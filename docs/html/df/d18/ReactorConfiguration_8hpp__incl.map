@@ -1,7 +1,0 @@
-<map id="libraries/pubsub_itc_fw/include/pubsub_itc_fw/ReactorConfiguration.hpp" name="libraries/pubsub_itc_fw/include/pubsub_itc_fw/ReactorConfiguration.hpp">
-<area shape="rect" id="Node000001" title=" " alt="" coords="5,5,219,60"/>
-<area shape="rect" id="Node000002" title=" " alt="" coords="33,108,100,133"/>
-<area shape="poly" id="edge1_Node000001_Node000002" title=" " alt="" coords="101,61,81,97,77,95,96,59"/>
-<area shape="rect" id="Node000003" title=" " alt="" coords="124,108,191,133"/>
-<area shape="poly" id="edge2_Node000001_Node000003" title=" " alt="" coords="128,59,147,95,143,97,123,61"/>
-</map>
