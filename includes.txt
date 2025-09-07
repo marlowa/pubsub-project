@@ -1,0 +1,10 @@
+libraries
+libraries/pubsub_itc_fw/include
+libraries/pubsub_itc_fw/tests_common/include/
+/usr/include/c++/13/
+/usr/include/x86_64-linux-gnu/c++/13
+/usr/include
+/home/marlowa/mystuff/thirdparty/installed/fmt/fmt-11.0.2/include
+/home/marlowa/mystuff/thirdparty/installed/quill/quill-10.0.1/include
+/home/marlowa/mystuff/thirdparty/installed/argparse/argparse-3.2/include
+/home/marlowa/mystuff/thirdparty/installed/googletest/googletest-1.8.1/include

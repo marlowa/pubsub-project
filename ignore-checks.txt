@@ -1,0 +1,41 @@
+altera-*
+abseil-*
+android-*
+fuchsia-*
+
+# Google and I have different opinions on namespaces.
+google-readability-namespace-comments
+llvm-namespace-comment
+
+# llvmlibc is for google but not for us.
+llvmlibc-*
+
+# Another point where Google and I disagree.
+modernize-use-trailing-return-type
+
+# stop clang-tidy from complaining about the use of boost headers.
+llvmlibc-restrict-system-libc-headers
+
+# The clang standard is to have system headers last but we want them first.
+llvm-include-order
+
+# We still want to pass constant strings as const std::string&.
+modernize-pass-by-value
+
+# We use this in macros for good reason
+cppcoreguidelines-avoid-do-while
+
+# I tried but failed to get .clang-tidy to work to disable certain checks for filenames that end in Test.cpp.
+# So, we have no choice but to disable the categories globally.
+# This is very annoying because the categories are useful. However, they triggered by the gtest TEST_F macro.
+cert-err58-cpp
+cppcoreguidelines-special-member-functions
+hicpp-special-member-functions
+cppcoreguidelines-owning-memory
+
+# this is a useful warning to have, but too much test code has magic numbers which are ok.
+cppcoreguidelines-avoid-magic-numbers
+readability-magic-numbers
+
+# It is annoying that clang-tidy objects to this when it is so much better than a C-style cast. When it's needed, it's needed.
+cppcoreguidelines-pro-type-reinterpret-cast

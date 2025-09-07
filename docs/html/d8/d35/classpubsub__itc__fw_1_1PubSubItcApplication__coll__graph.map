@@ -1,0 +1,19 @@
+<map id="pubsub_itc_fw::PubSubItcApplication" name="pubsub_itc_fw::PubSubItcApplication">
+<area shape="rect" id="Node000001" title="The top&#45;level orchestrator for the PubSub ITC framework." alt="" coords="497,385,684,505"/>
+<area shape="rect" id="Node000002" title=" " alt="" coords="37,243,256,323"/>
+<area shape="poly" id="edge1_Node000001_Node000002" title=" " alt="" coords="255,320,483,402,481,407,253,325"/>
+<area shape="rect" id="Node000003" href="$d0/dc5/structpubsub__itc__fw_1_1ReactorConfiguration.html" title="Configuration data for the Reactor." alt="" coords="5,5,256,180"/>
+<area shape="poly" id="edge2_Node000002_Node000003" title=" " alt="" coords="141,180,145,226,139,227,135,181"/>
+<area shape="rect" id="Node000004" title=" " alt="" coords="289,243,471,323"/>
+<area shape="poly" id="edge3_Node000001_Node000004" title=" " alt="" coords="433,321,502,373,499,378,429,325"/>
+<area shape="rect" id="Node000005" href="$dc/d34/classpubsub__itc__fw_1_1LoggerInterface.html" title="An abstract interface for logging." alt="" coords="281,20,495,165"/>
+<area shape="poly" id="edge4_Node000004_Node000005" title=" " alt="" coords="388,165,385,226,380,225,382,165"/>
+<area shape="rect" id="Node000006" title=" " alt="" coords="495,250,686,315"/>
+<area shape="poly" id="edge5_Node000001_Node000006" title=" " alt="" coords="593,316,593,369,588,369,588,316"/>
+<area shape="rect" id="Node000007" title=" " alt="" coords="710,250,957,315"/>
+<area shape="poly" id="edge6_Node000001_Node000007" title=" " alt="" coords="787,318,695,379,692,374,784,313"/>
+<area shape="rect" id="Node000008" title=" " alt="" coords="981,243,1184,323"/>
+<area shape="poly" id="edge7_Node000001_Node000008" title=" " alt="" coords="982,321,969,325,701,412,699,407,967,320,980,316"/>
+<area shape="rect" id="Node000009" title=" " alt="" coords="983,53,1182,133"/>
+<area shape="poly" id="edge8_Node000008_Node000009" title=" " alt="" coords="1085,133,1085,226,1080,226,1080,133"/>
+</map>

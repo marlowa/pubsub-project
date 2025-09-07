@@ -1,0 +1,5 @@
+<map id="pubsub_itc_fw::EventMessage" name="pubsub_itc_fw::EventMessage">
+<area shape="rect" id="Node000001" title="Represents a message used for inter&#45;thread communication." alt="" coords="5,253,213,379"/>
+<area shape="rect" id="Node000002" href="$da/df4/classpubsub__itc__fw_1_1ThreadID.html" title="Represents a unique identifier for a thread in the framework." alt="" coords="23,5,195,191"/>
+<area shape="poly" id="edge1_Node000001_Node000002" title=" " alt="" coords="112,191,112,237,107,237,107,191"/>
+</map>
