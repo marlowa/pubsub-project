@@ -1,0 +1,39 @@
+syntax = "proto3";
+
+// Defines the Protobuf package for general application messages.
+// This ensures that the generated C++ enum is scoped correctly (e.g., pubsub_itc_fw::app_messages::MessageType).
+package pubsub_itc_fw.app_messages;
+
+// Enum for identifying the type of serialized Protobuf message payloads.
+// This enum is intended to be included as the first field in all top-level
+// application messages, allowing the receiving threads to dispatch them correctly.
+//
+// Enum values use PascalCase to align with the specified C++ coding style
+// (no ALL_UPPERCASE tokens for user-defined elements).
+enum MessageType {
+  // Default/unknown message type. Should be avoided for explicit message types.
+  MessageTypeUnknown = 0;
+
+  // --- Application-Specific Messages (examples) ---
+  // Represents an event when a new order is placed in the system.
+  OrderPlaced = 1;
+  // Represents an event when a trade has been successfully executed.
+  TradeExecuted = 2;
+  // A periodic message to indicate liveness of a component.
+  Heartbeat = 3;
+  // An event signaling a change in system configuration.
+  ConfigurationUpdate = 4;
+
+  // --- SystemUser-Related Messages ---
+  // Represents an event when a new user registers with the system.
+  // Starting system messages from a higher, distinct number (e.g., 100) helps
+  // in organizing the enum and distinguishing them from application-specific ones.
+  SystemUserRegistered = 100;
+  // Represents an event when a user successfully logs into the system.
+  SystemUserLoggedIn = 101;
+  // Represents an event when a user logs out of the system.
+  SystemUserLoggedOut = 102;
+  // Represents an event when a user's group memberships are updated.
+  SystemUserGroupUpdated = 103;
+  // ... Add more system-related events as your application requires ...
+}

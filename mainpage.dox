@@ -31,7 +31,7 @@ It would be nice to use std::span but that is not available until C++20. Boost s
 @section design_philosophy_sec Design Philosophy
 The framework's core design is built on the following principles:Non-Blocking I/O: The Reactor uses asynchronous I/O with non-blocking sockets to ensure it never blocks while waiting for external resources,
 maintaining a responsive event loop.Asynchronous Threading: All communication between the Reactor and its worker threads is asynchronous and message-based. The framework uses a high-performance
-Dmitry Vyukov MPSCqueue for this purpose. The resulting CPU spinning is managed by employing CPU pinningto dedicated cores, avoiding interference with other system processes.
+Dmitry Vyukov MPSC queue for this purpose. The resulting CPU spinning is managed by employing CPU pinningto dedicated cores, avoiding interference with other system processes.
 This decouples thread execution and allows for independent processing.
 
 Backpressure Handling: The framework's architecture naturally handles backpressure. All work is queued and processed asynchronously, ensuring that a slow consumer on a given worker thread will

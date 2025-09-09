@@ -1,81 +1,54 @@
 #pragma once
 
-// C headers including posix API headers
-// (None directly here)
+#include <cstdint>
+#include <string>
+#include <vector>
 
-// C++ headers whose names start with ‘c’
-#include <cstdint> // For uint8_t
-
-// System C++ headers
-#include <string_view> // For std::string_view
-#include <utility>     // For std::move
-
-// Third party headers
-// (None directly here)
-
-// Project headers
-// (None directly here)
+#include <pubsub_itc_fw/utils/SimpleSpan.hpp>
 
 namespace pubsub_itc_fw {
 
 /**
- * @brief A lightweight, non-owning wrapper for binary message payloads.
+ * @brief Represents a message in the pubsub framework.
  *
- * This class serves as a generic data carrier for both pubsub and inter-thread
- * communication (ITC) messages. It holds a view (span) over raw binary data
- * and its length. The actual data memory is managed externally (e.g., by memory pools).
- *
- * This design is fully compatible with Google Protobuf. On the sending side, you serialize
- * your Protobuf message into a buffer (from a memory pool), then create a `Message`
- * that references this buffer. On the receiving side, you use the `Message`'s
- * data to deserialize into a Protobuf message.
+ * This class encapsulates the data transmitted between threads, including
+ * a payload, topic, and a unique sequence number for handling late subscribers.
  */
 class Message final {
-  public:
-    /**
-     * @brief Constructs a Message from a span of binary data.
-     * @param [in] data A span providing a view to the binary data.
-     */
-    explicit Message(std::string_view data) : data_span_(data) {}
+public:
+    ~Message() = default;
 
     /**
-     * @brief Copy constructor.
+     * @brief Constructs a message with a payload and topic.
+     *
+     * @param [in] topic The topic of the message.
+     * @param [in] payload_span A SimpleSpan representing the message's payload.
+     * @param [in] sequence_number The unique sequence number of the message.
      */
-    Message(const Message& other) = default;
+    explicit Message(const std::string& topic, utils::SimpleSpan<uint8_t> payload_span, int64_t sequence_number);
 
     /**
-     * @brief Move constructor.
+     * @brief Gets the message's topic.
+     * @returns A const reference to the message's topic.
      */
-    Message(Message&& other) noexcept = default;
+    [[nodiscard]] const std::string& get_topic() const;
 
     /**
-     * @brief Copy assignment operator.
+     * @brief Gets the message's payload.
+     * @returns A const reference to the message's payload span.
      */
-    Message& operator=(const Message& other) = default;
+    [[nodiscard]] const utils::SimpleSpan<uint8_t>& get_payload() const;
 
     /**
-     * @brief Move assignment operator.
+     * @brief Gets the message's sequence number.
+     * @returns The message's unique sequence number.
      */
-    Message& operator=(Message&& other) noexcept = default;
+    [[nodiscard]] int64_t get_sequence_number() const;
 
-    /**
-     * @brief Returns a `std::string_view` to the binary data payload.
-     * @return A `std::string_view` representing the message data.
-     */
-    [[nodiscard]] std::string_view get_data() const {
-        return data_span_;
-    }
-
-    /**
-     * @brief Returns the length of the binary data payload.
-     * @return The length of the message data in bytes, as a `size_t`.
-     */
-    [[nodiscard]] size_t get_length() const {
-        return data_span_.length();
-    }
-
-  private:
-    std::string_view data_span_;
+private:
+    std::string topic_;
+    utils::SimpleSpan<uint8_t> payload_;
+    int64_t sequence_number_;
 };
 
 } // namespace pubsub_itc_fw

@@ -126,15 +126,12 @@ add_library(pubsub_itc_fw_lib
     ${PROTO_SRCS} # Generated .pb.cc files
     libraries/pubsub_itc_fw/src/InetAddress.cpp
     libraries/pubsub_itc_fw/src/Message.cpp
-    libraries/pubsub_itc_fw/src/ApplicationEngine.cpp
     libraries/pubsub_itc_fw/src/ExpandablePoolAllocator.cpp
     libraries/pubsub_itc_fw/src/Logger.cpp
-    libraries/pubsub_itc_fw/src/ReactorBuilder.cpp
     libraries/pubsub_itc_fw/src/StringUtils.cpp
     libraries/pubsub_itc_fw/src/TcpAcceptor.cpp
     libraries/pubsub_itc_fw/src/TcpConnector.cpp
     libraries/pubsub_itc_fw/src/TcpSocket.cpp
-    libraries/pubsub_itc_fw/src/WorkerThread.cpp
 )
 
 # PUBLIC makes them available to targets that link against this library.

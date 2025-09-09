@@ -1,0 +1,47 @@
+syntax = "proto3";
+
+// Defines the Protobuf package for system-related messages.
+package pubsub_itc_fw.system;
+
+// Import the shared MessageType enum from the application messages package.
+// This allows SystemUser to include the common message type identifier.
+import "pubsub_itc_fw/message_types.proto";
+
+// SystemGroup message definition.
+// Represents a permission group within the system, identified by a unique name.
+// This message is simple, containing only a string name.
+message SystemGroup {
+  // The unique name of the system group.
+  string name = 1;
+}
+
+// SystemUser message definition.
+// Represents a registered user in the system. This message can be used
+// to convey user registration, login status, or profile updates,
+// including their associated group memberships.
+message SystemUser {
+  // The type of this specific system message.
+  // This field should be set to a value from MessageType (e.g., MessageType.SystemUserLoggedIn)
+  // when a SystemUser message is serialized and sent.
+  pubsub_itc_fw.app_messages.MessageType message_type = 1;
+
+  // A unique identifier for the system user. This could be a username,
+  // a UUID, or an internal user ID.
+  string user_id = 2;
+
+  // A repeated field containing a list of groups that the user belongs to.
+  // Each element is a SystemGroup message, allowing for extensibility if
+  // SystemGroup ever needs more fields beyond just a name.
+  repeated SystemGroup groups = 3;
+
+  // --- NOTE ON MESSAGE SIZE CONSTRAINT (1200 bytes) ---
+  // The overall pubsub message limit is 1200 bytes. When serializing a SystemUser,
+  // each group added to the 'groups' list will consume space equivalent to:
+  // (length of group name string) + (Protobuf string overhead ~1-2 bytes) + (Protobuf repeated field tag overhead ~2-3 bytes).
+  //
+  // For example, if an average group name is 15 characters (e.g., "administrators"),
+  // each `SystemGroup` instance might take roughly 18-20 bytes when serialized.
+  // This implies that a `SystemUser` message could carry approximately 60 to 70 groups
+  // within the 1200-byte limit, depending on the length of 'user_id' and any other
+  // future fields. This should provide ample capacity for typical user group assignments.
+}
