@@ -32,13 +32,15 @@ struct EventMessage {
         AppReady,
         Termination,
         Timer,
-        Socket
+        Socket,
+        Message
     };
 
     /**
      * @brief Variant to hold the payload, ensuring type-safety.
+     * We explicitly add a std::pair to handle messages with topics.
      */
-    using Payload = std::variant<std::monostate, std::string, Message>;
+    using Payload = std::variant<std::monostate, std::string, Message, std::pair<std::string, Message>>;
 
     /**
      * @brief Constructs a termination message.
@@ -60,6 +62,17 @@ struct EventMessage {
         : event_type_(type),
           originating_thread_id_(originating_thread_id),
           payload_(message) {}
+
+    /**
+     * @brief Constructs a message with a topic and a message payload.
+     * @param [in] type The type of event (should be EventType::Message).
+     * @param [in] message_pair A pair containing the topic and the message data.
+     * @param [in] originating_thread_id The ID of the thread that initiated the event.
+     */
+    EventMessage(EventType type, std::pair<std::string, Message> message_pair, ThreadID originating_thread_id)
+        : event_type_(type),
+          originating_thread_id_(originating_thread_id),
+          payload_(message_pair) {}
 
     /**
      * @brief Constructs a generic event message without a payload.

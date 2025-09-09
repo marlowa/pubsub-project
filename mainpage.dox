@@ -82,6 +82,70 @@ NORM (Nack-Oriented Reliable Multicast), DDS (Data Distribution Service from the
 aeron, ACE, and POCO. In the end they were all rejected. There seems to be no choice but to simulate
 reliable multicast by using unicast fanout. This is non-trivial also, but can be done.
 
+@section event_distributor_sec The EventDistributor
+
+The EventDistributor has a mutex, but the publish method, which is called by the PubSubClient,
+is not where the mutex is acquired. Looking at the EventDistributor's methods,
+you'll notice that the publish method does not access the
+subscriptions_ map directly. Instead, it is an asynchronous, lock-free operation.
+
+When a thread calls publish, it performs a very fast, non-blocking operation: it simply
+places the message onto a lock-free queue. The EventDistributor's thread, running in its run() loop,
+is the only thread that ever dequeues and processes these messages.
+
+Single-Threaded Event Processing:
+
+The EventDistributor's run() loop calls the process_message method to
+handle incoming events. This method is the one that accesses and
+iterates over the subscriptions_ map to fan out the message to all the
+subscribed threads. Since this process_message method is only ever
+executed by the EventDistributor's single thread, there is no risk of
+a race condition on the subscriptions_ map.
+
+The EventDistributor inherits from ApplicationThread.
+This is so that it automatically gains all the necessary infrastructure for
+inter-thread communication (ITC). This includes:
+
+    A dedicated thread: The run() method, which is the main loop for the EventDistributor,
+    is executed in its own std::thread, completely separate from the Reactor and other application threads.
+    This is crucial for isolating its responsibilities.
+
+    A lock-free message queue: Each ApplicationThread has its own LockFreeMessageQueue.
+    This is the mechanism that allows PubSubClients (on other threads) to post EventMessages
+    to the EventDistributor without taking a lock, which is the key to our high-performance publish path.
+
+    An event file descriptor (event_fd_): This file descriptor is used by the Reactor to monitor
+    for incoming messages on the thread's queue. When a new message is posted, the event_fd_ is triggered,
+    and the Reactor can then dispatch the event to the EventDistributor's handle_event method.
+
+@section reactor_and_threads_sec The Reactor and ApplicationThreads
+
+In this framework, there's a strong, bidirectional relationship between the Reactor and ApplicationThread:
+
+    The Reactor needs to know about the ApplicationThreads to manage their event file descriptors and dispatch events to them.
+
+    The ApplicationThreads need to know about the Reactor to perform actions like posting messages and communicating with other parts of the system.
+
+If we tried to pass the Reactor as a constructor parameter to ApplicationThread, we'd run into a problem. We couldn't create the Reactor until all the ApplicationThreads had been created (so we could register them), but we couldn't create the ApplicationThreads until the Reactor was created (to pass it to their constructors).
+
+This is a classic "chicken-and-egg" scenario.
+
+The Two-Stage Solution
+
+The setReactor() function solves this by separating the construction of the objects from the "wiring up" of their dependencies.
+
+    First, the PubSubItcApplication creates the Reactor.
+
+    Next, the application creates all the ApplicationThreads. The constructor only requires a logger and the thread name, which are independent of the Reactor.
+
+    Finally, the PubSubItcApplication calls the setReactor() method on each ApplicationThread to inject the Reactor dependency and complete the setup. This is also when the ApplicationThreads are registered with the Reactor itself.
+
+This design makes the system more flexible and cleanly separates the
+concerns of object creation from their runtime relationships. It
+ensures that the Reactor can manage all the ApplicationThreads, and
+that each ApplicationThread has a valid reference to the Reactor when
+it needs it, all without causing a compile-time dependency loop.
+
 @section low_latency_sec Low latency considerations
 
 Due to the low latency requirement, memory pools are to be used. Repeated heap allocation is to be avoided.
@@ -168,7 +232,7 @@ File Naming and Structure: Use PascalCase for filenames and types
 exception of the pimpl idiom (pimpl code all goes in the cpp file of the class that uses the pimpl).
 Abstract types should have the Interface suffix.
 
-Code Style and Naming: Use 1TBS for brace style. Variable names should
+Code Style and Naming: Use 1TBS for brace style. Variable names and function names should
 use snake_case, while type names should use PascalCase. Do not use UPPERCASE_TOKENS.
 Brace initialisation should be used for data members.
 Data members should have a trailing underscore.
@@ -179,10 +243,12 @@ The trailing underscore indicates they are private.
 General Practices: Prefer explicit nullptr comparisons (e.g., if (ptr == nullptr)).
 Avoid one-letter variable names except for loop counters.
 Use \#pragma once instead of C-style include guards.
+Avoid use of the final keyword on class declarations - it is of dubious value.
 
 Documentation: All documentation must be in Doxygen format and placed in header files only.
 Use \@param to indicate parameter direction ([in], [out], or [in,out]) and use \@returns for non-void functions.
 Avoid the doxygen at class directive since it is redundant and its use merely restates the code.
+The same goes for the doxygen file keyword.
 Don't comment the use of RAII or pimpl, since the developer is expected to know these concepts.
 
 Compilation and Safety: Treat all compiler warnings as errors. Use the

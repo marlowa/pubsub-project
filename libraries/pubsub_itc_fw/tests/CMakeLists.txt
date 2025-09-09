@@ -4,9 +4,9 @@
 add_executable(pubsub_itc_fw_tests
     ExpandablePoolAllocatorTest.cpp
     LoggerTest.cpp
+    StringUtilsTest.cpp
     # Add other test files here as you create them
     # MessageTest.cpp
-    # ApplicationEngineTest.cpp
 )
 
 # Link against the library being tested
