@@ -83,7 +83,7 @@ public:
      * @returns std::string The name of the thread.
      * @throws PreconditionAssertion if the ThreadID is not found.
      */
-    std::string getThreadNameFromID(ThreadID id) const;
+    std::string get_thread_name_from_id(ThreadID id) const;
 
 private:
     void checkForInactiveThreads();

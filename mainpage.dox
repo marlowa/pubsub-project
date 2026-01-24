@@ -51,6 +51,9 @@ The following classes are fundamental to the framework's architecture:
 Reactor: At the heart of the framework, this is the single-threaded event loop that monitors I/O events, manages timers, and routes all incoming and outgoing messages.
 It is responsible for maintaining the framework's overall responsiveness.
 
+ApplicationThread: This receives all events by reading from a Dimitry queue.
+Socket and pubsub events are sent to that queue by the Reactor.
+
 EventDistributor: This class is central to the pubsub mechanism.
 It simulates multicast by using a unicast fanout strategy, which ensures that all interested subscribers receive messages without requiring network-level multicast support.
 
@@ -231,6 +234,7 @@ File Naming and Structure: Use PascalCase for filenames and types
 (e.g., Logger.hpp). Follow the "one type per header" rule, with the
 exception of the pimpl idiom (pimpl code all goes in the cpp file of the class that uses the pimpl).
 Abstract types should have the Interface suffix.
+Only have .hpp or .cpp files. Do not use .inl or anything like it for headers containing inlined code.
 
 Code Style and Naming: Use 1TBS for brace style. Variable names and function names should
 use snake_case, while type names should use PascalCase. Do not use UPPERCASE_TOKENS.
@@ -240,10 +244,31 @@ That should not have a leading underscore, nor contain any double underscores.
 They should not start with 'm_' or 'd_' or anything like that.
 The trailing underscore indicates they are private.
 
+A special note on how to implement enum types: do not use enum class.
+Instead, define a class with the name desired, and make it contain
+a C-style enum that uses the type name followed by "Tag".
+The constructor should take a single argument of the type with "Tag" on the end,
+and be marked explicit, like all single argument constructors.
+It should provide a function as_string() const, which returns a string that corresponds
+to the value of the enumeration as a string rather than an integer.
+The class is to have a private data member of the type with "Tag" on the end of the type name.
+The class is to have a public is_equal function that returns true if the LHS equals the RHS.
+There is also to be an equality operator outside of the class that is implemented using the
+is_equal function.
+The code for the is_equal and as_string functions should be inline, so for enums done this way
+there is no need to have a .cpp file.
+So, for example, EventType would be in a file EventType.hpp and would have a class EventType
+containing a C-style enum called EventTypeTag.
+The equality operator would look like this:
+inline bool operator==(const EventType& lhs, const EventType& rhs) { return lhs.is_equal(rhs); }
+
 General Practices: Prefer explicit nullptr comparisons (e.g., if (ptr == nullptr)).
 Avoid one-letter variable names except for loop counters.
 Use \#pragma once instead of C-style include guards.
 Avoid use of the final keyword on class declarations - it is of dubious value.
+Avoid use of unsigned integers.
+Avoid std::byte since in practise its use often requires a reinterpret_cast.
+Also, it requires a header, <cstddef>.
 
 Documentation: All documentation must be in Doxygen format and placed in header files only.
 Use \@param to indicate parameter direction ([in], [out], or [in,out]) and use \@returns for non-void functions.

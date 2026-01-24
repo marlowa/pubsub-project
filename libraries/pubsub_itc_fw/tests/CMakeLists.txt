@@ -13,7 +13,7 @@ add_executable(pubsub_itc_fw_tests
 target_link_libraries(pubsub_itc_fw_tests PRIVATE
     pubsub_itc_fw_lib       # The library we're testing
     pubsub_itc_fw_test_helpers  # <--- Link to the custom test runner library
-    ${GOOGLETEST_LIBRARIES} # Google Test framework (from your FindGoogleTest.cmake)
+    GTest::gtest_main
     Boost::filesystem       # Needed for boost::filesystem in tests
 )
 

@@ -1,0 +1,82 @@
+#pragma once
+
+#include <string>
+#include <fmt/format.h>
+
+namespace pubsub_itc_fw {
+
+/**
+ * @brief Event type enumeration for EventMessage classification.
+ */
+class EventType
+{
+public:
+    /**
+     * @brief C-style enumeration of event types.
+     */
+    enum EventTypeTag
+    {
+        Initial,
+        AppReady,
+        Termination,
+        InterthreadCommunication,
+        Timer,
+        PubSubCommunication,
+        RawSocketCommunication
+    };
+
+private:
+    EventTypeTag event_type_;
+
+public:
+    /**
+     * @brief Constructs EventType from tag value.
+     * @param tag Event type tag
+     */
+    explicit EventType(EventTypeTag tag);
+
+    /**
+     * @brief Returns string representation of the event type.
+     * @return Event type as string
+     */
+    std::string as_string() const {
+        if (event_type_ == Initial) {
+            return "Initial";
+        } else if (event_type_ = AppReady) {
+                return "AppReady";
+        } else if (event_type_ = Termination) {
+            return "Termination";
+        } else if (event_type_ = InterthreadCommunication) {
+            return "InterthreadCommunication";
+        } else if (event_type_ = Timer) {
+            return "Timer";
+        } else if (event_type_ = PubSubCommunication) {
+            return "PubSubCommunication";
+        } else if (event_type_ = RawSocketCommunication) {
+            return "RawSocketCommunication";
+        } else {
+            return fmt::format("unknown ({})", static_cast<int>(event_type_));
+        }
+    }
+
+    /**
+     * @brief Checks equality with another EventType.
+     * @param other EventType to compare with
+     * @return True if equal, false otherwise
+     */
+    bool is_equal(const EventType& rhs) const {
+        return event_type_ == rhs.event_type_;
+};
+
+/**
+ * @brief Equality operator for EventType.
+ * @param[in] lhs Left-hand side EventType
+ * @param[in] rhs Right-hand side EventType
+ * @return True if equal, false otherwise
+ */
+inline bool operator==(const EventType& lhs, const EventType& rhs)
+{
+    return lhs.is_equal(rhs);
+}
+
+}

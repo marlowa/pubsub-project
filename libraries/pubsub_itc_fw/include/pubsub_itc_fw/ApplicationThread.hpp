@@ -6,8 +6,6 @@
 #include <map>
 #include <memory>
 #include <string>
-#include <utility>
-#include <vector>
 
 #include <pubsub_itc_fw/LockFreeMessageQueue.hpp>
 #include <pubsub_itc_fw/ThreadWithJoinTimeout.hpp>
@@ -30,100 +28,137 @@ class SocketHandler;
  * @brief Abstract base class for threads managed by the Reactor.
  *
  * This class abstracts the underlying std::thread and provides a consistent
- * interface for the Reactor to manage its lifecycle, including starting,
- * joining, and a mechanism for state-checking. It provides the core
- * infrastructure for event-driven processing and thread management within the framework.
+ * interface for the Reactor to manage the lifecycle of the thread, including starting,
+ * joining, and a mechanism for state-checking.
  */
-class ApplicationThread : public EventHandler {
+class ApplicationThread {
 public:
-    /**
-     * @brief Destructor. Joins with the managed thread if it is still running.
-     */
-    virtual ~ApplicationThread();
+
+    ~ApplicationThread();
 
     /**
+     * TODO need to document how watermarks work
+     *
+     * Note that the thread id is allocated by the Reactor when the thread is registered.
+     * The ApplicationThread stores a reference to the Reactor during construction.
+     * The Reactor constructor is simple so it is an easy thing to create the Reactor,
+     * not do anything with it yet, then create the ApplicationThreads. The creation of the thread
+     * registers it with the Reactor but nothing happens until the Reactor run function is invoked.
+     * This means that when this constructor completes the ApplicationThread can obtain its ThreadID.
+     *
      * @brief Constructs an ApplicationThread.
-     * @param [in] logger A reference to the logger instance.
-     * @param [in] thread_name The name of the thread.
-     * @param [in] low_watermark The low watermark for the message queue.
-     * @param [in] high_watermark The high watermark for the message queue.
-     * @param [in] for_client_use A user-defined pointer for client-specific data.
-     * @param [in] gone_below_low_watermark_handler A handler for when the queue size drops below the low watermark.
-     * @param [in] gone_above_high_watermark_handler A handler for when the queue size exceeds the high watermark.
+     * @param[in] logger A reference to the logger instance.
+     * @param[in] reactor a reference to the reactor which is needed when the thread terminates with an exception
+     * @param[in] thread_name The name of the thread.
+     * @param[in] low_watermark The low watermark for the message queue.
+     * @param[in] high_watermark The high watermark for the message queue.
      */
     ApplicationThread(const LoggerInterface& logger,
+                      Reactor& reactor,
                       const std::string& thread_name,
-                      int low_watermark,
-                      int high_watermark,
-                      void* for_client_use,
-                      std::function<void(void* for_client_use)> gone_below_low_watermark_handler,
-                      std::function<void(void* for_client_use)> gone_above_high_watermark_handler);
+                      uint32_t low_watermark, uint32_t high_watermark);
 
     /**
-     * @brief Pushes an EventMessage onto the thread's message queue.
-     * @param [in] event_message The message to be pushed.
-     * @return True if the push was successful, false otherwise.
+     * Return the thread name, as a const ref to avoid copying
      */
-    bool push(EventMessage&& event_message);
+    const std::string& get_thread_name() const {
+        return thread_name_;
+    }
 
     /**
-     * @brief Starts the thread by launching its internal run loop.
+     * @brief The main loop for the application thread.
+     */
+    virtual void run() = 0;
+
+    /**
+     * Starts the underlying thread.
      */
     void start();
 
     /**
-     * @brief Requests a graceful shutdown and joins the thread with a timeout.
-     * @param [in] timeout The duration to wait for the thread to join.
+     * @brief Joins the underlying thread with a timeout for hung threads.
      */
-    void join_with_timeout(std::chrono::milliseconds timeout);
+    bool join_with_timeout(std::chrono::milliseconds timeout);
 
     /**
-     * @brief Returns the name of the thread.
-     * @return The thread name.
+     * Returns the ID of the thread. This is allocated by the Reactor during the
+     * execution of the ApplicationThread constructor.
+     *
+     * @return ThreadID The thread ID.
      */
-    [[nodiscard]] const std::string& get_thread_name() const;
+    ThreadID get_thread_id() const;
 
     /**
-     * @brief Returns the unique ID of the application thread.
-     * @return The thread's ID.
+     * @brief Sets the ID of the thread. This is called by the Reactor during registration.
+     * @param [in] id The ID to set.
      */
-    [[nodiscard]] ThreadID get_thread_id() const;
+    void set_thread_id(ThreadID id);
 
     /**
-     * @brief Handles an event.
-     * @param [in] event_data A pointer to event-specific data.
-     * @param [in] originating_thread_id The ID of the thread that generated the event.
+     * @brief Pauses the thread's execution loop.
      */
-    void handle_event(void* event_data, ThreadID originating_thread_id) override;
+    void pause();
 
     /**
-     * @brief Registers a timer handler.
-     * @param [in] timer_type The type of timer to register.
-     * @param [in] handler The function to call when the timer expires.
+     * @brief Resumes the thread's execution loop.
      */
-    void register_handler(TimerType timer_type, std::function<void()> handler);
+    void resume();
 
     /**
-     * @brief Retrieves the Reactor instance associated with this thread.
-     * @return A pointer to the Reactor instance.
+     * @brief Enqueues an event message to the thread's queue.
+     *
+     *
+     * @param[in] target_thread_name The name of the thread to post to
+     * @param[in] message The message to enqueue, a discriminated union
      */
-    [[nodiscard]] Reactor* get_reactor() const;
+    void post_message(const std::string& target_thread_name, const EventMessage& message);
 
     /**
-     * @brief Sets the Reactor instance for this thread.
-     * @param [in] reactor The Reactor instance.
+     * @brief Returns a reference to the thread's message queue.
+     * @return LockFreeMessageQueue<EventMessage>& The message queue.
      */
-    void set_reactor(Reactor* reactor);
+    LockFreeMessageQueue<EventMessage>& get_queue();
 
-    // Getters and setters for event timing
+    /**
+     * @brief Returns a reference to the logger.
+     * @return const LoggerInterface& The logger instance.
+     */
+    const LoggerInterface& get_logger() const;
+
+    /**
+     * @brief Starts a one-off timer.
+     * @param [in] name The name of the timer.
+     * @param [in] interval The timer interval.
+     * @return the timer ID for the timer created
+     */
+    TimerID start_one_off_timer(const std::string& name, std::chrono::microseconds interval);
+
+    /**
+     * @brief Starts a recurring timer.
+     * @param [in] name The name of the timer.
+     * @param [in] interval The timer interval.
+     * @return the timer ID for the timer created
+     */
+    TimerID start_recurring_timer(const std::string& name, std::chrono::microseconds interval);
+
+    /**
+     * @brief Cancels a timer.
+     * @param [in] name The name of the timer to cancel.
+     */
+    void cancel_timer(const std::string& name);
+
+    //void post_socket_read_message(const int length, void* socket_handler); TODO in flux
+
     auto get_time_event_started() const { return time_event_started_; }
     auto get_time_event_finished() const { return time_event_finished_; }
 
-    void set_time_event_started(std::chrono::time_point<std::chrono::system_clock, std::chrono::nanoseconds> time_event_started) {
+    void set_time_event_started(std::chrono::time_point<std::chrono::system_clock,
+                                std::chrono::nanoseconds> time_event_started) {
         time_event_started_ = time_event_started;
     }
 
-    void set_time_event_finished(std::chrono::time_point<std::chrono::system_clock, std::chrono::nanoseconds> time_event_finished) {
+    void set_time_event_finished(std::chrono::time_point<std::chrono::system_clock,
+                                 std::chrono::nanoseconds> time_event_finished) {
         time_event_finished_ = time_event_finished;
     }
 
@@ -133,46 +168,46 @@ public:
     void shutdown(const std::string& reason);
 
 protected:
-    /**
-     * @brief The main loop for the application thread.
-     *
-     * This is the entry point for the thread's execution.
-     */
-    virtual void run() = 0;
 
     /**
-     * @brief Processes a message received via the internal queue.
-     * @param [in] message The message to process.
+     * This function is called by the wrapper 'run'. The work of 'run' is done here.
+     * The wrapper catches any exception and handles it by marking the thread as finished,
+     * cancelling any timers created by the thread, and then invoking the Reactor's shutdown function.
+     * This is because if any application encounters an unhandled exception it is fatal to the Reactor.
+     * In such cases the Reactor shuts down and the application should halt.
      */
-    virtual void process_message(EventMessage& message) = 0;
-
-    /**
-     * @brief Handles the deallocation of a message popped from the queue.
-     * @param [in] message The message to deallocate.
-     */
-    virtual void do_pop_message_deallocate(EventMessage& message) = 0;
-
-    // The primary internal run loop for the thread.
     void run_internal();
 
-    // Internal handler for data messages.
     void on_data_message(const EventMessage& event_message);
+    virtual void process_message(EventMessage& message) = 0;
 
-    LoggerInterface& get_logger() { return logger_; }
-
-    // Private members
 private:
+
+    const LoggerInterface& logger_;
+
+    /**
+     * When the Reactor posts events to this thread, it notes the time the event started
+     * (i.e., when it posted) and when the event finished (i.e. when the handler returned).
+     * This enables the Reactor to detect in its backstop thread if a thread has hung in its
+     * event processing.
+     */
     std::chrono::time_point<std::chrono::system_clock, std::chrono::nanoseconds> time_event_started_;
     std::chrono::time_point<std::chrono::system_clock, std::chrono::nanoseconds> time_event_finished_;
-    LoggerInterface& logger_;
+
     std::string thread_name_;
-    ThreadID thread_id_{ 0 };
-    std::atomic<bool> is_running_{ false };
+
+    /**
+     * Each thread has a thread_id which is basically a wrapped integer.
+     * It is used when events are posted as inter-thread messages. The receiver needs to know who
+     * sent the message. Hence the EventMessage contains the thread_id. It is more efficient then
+     * storing a string, the thread name. Any logging will probably want to use the thread name, so
+     * a function is provided by the Reactor to give the name from the id, get_thread_name_from_id.
+     */
+    ThreadID thread_id_;
+
     std::atomic<bool> is_paused_{ false };
     std::atomic<bool> has_processed_initial_event_{ false };
-    LockFreeMessageQueue<EventMessage> queue_;
-    std::unique_ptr<ThreadWithJoinTimeout> thread_with_join_timeout_;
-    Reactor* reactor_;
+    LockFreeMessageQueue<EventMessage> message_queue_;
+    std::unique_ptr<ThreadWithJoinTimeout> thread_;
 };
-
 } // namespace pubsub_itc_fw

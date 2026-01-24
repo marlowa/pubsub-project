@@ -1,53 +1,60 @@
+#if 0
 #pragma once
 
-#include <chrono>
-#include <string>
+#include <memory>
+#include <sys/epoll.h>
 
-#include <pubsub_itc_fw/TimerType.hpp>
+#include <pubsub_itc_fw/EventHandler.hpp>
+#include <pubsub_itc_fw/ApplicationThread.hpp>
+#include <pubsub_itc_fw/LoggerInterface.hpp>
+#include <pubsub_itc_fw/ThreadID.hpp>
+#include <pubsub_itc_fw/Timer.hpp>
 
 namespace pubsub_itc_fw {
 
 /**
- * @brief Manages the state and logic for a single timer.
+ * @brief An `EventHandler` for a timer event.
  *
- * This class is an internal component of ApplicationThread and encapsulates
- * all necessary information for a recurring or single-shot timer.
+ * This class inherits from `EventHandler` and correctly implements the
+ * `handle_event` method to process timer events. This class would be
+ * registered with the Reactor to handle a specific timer file descriptor.
  */
-class TimerHandler {
+class TimerHandler final : public EventHandler {
 public:
     /**
      * @brief Constructs a TimerHandler.
-     * @param [in] name The unique name of the timer.
-     * @param [in] type The type of timer (single-shot or recurring).
-     * @param [in] interval The interval for the timer.
+     * @param [in] fd The file descriptor of the timer.
+     * @param [in] timer A unique pointer to the Timer object.
+     * @param [in] processing_thread The thread to which the timer event will be dispatched.
      */
-    TimerHandler(const std::string& name, TimerType type, std::chrono::microseconds interval)
-        : name_(name),
-          type_(type),
-          interval_(interval) {}
+    TimerHandler(int fd, std::unique_ptr<Timer> timer, std::shared_ptr<ApplicationThread> processing_thread);
 
     /**
-     * @brief Returns the name of the timer.
-     * @returns std::string The name of the timer.
+     * @brief Destructor for TimerHandler.
      */
-    std::string get_name() const { return name_; }
+    ~TimerHandler() override = default;
 
     /**
-     * @brief Returns the type of the timer.
-     * @returns TimerType The timer's type.
+     * @brief Handles a timer event detected by the Reactor.
+     * @param [in] events The event types that occurred (e.g., EPOLLIN).
+     * @return True if the handler successfully processed the event, false otherwise.
      */
-    TimerType get_type() const { return type_; }
+    bool handle_event(uint32_t events) noexcept override;
 
     /**
-     * @brief Returns the interval of the timer.
-     * @returns std::chrono::microseconds The timer's interval.
+     * @brief Returns the file descriptor associated with this handler.
+     * @return The file descriptor.
      */
-    std::chrono::microseconds get_interval() const { return interval_; }
+    int get_fd() const noexcept override {
+        return fd_;
+    }
 
 private:
-    std::string name_;
-    TimerType type_;
-    std::chrono::microseconds interval_;
+    int fd_;
+    std::unique_ptr<Timer> timer_;
+    std::shared_ptr<ApplicationThread> processing_thread_;
 };
 
 } // namespace pubsub_itc_fw
+
+#endif

@@ -4,61 +4,40 @@
 // (None directly here)
 
 // System C++ headers
-#include <memory>
+#include <map>
 #include <mutex>
 #include <string>
-#include <unordered_map>
+#include <utility>
 #include <vector>
-#include <stdexcept>
-#include <functional>
-
-// Third party headers
-// (None directly here)
 
 // Project headers
 #include <pubsub_itc_fw/ApplicationThread.hpp>
-#include <pubsub_itc_fw/Timer.hpp>
-#include <pubsub_itc_fw/LoggerInterface.hpp>
-#include <pubsub_itc_fw/ThreadID.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
-#include <pubsub_itc_fw/ThreadWithJoinTimeout.hpp>
+#include <pubsub_itc_fw/Message.hpp>
+#include <pubsub_itc_fw/Reactor.hpp>
+#include <pubsub_itc_fw/ThreadID.hpp>
 
 namespace pubsub_itc_fw {
 
-// Forward declaration
+// Forward declaration to break circular dependency with Reactor
 class Reactor;
 
 /**
- * @brief The application-level hub for fanout messaging and timer events.
+ * @brief Handles fanout of messages to all interested subscribers.
  *
- * This class runs on its own dedicated thread and is responsible for managing
- * subscriptions, fanning out messages to subscribers, and managing timers.
- * It is a key component for decoupling publishers from subscribers.
+ * This class is the core of the framework's pubsub mechanism. It receives
+ * messages from publishers and distributes them to all registered subscribers.
+ * It is a single-threaded entity that processes messages from its own
+ * dedicated message queue.
  */
 class EventDistributor final : public ApplicationThread {
   public:
     /**
-     * @brief Destructor.
-     */
-    ~EventDistributor() override;
-
-    /**
      * @brief Constructs an EventDistributor.
+     * @param [in] reactor A reference to the Reactor instance.
      * @param [in] logger A reference to the logger instance.
-     * @param [in] thread_name The name of the thread.
-     * @param [in] low_watermark The low watermark for the message queue.
-     * @param [in] high_watermark The high watermark for the message queue.
-     * @param [in] for_client_use A user-defined pointer for client-specific data.
-     * @param [in] gone_below_low_watermark_handler A handler for when the queue size drops below the low watermark.
-     * @param [in] gone_above_high_watermark_handler A handler for when the queue size exceeds the high watermark.
      */
-    EventDistributor(const LoggerInterface& logger,
-                     const std::string& thread_name,
-                     int low_watermark,
-                     int high_watermark,
-                     void* for_client_use,
-                     std::function<void(void* for_client_use)> gone_below_low_watermark_handler,
-                     std::function<void(void* for_client_use)> gone_above_high_watermark_handler);
+    EventDistributor(Reactor& reactor, LoggerInterface& logger);
 
     /**
      * @brief The main loop for the event distributor thread.
@@ -67,35 +46,44 @@ class EventDistributor final : public ApplicationThread {
 
     /**
      * @brief Publishes a message to a topic.
+     *
+     * This method is called by publishers to send a message to the distributor's
+     * queue for asynchronous processing.
+     *
      * @param [in] topic The topic to publish to.
      * @param [in] message The message to publish.
+     * @param [in] originating_thread_id The ID of the thread that published the message.
      */
-    void publish(const std::string& topic, const Message& message);
+    void publish(const std::string& topic, const Message& message, ThreadID originating_thread_id);
 
     /**
      * @brief Subscribes a thread to a topic.
+     *
+     * This method is called by a client to register its thread ID as a subscriber
+     * for a given topic.
+     *
      * @param [in] topic The topic to subscribe to.
      * @param [in] subscriber_id The ID of the subscribing thread.
      */
     void subscribe(const std::string& topic, ThreadID subscriber_id);
 
     /**
-     * @brief Handles the deallocation of a message popped from the queue.
-     * @param [in] message The message to deallocate.
+     * @brief Unsubscribes a thread from a topic.
+     * @param [in] topic The topic to unsubscribe from.
+     * @param [in] subscriber_id The ID of the unsubscribing thread.
      */
-    void do_pop_message_deallocate(EventMessage& message) override;
+    void unsubscribe(const std::string& topic, ThreadID subscriber_id);
 
-  protected:
+  private:
     /**
      * @brief Processes a message received via the internal queue.
      * @param [in] message The message to process.
      */
-    void process_message(EventMessage& message) override;
+    void process_message(EventMessage& message);
 
-  private:
+    Reactor& reactor_;
+    std::map<std::string, std::vector<ThreadID>> subscriptions_;
     std::mutex subscriptions_mutex_;
-    std::unordered_map<std::string, std::vector<ThreadID>> subscriptions_;
-    std::unordered_map<std::string, std::unique_ptr<Timer>> timers_;
 };
 
 } // namespace pubsub_itc_fw

@@ -28,10 +28,14 @@ if (NOT DEFINED ENV{THIRDPARTY_DIR})
     message(FATAL_ERROR "THIRDPARTY_DIR environment variable is not set. Please set it to the root of the third-party installations.")
 endif()
 
-# Get the value of the environment variable
-set(THIRDPARTY_ROOT_DIR $ENV{THIRDPARTY_DIR})
+set(THIRDPARTY_DIR $ENV{THIRDPARTY_DIR})
+set(ABSEIL_VERSION $ENV{ABSEIL_VERSION})
+set(PROTOBUF_VERSION $ENV{PROTOBUF_VERSION})
+set(FMT_VERSION $ENV{FMT_VERSION})
+set(QUILL_VERSION $ENV{QUILL_VERSION})
+set(ARGPARSE_VERSION_FROM_ENV $ENV{ARGPARSE_VERSION})
 
-# Add the THIRDPARTY_ROOT_DIR to CMAKE_PREFIX_PATH.
+# Add the THIRDPARTY_DIR to CMAKE_PREFIX_PATH.
 # This makes CMake look under <THIRDPARTY_DIR>/ for packages.
 # When find_package(PackageName) is called, CMake automatically looks for
 # <THIRDPARTY_DIR>/PackageName/ or <THIRDPARTY_DIR>/<anything>/PackageName/
@@ -39,7 +43,7 @@ set(THIRDPARTY_ROOT_DIR $ENV{THIRDPARTY_DIR})
 # Your convention <component_name>-major.minor.fix needs to be handled by how
 # the third-party library itself generates its Config.cmake files or if
 # specific hints are given.
-list(PREPEND CMAKE_PREFIX_PATH ${THIRDPARTY_ROOT_DIR})
+list(PREPEND CMAKE_PREFIX_PATH ${THIRDPARTY_DIR})
 
 # Add a custom module path for finding packages that don't provide Config files
 # or need custom discovery logic (like argparse in this case).
@@ -51,11 +55,14 @@ list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake_modules")
 # or as submodules. CMake's find_package will look in standard locations
 # and now, crucially, within the paths added to CMAKE_PREFIX_PATH.
 
+list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/abseil/${ABSEIL_VERSION}")
+list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/protobuf/${PROTOBUF_VERSION}")
+
 # Find Protobuf. This is crucial for generating C++ code from .proto files.
 # For Protobuf, ensure its installation places `protobuf-config.cmake` or
 # `ProtobufConfig.cmake` under `$THIRDPARTY_DIR/protobuf/protobuf-MAJOR.MINOR.PATCH/lib/cmake/protobuf/`
 # or similar standard CMake package config locations.
-find_package(Protobuf REQUIRED)
+find_package(Protobuf REQUIRED CONFIG)
 
 # Boost usually works well with CMAKE_PREFIX_PATH if its installation is standard.
 # It looks for `BoostConfig.cmake` or `boost-config.cmake`.
@@ -63,7 +70,8 @@ find_package(Boost REQUIRED COMPONENTS headers filesystem)
 
 # Find fmt library for formatting.
 # fmt needs `fmtConfig.cmake` or `fmt-config.cmake`.
-find_package(fmt REQUIRED)
+list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/fmt/${FMT_VERSION}")
+find_package(fmt REQUIRED CONFIG)
 
 # Find quill for logging. Quill typically requires its own build or a specific
 # FindQuill.cmake module if not installed in a standard path.
@@ -76,11 +84,12 @@ find_package(quill REQUIRED)
 if (NOT DEFINED ENV{ARGPARSE_VERSION})
     message(FATAL_ERROR "ARGPARSE_VERSION environment variable is not set. Please set it to the exact version of argparse (e.g., '3.2').")
 endif()
-set(ARGPARSE_VERSION_FROM_ENV $ENV{ARGPARSE_VERSION})
+
 find_package(argparse REQUIRED)
 
-# --- Add this section to find and configure GoogleTest ---
-find_package(GoogleTest REQUIRED)
+set(GOOGLETEST_VERSION $ENV{GOOGLETEST_VERSION})
+list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/googletest/${GOOGLETEST_VERSION}")
+find_package(GTest REQUIRED CONFIG)
 
 # --- Define the Protobuf Message Type ---
 # This step tells CMake to compile the .proto files into .pb.h and .pb.cc
@@ -149,7 +158,7 @@ target_include_directories(pubsub_itc_fw_lib PUBLIC
 
 # PRIVATE means these are only needed for building this library.
 target_link_libraries(pubsub_itc_fw_lib PUBLIC
-     ${PROTOBUF_LIBRARIES} # Link against the Protobuf libraries using the legacy variable
+     protobuf::libprotobuf
      Boost::headers        # Link against Boost headers
      fmt::fmt              # Link against fmt library
      quill::quill          # Link against quill
