@@ -157,28 +157,24 @@ template <typename T>
 T* ExpandablePoolAllocator<T>::allocate() {
     T* obj = nullptr;
 
-    // 1. Fast Path (Standard DCLP first check)
-    // We use acquire semantics to ensure we see the fully initialized pool
+    // 1. Fast Path: Atomic load with acquire semantics
     FixedSizeMemoryPool<T>* pool = current_pool_ptr_.load(std::memory_order_acquire);
     if (pool) {
         obj = pool->allocate();
         if (obj) return obj;
     }
 
-    // 2. Slow Path: Expansion or someone else is expanding
+    // 2. Slow Path: Contention/Expansion
     std::lock_guard<std::mutex> lock(expansion_mutex_);
 
-    // 3. Second Check (Standard DCLP second check)
-    // Re-load the pointer while holding the lock.
+    // RE-CHECK: Another thread might have expanded while we waited for the lock
     pool = current_pool_ptr_.load(std::memory_order_acquire);
-    
-    // Safety check: ensure pool is not null before dereferencing
     if (pool) {
         obj = pool->allocate();
         if (obj) return obj;
     }
 
-    // 4. If we are here, the current pool is definitely full (or doesn't exist)
+    // 3. Attempt Expansion
     if (pools_.size() < static_cast<size_t>(max_pools_)) {
         auto new_pool = std::make_unique<FixedSizeMemoryPool<T>>(
             objects_per_pool_, use_huge_pages_flag_,
@@ -192,20 +188,21 @@ T* ExpandablePoolAllocator<T>::allocate() {
         FixedSizeMemoryPool<T>* pool_ptr = new_pool.get();
         pools_.push_back(std::move(new_pool));
         
-        // Update the global pointer so the next thread finds this fresh pool immediately
+        // Critical: Store the new pool pointer before performing the callback/allocation
         current_pool_ptr_.store(pool_ptr, std::memory_order_release);
 
         if (handler_for_pool_exhausted_) {
             handler_for_pool_exhausted_(nullptr, objects_per_pool_);
         }
 
+        // Return from the pool we JUST created
         return pool_ptr->allocate();
     }
 
-    // 5. Final exhaustive fallback
-    // If we hit max_pools, some older pools might have had a deallocate() 
-    // call in the interim. Scan them all as a last resort.
-    for (auto& p : pools_) {
+    // 4. Final Fallback: Exhaustive search
+    // In extreme contention, a deallocate() might have happened in an older pool
+    // while we were fighting for the mutex.
+    for (const auto& p : pools_) {
         obj = p->allocate();
         if (obj) return obj;
     }
