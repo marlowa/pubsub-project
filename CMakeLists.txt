@@ -17,7 +17,9 @@ add_compile_options(-g -Wall -pedantic -Werror)
 
 # Add this to ensure the compiler uses the 16-byte atomic hardware instruction
 # This is used in the lock-free expandable buffer allocator.
-add_compile_options(-mcx16)
+add_compile_options(-mcx16
+   -march=x86-64-v2  # This is the minimum level that guarantees CMPXCHG16B
+                   )
 
 # --- Configure Third-Party Dependency Discovery ---
 # CMake will search for packages within the paths specified in CMAKE_PREFIX_PATH.
@@ -160,6 +162,8 @@ target_include_directories(pubsub_itc_fw_lib PUBLIC
      $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 
+
+
 # PRIVATE means these are only needed for building this library.
 target_link_libraries(pubsub_itc_fw_lib PUBLIC
      protobuf::libprotobuf
@@ -167,6 +171,7 @@ target_link_libraries(pubsub_itc_fw_lib PUBLIC
      fmt::fmt              # Link against fmt library
      quill::quill          # Link against quill
      argparse::argparse    # Link against argparse
+     atomic
 )
 
 add_subdirectory(libraries/pubsub_itc_fw/tests_common)
