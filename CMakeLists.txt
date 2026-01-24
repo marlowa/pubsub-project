@@ -17,7 +17,7 @@ add_compile_options(-g -Wall -pedantic -Werror)
 
 # Add this to ensure the compiler uses the 16-byte atomic hardware instruction
 # This is used in the lock-free expandable buffer allocator.
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mcx16")
+add_compile_options(-mcx16)
 
 # --- Configure Third-Party Dependency Discovery ---
 # CMake will search for packages within the paths specified in CMAKE_PREFIX_PATH.
