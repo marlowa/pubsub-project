@@ -99,10 +99,31 @@ FixedSizeMemoryPool<T>::FixedSizeMemoryPool(int objects_per_pool,
     total_pool_size_ = static_cast<size_t>(objects_per_pool_) * object_size;
 
     int flags = MAP_PRIVATE | MAP_ANONYMOUS;
-    if (use_huge_pages_flag_ == UseHugePagesFlag::DoUseHugePages) flags |= MAP_HUGETLB;
+    if (use_huge_pages_flag_ == UseHugePagesFlag::DoUseHugePages) {
+        flags |= MAP_HUGETLB;
+    }
 
     pool_memory_ = mmap(nullptr, total_pool_size_, PROT_READ | PROT_WRITE, flags, -1, 0);
-    if (pool_memory_ == MAP_FAILED) throw std::bad_alloc();
+
+    // If Huge Pages were requested but failed
+    if (pool_memory_ == MAP_FAILED && (flags & MAP_HUGETLB)) {
+        // 1. Invoke the handler so the failure is NOT silent
+        if (handler_for_huge_pages_error) {
+            handler_for_huge_pages_error(nullptr, total_pool_size_);
+        }
+        
+        // 2. Revert the internal flag to reflect reality
+        use_huge_pages_flag_ = UseHugePagesFlag::DoNotUseHugePages;
+        
+        // 3. Fallback to standard pages to ensure the 'Hardware' stays running
+        flags &= ~MAP_HUGETLB;
+        pool_memory_ = mmap(nullptr, total_pool_size_, PROT_READ | PROT_WRITE, flags, -1, 0);
+    }
+
+    // Only throw if even the standard memory allocation fails
+    if (pool_memory_ == MAP_FAILED) {
+        throw std::bad_alloc();
+    }
 
     std::byte* current = static_cast<std::byte*>(pool_memory_);
     for (int i = 0; i < objects_per_pool_; ++i) {
