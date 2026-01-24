@@ -15,6 +15,7 @@
 #include <pubsub_itc_fw/PoolStatistics.hpp>
 #include <pubsub_itc_fw/UseHugePagesFlag.hpp>
 #include <pubsub_itc_fw/tests_common/UnitTestLogger.hpp> // For the new UnitTestLogger
+#include <pubsub_itc_fw/tests_common/LatencyRecorder.hpp>
 
 namespace pubsub_itc_fw::tests {
 
@@ -413,6 +414,46 @@ TEST_F(ExpandablePoolAllocatorTest, CacheLineContentionStress) {
 
     auto stats = allocator.get_pool_statistics();
     EXPECT_EQ(stats.number_of_allocated_objects_, 0);
+}
+
+TEST_F(ExpandablePoolAllocatorTest, LatencyStressTest) {
+    const int objects_per_pool = 1000;
+    const int num_threads = 12;
+    const int iterations = 10000;
+    LatencyRecorder alloc_recorder;
+    LatencyRecorder dealloc_recorder;
+
+    ExpandablePoolAllocator<TestObject> allocator(
+        *unit_test_logger_, "LatencyTest", objects_per_pool, 1, 1,
+        handler_for_pool_exhausted_, handler_for_invalid_free_, handler_for_huge_pages_error_,
+        UseHugePagesFlag::DoNotUseHugePages);
+
+    std::vector<std::thread> threads;
+    for (int i = 0; i < num_threads; ++i) {
+        threads.emplace_back([&]() {
+            for (int j = 0; j < iterations; ++j) {
+                // Measure Allocation
+                auto start = std::chrono::high_resolution_clock::now();
+                TestObject* obj = allocator.allocate();
+                auto end = std::chrono::high_resolution_clock::now();
+                
+                if (obj) {
+                    alloc_recorder.record(std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count());
+                    
+                    // Measure Deallocation
+                    start = std::chrono::high_resolution_clock::now();
+                    allocator.deallocate(obj);
+                    end = std::chrono::high_resolution_clock::now();
+                    dealloc_recorder.record(std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count());
+                }
+            }
+        });
+    }
+
+    for (auto& t : threads) t.join();
+
+    alloc_recorder.dump_results("Allocation");
+    dealloc_recorder.dump_results("Deallocation");
 }
 
 } // namespace pubsub_itc_fw::tests
