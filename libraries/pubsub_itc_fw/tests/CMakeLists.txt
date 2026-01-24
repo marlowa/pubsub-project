@@ -15,6 +15,7 @@ target_link_libraries(pubsub_itc_fw_tests PRIVATE
     pubsub_itc_fw_test_helpers  # <--- Link to the custom test runner library
     GTest::gtest_main
     Boost::filesystem       # Needed for boost::filesystem in tests
+    atomic
 )
 
 # Include directories - the test needs access to the same headers

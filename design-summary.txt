@@ -1,0 +1,82 @@
+Core Components
+
+The framework is built on a few key components that work together to manage concurrency and communication.
+
+    ApplicationThread: This is the base class for all worker
+ threads in the system. Each ApplicationThread has its own
+ private, lock-free message queue. This queue is the primary
+ method for communicating with the thread.
+
+    Message: This class represents the payload of a
+ publish-subscribe message. It contains the data and the topic
+ string that defines its subject.
+
+    EventMessage: This is a crucial wrapper struct. It
+ encapsulates all types of events—from a timer firing to a socket
+ receiving data or a message being published—into a single,
+ type-safe std::variant. All messages passed between threads,
+ including Message objects, are wrapped in an EventMessage and
+ pushed onto an ApplicationThread's queue.
+
+    Reactor: The Reactor is the core event loop for a single
+ thread. It is responsible for handling I/O-related events such
+ as incoming socket data and timer expirations. It uses a
+ low-level, high-performance mechanism like epoll to wait for
+ events on registered file descriptors (FDs). When an event
+ occurs on an FD, the Reactor dispatches it to the corresponding
+ EventHandler for processing.
+
+    EventDistributor: This is the central hub for the
+ publish-subscribe system. It is itself an ApplicationThread that
+ handles the routing of messages between other threads. It
+ maintains a map of topics to a list of subscribed threads.
+
+Lock-Free Design and Message Publishing
+
+The design is fundamentally lock-free for message passing between
+ threads, which is critical for performance. The main
+ communication path is the thread-safe queue owned by each
+ ApplicationThread. When one thread wants to send a message to
+ another, it simply pushes an EventMessage onto the recipient's
+ queue. This is a highly optimized,
+ single-producer/single-consumer operation that does not require
+ mutexes or other expensive locks.
+
+For topic-based publishing, a thread does not lock the entire
+ system. Instead, it publishes a Message to the
+ EventDistributor's queue. The EventDistributor's own loop then
+ picks up this message and, under a single, localized lock on its
+ internal subscription map, iterates through the list of
+ subscribed threads and enqueues a new EventMessage to each of
+ their queues.
+
+To avoid repeated heap allocations, the framework would use a memory pool for Message objects.
+Instead of creating and destroying messages on the heap with every single publication,
+a memory pool pre-allocates a block of memory. When a new Message is needed,
+it's drawn from the pool; when it's no longer needed, it's returned to the pool,
+ready for reuse. This prevents memory fragmentation and significantly improves performance
+during high-frequency publishing.
+
+Reactor and EventDistributor Collaboration
+
+The Reactor and EventDistributor work together to create a two-tiered event processing system:
+
+    Reactor: The External Event Handler: The Reactor is concerned with
+    events originating outside of the thread itself, such as a client
+    connecting to a socket, a socket receiving data, or a timer
+    firing. It handles these low-level, system-oriented events and
+    dispatches them to specialized handlers.
+
+    EventDistributor: The Internal Message Router: The
+    EventDistributor, on the other hand, is a high-level router. It
+    does not deal with sockets or timers directly. Its sole
+    responsibility is to process EventMessage objects received from
+    other threads. When a thread publishes a message, it is sent to
+    the EventDistributor, which then "fans out" the message to the
+    appropriate subscribers.
+
+This separation of concerns allows each component to specialize and
+operate efficiently. The Reactor can be highly optimized for
+system-level I/O events, while the EventDistributor focuses on the
+internal logic of the pub-sub pattern, ensuring messages are delivered
+to the correct ApplicationThreads.

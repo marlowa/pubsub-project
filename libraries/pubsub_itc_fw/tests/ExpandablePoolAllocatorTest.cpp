@@ -282,4 +282,137 @@ TEST_F(ExpandablePoolAllocatorTest, HugePagesBehavior) {
     EXPECT_EQ(huge_pages_error_callback_count_.load(), 0);
 }
 
+TEST_F(ExpandablePoolAllocatorTest, ProducerConsumerStressTest) {
+    const int objects_per_pool = 100;
+    const int initial_pools = 1;
+    const int max_pools = 50;
+    const int num_producers = 4;
+    const int num_consumers = 4;
+    const int items_per_producer = 1000;
+
+    ExpandablePoolAllocator<TestObject> allocator(
+        *unit_test_logger_, "StressTest", objects_per_pool, initial_pools, max_pools,
+        handler_for_pool_exhausted_, handler_for_invalid_free_, handler_for_huge_pages_error_,
+        UseHugePagesFlag::DoNotUseHugePages);
+
+    std::vector<TestObject*> queue;
+    std::mutex queue_mutex;
+    std::atomic<bool> production_finished{false};
+    std::atomic<int> total_consumed{0};
+
+    // Producers: Constantly allocating and pushing to a shared queue
+    std::vector<std::thread> producers;
+    for (int i = 0; i < num_producers; ++i) {
+        producers.emplace_back([&]() {
+            for (int j = 0; j < items_per_producer; ++j) {
+                TestObject* obj = nullptr;
+                while ((obj = allocator.allocate()) == nullptr) {
+                    std::this_thread::yield(); // Wait if pool is temporarily exhausted
+                }
+                obj->id_ = j;
+                std::lock_guard<std::mutex> lock(queue_mutex);
+                queue.push_back(obj);
+            }
+        });
+    }
+
+    // Consumers: Constantly popping from queue and deallocating
+    std::vector<std::thread> consumers;
+    for (int i = 0; i < num_consumers; ++i) {
+        consumers.emplace_back([&]() {
+            while (!production_finished || !queue.empty()) {
+                TestObject* obj = nullptr;
+                {
+                    std::lock_guard<std::mutex> lock(queue_mutex);
+                    if (!queue.empty()) {
+                        obj = queue.back();
+                        queue.pop_back();
+                    }
+                }
+
+                if (obj) {
+                    allocator.deallocate(obj);
+                    total_consumed++;
+                } else {
+                    std::this_thread::yield();
+                }
+            }
+        });
+    }
+
+    for (auto& t : producers) t.join();
+    production_finished = true;
+    for (auto& t : consumers) t.join();
+
+    EXPECT_EQ(total_consumed.load(), num_producers * items_per_producer);
+    EXPECT_EQ(TestObject::s_destructor_count.load(), total_consumed.load());
+}
+
+TEST_F(ExpandablePoolAllocatorTest, ThunderingHerdExpansionRace) {
+    const int objects_per_pool = 1; // Extremely small to force immediate expansion
+    const int initial_pools = 1;
+    const int max_pools = 100;
+    const int num_threads = 80; // High thread count
+
+    ExpandablePoolAllocator<TestObject> allocator(
+        *unit_test_logger_, "RaceTest", objects_per_pool, initial_pools, max_pools,
+        handler_for_pool_exhausted_, handler_for_invalid_free_, handler_for_huge_pages_error_,
+        UseHugePagesFlag::DoNotUseHugePages);
+
+    std::vector<std::thread> threads;
+    std::atomic<bool> start_gate{false};
+    std::vector<TestObject*> results(num_threads, nullptr);
+
+    for (int i = 0; i < num_threads; ++i) {
+        threads.emplace_back([&, i]() {
+            while (!start_gate) std::this_thread::yield();
+            results[i] = allocator.allocate();
+        });
+    }
+
+    start_gate = true; // Release the herd
+    for (auto& t : threads) t.join();
+
+    int success_count = 0;
+    for (auto* ptr : results) {
+        if (ptr) {
+            success_count++;
+            allocator.deallocate(ptr);
+        }
+    }
+
+    // Since max_pools (100) > num_threads (80), everyone should succeed
+    EXPECT_EQ(success_count, num_threads);
+    EXPECT_EQ(pool_exhausted_callback_count_.load(), num_threads - initial_pools);
+}
+
+TEST_F(ExpandablePoolAllocatorTest, CacheLineContentionStress) {
+    const int objects_per_pool = 1000;
+    const int num_threads = 12; // Exceed typical physical core count
+    const int iterations = 5000;
+
+    ExpandablePoolAllocator<TestObject> allocator(
+        *unit_test_logger_, "ContentionTest", objects_per_pool, 1, 1,
+        handler_for_pool_exhausted_, handler_for_invalid_free_, handler_for_huge_pages_error_,
+        UseHugePagesFlag::DoNotUseHugePages);
+
+    std::vector<std::thread> threads;
+    for (int i = 0; i < num_threads; ++i) {
+        threads.emplace_back([&]() {
+            for (int j = 0; j < iterations; ++j) {
+                TestObject* obj = allocator.allocate();
+                if (obj) {
+                    // Touch the memory to ensure it's actually mapped and owned
+                    obj->id_ = j;
+                    allocator.deallocate(obj);
+                }
+            }
+        });
+    }
+    for (auto& t : threads) t.join();
+
+    auto stats = allocator.get_pool_statistics();
+    EXPECT_EQ(stats.number_of_allocated_objects_, 0);
+}
+
 } // namespace pubsub_itc_fw::tests

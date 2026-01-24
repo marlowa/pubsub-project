@@ -82,6 +82,7 @@ private:
     std::string pool_name_;
     LoggerInterface& logger_;
     int objects_per_pool_;
+    int initial_pools_;
     int max_pools_;
     UseHugePagesFlag use_huge_pages_flag_;
     std::function<void(void*, int)> handler_for_pool_exhausted_;
@@ -101,7 +102,6 @@ private:
     std::atomic<FixedSizeMemoryPool<T>*> current_pool_ptr_{nullptr};
 
     // A single mutex to protect the pools_ vector when a new pool is added.
-    // This is the simplest and safest way to manage a dynamically sized vector in a multi-threaded context.
     std::mutex expansion_mutex_;
 };
 
@@ -121,18 +121,30 @@ ExpandablePoolAllocator<T>::ExpandablePoolAllocator(
     : pool_name_(pool_name),
       logger_(logger),
       objects_per_pool_(objects_per_pool),
+      initial_pools_(initial_pools),
       max_pools_(max_pools),
       use_huge_pages_flag_(use_huge_pages_flag),
       handler_for_pool_exhausted_(std::move(handler_for_pool_exhausted)),
       handler_for_invalid_free_(std::move(handler_for_invalid_free)),
       handler_for_huge_pages_error_(std::move(handler_for_huge_pages_error)) {
-    // Pre-allocate the initial pools
+    
     pools_.reserve(max_pools_);
-    for (int i = 0; i < initial_pools; ++i) {
+
+    for (int i = 0; i < initial_pools_; ++i) {
+        // Corrected constructor call: Passing only the 3 required arguments
+        // and using a lambda to bridge the (void*, size_t) pool callback 
+        // to the (void*) allocator callback.
         pools_.push_back(std::make_unique<FixedSizeMemoryPool<T>>(
-            objects_per_pool, use_huge_pages_flag, 0, 0, handler_for_huge_pages_error, nullptr));
+            objects_per_pool_,
+            use_huge_pages_flag_,
+            [this](void* addr, size_t /*size*/) {
+                if (this->handler_for_huge_pages_error_) {
+                    this->handler_for_huge_pages_error_(addr);
+                }
+            }
+        ));
     }
-    // Set the initial current pool pointer
+
     if (!pools_.empty()) {
         current_pool_ptr_.store(pools_[0].get(), std::memory_order_release);
     }
@@ -145,23 +157,19 @@ template <typename T>
 T* ExpandablePoolAllocator<T>::allocate() {
     T* obj = nullptr;
 
-    // The main allocation loop is lock-free. Threads race to get an object from the current pool.
     while (true) {
         FixedSizeMemoryPool<T>* pool = current_pool_ptr_.load(std::memory_order_acquire);
 
         if (pool != nullptr) {
             obj = pool->allocate();
             if (obj != nullptr) {
-                return obj; // Successful lock-free allocation
+                return obj;
             }
         }
 
-        // If here, the current pool is full or null. This is the expansion path, which is infrequent.
-        // We use a mutex to safely modify the shared pools_ vector.
         std::lock_guard<std::mutex> lock(expansion_mutex_);
 
-        // Re-check if the pool is still full after acquiring the lock.
-        // Another thread might have already performed the expansion.
+        // Double-checked locking pattern
         pool = current_pool_ptr_.load(std::memory_order_acquire);
         if (pool != nullptr) {
             obj = pool->allocate();
@@ -170,32 +178,28 @@ T* ExpandablePoolAllocator<T>::allocate() {
             }
         }
 
-        // If still full, and we haven't reached the max pool limit, expand.
         if (pools_.size() < static_cast<size_t>(max_pools_)) {
+            // Corrected expansion logic: Fixed arguments and lambda bridge
             auto new_pool = std::make_unique<FixedSizeMemoryPool<T>>(
-                objects_per_pool_,
+                objects_per_pool_, 
                 use_huge_pages_flag_,
-                0, // huge_page_size
-                0, // pool_size_rounded_to_huge_page_size
-                handler_for_huge_pages_error_,
-                nullptr);
+                [this](void* addr, size_t /*size*/) {
+                    if (this->handler_for_huge_pages_error_) {
+                        this->handler_for_huge_pages_error_(addr);
+                    }
+                }
+            );
 
-            // Add the new pool to the vector and update the atomic pointer.
+            FixedSizeMemoryPool<T>* pool_ptr = new_pool.get();
             pools_.push_back(std::move(new_pool));
-            current_pool_ptr_.store(pools_.back().get(), std::memory_order_release);
+            current_pool_ptr_.store(pool_ptr, std::memory_order_release);
 
-            // Invoke the callback for expansion
             if (handler_for_pool_exhausted_) {
                 handler_for_pool_exhausted_(nullptr, objects_per_pool_);
             }
 
-            // Attempt to allocate from the newly created pool
-            obj = pools_.back()->allocate();
-            if (obj != nullptr) {
-                return obj; // Successful allocation from the new pool
-            }
+            return pool_ptr->allocate();
         } else {
-            // Max pools reached, and no object was available. Return nullptr.
             return nullptr;
         }
     }
@@ -207,8 +211,10 @@ void ExpandablePoolAllocator<T>::deallocate(T* obj) {
         return;
     }
 
-    // Try-catch block to handle the PreconditionAssertion thrown by FixedSizeMemoryPool::deallocate
     try {
+        // Linear scan of pools to find which one owns this pointer.
+        // In exchange environments, this is acceptable because deallocations
+        // are often off the critical path or occur in predictable patterns.
         for (auto& pool : pools_) {
             if (pool->contains(obj)) {
                 pool->deallocate(obj);
@@ -216,10 +222,9 @@ void ExpandablePoolAllocator<T>::deallocate(T* obj) {
             }
         }
     } catch (const pubsub_itc_fw::PreconditionAssertion& e) {
-        // The exception means the pointer was invalid.
+        // Logic error: pool claims to contain ptr but failed to deallocate.
     }
 
-    // If the loop completes, the object does not belong to any pool managed by this allocator.
     if (handler_for_invalid_free_) {
         handler_for_invalid_free_(nullptr, obj);
     }
@@ -235,11 +240,16 @@ PoolStatistics ExpandablePoolAllocator<T>::get_pool_statistics() const {
 
     for (const auto& pool : pools_) {
         stats.number_of_pools_++;
-        stats.number_of_allocated_objects_ += pool->get_number_of_allocated_objects();
-        stats.number_of_objects_available_ += pool->get_number_of_available_objects();
+            
+        // These methods rely on the public interface of our new FixedSizeMemoryPool.
+        int available = pool->get_number_of_available_objects();
+        stats.number_of_allocated_objects_ += (objects_per_pool_ - available);
+        stats.number_of_objects_available_ += available;
+    
         if (pool->is_full()) {
             stats.number_of_full_pools_++;
         }
+            
         if (pool->uses_huge_pages()) {
             stats.number_of_huge_page_pools_++;
             stats.huge_page_size_ = pool->get_huge_page_size();

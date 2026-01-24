@@ -1,0 +1,40 @@
+# .clang-format — 1TBS / OTBS, C++ (RHEL8-friendly)
+
+BasedOnStyle: LLVM
+Language: Cpp
+
+# Line length
+ColumnLimit: 160
+
+# Indentation
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+IndentCaseLabels: true
+NamespaceIndentation: None
+
+# 1TBS: braces attach to control statements, functions, classes, etc.
+BreakBeforeBraces: Attach
+
+# Keep control-flow multi-line & braced
+AllowShortIfStatementsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Empty
+AllowShortFunctionsOnASingleLine: Empty
+
+# Spacing
+SpaceBeforeParens: ControlStatements
+PointerAlignment: Left
+DerivePointerAlignment: false
+
+# Constructor initializer wrapping
+BreakConstructorInitializers: BeforeComma
+ConstructorInitializerAllOnOneLineOrOnePerLine: true
+
+# Argument/parameter packing
+BinPackArguments: true
+BinPackParameters: true
+
+# Includes
+SortIncludes: true
+IncludeBlocks: Preserve
