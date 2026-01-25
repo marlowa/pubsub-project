@@ -1,0 +1,96 @@
+British spelling, not American. And never employ the word "leverage", say "use" instead.
+Dont have comments that refer to previous conversations
+
+Brace Style
+
+1TBS (One True Brace Style) - opening brace on same line, closing brace on new line
+Example: if (condition) { and class Foo {
+
+Indentation & Spacing, formatting
+
+Spaces, never tabs
+4-space indentation (consistent throughout)
+Space after control flow keywords: if (, while (, for (, switch (
+No space before function call parentheses: function() not function ()
+Space around binary operators: a + b, x = y, i < max
+No space inside parentheses: (x + y) not ( x + y )
+code inside a namespace must not be indented since any indentation does not show flow control it is to scope symbols for compiling and linking disambiguation
+maximum line length is 160 characters
+when calling a function, do not put each argument on its own line
+lambda capture lists on same line as lambda
+template parameter on same line as template
+prefer west const to east const
+Always use braces for control structures, even single statement
+No assignments in conditionals - e.g., not if ((x = foo())), but separate lines
+Comparison order: Variable on left - e.g., x == 5 not 5 == x (don't use Yoda conditions)
+Never say "using namespace std"
+
+Naming Conventions
+
+snake_case for: variables, function names, member functions, parameters
+snake_case with trailing underscore for: member variables (pool_name_, logger_)
+Do not use the prefix "s_" for class static members.
+PascalCase for: class names, struct names, type names
+SCREAMING_SNAKE_CASE for: macros, constants
+Test fixture classes and with "Test".
+Do not use the underscore character in googletest names; that character is reserved.
+
+Function parameters
+When passing fundamental types by value do not qulaify with const
+When passing fundamental types such as integers and enums, pass by value, not const ref.
+Pass std::string by const ref when not modifying
+
+Class Organization
+
+one class per header file (this means whenever you see a class name you know how to find it)
+Public before private in class declarations
+Type definitions first, then public interface, then private members
+Delete copy/move constructors explicitly when not needed (= delete)
+dtor before ctors
+where there are multiple ctors give them sorted by simplicity with the simpler ones first
+Use = default for trivial special members
+Prefer brace initialisation in the member declaration to using an initialiser list
+prefer initialiser list to assignment statements inside ctor body
+
+Comments & Documentation
+
+Doxygen for public API - classes, public methods, parameters
+doxygen @param must indicate direction
+C++ block comments /* */ for design overviews - not Doxygen style
+Inline comments // for implementation details
+No end-of-line comments on braces (no } // end if)
+
+Modern C++ Preferences
+
+[[nodiscard]] for functions returning values that shouldn't be ignored
+nullptr not NULL or 0
+auto sparingly - use when type is obvious or very long
+Range-based for loops where appropriate and supported by C++17
+Smart pointers (std::unique_ptr, std::shared_ptr) over raw pointers for ownership
+const correctness - methods that don't modify state are const
+
+Include Guards & Headers
+
+header files must have the suffix ".hpp", not ".h"
+#pragma once instead of traditional include guards
+
+Include order: system headers (first the ones with .h then the ones without),
+the header that goes with the cpp
+any additional project headers required, in alphabetical order
+These sections/groupings need to be separated by a blank line
+
+Error Handling
+
+avoid exceptions, prefer returning a tuple that contains the good value when it worked and an additional error_string when it didn't, and make such functions no_discard.
+Throw PreconditionAssertion when a precondition is violated
+
+Function Style
+
+Short, focused functions where possible
+Early returns preferred over deeply nested conditionals
+Prefer references to pointers (as per Meyers recommendation)
+Null checks at function entry where appropriate
+
+Specific Patterns
+
+Trailing return type syntax: Not used (use traditional T* function() not auto function() -> T*)
