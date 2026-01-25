@@ -417,17 +417,39 @@ TEST_F(ExpandablePoolAllocatorTest, CacheLineContentionStress) {
 }
 
 TEST_F(ExpandablePoolAllocatorTest, LatencyStressTest) {
+    const int num_threads = 80;
     const int objects_per_pool = 1000;
-    const int num_threads = 12;
-    const int iterations = 10000;
-    LatencyRecorder alloc_recorder;
-    LatencyRecorder dealloc_recorder;
-
+    const int iterations = 100;
+    
+    // 1. Setup: Start with 1 initial pool to observe the transition 
+    // from steady-state to chained-state.
     ExpandablePoolAllocator<TestObject> allocator(
-        *unit_test_logger_, "LatencyTest", objects_per_pool, 1, 1,
+        *unit_test_logger_, "LatencyTest", objects_per_pool, 1, 10,
         handler_for_pool_exhausted_, handler_for_invalid_free_, handler_for_huge_pages_error_,
         UseHugePagesFlag::DoNotUseHugePages);
 
+    LatencyRecorder alloc_recorder;
+    LatencyRecorder dealloc_recorder;
+
+    // 2. PRIMING / PRE-FILL: Saturated the first pool to 90% (900 objects).
+    // This establishes the 'Hot Buckets' (20-40ns) in a single-threaded 
+    // environment to prevent map-insertion race conditions/core dumps.
+    std::vector<TestObject*> sentinel_objects;
+    sentinel_objects.reserve(900);
+    
+    for (int i = 0; i < 900; ++i) {
+        auto start = std::chrono::high_resolution_clock::now();
+        TestObject* obj = allocator.allocate();
+        auto end = std::chrono::high_resolution_clock::now();
+        
+        if (obj) {
+            alloc_recorder.record(std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count());
+            sentinel_objects.push_back(obj);
+        }
+    }
+
+    // 3. MULTI-THREADED STRESS: 80 threads fight for the remaining 100 slots 
+    // in Pool 1, then trickle into Pool 2 and 3.
     std::vector<std::thread> threads;
     for (int i = 0; i < num_threads; ++i) {
         threads.emplace_back([&]() {
@@ -441,6 +463,8 @@ TEST_F(ExpandablePoolAllocatorTest, LatencyStressTest) {
                     alloc_recorder.record(std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count());
                     
                     // Measure Deallocation
+                    // Since deallocate() is O(N) searching from head_pool_, 
+                    // this will reveal the 'Search Tax' for chained pools.
                     start = std::chrono::high_resolution_clock::now();
                     allocator.deallocate(obj);
                     end = std::chrono::high_resolution_clock::now();
@@ -450,10 +474,21 @@ TEST_F(ExpandablePoolAllocatorTest, LatencyStressTest) {
         });
     }
 
-    for (auto& t : threads) t.join();
+    for (auto& t : threads) {
+        t.join();
+    }
 
-    alloc_recorder.dump_results("Allocation");
-    dealloc_recorder.dump_results("Deallocation");
+    // 4. CLEANUP: Return the pre-fill sentinels to the pool
+    for (auto* obj : sentinel_objects) {
+        allocator.deallocate(obj);
+    }
+
+    // 5. OUTPUT: Space-delimited for Python/Gnuplot/Unix scanning.
+    alloc_recorder.dump_space_delimited("ALLOCATION");
+    dealloc_recorder.dump_space_delimited("DEALLOCATION");
+    
+    // Optional human-readable summary for console inspection
+    alloc_recorder.dump_results("Allocation Summary");
 }
 
 } // namespace pubsub_itc_fw::tests

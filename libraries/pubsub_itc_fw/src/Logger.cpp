@@ -1,3 +1,11 @@
+/*
+NOTE: This logger design needs to be rewritten.
+We should not use a TLS buffer into which to assemble the logging record.
+That causes a lot of work to be done on the wrong thread.
+Instead, we should take advantage of the fact that quill sends the variable length parameter list
+to the logging thread, which causes all the work to be done on the logging thread.
+ */
+
 #include <cstring>
 
 #include <stdexcept>

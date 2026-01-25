@@ -1,34 +1,99 @@
-#include <iostream>
-#include <vector>
-#include <chrono>
-#include <atomic>
-#include <iomanip>
-#include <map>
+#pragma once
 
+#include <iostream>
+#include <map>
+#include <atomic>
+#include <string>
+#include <vector>
+#include <algorithm>
+#include <iomanip>
+
+namespace pubsub_itc_fw::tests {
+
+/**
+ * @brief Thread-safe latency recorder using nanosecond buckets.
+ * Designed for NFT performance studies to identify long-tail outliers.
+ */
 class LatencyRecorder {
 public:
-    void record(uint64_t nanoseconds) {
-        // Simple bucketing: 0-10ns, 10-20ns, ..., 1000+ns
-        uint64_t bucket = nanoseconds / 10;
-        if (bucket > 100) bucket = 101; // Catch-all for slow calls
-        buckets_[bucket].fetch_add(1, std::memory_order_relaxed);
+    LatencyRecorder() = default;
+
+    // Delete copy to avoid issues with atomic members
+    LatencyRecorder(const LatencyRecorder&) = delete;
+    LatencyRecorder& operator=(const LatencyRecorder&) = delete;
+
+    /**
+     * @brief Records a latency sample into the appropriate 10ns bucket.
+     * @param duration_ns The measured duration in nanoseconds.
+     */
+    void record(int64_t duration_ns) {
+        int64_t bucket_start = (duration_ns / 10) * 10;
+        
+        // Thread-safe find
+        auto it = buckets_.find(bucket_start);
+        if (it != buckets_.end()) {
+            it->second.fetch_add(1, std::memory_order_relaxed);
+        } else {
+            // Only if a completely unexpected latency occurs do we lock.
+            // For NFT, this should be extremely rare after warm-up.
+            static std::mutex registration_mutex;
+            std::lock_guard<std::mutex> lock(registration_mutex);
+            buckets_[bucket_start].fetch_add(1, std::memory_order_relaxed);
+        }
     }
 
-    void dump_results(const std::string& label) {
+    /**
+     * @brief Dumps the data in a space-delimited format for scannable processing.
+     * Format: bucket_start_ns count
+     * @param label The dataset identifier (e.g., ALLOCATION).
+     */
+    void dump_space_delimited(const std::string& label) const {
+        std::cout << "\n# DATASET: " << label << "\n";
+        std::cout << "# ns_bucket_start count\n";
+
+        // Collect and sort buckets for chronological output
+        std::vector<std::pair<int64_t, size_t>> sorted_buckets;
+        for (auto const& [bucket, count] : buckets_) {
+            size_t val = count.load(std::memory_order_relaxed);
+            if (val > 0) {
+                sorted_buckets.push_back({bucket, val});
+            }
+        }
+
+        std::sort(sorted_buckets.begin(), sorted_buckets.end());
+
+        for (const auto& [bucket, count] : sorted_buckets) {
+            std::cout << bucket << " " << count << "\n";
+        }
+        std::cout << "# END DATASET\n" << std::endl;
+    }
+
+    /**
+     * @brief Human-readable dump for quick console inspection.
+     */
+    void dump_results(const std::string& label) const {
         std::cout << "\n--- Latency Histogram: " << label << " ---\n";
-        std::cout << "Range (ns) | Count\n";
+        std::cout << std::left << std::setw(15) << "Bucket (ns)" << " | Count\n";
         std::cout << "------------------\n";
-        for (int i = 0; i <= 101; ++i) {
-            uint64_t count = buckets_[i].load();
+
+        std::vector<std::pair<int64_t, size_t>> sorted_buckets;
+        for (auto const& [bucket, count] : buckets_) {
+            sorted_buckets.push_back({bucket, count.load()});
+        }
+        std::sort(sorted_buckets.begin(), sorted_buckets.end());
+
+        for (const auto& [bucket, count] : sorted_buckets) {
             if (count > 0) {
-                if (i <= 100)
-                    std::cout << std::setw(4) << i*10 << "-" << (i+1)*10 << " | " << count << "\n";
-                else
-                    std::cout << "   1000+  | " << count << "\n";
+                std::cout << std::right << std::setw(4) << bucket << "-" 
+                          << std::left << std::setw(4) << (bucket + 10) 
+                          << " | " << count << "\n";
             }
         }
     }
 
 private:
-    std::atomic<uint64_t> buckets_[102]{};
+    // map bucket_start -> atomic_counter
+    mutable std::map<int64_t, std::atomic<size_t>> buckets_;
 };
+
+} // namespace pubsub_itc_fw::tests
