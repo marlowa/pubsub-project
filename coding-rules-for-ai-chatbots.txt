@@ -1,5 +1,8 @@
+Coding rules for AI chatbots
+
 British spelling, not American. And never employ the word "leverage", say "use" instead.
 Dont have comments that refer to previous conversations
+Don't have comments that refer to previous AI chatbot corrections or changes.
 
 Brace Style
 
@@ -8,7 +11,9 @@ Example: if (condition) { and class Foo {
 
 Indentation & Spacing, formatting
 
-Spaces, never tabs
+Source files must only contain ASII characters. No special non-ASCII characters please.
+Where international characters are required (and they probably wont be for this project) then UTF-8 is to be used.
+Use spaces, never tabs
 4-space indentation (consistent throughout)
 Space after control flow keywords: if (, while (, for (, switch (
 No space before function call parentheses: function() not function ()
@@ -26,6 +31,8 @@ Comparison order: Variable on left - e.g., x == 5 not 5 == x (don't use Yoda con
 Never say "using namespace std"
 when checking if a ptr is nullptr, do not say "if (ptr)", say "if (ptr != nullptr)"
 when checking if a ptr is not nullptr, do not say "if (!ptr)", say "if (ptr == nullptr)"
+
+
 Naming Conventions
 
 snake_case for: variables, function names, member functions, parameters

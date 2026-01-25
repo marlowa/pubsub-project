@@ -23,59 +23,96 @@
  * expandable memory allocation while maintaining lock-free performance for
  * the common case.
  *
- * KEY DESIGN ELEMENTS:
- *
- * 1. HYBRID LOCK-FREE/LOCKED APPROACH
- *    - Fast path: Lock-free allocation from current_pool_ptr_ (atomic pointer)
- *    - Slow path: Mutex-protected chain traversal and expansion
- *    - Most allocations hit the fast path (single atomic load + pool allocation)
- *
- * 2. POOL CHAIN STRUCTURE
+ * POOL CHAIN STRUCTURE
  *    - Pools linked via next_pool_ pointers (singly-linked list)
  *    - head_pool_ points to first pool in chain
  *    - current_pool_ptr_ points to most recently active pool (optimization)
  *    - cleanup_list_ holds unique_ptrs for RAII cleanup
  *
- * 3. EXPANSION STRATEGY
+ * EXPANSION STRATEGY
  *    - Starts with initial_pools pre-allocated
  *    - Expands on-demand when all pools exhausted
  *    - No hard limit - expands as long as OS can provide memory
  *    - expansion_threshold_hint is for monitoring/alerts only
  *
- * 4. CRITICAL RACE CONDITION FIX (Thundering Herd)
- *    - Problem: When objects_per_pool is small (e.g., 1), multiple threads
- *      simultaneously exhausting pools can race on newly created pool
- *    - Solution: Thread creating pool allocates from it BEFORE making it
- *      visible to current_pool_ptr_
- *    - Sequence:
- *      a) Create new pool under mutex
- *      b) Allocate object from new pool (while still holding mutex)
- *      c) Update current_pool_ptr_ to new pool (after allocation)
- *      d) Release mutex
- *    - This ensures the creating thread gets its object before other threads'
- *      fast paths can see the new pool
- *
- * 5. OBJECT LIFETIME MANAGEMENT
+ * OBJECT LIFETIME MANAGEMENT
  *    - allocate() returns CONSTRUCTED objects (placement new applied)
  *    - deallocate() DESTRUCTS objects before returning memory to pool
  *    - FixedSizeMemoryPool deals only with raw memory
+ *    - Objects are destructed immediately before their memory is returned to
+ *      the underlying pool during deallocate().
+ *    - Callers must not use delete on objects returned by allocate().
  *
- * 6. DEALLOCATION STRATEGY
+ * DEALLOCATION STRATEGY
  *    - Linear search through chain to find owning pool
  *    - O(N) where N is number of pools, but typically N is small
- *    - Acceptable for exchange environments where deallocation is off
- *      critical path
+ *    - Acceptable for exchange environments where deallocation is off critical path
+ *
+ * POOL OWNERSHIP
+ *    - All FixedSizeMemoryPool instances are owned by this allocator.
+ *    - Pools are added to the chain but never removed during the allocator's
+ *      lifetime. This ensures that traversal of the pool chain is always safe.
+ *    - All pools are destroyed together when the allocator itself is destroyed.
  *
  * THREAD SAFETY:
  *    - allocate() is thread-safe (fast path lock-free, slow path mutex)
  *    - deallocate() is thread-safe (traversal uses atomic loads)
  *    - get_pool_statistics() is thread-safe (snapshot via atomic loads)
  *
- * NUMA CONSIDERATIONS:
- *    - Each pool allocated on NUMA node of creating thread
- *    - For best performance, pre-allocate initial_pools on worker thread's node
- *    - Huge pages reduce TLB pressure on NUMA systems
+ * MEMORY ORDERING GUARANTEES
+ *    - current_pool_ptr_ is published using __ATOMIC_RELEASE. This ensures that
+ *      all writes performed during pool creation, including linking the pool
+ *      into the chain, become visible before other threads observe the new
+ *      pointer.
  *
+ *    - Threads reading current_pool_ptr_ use __ATOMIC_ACQUIRE, which guarantees
+ *      that once a thread observes a new pool pointer, it also observes the
+ *      fully initialised pool and its correct position in the chain.
+ *
+ *    - head_pool_ is updated under the expansion mutex and published using
+ *      __ATOMIC_RELEASE. Readers use __ATOMIC_ACQUIRE to ensure that the pool
+ *      chain is observed in a consistent state. Pools are only added, never
+ *      removed, so readers may safely traverse the chain without additional
+ *      synchronisation.
+ *
+ * CALLBACK SEMANTICS
+ *    - Callback functions may be invoked from threads performing allocation or
+ *      deallocation. They are not invoked concurrently by multiple threads at
+ *      the same time.
+ *
+ *    - Callbacks are expected to be lightweight. They may log messages, and
+ *      they may allocate memory if required, although this is not recommended
+ *      for performance-critical paths.
+ *
+ *    - Callbacks are not required to be noexcept.
+ *
+ * DEALLOCATION COST
+ *    - Deallocation performs a linear search through the pool chain to locate
+ *      the owning pool. This operation is O(number_of_pools). This design is
+ *      intentional and acceptable for systems where deallocation is not on the
+ *      critical path.
+ *
+ * THREAD LIFETIME REQUIREMENT
+ *    - The allocator must not be destroyed while other threads may still call
+ *      allocate() or deallocate(). It is intended that each allocator instance
+ *      is owned by a single application thread and destroyed only after that
+ *      thread has completed all allocation and deallocation activity.
+ *
+ * RACE CONDITION NOTES
+ *    - Linking a new pool into the chain is safe. The next_pool_ pointer is
+ *      published using __ATOMIC_RELEASE, and readers use __ATOMIC_ACQUIRE.
+ *      This ensures that once a reader observes the new pool, it also observes
+ *      the fully initialised chain.
+ *
+ *    - During expansion, the creating thread performs the first allocation from
+ *      the new pool while still holding the expansion mutex. The pool is only
+ *      published via current_pool_ptr_ after this allocation has succeeded.
+ *      This prevents other threads from observing an empty pool and attempting
+ *      to allocate from it simultaneously.
+ *
+ *    - The pool chain is traversed using __ATOMIC_ACQUIRE loads. Pools are only
+ *      added, never removed, so traversal is safe even while another thread is
+ *      expanding the chain.
  * ============================================================================
  */
 

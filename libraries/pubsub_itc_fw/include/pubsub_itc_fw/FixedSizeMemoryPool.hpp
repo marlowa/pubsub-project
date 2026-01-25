@@ -79,16 +79,35 @@
  *    - Compiler flags: -mcx16 -std=c++17 (or higher)
  *    - Hardware: x86-64 CPU with CMPXCHG16B support (all modern x86-64 CPUs)
  *
- * NUMA CONSIDERATIONS:
- *    - Each pool's memory is allocated on the NUMA node of the creating thread
- *    - For best performance, allocate pools on the same node as worker threads
- *    - Huge pages reduce TLB misses significantly on NUMA systems
- *
  * PERFORMANCE CHARACTERISTICS:
  *    - Allocation: O(1) - single CAS operation
  *    - Deallocation: O(1) - single CAS operation
  *    - No memory allocator overhead after pool creation
  *    - Cache-friendly: sequential memory layout, minimal pointer chasing
+ *
+ * 8. SAFETY OF TREIBER STACK IN NON-GC ENVIRONMENTS
+ *    - Traditional Treiber stacks in non-garbage-collected languages require
+ *      careful handling of memory reclamation, because nodes may be freed and
+ *      later reused for unrelated objects. This can reintroduce the ABA problem
+ *      even when a counter is used.
+ *
+ *    - This allocator does not free individual nodes. All nodes are allocated
+ *      up-front during pool construction and remain valid for the entire
+ *      lifetime of the pool. The only OS-level free operation occurs when the
+ *      entire pool is unmapped during destruction.
+ *
+ *    - Nodes are reused only within the same pool. A node's address may appear
+ *      again in the free list after deallocation, but always as the same
+ *      logical node, never as memory that has been returned to the operating
+ *      system or repurposed for a different object.
+ *
+ *    - Because nodes are never individually reclaimed, and because each update
+ *      to the free-list head increments a monotonically increasing counter, the
+ *      ABA-prevention scheme is sufficient and safe. The counter ensures that
+ *      even if a pointer value repeats, the tagged pointer does not.
+ *
+ *    - This design avoids the memory-reclamation hazards normally associated
+ *      with Treiber stacks in manual-memory-management environments.
  *
  * ============================================================================
  */
