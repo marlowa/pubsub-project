@@ -79,51 +79,74 @@ FixedSizeMemoryPool<T>* ExpandablePoolAllocator<T>::add_pool_to_chain() {
     } else {
         FixedSizeMemoryPool<T>* tail = current_head;
         while (tail->get_next_pool()) tail = tail->get_next_pool();
-        tail->set_next_pool(pool_ptr); // Link established FIRST
+        tail->set_next_pool(pool_ptr);
     }
 
     cleanup_list_.push_back(std::move(new_pool));
-    __atomic_store_n(&current_pool_ptr_, pool_ptr, __ATOMIC_RELEASE); // Update current LAST
+    
+    // DO NOT update current_pool_ptr_ here - let the caller do it after allocating
+    // This prevents fast-path races when objects_per_pool is small
+    
     return pool_ptr;
 }
 
 template <typename T>
 T* ExpandablePoolAllocator<T>::allocate() {
+    // Fast path: try current pool without lock
     T* raw_mem = nullptr;
     FixedSizeMemoryPool<T>* pool = __atomic_load_n(&current_pool_ptr_, __ATOMIC_ACQUIRE);
-    if (pool) raw_mem = pool->allocate();
-
-    if (!raw_mem) {
-        std::lock_guard<std::mutex> lock(expansion_mutex_);
-        pool = __atomic_load_n(&current_pool_ptr_, __ATOMIC_ACQUIRE);
+    if (pool) {
         raw_mem = pool->allocate();
-
-        if (!raw_mem) {
-            FixedSizeMemoryPool<T>* traverse = __atomic_load_n(&head_pool_, __ATOMIC_ACQUIRE);
-            while (traverse) {
-                raw_mem = traverse->allocate();
-                if (raw_mem) {
-                    __atomic_store_n(&current_pool_ptr_, traverse, __ATOMIC_RELEASE);
-                    break;
-                }
-                traverse = traverse->get_next_pool();
-            }
-        }
-
-        if (!raw_mem && cleanup_list_.size() < static_cast<size_t>(max_pools_)) {
-            FixedSizeMemoryPool<T>* new_pool = add_pool_to_chain();
-            raw_mem = new_pool->allocate();
-            if (handler_for_pool_exhausted_) handler_for_pool_exhausted_(nullptr, objects_per_pool_);
+        if (raw_mem) {
+            return ::new (static_cast<void*>(raw_mem)) T();
         }
     }
 
-    return raw_mem ? ::new (static_cast<void*>(raw_mem)) T() : nullptr; // Placement New
+    // Slow path: need to search or expand
+    std::lock_guard<std::mutex> lock(expansion_mutex_);
+    
+    // CRITICAL FIX: Reload head_pool_ inside the mutex to see any pools added by other threads
+    FixedSizeMemoryPool<T>* traverse = __atomic_load_n(&head_pool_, __ATOMIC_ACQUIRE);
+    
+    // Search ALL pools in the chain for available memory
+    while (traverse) {
+        raw_mem = traverse->allocate();
+        if (raw_mem) {
+            // Update current_pool_ptr to this pool for future fast-path attempts
+            __atomic_store_n(&current_pool_ptr_, traverse, __ATOMIC_RELEASE);
+            return ::new (static_cast<void*>(raw_mem)) T();
+        }
+        traverse = traverse->get_next_pool();
+    }
+
+    // No pools have space, try to expand
+    if (cleanup_list_.size() < static_cast<size_t>(max_pools_)) {
+        FixedSizeMemoryPool<T>* new_pool = add_pool_to_chain();
+        
+        // Allocate while still holding the lock to prevent fast-path races
+        raw_mem = new_pool->allocate();
+        
+        if (raw_mem) {
+            // Only NOW make this pool visible to fast-path threads
+            // After we've already taken our object from it
+            __atomic_store_n(&current_pool_ptr_, new_pool, __ATOMIC_RELEASE);
+            
+            if (handler_for_pool_exhausted_) {
+                handler_for_pool_exhausted_(nullptr, objects_per_pool_);
+            }
+            
+            return ::new (static_cast<void*>(raw_mem)) T();
+        }
+    }
+
+    // All pools exhausted and at max capacity
+    return nullptr;
 }
 
 template <typename T>
 void ExpandablePoolAllocator<T>::deallocate(T* obj) {
     if (!obj) return;
-    obj->~T(); // Explicit Destructor
+    obj->~T();
 
     FixedSizeMemoryPool<T>* traverse = __atomic_load_n(&head_pool_, __ATOMIC_ACQUIRE);
     while (traverse) {
@@ -143,6 +166,7 @@ PoolStatistics ExpandablePoolAllocator<T>::get_pool_statistics() const {
     stats.object_size_ = sizeof(T);
     stats.number_of_objects_per_pool_ = objects_per_pool_;
     stats.use_huge_pages_flag_ = use_huge_pages_flag_;
+    
     FixedSizeMemoryPool<T>* traverse = __atomic_load_n(&head_pool_, __ATOMIC_ACQUIRE);
     while (traverse) {
         stats.number_of_pools_++;
