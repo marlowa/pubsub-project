@@ -353,4 +353,119 @@ TEST_F(ExpandablePoolAllocatorTest, CacheLineContentionStress) {
     EXPECT_EQ(stats.number_of_allocated_objects_, 0);
 }
 
+TEST_F(ExpandablePoolAllocatorTest, DeterministicThunderingHerdOrdering)
+{
+    const int objects_per_pool = 1;
+    const int initial_pools = 1;
+    const int expansion_threshold = 100;
+    const int num_threads = 32;
+
+    ExpandablePoolAllocator<TestObject> allocator(
+        *unit_test_logger_, "DeterministicHerd", objects_per_pool, initial_pools, expansion_threshold,
+        handler_for_pool_exhausted_, handler_for_invalid_free_, handler_for_huge_pages_error_,
+        UseHugePagesFlag::DoNotUseHugePages);
+
+    std::vector<TestObject*> results(num_threads, nullptr);
+    std::atomic<bool> start_gate{false};
+
+    std::vector<std::thread> threads;
+    threads.reserve(num_threads);
+
+    for (int i = 0; i < num_threads; ++i) {
+        threads.emplace_back([&, i]() {
+            while (!start_gate.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+            results[i] = allocator.allocate();
+        });
+    }
+
+    start_gate.store(true, std::memory_order_release);
+
+    for (auto &t : threads) {
+        t.join();
+    }
+
+    int success_count = 0;
+    for (auto *ptr : results) {
+        if (ptr != nullptr) {
+            success_count++;
+            allocator.deallocate(ptr);
+        }
+    }
+
+    EXPECT_EQ(success_count, num_threads);
+    EXPECT_EQ(pool_exhausted_callback_count_.load(), num_threads - initial_pools);
+}
+
+TEST_F(ExpandablePoolAllocatorTest, PoolCorrectnessAndReuse)
+{
+    const int objects_per_pool = 8;
+    const int initial_pools = 1;
+    const int expansion_threshold = 1;
+
+    ExpandablePoolAllocator<TestObject> allocator(
+        *unit_test_logger_, "PoolCorrectness", objects_per_pool, initial_pools, expansion_threshold,
+        handler_for_pool_exhausted_, handler_for_invalid_free_, handler_for_huge_pages_error_,
+        UseHugePagesFlag::DoNotUseHugePages);
+
+    std::vector<TestObject*> ptrs;
+    ptrs.reserve(objects_per_pool);
+
+    for (int i = 0; i < objects_per_pool; ++i) {
+        TestObject *obj = allocator.allocate();
+        ASSERT_NE(obj, nullptr);
+        ptrs.push_back(obj);
+    }
+
+    std::vector<TestObject*> shuffled = ptrs;
+    std::shuffle(shuffled.begin(), shuffled.end(), std::default_random_engine(std::random_device()()));
+
+    for (auto *obj : shuffled) {
+        allocator.deallocate(obj);
+    }
+
+    std::vector<TestObject*> ptrs2;
+    ptrs2.reserve(objects_per_pool);
+
+    for (int i = 0; i < objects_per_pool; ++i) {
+        TestObject *obj = allocator.allocate();
+        ASSERT_NE(obj, nullptr);
+        ptrs2.push_back(obj);
+    }
+
+    // Sort both vectors before comparison
+    std::sort(ptrs.begin(), ptrs.end());
+    std::sort(ptrs2.begin(), ptrs2.end());
+    EXPECT_EQ(ptrs, ptrs2);
+
+    for (auto *obj : ptrs2) {
+        allocator.deallocate(obj);
+    }
+}
+
+TEST_F(ExpandablePoolAllocatorTest, DISABLED_DestructorReleasesAllObjects)
+{
+    const int objects_per_pool = 16;
+    const int initial_pools = 1;
+    const int expansion_threshold = 1;
+
+    {
+        ExpandablePoolAllocator<TestObject> allocator(
+            *unit_test_logger_, "AllocatorDestruction", objects_per_pool, initial_pools, expansion_threshold,
+            handler_for_pool_exhausted_, handler_for_invalid_free_, handler_for_huge_pages_error_,
+            UseHugePagesFlag::DoNotUseHugePages);
+
+        for (int i = 0; i < objects_per_pool; ++i) {
+            TestObject *obj = allocator.allocate();
+            ASSERT_NE(obj, nullptr);
+        }
+
+        EXPECT_EQ(TestObject::s_constructor_count.load(), objects_per_pool);
+        EXPECT_EQ(TestObject::s_destructor_count.load(), 0);
+    }
+
+    EXPECT_EQ(TestObject::s_destructor_count.load(), TestObject::s_constructor_count.load());
+}
+
 } // namespace pubsub_itc_fw::tests
