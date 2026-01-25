@@ -3,6 +3,7 @@
 # Create the test executable for pubsub_itc_fw library
 add_executable(pubsub_itc_fw_tests
     ExpandablePoolAllocatorTest.cpp
+    NumaAwarePoolAllocatorTest.cpp
     LoggerTest.cpp
     StringUtilsTest.cpp
     # Add other test files here as you create them
@@ -23,6 +24,17 @@ target_include_directories(pubsub_itc_fw_tests PRIVATE
     ${CMAKE_CURRENT_BINARY_DIR}/../../..    # Generated protobuf headers
     ${GOOGLETEST_INCLUDE_DIRS}              # Google Test headers (from your FindGoogleTest.cmake)
 )
+
+# Add NUMA if available
+if(NUMA_FOUND)
+    target_compile_definitions(pubsub_itc_fw_tests PRIVATE HAVE_NUMA)
+    target_link_libraries(pubsub_itc_fw_tests PRIVATE ${NUMA_LIBRARIES})
+    target_include_directories(pubsub_itc_fw_tests PRIVATE ${NUMA_INCLUDE_DIRS})
+    message(STATUS "NUMA support enabled for tests")
+else()
+    message(STATUS "NUMA library not found - NUMA tests will be skipped")
+endif()
+
 
 # Add compiler flags consistent with the main project
 target_compile_options(pubsub_itc_fw_tests PRIVATE -g -Wall -pedantic)

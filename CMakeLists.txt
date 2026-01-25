@@ -97,6 +97,12 @@ set(GOOGLETEST_VERSION $ENV{GOOGLETEST_VERSION})
 list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/googletest/${GOOGLETEST_VERSION}")
 find_package(GTest REQUIRED CONFIG)
 
+# Find NUMA library
+find_package(PkgConfig)
+if(PkgConfig_FOUND)
+    pkg_check_modules(NUMA numa)
+endif()
+
 # --- Define the Protobuf Message Type ---
 # This step tells CMake to compile the .proto files into .pb.h and .pb.cc
 # The generated files will be placed in CMAKE_CURRENT_BINARY_DIR.
