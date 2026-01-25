@@ -24,7 +24,8 @@ Always use braces for control structures, even single statement
 No assignments in conditionals - e.g., not if ((x = foo())), but separate lines
 Comparison order: Variable on left - e.g., x == 5 not 5 == x (don't use Yoda conditions)
 Never say "using namespace std"
-
+when checking if a ptr is nullptr, do not say "if (ptr)", say "if (ptr != nullptr)"
+when checking if a ptr is not nullptr, do not say "if (!ptr)", say "if (ptr == nullptr)"
 Naming Conventions
 
 snake_case for: variables, function names, member functions, parameters
@@ -34,6 +35,7 @@ PascalCase for: class names, struct names, type names
 SCREAMING_SNAKE_CASE for: macros, constants
 Test fixture classes and with "Test".
 Do not use the underscore character in googletest names; that character is reserved.
+Do not create an identifier with a double underscore ever.
 
 Function parameters
 When passing fundamental types by value do not qulaify with const
@@ -59,6 +61,7 @@ doxygen @param must indicate direction
 C++ block comments /* */ for design overviews - not Doxygen style
 Inline comments // for implementation details
 No end-of-line comments on braces (no } // end if)
+Do not have doxygen comments for functions where we say " = default".
 
 Modern C++ Preferences
 
