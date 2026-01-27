@@ -31,7 +31,7 @@ Comparison order: Variable on left - e.g., x == 5 not 5 == x (don't use Yoda con
 Never say "using namespace std"
 when checking if a ptr is nullptr, do not say "if (ptr)", say "if (ptr != nullptr)"
 when checking if a ptr is not nullptr, do not say "if (!ptr)", say "if (ptr == nullptr)"
-
+When a variable is a pointer or a reference, the * or & should be with the typename, not with the variable name, so, for example, instead of T *myvar it should be T* myvar. Also have a space before the variable name  (T* obj, not T*obj). This rule also applies to function argument declarations.
 
 Naming Conventions
 

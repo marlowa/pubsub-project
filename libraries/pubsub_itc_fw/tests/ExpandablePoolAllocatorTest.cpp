@@ -444,7 +444,7 @@ TEST_F(ExpandablePoolAllocatorTest, PoolCorrectnessAndReuse)
     }
 }
 
-TEST_F(ExpandablePoolAllocatorTest, DISABLED_DestructorReleasesAllObjects)
+TEST_F(ExpandablePoolAllocatorTest, DestructorReleasesAllObjects)
 {
     const int objects_per_pool = 16;
     const int initial_pools = 1;
