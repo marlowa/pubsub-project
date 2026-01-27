@@ -465,13 +465,24 @@ FixedSizeMemoryPool<T>::FixedSizeMemoryPool(int objects_per_pool,
 
 template <typename T>
 FixedSizeMemoryPool<T>::~FixedSizeMemoryPool() {
+
     if (pool_memory_ != MAP_FAILED) {
+        // Destruct any objects that are still allocated in this pool.
+        for (int i = 0; i < objects_per_pool_; ++i) {
+            SlotType* slot = &slots_[i];
+            if (slot->flag == 1U) {
+                T* obj = slot->storage.object_ptr();
+                obj->~T();
+                slot->flag = 0U;
+            }
+        }
+
         munmap(pool_memory_, total_pool_size_);
     }
 }
 
 template <typename T>
-T *FixedSizeMemoryPool<T>::allocate() {
+T* FixedSizeMemoryPool<T>::allocate() {
     SlotType *slot = pop_slot_from_free_list();
     if (slot == nullptr) {
         return nullptr;
@@ -480,17 +491,17 @@ T *FixedSizeMemoryPool<T>::allocate() {
 }
 
 template <typename T>
-void FixedSizeMemoryPool<T>::deallocate(T *node_to_push) {
+void FixedSizeMemoryPool<T>::deallocate(T* node_to_push) {
     if (node_to_push == nullptr) {
         throw PreconditionAssertion("deallocate called with nullptr", __FILE__, __LINE__);
     }
 
-    SlotType *slot = slot_from_object(node_to_push);
+    SlotType* slot = slot_from_object(node_to_push);
     push_slot_to_free_list(slot);
 }
 
 template <typename T>
-bool FixedSizeMemoryPool<T>::contains(T const *ptr) const {
+bool FixedSizeMemoryPool<T>::contains(T const* ptr) const {
     auto const *byte_ptr = reinterpret_cast<std::byte const *>(ptr);
     auto const *start = static_cast<std::byte const *>(pool_memory_);
     auto const *end = start + total_pool_size_;
