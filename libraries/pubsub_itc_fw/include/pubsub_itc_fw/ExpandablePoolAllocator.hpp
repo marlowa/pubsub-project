@@ -118,9 +118,8 @@
 
 namespace pubsub_itc_fw {
 
-template <typename T>
-class ExpandablePoolAllocator final {
-public:
+template <typename T> class ExpandablePoolAllocator final {
+  public:
     ~ExpandablePoolAllocator() = default;
 
     /**
@@ -136,15 +135,9 @@ public:
      * @param[in] handler_for_huge_pages_error Callback if huge page allocation fails.
      * @param[in] use_huge_pages_flag Whether to attempt 2MB huge page allocation.
      */
-    ExpandablePoolAllocator(LoggerInterface& logger,
-                            std::string const& pool_name,
-                            int objects_per_pool,
-                            int initial_pools,
-                            int expansion_threshold_hint,
-                            std::function<void(void*, int)> handler_for_pool_exhausted,
-                            std::function<void(void*, void*)> handler_for_invalid_free,
-                            std::function<void(void*)> handler_for_huge_pages_error,
-                            UseHugePagesFlag use_huge_pages_flag);
+    ExpandablePoolAllocator(LoggerInterface& logger, std::string const& pool_name, int objects_per_pool, int initial_pools, int expansion_threshold_hint,
+                            std::function<void(void*, int)> handler_for_pool_exhausted, std::function<void(void*, void*)> handler_for_invalid_free,
+                            std::function<void(void*)> handler_for_huge_pages_error, UseHugePagesFlag use_huge_pages_flag);
 
     ExpandablePoolAllocator(ExpandablePoolAllocator const&) = delete;
     ExpandablePoolAllocator& operator=(ExpandablePoolAllocator const&) = delete;
@@ -181,7 +174,7 @@ public:
      */
     [[nodiscard]] PoolStatistics get_pool_statistics() const;
 
-private:
+  private:
     FixedSizeMemoryPool<T>* add_pool_to_chain();
 
     static std::uintptr_t* get_flag_for_object(T* obj);
@@ -203,31 +196,25 @@ private:
 };
 
 template <typename T>
-ExpandablePoolAllocator<T>::ExpandablePoolAllocator(LoggerInterface& logger,
-                                                    std::string const& pool_name,
-                                                    int objects_per_pool,
-                                                    int initial_pools,
-                                                    int expansion_threshold_hint,
-                                                    std::function<void(void*, int)> handler_for_pool_exhausted,
+ExpandablePoolAllocator<T>::ExpandablePoolAllocator(LoggerInterface& logger, std::string const& pool_name, int objects_per_pool, int initial_pools,
+                                                    int expansion_threshold_hint, std::function<void(void*, int)> handler_for_pool_exhausted,
                                                     std::function<void(void*, void*)> handler_for_invalid_free,
-                                                    std::function<void(void*)> handler_for_huge_pages_error,
-                                                    UseHugePagesFlag use_huge_pages_flag)
-    : pool_name_(pool_name),
-      logger_(logger),
-      objects_per_pool_(objects_per_pool),
-      initial_pools_(initial_pools),
-      expansion_threshold_hint_(expansion_threshold_hint),
-      use_huge_pages_flag_(use_huge_pages_flag),
-      handler_for_pool_exhausted_(std::move(handler_for_pool_exhausted)),
-      handler_for_invalid_free_(std::move(handler_for_invalid_free)),
-      handler_for_huge_pages_error_(std::move(handler_for_huge_pages_error)) {
+                                                    std::function<void(void*)> handler_for_huge_pages_error, UseHugePagesFlag use_huge_pages_flag)
+    : pool_name_(pool_name)
+    , logger_(logger)
+    , objects_per_pool_(objects_per_pool)
+    , initial_pools_(initial_pools)
+    , expansion_threshold_hint_(expansion_threshold_hint)
+    , use_huge_pages_flag_(use_huge_pages_flag)
+    , handler_for_pool_exhausted_(std::move(handler_for_pool_exhausted))
+    , handler_for_invalid_free_(std::move(handler_for_invalid_free))
+    , handler_for_huge_pages_error_(std::move(handler_for_huge_pages_error)) {
     for (int i = 0; i < initial_pools_; ++i) {
         add_pool_to_chain();
     }
 }
 
-template <typename T>
-T* ExpandablePoolAllocator<T>::allocate() {
+template <typename T> T* ExpandablePoolAllocator<T>::allocate() {
     T* raw_mem = nullptr;
     FixedSizeMemoryPool<T>* pool = __atomic_load_n(&current_pool_ptr_, __ATOMIC_ACQUIRE);
 
@@ -278,8 +265,7 @@ T* ExpandablePoolAllocator<T>::allocate() {
     return nullptr;
 }
 
-template <typename T>
-void ExpandablePoolAllocator<T>::deallocate(T* obj) {
+template <typename T> void ExpandablePoolAllocator<T>::deallocate(T* obj) {
     if (obj == nullptr) {
         throw PreconditionAssertion("deallocate called with nullptr", __FILE__, __LINE__);
     }
@@ -316,16 +302,12 @@ void ExpandablePoolAllocator<T>::deallocate(T* obj) {
     owner_pool->deallocate(obj);
 }
 
-template <typename T>
-FixedSizeMemoryPool<T>* ExpandablePoolAllocator<T>::add_pool_to_chain() {
-    auto new_pool = std::make_unique<FixedSizeMemoryPool<T>>(
-        objects_per_pool_,
-        use_huge_pages_flag_,
-        [this](void* addr, std::size_t) {
-            if (handler_for_huge_pages_error_ != nullptr) {
-                handler_for_huge_pages_error_(addr);
-            }
-        });
+template <typename T> FixedSizeMemoryPool<T>* ExpandablePoolAllocator<T>::add_pool_to_chain() {
+    auto new_pool = std::make_unique<FixedSizeMemoryPool<T>>(objects_per_pool_, use_huge_pages_flag_, [this](void* addr, std::size_t) {
+        if (handler_for_huge_pages_error_ != nullptr) {
+            handler_for_huge_pages_error_(addr);
+        }
+    });
 
     FixedSizeMemoryPool<T>* pool_ptr = new_pool.get();
     FixedSizeMemoryPool<T>* current_head = __atomic_load_n(&head_pool_, __ATOMIC_RELAXED);
@@ -345,8 +327,7 @@ FixedSizeMemoryPool<T>* ExpandablePoolAllocator<T>::add_pool_to_chain() {
     return pool_ptr;
 }
 
-template <typename T>
-PoolStatistics ExpandablePoolAllocator<T>::get_pool_statistics() const {
+template <typename T> PoolStatistics ExpandablePoolAllocator<T>::get_pool_statistics() const {
     PoolStatistics stats;
     stats.pool_name_ = pool_name_;
     stats.object_size_ = sizeof(T);
@@ -368,18 +349,14 @@ PoolStatistics ExpandablePoolAllocator<T>::get_pool_statistics() const {
     return stats;
 }
 
-template <typename T>
-std::uintptr_t* ExpandablePoolAllocator<T>::get_flag_for_object(T* obj) {
+template <typename T> std::uintptr_t* ExpandablePoolAllocator<T>::get_flag_for_object(T* obj) {
     using SlotType = Slot<T>;
 
-    auto* storage_ptr =
-        reinterpret_cast<std::aligned_storage_t<sizeof(T), alignof(T)>*>(obj);
+    auto* storage_ptr = reinterpret_cast<std::aligned_storage_t<sizeof(T), alignof(T)>*>(obj);
 
-    auto* slot = reinterpret_cast<SlotType*>(
-        reinterpret_cast<char*>(storage_ptr) -
-        offsetof(SlotType, storage));
+    auto* slot = reinterpret_cast<SlotType*>(reinterpret_cast<char*>(storage_ptr) - offsetof(SlotType, storage));
 
     return &slot->flag;
 }
 
-}  
+} // namespace pubsub_itc_fw

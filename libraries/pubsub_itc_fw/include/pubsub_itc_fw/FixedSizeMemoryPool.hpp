@@ -107,16 +107,14 @@
 
 namespace pubsub_itc_fw {
 
-template <typename T>
-struct SlotStorage; // forward declaration
+template <typename T> struct SlotStorage; // forward declaration
 
 // ============================================================
 // Slot<T> — one allocator slot: [flag][storage]
 // ============================================================
 
-template <typename T>
-struct Slot {
-    std::uintptr_t flag;  // 0 = free, 1 = allocated
+template <typename T> struct Slot {
+    std::uintptr_t flag; // 0 = free, 1 = allocated
     SlotStorage<T> storage;
 };
 
@@ -124,10 +122,9 @@ struct Slot {
 // SlotStorage<T> — raw storage helper for allocator slots
 // ============================================================
 
-template <typename T>
-struct SlotStorage {
+template <typename T> struct SlotStorage {
     struct FreeListNode {
-        Slot<T> *next;
+        Slot<T>* next;
     };
 
     union {
@@ -135,19 +132,19 @@ struct SlotStorage {
         std::aligned_storage_t<sizeof(T), alignof(T)> storage;
     };
 
-    T *object_ptr() {
-        return reinterpret_cast<T *>(&storage);
+    T* object_ptr() {
+        return reinterpret_cast<T*>(&storage);
     }
 
-    T const *object_ptr() const {
-        return reinterpret_cast<T const *>(&storage);
+    T const* object_ptr() const {
+        return reinterpret_cast<T const*>(&storage);
     }
 
-    FreeListNode *free_node_ptr() {
+    FreeListNode* free_node_ptr() {
         return &free_node;
     }
 
-    FreeListNode const *free_node_ptr() const {
+    FreeListNode const* free_node_ptr() const {
         return &free_node;
     }
 };
@@ -179,13 +176,12 @@ struct SlotStorage {
  *                call allocate() and deallocate() concurrently without
  *                external synchronisation.
  */
-template <typename T>
-class FixedSizeMemoryPool final {
-public:
+template <typename T> class FixedSizeMemoryPool final {
+  public:
     using SlotType = Slot<T>;
 
     struct alignas(16) HeadPtr {
-        SlotType *ptr;
+        SlotType* ptr;
         std::uint64_t counter;
     };
 
@@ -207,14 +203,12 @@ public:
      *       If huge pages are requested but unavailable, the pool falls back
      *       to standard pages and invokes the error handler.
      */
-    FixedSizeMemoryPool(int objects_per_pool,
-                        UseHugePagesFlag use_huge_pages_flag,
-                        std::function<void(void *, std::size_t)> handler_for_huge_pages_error);
+    FixedSizeMemoryPool(int objects_per_pool, UseHugePagesFlag use_huge_pages_flag, std::function<void(void*, std::size_t)> handler_for_huge_pages_error);
 
-    FixedSizeMemoryPool(FixedSizeMemoryPool const &) = delete;
-    FixedSizeMemoryPool &operator=(FixedSizeMemoryPool const &) = delete;
-    FixedSizeMemoryPool(FixedSizeMemoryPool &&) = delete;
-    FixedSizeMemoryPool &operator=(FixedSizeMemoryPool &&) = delete;
+    FixedSizeMemoryPool(FixedSizeMemoryPool const&) = delete;
+    FixedSizeMemoryPool& operator=(FixedSizeMemoryPool const&) = delete;
+    FixedSizeMemoryPool(FixedSizeMemoryPool&&) = delete;
+    FixedSizeMemoryPool& operator=(FixedSizeMemoryPool&&) = delete;
 
     /**
      * @brief Allocates raw memory for one object from the pool.
@@ -234,7 +228,7 @@ public:
      *       The returned memory is not initialised. The caller must use placement
      *       new to construct an object: new (ptr) T(args...).
      */
-    [[nodiscard]] T *allocate();
+    [[nodiscard]] T* allocate();
 
     /**
      * @brief Returns raw memory to the pool.
@@ -249,7 +243,7 @@ public:
      *
      * @throws PreconditionAssertion if node_to_push is nullptr.
      */
-    void deallocate(T *node_to_push);
+    void deallocate(T* node_to_push);
 
     /**
      * @brief Checks if a pointer belongs to this pool's memory region.
@@ -257,7 +251,7 @@ public:
      * @param[in] ptr Pointer to check.
      * @return true if ptr is within this pool's allocated memory range.
      */
-    [[nodiscard]] bool contains(T const *ptr) const;
+    [[nodiscard]] bool contains(T const* ptr) const;
 
     /**
      * @brief Checks if the pool has no available objects.
@@ -303,7 +297,7 @@ public:
      *
      * @note Uses atomic store with RELEASE ordering to ensure visibility.
      */
-    void set_next_pool(FixedSizeMemoryPool<T> *next) {
+    void set_next_pool(FixedSizeMemoryPool<T>* next) {
         __atomic_store_n(&next_pool_, next, __ATOMIC_RELEASE);
     }
 
@@ -314,18 +308,18 @@ public:
      *
      * @note Uses atomic load with ACQUIRE ordering to ensure visibility.
      */
-    [[nodiscard]] FixedSizeMemoryPool<T> *get_next_pool() const {
+    [[nodiscard]] FixedSizeMemoryPool<T>* get_next_pool() const {
         return __atomic_load_n(&next_pool_, __ATOMIC_ACQUIRE);
     }
 
-private:
+  private:
     /**
      * @brief Converts a slot pointer to the corresponding object pointer.
      *
      * @param[in] slot Pointer to a SlotType.
      * @return T* Pointer to the object storage within the slot.
      */
-    static T *object_from_slot(SlotType *slot) {
+    static T* object_from_slot(SlotType* slot) {
         return slot->storage.object_ptr();
     }
 
@@ -335,13 +329,10 @@ private:
      * @param[in] obj Pointer to an object within this pool.
      * @return SlotType* Pointer to the owning slot.
      */
-    static SlotType *slot_from_object(T *obj) {
-        auto *storage_ptr =
-            reinterpret_cast<std::aligned_storage_t<sizeof(T), alignof(T)> *>(obj);
+    static SlotType* slot_from_object(T* obj) {
+        auto* storage_ptr = reinterpret_cast<std::aligned_storage_t<sizeof(T), alignof(T)>*>(obj);
 
-        auto *slot = reinterpret_cast<SlotType *>(
-            reinterpret_cast<char *>(storage_ptr) -
-            offsetof(SlotType, storage));
+        auto* slot = reinterpret_cast<SlotType*>(reinterpret_cast<char*>(storage_ptr) - offsetof(SlotType, storage));
 
         return slot;
     }
@@ -357,7 +348,7 @@ private:
     [[nodiscard]] HeadPtr load_head() const noexcept {
         unsigned __int128 val;
         __atomic_load(&head_raw_, &val, __ATOMIC_ACQUIRE);
-        return *reinterpret_cast<HeadPtr const *>(&val);
+        return *reinterpret_cast<HeadPtr const*>(&val);
     }
 
     /**
@@ -376,14 +367,9 @@ private:
      * @note The "weak" variant may spuriously fail even when expected == current.
      *       This is acceptable in a loop (as used in push/pop).
      */
-    bool compare_exchange_weak(HeadPtr &expected, HeadPtr desired) noexcept {
-        return __atomic_compare_exchange(
-            &head_raw_,
-            reinterpret_cast<unsigned __int128 *>(&expected),
-            reinterpret_cast<unsigned __int128 *>(&desired),
-            true,
-            __ATOMIC_ACQ_REL,
-            __ATOMIC_ACQUIRE);
+    bool compare_exchange_weak(HeadPtr& expected, HeadPtr desired) noexcept {
+        return __atomic_compare_exchange(&head_raw_, reinterpret_cast<unsigned __int128*>(&expected), reinterpret_cast<unsigned __int128*>(&desired), true,
+                                         __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
     }
 
     /**
@@ -393,7 +379,7 @@ private:
      *
      * @note This function is lock-free and may be called concurrently.
      */
-    void push_slot_to_free_list(SlotType *slot);
+    void push_slot_to_free_list(SlotType* slot);
 
     /**
      * @brief Pops a slot from the intrusive free list.
@@ -402,25 +388,23 @@ private:
      *
      * @note This function is lock-free and may be called concurrently.
      */
-    [[nodiscard]] SlotType *pop_slot_from_free_list();
+    [[nodiscard]] SlotType* pop_slot_from_free_list();
 
     int objects_per_pool_;
     UseHugePagesFlag use_huge_pages_flag_;
     std::size_t total_pool_size_{0U};
-    void *pool_memory_{MAP_FAILED};
-    SlotType *slots_{nullptr};
+    void* pool_memory_{MAP_FAILED};
+    SlotType* slots_{nullptr};
 
     alignas(16) mutable unsigned __int128 head_raw_{0U};
 
-    FixedSizeMemoryPool<T> *next_pool_{nullptr};
+    FixedSizeMemoryPool<T>* next_pool_{nullptr};
 };
 
 template <typename T>
-FixedSizeMemoryPool<T>::FixedSizeMemoryPool(int objects_per_pool,
-                                            UseHugePagesFlag use_huge_pages_flag,
-                                            std::function<void(void *, std::size_t)> handler_for_huge_pages_error)
-    : objects_per_pool_(objects_per_pool),
-      use_huge_pages_flag_(use_huge_pages_flag) {
+FixedSizeMemoryPool<T>::FixedSizeMemoryPool(int objects_per_pool, UseHugePagesFlag use_huge_pages_flag,
+                                            std::function<void(void*, std::size_t)> handler_for_huge_pages_error)
+    : objects_per_pool_(objects_per_pool), use_huge_pages_flag_(use_huge_pages_flag) {
 #ifndef __GCC_HAVE_SYNC_COMPARE_AND_SWAP_16
     static_assert(false, "Hardware 128-bit atomics not supported. Add -mcx16 to compiler flags.");
 #endif
@@ -453,18 +437,17 @@ FixedSizeMemoryPool<T>::FixedSizeMemoryPool(int objects_per_pool,
     }
 
     // Interpret the mmap region as an array of SlotType and initialise the free list.
-    slots_ = reinterpret_cast<SlotType *>(pool_memory_);
+    slots_ = reinterpret_cast<SlotType*>(pool_memory_);
 
     for (int i = 0; i < objects_per_pool_; ++i) {
-        SlotType *slot = &slots_[i];
+        SlotType* slot = &slots_[i];
         slot->flag = 0U;
         slot->storage.free_node_ptr()->next = nullptr;
         push_slot_to_free_list(slot);
     }
 }
 
-template <typename T>
-FixedSizeMemoryPool<T>::~FixedSizeMemoryPool() {
+template <typename T> FixedSizeMemoryPool<T>::~FixedSizeMemoryPool() {
 
     if (pool_memory_ != MAP_FAILED) {
         // Destruct any objects that are still allocated in this pool.
@@ -481,17 +464,15 @@ FixedSizeMemoryPool<T>::~FixedSizeMemoryPool() {
     }
 }
 
-template <typename T>
-T* FixedSizeMemoryPool<T>::allocate() {
-    SlotType *slot = pop_slot_from_free_list();
+template <typename T> T* FixedSizeMemoryPool<T>::allocate() {
+    SlotType* slot = pop_slot_from_free_list();
     if (slot == nullptr) {
         return nullptr;
     }
     return object_from_slot(slot);
 }
 
-template <typename T>
-void FixedSizeMemoryPool<T>::deallocate(T* node_to_push) {
+template <typename T> void FixedSizeMemoryPool<T>::deallocate(T* node_to_push) {
     if (node_to_push == nullptr) {
         throw PreconditionAssertion("deallocate called with nullptr", __FILE__, __LINE__);
     }
@@ -500,24 +481,21 @@ void FixedSizeMemoryPool<T>::deallocate(T* node_to_push) {
     push_slot_to_free_list(slot);
 }
 
-template <typename T>
-bool FixedSizeMemoryPool<T>::contains(T const* ptr) const {
-    auto const *byte_ptr = reinterpret_cast<std::byte const *>(ptr);
-    auto const *start = static_cast<std::byte const *>(pool_memory_);
-    auto const *end = start + total_pool_size_;
+template <typename T> bool FixedSizeMemoryPool<T>::contains(T const* ptr) const {
+    auto const* byte_ptr = reinterpret_cast<std::byte const*>(ptr);
+    auto const* start = static_cast<std::byte const*>(pool_memory_);
+    auto const* end = start + total_pool_size_;
     return (byte_ptr >= start && byte_ptr < end);
 }
 
-template <typename T>
-bool FixedSizeMemoryPool<T>::is_full() const {
+template <typename T> bool FixedSizeMemoryPool<T>::is_full() const {
     return load_head().ptr == nullptr;
 }
 
-template <typename T>
-int FixedSizeMemoryPool<T>::get_number_of_available_objects() const {
+template <typename T> int FixedSizeMemoryPool<T>::get_number_of_available_objects() const {
     int count = 0;
     HeadPtr head = load_head();
-    SlotType *current = head.ptr;
+    SlotType* current = head.ptr;
     while (current != nullptr) {
         ++count;
         current = current->storage.free_node_ptr()->next;
@@ -525,21 +503,18 @@ int FixedSizeMemoryPool<T>::get_number_of_available_objects() const {
     return count;
 }
 
-template <typename T>
-bool FixedSizeMemoryPool<T>::uses_huge_pages() const {
+template <typename T> bool FixedSizeMemoryPool<T>::uses_huge_pages() const {
     return use_huge_pages_flag_ == UseHugePagesFlag::DoUseHugePages;
 }
 
-template <typename T>
-std::size_t FixedSizeMemoryPool<T>::get_huge_page_size() const {
+template <typename T> std::size_t FixedSizeMemoryPool<T>::get_huge_page_size() const {
     if (uses_huge_pages()) {
         return static_cast<std::size_t>(2048U) * 1024U;
     }
     return 0U;
 }
 
-template <typename T>
-void FixedSizeMemoryPool<T>::push_slot_to_free_list(SlotType *slot) {
+template <typename T> void FixedSizeMemoryPool<T>::push_slot_to_free_list(SlotType* slot) {
     HeadPtr old_head = load_head();
     HeadPtr next_head;
 
@@ -550,13 +525,12 @@ void FixedSizeMemoryPool<T>::push_slot_to_free_list(SlotType *slot) {
     } while (!compare_exchange_weak(old_head, next_head));
 }
 
-template <typename T>
-typename FixedSizeMemoryPool<T>::SlotType *FixedSizeMemoryPool<T>::pop_slot_from_free_list() {
+template <typename T> typename FixedSizeMemoryPool<T>::SlotType* FixedSizeMemoryPool<T>::pop_slot_from_free_list() {
     HeadPtr old_head = load_head();
     HeadPtr next_head;
 
     while (old_head.ptr != nullptr) {
-        SlotType *head_slot = old_head.ptr;
+        SlotType* head_slot = old_head.ptr;
         next_head.ptr = head_slot->storage.free_node_ptr()->next;
         next_head.counter = old_head.counter + 1U;
 
@@ -568,6 +542,6 @@ typename FixedSizeMemoryPool<T>::SlotType *FixedSizeMemoryPool<T>::pop_slot_from
     return nullptr;
 }
 
-}  // namespace pubsub_itc_fw
+} // namespace pubsub_itc_fw
 
 #pragma GCC diagnostic pop
