@@ -9,7 +9,9 @@
 #include <string>
 #include <type_traits>
 #include <vector>
+#include <atomic>
 
+#include <pubsub_itc_fw/AllocatorBehaviourStatistics.hpp>
 #include <pubsub_itc_fw/FixedSizeMemoryPool.hpp>
 #include <pubsub_itc_fw/LoggerInterface.hpp>
 #include <pubsub_itc_fw/PoolStatistics.hpp>
@@ -174,6 +176,8 @@ template <typename T> class ExpandablePoolAllocator final {
      */
     [[nodiscard]] PoolStatistics get_pool_statistics() const;
 
+    AllocatorBehaviourStatistics get_behaviour_statistics() const;
+
   private:
     FixedSizeMemoryPool<T>* add_pool_to_chain();
 
@@ -193,6 +197,12 @@ template <typename T> class ExpandablePoolAllocator final {
     FixedSizeMemoryPool<T>* current_pool_ptr_{nullptr};
     mutable std::mutex expansion_mutex_;
     std::vector<std::unique_ptr<FixedSizeMemoryPool<T>>> cleanup_list_;
+
+    std::atomic<uint64_t> total_allocations_{0};
+    std::atomic<uint64_t> fast_path_allocations_{0};
+    std::atomic<uint64_t> slow_path_allocations_{0};
+    std::atomic<uint64_t> expansion_events_{0};
+    std::atomic<uint64_t> failed_allocations_{0};
 };
 
 template <typename T>
@@ -221,12 +231,18 @@ template <typename T> T* ExpandablePoolAllocator<T>::allocate() {
     if (pool != nullptr) {
         raw_mem = pool->allocate();
         if (raw_mem != nullptr) {
+
+            total_allocations_.fetch_add(1, std::memory_order_relaxed); 
+            fast_path_allocations_.fetch_add(1, std::memory_order_relaxed);
+
             T* obj = ::new (static_cast<void*>(raw_mem)) T();
             std::uintptr_t* flag = get_flag_for_object(obj);
             *flag = 1U;
             return obj;
         }
     }
+
+    slow_path_allocations_.fetch_add(1, std::memory_order_relaxed);
 
     std::lock_guard<std::mutex> lock(expansion_mutex_);
 
@@ -235,6 +251,9 @@ template <typename T> T* ExpandablePoolAllocator<T>::allocate() {
     while (traverse != nullptr) {
         raw_mem = traverse->allocate();
         if (raw_mem != nullptr) {
+
+            total_allocations_.fetch_add(1, std::memory_order_relaxed);
+
             __atomic_store_n(&current_pool_ptr_, traverse, __ATOMIC_RELEASE);
             T* obj = ::new (static_cast<void*>(raw_mem)) T();
             std::uintptr_t* flag = get_flag_for_object(obj);
@@ -246,9 +265,15 @@ template <typename T> T* ExpandablePoolAllocator<T>::allocate() {
 
     FixedSizeMemoryPool<T>* new_pool = add_pool_to_chain();
     if (new_pool != nullptr) {
+
+        expansion_events_.fetch_add(1, std::memory_order_relaxed);
+
         raw_mem = new_pool->allocate();
 
         if (raw_mem != nullptr) {
+
+            total_allocations_.fetch_add(1, std::memory_order_relaxed);
+
             __atomic_store_n(&current_pool_ptr_, new_pool, __ATOMIC_RELEASE);
 
             if (handler_for_pool_exhausted_ != nullptr) {
@@ -262,6 +287,7 @@ template <typename T> T* ExpandablePoolAllocator<T>::allocate() {
         }
     }
 
+    failed_allocations_.fetch_add(1, std::memory_order_relaxed);
     return nullptr;
 }
 
@@ -357,6 +383,39 @@ template <typename T> std::uintptr_t* ExpandablePoolAllocator<T>::get_flag_for_o
     auto* slot = reinterpret_cast<SlotType*>(reinterpret_cast<char*>(storage_ptr) - offsetof(SlotType, storage));
 
     return &slot->flag;
+}
+
+template <typename T>
+AllocatorBehaviourStatistics ExpandablePoolAllocator<T>::get_behaviour_statistics() const {
+    AllocatorBehaviourStatistics stats;
+
+    stats.total_allocations = total_allocations_.load(std::memory_order_relaxed);
+    stats.fast_path_allocations = fast_path_allocations_.load(std::memory_order_relaxed);
++    stats.slow_path_allocations = slow_path_allocations_.load(std::memory_order_relaxed);
+    stats.expansion_events = expansion_events_.load(std::memory_order_relaxed);
+    stats.failed_allocations = failed_allocations_.load(std::memory_order_relaxed);
+
+    // Count pools
+    uint64_t pool_count = 0;
+    for (auto* p = head_pool_; p != nullptr; p = p->get_next_pool()) {
+        pool_count++;
+    }
+    stats.pool_count = pool_count;
+
+    // Allocate per-pool array
+    stats.per_pool_allocation_counts.count = pool_count;
+    if (pool_count > 0) {
+        stats.per_pool_allocation_counts.counts =
+            new uint64_t[pool_count]();
+
+        uint64_t i = 0;
+        for (auto* p = head_pool_; p != nullptr; p = p->get_next_pool()) {
+            stats.per_pool_allocation_counts.counts[i++] =
+                p->get_allocation_count();
+        }
+    }
+
+    return stats;
 }
 
 } // namespace pubsub_itc_fw

@@ -312,6 +312,8 @@ template <typename T> class FixedSizeMemoryPool final {
         return __atomic_load_n(&next_pool_, __ATOMIC_ACQUIRE);
     }
 
+    uint64_t get_allocation_count() const { return allocation_count_; }
+
   private:
     /**
      * @brief Converts a slot pointer to the corresponding object pointer.
@@ -399,6 +401,7 @@ template <typename T> class FixedSizeMemoryPool final {
     alignas(16) mutable unsigned __int128 head_raw_{0U};
 
     FixedSizeMemoryPool<T>* next_pool_{nullptr};
+    uint64_t allocation_count_{0};
 };
 
 template <typename T>
@@ -469,6 +472,7 @@ template <typename T> T* FixedSizeMemoryPool<T>::allocate() {
     if (slot == nullptr) {
         return nullptr;
     }
+    ++allocation_count_;
     return object_from_slot(slot);
 }
 
