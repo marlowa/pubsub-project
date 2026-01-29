@@ -20,7 +20,6 @@
 namespace pubsub_itc_fw {
 
 /**
- * @class Reactor
  * @brief This is the main class for the reactor framework, orchestrating the
  * event loop, managing handlers, and controlling application threads.
  */

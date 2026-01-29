@@ -1,0 +1,31 @@
+At home I develop on linux mint 22.2 using gcc 13. I am using the C++17 dialect.
+I know about C++20 and would like to use it but I want some of my code to be used at work
+where the environment is sadly lacking. It is RHEL8 there, using the ancient gcc 8.5 compiler.
+C++17 is the dialect in use and that is not going to change. The env is an electronic financial exchange
+where performance, robustness and reliability are key. Therefore, the code I produce at home to be used
+at work must not only work with no code changes, I must be highly confident that it is correct
+in every way. Comprehensive unit testing and performance testing is a must.
+I will be using gtest, perf, callgrind and valgrind.
+
+At work a framework is used that I will refer to as the FW. It is closed source, undocumented
+and unsupported. It is used to drive the event loop and multi-threaded aspects of the system.
+The exchange software where we do have the source code and the responsibility uses the FW.
+It consists of multple components. One of them I have been doing a performance study on.
+The study reveals that there is an area for improvement. It is to do with buffer pool allocation,
+as offered by the FW. Callgrind and perf via call graphs reveal that the FW has a dedicated worker thread
+for doling out buffer pool buffers. It is thread-safe, it works, but I think I can do better.
+My project at home wants to implement a pool allocator and I want to give it to the guys at work so
+that I can help with the FW performance issue that I found. My idea is that the component is changed
+to use my allocator.
+
+The work env is machines that have at least 20 cores and 200GB of memory.
+There are also a limited number of huge pages available, on a first come first served basis.
+The FW buffer pool allocator always suceeds. When the pool is exhausted it silently reverts to
+using the heap. Obviously, that is not good. My allocator will invoke a special callback when
+that happens and will chain a fresh pool to the current one. Each pool has the same attributes.
+Thus, when the pool size is accidently configured to be too small, my applications will get to hear
+about it and will still get the effiencies of pool allocation, albeit with a small initial hit to
+manage the chaining. That is acceptable, and certainly better than silently reverting to use the heap.
+
+Before we get into any code I will have to send you the home project coding rules that I have.
+

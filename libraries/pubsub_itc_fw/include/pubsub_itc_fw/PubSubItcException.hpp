@@ -10,7 +10,6 @@
 namespace pubsub_itc_fw {
 
 /**
- * @class PubSubItcException
  * @brief Custom exception class for all framework errors.
  *
  * This class is designed to be thread-safe when dealing with system errors

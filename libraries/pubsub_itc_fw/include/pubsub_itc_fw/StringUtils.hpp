@@ -11,7 +11,6 @@
 namespace pubsub_itc_fw {
 
 /**
- * @class StringUtils
  * @brief Provides a collection of static utility functions for string
  * manipulation and conversions.
  *

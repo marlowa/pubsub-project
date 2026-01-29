@@ -7,7 +7,6 @@
 namespace pubsub_itc_fw {
 
 /**
- * @class EventHandler
  * @brief This is an abstract base class that provides a common interface
  * for all event sources handled by the Reactor.
  *

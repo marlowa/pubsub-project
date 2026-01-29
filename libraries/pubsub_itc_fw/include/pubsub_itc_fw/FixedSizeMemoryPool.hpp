@@ -154,7 +154,6 @@ template <typename T> struct SlotStorage {
 // ============================================================
 
 /**
- * @class FixedSizeMemoryPool
  * @brief A lock-free, fixed-size memory pool for fast object allocation.
  *
  * This class provides a thread-safe memory pool that allocates fixed-size

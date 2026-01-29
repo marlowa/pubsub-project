@@ -6,7 +6,6 @@
 namespace pubsub_itc_fw {
 
 /**
- * @class AllocatorBehaviourStatistics
  * @brief A structured snapshot of behavioural information from ExpandablePoolAllocator.
  *
  * AllocatorBehaviourStatistics provides a read-only summary of how an
