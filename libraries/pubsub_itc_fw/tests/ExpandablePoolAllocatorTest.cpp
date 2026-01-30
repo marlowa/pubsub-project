@@ -646,9 +646,9 @@ TEST_F(ExpandablePoolAllocatorTest, LatencyStressTest) {
 
 TEST_F(ExpandablePoolAllocatorTest, BehaviouralStatisticsStressTest)
 {
-    const int num_threads = 80;
-    const int iterations = 200;
-    const int objects_per_pool = 64;
+    const int num_threads = 120;          // Increased to raise contention
+    const int iterations = 2000;          // More cycles → more slow-path
+    const int objects_per_pool = 64;      // Keep pool large enough to avoid expansion
     const int initial_pools = 1;
     const int expansion_threshold = 1;
 
@@ -667,9 +667,19 @@ TEST_F(ExpandablePoolAllocatorTest, BehaviouralStatisticsStressTest)
     threads.reserve(num_threads);
 
     for (int i = 0; i < num_threads; ++i) {
-        threads.emplace_back([&allocator]() {
+        threads.emplace_back([&allocator, iterations]() {
+
+            // Deterministic per-thread jitter (1–10 microseconds)
+            const auto tid_hash =
+                std::hash<std::thread::id>{}(std::this_thread::get_id());
+            const int jitter_us = 1 + (tid_hash % 10);
+
             for (int j = 0; j < iterations; ++j) {
                 TestObject* obj = allocator.allocate();
+
+                // Increase contention without forcing expansion
+                std::this_thread::sleep_for(std::chrono::microseconds(jitter_us));
+
                 if (obj != nullptr) {
                     allocator.deallocate(obj);
                 }
@@ -682,6 +692,8 @@ TEST_F(ExpandablePoolAllocatorTest, BehaviouralStatisticsStressTest)
     }
 
     auto stats = allocator.get_behaviour_statistics();
+
+    // --- Correctness invariants (V2-accurate) ---
 
     ASSERT_EQ(stats.fast_path_allocations + stats.slow_path_allocations,
               stats.total_allocations)
@@ -704,14 +716,7 @@ TEST_F(ExpandablePoolAllocatorTest, BehaviouralStatisticsStressTest)
     ASSERT_GT(sum_per_pool, 0U)
         << "at least one pool must have been used";
 
-    ASSERT_EQ(stats.fast_path_allocations + stats.slow_path_allocations, stats.total_allocations)
-        << "fast + slow must equal total allocations";
-
-    ASSERT_GE(stats.pool_count, 1U)
-        << "allocator must have at least one pool";
-
-    ASSERT_EQ(stats.per_pool_allocation_counts.count, stats.pool_count)
-        << "per-pool count array must match pool_count";
+    // --- Diagnostic output block (machine-parseable) ---
 
     std::cout << "# DATASET: BEHAVIOUR-STATS\n";
     std::cout << "total_allocations " << stats.total_allocations << "\n";
