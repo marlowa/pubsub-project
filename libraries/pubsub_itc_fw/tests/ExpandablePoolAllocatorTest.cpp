@@ -644,4 +644,90 @@ TEST_F(ExpandablePoolAllocatorTest, LatencyStressTest) {
     alloc_recorder.dump_results("Allocation Summary");
 }
 
+TEST_F(ExpandablePoolAllocatorTest, BehaviouralStatisticsStressTest)
+{
+    const int num_threads = 80;
+    const int iterations = 200;
+    const int objects_per_pool = 64;
+    const int initial_pools = 1;
+    const int expansion_threshold = 1;
+
+    ExpandablePoolAllocator<TestObject> allocator(
+        *unit_test_logger_,
+        "BehaviourStatsTest",
+        objects_per_pool,
+        initial_pools,
+        expansion_threshold,
+        handler_for_pool_exhausted_,
+        handler_for_invalid_free_,
+        handler_for_huge_pages_error_,
+        UseHugePagesFlag::DoNotUseHugePages);
+
+    std::vector<std::thread> threads;
+    threads.reserve(num_threads);
+
+    for (int i = 0; i < num_threads; ++i) {
+        threads.emplace_back([&allocator]() {
+            for (int j = 0; j < iterations; ++j) {
+                TestObject* obj = allocator.allocate();
+                if (obj != nullptr) {
+                    allocator.deallocate(obj);
+                }
+            }
+        });
+    }
+
+    for (auto& t : threads) {
+        t.join();
+    }
+
+    auto stats = allocator.get_behaviour_statistics();
+
+    ASSERT_EQ(stats.fast_path_allocations + stats.slow_path_allocations,
+              stats.total_allocations)
+        << "fast + slow must equal total allocations";
+
+    ASSERT_GE(stats.pool_count, 1U)
+        << "allocator must have at least one pool";
+
+    ASSERT_EQ(stats.per_pool_allocation_counts.count, stats.pool_count)
+        << "per-pool count array must match pool_count";
+
+    uint64_t sum_per_pool = 0;
+    for (uint64_t i = 0; i < stats.per_pool_allocation_counts.count; ++i) {
+        sum_per_pool += stats.per_pool_allocation_counts.counts[i];
+    }
+
+    ASSERT_LE(sum_per_pool, stats.total_allocations)
+        << "sum of per-pool counts must never exceed total allocations";
+
+    ASSERT_GT(sum_per_pool, 0U)
+        << "at least one pool must have been used";
+
+    ASSERT_EQ(stats.fast_path_allocations + stats.slow_path_allocations, stats.total_allocations)
+        << "fast + slow must equal total allocations";
+
+    ASSERT_GE(stats.pool_count, 1U)
+        << "allocator must have at least one pool";
+
+    ASSERT_EQ(stats.per_pool_allocation_counts.count, stats.pool_count)
+        << "per-pool count array must match pool_count";
+
+    std::cout << "# DATASET: BEHAVIOUR-STATS\n";
+    std::cout << "total_allocations " << stats.total_allocations << "\n";
+    std::cout << "fast_path_allocations " << stats.fast_path_allocations << "\n";
+    std::cout << "slow_path_allocations " << stats.slow_path_allocations << "\n";
+    std::cout << "expansion_events " << stats.expansion_events << "\n";
+    std::cout << "failed_allocations " << stats.failed_allocations << "\n";
+    std::cout << "pool_count " << stats.pool_count << "\n";
+
+    std::cout << "per_pool_counts";
+    for (uint64_t i = 0; i < stats.per_pool_allocation_counts.count; ++i) {
+        std::cout << " " << stats.per_pool_allocation_counts.counts[i];
+    }
+    std::cout << "\n";
+
+    std::cout << "# END-DATASET\n";
+}
+
 } // namespace pubsub_itc_fw::tests
