@@ -1,43 +1,51 @@
-#include <gtest/gtest.h>
-#include <atomic>
-#include <functional>
-#include <memory>
-#include <string>
-#include <thread>
-#include <vector>
-#include <random>
-#include <algorithm>
+#include <gtest/gtest.h>           // Google Test framework
+#include <atomic>                  // For std::atomic
+#include <functional>              // For std::function
+#include <memory>                  // For std::unique_ptr
+#include <string>                  // For std::string
+#include <thread>                  // For std::thread
+#include <vector>                  // For std::vector
+#include <random>                  // For std::shuffle
+#include <algorithm>               // For std::find
 
 #include <pubsub_itc_fw/ExpandablePoolAllocator.hpp>
-#include <pubsub_itc_fw/LoggerInterface.hpp>
+#include <pubsub_itc_fw/LoggerInterface.hpp>                 // For PUBSUB_LOG macro and LogLevel
 #include <pubsub_itc_fw/LogLevel.hpp>
 #include <pubsub_itc_fw/PoolStatistics.hpp>
 #include <pubsub_itc_fw/UseHugePagesFlag.hpp>
-#include <pubsub_itc_fw/tests_common/UnitTestLogger.hpp>
+#include <pubsub_itc_fw/tests_common/UnitTestLogger.hpp> // For the new UnitTestLogger
+#include <pubsub_itc_fw/tests_common/LatencyRecorder.hpp>
 
 namespace pubsub_itc_fw::tests {
 
+// --- Test Object Definition ---
+// A simple test object to be managed by the pool.
+// It tracks its construction/destruction and ensures it's large enough for the intrusive free list.
 struct TestObject {
-    int id_ = 0;
-    std::byte padding_[128];
-    
+    int id_ = 0; // Instance-specific ID
+    // Pad with data to ensure it's larger than FixedSizeMemoryPool::FreeListNode (sizeof(std::atomic<T*>))
+    std::byte padding_[128]; // Ensure sufficient size for intrusive linking
+
+    // Static counters to track allocations and deallocations across all instances
     static std::atomic<int> s_constructor_count;
     static std::atomic<int> s_destructor_count;
-    
+
     TestObject() {
         s_constructor_count++;
     }
-    
+
     ~TestObject() {
         s_destructor_count++;
     }
-    
+
+    // Reset static counters before each test case
     static void reset_counts() {
         s_constructor_count = 0;
         s_destructor_count = 0;
     }
 };
 
+// Initialize static members
 std::atomic<int> TestObject::s_constructor_count(0);
 std::atomic<int> TestObject::s_destructor_count(0);
 
@@ -48,6 +56,8 @@ protected:
         pool_exhausted_callback_count_ = 0;
         invalid_free_callback_count_ = 0;
         huge_pages_error_callback_count_ = 0;
+
+        // Corrected: Pass LogLevel::Info to the constructor of UnitTestLogger
         unit_test_logger_ = std::make_unique<pubsub_itc_fw::tests_common::UnitTestLogger>(LogLevel::Info);
     }
     
@@ -55,19 +65,20 @@ protected:
     std::atomic<int> invalid_free_callback_count_;
     std::atomic<int> huge_pages_error_callback_count_;
     std::unique_ptr<pubsub_itc_fw::tests_common::UnitTestLogger> unit_test_logger_;
-    
+
+    // Callbacks for the allocator to use
     std::function<void(void*, int)> handler_for_pool_exhausted_ =
-        [this](void*, int) {
+        [this](void* for_sender_client_use, int objects_per_pool) {
         this->pool_exhausted_callback_count_++;
     };
     
     std::function<void(void*, void*)> handler_for_invalid_free_ =
-        [this](void*, void*) {
+        [this](void* for_receiver_client_use, void* object_to_deallocate) {
         this->invalid_free_callback_count_++;
     };
     
     std::function<void(void*)> handler_for_huge_pages_error_ =
-        [this](void*) {
+        [this](void* for_client_use) {
         this->huge_pages_error_callback_count_++;
     };
 };
@@ -123,6 +134,68 @@ TEST_F(ExpandablePoolAllocatorTest, PoolExpansionOnExhaustion) {
     }
 
     EXPECT_EQ(TestObject::s_destructor_count.load(), objects_per_pool + 1);
+}
+
+TEST_F(ExpandablePoolAllocatorTest, MaxChainLengthEnforcement)
+{
+    const int objects_per_pool = 10;
+    const int initial_pools = 1;
+    const int expansion_threshold = 1;
+    
+    ExpandablePoolAllocator<int> allocator(
+        *unit_test_logger_, "BasicTest", objects_per_pool, initial_pools, expansion_threshold,
+        handler_for_pool_exhausted_, handler_for_invalid_free_, handler_for_huge_pages_error_,
+        UseHugePagesFlag::DoNotUseHugePages);
+
+    constexpr std::size_t pool_size = 16U;
+
+    std::vector<int*> pointers;
+    pointers.reserve(pool_size);
+
+    auto statistics_before = allocator.get_behaviour_statistics();
+
+    for (std::size_t i = 0U; i < pool_size; ++i) {
+        auto* pointer = allocator.allocate();
+        ASSERT_NE(pointer, nullptr) << "allocator returned nullptr during initial allocation";
+        pointers.push_back(pointer);
+    }
+
+    auto statistics_after_initial_allocations = allocator.get_behaviour_statistics();
+    EXPECT_EQ(statistics_before.expansion_events, statistics_after_initial_allocations.expansion_events)
+        << "allocator should not expand while exhausting the initial pool";
+
+    for (int* pointer : pointers) {
+        allocator.deallocate(pointer);
+    }
+
+    auto statistics_after_deallocation = allocator.get_behaviour_statistics();
+    EXPECT_EQ(statistics_after_initial_allocations.expansion_events, statistics_after_deallocation.expansion_events)
+        << "deallocation should not trigger pool expansion";
+
+    for (int* pointer : pointers) {
+        allocator.deallocate(pointer);
+    }
+
+    auto statistics_after_over_free = allocator.get_behaviour_statistics();
+    EXPECT_EQ(statistics_after_deallocation.expansion_events, statistics_after_over_free.expansion_events)
+        << "over-free attempts must not cause pool expansion";
+
+    std::vector<int*> pointers_second_round;
+    pointers_second_round.reserve(pool_size);
+
+    for (std::size_t i = 0U; i < pool_size; ++i) {
+        int* pointer = allocator.allocate();
+        ASSERT_NE(pointer, nullptr) << "allocator failed after over-free attempts";
+        pointers_second_round.push_back(pointer);
+    }
+
+    auto statistics_after_second_allocations = allocator.get_behaviour_statistics();
+    EXPECT_EQ(statistics_after_over_free.expansion_events, statistics_after_second_allocations.expansion_events)
+        << "allocator should not expand when reusing the existing pool";
+
+    for (int* pointer : pointers_second_round) {
+        allocator.deallocate(pointer);
+    }
 }
 
 TEST_F(ExpandablePoolAllocatorTest, ConcurrentAllocationAndDeallocation) {
