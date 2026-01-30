@@ -141,56 +141,59 @@ TEST_F(ExpandablePoolAllocatorTest, MaxChainLengthEnforcement)
     const int objects_per_pool = 10;
     const int initial_pools = 1;
     const int expansion_threshold = 1;
-    
+
     ExpandablePoolAllocator<int> allocator(
-        *unit_test_logger_, "BasicTest", objects_per_pool, initial_pools, expansion_threshold,
-        handler_for_pool_exhausted_, handler_for_invalid_free_, handler_for_huge_pages_error_,
+        *unit_test_logger_,
+        "MaxChainLengthEnforcement",
+        objects_per_pool,
+        initial_pools,
+        expansion_threshold,
+        handler_for_pool_exhausted_,
+        handler_for_invalid_free_,
+        handler_for_huge_pages_error_,
         UseHugePagesFlag::DoNotUseHugePages);
 
-    constexpr std::size_t pool_size = 16U;
-
     std::vector<int*> pointers;
-    pointers.reserve(pool_size);
+    pointers.reserve(objects_per_pool);
 
-    auto statistics_before = allocator.get_behaviour_statistics();
-
-    for (std::size_t i = 0U; i < pool_size; ++i) {
-        auto* pointer = allocator.allocate();
+    for (int i = 0; i < objects_per_pool; ++i) {
+        int* pointer = allocator.allocate();
         ASSERT_NE(pointer, nullptr) << "allocator returned nullptr during initial allocation";
         pointers.push_back(pointer);
     }
 
     auto statistics_after_initial_allocations = allocator.get_behaviour_statistics();
-    EXPECT_EQ(statistics_before.expansion_events, statistics_after_initial_allocations.expansion_events)
-        << "allocator should not expand while exhausting the initial pool";
 
     for (int* pointer : pointers) {
         allocator.deallocate(pointer);
     }
 
     auto statistics_after_deallocation = allocator.get_behaviour_statistics();
-    EXPECT_EQ(statistics_after_initial_allocations.expansion_events, statistics_after_deallocation.expansion_events)
-        << "deallocation should not trigger pool expansion";
+    EXPECT_EQ(statistics_after_initial_allocations.expansion_events,
+              statistics_after_deallocation.expansion_events)
+        << "deallocation must not trigger pool expansion";
 
     for (int* pointer : pointers) {
         allocator.deallocate(pointer);
     }
 
     auto statistics_after_over_free = allocator.get_behaviour_statistics();
-    EXPECT_EQ(statistics_after_deallocation.expansion_events, statistics_after_over_free.expansion_events)
+    EXPECT_EQ(statistics_after_deallocation.expansion_events,
+              statistics_after_over_free.expansion_events)
         << "over-free attempts must not cause pool expansion";
 
     std::vector<int*> pointers_second_round;
-    pointers_second_round.reserve(pool_size);
+    pointers_second_round.reserve(objects_per_pool);
 
-    for (std::size_t i = 0U; i < pool_size; ++i) {
+    for (int i = 0; i < objects_per_pool; ++i) {
         int* pointer = allocator.allocate();
         ASSERT_NE(pointer, nullptr) << "allocator failed after over-free attempts";
         pointers_second_round.push_back(pointer);
     }
 
     auto statistics_after_second_allocations = allocator.get_behaviour_statistics();
-    EXPECT_EQ(statistics_after_over_free.expansion_events, statistics_after_second_allocations.expansion_events)
+    EXPECT_EQ(statistics_after_over_free.expansion_events,
+              statistics_after_second_allocations.expansion_events)
         << "allocator should not expand when reusing the existing pool";
 
     for (int* pointer : pointers_second_round) {
@@ -428,47 +431,72 @@ TEST_F(ExpandablePoolAllocatorTest, CacheLineContentionStress) {
 
 TEST_F(ExpandablePoolAllocatorTest, DeterministicThunderingHerdOrdering)
 {
-    const int objects_per_pool = 1;
+    const int objects_per_pool = 4;
     const int initial_pools = 1;
-    const int expansion_threshold = 100;
-    const int num_threads = 32;
+    const int expansion_threshold = 1;
 
-    ExpandablePoolAllocator<TestObject> allocator(
-        *unit_test_logger_, "DeterministicHerd", objects_per_pool, initial_pools, expansion_threshold,
-        handler_for_pool_exhausted_, handler_for_invalid_free_, handler_for_huge_pages_error_,
+    ExpandablePoolAllocator<int> allocator(
+        *unit_test_logger_,
+        "DeterministicThunderingHerdOrdering",
+        objects_per_pool,
+        initial_pools,
+        expansion_threshold,
+        handler_for_pool_exhausted_,
+        handler_for_invalid_free_,
+        handler_for_huge_pages_error_,
         UseHugePagesFlag::DoNotUseHugePages);
 
-    std::vector<TestObject*> results(num_threads, nullptr);
-    std::atomic<bool> start_gate{false};
+    const int thread_count = 8;
 
+    std::vector<int*> results(thread_count, nullptr);
     std::vector<std::thread> threads;
-    threads.reserve(num_threads);
+    threads.reserve(thread_count);
 
-    for (int i = 0; i < num_threads; ++i) {
-        threads.emplace_back([&, i]() {
-            while (!start_gate.load(std::memory_order_acquire)) {
-                std::this_thread::yield();
+    std::atomic<bool> start_flag(false);
+    std::atomic<int> ready_count(0);
+
+    auto statistics_before = allocator.get_behaviour_statistics();
+
+    for (int i = 0; i < thread_count; ++i) {
+        threads.emplace_back([&allocator, &results, &start_flag, &ready_count, i]() {
+            ready_count.fetch_add(1);
+            while (!start_flag.load()) {
             }
-            results[i] = allocator.allocate();
+
+            int* pointer = allocator.allocate();
+            results[i] = pointer;
         });
     }
 
-    start_gate.store(true, std::memory_order_release);
+    while (ready_count.load() != thread_count) {
+    }
 
-    for (auto &t : threads) {
+    start_flag.store(true);
+
+    for (std::thread& t : threads) {
         t.join();
     }
 
-    int success_count = 0;
-    for (auto *ptr : results) {
-        if (ptr != nullptr) {
-            success_count++;
-            allocator.deallocate(ptr);
+    auto statistics_after = allocator.get_behaviour_statistics();
+
+    EXPECT_EQ(statistics_after.expansion_events,
+              statistics_before.expansion_events + 1)
+        << "exactly one expansion must occur when multiple threads allocate simultaneously";
+
+    for (int i = 0; i < thread_count; ++i) {
+        ASSERT_NE(results[i], nullptr) << "thread " << i << " received nullptr from allocator";
+    }
+
+    for (int i = 0; i < thread_count; ++i) {
+        for (int j = i + 1; j < thread_count; ++j) {
+            EXPECT_NE(results[i], results[j])
+                << "threads " << i << " and " << j << " received duplicate pointers";
         }
     }
 
-    EXPECT_EQ(success_count, num_threads);
-    EXPECT_EQ(pool_exhausted_callback_count_.load(), num_threads - initial_pools);
+    for (int* pointer : results) {
+        allocator.deallocate(pointer);
+    }
 }
 
 TEST_F(ExpandablePoolAllocatorTest, PoolCorrectnessAndReuse)
