@@ -618,7 +618,7 @@ TEST(LockFreeMessageQueueTest, MixedRateJitterSoakTest) {
     LockFreeMessageQueue<TestMessage> q;
 
     constexpr int producers = 4;
-    constexpr int iterations = 500'000; // smaller number, but chaotic timing
+    constexpr int iterations = 500'000;
 
     std::atomic<bool> start_flag{false};
     std::atomic<int> consumed{0};
@@ -626,35 +626,65 @@ TEST(LockFreeMessageQueueTest, MixedRateJitterSoakTest) {
     std::vector<std::thread> threads;
     threads.reserve(producers);
 
-    // Producers with jitter: random pauses, random burst sizes
+    // Producers with realistic jitter
     for (int p = 0; p < producers; ++p) {
         threads.emplace_back([&, p] {
             std::mt19937 rng(p + 1);
-            std::uniform_int_distribution<int> burst_dist(1, 50);
-            std::uniform_int_distribution<int> pause_dist(0, 200);
+
+            // Typical burst sizes
+            std::uniform_int_distribution<int> burst_dist(4, 32);
+
+            // Frequent tiny stalls (cache misses, branch mispredicts)
+            std::uniform_int_distribution<int> tiny_stall(1, 3);
+
+            // Occasional medium stalls (allocator slow path)
+            std::uniform_int_distribution<int> medium_stall(20, 200);
+
+            // Rare large stalls (NUMA hiccup, page fault)
+            std::uniform_int_distribution<int> large_stall(200, 2000);
+
+            // Probability distributions
+            std::uniform_int_distribution<int> stall_type(1, 1000);
 
             while (!start_flag.load(std::memory_order_acquire)) {
                 std::this_thread::yield();
             }
 
             for (int i = 0; i < iterations; ) {
+
+                // Burst of messages
                 int burst = burst_dist(rng);
                 for (int b = 0; b < burst && i < iterations; ++b, ++i) {
                     q.enqueue(TestMessage{i});
                 }
 
-                // random jitter pause
-                for (int k = 0, pause = pause_dist(rng); k < pause; ++k) {
-                    std::this_thread::yield();
+                // Decide what kind of stall to simulate
+                int s = stall_type(rng);
+
+                if (s <= 850) {
+                    // 85%: tiny stall
+                    for (int k = 0, n = tiny_stall(rng); k < n; ++k)
+                        std::this_thread::yield();
+                } else if (s <= 990) {
+                    // 14%: medium stall
+                    for (int k = 0, n = medium_stall(rng); k < n; ++k)
+                        std::this_thread::yield();
+                } else {
+                    // 1%: large stall
+                    for (int k = 0, n = large_stall(rng); k < n; ++k)
+                        std::this_thread::yield();
                 }
             }
         });
     }
 
-    // Consumer with jitter too
+    // Consumer with realistic jitter
     std::thread consumer([&] {
         std::mt19937 rng(999);
-        std::uniform_int_distribution<int> pause_dist(0, 300);
+
+        std::uniform_int_distribution<int> tiny_stall(1, 3);
+        std::uniform_int_distribution<int> medium_stall(10, 50);
+        std::uniform_int_distribution<int> stall_type(1, 1000);
 
         start_flag.store(true, std::memory_order_release);
 
@@ -667,9 +697,14 @@ TEST(LockFreeMessageQueueTest, MixedRateJitterSoakTest) {
                 ++local_count;
                 consumed.fetch_add(1, std::memory_order_relaxed);
             } else {
-                // random jitter pause
-                for (int k = 0, pause = pause_dist(rng); k < pause; ++k) {
-                    std::this_thread::yield();
+                // Consumer jitter
+                int s = stall_type(rng);
+                if (s <= 900) {
+                    for (int k = 0, n = tiny_stall(rng); k < n; ++k)
+                        std::this_thread::yield();
+                } else {
+                    for (int k = 0, n = medium_stall(rng); k < n; ++k)
+                        std::this_thread::yield();
                 }
             }
         }
@@ -682,4 +717,174 @@ TEST(LockFreeMessageQueueTest, MixedRateJitterSoakTest) {
 
     EXPECT_EQ(consumed.load(), producers * iterations);
     EXPECT_TRUE(q.empty());
+}
+
+TEST(LockFreeMessageQueueTest, MemoryPressureBurstTest) {
+    LockFreeMessageQueue<TestMessage> q;
+
+    constexpr int producers = 4;
+    constexpr int bursts = 3000;
+    constexpr int burst_size = 50;   // small bursts → high allocation churn
+    constexpr int total = producers * bursts * burst_size;
+
+    std::atomic<bool> start_flag{false};
+    std::atomic<int> consumed{0};
+
+    std::vector<std::thread> threads;
+    threads.reserve(producers);
+
+    // Producers: rapid bursts with forced pauses to simulate allocator pressure
+    for (int p = 0; p < producers; ++p) {
+        threads.emplace_back([&, p] {
+            std::mt19937 rng(p + 123);
+            std::uniform_int_distribution<int> pause_dist(50, 500);
+
+            while (!start_flag.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+
+            for (int b = 0; b < bursts; ++b) {
+
+                // Burst of allocations
+                for (int i = 0; i < burst_size; ++i) {
+                    q.enqueue(TestMessage{i});
+                }
+
+                // Forced pause to simulate allocator slow path
+                int pause = pause_dist(rng);
+                for (int k = 0; k < pause; ++k) {
+                    std::this_thread::yield();
+                }
+            }
+        });
+    }
+
+    // Consumer: drains continuously
+    std::thread consumer([&] {
+        start_flag.store(true, std::memory_order_release);
+
+        int local_count = 0;
+        while (local_count < total) {
+            auto msg = q.dequeue();
+            if (msg.has_value()) {
+                ++local_count;
+                consumed.fetch_add(1, std::memory_order_relaxed);
+            } else {
+                std::this_thread::yield();
+            }
+        }
+    });
+
+    for (auto& t : threads) {
+        t.join();
+    }
+    consumer.join();
+
+    EXPECT_EQ(consumed.load(), total);
+    EXPECT_TRUE(q.empty());
+}
+
+TEST(LockFreeMessageQueueTest, QueueDepthHistogramTest) {
+    LockFreeMessageQueue<TestMessage> q;
+
+    constexpr int producers = 4;
+    constexpr int iterations = 300'000;
+
+    std::atomic<bool> start_flag{false};
+    std::atomic<int> consumed{0};
+    std::atomic<int> depth{0};
+    std::atomic<int> max_depth{0};
+
+    std::array<std::atomic<int>, 10> histogram{};
+    for (auto& h : histogram) h.store(0);
+
+    std::vector<std::thread> threads;
+    threads.reserve(producers);
+
+    // Producers with jitter
+    for (int p = 0; p < producers; ++p) {
+        threads.emplace_back([&, p] {
+            std::mt19937 rng(p + 100);
+            std::uniform_int_distribution<int> burst_dist(4, 32);
+            std::uniform_int_distribution<int> stall_dist(1, 50);
+
+            while (!start_flag.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+
+            for (int i = 0; i < iterations; ) {
+                int burst = burst_dist(rng);
+                for (int b = 0; b < burst && i < iterations; ++b, ++i) {
+                    q.enqueue(TestMessage{i});
+                    int d = depth.fetch_add(1, std::memory_order_relaxed) + 1;
+
+                    // track max depth
+                    int prev = max_depth.load(std::memory_order_relaxed);
+                    while (d > prev &&
+                           !max_depth.compare_exchange_weak(prev, d,
+                                   std::memory_order_relaxed)) {
+                        // prev reloaded
+                    }
+                }
+
+                int stall = stall_dist(rng);
+                for (int k = 0; k < stall; ++k) {
+                    std::this_thread::yield();
+                }
+            }
+        });
+    }
+
+    // Consumer with jitter
+    std::thread consumer([&] {
+        std::mt19937 rng(999);
+        std::uniform_int_distribution<int> stall_dist(1, 30);
+
+        start_flag.store(true, std::memory_order_release);
+
+        int local_count = 0;
+        const int total = producers * iterations;
+
+        while (local_count < total) {
+            auto msg = q.dequeue();
+            if (msg.has_value()) {
+                ++local_count;
+                consumed.fetch_add(1, std::memory_order_relaxed);
+                int d = depth.fetch_sub(1, std::memory_order_relaxed) - 1;
+                // sanity: depth should never go negative
+                EXPECT_GE(d, 0);
+            } else {
+                int stall = stall_dist(rng);
+                for (int k = 0; k < stall; ++k) {
+                    std::this_thread::yield();
+                }
+            }
+
+            if ((local_count % 500) == 0) {
+                int d = depth.load(std::memory_order_relaxed);
+                int bucket = std::min(d / 100, 9);
+                histogram[bucket].fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+    });
+
+    for (auto& t : threads) {
+        t.join();
+    }
+    consumer.join();
+
+    EXPECT_EQ(consumed.load(), producers * iterations);
+    EXPECT_EQ(depth.load(), 0);
+    EXPECT_TRUE(q.empty());
+
+    // Optional: debug output for plotting
+    // std::cout << "===QUEUE_DEPTH_HISTOGRAM_BEGIN===\n";
+    // for (int i = 0; i < 10; ++i) {
+    //     int low  = i * 100;
+    //     int high = (i + 1) * 100 - 1;
+    //     int count = histogram[i].load(std::memory_order_relaxed);
+    //     std::cout << low << "," << high << "," << count << "\n";
+    // }
+    // std::cout << "MAX_DEPTH," << max_depth.load() << "\n";
+    // std::cout << "===QUEUE_DEPTH_HISTOGRAM_END===\n";
 }
