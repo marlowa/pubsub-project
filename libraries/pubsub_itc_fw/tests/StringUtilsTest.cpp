@@ -1,22 +1,17 @@
 /**
- * @file StringUtilsTest.cpp
  * @brief Unit tests for the StringUtils class.
  *
  * This file contains a suite of Google Tests to verify the correctness and
  * robustness of the `StringUtils` utility functions.
  */
 
-// C++ headers whose names start with ‘c’
 #include <cerrno>
 
-// System C++ headers
 #include <string>
 #include <string_view>
 
-// Third party headers
 #include <gtest/gtest.h>
 
-// Project headers
 #include <pubsub_itc_fw/StringUtils.hpp>
 
 namespace pubsub_itc_fw {
