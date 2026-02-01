@@ -1,10 +1,64 @@
-/**
- * @brief Unit tests for the LockFreeMessageQueue class.
- *
- * This file contains a suite of Google Tests to verify the correctness,
- * concurrency behavior, watermark transitions, and shutdown semantics
- * of the lock-free multi-producer / single-consumer queue.
- */
+// ============================================================================
+// LockFreeMessageQueue Test Suite
+// ============================================================================
+//
+// This file contains a comprehensive set of Google Tests for validating the
+// correctness, performance, and concurrency behaviour of the
+// LockFreeMessageQueue class.
+//
+// The queue is a multi-producer / single-consumer lock-free structure used in
+// high-performance, pinned-thread application environments. Because the queue
+// is a core infrastructure component, these tests aim to provide extremely
+// high confidence in its behaviour under a wide range of real-world and
+// pathological conditions.
+//
+// The suite covers:
+//
+//   • Basic functional correctness
+//       - FIFO ordering
+//       - enqueue/dequeue semantics
+//
+//   • Multi-threaded correctness
+//       - multiple producers racing a single consumer
+//       - pinned-core execution to simulate production deployment
+//
+//   • Watermark behaviour
+//       - high/low watermark transitions
+//       - hysteresis stability
+//       - storm tests to ensure handlers fire exactly once per crossing
+//
+//   • Shutdown semantics
+//       - enqueue-after-shutdown safety
+//       - destructor draining behaviour
+//       - shutdown races under load
+//
+//   • Stress and soak testing
+//       - millions of messages
+//       - jittered producer/consumer timing
+//       - memory-pressure bursts
+//       - ABA-adjacent pointer churn
+//       - false sharing detection
+//
+//   • Behavioural profiling
+//       - queue-depth histogram sampling
+//       - output for external plotting/analysis
+//
+// These tests intentionally simulate:
+//   - realistic timing jitter (cache misses, allocator stalls, NUMA hiccups)
+//   - pinned-thread execution
+//   - bursty producer behaviour
+//   - slow or uneven consumer behaviour
+//   - allocator churn and node reuse
+//
+// The goal is not only to verify correctness, but to expose rare timing bugs,
+// ordering issues, or structural weaknesses that only appear under sustained
+// or adversarial conditions.
+//
+// This suite is designed to be read and understood by future maintainers.
+// Each test includes a comment block describing its purpose and the specific
+// failure modes it is intended to detect.
+//
+// ============================================================================
 
 #include <pthread.h>
 #include <sched.h>
@@ -42,7 +96,10 @@ void pin_current_thread_to_cpu(int cpu_index) {
 } // namespace
 
 // ------------------------------------------------------------
-// Basic enqueue/dequeue
+// Basic sanity check: verifies FIFO ordering and that enqueue()
+// and dequeue() work correctly in the simplest single-threaded
+// scenario. This ensures the fundamental queue mechanics behave
+// as expected before layering on concurrency tests.
 // ------------------------------------------------------------
 TEST(LockFreeMessageQueueTest, BasicEnqueueDequeue) {
     LockFreeMessageQueue<TestMessage> q;
@@ -67,7 +124,11 @@ TEST(LockFreeMessageQueueTest, BasicEnqueueDequeue) {
 }
 
 // ------------------------------------------------------------
-// Multi-producer correctness
+// Multi-producer correctness test: launches several producers
+// concurrently and ensures that all messages are eventually
+// consumed with no loss, corruption, or duplication. This
+// validates the lock-free multi-producer logic under moderate
+// contention.
 // ------------------------------------------------------------
 TEST(LockFreeMessageQueueTest, MultiProducerSingleConsumer) {
     LockFreeMessageQueue<TestMessage> q;
@@ -111,7 +172,10 @@ TEST(LockFreeMessageQueueTest, MultiProducerSingleConsumer) {
 }
 
 // ------------------------------------------------------------
-// Watermark transitions
+// Watermark transition correctness: verifies that the high and
+// low watermark handlers fire exactly once when crossing their
+// respective thresholds. Ensures hysteresis logic is correct
+// and handlers do not storm or double-fire.
 // ------------------------------------------------------------
 TEST(LockFreeMessageQueueTest, WatermarkHandlersFireOnce) {
     std::atomic<int> high_calls{0};
@@ -142,7 +206,10 @@ TEST(LockFreeMessageQueueTest, WatermarkHandlersFireOnce) {
 }
 
 // ------------------------------------------------------------
-// Shutdown flag behavior
+// Shutdown behavior: verifies that enqueue() after shutdown()
+// does not crash, corrupt memory, or accept new messages.
+// Ensures shutdown flag is respected and the queue enters a
+// safe, inert state.
 // ------------------------------------------------------------
 TEST(LockFreeMessageQueueTest, EnqueueAfterShutdownIsDropped) {
     LockFreeMessageQueue<TestMessage> q;
@@ -162,7 +229,10 @@ TEST(LockFreeMessageQueueTest, EnqueueAfterShutdownIsDropped) {
 }
 
 // ------------------------------------------------------------
-// Destructor drains remaining items
+// Destructor behavior: ensures that destroying the queue drains
+// all remaining messages safely without leaks, corruption, or
+// undefined behavior. Validates that the destructor correctly
+// invokes shutdown semantics.
 // ------------------------------------------------------------
 TEST(LockFreeMessageQueueTest, DestructorDrainsQueue) {
     auto* q = new LockFreeMessageQueue<TestMessage>();
@@ -176,6 +246,13 @@ TEST(LockFreeMessageQueueTest, DestructorDrainsQueue) {
     SUCCEED();
 }
 
+// ------------------------------------------------------------
+// Heavy multi-producer stress test: pushes the queue with a
+// large number of concurrent producers and verifies that all
+// messages are delivered. This exposes timing races, atomic
+// ordering issues, and pointer-linking bugs under sustained
+// contention.
+// ------------------------------------------------------------
 TEST(LockFreeMessageQueueTest, HeavyMultiProducerStress) {
     LockFreeMessageQueue<TestMessage> q;
 
@@ -227,6 +304,12 @@ TEST(LockFreeMessageQueueTest, HeavyMultiProducerStress) {
     EXPECT_TRUE(q.empty());
 }
 
+// ------------------------------------------------------------
+// CPU affinity test: pins producer and consumer threads to
+// separate physical cores to simulate real-world deployment
+// conditions. Ensures the queue behaves correctly when threads
+// do not migrate and memory access patterns are stable.
+// ------------------------------------------------------------
 TEST(LockFreeMessageQueueTest, ProducerConsumerPinnedToSeparateCores) {
     LockFreeMessageQueue<TestMessage> q;
 
@@ -273,6 +356,12 @@ TEST(LockFreeMessageQueueTest, ProducerConsumerPinnedToSeparateCores) {
     EXPECT_TRUE(q.empty());
 }
 
+// ------------------------------------------------------------
+// Large-scale soak test: pushes tens of millions of messages
+// through the queue to expose rare timing bugs, ABA-like
+// behavior, allocator churn issues, and long-term stability
+// problems. This is a high-confidence stress test.
+// ------------------------------------------------------------
 TEST(LockFreeMessageQueueTest, SoakTestMillionsOfMessages) {
     LockFreeMessageQueue<TestMessage> q;
 
@@ -316,6 +405,13 @@ TEST(LockFreeMessageQueueTest, SoakTestMillionsOfMessages) {
     EXPECT_TRUE(q.empty());
 }
 
+// ------------------------------------------------------------
+// False sharing detection: producer and consumer are pinned to
+// separate cores and run at high speed. If any shared cache
+// lines are incorrectly laid out, performance collapses or
+// behavior becomes unstable. This test helps detect structural
+// layout issues.
+// ------------------------------------------------------------
 TEST(LockFreeMessageQueueTest, FalseSharingDetection) {
     LockFreeMessageQueue<TestMessage> q;
 
@@ -361,6 +457,12 @@ TEST(LockFreeMessageQueueTest, FalseSharingDetection) {
     EXPECT_TRUE(q.empty());
 }
 
+// ------------------------------------------------------------
+// ABA-resistance stress test: forces rapid allocation and
+// deallocation of nodes by generating many small bursts. This
+// exposes pointer reuse hazards, stale-next-pointer races, and
+// other ABA-adjacent failure modes in the linked-list structure.
+// ------------------------------------------------------------
 TEST(LockFreeMessageQueueTest, AbaResistanceStress) {
     LockFreeMessageQueue<TestMessage> q;
 
@@ -417,6 +519,12 @@ TEST(LockFreeMessageQueueTest, AbaResistanceStress) {
     EXPECT_TRUE(q.empty());
 }
 
+// ------------------------------------------------------------
+// Watermark storm test: repeatedly oscillates the queue size
+// above and below the high/low watermarks thousands of times.
+// Ensures each transition fires exactly once per crossing and
+// that hysteresis logic remains stable under extreme churn.
+// ------------------------------------------------------------
 TEST(LockFreeMessageQueueTest, WatermarkStormTest) {
     std::atomic<int> high_calls{0};
     std::atomic<int> low_calls{0};
@@ -455,6 +563,12 @@ TEST(LockFreeMessageQueueTest, WatermarkStormTest) {
     EXPECT_TRUE(q.empty());
 }
 
+// ------------------------------------------------------------
+// Shutdown race test: triggers shutdown while producers are
+// still actively enqueueing. Ensures that enqueue() safely
+// drops messages after shutdown, that no corruption occurs,
+// and that the queue drains cleanly without undefined behavior.
+// ------------------------------------------------------------
 TEST(LockFreeMessageQueueTest, ShutdownRaceTest) {
     LockFreeMessageQueue<TestMessage> q;
 
@@ -517,6 +631,12 @@ TEST(LockFreeMessageQueueTest, ShutdownRaceTest) {
     EXPECT_TRUE(q.empty());
 }
 
+// ------------------------------------------------------------
+// Low-watermark storm test: mirror image of the high-watermark
+// storm test. Repeatedly crosses the low watermark boundary to
+// ensure the low handler fires exactly once per downward
+// transition and remains stable under oscillation.
+// ------------------------------------------------------------
 TEST(LockFreeMessageQueueTest, LowWatermarkStormTest) {
     std::atomic<int> high_calls{0};
     std::atomic<int> low_calls{0};
@@ -556,6 +676,12 @@ TEST(LockFreeMessageQueueTest, LowWatermarkStormTest) {
     EXPECT_TRUE(q.empty());
 }
 
+// ------------------------------------------------------------
+// Throughput benchmark: measures messages-per-second under
+// multi-producer load. This is not a correctness test but a
+// performance regression guard to ensure the queue remains
+// efficient over time.
+// ------------------------------------------------------------
 TEST(LockFreeMessageQueueTest, ThroughputBenchmark) {
     LockFreeMessageQueue<TestMessage> q;
 
@@ -614,6 +740,12 @@ TEST(LockFreeMessageQueueTest, ThroughputBenchmark) {
     EXPECT_TRUE(q.empty());
 }
 
+// ------------------------------------------------------------
+// Mixed-rate jitter soak test: producers and consumer run with
+// realistic micro-jitter (cache misses, allocator stalls,
+// NUMA-like delays). This simulates real-world timing noise and
+// exposes subtle races that fixed-rate tests cannot detect.
+// ------------------------------------------------------------
 TEST(LockFreeMessageQueueTest, MixedRateJitterSoakTest) {
     LockFreeMessageQueue<TestMessage> q;
 
@@ -719,6 +851,12 @@ TEST(LockFreeMessageQueueTest, MixedRateJitterSoakTest) {
     EXPECT_TRUE(q.empty());
 }
 
+// ------------------------------------------------------------
+// Memory-pressure burst test: producers generate rapid bursts
+// of allocations followed by forced pauses, simulating allocator
+// slow paths and fragmentation. This stresses pointer linking,
+// node reuse, and memory-ordering under high churn.
+// ------------------------------------------------------------
 TEST(LockFreeMessageQueueTest, MemoryPressureBurstTest) {
     LockFreeMessageQueue<TestMessage> q;
 
@@ -784,6 +922,14 @@ TEST(LockFreeMessageQueueTest, MemoryPressureBurstTest) {
     EXPECT_TRUE(q.empty());
 }
 
+// ------------------------------------------------------------
+// Queue-depth histogram test: tracks queue depth over time under
+// jittery load and records a histogram of observed depths. This
+// is a behavioral profiling test that ensures the queue does not
+// accumulate unbounded backlog and that depth changes remain
+// stable under realistic timing conditions. Output is used by
+// the Python plotting script for visualization.
+// ------------------------------------------------------------
 TEST(LockFreeMessageQueueTest, QueueDepthHistogramTest) {
     LockFreeMessageQueue<TestMessage> q;
 
