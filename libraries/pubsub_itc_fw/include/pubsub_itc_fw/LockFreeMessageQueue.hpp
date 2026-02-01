@@ -1,7 +1,6 @@
 #pragma once
 
 #include <atomic>
-#include <concepts>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -15,6 +14,26 @@ namespace pubsub_itc_fw {
  * This implementation is based on Dmitry Vyukov's algorithm and is optimized for
  * high-performance, inter-thread communication. It offers wait-free enqueue
  * and lock-free dequeue operations.
+ *
+ * @note Lifetime and shutdown:
+ *
+ * This queue is owned by a single consumer thread (e.g. an ApplicationThread)
+ * and may have multiple producers (e.g. Reactor, other threads) calling enqueue().
+ *
+ * It is a programming error for any producer to call enqueue() after the owning
+ * consumer has begun shutdown and the queue is being destroyed. The framework's
+ * shutdown protocol (via Reactor) is responsible for ensuring that no further
+ * enqueue() calls are made once a thread has been unregistered.
+ *
+ * In practice, this means:
+ *  - Reactor stops routing messages to a thread before that thread (and its queue)
+ *    are destroyed.
+ *  - Any messages that would have been sent to a shutting-down thread are simply
+ *    not enqueued.
+ *
+ * Given the intended usage pattern (applications run for the duration of a day
+ * and shut down at end of day), any messages that are not delivered during
+ * shutdown are considered acceptable to lose.
  *
  * @tparam T The type of elements to store in the queue. Must be move-constructible.
  */
@@ -96,8 +115,33 @@ public:
      * memory leaks.
      */
     ~LockFreeMessageQueue() {
+        shutdown();
+    }
+
+    /**
+     * @brief Initiates shutdown and drains all remaining messages.
+     *
+     * After shutdown has been initiated, the queue will no longer logically
+     * accept new messages. Calls to enqueue() after shutdown are allowed,
+     * but they will silently drop the message and will not modify the
+     * internal linked list.
+     *
+     * This function is idempotent and may be called multiple times safely.
+     * The destructor calls shutdown() automatically.
+     */
+    void shutdown() noexcept {
+        bool expected = false;
+        if (!shutting_down_.compare_exchange_strong(
+                expected, true,
+                std::memory_order_acq_rel)) {
+            // Already shutting down or shut down; nothing more to do.
+            return;
+        }
+
+        // Drain remaining messages. We intentionally ignore the returned
+        // values; they are being discarded as part of shutdown.
         while (!empty()) {
-            dequeue();
+            (void)dequeue();
         }
     }
 
@@ -112,6 +156,11 @@ public:
      */
     template<typename... Args>
     void enqueue(Args&&... args) {
+        if (shutting_down_.load(std::memory_order_acquire)) {
+            // TODO we might log that an attempt to enqueue was dropped here.
+            return;
+        }     
+
         auto* node = new(std::nothrow) Node(std::forward<Args>(args)...);
         if (node == nullptr) {
             // TODO handle this gracefully.
@@ -122,7 +171,8 @@ public:
         Node* prev_head = head_.exchange(node, std::memory_order_acq_rel);
         prev_head->next_.store(node, std::memory_order_release);
         int current_size = ++size_;
-        if (current_size >= high_watermark_ && !is_high_watermark_breached_.exchange(true)) {
+        if (gone_above_high_watermark_handler_ != nullptr &&
+            current_size >= high_watermark_ && !is_high_watermark_breached_.exchange(true)) {
             gone_above_high_watermark_handler_(for_client_use_);
         }
     }
@@ -153,7 +203,8 @@ public:
             tail_ = next;
             delete tail;
             int current_size = --size_;
-            if (current_size < low_watermark_ && is_high_watermark_breached_.exchange(false)) {
+            if (gone_below_low_watermark_handler_ != nullptr &&
+                current_size < low_watermark_ && is_high_watermark_breached_.exchange(false)) {
                 gone_below_low_watermark_handler_(for_client_use_);
             }
             return result;
@@ -228,6 +279,7 @@ private:
     std::function<void(void* for_client_use)> gone_above_high_watermark_handler_;
 
     std::atomic<bool> is_high_watermark_breached_{false};
+    std::atomic<bool> shutting_down_{false};
 };
 
 } // namespace pubsub_itc_fw

@@ -7,14 +7,14 @@
 #include <memory>
 #include <string>
 
+#include <pubsub_itc_fw/EventHandler.hpp>
+#include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/LockFreeMessageQueue.hpp>
-#include <pubsub_itc_fw/ThreadWithJoinTimeout.hpp>
 #include <pubsub_itc_fw/LoggerInterface.hpp>
+#include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
-#include <pubsub_itc_fw/EventHandler.hpp>
-#include <pubsub_itc_fw/PreconditionAssertion.hpp>
-#include <pubsub_itc_fw/EventMessage.hpp>
+#include <pubsub_itc_fw/ThreadWithJoinTimeout.hpp>
 #include <pubsub_itc_fw/TimerHandler.hpp>
 #include <pubsub_itc_fw/TimerType.hpp>
 
@@ -25,38 +25,75 @@ class Reactor;
 class SocketHandler;
 
 /**
- * @brief Abstract base class for threads managed by the Reactor.
- *
  * This class abstracts the underlying std::thread and provides a consistent
  * interface for the Reactor to manage the lifecycle of the thread, including starting,
  * joining, and a mechanism for state-checking.
+ *
+ * An ApplicationThread hold a reference to the Reactor because it is needed
+ * when the thread terminates with an exception.
+ *
+ * WATERMARK SEMANTICS
+ * -------------------
+ * Each ApplicationThread owns a LockFreeMessageQueue<EventMessage> with an optional
+ * low and high watermark. These watermarks allow the Reactor (or the thread itself)
+ * to detect overload conditions and recovery conditions.
+ *
+ * HIGH WATERMARK:
+ *   - When the queue size grows to >= high_watermark, the queue fires the
+ *     "gone_above_high_watermark" handler exactly once.
+ *   - This handler is invoked by the *producer* thread performing the enqueue().
+ *   - It fires only on the transition from below → above the high watermark.
+ *
+ * LOW WATERMARK:
+ *   - When the queue size later drops to < low_watermark, the queue fires the
+ *     "gone_below_low_watermark" handler exactly once.
+ *   - This handler is invoked by the *consumer* thread performing the dequeue().
+ *   - It fires only on the transition from above → below the low watermark.
+ *
+ * HYSTERESIS:
+ *   - The pair (low_watermark, high_watermark) defines a hysteresis band.
+ *   - While the queue remains above the high watermark, the high watermark handler
+ *     will NOT fire again.
+ *   - While the queue remains below the low watermark, the low watermark handler
+ *     will NOT fire again.
+ *   - This prevents handler storms when the queue size fluctuates near a boundary.
+ *
+ * THREADING MODEL:
+ *   - enqueue() is wait-free for multiple producers.
+ *   - dequeue() is lock-free and must be called only by the ApplicationThread itself.
+ *   - Watermark handlers run in the context of the thread that caused the transition.
+ *
+ * SHUTDOWN BEHAVIOR:
+ *   - During shutdown, the queue marks itself as "shutting down".
+ *   - Any enqueue() after shutdown begins is ignored and the message is dropped.
+ *   - This is safe because the Reactor stops routing messages to a thread before
+ *     destroying the ApplicationThread and its queue.
+ *
+ * APPLICATION-LEVEL GUARANTEE:
+ *   - Messages lost during shutdown are acceptable for the intended usage pattern
+ *     (threads run for the duration of the day and terminate at end-of-day).
+ *   - No enqueue() will occur after the queue is destroyed, because Reactor
+ *     unregisters the thread before destruction.
  */
-class ApplicationThread {
-public:
 
+class ApplicationThread {
+  public:
     ~ApplicationThread();
 
     /**
      * TODO need to document how watermarks work
      *
-     * Note that the thread id is allocated by the Reactor when the thread is registered.
-     * The ApplicationThread stores a reference to the Reactor during construction.
-     * The Reactor constructor is simple so it is an easy thing to create the Reactor,
-     * not do anything with it yet, then create the ApplicationThreads. The creation of the thread
-     * registers it with the Reactor but nothing happens until the Reactor run function is invoked.
-     * This means that when this constructor completes the ApplicationThread can obtain its ThreadID.
-     *
      * @brief Constructs an ApplicationThread.
+     *
      * @param[in] logger A reference to the logger instance.
-     * @param[in] reactor a reference to the reactor which is needed when the thread terminates with an exception
+     * @param[in] reactor a reference to the reactor
      * @param[in] thread_name The name of the thread.
+     * @param[in] thread_id The ID of the thread, as chosen by the application developer
      * @param[in] low_watermark The low watermark for the message queue.
      * @param[in] high_watermark The high watermark for the message queue.
      */
-    ApplicationThread(const LoggerInterface& logger,
-                      Reactor& reactor,
-                      const std::string& thread_name,
-                      uint32_t low_watermark, uint32_t high_watermark);
+    ApplicationThread(const LoggerInterface& logger, Reactor& reactor, const std::string& thread_name, ThreadID, thread_id, uint32_t low_watermark,
+                      uint32_t high_watermark);
 
     /**
      * Return the thread name, as a const ref to avoid copying
@@ -81,18 +118,12 @@ public:
     bool join_with_timeout(std::chrono::milliseconds timeout);
 
     /**
-     * Returns the ID of the thread. This is allocated by the Reactor during the
-     * execution of the ApplicationThread constructor.
+     * Returns the ID of the thread. This is chosen by the application developer
+     * and enforced to be unique by the Reactor.
      *
      * @return ThreadID The thread ID.
      */
     ThreadID get_thread_id() const;
-
-    /**
-     * @brief Sets the ID of the thread. This is called by the Reactor during registration.
-     * @param [in] id The ID to set.
-     */
-    void set_thread_id(ThreadID id);
 
     /**
      * @brief Pauses the thread's execution loop.
@@ -147,28 +178,33 @@ public:
      */
     void cancel_timer(const std::string& name);
 
-    //void post_socket_read_message(const int length, void* socket_handler); TODO in flux
+    // void post_socket_read_message(const int length, void* socket_handler); TODO in flux
 
-    auto get_time_event_started() const { return time_event_started_; }
-    auto get_time_event_finished() const { return time_event_finished_; }
+    auto get_time_event_started() const {
+        return time_event_started_;
+    }
+    auto get_time_event_finished() const {
+        return time_event_finished_;
+    }
 
-    void set_time_event_started(std::chrono::time_point<std::chrono::system_clock,
-                                std::chrono::nanoseconds> time_event_started) {
+    void set_time_event_started(std::chrono::time_point<std::chrono::system_clock, std::chrono::nanoseconds> time_event_started) {
         time_event_started_ = time_event_started;
     }
 
-    void set_time_event_finished(std::chrono::time_point<std::chrono::system_clock,
-                                 std::chrono::nanoseconds> time_event_finished) {
+    void set_time_event_finished(std::chrono::time_point<std::chrono::system_clock, std::chrono::nanoseconds> time_event_finished) {
         time_event_finished_ = time_event_finished;
     }
 
-    bool get_has_processed_initial_event() { return has_processed_initial_event_.load(); }
-    void set_has_processed_initial_event() { has_processed_initial_event_.store(true); }
+    bool get_has_processed_initial_event() {
+        return has_processed_initial_event_.load();
+    }
+    void set_has_processed_initial_event() {
+        has_processed_initial_event_.store(true);
+    }
 
     void shutdown(const std::string& reason);
 
-protected:
-
+  protected:
     /**
      * This function is called by the wrapper 'run'. The work of 'run' is done here.
      * The wrapper catches any exception and handles it by marking the thread as finished,
@@ -181,8 +217,7 @@ protected:
     void on_data_message(const EventMessage& event_message);
     virtual void process_message(EventMessage& message) = 0;
 
-private:
-
+  private:
     const LoggerInterface& logger_;
 
     /**
@@ -198,16 +233,18 @@ private:
 
     /**
      * Each thread has a thread_id which is basically a wrapped integer.
-     * It is used when events are posted as inter-thread messages. The receiver needs to know who
-     * sent the message. Hence the EventMessage contains the thread_id. It is more efficient then
+     * It is used when events are posted as inter-thread messages.
+     * The receiver needs to know who sent the message.
+     * Hence the EventMessage contains the thread_id. It is more efficient then
      * storing a string, the thread name. Any logging will probably want to use the thread name, so
      * a function is provided by the Reactor to give the name from the id, get_thread_name_from_id.
      */
     ThreadID thread_id_;
 
-    std::atomic<bool> is_paused_{ false };
-    std::atomic<bool> has_processed_initial_event_{ false };
+    std::atomic<bool> is_paused_{false};
+    std::atomic<bool> has_processed_initial_event_{false};
     LockFreeMessageQueue<EventMessage> message_queue_;
     std::unique_ptr<ThreadWithJoinTimeout> thread_;
 };
+
 } // namespace pubsub_itc_fw

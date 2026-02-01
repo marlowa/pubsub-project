@@ -108,3 +108,4 @@ Specific Patterns
 
 Prefer signed integers over unsigned. So dont pick an unsigned tyoe just because you think that the domain says the number can never be negative.
 Trailing return type syntax: Not used (use traditional T* function() not auto function() -> T*)
+prefer functions scoped to the unnamed namespace rather than the old C-style static (file-scoped) functions
