@@ -877,14 +877,13 @@ TEST(LockFreeMessageQueueTest, QueueDepthHistogramTest) {
     EXPECT_EQ(depth.load(), 0);
     EXPECT_TRUE(q.empty());
 
-    // Optional: debug output for plotting
-    // std::cout << "===QUEUE_DEPTH_HISTOGRAM_BEGIN===\n";
-    // for (int i = 0; i < 10; ++i) {
-    //     int low  = i * 100;
-    //     int high = (i + 1) * 100 - 1;
-    //     int count = histogram[i].load(std::memory_order_relaxed);
-    //     std::cout << low << "," << high << "," << count << "\n";
-    // }
-    // std::cout << "MAX_DEPTH," << max_depth.load() << "\n";
-    // std::cout << "===QUEUE_DEPTH_HISTOGRAM_END===\n";
+    std::cout << "# DATASET: QUEUE-DEPTH" << '\n';
+    std::cout << "max_depth " << max_depth.load(std::memory_order_relaxed) << '\n';
+    std::cout << "depth_histogram";
+    for (int i = 0; i < 10; ++i) {
+        int count = histogram[i].load(std::memory_order_relaxed);
+        std::cout << " " << count;
+    }
+    std::cout << '\n';
+    std::cout << "# END-DATASET" << '\n';
 }
