@@ -1,19 +1,10 @@
 #pragma once
 
-// C++ headers whose names start with ‘c’
-// (None directly here)
-
-// System C++ headers
 #include <string>
 
-// Third party headers
-// (None directly here)
-
-// Project headers
 #include <pubsub_itc_fw/ThreadID.hpp>
 #include <pubsub_itc_fw/TimerID.hpp>
 #include <pubsub_itc_fw/EventType.hpp>
-#include <pubsub_itc_fw/Message.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -26,9 +17,10 @@ namespace pubsub_itc_fw {
  * ensure consistent state and initialization.
  *
  * **Payload Ownership:**
- * THIS CLASS DOES NOT OWN THE PAYLOAD MEMORY. The lifetime of the payload
- * buffer is managed by the producing component (e.g., the Reactor). The consuming
- * component is responsible for processing the data before the buffer is reused.
+ * The payload applies to ITC messages, not to system event messages
+ * such as INIT or TERM. In those system event cases the payload pointer is nullptr.
+ * Where the payload pointer is not nullptr, the buffer is managed by the allocator of
+ * the receiving component. Thus the reeiving thread is responsible for freeing it.
  *
  * **Type Safety:**
  * This class relies on explicit type checking and casting. The `get_as()` method
@@ -49,7 +41,8 @@ public:
 
 private:
     Header header_;
-    const uint8_t* payload_;
+    const uint8_t* payload_{nullptr};
+    int itc_message_type_{-1};
 
     /**
      * @brief Private constructor to enforce use of static factory methods.
@@ -66,14 +59,26 @@ private:
         : header_{type, size, TimerID(), "", ThreadID()}, payload_(payload_data) {}
 
 public:
-    // Ensure all messages are moved, not copied, to prevent unintended sharing
-    // of the raw payload pointer. TODO maybe we should just delete these functions.
-    EventMessage(EventMessage&& other) noexcept;
-    EventMessage& operator=(EventMessage&& other) noexcept;
 
-    // Disallow copy operations to prevent unintended sharing of the raw pointer.
+    // Disallow copy and move operations to prevent unintended sharing of the raw pointer.
     EventMessage(const EventMessage&) = delete;
     EventMessage& operator=(const EventMessage&) = delete;
+    EventMessage(EventMessage&& other) noexcept = delete;
+    EventMessage& operator=(EventMessage&& other) noexcept = delete;
+
+    /**
+     * @brief Gets the ITC message subtype.
+     *
+     * This value is meaningful only when the event type is
+     * EventType::InterthreadCommunication. It identifies the
+     * specific ITC message variant as defined by the receiving
+     * thread's local ITC type registry.
+     *
+     * @return The ITC message subtype as a signed integer.
+     */
+    [[nodiscard]] int itc_message_type() const noexcept {
+        return itc_message_type_;
+    }
 
     /**
      * @brief Factory method for reactor internal events (Initial, AppReady).

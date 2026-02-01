@@ -39,10 +39,13 @@ snake_case for: variables, function names, member functions, parameters
 snake_case with trailing underscore for: member variables (pool_name_, logger_)
 Do not use the prefix "s_" for class static members.
 PascalCase for: class names, struct names, type names
-SCREAMING_SNAKE_CASE for: macros, constants
+Use SCREAMING_SNAKE_CASE for: macros but nothing else (so not constants). 
 Test fixture classes and with "Test".
 Do not use the underscore character in googletest names; that character is reserved.
 Do not create an identifier with a double underscore ever.
+Do not use Hebrew‑style consonant writing, e.g say "plot" instead of "plt".
+Use English, not American English.
+Use English variable names but American API spellings.
 
 Function parameters
 When passing fundamental types by value do not qulaify with const
@@ -99,8 +102,9 @@ Function Style
 Short, focused functions where possible
 Early returns preferred over deeply nested conditionals
 Prefer references to pointers (as per Meyers recommendation)
-Null checks at function entry where appropriate
+Null pointer checks at function entry where appropriate (throw PreconditionViolation when precondition violated)
 
 Specific Patterns
 
+Prefer signed integers over unsigned. So dont pick an unsigned tyoe just because you think that the domain says the number can never be negative.
 Trailing return type syntax: Not used (use traditional T* function() not auto function() -> T*)

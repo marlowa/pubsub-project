@@ -33,26 +33,26 @@ public:
      * @brief Constructs EventType from tag value.
      * @param tag Event type tag
      */
-    explicit EventType(EventTypeTag tag);
+    constexpr explicit EventType(EventTypeTag tag);
 
     /**
      * @brief Returns string representation of the event type.
      * @return Event type as string
      */
-    std::string as_string() const {
+    [[nodiscard]] std::string as_string() const {
         if (event_type_ == Initial) {
             return "Initial";
-        } else if (event_type_ = AppReady) {
+        } else if (event_type_ == AppReady) {
                 return "AppReady";
-        } else if (event_type_ = Termination) {
+        } else if (event_type_ == Termination) {
             return "Termination";
-        } else if (event_type_ = InterthreadCommunication) {
+        } else if (event_type_ == InterthreadCommunication) {
             return "InterthreadCommunication";
-        } else if (event_type_ = Timer) {
+        } else if (event_type_ == Timer) {
             return "Timer";
-        } else if (event_type_ = PubSubCommunication) {
+        } else if (event_type_ == PubSubCommunication) {
             return "PubSubCommunication";
-        } else if (event_type_ = RawSocketCommunication) {
+        } else if (event_type_ == RawSocketCommunication) {
             return "RawSocketCommunication";
         } else {
             return fmt::format("unknown ({})", static_cast<int>(event_type_));
@@ -66,6 +66,7 @@ public:
      */
     bool is_equal(const EventType& rhs) const {
         return event_type_ == rhs.event_type_;
+    }
 };
 
 /**
