@@ -73,6 +73,9 @@ QuillLogger::QuillLogger()
       console_level_{LogLevel::Debug},
       syslog_level_{LogLevel::Debug}  {
 
+    quill::BackendOptions backend_options{};
+    quill::Backend::start(backend_options);
+
     console_sink_ = quill::Frontend::create_or_get_sink<quill::ConsoleSink>("console_sink");
     quill_logger_ = quill::Frontend::create_or_get_logger(
         "pubsub_logger",
@@ -80,6 +83,30 @@ QuillLogger::QuillLogger()
     );
 
     quill_logger_->set_log_level(LoggerUtils::to_quill_log_level(LogLevel::Debug));
+}
+
+/**
+ * Constructor for unit tests with custom sink (e.g., TestSink)
+ */
+QuillLogger::QuillLogger(std::shared_ptr<quill::Sink> test_sink, LogLevel log_level)
+    :
+      console_sink_{test_sink},
+      level_{log_level},
+      file_level_{log_level},
+      console_level_{log_level},
+      syslog_level_{log_level}
+{
+    // Start backend if not already started
+    quill::BackendOptions backend_options{};
+    quill::Backend::start(backend_options);
+
+    // Create logger with the test sink
+    quill_logger_ = quill::Frontend::create_or_get_logger(
+        "test_logger",
+        {test_sink}
+    );
+
+    quill_logger_->set_log_level(LoggerUtils::to_quill_log_level(log_level));
 }
 
 // -----------------------------------------------------------------------------

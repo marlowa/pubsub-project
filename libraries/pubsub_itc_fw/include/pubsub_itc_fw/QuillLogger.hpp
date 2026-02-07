@@ -27,6 +27,14 @@ public:
 
     explicit QuillLogger(); // for unit tests
 
+    /**
+     * @brief Constructor for unit tests with custom sink
+     * @param test_sink Custom sink for capturing log records
+     * @param log_level Log level to set
+     */
+    explicit QuillLogger(std::shared_ptr<quill::Sink> test_sink,
+                         LogLevel log_level = LogLevel::Debug);
+
     quill::Logger* quill_logger() const noexcept { return quill_logger_; }
 
     void set_log_level(LogLevel level);
@@ -38,16 +46,18 @@ public:
     bool should_log_to_console(LogLevel level) const;
 
 private:
-    quill::Logger* quill_logger_{nullptr};
-    LogLevel level_{LogLevel::Info};
-
     std::shared_ptr<quill::Sink> file_sink_;
     std::shared_ptr<quill::Sink> console_sink_;
     std::shared_ptr<quill::Sink> syslog_sink_;
 
+    // TODO APM not sure about this, having a single level here.
+    LogLevel level_{LogLevel::Info};
+
     LogLevel file_level_{LogLevel::Info};
     LogLevel console_level_{LogLevel::Info};
     LogLevel syslog_level_{LogLevel::Info};
+
+    quill::Logger* quill_logger_{nullptr};
 };
 
 } // namespace pubsub_itc_fw
