@@ -8,7 +8,7 @@
 
 #include <pubsub_itc_fw/UseHugePagesFlag.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
-#include <pubsub_itc_fw/Logger.hpp>
+#include <pubsub_itc_fw/QuillLogger.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -41,7 +41,7 @@ struct PoolStatistics {
      * @brief Logs the pool statistics to a provided `LoggerInterface`.
      * @param logger The logger to use for output.
      */
-    void log_statistics(Logger& logger) const {
+    void log_statistics(QuillLogger& logger) const {
         PUBSUB_LOG(logger, LogLevel::Info, "--- Pool Statistics for '{}' ---", pool_name_);
         PUBSUB_LOG(logger, LogLevel::Info, "Object Size: {} bytes", object_size_);
         PUBSUB_LOG(logger, LogLevel::Info, "Objects Per Pool: {}", number_of_objects_per_pool_);

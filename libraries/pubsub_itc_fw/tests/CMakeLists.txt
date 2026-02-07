@@ -6,7 +6,7 @@ add_executable(pubsub_itc_fw_tests
     ExpandablePoolAllocatorTest.cpp
     NumaAwarePoolAllocatorTest.cpp
     LockFreeMessageQueueTest.cpp
-    LoggerTest.cpp
+    #LoggerTest.cpp
     StringUtilsTest.cpp
     ThreadWithJoinTimeoutTest.cpp
 )

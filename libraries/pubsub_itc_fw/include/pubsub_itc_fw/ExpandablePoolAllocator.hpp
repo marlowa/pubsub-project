@@ -14,7 +14,8 @@
 #include <pubsub_itc_fw/AllocatorBehaviourStatistics.hpp>
 #include <pubsub_itc_fw/CacheLine.hpp>
 #include <pubsub_itc_fw/FixedSizeMemoryPool.hpp>
-#include <pubsub_itc_fw/LoggerInterface.hpp>
+#include <pubsub_itc_fw/LoggingMacros.hpp>
+#include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/PoolStatistics.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/UseHugePagesFlag.hpp>
@@ -138,9 +139,12 @@ template <typename T> class ExpandablePoolAllocator final {
      * @param[in] handler_for_huge_pages_error Callback if huge page allocation fails.
      * @param[in] use_huge_pages_flag Whether to attempt 2MB huge page allocation.
      */
-    ExpandablePoolAllocator(LoggerInterface& logger, std::string const& pool_name, int objects_per_pool, int initial_pools, int expansion_threshold_hint,
-                            std::function<void(void*, int)> handler_for_pool_exhausted, std::function<void(void*, void*)> handler_for_invalid_free,
-                            std::function<void(void*)> handler_for_huge_pages_error, UseHugePagesFlag use_huge_pages_flag);
+    ExpandablePoolAllocator(QuillLogger& logger, std::string const& pool_name, int objects_per_pool, int initial_pools,
+                            int expansion_threshold_hint,
+                            std::function<void(void*, int)> handler_for_pool_exhausted,
+                            std::function<void(void*, void*)> handler_for_invalid_free,
+                            std::function<void(void*)> handler_for_huge_pages_error,
+                            UseHugePagesFlag use_huge_pages_flag);
 
     ExpandablePoolAllocator(ExpandablePoolAllocator const&) = delete;
     ExpandablePoolAllocator& operator=(ExpandablePoolAllocator const&) = delete;
@@ -185,7 +189,7 @@ template <typename T> class ExpandablePoolAllocator final {
     static std::uintptr_t* get_flag_for_object(T* obj);
 
     std::string pool_name_;
-    LoggerInterface& logger_;
+    QuillLogger& logger_;
     int objects_per_pool_;
     int initial_pools_;
     int expansion_threshold_hint_;
@@ -207,10 +211,13 @@ template <typename T> class ExpandablePoolAllocator final {
 };
 
 template <typename T>
-ExpandablePoolAllocator<T>::ExpandablePoolAllocator(LoggerInterface& logger, std::string const& pool_name, int objects_per_pool, int initial_pools,
-                                                    int expansion_threshold_hint, std::function<void(void*, int)> handler_for_pool_exhausted,
-                                                    std::function<void(void*, void*)> handler_for_invalid_free,
-                                                    std::function<void(void*)> handler_for_huge_pages_error, UseHugePagesFlag use_huge_pages_flag)
+ExpandablePoolAllocator<T>::ExpandablePoolAllocator(QuillLogger& logger, std::string const& pool_name, //
+                                                    int objects_per_pool, int initial_pools,
+                                                    int expansion_threshold_hint, //
+                                                    std::function<void(void*, int)> handler_for_pool_exhausted, //
+                                                    std::function<void(void*, void*)> handler_for_invalid_free, //
+                                                    std::function<void(void*)> handler_for_huge_pages_error, //
+                                                    UseHugePagesFlag use_huge_pages_flag)
     : pool_name_(pool_name)
     , logger_(logger)
     , objects_per_pool_(objects_per_pool)
@@ -233,7 +240,7 @@ template <typename T> T* ExpandablePoolAllocator<T>::allocate() {
         raw_mem = pool->allocate();
         if (raw_mem != nullptr) {
 
-            total_allocations_.value.fetch_add(1, std::memory_order_relaxed); 
+            total_allocations_.value.fetch_add(1, std::memory_order_relaxed);
             fast_path_allocations_.value.fetch_add(1, std::memory_order_relaxed);
 
             T* obj = ::new (static_cast<void*>(raw_mem)) T();

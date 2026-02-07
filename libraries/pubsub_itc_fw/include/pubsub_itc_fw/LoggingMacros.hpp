@@ -1,52 +1,34 @@
 #pragma once
 
 #include <quill/LogMacros.h>
+
 #include <pubsub_itc_fw/LoggerUtils.hpp>
 #include <pubsub_itc_fw/LogLevel.hpp>
+#include <pubsub_itc_fw/QuillLogger.hpp>
 
-#define PUBSUB_LOG(logger_expr, log_level_expr, fmt, ...)                                      \
-    do {                                                                                       \
-        auto& logger_local_ref = (logger_expr);                                                \
-        ::pubsub_itc_fw::LogLevel level_obj{log_level_expr};                                   \
-                                                                                               \
-        if (logger_local_ref.should_log(level_obj)) {                                          \
-            auto* quill_logger = logger_local_ref.quill_logger();                              \
-                                                                                               \
-            const char* file = ::pubsub_itc_fw::LoggerUtils::leafname(__FILE__);               \
-            const char* func = ::pubsub_itc_fw::LoggerUtils::function_name(__PRETTY_FUNCTION__).data(); \
-            int line = __LINE__;                                                               \
-                                                                                               \
-            switch (level_obj.log_level_) {                                                    \
-                case ::pubsub_itc_fw::LogLevel::Alert:                                         \
-                case ::pubsub_itc_fw::LogLevel::Critical:                                      \
-                    LOG_CRITICAL(quill_logger, "{}:{} {} " fmt,                                \
-                                 file, line, func, __VA_ARGS__);                               \
-                    quill_logger->flush_log();                                                 \
-                    break;                                                                     \
-                                                                                               \
-                case ::pubsub_itc_fw::LogLevel::Error:                                         \
-                    LOG_ERROR(quill_logger, "{}:{} {} " fmt,                                   \
-                              file, line, func, __VA_ARGS__);                                  \
-                    break;                                                                     \
-                                                                                               \
-                case ::pubsub_itc_fw::LogLevel::Warning:                                       \
-                    LOG_WARNING(quill_logger, "{}:{} {} " fmt,                                 \
-                                file, line, func, __VA_ARGS__);                                \
-                    break;                                                                     \
-                                                                                               \
-                case ::pubsub_itc_fw::LogLevel::Notice:                                        \
-                case ::pubsub_itc_fw::LogLevel::Info:                                          \
-                    LOG_INFO(quill_logger, "{}:{} {} " fmt,                                    \
-                             file, line, func, __VA_ARGS__);                                   \
-                    break;                                                                     \
-                                                                                               \
-                case ::pubsub_itc_fw::LogLevel::Debug:                                         \
-                default:                                                                       \
-                    LOG_DEBUG(quill_logger, "{}:{} {} " fmt,                                   \
-                               file, line, func, __VA_ARGS__);                                 \
-                    break;                                                                     \
-            }                                                                                  \
-        }                                                                                      \
-    } while (false)
+// TODO we need to do something so that critcals, errors etc cause log flushing.
+// There is a new way to do this in quill v11.
 
-#define PUBSUB_LOG_STR(logger, log_level, log_string) PUBSUB_LOG(logger, log_level, "{}", log_string);
+// Note: In Quill 11.x, the macros are LOG_CRITICAL, LOG_ERROR, etc. (not QUILL_LOG_*)
+#define PUBSUB_LOG(logger_expr, log_level_expr, fmt, ...)                               \
+    do {                                                                                \
+        auto& logger_local_ref = (logger_expr);                                         \
+        ::pubsub_itc_fw::LogLevel level_obj = (log_level_expr);                         \
+        if (level_obj == ::pubsub_itc_fw::LogLevel::Alert ||                            \
+            level_obj == ::pubsub_itc_fw::LogLevel::Critical) {                         \
+            LOG_CRITICAL(logger_local_ref.quill_logger(), fmt, ##__VA_ARGS__);          \
+        } else if (level_obj == ::pubsub_itc_fw::LogLevel::Error) {                     \
+            LOG_ERROR(logger_local_ref.quill_logger(), fmt, ##__VA_ARGS__);             \
+        } else if (level_obj == ::pubsub_itc_fw::LogLevel::Warning) {                   \
+            LOG_WARNING(logger_local_ref.quill_logger(), fmt, ##__VA_ARGS__);           \
+        } else if (level_obj == ::pubsub_itc_fw::LogLevel::Notice) {                    \
+            LOG_INFO(logger_local_ref.quill_logger(), fmt, ##__VA_ARGS__);              \
+        } else if (level_obj == ::pubsub_itc_fw::LogLevel::Info) {                      \
+            LOG_INFO(logger_local_ref.quill_logger(), fmt, ##__VA_ARGS__);              \
+        } else if (level_obj == ::pubsub_itc_fw::LogLevel::Debug) {                     \
+            LOG_DEBUG(logger_local_ref.quill_logger(), fmt, ##__VA_ARGS__);             \
+        }                                                                               \
+    } while (0)
+
+#define PUBSUB_LOG_STR(logger_expr, log_level_expr, msg)                                \
+    PUBSUB_LOG(logger_expr, log_level_expr, "{}", msg)

@@ -2,15 +2,47 @@
 
 namespace pubsub_itc_fw {
 
-/**
- * @brief Enumeration to indicate whether huge pages should be used for memory allocation.
- *
- * Huge pages can improve performance for applications that require large amounts
- * of contiguous memory by reducing Translation Lookaside Buffer (TLB) misses.
- */
-enum class UseHugePagesFlag { // Renamed file to UseHugePagesFlag.hpp
-    DoNotUseHugePages, /**< @brief Do not use huge pages for memory allocation. */
-    DoUseHugePages     /**< @brief Attempt to use huge pages for memory allocation. */
+class UseHugePagesFlag {
+public:
+    enum UseHugePagesFlagTag {
+        DoNotUseHugePages = 0,
+        DoUseHugePages    = 1
+    };
+
+    explicit UseHugePagesFlag(UseHugePagesFlagTag value) : value_{value} {}
+
+    bool isEqual(const UseHugePagesFlag& rhs) const
+    {
+        return value_ == rhs.value_;
+    }
+
+    bool isEqual(const UseHugePagesFlagTag& rhs) const
+    {
+        return value_ == rhs;
+    }
+
+    UseHugePagesFlagTag value() const noexcept
+    {
+        return value_;
+    }
+
+private:
+    UseHugePagesFlagTag value_;
 };
+
+inline bool operator==(const UseHugePagesFlag& lhs, const UseHugePagesFlag& rhs)
+{
+    return lhs.isEqual(rhs);
+}
+
+inline bool operator==(const UseHugePagesFlag& lhs, const UseHugePagesFlag::UseHugePagesFlagTag& rhs)
+{
+    return lhs.isEqual(rhs);
+}
+
+inline bool operator==(const UseHugePagesFlag::UseHugePagesFlagTag& lhs, const UseHugePagesFlag& rhs)
+{
+    return rhs.isEqual(lhs);
+}
 
 } // namespace pubsub_itc_fw

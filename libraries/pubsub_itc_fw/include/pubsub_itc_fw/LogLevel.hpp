@@ -11,7 +11,7 @@ namespace pubsub_itc_fw {
 
 class LogLevel {
   public:
-    enum LogLevelTag { Alert = 0, Critical = 1, Error = 2, Warning = 3, Notice = 4, Info = 5, Debug = 6 };
+    enum LogLevelTag { Alert = 0, Critical = 1, Error = 2, Warning = 3, Notice = 4, Info = 5, Debug = 6, Trace =7 };
 
     LogLevel(LogLevelTag LogLevel) : log_level_(LogLevel) {}
 

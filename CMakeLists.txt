@@ -150,7 +150,8 @@ add_library(pubsub_itc_fw_lib
     libraries/pubsub_itc_fw/src/Message.cpp
     libraries/pubsub_itc_fw/src/EventDistributor.cpp
     libraries/pubsub_itc_fw/src/ExpandablePoolAllocator.cpp
-    libraries/pubsub_itc_fw/src/Logger.cpp
+    #libraries/pubsub_itc_fw/src/Logger.cpp # TODO remove this is the quill logger
+    libraries/pubsub_itc_fw/src/QuillLogger.cpp
     libraries/pubsub_itc_fw/src/StringUtils.cpp
     libraries/pubsub_itc_fw/src/TcpAcceptor.cpp
     libraries/pubsub_itc_fw/src/TcpConnector.cpp

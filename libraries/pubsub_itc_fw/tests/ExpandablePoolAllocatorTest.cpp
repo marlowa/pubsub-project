@@ -10,11 +10,11 @@
 #include <gtest/gtest.h>           // Google Test framework
 
 #include <pubsub_itc_fw/ExpandablePoolAllocator.hpp>
-#include <pubsub_itc_fw/LoggerInterface.hpp>                 // For PUBSUB_LOG macro and LogLevel
+#include <pubsub_itc_fw/QuillLogger.hpp>
+#include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/LogLevel.hpp>
 #include <pubsub_itc_fw/PoolStatistics.hpp>
 #include <pubsub_itc_fw/UseHugePagesFlag.hpp>
-#include <pubsub_itc_fw/tests_common/UnitTestLogger.hpp> // For the new UnitTestLogger
 #include <pubsub_itc_fw/tests_common/LatencyRecorder.hpp>
 
 namespace pubsub_itc_fw::tests {
@@ -59,25 +59,25 @@ protected:
         huge_pages_error_callback_count_ = 0;
 
         // Corrected: Pass LogLevel::Info to the constructor of UnitTestLogger
-        unit_test_logger_ = std::make_unique<pubsub_itc_fw::tests_common::UnitTestLogger>(LogLevel::Info);
+        unit_test_logger_ = std::make_unique<pubsub_itc_fw::QuillLogger>();
     }
-    
+
     std::atomic<int> pool_exhausted_callback_count_;
     std::atomic<int> invalid_free_callback_count_;
     std::atomic<int> huge_pages_error_callback_count_;
-    std::unique_ptr<pubsub_itc_fw::tests_common::UnitTestLogger> unit_test_logger_;
+    std::unique_ptr<pubsub_itc_fw::QuillLogger> unit_test_logger_;
 
     // Callbacks for the allocator to use
     std::function<void(void*, int)> handler_for_pool_exhausted_ =
         [this](void* for_sender_client_use, int objects_per_pool) {
         this->pool_exhausted_callback_count_++;
     };
-    
+
     std::function<void(void*, void*)> handler_for_invalid_free_ =
         [this](void* for_receiver_client_use, void* object_to_deallocate) {
         this->invalid_free_callback_count_++;
     };
-    
+
     std::function<void(void*)> handler_for_huge_pages_error_ =
         [this](void* for_client_use) {
         this->huge_pages_error_callback_count_++;
@@ -88,11 +88,11 @@ TEST_F(ExpandablePoolAllocatorTest, BasicAllocationAndDeallocation) {
     const int objects_per_pool = 10;
     const int initial_pools = 1;
     const int expansion_threshold = 1;
-    
+
     ExpandablePoolAllocator<TestObject> allocator(
         *unit_test_logger_, "BasicTest", objects_per_pool, initial_pools, expansion_threshold,
         handler_for_pool_exhausted_, handler_for_invalid_free_, handler_for_huge_pages_error_,
-        UseHugePagesFlag::DoNotUseHugePages);
+        UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
 
     std::vector<TestObject*> allocated_objects;
     for (int i = 0; i < objects_per_pool; ++i) {
@@ -102,11 +102,11 @@ TEST_F(ExpandablePoolAllocatorTest, BasicAllocationAndDeallocation) {
     }
 
     EXPECT_EQ(TestObject::s_constructor_count.load(), objects_per_pool);
-    
+
     for (TestObject* obj : allocated_objects) {
         allocator.deallocate(obj);
     }
-    
+
     EXPECT_EQ(TestObject::s_destructor_count.load(), objects_per_pool);
 }
 
@@ -114,11 +114,11 @@ TEST_F(ExpandablePoolAllocatorTest, PoolExpansionOnExhaustion) {
     const int objects_per_pool = 5;
     const int initial_pools = 1;
     const int expansion_threshold = 2;
-    
+
     ExpandablePoolAllocator<TestObject> allocator(
         *unit_test_logger_, "ExpansionTest", objects_per_pool, initial_pools, expansion_threshold,
         handler_for_pool_exhausted_, handler_for_invalid_free_, handler_for_huge_pages_error_,
-        UseHugePagesFlag::DoNotUseHugePages);
+        UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
 
     std::vector<TestObject*> allocated_objects;
     for (int i = 0; i < objects_per_pool + 1; ++i) {
@@ -152,7 +152,7 @@ TEST_F(ExpandablePoolAllocatorTest, MaxChainLengthEnforcement)
         handler_for_pool_exhausted_,
         handler_for_invalid_free_,
         handler_for_huge_pages_error_,
-        UseHugePagesFlag::DoNotUseHugePages);
+        UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
 
     std::vector<int*> pointers;
     pointers.reserve(objects_per_pool);
@@ -212,7 +212,7 @@ TEST_F(ExpandablePoolAllocatorTest, ConcurrentAllocationAndDeallocation) {
     ExpandablePoolAllocator<TestObject> allocator(
         *unit_test_logger_, "ConcurrentTest", objects_per_pool, initial_pools, expansion_threshold,
         handler_for_pool_exhausted_, handler_for_invalid_free_, handler_for_huge_pages_error_,
-        UseHugePagesFlag::DoNotUseHugePages);
+        UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
 
     std::vector<std::thread> threads;
     std::vector<TestObject*> thread_safe_allocated_objects_ptr_list(total_threads * allocations_per_thread);
@@ -258,11 +258,11 @@ TEST_F(ExpandablePoolAllocatorTest, InvalidDeallocation) {
     const int objects_per_pool = 10;
     const int initial_pools = 1;
     const int expansion_threshold = 1;
-    
+
     ExpandablePoolAllocator<TestObject> allocator(
         *unit_test_logger_, "InvalidDeallocationTest", objects_per_pool, initial_pools, expansion_threshold,
         handler_for_pool_exhausted_, handler_for_invalid_free_, handler_for_huge_pages_error_,
-        UseHugePagesFlag::DoNotUseHugePages);
+        UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
 
     TestObject invalid_object;
     allocator.deallocate(&invalid_object);
@@ -278,7 +278,7 @@ TEST_F(ExpandablePoolAllocatorTest, HugePagesBehavior) {
     ExpandablePoolAllocator<TestObject> allocator_hp(
         *unit_test_logger_, "HugePagesTest", objects_per_pool, initial_pools, expansion_threshold,
         handler_for_pool_exhausted_, handler_for_invalid_free_, handler_for_huge_pages_error_,
-        UseHugePagesFlag::DoUseHugePages);
+        UseHugePagesFlag(UseHugePagesFlag::DoUseHugePages));
 
     EXPECT_GE(huge_pages_error_callback_count_.load(), 0);
 
@@ -286,7 +286,7 @@ TEST_F(ExpandablePoolAllocatorTest, HugePagesBehavior) {
     ExpandablePoolAllocator<TestObject> allocator_no_hp(
         *unit_test_logger_, "NoHugePagesTest", objects_per_pool, initial_pools, expansion_threshold,
         handler_for_pool_exhausted_, handler_for_invalid_free_, handler_for_huge_pages_error_,
-        UseHugePagesFlag::DoNotUseHugePages);
+        UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
 
     EXPECT_EQ(huge_pages_error_callback_count_.load(), 0);
 }
@@ -300,7 +300,7 @@ TEST_F(ExpandablePoolAllocatorTest, ThunderingHerdExpansionRace) {
     ExpandablePoolAllocator<TestObject> allocator(
         *unit_test_logger_, "RaceTest", objects_per_pool, initial_pools, expansion_threshold,
         handler_for_pool_exhausted_, handler_for_invalid_free_, handler_for_huge_pages_error_,
-        UseHugePagesFlag::DoNotUseHugePages);
+        UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
 
     std::vector<std::thread> threads;
     std::atomic<bool> start_gate{false};
@@ -343,7 +343,7 @@ TEST_F(ExpandablePoolAllocatorTest, ProducerConsumerStressTest) {
     ExpandablePoolAllocator<TestObject> allocator(
         *unit_test_logger_, "StressTest", objects_per_pool, initial_pools, expansion_threshold,
         handler_for_pool_exhausted_, handler_for_invalid_free_, handler_for_huge_pages_error_,
-        UseHugePagesFlag::DoNotUseHugePages);
+        UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
 
     std::vector<TestObject*> queue;
     std::mutex queue_mutex;
@@ -408,7 +408,7 @@ TEST_F(ExpandablePoolAllocatorTest, CacheLineContentionStress) {
     ExpandablePoolAllocator<TestObject> allocator(
         *unit_test_logger_, "ContentionTest", objects_per_pool, 1, 1,
         handler_for_pool_exhausted_, handler_for_invalid_free_, handler_for_huge_pages_error_,
-        UseHugePagesFlag::DoNotUseHugePages);
+        UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
 
     std::vector<std::thread> threads;
     for (int i = 0; i < num_threads; ++i) {
@@ -445,7 +445,7 @@ TEST_F(ExpandablePoolAllocatorTest, DeterministicThunderingHerdOrdering)
         handler_for_pool_exhausted_,
         handler_for_invalid_free_,
         handler_for_huge_pages_error_,
-        UseHugePagesFlag::DoNotUseHugePages);
+        UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
 
     const int thread_count = 8;
 
@@ -509,7 +509,7 @@ TEST_F(ExpandablePoolAllocatorTest, PoolCorrectnessAndReuse)
     ExpandablePoolAllocator<TestObject> allocator(
         *unit_test_logger_, "PoolCorrectness", objects_per_pool, initial_pools, expansion_threshold,
         handler_for_pool_exhausted_, handler_for_invalid_free_, handler_for_huge_pages_error_,
-        UseHugePagesFlag::DoNotUseHugePages);
+        UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
 
     std::vector<TestObject*> ptrs;
     ptrs.reserve(objects_per_pool);
@@ -556,7 +556,7 @@ TEST_F(ExpandablePoolAllocatorTest, DestructorReleasesAllObjects)
         ExpandablePoolAllocator<TestObject> allocator(
             *unit_test_logger_, "AllocatorDestruction", objects_per_pool, initial_pools, expansion_threshold,
             handler_for_pool_exhausted_, handler_for_invalid_free_, handler_for_huge_pages_error_,
-            UseHugePagesFlag::DoNotUseHugePages);
+            UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
 
         for (int i = 0; i < objects_per_pool; ++i) {
             TestObject *obj = allocator.allocate();
@@ -574,35 +574,35 @@ TEST_F(ExpandablePoolAllocatorTest, LatencyStressTest) {
     const int num_threads = 80;
     const int objects_per_pool = 1000;
     const int iterations = 100;
-    
-    // 1. Setup: Start with 1 initial pool to observe the transition 
+
+    // 1. Setup: Start with 1 initial pool to observe the transition
     // from steady-state to chained-state.
     ExpandablePoolAllocator<TestObject> allocator(
         *unit_test_logger_, "LatencyTest", objects_per_pool, 1, 10,
         handler_for_pool_exhausted_, handler_for_invalid_free_, handler_for_huge_pages_error_,
-        UseHugePagesFlag::DoNotUseHugePages);
+        UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
 
     LatencyRecorder alloc_recorder;
     LatencyRecorder dealloc_recorder;
 
     // 2. PRIMING / PRE-FILL: Saturated the first pool to 90% (900 objects).
-    // This establishes the 'Hot Buckets' (20-40ns) in a single-threaded 
+    // This establishes the 'Hot Buckets' (20-40ns) in a single-threaded
     // environment to prevent map-insertion race conditions/core dumps.
     std::vector<TestObject*> sentinel_objects;
     sentinel_objects.reserve(900);
-    
+
     for (int i = 0; i < 900; ++i) {
         auto start = std::chrono::high_resolution_clock::now();
         TestObject* obj = allocator.allocate();
         auto end = std::chrono::high_resolution_clock::now();
-        
+
         if (obj) {
             alloc_recorder.record(std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count());
             sentinel_objects.push_back(obj);
         }
     }
 
-    // 3. MULTI-THREADED STRESS: 80 threads fight for the remaining 100 slots 
+    // 3. MULTI-THREADED STRESS: 80 threads fight for the remaining 100 slots
     // in Pool 1, then trickle into Pool 2 and 3.
     std::vector<std::thread> threads;
     for (int i = 0; i < num_threads; ++i) {
@@ -612,12 +612,12 @@ TEST_F(ExpandablePoolAllocatorTest, LatencyStressTest) {
                 auto start = std::chrono::high_resolution_clock::now();
                 TestObject* obj = allocator.allocate();
                 auto end = std::chrono::high_resolution_clock::now();
-                
+
                 if (obj) {
                     alloc_recorder.record(std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count());
-                    
+
                     // Measure Deallocation
-                    // Since deallocate() is O(N) searching from head_pool_, 
+                    // Since deallocate() is O(N) searching from head_pool_,
                     // this will reveal the 'Search Tax' for chained pools.
                     start = std::chrono::high_resolution_clock::now();
                     allocator.deallocate(obj);
@@ -640,7 +640,7 @@ TEST_F(ExpandablePoolAllocatorTest, LatencyStressTest) {
     // 5. OUTPUT: Space-delimited for Python/Gnuplot/Unix scanning.
     alloc_recorder.dump_space_delimited("ALLOCATION");
     dealloc_recorder.dump_space_delimited("DEALLOCATION");
-    
+
     // Optional human-readable summary for console inspection
     alloc_recorder.dump_results("Allocation Summary");
 }
@@ -662,7 +662,7 @@ TEST_F(ExpandablePoolAllocatorTest, BehaviouralStatisticsStressTest)
         handler_for_pool_exhausted_,
         handler_for_invalid_free_,
         handler_for_huge_pages_error_,
-        UseHugePagesFlag::DoNotUseHugePages);
+        UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
 
     std::vector<std::thread> threads;
     threads.reserve(num_threads);

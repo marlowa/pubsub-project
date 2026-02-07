@@ -9,18 +9,14 @@
 #include <gtest/gtest.h>
 
 #include <pubsub_itc_fw/LogLevel.hpp>
-#include <pubsub_itc_fw/Logger.hpp>
+#include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 
 namespace {
 boost::filesystem::path test_log_dir_{boost::filesystem::temp_directory_path() / "logger_test"};
 
-pubsub_itc_fw::Logger test_logger(
-    pubsub_itc_fw::LogLevel::Debug,
-    test_log_dir_.string(),
-    "test.log",
-    pubsub_itc_fw::LoggerInterface::FilenameAppendMode::None,
-    0);
+pubsub_itc_fw::QuillLogger test_logger
+
 } // namespace
 
 namespace pubsub_itc_fw {

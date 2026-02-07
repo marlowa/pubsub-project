@@ -429,7 +429,7 @@ FixedSizeMemoryPool<T>::FixedSizeMemoryPool(int objects_per_pool, UseHugePagesFl
             handler_for_huge_pages_error(nullptr, total_pool_size_);
         }
 
-        use_huge_pages_flag_ = UseHugePagesFlag::DoNotUseHugePages;
+        use_huge_pages_flag_ = UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages);
         flags &= ~MAP_HUGETLB;
         pool_memory_ = mmap(nullptr, total_pool_size_, PROT_READ | PROT_WRITE, flags, -1, 0);
     }
