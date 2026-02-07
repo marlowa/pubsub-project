@@ -107,6 +107,8 @@ QuillLogger::QuillLogger(std::shared_ptr<quill::Sink> test_sink, LogLevel log_le
     );
 
     quill_logger_->set_log_level(LoggerUtils::to_quill_log_level(log_level));
+
+    quill_logger_->set_immediate_flush();
 }
 
 // -----------------------------------------------------------------------------
