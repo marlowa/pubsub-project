@@ -116,8 +116,8 @@ TEST_F(LoggerTest, theOneTest) {
     //
     // 4. Multiple messages + ordering (weak check)
     //
-    PUBSUB_LOG(test_logger, LogLevel::Info, "First message");
-    PUBSUB_LOG(test_logger, LogLevel::Info, "Second message");
+    PUBSUB_LOG_STR(test_logger, LogLevel::Info, "First message");
+    PUBSUB_LOG_STR(test_logger, LogLevel::Info, "Second message");
     test_logger.flush();
 
     auto [found3, content3] = findLogFileContent("test.log");
@@ -135,8 +135,8 @@ TEST_F(LoggerTest, theOneTest) {
     //
     test_logger.set_log_level(LogLevel::Warning);
 
-    PUBSUB_LOG(test_logger, LogLevel::Error, "Error message should be logged");
-    PUBSUB_LOG(test_logger, LogLevel::Info, "Info message should not be logged");
+    PUBSUB_LOG_STR(test_logger, LogLevel::Error, "Error message should be logged");
+    PUBSUB_LOG_STR(test_logger, LogLevel::Info, "Info message should not be logged");
 
     test_logger.flush();
 
@@ -152,7 +152,7 @@ TEST_F(LoggerTest, theOneTest) {
     test_logger.set_log_level(LogLevel::Info);
     test_logger.set_immediate_flush();
 
-    PUBSUB_LOG(test_logger, LogLevel::Info, "Immediate flush test");
+    PUBSUB_LOG_STR(test_logger, LogLevel::Info, "Immediate flush test");
 
     auto [found5, content5] = findLogFileContent("test.log");
     ASSERT_TRUE(found5);
