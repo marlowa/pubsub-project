@@ -92,8 +92,11 @@ class ApplicationThread {
      * @param[in] low_watermark The low watermark for the message queue.
      * @param[in] high_watermark The high watermark for the message queue.
      */
-    ApplicationThread(const LoggerInterface& logger, Reactor& reactor, const std::string& thread_name, ThreadID, thread_id, uint32_t low_watermark,
-                      uint32_t high_watermark);
+    ApplicationThread(const LoggerInterface& logger, Reactor& reactor,
+                      const std::string& thread_name, ThreadID thread_id,
+                      uint32_t low_watermark, uint32_t high_watermark,
+                      std::function<void(void* for_client_use)> gone_below_low_watermark_handler,
+                      std::function<void(void* for_client_use)> gone_above_high_watermark_handler);
 
     /**
      * Return the thread name, as a const ref to avoid copying
@@ -139,10 +142,10 @@ class ApplicationThread {
      * @brief Enqueues an event message to the thread's queue.
      *
      *
-     * @param[in] target_thread_name The name of the thread to post to
+     * @param[in] target_thread_id The id of the thread to post to
      * @param[in] message The message to enqueue, a discriminated union
      */
-    void post_message(const std::string& target_thread_name, const EventMessage& message);
+    void post_message(ThreadID target_thread_id, EventMessage message);
 
     /**
      * @brief Returns a reference to the thread's message queue.
@@ -204,6 +207,8 @@ class ApplicationThread {
 
     void shutdown(const std::string& reason);
 
+    bool is_running() const noexcept;
+
   protected:
     /**
      * This function is called by the wrapper 'run'. The work of 'run' is done here.
@@ -219,6 +224,8 @@ class ApplicationThread {
 
   private:
     const LoggerInterface& logger_;
+
+    Reactor& reactor_;
 
     /**
      * When the Reactor posts events to this thread, it notes the time the event started
@@ -242,6 +249,7 @@ class ApplicationThread {
     ThreadID thread_id_;
 
     std::atomic<bool> is_paused_{false};
+    std::atomic<bool> is_running_{false};
     std::atomic<bool> has_processed_initial_event_{false};
     LockFreeMessageQueue<EventMessage> message_queue_;
     std::unique_ptr<ThreadWithJoinTimeout> thread_;

@@ -2,14 +2,13 @@
 
 # Create the test executable for pubsub_itc_fw library
 add_executable(pubsub_itc_fw_tests
+    #ApplicationThreadTest.cpp
     ExpandablePoolAllocatorTest.cpp
     NumaAwarePoolAllocatorTest.cpp
     LockFreeMessageQueueTest.cpp
     LoggerTest.cpp
     StringUtilsTest.cpp
     ThreadWithJoinTimeoutTest.cpp
-    # Add other test files here as you create them
-    # MessageTest.cpp
 )
 
 # Link against the library being tested

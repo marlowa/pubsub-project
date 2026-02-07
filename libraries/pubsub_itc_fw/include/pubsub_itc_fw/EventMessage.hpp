@@ -60,11 +60,11 @@ private:
 
 public:
 
-    // Disallow copy and move operations to prevent unintended sharing of the raw pointer.
+    // Disallow copy, allow move
     EventMessage(const EventMessage&) = delete;
     EventMessage& operator=(const EventMessage&) = delete;
-    EventMessage(EventMessage&& other) noexcept = delete;
-    EventMessage& operator=(EventMessage&& other) noexcept = delete;
+    EventMessage(EventMessage&& other) noexcept = default;
+    EventMessage& operator=(EventMessage&& other) noexcept = default;
 
     /**
      * @brief Gets the ITC message subtype.

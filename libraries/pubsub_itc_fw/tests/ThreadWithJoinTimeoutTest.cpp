@@ -25,7 +25,7 @@ TEST_F(ThreadWithJoinTimeoutTest, JoinCompletesWithinTimeout) {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     });
 
-    const bool joined = t.joinWithTimeout(std::chrono::milliseconds(200));
+    const bool joined = t.join_with_timeout(std::chrono::milliseconds(200));
     EXPECT_TRUE(joined);
     EXPECT_FALSE(t.joinable());
 }
@@ -38,7 +38,7 @@ TEST_F(ThreadWithJoinTimeoutTest, JoinTimesOut) {
         std::this_thread::sleep_for(std::chrono::seconds(3));
     });
 
-    const bool joined = t.joinWithTimeout(std::chrono::milliseconds(100));
+    const bool joined = t.join_with_timeout(std::chrono::milliseconds(100));
     EXPECT_FALSE(joined);
     EXPECT_FALSE(t.joinable());
 }
@@ -51,7 +51,7 @@ TEST_F(ThreadWithJoinTimeoutTest, JoinTimesOutOnTrulyStuckThread) {
         p.get_future().wait();   // Block forever
     });
 
-    const bool joined = t.joinWithTimeout(std::chrono::milliseconds(100));
+    const bool joined = t.join_with_timeout(std::chrono::milliseconds(100));
     EXPECT_FALSE(joined);
     EXPECT_FALSE(t.joinable());
 
@@ -68,7 +68,7 @@ TEST_F(ThreadWithJoinTimeoutTest, DestructorSafeAfterTimeout) {
             std::this_thread::sleep_for(std::chrono::seconds(3));
         });
 
-        const bool joined = t.joinWithTimeout(std::chrono::milliseconds(100));
+        const bool joined = t.join_with_timeout(std::chrono::milliseconds(100));
         EXPECT_FALSE(joined);
         EXPECT_FALSE(t.joinable());
     }

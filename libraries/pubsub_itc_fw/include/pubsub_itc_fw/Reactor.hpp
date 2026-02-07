@@ -49,9 +49,12 @@ public:
 
     /**
      * @brief Initiates a graceful shutdown of the reactor and all threads.
+     *
+     * It is impure virtual so it can be overridden by a mock.
+     *
      * @param [in] reason The reason for the shutdown.
      */
-    void shutdown(const std::string& reason);
+    virtual void shutdown(const std::string& reason);
 
     /**
      * @brief Handles a SIGTERM signal to trigger shutdown.
@@ -78,11 +81,14 @@ public:
 
     /**
      * @brief Returns the name of a thread given its ID.
+     *
+     * It is impure virtual so it can be overridden by a mock.
+     *
      * @param [in] id The ID of the thread.
      * @returns std::string The name of the thread.
      * @throws PreconditionAssertion if the ThreadID is not found.
      */
-    std::string get_thread_name_from_id(ThreadID id) const;
+    virtual std::string get_thread_name_from_id(ThreadID id) const;
 
 private:
     void checkForInactiveThreads();

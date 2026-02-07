@@ -1,112 +1,63 @@
 #pragma once
 
-#include <string>  // For std::string
-#include <vector>  // For std::vector
-#include <atomic>  // For std::atomic
-#include <mutex>   // For std::mutex, std::lock_guard
+#include <string>
+#include <vector>
+#include <mutex>
 
-// Project headers
-#include <pubsub_itc_fw/LoggerInterface.hpp> // Base interface
-#include <pubsub_itc_fw/LogLevel.hpp>       // For LogLevel enum
-#include <quill/bundled/fmt/format.h>       // For fmt::format in PUBSUB_LOG macro
+#include <pubsub_itc_fw/LoggerInterface.hpp>
+#include <pubsub_itc_fw/LogLevel.hpp>
 
 namespace pubsub_itc_fw::tests_common {
 
-/**
- * @brief A simple in-memory logger for unit testing purposes.
- *
- * This logger captures log messages into a vector of strings, allowing unit
- * tests to easily inspect generated log output. It implements the
- * `LoggerInterface` and is designed to be self-contained for testing,
- * without relying on external logging frameworks like Quill for its operation.
- *
- * It uses a mutex to protect access to its internal log buffer, as it might
- * be used concurrently in multi-threaded tests, although its primary purpose
- * is for verifying single-threaded logging behavior or final aggregated logs.
- */
 class UnitTestLogger final : public LoggerInterface {
 public:
-    /**
-     * @brief Constructs a `UnitTestLogger` with a specified log level.
-     * @param[in] log_level The maximum log level that this logger will process.
-     */
-    explicit UnitTestLogger(LogLevel log_level);
+    explicit UnitTestLogger(LogLevel log_level)
+        : log_level_(log_level) {}
 
-    /**
-     * @brief Destructor for `UnitTestLogger`.
-     */
     ~UnitTestLogger() override = default;
 
-    // Deleted copy and move constructors/assignment operators to ensure
-    // unique ownership of resources (e.g., the log buffer).
     UnitTestLogger(const UnitTestLogger&) = delete;
     UnitTestLogger& operator=(const UnitTestLogger&) = delete;
     UnitTestLogger(UnitTestLogger&&) = delete;
     UnitTestLogger& operator=(UnitTestLogger&&) = delete;
 
-    /**
-     * @brief Checks if a given log level should be processed by this logger.
-     * @param[in] log_level The log level to check.
-     * @return `true` if `log_level` is less than or equal to the logger's configured level, `false` otherwise.
-     */
-    [[nodiscard]] bool should_log(LogLevel log_level) const override;
+    [[nodiscard]] bool should_log(LogLevel level) const override {
+        return level <= log_level_;
+    }
 
-    /**
-     * @brief Logs a formatted message.
-     *
-     * This method captures the formatted message into an internal buffer.
-     *
-     * @param[in] log_level The level of the log message.
-     * @param[in] filename The name of the source file where the log originated.
-     * @param[in] line_number The line number in the source file.
-     * @param[in] function_name The name of the function where the log originated.
-     */
-    void log(LogLevel log_level, const char* filename, int line_number, const char* function_name) const override;
+    void set_log_level(LogLevel level) override {
+        log_level_ = level;
+    }
 
-    /**
-     * @brief Returns a thread-local buffer (not used by `UnitTestLogger`).
-     *
-     * This method is part of `LoggerInterface` but is not actively used by
-     * `UnitTestLogger` for formatting, as it captures the final string.
-     * A dummy vector is returned.
-     * @return A reference to a dummy `std::vector<char>`.
-     */
-    [[nodiscard]] std::vector<char>& get_tls_buffer() const override;
+    void flush() const override {
+        // no-op
+    }
 
-    /**
-     * @brief Flushes any buffered messages (no-op for `UnitTestLogger`).
-     */
-    void flush() const override;
+    void set_immediate_flush() override {
+        // no-op
+    }
 
-    /**
-     * @brief Sets the new minimum log level for this logger.
-     * @param[in] log_level The new log level to set.
-     */
-    void set_log_level(LogLevel log_level) override;
+    // --- Test helpers --------------------------------------------------------
 
-    /**
-     * @brief Sets the logger to immediate flush mode (no-op for `UnitTestLogger`).
-     */
-    void set_immediate_flush() override;
+    void record(const std::string& msg) {
+        std::lock_guard<std::mutex> lock(log_mutex_);
+        logged_messages_.push_back(msg);
+    }
 
-    /**
-     * @brief Retrieves all captured log messages.
-     * @return A `std::vector<std::string>` containing all log messages in order.
-     */
-    [[nodiscard]] std::vector<std::string> get_logged_messages() const;
+    [[nodiscard]] std::vector<std::string> get_logged_messages() const {
+        std::lock_guard<std::mutex> lock(log_mutex_);
+        return logged_messages_;
+    }
 
-    /**
-     * @brief Clears all captured log messages from the internal buffer.
-     */
-    void clear_logged_messages();
+    void clear_logged_messages() {
+        std::lock_guard<std::mutex> lock(log_mutex_);
+        logged_messages_.clear();
+    }
 
 private:
-    LogLevel log_level_{LogLevel::Debug};            /**< @brief The current log level for this logger. */
-    mutable std::vector<std::string> logged_messages_; /**< @brief The in-memory buffer for captured log messages. */
-    mutable std::mutex log_mutex_;                   /**< @brief Mutex to protect `logged_messages_` during concurrent access. */
-
-    // Dummy buffer for get_tls_buffer, as it's required by interface but not used by this logger.
-    static thread_local std::vector<char> tls_dummy_buffer_;
+    LogLevel log_level_{LogLevel::Debug};
+    mutable std::mutex log_mutex_;
+    mutable std::vector<std::string> logged_messages_;
 };
 
-} // namespaces
+} // namespace pubsub_itc_fw::tests_common

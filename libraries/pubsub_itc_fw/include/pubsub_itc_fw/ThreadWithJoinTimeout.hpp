@@ -94,7 +94,7 @@ public:
      * @return true if the thread finished and was joined within the timeout.
      *         false if the timeout expired.
      */
-    [[nodiscard]] bool joinWithTimeout(std::chrono::milliseconds timeout) {
+    [[nodiscard]] bool join_with_timeout(std::chrono::milliseconds timeout) {
         if (!thread_.joinable()) {
             return true; // nothing to do
         }

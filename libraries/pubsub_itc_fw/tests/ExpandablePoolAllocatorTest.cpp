@@ -1,4 +1,3 @@
-#include <gtest/gtest.h>           // Google Test framework
 #include <atomic>                  // For std::atomic
 #include <functional>              // For std::function
 #include <memory>                  // For std::unique_ptr
@@ -7,6 +6,8 @@
 #include <vector>                  // For std::vector
 #include <random>                  // For std::shuffle
 #include <algorithm>               // For std::find
+
+#include <gtest/gtest.h>           // Google Test framework
 
 #include <pubsub_itc_fw/ExpandablePoolAllocator.hpp>
 #include <pubsub_itc_fw/LoggerInterface.hpp>                 // For PUBSUB_LOG macro and LogLevel
