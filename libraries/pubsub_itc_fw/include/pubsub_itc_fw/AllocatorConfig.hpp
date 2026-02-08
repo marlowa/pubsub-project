@@ -7,13 +7,9 @@
 
 namespace pubsub_itc_fw {
 
-class QuillLogger;
-
 class AllocatorConfig
 {
 public:
-    // Logging and identification
-    QuillLogger* logger{nullptr};
     std::string pool_name;
 
     // Pool sizing

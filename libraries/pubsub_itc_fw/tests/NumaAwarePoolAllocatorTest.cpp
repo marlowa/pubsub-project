@@ -9,7 +9,6 @@
 #include <algorithm>
 
 #include <pubsub_itc_fw/ExpandablePoolAllocator.hpp>
-#include <pubsub_itc_fw/QuillLogger.hpp>
 
 namespace pubsub_itc_fw::tests {
 
@@ -86,7 +85,6 @@ protected:
         pool_exhausted_callback_count_ = 0;
         invalid_free_callback_count_ = 0;
         huge_pages_error_callback_count_ = 0;
-        unit_test_logger_ = std::make_unique<pubsub_itc_fw::QuillLogger>();
     }
 
     struct TestObject {
@@ -107,7 +105,6 @@ protected:
     std::atomic<int> pool_exhausted_callback_count_{0};
     std::atomic<int> invalid_free_callback_count_{0};
     std::atomic<int> huge_pages_error_callback_count_{0};
-    std::unique_ptr<pubsub_itc_fw::QuillLogger> unit_test_logger_;
 
     std::function<void(void*, int)> handler_for_pool_exhausted_ =
         [this](void*, int) { this->pool_exhausted_callback_count_++; };
@@ -151,7 +148,7 @@ TEST_F(NumaAwarePoolAllocatorTest, NumaPinnedThunderingHerd) {
     const int max_pools = num_threads + 10;
 
     ExpandablePoolAllocator<TestObject> allocator(
-        *unit_test_logger_, "NumaPinnedTest", objects_per_pool, initial_pools, max_pools,
+        "NumaPinnedTest", objects_per_pool, initial_pools, max_pools,
         handler_for_pool_exhausted_, handler_for_invalid_free_, handler_for_huge_pages_error_,
         UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
 
@@ -221,7 +218,7 @@ TEST_F(NumaAwarePoolAllocatorTest, NumaPinnedContentionStress) {
     const int allocations_per_thread = 200;
 
     ExpandablePoolAllocator<TestObject> allocator(
-        *unit_test_logger_, "ContentionStress", objects_per_pool, initial_pools, max_pools,
+        "ContentionStress", objects_per_pool, initial_pools, max_pools,
         handler_for_pool_exhausted_, handler_for_invalid_free_, handler_for_huge_pages_error_,
         UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
 

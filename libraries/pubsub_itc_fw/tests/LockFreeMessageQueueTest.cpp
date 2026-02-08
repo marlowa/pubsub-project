@@ -98,7 +98,6 @@ void pin_current_thread_to_cpu(int cpu_index) {
 
 AllocatorConfig make_default_allocator_config() {
     AllocatorConfig cfg;
-    cfg.logger = nullptr; // tests do not use logging
     cfg.pool_name = "LockFreeMessageQueueTestPool";
     cfg.objects_per_pool = 1024;
     cfg.initial_pools = 1;

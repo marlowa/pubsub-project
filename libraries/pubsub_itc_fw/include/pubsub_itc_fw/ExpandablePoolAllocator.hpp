@@ -15,7 +15,6 @@
 #include <pubsub_itc_fw/CacheLine.hpp>
 #include <pubsub_itc_fw/FixedSizeMemoryPool.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
-#include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/PoolStatistics.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/UseHugePagesFlag.hpp>
@@ -129,7 +128,6 @@ template <typename T> class ExpandablePoolAllocator final {
     /**
      * @brief Constructs an expandable pool allocator.
      *
-     * @param[in] logger Logging interface for system events.
      * @param[in] pool_name Unique name for the pool (for statistics and logging).
      * @param[in] objects_per_pool Capacity of each individual pool.
      * @param[in] initial_pools Number of pools to pre-allocate at construction.
@@ -139,7 +137,7 @@ template <typename T> class ExpandablePoolAllocator final {
      * @param[in] handler_for_huge_pages_error Callback if huge page allocation fails.
      * @param[in] use_huge_pages_flag Whether to attempt 2MB huge page allocation.
      */
-    ExpandablePoolAllocator(QuillLogger& logger, std::string const& pool_name, int objects_per_pool, int initial_pools,
+    ExpandablePoolAllocator(std::string const& pool_name, int objects_per_pool, int initial_pools,
                             int expansion_threshold_hint,
                             std::function<void(void*, int)> handler_for_pool_exhausted,
                             std::function<void(void*, void*)> handler_for_invalid_free,
@@ -189,7 +187,6 @@ template <typename T> class ExpandablePoolAllocator final {
     static std::uintptr_t* get_flag_for_object(T* obj);
 
     std::string pool_name_;
-    QuillLogger& logger_;
     int objects_per_pool_;
     int initial_pools_;
     int expansion_threshold_hint_;
@@ -211,7 +208,7 @@ template <typename T> class ExpandablePoolAllocator final {
 };
 
 template <typename T>
-ExpandablePoolAllocator<T>::ExpandablePoolAllocator(QuillLogger& logger, std::string const& pool_name, //
+ExpandablePoolAllocator<T>::ExpandablePoolAllocator(std::string const& pool_name, //
                                                     int objects_per_pool, int initial_pools,
                                                     int expansion_threshold_hint, //
                                                     std::function<void(void*, int)> handler_for_pool_exhausted, //
@@ -219,7 +216,6 @@ ExpandablePoolAllocator<T>::ExpandablePoolAllocator(QuillLogger& logger, std::st
                                                     std::function<void(void*)> handler_for_huge_pages_error, //
                                                     UseHugePagesFlag use_huge_pages_flag)
     : pool_name_(pool_name)
-    , logger_(logger)
     , objects_per_pool_(objects_per_pool)
     , initial_pools_(initial_pools)
     , expansion_threshold_hint_(expansion_threshold_hint)

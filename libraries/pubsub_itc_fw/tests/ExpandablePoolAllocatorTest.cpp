@@ -90,7 +90,7 @@ TEST_F(ExpandablePoolAllocatorTest, BasicAllocationAndDeallocation) {
     const int expansion_threshold = 1;
 
     ExpandablePoolAllocator<TestObject> allocator(
-        *unit_test_logger_, "BasicTest", objects_per_pool, initial_pools, expansion_threshold,
+        "BasicTest", objects_per_pool, initial_pools, expansion_threshold,
         handler_for_pool_exhausted_, handler_for_invalid_free_, handler_for_huge_pages_error_,
         UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
 
@@ -116,7 +116,7 @@ TEST_F(ExpandablePoolAllocatorTest, PoolExpansionOnExhaustion) {
     const int expansion_threshold = 2;
 
     ExpandablePoolAllocator<TestObject> allocator(
-        *unit_test_logger_, "ExpansionTest", objects_per_pool, initial_pools, expansion_threshold,
+        "ExpansionTest", objects_per_pool, initial_pools, expansion_threshold,
         handler_for_pool_exhausted_, handler_for_invalid_free_, handler_for_huge_pages_error_,
         UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
 
@@ -144,7 +144,6 @@ TEST_F(ExpandablePoolAllocatorTest, MaxChainLengthEnforcement)
     const int expansion_threshold = 1;
 
     ExpandablePoolAllocator<int> allocator(
-        *unit_test_logger_,
         "MaxChainLengthEnforcement",
         objects_per_pool,
         initial_pools,
@@ -210,7 +209,7 @@ TEST_F(ExpandablePoolAllocatorTest, ConcurrentAllocationAndDeallocation) {
     const int allocations_per_thread = 20;
 
     ExpandablePoolAllocator<TestObject> allocator(
-        *unit_test_logger_, "ConcurrentTest", objects_per_pool, initial_pools, expansion_threshold,
+        "ConcurrentTest", objects_per_pool, initial_pools, expansion_threshold,
         handler_for_pool_exhausted_, handler_for_invalid_free_, handler_for_huge_pages_error_,
         UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
 
@@ -260,7 +259,7 @@ TEST_F(ExpandablePoolAllocatorTest, InvalidDeallocation) {
     const int expansion_threshold = 1;
 
     ExpandablePoolAllocator<TestObject> allocator(
-        *unit_test_logger_, "InvalidDeallocationTest", objects_per_pool, initial_pools, expansion_threshold,
+        "InvalidDeallocationTest", objects_per_pool, initial_pools, expansion_threshold,
         handler_for_pool_exhausted_, handler_for_invalid_free_, handler_for_huge_pages_error_,
         UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
 
@@ -276,7 +275,7 @@ TEST_F(ExpandablePoolAllocatorTest, HugePagesBehavior) {
     const int expansion_threshold = 1;
 
     ExpandablePoolAllocator<TestObject> allocator_hp(
-        *unit_test_logger_, "HugePagesTest", objects_per_pool, initial_pools, expansion_threshold,
+        "HugePagesTest", objects_per_pool, initial_pools, expansion_threshold,
         handler_for_pool_exhausted_, handler_for_invalid_free_, handler_for_huge_pages_error_,
         UseHugePagesFlag(UseHugePagesFlag::DoUseHugePages));
 
@@ -284,7 +283,7 @@ TEST_F(ExpandablePoolAllocatorTest, HugePagesBehavior) {
 
     huge_pages_error_callback_count_ = 0;
     ExpandablePoolAllocator<TestObject> allocator_no_hp(
-        *unit_test_logger_, "NoHugePagesTest", objects_per_pool, initial_pools, expansion_threshold,
+        "NoHugePagesTest", objects_per_pool, initial_pools, expansion_threshold,
         handler_for_pool_exhausted_, handler_for_invalid_free_, handler_for_huge_pages_error_,
         UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
 
@@ -298,7 +297,7 @@ TEST_F(ExpandablePoolAllocatorTest, ThunderingHerdExpansionRace) {
     const int num_threads = 80;
 
     ExpandablePoolAllocator<TestObject> allocator(
-        *unit_test_logger_, "RaceTest", objects_per_pool, initial_pools, expansion_threshold,
+        "RaceTest", objects_per_pool, initial_pools, expansion_threshold,
         handler_for_pool_exhausted_, handler_for_invalid_free_, handler_for_huge_pages_error_,
         UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
 
@@ -341,7 +340,7 @@ TEST_F(ExpandablePoolAllocatorTest, ProducerConsumerStressTest) {
     const int items_per_producer = 1000;
 
     ExpandablePoolAllocator<TestObject> allocator(
-        *unit_test_logger_, "StressTest", objects_per_pool, initial_pools, expansion_threshold,
+        "StressTest", objects_per_pool, initial_pools, expansion_threshold,
         handler_for_pool_exhausted_, handler_for_invalid_free_, handler_for_huge_pages_error_,
         UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
 
@@ -406,7 +405,7 @@ TEST_F(ExpandablePoolAllocatorTest, CacheLineContentionStress) {
     const int iterations = 5000;
 
     ExpandablePoolAllocator<TestObject> allocator(
-        *unit_test_logger_, "ContentionTest", objects_per_pool, 1, 1,
+        "ContentionTest", objects_per_pool, 1, 1,
         handler_for_pool_exhausted_, handler_for_invalid_free_, handler_for_huge_pages_error_,
         UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
 
@@ -437,7 +436,6 @@ TEST_F(ExpandablePoolAllocatorTest, DeterministicThunderingHerdOrdering)
     const int expansion_threshold = 1;
 
     ExpandablePoolAllocator<int> allocator(
-        *unit_test_logger_,
         "DeterministicThunderingHerdOrdering",
         objects_per_pool,
         initial_pools,
@@ -507,7 +505,7 @@ TEST_F(ExpandablePoolAllocatorTest, PoolCorrectnessAndReuse)
     const int expansion_threshold = 1;
 
     ExpandablePoolAllocator<TestObject> allocator(
-        *unit_test_logger_, "PoolCorrectness", objects_per_pool, initial_pools, expansion_threshold,
+        "PoolCorrectness", objects_per_pool, initial_pools, expansion_threshold,
         handler_for_pool_exhausted_, handler_for_invalid_free_, handler_for_huge_pages_error_,
         UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
 
@@ -554,7 +552,7 @@ TEST_F(ExpandablePoolAllocatorTest, DestructorReleasesAllObjects)
 
     {
         ExpandablePoolAllocator<TestObject> allocator(
-            *unit_test_logger_, "AllocatorDestruction", objects_per_pool, initial_pools, expansion_threshold,
+            "AllocatorDestruction", objects_per_pool, initial_pools, expansion_threshold,
             handler_for_pool_exhausted_, handler_for_invalid_free_, handler_for_huge_pages_error_,
             UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
 
@@ -578,7 +576,7 @@ TEST_F(ExpandablePoolAllocatorTest, LatencyStressTest) {
     // 1. Setup: Start with 1 initial pool to observe the transition
     // from steady-state to chained-state.
     ExpandablePoolAllocator<TestObject> allocator(
-        *unit_test_logger_, "LatencyTest", objects_per_pool, 1, 10,
+        "LatencyTest", objects_per_pool, 1, 10,
         handler_for_pool_exhausted_, handler_for_invalid_free_, handler_for_huge_pages_error_,
         UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
 
@@ -654,7 +652,6 @@ TEST_F(ExpandablePoolAllocatorTest, BehaviouralStatisticsStressTest)
     const int expansion_threshold = 1;
 
     ExpandablePoolAllocator<TestObject> allocator(
-        *unit_test_logger_,
         "BehaviourStatsTest",
         objects_per_pool,
         initial_pools,

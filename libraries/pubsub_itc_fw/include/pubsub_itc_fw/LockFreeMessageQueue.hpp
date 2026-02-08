@@ -59,8 +59,7 @@ public:
         , tail_(&stub_)
         , queue_config_(queue_config)
         , allocator_config_(allocator_config)
-        , node_allocator_(*allocator_config_.logger,
-                          allocator_config_.pool_name,
+        , node_allocator_(allocator_config_.pool_name,
                           allocator_config_.objects_per_pool,
                           allocator_config_.initial_pools,
                           allocator_config_.expansion_threshold_hint,
