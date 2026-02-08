@@ -4,6 +4,8 @@
 #include <string>
 #include <mutex>
 
+#include <iostream> // HACK
+
 #include <quill/sinks/Sink.h>
 #include <quill/core/LogLevel.h>
 
@@ -35,7 +37,11 @@ public:
         {}
     };
 
+#if 0
     TestSink() = default;
+#else
+    TestSink() { std::fprintf(stderr, "TestSink::CTOR this=%p\n", static_cast<void*>(this)); }
+#endif
 
     /**
      * @brief Called by Quill backend to write a log record
@@ -53,6 +59,19 @@ public:
                    std::string_view log_message,
                    std::string_view log_statement) override
     {
+#if 1
+    std::fprintf(stderr, "TestSink::write_log CALLED: %s\n", std::string{log_message}.c_str());
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    records_.emplace_back(
+        log_level,
+        std::string{logger_name},
+        std::string{log_message},
+        std::string{thread_id},
+        log_timestamp
+    );
+    std::fprintf(stderr, "TestSink::write_log this=%p message=%.*s size=%zu\n", static_cast<void*>(this), static_cast<int>(log_message.size()), log_message.data(), records_.size());
+#else
         std::lock_guard<std::mutex> lock(mutex_);
 
         records_.emplace_back(
@@ -62,6 +81,7 @@ public:
             std::string{thread_id},
             log_timestamp
         );
+#endif
     }
 
     /**
@@ -86,7 +106,12 @@ public:
      */
     size_t count() const {
         std::lock_guard<std::mutex> lock(mutex_);
+#if 0
         return records_.size();
+#else
+    std::fprintf(stderr, "TestSink::count this=%p size=%zu\n", static_cast<const void*>(this), records_.size());
+    return records_.size();
+#endif
     }
 
     /**
@@ -94,6 +119,7 @@ public:
      */
     void clear() {
         std::lock_guard<std::mutex> lock(mutex_);
+ std::fprintf(stderr, "TestSink::clear this=%p (before size=%zu)\n", static_cast<void*>(this), records_.size());
         records_.clear();
     }
 

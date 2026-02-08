@@ -19,7 +19,7 @@ class QuillLogger {
 public:
     ~QuillLogger() = default;
 
-    explicit QuillLogger(const std::string& file_path,
+    QuillLogger(const std::string& file_path,
                          FileOpenMode file_mode,
                          LogLevel file_level,
                          LogLevel syslog_level,
@@ -27,12 +27,7 @@ public:
 
     explicit QuillLogger(); // for unit tests
 
-    /**
-     * @brief Constructor for unit tests with custom sink
-     * @param test_sink Custom sink for capturing log records
-     * @param log_level Log level to set
-     */
-    explicit QuillLogger(std::shared_ptr<quill::Sink> test_sink,
+    QuillLogger(const std::string& logger_name, std::shared_ptr<quill::Sink> test_sink,
                          LogLevel log_level = LogLevel::Debug);
 
     quill::Logger* quill_logger() const noexcept { return quill_logger_; }

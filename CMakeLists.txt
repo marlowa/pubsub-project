@@ -147,10 +147,12 @@ add_library(pubsub_itc_fw_lib
     ${PROTO_SRCS} # Generated .pb.cc files
     libraries/pubsub_itc_fw/src/ApplicationThread.cpp
     libraries/pubsub_itc_fw/src/InetAddress.cpp
+    libraries/pubsub_itc_fw/src/EventMessage.cpp
     libraries/pubsub_itc_fw/src/Message.cpp
     libraries/pubsub_itc_fw/src/EventDistributor.cpp
     libraries/pubsub_itc_fw/src/ExpandablePoolAllocator.cpp
     libraries/pubsub_itc_fw/src/QuillLogger.cpp
+    libraries/pubsub_itc_fw/src/Reactor.cpp
     libraries/pubsub_itc_fw/src/StringUtils.cpp
     libraries/pubsub_itc_fw/src/TcpAcceptor.cpp
     libraries/pubsub_itc_fw/src/TcpConnector.cpp

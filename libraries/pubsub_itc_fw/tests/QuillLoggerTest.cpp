@@ -17,26 +17,29 @@ using namespace pubsub_itc_fw;
  */
 class QuillLoggerTest : public ::testing::Test {
 protected:
-    void SetUp() override {
-        // Create test sink to capture log records
-        test_sink_ = quill::Frontend::create_or_get_sink<TestSink>("test_sink");
 
-        // Get raw pointer to TestSink for assertions
+    QuillLoggerTest() {
+        // Generate a unique name for this specific test case
+        std::string unique_name = ::testing::UnitTest::GetInstance()->current_test_info()->name();
+
+        test_sink_ = quill::Frontend::create_or_get_sink<TestSink>("quill_logger_test_sink");
         test_sink_ptr_ = static_cast<TestSink*>(test_sink_.get());
+        test_sink_->set_log_level_filter(quill::LogLevel::TraceL3);
+        test_sink_ptr_->clear();
 
+        // This forces Quill to create a brand new logger attached to YOUR sink
+        logger_ = std::make_unique<QuillLogger>(unique_name, test_sink_, LogLevel::Debug);
+    }
+
+    void SetUp() override {
         // Clear any previous records
         test_sink_ptr_->clear();
     }
 
-    void TearDown() override {
-        // Give Quill backend time to process async logs
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-        // TODO we do not flush any more due to quill v11 changes
-    }
-
     std::shared_ptr<quill::Sink> test_sink_;
     TestSink* test_sink_ptr_{nullptr};
+    std::unique_ptr<QuillLogger> logger_;
+
 };
 
 // =============================================================================
@@ -45,10 +48,10 @@ protected:
 
 TEST_F(QuillLoggerTest, LogsDebugMessage) {
     // Arrange
-    QuillLogger logger(test_sink_, LogLevel::Debug);
+    logger_->set_log_level(LogLevel::Debug);
 
     // Act
-    PUBSUB_LOG_STR(logger, LogLevel::Debug, "Debug message");
+    PUBSUB_LOG_STR(*logger_, LogLevel::Debug, "Debug message");
 
     // Assert
     ASSERT_EQ(test_sink_ptr_->count(), 1);
@@ -58,10 +61,10 @@ TEST_F(QuillLoggerTest, LogsDebugMessage) {
 
 TEST_F(QuillLoggerTest, LogsInfoMessage) {
     // Arrange
-    QuillLogger logger(test_sink_, LogLevel::Info);
+    logger_->set_log_level(LogLevel::Info);
 
     // Act
-    PUBSUB_LOG_STR(logger, LogLevel::Info, "Info message");
+    PUBSUB_LOG_STR(*logger_, LogLevel::Info, "Info message");
 
     // Assert
     ASSERT_EQ(test_sink_ptr_->count(), 1);
@@ -71,10 +74,10 @@ TEST_F(QuillLoggerTest, LogsInfoMessage) {
 
 TEST_F(QuillLoggerTest, LogsWarningMessage) {
     // Arrange
-    QuillLogger logger(test_sink_, LogLevel::Warning);
+    logger_->set_log_level(LogLevel::Warning);
 
     // Act
-    PUBSUB_LOG_STR(logger, LogLevel::Warning, "Warning message");
+    PUBSUB_LOG_STR(*logger_, LogLevel::Warning, "Warning message");
 
     // Assert
     ASSERT_EQ(test_sink_ptr_->count(), 1);
@@ -84,10 +87,10 @@ TEST_F(QuillLoggerTest, LogsWarningMessage) {
 
 TEST_F(QuillLoggerTest, LogsErrorMessage) {
     // Arrange
-    QuillLogger logger(test_sink_, LogLevel::Error);
+    logger_->set_log_level(LogLevel::Error);
 
     // Act
-    PUBSUB_LOG_STR(logger, LogLevel::Error, "Error message");
+    PUBSUB_LOG_STR(*logger_, LogLevel::Error, "Error message");
 
     // Assert
     ASSERT_EQ(test_sink_ptr_->count(), 1);
@@ -97,10 +100,10 @@ TEST_F(QuillLoggerTest, LogsErrorMessage) {
 
 TEST_F(QuillLoggerTest, LogsCriticalMessage) {
     // Arrange
-    QuillLogger logger(test_sink_, LogLevel::Critical);
+    logger_->set_log_level(LogLevel::Critical);
 
     // Act
-    PUBSUB_LOG_STR(logger, LogLevel::Critical, "Critical message");
+    PUBSUB_LOG_STR(*logger_, LogLevel::Critical, "Critical message");
 
     // Assert
     ASSERT_EQ(test_sink_ptr_->count(), 1);
@@ -110,10 +113,10 @@ TEST_F(QuillLoggerTest, LogsCriticalMessage) {
 
 TEST_F(QuillLoggerTest, LogsAlertMessage) {
     // Arrange
-    QuillLogger logger(test_sink_, LogLevel::Alert);
+    logger_->set_log_level(LogLevel::Alert);
 
     // Act
-    PUBSUB_LOG_STR(logger, LogLevel::Alert, "Alert message");
+    PUBSUB_LOG_STR(*logger_, LogLevel::Alert, "Alert message");
 
     // Assert
     ASSERT_EQ(test_sink_ptr_->count(), 1);
@@ -128,11 +131,11 @@ TEST_F(QuillLoggerTest, LogsAlertMessage) {
 
 TEST_F(QuillLoggerTest, LogsFormattedMessageWithInteger) {
     // Arrange
-    QuillLogger logger(test_sink_, LogLevel::Info);
+    logger_->set_log_level(LogLevel::Info);
     int value = 42;
 
     // Act
-    PUBSUB_LOG(logger, LogLevel::Info, "Value is {}", value);
+    PUBSUB_LOG(*logger_, LogLevel::Info, "Value is {}", value);
 
     // Assert
     ASSERT_EQ(test_sink_ptr_->count(), 1);
@@ -141,11 +144,11 @@ TEST_F(QuillLoggerTest, LogsFormattedMessageWithInteger) {
 
 TEST_F(QuillLoggerTest, LogsFormattedMessageWithString) {
     // Arrange
-    QuillLogger logger(test_sink_, LogLevel::Info);
+    logger_->set_log_level(LogLevel::Info);
     std::string name = "Alice";
 
     // Act
-    PUBSUB_LOG(logger, LogLevel::Info, "Hello {}", name);
+    PUBSUB_LOG(*logger_, LogLevel::Info, "Hello {}", name);
 
     // Assert
     ASSERT_EQ(test_sink_ptr_->count(), 1);
@@ -154,10 +157,10 @@ TEST_F(QuillLoggerTest, LogsFormattedMessageWithString) {
 
 TEST_F(QuillLoggerTest, LogsFormattedMessageWithMultipleArgs) {
     // Arrange
-    QuillLogger logger(test_sink_, LogLevel::Info);
+    logger_->set_log_level(LogLevel::Info);
 
     // Act
-    PUBSUB_LOG(logger, LogLevel::Info, "User {} has {} points", "Bob", 100);
+    PUBSUB_LOG(*logger_, LogLevel::Info, "User {} has {} points", "Bob", 100);
 
     // Assert
     ASSERT_EQ(test_sink_ptr_->count(), 1);
@@ -166,10 +169,10 @@ TEST_F(QuillLoggerTest, LogsFormattedMessageWithMultipleArgs) {
 
 TEST_F(QuillLoggerTest, LogsStringWithPUBSUB_LOG_STR) {
     // Arrange
-    QuillLogger logger(test_sink_, LogLevel::Info);
+    logger_->set_log_level(LogLevel::Info);
 
     // Act
-    PUBSUB_LOG_STR(logger, LogLevel::Info, "Simple string message");
+    PUBSUB_LOG_STR(*logger_, LogLevel::Info, "Simple string message");
 
     // Assert
     ASSERT_EQ(test_sink_ptr_->count(), 1);
@@ -182,11 +185,11 @@ TEST_F(QuillLoggerTest, LogsStringWithPUBSUB_LOG_STR) {
 
 TEST_F(QuillLoggerTest, FiltersDebugWhenLevelIsInfo) {
     // Arrange
-    QuillLogger logger(test_sink_, LogLevel::Info);
+    logger_->set_log_level(LogLevel::Info);
 
     // Act
-    PUBSUB_LOG_STR(logger, LogLevel::Debug, "Debug message - should be filtered");
-    PUBSUB_LOG_STR(logger, LogLevel::Info, "Info message - should appear");
+    PUBSUB_LOG_STR(*logger_, LogLevel::Debug, "Debug message - should be filtered");
+    PUBSUB_LOG_STR(*logger_, LogLevel::Info, "Info message - should appear");
 
     // Assert
     ASSERT_EQ(test_sink_ptr_->count(), 1);
@@ -196,11 +199,11 @@ TEST_F(QuillLoggerTest, FiltersDebugWhenLevelIsInfo) {
 
 TEST_F(QuillLoggerTest, FiltersInfoWhenLevelIsWarning) {
     // Arrange
-    QuillLogger logger(test_sink_, LogLevel::Warning);
+    logger_->set_log_level(LogLevel::Warning);
 
     // Act
-    PUBSUB_LOG_STR(logger, LogLevel::Info, "Info - filtered");
-    PUBSUB_LOG_STR(logger, LogLevel::Warning, "Warning - appears");
+    PUBSUB_LOG_STR(*logger_, LogLevel::Info, "Info - filtered");
+    PUBSUB_LOG_STR(*logger_, LogLevel::Warning, "Warning - appears");
 
     // Assert
     ASSERT_EQ(test_sink_ptr_->count(), 1);
@@ -209,11 +212,11 @@ TEST_F(QuillLoggerTest, FiltersInfoWhenLevelIsWarning) {
 
 TEST_F(QuillLoggerTest, FiltersWarningWhenLevelIsError) {
     // Arrange
-    QuillLogger logger(test_sink_, LogLevel::Error);
+    logger_->set_log_level(LogLevel::Error);
 
     // Act
-    PUBSUB_LOG_STR(logger, LogLevel::Warning, "Warning - filtered");
-    PUBSUB_LOG_STR(logger, LogLevel::Error, "Error - appears");
+    PUBSUB_LOG_STR(*logger_, LogLevel::Warning, "Warning - filtered");
+    PUBSUB_LOG_STR(*logger_, LogLevel::Error, "Error - appears");
 
     // Assert
     ASSERT_EQ(test_sink_ptr_->count(), 1);
@@ -222,14 +225,14 @@ TEST_F(QuillLoggerTest, FiltersWarningWhenLevelIsError) {
 
 TEST_F(QuillLoggerTest, LogsAllLevelsWhenSetToDebug) {
     // Arrange
-    QuillLogger logger(test_sink_, LogLevel::Debug);
+    logger_->set_log_level(LogLevel::Debug);
 
     // Act
-    PUBSUB_LOG_STR(logger, LogLevel::Debug, "Debug");
-    PUBSUB_LOG_STR(logger, LogLevel::Info, "Info");
-    PUBSUB_LOG_STR(logger, LogLevel::Warning, "Warning");
-    PUBSUB_LOG_STR(logger, LogLevel::Error, "Error");
-    PUBSUB_LOG_STR(logger, LogLevel::Critical, "Critical");
+    PUBSUB_LOG_STR(*logger_, LogLevel::Debug, "Debug");
+    PUBSUB_LOG_STR(*logger_, LogLevel::Info, "Info");
+    PUBSUB_LOG_STR(*logger_, LogLevel::Warning, "Warning");
+    PUBSUB_LOG_STR(*logger_, LogLevel::Error, "Error");
+    PUBSUB_LOG_STR(*logger_, LogLevel::Critical, "Critical");
 
     // Assert
     EXPECT_EQ(test_sink_ptr_->count(), 5);
@@ -246,17 +249,17 @@ TEST_F(QuillLoggerTest, LogsAllLevelsWhenSetToDebug) {
 
 TEST_F(QuillLoggerTest, ChangesLogLevelDynamically) {
     // Arrange
-    QuillLogger logger(test_sink_, LogLevel::Info);
+    logger_->set_log_level(LogLevel::Info);
 
     // Act - first log at Info level
-    PUBSUB_LOG_STR(logger, LogLevel::Debug, "Debug 1 - filtered");
-    PUBSUB_LOG_STR(logger, LogLevel::Info, "Info 1 - appears");
+    PUBSUB_LOG_STR(*logger_, LogLevel::Debug, "Debug 1 - filtered");
+    PUBSUB_LOG_STR(*logger_, LogLevel::Info, "Info 1 - appears");
 
     // Change to Debug level
-    logger.set_log_level(LogLevel::Debug);
+    logger_->set_log_level(LogLevel::Debug);
 
-    PUBSUB_LOG_STR(logger, LogLevel::Debug, "Debug 2 - appears");
-    PUBSUB_LOG_STR(logger, LogLevel::Info, "Info 2 - appears");
+    PUBSUB_LOG_STR(*logger_, LogLevel::Debug, "Debug 2 - appears");
+    PUBSUB_LOG_STR(*logger_, LogLevel::Info, "Info 2 - appears");
 
     // Assert
     EXPECT_EQ(test_sink_ptr_->count(), 3);
@@ -272,15 +275,15 @@ TEST_F(QuillLoggerTest, ChangesLogLevelDynamically) {
 
 TEST_F(QuillLoggerTest, LogsMultipleMessagesInSequence) {
     // Arrange
-    QuillLogger logger(test_sink_, LogLevel::Info);
+    logger_->set_log_level(LogLevel::Info);
 
     // Act
-    PUBSUB_LOG_STR(logger, LogLevel::Info, "Message 1");
-    PUBSUB_LOG_STR(logger, LogLevel::Info, "Message 2");
-    PUBSUB_LOG_STR(logger, LogLevel::Info, "Message 3");
+    PUBSUB_LOG_STR(*logger_, LogLevel::Info, "Message 1");
+    PUBSUB_LOG_STR(*logger_, LogLevel::Info, "Message 2");
+    PUBSUB_LOG_STR(*logger_, LogLevel::Info, "Message 3");
 
     // Assert
-    EXPECT_EQ(test_sink_ptr_->count(), 3);
+    ASSERT_EQ(test_sink_ptr_->count(), 3);
     const auto& records = test_sink_ptr_->records();
     EXPECT_TRUE(records[0].message.find("Message 1") != std::string::npos);
     EXPECT_TRUE(records[1].message.find("Message 2") != std::string::npos);
@@ -293,36 +296,36 @@ TEST_F(QuillLoggerTest, LogsMultipleMessagesInSequence) {
 
 TEST_F(QuillLoggerTest, ShouldLogToFileRespectsLevel) {
     // Arrange
-    QuillLogger logger(test_sink_, LogLevel::Info);
+    logger_->set_log_level(LogLevel::Info);
 
     // Assert
-    EXPECT_TRUE(logger.should_log_to_file(LogLevel::Error));
-    EXPECT_TRUE(logger.should_log_to_file(LogLevel::Warning));
-    EXPECT_TRUE(logger.should_log_to_file(LogLevel::Info));
-    EXPECT_FALSE(logger.should_log_to_file(LogLevel::Debug));
+    EXPECT_TRUE(logger_->should_log_to_file(LogLevel::Error));
+    EXPECT_TRUE(logger_->should_log_to_file(LogLevel::Warning));
+    EXPECT_TRUE(logger_->should_log_to_file(LogLevel::Info));
+    EXPECT_FALSE(logger_->should_log_to_file(LogLevel::Debug));
 }
 
 TEST_F(QuillLoggerTest, ShouldLogToConsoleRespectsLevel) {
     // Arrange
-    QuillLogger logger(test_sink_, LogLevel::Warning);
+    logger_->set_log_level(LogLevel::Warning);
 
     // Assert
-    EXPECT_TRUE(logger.should_log_to_console(LogLevel::Critical));
-    EXPECT_TRUE(logger.should_log_to_console(LogLevel::Error));
-    EXPECT_TRUE(logger.should_log_to_console(LogLevel::Warning));
-    EXPECT_FALSE(logger.should_log_to_console(LogLevel::Info));
-    EXPECT_FALSE(logger.should_log_to_console(LogLevel::Debug));
+    EXPECT_TRUE(logger_->should_log_to_console(LogLevel::Critical));
+    EXPECT_TRUE(logger_->should_log_to_console(LogLevel::Error));
+    EXPECT_TRUE(logger_->should_log_to_console(LogLevel::Warning));
+    EXPECT_FALSE(logger_->should_log_to_console(LogLevel::Info));
+    EXPECT_FALSE(logger_->should_log_to_console(LogLevel::Debug));
 }
 
 TEST_F(QuillLoggerTest, ShouldLogToSyslogRespectsLevel) {
     // Arrange
-    QuillLogger logger(test_sink_, LogLevel::Error);
+    logger_->set_log_level(LogLevel::Error);
 
     // Assert
-    EXPECT_TRUE(logger.should_log_to_syslog(LogLevel::Critical));
-    EXPECT_TRUE(logger.should_log_to_syslog(LogLevel::Error));
-    EXPECT_FALSE(logger.should_log_to_syslog(LogLevel::Warning));
-    EXPECT_FALSE(logger.should_log_to_syslog(LogLevel::Info));
+    EXPECT_TRUE(logger_->should_log_to_syslog(LogLevel::Critical));
+    EXPECT_TRUE(logger_->should_log_to_syslog(LogLevel::Error));
+    EXPECT_FALSE(logger_->should_log_to_syslog(LogLevel::Warning));
+    EXPECT_FALSE(logger_->should_log_to_syslog(LogLevel::Info));
 }
 
 // =============================================================================
@@ -331,19 +334,19 @@ TEST_F(QuillLoggerTest, ShouldLogToSyslogRespectsLevel) {
 
 TEST_F(QuillLoggerTest, ReturnsCorrectLogLevel) {
     // Arrange & Act
-    QuillLogger logger(test_sink_, LogLevel::Warning);
+    logger_->set_log_level(LogLevel::Warning);
 
     // Assert
-    EXPECT_EQ(logger.log_level(), LogLevel::Warning);
+    EXPECT_EQ(logger_->log_level(), LogLevel::Warning);
 }
 
 TEST_F(QuillLoggerTest, ReturnsUpdatedLogLevelAfterChange) {
     // Arrange
-    QuillLogger logger(test_sink_, LogLevel::Info);
+    logger_->set_log_level(LogLevel::Info);
 
     // Act
-    logger.set_log_level(LogLevel::Error);
+    logger_->set_log_level(LogLevel::Error);
 
     // Assert
-    EXPECT_EQ(logger.log_level(), LogLevel::Error);
+    EXPECT_EQ(logger_->log_level(), LogLevel::Error);
 }

@@ -29,8 +29,7 @@ QuillLogger::QuillLogger(const std::string& file_path,
     quill::Backend::start(backend_options);
 
     // 2. Configure file sink (Quill 11.x API)
-    auto file_sink = quill::Frontend::create_or_get_sink<quill::FileSink>(
-        file_path,
+    auto file_sink = quill::Frontend::create_or_get_sink<quill::FileSink>(file_path,
         [file_mode]() {
             quill::FileSinkConfig config;
             if (file_mode == FileOpenMode::Append) {
@@ -55,10 +54,7 @@ QuillLogger::QuillLogger(const std::string& file_path,
     syslog_sink_ = console_sink_;
 
     // 5. Create logger with all sinks (Quill 11.x API)
-    quill_logger_ = quill::Frontend::create_or_get_logger(
-        "pubsub_logger",
-        {file_sink, console_sink}  // Pass shared_ptr directly
-    );
+    quill_logger_ = quill::Frontend::create_or_get_logger("pubsub_logger", {file_sink, console_sink} );
 
     // 6. Set initial log level
     quill_logger_->set_log_level(LoggerUtils::to_quill_log_level(file_level));
@@ -77,10 +73,7 @@ QuillLogger::QuillLogger()
     quill::Backend::start(backend_options);
 
     console_sink_ = quill::Frontend::create_or_get_sink<quill::ConsoleSink>("console_sink");
-    quill_logger_ = quill::Frontend::create_or_get_logger(
-        "pubsub_logger",
-        {console_sink_}  // Pass shared_ptr directly
-    );
+    quill_logger_ = quill::Frontend::create_or_get_logger("pubsub_logger", {console_sink_} );
 
     quill_logger_->set_log_level(LoggerUtils::to_quill_log_level(LogLevel::Debug));
 }
@@ -88,7 +81,7 @@ QuillLogger::QuillLogger()
 /**
  * Constructor for unit tests with custom sink (e.g., TestSink)
  */
-QuillLogger::QuillLogger(std::shared_ptr<quill::Sink> test_sink, LogLevel log_level)
+QuillLogger::QuillLogger(const std::string& logger_name, std::shared_ptr<quill::Sink> test_sink, LogLevel log_level)
     :
       console_sink_{test_sink},
       level_{log_level},
@@ -96,15 +89,17 @@ QuillLogger::QuillLogger(std::shared_ptr<quill::Sink> test_sink, LogLevel log_le
       console_level_{log_level},
       syslog_level_{log_level}
 {
-    // Start backend if not already started
+    // If the quill backend is already running from a previous test, then stop it.
+    quill::Backend::stop();
+
+    // Start backend
     quill::BackendOptions backend_options{};
+    backend_options.sleep_duration = std::chrono::nanoseconds{0};
+    backend_options.sink_min_flush_interval = std::chrono::milliseconds{0};
     quill::Backend::start(backend_options);
 
     // Create logger with the test sink
-    quill_logger_ = quill::Frontend::create_or_get_logger(
-        "test_logger",
-        {test_sink}
-    );
+    quill_logger_ = quill::Frontend::create_or_get_logger(logger_name, {test_sink} );
 
     quill_logger_->set_log_level(LoggerUtils::to_quill_log_level(log_level));
 

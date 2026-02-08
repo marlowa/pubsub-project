@@ -16,6 +16,7 @@ public:
      */
     enum EventTypeTag
     {
+        None,
         Initial,
         AppReady,
         Termination,
@@ -25,36 +26,37 @@ public:
         RawSocketCommunication
     };
 
-private:
-    EventTypeTag event_type_;
-
 public:
     /**
      * @brief Constructs EventType from tag value.
      * @param tag Event type tag
      */
-    constexpr explicit EventType(EventTypeTag tag);
+    constexpr explicit EventType(EventTypeTag tag) {
+        event_type_ = tag;
+    }
 
     /**
      * @brief Returns string representation of the event type.
      * @return Event type as string
      */
     [[nodiscard]] std::string as_string() const {
-        if (event_type_ == Initial) {
+        if (event_type_ == None) {
+            return "None";
+        } if (event_type_ == Initial) {
             return "Initial";
-        } else if (event_type_ == AppReady) {
+        } if (event_type_ == AppReady) {
                 return "AppReady";
-        } else if (event_type_ == Termination) {
+        } if (event_type_ == Termination) {
             return "Termination";
-        } else if (event_type_ == InterthreadCommunication) {
+        } if (event_type_ == InterthreadCommunication) {
             return "InterthreadCommunication";
-        } else if (event_type_ == Timer) {
+        } if (event_type_ == Timer) {
             return "Timer";
-        } else if (event_type_ == PubSubCommunication) {
+        } if (event_type_ == PubSubCommunication) {
             return "PubSubCommunication";
-        } else if (event_type_ == RawSocketCommunication) {
+        } if (event_type_ == RawSocketCommunication) {
             return "RawSocketCommunication";
-        } else {
+        } {
             return fmt::format("unknown ({})", static_cast<int>(event_type_));
         }
     }
@@ -67,6 +69,9 @@ public:
     bool is_equal(const EventType& rhs) const {
         return event_type_ == rhs.event_type_;
     }
+
+private:
+    EventTypeTag event_type_{None};
 };
 
 /**

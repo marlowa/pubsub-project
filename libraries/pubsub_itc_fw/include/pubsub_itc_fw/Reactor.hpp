@@ -28,11 +28,12 @@ class Reactor
 public:
     /**
      * @brief Destroys the Reactor instance, closing the epoll file descriptor.
+     * The function is virtual so that it can be mocked.
      *
      * This destructor expects all threads to have been joined by the shutdown function
      * before it is called.
      */
-    ~Reactor();
+    virtual ~Reactor() = default;
 
     /**
      * @brief Constructs a Reactor.

@@ -66,6 +66,8 @@ public:
         return value_ != other.value_;
     }
 
+    [[nodiscard]] constexpr bool operator<(const WrappedInteger& other) const { return value_ < other.value_; }
+
 private:
     T value_;
 };
