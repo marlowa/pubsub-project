@@ -2,188 +2,126 @@
 
 #include <atomic>
 #include <functional>
-#include <memory>
 #include <optional>
 #include <type_traits>
+#include <cstddef>
+
+#include <pubsub_itc_fw/AllocatorConfig.hpp>
+#include <pubsub_itc_fw/ExpandablePoolAllocator.hpp>
+#include <pubsub_itc_fw/QueueConfig.hpp>
 
 namespace pubsub_itc_fw {
 
 /**
- * @brief Provides a lock-free queue implementation for a single consumer and multiple producers.
+ * @brief Lock-free MPSC queue using Vyukov's algorithm.
  *
- * This implementation is based on Dmitry Vyukov's algorithm and is optimized for
- * high-performance, inter-thread communication. It offers wait-free enqueue
- * and lock-free dequeue operations.
+ * This queue is owned by a single consumer thread and may have multiple
+ * producers. Nodes are allocated from an ExpandablePoolAllocator<Node>.
  *
- * @note Lifetime and shutdown:
- *
- * This queue is owned by a single consumer thread (e.g. an ApplicationThread)
- * and may have multiple producers (e.g. Reactor, other threads) calling enqueue().
- *
- * It is a programming error for any producer to call enqueue() after the owning
- * consumer has begun shutdown and the queue is being destroyed. The framework's
- * shutdown protocol (via Reactor) is responsible for ensuring that no further
- * enqueue() calls are made once a thread has been unregistered.
- *
- * In practice, this means:
- *  - Reactor stops routing messages to a thread before that thread (and its queue)
- *    are destroyed.
- *  - Any messages that would have been sent to a shutting-down thread are simply
- *    not enqueued.
- *
- * Given the intended usage pattern (applications run for the duration of a day
- * and shut down at end of day), any messages that are not delivered during
- * shutdown are considered acceptable to lose.
- *
- * @tparam T The type of elements to store in the queue. Must be move-constructible.
+ * @tparam T Must be move-constructible.
  */
 template<typename T>
 class LockFreeMessageQueue {
-    static_assert(std::is_move_constructible_v<T>, "LockFreeMessageQueue requires a move-constructible element type.");
+    static_assert(std::is_move_constructible_v<T>,
+                  "LockFreeMessageQueue requires a move-constructible element type.");
 
 private:
-    // Node structure for the intrusive linked list.
-    // Made a private inner struct as it is an implementation detail.
     struct Node {
-        std::atomic<Node*> next_{nullptr};
+        std::atomic<Node*> next_;
         alignas(T) std::byte data_storage_[sizeof(T)];
-        bool has_data_{false};
+        bool has_data_;
 
-        // Constructor for a data node.
-        template<typename... Args>
-        explicit Node(Args&&... args) : has_data_(true) {
-            new(data_storage_) T(std::forward<Args>(args)...);
-        }
+        Node() : next_(nullptr), has_data_(false) {}
 
-        // Constructor for a stub node.
-        Node() : has_data_(false) {}
-
-        // Destructor to handle data destruction.
         ~Node() {
             if (has_data_) {
                 reinterpret_cast<T*>(data_storage_)->~T();
             }
         }
 
-        // Accessor for data.
-        T& data() { return *reinterpret_cast<T*>(data_storage_); }
+        T& data() {
+            return *reinterpret_cast<T*>(data_storage_);
+        }
     };
 
 public:
-    // Non-copyable, non-movable for safety and simplicity.
-    LockFreeMessageQueue(const LockFreeMessageQueue&) = delete;
-    LockFreeMessageQueue& operator=(const LockFreeMessageQueue&) = delete;
+    LockFreeMessageQueue(LockFreeMessageQueue const&) = delete;
+    LockFreeMessageQueue& operator=(LockFreeMessageQueue const&) = delete;
     LockFreeMessageQueue(LockFreeMessageQueue&&) = delete;
     LockFreeMessageQueue& operator=(LockFreeMessageQueue&&) = delete;
 
     /**
-     * @brief Constructs a LockFreeMessageQueue with watermark support.
-     * @param low_watermark The low watermark for the queue size.
-     * @param high_watermark The high watermark for the queue size.
-     * @param for_client_use A client-provided pointer for handler use.
-     * @param gone_below_low_watermark_handler The handler to call when the queue size drops below the low watermark.
-     * @param gone_above_high_watermark_handler The handler to call when the queue size exceeds the high watermark.
+     * @brief Constructs a queue using the provided configuration objects.
      */
-    LockFreeMessageQueue(int low_watermark,
-                         int high_watermark,
-                         void* for_client_use,
-                         std::function<void(void* for_client_use)> gone_below_low_watermark_handler,
-                         std::function<void(void* for_client_use)> gone_above_high_watermark_handler)
-        : head_{&stub_},
-          tail_{&stub_},
-          size_{0},
-          low_watermark_{low_watermark},
-          high_watermark_{high_watermark},
-          for_client_use_{for_client_use},
-          gone_below_low_watermark_handler_{std::move(gone_below_low_watermark_handler)},
-          gone_above_high_watermark_handler_{std::move(gone_above_high_watermark_handler)} {
+    LockFreeMessageQueue(QueueConfig const& queue_config,
+                         AllocatorConfig const& allocator_config)
+        : head_(&stub_)
+        , tail_(&stub_)
+        , queue_config_(queue_config)
+        , allocator_config_(allocator_config)
+        , node_allocator_(*allocator_config_.logger,
+                          allocator_config_.pool_name,
+                          allocator_config_.objects_per_pool,
+                          allocator_config_.initial_pools,
+                          allocator_config_.expansion_threshold_hint,
+                          allocator_config_.handler_for_pool_exhausted,
+                          allocator_config_.handler_for_invalid_free,
+                          allocator_config_.handler_for_huge_pages_error,
+                          allocator_config_.use_huge_pages_flag)
+        , stub_()
+        , size_{0}
+    {
         stub_.next_.store(nullptr, std::memory_order_relaxed);
     }
 
-    /**
-     * @brief Constructs an empty queue.
-     *
-     * Initializes the queue with a stub node to simplify the algorithm
-     * and avoid special-casing an empty queue.
-     */
-    LockFreeMessageQueue() : LockFreeMessageQueue(0, 0, nullptr, nullptr, nullptr) {}
-
-    /**
-     * @brief Destructs the queue and drains all remaining elements.
-     *
-     * This method ensures all allocated nodes are properly deallocated to prevent
-     * memory leaks.
-     */
     ~LockFreeMessageQueue() {
         shutdown();
     }
 
     /**
      * @brief Initiates shutdown and drains all remaining messages.
-     *
-     * After shutdown has been initiated, the queue will no longer logically
-     * accept new messages. Calls to enqueue() after shutdown are allowed,
-     * but they will silently drop the message and will not modify the
-     * internal linked list.
-     *
-     * This function is idempotent and may be called multiple times safely.
-     * The destructor calls shutdown() automatically.
      */
     void shutdown() noexcept {
         bool expected = false;
         if (!shutting_down_.compare_exchange_strong(
-                expected, true,
-                std::memory_order_acq_rel)) {
-            // Already shutting down or shut down; nothing more to do.
+                expected, true, std::memory_order_acq_rel)) {
             return;
         }
 
-        // Drain remaining messages. We intentionally ignore the returned
-        // values; they are being discarded as part of shutdown.
         while (!empty()) {
             (void)dequeue();
         }
     }
 
     /**
-     * @brief Enqueues an element.
-     *
-     * This operation is thread-safe and can be called by multiple producers
-     * concurrently without contention.
-     *
-     * @tparam Args The types of the arguments to construct the element.
-     * @param [in] args The arguments to forward to the element's constructor.
+     * @brief Enqueues an element. Never fails unless shutting down.
      */
     template<typename... Args>
     void enqueue(Args&&... args) {
         if (shutting_down_.load(std::memory_order_acquire)) {
-            // TODO we might log that an attempt to enqueue was dropped here.
-            return;
-        }     
-
-        auto* node = new(std::nothrow) Node(std::forward<Args>(args)...);
-        if (node == nullptr) {
-            // TODO handle this gracefully.
             return;
         }
 
+        Node* node = node_allocator_.allocate();  // guaranteed non-null
+
+        node->has_data_ = true;
+        new (node->data_storage_) T(std::forward<Args>(args)...);
         node->next_.store(nullptr, std::memory_order_relaxed);
+
         Node* prev_head = head_.exchange(node, std::memory_order_acq_rel);
         prev_head->next_.store(node, std::memory_order_release);
+
         int current_size = ++size_;
-        if (gone_above_high_watermark_handler_ != nullptr &&
-            current_size >= high_watermark_ && !is_high_watermark_breached_.exchange(true)) {
-            gone_above_high_watermark_handler_(for_client_use_);
+        if (queue_config_.gone_above_high_watermark_handler &&
+            current_size >= queue_config_.high_watermark &&
+            !is_high_watermark_breached_.exchange(true))
+        {
+            queue_config_.gone_above_high_watermark_handler(queue_config_.for_client_use);
         }
     }
 
     /**
-     * @brief Attempts to dequeue an element.
-     *
-     * This operation is lock-free and should only be called by a single consumer
-     * thread.
-     *
-     * @returns std::optional<T> The dequeued element, or std::nullopt if the queue is empty.
+     * @brief Dequeues an element. Only the consumer thread may call this.
      */
     [[nodiscard]] std::optional<T> dequeue() {
         Node* tail = tail_;
@@ -200,12 +138,16 @@ public:
 
         if (next != nullptr) {
             std::optional<T> result{std::move(tail->data())};
+            tail->has_data_ = false;
             tail_ = next;
-            delete tail;
+            node_allocator_.deallocate(tail);
+
             int current_size = --size_;
-            if (gone_below_low_watermark_handler_ != nullptr &&
-                current_size < low_watermark_ && is_high_watermark_breached_.exchange(false)) {
-                gone_below_low_watermark_handler_(for_client_use_);
+            if (queue_config_.gone_below_low_watermark_handler &&
+                current_size < queue_config_.low_watermark &&
+                is_high_watermark_breached_.exchange(false))
+            {
+                queue_config_.gone_below_low_watermark_handler(queue_config_.for_client_use);
             }
             return result;
         }
@@ -220,11 +162,16 @@ public:
 
         if (next != nullptr) {
             std::optional<T> result{std::move(tail->data())};
+            tail->has_data_ = false;
             tail_ = next;
-            delete tail;
+            node_allocator_.deallocate(tail);
+
             int current_size = --size_;
-            if (current_size < low_watermark_ && is_high_watermark_breached_.exchange(false)) {
-                gone_below_low_watermark_handler_(for_client_use_);
+            if (queue_config_.gone_below_low_watermark_handler &&
+                current_size < queue_config_.low_watermark &&
+                is_high_watermark_breached_.exchange(false))
+            {
+                queue_config_.gone_below_low_watermark_handler(queue_config_.for_client_use);
             }
             return result;
         }
@@ -234,10 +181,6 @@ public:
 
     /**
      * @brief Checks if the queue is empty.
-     *
-     * This is a snapshot and may not reflect concurrent enqueue operations.
-     *
-     * @returns bool True if the queue appears empty, false otherwise.
      */
     bool empty() const {
         Node* tail = tail_;
@@ -249,35 +192,24 @@ public:
     }
 
 private:
-    /**
-     * @brief Pushes a stub node to maintain queue invariants.
-     */
     void enqueue_stub_() {
         stub_.next_.store(nullptr, std::memory_order_relaxed);
         Node* prev_head = head_.exchange(&stub_, std::memory_order_acq_rel);
         prev_head->next_.store(&stub_, std::memory_order_release);
     }
 
-    // Aligned to cache line size to prevent false sharing.
     static constexpr size_t cache_line_size_ = 64;
 
-    // Head pointer for producers.
     alignas(cache_line_size_) std::atomic<Node*> head_;
-
-    // Tail pointer for the single consumer.
     alignas(cache_line_size_) Node* tail_;
 
-    // Stub node to handle the empty queue case.
+    QueueConfig queue_config_;
+    AllocatorConfig allocator_config_;
+    ExpandablePoolAllocator<Node> node_allocator_;
+
     Node stub_;
 
     std::atomic<int> size_{0};
-    int low_watermark_;
-    int high_watermark_;
-
-    void* for_client_use_;
-    std::function<void(void* for_client_use)> gone_below_low_watermark_handler_;
-    std::function<void(void* for_client_use)> gone_above_high_watermark_handler_;
-
     std::atomic<bool> is_high_watermark_breached_{false};
     std::atomic<bool> shutting_down_{false};
 };

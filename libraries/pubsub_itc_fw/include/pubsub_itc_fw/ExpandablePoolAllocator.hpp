@@ -296,7 +296,15 @@ template <typename T> T* ExpandablePoolAllocator<T>::allocate() {
     }
 
     failed_allocations_.value.fetch_add(1, std::memory_order_relaxed);
-    return nullptr;
+
+    // At this point, the operating system has refused to provide memory for a new pool.
+    // On an overcommitting system this is already a catastrophic condition: the process cannot reasonably continue.
+    // Treat this as a hard precondition failure rather than a recoverable runtime condition.
+    // It is a precondition that the OS will always give us the memory we need.
+    // We have to run on a machine where we can be very confident indeed that this is the case.
+    // Strictly speaking, this is a post condition violation.
+    throw PreconditionAssertion("ExpandablePoolAllocator::allocate: operating system refused memory for new pool",
+                                __FILE__, __LINE__);
 }
 
 template <typename T> void ExpandablePoolAllocator<T>::deallocate(T* obj) {

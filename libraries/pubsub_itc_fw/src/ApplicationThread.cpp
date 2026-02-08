@@ -130,14 +130,14 @@ void ApplicationThread::run()
 }
 
 void ApplicationThread::run_internal() {
-    PUBSUB_LOG_STR(logger_, LogLevel::Info, "Starting thread " + thread_name_);
+    PUBSUB_LOG(logger_, LogLevel::Info, "Starting thread {}", thread_name_);
     while (is_running_.load()) {
         EventMessage message;
         if (message_queue_.try_dequeue(message)) {
             process_message(message);
         }
     }
-    PUBSUB_LOG_STR(logger_, LogLevel::Info, "Thread " + thread_name_ + " is shutting down.");
+    PUBSUB_LOG(logger_, LogLevel::Info, "Thread {} is shutting down.", thread_name_);
 }
 
 void ApplicationThread::on_data_message(const EventMessage& event_message) {
