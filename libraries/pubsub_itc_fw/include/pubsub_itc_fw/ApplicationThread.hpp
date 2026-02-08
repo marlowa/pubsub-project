@@ -10,13 +10,15 @@
 #include <pubsub_itc_fw/EventHandler.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/LockFreeMessageQueue.hpp>
-#include <pubsub_itc_fw/LoggerInterface.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 #include <pubsub_itc_fw/ThreadWithJoinTimeout.hpp>
 #include <pubsub_itc_fw/TimerHandler.hpp>
 #include <pubsub_itc_fw/TimerType.hpp>
+#include <pubsub_itc_fw/QueueConfig.hpp>
+#include <pubsub_itc_fw/AllocatorConfig.hpp>
+#include <pubsub_itc_fw/QuillLogger.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -29,7 +31,7 @@ class SocketHandler;
  * interface for the Reactor to manage the lifecycle of the thread, including starting,
  * joining, and a mechanism for state-checking.
  *
- * An ApplicationThread hold a reference to the Reactor because it is needed
+ * An ApplicationThread holds a reference to the Reactor because it is needed
  * when the thread terminates with an exception.
  *
  * WATERMARK SEMANTICS
@@ -75,28 +77,16 @@ class SocketHandler;
  *   - No enqueue() will occur after the queue is destroyed, because Reactor
  *     unregisters the thread before destruction.
  */
-
 class ApplicationThread {
   public:
-    ~ApplicationThread();
+    virtual ~ApplicationThread();
 
-    /**
-     * TODO need to document how watermarks work
-     *
-     * @brief Constructs an ApplicationThread.
-     *
-     * @param[in] logger A reference to the logger instance.
-     * @param[in] reactor a reference to the reactor
-     * @param[in] thread_name The name of the thread.
-     * @param[in] thread_id The ID of the thread, as chosen by the application developer
-     * @param[in] low_watermark The low watermark for the message queue.
-     * @param[in] high_watermark The high watermark for the message queue.
-     */
-    ApplicationThread(const LoggerInterface& logger, Reactor& reactor,
-                      const std::string& thread_name, ThreadID thread_id,
-                      uint32_t low_watermark, uint32_t high_watermark,
-                      std::function<void(void* for_client_use)> gone_below_low_watermark_handler,
-                      std::function<void(void* for_client_use)> gone_above_high_watermark_handler);
+    ApplicationThread(QuillLogger& logger,
+                      Reactor& reactor,
+                      const std::string& thread_name,
+                      ThreadID thread_id,
+                      const QueueConfig& queue_config,
+                      const AllocatorConfig& allocator_config);
 
     /**
      * Return the thread name, as a const ref to avoid copying
@@ -118,7 +108,7 @@ class ApplicationThread {
     /**
      * @brief Joins the underlying thread with a timeout for hung threads.
      */
-    bool join_with_timeout(std::chrono::milliseconds timeout);
+    [[nodiscard]] bool join_with_timeout(std::chrono::milliseconds timeout);
 
     /**
      * Returns the ID of the thread. This is chosen by the application developer
@@ -126,7 +116,9 @@ class ApplicationThread {
      *
      * @return ThreadID The thread ID.
      */
-    ThreadID get_thread_id() const;
+    ThreadID get_thread_id() const {
+        return thread_id_;
+    }
 
     /**
      * @brief Pauses the thread's execution loop.
@@ -141,9 +133,11 @@ class ApplicationThread {
     /**
      * @brief Enqueues an event message to the thread's queue.
      *
+     * @param[in] target_thread_id The id of the thread to post to.
+     * @param[in] message The message to enqueue, a discriminated union.
      *
-     * @param[in] target_thread_id The id of the thread to post to
-     * @param[in] message The message to enqueue, a discriminated union
+     * For now, this posts to this thread's own queue; routing to other
+     * threads is handled by the Reactor.
      */
     void post_message(ThreadID target_thread_id, EventMessage message);
 
@@ -151,13 +145,17 @@ class ApplicationThread {
      * @brief Returns a reference to the thread's message queue.
      * @return LockFreeMessageQueue<EventMessage>& The message queue.
      */
-    LockFreeMessageQueue<EventMessage>& get_queue();
+    LockFreeMessageQueue<EventMessage>& get_queue() {
+        return message_queue_;
+    }
 
     /**
      * @brief Returns a reference to the logger.
-     * @return const LoggerInterface& The logger instance.
+     * @return QuillLogger& The logger instance.
      */
-    const LoggerInterface& get_logger() const;
+    QuillLogger& get_logger() const {
+        return logger_;
+    }
 
     /**
      * @brief Starts a one-off timer.
@@ -181,11 +179,10 @@ class ApplicationThread {
      */
     void cancel_timer(const std::string& name);
 
-    // void post_socket_read_message(const int length, void* socket_handler); TODO in flux
-
     auto get_time_event_started() const {
         return time_event_started_;
     }
+
     auto get_time_event_finished() const {
         return time_event_finished_;
     }
@@ -201,13 +198,16 @@ class ApplicationThread {
     bool get_has_processed_initial_event() {
         return has_processed_initial_event_.load();
     }
+
     void set_has_processed_initial_event() {
         has_processed_initial_event_.store(true);
     }
 
     void shutdown(const std::string& reason);
 
-    bool is_running() const noexcept;
+    bool is_running() const noexcept {
+        return is_running_.load();
+    }
 
   protected:
     /**
@@ -223,34 +223,19 @@ class ApplicationThread {
     virtual void process_message(EventMessage& message) = 0;
 
   private:
-    const LoggerInterface& logger_;
-
+    QuillLogger& logger_;
     Reactor& reactor_;
 
-    /**
-     * When the Reactor posts events to this thread, it notes the time the event started
-     * (i.e., when it posted) and when the event finished (i.e. when the handler returned).
-     * This enables the Reactor to detect in its backstop thread if a thread has hung in its
-     * event processing.
-     */
     std::chrono::time_point<std::chrono::system_clock, std::chrono::nanoseconds> time_event_started_;
     std::chrono::time_point<std::chrono::system_clock, std::chrono::nanoseconds> time_event_finished_;
 
     std::string thread_name_;
-
-    /**
-     * Each thread has a thread_id which is basically a wrapped integer.
-     * It is used when events are posted as inter-thread messages.
-     * The receiver needs to know who sent the message.
-     * Hence the EventMessage contains the thread_id. It is more efficient then
-     * storing a string, the thread name. Any logging will probably want to use the thread name, so
-     * a function is provided by the Reactor to give the name from the id, get_thread_name_from_id.
-     */
     ThreadID thread_id_;
 
     std::atomic<bool> is_paused_{false};
     std::atomic<bool> is_running_{false};
     std::atomic<bool> has_processed_initial_event_{false};
+
     LockFreeMessageQueue<EventMessage> message_queue_;
     std::unique_ptr<ThreadWithJoinTimeout> thread_;
 };

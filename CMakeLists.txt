@@ -145,12 +145,11 @@ set(PROTO_HDRS
 # We explicitly list the generated .pb.cc files
 add_library(pubsub_itc_fw_lib
     ${PROTO_SRCS} # Generated .pb.cc files
-    #libraries/pubsub_itc_fw/src/ApplicationThread.cpp
+    libraries/pubsub_itc_fw/src/ApplicationThread.cpp
     libraries/pubsub_itc_fw/src/InetAddress.cpp
     libraries/pubsub_itc_fw/src/Message.cpp
     libraries/pubsub_itc_fw/src/EventDistributor.cpp
     libraries/pubsub_itc_fw/src/ExpandablePoolAllocator.cpp
-    #libraries/pubsub_itc_fw/src/Logger.cpp # TODO remove this is the quill logger
     libraries/pubsub_itc_fw/src/QuillLogger.cpp
     libraries/pubsub_itc_fw/src/StringUtils.cpp
     libraries/pubsub_itc_fw/src/TcpAcceptor.cpp

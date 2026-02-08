@@ -9,7 +9,7 @@
 
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/EventHandler.hpp>
-#include <pubsub_itc_fw/LoggerInterface.hpp>
+#include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/ReactorConfiguration.hpp>
@@ -39,7 +39,7 @@ public:
      * @param [in] config The reactor's configuration.
      * @param [in] logger The logger instance.
      */
-    explicit Reactor(const ReactorConfiguration& config, LoggerInterface& logger);
+    explicit Reactor(const ReactorConfiguration& config, QuillLogger& logger);
 
     /**
      * @brief Starts the reactor's event loop.
@@ -109,8 +109,7 @@ private:
     // Configuration parameters
     ReactorConfiguration config_;
 
-    // The LoggerInterface dependency
-    LoggerInterface& logger_;
+    QuillLogger& logger_;
 };
 
 } // namespace pubsub_itc_fw
