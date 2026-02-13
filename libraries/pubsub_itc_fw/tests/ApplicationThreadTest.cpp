@@ -409,6 +409,16 @@ TEST(ApplicationThreadTest, PauseResumeUnderLoad)
 // How:  Install handlers that bump atomics, push enough messages to cross
 //       the high watermark, then drain via shutdown and assert each handler
 //       fired exactly once.
+// ------------------------------------------------------------
+// TEST 9: Watermark transitions
+// ------------------------------------------------------------
+// What: Verifies that the high/low watermark handlers are invoked exactly
+//       once when the queue crosses the configured thresholds.
+// Why:  Confirms the hysteresis semantics of LockFreeMessageQueue and that
+//       ApplicationThread's queue wiring preserves them.
+// How:  Pause the thread to prevent draining, enqueue messages to cross
+//       the high watermark, then resume and wait for both watermarks to
+//       fire using futures for deterministic synchronization.
 TEST(ApplicationThreadTest, WatermarkTransitions)
 {
     auto logger_with_sink = make_logger_with_sink("logger_WatermarkTransitions", "sink_WatermarkTransitions");
@@ -422,9 +432,30 @@ TEST(ApplicationThreadTest, WatermarkTransitions)
     std::atomic<int> high_triggered{0};
     std::atomic<int> low_triggered{0};
 
-    // Handlers are std::function<void(void*)>, so accept a void* context.
-    qc.gone_above_high_watermark_handler = [&](void*) { high_triggered++; };
-    qc.gone_below_low_watermark_handler = [&](void*) { low_triggered++; };
+    // Synchronization primitives for deterministic waiting
+    std::atomic<bool> high_fired{false};
+    std::atomic<bool> low_fired{false};
+    std::promise<void> high_promise;
+    std::promise<void> low_promise;
+    auto high_future = high_promise.get_future();
+    auto low_future = low_promise.get_future();
+
+    // Handlers now signal via promises when they fire
+    qc.gone_above_high_watermark_handler = [&](void*) {
+        high_triggered.fetch_add(1, std::memory_order_release);
+        // Only set promise once to avoid multiple set_value() calls
+        if (!high_fired.exchange(true, std::memory_order_acq_rel)) {
+            high_promise.set_value();
+        }
+    };
+
+    qc.gone_below_low_watermark_handler = [&](void*) {
+        low_triggered.fetch_add(1, std::memory_order_release);
+        // Only set promise once
+        if (!low_fired.exchange(true, std::memory_order_acq_rel)) {
+            low_promise.set_value();
+        }
+    };
 
     TestThread thread(logger_with_sink.logger,
                       reactor,
@@ -436,18 +467,38 @@ TEST(ApplicationThreadTest, WatermarkTransitions)
     thread.start();
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
-    // Push above high watermark
+    // CRITICAL: Pause the thread to prevent it from draining the queue
+    // while we're enqueuing messages. This ensures the queue will actually
+    // reach the high watermark.
+    thread.pause();
+
+    // Enqueue 4 messages while paused (high watermark is 3)
     for (int i = 0; i < 4; ++i)
     {
         EventMessage msg = EventMessage::create_reactor_event(EventType(EventType::Initial));
         thread.post_message(ThreadID(1), std::move(msg));
     }
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    // Give a moment for the enqueue operations to complete
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
 
-    // Drain queue via shutdown
+    // Resume thread so it can process messages and trigger watermarks
+    thread.resume();
+
+    // Wait for high watermark handler to fire (timeout after 1 second)
+    auto high_status = high_future.wait_for(std::chrono::seconds(1));
+    ASSERT_EQ(high_status, std::future_status::ready)
+        << "High watermark handler did not fire within timeout";
+
+    // Wait for low watermark handler to fire (timeout after 1 second)
+    auto low_status = low_future.wait_for(std::chrono::seconds(1));
+    ASSERT_EQ(low_status, std::future_status::ready)
+        << "Low watermark handler did not fire within timeout";
+
+    // Clean shutdown
     thread.shutdown("done");
 
+    // Verify each handler fired exactly once
     EXPECT_EQ(high_triggered.load(), 1);
     EXPECT_EQ(low_triggered.load(), 1);
 }

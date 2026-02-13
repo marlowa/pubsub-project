@@ -350,3 +350,111 @@ TEST_F(QuillLoggerTest, ReturnsUpdatedLogLevelAfterChange) {
     // Assert
     EXPECT_EQ(logger_->log_level(), LogLevel::Error);
 }
+
+// =============================================================================
+// Logger Isolation Test
+// =============================================================================
+
+TEST(QuillLoggerIsolationTest, TwoLoggersWithSeparateSinksDoNotCrossTalk) {
+    // Purpose: Verify that two QuillLogger instances with unique names
+    //          and unique sinks do not leak messages to each other.
+    //
+    // This test ensures that logger isolation works correctly when
+    // creating multiple loggers with different sinks.
+
+    // Create first logger with unique sink
+    auto sink1 = quill::Frontend::create_or_get_sink<TestSink>("isolation_test_sink_1");
+    auto test_sink1 = static_cast<TestSink*>(sink1.get());
+    test_sink1->clear();
+
+    QuillLogger logger1("isolation_logger_1", sink1, LogLevel::Debug);
+
+    // Create second logger with unique sink
+    auto sink2 = quill::Frontend::create_or_get_sink<TestSink>("isolation_test_sink_2");
+    auto test_sink2 = static_cast<TestSink*>(sink2.get());
+    test_sink2->clear();
+
+    QuillLogger logger2("isolation_logger_2", sink2, LogLevel::Debug);
+
+    // Log unique messages to each logger
+    PUBSUB_LOG_STR(logger1, LogLevel::Info, "Message from logger1");
+    PUBSUB_LOG_STR(logger2, LogLevel::Info, "Message from logger2");
+
+    // Verify each sink only contains its own message
+    EXPECT_EQ(test_sink1->count(), 1);
+    EXPECT_EQ(test_sink2->count(), 1);
+
+    EXPECT_TRUE(test_sink1->contains_message("Message from logger1"));
+    EXPECT_FALSE(test_sink1->contains_message("Message from logger2"));
+
+    EXPECT_TRUE(test_sink2->contains_message("Message from logger2"));
+    EXPECT_FALSE(test_sink2->contains_message("Message from logger1"));
+}
+
+TEST(QuillLoggerIsolationTest, TwoLoggersWithSameSinkNameShareSink) {
+    // Purpose: Demonstrate that reusing sink names causes sink sharing.
+    //
+    // This is a NEGATIVE test showing what happens when you reuse
+    // sink names - both loggers will write to the same sink.
+
+    // Create first logger
+    auto sink1 = quill::Frontend::create_or_get_sink<TestSink>("shared_sink_name");
+    auto test_sink1 = static_cast<TestSink*>(sink1.get());
+    test_sink1->clear();
+
+    QuillLogger logger1("shared_test_logger_1", sink1, LogLevel::Debug);
+
+    // Create second logger with SAME sink name - it will get the same sink!
+    auto sink2 = quill::Frontend::create_or_get_sink<TestSink>("shared_sink_name");
+    auto test_sink2 = static_cast<TestSink*>(sink2.get());
+
+    QuillLogger logger2("shared_test_logger_2", sink2, LogLevel::Debug);
+
+    // Verify they're the same sink instance
+    EXPECT_EQ(sink1.get(), sink2.get());
+    EXPECT_EQ(test_sink1, test_sink2);
+
+    // Log to both loggers
+    PUBSUB_LOG_STR(logger1, LogLevel::Info, "From logger1");
+    PUBSUB_LOG_STR(logger2, LogLevel::Info, "From logger2");
+
+    // Both messages appear in the SAME sink (because it's the same instance)
+    EXPECT_EQ(test_sink1->count(), 2);
+    EXPECT_TRUE(test_sink1->contains_message("From logger1"));
+    EXPECT_TRUE(test_sink1->contains_message("From logger2"));
+}
+
+TEST(QuillLoggerIsolationTest, TwoLoggersWithSameLoggerNameShareLogger) {
+    // Purpose: Demonstrate that Quill's create_or_get_logger returns
+    //          the same logger instance when given the same name.
+    //
+    // This is the root cause of the ApplicationThreadTest bug.
+
+    auto sink1 = quill::Frontend::create_or_get_sink<TestSink>("logger_name_test_sink1");
+    auto test_sink1 = static_cast<TestSink*>(sink1.get());
+    test_sink1->clear();
+
+    auto sink2 = quill::Frontend::create_or_get_sink<TestSink>("logger_name_test_sink2");
+    auto test_sink2 = static_cast<TestSink*>(sink2.get());
+    test_sink2->clear();
+
+    // Create first logger with name "duplicate_name" and sink1
+    QuillLogger logger1("duplicate_name", sink1, LogLevel::Debug);
+
+    // Create second logger with SAME name but different sink
+    // QuillLogger constructor calls create_or_get_logger("duplicate_name", {sink2})
+    // but Quill will return the EXISTING logger with sink1!
+    QuillLogger logger2("duplicate_name", sink2, LogLevel::Debug);
+
+    // Verify both QuillLogger instances point to the same underlying quill::Logger
+    EXPECT_EQ(logger1.quill_logger(), logger2.quill_logger());
+
+    // Log to logger2 - but it goes to logger1's sink!
+    PUBSUB_LOG_STR(logger2, LogLevel::Info, "Logged via logger2");
+
+    // The message appears in sink1 (not sink2) because both loggers share the underlying Quill logger
+    EXPECT_TRUE(test_sink1->contains_message("Logged via logger2"));
+
+    // sink2 is empty because logger2 never actually used it
+    EXPECT_EQ(test_sink2->count(), 0);
+}
