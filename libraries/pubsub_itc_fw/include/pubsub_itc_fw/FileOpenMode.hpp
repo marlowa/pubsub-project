@@ -26,6 +26,9 @@ private:
 public:
     /**
      * @brief Constructs FileOpenMode from tag value.
+     *
+     * TODO not sure about making these ctor explicit. The jury is out.
+     *
      * @param tag File open mode tag
      */
     constexpr explicit FileOpenMode(FileOpenModeTag tag)

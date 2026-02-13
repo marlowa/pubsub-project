@@ -8,12 +8,21 @@
 #include <quill/sinks/StreamSink.h>
 #include <quill/sinks/FileSink.h>
 #include <quill/sinks/ConsoleSink.h>
-// Note: SyslogSink may not be available on all platforms in Quill 11
-// #include <quill/sinks/SyslogSink.h>
+#include <quill/sinks/SyslogSink.h>
 
 #include <pubsub_itc_fw/FileOpenMode.hpp>
 
 namespace pubsub_itc_fw {
+
+static std::once_flag backend_started;
+
+// Helper to start backend exactly once
+static void ensure_backend_started() {
+    std::call_once(backend_started, []() {
+        quill::BackendOptions backend_options{};
+        quill::Backend::start(backend_options);
+    });
+}
 
 // Initialize static counter
 std::atomic<uint64_t> QuillLogger::instance_counter_{0};
@@ -39,10 +48,7 @@ QuillLogger::QuillLogger(const std::string& file_path,
       console_level_{console_level},
       syslog_level_{syslog_level}
 {
-    // 1. Start Quill backend thread (Quill 11.x API)
-    // TODO maybe this should only be done once, check it.
-    quill::BackendOptions backend_options{};
-    quill::Backend::start(backend_options);
+    ensure_backend_started();
 
     auto file_sink = quill::Frontend::create_or_get_sink<quill::FileSink>(file_path,
         [file_mode]() {
@@ -62,15 +68,22 @@ QuillLogger::QuillLogger(const std::string& file_path,
         generate_unique_sink_name("console_sink"));
     console_sink_ = console_sink;
 
-    // TODO For now, we'll use console for syslog as well with unique name
-    syslog_sink_ = quill::Frontend::create_or_get_sink<quill::ConsoleSink>(
-        generate_unique_sink_name("syslog_sink")
+    auto syslog_sink = quill::Frontend::create_or_get_sink<quill::SyslogSink>(
+        generate_unique_sink_name("syslog_sink"),
+        []() {
+            quill::SyslogSinkConfig config;
+            config.set_identifier("pubsub_app");  // Shows as "pubsub_app" in syslog
+            config.set_facility(LOG_USER);        // Standard user-level facility
+            config.set_options(LOG_PID);          // Include PID in each message
+            config.set_format_message(false);     // Use raw message, not formatted
+            return config;
+        }()
     );
+    syslog_sink_ = syslog_sink;
 
-    // 5. Create logger with all sinks (Quill 11.x API)
     quill_logger_ = quill::Frontend::create_or_get_logger(
         generate_unique_logger_name("pubsub_logger"),
-                                                          {file_sink, console_sink} );
+        {file_sink, console_sink, syslog_sink} );
 
     // 6. Set initial log level
     quill_logger_->set_log_level(LoggerUtils::to_quill_log_level(file_level));
@@ -85,9 +98,7 @@ QuillLogger::QuillLogger()
       console_level_{LogLevel::Debug},
       syslog_level_{LogLevel::Debug}  {
 
-    // TODO revisit this
-    quill::BackendOptions backend_options{};
-    quill::Backend::start(backend_options);
+    ensure_backend_started();
 
     console_sink_ = quill::Frontend::create_or_get_sink<quill::ConsoleSink>(generate_unique_sink_name("console_sink"));
     quill_logger_ = quill::Frontend::create_or_get_logger(generate_unique_logger_name("pubsub_logger"), {console_sink_} );
@@ -106,14 +117,7 @@ QuillLogger::QuillLogger(const std::string& logger_name, std::shared_ptr<quill::
       console_level_{log_level},
       syslog_level_{log_level}
 {
-    // TODO revisit this stop/start malarky
-    // If the quill backend is already running from a previous test, then stop it.
-    quill::Backend::stop();
-    // Start backend
-    quill::BackendOptions backend_options{};
-    backend_options.sleep_duration = std::chrono::nanoseconds{0};
-    backend_options.sink_min_flush_interval = std::chrono::milliseconds{0};
-    quill::Backend::start(backend_options);
+    ensure_backend_started();
 
     // Create logger with the test sink
     quill_logger_ = quill::Frontend::create_or_get_logger(logger_name, {test_sink} );

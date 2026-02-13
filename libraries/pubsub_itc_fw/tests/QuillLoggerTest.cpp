@@ -578,3 +578,43 @@ TEST(QuillLoggerIsolationTest, ShouldProvideIsolation) {
     EXPECT_EQ(logger1.log_level(), LogLevel::Error);
     EXPECT_EQ(logger2.log_level(), LogLevel::Debug);
 }
+
+TEST(QuillLoggerSyslogTest, FileConstructorEnablesSyslogFiltering) {
+    std::string temp_file = "/tmp/test_syslog_config.log";
+
+    // Create logger with different syslog level
+    QuillLogger logger(temp_file,
+                       FileOpenMode(FileOpenMode::Truncate),
+                       LogLevel::Debug,   // file logs everything
+                       LogLevel::Error,   // syslog only errors
+                       LogLevel::Info);   // console logs info+
+
+    // Verify filtering configuration
+    EXPECT_TRUE(logger.should_log_to_file(LogLevel::Debug));
+    EXPECT_TRUE(logger.should_log_to_syslog(LogLevel::Error));
+    EXPECT_FALSE(logger.should_log_to_syslog(LogLevel::Warning));
+    EXPECT_FALSE(logger.should_log_to_syslog(LogLevel::Info));
+
+    // Verify logger was created successfully
+    EXPECT_NE(logger.quill_logger(), nullptr);
+
+    std::remove(temp_file.c_str());
+}
+
+TEST(QuillLoggerSyslogTest, SyslogLevelIndependentFromOtherSinks) {
+    std::string temp_file = "/tmp/test_syslog_independence.log";
+
+    QuillLogger logger(temp_file,
+                       FileOpenMode(FileOpenMode::Truncate),
+                       LogLevel::Debug,     // file
+                       LogLevel::Critical,  // syslog - most restrictive
+                       LogLevel::Warning);  // console
+
+    EXPECT_TRUE(logger.should_log_to_file(LogLevel::Debug));
+    EXPECT_TRUE(logger.should_log_to_console(LogLevel::Warning));
+    EXPECT_FALSE(logger.should_log_to_console(LogLevel::Debug));
+    EXPECT_TRUE(logger.should_log_to_syslog(LogLevel::Critical));
+    EXPECT_FALSE(logger.should_log_to_syslog(LogLevel::Error));
+
+    std::remove(temp_file.c_str());
+}
