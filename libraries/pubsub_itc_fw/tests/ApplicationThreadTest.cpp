@@ -55,16 +55,17 @@ struct LoggerWithSink
     std::shared_ptr<TestSink> sink;
 };
 
-LoggerWithSink make_logger_with_sink()
+LoggerWithSink make_logger_with_sink(const std::string& logger_name,
+                                     const std::string& sink_name)
 {
     LoggerWithSink out{QuillLogger{}, nullptr};
 
-    auto sink_base = quill::Frontend::create_or_get_sink<TestSink>("app_thread_test_sink");
+    auto sink_base = quill::Frontend::create_or_get_sink<TestSink>(sink_name);
     auto sink_typed = std::static_pointer_cast<TestSink>(sink_base);
 
     // NOTE: This relies on the real QuillLogger having a ctor that matches this signature
     // in your actual codebase.
-    out.logger = QuillLogger("ApplicationThreadTest_logger", sink_base, LogLevel::Debug);
+    out.logger = QuillLogger(logger_name, sink_base, LogLevel::Debug);
     out.sink = sink_typed;
     return out;
 }
@@ -122,7 +123,7 @@ public:
 //       call shutdown and assert is_running() is false.
 TEST(ApplicationThreadTest, StartAndShutdown)
 {
-    auto logger_with_sink = make_logger_with_sink();
+    auto logger_with_sink = make_logger_with_sink("logger_StartAndShutdown", "sink_StartAndShutdown");
     ReactorConfiguration cfg{};
     MockReactor reactor(cfg, logger_with_sink.logger);
 
@@ -153,7 +154,7 @@ TEST(ApplicationThreadTest, StartAndShutdown)
 //       shutdown and assert processed_count >= 1.
 TEST(ApplicationThreadTest, MessageProcessing)
 {
-    auto logger_with_sink = make_logger_with_sink();
+    auto logger_with_sink = make_logger_with_sink("logger_MessageProcessing", "sink_MessageProcessing");
     ReactorConfiguration cfg{};
     MockReactor reactor(cfg, logger_with_sink.logger);
 
@@ -187,7 +188,7 @@ TEST(ApplicationThreadTest, MessageProcessing)
 //       then resume, wait, and assert processed_count >= 1.
 TEST(ApplicationThreadTest, PauseResume)
 {
-    auto logger_with_sink = make_logger_with_sink();
+    auto logger_with_sink = make_logger_with_sink("logger_PauseResume", "sink_PauseResume");
     ReactorConfiguration cfg{};
     MockReactor reactor(cfg, logger_with_sink.logger);
 
@@ -227,7 +228,7 @@ TEST(ApplicationThreadTest, PauseResume)
 //       wait, then assert reactor.shutdown_called() and !thread.is_running().
 TEST(ApplicationThreadTest, ExceptionTriggersShutdown)
 {
-    auto logger_with_sink = make_logger_with_sink();
+    auto logger_with_sink = make_logger_with_sink("logger_ExceptionTriggersShutdown", "sink_ExceptionTriggersShutdown");
     ReactorConfiguration cfg{};
     MockReactor reactor(cfg, logger_with_sink.logger);
 
@@ -263,7 +264,7 @@ TEST(ApplicationThreadTest, ExceptionTriggersShutdown)
 //       processed_count remains 0.
 TEST(ApplicationThreadTest, QueueShutdownDropsMessages)
 {
-    auto logger_with_sink = make_logger_with_sink();
+    auto logger_with_sink = make_logger_with_sink("logger_QueueShutdownDropsMessages", "sink_QueueShutdownDropsMessages");
     ReactorConfiguration cfg{};
     MockReactor reactor(cfg, logger_with_sink.logger);
 
@@ -298,7 +299,7 @@ TEST(ApplicationThreadTest, QueueShutdownDropsMessages)
 //       unchanged by the getters.
 TEST(ApplicationThreadTest, TimestampSemantics)
 {
-    auto logger_with_sink = make_logger_with_sink();
+    auto logger_with_sink = make_logger_with_sink("logger_TimestampSemantics", "sink_TimestampSemantics");
     ReactorConfiguration cfg{};
     MockReactor reactor(cfg, logger_with_sink.logger);
 
@@ -330,7 +331,7 @@ TEST(ApplicationThreadTest, TimestampSemantics)
 //       at least one log record was captured and that it mentions "shutdown".
 TEST(ApplicationThreadTest, LoggingVerification)
 {
-    auto logger_with_sink = make_logger_with_sink();
+    auto logger_with_sink = make_logger_with_sink("logger_LoggingVerification", "sink_LoggingVerification");
     ReactorConfiguration cfg{};
     MockReactor reactor(cfg, logger_with_sink.logger);
 
@@ -362,7 +363,7 @@ TEST(ApplicationThreadTest, LoggingVerification)
 //       then resume, wait, and assert processed_count > 0.
 TEST(ApplicationThreadTest, PauseResumeUnderLoad)
 {
-    auto logger_with_sink = make_logger_with_sink();
+    auto logger_with_sink = make_logger_with_sink("logger_PauseResumeUnderLoad", "sink_PauseResumeUnderLoad");
     ReactorConfiguration cfg{};
     MockReactor reactor(cfg, logger_with_sink.logger);
 
@@ -410,7 +411,7 @@ TEST(ApplicationThreadTest, PauseResumeUnderLoad)
 //       fired exactly once.
 TEST(ApplicationThreadTest, WatermarkTransitions)
 {
-    auto logger_with_sink = make_logger_with_sink();
+    auto logger_with_sink = make_logger_with_sink("logger_WatermarkTransitions", "sink_WatermarkTransitions");
     ReactorConfiguration cfg{};
     MockReactor reactor(cfg, logger_with_sink.logger);
 
@@ -462,7 +463,7 @@ TEST(ApplicationThreadTest, WatermarkTransitions)
 //       containing "MetaThread" and "[42]".
 TEST(ApplicationThreadTest, ExceptionLoggingContainsThreadMetadata)
 {
-    auto logger_with_sink = make_logger_with_sink();
+    auto logger_with_sink = make_logger_with_sink("logger_ExceptionLoggingContainsThreadMetadata", "sink_ExceptionLoggingContainsThreadMetadata");
     ReactorConfiguration cfg{};
     MockReactor reactor(cfg, logger_with_sink.logger);
 
@@ -512,7 +513,7 @@ TEST(ApplicationThreadTest, ExceptionLoggingContainsThreadMetadata)
 //       processed type is the last one enqueued.
 TEST(ApplicationThreadTest, MessageOrderingPreserved)
 {
-    auto logger_with_sink = make_logger_with_sink();
+    auto logger_with_sink = make_logger_with_sink("logger_MessageOrderingPreserved", "sink_MessageOrderingPreserved");
     ReactorConfiguration cfg{};
     MockReactor reactor(cfg, logger_with_sink.logger);
 
@@ -552,8 +553,8 @@ TEST(ApplicationThreadTest, MessageOrderingPreserved)
 //       shutdown reason.
 TEST(ApplicationThreadTest, LoggerIsolationAcrossThreads)
 {
-    auto logger1 = make_logger_with_sink();
-    auto logger2 = make_logger_with_sink();
+    auto logger1 = make_logger_with_sink("logger1_LoggerIsolationAcrossThreads", "sink1_LoggerIsolationAcrossThreads");
+    auto logger2 = make_logger_with_sink("logger2_LoggerIsolationAcrossThreads", "sink2_LoggerIsolationAcrossThreads");
 
     logger1.sink->clear();
     logger2.sink->clear();
