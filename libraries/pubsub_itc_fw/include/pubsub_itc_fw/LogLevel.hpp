@@ -45,4 +45,8 @@ inline bool operator==(const LogLevel& lhs, const LogLevel& rhs) {
     return lhs.isEqual(rhs);
 }
 
+inline bool operator!=(const LogLevel& lhs, const LogLevel& rhs) {
+    return !lhs.isEqual(rhs);
+}
+
 } // namespace pubsub_itc_fw

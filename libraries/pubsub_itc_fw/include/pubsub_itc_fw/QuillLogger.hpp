@@ -41,6 +41,14 @@ public:
     bool should_log_to_console(LogLevel level) const;
 
 private:
+
+    // Static counter for generating unique logger names
+    static std::atomic<uint64_t> instance_counter_;
+
+    // Helper to generate unique names
+    static std::string generate_unique_logger_name(const std::string& prefix);
+    static std::string generate_unique_sink_name(const std::string& prefix);
+
     std::shared_ptr<quill::Sink> file_sink_;
     std::shared_ptr<quill::Sink> console_sink_;
     std::shared_ptr<quill::Sink> syslog_sink_;

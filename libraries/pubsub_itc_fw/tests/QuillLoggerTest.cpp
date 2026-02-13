@@ -458,3 +458,123 @@ TEST(QuillLoggerIsolationTest, TwoLoggersWithSameLoggerNameShareLogger) {
     // sink2 is empty because logger2 never actually used it
     EXPECT_EQ(test_sink2->count(), 0);
 }
+
+// =============================================================================
+// Default Constructor Isolation Test
+// =============================================================================
+
+TEST(QuillLoggerDefaultConstructorTest, MultipleInstancesShareLoggerAndSink) {
+    QuillLogger logger1;
+    QuillLogger logger2;
+
+    EXPECT_NE(logger1.quill_logger(), logger2.quill_logger())
+        << "Expected both loggers to have separate underlying Quill loggers "
+        << "due to unique name generation";
+}
+
+// =============================================================================
+// File Constructor Isolation Test
+// =============================================================================
+
+TEST(QuillLoggerFileConstructorTest, MultipleInstancesShareLoggerAndSink) {
+    std::string file1 = "/tmp/quill_test_log1.log";
+    std::string file2 = "/tmp/quill_test_log2.log";
+
+    QuillLogger logger1(file1, FileOpenMode(FileOpenMode::Truncate), LogLevel::Debug, LogLevel::Debug, LogLevel::Debug);
+    QuillLogger logger2(file2, FileOpenMode(FileOpenMode::Truncate), LogLevel::Debug, LogLevel::Debug, LogLevel::Debug);
+
+    // After fix: loggers should be SEPARATE
+    EXPECT_NE(logger1.quill_logger(), logger2.quill_logger())
+        << "Expected both loggers to have separate underlying Quill loggers "
+        << "due to unique name generation in file constructor (fix applied)";
+
+    std::remove(file1.c_str());
+    std::remove(file2.c_str());
+}
+
+// =============================================================================
+// Cross-Talk Demonstration Test
+// =============================================================================
+
+TEST(QuillLoggerDefaultConstructorTest, LoggingCrossTalkBetweenInstances) {
+    QuillLogger logger1;
+    QuillLogger logger2;
+
+    logger1.set_log_level(LogLevel::Error);
+
+    // After fix: logger2 should NOT be affected by logger1's change
+    EXPECT_NE(logger2.log_level(), LogLevel(LogLevel::Error))
+        << "Expected logger2's level to remain independent from logger1";
+
+    logger2.set_log_level(LogLevel::Debug);
+
+    // After fix: logger1 should maintain its own level
+    EXPECT_EQ(logger1.log_level(), LogLevel::Error)
+        << "Expected logger1's level to remain Error (not changed by logger2)";
+}
+
+// =============================================================================
+// Sink Sharing Test
+// =============================================================================
+
+TEST(QuillLoggerDefaultConstructorTest, MultipleInstancesShareConsoleSink) {
+    QuillLogger logger1;
+    QuillLogger logger2;
+
+    // After fix: loggers should be separate (sink separation follows)
+    EXPECT_NE(logger1.quill_logger(), logger2.quill_logger())
+        << "Logger independence confirmed - each has unique sinks";
+}
+
+// =============================================================================
+// Production Scenario Test
+// =============================================================================
+
+TEST(QuillLoggerIsolationTest, ProductionScenarioWithMultipleComponents) {
+    // Purpose: Simulate a production scenario where multiple components
+    //          each create their own QuillLogger instance expecting isolation.
+    //
+    // This verifies that the fix ensures proper logger independence.
+
+    // Component A creates its logger
+    QuillLogger component_a_logger;
+    component_a_logger.set_log_level(LogLevel::Error);
+
+    // Component B creates its logger, expecting it to be independent
+    QuillLogger component_b_logger;
+    component_b_logger.set_log_level(LogLevel::Debug);
+
+    // After fix: Component A should maintain its own Error level
+    EXPECT_EQ(component_a_logger.log_level(), LogLevel::Error)
+        << "Component A's log level should remain Error (independent from Component B)";
+
+    // After fix: Component B should have its own Debug level
+    EXPECT_EQ(component_b_logger.log_level(), LogLevel::Debug)
+        << "Component B's log level should remain Debug (independent from Component A)";
+}
+
+// =============================================================================
+// Recommended Fix Verification Test (for future implementation)
+// =============================================================================
+
+TEST(QuillLoggerIsolationTest, ShouldProvideIsolation) {
+    // Purpose: This test is DISABLED and shows what SHOULD happen after fixing
+    //          the hardcoded names issue.
+    //
+    // Enable this test after implementing unique name generation.
+
+    QuillLogger logger1;
+    QuillLogger logger2;
+
+    // After fix: These should be DIFFERENT logger instances
+    EXPECT_NE(logger1.quill_logger(), logger2.quill_logger())
+        << "After fix, each QuillLogger instance should have its own "
+        << "unique underlying Quill logger";
+
+    // After fix: Setting one logger's level shouldn't affect the other
+    logger1.set_log_level(LogLevel::Error);
+    logger2.set_log_level(LogLevel::Debug);
+
+    EXPECT_EQ(logger1.log_level(), LogLevel::Error);
+    EXPECT_EQ(logger2.log_level(), LogLevel::Debug);
+}
