@@ -7,26 +7,36 @@
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
+#include <pubsub_itc_fw/PubSubItcException.hpp>
 
 namespace pubsub_itc_fw {
 
 ApplicationThread::~ApplicationThread() {
+    if (!run_loop_entered_.load()) {
+        // thread has not started yet, so no cleanup to do
+        return;
+    }
+
     if (thread_ != nullptr && thread_->joinable()) {
+        // Signal the run loop to exit
+        is_running_.store(false, std::memory_order_relaxed);
+        if (message_queue_ != nullptr) {
+            message_queue_->shutdown();
+        }
+
         try {
             bool joined = thread_->join_with_timeout(std::chrono::seconds(3));
             if (!joined) {
-                PUBSUB_LOG_STR(logger_, LogLevel::Error,
-                               "Failed to join thread: " + thread_name_ +
-                                   " during destruction");
-                 // Thread we cannot join means it might be rogue and still carry on trying
-                 // to use the lock-free queue, so we detach it here without freeing.
-                message_queue_.release();
+                auto errorString = fmt::format("Failed to join thread: {} during destruction", thread_name_);
+                PUBSUB_LOG_STR(logger_, LogLevel::Error, errorString);
+                // At this point, something is badly wrong; but do NOT
+                // release/destroy the queue while the thread may still run.
+                // TBD whether to assert/terminate here in production.
+                throw PubSubItcException(errorString);
             }
         } catch (const std::exception& ex) {
-            PUBSUB_LOG_STR(logger_,
-                           LogLevel::Error,
-                           "Failed to join thread: " + thread_name_ +
-                               " during destruction: " + ex.what());
+            PUBSUB_LOG_STR(logger_, LogLevel::Error,
+                           "Failed to join thread: " + thread_name_ + " during destruction: " + ex.what());
         }
     }
 }
@@ -56,6 +66,12 @@ void ApplicationThread::start() {
 
     thread_ = std::make_unique<ThreadWithJoinTimeout>();
     thread_->start([this]() { run_internal(); });
+
+     while (!run_loop_entered_.load(std::memory_order_acquire))
+     {
+         // TODO might use mm_pause here
+         std::this_thread::yield();
+     }
 }
 
 [[nodiscard]] bool ApplicationThread::join_with_timeout(
@@ -102,41 +118,32 @@ void ApplicationThread::cancel_timer(const std::string& name) {
 }
 
 void ApplicationThread::shutdown(const std::string& reason) {
-    std::cerr << fmt::format("{}:{} got here\n", __FILE__, __LINE__);
     is_running_.store(false, std::memory_order_relaxed);
     message_queue_->shutdown();
-    std::cerr << fmt::format("{}:{} got here\n", __FILE__, __LINE__);
 
     // TODO use fmt instead of string addition
 
     PUBSUB_LOG_STR(logger_, LogLevel::Info,
         "Thread " + thread_name_ + " received shutdown signal: " + reason);
 
-    std::cerr << fmt::format("{}:{} got here\n", __FILE__, __LINE__);
     if (thread_ != nullptr && thread_->joinable()) {
         try {
-    std::cerr << fmt::format("{}:{} got here\n", __FILE__, __LINE__);
             if (!thread_->join_with_timeout(std::chrono::seconds(2))) {
                 PUBSUB_LOG_STR(logger_, LogLevel::Error, "join with timeout failed");
-    std::cerr << fmt::format("{}:{} got here\n", __FILE__, __LINE__);
             }
         } catch (const std::exception& ex) {
             PUBSUB_LOG_STR(logger_, LogLevel::Error,
                 "Failed to join thread during shutdown: " + thread_name_ +
                     " " + ex.what());
-    std::cerr << fmt::format("{}:{} got here\n", __FILE__, __LINE__);
         }
     }
-    std::cerr << fmt::format("{}:{} got here\n", __FILE__, __LINE__);
 }
 
 void ApplicationThread::run_internal() {
+    run_loop_entered_.store(true, std::memory_order_release);
     is_running_.store(true, std::memory_order_relaxed);
 
-    PUBSUB_LOG(logger_,
-               LogLevel::Info,
-               "Starting thread {}",
-               thread_name_);
+    PUBSUB_LOG(logger_, LogLevel::Info, "Starting thread {}", thread_name_);
 
     try {
         for (;;) {

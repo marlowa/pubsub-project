@@ -234,6 +234,7 @@ class ApplicationThread {
 
     std::atomic<bool> is_paused_{false};
     std::atomic<bool> is_running_{false};
+    std::atomic<bool> run_loop_entered_{false};
     std::atomic<bool> has_processed_initial_event_{false};
 
     // Note: We heap allocate the lock free queue so that if the application thread

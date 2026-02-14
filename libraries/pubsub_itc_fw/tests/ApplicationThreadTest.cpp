@@ -158,6 +158,20 @@ public:
     EventType last_processed_type{EventType(EventType::None)};
 };
 
+struct TestThreadOwner {
+    std::unique_ptr<TestThread> thread;
+
+    ~TestThreadOwner() {
+        if (!thread) return;
+        thread->shutdown("test teardown");
+        // If join fails here, leak intentionally
+        if (!thread->join_with_timeout(std::chrono::seconds(3))) {
+            // Log or even std::cerr something, then:
+            (void)thread.release(); // leak; do NOT run ApplicationThread dtor
+        }
+    }
+};
+
 } // unnamed namespace
 
 // ------------------------------------------------------------
@@ -650,18 +664,19 @@ TEST_F(ApplicationThreadTest, DoubleStartThrowsException)
     // Why:  Prevents undefined behavior from multiple thread starts
     // How:  Start thread, then attempt to start again
 
+#if 1
     TestThread thread(logger_with_sink_.logger, reactor_, "TestThread",
                      ThreadID(1), make_queue_config(), make_allocator_config());
-    std::cerr << fmt::format("{}:{} got here\n", __FILE__, __LINE__);
+#else
+    TestThreadOwner owner{std::make_unique<TestThread>(logger_with_sink_.logger, reactor_, "TestThread",
+                     ThreadID(1), make_queue_config(), make_allocator_config())};
+    auto& thread = *owner.thread;
+#endif
     reactor_.run();
     thread.start();
-    std::cerr << fmt::format("{}:{} got here\n", __FILE__, __LINE__);
     // Second start should throw
-    std::cerr << fmt::format("{}:{} got here\n", __FILE__, __LINE__);
     EXPECT_THROW(thread.start(), PreconditionAssertion);
-    std::cerr << fmt::format("{}:{} got here\n", __FILE__, __LINE__);
     thread.shutdown("done");
-    std::cerr << fmt::format("{}:{} got here\n", __FILE__, __LINE__);
 }
 
 TEST_F(ApplicationThreadTest, ShutdownBeforeStartIsGraceful)
