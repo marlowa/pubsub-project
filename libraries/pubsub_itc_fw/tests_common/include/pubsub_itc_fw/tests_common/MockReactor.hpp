@@ -21,19 +21,18 @@ public:
 
     MockReactor(const ReactorConfiguration& config, QuillLogger& logger)
         : Reactor(config, logger)
-        , shutdown_called_(false)
-        , last_shutdown_reason_("")
     {
+    }
+
+    int run() override {
+        is_finished_.store(false, std::memory_order_release);
+        shutdown_reason_ = "";
+        return 0;
     }
 
     std::string get_thread_name_from_id(ThreadID id) const override
     {
         return "MockThread_" + std::to_string(static_cast<int>(id.get_value()));
-    }
-
-    bool shutdown_called() const
-    {
-        return shutdown_called_.load(std::memory_order_acquire);
     }
 };
 

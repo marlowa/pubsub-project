@@ -44,9 +44,11 @@ public:
 
     /**
      * @brief Starts the reactor's event loop.
+     * The function is virtual so that it can overridden in a mock.
+     *
      * @returns int An integer status code: 0 for normal shutdown, non-zero otherwise.
      */
-    int run();
+    virtual int run();
 
     /**
      * @brief Initiates a graceful shutdown of the reactor and all threads.
@@ -95,15 +97,17 @@ public:
         return is_finished_.load();
     }
 
+protected:
+    std::atomic<bool> is_finished_{false};
+    std::string shutdown_reason_;
+
 private:
     void checkForInactiveThreads();
     void checkForInactiveSockets();
     void dispatchEvents(int nfds, epoll_event* events);
 
     // The core of the reactor
-    int epoll_fd_;
-    std::atomic<bool> is_finished_{false};
-    std::string shutdown_reason_;
+    int epoll_fd_{-1};
 
     // Handler management, mapping file descriptors to their handlers
     std::map<int, std::unique_ptr<EventHandler>> handlers_;

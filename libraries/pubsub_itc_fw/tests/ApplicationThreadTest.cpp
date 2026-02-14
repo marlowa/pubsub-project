@@ -10,8 +10,8 @@
 #include <pubsub_itc_fw/AllocatorConfig.hpp>
 #include <pubsub_itc_fw/QueueConfig.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
-#include <pubsub_itc_fw/Reactor.hpp>
 
+#include <pubsub_itc_fw/tests_common/MockReactor.hpp>
 #include <pubsub_itc_fw/tests_common/TestSink.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
 
@@ -75,7 +75,7 @@ LoggerWithSink make_logger_with_sink(const std::string& logger_name,
 class ApplicationThreadTestEnv : public ::testing::Environment {
 public:
     LoggerWithSink* logger_with_sink = nullptr;
-    Reactor* reactor = nullptr;
+    MockReactor* reactor = nullptr;
 
     void SetUp() override {
         // Create long-lived logger + sink
@@ -85,7 +85,7 @@ public:
 
         // Create long-lived Reactor
         ReactorConfiguration cfg{};
-        reactor = new Reactor(cfg, logger_with_sink->logger);
+        reactor = new MockReactor(cfg, logger_with_sink->logger);
     }
 
     void TearDown() override {
@@ -114,7 +114,7 @@ public:
     }
 
     LoggerWithSink& logger_with_sink_;
-    Reactor& reactor_;
+    MockReactor& reactor_;
 };
 
 // ------------------------------------------------------------
@@ -177,6 +177,7 @@ TEST_F(ApplicationThreadTest, StartAndShutdown)
                       make_queue_config(),
                       make_allocator_config());
 
+    reactor_.run();
     thread.start();
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
@@ -204,6 +205,7 @@ TEST_F(ApplicationThreadTest, MessageProcessing)
                       make_queue_config(),
                       make_allocator_config());
 
+    reactor_.run();
     thread.start();
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
@@ -234,6 +236,7 @@ TEST_F(ApplicationThreadTest, PauseResume)
                       make_queue_config(),
                       make_allocator_config());
 
+    reactor_.run();
     thread.start();
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
@@ -260,7 +263,7 @@ TEST_F(ApplicationThreadTest, PauseResume)
 // Why:  This is the fatal-path contract: unhandled exceptions in the
 //       application thread should trigger a Reactor shutdown.
 // How:  Configure the TestThread to throw on message, enqueue a message,
-//       wait, then assert reactor.shutdown_called() and !thread.is_running().
+//       wait, then assert that reactor is finished and !thread.is_running().
 TEST_F(ApplicationThreadTest, ExceptionTriggersShutdown)
 {
     TestThread thread(logger_with_sink_.logger,
@@ -272,6 +275,7 @@ TEST_F(ApplicationThreadTest, ExceptionTriggersShutdown)
 
     thread.throw_on_message.store(true, std::memory_order_release);
 
+    reactor_.run();
     thread.start();
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
@@ -302,6 +306,7 @@ TEST_F(ApplicationThreadTest, QueueShutdownDropsMessages)
                       make_queue_config(),
                       make_allocator_config());
 
+    reactor_.run();
     thread.start();
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
@@ -361,6 +366,7 @@ TEST_F(ApplicationThreadTest, LoggingVerification)
                       make_queue_config(),
                       make_allocator_config());
 
+    reactor_.run();
     thread.start();
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
@@ -387,6 +393,7 @@ TEST_F(ApplicationThreadTest, PauseResumeUnderLoad)
                       make_queue_config(),
                       make_allocator_config());
 
+    reactor_.run();
     thread.start();
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
@@ -473,6 +480,7 @@ TEST_F(ApplicationThreadTest, WatermarkTransitions)
                       qc,
                       make_allocator_config());
 
+    reactor_.run();
     thread.start();
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
@@ -532,6 +540,7 @@ TEST_F(ApplicationThreadTest, ExceptionLoggingContainsThreadMetadata)
 
     thread.throw_on_message.store(true);
 
+    reactor_.run();
     thread.start();
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
@@ -574,6 +583,7 @@ TEST_F(ApplicationThreadTest, MessageOrderingPreserved)
                       make_queue_config(),
                       make_allocator_config());
 
+    reactor_.run();
     thread.start();
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
@@ -615,6 +625,7 @@ TEST_F(ApplicationThreadTest, LoggerIsolationAcrossThreads)
     TestThread t1(logger1.logger, reactor, "T1", ThreadID(1), make_queue_config(), make_allocator_config());
     TestThread t2(logger2.logger, reactor, "T2", ThreadID(2), make_queue_config(), make_allocator_config());
 
+    reactor_.run();
     t1.start();
     t2.start();
 
@@ -642,6 +653,7 @@ TEST_F(ApplicationThreadTest, DoubleStartThrowsException)
     TestThread thread(logger_with_sink_.logger, reactor_, "TestThread",
                      ThreadID(1), make_queue_config(), make_allocator_config());
     std::cerr << fmt::format("{}:{} got here\n", __FILE__, __LINE__);
+    reactor_.run();
     thread.start();
     std::cerr << fmt::format("{}:{} got here\n", __FILE__, __LINE__);
     // Second start should throw
@@ -674,6 +686,7 @@ TEST_F(ApplicationThreadTest, JoinWithTimeoutSucceeds)
     TestThread thread(logger_with_sink_.logger, reactor_, "TestThread",
                      ThreadID(1), make_queue_config(), make_allocator_config());
 
+    reactor_.run();
     thread.start();
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
     thread.shutdown("test");
@@ -754,6 +767,7 @@ TEST_F(ApplicationThreadTest, DestructorJoinsThread)
         TestThread thread(logger_with_sink_.logger, reactor_, "DestructorTest",
                          ThreadID(1), make_queue_config(), make_allocator_config());
 
+        reactor_.run();
         thread.start();
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
@@ -774,6 +788,7 @@ TEST_F(ApplicationThreadTest, MultiplePauseResumeCycles)
     TestThread thread(logger_with_sink_.logger, reactor_, "TestThread",
                      ThreadID(1), make_queue_config(), make_allocator_config());
 
+    reactor_.run();
     thread.start();
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
@@ -812,6 +827,7 @@ TEST_F(ApplicationThreadTest, ExceptionTriggersReactorShutdown)
 
     thread.throw_on_message.store(true);
 
+    reactor_.run();
     thread.start();
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
