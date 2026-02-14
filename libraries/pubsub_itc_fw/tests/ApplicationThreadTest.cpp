@@ -72,20 +72,49 @@ LoggerWithSink make_logger_with_sink(const std::string& logger_name,
     return out;
 }
 
+class ApplicationThreadTestEnv : public ::testing::Environment {
+public:
+    LoggerWithSink* logger_with_sink = nullptr;
+    Reactor* reactor = nullptr;
+
+    void SetUp() override {
+        // Create long-lived logger + sink
+        logger_with_sink = new LoggerWithSink(
+            make_logger_with_sink("global_AT_logger", "global_AT_sink")
+        );
+
+        // Create long-lived Reactor
+        ReactorConfiguration cfg{};
+        reactor = new Reactor(cfg, logger_with_sink->logger);
+    }
+
+    void TearDown() override {
+        delete reactor;
+        delete logger_with_sink;
+    }
+};
+
+// Register this environment ONLY for this translation unit
+static ::testing::Environment* const appThreadEnv =
+    ::testing::AddGlobalTestEnvironment(new ApplicationThreadTestEnv());
+
+static ApplicationThreadTestEnv* env() {
+    return static_cast<ApplicationThreadTestEnv*>(appThreadEnv);
+}
+
 class ApplicationThreadTest : public ::testing::Test {
 public:
-    ApplicationThreadTest() :
-        logger_with_sink_(make_logger_with_sink("logger_ApplicationThreadTest", "sink_ApplicationThreadTest")),
-        reactor_(reactor_configuration_, logger_with_sink_.logger) {
-    }
+    ApplicationThreadTest()
+        : logger_with_sink_(*env()->logger_with_sink),
+          reactor_(*env()->reactor)
+    {}
 
     void SetUp() override {
         logger_with_sink_.sink->clear();
     }
 
-    LoggerWithSink logger_with_sink_ ;
-    ReactorConfiguration reactor_configuration_{};
-    Reactor reactor_;
+    LoggerWithSink& logger_with_sink_;
+    Reactor& reactor_;
 };
 
 // ------------------------------------------------------------
