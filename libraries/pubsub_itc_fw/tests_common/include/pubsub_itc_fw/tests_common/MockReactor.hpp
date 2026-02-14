@@ -26,12 +26,6 @@ public:
     {
     }
 
-    void shutdown(const std::string& reason) override
-    {
-        shutdown_called_.store(true, std::memory_order_release);
-        last_shutdown_reason_ = reason;
-    }
-
     std::string get_thread_name_from_id(ThreadID id) const override
     {
         return "MockThread_" + std::to_string(static_cast<int>(id.get_value()));
@@ -41,15 +35,6 @@ public:
     {
         return shutdown_called_.load(std::memory_order_acquire);
     }
-
-    const std::string& last_shutdown_reason() const
-    {
-        return last_shutdown_reason_;
-    }
-
-private:
-    std::atomic<bool> shutdown_called_;
-    std::string last_shutdown_reason_;
 };
 
 } // namespace pubsub_itc_fw

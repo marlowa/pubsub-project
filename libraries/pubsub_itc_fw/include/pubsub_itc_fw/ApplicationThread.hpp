@@ -146,7 +146,7 @@ class ApplicationThread {
      * @return LockFreeMessageQueue<EventMessage>& The message queue.
      */
     LockFreeMessageQueue<EventMessage>& get_queue() {
-        return message_queue_;
+        return *message_queue_;
     }
 
     /**
@@ -236,7 +236,11 @@ class ApplicationThread {
     std::atomic<bool> is_running_{false};
     std::atomic<bool> has_processed_initial_event_{false};
 
-    LockFreeMessageQueue<EventMessage> message_queue_;
+    // Note: We heap allocate the lock free queue so that if the application thread
+    // misbehaves and does not join properly in the dtor, we can still destroy the
+    // application thread, but we leave the queue alone, in case the rogue thread
+    // still tries to use it.
+    std::unique_ptr<LockFreeMessageQueue<EventMessage>> message_queue_;
     std::unique_ptr<ThreadWithJoinTimeout> thread_;
 };
 

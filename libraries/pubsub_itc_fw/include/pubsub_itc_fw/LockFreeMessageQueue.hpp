@@ -87,9 +87,10 @@ public:
             return;
         }
 
-        while (!empty()) {
-            (void)dequeue();
-        }
+        // After this point, enqueue() becomes a no-op and producers
+        // will silently drop messages. The single consumer thread
+        // remains responsible for draining any remaining items via
+        // dequeue(), preserving the MPSC contract. }
     }
 
     /**

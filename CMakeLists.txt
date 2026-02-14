@@ -6,6 +6,9 @@ project(pubsub_itc_fw_project
     LANGUAGES CXX
 )
 
+# Note: We cannot use the thread sanitizer because it clashes with the special instructions
+# for lock free programming.
+
 # Set the C++ standard to C++17.
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -20,6 +23,9 @@ add_compile_options(-g -Wall -pedantic -Werror)
 add_compile_options(-mcx16
    -march=x86-64-v2  # This is the minimum level that guarantees CMPXCHG16B
                    )
+
+# --- Optional ThreadSanitizer Support ---
+option(ENABLE_TSAN "Enable ThreadSanitizer for race condition detection" OFF)
 
 # --- Configure Third-Party Dependency Discovery ---
 # CMake will search for packages within the paths specified in CMAKE_PREFIX_PATH.

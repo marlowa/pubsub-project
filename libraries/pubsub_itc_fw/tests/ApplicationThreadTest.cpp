@@ -1,7 +1,8 @@
-#include <gtest/gtest.h>
 #include <atomic>
 #include <chrono>
 #include <thread>
+
+#include <gtest/gtest.h>
 
 #include <quill/Frontend.h>
 
@@ -9,8 +10,9 @@
 #include <pubsub_itc_fw/AllocatorConfig.hpp>
 #include <pubsub_itc_fw/QueueConfig.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
+#include <pubsub_itc_fw/Reactor.hpp>
+
 #include <pubsub_itc_fw/tests_common/TestSink.hpp>
-#include <pubsub_itc_fw/tests_common/MockReactor.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
 
 using namespace pubsub_itc_fw;
@@ -70,6 +72,22 @@ LoggerWithSink make_logger_with_sink(const std::string& logger_name,
     return out;
 }
 
+class ApplicationThreadTest : public ::testing::Test {
+public:
+    ApplicationThreadTest() :
+        logger_with_sink_(make_logger_with_sink("logger_ApplicationThreadTest", "sink_ApplicationThreadTest")),
+        reactor_(reactor_configuration_, logger_with_sink_.logger) {
+    }
+
+    void SetUp() override {
+        logger_with_sink_.sink->clear();
+    }
+
+    LoggerWithSink logger_with_sink_ ;
+    ReactorConfiguration reactor_configuration_{};
+    Reactor reactor_;
+};
+
 // ------------------------------------------------------------
 // Test subclass of ApplicationThread
 // ------------------------------------------------------------
@@ -82,9 +100,9 @@ public:
                Reactor& reactor,
                const std::string& name,
                ThreadID id,
-               const QueueConfig& qc,
-               const AllocatorConfig& ac)
-        : ApplicationThread(logger, reactor, name, id, qc, ac)
+               const QueueConfig& queueConfig,
+               const AllocatorConfig& allocatorConfig)
+        : ApplicationThread(logger, reactor, name, id, queueConfig, allocatorConfig)
     {
     }
 
@@ -121,14 +139,10 @@ public:
 // Why:  Confirms the basic lifecycle wiring (start + shutdown) is correct.
 // How:  Start the thread, wait briefly, assert is_running() is true, then
 //       call shutdown and assert is_running() is false.
-TEST(ApplicationThreadTest, StartAndShutdown)
+TEST_F(ApplicationThreadTest, StartAndShutdown)
 {
-    auto logger_with_sink = make_logger_with_sink("logger_StartAndShutdown", "sink_StartAndShutdown");
-    ReactorConfiguration cfg{};
-    MockReactor reactor(cfg, logger_with_sink.logger);
-
-    TestThread thread(logger_with_sink.logger,
-                      reactor,
+    TestThread thread(logger_with_sink_.logger,
+                      reactor_,
                       "TestThread",
                       ThreadID(1),
                       make_queue_config(),
@@ -152,14 +166,10 @@ TEST(ApplicationThreadTest, StartAndShutdown)
 //       run loop is actually draining the queue.
 // How:  Start the thread, enqueue a single Initial event, wait, then
 //       shutdown and assert processed_count >= 1.
-TEST(ApplicationThreadTest, MessageProcessing)
+TEST_F(ApplicationThreadTest, MessageProcessing)
 {
-    auto logger_with_sink = make_logger_with_sink("logger_MessageProcessing", "sink_MessageProcessing");
-    ReactorConfiguration cfg{};
-    MockReactor reactor(cfg, logger_with_sink.logger);
-
-    TestThread thread(logger_with_sink.logger,
-                      reactor,
+    TestThread thread(logger_with_sink_.logger,
+                      reactor_,
                       "TestThread",
                       ThreadID(1),
                       make_queue_config(),
@@ -186,14 +196,10 @@ TEST(ApplicationThreadTest, MessageProcessing)
 //       messages are not lost but processed after resume.
 // How:  Pause the thread, enqueue a message, assert processed_count == 0,
 //       then resume, wait, and assert processed_count >= 1.
-TEST(ApplicationThreadTest, PauseResume)
+TEST_F(ApplicationThreadTest, PauseResume)
 {
-    auto logger_with_sink = make_logger_with_sink("logger_PauseResume", "sink_PauseResume");
-    ReactorConfiguration cfg{};
-    MockReactor reactor(cfg, logger_with_sink.logger);
-
-    TestThread thread(logger_with_sink.logger,
-                      reactor,
+    TestThread thread(logger_with_sink_.logger,
+                      reactor_,
                       "TestThread",
                       ThreadID(1),
                       make_queue_config(),
@@ -226,14 +232,10 @@ TEST(ApplicationThreadTest, PauseResume)
 //       application thread should trigger a Reactor shutdown.
 // How:  Configure the TestThread to throw on message, enqueue a message,
 //       wait, then assert reactor.shutdown_called() and !thread.is_running().
-TEST(ApplicationThreadTest, ExceptionTriggersShutdown)
+TEST_F(ApplicationThreadTest, ExceptionTriggersShutdown)
 {
-    auto logger_with_sink = make_logger_with_sink("logger_ExceptionTriggersShutdown", "sink_ExceptionTriggersShutdown");
-    ReactorConfiguration cfg{};
-    MockReactor reactor(cfg, logger_with_sink.logger);
-
-    TestThread thread(logger_with_sink.logger,
-                      reactor,
+    TestThread thread(logger_with_sink_.logger,
+                      reactor_,
                       "TestThread",
                       ThreadID(1),
                       make_queue_config(),
@@ -249,7 +251,7 @@ TEST(ApplicationThreadTest, ExceptionTriggersShutdown)
 
     std::this_thread::sleep_for(std::chrono::milliseconds(30));
 
-    EXPECT_TRUE(reactor.shutdown_called());
+    EXPECT_TRUE(reactor_.is_finished());
     EXPECT_FALSE(thread.is_running());
 }
 
@@ -262,14 +264,10 @@ TEST(ApplicationThreadTest, ExceptionTriggersShutdown)
 //       ApplicationThread wrapper around it.
 // How:  Shutdown the thread, then enqueue a message and wait; assert that
 //       processed_count remains 0.
-TEST(ApplicationThreadTest, QueueShutdownDropsMessages)
+TEST_F(ApplicationThreadTest, QueueShutdownDropsMessages)
 {
-    auto logger_with_sink = make_logger_with_sink("logger_QueueShutdownDropsMessages", "sink_QueueShutdownDropsMessages");
-    ReactorConfiguration cfg{};
-    MockReactor reactor(cfg, logger_with_sink.logger);
-
-    TestThread thread(logger_with_sink.logger,
-                      reactor,
+    TestThread thread(logger_with_sink_.logger,
+                      reactor_,
                       "TestThread",
                       ThreadID(1),
                       make_queue_config(),
@@ -297,14 +295,10 @@ TEST(ApplicationThreadTest, QueueShutdownDropsMessages)
 //       here avoids subtle timing bugs later.
 // How:  Set start and finish timestamps and assert they are returned
 //       unchanged by the getters.
-TEST(ApplicationThreadTest, TimestampSemantics)
+TEST_F(ApplicationThreadTest, TimestampSemantics)
 {
-    auto logger_with_sink = make_logger_with_sink("logger_TimestampSemantics", "sink_TimestampSemantics");
-    ReactorConfiguration cfg{};
-    MockReactor reactor(cfg, logger_with_sink.logger);
-
-    TestThread thread(logger_with_sink.logger,
-                      reactor,
+    TestThread thread(logger_with_sink_.logger,
+                      reactor_,
                       "TestThread",
                       ThreadID(1),
                       make_queue_config(),
@@ -329,16 +323,10 @@ TEST(ApplicationThreadTest, TimestampSemantics)
 //       to the configured TestSink.
 // How:  Clear the sink, start and shutdown the thread, then assert that
 //       at least one log record was captured and that it mentions "shutdown".
-TEST(ApplicationThreadTest, LoggingVerification)
+TEST_F(ApplicationThreadTest, LoggingVerification)
 {
-    auto logger_with_sink = make_logger_with_sink("logger_LoggingVerification", "sink_LoggingVerification");
-    ReactorConfiguration cfg{};
-    MockReactor reactor(cfg, logger_with_sink.logger);
-
-    logger_with_sink.sink->clear();
-
-    TestThread thread(logger_with_sink.logger,
-                      reactor,
+    TestThread thread(logger_with_sink_.logger,
+                      reactor_,
                       "TestThread",
                       ThreadID(1),
                       make_queue_config(),
@@ -349,8 +337,8 @@ TEST(ApplicationThreadTest, LoggingVerification)
 
     thread.shutdown("log test");
 
-    EXPECT_GE(logger_with_sink.sink->count(), 1);
-    EXPECT_TRUE(logger_with_sink.sink->contains_message("shutdown"));
+    EXPECT_GE(logger_with_sink_.sink->count(), 1);
+    EXPECT_TRUE(logger_with_sink_.sink->contains_message("shutdown"));
 }
 
 // ------------------------------------------------------------
@@ -361,14 +349,10 @@ TEST(ApplicationThreadTest, LoggingVerification)
 //       they are processed once the thread is resumed.
 // How:  Pause the thread, enqueue many messages, assert no processing,
 //       then resume, wait, and assert processed_count > 0.
-TEST(ApplicationThreadTest, PauseResumeUnderLoad)
+TEST_F(ApplicationThreadTest, PauseResumeUnderLoad)
 {
-    auto logger_with_sink = make_logger_with_sink("logger_PauseResumeUnderLoad", "sink_PauseResumeUnderLoad");
-    ReactorConfiguration cfg{};
-    MockReactor reactor(cfg, logger_with_sink.logger);
-
-    TestThread thread(logger_with_sink.logger,
-                      reactor,
+    TestThread thread(logger_with_sink_.logger,
+                      reactor_,
                       "TestThread",
                       ThreadID(1),
                       make_queue_config(),
@@ -419,12 +403,8 @@ TEST(ApplicationThreadTest, PauseResumeUnderLoad)
 // How:  Pause the thread to prevent draining, enqueue messages to cross
 //       the high watermark, then resume and wait for both watermarks to
 //       fire using futures for deterministic synchronization.
-TEST(ApplicationThreadTest, WatermarkTransitions)
+TEST_F(ApplicationThreadTest, WatermarkTransitions)
 {
-    auto logger_with_sink = make_logger_with_sink("logger_WatermarkTransitions", "sink_WatermarkTransitions");
-    ReactorConfiguration cfg{};
-    MockReactor reactor(cfg, logger_with_sink.logger);
-
     QueueConfig qc = make_queue_config();
     qc.low_watermark = 1;
     qc.high_watermark = 3;
@@ -457,8 +437,8 @@ TEST(ApplicationThreadTest, WatermarkTransitions)
         }
     };
 
-    TestThread thread(logger_with_sink.logger,
-                      reactor,
+    TestThread thread(logger_with_sink_.logger,
+                      reactor_,
                       "TestThread",
                       ThreadID(1),
                       qc,
@@ -512,16 +492,10 @@ TEST(ApplicationThreadTest, WatermarkTransitions)
 //       must carry enough metadata to identify the failing thread.
 // How:  Force an exception, then scan TestSink::records() for a message
 //       containing "MetaThread" and "[42]".
-TEST(ApplicationThreadTest, ExceptionLoggingContainsThreadMetadata)
+TEST_F(ApplicationThreadTest, ExceptionLoggingContainsThreadMetadata)
 {
-    auto logger_with_sink = make_logger_with_sink("logger_ExceptionLoggingContainsThreadMetadata", "sink_ExceptionLoggingContainsThreadMetadata");
-    ReactorConfiguration cfg{};
-    MockReactor reactor(cfg, logger_with_sink.logger);
-
-    logger_with_sink.sink->clear();
-
-    TestThread thread(logger_with_sink.logger,
-                      reactor,
+    TestThread thread(logger_with_sink_.logger,
+                      reactor_,
                       "MetaThread",
                       ThreadID(42),
                       make_queue_config(),
@@ -537,7 +511,7 @@ TEST(ApplicationThreadTest, ExceptionLoggingContainsThreadMetadata)
 
     std::this_thread::sleep_for(std::chrono::milliseconds(30));
 
-    const auto& records = logger_with_sink.sink->records();
+    const auto& records = logger_with_sink_.sink->records();
 
     bool found_name = false;
     bool found_id = false;
@@ -562,14 +536,10 @@ TEST(ApplicationThreadTest, ExceptionLoggingContainsThreadMetadata)
 //       protocols; this test gives a basic sanity check.
 // How:  Enqueue three events with distinct types and assert that the last
 //       processed type is the last one enqueued.
-TEST(ApplicationThreadTest, MessageOrderingPreserved)
+TEST_F(ApplicationThreadTest, MessageOrderingPreserved)
 {
-    auto logger_with_sink = make_logger_with_sink("logger_MessageOrderingPreserved", "sink_MessageOrderingPreserved");
-    ReactorConfiguration cfg{};
-    MockReactor reactor(cfg, logger_with_sink.logger);
-
-    TestThread thread(logger_with_sink.logger,
-                      reactor,
+    TestThread thread(logger_with_sink_.logger,
+                      reactor_,
                       "OrderThread",
                       ThreadID(1),
                       make_queue_config(),
@@ -602,7 +572,7 @@ TEST(ApplicationThreadTest, MessageOrderingPreserved)
 // How:  Create two loggers + sinks, run two threads, shutdown with
 //       different reasons, and assert each sink only contains its own
 //       shutdown reason.
-TEST(ApplicationThreadTest, LoggerIsolationAcrossThreads)
+TEST_F(ApplicationThreadTest, LoggerIsolationAcrossThreads)
 {
     auto logger1 = make_logger_with_sink("logger1_LoggerIsolationAcrossThreads", "sink1_LoggerIsolationAcrossThreads");
     auto logger2 = make_logger_with_sink("logger2_LoggerIsolationAcrossThreads", "sink2_LoggerIsolationAcrossThreads");
@@ -611,7 +581,7 @@ TEST(ApplicationThreadTest, LoggerIsolationAcrossThreads)
     logger2.sink->clear();
 
     ReactorConfiguration cfg{};
-    MockReactor reactor(cfg, logger1.logger);
+    Reactor reactor(cfg, logger1.logger);
 
     TestThread t1(logger1.logger, reactor, "T1", ThreadID(1), make_queue_config(), make_allocator_config());
     TestThread t2(logger2.logger, reactor, "T2", ThreadID(2), make_queue_config(), make_allocator_config());
@@ -632,4 +602,196 @@ TEST(ApplicationThreadTest, LoggerIsolationAcrossThreads)
 
     EXPECT_FALSE(logger1.sink->contains_message("two"));
     EXPECT_FALSE(logger2.sink->contains_message("one"));
+}
+
+TEST_F(ApplicationThreadTest, DoubleStartThrowsException)
+{
+    // What: Verifies that calling start() twice throws PreconditionAssertion
+    // Why:  Prevents undefined behavior from multiple thread starts
+    // How:  Start thread, then attempt to start again
+
+    TestThread thread(logger_with_sink_.logger, reactor_, "TestThread",
+                     ThreadID(1), make_queue_config(), make_allocator_config());
+    std::cerr << fmt::format("{}:{} got here\n", __FILE__, __LINE__);
+    thread.start();
+    std::cerr << fmt::format("{}:{} got here\n", __FILE__, __LINE__);
+    // Second start should throw
+    std::cerr << fmt::format("{}:{} got here\n", __FILE__, __LINE__);
+    EXPECT_THROW(thread.start(), PreconditionAssertion);
+    std::cerr << fmt::format("{}:{} got here\n", __FILE__, __LINE__);
+    thread.shutdown("done");
+    std::cerr << fmt::format("{}:{} got here\n", __FILE__, __LINE__);
+}
+
+TEST_F(ApplicationThreadTest, ShutdownBeforeStartIsGraceful)
+{
+    // What: Verifies that calling shutdown() on a never-started thread is safe
+    // Why:  Edge case handling - cleanup without initialization
+    // How:  Create thread, call shutdown without start
+
+    TestThread thread(logger_with_sink_.logger, reactor_, "TestThread",
+                     ThreadID(1), make_queue_config(), make_allocator_config());
+
+    // Should not crash or hang
+    EXPECT_NO_THROW(thread.shutdown("never started"));
+    EXPECT_FALSE(thread.is_running());
+}
+
+TEST_F(ApplicationThreadTest, JoinWithTimeoutSucceeds)
+{
+    // What: Verifies join_with_timeout returns true when thread finishes
+    // Why:  Tests the join mechanism works correctly
+
+    TestThread thread(logger_with_sink_.logger, reactor_, "TestThread",
+                     ThreadID(1), make_queue_config(), make_allocator_config());
+
+    thread.start();
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    thread.shutdown("test");
+
+    // Thread should finish quickly
+    bool joined = thread.join_with_timeout(std::chrono::milliseconds(500));
+    EXPECT_TRUE(joined);
+}
+
+TEST_F(ApplicationThreadTest, JoinWithTimeoutBeforeStartReturnsFalse)
+{
+    // What: Verifies join_with_timeout returns false when thread never started
+    // Why:  Edge case - joining a thread that doesn't exist
+
+    TestThread thread(logger_with_sink_.logger, reactor_, "TestThread",
+                     ThreadID(1), make_queue_config(), make_allocator_config());
+
+    // Should return false immediately
+    bool joined = thread.join_with_timeout(std::chrono::milliseconds(100));
+    EXPECT_FALSE(joined);
+}
+
+TEST_F(ApplicationThreadTest, TimestampGettersAndSetters)
+{
+    // What: Verifies timestamp tracking functionality
+    // Why:  These are used for latency measurement in production
+
+    TestThread thread(logger_with_sink_.logger, reactor_, "TestThread",
+                     ThreadID(1), make_queue_config(), make_allocator_config());
+
+    auto now = std::chrono::system_clock::now();
+    auto later = now + std::chrono::milliseconds(100);
+
+    thread.set_time_event_started(now);
+    thread.set_time_event_finished(later);
+
+    EXPECT_EQ(thread.get_time_event_started(), now);
+    EXPECT_EQ(thread.get_time_event_finished(), later);
+}
+
+TEST_F(ApplicationThreadTest, InitialEventFlagTracking)
+{
+    // What: Verifies has_processed_initial_event flag works
+    // Why:  Used for initialization sequencing in production
+
+    TestThread thread(logger_with_sink_.logger, reactor_, "TestThread",
+                     ThreadID(1), make_queue_config(), make_allocator_config());
+
+    EXPECT_FALSE(thread.get_has_processed_initial_event());
+
+    thread.set_has_processed_initial_event();
+
+    EXPECT_TRUE(thread.get_has_processed_initial_event());
+}
+
+TEST_F(ApplicationThreadTest, ThreadNameAndIDGetters)
+{
+    // What: Verifies thread metadata is correctly stored and retrieved
+    // Why:  Critical for debugging and logging
+
+    const std::string expected_name = "MyTestThread";
+    const ThreadID expected_id(123);
+
+    TestThread thread(logger_with_sink_.logger, reactor_, expected_name,
+                     expected_id, make_queue_config(), make_allocator_config());
+
+    EXPECT_EQ(thread.get_thread_name(), expected_name);
+    EXPECT_EQ(thread.get_thread_id(), expected_id);
+}
+
+TEST_F(ApplicationThreadTest, DestructorJoinsThread)
+{
+    // What: Verifies destructor attempts to join the thread
+    // Why:  Ensures clean shutdown semantics
+    // How:  Let thread go out of scope while running, check logs for join attempt
+
+    {
+        TestThread thread(logger_with_sink_.logger, reactor_, "DestructorTest",
+                         ThreadID(1), make_queue_config(), make_allocator_config());
+
+        thread.start();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
+        // Let it go out of scope without explicit shutdown
+        // Destructor should attempt join with 3-second timeout
+    }
+
+    // Check that destructor attempted to join (might log error if timeout)
+    // This is more of a "doesn't crash" test
+    SUCCEED();
+}
+
+TEST_F(ApplicationThreadTest, MultiplePauseResumeCycles)
+{
+    // What: Verifies pause/resume can be called multiple times
+    // Why:  Tests state machine robustness
+
+    TestThread thread(logger_with_sink_.logger, reactor_, "TestThread",
+                     ThreadID(1), make_queue_config(), make_allocator_config());
+
+    thread.start();
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
+    // Cycle 1
+    thread.pause();
+    EventMessage msg1 = EventMessage::create_reactor_event(EventType(EventType::Initial));
+    thread.post_message(ThreadID(1), std::move(msg1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    EXPECT_EQ(thread.processed_count.load(), 0);
+
+    thread.resume();
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    EXPECT_EQ(thread.processed_count.load(), 1);
+
+    // Cycle 2
+    thread.pause();
+    EventMessage msg2 = EventMessage::create_reactor_event(EventType(EventType::Initial));
+    thread.post_message(ThreadID(1), std::move(msg2));
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    EXPECT_EQ(thread.processed_count.load(), 1); // Still 1
+
+    thread.resume();
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    EXPECT_EQ(thread.processed_count.load(), 2);
+
+    thread.shutdown("done");
+}
+
+TEST_F(ApplicationThreadTest, ExceptionTriggersReactorShutdown)
+{
+    // What: Verifies that reactor.shutdown() is called when exception occurs
+    // Why:  Critical contract - unhandled exception is fatal
+
+    TestThread thread(logger_with_sink_.logger, reactor_, "TestThread",
+                     ThreadID(1), make_queue_config(), make_allocator_config());
+
+    thread.throw_on_message.store(true);
+
+    thread.start();
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
+    EventMessage msg = EventMessage::create_reactor_event(EventType(EventType::Initial));
+    thread.post_message(ThreadID(1), std::move(msg));
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    // Verify reactor's shutdown was called
+    EXPECT_TRUE(reactor_.is_finished());
+    EXPECT_FALSE(thread.is_running());
 }

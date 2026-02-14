@@ -91,6 +91,10 @@ public:
      */
     virtual std::string get_thread_name_from_id(ThreadID id) const;
 
+    bool is_finished() const {
+        return is_finished_.load();
+    }
+
 private:
     void checkForInactiveThreads();
     void checkForInactiveSockets();
@@ -99,6 +103,7 @@ private:
     // The core of the reactor
     int epoll_fd_;
     std::atomic<bool> is_finished_{false};
+    std::string shutdown_reason_;
 
     // Handler management, mapping file descriptors to their handlers
     std::map<int, std::unique_ptr<EventHandler>> handlers_;

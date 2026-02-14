@@ -75,14 +75,20 @@ public:
         return thread_.joinable();
     }
 
+#if 1
     /**
      * @brief Joins the thread if joinable.
+     *
+     * TODO need to think about this, is it dangerous for this function to exist,
+     * since it could block forever? The unit test currently uses it.
+     *
      */
     void join() {
         if (thread_.joinable()) {
             thread_.join();
         }
     }
+#endif
 
     /**
      * @brief Attempts to join the thread within the given timeout.
