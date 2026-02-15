@@ -97,8 +97,9 @@ class ApplicationThread {
 
     /**
      * @brief The main loop for the application thread.
+     * TODO we need to remember why we had this as pure virtual at one point.
      */
-    virtual void run() = 0;
+    void run();
 
     /**
      * Starts the underlying thread.

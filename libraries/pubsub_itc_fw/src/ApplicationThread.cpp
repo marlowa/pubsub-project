@@ -67,6 +67,7 @@ void ApplicationThread::start() {
     thread_ = std::make_unique<ThreadWithJoinTimeout>();
     thread_->start([this]() { run_internal(); });
 
+    // Make sure we do not return until the started thread is in the run loop.
      while (!run_loop_entered_.load(std::memory_order_acquire))
      {
          // TODO might use mm_pause here
@@ -90,8 +91,7 @@ void ApplicationThread::resume() {
     is_paused_.store(false, std::memory_order_relaxed);
 }
 
-void ApplicationThread::post_message(ThreadID target_thread_id,
-                                     EventMessage message) {
+void ApplicationThread::post_message(ThreadID target_thread_id, EventMessage message) {
     (void)target_thread_id; // routing to other threads is Reactor’s job
     message_queue_->enqueue(std::move(message));
 }
@@ -133,9 +133,26 @@ void ApplicationThread::shutdown(const std::string& reason) {
             }
         } catch (const std::exception& ex) {
             PUBSUB_LOG_STR(logger_, LogLevel::Error,
-                "Failed to join thread during shutdown: " + thread_name_ +
-                    " " + ex.what());
+                "Failed to join thread during shutdown: " + thread_name_ + " " + ex.what());
         }
+    }
+}
+
+void ApplicationThread::run() {
+    try {
+        std::cerr << fmt::format("{}:{} got here\n", __FILE__, __LINE__);
+        run_internal();
+        std::cerr << fmt::format("{}:{} got here\n", __FILE__, __LINE__);
+    } catch (const std::exception& ex) {
+        std::cerr << fmt::format("{}:{} got here\n", __FILE__, __LINE__);
+        PUBSUB_LOG(logger_, LogLevel::Error, "{} [{}] terminating due to exception: {}",
+                   thread_name_, thread_id_.get_value(), ex.what());
+        reactor_.shutdown("thread run function finished abnormally");
+    } catch (...) {
+        std::cerr << fmt::format("{}:{} got here\n", __FILE__, __LINE__);
+        PUBSUB_LOG(logger_, LogLevel::Error, "{} [{}] terminating due to unknown exception",
+                   thread_name_, thread_id_.get_value());
+        reactor_.shutdown("thread run function finished abnormally");
     }
 }
 
@@ -185,8 +202,7 @@ void ApplicationThread::run_internal() {
     } catch (const std::exception& ex) {
         is_running_.store(false, std::memory_order_relaxed);
 
-        PUBSUB_LOG(logger_, LogLevel::Error,
-                   "{} [{}] terminating due to exception: {}",
+        PUBSUB_LOG(logger_, LogLevel::Error, "{} [{}] terminating due to exception: {}",
                    thread_name_, thread_id_.get_value(), ex.what());
 
         reactor_.shutdown("thread run function finished abnormally");

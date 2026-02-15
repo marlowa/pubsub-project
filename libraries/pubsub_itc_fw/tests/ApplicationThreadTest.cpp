@@ -135,13 +135,6 @@ public:
     {
     }
 
-    void run() override
-    {
-        // Delegate to the framework’s internal loop so we exercise the real
-        // ApplicationThread behavior (logging, shutdown, exception handling).
-        run_internal();
-    }
-
     void process_message(EventMessage& msg) override
     {
         processed_count.fetch_add(1, std::memory_order_release);
@@ -156,20 +149,6 @@ public:
     std::atomic<int> processed_count{0};
     std::atomic<bool> throw_on_message{false};
     EventType last_processed_type{EventType(EventType::None)};
-};
-
-struct TestThreadOwner {
-    std::unique_ptr<TestThread> thread;
-
-    ~TestThreadOwner() {
-        if (!thread) return;
-        thread->shutdown("test teardown");
-        // If join fails here, leak intentionally
-        if (!thread->join_with_timeout(std::chrono::seconds(3))) {
-            // Log or even std::cerr something, then:
-            (void)thread.release(); // leak; do NOT run ApplicationThread dtor
-        }
-    }
 };
 
 } // unnamed namespace
@@ -296,7 +275,10 @@ TEST_F(ApplicationThreadTest, ExceptionTriggersShutdown)
     EventMessage msg = EventMessage::create_reactor_event(EventType(EventType::Initial));
     thread.post_message(ThreadID(1), std::move(msg));
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
+    // did the thread ever touch the message?
+    EXPECT_GT(thread.processed_count.load(std::memory_order_acquire), 0);
 
     EXPECT_TRUE(reactor_.is_finished());
     EXPECT_FALSE(thread.is_running());
@@ -664,14 +646,8 @@ TEST_F(ApplicationThreadTest, DoubleStartThrowsException)
     // Why:  Prevents undefined behavior from multiple thread starts
     // How:  Start thread, then attempt to start again
 
-#if 1
     TestThread thread(logger_with_sink_.logger, reactor_, "TestThread",
                      ThreadID(1), make_queue_config(), make_allocator_config());
-#else
-    TestThreadOwner owner{std::make_unique<TestThread>(logger_with_sink_.logger, reactor_, "TestThread",
-                     ThreadID(1), make_queue_config(), make_allocator_config())};
-    auto& thread = *owner.thread;
-#endif
     reactor_.run();
     thread.start();
     // Second start should throw
