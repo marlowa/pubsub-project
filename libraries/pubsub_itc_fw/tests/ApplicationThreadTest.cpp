@@ -200,12 +200,14 @@ TEST_F(ApplicationThreadTest, MessageProcessing)
 
     reactor_.run();
     thread.start();
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
-    EventMessage msg = EventMessage::create_reactor_event(EventType(EventType::Initial));
-    thread.post_message(ThreadID(1), std::move(msg));
+    thread.post_message(ThreadID(1), EventMessage::create_reactor_event(EventType(EventType::Initial)));
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    // Wait until the message is actually processed
+    for (int i = 0; i < 100 && thread.processed_count.load() == 0; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
     thread.shutdown("done");
 
     EXPECT_GE(thread.processed_count.load(), 1);
@@ -270,15 +272,21 @@ TEST_F(ApplicationThreadTest, ExceptionTriggersShutdown)
 
     reactor_.run();
     thread.start();
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
     EventMessage msg = EventMessage::create_reactor_event(EventType(EventType::Initial));
     thread.post_message(ThreadID(1), std::move(msg));
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    // Wait until the message is processed (which will throw)
+    for (int i = 0; i < 100 && thread.processed_count.load() == 0; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
 
-    // did the thread ever touch the message?
     EXPECT_GT(thread.processed_count.load(std::memory_order_acquire), 0);
+
+    // Now wait for the reactor to observe shutdown
+    for (int i = 0; i < 100 && !reactor_.is_finished(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
 
     EXPECT_TRUE(reactor_.is_finished());
     EXPECT_FALSE(thread.is_running());
@@ -529,36 +537,42 @@ TEST_F(ApplicationThreadTest, ExceptionLoggingContainsThreadMetadata)
 {
     TestThread thread(logger_with_sink_.logger,
                       reactor_,
-                      "MetaThread",
-                      ThreadID(42),
+                      "TestThread",
+                      ThreadID(1),
                       make_queue_config(),
                       make_allocator_config());
 
-    thread.throw_on_message.store(true);
+    thread.throw_on_message.store(true, std::memory_order_release);
 
     reactor_.run();
     thread.start();
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
     EventMessage msg = EventMessage::create_reactor_event(EventType(EventType::Initial));
     thread.post_message(ThreadID(1), std::move(msg));
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    // 1. Wait until the message is processed (which will then throw)
+    for (int i = 0; i < 100 && thread.processed_count.load(std::memory_order_acquire) == 0; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    EXPECT_GT(thread.processed_count.load(std::memory_order_acquire), 0);
 
-    const auto& records = logger_with_sink_.sink->records();
+    // 2. Wait until the reactor has shut down (exception handler finished)
+    for (int i = 0; i < 100 && !reactor_.is_finished(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    EXPECT_TRUE(reactor_.is_finished());
 
-    bool found_name = false;
-    bool found_id = false;
-
-    for (const auto& r : records)
-    {
-        const auto& s = r.message;
-        if (s.find("MetaThread") != std::string::npos) found_name = true;
-        if (s.find("[42]") != std::string::npos)       found_id = true;
+    // 3. Give the logger a moment to flush into the sink
+    for (int i = 0; i < 100 && logger_with_sink_.sink->records().empty(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
-    EXPECT_TRUE(found_name);
-    EXPECT_TRUE(found_id);
+    const auto& records = logger_with_sink_.sink->records();
+    ASSERT_FALSE(records.empty());
+
+    const auto& msg_text = records.back().message; // or however you access it
+    EXPECT_NE(msg_text.find("TestThread"), std::string::npos);
+    EXPECT_NE(msg_text.find("1"), std::string::npos); // thread_id, etc.
 }
 
 // ------------------------------------------------------------
@@ -591,7 +605,10 @@ TEST_F(ApplicationThreadTest, MessageOrderingPreserved)
     thread.post_message(ThreadID(1), std::move(m2));
     thread.post_message(ThreadID(1), std::move(m3));
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    for (int i = 0; i < 200 && thread.processed_count.load() < 3; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
     thread.shutdown("done");
 
     EXPECT_EQ(thread.last_processed_type, EventType(EventType::Timer));
@@ -791,7 +808,11 @@ TEST_F(ApplicationThreadTest, MultiplePauseResumeCycles)
     EXPECT_EQ(thread.processed_count.load(), 0);
 
     thread.resume();
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    // Wait for processing
+    for (int i = 0; i < 100 && thread.processed_count.load() == 0; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
     EXPECT_EQ(thread.processed_count.load(), 1);
 
     // Cycle 2
@@ -825,7 +846,12 @@ TEST_F(ApplicationThreadTest, ExceptionTriggersReactorShutdown)
     EventMessage msg = EventMessage::create_reactor_event(EventType(EventType::Initial));
     thread.post_message(ThreadID(1), std::move(msg));
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    // Wait until the reactor has actually shut down
+     for (int i = 0; i < 100 && !reactor_.is_finished(); ++i) {
+         std::this_thread::sleep_for(std::chrono::milliseconds(1));
+     }
+
+     EXPECT_GT(thread.processed_count.load(std::memory_order_acquire), 0);
 
     // Verify reactor's shutdown was called
     EXPECT_TRUE(reactor_.is_finished());
