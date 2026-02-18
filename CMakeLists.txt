@@ -6,9 +6,6 @@ project(pubsub_itc_fw_project
     LANGUAGES CXX
 )
 
-# Note: We cannot use the thread sanitizer because it clashes with the special instructions
-# for lock free programming.
-
 # Set the C++ standard to C++17.
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -18,14 +15,19 @@ set(CMAKE_CXX_EXTENSIONS OFF) # Ensure strict C++17
 # Always use debug symbols (-g) and enable all standard warnings and treat warnings as error (-Wall -pedantic -Werror).
 add_compile_options(-g -Wall -pedantic -Werror)
 
-# Add this to ensure the compiler uses the 16-byte atomic hardware instruction
-# This is used in the lock-free expandable buffer allocator.
-add_compile_options(-mcx16
-   -march=x86-64-v2  # This is the minimum level that guarantees CMPXCHG16B
-                   )
+# --- Optional Valgrind Support ---
+option(ENABLE_VALGRIND "Build with Valgrind compatibility (disables lock-free optimizations)" OFF)
 
-# --- Optional ThreadSanitizer Support ---
-option(ENABLE_TSAN "Enable ThreadSanitizer for race condition detection" OFF)
+if(ENABLE_VALGRIND)
+    message(STATUS "Valgrind mode enabled - disabling lock-free atomic optimizations")
+    add_compile_definitions(USING_VALGRIND)
+    message(STATUS "  - USING_VALGRIND macro defined")
+    message(STATUS "  - Omitting -mcx16 and -march=x86-64-v2 flags")
+else()
+    message(STATUS "Normal build mode - using optimized atomic instructions")
+    # These atomic flags conflict with Valgrind, only use in normal builds
+    add_compile_options(-mcx16 -march=x86-64-v2)
+endif()
 
 # --- Configure Third-Party Dependency Discovery ---
 # CMake will search for packages within the paths specified in CMAKE_PREFIX_PATH.
@@ -176,8 +178,6 @@ target_include_directories(pubsub_itc_fw_lib PUBLIC
      # When installed, the headers will be copied to CMAKE_INSTALL_INCLUDEDIR
      $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
-
-
 
 # PRIVATE means these are only needed for building this library.
 target_link_libraries(pubsub_itc_fw_lib PUBLIC

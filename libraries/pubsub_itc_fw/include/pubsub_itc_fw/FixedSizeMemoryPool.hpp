@@ -1,5 +1,173 @@
 #pragma once
 
+#ifdef USING_VALGRIND
+
+#include <sys/mman.h>
+#include <unistd.h>
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <new>
+#include <stdexcept>
+#include <string>
+#include <vector>
+#include <mutex>
+
+#include <pubsub_itc_fw/PreconditionAssertion.hpp>
+#include <pubsub_itc_fw/UseHugePagesFlag.hpp>
+
+namespace pubsub_itc_fw {
+
+// Forward declarations to maintain compatibility with ExpandablePoolAllocator
+template <typename T> struct Slot;
+
+template <typename T>
+struct SlotStorage {
+    struct FreeListNode {
+        Slot<T>* next;
+    };
+
+    union {
+        FreeListNode free_node;
+        std::aligned_storage_t<sizeof(T), alignof(T)> storage;
+    };
+
+    T* object_ptr() noexcept { return reinterpret_cast<T*>(&storage); }
+    T const* object_ptr() const noexcept { return reinterpret_cast<T const*>(&storage); }
+    FreeListNode* free_node_ptr() noexcept { return &free_node; }
+};
+
+/**
+ * @brief Slot structure aligned with ExpandablePoolAllocator expectations.
+ * * The 'flag' member is positioned first to ensure that get_flag_for_object()
+ * pointer arithmetic remains valid.
+ */
+template <typename T>
+struct Slot {
+    std::uintptr_t flag; // 0 = free, 1 = allocated
+    SlotStorage<T> storage;
+};
+
+/**
+ * @brief Valgrind-friendly FixedSizeMemoryPool.
+ * * Replaces lock-free atomics with std::mutex to allow memory debuggers
+ * to track happens-before relationships correctly.
+ */
+template <typename T>
+class FixedSizeMemoryPool final {
+public:
+    using SlotType = Slot<T>;
+
+    FixedSizeMemoryPool(int objects_per_pool, UseHugePagesFlag use_huge_pages_flag,
+                        std::function<void(void*, std::size_t)> handler_for_huge_pages_error)
+        : objects_per_pool_(objects_per_pool)
+        , use_huge_pages_flag_(use_huge_pages_flag)
+    {
+        total_pool_size_ = static_cast<std::size_t>(objects_per_pool_) * sizeof(SlotType);
+
+        // Use mmap for consistent memory mapping behavior
+        pool_memory_ = mmap(nullptr, total_pool_size_, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (pool_memory_ == MAP_FAILED) throw std::bad_alloc();
+
+        slots_ = reinterpret_cast<SlotType*>(pool_memory_);
+        free_list_v_.reserve(objects_per_pool_);
+
+        for (int i = 0; i < objects_per_pool_; ++i) {
+            slots_[i].flag = 0; // Mark as free for the allocator
+            free_list_v_.push_back(&slots_[i]);
+        }
+    }
+
+    ~FixedSizeMemoryPool() {
+        if (pool_memory_ != MAP_FAILED) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            for (int i = 0; i < objects_per_pool_; ++i) {
+                if (slots_[i].flag == 1) {
+                    slots_[i].storage.object_ptr()->~T();
+                }
+            }
+            munmap(pool_memory_, total_pool_size_);
+        }
+    }
+
+    FixedSizeMemoryPool(const FixedSizeMemoryPool&) = delete;
+    FixedSizeMemoryPool& operator=(const FixedSizeMemoryPool&) = delete;
+
+    [[nodiscard]] T* allocate() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (free_list_v_.empty()) return nullptr;
+
+        SlotType* slot = free_list_v_.back();
+        free_list_v_.pop_back();
+
+        slot->flag = 1; // Mark as allocated for ExpandablePoolAllocator
+        allocation_count_++;
+        return slot->storage.object_ptr();
+    }
+
+    void deallocate(T* ptr) {
+        if (!ptr) throw PreconditionAssertion("deallocate called with nullptr", __FILE__, __LINE__);
+
+        // Use offsetof to resolve the Slot from the object pointer
+        SlotType* slot = reinterpret_cast<SlotType*>(
+            reinterpret_cast<char*>(ptr) - offsetof(SlotType, storage.storage));
+
+        ptr->~T();
+
+        std::lock_guard<std::mutex> lock(mutex_);
+        slot->flag = 0; // Mark as free
+        free_list_v_.push_back(slot);
+    }
+
+    [[nodiscard]] bool contains(T const* ptr) const {
+        auto const* byte_ptr = reinterpret_cast<std::byte const*>(ptr);
+        auto const* start = static_cast<std::byte const*>(pool_memory_);
+        return (byte_ptr >= start && byte_ptr < (start + total_pool_size_));
+    }
+
+    [[nodiscard]] bool is_full() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return free_list_v_.empty();
+    }
+
+    [[nodiscard]] int get_number_of_available_objects() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return static_cast<int>(free_list_v_.size());
+    }
+
+    [[nodiscard]] bool uses_huge_pages() const {
+        return use_huge_pages_flag_ == UseHugePagesFlag::DoUseHugePages;
+    }
+
+    [[nodiscard]] std::size_t get_huge_page_size() const {
+        return uses_huge_pages() ? 2048U * 1024U : 0U;
+    }
+
+    uint64_t get_allocation_count() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return allocation_count_;
+    }
+
+    void set_next_pool(FixedSizeMemoryPool<T>* next) { next_pool_ = next; }
+    [[nodiscard]] FixedSizeMemoryPool<T>* get_next_pool() const { return next_pool_; }
+
+private:
+    int objects_per_pool_;
+    UseHugePagesFlag use_huge_pages_flag_;
+    std::size_t total_pool_size_{0};
+    void* pool_memory_{MAP_FAILED};
+    SlotType* slots_{nullptr};
+
+    mutable std::mutex mutex_;
+    std::vector<SlotType*> free_list_v_;
+    uint64_t allocation_count_{0};
+    FixedSizeMemoryPool<T>* next_pool_{nullptr};
+};
+
+} // namespace pubsub_itc_fw
+#else
+
 // This diagnostic suppression is required because unsigned __int128 is a GNU extension,
 // and we rely on it for the 128-bit tagged pointer used in the Treiber stack.
 #pragma GCC diagnostic push
@@ -548,3 +716,5 @@ template <typename T> typename FixedSizeMemoryPool<T>::SlotType* FixedSizeMemory
 } // namespace pubsub_itc_fw
 
 #pragma GCC diagnostic pop
+
+#endif

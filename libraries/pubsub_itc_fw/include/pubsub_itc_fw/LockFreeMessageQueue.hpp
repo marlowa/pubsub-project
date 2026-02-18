@@ -6,11 +6,113 @@
 #include <type_traits>
 #include <cstddef>
 
+#ifdef USING_VALGRIND
+#include <mutex>
+#include <deque>
+#endif
+
 #include <pubsub_itc_fw/AllocatorConfig.hpp>
 #include <pubsub_itc_fw/ExpandablePoolAllocator.hpp>
 #include <pubsub_itc_fw/QueueConfig.hpp>
 
 namespace pubsub_itc_fw {
+
+#ifdef USING_VALGRIND
+/**
+ * @brief Valgrind-compatible MPSC queue using mutex.
+ * 
+ * When USING_VALGRIND is defined, we use a simple mutex-protected std::deque
+ * instead of lock-free atomics. This allows Valgrind's tools (Helgrind, DRD)
+ * to properly analyze the code without getting confused by lock-free algorithms.
+ */
+template<typename T>
+class LockFreeMessageQueue {
+    static_assert(std::is_move_constructible_v<T>,
+                  "LockFreeMessageQueue requires a move-constructible element type.");
+
+public:
+    LockFreeMessageQueue(LockFreeMessageQueue const&) = delete;
+    LockFreeMessageQueue& operator=(LockFreeMessageQueue const&) = delete;
+    LockFreeMessageQueue(LockFreeMessageQueue&&) = delete;
+    LockFreeMessageQueue& operator=(LockFreeMessageQueue&&) = delete;
+
+    LockFreeMessageQueue(QueueConfig const& queue_config,
+                         AllocatorConfig const& allocator_config)
+        : queue_config_(queue_config)
+        , allocator_config_(allocator_config)
+    {
+    }
+
+    ~LockFreeMessageQueue() {
+        shutdown();
+    }
+
+    void shutdown() noexcept {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (shutting_down_) {
+            return;
+        }
+        shutting_down_ = true;
+        queue_.clear();
+    }
+
+    template<typename... Args>
+    void enqueue(Args&&... args) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        
+        if (shutting_down_) {
+            return;
+        }
+
+        queue_.emplace_back(std::forward<Args>(args)...);
+        
+        int current_size = static_cast<int>(queue_.size());
+        if (queue_config_.gone_above_high_watermark_handler &&
+            current_size >= queue_config_.high_watermark &&
+            !is_high_watermark_breached_)
+        {
+            is_high_watermark_breached_ = true;
+            queue_config_.gone_above_high_watermark_handler(queue_config_.for_client_use);
+        }
+    }
+
+    [[nodiscard]] std::optional<T> dequeue() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        
+        if (queue_.empty()) {
+            return std::nullopt;
+        }
+
+        T value = std::move(queue_.front());
+        queue_.pop_front();
+
+        int current_size = static_cast<int>(queue_.size());
+        if (queue_config_.gone_below_low_watermark_handler &&
+            current_size < queue_config_.low_watermark &&
+            is_high_watermark_breached_)
+        {
+            is_high_watermark_breached_ = false;
+            queue_config_.gone_below_low_watermark_handler(queue_config_.for_client_use);
+        }
+
+        return value;
+    }
+
+    bool empty() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return queue_.empty();
+    }
+
+private:
+    mutable std::mutex mutex_;
+    std::deque<T> queue_;
+    QueueConfig queue_config_;
+    AllocatorConfig allocator_config_;
+    bool shutting_down_{false};
+    bool is_high_watermark_breached_{false};
+};
+
+#else // !USING_VALGRIND
 
 /**
  * @brief Lock-free MPSC queue using Vyukov's algorithm.
@@ -90,7 +192,7 @@ public:
         // After this point, enqueue() becomes a no-op and producers
         // will silently drop messages. The single consumer thread
         // remains responsible for draining any remaining items via
-        // dequeue(), preserving the MPSC contract. }
+        // dequeue(), preserving the MPSC contract.
     }
 
     /**
@@ -213,5 +315,7 @@ private:
     std::atomic<bool> is_high_watermark_breached_{false};
     std::atomic<bool> shutting_down_{false};
 };
+
+#endif // USING_VALGRIND
 
 } // namespace pubsub_itc_fw
