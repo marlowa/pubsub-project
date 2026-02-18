@@ -460,7 +460,13 @@ TEST_F(ExpandablePoolAllocatorTest, DeterministicThunderingHerdOrdering)
         threads.emplace_back([&allocator, &results, &start_flag, &ready_count, i]() {
             ready_count.fetch_add(1);
             while (!start_flag.load()) {
+#ifdef USING_VALGRIND
+                std::this_thread::yield();
+#else
+                // TODO mm_pause, exponential backoff, spin count.
+#endif
             }
+
 
             int* pointer = allocator.allocate();
             results[i] = pointer;
@@ -468,6 +474,11 @@ TEST_F(ExpandablePoolAllocatorTest, DeterministicThunderingHerdOrdering)
     }
 
     while (ready_count.load() != thread_count) {
+#ifdef USING_VALGRIND
+                std::this_thread::yield();
+#else
+                // TODO mm_pause, exponential backoff, spin count.
+#endif
     }
 
     start_flag.store(true);
@@ -645,8 +656,13 @@ TEST_F(ExpandablePoolAllocatorTest, LatencyStressTest) {
 
 TEST_F(ExpandablePoolAllocatorTest, BehaviouralStatisticsStressTest)
 {
+#ifdef USING_VALGRIND
+    const int num_threads = 10;    // 120 is too many for instrumented serial execution
+    const int iterations = 100;    // Reduced to allow completion in seconds, not hours
+#else
     const int num_threads = 120;          // Increased to raise contention
     const int iterations = 2000;          // More cycles → more slow-path
+#endif
     const int objects_per_pool = 64;      // Keep pool large enough to avoid expansion
     const int initial_pools = 1;
     const int expansion_threshold = 1;
@@ -668,16 +684,19 @@ TEST_F(ExpandablePoolAllocatorTest, BehaviouralStatisticsStressTest)
         threads.emplace_back([&allocator, iterations]() {
 
             // Deterministic per-thread jitter (1–10 microseconds)
-            const auto tid_hash =
-                std::hash<std::thread::id>{}(std::this_thread::get_id());
+#ifndef USING_VALGRIND
+            const auto tid_hash = std::hash<std::thread::id>{}(std::this_thread::get_id());
             const int jitter_us = 1 + (tid_hash % 10);
-
+#endif
             for (int j = 0; j < iterations; ++j) {
                 TestObject* obj = allocator.allocate();
 
                 // Increase contention without forcing expansion
+#ifdef USING_VALGRIND
+                std::this_thread::yield();
+#else
                 std::this_thread::sleep_for(std::chrono::microseconds(jitter_us));
-
+#endif
                 if (obj != nullptr) {
                     allocator.deallocate(obj);
                 }

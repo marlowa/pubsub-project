@@ -14,13 +14,14 @@ int TestRunner::runTests(int argc, char** argv) {
 } // namespace pubsub_itc_fw::tests_common
 
 int main(int argc, char** argv) {
-
+#ifndef USING_VALGRIND
     // Start Quill backend with synchronous options for tests
     // The quill backend is started using std::call_once, hence it has to be started here.
     quill::BackendOptions backend_options{};
     backend_options.sleep_duration = std::chrono::nanoseconds{0};
     backend_options.sink_min_flush_interval = std::chrono::milliseconds{0};
     quill::Backend::start(backend_options);
+#endif
 
     using namespace pubsub_itc_fw::tests_common;
     return TestRunner::runTests(argc, argv);

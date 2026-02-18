@@ -71,6 +71,7 @@
 
 #include <gtest/gtest.h>
 
+#include <pubsub_itc_fw/Backoff.hpp>
 #include <pubsub_itc_fw/LockFreeMessageQueue.hpp>
 #include <pubsub_itc_fw/QueueConfig.hpp>
 #include <pubsub_itc_fw/AllocatorConfig.hpp>
@@ -419,8 +420,13 @@ TEST(LockFreeMessageQueueTest, SoakTestMillionsOfMessages) {
 
     LockFreeMessageQueue<TestMessage> queue(queue_config, allocator_config);
 
+#ifdef USING_VALGRIND
+    constexpr int producers = 2;            // Reduced threads
+    constexpr int per_producer = 10'000;    // 20k total is plenty for a Valgrind check
+#else
     constexpr int producers = 4;
     constexpr int per_producer = 2'500'000; // 2.5M each → 10M total
+#endif
     constexpr int total = producers * per_producer;
 
     std::atomic<bool> start_flag{false};
@@ -431,8 +437,9 @@ TEST(LockFreeMessageQueueTest, SoakTestMillionsOfMessages) {
 
     for (int p = 0; p < producers; ++p) {
         threads.emplace_back([&, p] {
+            Backoff start_backoff;
             while (!start_flag.load(std::memory_order_acquire)) {
-                std::this_thread::yield();
+                start_backoff.pause();
             }
             for (int i = 0; i < per_producer; ++i) {
                 queue.enqueue(TestMessage{i});
@@ -443,12 +450,13 @@ TEST(LockFreeMessageQueueTest, SoakTestMillionsOfMessages) {
     start_flag.store(true, std::memory_order_release);
 
     int local_count = 0;
+    Backoff count_backoff;
     while (local_count < total) {
         auto msg = queue.dequeue();
         if (msg.has_value()) {
             ++local_count;
         } else {
-            std::this_thread::yield();
+            count_backoff.pause();
         }
     }
 
@@ -808,7 +816,13 @@ TEST(LockFreeMessageQueueTest, ThroughputBenchmark) {
 
     // Assert a reasonable minimum throughput.
     // This threshold is intentionally conservative.
-    EXPECT_GT(msgs_per_sec, 500'000.0);
+#ifdef USING_VALGRIND
+    const double minimum_throughput = 50'000.0; // Realistic for instrumented code
+#else
+    const double minimum_throughput = 500'000.0; // Production floor
+#endif
+
+    EXPECT_GT(msgs_per_sec, minimum_throughput) << "Throughput too low";
 
     EXPECT_TRUE(queue.empty());
 }
@@ -826,7 +840,11 @@ TEST(LockFreeMessageQueueTest, MixedRateJitterSoakTest) {
     LockFreeMessageQueue<TestMessage> queue(queue_config, allocator_config);
 
     constexpr int producers = 4;
+#ifdef USING_VALGRIND
+    constexpr int iterations = 10'000; // Reduced for Valgrind
+#else
     constexpr int iterations = 500'000;
+#endif
 
     std::atomic<bool> start_flag{false};
     std::atomic<int> consumed{0};
@@ -845,8 +863,9 @@ TEST(LockFreeMessageQueueTest, MixedRateJitterSoakTest) {
             std::uniform_int_distribution<int> large_stall(200, 2000);
             std::uniform_int_distribution<int> stall_type(1, 1000);
 
+            Backoff producer_backoff;
             while (!start_flag.load(std::memory_order_acquire)) {
-                std::this_thread::yield();
+                producer_backoff.pause();
             }
 
             for (int i = 0; i < iterations; ) {
@@ -855,6 +874,8 @@ TEST(LockFreeMessageQueueTest, MixedRateJitterSoakTest) {
                 for (int b = 0; b < burst && i < iterations; ++b, ++i) {
                     queue.enqueue(TestMessage{i});
                 }
+
+                producer_backoff.pause();
 
                 int s = stall_type(rng);
 
@@ -913,7 +934,7 @@ TEST(LockFreeMessageQueueTest, MixedRateJitterSoakTest) {
 }
 
 // ------------------------------------------------------------
-// Memory-pressure burst test: producers generate rapid bursts
+// Memory-pressure burstn test: producers generate rapid bursts
 // of allocations followed by forced pauses, simulating allocator
 // slow paths and fragmentation. This stresses pointer linking,
 // node reuse, and memory-ordering under high churn.
@@ -924,9 +945,15 @@ TEST(LockFreeMessageQueueTest, MemoryPressureBurstTest) {
 
     LockFreeMessageQueue<TestMessage> queue(queue_config, allocator_config);
 
+#ifdef USING_VALGRIND
+    constexpr int producers = 2;       // Reduced for Valgrind
+    constexpr int bursts = 100;        // Reduced from 3000
+    constexpr int burst_size = 20;     // Reduced from 50
+#else
     constexpr int producers = 4;
     constexpr int bursts = 3000;
     constexpr int burst_size = 50;   // small bursts → high allocation churn
+#endif
     constexpr int total = producers * bursts * burst_size;
 
     std::atomic<bool> start_flag{false};
@@ -941,8 +968,9 @@ TEST(LockFreeMessageQueueTest, MemoryPressureBurstTest) {
             std::mt19937 rng(p + 123);
             std::uniform_int_distribution<int> pause_dist(50, 500);
 
+            Backoff producer_backoff;
             while (!start_flag.load(std::memory_order_acquire)) {
-                std::this_thread::yield();
+                producer_backoff.pause();
             }
 
             for (int b = 0; b < bursts; ++b) {
@@ -951,9 +979,11 @@ TEST(LockFreeMessageQueueTest, MemoryPressureBurstTest) {
                     queue.enqueue(TestMessage{i});
                 }
 
-                int pause = pause_dist(rng);
-                for (int k = 0; k < pause; ++k) {
-                    std::this_thread::yield();
+                producer_backoff.pause();
+
+                // Add a second pause only for the longer simulated stalls
+                if (b % 10 == 0) {
+                    producer_backoff.pause();
                 }
             }
         });
@@ -963,6 +993,7 @@ TEST(LockFreeMessageQueueTest, MemoryPressureBurstTest) {
     std::thread consumer([&] {
         start_flag.store(true, std::memory_order_release);
 
+        Backoff consumer_backoff;
         int local_count = 0;
         while (local_count < total) {
             auto msg = queue.dequeue();
@@ -970,7 +1001,7 @@ TEST(LockFreeMessageQueueTest, MemoryPressureBurstTest) {
                 ++local_count;
                 consumed.fetch_add(1, std::memory_order_relaxed);
             } else {
-                std::this_thread::yield();
+                consumer_backoff.pause();
             }
         }
     });
