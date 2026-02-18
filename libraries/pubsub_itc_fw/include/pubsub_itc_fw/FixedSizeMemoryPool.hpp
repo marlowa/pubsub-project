@@ -2,6 +2,8 @@
 
 #ifdef USING_VALGRIND
 
+#pragma once
+
 #include <sys/mman.h>
 #include <unistd.h>
 #include <algorithm>
@@ -19,7 +21,6 @@
 
 namespace pubsub_itc_fw {
 
-// Forward declarations to maintain compatibility with ExpandablePoolAllocator
 template <typename T> struct Slot;
 
 template <typename T>
@@ -38,11 +39,6 @@ struct SlotStorage {
     FreeListNode* free_node_ptr() noexcept { return &free_node; }
 };
 
-/**
- * @brief Slot structure aligned with ExpandablePoolAllocator expectations.
- * * The 'flag' member is positioned first to ensure that get_flag_for_object()
- * pointer arithmetic remains valid.
- */
 template <typename T>
 struct Slot {
     std::uintptr_t flag; // 0 = free, 1 = allocated
@@ -51,8 +47,9 @@ struct Slot {
 
 /**
  * @brief Valgrind-friendly FixedSizeMemoryPool.
- * * Replaces lock-free atomics with std::mutex to allow memory debuggers
- * to track happens-before relationships correctly.
+ * * Provides mutex-protected memory management that satisfies Valgrind's
+ * synchronization requirements while maintaining compatibility with the
+ * ExpandablePoolAllocator's flag-based diagnostic checks.
  */
 template <typename T>
 class FixedSizeMemoryPool final {
@@ -66,7 +63,6 @@ public:
     {
         total_pool_size_ = static_cast<std::size_t>(objects_per_pool_) * sizeof(SlotType);
 
-        // Use mmap for consistent memory mapping behavior
         pool_memory_ = mmap(nullptr, total_pool_size_, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         if (pool_memory_ == MAP_FAILED) throw std::bad_alloc();
 
@@ -74,11 +70,17 @@ public:
         free_list_v_.reserve(objects_per_pool_);
 
         for (int i = 0; i < objects_per_pool_; ++i) {
-            slots_[i].flag = 0; // Mark as free for the allocator
+            slots_[i].flag = 0;
             free_list_v_.push_back(&slots_[i]);
         }
     }
 
+    /**
+     * @brief Pool Destructor.
+     * * Only calls destructors on objects that were never returned to the pool
+     * (leaks). This ensures consistency with the ExpandablePoolAllocator's
+     * ownership model.
+     */
     ~FixedSizeMemoryPool() {
         if (pool_memory_ != MAP_FAILED) {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -101,22 +103,24 @@ public:
         SlotType* slot = free_list_v_.back();
         free_list_v_.pop_back();
 
-        slot->flag = 1; // Mark as allocated for ExpandablePoolAllocator
+        slot->flag = 1;
         allocation_count_++;
         return slot->storage.object_ptr();
     }
 
+    /**
+     * @brief Returns raw memory to the pool.
+     * * Does NOT call the destructor, as ExpandablePoolAllocator has already
+     * handled the object lifetime before calling this method.
+     */
     void deallocate(T* ptr) {
         if (!ptr) throw PreconditionAssertion("deallocate called with nullptr", __FILE__, __LINE__);
 
-        // Use offsetof to resolve the Slot from the object pointer
         SlotType* slot = reinterpret_cast<SlotType*>(
             reinterpret_cast<char*>(ptr) - offsetof(SlotType, storage.storage));
 
-        ptr->~T();
-
         std::lock_guard<std::mutex> lock(mutex_);
-        slot->flag = 0; // Mark as free
+        slot->flag = 0;
         free_list_v_.push_back(slot);
     }
 
