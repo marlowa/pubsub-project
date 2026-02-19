@@ -9,6 +9,8 @@
 
 namespace pubsub_itc_fw {
 
+/** @ingroup logging_subsystem */
+
 class LoggerUtils {
 public:
     static const char* leafname(const char* filename)

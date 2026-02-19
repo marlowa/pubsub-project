@@ -1,19 +1,13 @@
 #pragma once
 
-// C++ headers whose names start with ‘c’
-// (None directly here)
-
-// System C++ headers
 #include <chrono>
 #include <string>
 
-// Third party headers
-// (None directly here)
-
-// Project headers
 #include <pubsub_itc_fw/TimerType.hpp>
 
 namespace pubsub_itc_fw {
+
+/** @ingroup threading_subsystem */
 
 /**
  * @brief Manages the state and logic for a single timer.

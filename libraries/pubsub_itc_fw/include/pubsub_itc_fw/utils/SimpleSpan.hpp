@@ -8,6 +8,8 @@
 
 namespace pubsub_itc_fw::utils {
 
+/** @ingroup messaging_subsystem */
+
 /**
  * @brief A simple, lightweight span-like wrapper for contiguous sequences
  *

@@ -1,0 +1,31 @@
+/** @defgroup allocator_subsystem Allocator Subsystem
+ *  @brief Lock‑free and expandable memory pools for deterministic allocation.
+ */
+
+/** @defgroup queue_subsystem Lock‑Free Queue Subsystem
+ *  @brief Vyukov MPSC queue with watermark hysteresis and shutdown semantics.
+ */
+
+/** @defgroup threading_subsystem Threading Subsystem
+ *  @brief ApplicationThread lifecycle, timers, pause/resume, and message dispatch.
+ */
+
+/** @defgroup reactor_subsystem Reactor Subsystem
+ *  @brief Central orchestrator for events, threads, and shutdown propagation.
+ */
+
+/** @defgroup messaging_subsystem Messaging Subsystem
+ *  @brief Lightweight envelopes for inter‑thread and reactor events.
+ */
+
+/** @defgroup logging_subsystem Logging Subsystem
+ *  @brief Unified logging abstraction over Quill with multi‑sink support.
+ */
+
+/** @defgroup instrumentation_subsystem Instrumentation
+ *  @brief Latency histograms and performance measurement tools.
+ */
+
+/** @defgroup utilities_subsystem Utilities
+ *  @brief Supporting helpers: strong typedefs, string utilities, assertions.
+ */

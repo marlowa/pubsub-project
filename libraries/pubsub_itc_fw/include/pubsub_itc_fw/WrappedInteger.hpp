@@ -7,6 +7,8 @@
 
 namespace pubsub_itc_fw {
 
+/** @ingroup utilities_subsystem */
+
 /**
  * @brief A generic template for creating type-safe ID classes.
  *

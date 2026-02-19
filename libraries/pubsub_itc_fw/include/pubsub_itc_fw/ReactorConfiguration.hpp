@@ -1,18 +1,12 @@
 #pragma once
 
-// C++ headers whose names start with ‘c’
 #include <cstdint> // For uint16_t
 
-// System C++ headers
 #include <chrono>
 
-// Third party headers
-// (None directly here)
-
-// Project headers
-// (None directly here)
-
 namespace pubsub_itc_fw {
+
+/** @ingroup reactor_subsystem */
 
 /**
  * @brief Configuration data for the Reactor.

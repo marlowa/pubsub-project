@@ -6,6 +6,8 @@
 
 namespace pubsub_itc_fw {
 
+/** @ingroup allocator_subsystem */
+
 /**
  * @brief A wrapper that places a value on its own hardware cache line.
  *

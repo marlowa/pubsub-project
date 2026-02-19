@@ -2,6 +2,8 @@
 
 namespace pubsub_itc_fw {
 
+/** @ingroup allocator_subsystem */
+
 class UseHugePagesFlag {
 public:
     enum UseHugePagesFlagTag {

@@ -1,18 +1,8 @@
 #pragma once
 
-// C++ headers whose names start with ‘c’
-// (None directly here)
-
-// System C++ headers
-// (None directly here)
-
-// Third party headers
-// (None directly here)
-
-// Project headers
-// (None directly here)
-
 namespace pubsub_itc_fw {
+
+/** @ingroup threading_subsystem */
 
 /**
  * @brief An enumeration that specifies the type of a timer.

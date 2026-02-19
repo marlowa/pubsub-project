@@ -26,6 +26,8 @@ namespace {
     }
 } // namespace
 
+/** @ingroup utilities_subsystem */
+
 /**
  * @brief Exception class for representing a precondition assertion failure.
  *

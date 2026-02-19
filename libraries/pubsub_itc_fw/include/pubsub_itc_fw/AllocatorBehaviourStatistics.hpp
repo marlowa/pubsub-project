@@ -5,6 +5,8 @@
 
 namespace pubsub_itc_fw {
 
+/** @ingroup allocator_subsystem */
+
 /**
  * @brief A structured snapshot of behavioural information from ExpandablePoolAllocator.
  *

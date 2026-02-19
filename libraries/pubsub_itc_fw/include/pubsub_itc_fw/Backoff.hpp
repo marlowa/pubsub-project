@@ -10,6 +10,8 @@
 
 namespace pubsub_itc_fw {
 
+/** @ingroup threading_subsystem */
+
 /**
  * @brief Utility for exponential backoff in spin-loops.
  * * Provides a tiered strategy:
@@ -50,7 +52,7 @@ public:
             // Tier 3: Brief sleep to stop the fan and save power
             std::this_thread::sleep_for(std::chrono::microseconds(10));
         }
-        
+
         // Prevent overflow while maintaining maximum backoff state
         if (count_ < UP_TO_SLEEP + 1) {
             count_++;
@@ -59,7 +61,7 @@ public:
     }
 
     /**
-     * @brief Resets the backoff counter. 
+     * @brief Resets the backoff counter.
      * Call this whenever progress is made (e.g., a message is successfully dequeued).
      */
     void reset() noexcept {

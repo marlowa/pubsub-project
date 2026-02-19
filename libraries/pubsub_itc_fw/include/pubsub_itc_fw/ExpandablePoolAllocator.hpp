@@ -125,6 +125,8 @@ template <typename T> class ExpandablePoolAllocator final {
   public:
     ~ExpandablePoolAllocator() = default;
 
+    /** @ingroup allocator_subsystem */
+
     /**
      * @brief Constructs an expandable pool allocator.
      *

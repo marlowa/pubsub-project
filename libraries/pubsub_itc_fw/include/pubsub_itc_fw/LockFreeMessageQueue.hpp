@@ -6,6 +6,8 @@
 #include <type_traits>
 #include <cstddef>
 
+/** @ingroup queue_subsystem */
+
 #ifdef USING_VALGRIND
 #include <mutex>
 #include <deque>
@@ -20,7 +22,7 @@ namespace pubsub_itc_fw {
 #ifdef USING_VALGRIND
 /**
  * @brief Valgrind-compatible MPSC queue using mutex.
- * 
+ *
  * When USING_VALGRIND is defined, we use a simple mutex-protected std::deque
  * instead of lock-free atomics. This allows Valgrind's tools (Helgrind, DRD)
  * to properly analyze the code without getting confused by lock-free algorithms.
@@ -59,13 +61,13 @@ public:
     template<typename... Args>
     void enqueue(Args&&... args) {
         std::lock_guard<std::mutex> lock(mutex_);
-        
+
         if (shutting_down_) {
             return;
         }
 
         queue_.emplace_back(std::forward<Args>(args)...);
-        
+
         int current_size = static_cast<int>(queue_.size());
         if (queue_config_.gone_above_high_watermark_handler &&
             current_size >= queue_config_.high_watermark &&
@@ -78,7 +80,7 @@ public:
 
     [[nodiscard]] std::optional<T> dequeue() {
         std::lock_guard<std::mutex> lock(mutex_);
-        
+
         if (queue_.empty()) {
             return std::nullopt;
         }

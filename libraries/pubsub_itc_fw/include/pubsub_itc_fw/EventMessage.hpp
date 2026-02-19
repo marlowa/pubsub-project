@@ -8,6 +8,8 @@
 
 namespace pubsub_itc_fw {
 
+/** @ingroup messaging_subsystem */
+
 /**
  * @brief A unified, low-latency message envelope for inter-thread and reactor events.
  *

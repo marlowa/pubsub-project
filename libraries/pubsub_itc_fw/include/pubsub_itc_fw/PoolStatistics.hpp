@@ -12,6 +12,8 @@
 
 namespace pubsub_itc_fw {
 
+/** @ingroup allocator_subsystem */
+
 /**
  * @brief Represents a snapshot of the current state and metrics of a memory pool.
  *

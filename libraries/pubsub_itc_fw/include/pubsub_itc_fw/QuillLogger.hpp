@@ -15,6 +15,8 @@
 
 namespace pubsub_itc_fw {
 
+/** @ingroup logging_subsystem */
+
 class QuillLogger {
 public:
     ~QuillLogger() = default;

@@ -7,6 +7,8 @@
 
 namespace pubsub_itc_fw {
 
+/** @ingroup allocator_subsystem */
+
 class AllocatorConfig
 {
 public:

@@ -5,6 +5,8 @@
 
 namespace pubsub_itc_fw {
 
+/** @ingroup utilities_subsystem */
+
 /**
  * @brief File open mode for log file handling.
  */

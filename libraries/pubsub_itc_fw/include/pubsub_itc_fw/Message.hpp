@@ -8,6 +8,8 @@
 
 namespace pubsub_itc_fw {
 
+/** @ingroup messaging_subsystem */
+
 /**
  * @brief Represents a message in the pubsub framework.
  *

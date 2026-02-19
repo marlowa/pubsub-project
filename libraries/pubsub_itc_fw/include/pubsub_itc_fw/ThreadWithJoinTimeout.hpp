@@ -7,6 +7,8 @@
 
 namespace pubsub_itc_fw {
 
+/** @ingroup threading_subsystem */
+
 /**
  * @brief A C++17-safe wrapper around std::thread that supports join-with-timeout.
  *

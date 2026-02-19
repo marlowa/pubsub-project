@@ -26,6 +26,8 @@ namespace pubsub_itc_fw {
 class Reactor;
 class SocketHandler;
 
+/** @ingroup threading_subsystem */
+
 /**
  * This class abstracts the underlying std::thread and provides a consistent
  * interface for the Reactor to manage the lifecycle of the thread, including starting,

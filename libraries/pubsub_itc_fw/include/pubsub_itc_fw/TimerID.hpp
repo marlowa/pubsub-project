@@ -5,6 +5,8 @@
 
 namespace pubsub_itc_fw {
 
+/** @ingroup threading_subsystem */
+
 /**
  * @brief A tag struct for the TimerID class.
  *

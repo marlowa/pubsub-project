@@ -5,6 +5,8 @@
 
 namespace pubsub_itc_fw {
 
+/** @ingroup messaging_subsystem */
+
 /**
  * @brief Event type enumeration for EventMessage classification.
  */

@@ -10,6 +10,8 @@
 
 namespace pubsub_itc_fw {
 
+/** @ingroup utilities_subsystem */
+
 /**
  * @brief Provides a collection of static utility functions for string
  * manipulation and conversions.

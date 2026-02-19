@@ -6,6 +6,8 @@
 
 namespace pubsub_itc_fw {
 
+/** @ingroup reactor_subsystem */
+
 /**
  * @brief This is an abstract base class that provides a common interface
  * for all event sources handled by the Reactor.

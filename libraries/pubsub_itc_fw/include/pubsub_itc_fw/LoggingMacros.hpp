@@ -6,6 +6,8 @@
 #include <pubsub_itc_fw/LogLevel.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 
+/** @ingroup logging_subsystem */
+
 // TODO we need to do something so that critcals, errors etc cause log flushing.
 // There is a new way to do this in quill v11.
 
