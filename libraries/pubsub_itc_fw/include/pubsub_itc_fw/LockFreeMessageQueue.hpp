@@ -213,6 +213,12 @@ public:
         node->next_.store(nullptr, std::memory_order_relaxed);
 
         Node* prev_head = head_.exchange(node, std::memory_order_acq_rel);
+
+        // This is just used by a unit test to explore priority inversion.
+        if (test_stall_callback_) {
+            test_stall_callback_();
+        }
+
         prev_head->next_.store(node, std::memory_order_release);
 
         int current_size = ++size_;
@@ -294,6 +300,9 @@ public:
         return tail->next_.load(std::memory_order_acquire) == nullptr &&
                tail == head_.load(std::memory_order_acquire);
     }
+
+    // To test for priority inversion we need to add some hooks that are just used by a unit test.
+    std::function<void()> test_stall_callback_;
 
 private:
     void enqueue_stub_() {

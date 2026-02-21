@@ -3,14 +3,12 @@
 // ============================================================================
 //
 // This file contains a comprehensive set of Google Tests for validating the
-// correctness, performance, and concurrency behaviour of the
-// LockFreeMessageQueue class.
+// correctness, performance, and concurrency behaviour of the LockFreeMessageQueue class.
 //
 // The queue is a multi-producer / single-consumer lock-free structure used in
 // high-performance, pinned-thread application environments. Because the queue
-// is a core infrastructure component, these tests aim to provide extremely
-// high confidence in its behaviour under a wide range of real-world and
-// pathological conditions.
+// is a core infrastructure component, these tests aim to provide extremely high confidence
+// in its behaviour under a wide range of real-world and pathological conditions.
 //
 // The suite covers:
 //
@@ -1032,4 +1030,143 @@ TEST(LockFreeMessageQueueTest, QueueDepthHistogramTest) {
     // The rest of this test was truncated in the original snippet.
     // You can reinsert your existing histogram logic here unchanged,
     // using `queue` instead of `q` and the same construction pattern.
+    // TODO this test got destroyed by a chatbot. Find out how to reinstate it.
 }
+
+#ifndef USING_VALGRIND
+/*
+ * ============================================================================
+ *  Priority Inversion Demonstration for Vyukov MPSC Queue (Dimitry Queue)
+ * ============================================================================
+ *
+ * This test intentionally forces a producer thread to stall *mid‑enqueue* in
+ * the Vyukov MPSC algorithm. The goal is to expose the well‑known “Dimitry
+ * gap”: a window where a later producer appears to complete its enqueue, but
+ * the consumer cannot yet observe that message because an earlier producer has
+ * not finished linking its node into the list.
+ *
+ * -----------------------------
+ *  Why this gap exists
+ * -----------------------------
+ * The MPSC algorithm publishes a new node in two steps:
+ *
+ *      1. head_.exchange(node)              // publish new head
+ *      2. prev_head->next_.store(node)      // link previous node forward
+ *
+ * These two steps are deliberately not atomic as a pair. If a producer stalls
+ * between them, the queue temporarily contains:
+ *
+ *      stub -> nullptr
+ *      A     -> B
+ *
+ * where:
+ *   - Producer A has executed (1) but not (2)
+ *   - Producer B has executed both steps
+ *
+ * The consumer follows the list starting at stub_.next_. Because A has not yet
+ * linked itself, stub_.next_ is still null, so the consumer cannot see *either*
+ * A or B. This is the “gap”.
+ *
+ * Importantly: this is not a correctness bug. No memory is corrupted, no
+ * messages are lost, and ordering is preserved once A resumes. It is simply a
+ * visibility delay caused by the algorithm’s structure.
+ *
+ * -----------------------------
+ *  What this test verifies
+ * -----------------------------
+ *  • Producer A stalls after publishing its node as the new head.
+ *  • Producer B enqueues normally and believes it has completed.
+ *  • The consumer still sees an empty queue (the Dimitry gap).
+ *  • Once A resumes and links its node, the consumer sees A then B in order.
+ *
+ * This test proves that our implementation faithfully reproduces the intended
+ * behavior of the Vyukov MPSC queue.
+ *
+ * -----------------------------
+ *  Why the gap is acceptable
+ * -----------------------------
+ * The Dimitry gap is a *documented tradeoff* of this algorithm:
+ *
+ *   • Producers never contend on a global lock.
+ *   • Enqueue is wait‑free for all producers except the one that stalls itself.
+ *   • Cache traffic is minimized.
+ *   • Throughput is extremely high under normal conditions.
+ *
+ * In pinned‑thread systems (our deployment model), producers do not stall
+ * arbitrarily. Under those assumptions, the gap is harmless and the algorithm
+ * provides excellent performance and predictable behavior.
+ *
+ * If a producer *does* stall indefinitely, the system has bigger problems than
+ * queue fairness. In such cases, watchdogs or thread‑health monitoring are the
+ * correct mitigation—not changing the queue algorithm.
+ *
+ * -----------------------------
+ *  Takeaway
+ * -----------------------------
+ * This test is not detecting a bug. It is documenting and asserting a core
+ * property of the Vyukov MPSC queue: a stalled producer can delay visibility of
+ * later producers’ messages, but the queue remains correct, ordered, and safe.
+ *
+ * Future maintainers: do not “fix” this behavior unless you intend to replace
+ * the algorithm with a different MPSC design entirely.
+ * ============================================================================
+ */
+TEST(LockFreeMessageQueueTest, ShouldSufferFromPriorityInversion) {
+    QueueConfig queue_config = make_default_queue_config();
+    AllocatorConfig allocator_config = make_default_allocator_config();
+    LockFreeMessageQueue<TestMessage> queue(queue_config, allocator_config);
+
+    std::atomic<bool> stall_producer{true};
+    std::atomic<bool> producer_a_claimed{false};
+
+    // Install stall callback for first enqueue
+    queue.test_stall_callback_ = [&]() {
+         // Only the first producer to get here should stall
+        bool expected = false;
+        if (!producer_a_claimed.compare_exchange_strong(expected, true)) {
+            // Someone already claimed; do NOT stall this producer
+            return;
+        }
+
+        producer_a_claimed.store(true);
+        Backoff backoff;
+        while (stall_producer.load()) {
+            backoff.pause();
+        }
+        queue.test_stall_callback_ = nullptr; // Only stall once
+    };
+    // Producer A: Will stall mid-push
+    std::thread producer_a([&]() {
+        queue.enqueue(TestMessage{42});
+    });
+
+    // Wait for Producer A to claim head but not link
+    Backoff wait_backoff;
+    while (!producer_a_claimed.load()) {
+        wait_backoff.pause();
+    }
+
+    // Producer B: Completes normally
+    queue.enqueue(TestMessage{84});
+
+    // Consumer: Should NOT see either message yet
+    // This demonstrates the "gap" - Producer B's message is blocked behind A's
+    auto result = queue.dequeue();
+    EXPECT_FALSE(result.has_value()) << "Dimitry gap: Consumer blocked despite Producer B completing";
+
+    // Resume Producer A
+    stall_producer.store(false);
+    producer_a.join();
+
+    // Now consumer can see both in order
+    auto msg1 = queue.dequeue();
+    ASSERT_TRUE(msg1.has_value());
+    EXPECT_EQ(msg1->value, 42);
+
+    auto msg2 = queue.dequeue();
+    ASSERT_TRUE(msg2.has_value());
+    EXPECT_EQ(msg2->value, 84);
+
+    EXPECT_FALSE(queue.dequeue().has_value());
+}
+#endif
