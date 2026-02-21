@@ -1,3 +1,4 @@
 status notes
 TODO   find all calls to yield and replace with Backoff::pause.
 TODO   flesh out QueueDepthHistogramTest that was destroyed by chatbot.
+TODO   add CPU pinning code to reactor to avoid the fan going crazy when we use Backoff.

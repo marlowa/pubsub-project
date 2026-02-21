@@ -101,6 +101,10 @@ public:
 
     void route_message(ThreadID target_id, EventMessage message);
 
+    bool is_initialized() const noexcept {
+        return initialization_complete_.load(std::memory_order_acquire);
+    }
+
 protected:
     std::atomic<bool> is_finished_{false};
     std::string shutdown_reason_;
@@ -109,6 +113,8 @@ private:
     void checkForInactiveThreads();
     void checkForInactiveSockets();
     void dispatchEvents(int nfds, epoll_event* events);
+
+    std::atomic<bool> initialization_complete_{false};
 
     // The core of the reactor
     int epoll_fd_{-1};

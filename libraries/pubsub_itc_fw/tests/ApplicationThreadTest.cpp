@@ -8,6 +8,7 @@
 
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/AllocatorConfig.hpp>
+#include <pubsub_itc_fw/Backoff.hpp>
 #include <pubsub_itc_fw/QueueConfig.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 
@@ -118,24 +119,24 @@ public:
             throw std::runtime_error("Test exception");
         }
 
-        last_processed_type = EventType(EventType::Initial);
+        last_processed_type.store(EventType(EventType::Initial), std::memory_order_release);
     }
 
     void on_app_ready_event() override {
-        last_processed_type = EventType(EventType::AppReady);
+        last_processed_type.store(EventType(EventType::AppReady), std::memory_order_release);
     }
 
     void on_itc_message(const EventMessage& msg) override {
-        last_processed_type = EventType(EventType::InterthreadCommunication);
+        last_processed_type.store(EventType(EventType::InterthreadCommunication), std::memory_order_release);
     }
 
     void on_timer_event(TimerID id) override {
-        last_processed_type = EventType(EventType::Timer);
+        last_processed_type.store(EventType(EventType::Timer), std::memory_order_release);
     }
 
     std::atomic<int> processed_count{0};
     std::atomic<bool> throw_on_message{false};
-    EventType last_processed_type{EventType(EventType::None)};
+    std::atomic<EventType> last_processed_type{EventType(EventType::None)};
 };
 
 } // unnamed namespace
@@ -598,7 +599,7 @@ TEST_F(ApplicationThreadTest, MessageOrderingPreserved)
 
     thread.shutdown("done");
 
-    EXPECT_EQ(thread.last_processed_type, EventType(EventType::Timer));
+    EXPECT_EQ(thread.last_processed_type.load(std::memory_order_acquire), EventType(EventType::Timer));
 }
 
 // ------------------------------------------------------------
@@ -843,4 +844,57 @@ TEST_F(ApplicationThreadTest, ExceptionTriggersReactorShutdown)
     // Verify reactor's shutdown was called
     EXPECT_TRUE(reactor_.is_finished());
     EXPECT_FALSE(thread.is_running());
+}
+
+TEST_F(ApplicationThreadTest, InterThreadRoutingDeliversMessage)
+{
+    LoggerWithSink logger1("itc_logger1", "itc_sink1");
+    LoggerWithSink logger2("itc_logger2", "itc_sink2");
+
+    ReactorConfiguration cfg{};
+    Reactor reactor(cfg, logger1.logger);
+
+    QueueConfig qc = make_queue_config();
+    AllocatorConfig ac = make_allocator_config();
+
+    auto threadA = std::make_shared<TestThread>(logger1.logger, reactor, "ThreadA", ThreadID(1), qc, ac);
+
+    auto threadB = std::make_shared<TestThread>(logger2.logger, reactor, "ThreadB", ThreadID(2), qc, ac);
+
+    reactor.register_thread(threadA);
+    reactor.register_thread(threadB);
+
+    // Start Reactor in its own thread
+    std::thread reactor_thread([&]() {
+        reactor.run();
+    });
+
+    // Wait for reactor to say that all threads are ready
+    {
+        Backoff backoff;
+        while (!reactor.is_initialized()) {
+            backoff.pause();
+        }
+    }
+
+    // Send an ITC message from A → B
+    EventMessage msg = EventMessage::create_itc_message(threadA->get_thread_id(), nullptr, 0);
+
+    threadA->post_message(ThreadID(2), std::move(msg));
+
+    // Wait for B to process the message
+    {
+        Backoff backoff;
+        while (threadB->last_processed_type.load(std::memory_order_acquire) != EventType(EventType::InterthreadCommunication)) {
+            backoff.pause();
+        }
+    }
+
+    // Clean shutdown
+    threadA->shutdown("done");
+    threadB->shutdown("done");
+    reactor.shutdown("done");
+    reactor_thread.join();
+
+    EXPECT_EQ(threadB->last_processed_type.load(std::memory_order_acquire), EventType(EventType::InterthreadCommunication));
 }

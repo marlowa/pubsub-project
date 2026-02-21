@@ -4,6 +4,7 @@
 #include <utility>
 
 #include <pubsub_itc_fw/ApplicationThread.hpp>
+#include <pubsub_itc_fw/Backoff.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
@@ -59,19 +60,17 @@ ApplicationThread::ApplicationThread(QuillLogger& logger,
 
 void ApplicationThread::start() {
     if (thread_ != nullptr) {
-        throw PreconditionAssertion("Thread has already been started.",
-                                    __FILE__,
-                                    __LINE__);
+        throw PreconditionAssertion("Thread has already been started.", __FILE__, __LINE__);
     }
 
     thread_ = std::make_unique<ThreadWithJoinTimeout>();
     thread_->start([this]() { run_internal(); });
 
     // Make sure we do not return until the started thread is in the run loop.
+    Backoff backoff;
      while (!run_loop_entered_.load(std::memory_order_acquire))
      {
-         // TODO might use mm_pause here
-         std::this_thread::yield();
+         backoff.pause();
      }
 }
 
@@ -220,8 +219,15 @@ void ApplicationThread::run_internal() {
 
 void ApplicationThread::process_message(EventMessage& message) {
     const EventType type = message.type();
+    auto tag = static_cast<EventType::EventTypeTag>(type.as_tag());
 
-    switch (static_cast<EventType::EventTypeTag>(type.as_tag())) {
+    const bool fully_operational = get_has_processed_initial_event() && get_has_received_app_ready();
+    // Before fully operational, only Initial and AppReady are allowed
+    if (!fully_operational && tag != EventType::Initial && tag != EventType::AppReady) {
+        throw PreconditionAssertion(fmt::format("Non-reactor event received before thread is fully operational, event Type = {}", type.as_string()),__FILE__, __LINE__);
+    }
+
+    switch (tag) {
         case EventType::Initial: {
             on_initial_event();
             set_has_processed_initial_event();
@@ -236,6 +242,8 @@ void ApplicationThread::process_message(EventMessage& message) {
             }
 
             on_app_ready_event();
+
+            has_received_app_ready_.store(true, std::memory_order_release);
 
             PUBSUB_LOG(logger_, LogLevel::Info, "Thread {}: Received AppReady. Moving to operational state.",
                        thread_name_);

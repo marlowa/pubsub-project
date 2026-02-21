@@ -16,8 +16,14 @@ Reactor::Reactor(const ReactorConfiguration& config, QuillLogger& logger) :
 }
 
 void Reactor::route_message(ThreadID target_id, EventMessage message) {
+     // Reject attempt to route event message before reactor initialization is complete
+    if (!initialization_complete_.load(std::memory_order_acquire)) {
+        throw PreconditionAssertion(fmt::format("message posted before Reactor initialization completed, event type {}", message.type().as_string()), __FILE__, __LINE__);
+    }
+
     // Lookup target thread
     auto it = threads_by_thread_id_.find(target_id);
+
     if (it == threads_by_thread_id_.end()) {
         // Unknown target: drop safely
         return;
@@ -92,6 +98,9 @@ int Reactor::run() {
             EventMessage::create_reactor_event(EventType(EventType::AppReady));
         thread->post_message(thread->get_thread_id(), std::move(ready_msg));
     }
+
+    // 5.5 Mark initialization complete
+    initialization_complete_.store(true, std::memory_order_release);
 
     // ---------------------------------------------------------------------
     // 6. Main loop (placeholder until epoll/timers/sockets are added)

@@ -91,4 +91,9 @@ inline bool operator==(const EventType& lhs, const EventType& rhs)
     return lhs.is_equal(rhs);
 }
 
+inline bool operator!=(const EventType& lhs, const EventType& rhs)
+{
+    return !lhs.is_equal(rhs);
+}
+
 }

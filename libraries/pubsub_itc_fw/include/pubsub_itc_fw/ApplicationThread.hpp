@@ -238,6 +238,10 @@ class ApplicationThread {
 
     virtual void on_raw_socket_message(const EventMessage& msg) {}
 
+    bool get_has_received_app_ready() const noexcept {
+        return has_received_app_ready_.load(std::memory_order_acquire);
+    }
+
   private:
     QuillLogger& logger_;
     Reactor& reactor_;
@@ -252,6 +256,7 @@ class ApplicationThread {
     std::atomic<bool> is_running_{false};
     std::atomic<bool> run_loop_entered_{false};
     std::atomic<bool> has_processed_initial_event_{false};
+    std::atomic<bool> has_received_app_ready_{false};
 
     // Note: We heap allocate the lock free queue so that if the application thread
     // misbehaves and does not join properly in the dtor, we can still destroy the
