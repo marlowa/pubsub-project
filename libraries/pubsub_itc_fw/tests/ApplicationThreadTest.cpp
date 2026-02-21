@@ -135,7 +135,7 @@ public:
     {
     }
 
-    void process_message(EventMessage& msg) override
+    void on_initial_event() override
     {
         processed_count.fetch_add(1, std::memory_order_release);
 
@@ -143,7 +143,19 @@ public:
             throw std::runtime_error("Test exception");
         }
 
-        last_processed_type = msg.type();
+        last_processed_type = EventType(EventType::Initial);
+    }
+
+    void on_app_ready_event() override {
+        last_processed_type = EventType(EventType::AppReady);
+    }
+
+    void on_itc_message(const EventMessage& msg) override {
+        last_processed_type = EventType(EventType::InterthreadCommunication);
+    }
+
+    void on_timer_event(TimerID id) override {
+        last_processed_type = EventType(EventType::Timer);
     }
 
     std::atomic<int> processed_count{0};

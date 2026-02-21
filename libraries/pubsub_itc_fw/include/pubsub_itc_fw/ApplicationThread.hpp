@@ -222,8 +222,21 @@ class ApplicationThread {
      */
     void run_internal();
 
-    void on_data_message(const EventMessage& event_message);
-    virtual void process_message(EventMessage& message) = 0;
+    void process_message(EventMessage& message);
+
+    virtual void on_initial_event() {}
+
+    virtual void on_app_ready_event() {}
+
+    virtual void on_termination_event(const std::string& reason) {}
+
+    virtual void on_itc_message(const EventMessage& msg) = 0;
+
+    virtual void on_timer_event(TimerID id) {}
+
+    virtual void on_pubsub_message(const EventMessage& msg) {}
+
+    virtual void on_raw_socket_message(const EventMessage& msg) {}
 
   private:
     QuillLogger& logger_;

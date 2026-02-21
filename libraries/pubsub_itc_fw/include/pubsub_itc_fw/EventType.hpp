@@ -63,6 +63,10 @@ public:
         }
     }
 
+    EventTypeTag as_tag() const {
+        return event_type_;
+    }
+
     /**
      * @brief Checks equality with another EventType.
      * @param other EventType to compare with

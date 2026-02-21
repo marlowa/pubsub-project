@@ -82,7 +82,7 @@ public:
      * @brief Registers an application thread with the reactor.
      * @param [in] thread A reference to the application thread.
      */
-    void registerThread(ApplicationThread& thread);
+    void register_thread(std::shared_ptr<ApplicationThread> thread);
 
     /**
      * @brief Returns the name of a thread given its ID.
@@ -115,8 +115,8 @@ private:
     std::map<int, std::unique_ptr<EventHandler>> handlers_;
 
     // Thread management
-    std::map<std::string, ApplicationThread*> threads_;
-    std::map<ThreadID, ApplicationThread*> threads_by_thread_id_;
+    std::map<std::string, std::shared_ptr<ApplicationThread>> threads_;
+    std::map<ThreadID, std::shared_ptr<ApplicationThread>> threads_by_thread_id_;
 
     // Configuration parameters
     ReactorConfiguration config_;

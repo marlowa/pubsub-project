@@ -140,16 +140,12 @@ void ApplicationThread::shutdown(const std::string& reason) {
 
 void ApplicationThread::run() {
     try {
-        std::cerr << fmt::format("{}:{} got here\n", __FILE__, __LINE__);
         run_internal();
-        std::cerr << fmt::format("{}:{} got here\n", __FILE__, __LINE__);
     } catch (const std::exception& ex) {
-        std::cerr << fmt::format("{}:{} got here\n", __FILE__, __LINE__);
         PUBSUB_LOG(logger_, LogLevel::Error, "{} [{}] terminating due to exception: {}",
                    thread_name_, thread_id_.get_value(), ex.what());
         reactor_.shutdown("thread run function finished abnormally");
     } catch (...) {
-        std::cerr << fmt::format("{}:{} got here\n", __FILE__, __LINE__);
         PUBSUB_LOG(logger_, LogLevel::Error, "{} [{}] terminating due to unknown exception",
                    thread_name_, thread_id_.get_value());
         reactor_.shutdown("thread run function finished abnormally");
@@ -217,9 +213,62 @@ void ApplicationThread::run_internal() {
     }
 }
 
-void ApplicationThread::on_data_message(const EventMessage& event_message) {
-    (void)event_message;
-    // Intentionally left as a stub; message handling is in process_message().
+void ApplicationThread::process_message(EventMessage& message) {
+    const EventType type = message.type();
+
+    switch (static_cast<EventType::EventTypeTag>(type.as_tag())) {
+        case EventType::Initial: {
+            on_initial_event();
+            set_has_processed_initial_event();
+            PUBSUB_LOG(logger_, LogLevel::Info, "Thread {}: Initialisation complete", thread_name_);
+            break;
+        }
+
+        case EventType::AppReady: {
+            if (!get_has_processed_initial_event()) {
+                throw PreconditionAssertion("Received AppReady event before Initial event was processed",
+                    __FILE__, __LINE__);
+            }
+
+            on_app_ready_event();
+
+            PUBSUB_LOG(logger_, LogLevel::Info, "Thread {}: Received AppReady. Moving to operational state.",
+                       thread_name_);
+            break;
+        }
+
+        case EventType::Termination: {
+            on_termination_event(message.reason());
+            break;
+        }
+
+        case EventType::InterthreadCommunication: {
+            on_itc_message(message);
+            break;
+        }
+
+        case EventType::Timer: {
+            on_timer_event(message.timer_id());
+            break;
+        }
+
+        case EventType::PubSubCommunication: {
+            on_pubsub_message(message);
+            break;
+        }
+
+        case EventType::RawSocketCommunication: {
+            on_raw_socket_message(message);
+            break;
+        }
+
+        case EventType::None:
+        default: {
+            PUBSUB_LOG(logger_, LogLevel::Warning, "Thread {}: Received unknown or None event type: {}",
+                       thread_name_, type.as_string());
+            break;
+        }
+    }
 }
 
 } // namespace pubsub_itc_fw
