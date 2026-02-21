@@ -13,6 +13,7 @@
 
 #include <pubsub_itc_fw/tests_common/MockReactor.hpp>
 #include <pubsub_itc_fw/tests_common/TestSink.hpp>
+#include <pubsub_itc_fw/tests_common/LoggerWithSink.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
 
 using namespace pubsub_itc_fw;
@@ -48,30 +49,6 @@ AllocatorConfig make_allocator_config()
     return cfg;
 }
 
-// ------------------------------------------------------------
-// Helper: QuillLogger + TestSink
-// ------------------------------------------------------------
-struct LoggerWithSink
-{
-    QuillLogger logger;
-    std::shared_ptr<TestSink> sink;
-};
-
-LoggerWithSink make_logger_with_sink(const std::string& logger_name,
-                                     const std::string& sink_name)
-{
-    LoggerWithSink out{QuillLogger{}, nullptr};
-
-    auto sink_base = quill::Frontend::create_or_get_sink<TestSink>(sink_name);
-    auto sink_typed = std::static_pointer_cast<TestSink>(sink_base);
-
-    // NOTE: This relies on the real QuillLogger having a ctor that matches this signature
-    // in your actual codebase.
-    out.logger = QuillLogger(logger_name, sink_base, LogLevel::Debug);
-    out.sink = sink_typed;
-    return out;
-}
-
 class ApplicationThreadTestEnv : public ::testing::Environment {
 public:
     LoggerWithSink* logger_with_sink = nullptr;
@@ -79,9 +56,7 @@ public:
 
     void SetUp() override {
         // Create long-lived logger + sink
-        logger_with_sink = new LoggerWithSink(
-            make_logger_with_sink("global_AT_logger", "global_AT_sink")
-        );
+        logger_with_sink = new LoggerWithSink("global_AT_logger", "global_AT_sink");
 
         // Create long-lived Reactor
         ReactorConfiguration cfg{};
@@ -638,17 +613,17 @@ TEST_F(ApplicationThreadTest, MessageOrderingPreserved)
 //       shutdown reason.
 TEST_F(ApplicationThreadTest, LoggerIsolationAcrossThreads)
 {
-    auto logger1 = make_logger_with_sink("logger1_LoggerIsolationAcrossThreads", "sink1_LoggerIsolationAcrossThreads");
-    auto logger2 = make_logger_with_sink("logger2_LoggerIsolationAcrossThreads", "sink2_LoggerIsolationAcrossThreads");
+    auto logger1 = std::make_unique<LoggerWithSink>("logger1_LoggerIsolationAcrossThreads", "sink1_LoggerIsolationAcrossThreads");
+    auto logger2 = std::make_unique<LoggerWithSink>("logger2_LoggerIsolationAcrossThreads", "sink2_LoggerIsolationAcrossThreads");
 
-    logger1.sink->clear();
-    logger2.sink->clear();
+    logger1->sink->clear();
+    logger2->sink->clear();
 
     ReactorConfiguration cfg{};
-    Reactor reactor(cfg, logger1.logger);
+    Reactor reactor(cfg, logger1->logger);
 
-    TestThread t1(logger1.logger, reactor, "T1", ThreadID(1), make_queue_config(), make_allocator_config());
-    TestThread t2(logger2.logger, reactor, "T2", ThreadID(2), make_queue_config(), make_allocator_config());
+    TestThread t1(logger1->logger, reactor, "T1", ThreadID(1), make_queue_config(), make_allocator_config());
+    TestThread t2(logger2->logger, reactor, "T2", ThreadID(2), make_queue_config(), make_allocator_config());
 
     reactor_.run();
     t1.start();
@@ -659,14 +634,14 @@ TEST_F(ApplicationThreadTest, LoggerIsolationAcrossThreads)
     t1.shutdown("one");
     t2.shutdown("two");
 
-    EXPECT_GT(logger1.sink->count(), 0);
-    EXPECT_GT(logger2.sink->count(), 0);
+    EXPECT_GT(logger1->sink->count(), 0);
+    EXPECT_GT(logger2->sink->count(), 0);
 
-    EXPECT_TRUE(logger1.sink->contains_message("one"));
-    EXPECT_TRUE(logger2.sink->contains_message("two"));
+    EXPECT_TRUE(logger1->sink->contains_message("one"));
+    EXPECT_TRUE(logger2->sink->contains_message("two"));
 
-    EXPECT_FALSE(logger1.sink->contains_message("two"));
-    EXPECT_FALSE(logger2.sink->contains_message("one"));
+    EXPECT_FALSE(logger1->sink->contains_message("two"));
+    EXPECT_FALSE(logger2->sink->contains_message("one"));
 }
 
 TEST_F(ApplicationThreadTest, DoubleStartThrowsException)

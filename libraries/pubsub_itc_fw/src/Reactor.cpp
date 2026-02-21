@@ -1,4 +1,6 @@
 #include <pubsub_itc_fw/Reactor.hpp>
+
+#include <pubsub_itc_fw/Backoff.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 
@@ -16,7 +18,62 @@ Reactor::Reactor(const ReactorConfiguration& config, QuillLogger& logger) :
 int Reactor::run() {
     is_finished_.store(false, std::memory_order_release);
     shutdown_reason_ = "";
-    // TODO there is no implementation here yet.
+
+    // ---------------------------------------------------------------------
+    // 1. Start all registered ApplicationThreads
+    // ---------------------------------------------------------------------
+    for (auto& [name, thread] : threads_) {
+        thread->start();
+    }
+
+    // ---------------------------------------------------------------------
+    // 2. Wait until all threads have entered their run loops
+    // ---------------------------------------------------------------------
+    for (auto& [name, thread] : threads_) {
+        Backoff backoff;
+        while (!thread->is_running()) {
+            backoff.pause();
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // 3. Post Initial event to each thread
+    // ---------------------------------------------------------------------
+    for (auto& [name, thread] : threads_) {
+        EventMessage init_msg =
+            EventMessage::create_reactor_event(EventType(EventType::Initial));
+        thread->post_message(thread->get_thread_id(), std::move(init_msg));
+    }
+
+    // ---------------------------------------------------------------------
+    // 4. Wait until all threads have processed Initial
+    // ---------------------------------------------------------------------
+    for (auto& [name, thread] : threads_) {
+        Backoff backoff;
+        while (!thread->get_has_processed_initial_event()) {
+            backoff.pause();
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // 5. Post AppReady event to each thread
+    // ---------------------------------------------------------------------
+    for (auto& [name, thread] : threads_) {
+        EventMessage ready_msg =
+            EventMessage::create_reactor_event(EventType(EventType::AppReady));
+        thread->post_message(thread->get_thread_id(), std::move(ready_msg));
+    }
+
+    // ---------------------------------------------------------------------
+    // 6. Main loop (placeholder until epoll/timers/sockets are added)
+    // ---------------------------------------------------------------------
+    {
+        Backoff backoff;
+        while (!is_finished_.load(std::memory_order_acquire)) {
+            backoff.pause();
+        }
+    }
+
     return 0;
 }
 

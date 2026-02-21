@@ -7,6 +7,7 @@ add_executable(pubsub_itc_fw_tests
     NumaAwarePoolAllocatorTest.cpp
     LockFreeMessageQueueTest.cpp
     QuillLoggerTest.cpp
+    ReactorTest.cpp
     StringUtilsTest.cpp
     ThreadWithJoinTimeoutTest.cpp
 )
