@@ -15,6 +15,35 @@ Reactor::Reactor(const ReactorConfiguration& config, QuillLogger& logger) :
 {
 }
 
+void Reactor::route_message(ThreadID target_id, EventMessage message) {
+    // Lookup target thread
+    auto it = threads_by_thread_id_.find(target_id);
+    if (it == threads_by_thread_id_.end()) {
+        // Unknown target: drop safely
+        return;
+    }
+
+    auto* target = it->second.get();
+
+    // If target is finished, drop safely
+    if (!target->is_running()) {
+        return;
+    }
+
+    // Lookup origin thread
+    ThreadID origin_id = message.originating_thread_id();
+    auto origin_it = threads_by_thread_id_.find(origin_id);
+
+    // If origin is unknown or finished, drop safely
+    if (origin_it == threads_by_thread_id_.end() ||
+        !origin_it->second->is_running()) {
+        return;
+    }
+
+    // Enqueue into target queue
+    target->get_queue().enqueue(std::move(message));
+}
+
 int Reactor::run() {
     is_finished_.store(false, std::memory_order_release);
     shutdown_reason_ = "";

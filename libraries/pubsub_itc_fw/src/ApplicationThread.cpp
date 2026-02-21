@@ -92,8 +92,13 @@ void ApplicationThread::resume() {
 }
 
 void ApplicationThread::post_message(ThreadID target_thread_id, EventMessage message) {
-    (void)target_thread_id; // routing to other threads is Reactor’s job
-    message_queue_->enqueue(std::move(message));
+     if (target_thread_id == thread_id_) {
+        // Direct self-post
+        message_queue_->enqueue(std::move(message));
+        return;
+     }
+
+    reactor_.route_message(target_thread_id, std::move(message));
 }
 
 TimerID ApplicationThread::start_one_off_timer(

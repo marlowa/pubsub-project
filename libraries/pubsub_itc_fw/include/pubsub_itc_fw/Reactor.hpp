@@ -99,6 +99,8 @@ public:
         return is_finished_.load();
     }
 
+    void route_message(ThreadID target_id, EventMessage message);
+
 protected:
     std::atomic<bool> is_finished_{false};
     std::string shutdown_reason_;
