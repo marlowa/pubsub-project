@@ -1,5 +1,5 @@
 status notes
-TODO   find all calls to yield and replace with Backoff::pause.
+DONE** find all calls to yield and replace with Backoff::pause.
 TODO   flesh out QueueDepthHistogramTest that was destroyed by chatbot.
 TODO   add CPU pinning code to reactor to avoid the fan going crazy when we use Backoff.
 TODO   remind ourselves what ApplicationThread::is_paused is for.
@@ -9,3 +9,4 @@ TODO   design XML config file reader with XSD and the ability for file inclusion
 TODO   does Backoff class need a policy or config for eventually timing out?
 TODO   threads can be paused and resumed. revise why we added this.
 TODO   purge cases of using namespaces inserted by chatbots
+TODO   PubSubItcException does not take file and line numer.

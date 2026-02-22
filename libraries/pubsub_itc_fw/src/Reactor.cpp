@@ -4,6 +4,7 @@
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/MillisecondClock.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
+#include <pubsub_itc_fw/PubSubItcException.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -44,8 +45,7 @@ void Reactor::route_message(ThreadID target_id, EventMessage message) {
         if (lifecycle_state == ThreadLifecycleState::ShuttingDown || lifecycle_state == ThreadLifecycleState::Terminated) {
             return;
         }
-        throw PreconditionAssertion(fmt::format("Attempted to route non-reactor event {} to non-operational thread", message.type().as_string()),
-                                    __FILE__, __LINE__);
+        throw PubSubItcException(fmt::format("Attempted to route non-reactor event {} to non-operational thread", message.type().as_string()));
     }
 
     // Lookup origin thread
@@ -168,8 +168,8 @@ void Reactor::initialize_threads() {
     for (auto& [name, thread] : threads_) {
         EventMessage ready_msg = EventMessage::create_reactor_event(EventType(EventType::AppReady));
         if (thread->get_lifecycle_state().as_tag() != ThreadLifecycleState::InitialProcessed) {
-            throw PreconditionAssertion(fmt::format("Reactor attempted to post AppReady before InitialProcessed, thread state = {}",
-                                        thread->get_lifecycle_state().as_string()), __FILE__, __LINE__);
+            throw PubSubItcException(fmt::format("Reactor attempted to post AppReady before InitialProcessed, thread state = {}",
+                                        thread->get_lifecycle_state().as_string()));
         }
 
         thread->post_message(thread->get_thread_id(), std::move(ready_msg));
