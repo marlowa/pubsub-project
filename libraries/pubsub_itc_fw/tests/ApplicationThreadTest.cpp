@@ -10,6 +10,7 @@
 #include <pubsub_itc_fw/AllocatorConfig.hpp>
 #include <pubsub_itc_fw/Backoff.hpp>
 #include <pubsub_itc_fw/ThreadLifecycleState.hpp>
+#include <pubsub_itc_fw/ThreadWithJoinTimeout.hpp>
 #include <pubsub_itc_fw/QueueConfig.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 
@@ -866,7 +867,7 @@ TEST_F(ApplicationThreadTest, InterThreadRoutingDeliversMessage)
     reactor.register_thread(threadB);
 
     // Start Reactor in its own thread
-    std::thread reactor_thread([&]() {
+    ThreadWithJoinTimeout reactor_thread([&]() {
         reactor.run();
     });
 

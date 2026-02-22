@@ -11,7 +11,6 @@ public:
         Created,
         Started,
         InitialProcessed,
-        AppReadyProcessed,
         Operational,
         ShuttingDown,
         Terminated
@@ -32,7 +31,6 @@ public:
         if (tag_ == Created) return "Created";
         if (tag_ == Started) return "Started";
         if (tag_ == InitialProcessed) return "InitialProcessed";
-        if (tag_ == AppReadyProcessed) return "AppReadyProcessed";
         if (tag_ == Operational) return "Operational";
         if (tag_ == ShuttingDown) return "ShuttingDown";
         if (tag_ == Terminated) return "Terminated";

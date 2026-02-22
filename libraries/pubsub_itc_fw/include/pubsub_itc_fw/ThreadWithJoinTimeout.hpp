@@ -21,12 +21,16 @@ namespace pubsub_itc_fw {
  *    into a helper thread so that the wrapper can be safely destroyed even
  *    if the worker thread is stuck.
  *
- * After joinWithTimeout() returns (true or false), this wrapper no longer
- * owns a joinable thread.
+ * After joinWithTimeout() returns (true or false), this wrapper no longer owns a joinable thread.
  */
 class ThreadWithJoinTimeout {
 public:
     ThreadWithJoinTimeout() = default;
+
+    template <typename Callable, typename... Args>
+    explicit ThreadWithJoinTimeout(Callable&& func, Args&&... args) {
+        start(std::forward<Callable>(func), std::forward<Args>(args)...);
+    }
 
     // Non-copyable
     ThreadWithJoinTimeout(const ThreadWithJoinTimeout&) = delete;
@@ -75,6 +79,10 @@ public:
      */
     bool joinable() const noexcept {
         return thread_.joinable();
+    }
+
+    void detach() {
+        thread_.detach();
     }
 
 #if 1

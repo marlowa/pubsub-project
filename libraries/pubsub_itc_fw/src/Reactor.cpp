@@ -18,7 +18,8 @@ Reactor::Reactor(const ReactorConfiguration& config, QuillLogger& logger) :
 void Reactor::route_message(ThreadID target_id, EventMessage message) {
      // Reject attempt to route event message before reactor initialization is complete
     if (!initialization_complete_.load(std::memory_order_acquire)) {
-        throw PreconditionAssertion(fmt::format("message posted before Reactor initialization completed, event type {}", message.type().as_string()), __FILE__, __LINE__);
+        throw PreconditionAssertion(fmt::format("message posted before Reactor initialization completed, event type {}",
+                                                message.type().as_string()), __FILE__, __LINE__);
     }
 
     // Lookup target thread
@@ -30,10 +31,20 @@ void Reactor::route_message(ThreadID target_id, EventMessage message) {
     }
 
     auto* target = it->second.get();
-
     // If target is finished, drop safely
     if (!target->is_running()) {
         return;
+    }
+
+    auto tag = message.type().as_tag();
+    const bool is_reactor_event = tag == EventType::Initial || tag == EventType::AppReady;
+    const auto lifecycle_state = target->get_lifecycle_state().as_tag();
+    if (!is_reactor_event && lifecycle_state != ThreadLifecycleState::Operational) {
+        if (lifecycle_state == ThreadLifecycleState::ShuttingDown || lifecycle_state == ThreadLifecycleState::Terminated) {
+            return;
+        }
+        throw PreconditionAssertion(fmt::format("Attempted to route non-reactor event {} to non-operational thread", message.type().as_string()),
+                                    __FILE__, __LINE__);
     }
 
     // Lookup origin thread
@@ -85,6 +96,10 @@ int Reactor::run() {
     // ---------------------------------------------------------------------
     for (auto& [name, thread] : threads_) {
         Backoff backoff;
+        if (thread->get_lifecycle_state().as_tag() != ThreadLifecycleState::Started) {
+            throw PreconditionAssertion("Reactor attempted to post Initial before thread reached Started", __FILE__, __LINE__);
+        }
+
         while (thread->get_lifecycle_state().as_tag() < ThreadLifecycleState::InitialProcessed) {
             backoff.pause();
         }
@@ -94,12 +109,25 @@ int Reactor::run() {
     // 5. Post AppReady event to each thread
     // ---------------------------------------------------------------------
     for (auto& [name, thread] : threads_) {
-        EventMessage ready_msg =
-            EventMessage::create_reactor_event(EventType(EventType::AppReady));
+        EventMessage ready_msg = EventMessage::create_reactor_event(EventType(EventType::AppReady));
+        if (thread->get_lifecycle_state().as_tag() != ThreadLifecycleState::InitialProcessed) {
+            throw PreconditionAssertion("Reactor attempted to post AppReady before InitialProcessed", __FILE__, __LINE__);
+        }
+
         thread->post_message(thread->get_thread_id(), std::move(ready_msg));
     }
 
-    // 5.5 Mark initialization complete
+    // 5.5 Wait until all threads are Operational
+    // TODO a misbehaving thread in its early stages could make the reactor wait forever here.
+    // I think there needs to be some kind of time limit.
+    for (auto& [name, thread] : threads_) {
+        Backoff backoff;
+        while (thread->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational) {
+            backoff.pause();
+        }
+    }
+
+    // 5.6 Mark initialization complete
     initialization_complete_.store(true, std::memory_order_release);
 
     // ---------------------------------------------------------------------

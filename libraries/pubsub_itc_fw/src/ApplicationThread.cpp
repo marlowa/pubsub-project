@@ -13,11 +13,6 @@
 namespace pubsub_itc_fw {
 
 ApplicationThread::~ApplicationThread() {
-    if (get_lifecycle_state().as_tag() < ThreadLifecycleState::Started) {
-        // thread has not started yet, so no cleanup to do
-        return;
-    }
-
     if (thread_ != nullptr && thread_->joinable()) {
         // Signal the run loop to exit
         set_lifecycle_state(ThreadLifecycleState::ShuttingDown);
@@ -28,16 +23,13 @@ ApplicationThread::~ApplicationThread() {
         try {
             bool joined = thread_->join_with_timeout(std::chrono::seconds(3));
             if (!joined) {
-                auto errorString = fmt::format("Failed to join thread: {} during destruction", thread_name_);
+                auto errorString = fmt::format("Failed to join thread: {} during destruction, will detach", thread_name_);
                 PUBSUB_LOG_STR(logger_, LogLevel::Error, errorString);
-                // At this point, something is badly wrong; but do NOT
-                // release/destroy the queue while the thread may still run.
-                // TBD whether to assert/terminate here in production.
-                throw PubSubItcException(errorString);
+                // At this point, something is badly wrong; but do NOT release/destroy the queue while the thread may still run.
+                thread_->detach();
             }
         } catch (const std::exception& ex) {
-            PUBSUB_LOG_STR(logger_, LogLevel::Error,
-                           "Failed to join thread: " + thread_name_ + " during destruction: " + ex.what());
+            PUBSUB_LOG_STR(logger_, LogLevel::Error, "Failed to join thread: " + thread_name_ + " during destruction: " + ex.what());
         }
     }
 }
@@ -232,8 +224,6 @@ void ApplicationThread::process_message(EventMessage& message) {
             }
 
             on_app_ready_event();
-
-            set_lifecycle_state(ThreadLifecycleState::AppReadyProcessed);
 
             PUBSUB_LOG(logger_, LogLevel::Info, "Thread {}: Received AppReady. Moving to operational state.",
                        thread_name_);
