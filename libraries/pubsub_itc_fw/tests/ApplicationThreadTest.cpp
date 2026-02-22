@@ -9,6 +9,7 @@
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/AllocatorConfig.hpp>
 #include <pubsub_itc_fw/Backoff.hpp>
+#include <pubsub_itc_fw/ThreadLifecycleState.hpp>
 #include <pubsub_itc_fw/QueueConfig.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 
@@ -731,11 +732,11 @@ TEST_F(ApplicationThreadTest, InitialEventFlagTracking)
     TestThread thread(logger_with_sink_.logger, reactor_, "TestThread",
                      ThreadID(1), make_queue_config(), make_allocator_config());
 
-    EXPECT_FALSE(thread.get_has_processed_initial_event());
+    EXPECT_FALSE(thread.has_processed_initial());
 
-    thread.set_has_processed_initial_event();
+    thread.set_lifecycle_state(ThreadLifecycleState::InitialProcessed);
 
-    EXPECT_TRUE(thread.get_has_processed_initial_event());
+    EXPECT_TRUE(thread.has_processed_initial());
 }
 
 TEST_F(ApplicationThreadTest, ThreadNameAndIDGetters)

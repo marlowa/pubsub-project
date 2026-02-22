@@ -9,6 +9,7 @@
 
 #include <pubsub_itc_fw/EventHandler.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
+#include <pubsub_itc_fw/ThreadLifecycleState.hpp>
 #include <pubsub_itc_fw/LockFreeMessageQueue.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
@@ -198,18 +199,29 @@ class ApplicationThread {
         time_event_finished_ = time_event_finished;
     }
 
-    bool get_has_processed_initial_event() {
-        return has_processed_initial_event_.load();
-    }
-
-    void set_has_processed_initial_event() {
-        has_processed_initial_event_.store(true);
-    }
-
     void shutdown(const std::string& reason);
 
     bool is_running() const noexcept {
-        return is_running_.load();
+        auto tag = get_lifecycle_state().as_tag();
+        return tag >= ThreadLifecycleState::Started &&
+            tag < ThreadLifecycleState::ShuttingDown;
+    }
+
+    bool is_operational() const noexcept {
+        auto tag = get_lifecycle_state().as_tag();
+        return tag == ThreadLifecycleState::Operational;
+    }
+
+    bool has_processed_initial() const noexcept {
+        return get_lifecycle_state().as_tag() >= ThreadLifecycleState::InitialProcessed;
+    }
+
+    ThreadLifecycleState get_lifecycle_state() const noexcept {
+        return ThreadLifecycleState(lifecycle_state_.load(std::memory_order_acquire));
+    }
+
+    void set_lifecycle_state(ThreadLifecycleState::Tag tag) noexcept {
+        lifecycle_state_.store(tag, std::memory_order_release);
     }
 
   protected:
@@ -238,10 +250,6 @@ class ApplicationThread {
 
     virtual void on_raw_socket_message(const EventMessage& msg) {}
 
-    bool get_has_received_app_ready() const noexcept {
-        return has_received_app_ready_.load(std::memory_order_acquire);
-    }
-
   private:
     QuillLogger& logger_;
     Reactor& reactor_;
@@ -253,10 +261,8 @@ class ApplicationThread {
     ThreadID thread_id_;
 
     std::atomic<bool> is_paused_{false};
-    std::atomic<bool> is_running_{false};
-    std::atomic<bool> run_loop_entered_{false};
-    std::atomic<bool> has_processed_initial_event_{false};
-    std::atomic<bool> has_received_app_ready_{false};
+    // TODO check if we need to do something similar for EventType atomic.
+    std::atomic<ThreadLifecycleState::Tag> lifecycle_state_{ThreadLifecycleState::NotCreated};
 
     // Note: We heap allocate the lock free queue so that if the application thread
     // misbehaves and does not join properly in the dtor, we can still destroy the

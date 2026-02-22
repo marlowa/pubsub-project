@@ -13,14 +13,14 @@
 namespace pubsub_itc_fw {
 
 ApplicationThread::~ApplicationThread() {
-    if (!run_loop_entered_.load()) {
+    if (get_lifecycle_state().as_tag() < ThreadLifecycleState::Started) {
         // thread has not started yet, so no cleanup to do
         return;
     }
 
     if (thread_ != nullptr && thread_->joinable()) {
         // Signal the run loop to exit
-        is_running_.store(false, std::memory_order_relaxed);
+        set_lifecycle_state(ThreadLifecycleState::ShuttingDown);
         if (message_queue_ != nullptr) {
             message_queue_->shutdown();
         }
@@ -56,6 +56,7 @@ ApplicationThread::ApplicationThread(QuillLogger& logger,
     , thread_id_(thread_id)
     , thread_(nullptr) {
     message_queue_ = std::make_unique<LockFreeMessageQueue<EventMessage>>(queue_config, allocator_config);
+    set_lifecycle_state(ThreadLifecycleState::Created);
 }
 
 void ApplicationThread::start() {
@@ -68,10 +69,9 @@ void ApplicationThread::start() {
 
     // Make sure we do not return until the started thread is in the run loop.
     Backoff backoff;
-     while (!run_loop_entered_.load(std::memory_order_acquire))
-     {
-         backoff.pause();
-     }
+    while (get_lifecycle_state().as_tag() < ThreadLifecycleState::Started) {
+        backoff.pause();
+    }
 }
 
 [[nodiscard]] bool ApplicationThread::join_with_timeout(
@@ -122,14 +122,10 @@ void ApplicationThread::cancel_timer(const std::string& name) {
 }
 
 void ApplicationThread::shutdown(const std::string& reason) {
-    is_running_.store(false, std::memory_order_relaxed);
+    set_lifecycle_state(ThreadLifecycleState::ShuttingDown);
     message_queue_->shutdown();
 
-    // TODO use fmt instead of string addition
-
-    PUBSUB_LOG_STR(logger_, LogLevel::Info,
-        "Thread " + thread_name_ + " received shutdown signal: " + reason);
-
+    PUBSUB_LOG(logger_, LogLevel::Info, "Thread {} received shutdown signal: {}", thread_name_, reason);
     if (thread_ != nullptr && thread_->joinable()) {
         try {
             if (!thread_->join_with_timeout(std::chrono::seconds(2))) {
@@ -157,14 +153,13 @@ void ApplicationThread::run() {
 }
 
 void ApplicationThread::run_internal() {
-    run_loop_entered_.store(true, std::memory_order_release);
-    is_running_.store(true, std::memory_order_relaxed);
+    set_lifecycle_state(ThreadLifecycleState::Started);
 
     PUBSUB_LOG(logger_, LogLevel::Info, "Starting thread {}", thread_name_);
 
     try {
         for (;;) {
-            if (!is_running_.load(std::memory_order_relaxed)) {
+            if (!is_running()) {
                 break;
             }
 
@@ -175,15 +170,14 @@ void ApplicationThread::run_internal() {
             }
 
             if (reactor_.is_finished()) {
-                PUBSUB_LOG(logger_, LogLevel::Warning,
-                          "Thread {} detected Reactor shutdown, exiting",
-                          thread_name_);
+                PUBSUB_LOG(logger_, LogLevel::Warning, "Thread {} detected Reactor shutdown, exiting", thread_name_);
+                set_lifecycle_state(ThreadLifecycleState::ShuttingDown);
                 break;
             }
 
             if (message_queue_ == nullptr) {
                 PUBSUB_LOG(logger_, LogLevel::Error, "Thread {} no longer has message queue, shutting down.", thread_name_);
-                is_running_.store(false, std::memory_order_relaxed);
+                set_lifecycle_state(ThreadLifecycleState::ShuttingDown);
                 break;
             }
 
@@ -200,19 +194,12 @@ void ApplicationThread::run_internal() {
 
         PUBSUB_LOG(logger_, LogLevel::Info, "Thread {} is shutting down.", thread_name_);
     } catch (const std::exception& ex) {
-        is_running_.store(false, std::memory_order_relaxed);
-
-        PUBSUB_LOG(logger_, LogLevel::Error, "{} [{}] terminating due to exception: {}",
-                   thread_name_, thread_id_.get_value(), ex.what());
-
+        set_lifecycle_state(ThreadLifecycleState::ShuttingDown);
+        PUBSUB_LOG(logger_, LogLevel::Error, "{} [{}] terminating due to exception: {}", thread_name_, thread_id_.get_value(), ex.what());
         reactor_.shutdown("thread run function finished abnormally");
     } catch (...) {
-        is_running_.store(false, std::memory_order_relaxed);
-
-        PUBSUB_LOG(logger_, LogLevel::Error,
-                   "{} [{}] terminating due to unknown exception",
-                   thread_name_, thread_id_.get_value());
-
+        set_lifecycle_state(ThreadLifecycleState::ShuttingDown);
+        PUBSUB_LOG(logger_, LogLevel::Error, "{} [{}] terminating due to unknown exception", thread_name_, thread_id_.get_value());
         reactor_.shutdown("thread run function finished abnormally (unknown exception)");
     }
 }
@@ -221,32 +208,36 @@ void ApplicationThread::process_message(EventMessage& message) {
     const EventType type = message.type();
     auto tag = static_cast<EventType::EventTypeTag>(type.as_tag());
 
-    const bool fully_operational = get_has_processed_initial_event() && get_has_received_app_ready();
-    // Before fully operational, only Initial and AppReady are allowed
-    if (!fully_operational && tag != EventType::Initial && tag != EventType::AppReady) {
-        throw PreconditionAssertion(fmt::format("Non-reactor event received before thread is fully operational, event Type = {}", type.as_string()),__FILE__, __LINE__);
+    auto state = get_lifecycle_state().as_tag();
+
+    const bool is_reactor_event = tag == EventType::Initial || tag == EventType::AppReady;
+    const bool is_operational = state == ThreadLifecycleState::Operational;
+
+    if (!is_operational && !is_reactor_event) {
+        throw PreconditionAssertion(
+            "Non-reactor event received before thread is fully operational", __FILE__, __LINE__);
     }
 
     switch (tag) {
         case EventType::Initial: {
             on_initial_event();
-            set_has_processed_initial_event();
+            set_lifecycle_state(ThreadLifecycleState::InitialProcessed);
             PUBSUB_LOG(logger_, LogLevel::Info, "Thread {}: Initialisation complete", thread_name_);
             break;
         }
 
         case EventType::AppReady: {
-            if (!get_has_processed_initial_event()) {
-                throw PreconditionAssertion("Received AppReady event before Initial event was processed",
-                    __FILE__, __LINE__);
+            if (get_lifecycle_state().as_tag() < ThreadLifecycleState::InitialProcessed) {
+                throw PreconditionAssertion("Received AppReady event before Initial event was processed", __FILE__, __LINE__);
             }
 
             on_app_ready_event();
 
-            has_received_app_ready_.store(true, std::memory_order_release);
+            set_lifecycle_state(ThreadLifecycleState::AppReadyProcessed);
 
             PUBSUB_LOG(logger_, LogLevel::Info, "Thread {}: Received AppReady. Moving to operational state.",
                        thread_name_);
+            set_lifecycle_state(ThreadLifecycleState::Operational);
             break;
         }
 

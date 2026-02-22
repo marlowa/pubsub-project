@@ -58,9 +58,9 @@ public:
             return "PubSubCommunication";
         } if (event_type_ == RawSocketCommunication) {
             return "RawSocketCommunication";
-        } {
-            return fmt::format("unknown ({})", static_cast<int>(event_type_));
         }
+
+        return fmt::format("unknown ({})", static_cast<int>(event_type_));
     }
 
     EventTypeTag as_tag() const {

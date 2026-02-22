@@ -85,7 +85,7 @@ int Reactor::run() {
     // ---------------------------------------------------------------------
     for (auto& [name, thread] : threads_) {
         Backoff backoff;
-        while (!thread->get_has_processed_initial_event()) {
+        while (thread->get_lifecycle_state().as_tag() < ThreadLifecycleState::InitialProcessed) {
             backoff.pause();
         }
     }
