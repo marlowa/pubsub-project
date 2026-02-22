@@ -110,8 +110,10 @@ protected:
     std::string shutdown_reason_;
 
 private:
-    void checkForInactiveThreads();
-    void checkForInactiveSockets();
+    void initialize_threads();
+    void event_loop();
+    void check_for_inactive_threads();
+    void check_for_inactive_sockets();
     void dispatchEvents(int nfds, epoll_event* events);
 
     std::atomic<bool> initialization_complete_{false};

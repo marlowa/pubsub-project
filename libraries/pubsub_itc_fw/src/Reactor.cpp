@@ -2,6 +2,7 @@
 
 #include <pubsub_itc_fw/Backoff.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
+#include <pubsub_itc_fw/MillisecondClock.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 
 namespace pubsub_itc_fw {
@@ -65,81 +66,11 @@ int Reactor::run() {
     is_finished_.store(false, std::memory_order_release);
     shutdown_reason_ = "";
 
-    // ---------------------------------------------------------------------
-    // 1. Start all registered ApplicationThreads
-    // ---------------------------------------------------------------------
-    for (auto& [name, thread] : threads_) {
-        thread->start();
-    }
+    initialize_threads();
 
-    // ---------------------------------------------------------------------
-    // 2. Wait until all threads have entered their run loops
-    // ---------------------------------------------------------------------
-    for (auto& [name, thread] : threads_) {
-        Backoff backoff;
-        while (!thread->is_running()) {
-            backoff.pause();
-        }
-    }
+    event_loop();
 
-    // ---------------------------------------------------------------------
-    // 3. Post Initial event to each thread
-    // ---------------------------------------------------------------------
-    for (auto& [name, thread] : threads_) {
-        EventMessage init_msg =
-            EventMessage::create_reactor_event(EventType(EventType::Initial));
-        thread->post_message(thread->get_thread_id(), std::move(init_msg));
-    }
-
-    // ---------------------------------------------------------------------
-    // 4. Wait until all threads have processed Initial
-    // ---------------------------------------------------------------------
-    for (auto& [name, thread] : threads_) {
-        Backoff backoff;
-        if (thread->get_lifecycle_state().as_tag() != ThreadLifecycleState::Started) {
-            throw PreconditionAssertion("Reactor attempted to post Initial before thread reached Started", __FILE__, __LINE__);
-        }
-
-        while (thread->get_lifecycle_state().as_tag() < ThreadLifecycleState::InitialProcessed) {
-            backoff.pause();
-        }
-    }
-
-    // ---------------------------------------------------------------------
-    // 5. Post AppReady event to each thread
-    // ---------------------------------------------------------------------
-    for (auto& [name, thread] : threads_) {
-        EventMessage ready_msg = EventMessage::create_reactor_event(EventType(EventType::AppReady));
-        if (thread->get_lifecycle_state().as_tag() != ThreadLifecycleState::InitialProcessed) {
-            throw PreconditionAssertion("Reactor attempted to post AppReady before InitialProcessed", __FILE__, __LINE__);
-        }
-
-        thread->post_message(thread->get_thread_id(), std::move(ready_msg));
-    }
-
-    // 5.5 Wait until all threads are Operational
-    // TODO a misbehaving thread in its early stages could make the reactor wait forever here.
-    // I think there needs to be some kind of time limit.
-    for (auto& [name, thread] : threads_) {
-        Backoff backoff;
-        while (thread->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational) {
-            backoff.pause();
-        }
-    }
-
-    // 5.6 Mark initialization complete
-    initialization_complete_.store(true, std::memory_order_release);
-
-    // ---------------------------------------------------------------------
-    // 6. Main loop (placeholder until epoll/timers/sockets are added)
-    // ---------------------------------------------------------------------
-    {
-        Backoff backoff;
-        while (!is_finished_.load(std::memory_order_acquire)) {
-            backoff.pause();
-        }
-    }
-
+    // TODO we should exit with a non-zero status if any thread got a critical error.
     return 0;
 }
 
@@ -180,8 +111,107 @@ void Reactor::register_thread(std::shared_ptr<ApplicationThread> thread) {
     threads_[name] = thread;
     threads_by_thread_id_[id] = thread;
 
-    PUBSUB_LOG(logger_, LogLevel::Info, "Registered application thread: {} (ID: {})",
-               name, id.get_value());
+    PUBSUB_LOG(logger_, LogLevel::Info, "Registered application thread: {} (ID: {})", name, id.get_value());
+}
+
+void Reactor::initialize_threads() {
+    // ---------------------------------------------------------------------
+    // 1. Start all registered ApplicationThreads
+    // ---------------------------------------------------------------------
+    for (auto& [name, thread] : threads_) {
+        thread->start();
+    }
+
+    // ---------------------------------------------------------------------
+    // 2. Wait until all threads have entered their run loops
+    // ---------------------------------------------------------------------
+    for (auto& [name, thread] : threads_) {
+        Backoff backoff;
+        auto start = MillisecondClock::now();
+        while (!thread->is_running()) {
+            if (MillisecondClock::now() - start > config_.init_phase_timeout_) {
+                shutdown(fmt::format("Thread {} failed to reach Started within init_phase_timeout", thread->get_thread_name()));
+                return;
+            }
+            backoff.pause();
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // 3. Post Initial event to each thread
+    // ---------------------------------------------------------------------
+    for (auto& [name, thread] : threads_) {
+        EventMessage init_msg =
+            EventMessage::create_reactor_event(EventType(EventType::Initial));
+        thread->post_message(thread->get_thread_id(), std::move(init_msg));
+    }
+
+    // ---------------------------------------------------------------------
+    // 4. Wait until all threads have processed Initial
+    // ---------------------------------------------------------------------
+    for (auto& [name, thread] : threads_) {
+        Backoff backoff;
+        auto start = MillisecondClock::now();
+        while (thread->get_lifecycle_state().as_tag() < ThreadLifecycleState::InitialProcessed) {
+            if (MillisecondClock::now() - start > config_.init_phase_timeout_) {
+                shutdown(fmt::format("Thread {} failed to reach InitialProcessed within init_phase_timeout", thread->get_thread_name()));
+                return;
+            }
+
+            backoff.pause();
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // 5. Post AppReady event to each thread
+    // ---------------------------------------------------------------------
+    for (auto& [name, thread] : threads_) {
+        EventMessage ready_msg = EventMessage::create_reactor_event(EventType(EventType::AppReady));
+        if (thread->get_lifecycle_state().as_tag() != ThreadLifecycleState::InitialProcessed) {
+            throw PreconditionAssertion(fmt::format("Reactor attempted to post AppReady before InitialProcessed, thread state = {}",
+                                        thread->get_lifecycle_state().as_string()), __FILE__, __LINE__);
+        }
+
+        thread->post_message(thread->get_thread_id(), std::move(ready_msg));
+    }
+
+    // 5.5 Wait until all threads are Operational
+    // TODO a misbehaving thread in its early stages could make the reactor wait forever here.
+    // I think there needs to be some kind of time limit.
+    for (auto& [name, thread] : threads_) {
+        Backoff backoff;
+        auto start = MillisecondClock::now();
+        while (thread->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational) {
+            if (MillisecondClock::now() - start > config_.init_phase_timeout_) {
+                shutdown(fmt::format("Thread {} failed to reach Operational within init_phase_timeout", thread->get_thread_name()));
+                return;
+            }
+            backoff.pause();
+        }
+    }
+
+    // 5.6 Mark initialization complete
+    initialization_complete_.store(true, std::memory_order_release);
+}
+
+void Reactor::event_loop() {
+    // ---------------------------------------------------------------------
+    // Main loop (placeholder until epoll/timers/sockets are added)
+    // ---------------------------------------------------------------------
+    {
+        Backoff backoff;
+        while (!is_finished_.load(std::memory_order_acquire)) {
+            backoff.pause();
+        }
+    }
+}
+
+void Reactor::check_for_inactive_threads()
+{
+}
+
+void Reactor::check_for_inactive_sockets()
+{
 }
 
 } // namespace pubsub_itc_fw

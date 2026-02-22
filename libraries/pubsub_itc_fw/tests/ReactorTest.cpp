@@ -1,22 +1,34 @@
 // ReactorInitAppReadyTest.cpp
 
-#include <gtest/gtest.h>
 #include <atomic>
+#include <chrono>
 #include <thread>
 
+#include <gtest/gtest.h>
+
 #include <pubsub_itc_fw/Reactor.hpp>
+
+#include <pubsub_itc_fw/AllocatorConfig.hpp>
+#include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/Backoff.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/EventType.hpp>
 #include <pubsub_itc_fw/ReactorConfiguration.hpp>
+#include <pubsub_itc_fw/MillisecondClock.hpp>
 #include <pubsub_itc_fw/QueueConfig.hpp>
-#include <pubsub_itc_fw/AllocatorConfig.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 
 #include <pubsub_itc_fw/tests_common/LoggerWithSink.hpp>
 
 namespace pubsub_itc_fw {
+
+// -----------------------------------------------------------------------------
+// Reactor initialization timeout test
+// -----------------------------------------------------------------------------
+
+namespace {
+
 // ------------------------------------------------------------
 // Helpers: QueueConfig, AllocatorConfig
 // ------------------------------------------------------------
@@ -44,6 +56,76 @@ AllocatorConfig make_allocator_config()
     cfg.use_huge_pages_flag = UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages);
     cfg.context = nullptr;
     return cfg;
+}
+
+// A deliberately misbehaving thread that never reaches Started.
+// It launches a thread but run_internal() never sets the lifecycle state.
+class NeverStartingThread : public pubsub_itc_fw::ApplicationThread {
+public:
+    NeverStartingThread(pubsub_itc_fw::QuillLogger& logger,
+                        pubsub_itc_fw::Reactor& reactor,
+                        const std::string& name,
+                        pubsub_itc_fw::ThreadID id,
+                        const pubsub_itc_fw::QueueConfig& qc,
+                        const pubsub_itc_fw::AllocatorConfig& ac)
+        : ApplicationThread(logger, reactor, name, id, qc, ac)
+    {}
+
+protected:
+    void on_initial_event() override
+    {
+        // Intentionally never calls set_lifecycle_state(Started).
+        for (;;) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+
+    void on_itc_message(const EventMessage& msg) override {
+    }
+};
+
+} // namespace
+
+TEST(ReactorTest, InitializationTimeoutTriggersShutdown)
+{
+    pubsub_itc_fw::LoggerWithSink logger("reactor_timeout_logger",
+                                         "reactor_timeout_sink");
+
+    pubsub_itc_fw::ReactorConfiguration cfg{};
+    cfg.init_phase_timeout_ = pubsub_itc_fw::MillisecondClock::duration{50};
+
+    pubsub_itc_fw::Reactor reactor(cfg, logger.logger);
+
+    pubsub_itc_fw::QueueConfig qc = make_queue_config();
+    pubsub_itc_fw::AllocatorConfig ac = make_allocator_config();
+
+    auto bad_thread = std::make_shared<NeverStartingThread>(
+        logger.logger, reactor, "BadThread", pubsub_itc_fw::ThreadID(99), qc, ac);
+
+    reactor.register_thread(bad_thread);
+
+    pubsub_itc_fw::ThreadWithJoinTimeout reactor_thread([&]() {
+        reactor.run();
+    });
+
+    // Wait for Reactor to detect timeout and shut down.
+    {
+        pubsub_itc_fw::Backoff backoff;
+        auto start = pubsub_itc_fw::MillisecondClock::now();
+
+        while (!reactor.is_finished()) {
+            if (pubsub_itc_fw::MillisecondClock::now() - start >
+                pubsub_itc_fw::MillisecondClock::duration{200}) {
+                FAIL() << "Reactor did not shut down after initialization timeout";
+            }
+            backoff.pause();
+        }
+    }
+
+    reactor_thread.join();
+
+    EXPECT_FALSE(reactor.is_initialized());
+    EXPECT_TRUE(reactor.is_finished());
 }
 
 } // namespaces

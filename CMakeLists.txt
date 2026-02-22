@@ -161,6 +161,7 @@ add_library(pubsub_itc_fw_lib
     libraries/pubsub_itc_fw/src/Message.cpp
     libraries/pubsub_itc_fw/src/EventDistributor.cpp
     libraries/pubsub_itc_fw/src/ExpandablePoolAllocator.cpp
+    libraries/pubsub_itc_fw/src/MillisecondClock.cpp
     libraries/pubsub_itc_fw/src/QuillLogger.cpp
     libraries/pubsub_itc_fw/src/Reactor.cpp
     libraries/pubsub_itc_fw/src/StringUtils.cpp

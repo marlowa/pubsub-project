@@ -149,6 +149,8 @@ void ApplicationThread::run_internal() {
 
     PUBSUB_LOG(logger_, LogLevel::Info, "Starting thread {}", thread_name_);
 
+    Backoff backoff;
+
     try {
         for (;;) {
             if (!is_running()) {
@@ -156,7 +158,7 @@ void ApplicationThread::run_internal() {
             }
 
             if (is_paused_.load(std::memory_order_relaxed)) {
-                // TODO do a mm_pause on intel machines
+                // Because this thread is paused, we want to hint to the scheduler that another thread should run.
                 std::this_thread::yield();
                 continue;
             }
@@ -175,11 +177,11 @@ void ApplicationThread::run_internal() {
 
             auto maybe_msg = message_queue_->dequeue();
             if (!maybe_msg.has_value()) {
-                // TODO do a mm_pause on intel machines
-                std::this_thread::yield();
+                backoff.pause();
                 continue;
             }
 
+            backoff.reset();
             EventMessage msg = std::move(*maybe_msg);
             process_message(msg);
         }
@@ -263,6 +265,20 @@ void ApplicationThread::process_message(EventMessage& message) {
             break;
         }
     }
+}
+
+void ApplicationThread::set_lifecycle_state(ThreadLifecycleState::Tag new_tag)
+{
+    auto old_tag = lifecycle_state_.load(std::memory_order_acquire);
+
+    if (old_tag == new_tag) {
+        return;
+    }
+
+    PUBSUB_LOG(logger_, LogLevel::Info, "Thread {} lifecycle transition {} → {}", thread_name_,
+               ThreadLifecycleState::to_string(old_tag), ThreadLifecycleState::to_string(new_tag));
+
+    lifecycle_state_.store(new_tag, std::memory_order_release);
 }
 
 } // namespace pubsub_itc_fw

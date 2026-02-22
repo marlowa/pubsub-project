@@ -39,7 +39,7 @@ snake_case for: variables, function names, member functions, parameters
 snake_case with trailing underscore for: member variables (pool_name_, logger_)
 Do not use the prefix "s_" for class static members.
 PascalCase for: class names, struct names, type names
-Use SCREAMING_SNAKE_CASE for: macros but nothing else (so not constants). 
+Use SCREAMING_SNAKE_CASE for: macros but nothing else (so not constants).
 Test fixture classes and with "Test".
 Do not use the underscore character in googletest names; that character is reserved.
 Do not create an identifier with a double underscore ever.
@@ -91,6 +91,8 @@ Include order: system headers (first the ones with .h then the ones without),
 the header that goes with the cpp
 any additional project headers required, in alphabetical order
 These sections/groupings need to be separated by a blank line
+
+#include statements must always use angled brackets, never double quotes.
 
 Error Handling
 

@@ -220,9 +220,7 @@ class ApplicationThread {
         return ThreadLifecycleState(lifecycle_state_.load(std::memory_order_acquire));
     }
 
-    void set_lifecycle_state(ThreadLifecycleState::Tag tag) noexcept {
-        lifecycle_state_.store(tag, std::memory_order_release);
-    }
+    void set_lifecycle_state(ThreadLifecycleState::Tag new_tag);
 
   protected:
     /**

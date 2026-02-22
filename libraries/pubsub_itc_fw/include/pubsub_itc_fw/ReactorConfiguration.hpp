@@ -33,6 +33,8 @@ struct ReactorConfiguration {
      * @brief The maximum allowed inactivity interval for sockets.
      */
     std::chrono::milliseconds socket_maximum_inactivity_interval_{std::chrono::seconds{60}};
+
+    std::chrono::milliseconds init_phase_timeout_{std::chrono::seconds{10}};
 };
 
 } // namespace pubsub_itc_fw

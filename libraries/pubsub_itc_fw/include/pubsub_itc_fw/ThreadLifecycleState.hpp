@@ -27,14 +27,18 @@ public:
     }
 
     [[nodiscard]] std::string as_string() const {
-        if (tag_ == NotCreated) return "NotCreated";
-        if (tag_ == Created) return "Created";
-        if (tag_ == Started) return "Started";
-        if (tag_ == InitialProcessed) return "InitialProcessed";
-        if (tag_ == Operational) return "Operational";
-        if (tag_ == ShuttingDown) return "ShuttingDown";
-        if (tag_ == Terminated) return "Terminated";
-        return fmt::format("unknown ({})", static_cast<int>(tag_));
+        return ThreadLifecycleState::to_string(tag_);
+    }
+
+    static std::string to_string(Tag tag) {
+        if (tag == NotCreated) return "NotCreated";
+        if (tag == Created) return "Created";
+        if (tag == Started) return "Started";
+        if (tag == InitialProcessed) return "InitialProcessed";
+        if (tag == Operational) return "Operational";
+        if (tag == ShuttingDown) return "ShuttingDown";
+        if (tag == Terminated) return "Terminated";
+        return fmt::format("unknown ({})", static_cast<int>(tag));
     }
 
 private:
