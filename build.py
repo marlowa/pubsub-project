@@ -11,6 +11,50 @@ import os
 import shutil
 from pathlib import Path
 
+def generate_coverage_report(build_dir, source_dir):
+    """Generate LCOV + genhtml coverage report"""
+    print("\n============================================================")
+    print("Generating code coverage report")
+    print("============================================================")
+
+    raw_info = build_dir / "coverage.raw.info"
+    filtered_info = build_dir / "coverage.info"
+    html_dir = build_dir / "coverage_html"
+
+    # 1. Capture coverage
+    run_command([
+        "lcov",
+        "--capture",
+        "--directory", str(build_dir),
+        "--output-file", str(raw_info),
+        "--rc", "geninfo_unexecuted_blocks=1",
+        "--ignore-errors", "mismatch"
+    ], description="Capturing coverage data")
+
+    # 2. Filter out system, thirdparty, and tests
+    run_command([
+        "lcov",
+        "--remove", str(raw_info),
+        "/usr/*",
+        "*/thirdparty/*",
+        "*/tests/*",
+        "--output-file", str(filtered_info),
+        "--ignore-errors", "mismatch"
+    ], description="Filtering coverage data")
+
+    # 3. Generate HTML
+    run_command([
+        "genhtml",
+        str(filtered_info),
+        "--output-directory", str(html_dir),
+        "--legend",
+        "--title", "pubsub_itc_fw Code Coverage",
+        "--show-details",
+        "--ignore-errors", "mismatch"
+    ], description="Generating HTML coverage report")
+
+    print("\n✓ Coverage report generated:")
+    print(f"  {html_dir}/index.html")
 
 def run_command(cmd, cwd=None, description=None):
     """Run a shell command and handle errors"""
@@ -158,54 +202,39 @@ Examples:
         """
     )
 
-    parser.add_argument(
-        '--clean',
-        action='store_true',
+    parser.add_argument('--clean', action='store_true',
         help='Clean build directory before building'
     )
 
-    parser.add_argument(
-        '--valgrind',
-        action='store_true',
+    parser.add_argument('--valgrind', action='store_true',
         help='Build with Valgrind compatibility (disables lock-free optimizations)'
     )
 
-    parser.add_argument(
-        '--doxygen',
-        action='store_true',
+    parser.add_argument('--doxygen', action='store_true',
         help='Generate Doxygen documentation after building'
     )
 
-    parser.add_argument(
-        '--doxygen-only',
-        action='store_true',
+    parser.add_argument('--doxygen-only', action='store_true',
         help='Only generate Doxygen documentation (skip build)'
     )
 
-    parser.add_argument(
-        '--no-tests',
-        action='store_true',
+    parser.add_argument('--no-tests', action='store_true',
         help='Skip running tests after building'
     )
 
-    parser.add_argument(
-        '--jobs', '-j',
-        type=int,
-        metavar='N',
+    parser.add_argument('--jobs', '-j', type=int, metavar='N',
         help='Number of parallel build jobs (default: number of CPU cores)'
     )
 
-    parser.add_argument(
-        '--build-dir',
-        type=Path,
-        default=Path('build'),
+    parser.add_argument('--build-dir', type=Path, default=Path('build'),
         help='Build directory path (default: ./build)'
     )
 
-    parser.add_argument(
-        '--coverage',
-        action='store_true',
+    parser.add_argument('--coverage', action='store_true',
         help='Build with GCC/Clang code coverage instrumentation')
+
+    parser.add_argument('--coverage-report', action='store_true',
+        help='Generate LCOV + genhtml coverage report after running tests')
 
     args = parser.parse_args()
 
@@ -229,7 +258,7 @@ Examples:
     build_dir.mkdir(parents=True, exist_ok=True)
 
     # Configure
-    configure_cmake(build_dir, source_dir, enable_valgrind=args.valgrind,  enable_coverage=args.coverage)
+    configure_cmake(build_dir, source_dir, enable_valgrind=args.valgrind, enable_coverage=args.coverage)
 
     # Build
     build_project(build_dir, jobs=args.jobs)
@@ -238,9 +267,13 @@ Examples:
     if not args.no_tests:
         run_tests(build_dir)
 
+    if args.coverage_report:
+        generate_coverage_report(build_dir, source_dir)
+
     # Generate Doxygen if requested
     if args.doxygen:
         run_doxygen(source_dir)
+
 
     print("\n" + "="*60)
     print("Build process completed successfully!")

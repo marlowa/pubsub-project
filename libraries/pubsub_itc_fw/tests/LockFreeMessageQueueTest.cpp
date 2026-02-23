@@ -412,6 +412,7 @@ TEST(LockFreeMessageQueueTest, ProducerConsumerPinnedToSeparateCores) {
 // behavior, allocator churn issues, and long-term stability
 // problems. This is a high-confidence stress test.
 // ------------------------------------------------------------
+#ifdef ENABLE_PERFORMANCE_TESTS
 TEST(LockFreeMessageQueueTest, SoakTestMillionsOfMessages) {
     QueueConfig queue_config = make_default_queue_config();
     AllocatorConfig allocator_config = make_default_allocator_config();
@@ -464,6 +465,7 @@ TEST(LockFreeMessageQueueTest, SoakTestMillionsOfMessages) {
 
     EXPECT_TRUE(queue.empty());
 }
+#endif
 
 // ------------------------------------------------------------
 // False sharing detection: producer and consumer are pinned to
@@ -758,6 +760,7 @@ TEST(LockFreeMessageQueueTest, LowWatermarkStormTest) {
 // performance regression guard to ensure the queue remains
 // efficient over time.
 // ------------------------------------------------------------
+#ifdef ENABLE_PERFORMANCE_TESTS
 TEST(LockFreeMessageQueueTest, ThroughputBenchmark) {
     QueueConfig queue_config = make_default_queue_config();
     AllocatorConfig allocator_config = make_default_allocator_config();
@@ -824,6 +827,7 @@ TEST(LockFreeMessageQueueTest, ThroughputBenchmark) {
 
     EXPECT_TRUE(queue.empty());
 }
+#endif
 
 // ------------------------------------------------------------
 // Mixed-rate jitter soak test: producers and consumer run with

@@ -42,6 +42,8 @@ if(ENABLE_COVERAGE)
     else()
         message(FATAL_ERROR "Coverage enabled, but compiler does not support GCC/Clang coverage flags")
     endif()
+else()
+    add_definitions(-DENABLE_PERFORMANCE_TESTS)
 endif()
 
 # --- Configure Third-Party Dependency Discovery ---
