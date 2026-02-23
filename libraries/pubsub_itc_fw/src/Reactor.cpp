@@ -1,3 +1,7 @@
+#include <unistd.h>
+#include <sys/timerfd.h>
+#include <sys/epoll.h>
+
 #include <pubsub_itc_fw/Reactor.hpp>
 
 #include <pubsub_itc_fw/Backoff.hpp>
@@ -257,6 +261,114 @@ void Reactor::initialize_threads() {
 
     // 5.6 Mark initialization complete
     initialization_complete_.store(true, std::memory_order_release);
+}
+
+TimerID Reactor::create_timer_fd(ThreadID owner_thread_id,
+                                 std::chrono::microseconds interval,
+                                 TimerType type)
+{
+    int fd = ::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+    if (fd == -1) {
+        throw std::runtime_error("timerfd_create failed");
+    }
+
+    // Convert microseconds → nanoseconds for timerfd
+    auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(interval);
+
+    itimerspec spec{};
+    spec.it_value.tv_sec  = ns.count() / 1'000'000'000;
+    spec.it_value.tv_nsec = ns.count() % 1'000'000'000;
+
+    if (type == TimerType::Recurring) {
+        spec.it_interval = spec.it_value;
+    }
+
+    if (::timerfd_settime(fd, 0, &spec, nullptr) == -1) {
+        ::close(fd);
+        throw std::runtime_error("timerfd_settime failed");
+    }
+
+    // Generate a new TimerID
+    TimerID id = next_timer_id_++;
+
+    // Store mappings
+    timer_fd_to_thread_[fd] = owner_thread_id;
+    timer_fd_to_timer_id_[fd] = id;
+
+    // Register with epoll
+    epoll_event ev{};
+    ev.events = EPOLLIN;
+    ev.data.fd = fd;
+    if (::epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, fd, &ev) == -1) {
+        timer_fd_to_thread_.erase(fd);
+        timer_fd_to_timer_id_.erase(fd);
+        ::close(fd);
+        throw std::runtime_error("epoll_ctl ADD failed for timerfd");
+    }
+
+    return id;
+}
+
+void Reactor::cancel_timer_fd(TimerID id)
+{
+    // Find the fd associated with this TimerID
+    int fd_to_remove = -1;
+
+    for (const auto& kv : timer_fd_to_timer_id_) {
+        if (kv.second == id) {
+            fd_to_remove = kv.first;
+            break;
+        }
+    }
+
+    if (fd_to_remove == -1) {
+        return; // Unknown TimerID → no-op
+    }
+
+    ::epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, fd_to_remove, nullptr);
+    ::close(fd_to_remove);
+
+    timer_fd_to_thread_.erase(fd_to_remove);
+    timer_fd_to_timer_id_.erase(fd_to_remove);
+}
+
+/*
+ * Called from the main epoll loop when a timerfd becomes readable.
+ *
+ * This function MUST:
+ *   - read the uint64_t ring count
+ *   - generate one Timer event per ring
+ *   - deliver events to the owning ApplicationThread
+ *
+ * No coalescing is performed. If the kernel reports multiple expirations,
+ * Reactor emits multiple Timer events. This preserves correctness for
+ * high-resolution periodic timers and avoids silent loss of events.
+ */
+void Reactor::handle_timer_fd_ready(int fd)
+{
+    uint64_t ring_count = 0;
+    ::read(fd, &ring_count, sizeof(ring_count)); // must read to clear readiness
+
+    auto thread_it = timer_fd_to_thread_.find(fd);
+    auto id_it = timer_fd_to_timer_id_.find(fd);
+
+    if (thread_it == timer_fd_to_thread_.end() || id_it == timer_fd_to_timer_id_.end()) {
+        return; // Should never happen, but safe to ignore
+    }
+
+    ThreadID owner_thread_id = thread_it->second;
+    TimerID timer_id = id_it->second;
+
+    auto owner = threads_by_thread_id_[owner_thread_id];
+    if (owner.get() == nullptr) {
+        return; // Thread already gone
+    }
+
+    // Emit one event per ring — no coalescing
+    for (uint64_t i = 0; i < ring_count; ++i) {
+        EventMessage msg = EventMessage::create_timer_event(timer_id);
+        owner->post_message(owner_thread_id, std::move(msg));
+    }
 }
 
 void Reactor::event_loop() {

@@ -92,25 +92,24 @@ void ApplicationThread::post_message(ThreadID target_thread_id, EventMessage mes
     reactor_.route_message(target_thread_id, std::move(message));
 }
 
-TimerID ApplicationThread::start_one_off_timer(
-    const std::string& name,
-    std::chrono::microseconds interval) {
-    (void)name;
-    (void)interval;
-    // Timer wiring is out of scope here; keep placeholder.
-    return TimerID();
+TimerID ApplicationThread::start_one_off_timer(const std::string& name, std::chrono::microseconds interval) {
+    return schedule_timer(name, interval, TimerType::SingleShot);
 }
 
-TimerID ApplicationThread::start_recurring_timer(
-    const std::string& name,
-    std::chrono::microseconds interval) {
-    (void)name;
-    (void)interval;
-    return TimerID();
+TimerID ApplicationThread::start_recurring_timer(const std::string& name, std::chrono::microseconds interval) {
+    return schedule_timer(name, interval, TimerType::Recurring);
 }
 
 void ApplicationThread::cancel_timer(const std::string& name) {
-    (void)name;
+    auto it = name_to_id_.find(name);
+    if (it == name_to_id_.end()) {
+        return;
+    }
+
+    TimerID id = it->second;
+    reactor_.cancel_timer_fd(id);
+    id_to_name_.erase(id);
+    name_to_id_.erase(it);
 }
 
 void ApplicationThread::shutdown(const std::string& reason) {
@@ -246,7 +245,7 @@ void ApplicationThread::process_message(EventMessage& message) {
         }
 
         case EventType::Timer: {
-            on_timer_event(message.timer_id());
+            on_timer_id_event(message.timer_id());
             break;
         }
 
@@ -269,6 +268,20 @@ void ApplicationThread::process_message(EventMessage& message) {
     }
 }
 
+void ApplicationThread::on_timer_id_event(TimerID id)
+{
+    auto it = id_to_name_.find(id);
+    if (it == id_to_name_.end()) {
+        PUBSUB_LOG(logger_, LogLevel::Warning, "Thread {} received timer event for unknown TimerID {}", thread_name_, id.get_value());
+        return;
+    }
+
+    const std::string& name = it->second;
+
+    // Call the user-overridable handler.
+    on_timer_event(name);
+}
+
 void ApplicationThread::set_lifecycle_state(ThreadLifecycleState::Tag new_tag)
 {
     auto old_tag = lifecycle_state_.load(std::memory_order_acquire);
@@ -281,6 +294,27 @@ void ApplicationThread::set_lifecycle_state(ThreadLifecycleState::Tag new_tag)
                ThreadLifecycleState::to_string(old_tag), ThreadLifecycleState::to_string(new_tag));
 
     lifecycle_state_.store(new_tag, std::memory_order_release);
+}
+
+TimerID ApplicationThread::schedule_timer(const std::string& name,
+                                          std::chrono::microseconds interval,
+                                          TimerType type)
+{
+    // If a timer with this name already exists, cancel it first.
+    // TODO I am not sure about this. Perhaps it is a precondition violation.
+    auto it = name_to_id_.find(name);
+    if (it != name_to_id_.end()) {
+        cancel_timer(name);
+    }
+
+    // Ask Reactor to create and register the timerfd.
+    TimerID id = reactor_.create_timer_fd(thread_id_, interval, type);
+
+    // Store mappings for lookup and cancellation.
+    name_to_id_[name] = id;
+    id_to_name_[id] = name;
+
+    return id;
 }
 
 } // namespace pubsub_itc_fw

@@ -70,6 +70,25 @@ public:
 
     [[nodiscard]] constexpr bool operator<(const WrappedInteger& other) const { return value_ < other.value_; }
 
+    /**
+     * @brief Prefix increment operator.
+     * @return A reference to this ID after incrementing.
+     */
+    constexpr WrappedInteger& operator++() {
+        ++value_;
+        return *this;
+    }
+
+    /**
+     * @brief Postfix increment operator.
+     * @return A copy of the ID before incrementing.
+     */
+    constexpr WrappedInteger operator++(int) {
+        WrappedInteger temp(*this);
+        ++value_;
+        return temp;
+    }
+
 private:
     T value_;
 };

@@ -7,6 +7,8 @@
 #include <stdexcept>
 #include <string>
 
+#include <sys/epoll.h>
+
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/EventHandler.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
@@ -14,8 +16,7 @@
 #include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/ReactorConfiguration.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
-
-#include <sys/epoll.h>
+#include <pubsub_itc_fw/TimerID.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -105,6 +106,29 @@ public:
         return initialization_complete_.load(std::memory_order_acquire);
     }
 
+    /**
+     * @brief Creates and registers a timerfd for an ApplicationThread.
+     * @param [in] owner_thread_id The ThreadID of the owning ApplicationThread.
+     * @param [in] interval The delay or interval before the timer rings.
+     * @param [in] type Whether the timer is single-shot or recurring.
+     * @return The TimerID for the timer created.
+     *
+     * The Reactor owns the underlying timerfd and will deliver Timer events to
+     * the specified ApplicationThread when the timer rings. One event is
+     * generated per ring; no coalescing is performed.
+     */
+    TimerID create_timer_fd(ThreadID owner_thread_id, std::chrono::microseconds interval, TimerType type);
+
+    /**
+     * @brief Cancels and deregisters a previously created timerfd.
+     * @param [in] id The TimerID to cancel.
+     *
+     * After cancellation, the Reactor will no longer watch the associated
+     * timerfd and no further Timer events will be generated for this TimerID.
+     * If the TimerID is unknown, this function is a no-op.
+     */
+    void cancel_timer_fd(TimerID id);
+
 protected:
     std::atomic<bool> is_finished_{false};
     std::string shutdown_reason_;
@@ -117,10 +141,19 @@ private:
     void dispatchEvents(int nfds, epoll_event* events);
     void finalize_threads_after_shutdown();
 
+    void handle_timer_fd_ready(int fd);
+
     std::atomic<bool> initialization_complete_{false};
 
     // The core of the reactor
     int epoll_fd_{-1};
+
+    // Monotonically increasing counter used to generate unique TimerIDs.
+    TimerID next_timer_id_{0};
+
+    // Timer bookkeeping: Reactor owns timerfds and maps them back to threads and TimerIDs.
+    std::unordered_map<int, ThreadID> timer_fd_to_thread_;
+    std::unordered_map<int, TimerID> timer_fd_to_timer_id_;
 
     // Handler management, mapping file descriptors to their handlers
     std::map<int, std::unique_ptr<EventHandler>> handlers_;

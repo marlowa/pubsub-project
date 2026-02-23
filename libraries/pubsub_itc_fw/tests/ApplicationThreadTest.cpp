@@ -132,8 +132,8 @@ public:
         last_processed_type.store(EventType(EventType::InterthreadCommunication), std::memory_order_release);
     }
 
-    void on_timer_event(TimerID id) override {
-        last_processed_type.store(EventType(EventType::Timer), std::memory_order_release);
+    void on_raw_socket_message(const EventMessage& msg) override {
+        last_processed_type.store(EventType(EventType::RawSocketCommunication), std::memory_order_release);
     }
 
     std::atomic<int> processed_count{0};
@@ -597,7 +597,7 @@ TEST_F(ApplicationThreadTest, MessageOrderingPreserved)
 
     EventMessage m1 = EventMessage::create_reactor_event(EventType(EventType::Initial));
     EventMessage m2 = EventMessage::create_reactor_event(EventType(EventType::AppReady));
-    EventMessage m3 = EventMessage::create_reactor_event(EventType(EventType::Timer));
+    EventMessage m3 = EventMessage::create_reactor_event(EventType(EventType::RawSocketCommunication));
 
     thread.post_message(ThreadID(1), std::move(m1));
     thread.post_message(ThreadID(1), std::move(m2));
@@ -609,7 +609,7 @@ TEST_F(ApplicationThreadTest, MessageOrderingPreserved)
 
     thread.shutdown("done");
 
-    EXPECT_EQ(thread.last_processed_type.load(std::memory_order_acquire), EventType(EventType::Timer));
+    EXPECT_EQ(thread.last_processed_type.load(std::memory_order_acquire), EventType(EventType::RawSocketCommunication));
 }
 
 // ------------------------------------------------------------

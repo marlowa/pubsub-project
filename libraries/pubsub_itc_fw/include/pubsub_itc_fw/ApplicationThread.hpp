@@ -16,6 +16,7 @@
 #include <pubsub_itc_fw/ThreadID.hpp>
 #include <pubsub_itc_fw/ThreadWithJoinTimeout.hpp>
 #include <pubsub_itc_fw/TimerHandler.hpp>
+#include <pubsub_itc_fw/TimerID.hpp>
 #include <pubsub_itc_fw/TimerType.hpp>
 #include <pubsub_itc_fw/QueueConfig.hpp>
 #include <pubsub_itc_fw/AllocatorConfig.hpp>
@@ -183,6 +184,22 @@ class ApplicationThread {
      */
     void cancel_timer(const std::string& name);
 
+    /**
+     * @brief Schedules a high-resolution timer.
+     * @param [in] name The name of the timer.
+     * @param [in] interval The delay or interval before the timer rings.
+     * @param [in] type Whether the timer is single-shot or recurring.
+     * @return The TimerID for the timer created.
+     *
+     * Timers are scheduled by ApplicationThread but managed by Reactor. Reactor owns
+     * the underlying timerfd, waits for it in epoll, reads it when it becomes
+     * readable, and enqueues one TimerRings event per ring into this thread's
+     * message queue. ApplicationThread never touches timerfds directly.
+     */
+    TimerID schedule_timer(const std::string& name,
+                           std::chrono::microseconds interval,
+                           TimerType type);
+
     auto get_time_event_started() const {
         return time_event_started_;
     }
@@ -241,7 +258,9 @@ class ApplicationThread {
 
     virtual void on_itc_message(const EventMessage& msg) = 0;
 
-    virtual void on_timer_event(TimerID id) {}
+    void on_timer_id_event(TimerID id);
+
+    virtual void on_timer_event(const std::string& name) {}
 
     virtual void on_pubsub_message(const EventMessage& msg) {}
 
@@ -267,6 +286,9 @@ class ApplicationThread {
     // still tries to use it.
     std::unique_ptr<LockFreeMessageQueue<EventMessage>> message_queue_;
     std::unique_ptr<ThreadWithJoinTimeout> thread_;
+
+    std::unordered_map<std::string, TimerID> name_to_id_;
+    std::unordered_map<TimerID, std::string> id_to_name_;
 };
 
 } // namespace pubsub_itc_fw
