@@ -560,9 +560,17 @@ TEST_F(ApplicationThreadTest, ExceptionLoggingContainsThreadMetadata)
     const auto& records = logger_with_sink_.sink->records();
     ASSERT_FALSE(records.empty());
 
-    const auto& msg_text = records.back().message; // or however you access it
-    EXPECT_NE(msg_text.find("TestThread"), std::string::npos);
-    EXPECT_NE(msg_text.find("1"), std::string::npos); // thread_id, etc.
+    bool found = false;
+    for (const auto& rec : records) {
+        const auto& msg_text = rec.message;
+        if (msg_text.find("TestThread") != std::string::npos &&
+            msg_text.find("1") != std::string::npos) {
+            found = true;
+            break;
+        }
+    }
+
+    EXPECT_TRUE(found) << "No log record contained both thread name and ID";
 }
 
 // ------------------------------------------------------------

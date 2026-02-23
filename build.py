@@ -74,8 +74,8 @@ def run_doxygen(source_dir):
     print("\n✓ Doxygen documentation generated successfully")
 
 
-def configure_cmake(build_dir, source_dir, enable_valgrind=False):
-    """Configure CMake with appropriate flags"""
+
+def configure_cmake(build_dir, source_dir, enable_valgrind=False, enable_coverage=False):
     cmake_args = [
         "cmake",
         str(source_dir)
@@ -87,12 +87,14 @@ def configure_cmake(build_dir, source_dir, enable_valgrind=False):
         print("  - Lock-free optimizations disabled (-mcx16 -march=x86-64-v2)")
         print("  - USING_VALGRIND macro defined")
 
+    if enable_coverage:
+        cmake_args.append("-DENABLE_COVERAGE=ON")
+
     run_command(
         cmake_args,
         cwd=build_dir,
         description="Configuring CMake"
     )
-
 
 def build_project(build_dir, jobs=None):
     """Build the project using make"""
@@ -200,6 +202,11 @@ Examples:
         help='Build directory path (default: ./build)'
     )
 
+    parser.add_argument(
+        '--coverage',
+        action='store_true',
+        help='Build with GCC/Clang code coverage instrumentation')
+
     args = parser.parse_args()
 
     # Get source directory (parent of this script)
@@ -222,7 +229,7 @@ Examples:
     build_dir.mkdir(parents=True, exist_ok=True)
 
     # Configure
-    configure_cmake(build_dir, source_dir, enable_valgrind=args.valgrind)
+    configure_cmake(build_dir, source_dir, enable_valgrind=args.valgrind,  enable_coverage=args.coverage)
 
     # Build
     build_project(build_dir, jobs=args.jobs)

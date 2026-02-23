@@ -3,25 +3,19 @@
 #include <pubsub_itc_fw/Backoff.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/MillisecondClock.hpp>
-#include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
+#include <pubsub_itc_fw/QuillLogger.hpp>
 
 namespace pubsub_itc_fw {
 
-Reactor::Reactor(const ReactorConfiguration& config, QuillLogger& logger) :
-      handlers_{}
-    , threads_{}
-    , threads_by_thread_id_{}
-    , config_(config)
-    , logger_(logger)
-{
-}
+Reactor::Reactor(const ReactorConfiguration& config, QuillLogger& logger)
+    : handlers_{}, threads_{}, threads_by_thread_id_{}, config_(config), logger_(logger) {}
 
 void Reactor::route_message(ThreadID target_id, EventMessage message) {
-     // Reject attempt to route event message before reactor initialization is complete
+    // Reject attempt to route event message before reactor initialization is complete
     if (!initialization_complete_.load(std::memory_order_acquire)) {
-        throw PreconditionAssertion(fmt::format("message posted before Reactor initialization completed, event type {}",
-                                                message.type().as_string()), __FILE__, __LINE__);
+        throw PreconditionAssertion(fmt::format("message posted before Reactor initialization completed, event type {}", message.type().as_string()), __FILE__,
+                                    __LINE__);
     }
 
     // Lookup target thread
@@ -53,8 +47,7 @@ void Reactor::route_message(ThreadID target_id, EventMessage message) {
     auto origin_it = threads_by_thread_id_.find(origin_id);
 
     // If origin is unknown or finished, drop safely
-    if (origin_it == threads_by_thread_id_.end() ||
-        !origin_it->second->is_running()) {
+    if (origin_it == threads_by_thread_id_.end() || !origin_it->second->is_running()) {
         return;
     }
 
@@ -74,18 +67,45 @@ int Reactor::run() {
     return 0;
 }
 
-void Reactor::shutdown(const std::string& reason)
-{
+void Reactor::shutdown(const std::string& reason) {
+    // 1. Mark Reactor as shutting down
     is_finished_.store(true, std::memory_order_release);
     shutdown_reason_ = reason;
+
+    // 2. Broadcast Shutdown event to all threads
+    for (auto& [name, thread] : threads_) {
+        EventMessage shutdown_msg = EventMessage::create_reactor_event(EventType(EventType::Termination));
+        thread->post_message(thread->get_thread_id(), std::move(shutdown_msg));
+    }
+
+    // 3. Wait for each thread to exit its run loop (bounded)
+    for (auto& [name, thread] : threads_) {
+        Backoff backoff;
+        auto start = MillisecondClock::now();
+
+        while (thread->is_running()) {
+            if (MillisecondClock::now() - start > config_.shutdown_timeout_) {
+                // Log and break; we will still attempt join
+                PUBSUB_LOG(logger_, LogLevel::Error, "Thread {} did not stop within shutdown_timeout", name);
+                break;
+            }
+            backoff.pause();
+        }
+    }
+
+    // 4. Join each thread
+    for (auto& [name, thread] : threads_) {
+        if (!thread->join_with_timeout(config_.shutdown_timeout_)) {
+            PUBSUB_LOG(logger_, LogLevel::Error, "Thread {} failed to join within shutdown_timeout", name);
+        }
+    }
+
 }
 
-std::string Reactor::get_thread_name_from_id(ThreadID id) const
-{
+std::string Reactor::get_thread_name_from_id(ThreadID id) const {
     auto it = threads_by_thread_id_.find(id);
     if (it == threads_by_thread_id_.end()) {
-        throw PreconditionAssertion("Unknown ThreadID in get_thread_name_from_id",
-                                    __FILE__, __LINE__);
+        throw PreconditionAssertion("Unknown ThreadID in get_thread_name_from_id", __FILE__, __LINE__);
     }
     return it->second->get_thread_name();
 }
@@ -104,8 +124,7 @@ void Reactor::register_thread(std::shared_ptr<ApplicationThread> thread) {
     }
 
     if (threads_by_thread_id_.find(id) != threads_by_thread_id_.end()) {
-        throw PreconditionAssertion(fmt::format("Thread ID '{}' is already registered",
-                                                id.get_value()), __FILE__, __LINE__);
+        throw PreconditionAssertion(fmt::format("Thread ID '{}' is already registered", id.get_value()), __FILE__, __LINE__);
     }
 
     threads_[name] = thread;
@@ -141,8 +160,7 @@ void Reactor::initialize_threads() {
     // 3. Post Initial event to each thread
     // ---------------------------------------------------------------------
     for (auto& [name, thread] : threads_) {
-        EventMessage init_msg =
-            EventMessage::create_reactor_event(EventType(EventType::Initial));
+        EventMessage init_msg = EventMessage::create_reactor_event(EventType(EventType::Initial));
         thread->post_message(thread->get_thread_id(), std::move(init_msg));
     }
 
@@ -168,8 +186,8 @@ void Reactor::initialize_threads() {
     for (auto& [name, thread] : threads_) {
         EventMessage ready_msg = EventMessage::create_reactor_event(EventType(EventType::AppReady));
         if (thread->get_lifecycle_state().as_tag() != ThreadLifecycleState::InitialProcessed) {
-            throw PubSubItcException(fmt::format("Reactor attempted to post AppReady before InitialProcessed, thread state = {}",
-                                        thread->get_lifecycle_state().as_string()));
+            throw PubSubItcException(
+                fmt::format("Reactor attempted to post AppReady before InitialProcessed, thread state = {}", thread->get_lifecycle_state().as_string()));
         }
 
         thread->post_message(thread->get_thread_id(), std::move(ready_msg));
@@ -206,12 +224,8 @@ void Reactor::event_loop() {
     }
 }
 
-void Reactor::check_for_inactive_threads()
-{
-}
+void Reactor::check_for_inactive_threads() {}
 
-void Reactor::check_for_inactive_sockets()
-{
-}
+void Reactor::check_for_inactive_sockets() {}
 
 } // namespace pubsub_itc_fw

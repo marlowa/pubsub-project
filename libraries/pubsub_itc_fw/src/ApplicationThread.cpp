@@ -57,7 +57,7 @@ void ApplicationThread::start() {
     }
 
     thread_ = std::make_unique<ThreadWithJoinTimeout>();
-    thread_->start([this]() { run_internal(); });
+    thread_->start([this]() { run(); });
 
     // Make sure we do not return until the started thread is in the run loop.
     Backoff backoff;
@@ -196,6 +196,8 @@ void ApplicationThread::run_internal() {
         PUBSUB_LOG(logger_, LogLevel::Error, "{} [{}] terminating due to unknown exception", thread_name_, thread_id_.get_value());
         reactor_.shutdown("thread run function finished abnormally (unknown exception)");
     }
+
+    set_lifecycle_state(ThreadLifecycleState::Terminated);
 }
 
 void ApplicationThread::process_message(EventMessage& message) {

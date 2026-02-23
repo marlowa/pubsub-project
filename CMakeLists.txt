@@ -31,6 +31,19 @@ else()
     add_compile_options(-mcx16 -march=x86-64-v2)
 endif()
 
+option(ENABLE_COVERAGE "Enable code coverage instrumentation" OFF)
+
+if(ENABLE_COVERAGE)
+    message(STATUS "Building with code coverage instrumentation")
+
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        add_compile_options(-O0 -g --coverage -fprofile-arcs -ftest-coverage -fprofile-update=atomic)
+        add_link_options(--coverage)
+    else()
+        message(FATAL_ERROR "Coverage enabled, but compiler does not support GCC/Clang coverage flags")
+    endif()
+endif()
+
 # --- Configure Third-Party Dependency Discovery ---
 # CMake will search for packages within the paths specified in CMAKE_PREFIX_PATH.
 # We will prepend the directory specified by the THIRDPARTY_DIR environment variable.
