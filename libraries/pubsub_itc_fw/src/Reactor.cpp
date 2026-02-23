@@ -63,6 +63,8 @@ int Reactor::run() {
 
     event_loop();
 
+    finalize_threads_after_shutdown();
+
     // TODO we should exit with a non-zero status if any thread got a critical error.
     return 0;
 }
@@ -77,15 +79,16 @@ void Reactor::shutdown(const std::string& reason) {
         EventMessage shutdown_msg = EventMessage::create_reactor_event(EventType(EventType::Termination));
         thread->post_message(thread->get_thread_id(), std::move(shutdown_msg));
     }
+}
 
-    // 3. Wait for each thread to exit its run loop (bounded)
+void Reactor::finalize_threads_after_shutdown() {
+    // 1. Wait for each thread to exit its run loop (bounded)
     for (auto& [name, thread] : threads_) {
         Backoff backoff;
         auto start = MillisecondClock::now();
 
         while (thread->is_running()) {
             if (MillisecondClock::now() - start > config_.shutdown_timeout_) {
-                // Log and break; we will still attempt join
                 PUBSUB_LOG(logger_, LogLevel::Error, "Thread {} did not stop within shutdown_timeout", name);
                 break;
             }
@@ -93,13 +96,26 @@ void Reactor::shutdown(const std::string& reason) {
         }
     }
 
-    // 4. Join each thread
+    // 2. Join each thread (bounded)
     for (auto& [name, thread] : threads_) {
         if (!thread->join_with_timeout(config_.shutdown_timeout_)) {
             PUBSUB_LOG(logger_, LogLevel::Error, "Thread {} failed to join within shutdown_timeout", name);
         }
     }
 
+    // 3. Wait for each thread to reach Terminated (bounded)
+    for (auto& [name, thread] : threads_) {
+        Backoff backoff;
+        auto start = MillisecondClock::now();
+
+        while (thread->get_lifecycle_state().as_tag() != ThreadLifecycleState::Terminated) {
+            if (MillisecondClock::now() - start > config_.shutdown_timeout_) {
+                PUBSUB_LOG(logger_, LogLevel::Error, "Thread {} did not reach Terminated within shutdown_timeout", name);
+                break;
+            }
+            backoff.pause();
+        }
+    }
 }
 
 std::string Reactor::get_thread_name_from_id(ThreadID id) const {
@@ -194,8 +210,6 @@ void Reactor::initialize_threads() {
     }
 
     // 5.5 Wait until all threads are Operational
-    // TODO a misbehaving thread in its early stages could make the reactor wait forever here.
-    // I think there needs to be some kind of time limit.
     for (auto& [name, thread] : threads_) {
         Backoff backoff;
         auto start = MillisecondClock::now();

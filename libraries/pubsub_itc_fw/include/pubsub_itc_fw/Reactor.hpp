@@ -115,6 +115,7 @@ private:
     void check_for_inactive_threads();
     void check_for_inactive_sockets();
     void dispatchEvents(int nfds, epoll_event* events);
+    void finalize_threads_after_shutdown();
 
     std::atomic<bool> initialization_complete_{false};
 

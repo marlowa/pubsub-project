@@ -203,8 +203,7 @@ class ApplicationThread {
 
     bool is_running() const noexcept {
         auto tag = get_lifecycle_state().as_tag();
-        return tag >= ThreadLifecycleState::Started &&
-            tag < ThreadLifecycleState::ShuttingDown;
+        return tag >= ThreadLifecycleState::Started && tag < ThreadLifecycleState::ShuttingDown;
     }
 
     bool is_operational() const noexcept {

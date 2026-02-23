@@ -583,17 +583,7 @@ TEST(ReactorTest, ThreadThrowsDuringRunLoopReactorShutsDown)
     EXPECT_TRUE(reactor.is_finished());
     EXPECT_FALSE(bad_thread->is_running());
 
-     // Wait for the thread to reach Terminated
-    {
-        Backoff backoff;
-        auto start = MillisecondClock::now();
-        while (bad_thread->get_lifecycle_state().as_tag() != ThreadLifecycleState::Terminated) {
-            if (MillisecondClock::now() - start > MillisecondClock::duration{200}) {
-                FAIL() << "Thread did not reach Terminated state";
-            }
-            backoff.pause();
-        }
-    }
+    // Once the reactor has finished, all its threads must have finished.
 
     EXPECT_EQ(bad_thread->get_lifecycle_state().as_tag(), ThreadLifecycleState::Terminated);
 }
