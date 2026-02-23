@@ -21,8 +21,6 @@
 
 #include <pubsub_itc_fw/tests_common/LoggerWithSink.hpp>
 
-namespace pubsub_itc_fw {
-
 // -----------------------------------------------------------------------------
 // Reactor initialization timeout test
 // -----------------------------------------------------------------------------
@@ -34,9 +32,9 @@ namespace {
 // ------------------------------------------------------------
 // Helpers: QueueConfig, AllocatorConfig
 // ------------------------------------------------------------
-QueueConfig make_queue_config()
+pubsub_itc_fw::QueueConfig make_queue_config()
 {
-    QueueConfig cfg{};
+    pubsub_itc_fw::QueueConfig cfg{};
     cfg.low_watermark = 1;
     cfg.high_watermark = 3;
     cfg.for_client_use = nullptr;
@@ -45,9 +43,9 @@ QueueConfig make_queue_config()
     return cfg;
 }
 
-AllocatorConfig make_allocator_config()
+pubsub_itc_fw::AllocatorConfig make_allocator_config()
 {
-    AllocatorConfig cfg{};
+    pubsub_itc_fw::AllocatorConfig cfg{};
     cfg.pool_name = "ATestPool";
     cfg.objects_per_pool = 128;
     cfg.initial_pools = 1;
@@ -55,7 +53,7 @@ AllocatorConfig make_allocator_config()
     cfg.handler_for_pool_exhausted = nullptr;
     cfg.handler_for_invalid_free = nullptr;
     cfg.handler_for_huge_pages_error = nullptr;
-    cfg.use_huge_pages_flag = UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages);
+    cfg.use_huge_pages_flag = pubsub_itc_fw::UseHugePagesFlag(pubsub_itc_fw::UseHugePagesFlag::DoNotUseHugePages);
     cfg.context = nullptr;
     return cfg;
 }
@@ -82,11 +80,183 @@ protected:
         }
     }
 
-    void on_itc_message(const EventMessage& msg) override {
+    void on_itc_message(const pubsub_itc_fw::EventMessage& msg) override {
     }
 };
 
-} // namespace
+class ThrowingInitialThread : public pubsub_itc_fw::ApplicationThread {
+public:
+    ThrowingInitialThread(pubsub_itc_fw::QuillLogger& logger, pubsub_itc_fw::Reactor& reactor,
+                          const std::string& name, pubsub_itc_fw::ThreadID id,
+                          const pubsub_itc_fw::QueueConfig& qc, const pubsub_itc_fw::AllocatorConfig& ac)
+        : pubsub_itc_fw::ApplicationThread(logger, reactor, name, id, qc, ac) {}
+
+protected:
+    void on_initial_event() override {
+        throw std::runtime_error("boom in Initial");
+    }
+
+    void on_itc_message(const pubsub_itc_fw::EventMessage&) override {}
+};
+
+class ThrowingDuringRunThread : public pubsub_itc_fw::ApplicationThread {
+public:
+    ThrowingDuringRunThread(pubsub_itc_fw::QuillLogger& logger,
+                            pubsub_itc_fw::Reactor& reactor,
+                            const std::string& name,
+                            pubsub_itc_fw::ThreadID id,
+                            const pubsub_itc_fw::QueueConfig& queue_config,
+                            const pubsub_itc_fw::AllocatorConfig& allocator_config)
+        : pubsub_itc_fw::ApplicationThread(logger, reactor, name, id, queue_config, allocator_config)
+    {}
+
+protected:
+    void on_initial_event() override {
+        // Normal startup
+    }
+
+    void on_app_ready_event() override {
+        // Normal startup
+    }
+
+    void on_itc_message(const pubsub_itc_fw::EventMessage&) override {
+        // Misbehaviour: throw during normal message handling
+        throw std::runtime_error("boom during run loop");
+    }
+};
+
+class ThrowingTerminationThread : public pubsub_itc_fw::ApplicationThread {
+public:
+    ThrowingTerminationThread(pubsub_itc_fw::QuillLogger& logger, pubsub_itc_fw::Reactor& reactor,
+                              const std::string& name, pubsub_itc_fw::ThreadID id, const pubsub_itc_fw::QueueConfig& qc,
+                              const pubsub_itc_fw::AllocatorConfig& ac) :
+        ApplicationThread(logger, reactor, name, id, qc, ac) {}
+protected:
+    void on_initial_event() override { // Normal startup
+    }
+    void on_app_ready_event() override { // Normal startup
+    }
+    void on_termination_event(const std::string&) override {
+    // Misbehaviour: throw during termination handling
+        throw std::runtime_error("boom");
+    }
+    void on_itc_message(const pubsub_itc_fw::EventMessage&) override { // Not used in this test
+    }
+};
+
+class RogueITCThread : public pubsub_itc_fw::ApplicationThread {
+public:
+    RogueITCThread(pubsub_itc_fw::QuillLogger& logger,
+                   pubsub_itc_fw::Reactor& reactor,
+                   const std::string& name,
+                   pubsub_itc_fw::ThreadID id,
+                   const pubsub_itc_fw::QueueConfig& qc,
+                   const pubsub_itc_fw::AllocatorConfig& ac)
+        : ApplicationThread(logger, reactor, name, id, qc, ac)
+    {}
+
+protected:
+    void on_initial_event() override {
+        // Normal startup
+    }
+
+    void on_app_ready_event() override {
+        // Normal startup
+    }
+
+    void on_itc_message(const pubsub_itc_fw::EventMessage&) override {
+        // Rogue behaviour: block forever
+        for (;;) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+};
+
+// A cooperative thread that exits when it receives a Termination event.
+class CooperativeShutdownThread : public pubsub_itc_fw::ApplicationThread {
+public:
+    CooperativeShutdownThread(pubsub_itc_fw::QuillLogger& logger,
+                              pubsub_itc_fw::Reactor& reactor,
+                              const std::string& name,
+                              pubsub_itc_fw::ThreadID id,
+                              const pubsub_itc_fw::QueueConfig& qc,
+                              const pubsub_itc_fw::AllocatorConfig& ac)
+        : ApplicationThread(logger, reactor, name, id, qc, ac)
+    {}
+
+protected:
+    void on_initial_event() override {
+        // Mark thread as started and ready.
+    }
+
+    void on_app_ready_event() override {
+        // Nothing special for this test.
+    }
+
+    void on_itc_message(const pubsub_itc_fw::EventMessage& msg) override {
+        // Nothing special for this test.
+    }
+};
+
+// -----------------------------------------------------------------------------
+// A test ApplicationThread that records Init and AppReady events.
+// -----------------------------------------------------------------------------
+class TestApplicationThread : public pubsub_itc_fw::ApplicationThread {
+public:
+    TestApplicationThread(pubsub_itc_fw::QuillLogger& logger,
+                          pubsub_itc_fw::Reactor& reactor,
+                          const std::string& name,
+                          pubsub_itc_fw::ThreadID id,
+                          const pubsub_itc_fw::QueueConfig& queue_config,
+                          const pubsub_itc_fw::AllocatorConfig& allocator_config)
+        : ApplicationThread(logger, reactor, name, id, queue_config, allocator_config)
+    {}
+
+    std::atomic<bool> saw_initial_event{false};
+    std::atomic<bool> saw_app_ready_event{false};
+
+protected:
+    void on_initial_event() override {
+        saw_initial_event.store(true, std::memory_order_release);
+    }
+
+    void on_app_ready_event() override {
+        // Enforce local ordering: AppReady must not arrive before Init.
+        EXPECT_TRUE(saw_initial_event.load(std::memory_order_acquire));
+        saw_app_ready_event.store(true, std::memory_order_release);
+    }
+
+    void on_itc_message(const pubsub_itc_fw::EventMessage&) override {
+        // Not used in this test.
+    }
+};
+
+class ThrowingAppReadyThread : public pubsub_itc_fw::ApplicationThread {
+public:
+    ThrowingAppReadyThread(pubsub_itc_fw::QuillLogger& logger,
+                           pubsub_itc_fw::Reactor& reactor,
+                           const std::string& thread_name,
+                           pubsub_itc_fw::ThreadID thread_id,
+                           const pubsub_itc_fw::QueueConfig& queue_config,
+                           const pubsub_itc_fw::AllocatorConfig& allocator_config)
+        : ApplicationThread(logger, reactor, thread_name, thread_id, queue_config, allocator_config)
+    {}
+
+protected:
+    void on_initial_event() override {
+        // Normal startup
+    }
+
+    void on_app_ready_event() override {
+        throw std::runtime_error("boom in AppReady");
+    }
+
+    void on_itc_message(const pubsub_itc_fw::EventMessage&) override {
+        // Not used in this test
+    }
+};
+
+} // un-named namespace
 
 TEST(ReactorTest, InitializationTimeoutTriggersShutdown)
 {
@@ -130,40 +300,7 @@ TEST(ReactorTest, InitializationTimeoutTriggersShutdown)
     EXPECT_TRUE(reactor.is_finished());
 }
 
-} // namespaces
-
-// -----------------------------------------------------------------------------
-// A test ApplicationThread that records Init and AppReady events.
-// -----------------------------------------------------------------------------
-class TestApplicationThread : public pubsub_itc_fw::ApplicationThread {
-public:
-    TestApplicationThread(pubsub_itc_fw::QuillLogger& logger,
-                          pubsub_itc_fw::Reactor& reactor,
-                          const std::string& name,
-                          pubsub_itc_fw::ThreadID id,
-                          const pubsub_itc_fw::QueueConfig& queue_config,
-                          const pubsub_itc_fw::AllocatorConfig& allocator_config)
-        : ApplicationThread(logger, reactor, name, id, queue_config, allocator_config)
-    {}
-
-    std::atomic<bool> saw_initial_event{false};
-    std::atomic<bool> saw_app_ready_event{false};
-
-protected:
-    void on_initial_event() override {
-        saw_initial_event.store(true, std::memory_order_release);
-    }
-
-    void on_app_ready_event() override {
-        // Enforce local ordering: AppReady must not arrive before Init.
-        EXPECT_TRUE(saw_initial_event.load(std::memory_order_acquire));
-        saw_app_ready_event.store(true, std::memory_order_release);
-    }
-
-    void on_itc_message(const pubsub_itc_fw::EventMessage&) override {
-        // Not used in this test.
-    }
-};
+namespace pubsub_itc_fw {
 
 /*
 ===============================================================================
@@ -257,36 +394,6 @@ TEST(ReactorTest, AllThreadsReceiveInitThenAppReady) {
 // Reactor shutdown test: cooperative thread receives Termination event
 // -----------------------------------------------------------------------------
 
-namespace {
-
-// A cooperative thread that exits when it receives a Termination event.
-class CooperativeShutdownThread : public pubsub_itc_fw::ApplicationThread {
-public:
-    CooperativeShutdownThread(pubsub_itc_fw::QuillLogger& logger,
-                              pubsub_itc_fw::Reactor& reactor,
-                              const std::string& name,
-                              pubsub_itc_fw::ThreadID id,
-                              const pubsub_itc_fw::QueueConfig& qc,
-                              const pubsub_itc_fw::AllocatorConfig& ac)
-        : ApplicationThread(logger, reactor, name, id, qc, ac)
-    {}
-
-protected:
-    void on_initial_event() override {
-        // Mark thread as started and ready.
-    }
-
-    void on_app_ready_event() override {
-        // Nothing special for this test.
-    }
-
-    void on_itc_message(const pubsub_itc_fw::EventMessage& msg) override {
-        // Nothing special for this test.
-    }
-};
-
-} // namespace
-
 TEST(ReactorTest, ShutdownBroadcastsTerminationAndThreadExits)
 {
     using namespace pubsub_itc_fw;
@@ -330,38 +437,6 @@ TEST(ReactorTest, ShutdownBroadcastsTerminationAndThreadExits)
 // -----------------------------------------------------------------------------
 // Reactor shutdown test: thread ignores Termination and never exits
 // -----------------------------------------------------------------------------
-
-namespace {
-
-class RogueITCThread : public pubsub_itc_fw::ApplicationThread {
-public:
-    RogueITCThread(pubsub_itc_fw::QuillLogger& logger,
-                   pubsub_itc_fw::Reactor& reactor,
-                   const std::string& name,
-                   pubsub_itc_fw::ThreadID id,
-                   const pubsub_itc_fw::QueueConfig& qc,
-                   const pubsub_itc_fw::AllocatorConfig& ac)
-        : ApplicationThread(logger, reactor, name, id, qc, ac)
-    {}
-
-protected:
-    void on_initial_event() override {
-        // Normal startup
-    }
-
-    void on_app_ready_event() override {
-        // Normal startup
-    }
-
-    void on_itc_message(const pubsub_itc_fw::EventMessage&) override {
-        // Rogue behaviour: block forever
-        for (;;) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
-    }
-};
-
-} // namespace
 
 TEST(ReactorTest, RogueThreadBlocksInITCMessage_ReactorStillShutsDown)
 {
@@ -420,29 +495,6 @@ TEST(ReactorTest, RogueThreadBlocksInITCMessage_ReactorStillShutsDown)
     EXPECT_TRUE(rogue->is_running());  // Rogue thread never exited
 }
 
-namespace {
-
-class ThrowingTerminationThread : public pubsub_itc_fw::ApplicationThread {
-public:
-    ThrowingTerminationThread(pubsub_itc_fw::QuillLogger& logger, pubsub_itc_fw::Reactor& reactor,
-                              const std::string& name, pubsub_itc_fw::ThreadID id, const pubsub_itc_fw::QueueConfig& qc,
-                              const pubsub_itc_fw::AllocatorConfig& ac) :
-        ApplicationThread(logger, reactor, name, id, qc, ac) {}
-protected:
-    void on_initial_event() override { // Normal startup
-    }
-    void on_app_ready_event() override { // Normal startup
-    }
-    void on_termination_event(const std::string&) override {
-    // Misbehaviour: throw during termination handling
-        throw std::runtime_error("boom");
-    }
-    void on_itc_message(const pubsub_itc_fw::EventMessage&) override { // Not used in this test
-    }
-};
-
-} // namespace
-
 TEST(ReactorTest, ThreadThrowsDuringTerminationReactorStillShutsDown)
 {
     using namespace pubsub_itc_fw;
@@ -492,36 +544,6 @@ TEST(ReactorTest, ThreadThrowsDuringTerminationReactorStillShutsDown)
 // -----------------------------------------------------------------------------
 // Reactor shutdown test: thread throws during normal message processing
 // -----------------------------------------------------------------------------
-
-namespace {
-
-class ThrowingDuringRunThread : public pubsub_itc_fw::ApplicationThread {
-public:
-    ThrowingDuringRunThread(pubsub_itc_fw::QuillLogger& logger,
-                            pubsub_itc_fw::Reactor& reactor,
-                            const std::string& name,
-                            pubsub_itc_fw::ThreadID id,
-                            const pubsub_itc_fw::QueueConfig& queue_config,
-                            const pubsub_itc_fw::AllocatorConfig& allocator_config)
-        : ApplicationThread(logger, reactor, name, id, queue_config, allocator_config)
-    {}
-
-protected:
-    void on_initial_event() override {
-        // Normal startup
-    }
-
-    void on_app_ready_event() override {
-        // Normal startup
-    }
-
-    void on_itc_message(const pubsub_itc_fw::EventMessage&) override {
-        // Misbehaviour: throw during normal message handling
-        throw std::runtime_error("boom during run loop");
-    }
-};
-
-} // namespace
 
 TEST(ReactorTest, ThreadThrowsDuringRunLoopReactorShutsDown)
 {
@@ -586,4 +608,70 @@ TEST(ReactorTest, ThreadThrowsDuringRunLoopReactorShutsDown)
     // Once the reactor has finished, all its threads must have finished.
 
     EXPECT_EQ(bad_thread->get_lifecycle_state().as_tag(), ThreadLifecycleState::Terminated);
+}
+
+TEST(ReactorTest, ThreadThrowsDuringInitialProcessingReactorShutsDown)
+{
+    using namespace pubsub_itc_fw;
+
+    LoggerWithSink logger("reactor_init_throw_logger", "reactor_init_throw_sink");
+
+    ReactorConfiguration cfg{};
+    cfg.init_phase_timeout_ = MillisecondClock::duration{200};
+    cfg.shutdown_timeout_   = MillisecondClock::duration{200};
+
+    QueueConfig qc = make_queue_config();
+    AllocatorConfig ac = make_allocator_config();
+
+    Reactor reactor(cfg, logger.logger);
+
+    auto bad_thread = std::make_shared<ThrowingInitialThread>(logger.logger, reactor, "BadInitThread", ThreadID{101}, qc, ac);
+
+    reactor.register_thread(bad_thread);
+
+    std::thread reactor_thread([&reactor]() {
+        reactor.run();
+    });
+
+    reactor_thread.join();
+
+    EXPECT_TRUE(reactor.is_finished());
+    EXPECT_EQ(bad_thread->get_lifecycle_state().as_tag(), ThreadLifecycleState::Terminated);
+}
+
+TEST(ReactorTest, ThreadThrowsDuringAppReadyProcessingReactorShutsDown)
+{
+    using namespace pubsub_itc_fw;
+
+    LoggerWithSink logger("reactor_appready_throw_logger", "reactor_appready_throw_sink");
+
+    ReactorConfiguration reactor_config{};
+    reactor_config.init_phase_timeout_ = MillisecondClock::duration{200};
+    reactor_config.shutdown_timeout_   = MillisecondClock::duration{200};
+
+    QueueConfig thread_queue_config = make_queue_config();
+    AllocatorConfig thread_allocator_config = make_allocator_config();
+
+    Reactor reactor(reactor_config, logger.logger);
+
+    auto bad_thread = std::make_shared<ThrowingAppReadyThread>(
+        logger.logger,
+        reactor,
+        "BadAppReadyThread",
+        ThreadID{202},
+        thread_queue_config,
+        thread_allocator_config);
+
+    reactor.register_thread(bad_thread);
+
+    std::thread reactor_thread([&reactor]() {
+        reactor.run();
+    });
+
+    reactor_thread.join();
+
+    EXPECT_TRUE(reactor.is_finished());
+    EXPECT_EQ(bad_thread->get_lifecycle_state().as_tag(), ThreadLifecycleState::Terminated);
+}
+
 }

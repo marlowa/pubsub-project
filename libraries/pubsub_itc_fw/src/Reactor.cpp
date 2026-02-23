@@ -181,14 +181,35 @@ void Reactor::initialize_threads() {
     }
 
     // ---------------------------------------------------------------------
-    // 4. Wait until all threads have processed Initial
+    // 4. Wait until all threads have *successfully* processed Initial
+    //    (i.e. state == InitialProcessed). If a thread moves to
+    //    ShuttingDown/Terminated instead, treat that as init failure and
+    //    trigger shutdown.
     // ---------------------------------------------------------------------
     for (auto& [name, thread] : threads_) {
         Backoff backoff;
         auto start = MillisecondClock::now();
-        while (thread->get_lifecycle_state().as_tag() < ThreadLifecycleState::InitialProcessed) {
+
+        for (;;) {
+            auto state = thread->get_lifecycle_state().as_tag();
+
+            if (state == ThreadLifecycleState::InitialProcessed) {
+                // This thread completed its Initial handler successfully.
+                break;
+            }
+
+            if (state == ThreadLifecycleState::ShuttingDown || state == ThreadLifecycleState::Terminated) {
+                // The thread failed during Initial (e.g. threw and its
+                // ApplicationThread caught it and called reactor.shutdown()).
+                // Treat this as an initialization failure and abort.
+                shutdown(fmt::format("Thread {} failed during Initial processing, state = {}",
+                                     thread->get_thread_name(), thread->get_lifecycle_state().as_string()));
+                return;
+            }
+
             if (MillisecondClock::now() - start > config_.init_phase_timeout_) {
-                shutdown(fmt::format("Thread {} failed to reach InitialProcessed within init_phase_timeout", thread->get_thread_name()));
+                shutdown(fmt::format("Thread {} failed to reach InitialProcessed within init_phase_timeout",
+                                     thread->get_thread_name()));
                 return;
             }
 
@@ -198,14 +219,25 @@ void Reactor::initialize_threads() {
 
     // ---------------------------------------------------------------------
     // 5. Post AppReady event to each thread
+    //
+    // If initialization has already been aborted (is_finished_ set by a
+    // failing thread), do not attempt to send AppReady at all.
     // ---------------------------------------------------------------------
+    if (is_finished_.load(std::memory_order_acquire)) {
+        return;
+    }
+
     for (auto& [name, thread] : threads_) {
-        EventMessage ready_msg = EventMessage::create_reactor_event(EventType(EventType::AppReady));
-        if (thread->get_lifecycle_state().as_tag() != ThreadLifecycleState::InitialProcessed) {
-            throw PubSubItcException(
-                fmt::format("Reactor attempted to post AppReady before InitialProcessed, thread state = {}", thread->get_lifecycle_state().as_string()));
+        auto state = thread->get_lifecycle_state().as_tag();
+        if (state != ThreadLifecycleState::InitialProcessed) {
+            // Defensive: we should never get here, but if we do, abort cleanly
+            // instead of throwing from AppReady fan-out.
+            shutdown(fmt::format("Thread {} not InitialProcessed at AppReady fan-out, state = {}",
+                                 thread->get_thread_name(), thread->get_lifecycle_state().as_string()));
+            return;
         }
 
+        EventMessage ready_msg = EventMessage::create_reactor_event(EventType(EventType::AppReady));
         thread->post_message(thread->get_thread_id(), std::move(ready_msg));
     }
 
@@ -215,7 +247,8 @@ void Reactor::initialize_threads() {
         auto start = MillisecondClock::now();
         while (thread->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational) {
             if (MillisecondClock::now() - start > config_.init_phase_timeout_) {
-                shutdown(fmt::format("Thread {} failed to reach Operational within init_phase_timeout", thread->get_thread_name()));
+                shutdown(fmt::format("Thread {} failed to reach Operational within init_phase_timeout",
+                                     thread->get_thread_name()));
                 return;
             }
             backoff.pause();
