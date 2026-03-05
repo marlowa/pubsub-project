@@ -23,6 +23,8 @@ public:
      */
     virtual ~EventHandler() = default;
 
+    EventHandler() = default;
+
     /**
      * @brief Handles an event detected by the Reactor.
      *

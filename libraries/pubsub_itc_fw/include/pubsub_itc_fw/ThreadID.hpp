@@ -5,6 +5,8 @@
 
 namespace pubsub_itc_fw {
 
+static constexpr int system_thread_id_value = 0;
+
 /**
  * @brief A tag struct for the ThreadID class.
  *

@@ -183,6 +183,7 @@ add_library(pubsub_itc_fw_lib
     libraries/pubsub_itc_fw/src/TcpAcceptor.cpp
     libraries/pubsub_itc_fw/src/TcpConnector.cpp
     libraries/pubsub_itc_fw/src/TcpSocket.cpp
+    libraries/pubsub_itc_fw/src/TimerHandler.cpp
 )
 
 # PUBLIC makes them available to targets that link against this library.

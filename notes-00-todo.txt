@@ -5,8 +5,15 @@ TODO   add CPU pinning code to reactor to avoid the fan going crazy when we use 
 TODO   remind ourselves what ApplicationThread::is_paused is for.
 TODO   Reactor, add detection of inactive threads.
 TODO   look into if I should use noexcept, reasons.
+TODO   look into if I should use final, reasons
 TODO   design XML config file reader with XSD and the ability for file inclusion.
 TODO   does Backoff class need a policy or config for eventually timing out?
 TODO   threads can be paused and resumed. revise why we added this.
 TODO   purge cases of using namespaces inserted by chatbots
-TODO   PubSubItcException does not take file and line numer.
+TODO   PubSubItcException does not take file and line number.
+TODO   unit test logging does not come out. It really needs to, esecially for timer testing.
+TODO   plan for adding XML config using libxml2
+TODO   have a fresh think about if we want weak_ptr in the thread collections of the reactor, check for locks.
+TODO   reactor run should give error if no threads are registered.
+TODO   when reactor shuts down it should send TERM events to all threads that are still running
+

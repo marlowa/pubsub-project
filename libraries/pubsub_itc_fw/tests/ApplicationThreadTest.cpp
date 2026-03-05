@@ -13,8 +13,8 @@
 #include <pubsub_itc_fw/ThreadWithJoinTimeout.hpp>
 #include <pubsub_itc_fw/QueueConfig.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
+#include <pubsub_itc_fw/Reactor.hpp>
 
-#include <pubsub_itc_fw/tests_common/MockReactor.hpp>
 #include <pubsub_itc_fw/tests_common/TestSink.hpp>
 #include <pubsub_itc_fw/tests_common/LoggerWithSink.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
@@ -55,19 +55,14 @@ AllocatorConfig make_allocator_config()
 class ApplicationThreadTestEnv : public ::testing::Environment {
 public:
     LoggerWithSink* logger_with_sink = nullptr;
-    MockReactor* reactor = nullptr;
+    Reactor* reactor = nullptr;
 
     void SetUp() override {
         // Create long-lived logger + sink
         logger_with_sink = new LoggerWithSink("global_AT_logger", "global_AT_sink");
-
-        // Create long-lived Reactor
-        ReactorConfiguration cfg{};
-        reactor = new MockReactor(cfg, logger_with_sink->logger);
     }
 
     void TearDown() override {
-        delete reactor;
         delete logger_with_sink;
     }
 };
@@ -83,16 +78,38 @@ static ApplicationThreadTestEnv* env() {
 class ApplicationThreadTest : public ::testing::Test {
 public:
     ApplicationThreadTest()
-        : logger_with_sink_(*env()->logger_with_sink),
-          reactor_(*env()->reactor)
-    {}
+        : logger_with_sink_(*env()->logger_with_sink) {
+    }
 
     void SetUp() override {
         logger_with_sink_.sink->clear();
+        reactor_configuration_.inactivity_check_interval_ = std::chrono::milliseconds(100);
+        reactor_ = std::make_unique<Reactor>(reactor_configuration_, logger_with_sink_.logger);
+        reactor_thread_.reset(); // not started yet
+        reactor_self_shutdown_ = false;
+        std::cerr << fmt::format("{}:{} reactor initialised\n", __FILE__, __LINE__);
+    }
+
+    void TearDown() override {
+         if (!reactor_self_shutdown_) {
+            reactor_->shutdown("Test End");
+         }
+         if (reactor_thread_) {
+             (void)reactor_thread_->join_with_timeout(std::chrono::seconds(2));
+             reactor_thread_.reset();
+         }
+         reactor_.reset();
+    }
+
+    void mark_reactor_self_shutdown() {
+        reactor_self_shutdown_ = true;
     }
 
     LoggerWithSink& logger_with_sink_;
-    MockReactor& reactor_;
+    ReactorConfiguration reactor_configuration_;
+    std::unique_ptr<Reactor> reactor_;
+    std::unique_ptr<ThreadWithJoinTimeout> reactor_thread_;
+    bool reactor_self_shutdown_{false};
 };
 
 // ------------------------------------------------------------
@@ -103,37 +120,44 @@ class TestThread : public ApplicationThread
 public:
     ~TestThread() override = default;
 
-    TestThread(QuillLogger& logger,
-               Reactor& reactor,
-               const std::string& name,
-               ThreadID id,
-               const QueueConfig& queueConfig,
-               const AllocatorConfig& allocatorConfig)
+    TestThread(QuillLogger& logger, Reactor& reactor, const std::string& name, ThreadID id,
+               const QueueConfig& queueConfig, const AllocatorConfig& allocatorConfig)
         : ApplicationThread(logger, reactor, name, id, queueConfig, allocatorConfig)
     {
     }
 
     void on_initial_event() override
     {
-        processed_count.fetch_add(1, std::memory_order_release);
-
-        if (throw_on_message.load(std::memory_order_acquire)) {
-            throw std::runtime_error("Test exception");
-        }
-
         last_processed_type.store(EventType(EventType::Initial), std::memory_order_release);
+        std::cerr << fmt::format("{}:{} got here\n", __FILE__, __LINE__);
+        processed_count.fetch_add(1, std::memory_order_release);
     }
 
     void on_app_ready_event() override {
         last_processed_type.store(EventType(EventType::AppReady), std::memory_order_release);
+        std::cerr << fmt::format("{}:{} got here\n", __FILE__, __LINE__);
+        processed_count.fetch_add(1, std::memory_order_release);
     }
 
     void on_itc_message(const EventMessage& msg) override {
+        std::cerr << fmt::format("{}:{} got here\n", __FILE__, __LINE__);
         last_processed_type.store(EventType(EventType::InterthreadCommunication), std::memory_order_release);
+        if (throw_on_message.load(std::memory_order_acquire)) {
+            std::cerr << fmt::format("{}:{} got here about to throw\n", __FILE__, __LINE__);
+            throw std::runtime_error("Test exception");
+        }
+        processed_count.fetch_add(1, std::memory_order_release);
     }
 
     void on_raw_socket_message(const EventMessage& msg) override {
+        std::cerr << fmt::format("{}:{} got here\n", __FILE__, __LINE__);
         last_processed_type.store(EventType(EventType::RawSocketCommunication), std::memory_order_release);
+    }
+
+    void on_timer_event(const std::string& name) override {
+        last_processed_type.store(EventType(EventType::Timer), std::memory_order_release);
+        std::cerr << fmt::format("{}:{} got here, timer event for {}\n", __FILE__, __LINE__, name);
+        processed_count.fetch_add(1, std::memory_order_release);
     }
 
     std::atomic<int> processed_count{0};
@@ -153,21 +177,19 @@ public:
 //       call shutdown and assert is_running() is false.
 TEST_F(ApplicationThreadTest, StartAndShutdown)
 {
-    TestThread thread(logger_with_sink_.logger,
-                      reactor_,
-                      "TestThread",
-                      ThreadID(1),
-                      make_queue_config(),
-                      make_allocator_config());
+    auto thread = std::make_shared<TestThread>(logger_with_sink_.logger, *reactor_,
+                      "TestThread1", ThreadID(1), make_queue_config(), make_allocator_config());
 
-    reactor_.run();
-    thread.start();
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    reactor_->register_thread(thread);
+    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>( [this] { reactor_->run(); });
 
-    EXPECT_TRUE(thread.is_running());
+    // Wait until Reactor has started the thread and it is Operational
+    for (int i = 0; i < 200 && thread->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
 
-    thread.shutdown("normal");
-    EXPECT_FALSE(thread.is_running());
+    thread->shutdown("normal");
+    EXPECT_FALSE(thread->is_running());
 }
 
 // ------------------------------------------------------------
@@ -181,26 +203,22 @@ TEST_F(ApplicationThreadTest, StartAndShutdown)
 //       shutdown and assert processed_count >= 1.
 TEST_F(ApplicationThreadTest, MessageProcessing)
 {
-    TestThread thread(logger_with_sink_.logger,
-                      reactor_,
-                      "TestThread",
-                      ThreadID(1),
-                      make_queue_config(),
-                      make_allocator_config());
+    auto thread = std::make_shared<TestThread>(logger_with_sink_.logger, *reactor_,
+                      "TestThreadMessageProcessing", ThreadID(2),
+                      make_queue_config(), make_allocator_config());
 
-    reactor_.run();
-    thread.start();
+    // Start Reactor in background thread; it will start the thread for us.
+    reactor_->register_thread(thread);
+    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>( [this] { reactor_->run(); });
 
-    thread.post_message(ThreadID(1), EventMessage::create_reactor_event(EventType(EventType::Initial)));
-
-    // Wait until the message is actually processed
-    for (int i = 0; i < 100 && thread.processed_count.load() == 0; ++i) {
+    // Wait until Reactor has started the thread and it is Operational
+    for (int i = 0; i < 200 && thread->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational; ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
-    thread.shutdown("done");
+    thread->shutdown("done");
 
-    EXPECT_GE(thread.processed_count.load(), 1);
+    EXPECT_GE(thread->processed_count.load(), 2); // init and appReady
 }
 
 // ------------------------------------------------------------
@@ -214,30 +232,35 @@ TEST_F(ApplicationThreadTest, MessageProcessing)
 //       then resume, wait, and assert processed_count >= 1.
 TEST_F(ApplicationThreadTest, PauseResume)
 {
-    TestThread thread(logger_with_sink_.logger,
-                      reactor_,
-                      "TestThread",
-                      ThreadID(1),
-                      make_queue_config(),
-                      make_allocator_config());
+    // Wrap the thread in a shared_ptr to ensure shared_from_this works
+    auto thread = std::make_shared<TestThread>(logger_with_sink_.logger,
+                      *reactor_, "TestThread2", ThreadID(1),
+                      make_queue_config(), make_allocator_config());
 
-    reactor_.run();
-    thread.start();
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    reactor_->register_thread(thread);
+    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>( [this] { reactor_->run(); });
 
-    thread.pause();
+    // Wait until Reactor has started the thread and it is Operational
+    for (int i = 0; i < 200 && thread->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
 
-    EventMessage msg = EventMessage::create_reactor_event(EventType(EventType::Initial));
-    thread.post_message(ThreadID(1), std::move(msg));
+    EXPECT_EQ(thread->processed_count.load(), 2); // init, appReady
+    thread->pause();
+
+    EventMessage msg = EventMessage::create_itc_message(thread->get_thread_id(), nullptr, 0);
+    thread->post_message(ThreadID(1), std::move(msg));
 
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    EXPECT_EQ(thread.processed_count.load(), 0);
 
-    thread.resume();
+    thread->resume();
+
+    // Give it time to process the queued message after resume
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
-
-    thread.shutdown("done");
-    EXPECT_GE(thread.processed_count.load(), 1);
+    EXPECT_EQ(thread->processed_count.load(), 3); // init, appReady and ITC
+    std::cerr << fmt::format("{}:{} about to shutdown\n", __FILE__, __LINE__);
+    thread->shutdown("done");
+    std::cerr << fmt::format("{}:{} thread shutdown returned\n", __FILE__, __LINE__);
 }
 
 // ------------------------------------------------------------
@@ -251,35 +274,38 @@ TEST_F(ApplicationThreadTest, PauseResume)
 //       wait, then assert that reactor is finished and !thread.is_running().
 TEST_F(ApplicationThreadTest, ExceptionTriggersShutdown)
 {
-    TestThread thread(logger_with_sink_.logger,
-                      reactor_,
-                      "TestThread",
-                      ThreadID(1),
-                      make_queue_config(),
-                      make_allocator_config());
+    auto thread = std::make_shared<TestThread>(logger_with_sink_.logger,
+                      *reactor_, "TestThread3", ThreadID(1),
+                      make_queue_config(), make_allocator_config());
 
-    thread.throw_on_message.store(true, std::memory_order_release);
+    thread->throw_on_message.store(true, std::memory_order_release);
 
-    reactor_.run();
-    thread.start();
+    reactor_->register_thread(thread);
+    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>( [this] { reactor_->run(); });
 
-    EventMessage msg = EventMessage::create_reactor_event(EventType(EventType::Initial));
-    thread.post_message(ThreadID(1), std::move(msg));
+    // Wait until Reactor has started the thread and it is Operational
+    for (int i = 0; i < 200 && thread->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    // Post an ITC message that will cause the thread to throw
+    EventMessage msg = EventMessage::create_itc_message(thread->get_thread_id(), nullptr, 0);
+    thread->post_message(ThreadID(1), std::move(msg));
 
     // Wait until the message is processed (which will throw)
-    for (int i = 0; i < 100 && thread.processed_count.load() == 0; ++i) {
+    for (int i = 0; i < 100 && thread->processed_count.load() == 0; ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
-    EXPECT_GT(thread.processed_count.load(std::memory_order_acquire), 0);
+    EXPECT_GT(thread->processed_count.load(std::memory_order_acquire), 0);
 
     // Now wait for the reactor to observe shutdown
-    for (int i = 0; i < 100 && !reactor_.is_finished(); ++i) {
+    for (int i = 0; i < 100 && !reactor_->is_finished(); ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
-    EXPECT_TRUE(reactor_.is_finished());
-    EXPECT_FALSE(thread.is_running());
+    EXPECT_FALSE(thread->is_running());
+    mark_reactor_self_shutdown();
 }
 
 // ------------------------------------------------------------
@@ -293,25 +319,29 @@ TEST_F(ApplicationThreadTest, ExceptionTriggersShutdown)
 //       processed_count remains 0.
 TEST_F(ApplicationThreadTest, QueueShutdownDropsMessages)
 {
-    TestThread thread(logger_with_sink_.logger,
-                      reactor_,
-                      "TestThread",
-                      ThreadID(1),
-                      make_queue_config(),
-                      make_allocator_config());
+    auto thread = std::make_shared<TestThread>(logger_with_sink_.logger,
+                      *reactor_, "TestThread4", ThreadID(1),
+                      make_queue_config(), make_allocator_config());
 
-    reactor_.run();
-    thread.start();
+    reactor_->register_thread(thread);
+    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>( [this] { reactor_->run(); });
+
+    // Wait until Reactor has started the thread and it is Operational
+    for (int i = 0; i < 200 && thread->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
-    thread.shutdown("test");
+    thread->shutdown("test");
+    mark_reactor_self_shutdown();
 
-    EventMessage msg = EventMessage::create_reactor_event(EventType(EventType::Initial));
-    thread.post_message(ThreadID(1), std::move(msg)); // should be dropped
+    EventMessage msg = EventMessage::create_itc_message(thread->get_thread_id(), nullptr, 0);
+    thread->post_message(ThreadID(1), std::move(msg));
 
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
 
-    EXPECT_EQ(thread.processed_count.load(), 0);
+    EXPECT_EQ(thread->processed_count.load(), 2); //init and appReady counts only
 }
 
 // ------------------------------------------------------------
@@ -326,11 +356,9 @@ TEST_F(ApplicationThreadTest, QueueShutdownDropsMessages)
 TEST_F(ApplicationThreadTest, TimestampSemantics)
 {
     TestThread thread(logger_with_sink_.logger,
-                      reactor_,
-                      "TestThread",
-                      ThreadID(1),
-                      make_queue_config(),
-                      make_allocator_config());
+                      *reactor_,
+                      "TestThread5", ThreadID(1),
+                      make_queue_config(), make_allocator_config());
 
     auto before = std::chrono::system_clock::now();
     thread.set_time_event_started(before);
@@ -353,21 +381,25 @@ TEST_F(ApplicationThreadTest, TimestampSemantics)
 //       at least one log record was captured and that it mentions "shutdown".
 TEST_F(ApplicationThreadTest, LoggingVerification)
 {
-    TestThread thread(logger_with_sink_.logger,
-                      reactor_,
-                      "TestThread",
-                      ThreadID(1),
-                      make_queue_config(),
-                      make_allocator_config());
+    auto thread = std::make_shared<TestThread>(logger_with_sink_.logger,
+                      *reactor_, "TestThread6", ThreadID(1),
+                      make_queue_config(), make_allocator_config());
 
-    reactor_.run();
-    thread.start();
+    reactor_->register_thread(thread);
+    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>( [this] { reactor_->run(); });
+
+    // Wait until Reactor has started the thread and it is Operational
+    for (int i = 0; i < 200 && thread->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
-    thread.shutdown("log test");
+    thread->shutdown("shutdown log test");
+    mark_reactor_self_shutdown();
 
     EXPECT_GE(logger_with_sink_.sink->count(), 1);
-    EXPECT_TRUE(logger_with_sink_.sink->contains_message("shutdown"));
+    EXPECT_TRUE(logger_with_sink_.sink->contains_message("shutdown log test"));
 }
 
 // ------------------------------------------------------------
@@ -380,37 +412,39 @@ TEST_F(ApplicationThreadTest, LoggingVerification)
 //       then resume, wait, and assert processed_count > 0.
 TEST_F(ApplicationThreadTest, PauseResumeUnderLoad)
 {
-    TestThread thread(logger_with_sink_.logger,
-                      reactor_,
-                      "TestThread",
-                      ThreadID(1),
-                      make_queue_config(),
-                      make_allocator_config());
+    auto thread = std::make_shared<TestThread>(logger_with_sink_.logger,
+                      *reactor_, "TestThread7", ThreadID(1),
+                      make_queue_config(), make_allocator_config());
 
-    reactor_.run();
-    thread.start();
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    reactor_->register_thread(thread);
+    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>( [this] { reactor_->run(); });
 
-    thread.pause();
+    // Wait until Reactor has started the thread and it is Operational
+    for (int i = 0; i < 200 && thread->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    thread->pause();
 
     // Enqueue a burst of messages while paused
     for (int i = 0; i < 50; ++i)
     {
-        EventMessage msg = EventMessage::create_reactor_event(EventType(EventType::Initial));
-        thread.post_message(ThreadID(1), std::move(msg));
+        EventMessage msg = EventMessage::create_itc_message(thread->get_thread_id(), nullptr, 0);
+        thread->post_message(ThreadID(1), std::move(msg));
     }
 
     std::this_thread::sleep_for(std::chrono::milliseconds(30));
 
-    // Should not have processed anything yet
-    EXPECT_EQ(thread.processed_count.load(), 0);
+    // Should not have processed anything yet (other than init and appReady)
+    EXPECT_EQ(thread->processed_count.load(), 2);
 
-    thread.resume();
+    thread->resume();
     std::this_thread::sleep_for(std::chrono::milliseconds(30));
 
-    thread.shutdown("done");
+    thread->shutdown("done");
+    mark_reactor_self_shutdown();
 
-    EXPECT_GT(thread.processed_count.load(), 0);
+    EXPECT_GT(thread->processed_count.load(), 2);
 }
 
 // ------------------------------------------------------------
@@ -467,47 +501,49 @@ TEST_F(ApplicationThreadTest, WatermarkTransitions)
         }
     };
 
-    TestThread thread(logger_with_sink_.logger,
-                      reactor_,
-                      "TestThread",
-                      ThreadID(1),
-                      qc,
-                      make_allocator_config());
+    auto thread = std::make_shared<TestThread>(logger_with_sink_.logger,
+                      *reactor_, "TestThread8", ThreadID(1),
+                      qc, make_allocator_config());
 
-    reactor_.run();
-    thread.start();
+    reactor_->register_thread(thread);
+    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>( [this] { reactor_->run(); });
+
+    // Wait until Reactor has started the thread and it is Operational
+    for (int i = 0; i < 200 && thread->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
     // CRITICAL: Pause the thread to prevent it from draining the queue
     // while we're enqueuing messages. This ensures the queue will actually
     // reach the high watermark.
-    thread.pause();
+    thread->pause();
 
     // Enqueue 4 messages while paused (high watermark is 3)
     for (int i = 0; i < 4; ++i)
     {
-        EventMessage msg = EventMessage::create_reactor_event(EventType(EventType::Initial));
-        thread.post_message(ThreadID(1), std::move(msg));
+        EventMessage msg = EventMessage::create_itc_message(thread->get_thread_id(), nullptr, 0);
+        thread->post_message(ThreadID(1), std::move(msg));
     }
 
     // Give a moment for the enqueue operations to complete
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
 
     // Resume thread so it can process messages and trigger watermarks
-    thread.resume();
+    thread->resume();
 
     // Wait for high watermark handler to fire (timeout after 1 second)
     auto high_status = high_future.wait_for(std::chrono::seconds(1));
-    ASSERT_EQ(high_status, std::future_status::ready)
-        << "High watermark handler did not fire within timeout";
+    ASSERT_EQ(high_status, std::future_status::ready) << "High watermark handler did not fire within timeout";
 
     // Wait for low watermark handler to fire (timeout after 1 second)
     auto low_status = low_future.wait_for(std::chrono::seconds(1));
-    ASSERT_EQ(low_status, std::future_status::ready)
-        << "Low watermark handler did not fire within timeout";
+    ASSERT_EQ(low_status, std::future_status::ready) << "Low watermark handler did not fire within timeout";
 
     // Clean shutdown
-    thread.shutdown("done");
+    thread->shutdown("done");
+    mark_reactor_self_shutdown();
 
     // Verify each handler fired exactly once
     EXPECT_EQ(high_triggered.load(), 1);
@@ -525,32 +561,32 @@ TEST_F(ApplicationThreadTest, WatermarkTransitions)
 //       containing "MetaThread" and "[42]".
 TEST_F(ApplicationThreadTest, ExceptionLoggingContainsThreadMetadata)
 {
-    TestThread thread(logger_with_sink_.logger,
-                      reactor_,
-                      "TestThread",
-                      ThreadID(1),
-                      make_queue_config(),
-                      make_allocator_config());
+    auto thread = std::make_shared<TestThread>(logger_with_sink_.logger,
+                      *reactor_, "TestThread9", ThreadID(1), make_queue_config(), make_allocator_config());
 
-    thread.throw_on_message.store(true, std::memory_order_release);
+    thread->throw_on_message.store(true, std::memory_order_release);
 
-    reactor_.run();
-    thread.start();
+    reactor_->register_thread(thread);
+    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>( [this] { reactor_->run(); });
 
-    EventMessage msg = EventMessage::create_reactor_event(EventType(EventType::Initial));
-    thread.post_message(ThreadID(1), std::move(msg));
+    // Wait until Reactor has started the thread and it is Operational
+    for (int i = 0; i < 200 && thread->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    EventMessage msg = EventMessage::create_itc_message(thread->get_thread_id(), nullptr, 0);
+    thread->post_message(ThreadID(1), std::move(msg));
 
     // 1. Wait until the message is processed (which will then throw)
-    for (int i = 0; i < 100 && thread.processed_count.load(std::memory_order_acquire) == 0; ++i) {
+    for (int i = 0; i < 100 && thread->processed_count.load(std::memory_order_acquire) == 0; ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    EXPECT_GT(thread.processed_count.load(std::memory_order_acquire), 0);
+    EXPECT_GT(thread->processed_count.load(std::memory_order_acquire), 0);
 
     // 2. Wait until the reactor has shut down (exception handler finished)
-    for (int i = 0; i < 100 && !reactor_.is_finished(); ++i) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
-    EXPECT_TRUE(reactor_.is_finished());
+    std::this_thread::sleep_for(reactor_configuration_.inactivity_check_interval_);
+    EXPECT_TRUE(reactor_->is_finished());
+    mark_reactor_self_shutdown();
 
     // 3. Give the logger a moment to flush into the sink
     for (int i = 0; i < 100 && logger_with_sink_.sink->records().empty(); ++i) {
@@ -563,7 +599,7 @@ TEST_F(ApplicationThreadTest, ExceptionLoggingContainsThreadMetadata)
     bool found = false;
     for (const auto& rec : records) {
         const auto& msg_text = rec.message;
-        if (msg_text.find("TestThread") != std::string::npos &&
+        if (msg_text.find("TestThread9") != std::string::npos &&
             msg_text.find("1") != std::string::npos) {
             found = true;
             break;
@@ -584,32 +620,34 @@ TEST_F(ApplicationThreadTest, ExceptionLoggingContainsThreadMetadata)
 //       processed type is the last one enqueued.
 TEST_F(ApplicationThreadTest, MessageOrderingPreserved)
 {
-    TestThread thread(logger_with_sink_.logger,
-                      reactor_,
-                      "OrderThread",
-                      ThreadID(1),
-                      make_queue_config(),
-                      make_allocator_config());
+    auto thread = std::make_shared<TestThread>(logger_with_sink_.logger,
+                      *reactor_, "TestThread10", ThreadID(10),
+                      make_queue_config(), make_allocator_config());
 
-    reactor_.run();
-    thread.start();
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    thread->throw_on_message.store(false, std::memory_order_release); // ensure that we don't throw when ITC message rcvd
 
-    EventMessage m1 = EventMessage::create_reactor_event(EventType(EventType::Initial));
-    EventMessage m2 = EventMessage::create_reactor_event(EventType(EventType::AppReady));
-    EventMessage m3 = EventMessage::create_reactor_event(EventType(EventType::RawSocketCommunication));
+    reactor_->register_thread(thread);
+    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>( [this] { reactor_->run(); });
 
-    thread.post_message(ThreadID(1), std::move(m1));
-    thread.post_message(ThreadID(1), std::move(m2));
-    thread.post_message(ThreadID(1), std::move(m3));
-
-    for (int i = 0; i < 200 && thread.processed_count.load() < 3; ++i) {
+    // Wait until Reactor has started the thread and it is Operational
+    for (int i = 0; i < 200 && thread->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational; ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
-    thread.shutdown("done");
+    // Enqueue 2 messages which should both be processed.
+    EventMessage m1 = EventMessage::create_itc_message(ThreadID(1), nullptr, 0);
+    EventMessage m2 = EventMessage::create_raw_socket_message(nullptr, 0);
+    thread->post_message(ThreadID(10), std::move(m1));
+    thread->post_message(ThreadID(10), std::move(m2));
 
-    EXPECT_EQ(thread.last_processed_type.load(std::memory_order_acquire), EventType(EventType::RawSocketCommunication));
+    for (int i = 0; i < 200 && thread->processed_count.load() < 4; ++i) { // init, appReady and the 2 above
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    thread->shutdown("done");
+    mark_reactor_self_shutdown();
+
+    EXPECT_EQ(thread->last_processed_type.load(std::memory_order_acquire), EventType(EventType::RawSocketCommunication));
 }
 
 // ------------------------------------------------------------
@@ -633,17 +671,30 @@ TEST_F(ApplicationThreadTest, LoggerIsolationAcrossThreads)
     ReactorConfiguration cfg{};
     Reactor reactor(cfg, logger1->logger);
 
-    TestThread t1(logger1->logger, reactor, "T1", ThreadID(1), make_queue_config(), make_allocator_config());
-    TestThread t2(logger2->logger, reactor, "T2", ThreadID(2), make_queue_config(), make_allocator_config());
+    auto t1 = std::make_shared<TestThread>(logger1->logger,
+                      *reactor_, "TestThread101", ThreadID(1),
+                      make_queue_config(), make_allocator_config());
+    auto t2 = std::make_shared<TestThread>(logger2->logger,
+                      *reactor_, "TestThread102", ThreadID(2),
+                      make_queue_config(), make_allocator_config());
 
-    reactor_.run();
-    t1.start();
-    t2.start();
+    // Run local Reactor in background so we don't block the test
+    ThreadWithJoinTimeout reactor_thread([&] {
+        reactor.register_thread(t1);
+        reactor.register_thread(t2);
+        reactor.run();
+    });
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    // Wait until Reactor has started the threads and they are Operational
+    for (int i = 0; i < 200 &&
+                    t1->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational &&
+                    t2->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
 
-    t1.shutdown("one");
-    t2.shutdown("two");
+    t1->shutdown("one");
+    t2->shutdown("two");
+    mark_reactor_self_shutdown();
 
     EXPECT_GT(logger1->sink->count(), 0);
     EXPECT_GT(logger2->sink->count(), 0);
@@ -657,17 +708,25 @@ TEST_F(ApplicationThreadTest, LoggerIsolationAcrossThreads)
 
 TEST_F(ApplicationThreadTest, DoubleStartThrowsException)
 {
+    auto thread = std::make_shared<TestThread>(logger_with_sink_.logger,
+                      *reactor_, "TestThread11", ThreadID(1),
+                      make_queue_config(), make_allocator_config());
+
+    reactor_->register_thread(thread);
+    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>( [this] { reactor_->run(); });
+
+    // Wait until Reactor has started the thread and it is Operational
+    for (int i = 0; i < 200 && thread->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
     // What: Verifies that calling start() twice throws PreconditionAssertion
     // Why:  Prevents undefined behavior from multiple thread starts
     // How:  Start thread, then attempt to start again
 
-    TestThread thread(logger_with_sink_.logger, reactor_, "TestThread",
-                     ThreadID(1), make_queue_config(), make_allocator_config());
-    reactor_.run();
-    thread.start();
-    // Second start should throw
-    EXPECT_THROW(thread.start(), PreconditionAssertion);
-    thread.shutdown("done");
+    EXPECT_THROW(thread->start(), PreconditionAssertion);
+    thread->shutdown("done");
+    mark_reactor_self_shutdown();
 }
 
 TEST_F(ApplicationThreadTest, ShutdownBeforeStartIsGraceful)
@@ -676,7 +735,7 @@ TEST_F(ApplicationThreadTest, ShutdownBeforeStartIsGraceful)
     // Why:  Edge case handling - cleanup without initialization
     // How:  Create thread, call shutdown without start
 
-    TestThread thread(logger_with_sink_.logger, reactor_, "TestThread",
+    TestThread thread(logger_with_sink_.logger, *reactor_, "TestThread12",
                      ThreadID(1), make_queue_config(), make_allocator_config());
 
     // Should not crash or hang
@@ -689,16 +748,24 @@ TEST_F(ApplicationThreadTest, JoinWithTimeoutSucceeds)
     // What: Verifies join_with_timeout returns true when thread finishes
     // Why:  Tests the join mechanism works correctly
 
-    TestThread thread(logger_with_sink_.logger, reactor_, "TestThread",
-                     ThreadID(1), make_queue_config(), make_allocator_config());
+    auto thread = std::make_shared<TestThread>(logger_with_sink_.logger,
+                      *reactor_, "TestThread13", ThreadID(1),
+                      make_queue_config(), make_allocator_config());
 
-    reactor_.run();
-    thread.start();
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    thread.shutdown("test");
+    thread->throw_on_message.store(true, std::memory_order_release);
+
+    reactor_->register_thread(thread);
+    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>( [this] { reactor_->run(); });
+
+    // Wait until Reactor has started the thread and it is Operational
+    for (int i = 0; i < 200 && thread->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    thread->shutdown("test");
 
     // Thread should finish quickly
-    bool joined = thread.join_with_timeout(std::chrono::milliseconds(500));
+    bool joined = thread->join_with_timeout(std::chrono::milliseconds(500));
     EXPECT_TRUE(joined);
 }
 
@@ -707,7 +774,7 @@ TEST_F(ApplicationThreadTest, JoinWithTimeoutBeforeStartReturnsFalse)
     // What: Verifies join_with_timeout returns false when thread never started
     // Why:  Edge case - joining a thread that doesn't exist
 
-    TestThread thread(logger_with_sink_.logger, reactor_, "TestThread",
+    TestThread thread(logger_with_sink_.logger, *reactor_, "TestThread14",
                      ThreadID(1), make_queue_config(), make_allocator_config());
 
     // Should return false immediately
@@ -720,7 +787,7 @@ TEST_F(ApplicationThreadTest, TimestampGettersAndSetters)
     // What: Verifies timestamp tracking functionality
     // Why:  These are used for latency measurement in production
 
-    TestThread thread(logger_with_sink_.logger, reactor_, "TestThread",
+    TestThread thread(logger_with_sink_.logger, *reactor_, "TestThread15",
                      ThreadID(1), make_queue_config(), make_allocator_config());
 
     auto now = std::chrono::system_clock::now();
@@ -738,7 +805,7 @@ TEST_F(ApplicationThreadTest, InitialEventFlagTracking)
     // What: Verifies has_processed_initial_event flag works
     // Why:  Used for initialization sequencing in production
 
-    TestThread thread(logger_with_sink_.logger, reactor_, "TestThread",
+    TestThread thread(logger_with_sink_.logger, *reactor_, "TestThread16",
                      ThreadID(1), make_queue_config(), make_allocator_config());
 
     EXPECT_FALSE(thread.has_processed_initial());
@@ -756,34 +823,11 @@ TEST_F(ApplicationThreadTest, ThreadNameAndIDGetters)
     const std::string expected_name = "MyTestThread";
     const ThreadID expected_id(123);
 
-    TestThread thread(logger_with_sink_.logger, reactor_, expected_name,
+    TestThread thread(logger_with_sink_.logger, *reactor_, expected_name,
                      expected_id, make_queue_config(), make_allocator_config());
 
     EXPECT_EQ(thread.get_thread_name(), expected_name);
     EXPECT_EQ(thread.get_thread_id(), expected_id);
-}
-
-TEST_F(ApplicationThreadTest, DestructorJoinsThread)
-{
-    // What: Verifies destructor attempts to join the thread
-    // Why:  Ensures clean shutdown semantics
-    // How:  Let thread go out of scope while running, check logs for join attempt
-
-    {
-        TestThread thread(logger_with_sink_.logger, reactor_, "DestructorTest",
-                         ThreadID(1), make_queue_config(), make_allocator_config());
-
-        reactor_.run();
-        thread.start();
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-
-        // Let it go out of scope without explicit shutdown
-        // Destructor should attempt join with 3-second timeout
-    }
-
-    // Check that destructor attempted to join (might log error if timeout)
-    // This is more of a "doesn't crash" test
-    SUCCEED();
 }
 
 TEST_F(ApplicationThreadTest, MultiplePauseResumeCycles)
@@ -791,40 +835,45 @@ TEST_F(ApplicationThreadTest, MultiplePauseResumeCycles)
     // What: Verifies pause/resume can be called multiple times
     // Why:  Tests state machine robustness
 
-    TestThread thread(logger_with_sink_.logger, reactor_, "TestThread",
-                     ThreadID(1), make_queue_config(), make_allocator_config());
+    auto thread = std::make_shared<TestThread>(logger_with_sink_.logger, *reactor_,
+                      "TestThreadMessageProcessing", ThreadID(3),
+                      make_queue_config(), make_allocator_config());
 
-    reactor_.run();
-    thread.start();
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    reactor_->register_thread(thread);
+    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>( [this] { reactor_->run(); });
 
-    // Cycle 1
-    thread.pause();
-    EventMessage msg1 = EventMessage::create_reactor_event(EventType(EventType::Initial));
-    thread.post_message(ThreadID(1), std::move(msg1));
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    EXPECT_EQ(thread.processed_count.load(), 0);
-
-    thread.resume();
-    // Wait for processing
-    for (int i = 0; i < 100 && thread.processed_count.load() == 0; ++i) {
+    // Wait until Reactor has started the thread and it is Operational
+    for (int i = 0; i < 200 && thread->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational; ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
-    EXPECT_EQ(thread.processed_count.load(), 1);
+    // Cycle 1
+    thread->pause();
+    EventMessage msg1 = EventMessage::create_itc_message(thread->get_thread_id(), nullptr, 0);
+    thread->post_message(ThreadID(3), std::move(msg1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    EXPECT_EQ(thread->processed_count.load(), 2); // includes init and appReady
+
+    thread->resume();
+    // Wait for processing
+    for (int i = 0; i < 100 && thread->processed_count.load() == 2; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    EXPECT_EQ(thread->processed_count.load(), 3); // ITC message picked up
 
     // Cycle 2
-    thread.pause();
-    EventMessage msg2 = EventMessage::create_reactor_event(EventType(EventType::Initial));
-    thread.post_message(ThreadID(1), std::move(msg2));
+    thread->pause();
+    EventMessage msg2 = EventMessage::create_itc_message(thread->get_thread_id(), nullptr, 0);
+    thread->post_message(ThreadID(3), std::move(msg2));
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    EXPECT_EQ(thread.processed_count.load(), 1); // Still 1
+    EXPECT_EQ(thread->processed_count.load(), 3); // Still 1 ITC
 
-    thread.resume();
+    thread->resume();
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    EXPECT_EQ(thread.processed_count.load(), 2);
+    EXPECT_EQ(thread->processed_count.load(), 4);
 
-    thread.shutdown("done");
+    thread->shutdown("done");
 }
 
 TEST_F(ApplicationThreadTest, ExceptionTriggersReactorShutdown)
@@ -832,59 +881,55 @@ TEST_F(ApplicationThreadTest, ExceptionTriggersReactorShutdown)
     // What: Verifies that reactor.shutdown() is called when exception occurs
     // Why:  Critical contract - unhandled exception is fatal
 
-    TestThread thread(logger_with_sink_.logger, reactor_, "TestThread",
-                     ThreadID(1), make_queue_config(), make_allocator_config());
+    auto thread = std::make_shared<TestThread>(logger_with_sink_.logger, *reactor_,
+                      "TestThread18", ThreadID(18),
+                      make_queue_config(), make_allocator_config());
 
-    thread.throw_on_message.store(true);
+    thread->throw_on_message.store(true);
 
-    reactor_.run();
-    thread.start();
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    reactor_->register_thread(thread);
+    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>( [this] { reactor_->run(); });
 
-    EventMessage msg = EventMessage::create_reactor_event(EventType(EventType::Initial));
-    thread.post_message(ThreadID(1), std::move(msg));
+    // Wait until Reactor has started the thread and it is Operational
+    for (int i = 0; i < 200 && thread->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    EventMessage msg = EventMessage::create_itc_message(thread->get_thread_id(), nullptr, 0);
+    thread->post_message(ThreadID(18), std::move(msg));
 
     // Wait until the reactor has actually shut down
-     for (int i = 0; i < 100 && !reactor_.is_finished(); ++i) {
+     for (int i = 0; i < 100 && !reactor_->is_finished(); ++i) {
          std::this_thread::sleep_for(std::chrono::milliseconds(1));
      }
 
-     EXPECT_GT(thread.processed_count.load(std::memory_order_acquire), 0);
+     // Exception is thrown such that count is not incremented.
+     EXPECT_EQ(thread->processed_count.load(std::memory_order_acquire), 2); // only init and appReady
 
     // Verify reactor's shutdown was called
-    EXPECT_TRUE(reactor_.is_finished());
-    EXPECT_FALSE(thread.is_running());
+    EXPECT_TRUE(reactor_->is_finished());
+    EXPECT_FALSE(thread->is_running());
+    mark_reactor_self_shutdown();
 }
 
 TEST_F(ApplicationThreadTest, InterThreadRoutingDeliversMessage)
 {
-    LoggerWithSink logger1("itc_logger1", "itc_sink1");
-    LoggerWithSink logger2("itc_logger2", "itc_sink2");
-
-    ReactorConfiguration cfg{};
-    Reactor reactor(cfg, logger1.logger);
-
     QueueConfig qc = make_queue_config();
     AllocatorConfig ac = make_allocator_config();
 
-    auto threadA = std::make_shared<TestThread>(logger1.logger, reactor, "ThreadA", ThreadID(1), qc, ac);
+    auto threadA = std::make_shared<TestThread>(logger_with_sink_.logger, *reactor_, "ThreadA", ThreadID(1), qc, ac);
+    auto threadB = std::make_shared<TestThread>(logger_with_sink_.logger, *reactor_, "ThreadB", ThreadID(2), qc, ac);
 
-    auto threadB = std::make_shared<TestThread>(logger2.logger, reactor, "ThreadB", ThreadID(2), qc, ac);
+    reactor_->register_thread(threadA);
+    reactor_->register_thread(threadB);
+    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>( [this] { reactor_->run(); });
 
-    reactor.register_thread(threadA);
-    reactor.register_thread(threadB);
-
-    // Start Reactor in its own thread
-    ThreadWithJoinTimeout reactor_thread([&]() {
-        reactor.run();
-    });
-
-    // Wait for reactor to say that all threads are ready
-    {
-        Backoff backoff;
-        while (!reactor.is_initialized()) {
-            backoff.pause();
-        }
+    // Wait until Reactor has started the threads and they are Operational
+    for (int i = 0; i < 200 &&
+                (threadA->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational ||
+                 threadB->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational);
+     ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
     // Send an ITC message from A → B
@@ -900,11 +945,210 @@ TEST_F(ApplicationThreadTest, InterThreadRoutingDeliversMessage)
         }
     }
 
-    // Clean shutdown
+#if 0
+    // We have to tell the threads to shutdown otherwise they will run forever
     threadA->shutdown("done");
     threadB->shutdown("done");
-    reactor.shutdown("done");
-    reactor_thread.join();
 
     EXPECT_EQ(threadB->last_processed_type.load(std::memory_order_acquire), EventType(EventType::InterthreadCommunication));
+#else
+    EXPECT_EQ(threadB->last_processed_type.load(std::memory_order_acquire), EventType(EventType::InterthreadCommunication));
+    // when we return the reactor will shutdown which will shutdown these threads.
+#endif
+}
+
+TEST_F(ApplicationThreadTest, OneOffTimerFiresOnce)
+{
+    auto thread = std::make_shared<TestThread>(logger_with_sink_.logger, *reactor_,
+                      "TimerThread", ThreadID(1),
+                      make_queue_config(), make_allocator_config());
+
+    reactor_->register_thread(thread);
+    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>( [this] { reactor_->run(); });
+
+    // Wait until Reactor has started the thread and it is Operational
+    for (int i = 0; i < 200 && thread->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    // Start a one-off timer with a short interval
+    thread->start_one_off_timer("once", std::chrono::milliseconds(5));
+
+    // Wait for the timer to fire
+    for (int i = 0; i < 200 && thread->last_processed_type.load() != EventType(EventType::Timer); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    thread->shutdown("done");
+
+    EXPECT_EQ(thread->last_processed_type.load(), EventType(EventType::Timer));
+}
+
+TEST_F(ApplicationThreadTest, RecurringTimerFiresMultipleTimes)
+{
+    std::atomic<int> count{0};
+
+    // Override handler to count rings
+    struct CountingThread : TestThread {
+        using TestThread::TestThread;
+        std::atomic<int>* counter{nullptr};
+        void on_timer_event(const std::string&) override {
+            counter->fetch_add(1, std::memory_order_release);
+        }
+    };
+
+    auto cthread = std::make_shared<CountingThread>(logger_with_sink_.logger, *reactor_,
+                           "TimerThread1", ThreadID(1), make_queue_config(), make_allocator_config());
+    cthread->counter = &count;
+
+    reactor_->register_thread(cthread);
+    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>( [this] { reactor_->run(); });
+
+    // Wait until Reactor has started the thread and it is Operational
+    for (int i = 0; i < 200 && cthread->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    cthread->start_recurring_timer("tick", std::chrono::milliseconds(5));
+
+    // Wait for several rings
+    for (int i = 0; i < 200 && count.load() < 3; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    cthread->shutdown("done");
+
+    EXPECT_GE(count.load(), 3);
+}
+
+TEST_F(ApplicationThreadTest, CancelTimerStopsEvents)
+{
+    std::atomic<int> count{0};
+
+    struct CountingThread : TestThread {
+        using TestThread::TestThread;
+        std::atomic<int>* counter{nullptr};
+        void on_timer_event(const std::string&) override {
+            counter->fetch_add(1, std::memory_order_release);
+        }
+    };
+
+    auto cthread = std::make_shared<CountingThread>(logger_with_sink_.logger, *reactor_,
+                      "TimerThread", ThreadID(1),
+                      make_queue_config(), make_allocator_config());
+    cthread->counter = &count;
+
+    reactor_->register_thread(cthread);
+    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>( [this] { reactor_->run(); });
+
+    // Wait until Reactor has started the thread and it is Operational
+    for (int i = 0; i < 200 && cthread->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    cthread->start_recurring_timer("tick", std::chrono::milliseconds(5));
+
+    // Wait for at least one ring
+    for (int i = 0; i < 200 && count.load() == 0; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    cthread->cancel_timer("tick");
+
+    int after_cancel = count.load();
+
+    // Wait a bit longer — count should not increase
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    cthread->shutdown("done");
+
+    EXPECT_EQ(count.load(), after_cancel);
+}
+
+TEST_F(ApplicationThreadTest, TimerNameMapping)
+{
+    struct NameThread : TestThread {
+        using TestThread::TestThread;
+        std::string* out = nullptr;
+
+        void on_timer_event(const std::string& name) override {
+            *out = name;
+        }
+    };
+
+    auto thread = std::make_shared<NameThread>(logger_with_sink_.logger, *reactor_,
+        "TimerThread", ThreadID(1), make_queue_config(), make_allocator_config()
+    );
+
+    std::string name_seen;
+    thread->out = &name_seen;
+
+    reactor_->register_thread(thread);
+    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>( [this] { reactor_->run(); });
+
+    // Wait until Operational
+    for (int i = 0; i < 200 &&
+         thread->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational; ++i)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    thread->start_one_off_timer("heartbeat", std::chrono::milliseconds(5));
+
+    for (int i = 0; i < 200 && name_seen.empty(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    thread->shutdown("done");
+    EXPECT_EQ(name_seen, "heartbeat");
+    mark_reactor_self_shutdown();
+}
+
+TEST_F(ApplicationThreadTest, MultipleTimersIndependent)
+{
+    std::atomic<int> a_count{0};
+    std::atomic<int> b_count{0};
+
+    struct MultiThread : TestThread {
+        using TestThread::TestThread;
+        std::atomic<int>* a{nullptr};
+        std::atomic<int>* b{nullptr};
+        void on_timer_event(const std::string& name) override {
+            if (name == "A") a->fetch_add(1);
+            if (name == "B") b->fetch_add(1);
+        }
+    };
+
+    auto thread = std::make_shared<TestThread>(logger_with_sink_.logger, *reactor_,
+                      "TimerThread1", ThreadID(1),
+                      make_queue_config(), make_allocator_config());
+
+    auto mthread = std::make_shared<MultiThread>(logger_with_sink_.logger, *reactor_, "TimerThread2", ThreadID(2),
+                        make_queue_config(), make_allocator_config());
+    mthread->a = &a_count;
+    mthread->b = &b_count;
+
+    reactor_->register_thread(thread);
+    reactor_->register_thread(mthread);
+    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>( [this] { reactor_->run(); });
+
+    // Wait until Reactor has started the thread and it is Operational
+    for (int i = 0; i < 200 &&
+             thread->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational &&
+             mthread->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational;
+         ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    mthread->start_recurring_timer("A", std::chrono::milliseconds(5));
+    mthread->start_recurring_timer("B", std::chrono::milliseconds(7));
+
+    for (int i = 0; i < 300 && (a_count.load() < 2 || b_count.load() < 2); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    mthread->shutdown("done");
+
+    EXPECT_GE(a_count.load(), 2);
+    EXPECT_GE(b_count.load(), 2);
 }

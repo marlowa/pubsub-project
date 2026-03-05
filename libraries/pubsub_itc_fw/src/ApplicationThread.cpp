@@ -2,6 +2,7 @@
 #include <exception>
 #include <thread>
 #include <utility>
+#include <memory>
 
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/Backoff.hpp>
@@ -13,25 +14,30 @@
 namespace pubsub_itc_fw {
 
 ApplicationThread::~ApplicationThread() {
-    if (thread_ != nullptr && thread_->joinable()) {
-        // Signal the run loop to exit
-        set_lifecycle_state(ThreadLifecycleState::ShuttingDown);
-        if (message_queue_ != nullptr) {
-            message_queue_->shutdown();
-        }
-
-        try {
-            bool joined = thread_->join_with_timeout(std::chrono::seconds(3));
-            if (!joined) {
-                auto errorString = fmt::format("Failed to join thread: {} during destruction, will detach", thread_name_);
-                PUBSUB_LOG_STR(logger_, LogLevel::Error, errorString);
-                // At this point, something is badly wrong; but do NOT release/destroy the queue while the thread may still run.
-                thread_->detach();
-            }
-        } catch (const std::exception& ex) {
-            PUBSUB_LOG_STR(logger_, LogLevel::Error, "Failed to join thread: " + thread_name_ + " during destruction: " + ex.what());
-        }
+    if (thread_ == nullptr || !thread_->joinable()) {
+        return;
     }
+
+    std::cerr << fmt::format("{}:{} ApplicationThread dtor {} {}\n", __FILE__, __LINE__,
+                             thread_name_, thread_id_.get_value());
+    if (message_queue_ != nullptr) {
+        message_queue_->shutdown();
+    }
+
+    try {
+        bool joined = thread_->join_with_timeout(std::chrono::seconds(3));
+        if (!joined) {
+            auto errorString = fmt::format("Failed to join thread: {} during destruction, will detach", thread_name_);
+            PUBSUB_LOG_STR(logger_, LogLevel::Error, errorString);
+            // At this point, something is badly wrong; but do NOT release/destroy the queue while the thread may still run.
+            thread_->detach();
+        }
+    } catch (const std::exception& ex) {
+        PUBSUB_LOG_STR(logger_, LogLevel::Error, "Failed to join thread: " + thread_name_ + " during destruction: " + ex.what());
+    }
+
+    // Note: We do not tell the reactor to deregister the thread.
+    // The reactor owns the threads.
 }
 
 ApplicationThread::ApplicationThread(QuillLogger& logger,
@@ -53,7 +59,7 @@ ApplicationThread::ApplicationThread(QuillLogger& logger,
 
 void ApplicationThread::start() {
     if (thread_ != nullptr) {
-        throw PreconditionAssertion("Thread has already been started.", __FILE__, __LINE__);
+        throw PreconditionAssertion(fmt::format("Thread {} has already been started.", thread_name_), __FILE__, __LINE__);
     }
 
     thread_ = std::make_unique<ThreadWithJoinTimeout>();
@@ -85,10 +91,12 @@ void ApplicationThread::resume() {
 void ApplicationThread::post_message(ThreadID target_thread_id, EventMessage message) {
      if (target_thread_id == thread_id_) {
         // Direct self-post
+         std::cerr << fmt::format("{}:{} self post event type {}\n", __FILE__, __LINE__, message.type().as_string());
         message_queue_->enqueue(std::move(message));
         return;
      }
 
+    std::cerr << fmt::format("{}:{} routed by reactor\n", __FILE__, __LINE__);
     reactor_.route_message(target_thread_id, std::move(message));
 }
 
@@ -107,7 +115,7 @@ void ApplicationThread::cancel_timer(const std::string& name) {
     }
 
     TimerID id = it->second;
-    reactor_.cancel_timer_fd(id);
+    reactor_.cancel_timer_fd(get_thread_id(), id);
     id_to_name_.erase(id);
     name_to_id_.erase(it);
 }
@@ -131,15 +139,15 @@ void ApplicationThread::shutdown(const std::string& reason) {
 
 void ApplicationThread::run() {
     try {
+        std::cerr << fmt::format("{}:{} ApplicationThread::run starting run_internal, thread {}\n", __FILE__, __LINE__, thread_name_);
         run_internal();
+        std::cerr << fmt::format("{}:{} ApplicationThread::run run_internal returned, thread {}\n", __FILE__, __LINE__, thread_name_);
     } catch (const std::exception& ex) {
         PUBSUB_LOG(logger_, LogLevel::Error, "{} [{}] terminating due to exception: {}",
                    thread_name_, thread_id_.get_value(), ex.what());
-        reactor_.shutdown("thread run function finished abnormally");
     } catch (...) {
         PUBSUB_LOG(logger_, LogLevel::Error, "{} [{}] terminating due to unknown exception",
                    thread_name_, thread_id_.get_value());
-        reactor_.shutdown("thread run function finished abnormally");
     }
 }
 
@@ -152,50 +160,60 @@ void ApplicationThread::run_internal() {
 
     try {
         for (;;) {
-            if (!is_running()) {
-                break;
-            }
-
+            // Optional pause mechanism
             if (is_paused_.load(std::memory_order_relaxed)) {
-                // Because this thread is paused, we want to hint to the scheduler that another thread should run.
                 std::this_thread::yield();
                 continue;
             }
 
+            // Physical/lifecycle running state: hard stop once we leave the running band
+            if (!is_running()) {
+                break;
+            }
+
+            // If the Reactor has begun shutdown, this thread should exit promptly
+// TODO not sure about this. When the reactor finishes it should tell all threads to terminate.
             if (reactor_.is_finished()) {
-                PUBSUB_LOG(logger_, LogLevel::Warning, "Thread {} detected Reactor shutdown, exiting", thread_name_);
-                set_lifecycle_state(ThreadLifecycleState::ShuttingDown);
+                PUBSUB_LOG(logger_, LogLevel::Warning,
+                           "Thread {} detected Reactor shutdown, exiting", thread_name_);
                 break;
             }
 
+            // Defensive: queue must exist while the thread is running
             if (message_queue_ == nullptr) {
-                PUBSUB_LOG(logger_, LogLevel::Error, "Thread {} no longer has message queue, shutting down.", thread_name_);
-                set_lifecycle_state(ThreadLifecycleState::ShuttingDown);
+                PUBSUB_LOG(logger_, LogLevel::Error,
+                           "Thread {} no longer has message queue, shutting down.", thread_name_);
                 break;
             }
 
+            // Main dequeue path
             auto maybe_msg = message_queue_->dequeue();
             if (!maybe_msg.has_value()) {
+                // No work available: apply backoff
                 backoff.pause();
                 continue;
             }
 
+            // We successfully dequeued a message: reset backoff
             backoff.reset();
+
             EventMessage msg = std::move(*maybe_msg);
             process_message(msg);
-        }
 
-        PUBSUB_LOG(logger_, LogLevel::Info, "Thread {} is shutting down.", thread_name_);
+            // Application logic may decide this thread is now Terminated
+            if (get_lifecycle_state().as_tag() == ThreadLifecycleState::Terminated) {
+                break;
+            }
+        }
     } catch (const std::exception& ex) {
-        set_lifecycle_state(ThreadLifecycleState::ShuttingDown);
-        PUBSUB_LOG(logger_, LogLevel::Error, "{} [{}] terminating due to exception: {}", thread_name_, thread_id_.get_value(), ex.what());
-        reactor_.shutdown("thread run function finished abnormally");
+        PUBSUB_LOG(logger_, LogLevel::Error, "{} [{}] terminating due to exception: {}",
+                   thread_name_, thread_id_.get_value(), ex.what());
     } catch (...) {
-        set_lifecycle_state(ThreadLifecycleState::ShuttingDown);
-        PUBSUB_LOG(logger_, LogLevel::Error, "{} [{}] terminating due to unknown exception", thread_name_, thread_id_.get_value());
-        reactor_.shutdown("thread run function finished abnormally (unknown exception)");
+        PUBSUB_LOG(logger_, LogLevel::Error, "{} [{}] terminating due to unknown exception",
+                   thread_name_, thread_id_.get_value());
     }
 
+    PUBSUB_LOG(logger_, LogLevel::Info, "Thread {} is shutting down.", thread_name_);
     set_lifecycle_state(ThreadLifecycleState::Terminated);
 }
 
@@ -236,6 +254,8 @@ void ApplicationThread::process_message(EventMessage& message) {
 
         case EventType::Termination: {
             on_termination_event(message.reason());
+    std::cerr << fmt::format("{}:{} ApplicationThread has received Termination event\n", __FILE__, __LINE__);
+            set_lifecycle_state(ThreadLifecycleState::Terminated);
             break;
         }
 
@@ -266,6 +286,7 @@ void ApplicationThread::process_message(EventMessage& message) {
             break;
         }
     }
+    std::cerr << fmt::format("{}:{} returning from process_message\n", __FILE__, __LINE__);
 }
 
 void ApplicationThread::on_timer_id_event(TimerID id)
@@ -308,7 +329,7 @@ TimerID ApplicationThread::schedule_timer(const std::string& name,
     }
 
     // Ask Reactor to create and register the timerfd.
-    TimerID id = reactor_.create_timer_fd(thread_id_, interval, type);
+    TimerID id = reactor_.create_timer_fd(name, thread_id_, interval, type);
 
     // Store mappings for lookup and cancellation.
     name_to_id_[name] = id;

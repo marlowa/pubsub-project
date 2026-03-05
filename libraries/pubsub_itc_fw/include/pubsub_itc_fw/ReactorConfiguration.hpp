@@ -21,8 +21,9 @@ struct ReactorConfiguration {
 
     /**
      * @brief The interval for checking for inactive threads and sockets.
+     * This interval is also used to check if the reactor has been told to shutdown.
      */
-    std::chrono::milliseconds inactivity_check_interval_{std::chrono::minutes{5}};
+    std::chrono::milliseconds inactivity_check_interval_{std::chrono::seconds{1}};
 
     /**
      * @brief The maximum allowed inactivity interval for inter-thread communication.

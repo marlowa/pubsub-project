@@ -22,6 +22,14 @@
 #include <pubsub_itc_fw/AllocatorConfig.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 
+
+// TODO not sure about the user specifying threadIDs
+// need to think some more about this
+// If we do allow it then zero should throw an exception since it is reserved
+
+// TODO we also want users to create an application thread using make_shared.
+// we might need a factory function to enforce this. The factory function might use CRTP.
+
 namespace pubsub_itc_fw {
 
 // Forward declarations
