@@ -132,6 +132,8 @@ public:
 
     void on_housekeeping_tick();
 
+    QuillLogger& get_logger() { return logger_; }
+
 protected:
     std::atomic<bool> is_finished_{false};
     std::string shutdown_reason_;

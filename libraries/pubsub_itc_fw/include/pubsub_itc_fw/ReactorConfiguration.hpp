@@ -35,6 +35,8 @@ struct ReactorConfiguration {
      */
     std::chrono::milliseconds socket_maximum_inactivity_interval_{std::chrono::seconds{60}};
 
+    // TODO need to revise what this is for this is how long we wait for INIT to complete
+    // We probably need to add more smarts to the backstop check for this
     std::chrono::milliseconds init_phase_timeout_{std::chrono::seconds{10}};
 
     std::chrono::milliseconds shutdown_timeout_{std::chrono::seconds{1}};

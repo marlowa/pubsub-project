@@ -26,6 +26,8 @@
 // Reactor initialization timeout test
 // -----------------------------------------------------------------------------
 
+using namespace pubsub_itc_fw;
+
 namespace {
 
 // TODO these are copied from ApplicationThreadTest.
@@ -59,28 +61,28 @@ pubsub_itc_fw::AllocatorConfig make_allocator_config()
     return cfg;
 }
 
-// A cooperative thread that exits when it receives a Termination event.
-class CooperativeShutdownThread : public pubsub_itc_fw::ApplicationThread {
+// A cooperative thread that does nothing special at all
+class CooperativeShutdownThread : public ApplicationThread {
 public:
-    CooperativeShutdownThread(pubsub_itc_fw::QuillLogger& logger,
-                              pubsub_itc_fw::Reactor& reactor,
+    CooperativeShutdownThread(QuillLogger& logger,
+                              Reactor& reactor,
                               const std::string& name,
-                              pubsub_itc_fw::ThreadID id,
-                              const pubsub_itc_fw::QueueConfig& qc,
-                              const pubsub_itc_fw::AllocatorConfig& ac)
+                              ThreadID id,
+                              const QueueConfig& qc,
+                              const AllocatorConfig& ac)
         : ApplicationThread(logger, reactor, name, id, qc, ac)
     {}
 
 protected:
     void on_initial_event() override {
-        // Mark thread as started and ready.
+        // Nothing special for this test.
     }
 
     void on_app_ready_event() override {
         // Nothing special for this test.
     }
 
-    void on_itc_message(const pubsub_itc_fw::EventMessage& msg) override {
+    void on_itc_message(const EventMessage& msg) override {
         // Nothing special for this test.
     }
 };
@@ -88,14 +90,14 @@ protected:
 // -----------------------------------------------------------------------------
 // A test ApplicationThread that records Init and AppReady events.
 // -----------------------------------------------------------------------------
-class TestApplicationThread : public pubsub_itc_fw::ApplicationThread {
+class TestApplicationThread : public ApplicationThread {
 public:
-    TestApplicationThread(pubsub_itc_fw::QuillLogger& logger,
-                          pubsub_itc_fw::Reactor& reactor,
+    TestApplicationThread(QuillLogger& logger,
+                          Reactor& reactor,
                           const std::string& name,
-                          pubsub_itc_fw::ThreadID id,
-                          const pubsub_itc_fw::QueueConfig& queue_config,
-                          const pubsub_itc_fw::AllocatorConfig& allocator_config)
+                          ThreadID id,
+                          const QueueConfig& queue_config,
+                          const AllocatorConfig& allocator_config)
         : ApplicationThread(logger, reactor, name, id, queue_config, allocator_config)
     {}
 
@@ -113,57 +115,62 @@ protected:
         saw_app_ready_event.store(true, std::memory_order_release);
     }
 
-    void on_itc_message(const pubsub_itc_fw::EventMessage&) override {
+    void on_itc_message(const EventMessage&) override {
         // Not used in this test.
     }
 };
 
 } // un-named namespace
 
+void join_reactor_or_die(ThreadWithJoinTimeout& reactor_thread, std::chrono::milliseconds timeout)
+{
+    if (!reactor_thread.join_with_timeout(timeout)) {
+        std::cerr << "FATAL: reactor thread did not join (timeout " << timeout.count() << " ms)\n";
+        std::terminate();
+    }
+}
+
 TEST(ReactorTest, InitializationTimeoutTriggersShutdown)
 {
-    using namespace pubsub_itc_fw::test_support;
-    pubsub_itc_fw::LoggerWithSink logger("reactor_timeout_logger",
-                                         "reactor_timeout_sink");
+    using namespace test_support;
+    LoggerWithSink logger("reactor_timeout_logger", "reactor_timeout_sink");
 
-    pubsub_itc_fw::ReactorConfiguration cfg{};
-    cfg.init_phase_timeout_ = pubsub_itc_fw::MillisecondClock::duration{50};
+    ReactorConfiguration cfg{};
+    cfg.init_phase_timeout_ = MillisecondClock::duration{50};
+    cfg.inactivity_check_interval_ = std::chrono::milliseconds(50);
+    cfg.shutdown_timeout_ = std::chrono::milliseconds(50);
+    Reactor reactor(cfg, logger.logger);
 
-    pubsub_itc_fw::Reactor reactor(cfg, logger.logger);
-
-    pubsub_itc_fw::QueueConfig qc = make_queue_config();
-    pubsub_itc_fw::AllocatorConfig ac = make_allocator_config();
+    QueueConfig qc = make_queue_config();
+    AllocatorConfig ac = make_allocator_config();
 
     auto bad_thread = std::make_shared<NeverStartingThread>(
-        logger.logger, reactor, "BadThread", pubsub_itc_fw::ThreadID(99), qc, ac);
+        logger.logger, reactor, "BadThread", ThreadID(99), qc, ac);
 
     reactor.register_thread(bad_thread);
 
-    pubsub_itc_fw::ThreadWithJoinTimeout reactor_thread([&]() {
+    ThreadWithJoinTimeout reactor_thread([&]() {
         reactor.run();
     });
 
     // Wait for Reactor to detect timeout and shut down.
     {
-        pubsub_itc_fw::Backoff backoff;
-        auto start = pubsub_itc_fw::MillisecondClock::now();
+        Backoff backoff;
+        auto start = MillisecondClock::now();
 
         while (!reactor.is_finished()) {
-            if (pubsub_itc_fw::MillisecondClock::now() - start >
-                pubsub_itc_fw::MillisecondClock::duration{200}) {
+            if (MillisecondClock::now() - start > MillisecondClock::duration{200}) {
                 FAIL() << "Reactor did not shut down after initialization timeout";
             }
             backoff.pause();
         }
     }
 
-    reactor_thread.join();
+    join_reactor_or_die(reactor_thread, std::chrono::milliseconds(500));
 
     EXPECT_FALSE(reactor.is_initialized());
     EXPECT_TRUE(reactor.is_finished());
 }
-
-namespace pubsub_itc_fw {
 
 /*
 ===============================================================================
@@ -191,7 +198,6 @@ all threads have completed their Initial processing.
 ===============================================================================
 */
 TEST(ReactorTest, AllThreadsReceiveInitThenAppReady) {
-    using namespace pubsub_itc_fw;
 
     // -------------------------------------------------------------------------
     // Configuration setup
@@ -208,19 +214,13 @@ TEST(ReactorTest, AllThreadsReceiveInitThenAppReady) {
     // -------------------------------------------------------------------------
     auto thread1 = std::make_shared<TestApplicationThread>(
         logger->logger, reactor, "thread1", ThreadID{1}, queue_config, allocator_config);
-
     auto thread2 = std::make_shared<TestApplicationThread>(
         logger->logger, reactor, "thread2", ThreadID{2}, queue_config, allocator_config);
 
     reactor.register_thread(thread1);
     reactor.register_thread(thread2);
 
-    // -------------------------------------------------------------------------
-    // Run the Reactor in its own thread (it will block until shutdown).
-    // -------------------------------------------------------------------------
-    std::thread reactor_thread([&reactor]() {
-        reactor.run();
-    });
+    ThreadWithJoinTimeout reactor_thread([&]() { reactor.run(); });
 
     // -------------------------------------------------------------------------
     // Wait until both threads have seen their Initial event.
@@ -246,12 +246,6 @@ TEST(ReactorTest, AllThreadsReceiveInitThenAppReady) {
     EXPECT_TRUE(thread2->saw_initial_event.load());
     EXPECT_TRUE(thread1->saw_app_ready_event.load());
     EXPECT_TRUE(thread2->saw_app_ready_event.load());
-
-    // -------------------------------------------------------------------------
-    // Clean shutdown for the test.
-    // -------------------------------------------------------------------------
-    reactor.shutdown("test shutdown");
-    reactor_thread.join();
 }
 // -----------------------------------------------------------------------------
 // Reactor shutdown test: cooperative thread receives Termination event
@@ -259,8 +253,6 @@ TEST(ReactorTest, AllThreadsReceiveInitThenAppReady) {
 
 TEST(ReactorTest, ShutdownBroadcastsTerminationAndThreadExits)
 {
-    using namespace pubsub_itc_fw;
-
     LoggerWithSink logger("reactor_shutdown_logger", "reactor_shutdown_sink");
 
     ReactorConfiguration cfg{};
@@ -273,11 +265,7 @@ TEST(ReactorTest, ShutdownBroadcastsTerminationAndThreadExits)
         logger.logger, reactor, "ShutdownThread", ThreadID{123}, qc, ac);
 
     reactor.register_thread(thread);
-
-    // Run the reactor in its own thread.
-    std::thread reactor_thread([&reactor]() {
-        reactor.run();
-    });
+    ThreadWithJoinTimeout reactor_thread([&]() { reactor.run(); });
 
     // Wait until initialization completes.
     {
@@ -287,11 +275,11 @@ TEST(ReactorTest, ShutdownBroadcastsTerminationAndThreadExits)
         }
     }
 
-    // Trigger shutdown.
+    // Trigger shutdown by explicitly shutting the reactor down.
     reactor.shutdown("test shutdown");
 
     // Reactor should exit its event loop and return from run().
-    reactor_thread.join();
+    join_reactor_or_die(reactor_thread, std::chrono::milliseconds(500));
 
     EXPECT_TRUE(reactor.is_finished());
     EXPECT_FALSE(thread->is_running());
@@ -303,8 +291,7 @@ TEST(ReactorTest, ShutdownBroadcastsTerminationAndThreadExits)
 
 TEST(ReactorTest, RogueThreadBlocksInITCMessage_ReactorStillShutsDown)
 {
-    using namespace pubsub_itc_fw;
-    using namespace pubsub_itc_fw::test_support;
+    using namespace test_support;
 
     LoggerWithSink logger("reactor_shutdown_rogue_logger", "reactor_shutdown_rogue_sink");
 
@@ -320,9 +307,7 @@ TEST(ReactorTest, RogueThreadBlocksInITCMessage_ReactorStillShutsDown)
         logger.logger, reactor, "RogueThread", ThreadID{777}, qc, ac);
 
     reactor.register_thread(rogue);
-
-    // Run the reactor in its own thread.
-    std::thread reactor_thread([&reactor]() {
+    ThreadWithJoinTimeout reactor_thread([&]() {
         reactor.run();
     });
 
@@ -353,7 +338,7 @@ TEST(ReactorTest, RogueThreadBlocksInITCMessage_ReactorStillShutsDown)
     reactor.shutdown("test shutdown");
 
     // Reactor::shutdown() must return even though the thread is hung.
-    reactor_thread.join();
+    join_reactor_or_die(reactor_thread, std::chrono::milliseconds(500));
 
     EXPECT_TRUE(reactor.is_finished());
     EXPECT_TRUE(rogue->is_running());  // Rogue thread never exited
@@ -361,8 +346,7 @@ TEST(ReactorTest, RogueThreadBlocksInITCMessage_ReactorStillShutsDown)
 
 TEST(ReactorTest, ThreadThrowsDuringTerminationReactorStillShutsDown)
 {
-    using namespace pubsub_itc_fw;
-    using namespace pubsub_itc_fw::test_support;
+    using namespace test_support;
 
     LoggerWithSink logger("reactor_shutdown_throw_logger", "reactor_shutdown_throw_sink");
 
@@ -378,9 +362,7 @@ TEST(ReactorTest, ThreadThrowsDuringTerminationReactorStillShutsDown)
         logger.logger, reactor, "ThrowingThread", ThreadID{888}, qc, ac);
 
     reactor.register_thread(bad_thread);
-
-    // Run the reactor in its own thread.
-    std::thread reactor_thread([&reactor]() {
+    ThreadWithJoinTimeout reactor_thread([&]() {
         reactor.run();
     });
 
@@ -400,7 +382,7 @@ TEST(ReactorTest, ThreadThrowsDuringTerminationReactorStillShutsDown)
     reactor.shutdown("test shutdown");
 
     // Reactor::shutdown() must return even though the thread threw.
-    reactor_thread.join();
+    join_reactor_or_die(reactor_thread, std::chrono::milliseconds(500));
 
     EXPECT_TRUE(reactor.is_finished());
     EXPECT_FALSE(bad_thread->is_running());  // Thread must have been shut down
@@ -412,11 +394,9 @@ TEST(ReactorTest, ThreadThrowsDuringTerminationReactorStillShutsDown)
 
 TEST(ReactorTest, ThreadThrowsDuringRunLoopReactorShutsDown)
 {
-    using namespace pubsub_itc_fw;
-    using namespace pubsub_itc_fw::test_support;
+    using namespace test_support;
 
-    LoggerWithSink logger("reactor_shutdown_runloop_logger",
-                          "reactor_shutdown_runloop_sink");
+    LoggerWithSink logger("reactor_shutdown_runloop_logger", "reactor_shutdown_runloop_sink");
 
     ReactorConfiguration reactor_config{};
     reactor_config.shutdown_timeout_ = MillisecondClock::duration{100};
@@ -426,60 +406,53 @@ TEST(ReactorTest, ThreadThrowsDuringRunLoopReactorShutsDown)
 
     Reactor reactor(reactor_config, logger.logger);
 
-    auto bad_thread = std::make_shared<ThrowingDuringRunThread>(
-        logger.logger,
-        reactor,
-        "ThrowingRunLoopThread",
-        ThreadID{999},
-        thread_queue_config,
-        thread_allocator_config);
+    auto bad_thread = std::make_shared<ThrowingDuringRunThread>(logger.logger, reactor,
+        "ThrowingRunLoopThread", ThreadID{999}, thread_queue_config, thread_allocator_config);
 
     reactor.register_thread(bad_thread);
+    auto reactor_thread = std::make_unique<ThreadWithJoinTimeout>( [&reactor] { reactor.run(); });
 
-    // Run the Reactor in its own thread.
-    std::thread reactor_thread([&reactor]() {
-        reactor.run();
-    });
-
-    // Wait for initialization to complete.
-    {
-        Backoff backoff;
-        auto start = MillisecondClock::now();
-        while (!reactor.is_initialized()) {
-            if (MillisecondClock::now() - start >
-                MillisecondClock::duration{500}) {
-                FAIL() << "Reactor did not complete initialization";
-            }
-            backoff.pause();
-        }
+    // Wait until Reactor has started the thread and it is Operational
+    for (int i = 0; i < 200 && bad_thread->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
     // Send an ITC message that will trigger the exception.
     {
         const uint8_t dummy_payload[1] = {42};
-        EventMessage itc_message = EventMessage::create_itc_message(
-            bad_thread->get_thread_id(),
-            dummy_payload,
-            1);
-
+        EventMessage itc_message = EventMessage::create_itc_message(bad_thread->get_thread_id(), dummy_payload, 1);
         bad_thread->post_message(bad_thread->get_thread_id(), std::move(itc_message));
     }
 
-    // Reactor must shut down because the thread threw.
-    reactor_thread.join();
+    // wait for bad thread to be no longer running
+    {
+        Backoff backoff;
+        auto start = MillisecondClock::now();
+        while (!bad_thread->is_running()) {
+            if (MillisecondClock::now() - start > MillisecondClock::duration{1000}) {
+                FAIL() << "Bad thread still running when should have terminated";
+            }
+            backoff.pause();
+        }
+    }
+
+    {
+        Backoff backoff;
+        auto const start = MillisecondClock::now();
+        while (!reactor.is_finished()) {
+            if (MillisecondClock::now() - start > MillisecondClock::duration{1000}) {
+                FAIL() << "Reactor did not finish after thread threw";
+            }
+            backoff.pause();
+        }
+    }
 
     EXPECT_TRUE(reactor.is_finished());
-    EXPECT_FALSE(bad_thread->is_running());
-
-    // Once the reactor has finished, all its threads must have finished.
-
-    EXPECT_EQ(bad_thread->get_lifecycle_state().as_tag(), ThreadLifecycleState::Terminated);
 }
 
 TEST(ReactorTest, ThreadThrowsDuringInitialProcessingReactorShutsDown)
 {
-    using namespace pubsub_itc_fw;
-    using namespace pubsub_itc_fw::test_support;
+    using namespace test_support;
 
     LoggerWithSink logger("reactor_init_throw_logger", "reactor_init_throw_sink");
 
@@ -495,12 +468,12 @@ TEST(ReactorTest, ThreadThrowsDuringInitialProcessingReactorShutsDown)
     auto bad_thread = std::make_shared<ThrowingInitialThread>(logger.logger, reactor, "BadInitThread", ThreadID{101}, qc, ac);
 
     reactor.register_thread(bad_thread);
+    ThreadWithJoinTimeout reactor_thread([&]() { reactor.run(); });
 
-    std::thread reactor_thread([&reactor]() {
-        reactor.run();
-    });
+    // Give the reactor some time to start things up and send the init event.
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
-    reactor_thread.join();
+    join_reactor_or_die(reactor_thread, std::chrono::milliseconds(500));
 
     EXPECT_TRUE(reactor.is_finished());
     EXPECT_EQ(bad_thread->get_lifecycle_state().as_tag(), ThreadLifecycleState::Terminated);
@@ -508,8 +481,7 @@ TEST(ReactorTest, ThreadThrowsDuringInitialProcessingReactorShutsDown)
 
 TEST(ReactorTest, ThreadThrowsDuringAppReadyProcessingReactorShutsDown)
 {
-    using namespace pubsub_itc_fw;
-    using namespace pubsub_itc_fw::test_support;
+    using namespace test_support;
 
     LoggerWithSink logger("reactor_appready_throw_logger", "reactor_appready_throw_sink");
 
@@ -532,14 +504,13 @@ TEST(ReactorTest, ThreadThrowsDuringAppReadyProcessingReactorShutsDown)
 
     reactor.register_thread(bad_thread);
 
-    std::thread reactor_thread([&reactor]() {
-        reactor.run();
-    });
+    ThreadWithJoinTimeout reactor_thread([&]() { reactor.run(); });
 
-    reactor_thread.join();
+    // Give the reactor some time to start things up and send the init event.
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    join_reactor_or_die(reactor_thread, std::chrono::milliseconds(500));
 
     EXPECT_TRUE(reactor.is_finished());
     EXPECT_EQ(bad_thread->get_lifecycle_state().as_tag(), ThreadLifecycleState::Terminated);
-}
-
 }

@@ -9,6 +9,7 @@
 
 #include <pubsub_itc_fw/EventHandler.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
+#include <pubsub_itc_fw/HighResolutionClock.hpp>
 #include <pubsub_itc_fw/ThreadLifecycleState.hpp>
 #include <pubsub_itc_fw/LockFreeMessageQueue.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
@@ -99,6 +100,11 @@ class ApplicationThread {
                       ThreadID thread_id,
                       const QueueConfig& queue_config,
                       const AllocatorConfig& allocator_config);
+
+    ApplicationThread(ApplicationThread const&) = delete;
+    ApplicationThread& operator=(ApplicationThread const&) = delete;
+    ApplicationThread(ApplicationThread&&) = delete;
+    ApplicationThread& operator=(ApplicationThread&&) = delete;
 
     /**
      * Return the thread name, as a const ref to avoid copying
@@ -216,11 +222,11 @@ class ApplicationThread {
         return time_event_finished_;
     }
 
-    void set_time_event_started(std::chrono::time_point<std::chrono::system_clock, std::chrono::nanoseconds> time_event_started) {
+    void set_time_event_started(HighResolutionClock::time_point time_event_started) {
         time_event_started_ = time_event_started;
     }
 
-    void set_time_event_finished(std::chrono::time_point<std::chrono::system_clock, std::chrono::nanoseconds> time_event_finished) {
+    void set_time_event_finished(HighResolutionClock::time_point time_event_finished) {
         time_event_finished_ = time_event_finished;
     }
 
@@ -246,14 +252,7 @@ class ApplicationThread {
 
     void set_lifecycle_state(ThreadLifecycleState::Tag new_tag);
 
-  protected:
-    /**
-     * This function is called by the wrapper 'run'. The work of 'run' is done here.
-     * The wrapper catches any exception and handles it by marking the thread as finished,
-     * cancelling any timers created by the thread, and then invoking the Reactor's shutdown function.
-     * This is because if any application encounters an unhandled exception it is fatal to the Reactor.
-     * In such cases the Reactor shuts down and the application should halt.
-     */
+protected:
     void run_internal();
 
     void process_message(EventMessage& message);
@@ -274,12 +273,12 @@ class ApplicationThread {
 
     virtual void on_raw_socket_message(const EventMessage& msg) {}
 
-  private:
+private:
     QuillLogger& logger_;
     Reactor& reactor_;
 
-    std::chrono::time_point<std::chrono::system_clock, std::chrono::nanoseconds> time_event_started_;
-    std::chrono::time_point<std::chrono::system_clock, std::chrono::nanoseconds> time_event_finished_;
+    HighResolutionClock::time_point time_event_started_;
+    HighResolutionClock::time_point time_event_finished_;
 
     std::string thread_name_;
     ThreadID thread_id_;

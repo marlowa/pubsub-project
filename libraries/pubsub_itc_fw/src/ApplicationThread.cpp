@@ -6,6 +6,7 @@
 
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/Backoff.hpp>
+#include <pubsub_itc_fw/HighResolutionClock.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
@@ -18,8 +19,6 @@ ApplicationThread::~ApplicationThread() {
         return;
     }
 
-    std::cerr << fmt::format("{}:{} ApplicationThread dtor {} {}\n", __FILE__, __LINE__,
-                             thread_name_, thread_id_.get_value());
     if (message_queue_ != nullptr) {
         message_queue_->shutdown();
     }
@@ -55,6 +54,8 @@ ApplicationThread::ApplicationThread(QuillLogger& logger,
     , thread_(nullptr) {
     message_queue_ = std::make_unique<LockFreeMessageQueue<EventMessage>>(queue_config, allocator_config);
     set_lifecycle_state(ThreadLifecycleState::Created);
+
+    // TODO prohibit threadID of zero since that is reserved for the reactor.
 }
 
 void ApplicationThread::start() {
@@ -72,8 +73,7 @@ void ApplicationThread::start() {
     }
 }
 
-[[nodiscard]] bool ApplicationThread::join_with_timeout(
-    std::chrono::milliseconds timeout) {
+[[nodiscard]] bool ApplicationThread::join_with_timeout(std::chrono::milliseconds timeout) {
     if (thread_ == nullptr) {
         return false;
     }
@@ -214,7 +214,7 @@ void ApplicationThread::run_internal() {
     }
 
     PUBSUB_LOG(logger_, LogLevel::Info, "Thread {} is shutting down.", thread_name_);
-    set_lifecycle_state(ThreadLifecycleState::Terminated);
+    set_lifecycle_state(ThreadLifecycleState::ShuttingDown);
 }
 
 void ApplicationThread::process_message(EventMessage& message) {
@@ -230,6 +230,8 @@ void ApplicationThread::process_message(EventMessage& message) {
         throw PreconditionAssertion(
             "Non-reactor event received before thread is fully operational", __FILE__, __LINE__);
     }
+
+    time_event_started_ = HighResolutionClock::now();
 
     switch (tag) {
         case EventType::Initial: {
@@ -254,7 +256,7 @@ void ApplicationThread::process_message(EventMessage& message) {
 
         case EventType::Termination: {
             on_termination_event(message.reason());
-    std::cerr << fmt::format("{}:{} ApplicationThread has received Termination event\n", __FILE__, __LINE__);
+            PUBSUB_LOG(logger_, LogLevel::Info, "ApplicationThread {} has received Termination event", thread_name_);
             set_lifecycle_state(ThreadLifecycleState::Terminated);
             break;
         }
@@ -286,7 +288,7 @@ void ApplicationThread::process_message(EventMessage& message) {
             break;
         }
     }
-    std::cerr << fmt::format("{}:{} returning from process_message\n", __FILE__, __LINE__);
+    time_event_finished_ = HighResolutionClock::now();
 }
 
 void ApplicationThread::on_timer_id_event(TimerID id)
@@ -311,7 +313,7 @@ void ApplicationThread::set_lifecycle_state(ThreadLifecycleState::Tag new_tag)
         return;
     }
 
-    PUBSUB_LOG(logger_, LogLevel::Info, "Thread {} lifecycle transition {} → {}", thread_name_,
+    PUBSUB_LOG(logger_, LogLevel::Info, "Thread {} lifecycle transition {} to {}", thread_name_,
                ThreadLifecycleState::to_string(old_tag), ThreadLifecycleState::to_string(new_tag));
 
     lifecycle_state_.store(new_tag, std::memory_order_release);

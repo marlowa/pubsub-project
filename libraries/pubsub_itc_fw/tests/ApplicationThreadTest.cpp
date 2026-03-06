@@ -86,30 +86,40 @@ public:
         reactor_configuration_.inactivity_check_interval_ = std::chrono::milliseconds(100);
         reactor_ = std::make_unique<Reactor>(reactor_configuration_, logger_with_sink_.logger);
         reactor_thread_.reset(); // not started yet
-        reactor_self_shutdown_ = false;
+        is_reactor_shutdown_required_ = false;
         std::cerr << fmt::format("{}:{} reactor initialised\n", __FILE__, __LINE__);
     }
 
     void TearDown() override {
-         if (!reactor_self_shutdown_) {
-            reactor_->shutdown("Test End");
+         if (is_reactor_shutdown_required_) {
+            reactor_->shutdown("Test End, forcing reactor shutdown");
          }
          if (reactor_thread_) {
-             (void)reactor_thread_->join_with_timeout(std::chrono::seconds(2));
-             reactor_thread_.reset();
+             join_reactor_or_die(std::chrono::seconds(2));
          }
          reactor_.reset();
     }
 
     void mark_reactor_self_shutdown() {
-        reactor_self_shutdown_ = true;
+        is_reactor_shutdown_required_ = true;
+    }
+
+    void join_reactor_or_die(std::chrono::milliseconds timeout)
+    {
+        ASSERT_TRUE(reactor_thread_); // if this fails, it’s a test bug
+
+        if (!reactor_thread_->join_with_timeout(timeout)) {
+            std::cerr << "FATAL: reactor thread did not join (timeout "
+                      << timeout.count() << " ms)\n";
+            std::terminate();
+        }
     }
 
     LoggerWithSink& logger_with_sink_;
     ReactorConfiguration reactor_configuration_;
     std::unique_ptr<Reactor> reactor_;
     std::unique_ptr<ThreadWithJoinTimeout> reactor_thread_;
-    bool reactor_self_shutdown_{false};
+    bool is_reactor_shutdown_required_{false};
 };
 
 // ------------------------------------------------------------
@@ -305,6 +315,8 @@ TEST_F(ApplicationThreadTest, ExceptionTriggersShutdown)
     }
 
     EXPECT_FALSE(thread->is_running());
+    join_reactor_or_die(std::chrono::milliseconds(500));
+
     mark_reactor_self_shutdown();
 }
 
@@ -334,7 +346,6 @@ TEST_F(ApplicationThreadTest, QueueShutdownDropsMessages)
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
     thread->shutdown("test");
-    mark_reactor_self_shutdown();
 
     EventMessage msg = EventMessage::create_itc_message(thread->get_thread_id(), nullptr, 0);
     thread->post_message(ThreadID(1), std::move(msg));
@@ -360,7 +371,7 @@ TEST_F(ApplicationThreadTest, TimestampSemantics)
                       "TestThread5", ThreadID(1),
                       make_queue_config(), make_allocator_config());
 
-    auto before = std::chrono::system_clock::now();
+    auto before = HighResolutionClock::now();
     thread.set_time_event_started(before);
 
     auto after = before + std::chrono::milliseconds(5);
@@ -396,7 +407,6 @@ TEST_F(ApplicationThreadTest, LoggingVerification)
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
     thread->shutdown("shutdown log test");
-    mark_reactor_self_shutdown();
 
     EXPECT_GE(logger_with_sink_.sink->count(), 1);
     EXPECT_TRUE(logger_with_sink_.sink->contains_message("shutdown log test"));
@@ -442,7 +452,6 @@ TEST_F(ApplicationThreadTest, PauseResumeUnderLoad)
     std::this_thread::sleep_for(std::chrono::milliseconds(30));
 
     thread->shutdown("done");
-    mark_reactor_self_shutdown();
 
     EXPECT_GT(thread->processed_count.load(), 2);
 }
@@ -543,7 +552,6 @@ TEST_F(ApplicationThreadTest, WatermarkTransitions)
 
     // Clean shutdown
     thread->shutdown("done");
-    mark_reactor_self_shutdown();
 
     // Verify each handler fired exactly once
     EXPECT_EQ(high_triggered.load(), 1);
@@ -645,7 +653,6 @@ TEST_F(ApplicationThreadTest, MessageOrderingPreserved)
     }
 
     thread->shutdown("done");
-    mark_reactor_self_shutdown();
 
     EXPECT_EQ(thread->last_processed_type.load(std::memory_order_acquire), EventType(EventType::RawSocketCommunication));
 }
@@ -694,7 +701,6 @@ TEST_F(ApplicationThreadTest, LoggerIsolationAcrossThreads)
 
     t1->shutdown("one");
     t2->shutdown("two");
-    mark_reactor_self_shutdown();
 
     EXPECT_GT(logger1->sink->count(), 0);
     EXPECT_GT(logger2->sink->count(), 0);
@@ -726,7 +732,6 @@ TEST_F(ApplicationThreadTest, DoubleStartThrowsException)
 
     EXPECT_THROW(thread->start(), PreconditionAssertion);
     thread->shutdown("done");
-    mark_reactor_self_shutdown();
 }
 
 TEST_F(ApplicationThreadTest, ShutdownBeforeStartIsGraceful)
@@ -790,7 +795,7 @@ TEST_F(ApplicationThreadTest, TimestampGettersAndSetters)
     TestThread thread(logger_with_sink_.logger, *reactor_, "TestThread15",
                      ThreadID(1), make_queue_config(), make_allocator_config());
 
-    auto now = std::chrono::system_clock::now();
+    auto now = HighResolutionClock::now();
     auto later = now + std::chrono::milliseconds(100);
 
     thread.set_time_event_started(now);
@@ -909,7 +914,6 @@ TEST_F(ApplicationThreadTest, ExceptionTriggersReactorShutdown)
     // Verify reactor's shutdown was called
     EXPECT_TRUE(reactor_->is_finished());
     EXPECT_FALSE(thread->is_running());
-    mark_reactor_self_shutdown();
 }
 
 TEST_F(ApplicationThreadTest, InterThreadRoutingDeliversMessage)
@@ -953,6 +957,7 @@ TEST_F(ApplicationThreadTest, InterThreadRoutingDeliversMessage)
     EXPECT_EQ(threadB->last_processed_type.load(std::memory_order_acquire), EventType(EventType::InterthreadCommunication));
 #else
     EXPECT_EQ(threadB->last_processed_type.load(std::memory_order_acquire), EventType(EventType::InterthreadCommunication));
+    mark_reactor_self_shutdown();
     // when we return the reactor will shutdown which will shutdown these threads.
 #endif
 }
@@ -1101,7 +1106,6 @@ TEST_F(ApplicationThreadTest, TimerNameMapping)
 
     thread->shutdown("done");
     EXPECT_EQ(name_seen, "heartbeat");
-    mark_reactor_self_shutdown();
 }
 
 TEST_F(ApplicationThreadTest, MultipleTimersIndependent)

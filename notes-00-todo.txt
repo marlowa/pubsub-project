@@ -16,4 +16,6 @@ TODO   plan for adding XML config using libxml2
 TODO   have a fresh think about if we want weak_ptr in the thread collections of the reactor, check for locks.
 TODO   reactor run should give error if no threads are registered.
 TODO   when reactor shuts down it should send TERM events to all threads that are still running
+TODO   look into this TCP_NODELAY thing that OTPM found a useful performance boost
+TODO   look into cancel tokens for our joinable thread, or maybe kill thread by tid.
 

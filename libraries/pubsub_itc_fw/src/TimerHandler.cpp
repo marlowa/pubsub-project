@@ -60,13 +60,13 @@ bool TimerHandler::handle_event(uint32_t events) noexcept {
     // Check if this is the Reactor's own backstop/housekeeping timer
     if (timer_.get_owner_thread_id().get_value() == 0) {
         // This wakes up the Reactor to check for shutdown or perform internal maintenance.
-    std::cerr << fmt::format("{}:{} handle_event calling housekeeping function\n", __FILE__, __LINE__);
+        PUBSUB_LOG_STR(reactor_.get_logger(), LogLevel::Info, "handle_event calling housekeeping function");
         reactor_.on_housekeeping_tick();
     } else {
         // This is an application-level timer.
         // Wrap the TimerID in an EventMessage and push it to the owner's queue.
         for (uint64_t i = 0; i < expirations; ++i) {
-    std::cerr << fmt::format("{}:{} handle_event will route message\n", __FILE__, __LINE__);
+            PUBSUB_LOG_STR(reactor_.get_logger(), LogLevel::Info, "handle_event will route timer event");
             auto msg = EventMessage::create_timer_event(timer_.get_timer_id());
             reactor_.route_message(timer_.get_owner_thread_id(), std::move(msg));
         }
