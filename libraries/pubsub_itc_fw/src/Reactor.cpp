@@ -27,7 +27,10 @@ Reactor::~Reactor() {
 }
 
 Reactor::Reactor(const ReactorConfiguration& reactor_configuration, QuillLogger& logger)
-    : handlers_{}, threads_{}, threads_by_thread_id_{}, config_(reactor_configuration), logger_(logger) {
+    : handlers_{}, threads_{}, threads_by_thread_id_{},
+      command_queue_(reactor_configuration.command_queue_config_, reactor_configuration.command_allocator_config_),
+      config_(reactor_configuration),
+      logger_(logger) {
     epoll_fd_ = ::epoll_create1(EPOLL_CLOEXEC);
     if (epoll_fd_ == -1) {
         throw PubSubItcException("epoll_create1 failed in Reactor constructor");
@@ -46,7 +49,9 @@ Reactor::Reactor(const ReactorConfiguration& reactor_configuration, QuillLogger&
         throw PubSubItcException("epoll_ctl ADD failed for wake_fd in Reactor constructor");
     }
 
-    create_timer_fd("Backstop", ThreadID(system_thread_id_value), config_.inactivity_check_interval_, TimerType::Recurring);
+    auto timer_id = allocate_timer_id();
+    create_timer_fd(timer_id, "Backstop", ThreadID(system_thread_id_value),
+                   config_.inactivity_check_interval_, TimerType::Recurring);
     PUBSUB_LOG_STR(logger_, LogLevel::Info, "backstop timer created");
 }
 
@@ -463,7 +468,22 @@ void Reactor::initialize_threads() {
                    "Registered application threads are now Operational. Reactor initialization complete.");
 }
 
-TimerID Reactor::create_timer_fd(const std::string& name, ThreadID owner_thread_id,
+void Reactor::enqueue_control_command(const ReactorControlCommand& command)
+{
+    command_queue_.enqueue(command);
+    uint64_t one = 1;
+    ::write(wake_fd_, &one, sizeof(one));
+}
+
+TimerID Reactor::allocate_timer_id()
+{
+    std::lock_guard<std::mutex> lock(timer_registry_mutex_);
+    TimerID id = next_timer_id_;
+    ++next_timer_id_;
+    return id;
+}
+
+void Reactor::create_timer_fd(TimerID timer_id, const std::string& name, ThreadID owner_thread_id,
                                  std::chrono::microseconds interval, TimerType type)
 {
     std::lock_guard<std::mutex> lock(timer_registry_mutex_);
@@ -474,15 +494,12 @@ TimerID Reactor::create_timer_fd(const std::string& name, ThreadID owner_thread_
                         owner_thread_id.get_value(), name), __FILE__, __LINE__);
     }
 
-    Timer timer(name, owner_thread_id, next_timer_id_, type, interval);
-    const TimerID new_id = next_timer_id_;
-    ++next_timer_id_;
-    PUBSUB_LOG(logger_, LogLevel::Info, "Reactor created timer id {}\n", __FILE__, __LINE__, new_id.get_value());
+    PUBSUB_LOG(logger_, LogLevel::Info, "Reactor created timer id {}\n", __FILE__, __LINE__, timer_id.get_value());
+    Timer timer(name, owner_thread_id, timer_id, type, interval);
     auto timer_handler = std::make_unique<TimerHandler>(timer, *this);
-    thread_timers[name] = new_id;
-    timer_id_to_fd_[new_id] = timer_handler->get_fd();
+    thread_timers[name] = timer_id;
+    timer_id_to_fd_[timer_id] = timer_handler->get_fd();
     register_handler(std::move(timer_handler));
-    return new_id;
 }
 
 void Reactor::cancel_timer_fd(ThreadID owner_thread_id, TimerID id)
@@ -561,6 +578,7 @@ void Reactor::deregister_handler(int fd)
 {
     ::epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, fd, nullptr);
     handlers_.erase(fd);
+    ::close(fd);
 }
 
 void Reactor::event_loop() {
@@ -580,6 +598,29 @@ void Reactor::event_loop() {
     }
 }
 
+void Reactor::process_control_commands()
+{
+    for (;;) {
+        auto maybe_command = command_queue_.dequeue();
+        if (!maybe_command.has_value()) {
+            break;
+        }
+
+        const ReactorControlCommand& command = maybe_command.value();
+
+        switch (command.as_tag()) {
+            case ReactorControlCommand::AddTimer:
+                create_timer_fd(command.timer_id_, command.timer_name_, command.owner_thread_id_,
+                    command.interval_, command.timer_type_);
+                break;
+
+            case ReactorControlCommand::CancelTimer:
+                cancel_timer_fd(command.owner_thread_id_, command.timer_id_);
+                break;
+        }
+    }
+}
+
 void Reactor::dispatch_events(int nfds, epoll_event* events)
 {
     std::cerr << fmt::format("{}:{} entered dispatch_events\n", __FILE__, __LINE__);
@@ -590,6 +631,8 @@ void Reactor::dispatch_events(int nfds, epoll_event* events)
             uint64_t dummy;
             std::cerr << fmt::format("{}:{} dispatch_events got event on wake_fd\n", __FILE__, __LINE__);
             (void) ::read(wake_fd_, &dummy, sizeof(dummy));
+
+            process_control_commands();
             continue;
         }
 

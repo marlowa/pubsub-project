@@ -115,7 +115,12 @@ void ApplicationThread::cancel_timer(const std::string& name) {
     }
 
     TimerID id = it->second;
-    reactor_.cancel_timer_fd(get_thread_id(), id);
+
+     ReactorControlCommand command(ReactorControlCommand::CommandTag::CancelTimer);
+     command.owner_thread_id_ = thread_id_;
+     command.timer_id_ = id;
+     reactor_.enqueue_control_command(command);
+
     id_to_name_.erase(id);
     name_to_id_.erase(it);
 }
@@ -145,9 +150,13 @@ void ApplicationThread::run() {
     } catch (const std::exception& ex) {
         PUBSUB_LOG(logger_, LogLevel::Error, "{} [{}] terminating due to exception: {}",
                    thread_name_, thread_id_.get_value(), ex.what());
+        reactor_.shutdown(fmt::format("Thread {} [{}] terminated due to exception: {}",
+                                      thread_name_, thread_id_.get_value(), ex.what()));
     } catch (...) {
         PUBSUB_LOG(logger_, LogLevel::Error, "{} [{}] terminating due to unknown exception",
                    thread_name_, thread_id_.get_value());
+        reactor_.shutdown(fmt::format("Thread {} [{}] terminated due to unknown exception",
+                                      thread_name_, thread_id_.get_value()));
     }
 }
 
@@ -331,7 +340,14 @@ TimerID ApplicationThread::schedule_timer(const std::string& name,
     }
 
     // Ask Reactor to create and register the timerfd.
-    TimerID id = reactor_.create_timer_fd(name, thread_id_, interval, type);
+    TimerID id = reactor_.allocate_timer_id();
+    ReactorControlCommand command(ReactorControlCommand::CommandTag::AddTimer);
+    command.timer_name_      = name;
+    command.owner_thread_id_ = thread_id_;
+    command.timer_id_        = id;
+    command.interval_        = interval;
+    command.timer_type_      = type;
+    reactor_.enqueue_control_command(command);
 
     // Store mappings for lookup and cancellation.
     name_to_id_[name] = id;

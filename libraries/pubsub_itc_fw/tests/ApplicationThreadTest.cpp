@@ -86,22 +86,17 @@ public:
         reactor_configuration_.inactivity_check_interval_ = std::chrono::milliseconds(100);
         reactor_ = std::make_unique<Reactor>(reactor_configuration_, logger_with_sink_.logger);
         reactor_thread_.reset(); // not started yet
-        is_reactor_shutdown_required_ = false;
         std::cerr << fmt::format("{}:{} reactor initialised\n", __FILE__, __LINE__);
     }
 
     void TearDown() override {
-         if (is_reactor_shutdown_required_) {
+        if (!reactor_->is_finished()) {
             reactor_->shutdown("Test End, forcing reactor shutdown");
          }
          if (reactor_thread_) {
              join_reactor_or_die(std::chrono::seconds(2));
          }
          reactor_.reset();
-    }
-
-    void mark_reactor_self_shutdown() {
-        is_reactor_shutdown_required_ = true;
     }
 
     void join_reactor_or_die(std::chrono::milliseconds timeout)
@@ -119,7 +114,6 @@ public:
     ReactorConfiguration reactor_configuration_;
     std::unique_ptr<Reactor> reactor_;
     std::unique_ptr<ThreadWithJoinTimeout> reactor_thread_;
-    bool is_reactor_shutdown_required_{false};
 };
 
 // ------------------------------------------------------------
@@ -316,8 +310,6 @@ TEST_F(ApplicationThreadTest, ExceptionTriggersShutdown)
 
     EXPECT_FALSE(thread->is_running());
     join_reactor_or_die(std::chrono::milliseconds(500));
-
-    mark_reactor_self_shutdown();
 }
 
 // ------------------------------------------------------------
@@ -594,7 +586,6 @@ TEST_F(ApplicationThreadTest, ExceptionLoggingContainsThreadMetadata)
     // 2. Wait until the reactor has shut down (exception handler finished)
     std::this_thread::sleep_for(reactor_configuration_.inactivity_check_interval_);
     EXPECT_TRUE(reactor_->is_finished());
-    mark_reactor_self_shutdown();
 
     // 3. Give the logger a moment to flush into the sink
     for (int i = 0; i < 100 && logger_with_sink_.sink->records().empty(); ++i) {
@@ -949,17 +940,7 @@ TEST_F(ApplicationThreadTest, InterThreadRoutingDeliversMessage)
         }
     }
 
-#if 0
-    // We have to tell the threads to shutdown otherwise they will run forever
-    threadA->shutdown("done");
-    threadB->shutdown("done");
-
     EXPECT_EQ(threadB->last_processed_type.load(std::memory_order_acquire), EventType(EventType::InterthreadCommunication));
-#else
-    EXPECT_EQ(threadB->last_processed_type.load(std::memory_order_acquire), EventType(EventType::InterthreadCommunication));
-    mark_reactor_self_shutdown();
-    // when we return the reactor will shutdown which will shutdown these threads.
-#endif
 }
 
 TEST_F(ApplicationThreadTest, OneOffTimerFiresOnce)
@@ -1152,7 +1133,6 @@ TEST_F(ApplicationThreadTest, MultipleTimersIndependent)
     }
 
     mthread->shutdown("done");
-
     EXPECT_GE(a_count.load(), 2);
     EXPECT_GE(b_count.load(), 2);
 }

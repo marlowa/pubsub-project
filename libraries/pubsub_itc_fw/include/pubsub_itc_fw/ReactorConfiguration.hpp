@@ -4,6 +4,9 @@
 
 #include <chrono>
 
+#include <pubsub_itc_fw/AllocatorConfig.hpp>
+#include <pubsub_itc_fw/QueueConfig.hpp>
+
 namespace pubsub_itc_fw {
 
 /** @ingroup reactor_subsystem */
@@ -16,6 +19,14 @@ namespace pubsub_itc_fw {
  * the port it should listen on.
  */
 struct ReactorConfiguration {
+    ReactorConfiguration() {
+        // Change defaults to be more suitable for our command queue
+        command_queue_config_.low_watermark = 2;
+        command_queue_config_.high_watermark = 64;
+        command_allocator_config_.objects_per_pool = 64;
+        command_allocator_config_.initial_pools = 1;
+    }
+
     size_t max_events_per_loop = 64; /**< The maximum number of events to handle in a single `epoll_wait` call. */
     uint16_t port = 8080; /**< The port number the application's TCP acceptor should listen on. */
 
@@ -40,6 +51,9 @@ struct ReactorConfiguration {
     std::chrono::milliseconds init_phase_timeout_{std::chrono::seconds{10}};
 
     std::chrono::milliseconds shutdown_timeout_{std::chrono::seconds{1}};
+
+    QueueConfig command_queue_config_;
+    AllocatorConfig command_allocator_config_;
 };
 
 } // namespace pubsub_itc_fw

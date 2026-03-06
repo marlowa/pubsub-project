@@ -4,6 +4,8 @@ namespace pubsub_itc_fw {
 
 /** @ingroup threading_subsystem */
 
+// TODO get rid of enum class and make this a proper class with a as_string function.
+
 /**
  * @brief An enumeration that specifies the type of a timer.
  *

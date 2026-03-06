@@ -13,10 +13,12 @@
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/EventHandler.hpp>
 #include <pubsub_itc_fw/EventType.hpp>
-#include <pubsub_itc_fw/QuillLogger.hpp>
+#include <pubsub_itc_fw/LockFreeMessageQueue.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
+#include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/ReactorConfiguration.hpp>
+#include <pubsub_itc_fw/ReactorControlCommand.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 #include <pubsub_itc_fw/TimerID.hpp>
 
@@ -39,12 +41,7 @@ public:
      */
     ~Reactor();
 
-    /**
-     * @brief Constructs a Reactor.
-     * @param [in] config The reactor's configuration.
-     * @param [in] logger The logger instance.
-     */
-    explicit Reactor(const ReactorConfiguration& config, QuillLogger& logger);
+    Reactor(const ReactorConfiguration& reactor_configuration, QuillLogger& logger);
 
     /**
      * @brief Starts the reactor's event loop.
@@ -104,19 +101,8 @@ public:
         return initialization_complete_.load(std::memory_order_acquire);
     }
 
-    /**
-     * @brief Creates and registers a timerfd for an ApplicationThread.
-     * @param [in] owner_thread_id The ThreadID of the owning ApplicationThread.
-     * @param [in] interval The delay or interval before the timer rings.
-     * @param [in] type Whether the timer is single-shot or recurring.
-     * @return The TimerID for the timer created.
-     *
-     * The Reactor owns the underlying timerfd and will deliver Timer events to
-     * the specified ApplicationThread when the timer rings. One event is
-     * generated per ring; no coalescing is performed.
-     */
-    TimerID create_timer_fd(const std::string& name, ThreadID owner_thread_id, std::chrono::microseconds interval,
-                            TimerType type);
+    void create_timer_fd(TimerID timer_id, const std::string& name, ThreadID owner_thread_id,
+                         std::chrono::microseconds interval, TimerType type);
 
     /**
      * @brief Cancels and deregisters a previously created timerfd.
@@ -130,7 +116,11 @@ public:
 
     void cancel_all_timer_fds_for_thread(ThreadID owner_thread_id);
 
+    void enqueue_control_command(const ReactorControlCommand& command);
+
     void on_housekeeping_tick();
+
+    TimerID allocate_timer_id();
 
     QuillLogger& get_logger() { return logger_; }
 
@@ -148,6 +138,9 @@ private:
     void finalize_threads_after_shutdown();
     bool wait_for_all_threads(std::function<bool(const ApplicationThread&)> predicate, const std::string& phase_name);
     void broadcast_reactor_event(EventType::EventTypeTag tag);
+    void process_control_commands();
+
+    // private data
 
     std::atomic<bool> initialization_complete_{false};
 
@@ -180,9 +173,10 @@ private:
     // Fast-path routing: non-owning raw pointers
     std::unordered_map<ThreadID, ApplicationThread*> fast_path_threads_;
 
+    LockFreeMessageQueue<ReactorControlCommand> command_queue_;
+
     // Configuration parameters
     ReactorConfiguration config_;
-
     QuillLogger& logger_;
 };
 
