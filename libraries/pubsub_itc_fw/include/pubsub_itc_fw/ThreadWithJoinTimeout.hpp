@@ -5,6 +5,8 @@
 #include <pthread.h>
 #include <time.h>
 
+#include <pubsub_itc_fw/PubSubItcException.hpp>
+
 /** @ingroup threading_subsystem */
 
 namespace pubsub_itc_fw {
@@ -88,7 +90,7 @@ public:
     template <typename Callable, typename... Args>
     void start(Callable&& func, Args&&... args) {
         if (has_thread_) {
-            throw std::runtime_error("Thread already running. Call join or join_with_timeout first.");
+            throw PubSubItcException("Thread already running. Call join or join_with_timeout first.");
         }
 
         using Functor = std::decay_t<Callable>;
@@ -106,7 +108,7 @@ public:
 
         if (rc != 0) {
             delete heap_func;
-            throw std::runtime_error("pthread_create failed");
+            throw PubSubItcException("pthread_create failed");
         }
 
         has_thread_ = true;

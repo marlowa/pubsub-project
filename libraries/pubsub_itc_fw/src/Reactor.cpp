@@ -124,7 +124,11 @@ int Reactor::run() {
     lifecycle_.store(ReactorLifecycleState::Running, std::memory_order_release);
     shutdown_reason_ = "";
 
-    initialize_threads();
+    if (!initialize_threads()) {
+        lifecycle_.store(ReactorLifecycleState::Finished, std::memory_order_release);
+        return -1;
+    }
+
     event_loop();
     cancel_all_timer_fds_for_thread(ThreadID(system_thread_id_value));
     lifecycle_.store(ReactorLifecycleState::FinalizingThreads, std::memory_order_release);
@@ -400,11 +404,16 @@ void Reactor::broadcast_reactor_event(EventType::EventTypeTag tag) {
     }
 }
 
-void Reactor::initialize_threads() {
+bool Reactor::initialize_threads() {
     // 1. Surgical Cleanup: Remove all Tombstones
     //    (With shared_ptr, there are no expired entries, but we preserve the structure.)
     {
         std::lock_guard<std::mutex> lock(thread_registry_mutex_);
+
+        if (threads_.size() == 0) {
+            PUBSUB_LOG_STR(logger_, LogLevel::Error, "Reactor has no registered threads to run");
+            return false;
+        }
 
         // Cleanup name map
         for (auto it = threads_.begin(); it != threads_.end();) {
@@ -437,7 +446,7 @@ void Reactor::initialize_threads() {
 
     // 3. Wait for all threads to enter run loops
     if (!wait_for_all_threads([](const ApplicationThread& t) { return t.is_running(); }, "Startup")) {
-        return;
+        return false;
     }
 
     // 4. Post Initial event and wait for processing completion
@@ -445,12 +454,12 @@ void Reactor::initialize_threads() {
 
     if (!wait_for_all_threads([](const ApplicationThread& t) { return t.get_lifecycle_state().as_tag() == ThreadLifecycleState::InitialProcessed; },
                               "Initial Processing")) {
-        return;
+        return false;
     }
 
     // 5. Post AppReady event (Check is_finished_ in case a thread aborted during Initial)
     if (lifecycle_.load(std::memory_order_acquire) != ReactorLifecycleState::Running) {
-        return;
+        return false;
     }
 
     broadcast_reactor_event(EventType::AppReady);
@@ -458,12 +467,14 @@ void Reactor::initialize_threads() {
     // 6. Final Wait: Ensure all threads reach the Operational state
     if (!wait_for_all_threads([](const ApplicationThread& t) { return t.get_lifecycle_state().as_tag() >= ThreadLifecycleState::Operational; },
                               "Operational Transition")) {
-        return;
+        return false;
     }
 
     // 7. Success
     initialization_complete_.store(true, std::memory_order_release);
     PUBSUB_LOG_STR(logger_, LogLevel::Info, "Registered application threads are now Operational. Reactor initialization complete.");
+
+    return true;
 }
 
 void Reactor::enqueue_control_command(const ReactorControlCommand& command) {

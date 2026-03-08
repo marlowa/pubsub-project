@@ -143,7 +143,7 @@ protected:
     std::string shutdown_reason_;
 
 private:
-    void initialize_threads();
+    [[nodiscard]] bool initialize_threads();
     void event_loop();
     void check_for_exited_threads();
     void check_for_stuck_threads();

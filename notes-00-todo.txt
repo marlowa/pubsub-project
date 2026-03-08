@@ -135,15 +135,13 @@ These are valuable but not urgent; they can be scheduled after the core is stabl
 These are easy, fast, and satisfying to knock off.
 
     DONE: replace all yield calls with Backoff::pause
-
-    flesh out QueueDepthHistogramTest
-
-    purge chatbot‑inserted namespaces
-
-    reactor run should error if no threads registered
-
-    unit test logging fix
-
-    get rid of runtime_error
+    DONE flesh out QueueDepthHistogramTest
+    DONE get rid of runtime_error
+    DONE unit test logging fix
+    DONE reactor run should error if no threads registered
 
     PubSubItcException improvements
+    purge chatbot‑inserted namespaces
+
+    check code coverage, code fails to compile
+/mnt/sda1/marlowa-extra/mystuff/pubsub-poc-attempts/simple-publish-poc/pubsub-project-10-copilot/libraries/pubsub_itc_fw/tests/LockFreeMessageQueueTest.cpp:1177:34: error: ‘max_depth’ was not declared in this scope

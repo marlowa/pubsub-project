@@ -11,6 +11,7 @@
 
 #include <gtest/gtest.h>
 
+#include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/ThreadWithJoinTimeout.hpp>
 
 namespace pubsub_itc_fw {

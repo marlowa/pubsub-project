@@ -1,7 +1,3 @@
-// TODO neutralise reactor tests until all the application thread tests are valgrind clean
-#if 1
-// ReactorInitAppReadyTest.cpp
-
 #include <atomic>
 #include <chrono>
 #include <thread>
@@ -473,4 +469,10 @@ TEST_F(ReactorTest, ThreadThrowsDuringAppReadyProcessingReactorShutsDown)
     EXPECT_FALSE(bad_thread->is_running());
 }
 
-#endif
+TEST_F(ReactorTest, ReactorRequiresAtLeastOneRegisteredThreadTest)
+{
+    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>( [this] { reactor_->run(); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    EXPECT_TRUE(reactor_->is_finished()); // reactor must immediately finish
+    EXPECT_FALSE(reactor_->is_running()); // never entered event loop
+}
