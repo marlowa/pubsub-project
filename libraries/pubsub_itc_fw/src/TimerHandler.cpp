@@ -9,10 +9,28 @@ TimerHandler::~TimerHandler() {
     }
 }
 
-TimerHandler::TimerHandler(const Timer& timer, Reactor& reactor) : timer_(timer), reactor_(reactor) {
+TimerHandler::TimerHandler(const Timer& timer, Reactor& reactor)
+    : timer_(timer), reactor_(reactor), owner_thread_(nullptr)
+{
     fd_ = ::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
     if (fd_ == -1) {
-        throw std::runtime_error("timerfd_create failed"); // TODO our exception type?
+        PUBSUB_LOG_STR(reactor_.get_logger(), LogLevel::Error, "TimerHandler ctor: timerfd_create failed");
+        throw PubSubItcException("timerfd_create failed");
+    }
+
+    // Resolve the owner ApplicationThread* from the reactor's fast-path map
+    ThreadID owner_id = timer_.get_owner_thread_id();
+
+    // Special case: reactor backstop timer (owner thread ID == 0)
+    if (owner_id.get_value() == 0) {
+        PUBSUB_LOG(reactor_.get_logger(), LogLevel::Info, "TimerHandler ctor: created backstop timerfd {} for timer '{}'", fd_, timer_.get_name());
+    } else {
+        owner_thread_ = reactor_.get_fast_path_thread(owner_id);
+        if (!owner_thread_) {
+            PUBSUB_LOG(reactor_.get_logger(), LogLevel::Error, "TimerHandler ctor: owner thread {} not found in fast-path map " "for timer '{}'", owner_id.get_value(), timer_.get_name());
+            // This should never happen unless construction order is wrong
+            throw PubSubItcException("TimerHandler: owner thread not found");
+        }
     }
 
     // Convert microseconds → nanoseconds for timerfd
@@ -29,48 +47,87 @@ TimerHandler::TimerHandler(const Timer& timer, Reactor& reactor) : timer_(timer)
     if (::timerfd_settime(fd_, 0, &spec, nullptr) == -1) {
         ::close(fd_);
         fd_ = -1;
-        throw std::runtime_error("timerfd_settime failed");
+        throw PubSubItcException("timerfd_settime failed");
     }
-
-// create timer handler allocate fd
 }
 
 bool TimerHandler::handle_event(uint32_t events) noexcept {
-    std::cerr << fmt::format("{}:{} handle_event\n", __FILE__, __LINE__);
-    // 1. Check if the event is actually a 'read' event
+    PUBSUB_LOG_STR(reactor_.get_logger(), LogLevel::Info, "TimerHandle::handle_event");
+
+    // 1. Must be a read event
     if (!(events & EPOLLIN)) {
-    std::cerr << fmt::format("{}:{} handle_event not a read event\n", __FILE__, __LINE__);
+        PUBSUB_LOG_STR(reactor_.get_logger(), LogLevel::Error, "handle_event not a read event");
         return false;
     }
 
-    // 2. Acknowledge the timerfd (Crucial!)
-    // The kernel requires you to read 8 bytes from the timerfd to
-    // reset it. If you don't, epoll will fire again immediately.
+    // 2. Drain the timerfd once (non-blocking)
     uint64_t expirations = 0;
     ssize_t s = ::read(fd_, &expirations, sizeof(expirations));
 
     if (s != sizeof(expirations)) {
-        // This could happen if the FD was set to non-blocking and
-        // there was nothing to read, or if the read was interrupted.
-    std::cerr << fmt::format("{}:{} handle_event nothing to read\n", __FILE__, __LINE__);
-        return false;
+        // Nothing to read (EAGAIN) or interrupted — treat as consumed
+        PUBSUB_LOG(reactor_.get_logger(), LogLevel::Info, "handle_event nothing to read (s={}, errno={})", s, errno);
+        return true;
     }
 
-    // 3. Dispatch based on the Timer metadata
-    // Check if this is the Reactor's own backstop/housekeeping timer
+    // 3. Reactor-owned housekeeping timer (owner thread ID == 0)
     if (timer_.get_owner_thread_id().get_value() == 0) {
-        // This wakes up the Reactor to check for shutdown or perform internal maintenance.
-        PUBSUB_LOG_STR(reactor_.get_logger(), LogLevel::Info, "handle_event calling housekeeping function");
+        PUBSUB_LOG_STR(reactor_.get_logger(), LogLevel::Info,
+                       "handle_event calling housekeeping function");
         reactor_.on_housekeeping_tick();
-    } else {
-        // This is an application-level timer.
-        // Wrap the TimerID in an EventMessage and push it to the owner's queue.
-        for (uint64_t i = 0; i < expirations; ++i) {
-            PUBSUB_LOG_STR(reactor_.get_logger(), LogLevel::Info, "handle_event will route timer event");
-            auto msg = EventMessage::create_timer_event(timer_.get_timer_id());
-            reactor_.route_message(timer_.get_owner_thread_id(), std::move(msg));
-        }
+        return true;
     }
+
+    if (reactor_.is_finished()) {
+        PUBSUB_LOG(reactor_.get_logger(), LogLevel::Info,
+                   "TimerHandler::handle_event: reactor is finished; "
+                   "dropping {} pending expirations for timer '{}'", expirations, timer_.get_name());
+        return true;
+    }
+
+    // 4. Application-owned timer
+    ThreadID owner = timer_.get_owner_thread_id();
+    auto state = reactor_.get_thread_state(owner);
+
+    // ---- RACE-AVOIDANCE GUARD ----
+    // If the owner thread is shutting down or not operational,
+    // we drop all pending expirations at once.
+    if (state != ThreadLifecycleState::Operational) {
+        PUBSUB_LOG(reactor_.get_logger(), LogLevel::Warning,
+                   "TimerHandler: dropping {} pending expirations for timer '{}' "
+                   "because owner thread {} is in state {}",
+                   expirations,
+                   timer_.get_name(),
+                   owner.get_value(),
+                   ThreadLifecycleState::to_string(state));
+        return true;
+    }
+    // ---- END RACE-AVOIDANCE GUARD ----
+
+    // 5. Deliver one event, coalescing multiple expirations (only when Operational)
+    if (expirations == 1) {
+        PUBSUB_LOG(reactor_.get_logger(), LogLevel::Info,
+                   "handle_event single expiration event, sending single timer event {} {}",
+                   timer_.get_name(), timer_.get_timer_id().get_value());
+    } else {
+        PUBSUB_LOG(reactor_.get_logger(), LogLevel::Info,
+                   "handle_event coalescing {} expiration events into single timer event {} {}",
+                   expirations, timer_.get_name(), timer_.get_timer_id().get_value());
+    }
+
+    auto msg = EventMessage::create_timer_event(timer_.get_timer_id());
+
+        // TODO Optional future refinement:
+        // if (!reactor_.route_message(owner, std::move(msg))) {
+        //     PUBSUB_LOG(reactor_.get_logger(), LogLevel::Warning,
+        //                "TimerHandler: route_message dropped event {} "
+        //                "for timer '{}'; stopping expiration loop",
+        //                i,
+        //                timer_.get_name());
+        //     break;
+        // }
+
+    reactor_.route_message(owner, std::move(msg));
 
     return true;
 }

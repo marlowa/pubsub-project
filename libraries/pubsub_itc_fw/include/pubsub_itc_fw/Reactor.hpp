@@ -19,6 +19,7 @@
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/ReactorConfiguration.hpp>
 #include <pubsub_itc_fw/ReactorControlCommand.hpp>
+#include <pubsub_itc_fw/ThreadLifecycleState.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 #include <pubsub_itc_fw/TimerID.hpp>
 
@@ -123,6 +124,10 @@ public:
     TimerID allocate_timer_id();
 
     QuillLogger& get_logger() { return logger_; }
+
+    ThreadLifecycleState::Tag get_thread_state(ThreadID id) const noexcept;
+
+    ApplicationThread* get_fast_path_thread(ThreadID id) const noexcept;
 
 protected:
     std::atomic<bool> is_finished_{false};

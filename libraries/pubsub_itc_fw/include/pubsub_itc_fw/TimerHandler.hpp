@@ -12,6 +12,7 @@
 namespace pubsub_itc_fw {
 
 class Reactor;
+class ApplicationThread;
 
 /**
  * @brief An `EventHandler` for a timer event.
@@ -49,6 +50,7 @@ private:
     int fd_{-1};
     Timer timer_;
     Reactor& reactor_;
+    ApplicationThread* owner_thread_; // lock-free pointer to owner thread
 };
 
 } // namespace pubsub_itc_fw

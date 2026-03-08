@@ -409,24 +409,15 @@ AllocatorBehaviourStatistics ExpandablePoolAllocator<T>::get_behaviour_statistic
     stats.expansion_events = expansion_events_.value.load(std::memory_order_relaxed);
     stats.failed_allocations = failed_allocations_.value.load(std::memory_order_relaxed);
 
-    // Count pools
-    uint64_t pool_count = 0;
-    for (auto* p = head_pool_; p != nullptr; p = p->get_next_pool()) {
-        pool_count++;
-    }
-    stats.pool_count = pool_count;
-
-    // Allocate per-pool array
-    stats.per_pool_allocation_counts.count = pool_count;
-    if (pool_count > 0) {
-        stats.per_pool_allocation_counts.counts =
-            new uint64_t[pool_count]();
-
-        uint64_t i = 0;
-        for (auto* p = head_pool_; p != nullptr; p = p->get_next_pool()) {
-            stats.per_pool_allocation_counts.counts[i++] = p->get_allocation_count();
-        }
-    }
+     uint64_t pool_count = 0;
+     for (auto* p = head_pool_; p != nullptr; p = p->get_next_pool()) {
+         pool_count++;
+     }
+     stats.per_pool_allocation_counts.counts.resize(pool_count);
+     uint64_t i = 0;
+     for (auto* p = head_pool_; p != nullptr; p = p->get_next_pool()) {
+         stats.per_pool_allocation_counts.counts[i++] = p->get_allocation_count();
+     }
 
     return stats;
 }

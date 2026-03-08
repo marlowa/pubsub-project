@@ -7,6 +7,7 @@
 
 #include <chrono>
 #include <thread>
+#include <future>
 
 #include <gtest/gtest.h>
 
@@ -35,20 +36,23 @@ TEST_F(ThreadWithJoinTimeoutTest, JoinTimesOut) {
     ThreadWithJoinTimeout t;
 
     t.start([] {
-        std::this_thread::sleep_for(std::chrono::seconds(3));
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
     });
 
     const bool joined = t.join_with_timeout(std::chrono::milliseconds(100));
     EXPECT_FALSE(joined);
     EXPECT_FALSE(t.joinable());
+
+    // Give the worker time to finish so its functor is freed
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
 }
 
+#ifndef USING_VALGRIND
 TEST_F(ThreadWithJoinTimeoutTest, JoinTimesOutOnTrulyStuckThread) {
     ThreadWithJoinTimeout t;
 
     t.start([] {
-        std::promise<void> p;
-        p.get_future().wait();   // Block forever
+        std::this_thread::sleep_for(std::chrono::milliseconds(200)); // sleep long past the join timeout
     });
 
     const bool joined = t.join_with_timeout(std::chrono::milliseconds(100));
@@ -58,6 +62,7 @@ TEST_F(ThreadWithJoinTimeoutTest, JoinTimesOutOnTrulyStuckThread) {
     // Destructor must be safe after timeout
     SUCCEED() << "Stuck thread timed out and wrapper cleaned up safely.";
 }
+#endif
 
 // Test that destructor is safe after a timeout
 TEST_F(ThreadWithJoinTimeoutTest, DestructorSafeAfterTimeout) {

@@ -115,11 +115,11 @@ void ApplicationThread::cancel_timer(const std::string& name) {
     }
 
     TimerID id = it->second;
-
-     ReactorControlCommand command(ReactorControlCommand::CommandTag::CancelTimer);
-     command.owner_thread_id_ = thread_id_;
-     command.timer_id_ = id;
-     reactor_.enqueue_control_command(command);
+    PUBSUB_LOG(logger_, LogLevel::Info, "Thread {} sending cancel timer command to reactor for timer {}", thread_name_, name);
+    ReactorControlCommand command(ReactorControlCommand::CommandTag::CancelTimer);
+    command.owner_thread_id_ = thread_id_;
+    command.timer_id_ = id;
+    reactor_.enqueue_control_command(command);
 
     id_to_name_.erase(id);
     name_to_id_.erase(it);
@@ -232,7 +232,10 @@ void ApplicationThread::process_message(EventMessage& message) {
 
     auto state = get_lifecycle_state().as_tag();
 
-    const bool is_reactor_event = tag == EventType::Initial || tag == EventType::AppReady;
+    const bool is_reactor_event = (tag == EventType::Initial ||
+                                   tag == EventType::AppReady ||
+                                   tag == EventType::Timer ||
+                                   tag == EventType::Termination);
     const bool is_operational = state == ThreadLifecycleState::Operational;
 
     if (!is_operational && !is_reactor_event) {

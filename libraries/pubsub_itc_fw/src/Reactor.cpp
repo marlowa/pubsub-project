@@ -137,34 +137,45 @@ int Reactor::run() {
 
     // At this point, is_finished_ is true and event_loop has returned.
     // Now it is safe to tear down the backstop timer.
-    std::cerr << fmt::format("{}:{} about to call cancel_all_timer_fds_for_thread\n", __FILE__, __LINE__);
+    PUBSUB_LOG_STR(logger_, LogLevel::Info, "Reactor::run event loop has finished, will cancel all timers for reactor thread");
+
     cancel_all_timer_fds_for_thread(ThreadID(system_thread_id_value));
-    std::cerr << fmt::format("{}:{} returned from cancel_all_timer_fds_for_thread\n", __FILE__, __LINE__);
+
+    PUBSUB_LOG_STR(logger_, LogLevel::Info, "Reactor::run event loop has finished, will now finalize all threads after shutdown");
     finalize_threads_after_shutdown();
-    std::cerr << fmt::format("{}:{} returned from finalize_threads_after_shutdown\n", __FILE__, __LINE__);
+
+    PUBSUB_LOG_STR(logger_, LogLevel::Info, "Reactor::run has finished. Returning.");
 
     // TODO we should exit with a non-zero status if any thread got a critical error.
     return 0;
 }
 
 void Reactor::shutdown(const std::string& reason) {
-    PUBSUB_LOG(logger_, LogLevel::Info, "Reactor::shutdown entered. Reason: {}", reason);
-
+    // Note: if the reactor is already shutting down we cannot safely use the quill logger.
     if (is_finished_.load(std::memory_order_acquire)) {
-        PUBSUB_LOG_STR(logger_, LogLevel::Error, "Reactor::shutdown entered but reactor already shutting down.");
         return;
     }
 
+    PUBSUB_LOG(logger_, LogLevel::Info, "Reactor::shutdown entered. Reason: {}", reason);
+
     // 1. Mark Reactor as shutting down
     is_finished_.store(true, std::memory_order_release);
+    PUBSUB_LOG_STR(logger_, LogLevel::Info, "Reactor::shutdown is_finished now marked as true, event_loop will finish");
     shutdown_reason_ = reason;
 
     // wake epoll_wait immediately
-    if (wake_fd_ != -1) {
+    if (wake_fd_ == -1) {
+        PUBSUB_LOG_STR(logger_, LogLevel::Info, "Reactor::shutdown wake_fd == -1");
+    } else {
         uint64_t one = 1;
         PUBSUB_LOG_STR(logger_, LogLevel::Info, "in Reactor::shutdown, writing wake_fd");
-        (void)::write(wake_fd_, &one, sizeof(one)); // best-effort
-        PUBSUB_LOG_STR(logger_, LogLevel::Info, "in Reactor::shutdown, wrote wake_fd");
+        ssize_t n = write(wake_fd_, &one, sizeof(one));
+        if (n == sizeof(one)) {
+            PUBSUB_LOG_STR(logger_, LogLevel::Info, "in Reactor::shutdown, wrote wake_fd");
+        } else {
+            [[maybe_unused]] auto err = errno;
+            PUBSUB_LOG(logger_, LogLevel::Error, "in Reactor::shutdown, failed to write wake_fd, errno {}", err);
+        }
     }
 
     PUBSUB_LOG(logger_, LogLevel::Info, "Reactor shutdown complete. Reason: {}", reason);
@@ -182,6 +193,10 @@ void Reactor::finalize_threads_after_shutdown()
             if (thread) snapshot.push_back(thread);
         }
     }
+
+    // 1b. Cancel all timers for all threads in this reactor
+    PUBSUB_LOG_STR(logger_, LogLevel::Info, "finalize_threads_after_shutdown canceling timers");
+    for (auto& thread : snapshot) { cancel_all_timer_fds_for_thread(thread->get_thread_id()); }
 
     // 2. Wait for run loops to exit
     PUBSUB_LOG_STR(logger_, LogLevel::Info, "finalize_threads_after_shutdown step 2");
@@ -310,7 +325,7 @@ void Reactor::deregister_thread(ThreadID thread_id, const std::string& name)
     std::lock_guard<std::mutex> lock(thread_registry_mutex_);
 
     PUBSUB_LOG(logger_, LogLevel::Info, "Deregistering thread: {} (ID: {})", name, thread_id.get_value());
-    std::cerr << fmt::format("{}:{} Reactor::deregister_thread {} {}\n", __FILE__, __LINE__, name, thread_id.get_value());
+
     // Drop all timers owned by this thread
     cancel_all_timer_fds_for_thread(thread_id);
 
@@ -331,7 +346,6 @@ void Reactor::deregister_thread(ThreadID thread_id, const std::string& name)
     if (it_fast != fast_path_threads_.end()) {
         fast_path_threads_.erase(it_fast);
     }
-
 }
 
 bool Reactor::wait_for_all_threads(std::function<bool(const ApplicationThread&)> predicate,
@@ -375,8 +389,6 @@ bool Reactor::wait_for_all_threads(std::function<bool(const ApplicationThread&)>
                 return false;
             }
 
-            // Drop the shared_ptr before pausing to allow other threads to progress/cleanup
-            thread.reset();
             backoff.pause();
         }
     }
@@ -585,7 +597,9 @@ void Reactor::event_loop() {
    std::array<epoll_event, 64> events{};
 
     while (!is_finished_.load(std::memory_order_acquire)) {
+        PUBSUB_LOG_STR(logger_, LogLevel::Info, "About to call epoll_wait");
         int nfds = ::epoll_wait(epoll_fd_, events.data(), static_cast<int>(events.size()), -1);
+        PUBSUB_LOG(logger_, LogLevel::Info, "epoll_wait returned nfds = {}", nfds);
         if (nfds == -1) {
             if (errno == EINTR) {
                 continue; // interrupted by signal, retry
@@ -596,6 +610,7 @@ void Reactor::event_loop() {
 
         dispatch_events(nfds, events.data());
     }
+    PUBSUB_LOG_STR(logger_, LogLevel::Info, "Event loop has finished");
 }
 
 void Reactor::process_control_commands()
@@ -607,6 +622,8 @@ void Reactor::process_control_commands()
         }
 
         const ReactorControlCommand& command = maybe_command.value();
+
+        PUBSUB_LOG(logger_, LogLevel::Info, "Reactor process_control_commands picked up command {}", command.as_string());
 
         switch (command.as_tag()) {
             case ReactorControlCommand::AddTimer:
@@ -623,14 +640,19 @@ void Reactor::process_control_commands()
 
 void Reactor::dispatch_events(int nfds, epoll_event* events)
 {
-    std::cerr << fmt::format("{}:{} entered dispatch_events\n", __FILE__, __LINE__);
+    PUBSUB_LOG_STR(logger_, LogLevel::Info, "entered dispatch_events");
+
     for (int i = 0; i < nfds; ++i) {
         int fd = events[i].data.fd;
 
         if (fd == wake_fd_) {
             uint64_t dummy;
-            std::cerr << fmt::format("{}:{} dispatch_events got event on wake_fd\n", __FILE__, __LINE__);
-            (void) ::read(wake_fd_, &dummy, sizeof(dummy));
+            PUBSUB_LOG_STR(logger_, LogLevel::Info, "dispatch_events got event on wake_fd");
+
+            while (::read(wake_fd_, &dummy, sizeof(dummy)) == sizeof(dummy)) {
+                PUBSUB_LOG_STR(logger_, LogLevel::Info, "dispatch_events draining wake_fd");
+                // keep draining until EAGAIN
+            }
 
             process_control_commands();
             continue;
@@ -638,12 +660,28 @@ void Reactor::dispatch_events(int nfds, epoll_event* events)
 
         auto handler_it = handlers_.find(fd);
         if (handler_it == handlers_.end()) {
+            PUBSUB_LOG_STR(logger_, LogLevel::Info, "dispatch_events unknown fd, ignore defensively");
             continue; // unknown fd, ignore defensively
         }
-        std::cerr << fmt::format("{}:{} dispatch_events\n", __FILE__, __LINE__);
+        PUBSUB_LOG_STR(logger_, LogLevel::Info, "dispatch_events about to handle event");
        // TODO There is more to do here
         handler_it->second->handle_event(events[i].events);
+        PUBSUB_LOG_STR(logger_, LogLevel::Info, "dispatch_events event handled");
     }
+    PUBSUB_LOG_STR(logger_, LogLevel::Info, "dispatch_events returning");
+}
+
+ApplicationThread* Reactor::get_fast_path_thread(ThreadID id) const noexcept {
+    auto it = fast_path_threads_.find(id);
+    return (it != fast_path_threads_.end()) ? it->second : nullptr;
+}
+
+ThreadLifecycleState::Tag Reactor::get_thread_state(ThreadID id) const noexcept {
+    ApplicationThread* t = get_fast_path_thread(id);
+    if (!t) {
+        return ThreadLifecycleState::Terminated;
+    }
+    return t->get_lifecycle_state().as_tag();
 }
 
 void Reactor::on_housekeeping_tick() {

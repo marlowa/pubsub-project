@@ -716,22 +716,18 @@ TEST_F(ExpandablePoolAllocatorTest, BehaviouralStatisticsStressTest)
               stats.total_allocations)
         << "fast + slow must equal total allocations";
 
-    ASSERT_GE(stats.pool_count, 1U)
+    ASSERT_GE(stats.per_pool_allocation_counts.counts.size(), 1U)
         << "allocator must have at least one pool";
 
-    ASSERT_EQ(stats.per_pool_allocation_counts.count, stats.pool_count)
-        << "per-pool count array must match pool_count";
-
     uint64_t sum_per_pool = 0;
-    for (uint64_t i = 0; i < stats.per_pool_allocation_counts.count; ++i) {
+    for (uint64_t i = 0; i < stats.per_pool_allocation_counts.counts.size(); ++i) {
         sum_per_pool += stats.per_pool_allocation_counts.counts[i];
     }
 
     ASSERT_LE(sum_per_pool, stats.total_allocations)
         << "sum of per-pool counts must never exceed total allocations";
 
-    ASSERT_GT(sum_per_pool, 0U)
-        << "at least one pool must have been used";
+    ASSERT_GT(sum_per_pool, 0U) << "at least one pool must have been used";
 
     // --- Diagnostic output block (machine-parseable) ---
 
@@ -741,10 +737,10 @@ TEST_F(ExpandablePoolAllocatorTest, BehaviouralStatisticsStressTest)
     std::cout << "slow_path_allocations " << stats.slow_path_allocations << "\n";
     std::cout << "expansion_events " << stats.expansion_events << "\n";
     std::cout << "failed_allocations " << stats.failed_allocations << "\n";
-    std::cout << "pool_count " << stats.pool_count << "\n";
+    std::cout << "pool_count " << stats.per_pool_allocation_counts.counts.size() << "\n";
 
     std::cout << "per_pool_counts";
-    for (uint64_t i = 0; i < stats.per_pool_allocation_counts.count; ++i) {
+    for (uint64_t i = 0; i < stats.per_pool_allocation_counts.counts.size(); ++i) {
         std::cout << " " << stats.per_pool_allocation_counts.counts[i];
     }
     std::cout << "\n";

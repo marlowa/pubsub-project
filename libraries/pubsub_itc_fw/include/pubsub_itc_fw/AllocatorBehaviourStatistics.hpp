@@ -42,9 +42,6 @@ namespace pubsub_itc_fw {
  *       The number of allocation attempts that failed even after attempting
  *       expansion.
  *
- *   - pool_count:
- *       The number of pools currently in the allocator’s chain.
- *
  *   - per_pool_allocation_counts:
  *       A sequence of counters, one per pool, indicating how many allocations
  *       each pool has served. These values are collected from the individual
@@ -60,6 +57,7 @@ namespace pubsub_itc_fw {
  */
 class AllocatorBehaviourStatistics {
   public:
+
     /**
      * @brief Constructs an empty statistics object.
      *
@@ -112,14 +110,6 @@ class AllocatorBehaviourStatistics {
     uint64_t failed_allocations{0U};
 
     /**
-     * @brief Number of pools currently in the allocator’s chain.
-     *
-     * This value is determined by walking the pool chain at the moment the
-     * statistics are collected.
-     */
-    uint64_t pool_count{0U};
-
-    /**
      * @brief Per-pool allocation counts.
      *
      * Each entry corresponds to a pool in the chain, in order. The value
@@ -130,18 +120,7 @@ class AllocatorBehaviourStatistics {
      * concurrency, which is acceptable for their intended diagnostic purpose.
      */
     struct PerPoolAllocationCounts {
-        /**
-         * @brief Pointer to an array of per-pool counters.
-         *
-         * The array is owned by the AllocatorBehaviourStatistics instance and
-         * is released automatically when the instance is destroyed.
-         */
-        uint64_t* counts{nullptr};
-
-        /**
-         * @brief Number of entries in the counts array.
-         */
-        uint64_t count{0U};
+        std::vector<uint64_t> counts; // TODO revise use of unsigned integers
     } per_pool_allocation_counts;
 };
 

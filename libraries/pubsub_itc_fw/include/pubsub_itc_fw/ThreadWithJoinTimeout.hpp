@@ -1,30 +1,56 @@
 #pragma once
 
 #include <chrono>
-#include <future>
-#include <thread>
 #include <stdexcept>
-
-namespace pubsub_itc_fw {
+#include <pthread.h>
+#include <time.h>
 
 /** @ingroup threading_subsystem */
 
+namespace pubsub_itc_fw {
+
 /**
- * @brief A C++17-safe wrapper around std::thread that supports join-with-timeout.
+ * @brief A thread wrapper providing deterministic join-with-timeout semantics.
  *
- * This class provides deterministic ownership semantics:
+ * This class offers strict and predictable ownership rules for a worker thread.
+ * It is designed for low-latency Linux environments where pthreads are the
+ * native threading API and where valgrind-clean execution is required.
  *
- *  - It is move-only.
- *  - It never implicitly joins (no hidden blocking).
- *  - It never implicitly detaches except in the destructor as a last resort.
- *  - joinWithTimeout() transfers ownership of the underlying std::thread
- *    into a helper thread so that the wrapper can be safely destroyed even
- *    if the worker thread is stuck.
+ * Key properties:
  *
- * After joinWithTimeout() returns (true or false), this wrapper no longer owns a joinable thread.
+ *   - Move-only: thread ownership cannot be copied.
+ *
+ *   - No implicit joins: the class never blocks unless join() or
+ *     join_with_timeout() is explicitly invoked.
+ *
+ *   - No hidden helper threads, no futures, and no additional heap allocations:
+ *     the implementation uses pthreads directly for maximum control and
+ *     minimal overhead.
+ *
+ *   - join_with_timeout() uses pthread_timedjoin_np() to attempt a timed join.
+ *     If the timeout expires, the worker thread is detached so that the wrapper
+ *     can be safely destroyed even if the worker thread is stuck forever.
+ *
+ *   - After join_with_timeout() returns (true or false), the wrapper no longer
+ *     owns a joinable thread. The destructor is guaranteed not to block.
+ *
+ *   - This design ensures that all thread lifecycle transitions are explicit,
+ *     deterministic, and valgrind-clean.
  */
 class ThreadWithJoinTimeout {
 public:
+    /**
+     * @brief Destructor detaches the thread if still joinable.
+     *
+     * This guarantees that destruction is always non-blocking, even if the
+     * worker thread is stuck forever.
+     */
+    ~ThreadWithJoinTimeout() {
+        if (has_thread_) {
+            pthread_detach(thread_);
+        }
+    }
+
     ThreadWithJoinTimeout() = default;
 
     template <typename Callable, typename... Args>
@@ -32,119 +58,131 @@ public:
         start(std::forward<Callable>(func), std::forward<Args>(args)...);
     }
 
-    // Non-copyable
-    ThreadWithJoinTimeout(const ThreadWithJoinTimeout&) = delete;
-    ThreadWithJoinTimeout& operator=(const ThreadWithJoinTimeout&) = delete;
+    ThreadWithJoinTimeout(ThreadWithJoinTimeout const&) = delete;
+    ThreadWithJoinTimeout& operator=(ThreadWithJoinTimeout const&) = delete;
 
-    // Move constructor
     ThreadWithJoinTimeout(ThreadWithJoinTimeout&& other) noexcept
-        : thread_(std::move(other.thread_)) {}
+        : thread_(other.thread_)
+        , has_thread_(other.has_thread_) {
+        other.has_thread_ = false;
+    }
 
-    // Move assignment
     ThreadWithJoinTimeout& operator=(ThreadWithJoinTimeout&& other) noexcept {
         if (this != &other) {
-            if (thread_.joinable()) {
-                // Policy choice: detach as last resort
-                thread_.detach();
+            if (has_thread_) {
+                pthread_detach(thread_);
             }
-            thread_ = std::move(other.thread_);
+            thread_ = other.thread_;
+            has_thread_ = other.has_thread_;
+            other.has_thread_ = false;
         }
         return *this;
     }
 
     /**
-     * @brief Destructor detaches only if the thread is still joinable.
+     * @brief Starts a new worker thread.
      *
-     * In a framework, you may want to assert/log here instead of detaching.
-     */
-    ~ThreadWithJoinTimeout() {
-        if (thread_.joinable()) {
-            thread_.detach();
-        }
-    }
-
-    /**
-     * @brief Starts the thread with the given function and arguments.
+     * The callable is heap-allocated and freed inside the thread entry point.
+     * This avoids capturing by reference and ensures safe lifetime semantics.
      */
     template <typename Callable, typename... Args>
     void start(Callable&& func, Args&&... args) {
-        if (thread_.joinable()) {
-            throw std::runtime_error("Thread already running. Call join or joinWithTimeout first.");
+        if (has_thread_) {
+            throw std::runtime_error("Thread already running. Call join or join_with_timeout first.");
         }
-        thread_ = std::thread(std::forward<Callable>(func), std::forward<Args>(args)...);
+
+        using Functor = std::decay_t<Callable>;
+        auto* heap_func = new Functor(std::forward<Callable>(func));
+
+        int rc = pthread_create(
+            &thread_,
+            nullptr,
+            [](void* arg) -> void* {
+                std::unique_ptr<Functor> f(static_cast<Functor*>(arg));
+                (*f)();
+                return nullptr;
+            },
+            heap_func);
+
+        if (rc != 0) {
+            delete heap_func;
+            throw std::runtime_error("pthread_create failed");
+        }
+
+        has_thread_ = true;
     }
 
     /**
-     * @brief Returns true if the thread is joinable.
+     * @brief Returns true if the wrapper still owns a joinable thread.
      */
     bool joinable() const noexcept {
-        return thread_.joinable();
+        return has_thread_;
     }
 
-    void detach() {
-        thread_.detach();
-    }
-
-#if 1
     /**
-     * @brief Joins the thread if joinable.
-     *
-     * TODO need to think about this, is it dangerous for this function to exist,
-     * since it could block forever? The unit test currently uses it.
-     *
+     * @brief Detaches the worker thread, relinquishing ownership.
      */
-    void join() {
-        if (thread_.joinable()) {
-            thread_.join();
+    void detach() {
+        if (has_thread_) {
+            pthread_detach(thread_);
+            has_thread_ = false;
         }
     }
-#endif
 
     /**
-     * @brief Attempts to join the thread within the given timeout.
+     * @brief Joins the worker thread without a timeout.
      *
-     * After this call returns (true or false), this wrapper no longer owns
-     * a joinable std::thread. Ownership is transferred to the joiner thread.
+     * Safe only if the worker thread is known to finish.
+     */
+    void join() {
+        if (has_thread_) {
+            pthread_join(thread_, nullptr);
+            has_thread_ = false;
+        }
+    }
+
+    /**
+     * @brief Attempts to join the worker thread within the given timeout.
+     *
+     * Uses pthread_timedjoin_np() for a true timed join. If the timeout
+     * expires, the thread is detached so that the wrapper can be safely
+     * destroyed without blocking.
      *
      * @param timeout Maximum time to wait.
      * @return true if the thread finished and was joined within the timeout.
      *         false if the timeout expired.
      */
     [[nodiscard]] bool join_with_timeout(std::chrono::milliseconds timeout) {
-        if (!thread_.joinable()) {
-            return true; // nothing to do
+        if (!has_thread_) {
+            return true;
         }
 
-        // packaged_task that takes ownership of the std::thread
-        std::packaged_task<void(std::thread)> task(
-            [](std::thread t) mutable {
-                if (t.joinable()) {
-                    t.join();
-                }
-            }
-        );
+        timespec ts{};
+        clock_gettime(CLOCK_REALTIME, &ts);
 
-        auto future = task.get_future();
-
-        // Move the worker thread into the joiner thread
-        std::thread joiner(std::move(task), std::move(thread_));
-
-        // thread_ is now empty (not joinable)
-        // joiner owns the real worker thread
-
-        if (future.wait_for(timeout) == std::future_status::timeout) {
-            // Timed out — joiner continues running in background
-            joiner.detach();
-            return false;
+        auto ns = static_cast<long>(timeout.count()) * 1000000L;
+        ts.tv_sec += ns / 1000000000L;
+        ts.tv_nsec += ns % 1000000000L;
+        if (ts.tv_nsec >= 1000000000L) {
+            ts.tv_sec += 1;
+            ts.tv_nsec -= 1000000000L;
         }
 
-        // Join completed — join the joiner thread itself
-        joiner.join();
-        return true;
+        int rc = pthread_timedjoin_np(thread_, nullptr, &ts);
+        if (rc == 0) {
+            has_thread_ = false;
+            return true;
+        }
+
+        // Timed out: detach so destructor is non-blocking
+        pthread_detach(thread_);
+        has_thread_ = false;
+        return false;
     }
 
 private:
-    std::thread thread_;
+    pthread_t thread_{};
+    bool has_thread_{false};
 };
 
 } // namespace pubsub_itc_fw
