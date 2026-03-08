@@ -1,16 +1,16 @@
 #include <chrono>
 #include <exception>
+#include <memory>
 #include <thread>
 #include <utility>
-#include <memory>
 
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/Backoff.hpp>
 #include <pubsub_itc_fw/HighResolutionClock.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
+#include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
-#include <pubsub_itc_fw/PubSubItcException.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -39,19 +39,9 @@ ApplicationThread::~ApplicationThread() {
     // The reactor owns the threads.
 }
 
-ApplicationThread::ApplicationThread(QuillLogger& logger,
-                                     Reactor& reactor,
-                                     const std::string& thread_name,
-                                     ThreadID thread_id,
-                                     const QueueConfig& queue_config,
+ApplicationThread::ApplicationThread(QuillLogger& logger, Reactor& reactor, const std::string& thread_name, ThreadID thread_id, const QueueConfig& queue_config,
                                      const AllocatorConfig& allocator_config)
-    : logger_(logger)
-    , reactor_(reactor)
-    , time_event_started_()
-    , time_event_finished_()
-    , thread_name_(thread_name)
-    , thread_id_(thread_id)
-    , thread_(nullptr) {
+    : logger_(logger), reactor_(reactor), time_event_started_(), time_event_finished_(), thread_name_(thread_name), thread_id_(thread_id), thread_(nullptr) {
     message_queue_ = std::make_unique<LockFreeMessageQueue<EventMessage>>(queue_config, allocator_config);
     set_lifecycle_state(ThreadLifecycleState::Created);
 
@@ -89,12 +79,12 @@ void ApplicationThread::resume() {
 }
 
 void ApplicationThread::post_message(ThreadID target_thread_id, EventMessage message) {
-     if (target_thread_id == thread_id_) {
+    if (target_thread_id == thread_id_) {
         // Direct self-post
-         std::cerr << fmt::format("{}:{} self post event type {}\n", __FILE__, __LINE__, message.type().as_string());
+        std::cerr << fmt::format("{}:{} self post event type {}\n", __FILE__, __LINE__, message.type().as_string());
         message_queue_->enqueue(std::move(message));
         return;
-     }
+    }
 
     std::cerr << fmt::format("{}:{} routed by reactor\n", __FILE__, __LINE__);
     reactor_.route_message(target_thread_id, std::move(message));
@@ -136,8 +126,7 @@ void ApplicationThread::shutdown(const std::string& reason) {
                 PUBSUB_LOG_STR(logger_, LogLevel::Error, "join with timeout failed");
             }
         } catch (const std::exception& ex) {
-            PUBSUB_LOG_STR(logger_, LogLevel::Error,
-                "Failed to join thread during shutdown: " + thread_name_ + " " + ex.what());
+            PUBSUB_LOG_STR(logger_, LogLevel::Error, "Failed to join thread during shutdown: " + thread_name_ + " " + ex.what());
         }
     }
 }
@@ -148,15 +137,11 @@ void ApplicationThread::run() {
         run_internal();
         std::cerr << fmt::format("{}:{} ApplicationThread::run run_internal returned, thread {}\n", __FILE__, __LINE__, thread_name_);
     } catch (const std::exception& ex) {
-        PUBSUB_LOG(logger_, LogLevel::Error, "{} [{}] terminating due to exception: {}",
-                   thread_name_, thread_id_.get_value(), ex.what());
-        reactor_.shutdown(fmt::format("Thread {} [{}] terminated due to exception: {}",
-                                      thread_name_, thread_id_.get_value(), ex.what()));
+        PUBSUB_LOG(logger_, LogLevel::Error, "{} [{}] terminating due to exception: {}", thread_name_, thread_id_.get_value(), ex.what());
+        reactor_.shutdown(fmt::format("Thread {} [{}] terminated due to exception: {}", thread_name_, thread_id_.get_value(), ex.what()));
     } catch (...) {
-        PUBSUB_LOG(logger_, LogLevel::Error, "{} [{}] terminating due to unknown exception",
-                   thread_name_, thread_id_.get_value());
-        reactor_.shutdown(fmt::format("Thread {} [{}] terminated due to unknown exception",
-                                      thread_name_, thread_id_.get_value()));
+        PUBSUB_LOG(logger_, LogLevel::Error, "{} [{}] terminating due to unknown exception", thread_name_, thread_id_.get_value());
+        reactor_.shutdown(fmt::format("Thread {} [{}] terminated due to unknown exception", thread_name_, thread_id_.get_value()));
     }
 }
 
@@ -181,17 +166,15 @@ void ApplicationThread::run_internal() {
             }
 
             // If the Reactor has begun shutdown, this thread should exit promptly
-// TODO not sure about this. When the reactor finishes it should tell all threads to terminate.
+            // TODO not sure about this. When the reactor finishes it should tell all threads to terminate.
             if (reactor_.is_finished()) {
-                PUBSUB_LOG(logger_, LogLevel::Warning,
-                           "Thread {} detected Reactor shutdown, exiting", thread_name_);
+                PUBSUB_LOG(logger_, LogLevel::Warning, "Thread {} detected Reactor shutdown, exiting", thread_name_);
                 break;
             }
 
             // Defensive: queue must exist while the thread is running
             if (message_queue_ == nullptr) {
-                PUBSUB_LOG(logger_, LogLevel::Error,
-                           "Thread {} no longer has message queue, shutting down.", thread_name_);
+                PUBSUB_LOG(logger_, LogLevel::Error, "Thread {} no longer has message queue, shutting down.", thread_name_);
                 break;
             }
 
@@ -215,11 +198,9 @@ void ApplicationThread::run_internal() {
             }
         }
     } catch (const std::exception& ex) {
-        PUBSUB_LOG(logger_, LogLevel::Error, "{} [{}] terminating due to exception: {}",
-                   thread_name_, thread_id_.get_value(), ex.what());
+        PUBSUB_LOG(logger_, LogLevel::Error, "{} [{}] terminating due to exception: {}", thread_name_, thread_id_.get_value(), ex.what());
     } catch (...) {
-        PUBSUB_LOG(logger_, LogLevel::Error, "{} [{}] terminating due to unknown exception",
-                   thread_name_, thread_id_.get_value());
+        PUBSUB_LOG(logger_, LogLevel::Error, "{} [{}] terminating due to unknown exception", thread_name_, thread_id_.get_value());
     }
 
     PUBSUB_LOG(logger_, LogLevel::Info, "Thread {} is shutting down.", thread_name_);
@@ -232,15 +213,11 @@ void ApplicationThread::process_message(EventMessage& message) {
 
     auto state = get_lifecycle_state().as_tag();
 
-    const bool is_reactor_event = (tag == EventType::Initial ||
-                                   tag == EventType::AppReady ||
-                                   tag == EventType::Timer ||
-                                   tag == EventType::Termination);
+    const bool is_reactor_event = (tag == EventType::Initial || tag == EventType::AppReady || tag == EventType::Timer || tag == EventType::Termination);
     const bool is_operational = state == ThreadLifecycleState::Operational;
 
     if (!is_operational && !is_reactor_event) {
-        throw PreconditionAssertion(
-            "Non-reactor event received before thread is fully operational", __FILE__, __LINE__);
+        throw PreconditionAssertion("Non-reactor event received before thread is fully operational", __FILE__, __LINE__);
     }
 
     time_event_started_ = HighResolutionClock::now();
@@ -260,8 +237,7 @@ void ApplicationThread::process_message(EventMessage& message) {
 
             on_app_ready_event();
 
-            PUBSUB_LOG(logger_, LogLevel::Info, "Thread {}: Received AppReady. Moving to operational state.",
-                       thread_name_);
+            PUBSUB_LOG(logger_, LogLevel::Info, "Thread {}: Received AppReady. Moving to operational state.", thread_name_);
             set_lifecycle_state(ThreadLifecycleState::Operational);
             break;
         }
@@ -295,16 +271,14 @@ void ApplicationThread::process_message(EventMessage& message) {
 
         case EventType::None:
         default: {
-            PUBSUB_LOG(logger_, LogLevel::Warning, "Thread {}: Received unknown or None event type: {}",
-                       thread_name_, type.as_string());
+            PUBSUB_LOG(logger_, LogLevel::Warning, "Thread {}: Received unknown or None event type: {}", thread_name_, type.as_string());
             break;
         }
     }
     time_event_finished_ = HighResolutionClock::now();
 }
 
-void ApplicationThread::on_timer_id_event(TimerID id)
-{
+void ApplicationThread::on_timer_id_event(TimerID id) {
     auto it = id_to_name_.find(id);
     if (it == id_to_name_.end()) {
         PUBSUB_LOG(logger_, LogLevel::Warning, "Thread {} received timer event for unknown TimerID {}", thread_name_, id.get_value());
@@ -317,24 +291,20 @@ void ApplicationThread::on_timer_id_event(TimerID id)
     on_timer_event(name);
 }
 
-void ApplicationThread::set_lifecycle_state(ThreadLifecycleState::Tag new_tag)
-{
+void ApplicationThread::set_lifecycle_state(ThreadLifecycleState::Tag new_tag) {
     auto old_tag = lifecycle_state_.load(std::memory_order_acquire);
 
     if (old_tag == new_tag) {
         return;
     }
 
-    PUBSUB_LOG(logger_, LogLevel::Info, "Thread {} lifecycle transition {} to {}", thread_name_,
-               ThreadLifecycleState::to_string(old_tag), ThreadLifecycleState::to_string(new_tag));
+    PUBSUB_LOG(logger_, LogLevel::Info, "Thread {} lifecycle transition {} to {}", thread_name_, ThreadLifecycleState::to_string(old_tag),
+               ThreadLifecycleState::to_string(new_tag));
 
     lifecycle_state_.store(new_tag, std::memory_order_release);
 }
 
-TimerID ApplicationThread::schedule_timer(const std::string& name,
-                                          std::chrono::microseconds interval,
-                                          TimerType type)
-{
+TimerID ApplicationThread::schedule_timer(const std::string& name, std::chrono::microseconds interval, TimerType type) {
     // If a timer with this name already exists, cancel it first.
     // TODO I am not sure about this. Perhaps it is a precondition violation.
     auto it = name_to_id_.find(name);
@@ -345,11 +315,11 @@ TimerID ApplicationThread::schedule_timer(const std::string& name,
     // Ask Reactor to create and register the timerfd.
     TimerID id = reactor_.allocate_timer_id();
     ReactorControlCommand command(ReactorControlCommand::CommandTag::AddTimer);
-    command.timer_name_      = name;
+    command.timer_name_ = name;
     command.owner_thread_id_ = thread_id_;
-    command.timer_id_        = id;
-    command.interval_        = interval;
-    command.timer_type_      = type;
+    command.timer_id_ = id;
+    command.interval_ = interval;
+    command.timer_type_ = type;
     reactor_.enqueue_control_command(command);
 
     // Store mappings for lookup and cancellation.

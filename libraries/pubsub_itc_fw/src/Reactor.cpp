@@ -1,7 +1,7 @@
-#include <unistd.h>
-#include <sys/timerfd.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
+#include <sys/timerfd.h>
+#include <unistd.h>
 
 #include <pubsub_itc_fw/Reactor.hpp>
 
@@ -27,10 +27,12 @@ Reactor::~Reactor() {
 }
 
 Reactor::Reactor(const ReactorConfiguration& reactor_configuration, QuillLogger& logger)
-    : handlers_{}, threads_{}, threads_by_thread_id_{},
-      command_queue_(reactor_configuration.command_queue_config_, reactor_configuration.command_allocator_config_),
-      config_(reactor_configuration),
-      logger_(logger) {
+    : handlers_{}
+    , threads_{}
+    , threads_by_thread_id_{}
+    , command_queue_(reactor_configuration.command_queue_config_, reactor_configuration.command_allocator_config_)
+    , config_(reactor_configuration)
+    , logger_(logger) {
     epoll_fd_ = ::epoll_create1(EPOLL_CLOEXEC);
     if (epoll_fd_ == -1) {
         throw PubSubItcException("epoll_create1 failed in Reactor constructor");
@@ -50,25 +52,19 @@ Reactor::Reactor(const ReactorConfiguration& reactor_configuration, QuillLogger&
     }
 
     auto timer_id = allocate_timer_id();
-    create_timer_fd(timer_id, "Backstop", ThreadID(system_thread_id_value),
-                   config_.inactivity_check_interval_, TimerType::Recurring);
+    create_timer_fd(timer_id, "Backstop", ThreadID(system_thread_id_value), config_.inactivity_check_interval_, TimerType::Recurring);
     PUBSUB_LOG_STR(logger_, LogLevel::Info, "backstop timer created");
 }
 
 void Reactor::route_message(ThreadID target_id, EventMessage message) {
     // 1. Identify if this is a system bootstrap message
     const auto tag = message.type().as_tag();
-    const bool is_reactor_event = (tag == EventType::Initial ||
-                                   tag == EventType::AppReady ||
-                                   tag == EventType::Timer ||
-                                   tag == EventType::Termination);
+    const bool is_reactor_event = (tag == EventType::Initial || tag == EventType::AppReady || tag == EventType::Timer || tag == EventType::Termination);
 
     // 2. Initialization gate
     if (!initialization_complete_.load(std::memory_order_acquire) && !is_reactor_event) {
-        throw PreconditionAssertion(
-            fmt::format("Standard message posted before Reactor initialization completed, event type {}",
-                        message.type().as_string()),
-            __FILE__, __LINE__);
+        throw PreconditionAssertion(fmt::format("Standard message posted before Reactor initialization completed, event type {}", message.type().as_string()),
+                                    __FILE__, __LINE__);
     }
 
     // 3. Fast-path lookup (non-owning pointer)
@@ -94,16 +90,13 @@ void Reactor::route_message(ThreadID target_id, EventMessage message) {
     const auto lifecycle_state = target->get_lifecycle_state().as_tag();
     if (!is_reactor_event) {
         // Drop silently if shutting down.
-        if (lifecycle_state == ThreadLifecycleState::ShuttingDown ||
-            lifecycle_state == ThreadLifecycleState::Terminated) {
+        if (lifecycle_state == ThreadLifecycleState::ShuttingDown || lifecycle_state == ThreadLifecycleState::Terminated) {
             return;
         }
 
         if (lifecycle_state != ThreadLifecycleState::Operational) {
-            throw PubSubItcException(
-                fmt::format("Attempted to route non-reactor event {} to non-operational thread {} state {}",
-                            message.type().as_string(), target->get_thread_name(),
-                            target->get_lifecycle_state().as_string()));
+            throw PubSubItcException(fmt::format("Attempted to route non-reactor event {} to non-operational thread {} state {}", message.type().as_string(),
+                                                 target->get_thread_name(), target->get_lifecycle_state().as_string()));
         }
     }
 
@@ -181,8 +174,7 @@ void Reactor::shutdown(const std::string& reason) {
     PUBSUB_LOG(logger_, LogLevel::Info, "Reactor shutdown complete. Reason: {}", reason);
 }
 
-void Reactor::finalize_threads_after_shutdown()
-{
+void Reactor::finalize_threads_after_shutdown() {
     // 1. Snapshot under lock
     PUBSUB_LOG_STR(logger_, LogLevel::Info, "finalize_threads_after_shutdown step 1");
     std::vector<std::shared_ptr<ApplicationThread>> snapshot;
@@ -190,13 +182,16 @@ void Reactor::finalize_threads_after_shutdown()
         std::lock_guard<std::mutex> lock(thread_registry_mutex_);
         snapshot.reserve(threads_.size());
         for (auto const& [name, thread] : threads_) {
-            if (thread) snapshot.push_back(thread);
+            if (thread)
+                snapshot.push_back(thread);
         }
     }
 
     // 1b. Cancel all timers for all threads in this reactor
     PUBSUB_LOG_STR(logger_, LogLevel::Info, "finalize_threads_after_shutdown canceling timers");
-    for (auto& thread : snapshot) { cancel_all_timer_fds_for_thread(thread->get_thread_id()); }
+    for (auto& thread : snapshot) {
+        cancel_all_timer_fds_for_thread(thread->get_thread_id());
+    }
 
     // 2. Wait for run loops to exit
     PUBSUB_LOG_STR(logger_, LogLevel::Info, "finalize_threads_after_shutdown step 2");
@@ -205,8 +200,7 @@ void Reactor::finalize_threads_after_shutdown()
         auto start = MillisecondClock::now();
         while (thread->is_running()) {
             if (MillisecondClock::now() - start > config_.shutdown_timeout_) {
-                PUBSUB_LOG(logger_, LogLevel::Error, "Thread {} did not stop within shutdown_timeout",
-                           thread->get_thread_name());
+                PUBSUB_LOG(logger_, LogLevel::Error, "Thread {} did not stop within shutdown_timeout", thread->get_thread_name());
                 break;
             }
             backoff.pause();
@@ -217,8 +211,7 @@ void Reactor::finalize_threads_after_shutdown()
     PUBSUB_LOG_STR(logger_, LogLevel::Info, "finalize_threads_after_shutdown step 3");
     for (auto& thread : snapshot) {
         if (!thread->join_with_timeout(config_.shutdown_timeout_)) {
-            PUBSUB_LOG(logger_, LogLevel::Error, "Thread {} failed to join within shutdown_timeout",
-                       thread->get_thread_name());
+            PUBSUB_LOG(logger_, LogLevel::Error, "Thread {} failed to join within shutdown_timeout", thread->get_thread_name());
         }
     }
 
@@ -226,7 +219,7 @@ void Reactor::finalize_threads_after_shutdown()
     PUBSUB_LOG_STR(logger_, LogLevel::Info, "finalize_threads_after_shutdown step 4");
     {
         std::lock_guard<std::mutex> lock(thread_registry_mutex_);
-        for (auto it = threads_.begin(); it != threads_.end(); ) {
+        for (auto it = threads_.begin(); it != threads_.end();) {
             auto& thread = it->second;
             if (!thread) {
                 it = threads_.erase(it);
@@ -262,16 +255,13 @@ void Reactor::register_thread(std::shared_ptr<ApplicationThread> thread) {
     auto name_it = threads_.find(name);
     if (name_it != threads_.end()) {
         // With shared_ptr, if it's present, it's active.
-        throw PreconditionAssertion(fmt::format("Thread name '{}' is already registered and active.", name),
-            __FILE__, __LINE__);
+        throw PreconditionAssertion(fmt::format("Thread name '{}' is already registered and active.", name), __FILE__, __LINE__);
     }
 
     // 2. Check for ThreadID Collision
     auto id_it = threads_by_thread_id_.find(id);
     if (id_it != threads_by_thread_id_.end()) {
-        throw PreconditionAssertion(
-            fmt::format("Thread ID '{}' is already registered and active.", id.get_value()),
-            __FILE__, __LINE__);
+        throw PreconditionAssertion(fmt::format("Thread ID '{}' is already registered and active.", id.get_value()), __FILE__, __LINE__);
     }
 
     // 3. Perform the Registration
@@ -285,8 +275,7 @@ void Reactor::register_thread(std::shared_ptr<ApplicationThread> thread) {
 }
 
 // Reactor.cpp
-void Reactor::cancel_all_timer_fds_for_thread(ThreadID owner_thread_id)
-{
+void Reactor::cancel_all_timer_fds_for_thread(ThreadID owner_thread_id) {
     std::lock_guard<std::mutex> lock(timer_registry_mutex_);
 
     auto it_thread = thread_timer_names_.find(owner_thread_id);
@@ -296,7 +285,7 @@ void Reactor::cancel_all_timer_fds_for_thread(ThreadID owner_thread_id)
 
     auto& timers_by_name = it_thread->second;
 
-    for (auto it = timers_by_name.begin(); it != timers_by_name.end(); ) {
+    for (auto it = timers_by_name.begin(); it != timers_by_name.end();) {
         TimerID id = it->second;
 
         // Look up FD for this timer
@@ -320,8 +309,7 @@ void Reactor::cancel_all_timer_fds_for_thread(ThreadID owner_thread_id)
     thread_timer_names_.erase(it_thread);
 }
 
-void Reactor::deregister_thread(ThreadID thread_id, const std::string& name)
-{
+void Reactor::deregister_thread(ThreadID thread_id, const std::string& name) {
     std::lock_guard<std::mutex> lock(thread_registry_mutex_);
 
     PUBSUB_LOG(logger_, LogLevel::Info, "Deregistering thread: {} (ID: {})", name, thread_id.get_value());
@@ -348,9 +336,7 @@ void Reactor::deregister_thread(ThreadID thread_id, const std::string& name)
     }
 }
 
-bool Reactor::wait_for_all_threads(std::function<bool(const ApplicationThread&)> predicate,
-                                   const std::string& phase_name)
-{
+bool Reactor::wait_for_all_threads(std::function<bool(const ApplicationThread&)> predicate, const std::string& phase_name) {
     // 1. Snapshot using shared_ptr
     std::vector<std::shared_ptr<ApplicationThread>> thread_snapshots;
     {
@@ -366,7 +352,8 @@ bool Reactor::wait_for_all_threads(std::function<bool(const ApplicationThread&)>
 
         while (true) {
             // If the thread is gone, it can't satisfy the predicate, but it's not "active"
-            if (!thread) break;
+            if (!thread)
+                break;
 
             if (predicate(*thread)) {
                 break;
@@ -375,17 +362,13 @@ bool Reactor::wait_for_all_threads(std::function<bool(const ApplicationThread&)>
             auto state = thread->get_lifecycle_state().as_tag();
 
             // Abort if the thread is failing
-            if (state == ThreadLifecycleState::ShuttingDown ||
-                state == ThreadLifecycleState::Terminated) {
-                shutdown(fmt::format("Thread {} failed during {}, state = {}",
-                         thread->get_thread_name(), phase_name,
-                         ThreadLifecycleState::to_string(state)));
+            if (state == ThreadLifecycleState::ShuttingDown || state == ThreadLifecycleState::Terminated) {
+                shutdown(fmt::format("Thread {} failed during {}, state = {}", thread->get_thread_name(), phase_name, ThreadLifecycleState::to_string(state)));
                 return false;
             }
 
             if (MillisecondClock::now() - start > config_.init_phase_timeout_) {
-                shutdown(fmt::format("Thread {} timed out during {} within init_phase_timeout",
-                         thread->get_thread_name(), phase_name));
+                shutdown(fmt::format("Thread {} timed out during {} within init_phase_timeout", thread->get_thread_name(), phase_name));
                 return false;
             }
 
@@ -417,7 +400,7 @@ void Reactor::initialize_threads() {
         std::lock_guard<std::mutex> lock(thread_registry_mutex_);
 
         // Cleanup name map
-        for (auto it = threads_.begin(); it != threads_.end(); ) {
+        for (auto it = threads_.begin(); it != threads_.end();) {
             if (it->second == nullptr) {
                 it = threads_.erase(it);
             } else {
@@ -426,7 +409,7 @@ void Reactor::initialize_threads() {
         }
 
         // Cleanup ID map
-        for (auto it = threads_by_thread_id_.begin(); it != threads_by_thread_id_.end(); ) {
+        for (auto it = threads_by_thread_id_.begin(); it != threads_by_thread_id_.end();) {
             if (it->second == nullptr) {
                 it = threads_by_thread_id_.erase(it);
             } else {
@@ -446,17 +429,15 @@ void Reactor::initialize_threads() {
     }
 
     // 3. Wait for all threads to enter run loops
-    if (!wait_for_all_threads([](const ApplicationThread& t) { return t.is_running(); },
-                              "Startup")) {
+    if (!wait_for_all_threads([](const ApplicationThread& t) { return t.is_running(); }, "Startup")) {
         return;
     }
 
     // 4. Post Initial event and wait for processing completion
     broadcast_reactor_event(EventType::Initial);
 
-    if (!wait_for_all_threads([](const ApplicationThread& t) {
-        return t.get_lifecycle_state().as_tag() == ThreadLifecycleState::InitialProcessed;
-    }, "Initial Processing")) {
+    if (!wait_for_all_threads([](const ApplicationThread& t) { return t.get_lifecycle_state().as_tag() == ThreadLifecycleState::InitialProcessed; },
+                              "Initial Processing")) {
         return;
     }
 
@@ -468,42 +449,35 @@ void Reactor::initialize_threads() {
     broadcast_reactor_event(EventType::AppReady);
 
     // 6. Final Wait: Ensure all threads reach the Operational state
-    if (!wait_for_all_threads([](const ApplicationThread& t) {
-        return t.get_lifecycle_state().as_tag() >= ThreadLifecycleState::Operational;
-    }, "Operational Transition")) {
+    if (!wait_for_all_threads([](const ApplicationThread& t) { return t.get_lifecycle_state().as_tag() >= ThreadLifecycleState::Operational; },
+                              "Operational Transition")) {
         return;
     }
 
     // 7. Success
     initialization_complete_.store(true, std::memory_order_release);
-    PUBSUB_LOG_STR(logger_, LogLevel::Info,
-                   "Registered application threads are now Operational. Reactor initialization complete.");
+    PUBSUB_LOG_STR(logger_, LogLevel::Info, "Registered application threads are now Operational. Reactor initialization complete.");
 }
 
-void Reactor::enqueue_control_command(const ReactorControlCommand& command)
-{
+void Reactor::enqueue_control_command(const ReactorControlCommand& command) {
     command_queue_.enqueue(command);
     uint64_t one = 1;
     ::write(wake_fd_, &one, sizeof(one));
 }
 
-TimerID Reactor::allocate_timer_id()
-{
+TimerID Reactor::allocate_timer_id() {
     std::lock_guard<std::mutex> lock(timer_registry_mutex_);
     TimerID id = next_timer_id_;
     ++next_timer_id_;
     return id;
 }
 
-void Reactor::create_timer_fd(TimerID timer_id, const std::string& name, ThreadID owner_thread_id,
-                                 std::chrono::microseconds interval, TimerType type)
-{
+void Reactor::create_timer_fd(TimerID timer_id, const std::string& name, ThreadID owner_thread_id, std::chrono::microseconds interval, TimerType type) {
     std::lock_guard<std::mutex> lock(timer_registry_mutex_);
 
     auto& thread_timers = thread_timer_names_[owner_thread_id];
     if (thread_timers.find(name) != thread_timers.end()) {
-        throw PreconditionAssertion(fmt::format("Thread {} already has a timer named '{}'",
-                        owner_thread_id.get_value(), name), __FILE__, __LINE__);
+        throw PreconditionAssertion(fmt::format("Thread {} already has a timer named '{}'", owner_thread_id.get_value(), name), __FILE__, __LINE__);
     }
 
     PUBSUB_LOG(logger_, LogLevel::Info, "Reactor created timer id {}\n", __FILE__, __LINE__, timer_id.get_value());
@@ -514,8 +488,7 @@ void Reactor::create_timer_fd(TimerID timer_id, const std::string& name, ThreadI
     register_handler(std::move(timer_handler));
 }
 
-void Reactor::cancel_timer_fd(ThreadID owner_thread_id, TimerID id)
-{
+void Reactor::cancel_timer_fd(ThreadID owner_thread_id, TimerID id) {
     std::lock_guard<std::mutex> lock(timer_registry_mutex_);
 
     // 1. Find the FD associated with this TimerID
@@ -544,9 +517,7 @@ void Reactor::cancel_timer_fd(ThreadID owner_thread_id, TimerID id)
     auto name_it = thread_timers.find(timer_name);
 
     if (name_it == thread_timers.end()) {
-        throw PreconditionAssertion(
-            fmt::format("Thread {} does not have a timer named '{}'",
-                        owner_thread_id.get_value(), timer_name), __FILE__, __LINE__);
+        throw PreconditionAssertion(fmt::format("Thread {} does not have a timer named '{}'", owner_thread_id.get_value(), timer_name), __FILE__, __LINE__);
     }
 
     // 4. Cleanup all registries
@@ -563,12 +534,10 @@ void Reactor::cancel_timer_fd(ThreadID owner_thread_id, TimerID id)
     // This triggers the TimerHandler dtor, which calls ::close(fd)
     deregister_handler(fd);
 
-    std::cerr << fmt::format("{}:{} Reactor cancelled timer id {}\n",
-                             __FILE__, __LINE__, id.get_value());
+    std::cerr << fmt::format("{}:{} Reactor cancelled timer id {}\n", __FILE__, __LINE__, id.get_value());
 }
 
-void Reactor::register_handler(std::unique_ptr<EventHandler> handler)
-{
+void Reactor::register_handler(std::unique_ptr<EventHandler> handler) {
     if (handler == nullptr) {
         throw PreconditionAssertion("Cannot register null EventHandler", __FILE__, __LINE__);
     }
@@ -586,15 +555,14 @@ void Reactor::register_handler(std::unique_ptr<EventHandler> handler)
     handlers_.emplace(fd, std::move(handler));
 }
 
-void Reactor::deregister_handler(int fd)
-{
+void Reactor::deregister_handler(int fd) {
     ::epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, fd, nullptr);
     handlers_.erase(fd);
     ::close(fd);
 }
 
 void Reactor::event_loop() {
-   std::array<epoll_event, 64> events{};
+    std::array<epoll_event, 64> events{};
 
     while (!is_finished_.load(std::memory_order_acquire)) {
         PUBSUB_LOG_STR(logger_, LogLevel::Info, "About to call epoll_wait");
@@ -613,8 +581,7 @@ void Reactor::event_loop() {
     PUBSUB_LOG_STR(logger_, LogLevel::Info, "Event loop has finished");
 }
 
-void Reactor::process_control_commands()
-{
+void Reactor::process_control_commands() {
     for (;;) {
         auto maybe_command = command_queue_.dequeue();
         if (!maybe_command.has_value()) {
@@ -627,8 +594,7 @@ void Reactor::process_control_commands()
 
         switch (command.as_tag()) {
             case ReactorControlCommand::AddTimer:
-                create_timer_fd(command.timer_id_, command.timer_name_, command.owner_thread_id_,
-                    command.interval_, command.timer_type_);
+                create_timer_fd(command.timer_id_, command.timer_name_, command.owner_thread_id_, command.interval_, command.timer_type_);
                 break;
 
             case ReactorControlCommand::CancelTimer:
@@ -638,8 +604,7 @@ void Reactor::process_control_commands()
     }
 }
 
-void Reactor::dispatch_events(int nfds, epoll_event* events)
-{
+void Reactor::dispatch_events(int nfds, epoll_event* events) {
     PUBSUB_LOG_STR(logger_, LogLevel::Info, "entered dispatch_events");
 
     for (int i = 0; i < nfds; ++i) {
@@ -664,7 +629,7 @@ void Reactor::dispatch_events(int nfds, epoll_event* events)
             continue; // unknown fd, ignore defensively
         }
         PUBSUB_LOG_STR(logger_, LogLevel::Info, "dispatch_events about to handle event");
-       // TODO There is more to do here
+        // TODO There is more to do here
         handler_it->second->handle_event(events[i].events);
         PUBSUB_LOG_STR(logger_, LogLevel::Info, "dispatch_events event handled");
     }
@@ -700,8 +665,7 @@ void Reactor::check_for_exited_threads() {
     for (auto& [name, thread] : threads_) {
         if (thread != nullptr) {
             auto state = thread->get_lifecycle_state().as_tag();
-            PUBSUB_LOG(logger_, LogLevel::Info, "   thread {} state {}", thread->get_thread_name(),
-                       thread->get_lifecycle_state().as_string());
+            PUBSUB_LOG(logger_, LogLevel::Info, "   thread {} state {}", thread->get_thread_name(), thread->get_lifecycle_state().as_string());
             if (state == ThreadLifecycleState::ShuttingDown) {
                 if (!is_finished()) {
                     shutdown("Thread " + name + " is shutting down, will terminate");
@@ -718,17 +682,16 @@ void Reactor::check_for_exited_threads() {
 }
 
 void Reactor::check_for_stuck_threads() {
-// TODO we currently have separate inactivity times for ITC and sockets. Maybe only need one.
-// config_.itc_maximum_inactivity_interval_
-// we also have a separate config interval for the init event because that might be costly.
+    // TODO we currently have separate inactivity times for ITC and sockets. Maybe only need one.
+    // config_.itc_maximum_inactivity_interval_
+    // we also have a separate config interval for the init event because that might be costly.
 
     std::lock_guard<std::mutex> lock(thread_registry_mutex_);
     PUBSUB_LOG_STR(logger_, LogLevel::Info, "checking for stuck threads");
     for (auto& [name, thread] : threads_) {
         if (thread != nullptr) {
             auto state = thread->get_lifecycle_state().as_tag();
-            PUBSUB_LOG(logger_, LogLevel::Info, "   thread {} state {}", thread->get_thread_name(),
-                       thread->get_lifecycle_state().as_string());
+            PUBSUB_LOG(logger_, LogLevel::Info, "   thread {} state {}", thread->get_thread_name(), thread->get_lifecycle_state().as_string());
             if (state == ThreadLifecycleState::Operational) {
                 if (thread->get_time_event_started() <= thread->get_time_event_finished()) {
                     // Callback finished but did it take too long?
@@ -742,8 +705,7 @@ void Reactor::check_for_stuck_threads() {
                     }
                 } else {
                     // Callback did not finish. How long has it been in there?
-                    PUBSUB_LOG(logger_, LogLevel::Info, "Thread {} callback not finished, checking if stuck",
-                               thread->get_thread_name());
+                    PUBSUB_LOG(logger_, LogLevel::Info, "Thread {} callback not finished, checking if stuck", thread->get_thread_name());
                     auto now = HighResolutionClock::now();
                     auto duration = now - thread->get_time_event_started();
                     if (duration > config_.itc_maximum_inactivity_interval_) {
@@ -752,18 +714,15 @@ void Reactor::check_for_stuck_threads() {
                             shutdown(shutdown_reason);
                             return; // only need to trigger once
                         }
-
                     }
                 }
             } else if (state == ThreadLifecycleState::Started) {
-                PUBSUB_LOG(logger_, LogLevel::Info, "Thread {} is started but init not complete, checking if stuck",
-                               thread->get_thread_name());
+                PUBSUB_LOG(logger_, LogLevel::Info, "Thread {} is started but init not complete, checking if stuck", thread->get_thread_name());
                 auto now = HighResolutionClock::now();
                 auto duration = now - thread->get_time_event_started();
                 if (duration > config_.init_phase_timeout_) {
                     if (!is_finished()) {
-                        auto shutdown_reason = fmt::format("Thread {} callback appears to be stuck during Init",
-                                                           thread->get_thread_name());
+                        auto shutdown_reason = fmt::format("Thread {} callback appears to be stuck during Init", thread->get_thread_name());
                         shutdown(shutdown_reason);
                         return; // only need to trigger once
                     }
@@ -774,6 +733,5 @@ void Reactor::check_for_stuck_threads() {
 }
 
 void Reactor::check_for_inactive_sockets() {}
-
 
 } // namespace pubsub_itc_fw

@@ -1,5 +1,5 @@
-#include <pubsub_itc_fw/TimerHandler.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
+#include <pubsub_itc_fw/TimerHandler.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -9,9 +9,7 @@ TimerHandler::~TimerHandler() {
     }
 }
 
-TimerHandler::TimerHandler(const Timer& timer, Reactor& reactor)
-    : timer_(timer), reactor_(reactor), owner_thread_(nullptr)
-{
+TimerHandler::TimerHandler(const Timer& timer, Reactor& reactor) : timer_(timer), reactor_(reactor), owner_thread_(nullptr) {
     fd_ = ::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
     if (fd_ == -1) {
         PUBSUB_LOG_STR(reactor_.get_logger(), LogLevel::Error, "TimerHandler ctor: timerfd_create failed");
@@ -27,7 +25,10 @@ TimerHandler::TimerHandler(const Timer& timer, Reactor& reactor)
     } else {
         owner_thread_ = reactor_.get_fast_path_thread(owner_id);
         if (!owner_thread_) {
-            PUBSUB_LOG(reactor_.get_logger(), LogLevel::Error, "TimerHandler ctor: owner thread {} not found in fast-path map " "for timer '{}'", owner_id.get_value(), timer_.get_name());
+            PUBSUB_LOG(reactor_.get_logger(), LogLevel::Error,
+                       "TimerHandler ctor: owner thread {} not found in fast-path map "
+                       "for timer '{}'",
+                       owner_id.get_value(), timer_.get_name());
             // This should never happen unless construction order is wrong
             throw PubSubItcException("TimerHandler: owner thread not found");
         }
@@ -37,7 +38,7 @@ TimerHandler::TimerHandler(const Timer& timer, Reactor& reactor)
     auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(timer.get_interval());
 
     itimerspec spec{};
-    spec.it_value.tv_sec  = ns.count() / 1'000'000'000;
+    spec.it_value.tv_sec = ns.count() / 1'000'000'000;
     spec.it_value.tv_nsec = ns.count() % 1'000'000'000;
 
     if (timer.get_type() == TimerType::Recurring) {
@@ -72,8 +73,7 @@ bool TimerHandler::handle_event(uint32_t events) noexcept {
 
     // 3. Reactor-owned housekeeping timer (owner thread ID == 0)
     if (timer_.get_owner_thread_id().get_value() == 0) {
-        PUBSUB_LOG_STR(reactor_.get_logger(), LogLevel::Info,
-                       "handle_event calling housekeeping function");
+        PUBSUB_LOG_STR(reactor_.get_logger(), LogLevel::Info, "handle_event calling housekeeping function");
         reactor_.on_housekeeping_tick();
         return true;
     }
@@ -81,7 +81,8 @@ bool TimerHandler::handle_event(uint32_t events) noexcept {
     if (reactor_.is_finished()) {
         PUBSUB_LOG(reactor_.get_logger(), LogLevel::Info,
                    "TimerHandler::handle_event: reactor is finished; "
-                   "dropping {} pending expirations for timer '{}'", expirations, timer_.get_name());
+                   "dropping {} pending expirations for timer '{}'",
+                   expirations, timer_.get_name());
         return true;
     }
 
@@ -96,40 +97,35 @@ bool TimerHandler::handle_event(uint32_t events) noexcept {
         PUBSUB_LOG(reactor_.get_logger(), LogLevel::Warning,
                    "TimerHandler: dropping {} pending expirations for timer '{}' "
                    "because owner thread {} is in state {}",
-                   expirations,
-                   timer_.get_name(),
-                   owner.get_value(),
-                   ThreadLifecycleState::to_string(state));
+                   expirations, timer_.get_name(), owner.get_value(), ThreadLifecycleState::to_string(state));
         return true;
     }
     // ---- END RACE-AVOIDANCE GUARD ----
 
     // 5. Deliver one event, coalescing multiple expirations (only when Operational)
     if (expirations == 1) {
-        PUBSUB_LOG(reactor_.get_logger(), LogLevel::Info,
-                   "handle_event single expiration event, sending single timer event {} {}",
-                   timer_.get_name(), timer_.get_timer_id().get_value());
+        PUBSUB_LOG(reactor_.get_logger(), LogLevel::Info, "handle_event single expiration event, sending single timer event {} {}", timer_.get_name(),
+                   timer_.get_timer_id().get_value());
     } else {
-        PUBSUB_LOG(reactor_.get_logger(), LogLevel::Info,
-                   "handle_event coalescing {} expiration events into single timer event {} {}",
-                   expirations, timer_.get_name(), timer_.get_timer_id().get_value());
+        PUBSUB_LOG(reactor_.get_logger(), LogLevel::Info, "handle_event coalescing {} expiration events into single timer event {} {}", expirations,
+                   timer_.get_name(), timer_.get_timer_id().get_value());
     }
 
     auto msg = EventMessage::create_timer_event(timer_.get_timer_id());
 
-        // TODO Optional future refinement:
-        // if (!reactor_.route_message(owner, std::move(msg))) {
-        //     PUBSUB_LOG(reactor_.get_logger(), LogLevel::Warning,
-        //                "TimerHandler: route_message dropped event {} "
-        //                "for timer '{}'; stopping expiration loop",
-        //                i,
-        //                timer_.get_name());
-        //     break;
-        // }
+    // TODO Optional future refinement:
+    // if (!reactor_.route_message(owner, std::move(msg))) {
+    //     PUBSUB_LOG(reactor_.get_logger(), LogLevel::Warning,
+    //                "TimerHandler: route_message dropped event {} "
+    //                "for timer '{}'; stopping expiration loop",
+    //                i,
+    //                timer_.get_name());
+    //     break;
+    // }
 
     reactor_.route_message(owner, std::move(msg));
 
     return true;
 }
 
-} // namespaces
+} // namespace pubsub_itc_fw
