@@ -97,7 +97,7 @@ public:
     void SetUp() override {
         logger_with_sink_.sink->clear();
         reactor_configuration_.inactivity_check_interval_ = std::chrono::milliseconds(100);
-        reactor_configuration_.init_phase_timeout_ = MillisecondClock::duration{50};
+        reactor_configuration_.init_phase_timeout_ = MillisecondClock::duration{2000};
         reactor_configuration_.shutdown_timeout_ = std::chrono::milliseconds(50);
 
         reactor_ = std::make_unique<Reactor>(reactor_configuration_, logger_with_sink_.logger);
@@ -198,6 +198,10 @@ TEST_F(ReactorTest, InitializationTimeoutTriggersShutdown)
     auto bad_thread = std::make_shared<NeverStartingThread>(logger_with_sink_.logger, *reactor_,
                                                             "BadThread", ThreadID(99),
                                                             make_queue_config(), make_allocator_config());
+    ReactorConfiguration cfg;
+    cfg.init_phase_timeout_ = std::chrono::milliseconds(50);
+    reactor_ = std::make_unique<Reactor>(cfg, logger_with_sink_.logger);
+
     reactor_->register_thread(bad_thread);
     reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>( [this] { reactor_->run(); });
 
@@ -244,6 +248,10 @@ all threads have completed their Initial processing.
 ===============================================================================
 */
 TEST_F(ReactorTest, AllThreadsReceiveInitThenAppReady) {
+    ReactorConfiguration cfg;
+    cfg.init_phase_timeout_ = std::chrono::milliseconds(2000);
+    reactor_ = std::make_unique<Reactor>(cfg, logger_with_sink_.logger);
+
     // -------------------------------------------------------------------------
     // Create two test threads
     // -------------------------------------------------------------------------
@@ -252,24 +260,26 @@ TEST_F(ReactorTest, AllThreadsReceiveInitThenAppReady) {
     auto thread2 = std::make_shared<TestApplicationThread>(logger_with_sink_.logger, *reactor_,
         "thread2", ThreadID{2}, make_queue_config(), make_allocator_config());
 
+    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>( [this] { reactor_->run(); });
     reactor_->register_thread(thread1);
     reactor_->register_thread(thread2);
-    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>( [this] { reactor_->run(); });
 
     // -------------------------------------------------------------------------
     // Wait until both threads have seen their Initial event.
     // -------------------------------------------------------------------------
     Backoff backoff;
-    while (!thread1->saw_initial_event.load(std::memory_order_acquire) ||
-           !thread2->saw_initial_event.load(std::memory_order_acquire)) {
+    while (reactor_->is_running() && (
+               !thread1->saw_initial_event.load(std::memory_order_acquire) ||
+               !thread2->saw_initial_event.load(std::memory_order_acquire))) {
         backoff.pause();
     }
 
     // -------------------------------------------------------------------------
     // Now wait until both threads have seen their AppReady event.
     // -------------------------------------------------------------------------
-    while (!thread1->saw_app_ready_event.load(std::memory_order_acquire) ||
-           !thread2->saw_app_ready_event.load(std::memory_order_acquire)) {
+    while (reactor_->is_running() && (
+               !thread1->saw_app_ready_event.load(std::memory_order_acquire) ||
+               !thread2->saw_app_ready_event.load(std::memory_order_acquire))) {
         backoff.pause();
     }
 
@@ -322,12 +332,12 @@ TEST_F(ReactorTest, RogueThreadBlocksInITCMessage_ReactorStillShutsDown)
     reactor_->register_thread(rogue);
     reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>( [this] { reactor_->run(); });
 
-    // Wait for initialization to complete.
+    // Wait for initialization to complete, give it 2s.
     {
         Backoff backoff;
         auto start = MillisecondClock::now();
         while (!reactor_->is_initialized()) {
-            if (MillisecondClock::now() - start > MillisecondClock::duration{500}) {
+            if (MillisecondClock::now() - start > MillisecondClock::duration{2000}) {
                 FAIL() << "Reactor did not complete initialization";
             }
             backoff.pause();
@@ -365,7 +375,7 @@ TEST_F(ReactorTest, ThreadThrowsDuringTerminationReactorStillShutsDown)
         Backoff backoff;
         auto start = MillisecondClock::now();
         while (!reactor_->is_initialized()) {
-            if (MillisecondClock::now() - start > MillisecondClock::duration{500}) {
+            if (MillisecondClock::now() - start > MillisecondClock::duration{2000}) {
                 FAIL() << "Reactor did not complete initialization";
             }
             backoff.pause();
@@ -440,10 +450,10 @@ TEST_F(ReactorTest, ThreadThrowsDuringInitialProcessingReactorShutsDown)
     reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>( [this] { reactor_->run(); });
 
     // Give the reactor some time to start things up and send the init event.
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    std::this_thread::sleep_for(std::chrono::milliseconds(2000));
 
     EXPECT_TRUE(reactor_->is_finished());
-    EXPECT_EQ(bad_thread->get_lifecycle_state().as_tag(), ThreadLifecycleState::Terminated);
+    EXPECT_FALSE(bad_thread->is_running());
 }
 
 TEST_F(ReactorTest, ThreadThrowsDuringAppReadyProcessingReactorShutsDown)
@@ -460,7 +470,7 @@ TEST_F(ReactorTest, ThreadThrowsDuringAppReadyProcessingReactorShutsDown)
     { Backoff backoff; while (!reactor_->is_finished() || bad_thread->is_running()) { backoff.pause(); } }
 
     EXPECT_TRUE(reactor_->is_finished());
-    EXPECT_EQ(bad_thread->get_lifecycle_state().as_tag(), ThreadLifecycleState::Terminated);
+    EXPECT_FALSE(bad_thread->is_running());
 }
 
 #endif

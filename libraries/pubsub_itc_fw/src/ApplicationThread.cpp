@@ -138,10 +138,12 @@ void ApplicationThread::run() {
         std::cerr << fmt::format("{}:{} ApplicationThread::run run_internal returned, thread {}\n", __FILE__, __LINE__, thread_name_);
     } catch (const std::exception& ex) {
         PUBSUB_LOG(logger_, LogLevel::Error, "{} [{}] terminating due to exception: {}", thread_name_, thread_id_.get_value(), ex.what());
+        set_lifecycle_state(ThreadLifecycleState::ShuttingDown);
         reactor_.shutdown(fmt::format("Thread {} [{}] terminated due to exception: {}", thread_name_, thread_id_.get_value(), ex.what()));
         set_lifecycle_state(ThreadLifecycleState::Terminated);
     } catch (...) {
         PUBSUB_LOG(logger_, LogLevel::Error, "{} [{}] terminating due to unknown exception", thread_name_, thread_id_.get_value());
+        set_lifecycle_state(ThreadLifecycleState::ShuttingDown);
         reactor_.shutdown(fmt::format("Thread {} [{}] terminated due to unknown exception", thread_name_, thread_id_.get_value()));
         set_lifecycle_state(ThreadLifecycleState::Terminated);
     }
