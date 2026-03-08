@@ -1172,5 +1172,15 @@ TEST(LockFreeMessageQueueTest, ShouldSufferFromPriorityInversion) {
     EXPECT_EQ(msg2->value, 84);
 
     EXPECT_FALSE(queue.dequeue().has_value());
+
+    std::cout << "# DATASET: QUEUE-DEPTH" << '\n';
+    std::cout << "max_depth " << max_depth.load(std::memory_order_relaxed) << '\n';
+    std::cout << "depth_histogram";
+    for (int i = 0; i < 10; ++i) {
+        int count = histogram[i].load(std::memory_order_relaxed);
+        std::cout << " " << count;
+    }
+    std::cout << '\n';
+    std::cout << "# END-DATASET" << '\n';
 }
 #endif

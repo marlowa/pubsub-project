@@ -78,10 +78,9 @@ bool TimerHandler::handle_event(uint32_t events) noexcept {
         return true;
     }
 
-    if (reactor_.is_finished()) {
+    if (!reactor_.is_running()) {
         PUBSUB_LOG(reactor_.get_logger(), LogLevel::Info,
-                   "TimerHandler::handle_event: reactor is finished; "
-                   "dropping {} pending expirations for timer '{}'",
+                   "TimerHandler::handle_event: reactor is no longer running; dropping {} pending expirations for timer '{}'",
                    expirations, timer_.get_name());
         return true;
     }

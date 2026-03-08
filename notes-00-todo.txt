@@ -1,22 +1,149 @@
-status notes
-DONE** find all calls to yield and replace with Backoff::pause.
-TODO   flesh out QueueDepthHistogramTest that was destroyed by chatbot.
-TODO   add CPU pinning code to reactor to avoid the fan going crazy when we use Backoff.
-TODO   remind ourselves what ApplicationThread::is_paused is for.
-TODO   Reactor, add detection of inactive threads.
-TODO   look into if I should use noexcept, reasons.
-TODO   look into if I should use final, reasons
-TODO   design XML config file reader with XSD and the ability for file inclusion.
-TODO   does Backoff class need a policy or config for eventually timing out?
-TODO   threads can be paused and resumed. revise why we added this.
-TODO   purge cases of using namespaces inserted by chatbots
-TODO   PubSubItcException does not take file and line number.
-TODO   unit test logging does not come out. It really needs to, esecially for timer testing.
-TODO   plan for adding XML config using libxml2
-TODO   have a fresh think about if we want weak_ptr in the thread collections of the reactor, check for locks.
-TODO   reactor run should give error if no threads are registered.
-TODO   when reactor shuts down it should send TERM events to all threads that are still running
-TODO   look into this TCP_NODELAY thing that OTPM found a useful performance boost
-TODO   look into cancel tokens for our joinable thread, or maybe kill thread by tid.
-TODO   get rid of throwing runtime_error, throw our exception instead
+# before we tackle the list as produced by copilot
 
+re-check that we re valgrind clean on everything, including the reactor tests
+revist the performance tests
+
+
+Tier 1 — Critical correctness & architectural integrity
+
+These items directly affect correctness, shutdown determinism, or core semantics. They should be done first.
+
+    Update documentation to reflect coalesced timer semantics
+    (Your framework’s behaviour has fundamentally changed; this must be explicit.)
+
+    Make route_message() return bool
+    (Needed for correctness and future backpressure handling.)
+
+    Add a shutdown guard in route_message()
+    (Prevents late routing during teardown.)
+
+    Audit all reactor paths for “work after shutdown”
+    (Now that timers are fixed, ensure wake_fd, control commands, etc. also stop.)
+
+    Review lifecycle transitions for atomicity and visibility
+    (We saw a case where ShuttingDown was observed as Operational.)
+
+    Document the lifetime guarantees of ApplicationThread
+    (Your lock‑free design depends on this being correct.)
+
+    Review the invariants of fast_path_threads_
+    (Owner pointer stability depends on this map’s lifetime rules.)
+
+    Ensure event_loop() exits promptly once is_finished is set
+    (Now that timers are coalesced, finish the shutdown audit.)
+
+    Ensure finalize_threads_after_shutdown() cannot block
+    (A blocked join is catastrophic; add timeout or fallback.)
+
+    Document the shutdown semantics clearly
+    (When timers stop firing, when routing stops, etc.)
+
+    Document the lifetime guarantees of Reactor and ApplicationThread
+    (This is the foundation of your lock‑free design.)
+
+⚙️ Tier 2 — Important for robustness, clarity, and maintainability
+
+These are not urgent for correctness but will significantly improve the framework’s quality.
+
+    Revisit the backstop timer semantics
+    (Now that timers are coalesced, ensure the backstop still makes sense.)
+
+    Add a safety cap for timerfd expirations (diagnostic only)
+    (Even with coalescing, logging huge expirations is valuable.)
+
+    Consider adding a debug assertion for invalid owner_thread_
+    (Catches construction‑order bugs early.)
+
+    Consider removing the mutex lookup path entirely
+    (Now redundant; simplifies the reactor.)
+
+    Increase join timeout in tests (Valgrind builds)
+    (2 seconds is too aggressive under Valgrind.)
+
+    Add tests that verify “one event per handle_event call.”
+
+    Add tests that verify “no routing after shutdown.”
+
+    Add stress tests for timer backlog
+    (Slow reactor + high‑frequency timer + shutdown.)
+
+    unit test logging does not come out — fix this
+    (Essential for debugging timers.)
+
+    reactor run should give error if no threads are registered
+    (Prevents undefined behaviour.)
+
+    when reactor shuts down it should send TERM events to all threads still running
+    (Completes the lifecycle model.)
+
+    get rid of throwing runtime_error, throw our exception instead
+    (Consistency.)
+
+    PubSubItcException should take file and line number
+    (Better diagnostics.)
+
+🧩 Tier 3 — Medium‑priority architectural hygiene
+
+These improve clarity, consistency, and long‑term maintainability.
+
+    remind ourselves what ApplicationThread::is_paused is for; document it
+    (This is part of your lifecycle model.)
+
+    threads can be paused and resumed — revisit why we added this
+    (Ensure semantics are still correct.)
+
+    have a fresh think about weak_ptr in thread collections
+    (Ownership clarity.)
+
+    purge cases of using namespaces inserted by chatbots
+    (Code hygiene.)
+
+    look into noexcept usage
+    (Performance + clarity.)
+
+    look into final usage
+    (Intentional design.)
+
+    Backoff class: consider policy/config for eventual timeout
+    (Avoid infinite spin.)
+
+    Add CPU pinning code to reactor
+    (Performance tuning.)
+
+    Reactor: add detection of inactive threads
+    (Health monitoring.)
+
+📦 Tier 4 — Larger features or enhancements
+
+These are valuable but not urgent; they can be scheduled after the core is stable.
+
+    design XML config file reader with XSD and file inclusion
+
+    plan for adding XML config using libxml2
+
+    look into TCP_NODELAY performance boost
+
+    look into cancel tokens or kill‑by‑tid for joinable thread
+
+    Add a “timer wheel” abstraction (replace timerfd)
+
+    Think about metrics (coalesced expirations, dropped events, etc.)
+    (Prometheus integration.)
+
+🍃 Tier 5 — Low‑hanging fruit (quick wins)
+
+These are easy, fast, and satisfying to knock off.
+
+    DONE: replace all yield calls with Backoff::pause
+
+    flesh out QueueDepthHistogramTest
+
+    purge chatbot‑inserted namespaces
+
+    reactor run should error if no threads registered
+
+    unit test logging fix
+
+    get rid of runtime_error
+
+    PubSubItcException improvements

@@ -19,6 +19,7 @@
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/ReactorConfiguration.hpp>
 #include <pubsub_itc_fw/ReactorControlCommand.hpp>
+#include <pubsub_itc_fw/ReactorLifecycleState.hpp>
 #include <pubsub_itc_fw/ThreadLifecycleState.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 #include <pubsub_itc_fw/TimerID.hpp>
@@ -92,14 +93,21 @@ public:
      */
     std::string get_thread_name_from_id(ThreadID id) const;
 
+    // Note: finished here means either fully shutdown or shutdown in progress.
     bool is_finished() const {
-        return is_finished_.load();
+        auto state = lifecycle_.load(std::memory_order_acquire);
+        return state != ReactorLifecycleState::Running &&
+               state != ReactorLifecycleState::NotStarted;
     }
 
     void route_message(ThreadID target_id, EventMessage message);
 
     bool is_initialized() const noexcept {
         return initialization_complete_.load(std::memory_order_acquire);
+    }
+
+    bool is_running() const {
+        return lifecycle_.load(std::memory_order_acquire) == ReactorLifecycleState::Running;
     }
 
     void create_timer_fd(TimerID timer_id, const std::string& name, ThreadID owner_thread_id,
@@ -130,7 +138,8 @@ public:
     ApplicationThread* get_fast_path_thread(ThreadID id) const noexcept;
 
 protected:
-    std::atomic<bool> is_finished_{false};
+    std::atomic<ReactorLifecycleState::Tag> lifecycle_{ReactorLifecycleState::NotStarted};
+
     std::string shutdown_reason_;
 
 private:

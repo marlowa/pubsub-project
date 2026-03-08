@@ -139,9 +139,11 @@ void ApplicationThread::run() {
     } catch (const std::exception& ex) {
         PUBSUB_LOG(logger_, LogLevel::Error, "{} [{}] terminating due to exception: {}", thread_name_, thread_id_.get_value(), ex.what());
         reactor_.shutdown(fmt::format("Thread {} [{}] terminated due to exception: {}", thread_name_, thread_id_.get_value(), ex.what()));
+        set_lifecycle_state(ThreadLifecycleState::Terminated);
     } catch (...) {
         PUBSUB_LOG(logger_, LogLevel::Error, "{} [{}] terminating due to unknown exception", thread_name_, thread_id_.get_value());
         reactor_.shutdown(fmt::format("Thread {} [{}] terminated due to unknown exception", thread_name_, thread_id_.get_value()));
+        set_lifecycle_state(ThreadLifecycleState::Terminated);
     }
 }
 
@@ -152,55 +154,48 @@ void ApplicationThread::run_internal() {
 
     Backoff backoff;
 
-    try {
-        for (;;) {
-            // Optional pause mechanism
-            if (is_paused_.load(std::memory_order_relaxed)) {
-                std::this_thread::yield();
-                continue;
-            }
-
-            // Physical/lifecycle running state: hard stop once we leave the running band
-            if (!is_running()) {
-                break;
-            }
-
-            // If the Reactor has begun shutdown, this thread should exit promptly
-            // TODO not sure about this. When the reactor finishes it should tell all threads to terminate.
-            if (reactor_.is_finished()) {
-                PUBSUB_LOG(logger_, LogLevel::Warning, "Thread {} detected Reactor shutdown, exiting", thread_name_);
-                break;
-            }
-
-            // Defensive: queue must exist while the thread is running
-            if (message_queue_ == nullptr) {
-                PUBSUB_LOG(logger_, LogLevel::Error, "Thread {} no longer has message queue, shutting down.", thread_name_);
-                break;
-            }
-
-            // Main dequeue path
-            auto maybe_msg = message_queue_->dequeue();
-            if (!maybe_msg.has_value()) {
-                // No work available: apply backoff
-                backoff.pause();
-                continue;
-            }
-
-            // We successfully dequeued a message: reset backoff
-            backoff.reset();
-
-            EventMessage msg = std::move(*maybe_msg);
-            process_message(msg);
-
-            // Application logic may decide this thread is now Terminated
-            if (get_lifecycle_state().as_tag() == ThreadLifecycleState::Terminated) {
-                break;
-            }
+    for (;;) {
+        // Optional pause mechanism
+        if (is_paused_.load(std::memory_order_relaxed)) {
+            std::this_thread::yield();
+            continue;
         }
-    } catch (const std::exception& ex) {
-        PUBSUB_LOG(logger_, LogLevel::Error, "{} [{}] terminating due to exception: {}", thread_name_, thread_id_.get_value(), ex.what());
-    } catch (...) {
-        PUBSUB_LOG(logger_, LogLevel::Error, "{} [{}] terminating due to unknown exception", thread_name_, thread_id_.get_value());
+
+        // Physical/lifecycle running state: hard stop once we leave the running band
+        if (!is_running()) {
+            break;
+        }
+
+        // If the Reactor has begun shutdown, this thread should exit promptly
+        if (!reactor_.is_running()) {
+            PUBSUB_LOG(logger_, LogLevel::Warning, "Thread {} detected Reactor shutdown, exiting", thread_name_);
+            break;
+        }
+
+        // Defensive: queue must exist while the thread is running
+        if (message_queue_ == nullptr) {
+            PUBSUB_LOG(logger_, LogLevel::Error, "Thread {} no longer has message queue, shutting down.", thread_name_);
+            break;
+        }
+
+        // Main dequeue path
+        auto maybe_msg = message_queue_->dequeue();
+        if (!maybe_msg.has_value()) {
+            // No work available: apply backoff
+            backoff.pause();
+            continue;
+        }
+
+        // We successfully dequeued a message: reset backoff
+        backoff.reset();
+
+        EventMessage msg = std::move(*maybe_msg);
+        process_message(msg);
+
+        // Application logic may decide this thread is now Terminated
+        if (get_lifecycle_state().as_tag() == ThreadLifecycleState::Terminated) {
+            break;
+        }
     }
 
     PUBSUB_LOG(logger_, LogLevel::Info, "Thread {} is shutting down.", thread_name_);

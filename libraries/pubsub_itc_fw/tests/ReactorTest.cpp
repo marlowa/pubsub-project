@@ -1,5 +1,5 @@
 // TODO neutralise reactor tests until all the application thread tests are valgrind clean
-#if 0
+#if 1
 // ReactorInitAppReadyTest.cpp
 
 #include <atomic>
@@ -304,6 +304,8 @@ TEST_F(ReactorTest, ShutdownBroadcastsTerminationAndThreadExits)
     // Trigger shutdown by explicitly shutting the reactor down.
     reactor_->shutdown("test shutdown");
 
+    { Backoff backoff; while (!reactor_->is_finished() || thread->is_running()) { backoff.pause(); } }
+
     EXPECT_TRUE(reactor_->is_finished());
     EXPECT_FALSE(thread->is_running());
 }
@@ -372,6 +374,8 @@ TEST_F(ReactorTest, ThreadThrowsDuringTerminationReactorStillShutsDown)
 
     // Trigger shutdown. The thread will throw during Termination.
     reactor_->shutdown("test shutdown");
+
+    { Backoff backoff; while (!reactor_->is_finished() || bad_thread->is_running()) { backoff.pause(); } }
 
     EXPECT_TRUE(reactor_->is_finished());
     EXPECT_FALSE(bad_thread->is_running());  // Thread must have been shut down
@@ -452,6 +456,8 @@ TEST_F(ReactorTest, ThreadThrowsDuringAppReadyProcessingReactorShutsDown)
 
     // Give the reactor some time to start things up and send the init event.
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    { Backoff backoff; while (!reactor_->is_finished() || bad_thread->is_running()) { backoff.pause(); } }
 
     EXPECT_TRUE(reactor_->is_finished());
     EXPECT_EQ(bad_thread->get_lifecycle_state().as_tag(), ThreadLifecycleState::Terminated);
