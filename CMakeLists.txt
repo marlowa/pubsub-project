@@ -37,7 +37,7 @@ if(ENABLE_COVERAGE)
     message(STATUS "Building with code coverage instrumentation")
 
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-        add_compile_options(-O0 -g --coverage -fprofile-arcs -ftest-coverage -fprofile-update=atomic)
+        add_compile_options(-O0 -g --coverage -fprofile-arcs -ftest-coverage -fno-inline -fno-inline-functions -fprofile-update=atomic)
         add_link_options(--coverage)
     else()
         message(FATAL_ERROR "Coverage enabled, but compiler does not support GCC/Clang coverage flags")

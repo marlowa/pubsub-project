@@ -172,6 +172,16 @@ public:
 
 } // unnamed namespace
 
+TEST_F(ApplicationThreadTest, GetThreadNameReturnsCorrectName)
+{
+    TestThread thread(logger_with_sink_.logger,
+                      *reactor_,
+                      "GetThreadNameTest", ThreadID(123),
+                      make_queue_config(), make_allocator_config());
+
+    EXPECT_EQ(thread.get_thread_name(), "GetThreadNameTest");
+}
+
 // ------------------------------------------------------------
 // TEST 1: Start and shutdown
 // ------------------------------------------------------------

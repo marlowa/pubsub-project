@@ -48,6 +48,10 @@ ApplicationThread::ApplicationThread(QuillLogger& logger, Reactor& reactor, cons
     // TODO prohibit threadID of zero since that is reserved for the reactor.
 }
 
+const std::string& ApplicationThread::get_thread_name() const {
+    return thread_name_;
+}
+
 void ApplicationThread::start() {
     if (thread_ != nullptr) {
         throw PreconditionAssertion(fmt::format("Thread {} has already been started.", thread_name_), __FILE__, __LINE__);

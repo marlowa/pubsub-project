@@ -109,9 +109,7 @@ class ApplicationThread {
     /**
      * Return the thread name, as a const ref to avoid copying
      */
-    const std::string& get_thread_name() const {
-        return thread_name_;
-    }
+    const std::string& get_thread_name() const;
 
     /**
      * @brief The main loop for the application thread.

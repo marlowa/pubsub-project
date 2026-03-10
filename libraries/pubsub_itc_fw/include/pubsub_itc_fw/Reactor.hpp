@@ -137,6 +137,21 @@ public:
 
     ApplicationThread* get_fast_path_thread(ThreadID id) const noexcept;
 
+    // Made public for unit test purposes only
+    void finalize_threads_after_shutdown();
+    void check_for_exited_threads();
+    void check_for_stuck_threads();
+    void dispatch_events(int nfds, epoll_event* events);
+    void set_lifecycle_state(ReactorLifecycleState::Tag state)
+    {
+        lifecycle_.store(state, std::memory_order_release);
+    }
+
+    void set_initialization_complete(bool is_complete)
+    {
+        initialization_complete_.store(is_complete, std::memory_order_release);
+    }
+
 protected:
     std::atomic<ReactorLifecycleState::Tag> lifecycle_{ReactorLifecycleState::NotStarted};
 
@@ -145,11 +160,7 @@ protected:
 private:
     [[nodiscard]] bool initialize_threads();
     void event_loop();
-    void check_for_exited_threads();
-    void check_for_stuck_threads();
     void check_for_inactive_sockets();
-    void dispatch_events(int nfds, epoll_event* events);
-    void finalize_threads_after_shutdown();
     bool wait_for_all_threads(std::function<bool(const ApplicationThread&)> predicate, const std::string& phase_name);
     void broadcast_reactor_event(EventType::EventTypeTag tag);
     void process_control_commands();

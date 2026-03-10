@@ -187,6 +187,22 @@ protected:
     }
 };
 
+class FakeThread : public ApplicationThread {
+public:
+    FakeThread(QuillLogger& logger,
+               Reactor& reactor,
+               const std::string& name,
+               ThreadID id,
+               const QueueConfig& qc,
+               const AllocatorConfig& ac)
+        : ApplicationThread(logger, reactor, name, id, qc, ac)
+    {
+        set_lifecycle_state(ThreadLifecycleState::Operational);
+    }
+
+    void on_itc_message(const EventMessage&) override {}
+};
+
 } // un-named namespace
 
 TEST_F(ReactorTest, InitializationTimeoutTriggersShutdown)
@@ -475,4 +491,182 @@ TEST_F(ReactorTest, ReactorRequiresAtLeastOneRegisteredThreadTest)
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
     EXPECT_TRUE(reactor_->is_finished()); // reactor must immediately finish
     EXPECT_FALSE(reactor_->is_running()); // never entered event loop
+}
+
+TEST_F(ReactorTest, RouteMessageBeforeInitializationThrows)
+{
+    ReactorConfiguration cfg;
+    Reactor reactor(cfg, logger_with_sink_.logger);
+
+    EventMessage msg = EventMessage::create_itc_message(ThreadID(1), nullptr, 0);
+
+    EXPECT_THROW(reactor.route_message(ThreadID(1), std::move(msg)), PreconditionAssertion);
+}
+
+TEST_F(ReactorTest, RouteMessageFromNonRunningOriginIsIgnored)
+{
+    ReactorConfiguration cfg;
+    Reactor reactor(cfg, logger_with_sink_.logger);
+
+    auto target_thread = std::make_shared<NeverStartingThread>(
+        logger_with_sink_.logger, reactor,
+        "TargetThread", ThreadID(1),
+        make_queue_config(), make_allocator_config());
+
+    reactor.register_thread(target_thread);
+
+    // Pretend initialization completed
+    reactor.set_lifecycle_state(ReactorLifecycleState::Running);
+    reactor.set_initialization_complete(true);
+
+    // Message claims to originate from thread 2, which does not exist
+    EventMessage message = EventMessage::create_itc_message(ThreadID(2), nullptr, 0);
+
+    // Should be ignored, not thrown
+    reactor.route_message(ThreadID(1), std::move(message));
+
+    EXPECT_TRUE(target_thread->get_queue().empty());
+}
+
+TEST_F(ReactorTest, FinalizePromotesShuttingDownToTerminated)
+{
+    ReactorConfiguration cfg;
+    Reactor reactor(cfg, logger_with_sink_.logger);
+
+    auto t = std::make_shared<NeverStartingThread>(logger_with_sink_.logger, reactor,
+                                                   "T", ThreadID(1),
+                                                   make_queue_config(), make_allocator_config());
+    reactor.register_thread(t);
+
+    // Force lifecycle state
+    t->set_lifecycle_state(ThreadLifecycleState::ShuttingDown);
+
+    reactor.shutdown("x");
+    reactor.finalize_threads_after_shutdown();
+
+    EXPECT_EQ(t->get_lifecycle_state().as_tag(), ThreadLifecycleState::Terminated);
+}
+
+TEST_F(ReactorTest, CancelTimerWrongOwnerThrows)
+{
+    ReactorConfiguration cfg;
+    Reactor reactor(cfg, logger_with_sink_.logger);
+
+    auto t1 = std::make_shared<CooperativeShutdownThread>(logger_with_sink_.logger, reactor,
+                                                          "A", ThreadID(1),
+                                                          make_queue_config(), make_allocator_config());
+    auto t2 = std::make_shared<CooperativeShutdownThread>(logger_with_sink_.logger, reactor,
+                                                          "B", ThreadID(2),
+                                                          make_queue_config(), make_allocator_config());
+
+    reactor.register_thread(t1);
+    reactor.register_thread(t2);
+
+    TimerID tid = reactor.allocate_timer_id();
+    reactor.create_timer_fd(tid, "X", ThreadID(1), std::chrono::milliseconds(10), TimerType::SingleShot);
+
+    EXPECT_THROW(
+        reactor.cancel_timer_fd(ThreadID(2), tid),
+        PreconditionAssertion
+    );
+}
+
+TEST_F(ReactorTest, DispatchEventsUnknownFdIsIgnored)
+{
+    ReactorConfiguration cfg;
+    Reactor reactor(cfg, logger_with_sink_.logger);
+
+    epoll_event ev{};
+    ev.data.fd = 9999; // bogus FD
+
+    reactor.dispatch_events(1, &ev);
+}
+
+TEST_F(ReactorTest, ExitedThreadTriggersShutdown)
+{
+    ReactorConfiguration cfg;
+    Reactor reactor(cfg, logger_with_sink_.logger);
+
+    auto thread = std::make_shared<FakeThread>(logger_with_sink_.logger, reactor,
+                                          "T", ThreadID(1), make_queue_config(), make_allocator_config());
+    reactor.register_thread(thread);
+
+    // Force Reactor into Running state
+    reactor.set_lifecycle_state(ReactorLifecycleState::Running);
+
+    // Force thread into ShuttingDown state
+    thread->set_lifecycle_state(ThreadLifecycleState::ShuttingDown);
+
+    // This should trigger Reactor shutdown
+    reactor.check_for_exited_threads();
+
+    EXPECT_TRUE(reactor.is_finished());
+}
+
+TEST_F(ReactorTest, StuckOperationalThreadTriggersShutdown)
+{
+    ReactorConfiguration cfg;
+    cfg.itc_maximum_inactivity_interval_ = std::chrono::milliseconds(1);
+    Reactor reactor(cfg, logger_with_sink_.logger);
+
+    auto thread = std::make_shared<FakeThread>(
+        logger_with_sink_.logger, reactor,
+        "ThreadA", ThreadID(1),
+        make_queue_config(), make_allocator_config());
+
+    reactor.register_thread(thread);
+
+    // Reactor must be Running
+    reactor.set_lifecycle_state(ReactorLifecycleState::Running);
+
+    // Thread must be Operational
+    thread->set_lifecycle_state(ThreadLifecycleState::Operational);
+
+    // Simulate a callback that finished long ago
+    auto long_ago = HighResolutionClock::now() - std::chrono::seconds(10);
+    thread->set_time_event_started(long_ago);
+    thread->set_time_event_finished(HighResolutionClock::now());
+
+    reactor.check_for_stuck_threads();
+
+    EXPECT_TRUE(reactor.is_finished());
+}
+
+TEST_F(ReactorTest, DeregisterThreadRemovesThreadAndTimers)
+{
+    ReactorConfiguration configuration;
+    Reactor reactor(configuration, logger_with_sink_.logger);
+
+    // Create and register a thread
+    auto thread = std::make_shared<CooperativeShutdownThread>(
+        logger_with_sink_.logger,
+        reactor,
+        "ThreadA",
+        ThreadID(10),
+        make_queue_config(),
+        make_allocator_config());
+
+    reactor.register_thread(thread);
+
+    // Create a timer owned by this thread
+    TimerID timer_id = reactor.allocate_timer_id();
+    reactor.create_timer_fd(
+        timer_id,
+        "TimerA",
+        ThreadID(10),
+        std::chrono::milliseconds(10),
+        TimerType::SingleShot);
+
+    // Preconditions: thread must be discoverable
+    EXPECT_NE(reactor.get_fast_path_thread(ThreadID(10)), nullptr);
+
+    // Act: deregister the thread
+    reactor.deregister_thread(ThreadID(10), "ThreadA");
+
+    // After deregistration, the thread must be gone
+    EXPECT_EQ(reactor.get_fast_path_thread(ThreadID(10)), nullptr);
+
+    // Timer must also be gone: cancel_timer_fd should now be a no-op
+    // (If the timer still existed, this would throw PreconditionAssertion)
+    EXPECT_NO_THROW(reactor.cancel_timer_fd(ThreadID(10), timer_id));
 }
