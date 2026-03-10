@@ -19,7 +19,7 @@ namespace pubsub_itc_fw {
     @tparam StateType The type of the state to be stored.
 */
     template <typename StateType>
-    class MemoryMappedFile final {
+    class MemoryMappedFile  {
     public:
     /*
         The destructor ensures that the memory-mapped file is unmapped and the file handle is closed, guaranteeing that all data is flushed to disk and resources are released.

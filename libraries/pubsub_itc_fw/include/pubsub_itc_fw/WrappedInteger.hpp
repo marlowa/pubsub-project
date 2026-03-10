@@ -21,7 +21,7 @@ namespace pubsub_itc_fw {
  * @tparam T The underlying integer type.
  */
 template <typename Tag, typename T>
-class WrappedInteger final {
+class WrappedInteger  {
 public:
     /**
      * @brief Constructs an ID with a default (invalid) value.
@@ -116,7 +116,7 @@ std::ostream& operator<<(std::ostream& os, const WrappedInteger<Tag, T>& id) {
 namespace std {
 template <typename Tag, typename T>
 struct hash<pubsub_itc_fw::WrappedInteger<Tag, T>> {
-    [[nodiscard]] size_t operator()(const pubsub_itc_fw::WrappedInteger<Tag, T>& id) const noexcept {
+    [[nodiscard]] size_t operator()(const pubsub_itc_fw::WrappedInteger<Tag, T>& id) const {
         return hash<T>()(id.get_value());
     }
 };

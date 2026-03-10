@@ -48,34 +48,34 @@ template <typename T> class SimpleSpan {
     /**
      * @brief Default constructor - creates an empty span
      */
-    constexpr SimpleSpan() noexcept : data_(nullptr), size_(0) {}
+    constexpr SimpleSpan() : data_(nullptr), size_(0) {}
 
     /**
      * @brief Construct from pointer and size
      */
-    constexpr SimpleSpan(T* data, size_type size) noexcept : data_(data), size_(size) {}
+    constexpr SimpleSpan(T* data, size_type size) : data_(data), size_(size) {}
 
     /**
      * @brief Construct from pointer range [begin, end)
      */
-    constexpr SimpleSpan(T* begin, T* end) noexcept : data_(begin), size_(static_cast<size_type>(end - begin)) {}
+    constexpr SimpleSpan(T* begin, T* end) : data_(begin), size_(static_cast<size_type>(end - begin)) {}
 
     /**
      * @brief Construct from std::vector (non-const)
      */
-    template <typename Allocator> SimpleSpan(std::vector<value_type, Allocator>& vec) noexcept : data_(vec.data()), size_(vec.size()) {}
+    template <typename Allocator> SimpleSpan(std::vector<value_type, Allocator>& vec) : data_(vec.data()), size_(vec.size()) {}
 
     /**
      * @brief Construct from std::vector (const) - only for const T
      */
-    template <typename Allocator> SimpleSpan(const std::vector<value_type, Allocator>& vec) noexcept : data_(vec.data()), size_(vec.size()) {
+    template <typename Allocator> SimpleSpan(const std::vector<value_type, Allocator>& vec) : data_(vec.data()), size_(vec.size()) {
         static_assert(std::is_const_v<T>, "Cannot create non-const span from const vector");
     }
 
     /**
      * @brief Construct from C-style array
      */
-    template <size_type N> constexpr SimpleSpan(T (&array)[N]) noexcept : data_(array), size_(N) {}
+    template <size_type N> constexpr SimpleSpan(T (&array)[N]) : data_(array), size_(N) {}
 
     // Copy constructor and assignment (default is fine)
     SimpleSpan(const SimpleSpan&) = default;
@@ -117,35 +117,35 @@ template <typename T> class SimpleSpan {
     /**
      * @brief Direct access to underlying data
      */
-    constexpr pointer data() const noexcept {
+    constexpr pointer data() const {
         return data_;
     }
 
     // --- Iterators ---
 
-    constexpr iterator begin() const noexcept {
+    constexpr iterator begin() const {
         return data_;
     }
-    constexpr iterator end() const noexcept {
+    constexpr iterator end() const {
         return data_ + size_;
     }
-    constexpr const_iterator cbegin() const noexcept {
+    constexpr const_iterator cbegin() const {
         return data_;
     }
-    constexpr const_iterator cend() const noexcept {
+    constexpr const_iterator cend() const {
         return data_ + size_;
     }
 
-    constexpr reverse_iterator rbegin() const noexcept {
+    constexpr reverse_iterator rbegin() const {
         return reverse_iterator(end());
     }
-    constexpr reverse_iterator rend() const noexcept {
+    constexpr reverse_iterator rend() const {
         return reverse_iterator(begin());
     }
-    constexpr const_reverse_iterator crbegin() const noexcept {
+    constexpr const_reverse_iterator crbegin() const {
         return const_reverse_iterator(cend());
     }
-    constexpr const_reverse_iterator crend() const noexcept {
+    constexpr const_reverse_iterator crend() const {
         return const_reverse_iterator(cbegin());
     }
 
@@ -154,21 +154,21 @@ template <typename T> class SimpleSpan {
     /**
      * @brief Number of elements in the span
      */
-    constexpr size_type size() const noexcept {
+    constexpr size_type size() const {
         return size_;
     }
 
     /**
      * @brief Size in bytes
      */
-    constexpr size_type size_bytes() const noexcept {
+    constexpr size_type size_bytes() const {
         return size_ * sizeof(T);
     }
 
     /**
      * @brief Check if span is empty
      */
-    constexpr bool empty() const noexcept {
+    constexpr bool empty() const {
         return size_ == 0;
     }
 

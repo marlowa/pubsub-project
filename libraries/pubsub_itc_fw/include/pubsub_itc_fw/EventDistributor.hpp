@@ -30,7 +30,7 @@ class Reactor;
  * It is a single-threaded entity that processes messages from its own
  * dedicated message queue.
  */
-class EventDistributor final : public ApplicationThread {
+class EventDistributor  : public ApplicationThread {
   public:
     /**
      * @brief Constructs an EventDistributor.

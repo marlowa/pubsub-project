@@ -98,12 +98,6 @@ These improve clarity, consistency, and long‑term maintainability.
     purge cases of using namespaces inserted by chatbots
     (Code hygiene.)
 
-    look into noexcept usage
-    (Performance + clarity.)
-
-    look into final usage
-    (Intentional design.)
-
     Backoff class: consider policy/config for eventual timeout
     (Avoid infinite spin.)
 
@@ -190,3 +184,6 @@ Force a thread to:
 Where you want to go next
 
 Now that I’ve seen the tests, the natural next step is to decide which of the missing coverage areas you want to tackle first.
+
+DONE look into noexcept usage (Performance + clarity.)
+DONE look into final usage (Intentional design.)

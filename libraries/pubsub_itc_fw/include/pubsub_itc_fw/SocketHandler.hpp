@@ -21,7 +21,7 @@ namespace pubsub_itc_fw {
  * It encapsulates the socket file descriptor and a reference to the thread
  * that should process the data.
  */
-class SocketHandler final : public EventHandler {
+class SocketHandler  : public EventHandler {
 public:
     /**
      * @brief Constructs a SocketHandler.
@@ -38,13 +38,13 @@ public:
      * @param [in] events The event types that occurred (e.g., EPOLLIN).
      * @return True if the handler successfully processed the event, false otherwise.
      */
-    bool handle_event(uint32_t events) noexcept override;
+    bool handle_event(uint32_t events) override;
 
     /**
      * @brief Returns the file descriptor associated with this handler.
      * @return The file descriptor.
      */
-    int get_fd() const noexcept override {
+    int get_fd() const override {
         return fd_;
     }
 

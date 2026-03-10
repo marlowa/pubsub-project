@@ -102,7 +102,7 @@ public:
 
     void route_message(ThreadID target_id, EventMessage message);
 
-    bool is_initialized() const noexcept {
+    bool is_initialized() const {
         return initialization_complete_.load(std::memory_order_acquire);
     }
 
@@ -133,9 +133,9 @@ public:
 
     QuillLogger& get_logger() { return logger_; }
 
-    ThreadLifecycleState::Tag get_thread_state(ThreadID id) const noexcept;
+    ThreadLifecycleState::Tag get_thread_state(ThreadID id) const;
 
-    ApplicationThread* get_fast_path_thread(ThreadID id) const noexcept;
+    ApplicationThread* get_fast_path_thread(ThreadID id) const;
 
     // Made public for unit test purposes only
     void finalize_threads_after_shutdown();

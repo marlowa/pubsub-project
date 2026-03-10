@@ -5,7 +5,7 @@
 
 namespace pubsub_itc_fw {
 
-MillisecondClock::time_point MillisecondClock::now() noexcept
+MillisecondClock::time_point MillisecondClock::now()
 {
     timespec ts{};
     clock_gettime(CLOCK_MONOTONIC_COARSE, &ts);

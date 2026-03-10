@@ -34,7 +34,7 @@ class TcpConnectorImpl;
  * It uses the Pimpl idiom to hide its implementation details. Error reporting
  * is done via `std::tuple<bool, std::string>` or `std::unique_ptr<T>, std::string`.
  */
-class TcpConnector final {
+class TcpConnector  {
 public:
     /**
      * @brief Constructs a `TcpConnector` instance for a specific remote address.
@@ -58,8 +58,8 @@ public:
     TcpConnector& operator=(const TcpConnector&) = delete;
 
     // Move operations to allow transferring ownership of the connector.
-    TcpConnector(TcpConnector&& other) noexcept;
-    TcpConnector& operator=(TcpConnector&& other) noexcept;
+    TcpConnector(TcpConnector&& other);
+    TcpConnector& operator=(TcpConnector&& other);
 
     /**
      * @brief Initiates an asynchronous connection attempt to the remote address.

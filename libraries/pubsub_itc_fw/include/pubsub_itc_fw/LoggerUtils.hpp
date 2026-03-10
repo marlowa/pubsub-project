@@ -40,7 +40,7 @@ public:
     /**
      * @brief Convert pubsub_itc_fw::LogLevel to quill::LogLevel
      */
-    static quill::LogLevel to_quill_log_level(LogLevel level) noexcept
+    static quill::LogLevel to_quill_log_level(LogLevel level)
     {
         switch (level.log_level_) {
             case LogLevel::Trace:
@@ -66,7 +66,7 @@ public:
     /**
      * @brief Convert quill::LogLevel to pubsub_itc_fw::LogLevel
      */
-    static LogLevel from_quill_log_level(quill::LogLevel level) noexcept
+    static LogLevel from_quill_log_level(quill::LogLevel level)
     {
         switch (level) {
             case quill::LogLevel::TraceL1:

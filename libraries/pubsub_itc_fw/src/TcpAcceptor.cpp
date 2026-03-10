@@ -56,7 +56,7 @@ public:
      * @brief Move constructor for `TcpAcceptorImpl`.
      * @param other The other `TcpAcceptorImpl` to move from.
      */
-    TcpAcceptorImpl(TcpAcceptorImpl&& other) noexcept
+    TcpAcceptorImpl(TcpAcceptorImpl&& other)
         : local_address_(std::move(other.local_address_)),
           listening_socket_(std::move(other.listening_socket_)) {}
 
@@ -65,7 +65,7 @@ public:
      * @param other The other `TcpAcceptorImpl` to move from.
      * @return A reference to this `TcpAcceptorImpl` instance.
      */
-    TcpAcceptorImpl& operator=(TcpAcceptorImpl&& other) noexcept {
+    TcpAcceptorImpl& operator=(TcpAcceptorImpl&& other) {
         if (this != &other) {
             close_listening_socket(); // Close current resources before taking over others.
             local_address_ = std::move(other.local_address_);
@@ -165,8 +165,8 @@ TcpAcceptor::~TcpAcceptor() = default; // Destructor is defaulted in header and 
 
 // Move constructor and assignment operator are defaulted in header
 
-TcpAcceptor::TcpAcceptor(TcpAcceptor&& other) noexcept = default;
-TcpAcceptor& TcpAcceptor::operator=(TcpAcceptor&& other) noexcept = default;
+TcpAcceptor::TcpAcceptor(TcpAcceptor&& other) = default;
+TcpAcceptor& TcpAcceptor::operator=(TcpAcceptor&& other) = default;
 
 [[nodiscard]] std::tuple<std::unique_ptr<TcpAcceptor>, std::string> TcpAcceptor::create(const InetAddress& local_address, int backlog) {
     try {

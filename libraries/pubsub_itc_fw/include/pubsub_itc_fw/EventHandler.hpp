@@ -34,13 +34,13 @@ public:
      * @param events The event types that occurred (e.g., EPOLLIN).
      * @return True if the handler successfully processed the event, false otherwise.
      */
-    virtual bool handle_event(uint32_t events) noexcept = 0;
+    virtual bool handle_event(uint32_t events) = 0;
 
     /**
      * @brief Returns the file descriptor associated with this handler.
      * @return The file descriptor.
      */
-    virtual int get_fd() const noexcept = 0;
+    virtual int get_fd() const = 0;
 
 private:
     // A deleted copy constructor and assignment operator to prevent copying.

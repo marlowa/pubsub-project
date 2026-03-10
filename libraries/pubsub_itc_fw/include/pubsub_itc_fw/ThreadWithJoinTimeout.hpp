@@ -63,13 +63,13 @@ public:
     ThreadWithJoinTimeout(ThreadWithJoinTimeout const&) = delete;
     ThreadWithJoinTimeout& operator=(ThreadWithJoinTimeout const&) = delete;
 
-    ThreadWithJoinTimeout(ThreadWithJoinTimeout&& other) noexcept
+    ThreadWithJoinTimeout(ThreadWithJoinTimeout&& other)
         : thread_(other.thread_)
         , has_thread_(other.has_thread_) {
         other.has_thread_ = false;
     }
 
-    ThreadWithJoinTimeout& operator=(ThreadWithJoinTimeout&& other) noexcept {
+    ThreadWithJoinTimeout& operator=(ThreadWithJoinTimeout&& other) {
         if (this != &other) {
             if (has_thread_) {
                 pthread_detach(thread_);
@@ -117,7 +117,7 @@ public:
     /**
      * @brief Returns true if the wrapper still owns a joinable thread.
      */
-    bool joinable() const noexcept {
+    bool joinable() const {
         return has_thread_;
     }
 

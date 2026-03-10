@@ -28,7 +28,7 @@ public:
     /**
      * @brief Performs one step of the backoff sequence.
      */
-    void pause() noexcept {
+    void pause() {
 #ifdef USING_VALGRIND
         // In Valgrind mode, we skip hardware spinning entirely.
         // Valgrind is serialised; we MUST yield to let other threads run.
@@ -64,7 +64,7 @@ public:
      * @brief Resets the backoff counter.
      * Call this whenever progress is made (e.g., a message is successfully dequeued).
      */
-    void reset() noexcept {
+    void reset() {
         count_ = 0;
     }
 

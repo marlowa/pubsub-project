@@ -40,7 +40,7 @@ class TcpSocketImpl; // Corrected to PascalCase as per your rule
  * `errno`) to allow higher-level components (e.g., event loop) to handle them
  * asynchronously without blocking the calling thread.
  */
-class TcpSocket final : public ByteStreamInterface {
+class TcpSocket  : public ByteStreamInterface {
   public:
     /**
      * @brief Destructor for `TcpSocket`.

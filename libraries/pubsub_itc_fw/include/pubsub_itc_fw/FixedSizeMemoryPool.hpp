@@ -34,9 +34,9 @@ struct SlotStorage {
         std::aligned_storage_t<sizeof(T), alignof(T)> storage;
     };
 
-    T* object_ptr() noexcept { return reinterpret_cast<T*>(&storage); }
-    T const* object_ptr() const noexcept { return reinterpret_cast<T const*>(&storage); }
-    FreeListNode* free_node_ptr() noexcept { return &free_node; }
+    T* object_ptr() { return reinterpret_cast<T*>(&storage); }
+    T const* object_ptr() const { return reinterpret_cast<T const*>(&storage); }
+    FreeListNode* free_node_ptr() { return &free_node; }
 };
 
 template <typename T>
@@ -52,7 +52,7 @@ struct Slot {
  * ExpandablePoolAllocator's flag-based diagnostic checks.
  */
 template <typename T>
-class FixedSizeMemoryPool final {
+class FixedSizeMemoryPool  {
 public:
     using SlotType = Slot<T>;
 
@@ -347,7 +347,7 @@ template <typename T> struct SlotStorage {
  *                call allocate() and deallocate() concurrently without
  *                external synchronisation.
  */
-template <typename T> class FixedSizeMemoryPool final {
+template <typename T> class FixedSizeMemoryPool  {
   public:
     using SlotType = Slot<T>;
 
@@ -518,7 +518,7 @@ template <typename T> class FixedSizeMemoryPool final {
      * @note Uses __atomic_load to ensure we see all writes that happened-before
      *       the head was stored.
      */
-    [[nodiscard]] HeadPtr load_head() const noexcept {
+    [[nodiscard]] HeadPtr load_head() const {
         unsigned __int128 val;
         __atomic_load(&head_raw_, &val, __ATOMIC_ACQUIRE);
         return *reinterpret_cast<HeadPtr const*>(&val);
@@ -540,7 +540,7 @@ template <typename T> class FixedSizeMemoryPool final {
      * @note The "weak" variant may spuriously fail even when expected == current.
      *       This is acceptable in a loop (as used in push/pop).
      */
-    bool compare_exchange_weak(HeadPtr& expected, HeadPtr desired) noexcept {
+    bool compare_exchange_weak(HeadPtr& expected, HeadPtr desired) {
         return __atomic_compare_exchange(&head_raw_, reinterpret_cast<unsigned __int128*>(&expected), reinterpret_cast<unsigned __int128*>(&desired), true,
                                          __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
     }

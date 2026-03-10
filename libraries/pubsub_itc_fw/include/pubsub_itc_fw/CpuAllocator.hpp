@@ -75,8 +75,8 @@ public:
     FileLock& operator=(const FileLock&) = delete;
 
     /// Movable
-    FileLock(FileLock&& other) noexcept;
-    FileLock& operator=(FileLock&& other) noexcept;
+    FileLock(FileLock&& other);
+    FileLock& operator=(FileLock&& other);
 
     /// Destructor releases the lock.
     ~FileLock();

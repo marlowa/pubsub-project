@@ -23,7 +23,7 @@ public:
         return value_ == rhs;
     }
 
-    UseHugePagesFlagTag value() const noexcept
+    UseHugePagesFlagTag value() const
     {
         return value_;
     }

@@ -55,7 +55,7 @@ public:
      * @brief Move constructor for `TcpConnectorImpl`.
      * @param other The other `TcpConnectorImpl` to move from.
      */
-    TcpConnectorImpl(TcpConnectorImpl&& other) noexcept
+    TcpConnectorImpl(TcpConnectorImpl&& other)
         : remote_address_(std::move(other.remote_address_)),
           tcp_socket_(std::move(other.tcp_socket_)) {}
 
@@ -64,7 +64,7 @@ public:
      * @param other The other `TcpConnectorImpl` to move from.
      * @return A reference to this `TcpConnectorImpl` instance.
      */
-    TcpConnectorImpl& operator=(TcpConnectorImpl&& other) noexcept {
+    TcpConnectorImpl& operator=(TcpConnectorImpl&& other) {
         if (this != &other) {
             cancel(); // Close current resources before taking over others.
             remote_address_ = std::move(other.remote_address_);
@@ -198,8 +198,8 @@ TcpConnector::TcpConnector(const InetAddress& remote_address)
 
 TcpConnector::~TcpConnector() = default;
 
-TcpConnector::TcpConnector(TcpConnector&& other) noexcept = default;
-TcpConnector& TcpConnector::operator=(TcpConnector&& other) noexcept = default;
+TcpConnector::TcpConnector(TcpConnector&& other) = default;
+TcpConnector& TcpConnector::operator=(TcpConnector&& other) = default;
 
 [[nodiscard]] std::tuple<bool, std::string> TcpConnector::connect() {
     return p_impl_->connect();

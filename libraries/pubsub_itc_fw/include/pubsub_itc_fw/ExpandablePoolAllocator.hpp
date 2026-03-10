@@ -87,7 +87,7 @@
  *      they may allocate memory if required, although this is not recommended
  *      for performance-critical paths.
  *
- *    - Callbacks are not required to be noexcept.
+ *    - Callbacks are not required to be.
  *
  * DEALLOCATION COST
  *    - Deallocation performs a linear search through the pool chain to locate
@@ -121,7 +121,7 @@
 
 namespace pubsub_itc_fw {
 
-template <typename T> class ExpandablePoolAllocator final {
+template <typename T> class ExpandablePoolAllocator  {
   public:
     ~ExpandablePoolAllocator() = default;
 

@@ -27,7 +27,7 @@ namespace pubsub_itc_fw {
  * owned by an `ApplicationThread` subclass that needs to interact with the
  * pubsub service.
  */
-class PubSubClient final {
+class PubSubClient  {
   public:
     /**
      * @brief Constructs a PubSubClient with a reference to the EventDistributor.

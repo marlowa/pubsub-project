@@ -654,12 +654,12 @@ void Reactor::dispatch_events(int nfds, epoll_event* events) {
     PUBSUB_LOG_STR(logger_, LogLevel::Info, "dispatch_events returning");
 }
 
-ApplicationThread* Reactor::get_fast_path_thread(ThreadID id) const noexcept {
+ApplicationThread* Reactor::get_fast_path_thread(ThreadID id) const {
     auto it = fast_path_threads_.find(id);
     return (it != fast_path_threads_.end()) ? it->second : nullptr;
 }
 
-ThreadLifecycleState::Tag Reactor::get_thread_state(ThreadID id) const noexcept {
+ThreadLifecycleState::Tag Reactor::get_thread_state(ThreadID id) const {
     ApplicationThread* t = get_fast_path_thread(id);
     if (!t) {
         return ThreadLifecycleState::Terminated;

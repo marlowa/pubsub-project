@@ -47,32 +47,32 @@ EventMessage EventMessage::create_raw_socket_message(const uint8_t* data, int si
 }
 
 // Getter method implementations
-EventType EventMessage::type() const noexcept
+EventType EventMessage::type() const
 {
     return header_.type;
 }
 
-int EventMessage::payload_size() const noexcept
+int EventMessage::payload_size() const
 {
     return header_.payload_size;
 }
 
-TimerID EventMessage::timer_id() const noexcept
+TimerID EventMessage::timer_id() const
 {
     return header_.timer_id;
 }
 
-const std::string& EventMessage::reason() const noexcept
+const std::string& EventMessage::reason() const
 {
     return header_.reason;
 }
 
-ThreadID EventMessage::originating_thread_id() const noexcept
+ThreadID EventMessage::originating_thread_id() const
 {
     return header_.originating_thread_id;
 }
 
-const uint8_t* EventMessage::payload() const noexcept
+const uint8_t* EventMessage::payload() const
 {
     return payload_;
 }

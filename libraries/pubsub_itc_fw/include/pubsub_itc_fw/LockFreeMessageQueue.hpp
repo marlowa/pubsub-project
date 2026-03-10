@@ -49,7 +49,7 @@ public:
         shutdown();
     }
 
-    void shutdown() noexcept {
+    void shutdown() {
         std::lock_guard<std::mutex> lock(mutex_);
         if (shutting_down_) {
             return;
@@ -184,7 +184,7 @@ public:
     /**
      * @brief Initiates shutdown and drains all remaining messages.
      */
-    void shutdown() noexcept {
+    void shutdown() {
         bool expected = false;
         if (!shutting_down_.compare_exchange_strong(
                 expected, true, std::memory_order_acq_rel)) {

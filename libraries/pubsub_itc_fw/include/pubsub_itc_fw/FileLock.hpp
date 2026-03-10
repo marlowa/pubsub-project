@@ -21,13 +21,13 @@ public:
     FileLock(const FileLock&) = delete;
     FileLock& operator=(const FileLock&) = delete;
 
-    FileLock(FileLock&& other) noexcept
+    FileLock(FileLock&& other)
         : fd_(other.fd_), file_path_(std::move(other.file_path_))
     {
         other.fd_ = -1;
     }
 
-    FileLock& operator=(FileLock&& other) noexcept {
+    FileLock& operator=(FileLock&& other) {
         if (this != &other) {
             release();
             fd_ = other.fd_;

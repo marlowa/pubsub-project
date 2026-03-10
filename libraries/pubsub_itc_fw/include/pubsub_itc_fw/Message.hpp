@@ -16,7 +16,7 @@ namespace pubsub_itc_fw {
  * This class encapsulates the data transmitted between threads, including
  * a payload, topic, and a unique sequence number for handling late subscribers.
  */
-class Message final {
+class Message  {
 public:
     ~Message() = default;
 

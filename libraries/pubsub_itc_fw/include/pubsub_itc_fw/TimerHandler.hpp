@@ -21,7 +21,7 @@ class ApplicationThread;
  * `handle_event` method to process timer events. This class would be
  * registered with the Reactor to handle a specific timer file descriptor.
  */
-class TimerHandler final : public EventHandler {
+class TimerHandler  : public EventHandler {
 public:
     ~TimerHandler() override;
 
@@ -32,13 +32,13 @@ public:
      * @param [in] events The event types that occurred (e.g., EPOLLIN).
      * @return True if the handler successfully processed the event, false otherwise.
      */
-    [[nodiscard]] bool handle_event(uint32_t events) noexcept override;
+    [[nodiscard]] bool handle_event(uint32_t events) override;
 
     /**
      * @brief Returns the file descriptor associated with this handler.
      * @return The file descriptor.
      */
-    int get_fd() const noexcept override {
+    int get_fd() const override {
         return fd_;
     }
 

@@ -65,8 +65,8 @@ public:
     // Disallow copy, allow move
     EventMessage(const EventMessage&) = delete;
     EventMessage& operator=(const EventMessage&) = delete;
-    EventMessage(EventMessage&& other) noexcept = default;
-    EventMessage& operator=(EventMessage&& other) noexcept = default;
+    EventMessage(EventMessage&& other) = default;
+    EventMessage& operator=(EventMessage&& other) = default;
 
     /**
      * @brief Gets the ITC message subtype.
@@ -78,7 +78,7 @@ public:
      *
      * @return The ITC message subtype as a signed integer.
      */
-    [[nodiscard]] int itc_message_type() const noexcept {
+    [[nodiscard]] int itc_message_type() const {
         return itc_message_type_;
     }
 
@@ -135,13 +135,13 @@ public:
      * @brief Gets the event type.
      * @return The event type.
      */
-    [[nodiscard]] EventType type() const noexcept;
+    [[nodiscard]] EventType type() const;
 
     /**
      * @brief Gets the payload size in bytes.
      * @return The size of the payload, or 0 if no payload.
      */
-    [[nodiscard]] int payload_size() const noexcept;
+    [[nodiscard]] int payload_size() const;
 
     /**
      * @brief Gets the timer ID.
@@ -149,7 +149,7 @@ public:
      * This method is only valid for Timer events.
      * @return The timer ID.
      */
-    [[nodiscard]] TimerID timer_id() const noexcept;
+    [[nodiscard]] TimerID timer_id() const;
 
     /**
      * @brief Gets the termination reason string.
@@ -157,7 +157,7 @@ public:
      * This method is only valid for Termination events.
      * @return A const reference to the reason string.
      */
-    [[nodiscard]] const std::string& reason() const noexcept;
+    [[nodiscard]] const std::string& reason() const;
 
     /**
      * @brief Gets the ID of the thread that sent the message.
@@ -165,7 +165,7 @@ public:
      * This method is only valid for InterthreadCommunication events.
      * @return The originating thread ID.
      */
-    [[nodiscard]] ThreadID originating_thread_id() const noexcept;
+    [[nodiscard]] ThreadID originating_thread_id() const;
 
     /**
      * @brief Gets read-only access to the payload data.
@@ -174,7 +174,7 @@ public:
      * attempt to free or modify the memory.
      * @return A const pointer to the payload bytes, or `nullptr` if no payload.
      */
-    [[nodiscard]] const uint8_t* payload() const noexcept;
+    [[nodiscard]] const uint8_t* payload() const;
 
     /**
      * @brief Casts the payload to the specified type.
@@ -188,7 +188,7 @@ public:
      * @return A const reference to the payload cast as type T.
      */
     template<typename T>
-    [[nodiscard]] const T& get_as() const noexcept {
+    [[nodiscard]] const T& get_as() const {
         return *reinterpret_cast<const T*>(payload_);
     }
 };

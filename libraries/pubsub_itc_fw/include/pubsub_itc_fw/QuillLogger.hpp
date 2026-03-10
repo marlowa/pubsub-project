@@ -32,10 +32,10 @@ public:
     QuillLogger(const std::string& logger_name, std::shared_ptr<quill::Sink> test_sink,
                          LogLevel log_level = LogLevel::Debug);
 
-    quill::Logger* quill_logger() const noexcept { return quill_logger_; }
+    quill::Logger* quill_logger() const { return quill_logger_; }
 
     void set_log_level(LogLevel level);
-    LogLevel log_level() const noexcept { return level_; }
+    LogLevel log_level() const { return level_; }
 
     // Per-destination filtering
     bool should_log_to_file(LogLevel level) const;

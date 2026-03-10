@@ -36,7 +36,7 @@ public:
     using duration = std::chrono::nanoseconds;
     using time_point = std::chrono::time_point<HighResolutionClock, duration>;
 
-    static time_point now() noexcept {
+    static time_point now() {
         struct timespec ts;
         ::clock_gettime(CLOCK_MONOTONIC, &ts);
         return time_point(duration(ts.tv_sec * 1'000'000'000LL + ts.tv_nsec));

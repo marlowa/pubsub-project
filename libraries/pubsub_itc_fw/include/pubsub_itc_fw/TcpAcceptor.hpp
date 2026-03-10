@@ -34,7 +34,7 @@ class TcpAcceptorImpl;
  * It uses the Pimpl idiom to hide its implementation details. Error reporting
  * is done via `std::tuple<std::unique_ptr<T>, std::string>`.
  */
-class TcpAcceptor final {
+class TcpAcceptor  {
 public:
     /**
      * @brief Destructor for `TcpAcceptor`.
@@ -64,8 +64,8 @@ public:
     TcpAcceptor& operator=(const TcpAcceptor&) = delete;
 
     // Move operations to allow transferring ownership of the acceptor.
-    TcpAcceptor(TcpAcceptor&& other) noexcept;
-    TcpAcceptor& operator=(TcpAcceptor&& other) noexcept;
+    TcpAcceptor(TcpAcceptor&& other);
+    TcpAcceptor& operator=(TcpAcceptor&& other);
 
     /**
      * @brief Accepts a new incoming client connection.

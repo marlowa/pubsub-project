@@ -52,7 +52,7 @@ TimerHandler::TimerHandler(const Timer& timer, Reactor& reactor) : timer_(timer)
     }
 }
 
-bool TimerHandler::handle_event(uint32_t events) noexcept {
+bool TimerHandler::handle_event(uint32_t events) {
     PUBSUB_LOG_STR(reactor_.get_logger(), LogLevel::Info, "TimerHandle::handle_event");
 
     // 1. Must be a read event

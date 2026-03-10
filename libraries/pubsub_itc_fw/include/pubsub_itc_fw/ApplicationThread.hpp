@@ -230,21 +230,21 @@ class ApplicationThread {
 
     void shutdown(const std::string& reason);
 
-    bool is_running() const noexcept {
+    bool is_running() const {
         auto tag = get_lifecycle_state().as_tag();
         return tag >= ThreadLifecycleState::Started && tag < ThreadLifecycleState::ShuttingDown;
     }
 
-    bool is_operational() const noexcept {
+    bool is_operational() const {
         auto tag = get_lifecycle_state().as_tag();
         return tag == ThreadLifecycleState::Operational;
     }
 
-    bool has_processed_initial() const noexcept {
+    bool has_processed_initial() const {
         return get_lifecycle_state().as_tag() >= ThreadLifecycleState::InitialProcessed;
     }
 
-    ThreadLifecycleState get_lifecycle_state() const noexcept {
+    ThreadLifecycleState get_lifecycle_state() const {
         return ThreadLifecycleState(lifecycle_state_.load(std::memory_order_acquire));
     }
 

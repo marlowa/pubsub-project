@@ -66,7 +66,7 @@ public:
      *
      * @return A time_point representing the current time in milliseconds since an unspecified epoch.
      */
-    static time_point now() noexcept;
+    static time_point now();
 };
 
 } // namespaces
