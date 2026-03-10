@@ -38,26 +38,11 @@ std::string StringUtils::get_error_string(int errnum) {
     // Use GNU-specific strerror_r (returns char*).
     // It attempts to write into error_buffer, but might return a pointer
     // to an internal static buffer if error_buffer is too small or for certain errnums.
+    // The pointer is guaranteed to never be null.
     char* strerror_result_ptr = strerror_r(errnum, error_buffer.data(), error_buffer.size());
 
-    if (strerror_result_ptr != nullptr) {
-        // GNU strerror_r returns a pointer to the string.
-        // We check if it points to our buffer, or an internal one.
-        // If it points to our buffer, it's null-terminated by strerror_r.
-        // If it points to an internal one, we use that.
-        error_message = strerror_result_ptr;
-
-        // Optionally, you might check for ERANGE if you strictly want to know
-        // if your provided buffer was too small, but the result ptr will still be valid.
-        // if (errno == ERANGE) {
-        //     error_message = fmt::format("Error (buffer too small, truncated): {}", error_message);
-        // }
-    } else {
-        // If strerror_r_ptr is null, it indicates a failure within strerror_r itself (rare).
-        // Fallback to a generic message.
-        error_message = fmt::format("Failed to get strerror_r message for error {}. strerror_r returned nullptr.", errnum);
-    }
-
+    // GNU strerror_r returns a pointer to the string.
+    error_message = strerror_result_ptr;
     return error_message;
 }
 

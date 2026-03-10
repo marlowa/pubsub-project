@@ -145,3 +145,48 @@ These are easy, fast, and satisfying to knock off.
 
     check code coverage, code fails to compile
 /mnt/sda1/marlowa-extra/mystuff/pubsub-poc-attempts/simple-publish-poc/pubsub-project-10-copilot/libraries/pubsub_itc_fw/tests/LockFreeMessageQueueTest.cpp:1177:34: error: ‘max_depth’ was not declared in this scope
+
+The highest-value next tests
+
+Given your architecture and the code paths above, the next tests that will meaningfully increase coverage are:
+A. Illegal message routing tests
+
+    ITC before initialization → expect PreconditionAssertion
+    ITC before Operational → expect PubSubItcException
+    ITC to ShuttingDown thread → silently dropped
+    ITC from non-running origin → silently dropped
+
+These are small, deterministic, and hit multiple uncovered branches.
+B. ApplicationThread illegal message tests
+
+Send ITC before AppReady → expect PreconditionAssertion.
+C. Timer lifecycle tests
+
+    Create timer
+    Wait for it to fire
+    Cancel timer
+    Assert no further events
+    Assert fd is closed (via handler count or epoll state)
+
+D. Lifecycle transition assertions
+
+Explicitly assert:
+
+    Created → Started
+    Started → InitialProcessed
+    InitialProcessed → Operational
+    Operational → ShuttingDown
+    ShuttingDown → Terminated (via Reactor promotion)
+
+E. Destructor path tests
+
+Force a thread to:
+
+    never exit
+    cause join timeout
+    verify ApplicationThread detaches thread
+    verify queue is not destroyed prematurely
+
+Where you want to go next
+
+Now that I’ve seen the tests, the natural next step is to decide which of the missing coverage areas you want to tackle first.

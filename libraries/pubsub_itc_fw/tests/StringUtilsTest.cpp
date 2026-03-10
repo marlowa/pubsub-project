@@ -85,4 +85,30 @@ TEST_F(StringUtilsTest, Leafname) {
     EXPECT_EQ(StringUtils::leafname(""), "");
 }
 
+TEST_F(StringUtilsTest, StartsWithAllOverloadsExplicit)
+{
+    // std::string overload
+    EXPECT_TRUE(StringUtils::starts_with(std::string("hello world"), std::string("hello")));
+    EXPECT_FALSE(StringUtils::starts_with(std::string("hello world"), std::string("world")));
+
+    // std::string_view overload
+    std::string_view sv = "hello";
+    EXPECT_TRUE(StringUtils::starts_with("hello world", sv));
+    EXPECT_FALSE(StringUtils::starts_with("hello world", std::string_view("world")));
+
+    // const char* overload — must use a variable to force this overload
+    const char* cprefix = "hello";
+    EXPECT_TRUE(StringUtils::starts_with("hello world", cprefix));
+
+    const char* cprefix_bad = "world";
+    EXPECT_FALSE(StringUtils::starts_with("hello world", cprefix_bad));
+
+    // Edge cases
+    EXPECT_TRUE(StringUtils::starts_with("hello world", ""));          // empty prefix
+    EXPECT_TRUE(StringUtils::starts_with("hello world", std::string_view("")));
+
+    EXPECT_FALSE(StringUtils::starts_with("", "hello"));               // empty string
+    EXPECT_TRUE(StringUtils::starts_with("", ""));                     // both empty
+}
+
 } // namespace pubsub_itc_fw
