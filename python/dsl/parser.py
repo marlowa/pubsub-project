@@ -196,33 +196,38 @@ class Parser:
             "i8", "i16", "i32", "i64", "bool", "datetime_ns"
         }:
             self.current = self.lexer.next_token()
-            # Array?
-            if self._accept("LBRACKET"):
-                length = int(self._eat("INT").value)
-                self._eat("RBRACKET")
-                return ArrayType(PrimitiveType(tok.value), length)
-            return PrimitiveType(tok.value)
+            base = PrimitiveType(tok.value)
 
         # string
-        if tok.kind == "KEYWORD" and tok.value == "string":
+        elif tok.kind == "KEYWORD" and tok.value == "string":
             self.current = self.lexer.next_token()
-            return StringType()
+            base = StringType()
 
         # list<T>
-        if tok.kind == "KEYWORD" and tok.value == "list":
+        elif tok.kind == "KEYWORD" and tok.value == "list":
             self.current = self.lexer.next_token()
             self._eat("LT")
             elem = self._parse_type()
             self._eat("GT")
-            return ListType(elem)
+            base = ListType(elem)
 
         # Reference type (message or enum)
-        if tok.kind == "IDENT":
+        elif tok.kind == "IDENT":
             name = tok.value
             self.current = self.lexer.next_token()
-            return ReferenceType(name)
+            base = ReferenceType(name)
 
-        raise SyntaxError(
-            f"Unexpected type token '{tok.value}' at "
-            f"{tok.line}:{tok.column}"
-        )
+        else:
+            raise SyntaxError(
+                f"Unexpected type token '{tok.value}' at "
+                f"{tok.line}:{tok.column}"
+            )
+
+        # Array suffix: T[n]
+        if self.current.kind == "LBRACKET":
+            self.current = self.lexer.next_token()
+            length = int(self._eat("INT").value)
+            self._eat("RBRACKET")
+            base = ArrayType(base, length)
+
+        return base
