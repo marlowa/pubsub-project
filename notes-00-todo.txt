@@ -187,3 +187,4 @@ Now that I’ve seen the tests, the natural next step is to decide which of the 
 
 DONE look into noexcept usage (Performance + clarity.)
 DONE look into final usage (Intentional design.)
+TODO think about allocator that is not fixed size but avoids repeated heap usage
