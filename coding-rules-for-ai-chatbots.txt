@@ -114,3 +114,4 @@ Trailing return type syntax: Not used (use traditional T* function() not auto fu
 prefer functions scoped to the unnamed namespace rather than the old C-style static (file-scoped) functions
 do not use noexcept, not even on destructors or move operations.
 dont use the "final" keyword.
+refrain from making a class non-movable just because you think it is advisable or useful.

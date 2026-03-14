@@ -4,12 +4,10 @@
 #include <sys/socket.h> // For sockaddr, sockaddr_storage, AF_INET, AF_INET6, socklen_t
 #include <unistd.h>     // For close
 
-// C++ headers whose names start with ‘c’
 #include <cstdint> // For uint8_t, uint16_t
 #include <cstring> // For memset
 #include <cerrno>  // For errno
 
-// System C++ headers
 #include <algorithm> // For std::min
 #include <memory>    // For std::unique_ptr, std::make_unique
 #include <string>    // For std::string
@@ -17,12 +15,10 @@
 #include <utility>   // for std::move
 #include <array>
 
-// Third party headers
 #include <fmt/format.h> // For fmt::format for error messages
 
-// Project headers
-#include <pubsub_itc_fw/IpAddressInterface.hpp> // Header for this class
-#include <pubsub_itc_fw/InetAddress.hpp> // Header for this class
+#include <pubsub_itc_fw/IpAddressInterface.hpp>
+#include <pubsub_itc_fw/InetAddress.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -165,33 +161,48 @@ socklen_t InetAddress::get_sockaddr_size() const {
     return addr_len_;
 }
 
+int InetAddress::address_family() const {
+    return static_cast<int>(addr_storage_.ss_family);
+}
+
 bool InetAddress::is_equal(const IpAddressInterface& rhs) const {
-    // If the rhs is not an InetAddress, we can't compare directly.
-    // This assumes that only InetAddress concrete types will be compared.
-    // If other concrete types of IpAddressInterface are introduced, this would need refinement.
     const auto* const other = dynamic_cast<const InetAddress*>(&rhs);
     if (other == nullptr) {
-        return false; // Can only compare with other InetAddress objects
+        return false;
     }
 
     if (addr_storage_.ss_family != other->addr_storage_.ss_family) {
-        return false; // Different address families are not equal
+        return false;
     }
 
-    if (addr_len_ != other->addr_len_) {
-        return false; // Different lengths are not equal
+    if (addr_storage_.ss_family == AF_INET) {
+        const auto* lhs4 = reinterpret_cast<const sockaddr_in*>(&addr_storage_);
+        const auto* rhs4 = reinterpret_cast<const sockaddr_in*>(&other->addr_storage_);
+
+        if (memcmp(&lhs4->sin_addr, &rhs4->sin_addr, sizeof(in_addr)) != 0) {
+            return false;
+        }
+
+        return lhs4->sin_port == rhs4->sin_port;
     }
 
-    // Compare the raw address data
-    // Use std::min to avoid reading past the smaller valid length if somehow addr_len_ is inconsistent
-    return memcmp(&addr_storage_, &other->addr_storage_, std::min(addr_len_, other->addr_len_)) == 0;
+    if (addr_storage_.ss_family == AF_INET6) {
+        const auto* lhs6 = reinterpret_cast<const sockaddr_in6*>(&addr_storage_);
+        const auto* rhs6 = reinterpret_cast<const sockaddr_in6*>(&other->addr_storage_);
+
+        if (memcmp(&lhs6->sin6_addr, &rhs6->sin6_addr, sizeof(in6_addr)) != 0) {
+            return false;
+        }
+
+        return lhs6->sin6_port == rhs6->sin6_port;
+    }
+
+    return false;
 }
 
 bool InetAddress::is_less_than(const IpAddressInterface& rhs) const {
     const auto* const other = dynamic_cast<const InetAddress*>(&rhs);
     if (other == nullptr) {
-        // If comparing with a different concrete type, perhaps use a predefined order
-        // For now, assume any non-InetAddress is "greater" for ordering purposes.
         return true;
     }
 
@@ -203,25 +214,30 @@ bool InetAddress::is_less_than(const IpAddressInterface& rhs) const {
         return false;
     }
 
-    // 2. Address families are the same, compare by raw address bytes
-    // Use std::min to handle potential length differences safely
-    const int cmp = memcmp(&addr_storage_, &other->addr_storage_, std::min(addr_len_, other->addr_len_));
-    if (cmp < 0) {
-        return true;
-    }
-    if (cmp > 0) {
-        return false;
+    // 2. Same family: compare address bytes only
+    if (addr_storage_.ss_family == AF_INET) {
+        const auto* lhs4 = reinterpret_cast<const sockaddr_in*>(&addr_storage_);
+        const auto* rhs4 = reinterpret_cast<const sockaddr_in*>(&other->addr_storage_);
+        const int cmp = memcmp(&lhs4->sin_addr, &rhs4->sin_addr, sizeof(in_addr));
+        if (cmp < 0) {
+            return true;
+        }
+        if (cmp > 0) {
+            return false;
+        }
+    } else if (addr_storage_.ss_family == AF_INET6) {
+        const auto* lhs6 = reinterpret_cast<const sockaddr_in6*>(&addr_storage_);
+        const auto* rhs6 = reinterpret_cast<const sockaddr_in6*>(&other->addr_storage_);
+        const int cmp = memcmp(&lhs6->sin6_addr, &rhs6->sin6_addr, sizeof(in6_addr));
+        if (cmp < 0) {
+            return true;
+        }
+        if (cmp > 0) {
+            return false;
+        }
     }
 
-    // 3. Address bytes are identical (or one is a prefix of another), compare by length
-    if (addr_len_ < other->addr_len_) {
-        return true;
-    }
-    if (addr_len_ > other->addr_len_) {
-        return false;
-    }
-
-    // 4. Everything else is identical, compare by port
+    // 3. Address bytes identical: compare port
     return get_port() < other->get_port();
 }
 

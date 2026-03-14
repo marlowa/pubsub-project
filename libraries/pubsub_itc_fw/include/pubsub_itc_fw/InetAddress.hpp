@@ -1,17 +1,14 @@
 #pragma once
 
-// C headers
 #include <arpa/inet.h>  // For inet_pton, inet_ntop
 #include <cstdint>      // For uint8_t, uint16_t
 #include <netinet/in.h> // For sockaddr_in, sockaddr_in6
 #include <sys/socket.h> // For sockaddr, sockaddr_storage, AF_INET, AF_INET6, socklen_t
 
-// System C++ headers
 #include <string> // For std::string
 #include <tuple>  // For std::tuple (used in error returns)
 #include <vector> // For potential raw address buffer
 
-// Project headers
 #include <pubsub_itc_fw/IpAddressInterface.hpp> // Base interface
 
 namespace pubsub_itc_fw {
@@ -107,6 +104,8 @@ class InetAddress  : public IpAddressInterface {
      * @returns A `socklen_t` representing the size of the `sockaddr` structure.
      */
     socklen_t get_sockaddr_size() const override;
+
+    int address_family() const override;
 
     /**
      * @brief Compares this `InetAddress` with another `IpAddressInterface` for equality.

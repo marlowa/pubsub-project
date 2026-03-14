@@ -34,7 +34,6 @@ namespace pubsub_itc_fw {
  */
 class IpAddressInterface {
   public:
-    // Destructor is first, as per coding style, and must be virtual for an interface.
     /**
      * @brief Virtual destructor for the IpAddressInterface.
      * Ensures proper cleanup of derived concrete classes.
@@ -70,6 +69,9 @@ class IpAddressInterface {
      * @returns `true` if the address is IPv6, `false` otherwise.
      */
     virtual bool is_ipv6() const = 0;
+
+    /// expose address family (AF_INET, AF_INET6, or AF_UNSPEC)
+    virtual int address_family() const = 0;
 
     /**
      * @brief Provides a pointer to the underlying system `sockaddr` structure.

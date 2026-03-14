@@ -253,6 +253,8 @@ class TcpSocket  : public ByteStreamInterface {
      */
     [[nodiscard]] std::tuple<bool, std::string> finish_connect() const;
 
+    bool is_connected() const;
+
   private:
     /**
      * @brief Private constructor to be used by the static factory methods.
