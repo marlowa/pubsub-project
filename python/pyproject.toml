@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dsl-compiler"
+version = "0.1.0"
+description = "A deterministic DSL-to-C++17 schema compiler"
+authors = [
+    { name = "Andrew Marlow" }
+]
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+
+# No dependencies — the whole toolchain is pure Python
+dependencies = []
+
+[project.urls]
+homepage = "https://example.com"   # optional placeholder
+repository = "https://example.com/repo"  # optional placeholder
+
+[project.scripts]
+generate-cpp-from-dsl = "tools.generate_cpp_from_dsl:main"
