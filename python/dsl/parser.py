@@ -91,11 +91,10 @@ class Parser:
         self._eat("COLON")
 
         # Underlying type must be i8/i16/i32/i64
-        if self.current.kind != "KEYWORD" or self.current.value not in {
-            "i8", "i16", "i32", "i64"
-        }:
+        # Accept any keyword here; validator will enforce allowed types
+        if self.current.kind != "KEYWORD":
             raise ParseError(
-                f"Expected integer type after ':', got {self.current.value} "
+                f"Expected type after ':', got {self.current.value} "
                 f"at {self.current.line}:{self.current.column}"
             )
         underlying = self.current.value
