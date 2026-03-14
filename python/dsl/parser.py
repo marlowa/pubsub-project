@@ -1,8 +1,8 @@
 from __future__ import annotations
 from typing import List, Dict
-from dataclasses import dataclass
 
 from .lexer import Lexer, Token
+from .errors import ParseError
 from .ast import (
     DslFile,
     Declaration,
@@ -29,7 +29,7 @@ class Parser:
 
     def _eat(self, kind: str) -> Token:
         if self.current.kind != kind:
-            raise SyntaxError(
+            raise ParseError(
                 f"Expected {kind}, got {self.current.kind} at "
                 f"{self.current.line}:{self.current.column}"
             )
@@ -45,7 +45,7 @@ class Parser:
 
     def _expect_keyword(self, value: str):
         if self.current.kind != "KEYWORD" or self.current.value != value:
-            raise SyntaxError(
+            raise ParseError(
                 f"Expected keyword '{value}', got {self.current.value} "
                 f"at {self.current.line}:{self.current.column}"
             )
@@ -74,7 +74,7 @@ class Parser:
         if self.current.kind == "KEYWORD" and self.current.value == "message":
             return self._parse_message()
 
-        raise SyntaxError(
+        raise ParseError(
             f"Unexpected token '{self.current.value}' at "
             f"{self.current.line}:{self.current.column}"
         )
@@ -84,28 +84,22 @@ class Parser:
     # -----------------------------
 
     def _parse_enum(self) -> EnumDecl:
+        # enum Name : i32 { x = 1 y = 2 }
         self._expect_keyword("enum")
 
-        name_tok = self._eat("IDENT")
-        name = name_tok.value
-
-        self._eat("COLON") if False else None  # placeholder if needed
-        # Actually the grammar uses IDENT ":" integer_type
-        self._eat("COLON") if False else None
-
-        # But our lexer does not produce COLON; instead "=" is EQUAL.
-        # So we need to adjust: underlying type is after ":" which is not lexed.
-        # Let's fix this properly:
-
-        # Expect ":"
-        if self.current.kind != "EQUAL" and self.current.value != ":":
-            # We need to handle ":" as a token. Let's add it to SINGLE_CHAR_TOKENS.
-            raise SyntaxError("Colon ':' not recognized by lexer. Add ':' to SINGLE_CHAR_TOKENS.")
-
-        # For now, assume ":" is recognized:
+        name = self._eat("IDENT").value
         self._eat("COLON")
 
-        underlying = self._eat("KEYWORD").value  # must be i8/i16/i32/i64
+        # Underlying type must be i8/i16/i32/i64
+        if self.current.kind != "KEYWORD" or self.current.value not in {
+            "i8", "i16", "i32", "i64"
+        }:
+            raise ParseError(
+                f"Expected integer type after ':', got {self.current.value} "
+                f"at {self.current.line}:{self.current.column}"
+            )
+        underlying = self.current.value
+        self.current = self.lexer.next_token()
 
         self._eat("LBRACE")
 
@@ -125,6 +119,7 @@ class Parser:
     # -----------------------------
 
     def _parse_message(self) -> MessageDecl:
+        # message Name (id=1, version=1) ... end
         self._expect_keyword("message")
 
         name = self._eat("IDENT").value
@@ -134,17 +129,17 @@ class Parser:
         self._eat("RPAREN")
 
         fields: List[Field] = []
-        while self.current.kind not in ("EOF", "KEYWORD") or (
-            self.current.kind == "KEYWORD" and self.current.value != "end"
-        ):
+
+        # Read fields until "end"
+        while not (self.current.kind == "KEYWORD" and self.current.value == "end"):
+            if self.current.kind == "EOF":
+                raise ParseError(
+                    f"Unexpected EOF while parsing fields for message '{name}'"
+                )
             fields.append(self._parse_field())
 
-        # Expect "end"
-        if self.current.kind != "KEYWORD" or self.current.value != "end":
-            raise SyntaxError(
-                f"Expected 'end' at {self.current.line}:{self.current.column}"
-            )
-        self.current = self.lexer.next_token()
+        # Consume "end"
+        self._expect_keyword("end")
 
         return MessageDecl(name, metadata, fields)
 
@@ -173,6 +168,7 @@ class Parser:
     # -----------------------------
 
     def _parse_field(self) -> Field:
+        # [optional] <type> <name>
         optional = False
 
         if self.current.kind == "KEYWORD" and self.current.value == "optional":
@@ -218,7 +214,7 @@ class Parser:
             base = ReferenceType(name)
 
         else:
-            raise SyntaxError(
+            raise ParseError(
                 f"Unexpected type token '{tok.value}' at "
                 f"{tok.line}:{tok.column}"
             )

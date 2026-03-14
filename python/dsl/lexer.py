@@ -28,6 +28,7 @@ class Lexer:
         "i64",
         "bool",
         "datetime_ns",
+        "end",
     }
 
     SINGLE = {

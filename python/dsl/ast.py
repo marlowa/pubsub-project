@@ -2,7 +2,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Optional, Dict, Union
 
-
 # -----------------------------
 # Top-level AST container
 # -----------------------------
@@ -91,4 +90,3 @@ class ArrayType(Type):
 @dataclass
 class ReferenceType(Type):
     name: str  # refers to a MessageDecl or EnumDecl by name
-
