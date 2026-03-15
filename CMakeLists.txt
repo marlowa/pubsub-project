@@ -128,6 +128,17 @@ if(PkgConfig_FOUND)
     pkg_check_modules(NUMA numa)
 endif()
 
+# Our python DSL requires pybind11 for testing
+execute_process(
+  COMMAND python3 -m pybind11 --cmakedir
+  OUTPUT_VARIABLE pybind11_DIR
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+if(NOT pybind11_DIR_result EQUAL 0)
+  message(FATAL_ERROR "Could not determine pybind11 CMake dir via python3 -m pybind11 --cmakedir")
+endif()
+find_package(pybind11 REQUIRED)
+
 # --- Define the Protobuf Message Type ---
 # This step tells CMake to compile the .proto files into .pb.h and .pb.cc
 # The generated files will be placed in CMAKE_CURRENT_BINARY_DIR.

@@ -188,3 +188,4 @@ Now that I’ve seen the tests, the natural next step is to decide which of the 
 DONE look into noexcept usage (Performance + clarity.)
 DONE look into final usage (Intentional design.)
 TODO think about allocator that is not fixed size but avoids repeated heap usage
+TODO document dependency on pybind11 and how it relates to the DSL. apt install pybind11-dev was needed.

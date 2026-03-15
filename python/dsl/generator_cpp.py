@@ -14,6 +14,7 @@ from .ast import (
     ReferenceType,
 )
 
+# pylint: disable=too-many-arguments,too-many-positional-arguments
 
 @dataclass
 class CppGenerator:
@@ -72,7 +73,7 @@ class CppGenerator:
     def _emit_list_view(self, w):
         w("template<typename T>")
         w("struct ListView {")
-        w("    const T* data = nullptr;")
+        w("    T* data = nullptr;")
         w("    std::size_t size = 0;")
         w("")
         w("    const T* begin() const { return data; }")
@@ -178,6 +179,26 @@ class CppGenerator:
         w("    return total;")
         w("}")
 
+    def _emit_size_for_list(self, t: ListType, expr: str, prefix: str, w):
+        # expr is something like "msg.field" or "msg.field.data[i]"
+        w(f"    {prefix}total += sizeof(int32_t);")
+        elem = t.element_type
+
+        if isinstance(elem, PrimitiveType):
+            elem_cpp = self._cpp_type(elem)
+            w(f"    {prefix}total += sizeof({elem_cpp}) * {expr}.size;")
+        elif isinstance(elem, ReferenceType):
+            w(f"    {prefix}for (std::size_t i = 0; i < {expr}.size; ++i) {{")
+            w(f"        total += encoded_size({expr}.data[i]);")
+            w("    }")
+        elif isinstance(elem, ListType):
+            w(f"    {prefix}for (std::size_t i = 0; i < {expr}.size; ++i) {{")
+            # recurse on the inner list: element is itself a ListView<...>
+            self._emit_size_for_list(elem, f"{expr}.data[i]", "", w)
+            w("    }")
+        else:
+            raise RuntimeError("Unsupported list element type in size: {elem}")
+
     def _emit_size_for_field(self, field: Field, w):
         t = field.type
         prefix = ""
@@ -194,19 +215,93 @@ class CppGenerator:
             elem = self._cpp_type(t.element_type)
             w(f"    {prefix}total += sizeof({elem}) * {t.length};")
         elif isinstance(t, ListType):
-            w(f"    {prefix}total += sizeof(int32_t);")
-            elem = t.element_type
-            if isinstance(elem, PrimitiveType):
-                elem_cpp = self._cpp_type(elem)
-                w(f"    {prefix}total += sizeof({elem_cpp}) * msg.{field.name}.size;")
-            else:
-                w(f"    {prefix}for (std::size_t i = 0; i < msg.{field.name}.size; ++i) {{")
-                w(f"        total += encoded_size(msg.{field.name}.data[i]);")
-                w("    }")
+            self._emit_size_for_list(t, f"msg.{field.name}", prefix, w)
         elif isinstance(t, ReferenceType):
             w(f"    {prefix}total += encoded_size(msg.{field.name});")
         else:
             raise RuntimeError(f"Unknown field type in size: {t}")
+
+    def _emit_encode_list(self, t: ListType, expr: str, name: str, w, need):
+        # expr is something like "msg.field" or "msg.field.data[i]"
+        # name is the field name (used only for count variable naming)
+
+        # write count
+        need("sizeof(int32_t)")
+        w(f"    int32_t count_{name} = static_cast<int32_t>({expr}.size);")
+        w(f"    std::memcpy(ptr, &count_{name}, sizeof(int32_t));")
+        w("    ptr += sizeof(int32_t);")
+        w("    remaining -= sizeof(int32_t);")
+
+        elem = t.element_type
+
+        if isinstance(elem, PrimitiveType):
+            elem_cpp = self._cpp_type(elem)
+            w(f"    std::size_t bytes_{name} = sizeof({elem_cpp}) * {expr}.size;")
+            w(f"    if (remaining < bytes_{name}) return false;")
+            w(f"    std::memcpy(ptr, {expr}.data, bytes_{name});")
+            w(f"    ptr += bytes_{name};")
+            w(f"    remaining -= bytes_{name};")
+
+        elif isinstance(elem, ReferenceType):
+            w(f"    for (std::size_t i = 0; i < {expr}.size; ++i) {{")
+            w("        std::size_t written_elem = 0;")
+            w(f"        if (!encode({expr}.data[i], ptr, remaining, written_elem)) return false;")
+            w("        ptr += written_elem;")
+            w("        remaining -= written_elem;")
+            w("    }")
+
+        elif isinstance(elem, ListType):
+            # recursive nested list
+            w(f"    for (std::size_t i = 0; i < {expr}.size; ++i) {{")
+            self._emit_encode_list(elem, f"{expr}.data[i]", f"{name}_inner", w, need)
+            w("    }")
+
+        else:
+            raise RuntimeError("Unsupported list element type in encode: {elem}")
+
+    def _emit_decode_list(self, t: ListType, expr: str, name: str, w, need):
+        # expr is something like "msg.field"
+        # name is the field name
+
+        # read count
+        need("sizeof(int32_t)")
+        w(f"    int32_t count_{name} = 0;")
+        w(f"    std::memcpy(&count_{name}, ptr, sizeof(int32_t));")
+        w("    ptr += sizeof(int32_t);")
+        w("    remaining -= sizeof(int32_t);")
+        w(f"    if (count_{name} < 0) return false;")
+        w(f"    {expr}.size = static_cast<std::size_t>(count_{name});")
+
+        elem = t.element_type
+
+        if isinstance(elem, PrimitiveType):
+            elem_cpp = self._cpp_type(elem)
+            w(f"    std::size_t bytes_{name} = sizeof({elem_cpp}) * {expr}.size;")
+            need(f"bytes_{name}")
+            w(f"    {expr}.data = reinterpret_cast<{elem_cpp}*>(ptr);")
+            w(f"    ptr += bytes_{name};")
+            w(f"    remaining -= bytes_{name};")
+
+        elif isinstance(elem, ReferenceType):
+            elem_cpp = elem.name
+            w(f"    {expr}.data = reinterpret_cast<{elem_cpp}*>(ptr);")
+            w(f"    for (std::size_t i = 0; i < {expr}.size; ++i) {{")
+            w("        std::size_t consumed_elem = 0;")
+            w(f"        if (!decode(const_cast<{elem_cpp}&>({expr}.data[i]), ptr, remaining, consumed_elem)) return false;")
+            w("        ptr += consumed_elem;")
+            w("        remaining -= consumed_elem;")
+            w("    }")
+
+        elif isinstance(elem, ListType):
+            # nested list: decode each inner list recursively
+            inner_cpp = self._cpp_type(elem)
+            w(f"    {expr}.data = reinterpret_cast<{inner_cpp}*>(ptr);")
+            w(f"    for (std::size_t i = 0; i < {expr}.size; ++i) {{")
+            self._emit_decode_list(elem, f"{expr}.data[i]", f"{name}_inner", w, need)
+            w("    }")
+
+        else:
+            raise RuntimeError("Unsupported list element type in decode: {elem}")
 
     def _emit_encode_impl(self, msg: MessageDecl, w):
         name = msg.name
@@ -260,26 +355,7 @@ class CppGenerator:
             w(f"    ptr += {sz};")
             w(f"    remaining -= {sz};")
         elif isinstance(t, ListType):
-            need("sizeof(int32_t)")
-            w(f"    int32_t count_{name} = static_cast<int32_t>(msg.{name}.size);")
-            w(f"    std::memcpy(ptr, &count_{name}, sizeof(int32_t));")
-            w("    ptr += sizeof(int32_t);")
-            w("    remaining -= sizeof(int32_t);")
-            elem = t.element_type
-            if isinstance(elem, PrimitiveType):
-                elem_cpp = self._cpp_type(elem)
-                w(f"    std::size_t bytes_{name} = sizeof({elem_cpp}) * msg.{name}.size;")
-                w(f"    if (remaining < bytes_{name}) return false;")
-                w(f"    std::memcpy(ptr, msg.{name}.data, bytes_{name});")
-                w(f"    ptr += bytes_{name};")
-                w(f"    remaining -= bytes_{name};")
-            else:
-                w(f"    for (std::size_t i = 0; i < msg.{name}.size; ++i) {{")
-                w("        std::size_t written_elem = 0;")
-                w(f"        if (!encode(msg.{name}.data[i], ptr, remaining, written_elem)) return false;")
-                w("        ptr += written_elem;")
-                w("        remaining -= written_elem;")
-                w("    }")
+            self._emit_encode_list(t, f"msg.{name}", name, w, need)
         elif isinstance(t, ReferenceType):
             w("    {")
             w("        std::size_t written_elem = 0;")
@@ -296,7 +372,7 @@ class CppGenerator:
     def _emit_decode_impl(self, msg: MessageDecl, w):
         name = msg.name
         w(f"inline bool decode({name}& msg, const uint8_t* data, std::size_t size, std::size_t& consumed) {{")
-        w("    const uint8_t* ptr = data;")
+        w("    uint8_t* ptr = const_cast<uint8_t*>(data);")
         w("    std::size_t remaining = size;")
         for field in msg.fields:
             self._emit_decode_field(field, w)
@@ -346,30 +422,7 @@ class CppGenerator:
             w(f"    ptr += {sz};")
             w(f"    remaining -= {sz};")
         elif isinstance(t, ListType):
-            need("sizeof(int32_t)")
-            w(f"    int32_t count_{name} = 0;")
-            w(f"    std::memcpy(&count_{name}, ptr, sizeof(int32_t));")
-            w("    ptr += sizeof(int32_t);")
-            w("    remaining -= sizeof(int32_t);")
-            w(f"    if (count_{name} < 0) return false;")
-            elem = t.element_type
-            if isinstance(elem, PrimitiveType):
-                elem_cpp = self._cpp_type(elem)
-                w(f"    std::size_t bytes_{name} = sizeof({elem_cpp}) * static_cast<std::size_t>(count_{name});")
-                need(f"bytes_{name}")
-                w(f"    msg.{name}.size = static_cast<std::size_t>(count_{name});")
-                w(f"    msg.{name}.data = reinterpret_cast<const {elem_cpp}*>(ptr);")
-                w(f"    ptr += bytes_{name};")
-                w(f"    remaining -= bytes_{name};")
-            else:
-                w(f"    msg.{name}.size = static_cast<std::size_t>(count_{name});")
-                w(f"    msg.{name}.data = reinterpret_cast<const {elem.name}*>(ptr);")
-                w(f"    for (std::size_t i = 0; i < msg.{name}.size; ++i) {{")
-                w("        std::size_t consumed_elem = 0;")
-                w(f"        if (!decode(const_cast<{elem.name}&>(msg.{name}.data[i]), ptr, remaining, consumed_elem)) return false;")
-                w("        ptr += consumed_elem;")
-                w("        remaining -= consumed_elem;")
-                w("    }")
+            self._emit_decode_list(t, f"msg.{name}", name, w, need)
         elif isinstance(t, ReferenceType):
             w("    {")
             w("        std::size_t consumed_elem = 0;")
