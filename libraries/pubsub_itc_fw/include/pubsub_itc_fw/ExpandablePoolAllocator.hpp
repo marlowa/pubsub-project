@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <functional>
 #include <memory>
@@ -9,7 +10,6 @@
 #include <string>
 #include <type_traits>
 #include <vector>
-#include <atomic>
 
 #include <pubsub_itc_fw/AllocatorBehaviourStatistics.hpp>
 #include <pubsub_itc_fw/CacheLine.hpp>
@@ -121,7 +121,7 @@
 
 namespace pubsub_itc_fw {
 
-template <typename T> class ExpandablePoolAllocator  {
+template <typename T> class ExpandablePoolAllocator {
   public:
     ~ExpandablePoolAllocator() = default;
 
@@ -139,12 +139,9 @@ template <typename T> class ExpandablePoolAllocator  {
      * @param[in] handler_for_huge_pages_error Callback if huge page allocation fails.
      * @param[in] use_huge_pages_flag Whether to attempt 2MB huge page allocation.
      */
-    ExpandablePoolAllocator(std::string const& pool_name, int objects_per_pool, int initial_pools,
-                            int expansion_threshold_hint,
-                            std::function<void(void*, int)> handler_for_pool_exhausted,
-                            std::function<void(void*, void*)> handler_for_invalid_free,
-                            std::function<void(void*)> handler_for_huge_pages_error,
-                            UseHugePagesFlag use_huge_pages_flag);
+    ExpandablePoolAllocator(std::string const& pool_name, int objects_per_pool, int initial_pools, int expansion_threshold_hint,
+                            std::function<void(void*, int)> handler_for_pool_exhausted, std::function<void(void*, void*)> handler_for_invalid_free,
+                            std::function<void(void*)> handler_for_huge_pages_error, UseHugePagesFlag use_huge_pages_flag);
 
     ExpandablePoolAllocator(ExpandablePoolAllocator const&) = delete;
     ExpandablePoolAllocator& operator=(ExpandablePoolAllocator const&) = delete;
@@ -212,10 +209,10 @@ template <typename T> class ExpandablePoolAllocator  {
 template <typename T>
 ExpandablePoolAllocator<T>::ExpandablePoolAllocator(std::string const& pool_name, //
                                                     int objects_per_pool, int initial_pools,
-                                                    int expansion_threshold_hint, //
+                                                    int expansion_threshold_hint,                               //
                                                     std::function<void(void*, int)> handler_for_pool_exhausted, //
                                                     std::function<void(void*, void*)> handler_for_invalid_free, //
-                                                    std::function<void(void*)> handler_for_huge_pages_error, //
+                                                    std::function<void(void*)> handler_for_huge_pages_error,    //
                                                     UseHugePagesFlag use_huge_pages_flag)
     : pool_name_(pool_name)
     , objects_per_pool_(objects_per_pool)
@@ -301,8 +298,7 @@ template <typename T> T* ExpandablePoolAllocator<T>::allocate() {
     // It is a precondition that the OS will always give us the memory we need.
     // We have to run on a machine where we can be very confident indeed that this is the case.
     // Strictly speaking, this is a post condition violation.
-    throw PreconditionAssertion("ExpandablePoolAllocator::allocate: operating system refused memory for new pool",
-                                __FILE__, __LINE__);
+    throw PreconditionAssertion("ExpandablePoolAllocator::allocate: operating system refused memory for new pool", __FILE__, __LINE__);
 }
 
 template <typename T> void ExpandablePoolAllocator<T>::deallocate(T* obj) {
@@ -399,8 +395,7 @@ template <typename T> std::uintptr_t* ExpandablePoolAllocator<T>::get_flag_for_o
     return &slot->flag;
 }
 
-template <typename T>
-AllocatorBehaviourStatistics ExpandablePoolAllocator<T>::get_behaviour_statistics() const {
+template <typename T> AllocatorBehaviourStatistics ExpandablePoolAllocator<T>::get_behaviour_statistics() const {
     AllocatorBehaviourStatistics stats;
 
     stats.total_allocations = total_allocations_.value.load(std::memory_order_relaxed);
@@ -409,15 +404,15 @@ AllocatorBehaviourStatistics ExpandablePoolAllocator<T>::get_behaviour_statistic
     stats.expansion_events = expansion_events_.value.load(std::memory_order_relaxed);
     stats.failed_allocations = failed_allocations_.value.load(std::memory_order_relaxed);
 
-     uint64_t pool_count = 0;
-     for (auto* p = head_pool_; p != nullptr; p = p->get_next_pool()) {
-         pool_count++;
-     }
-     stats.per_pool_allocation_counts.counts.resize(pool_count);
-     uint64_t i = 0;
-     for (auto* p = head_pool_; p != nullptr; p = p->get_next_pool()) {
-         stats.per_pool_allocation_counts.counts[i++] = p->get_allocation_count();
-     }
+    uint64_t pool_count = 0;
+    for (auto* p = head_pool_; p != nullptr; p = p->get_next_pool()) {
+        pool_count++;
+    }
+    stats.per_pool_allocation_counts.counts.resize(pool_count);
+    uint64_t i = 0;
+    for (auto* p = head_pool_; p != nullptr; p = p->get_next_pool()) {
+        stats.per_pool_allocation_counts.counts[i++] = p->get_allocation_count();
+    }
 
     return stats;
 }

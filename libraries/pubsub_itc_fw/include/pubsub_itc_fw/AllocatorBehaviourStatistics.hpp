@@ -57,7 +57,6 @@ namespace pubsub_itc_fw {
  */
 class AllocatorBehaviourStatistics {
   public:
-
     /**
      * @brief Constructs an empty statistics object.
      *

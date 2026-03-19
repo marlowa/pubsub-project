@@ -25,23 +25,21 @@ def compile_and_load(dsl_text: str, namespace: str = "ns"):
     pyb_gen = Pybind11Generator(namespace=namespace, module_name=module_name)
     bindings_code = pyb_gen.emit(ast)
 
-    with tempfile.TemporaryDirectory(prefix="dslgen_") as tmpdir:
-        tmp = Path(tmpdir)
-
-        # Write generated files
-        (tmp / "generated.hpp").write_text(header_code)
-        (tmp / "bindings.cpp").write_text(bindings_code)
-        (tmp / "CMakeLists.txt").write_text(_cmakelists())
-
-        # Configure + build
-        subprocess.check_call(["cmake", "-S", str(tmp), "-B", str(tmp)])
-        subprocess.check_call(["cmake", "--build", str(tmp)])
-
-        # Find built extension module
-        for so in tmp.glob("dslgen*.so"):
-            return _load_extension(so, module_name)
-
-        raise RuntimeError("dslgen module not built")
+    # TODO need to reindent this block
+    #with tempfile.TemporaryDirectory(prefix="dslgen_") as tmpdir:
+    tmpdir = "/home/marlowa/mystuff/dslgen_debug"  # or any fixed path you like
+    tmp = Path(tmpdir)
+    # Write generated files
+    (tmp / "generated.hpp").write_text(header_code)
+    (tmp / "bindings.cpp").write_text(bindings_code)
+    (tmp / "CMakeLists.txt").write_text(_cmakelists())
+    # Configure + build
+    subprocess.check_call(["cmake", "-S", str(tmp), "-B", str(tmp)])
+    subprocess.check_call(["cmake", "--build", str(tmp)])
+    # Find built extension module
+    for so in tmp.glob("dslgen*.so"):
+        return _load_extension(so, module_name)
+    raise RuntimeError("dslgen module not built")
 
 
 def _cmakelists() -> str:

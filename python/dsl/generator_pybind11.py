@@ -13,6 +13,7 @@ from .ast import (
     ReferenceType,
 )
 
+
 @dataclass
 class Pybind11Generator:
     namespace: str  # same as CppGenerator namespace
@@ -49,7 +50,7 @@ class Pybind11Generator:
         w('')
 
         # Bind EncodedBuffer
-        w('    py::class_<EncodedBuffer>(m, "EncodedBuffer")')
+        w('    py::class_<EncodedBuffer>(m, "EncodedBuffer", py::module_local())')
         w('        .def_readonly("data", &EncodedBuffer::data)')
         w('        .def_readonly("size", &EncodedBuffer::size)')
         w('        .def("__len__", [](const EncodedBuffer& b) { return b.size; })')
@@ -82,32 +83,46 @@ class Pybind11Generator:
 
     # ---------- helpers ----------
 
+    def _cpp_primitive(self, t: PrimitiveType) -> str:
+        # Match CppGenerator
+        mapping = {
+            "i8": "int8_t",
+            "i16": "int16_t",
+            "i32": "int32_t",
+            "i64": "int64_t",
+            "bool": "bool",
+            "datetime_ns": "int64_t",
+        }
+        return mapping[t.name]
+
     def _cpp_type(self, t) -> str:
         # Mirror CppGenerator’s notion of types, but as strings
         if isinstance(t, PrimitiveType):
             return self._cpp_primitive(t)
         if isinstance(t, ReferenceType):
-            return f"{self.namespace}::{t.name}"
+            return f"ns::{t.name}"
         if isinstance(t, ListType):
-            # Only needed if you ever want elem_cpp for nested lists;
-            # for the current kw-assign we only call this on element_type.
             inner = self._cpp_type(t.element_type)
             return f"ns::ListView<{inner}>"
         if isinstance(t, ArrayType):
             inner = self._cpp_type(t.element_type)
-            return f"std::array<{inner}, {t.size}>"
+            return f"std::array<{inner}, {t.length}>"
         raise RuntimeError(f"Unsupported type in _cpp_type: {t}")
 
     def _collect_list_types(self, t, acc: Set[Tuple[str, int]], depth: int = 1):
+        """
+        For a ListType, record (base_cpp_type, max_depth_of_nesting).
+        E.g. list<list<i32>> -> ("int32_t", 2)
+             list<list<Child>> -> ("ns::Child", 2)
+        """
         if isinstance(t, ListType):
             elem = t.element_type
             if isinstance(elem, PrimitiveType):
                 cpp = self._cpp_primitive(elem)
                 acc.add((cpp, depth))
             elif isinstance(elem, ReferenceType):
-                acc.add((f"{self.namespace}::{elem.name}", depth))
+                acc.add((f"ns::{elem.name}", depth))
             elif isinstance(elem, ListType):
-                # nested list: recurse, increasing depth
                 self._collect_list_types(elem, acc, depth + 1)
             else:
                 raise RuntimeError(f"Unsupported list element type in bindings: {elem}")
@@ -115,22 +130,13 @@ class Pybind11Generator:
             self._collect_list_types(t.element_type, acc, depth)
         # other types: nothing to do
 
-    def _cpp_primitive(self, t: PrimitiveType) -> str:
-        mapping = {
-            "i8": "std::int8_t",
-            "i16": "std::int16_t",
-            "i32": "std::int32_t",
-            "i64": "std::int64_t",
-            "bool": "bool",
-            "datetime_ns": "std::int64_t",
-        }
-        return mapping[t.name]
-
     def _emit_listview_binding(self, cpp_type: str, depth: int, w):
         # depth 1: ListView<T>
         # depth 2: ListView<ListView<T>>
         # etc.
         name = cpp_type.replace("::", "_").replace(" ", "_")
+        inst = ""
+        pyname = ""
         for d in range(1, depth + 1):
             if d == 1:
                 inst = f'ns::ListView<{cpp_type}>'
@@ -139,7 +145,7 @@ class Pybind11Generator:
                 inst = f'ns::ListView<{inst}>'
                 pyname = f'ListView_{pyname}'
 
-        w(f'    py::class_<{inst}>(m, "{pyname}")')
+        w(f'    py::class_<{inst}>(m, "{pyname}", py::module_local())')
         w(f'        .def_readwrite("data", &{inst}::data)')
         w(f'        .def_readwrite("size", &{inst}::size)')
         w(f'        .def("__len__", []({inst} const& v) {{ return v.size; }})')
@@ -152,9 +158,50 @@ class Pybind11Generator:
         w('        }, py::keep_alive<0, 1>());')
         w('')
 
+    def _emit_list_from_py(
+        self,
+        list_type: ListType,
+        target_expr: str,   # C++: ns::ListView<...>
+        source_expr: str,   # C++: py::object / py::list
+        w,
+        indent: str = " " * 20,
+        prefix: str = "",
+       ):
+        elem = list_type.element_type
+        elem_cpp = self._cpp_type(elem)
+
+        lst_name = f"lst_{prefix or '0'}"
+        n_name   = f"n_{prefix or '0'}"
+        buf_name = f"buf_{prefix or '0'}"
+        i_name   = f"i_{prefix or '0'}"
+
+        w(f'{indent}{{')
+        w(f'{indent}    py::list {lst_name} = {source_expr}.cast<py::list>();')
+        w(f'{indent}    std::size_t {n_name} = {lst_name}.size();')
+        w(f'{indent}    auto* {buf_name} = new {elem_cpp}[{n_name}];')
+        w(f'{indent}    for (std::size_t {i_name} = 0; {i_name} < {n_name}; ++{i_name}) {{')
+
+        if isinstance(elem, ListType):
+            # buf_name[i_name] is a ns::ListView<...>, lst_name[i_name] is a Python list
+            self._emit_list_from_py(
+                elem,
+                target_expr=f'{buf_name}[{i_name}]',
+                source_expr=f'{lst_name}[{i_name}]',
+                w=w,
+                indent=indent + "        ",
+                prefix=f"{prefix or '0'}_{i_name}",
+            )
+        else:
+            w(f'{indent}        {buf_name}[{i_name}] = {lst_name}[{i_name}].cast<{elem_cpp}>();')
+
+        w(f'{indent}    }}')
+        w(f'{indent}    {target_expr}.data = {buf_name};')
+        w(f'{indent}    {target_expr}.size = {n_name};')
+        w(f'{indent}}}')
+
     def _emit_message_binding(self, msg: MessageDecl, w):
         name = msg.name
-        w(f'    py::class_<ns::{name}>(m, "{name}")')
+        w(f'    py::class_<ns::{name}>(m, "{name}", py::module_local())')
         w('        .def(py::init([](py::kwargs kwargs) {')
         w(f'            ns::{name} obj{{}};')
         w('            for (auto& item : kwargs) {')
@@ -181,23 +228,19 @@ class Pybind11Generator:
     def _emit_field_kw_assign(self, msg: MessageDecl, field: Field, w):
         name = field.name
         w(f'                if (key == "{name}") {{')
-        # Special case: list<T>
         if isinstance(field.type, ListType):
-            elem_cpp = self._cpp_type(field.type.element_type)
-
             w('                    if (py::isinstance<py::list>(item.second)) {')
-            w('                        py::list lst = item.second.cast<py::list>();')
-            w('                        std::size_t n = lst.size();')
-            w(f'                        auto* buf = new {elem_cpp}[n];')
-            w('                        for (std::size_t i = 0; i < n; ++i)')
-            w(f'                            buf[i] = lst[i].cast<{elem_cpp}>();')
-            w(f'                        obj.{name}.data = buf;')
-            w(f'                        obj.{name}.size = n;')
+            self._emit_list_from_py(
+                field.type,
+                target_expr=f'obj.{name}',
+                source_expr='item.second',
+                w=w,
+                indent=" " * 20,
+            )
             w('                    } else {')
             w(f'                        obj.{name} = item.second.cast<decltype(obj.{name})>();')
             w('                    }')
         else:
-            # Normal field
             w(f'                    obj.{name} = item.second.cast<decltype(obj.{name})>();')
         if field.optional:
             w(f'                    obj.has_{name} = true;')

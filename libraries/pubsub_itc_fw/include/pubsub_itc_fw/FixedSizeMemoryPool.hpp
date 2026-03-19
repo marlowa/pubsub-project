@@ -4,17 +4,17 @@
 
 #pragma once
 
-#include <sys/mman.h>
-#include <unistd.h>
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <mutex>
 #include <new>
 #include <stdexcept>
 #include <string>
+#include <sys/mman.h>
+#include <unistd.h>
 #include <vector>
-#include <mutex>
 
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/UseHugePagesFlag.hpp>
@@ -23,8 +23,7 @@ namespace pubsub_itc_fw {
 
 template <typename T> struct Slot;
 
-template <typename T>
-struct SlotStorage {
+template <typename T> struct SlotStorage {
     struct FreeListNode {
         Slot<T>* next;
     };
@@ -34,13 +33,18 @@ struct SlotStorage {
         std::aligned_storage_t<sizeof(T), alignof(T)> storage;
     };
 
-    T* object_ptr() { return reinterpret_cast<T*>(&storage); }
-    T const* object_ptr() const { return reinterpret_cast<T const*>(&storage); }
-    FreeListNode* free_node_ptr() { return &free_node; }
+    T* object_ptr() {
+        return reinterpret_cast<T*>(&storage);
+    }
+    T const* object_ptr() const {
+        return reinterpret_cast<T const*>(&storage);
+    }
+    FreeListNode* free_node_ptr() {
+        return &free_node;
+    }
 };
 
-template <typename T>
-struct Slot {
+template <typename T> struct Slot {
     std::uintptr_t flag; // 0 = free, 1 = allocated
     SlotStorage<T> storage;
 };
@@ -51,20 +55,17 @@ struct Slot {
  * synchronization requirements while maintaining compatibility with the
  * ExpandablePoolAllocator's flag-based diagnostic checks.
  */
-template <typename T>
-class FixedSizeMemoryPool  {
-public:
+template <typename T> class FixedSizeMemoryPool {
+  public:
     using SlotType = Slot<T>;
 
-    FixedSizeMemoryPool(int objects_per_pool, UseHugePagesFlag use_huge_pages_flag,
-                        std::function<void(void*, std::size_t)> handler_for_huge_pages_error)
-        : objects_per_pool_(objects_per_pool)
-        , use_huge_pages_flag_(use_huge_pages_flag)
-    {
+    FixedSizeMemoryPool(int objects_per_pool, UseHugePagesFlag use_huge_pages_flag, std::function<void(void*, std::size_t)> handler_for_huge_pages_error)
+        : objects_per_pool_(objects_per_pool), use_huge_pages_flag_(use_huge_pages_flag) {
         total_pool_size_ = static_cast<std::size_t>(objects_per_pool_) * sizeof(SlotType);
 
         pool_memory_ = mmap(nullptr, total_pool_size_, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-        if (pool_memory_ == MAP_FAILED) throw std::bad_alloc();
+        if (pool_memory_ == MAP_FAILED)
+            throw std::bad_alloc();
 
         slots_ = reinterpret_cast<SlotType*>(pool_memory_);
         free_list_v_.reserve(objects_per_pool_);
@@ -98,7 +99,8 @@ public:
 
     [[nodiscard]] T* allocate() {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (free_list_v_.empty()) return nullptr;
+        if (free_list_v_.empty())
+            return nullptr;
 
         SlotType* slot = free_list_v_.back();
         free_list_v_.pop_back();
@@ -114,10 +116,10 @@ public:
      * handled the object lifetime before calling this method.
      */
     void deallocate(T* ptr) {
-        if (!ptr) throw PreconditionAssertion("deallocate called with nullptr", __FILE__, __LINE__);
+        if (!ptr)
+            throw PreconditionAssertion("deallocate called with nullptr", __FILE__, __LINE__);
 
-        SlotType* slot = reinterpret_cast<SlotType*>(
-            reinterpret_cast<char*>(ptr) - offsetof(SlotType, storage.storage));
+        SlotType* slot = reinterpret_cast<SlotType*>(reinterpret_cast<char*>(ptr) - offsetof(SlotType, storage.storage));
 
         std::lock_guard<std::mutex> lock(mutex_);
         slot->flag = 0;
@@ -153,10 +155,14 @@ public:
         return allocation_count_;
     }
 
-    void set_next_pool(FixedSizeMemoryPool<T>* next) { next_pool_ = next; }
-    [[nodiscard]] FixedSizeMemoryPool<T>* get_next_pool() const { return next_pool_; }
+    void set_next_pool(FixedSizeMemoryPool<T>* next) {
+        next_pool_ = next;
+    }
+    [[nodiscard]] FixedSizeMemoryPool<T>* get_next_pool() const {
+        return next_pool_;
+    }
 
-private:
+  private:
     int objects_per_pool_;
     UseHugePagesFlag use_huge_pages_flag_;
     std::size_t total_pool_size_{0};
@@ -347,7 +353,7 @@ template <typename T> struct SlotStorage {
  *                call allocate() and deallocate() concurrently without
  *                external synchronisation.
  */
-template <typename T> class FixedSizeMemoryPool  {
+template <typename T> class FixedSizeMemoryPool {
   public:
     using SlotType = Slot<T>;
 
@@ -483,7 +489,10 @@ template <typename T> class FixedSizeMemoryPool  {
         return __atomic_load_n(&next_pool_, __ATOMIC_ACQUIRE);
     }
 
-    uint64_t get_allocation_count() const { return allocation_count_; }
+    // TODO not safe make it an atomic
+    uint64_t get_allocation_count() const {
+        return allocation_count_;
+    }
 
   private:
     /**

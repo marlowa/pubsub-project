@@ -1,14 +1,14 @@
 #pragma once
 
-#include <string>  // For std::string
-#include <vector>  // For std::vector
 #include <cstdint> // For std::uint32_t
-#include <iostream>
 #include <fmt/core.h>
+#include <iostream>
+#include <string> // For std::string
+#include <vector> // For std::vector
 
-#include <pubsub_itc_fw/UseHugePagesFlag.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
+#include <pubsub_itc_fw/UseHugePagesFlag.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -24,20 +24,20 @@ namespace pubsub_itc_fw {
  */
 struct PoolStatistics {
     // Basic Info
-    std::string pool_name_;                                     /**< @brief The name of the pool allocator. */
+    std::string pool_name_;                                                     /**< @brief The name of the pool allocator. */
     UseHugePagesFlag use_huge_pages_flag_{UseHugePagesFlag::DoNotUseHugePages}; /**< @brief Flag indicating if huge pages are in use. */
-    size_t huge_page_size_{0};                                  /**< @brief The size of huge pages, if used. */
-    size_t object_size_{0};                                     /**< @brief The size of the objects managed by the pool. */
+    size_t huge_page_size_{0};                                                  /**< @brief The size of huge pages, if used. */
+    size_t object_size_{0};                                                     /**< @brief The size of the objects managed by the pool. */
 
     // Pool Metrics
-    int number_of_objects_per_pool_{0};                         /**< @brief The number of objects each pool can hold. */
-    int number_of_pools_{0};                                    /**< @brief The total number of memory pools currently allocated. */
-    int number_of_huge_page_pools_{0};                          /**< @brief The number of pools using huge pages. */
+    int number_of_objects_per_pool_{0}; /**< @brief The number of objects each pool can hold. */
+    int number_of_pools_{0};            /**< @brief The total number of memory pools currently allocated. */
+    int number_of_huge_page_pools_{0};  /**< @brief The number of pools using huge pages. */
 
     // Allocation Metrics (may be approximate in a concurrent environment)
-    int number_of_allocated_objects_{0};                        /**< @brief The total number of objects currently allocated from all pools. */
-    int number_of_objects_available_{0};                        /**< @brief The total number of objects available for allocation across all pools. */
-    int number_of_full_pools_{0};                               /**< @brief The number of pools that are completely full. */
+    int number_of_allocated_objects_{0}; /**< @brief The total number of objects currently allocated from all pools. */
+    int number_of_objects_available_{0}; /**< @brief The total number of objects available for allocation across all pools. */
+    int number_of_full_pools_{0};        /**< @brief The number of pools that are completely full. */
 
     /**
      * @brief Logs the pool statistics to a provided `LoggerInterface`.

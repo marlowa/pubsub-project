@@ -1,8 +1,8 @@
 #pragma once
 
+#include <sstream>   // For std::ostringstream
 #include <stdexcept> // For std::logic_error
 #include <string>    // For std::string
-#include <sstream>   // For std::ostringstream
 
 // For this specific file, we will directly include the StringUtils (if leafname is moved there)
 // or just use filename directly if leafname is not part of this core framework.
@@ -16,14 +16,14 @@ namespace pubsub_itc_fw {
 // If not, a direct filename might be used, or StringUtils needs to be designed.
 // Let's create a local helper for now to avoid a circular dependency if StringUtils uses PreconditionAssertion.
 namespace {
-    std::string get_leafname(const char* filepath) {
-        std::string path_str(filepath);
-        size_t pos = path_str.find_last_of("/\\");
-        if (pos == std::string::npos) {
-            return path_str;
-        }
-        return path_str.substr(pos + 1);
+std::string get_leafname(const char* filepath) {
+    std::string path_str(filepath);
+    size_t pos = path_str.find_last_of("/\\");
+    if (pos == std::string::npos) {
+        return path_str;
     }
+    return path_str.substr(pos + 1);
+}
 } // namespace
 
 /** @ingroup utilities_subsystem */
@@ -37,7 +37,7 @@ namespace {
  * was thrown, assisting in debugging.
  */
 class PreconditionAssertion : public std::logic_error {
-public:
+  public:
     /**
      * @brief Constructs a PreconditionAssertion with a message, filename, and line number.
      * @param message The detailed error message.
@@ -56,7 +56,7 @@ public:
     PreconditionAssertion(const char* message, const char* filename, int line_number)
         : std::logic_error(assemble_assertion_message(std::string(message), filename, line_number)) {}
 
-private:
+  private:
     /**
      * @brief Helper function to assemble the full assertion message string.
      * @param message The detailed error message.

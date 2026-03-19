@@ -1,8 +1,8 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <thread>
-#include <chrono>
 
 #ifdef __x86_64__
 #include <immintrin.h>
@@ -20,7 +20,7 @@ namespace pubsub_itc_fw {
  * 3. Targeted sleeping for sustained contention to reduce CPU heat/noise.
  */
 class Backoff {
-public:
+  public:
     // Constants for tuning the backoff behaviour
     static constexpr uint32_t UP_TO_YIELD = 10;
     static constexpr uint32_t UP_TO_SLEEP = 20;
@@ -68,7 +68,7 @@ public:
         count_ = 0;
     }
 
-private:
+  private:
     uint32_t count_ = 0;
 };
 
