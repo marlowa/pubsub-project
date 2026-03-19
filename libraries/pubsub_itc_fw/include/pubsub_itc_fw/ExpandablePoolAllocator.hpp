@@ -34,6 +34,29 @@
  *    - current_pool_ptr_ points to the most recently active pool (optimisation).
  *    - cleanup_list_ holds unique_ptrs for RAII cleanup.
  *
+ * CURRENT POOL POINTER STRATEGY
+ *    - current_pool_ptr_ always points to the most recently added pool.
+ *      It is updated forward (toward newer pools) during expansion, but is
+ *      never reset backward toward older pools after frees.
+ *
+ *    - This is a deliberate design decision. Under sustained high load,
+ *      demand filled the earlier pools and forced expansion. Those earlier
+ *      pools are likely to remain full or near-full while the system is
+ *      under load. Pointing the fast path at the newest pool avoids
+ *      repeatedly attempting pools that are unlikely to have free slots.
+ *
+ *    - In a burst-then-drain pattern (heavy allocation followed by freeing
+ *      everything), the fast path will miss on the next burst and fall
+ *      through to the slow path, which traverses the chain from head_pool_
+ *      and updates current_pool_ptr_ when it finds a slot. This is
+ *      acceptable — the slow path is the recovery mechanism for exactly
+ *      this case.
+ *
+ *    - If the allocator is consistently seeing slow-path hits after drains,
+ *      that is a signal that objects_per_pool or initial_pools is
+ *      misconfigured for the workload, not a deficiency in the pointer
+ *      strategy.
+ *
  * EXPANSION STRATEGY
  *    - Starts with initial_pools pre-allocated.
  *    - Expands on demand when all pools are exhausted.
@@ -324,17 +347,22 @@ template <typename T> void ExpandablePoolAllocator<T>::deallocate(T* obj) {
         return;
     }
 
-    std::uintptr_t* flag = get_flag_for_object(obj);
+auto* flag = reinterpret_cast<std::atomic<std::uintptr_t>*>(
+    get_flag_for_object(obj));
 
-    if (*flag == 0U) {
+    std::uintptr_t expected = 1U;
+    if (!flag->compare_exchange_strong(expected, 0U,
+                                       std::memory_order_acq_rel,
+                                       std::memory_order_acquire)) {
+        // flag was already 0 — double free or invalid free
         if (handler_for_invalid_free_ != nullptr) {
-            handler_for_invalid_free_(nullptr, obj);
+           handler_for_invalid_free_(nullptr, obj);
         }
         return;
     }
 
+    // Exactly one thread reaches here — safe to destruct and return to pool
     obj->~T();
-    *flag = 0U;
     owner_pool->deallocate(obj);
 }
 
@@ -346,7 +374,7 @@ template <typename T> FixedSizeMemoryPool<T>* ExpandablePoolAllocator<T>::add_po
     });
 
     FixedSizeMemoryPool<T>* pool_ptr = new_pool.get();
-    FixedSizeMemoryPool<T>* current_head = __atomic_load_n(&head_pool_, __ATOMIC_RELAXED);
+    FixedSizeMemoryPool<T>* current_head = __atomic_load_n(&head_pool_, __ATOMIC_ACQUIRE);
 
     if (current_head == nullptr) {
         __atomic_store_n(&head_pool_, pool_ptr, __ATOMIC_RELEASE);

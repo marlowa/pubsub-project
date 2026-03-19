@@ -156,10 +156,11 @@ template <typename T> class FixedSizeMemoryPool {
     }
 
     void set_next_pool(FixedSizeMemoryPool<T>* next) {
-        next_pool_ = next;
+        __atomic_store_n(&next_pool_, next, __ATOMIC_RELEASE);
     }
+
     [[nodiscard]] FixedSizeMemoryPool<T>* get_next_pool() const {
-        return next_pool_;
+        return __atomic_load_n(&next_pool_, __ATOMIC_ACQUIRE);
     }
 
   private:
@@ -491,7 +492,7 @@ template <typename T> class FixedSizeMemoryPool {
 
     // TODO not safe make it an atomic
     uint64_t get_allocation_count() const {
-        return allocation_count_;
+        return allocation_count_.load();
     }
 
   private:
@@ -581,7 +582,7 @@ template <typename T> class FixedSizeMemoryPool {
     alignas(16) mutable unsigned __int128 head_raw_{0U};
 
     FixedSizeMemoryPool<T>* next_pool_{nullptr};
-    uint64_t allocation_count_{0};
+    std::atomic<uint64_t> allocation_count_{0};
 };
 
 template <typename T>
@@ -652,7 +653,7 @@ template <typename T> T* FixedSizeMemoryPool<T>::allocate() {
     if (slot == nullptr) {
         return nullptr;
     }
-    ++allocation_count_;
+    allocation_count_.fetch_add(1, std::memory_order_relaxed);;
     return object_from_slot(slot);
 }
 
