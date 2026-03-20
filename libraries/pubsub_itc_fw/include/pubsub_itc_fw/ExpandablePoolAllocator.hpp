@@ -110,6 +110,23 @@
  *      they may allocate memory if required, although this is not recommended
  *      for performance-critical paths.
  *
+ *    - handler_for_pool_exhausted_ is invoked under expansion_mutex_ and
+ *      therefore cannot be called concurrently by multiple threads.
+ *
+ *    - handler_for_invalid_free_ is invoked under callback_mutex_ and
+ *      therefore cannot be called concurrently by multiple threads. The
+ *      lock is taken only after the double-free or invalid-pointer condition
+ *      has been confirmed atomically, so it does not appear on the normal
+ *      deallocation path.
+ *
+ *    - handler_for_huge_pages_error_ is invoked from add_pool_to_chain(),
+ *      which is called under expansion_mutex_, so it also cannot be called
+ *      concurrently by multiple threads.
+ *
+ *    - Callbacks are expected to be lightweight. They may log messages, and
+ *      they may allocate memory if required, although this is not recommended
+ *      for performance-critical paths.
+ *
  * DEALLOCATION COST
  *    - Deallocation performs a linear search through the pool chain to locate
  *      the owning pool. This operation is O(number_of_pools). This design is
@@ -246,6 +263,7 @@ template <typename T> class ExpandablePoolAllocator {
     int expansion_threshold_hint_;
 
     UseHugePagesFlag use_huge_pages_flag_;
+    mutable std::mutex callback_mutex_;
     std::function<void(void*, int)> handler_for_pool_exhausted_;
     std::function<void(void*, void*)> handler_for_invalid_free_;
     std::function<void(void*)> handler_for_huge_pages_error_;
@@ -375,13 +393,13 @@ template <typename T> void ExpandablePoolAllocator<T>::deallocate(T* obj) {
 
     if (owner_pool == nullptr) {
         if (handler_for_invalid_free_ != nullptr) {
+            std::lock_guard<std::mutex> lock(callback_mutex_);
             handler_for_invalid_free_(nullptr, obj);
         }
         return;
     }
 
-auto* flag = reinterpret_cast<std::atomic<std::uintptr_t>*>(
-    get_flag_for_object(obj));
+    auto* flag = reinterpret_cast<std::atomic<std::uintptr_t>*>(get_flag_for_object(obj));
 
     std::uintptr_t expected = 1U;
     if (!flag->compare_exchange_strong(expected, 0U,
@@ -389,6 +407,7 @@ auto* flag = reinterpret_cast<std::atomic<std::uintptr_t>*>(
                                        std::memory_order_acquire)) {
         // flag was already 0 — double free or invalid free
         if (handler_for_invalid_free_ != nullptr) {
+           std::lock_guard<std::mutex> lock(callback_mutex_);
            handler_for_invalid_free_(nullptr, obj);
         }
         return;

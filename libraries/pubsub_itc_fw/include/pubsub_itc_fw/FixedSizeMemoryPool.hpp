@@ -11,10 +11,46 @@
  *          @code
  *          target_compile_options(your_target PRIVATE -mcx16)
  *          @endcode
- *          This flag is safe on all x86-64 processors manufactured after
- *          approximately 2006. It is not required when building with
- *          @c USING_VALGRIND defined, as that build path uses a mutex-based
- *          implementation instead.
+ *          This flag is safe on all x86-64 processors manufactured after approximately 2006.
+ *          It is not required when building with @c USING_VALGRIND defined, as that build path uses
+ *          a mutex-based implementation instead.
+ *
+ * ============================================================================
+ * BUILD PATH SELECTION
+ * ============================================================================
+ *
+ * This file provides two implementations of FixedSizeMemoryPool<T>:
+ *
+ * PRODUCTION PATH (USING_VALGRIND not defined)
+ *    - Lock-free Treiber stack using 128-bit CMPXCHG16B atomics.
+ *    - Requires -mcx16 compiler flag on x86-64.
+ *    - Used for all normal builds and ASAN builds.
+ *    - ASAN is compatible with this path because it instruments memory
+ *      safety (bounds, lifetime) without needing to decompose individual
+ *      atomic operations.
+ *
+ * INSTRUMENTED PATH (USING_VALGRIND defined)
+ *    - Mutex-protected implementation that replaces the lock-free Treiber
+ *      stack with a std::vector-based free list.
+ *    - USING_VALGRIND is defined in two distinct build configurations:
+ *
+ *      1. Valgrind builds (--valgrind flag in build.py):
+ *         Helgrind and DRD cannot model CMPXCHG16B and report false
+ *         positives. The mutex path gives them synchronisation primitives
+ *         they can reason about correctly.
+ *
+ *      2. ThreadSanitizer builds (--tsan flag in build.py):
+ *         TSan intercepts every memory access to track per-thread ordering.
+ *         It cannot decompose CMPXCHG16B into the individual accesses it
+ *         needs to track, so it cannot correctly instrument the lock-free
+ *         path. The mutex path gives TSan standard primitives it fully
+ *         understands.
+ *
+ *    - Note: despite the macro name, USING_VALGRIND does not imply that Valgrind is necessarily running.
+ *      It means "use the instrumentation-friendly mutex path".
+ *      The CMakeLists.txt sets this macro for both Valgrind and TSan builds.
+ *
+ * ============================================================================
  */
 
 #ifdef USING_VALGRIND
@@ -94,10 +130,21 @@ template <typename T> class FixedSizeMemoryPool {
     }
 
     /**
-     * @brief Pool Destructor.
-     * * Only calls destructors on objects that were never returned to the pool
-     * (leaks). This ensures consistency with the ExpandablePoolAllocator's
-     * ownership model.
+     * @brief Destructs all remaining allocated objects and releases pool memory.
+     *
+     * @note This destructor explicitly calls the destructor on any slot whose
+     *       flag is 1 (allocated). These are objects that were allocated by the
+     *       caller but never returned to the pool via deallocate() before the
+     *       allocator was destroyed — in other words, caller-leaked objects.
+     *
+     *       This is intentional cleanup, not a double-destruction hazard.
+     *       ExpandablePoolAllocator::deallocate() always calls obj->~T() and
+     *       clears the flag to 0 before returning the slot to this pool.
+     *       Therefore any slot still flagged as 1 at destruction time has
+     *       definitely not had its destructor called yet.
+     *
+     *       The flag is cleared to 0 after destruction here purely for
+     *       consistency, since the pool memory is about to be unmapped anyway.
      */
     ~FixedSizeMemoryPool() {
         if (pool_memory_ != MAP_FAILED) {
@@ -143,12 +190,6 @@ template <typename T> class FixedSizeMemoryPool {
         free_list_v_.push_back(slot);
     }
 
-    [[nodiscard]] bool contains(T const* ptr) const {
-        auto const* byte_ptr = reinterpret_cast<std::byte const*>(ptr);
-        auto const* start = static_cast<std::byte const*>(pool_memory_);
-        return (byte_ptr >= start && byte_ptr < (start + total_pool_size_));
-    }
-
     [[nodiscard]] bool is_full() const {
         std::lock_guard<std::mutex> lock(mutex_);
         return free_list_v_.empty();
@@ -159,26 +200,18 @@ template <typename T> class FixedSizeMemoryPool {
         return static_cast<int>(free_list_v_.size());
     }
 
-    [[nodiscard]] bool uses_huge_pages() const {
-        return use_huge_pages_flag_ == UseHugePagesFlag::DoUseHugePages;
-    }
+    [[nodiscard]] bool uses_huge_pages() const;
 
-    [[nodiscard]] std::size_t get_huge_page_size() const {
-        return uses_huge_pages() ? 2048U * 1024U : 0U;
-    }
+    [[nodiscard]] std::size_t get_huge_page_size() const;
 
     uint64_t get_allocation_count() const {
         std::lock_guard<std::mutex> lock(mutex_);
         return allocation_count_;
     }
 
-    void set_next_pool(FixedSizeMemoryPool<T>* next) {
-        __atomic_store_n(&next_pool_, next, __ATOMIC_RELEASE);
-    }
+    void set_next_pool(FixedSizeMemoryPool<T>* next);
 
-    [[nodiscard]] FixedSizeMemoryPool<T>* get_next_pool() const {
-        return __atomic_load_n(&next_pool_, __ATOMIC_ACQUIRE);
-    }
+    [[nodiscard]] FixedSizeMemoryPool<T>* get_next_pool() const;
 
   private:
     int objects_per_pool_;
@@ -194,7 +227,8 @@ template <typename T> class FixedSizeMemoryPool {
 };
 
 } // namespace pubsub_itc_fw
-#else
+
+#else // the non-valgrind code
 
 // This diagnostic suppression is required because unsigned __int128 is a GNU extension,
 // and we rely on it for the 128-bit tagged pointer used in the Treiber stack.
@@ -381,7 +415,24 @@ template <typename T> class FixedSizeMemoryPool {
     };
 
     /**
-     * @brief Destructor – unmaps the memory allocated during construction.
+     * @brief Destructs all remaining allocated objects and releases pool memory.
+     *
+     * @note This destructor explicitly calls the destructor on any slot whose
+     *       flag is 1 (allocated). These are objects that were allocated by the
+     *       caller but never returned to the pool via deallocate() before the
+     *       allocator was destroyed — in other words, caller-leaked objects.
+     *
+     *       This is intentional cleanup, not a double-destruction hazard.
+     *       ExpandablePoolAllocator::deallocate() always calls obj->~T() and
+     *       clears the flag to 0 before returning the slot to this pool.
+     *       Therefore any slot still flagged as 1 at destruction time has
+     *       definitely not had its destructor called yet.
+     *
+     * @note The mutex is held during iteration to satisfy Helgrind and DRD,
+     *       which require that all accesses to shared state are covered by
+     *       a recognised synchronisation primitive. In practice, the
+     *       allocator lifetime guarantee (no threads active during destruction)
+     *       means the lock is not strictly necessary for correctness.
      */
     ~FixedSizeMemoryPool();
 
@@ -492,9 +543,7 @@ template <typename T> class FixedSizeMemoryPool {
      *
      * @note Uses atomic store with RELEASE ordering to ensure visibility.
      */
-    void set_next_pool(FixedSizeMemoryPool<T>* next) {
-        __atomic_store_n(&next_pool_, next, __ATOMIC_RELEASE);
-    }
+    void set_next_pool(FixedSizeMemoryPool<T>* next);
 
     /**
      * @brief Gets the next pool in a linked chain (for ExpandablePoolAllocator).
@@ -503,9 +552,7 @@ template <typename T> class FixedSizeMemoryPool {
      *
      * @note Uses atomic load with ACQUIRE ordering to ensure visibility.
      */
-    [[nodiscard]] FixedSizeMemoryPool<T>* get_next_pool() const {
-        return __atomic_load_n(&next_pool_, __ATOMIC_ACQUIRE);
-    }
+    [[nodiscard]] FixedSizeMemoryPool<T>* get_next_pool() const;
 
     // TODO not safe make it an atomic
     uint64_t get_allocation_count() const {
@@ -683,13 +730,6 @@ template <typename T> void FixedSizeMemoryPool<T>::deallocate(T* node_to_push) {
     push_slot_to_free_list(slot);
 }
 
-template <typename T> bool FixedSizeMemoryPool<T>::contains(T const* ptr) const {
-    auto const* byte_ptr = reinterpret_cast<std::byte const*>(ptr);
-    auto const* start = static_cast<std::byte const*>(pool_memory_);
-    auto const* end = start + total_pool_size_;
-    return (byte_ptr >= start && byte_ptr < end);
-}
-
 template <typename T> bool FixedSizeMemoryPool<T>::is_full() const {
     return load_head().ptr == nullptr;
 }
@@ -703,17 +743,6 @@ template <typename T> int FixedSizeMemoryPool<T>::get_number_of_available_object
         current = current->storage.free_node_ptr()->next;
     }
     return count;
-}
-
-template <typename T> bool FixedSizeMemoryPool<T>::uses_huge_pages() const {
-    return use_huge_pages_flag_ == UseHugePagesFlag::DoUseHugePages;
-}
-
-template <typename T> std::size_t FixedSizeMemoryPool<T>::get_huge_page_size() const {
-    if (uses_huge_pages()) {
-        return static_cast<std::size_t>(2048U) * 1024U;
-    }
-    return 0U;
 }
 
 template <typename T> void FixedSizeMemoryPool<T>::push_slot_to_free_list(SlotType* slot) {
@@ -742,6 +771,65 @@ template <typename T> typename FixedSizeMemoryPool<T>::SlotType* FixedSizeMemory
     }
 
     return nullptr;
+}
+
+#ifdef USING_VALGRIND
+
+// ... Valgrind-specific class definition with mutex-based internals ...
+// Only genuinely different methods defined here
+
+#else
+
+// ... Production class definition with Treiber stack internals ...
+// Only genuinely different methods defined here
+
+#endif
+
+// ============================================================
+// Implementations common to both build paths
+// ============================================================
+
+template <typename T>
+bool FixedSizeMemoryPool<T>::contains(T const* ptr) const {
+    auto const* byte_ptr     = reinterpret_cast<std::byte const*>(ptr);
+    auto const* start        = static_cast<std::byte const*>(pool_memory_);
+    auto const* end          = start + total_pool_size_;
+
+    if (byte_ptr < start || byte_ptr >= end) {
+        return false;
+    }
+
+    auto const offset         = static_cast<std::size_t>(byte_ptr - start);
+    auto const storage_offset = offsetof(SlotType, storage);
+
+    if (offset < storage_offset) {
+        return false;
+    }
+
+    return (offset - storage_offset) % sizeof(SlotType) == 0;
+}
+
+template <typename T>
+bool FixedSizeMemoryPool<T>::uses_huge_pages() const {
+    return use_huge_pages_flag_ == UseHugePagesFlag::DoUseHugePages;
+}
+
+template <typename T>
+std::size_t FixedSizeMemoryPool<T>::get_huge_page_size() const {
+    if (uses_huge_pages()) {
+        return static_cast<std::size_t>(2048U) * 1024U;
+    }
+    return 0U;
+}
+
+template <typename T>
+void FixedSizeMemoryPool<T>::set_next_pool(FixedSizeMemoryPool<T>* next) {
+    __atomic_store_n(&next_pool_, next, __ATOMIC_RELEASE);
+}
+
+template <typename T>
+FixedSizeMemoryPool<T>* FixedSizeMemoryPool<T>::get_next_pool() const {
+    return __atomic_load_n(&next_pool_, __ATOMIC_ACQUIRE);
 }
 
 } // namespace pubsub_itc_fw

@@ -1077,4 +1077,33 @@ TEST_F(ExpandablePoolAllocatorTest, ConcurrentInvalidFreeCallbackRace) {
         << "callback was never invoked — test did not exercise the code path";
 }
 
+TEST_F(ExpandablePoolAllocatorTest, MisalignedPointerRejectedByContains) {
+    // We need direct access to FixedSizeMemoryPool to test contains().
+    // Create one directly rather than through ExpandablePoolAllocator.
+    pubsub_itc_fw::FixedSizeMemoryPool<TestObject> pool(
+        4,
+        UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages),
+        [](void*, std::size_t) {});
+
+    TestObject* valid_object = pool.allocate();
+    ASSERT_NE(valid_object, nullptr);
+
+    // A pointer one byte past a valid object — within the pool's memory
+    // region but not aligned to a slot boundary.
+    auto* misaligned_ptr = reinterpret_cast<TestObject*>(
+        reinterpret_cast<std::byte*>(valid_object) + 1);
+
+    // Before fix: contains() returns true — bounds check only.
+    // After fix:  contains() returns false — alignment check added.
+    EXPECT_FALSE(pool.contains(misaligned_ptr))
+        << "contains() must reject a pointer that is within the pool's "
+        << "memory region but not aligned to a slot boundary";
+
+    // A valid pointer must still be accepted.
+    EXPECT_TRUE(pool.contains(valid_object))
+        << "contains() must accept a valid slot pointer";
+
+    pool.deallocate(valid_object);
+}
+
 } // namespace pubsub_itc_fw::tests
