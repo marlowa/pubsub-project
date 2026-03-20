@@ -967,4 +967,114 @@ TEST_F(ExpandablePoolAllocatorTest, BehaviouralStatisticsStressTest) {
     std::cout << "# END-DATASET\n";
 }
 
+/**
+ * ConcurrentInvalidFreeCallbackRace
+ *
+ * Demonstrates that handler_for_invalid_free_ can be invoked concurrently
+ * by multiple threads before the callback_mutex_ fix is applied.
+ *
+ * The callback uses an atomic in-progress counter. If two threads are ever
+ * inside the callback simultaneously, the peak concurrency counter will
+ * exceed 1, proving the race exists.
+ *
+ * After the callback_mutex_ fix is applied, peak concurrency must always
+ * be exactly 1 — only one thread can be inside the callback at a time.
+ *
+ * The test exercises both invalid-free code paths:
+ *   (a) pointer does not belong to any pool
+ *   (b) double-free of a previously freed pointer (flag == 0)
+ */
+TEST_F(ExpandablePoolAllocatorTest, ConcurrentInvalidFreeCallbackRace) {
+#ifdef USING_VALGRIND
+    const int num_threads         = 4;
+    const int iterations_per_thread = 200;
+#else
+    const int num_threads         = 16;
+    const int iterations_per_thread = 10'000;
+#endif
+
+    std::atomic<int>  callback_in_progress{0};
+    std::atomic<int>  peak_concurrency{0};
+    std::atomic<int>  total_callback_invocations{0};
+
+    // Replace the fixture callback with one that measures concurrency.
+    std::function<void(void*, void*)> concurrency_measuring_callback =
+        [&](void*, void*) {
+            int concurrent = callback_in_progress.fetch_add(1, std::memory_order_acq_rel) + 1;
+
+            // Record the highest concurrency we have ever seen.
+            int observed_peak = peak_concurrency.load(std::memory_order_relaxed);
+            while (concurrent > observed_peak) {
+                if (peak_concurrency.compare_exchange_weak(observed_peak, concurrent,
+                                                           std::memory_order_relaxed)) {
+                    break;
+                }
+            }
+
+            // Simulate a lightweight callback doing some work.
+            std::this_thread::yield();
+
+            total_callback_invocations.fetch_add(1, std::memory_order_relaxed);
+            callback_in_progress.fetch_sub(1, std::memory_order_acq_rel);
+        };
+
+    const int pool_size = 8;
+
+    ExpandablePoolAllocator<TestObject> allocator(
+        "CallbackRaceTest", pool_size, /*initial_pools=*/1, /*threshold=*/1,
+        handler_for_pool_exhausted_,
+        concurrency_measuring_callback,   // our measuring callback
+        handler_for_huge_pages_error_,
+        UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
+
+    // Allocate one object that we will double-free from many threads,
+    // and keep a stack object whose address is not in any pool.
+    TestObject* valid_object  = allocator.allocate();
+    ASSERT_NE(valid_object, nullptr);
+    allocator.deallocate(valid_object);    // now flag == 0, double-free bait
+
+    TestObject stack_object;               // not in the pool at all
+
+    std::atomic<bool>          start_gate{false};
+    std::vector<std::thread>   threads;
+
+    for (int thread_index = 0; thread_index < num_threads; ++thread_index) {
+        threads.emplace_back([&]() {
+            while (!start_gate.load(std::memory_order_acquire))
+                std::this_thread::yield();
+
+            for (int iteration = 0; iteration < iterations_per_thread; ++iteration) {
+                // Alternate between the two invalid-free paths so both
+                // code paths in deallocate() are hammered concurrently.
+                if (iteration % 2 == 0) {
+                    // Path (a): pointer not in any pool.
+                    allocator.deallocate(&stack_object);
+                } else {
+                    // Path (b): double-free — flag is 0 after the
+                    // initial valid deallocate above.
+                    allocator.deallocate(valid_object);
+                }
+            }
+        });
+    }
+
+    start_gate.store(true, std::memory_order_release);
+    for (auto& thread : threads)
+        thread.join();
+
+    std::cout << "ConcurrentInvalidFreeCallbackRace:\n"
+              << "  total callback invocations : " << total_callback_invocations.load() << "\n"
+              << "  peak concurrent callbacks  : " << peak_concurrency.load() << "\n";
+
+    // Before the fix: peak_concurrency will likely be > 1, proving the race.
+    // After the fix:  peak_concurrency must be exactly 1.
+    EXPECT_EQ(peak_concurrency.load(), 1)
+        << "handler_for_invalid_free_ was invoked concurrently by "
+        << peak_concurrency.load() << " threads simultaneously. "
+        << "This demonstrates the race that callback_mutex_ is intended to prevent.";
+
+    EXPECT_GT(total_callback_invocations.load(), 0)
+        << "callback was never invoked — test did not exercise the code path";
+}
+
 } // namespace pubsub_itc_fw::tests

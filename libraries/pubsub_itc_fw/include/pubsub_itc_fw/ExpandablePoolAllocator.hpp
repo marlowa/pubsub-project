@@ -110,8 +110,6 @@
  *      they may allocate memory if required, although this is not recommended
  *      for performance-critical paths.
  *
- *    - Callbacks are not required to be.
- *
  * DEALLOCATION COST
  *    - Deallocation performs a linear search through the pool chain to locate
  *      the owning pool. This operation is O(number_of_pools). This design is
@@ -146,6 +144,26 @@ namespace pubsub_itc_fw {
 
 template <typename T> class ExpandablePoolAllocator {
   public:
+
+    /**
+     * @brief Destroys the allocator and releases all pool memory.
+     *
+     * @pre No other thread may be calling allocate() or deallocate() when this
+     *      destructor runs. The caller is responsible for ensuring that all
+     *      threads using this allocator have completed their work and joined
+     *      before this object is destroyed.
+     *
+     * @warning This precondition is not mechanically enforced. The fast path in
+     *          allocate() does not hold expansion_mutex_, so taking the mutex
+     *          in the destructor would not protect against concurrent allocations.
+     *          Violating this precondition is undefined behaviour and will not
+     *          be reliably detected at runtime.
+     *
+     * @note cleanup_list_ is traversed without a lock during destruction. This
+     *       is safe only because of the precondition above. Any pool objects
+     *       that still have allocated slots will have their objects destructed
+     *       here — see FixedSizeMemoryPool destructor for details.
+     */
     ~ExpandablePoolAllocator() = default;
 
     /** @ingroup allocator_subsystem */
@@ -448,12 +466,16 @@ template <typename T> AllocatorBehaviourStatistics ExpandablePoolAllocator<T>::g
     stats.failed_allocations = failed_allocations_.value.load(std::memory_order_relaxed);
 
     uint64_t pool_count = 0;
-    for (auto* p = head_pool_; p != nullptr; p = p->get_next_pool()) {
+    for (auto* p = __atomic_load_n(&head_pool_, __ATOMIC_ACQUIRE);
+             p != nullptr;
+             p = p->get_next_pool()) {
         pool_count++;
     }
     stats.per_pool_allocation_counts.counts.resize(pool_count);
     uint64_t i = 0;
-    for (auto* p = head_pool_; p != nullptr; p = p->get_next_pool()) {
+    for (auto* p = __atomic_load_n(&head_pool_, __ATOMIC_ACQUIRE);
+             p != nullptr;
+             p = p->get_next_pool()) {
         stats.per_pool_allocation_counts.counts[i++] = p->get_allocation_count();
     }
 
