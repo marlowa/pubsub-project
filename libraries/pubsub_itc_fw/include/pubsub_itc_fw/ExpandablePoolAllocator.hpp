@@ -211,7 +211,22 @@ template <typename T> class ExpandablePoolAllocator {
     std::string pool_name_;
     int objects_per_pool_;
     int initial_pools_;
+
+    /**
+     * expansion_threshold_hint A soft monitoring hint only. This value
+     * does NOT limit or prevent pool expansion — the allocator will
+     * always expand when demand exceeds capacity, as long as the
+     * operating system provides memory. On Linux with overcommit
+     * enabled, this means expansion is effectively unbounded.
+     * This parameter is reserved for future use as a threshold at
+     * which a monitoring callback could be triggered to alert the
+     * operator that the pool has grown beyond its expected size.
+     * If your workload is consistently exceeding this threshold,
+     * increase objects_per_pool or initial_pools rather than
+     * relying on expansion.
+     */
     int expansion_threshold_hint_;
+
     UseHugePagesFlag use_huge_pages_flag_;
     std::function<void(void*, int)> handler_for_pool_exhausted_;
     std::function<void(void*, void*)> handler_for_invalid_free_;
