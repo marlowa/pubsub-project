@@ -8,6 +8,7 @@ import argparse
 import subprocess
 import sys
 import os
+import platform
 import shutil
 from pathlib import Path
 
@@ -118,8 +119,8 @@ def run_doxygen(source_dir):
     print("\n✓ Doxygen documentation generated successfully")
 
 
-
-def configure_cmake(build_dir, source_dir, enable_valgrind=False, enable_coverage=False):
+def configure_cmake(build_dir, source_dir, enable_valgrind=False, enable_coverage=False,
+                    enable_asan=False, enable_tsan=False):
     cmake_args = [
         "cmake",
         str(source_dir)
@@ -134,13 +135,21 @@ def configure_cmake(build_dir, source_dir, enable_valgrind=False, enable_coverag
     if enable_coverage:
         cmake_args.append("-DENABLE_COVERAGE=ON")
 
-    run_command(
-        cmake_args,
-        cwd=build_dir,
-        description="Configuring CMake"
-    )
+    if enable_asan:
+        cmake_args.append("-DENABLE_ASAN=ON")
+        print("NOTE: Building with AddressSanitizer")
+        print("  - Link with -fsanitize=address")
 
-def build_project(build_dir, jobs=None):
+    if enable_tsan:
+        cmake_args.append("-DENABLE_TSAN=ON")
+        print("NOTE: Building with ThreadSanitizer")
+        print("  - Lock-free optimizations disabled (-mcx16 -march=x86-64-v2)")
+        print("  - Link with -fsanitize=thread")
+
+    run_command(cmake_args, cwd=build_dir, description="Configuring CMake")
+
+
+def build_project(build_dir, jobs=None, verbose=False):
     """Build the project using make"""
     if jobs is None:
         # Get number of CPU cores
@@ -150,16 +159,19 @@ def build_project(build_dir, jobs=None):
         except:
             jobs = 4
 
+    make_cmd = ["make", f"-j{jobs}"]
+    if verbose:
+        make_cmd.append("VERBOSE=1")
+
     run_command(
-        ["make", f"-j{jobs}"],
+        make_cmd,
         cwd=build_dir,
         description=f"Building project (using {jobs} cores)"
     )
 
     print("\n✓ Build completed successfully")
 
-
-def run_tests(build_dir):
+def run_tests(build_dir, use_tsan=False):
     """Run the test suite"""
     test_binary = build_dir / "libraries" / "pubsub_itc_fw" / "tests" / "pubsub_itc_fw_tests"
 
@@ -167,8 +179,18 @@ def run_tests(build_dir):
         print(f"ERROR: Test binary not found at {test_binary}", file=sys.stderr)
         sys.exit(1)
 
+    if use_tsan:
+        # TSan reserves specific virtual address ranges for its shadow memory.
+        # ASLR can place kernel mappings in those ranges, causing TSan to abort
+        # with "unexpected memory mapping" before any tests run.
+        # setarch -R disables ASLR for this process only, giving TSan the
+        # address space it needs. This has no effect on the rest of the system.
+        cmd = ["setarch", platform.machine(), "-R", str(test_binary)]
+    else:
+        cmd = [str(test_binary)]
+
     run_command(
-        [str(test_binary)],
+        cmd,
         cwd=build_dir,
         description="Running test suite"
     )
@@ -226,6 +248,10 @@ Examples:
         help='Number of parallel build jobs (default: number of CPU cores)'
     )
 
+    parser.add_argument('--verbose', '-v', action='store_true',
+        help='Show compiler and linker command lines during build'
+    )
+
     parser.add_argument('--build-dir', type=Path, default=Path('build'),
         help='Build directory path (default: ./build)'
     )
@@ -236,6 +262,14 @@ Examples:
     parser.add_argument('--coverage-report', action='store_true',
         help='Generate LCOV + genhtml coverage report after running tests')
 
+    parser.add_argument('--asan', action='store_true',
+        help='Build with AddressSanitizer (cannot be combined with --tsan or --valgrind)'
+    )
+
+    parser.add_argument('--tsan', action='store_true',
+        help='Build with ThreadSanitizer (cannot be combined with --asan or --valgrind)'
+    )
+
     args = parser.parse_args()
 
     # Get source directory (parent of this script)
@@ -244,6 +278,15 @@ Examples:
 
     # Verify environment variables
     check_environment_variables()
+
+    # Sanitizer mutual exclusion checks
+    if args.asan and args.tsan:
+        print("ERROR: --asan and --tsan are mutually exclusive", file=sys.stderr)
+        sys.exit(1)
+
+    if args.valgrind and (args.asan or args.tsan):
+        print("ERROR: --valgrind cannot be combined with --asan or --tsan", file=sys.stderr)
+        sys.exit(1)
 
     # Handle doxygen-only mode
     if args.doxygen_only:
@@ -258,14 +301,15 @@ Examples:
     build_dir.mkdir(parents=True, exist_ok=True)
 
     # Configure
-    configure_cmake(build_dir, source_dir, enable_valgrind=args.valgrind, enable_coverage=args.coverage)
+    configure_cmake(build_dir, source_dir, enable_valgrind=args.valgrind,
+                    enable_coverage=args.coverage, enable_asan=args.asan, enable_tsan=args.tsan)
 
     # Build
-    build_project(build_dir, jobs=args.jobs)
+    build_project(build_dir, jobs=args.jobs, verbose=args.verbose)
 
     # Run tests unless disabled
     if not args.no_tests:
-        run_tests(build_dir)
+        run_tests(build_dir, use_tsan=args.tsan)
 
     if args.coverage_report:
         generate_coverage_report(build_dir, source_dir)

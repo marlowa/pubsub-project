@@ -16,4 +16,5 @@ export GOOGLETEST_VERSION=1.17.0
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 # Invoke Python build script with all arguments passed through
+# Note that by default it runs the test. Use --no_tests to suppress that.
 exec python3 "${SCRIPT_DIR}/build.py" "$@"

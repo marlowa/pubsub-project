@@ -45,4 +45,14 @@ target_compile_options(pubsub_itc_fw_tests PRIVATE -g -Wall -pedantic)
 
 # Register the test with CTest so you can run it with 'make test' or 'ctest'
 include(GoogleTest)
-gtest_discover_tests(pubsub_itc_fw_tests)
+if(ENABLE_TSAN)
+    # TSan's shadow memory conflicts with ASLR mappings, causing the test
+    # binary to abort with "unexpected memory mapping" when run at build time.
+    # DISCOVERY_MODE PRE_TEST defers test discovery until ctest runs the
+    # binary, at which point we can control the environment (e.g. setarch -R).
+    # In normal builds, POST_BUILD discovery is preferred as it catches
+    # test registration errors earlier.
+    gtest_discover_tests(pubsub_itc_fw_tests DISCOVERY_MODE PRE_TEST)
+else()
+    gtest_discover_tests(pubsub_itc_fw_tests)
+endif()

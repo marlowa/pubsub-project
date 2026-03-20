@@ -28,7 +28,7 @@ public:
      */
     void record(int64_t duration_ns) {
         int64_t bucket_start = (duration_ns / 10) * 10;
-        
+
         // Thread-safe find
         auto it = buckets_.find(bucket_start);
         if (it != buckets_.end()) {
@@ -84,8 +84,8 @@ public:
 
         for (const auto& [bucket, count] : sorted_buckets) {
             if (count > 0) {
-                std::cout << std::right << std::setw(4) << bucket << "-" 
-                          << std::left << std::setw(4) << (bucket + 10) 
+                std::cout << std::right << std::setw(4) << bucket << "-"
+                          << std::left << std::setw(4) << (bucket + 10)
                           << " | " << count << "\n";
             }
         }

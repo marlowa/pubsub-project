@@ -26,9 +26,14 @@ if(ENABLE_VALGRIND)
 else()
     message(STATUS "Valgrind mode DISABLED - using lock-free atomic implementation")
     message(STATUS " - USING_VALGRIND macro NOT defined")
-    message(STATUS " - Enabling -mcx16 and -march=x86-64-v2")
-    # These atomic flags conflict with Valgrind, only use in normal builds
-    add_compile_options(-mcx16 -march=x86-64-v2)
+    if(ENABLE_TSAN)
+        message(STATUS " - Omitting -mcx16 and -march=x86-64-v2 (incompatible with ThreadSanitizer)")
+    else()
+        message(STATUS " - Enabling -mcx16 and -march=x86-64-v2")
+        # These atomic flags conflict with Valgrind and ThreadSanitizer,
+        # only use in normal builds.
+        add_compile_options(-mcx16 -march=x86-64-v2)
+    endif()
 endif()
 
 option(ENABLE_COVERAGE "Enable code coverage instrumentation" OFF)
@@ -44,6 +49,38 @@ if(ENABLE_COVERAGE)
     endif()
 else()
     add_definitions(-DENABLE_PERFORMANCE_TESTS)
+endif()
+
+# --- Optional Sanitizer Support ---
+option(ENABLE_ASAN "Build with AddressSanitizer" OFF)
+option(ENABLE_TSAN "Build with ThreadSanitizer" OFF)
+
+if(ENABLE_ASAN AND ENABLE_TSAN)
+    message(FATAL_ERROR "ENABLE_ASAN and ENABLE_TSAN are mutually exclusive. Please select only one.")
+endif()
+
+if(ENABLE_ASAN)
+    message(STATUS "AddressSanitizer enabled")
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        add_compile_options(-fsanitize=address -fno-omit-frame-pointer)
+        add_link_options(-fsanitize=address)
+    else()
+        message(FATAL_ERROR "ASAN enabled, but compiler does not support AddressSanitizer flags")
+    endif()
+endif()
+
+if(ENABLE_TSAN)
+    message(STATUS "ThreadSanitizer enabled")
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        add_compile_options(-fsanitize=thread -fno-omit-frame-pointer)
+        add_link_options(-fsanitize=thread)
+        # TSan cannot instrument 128-bit CMPXCHG16B operations, so we use
+        # the mutex-based FixedSizeMemoryPool path, exactly as for Valgrind.
+        add_compile_definitions(USING_VALGRIND)
+        message(STATUS "  - USING_VALGRIND macro defined (mutex path required for TSan)")
+    else()
+        message(FATAL_ERROR "TSAN enabled, but compiler does not support ThreadSanitizer flags")
+    endif()
 endif()
 
 # --- Configure Third-Party Dependency Discovery ---
@@ -129,15 +166,15 @@ if(PkgConfig_FOUND)
 endif()
 
 # Our python DSL requires pybind11 for testing
-execute_process(
-  COMMAND python3 -m pybind11 --cmakedir
-  OUTPUT_VARIABLE pybind11_DIR
-  OUTPUT_STRIP_TRAILING_WHITESPACE
-)
-if(NOT pybind11_DIR_result EQUAL 0)
-  message(FATAL_ERROR "Could not determine pybind11 CMake dir via python3 -m pybind11 --cmakedir")
-endif()
-find_package(pybind11 REQUIRED)
+#execute_process(
+#  COMMAND python3 -m pybind11 --cmakedir
+#  OUTPUT_VARIABLE pybind11_DIR
+#  OUTPUT_STRIP_TRAILING_WHITESPACE
+#)
+#if(NOT pybind11_DIR_result EQUAL 0)
+#  message(FATAL_ERROR "Could not determine pybind11 CMake dir via python3 -m pybind11 --cmakedir")
+#endif()
+#find_package(pybind11 REQUIRED)
 
 # --- Define the Protobuf Message Type ---
 # This step tells CMake to compile the .proto files into .pb.h and .pb.cc

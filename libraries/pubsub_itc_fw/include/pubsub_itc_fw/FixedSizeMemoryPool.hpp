@@ -1,5 +1,22 @@
 #pragma once
 
+/**
+ * @warning This class requires the compiler flag @c -mcx16 on x86-64 platforms.
+ *          This flag enables the @c CMPXCHG16B instruction, which provides
+ *          hardware 128-bit compare-and-swap used by the lock-free free list.
+ *          Without it, the @c static_assert in this constructor will fire at
+ *          compile time with the message:
+ *          "Hardware 128-bit atomics not supported. Add -mcx16 to compiler flags."
+ *          In CMake, add the following to your target:
+ *          @code
+ *          target_compile_options(your_target PRIVATE -mcx16)
+ *          @endcode
+ *          This flag is safe on all x86-64 processors manufactured after
+ *          approximately 2006. It is not required when building with
+ *          @c USING_VALGRIND defined, as that build path uses a mutex-based
+ *          implementation instead.
+ */
+
 #ifdef USING_VALGRIND
 
 #pragma once
@@ -227,7 +244,7 @@ template <typename T> class FixedSizeMemoryPool {
  * 3. 128-BIT ATOMIC OPERATIONS
  *    - On x86-64, CMPXCHG16B is used for 128-bit compare-and-swap.
  *    - Requirements:
- *        * -mcx16 compiler flag
+ *        * -mcx16 compiler flag (see constructor @warning for CMake instructions)
  *        * 16-byte alignment of the head structure (enforced by alignas(16))
  *        * __GCC_HAVE_SYNC_COMPARE_AND_SWAP_16 defined at compile time
  *    - unsigned __int128 is used as the underlying storage type.
