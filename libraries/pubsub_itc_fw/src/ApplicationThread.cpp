@@ -15,24 +15,20 @@
 namespace pubsub_itc_fw {
 
 ApplicationThread::~ApplicationThread() {
-    if (thread_ == nullptr || !thread_->joinable()) {
-        return;
-    }
-
-    if (message_queue_ != nullptr) {
-        message_queue_->shutdown();
-    }
-
-    try {
-        bool joined = thread_->join_with_timeout(std::chrono::seconds(3));
-        if (!joined) {
-            auto errorString = fmt::format("Failed to join thread: {} during destruction, will detach", thread_name_);
-            PUBSUB_LOG_STR(logger_, LogLevel::Error, errorString);
-            // At this point, something is badly wrong; but do NOT release/destroy the queue while the thread may still run.
-            thread_->detach();
-        }
-    } catch (const std::exception& ex) {
-        PUBSUB_LOG_STR(logger_, LogLevel::Error, "Failed to join thread: " + thread_name_ + " during destruction: " + ex.what());
+    // The Reactor's finalize_threads_after_shutdown() is responsible for joining
+    // all threads before their shared_ptrs are released. If this destructor is
+    // reached with a joinable thread, it means either:
+    //   (a) finalize_threads_after_shutdown() was not called — a programming error, or
+    //   (b) the thread refused to join within the shutdown timeout — an unrecoverable
+    //       condition. Detaching is not safe because the thread is still running and
+    //       still holds a reference to this object. std::terminate() is the only
+    //       honest response.
+    if (thread_ != nullptr && thread_->joinable()) {
+        PUBSUB_LOG(logger_, LogLevel::Error,
+            "ApplicationThread {} destroyed while thread is still joinable. "
+            "This indicates finalize_threads_after_shutdown() was not called "
+            "or the thread refused to stop. Terminating.", thread_name_);
+        std::terminate();
     }
 
     // Note: We do not tell the reactor to deregister the thread.
