@@ -57,7 +57,7 @@ def generate_coverage_report(build_dir, source_dir):
     print("\n✓ Coverage report generated:")
     print(f"  {html_dir}/index.html")
 
-def run_command(cmd, cwd=None, description=None):
+def run_command(cmd, cwd=None, description=None, env=None):
     """Run a shell command and handle errors"""
     if description:
         print(f"\n{'='*60}")
@@ -70,7 +70,8 @@ def run_command(cmd, cwd=None, description=None):
         cmd,
         cwd=cwd,
         shell=isinstance(cmd, str),
-        check=False
+        check=False,
+        env=env
     )
 
     if result.returncode != 0:
@@ -171,7 +172,7 @@ def build_project(build_dir, jobs=None, verbose=False):
 
     print("\n✓ Build completed successfully")
 
-def run_tests(build_dir, use_tsan=False):
+def run_tests(build_dir, use_tsan=False, tsan_suppressions=None):
     """Run the test suite"""
     test_binary = build_dir / "libraries" / "pubsub_itc_fw" / "tests" / "pubsub_itc_fw_tests"
 
@@ -189,10 +190,21 @@ def run_tests(build_dir, use_tsan=False):
     else:
         cmd = [str(test_binary)]
 
+    # TSan suppressions are passed via environment variable, not command line.
+    env = os.environ.copy()
+    if use_tsan and tsan_suppressions is not None:
+        suppressions_path = Path(tsan_suppressions).resolve()
+        if not suppressions_path.exists():
+            print(f"WARNING: TSan suppressions file not found: {suppressions_path}", file=sys.stderr)
+        else:
+            env["TSAN_OPTIONS"] = f"suppressions={suppressions_path}"
+            print(f"NOTE: Using TSan suppressions from {suppressions_path}")
+
     run_command(
         cmd,
         cwd=build_dir,
-        description="Running test suite"
+        description="Running test suite",
+        env=env
     )
 
     print("\n✓ All tests passed")
@@ -270,6 +282,10 @@ Examples:
         help='Build with ThreadSanitizer (cannot be combined with --asan or --valgrind)'
     )
 
+    parser.add_argument('--tsan-suppressions', type=str, metavar='FILE',
+        help='Path to TSan suppressions file (only used with --tsan)'
+    )
+
     args = parser.parse_args()
 
     # Get source directory (parent of this script)
@@ -309,7 +325,7 @@ Examples:
 
     # Run tests unless disabled
     if not args.no_tests:
-        run_tests(build_dir, use_tsan=args.tsan)
+        run_tests(build_dir, use_tsan=args.tsan, tsan_suppressions=args.tsan_suppressions)
 
     if args.coverage_report:
         generate_coverage_report(build_dir, source_dir)
