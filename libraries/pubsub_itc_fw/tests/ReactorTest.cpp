@@ -149,7 +149,7 @@ protected:
         // Nothing special for this test.
     }
 
-    void on_itc_message(const EventMessage& msg) override {
+    void on_itc_message([[maybe_unused]] const EventMessage& msg) override {
         // Nothing special for this test.
     }
 };

@@ -5,6 +5,7 @@ add_executable(pubsub_itc_fw_tests
     ApplicationThreadTest.cpp
     EventMessageTest.cpp
     ExpandablePoolAllocatorTest.cpp
+    FixedSizeMemoryPoolTest.cpp
     NumaAwarePoolAllocatorTest.cpp
     LockFreeMessageQueueTest.cpp
     MillisecondClockTest.cpp
@@ -41,7 +42,14 @@ endif()
 
 
 # Add compiler flags consistent with the main project
-target_compile_options(pubsub_itc_fw_tests PRIVATE -g -Wall -pedantic)
+target_compile_options(pubsub_itc_fw_tests PRIVATE
+    -g
+    -O2
+    -Wall
+    -Wextra
+    -pedantic
+    -Wstrict-aliasing=2
+    -Werror)
 
 # Register the test with CTest so you can run it with 'make test' or 'ctest'
 include(GoogleTest)

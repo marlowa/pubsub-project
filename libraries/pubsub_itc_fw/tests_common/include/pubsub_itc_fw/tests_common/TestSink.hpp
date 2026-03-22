@@ -65,19 +65,21 @@ public:
 
     /**
      * @brief Called by Quill backend to write a log record
+     *
+     * Several of the args here are not needed since this is test code.
      */
     void write_log(quill::MacroMetadata const* log_metadata,
                    uint64_t log_timestamp,
-                   std::string_view thread_id,
-                   std::string_view thread_name,
-                   std::string const& process_id,
+                   [[maybe_unused]] std::string_view thread_id,
+                   [[maybe_unused]] std::string_view thread_name,
+                   [[maybe_unused]] std::string const& process_id, // we dont need the pid on every record
                    std::string_view logger_name,
                    quill::LogLevel log_level,
                    std::string_view log_level_description,
-                   std::string_view log_level_short_code,
-                   std::vector<std::pair<std::string, std::string>> const* named_args,
+                   [[maybe_unused]] std::string_view log_level_short_code, // we dont need this
+                   [[maybe_unused]] std::vector<std::pair<std::string, std::string>> const* named_args,
                    std::string_view log_message,
-                   std::string_view log_statement) override
+                   [[maybe_unused]] std::string_view log_statement) override
     {
         std::lock_guard<std::mutex> lock(mutex_);
         records_.emplace_back(log_level, std::string{logger_name}, std::string{log_message},
@@ -85,8 +87,7 @@ public:
         std::string ts = format_timestamp_iso8601(log_timestamp);
 
         std::string_view source_location = log_metadata->source_location();
-        print_console_log(ts, log_level_description, thread_id, logger_name,
-                          log_message, source_location);
+        print_console_log(ts, log_level_description, thread_id, logger_name, log_message, source_location);
     }
 
     /**

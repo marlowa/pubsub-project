@@ -53,24 +53,26 @@
  * ============================================================================
  */
 
-#ifdef USING_VALGRIND
-
-#pragma once
-
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
-#include <mutex>
 #include <new>
 #include <stdexcept>
-#include <string>
-#include <sys/mman.h>
+#include <cstring> // for memcpy
+
 #include <unistd.h>
-#include <vector>
 
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/UseHugePagesFlag.hpp>
+
+#ifdef USING_VALGRIND
+
+#include <mutex>
+#include <string>
+#include <sys/mman.h>
+
+#include <vector>
 
 namespace pubsub_itc_fw {
 
@@ -112,7 +114,8 @@ template <typename T> class FixedSizeMemoryPool {
   public:
     using SlotType = Slot<T>;
 
-    FixedSizeMemoryPool(int objects_per_pool, UseHugePagesFlag use_huge_pages_flag, std::function<void(void*, std::size_t)> handler_for_huge_pages_error)
+    FixedSizeMemoryPool(int objects_per_pool, UseHugePagesFlag use_huge_pages_flag, //
+                        [[maybe_unused]] std::function<void(void*, std::size_t)> handler_for_huge_pages_error)
         : objects_per_pool_(objects_per_pool), use_huge_pages_flag_(use_huge_pages_flag) {
         total_pool_size_ = static_cast<std::size_t>(objects_per_pool_) * sizeof(SlotType);
 
@@ -186,7 +189,6 @@ template <typename T> class FixedSizeMemoryPool {
         SlotType* slot = reinterpret_cast<SlotType*>(reinterpret_cast<char*>(ptr) - offsetof(SlotType, storage.storage));
 
         std::lock_guard<std::mutex> lock(mutex_);
-        slot->flag = 0;
         free_list_v_.push_back(slot);
     }
 
@@ -213,6 +215,8 @@ template <typename T> class FixedSizeMemoryPool {
 
     [[nodiscard]] FixedSizeMemoryPool<T>* get_next_pool() const;
 
+    [[nodiscard]] bool contains(T const* ptr) const;
+
   private:
     int objects_per_pool_;
     UseHugePagesFlag use_huge_pages_flag_;
@@ -236,17 +240,6 @@ template <typename T> class FixedSizeMemoryPool {
 #pragma GCC diagnostic ignored "-Wpedantic"
 
 #include <sys/mman.h>
-#include <unistd.h>
-
-#include <algorithm>
-#include <cstddef>
-#include <cstdint>
-#include <functional>
-#include <new>
-#include <stdexcept>
-
-#include <pubsub_itc_fw/PreconditionAssertion.hpp>
-#include <pubsub_itc_fw/UseHugePagesFlag.hpp>
 
 /*
  * ============================================================================
@@ -449,7 +442,8 @@ template <typename T> class FixedSizeMemoryPool {
      *       If huge pages are requested but unavailable, the pool falls back
      *       to standard pages and invokes the error handler.
      */
-    FixedSizeMemoryPool(int objects_per_pool, UseHugePagesFlag use_huge_pages_flag, std::function<void(void*, std::size_t)> handler_for_huge_pages_error);
+    FixedSizeMemoryPool(int objects_per_pool, UseHugePagesFlag use_huge_pages_flag, //
+                        std::function<void(void*, std::size_t)> handler_for_huge_pages_error);
 
     FixedSizeMemoryPool(FixedSizeMemoryPool const&) = delete;
     FixedSizeMemoryPool& operator=(FixedSizeMemoryPool const&) = delete;
@@ -587,6 +581,9 @@ template <typename T> class FixedSizeMemoryPool {
     /**
      * @brief Atomically loads the free list head with ACQUIRE semantics.
      *
+     * Note: memcpy is used as a type-punning barrier to satisfy strict aliasing.
+     * Compilers optimise this to simple moves; there is no measurable runtime cost.
+     *
      * @return Current value of the free list head (pointer + counter).
      *
      * @note Uses __atomic_load to ensure we see all writes that happened-before
@@ -595,7 +592,11 @@ template <typename T> class FixedSizeMemoryPool {
     [[nodiscard]] HeadPtr load_head() const {
         unsigned __int128 val;
         __atomic_load(&head_raw_, &val, __ATOMIC_ACQUIRE);
-        return *reinterpret_cast<HeadPtr const*>(&val);
+
+        HeadPtr head{};
+        static_assert(sizeof(head) == sizeof(val), "HeadPtr must be 128 bits");
+        std::memcpy(&head, &val, sizeof(head));
+        return head;
     }
 
     /**
@@ -615,8 +616,23 @@ template <typename T> class FixedSizeMemoryPool {
      *       This is acceptable in a loop (as used in push/pop).
      */
     bool compare_exchange_weak(HeadPtr& expected, HeadPtr desired) {
-        return __atomic_compare_exchange(&head_raw_, reinterpret_cast<unsigned __int128*>(&expected), reinterpret_cast<unsigned __int128*>(&desired), true,
-                                         __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+        unsigned __int128 expected_raw;
+        unsigned __int128 desired_raw;
+
+        static_assert(sizeof(expected_raw) == sizeof(expected), "HeadPtr must be 128 bits");
+        std::memcpy(&expected_raw, &expected, sizeof(expected));
+        std::memcpy(&desired_raw, &desired, sizeof(desired));
+
+        bool ok = __atomic_compare_exchange(&head_raw_,
+                                            &expected_raw,
+                                            &desired_raw,
+                                            true,
+                                            __ATOMIC_ACQ_REL,
+                                            __ATOMIC_ACQUIRE);
+        if (!ok) {
+            std::memcpy(&expected, &expected_raw, sizeof(expected));
+        }
+        return ok;
     }
 
     /**
@@ -650,7 +666,7 @@ template <typename T> class FixedSizeMemoryPool {
 };
 
 template <typename T>
-FixedSizeMemoryPool<T>::FixedSizeMemoryPool(int objects_per_pool, UseHugePagesFlag use_huge_pages_flag,
+FixedSizeMemoryPool<T>::FixedSizeMemoryPool(int objects_per_pool, UseHugePagesFlag use_huge_pages_flag, //
                                             std::function<void(void*, std::size_t)> handler_for_huge_pages_error)
     : objects_per_pool_(objects_per_pool), use_huge_pages_flag_(use_huge_pages_flag) {
 #ifndef __GCC_HAVE_SYNC_COMPARE_AND_SWAP_16
@@ -756,7 +772,8 @@ template <typename T> void FixedSizeMemoryPool<T>::push_slot_to_free_list(SlotTy
     } while (!compare_exchange_weak(old_head, next_head));
 }
 
-template <typename T> typename FixedSizeMemoryPool<T>::SlotType* FixedSizeMemoryPool<T>::pop_slot_from_free_list() {
+template <typename T>
+typename FixedSizeMemoryPool<T>::SlotType* FixedSizeMemoryPool<T>::pop_slot_from_free_list() {
     HeadPtr old_head = load_head();
     HeadPtr next_head;
 
@@ -773,21 +790,15 @@ template <typename T> typename FixedSizeMemoryPool<T>::SlotType* FixedSizeMemory
     return nullptr;
 }
 
-#ifdef USING_VALGRIND
-
-// ... Valgrind-specific class definition with mutex-based internals ...
-// Only genuinely different methods defined here
-
-#else
-
-// ... Production class definition with Treiber stack internals ...
-// Only genuinely different methods defined here
+} // end namespaces
 
 #endif
 
 // ============================================================
 // Implementations common to both build paths
 // ============================================================
+
+namespace pubsub_itc_fw {
 
 template <typename T>
 bool FixedSizeMemoryPool<T>::contains(T const* ptr) const {
@@ -810,12 +821,12 @@ bool FixedSizeMemoryPool<T>::contains(T const* ptr) const {
 }
 
 template <typename T>
-bool FixedSizeMemoryPool<T>::uses_huge_pages() const {
+inline bool FixedSizeMemoryPool<T>::uses_huge_pages() const {
     return use_huge_pages_flag_ == UseHugePagesFlag::DoUseHugePages;
 }
 
 template <typename T>
-std::size_t FixedSizeMemoryPool<T>::get_huge_page_size() const {
+inline std::size_t FixedSizeMemoryPool<T>::get_huge_page_size() const {
     if (uses_huge_pages()) {
         return static_cast<std::size_t>(2048U) * 1024U;
     }
@@ -823,17 +834,15 @@ std::size_t FixedSizeMemoryPool<T>::get_huge_page_size() const {
 }
 
 template <typename T>
-void FixedSizeMemoryPool<T>::set_next_pool(FixedSizeMemoryPool<T>* next) {
+inline void FixedSizeMemoryPool<T>::set_next_pool(FixedSizeMemoryPool<T>* next) {
     __atomic_store_n(&next_pool_, next, __ATOMIC_RELEASE);
 }
 
 template <typename T>
-FixedSizeMemoryPool<T>* FixedSizeMemoryPool<T>::get_next_pool() const {
+inline FixedSizeMemoryPool<T>* FixedSizeMemoryPool<T>::get_next_pool() const {
     return __atomic_load_n(&next_pool_, __ATOMIC_ACQUIRE);
 }
 
 } // namespace pubsub_itc_fw
 
 #pragma GCC diagnostic pop
-
-#endif

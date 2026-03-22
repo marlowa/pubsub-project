@@ -69,15 +69,15 @@ class ExpandablePoolAllocatorTest : public ::testing::Test {
     std::unique_ptr<pubsub_itc_fw::QuillLogger> unit_test_logger_;
 
     // Callbacks for the allocator to use
-    std::function<void(void*, int)> handler_for_pool_exhausted_ = [this](void* for_sender_client_use, int objects_per_pool) {
+    std::function<void(void*, int)> handler_for_pool_exhausted_ = [this]([[maybe_unused]] void* for_sender_client_use, [[maybe_unused]] int objects_per_pool) {
         this->pool_exhausted_callback_count_++;
     };
 
-    std::function<void(void*, void*)> handler_for_invalid_free_ = [this](void* for_receiver_client_use, void* object_to_deallocate) {
+    std::function<void(void*, void*)> handler_for_invalid_free_ = [this]([[maybe_unused]] void* for_receiver_client_use, [[maybe_unused]] void* object_to_deallocate) {
         this->invalid_free_callback_count_++;
     };
 
-    std::function<void(void*)> handler_for_huge_pages_error_ = [this](void* for_client_use) { this->huge_pages_error_callback_count_++; };
+    std::function<void(void*)> handler_for_huge_pages_error_ = [this]([[maybe_unused]] void* for_client_use) { this->huge_pages_error_callback_count_++; };
 
     // Convenience factory.
     ExpandablePoolAllocator<TestObject> make_allocator(std::string name, int objects_per_pool, int initial_pools = 1, int threshold = 1) {
@@ -354,20 +354,22 @@ TEST_F(ExpandablePoolAllocatorTest, ProducerConsumerStressTest) {
     std::vector<std::thread> consumers;
     for (int i = 0; i < num_consumers; ++i) {
         consumers.emplace_back([&]() {
-            while (!production_finished || !queue.empty()) {
+            bool should_exit = false;
+            while (!should_exit) {
                 TestObject* obj = nullptr;
                 {
                     std::lock_guard<std::mutex> lock(queue_mutex);
                     if (!queue.empty()) {
                         obj = queue.back();
                         queue.pop_back();
+                    } else if (production_finished.load(std::memory_order_acquire)) {
+                        should_exit = true;
                     }
                 }
-
                 if (obj) {
                     allocator.deallocate(obj);
                     total_consumed++;
-                } else {
+                } else if (!should_exit) {
                     std::this_thread::yield();
                 }
             }

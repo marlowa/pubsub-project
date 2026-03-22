@@ -480,7 +480,21 @@ bool Reactor::initialize_threads() {
 void Reactor::enqueue_control_command(const ReactorControlCommand& command) {
     command_queue_.enqueue(command);
     uint64_t one = 1;
-    ::write(wake_fd_, &one, sizeof(one));
+    ssize_t n;
+
+    do {
+        n = ::write(wake_fd_, &one, sizeof(one));
+    } while (n == -1 && errno == EINTR);
+
+    if (n == -1) {
+        if (errno == EAGAIN) {
+            // Pipe/eventfd already full — reactor is already awake.
+            return;
+        }
+
+        // Anything else is a real logic error.
+        throw PubSubItcException(fmt::format("Reactor wakeup write() failed: {}", strerror(errno)));
+    }
 }
 
 TimerID Reactor::allocate_timer_id() {

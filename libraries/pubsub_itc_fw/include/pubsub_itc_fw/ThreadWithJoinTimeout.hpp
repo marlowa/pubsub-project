@@ -182,6 +182,13 @@ public:
         return false;
     }
 
+    pthread_t get_pthread_id() const {
+        if (!has_thread_) {
+            throw PubSubItcException("ThreadWithJoinTimeout: get_pthread_id called with no running thread");
+        }
+        return thread_;
+    }
+
 private:
     pthread_t thread_{};
     bool has_thread_{false};

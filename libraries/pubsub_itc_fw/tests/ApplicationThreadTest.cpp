@@ -87,7 +87,6 @@ public:
         reactor_configuration_.inactivity_check_interval_ = std::chrono::milliseconds(100);
         reactor_ = std::make_unique<Reactor>(reactor_configuration_, logger_with_sink_.logger);
         reactor_thread_.reset(); // not started yet
-        std::cerr << fmt::format("{}:{} reactor initialised\n", __FILE__, __LINE__);
     }
 
     void TearDown() override {
@@ -105,8 +104,7 @@ public:
         ASSERT_TRUE(reactor_thread_); // if this fails, it’s a test bug
 
         if (!reactor_thread_->join_with_timeout(timeout)) {
-            std::cerr << "FATAL: reactor thread did not join (timeout "
-                      << timeout.count() << " ms)\n";
+            std::cerr << "FATAL: reactor thread did not join (timeout " << timeout.count() << " ms)\n";
             std::terminate();
         }
     }
@@ -134,40 +132,147 @@ public:
     void on_initial_event() override
     {
         last_processed_type.store(EventType(EventType::Initial), std::memory_order_release);
-        std::cerr << fmt::format("{}:{} got here\n", __FILE__, __LINE__);
         processed_count.fetch_add(1, std::memory_order_release);
     }
 
     void on_app_ready_event() override {
         last_processed_type.store(EventType(EventType::AppReady), std::memory_order_release);
-        std::cerr << fmt::format("{}:{} got here\n", __FILE__, __LINE__);
         processed_count.fetch_add(1, std::memory_order_release);
     }
 
-    void on_itc_message(const EventMessage& msg) override {
-        std::cerr << fmt::format("{}:{} got here\n", __FILE__, __LINE__);
+    void on_itc_message([[maybe_unused]] const EventMessage& msg) override {
         last_processed_type.store(EventType(EventType::InterthreadCommunication), std::memory_order_release);
         if (throw_on_message.load(std::memory_order_acquire)) {
-            std::cerr << fmt::format("{}:{} got here about to throw\n", __FILE__, __LINE__);
             throw std::runtime_error("Test exception");
         }
         processed_count.fetch_add(1, std::memory_order_release);
     }
 
-    void on_raw_socket_message(const EventMessage& msg) override {
-        std::cerr << fmt::format("{}:{} got here\n", __FILE__, __LINE__);
+    void on_raw_socket_message([[maybe_unused]] const EventMessage& msg) override {
         last_processed_type.store(EventType(EventType::RawSocketCommunication), std::memory_order_release);
     }
 
-    void on_timer_event(const std::string& name) override {
+    void on_timer_event([[maybe_unused]] const std::string& name) override {
         last_processed_type.store(EventType(EventType::Timer), std::memory_order_release);
-        std::cerr << fmt::format("{}:{} got here, timer event for {}\n", __FILE__, __LINE__, name);
         processed_count.fetch_add(1, std::memory_order_release);
     }
 
     std::atomic<int> processed_count{0};
     std::atomic<bool> throw_on_message{false};
     std::atomic<EventType> last_processed_type{EventType(EventType::None)};
+};
+
+class TestThreadOneOffTimer : public TestThread
+{
+public:
+    TestThreadOneOffTimer(QuillLogger& logger, Reactor& reactor, const std::string& name, ThreadID id,
+               const QueueConfig& queueConfig, const AllocatorConfig& allocatorConfig)
+        : TestThread(logger, reactor, name, id, queueConfig, allocatorConfig)
+    {
+    }
+
+    void on_initial_event() override
+    {
+        TestThread::on_initial_event();
+        start_one_off_timer("once", std::chrono::milliseconds(5));
+    }
+};
+
+class TestThreadRecurringTimer : public TestThread
+{
+public:
+    TestThreadRecurringTimer(QuillLogger& logger, Reactor& reactor, const std::string& name, ThreadID id,
+               const QueueConfig& queueConfig, const AllocatorConfig& allocatorConfig)
+        : TestThread(logger, reactor, name, id, queueConfig, allocatorConfig)
+    {
+    }
+
+    void on_initial_event() override
+    {
+        TestThread::on_initial_event();
+        start_recurring_timer("tick", std::chrono::milliseconds(5));
+    }
+
+    std::atomic<int>* counter{nullptr};
+    void on_timer_event(const std::string&) override {
+        counter->fetch_add(1, std::memory_order_release);
+    }
+};
+
+class TestThreadCancelTimer : public TestThread
+{
+public:
+    TestThreadCancelTimer(QuillLogger& logger, Reactor& reactor, const std::string& name, ThreadID id,
+               const QueueConfig& queueConfig, const AllocatorConfig& allocatorConfig)
+        : TestThread(logger, reactor, name, id, queueConfig, allocatorConfig)
+    {
+    }
+
+    void on_initial_event() override
+    {
+        TestThread::on_initial_event();
+        start_recurring_timer("tick", std::chrono::milliseconds(5));
+    }
+
+    std::atomic<int>* counter{nullptr};
+    void on_timer_event(const std::string&) override {
+        counter->fetch_add(1, std::memory_order_release);
+    }
+
+    void on_itc_message([[maybe_unused]] const EventMessage& msg) override {
+        cancel_timer("tick");
+    }
+};
+
+class TestThreadNameTimer : public TestThread
+{
+public:
+    std::string out;
+    TestThreadNameTimer(QuillLogger& logger, Reactor& reactor, const std::string& name, ThreadID id,
+               const QueueConfig& queueConfig, const AllocatorConfig& allocatorConfig)
+        : TestThread(logger, reactor, name, id, queueConfig, allocatorConfig)
+    {
+    }
+
+    void on_initial_event() override
+    {
+        TestThread::on_initial_event();
+        start_one_off_timer("heartbeat", std::chrono::milliseconds(5));
+    }
+
+    void on_timer_event(const std::string& name) override {
+        out = name;
+    }
+};
+
+class TestThreadMultiTimer : public TestThread
+{
+public:
+    std::atomic<int>* a{nullptr};
+    std::atomic<int>* b{nullptr};
+
+    TestThreadMultiTimer(QuillLogger& logger, Reactor& reactor, const std::string& name, ThreadID id,
+               const QueueConfig& queueConfig, const AllocatorConfig& allocatorConfig)
+        : TestThread(logger, reactor, name, id, queueConfig, allocatorConfig)
+    {
+    }
+
+    void on_initial_event() override
+    {
+        TestThread::on_initial_event();
+        start_recurring_timer("A", std::chrono::milliseconds(5));
+        start_recurring_timer("B", std::chrono::milliseconds(7));
+    }
+
+    void on_timer_event(const std::string& name) override {
+        if (name == "A") a->fetch_add(1);
+        if (name == "B") b->fetch_add(1);
+    }
+
+    void on_itc_message([[maybe_unused]] const EventMessage& msg) override {
+        cancel_timer("A");
+        cancel_timer("B");
+    }
 };
 
 } // unnamed namespace
@@ -273,9 +378,7 @@ TEST_F(ApplicationThreadTest, PauseResume)
     // Give it time to process the queued message after resume
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
     EXPECT_EQ(thread->processed_count.load(), 3); // init, appReady and ITC
-    std::cerr << fmt::format("{}:{} about to shutdown\n", __FILE__, __LINE__);
     thread->shutdown("done");
-    std::cerr << fmt::format("{}:{} thread shutdown returned\n", __FILE__, __LINE__);
 }
 
 // ------------------------------------------------------------
@@ -943,7 +1046,6 @@ TEST_F(ApplicationThreadTest, InterThreadRoutingDeliversMessage)
 
     // Send an ITC message from A → B
     EventMessage msg = EventMessage::create_itc_message(threadA->get_thread_id(), nullptr, 0);
-
     threadA->post_message(ThreadID(2), std::move(msg));
 
     // Wait for B to process the message
@@ -959,7 +1061,7 @@ TEST_F(ApplicationThreadTest, InterThreadRoutingDeliversMessage)
 
 TEST_F(ApplicationThreadTest, OneOffTimerFiresOnce)
 {
-    auto thread = std::make_shared<TestThread>(logger_with_sink_.logger, *reactor_,
+    auto thread = std::make_shared<TestThreadOneOffTimer>(logger_with_sink_.logger, *reactor_,
                       "TimerThread", ThreadID(1),
                       make_queue_config(), make_allocator_config());
 
@@ -967,12 +1069,10 @@ TEST_F(ApplicationThreadTest, OneOffTimerFiresOnce)
     reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>( [this] { reactor_->run(); });
 
     // Wait until Reactor has started the thread and it is Operational
+    // This will start the timer inside the init event handler.
     for (int i = 0; i < 200 && thread->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational; ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-
-    // Start a one-off timer with a short interval
-    thread->start_one_off_timer("once", std::chrono::milliseconds(5));
 
     // Wait for the timer to fire
     for (int i = 0; i < 200 && thread->last_processed_type.load() != EventType(EventType::Timer); ++i) {
@@ -988,16 +1088,7 @@ TEST_F(ApplicationThreadTest, RecurringTimerFiresMultipleTimes)
 {
     std::atomic<int> count{0};
 
-    // Override handler to count rings
-    struct CountingThread : TestThread {
-        using TestThread::TestThread;
-        std::atomic<int>* counter{nullptr};
-        void on_timer_event(const std::string&) override {
-            counter->fetch_add(1, std::memory_order_release);
-        }
-    };
-
-    auto cthread = std::make_shared<CountingThread>(logger_with_sink_.logger, *reactor_,
+    auto cthread = std::make_shared<TestThreadRecurringTimer>(logger_with_sink_.logger, *reactor_,
                            "TimerThread1", ThreadID(1), make_queue_config(), make_allocator_config());
     cthread->counter = &count;
 
@@ -1005,11 +1096,10 @@ TEST_F(ApplicationThreadTest, RecurringTimerFiresMultipleTimes)
     reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>( [this] { reactor_->run(); });
 
     // Wait until Reactor has started the thread and it is Operational
+    // This will start the timer.
     for (int i = 0; i < 200 && cthread->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational; ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-
-    cthread->start_recurring_timer("tick", std::chrono::milliseconds(5));
 
     // Wait for several rings
     for (int i = 0; i < 200 && count.load() < 3; ++i) {
@@ -1025,15 +1115,7 @@ TEST_F(ApplicationThreadTest, CancelTimerStopsEvents)
 {
     std::atomic<int> count{0};
 
-    struct CountingThread : TestThread {
-        using TestThread::TestThread;
-        std::atomic<int>* counter{nullptr};
-        void on_timer_event(const std::string&) override {
-            counter->fetch_add(1, std::memory_order_release);
-        }
-    };
-
-    auto cthread = std::make_shared<CountingThread>(logger_with_sink_.logger, *reactor_,
+    auto cthread = std::make_shared<TestThreadCancelTimer>(logger_with_sink_.logger, *reactor_,
                       "TimerThread", ThreadID(1),
                       make_queue_config(), make_allocator_config());
     cthread->counter = &count;
@@ -1042,18 +1124,19 @@ TEST_F(ApplicationThreadTest, CancelTimerStopsEvents)
     reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>( [this] { reactor_->run(); });
 
     // Wait until Reactor has started the thread and it is Operational
+    // This will start the timer
     for (int i = 0; i < 200 && cthread->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational; ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-
-    cthread->start_recurring_timer("tick", std::chrono::milliseconds(5));
 
     // Wait for at least one ring
     for (int i = 0; i < 200 && count.load() == 0; ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
-    cthread->cancel_timer("tick");
+    // send an ITC message to cancel timer (note we are sending as if from and to are the same)
+    EventMessage msg = EventMessage::create_itc_message(cthread->get_thread_id(), nullptr, 0);
+    cthread->post_message(ThreadID(1), std::move(msg));
 
     int after_cancel = count.load();
 
@@ -1067,40 +1150,27 @@ TEST_F(ApplicationThreadTest, CancelTimerStopsEvents)
 
 TEST_F(ApplicationThreadTest, TimerNameMapping)
 {
-    struct NameThread : TestThread {
-        using TestThread::TestThread;
-        std::string* out = nullptr;
-
-        void on_timer_event(const std::string& name) override {
-            *out = name;
-        }
-    };
-
-    auto thread = std::make_shared<NameThread>(logger_with_sink_.logger, *reactor_,
+    auto thread = std::make_shared<TestThreadNameTimer>(logger_with_sink_.logger, *reactor_,
         "TimerThread", ThreadID(1), make_queue_config(), make_allocator_config()
     );
-
-    std::string name_seen;
-    thread->out = &name_seen;
 
     reactor_->register_thread(thread);
     reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>( [this] { reactor_->run(); });
 
     // Wait until Operational
+    // This will start the timer
     for (int i = 0; i < 200 &&
          thread->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational; ++i)
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
-    thread->start_one_off_timer("heartbeat", std::chrono::milliseconds(5));
-
-    for (int i = 0; i < 200 && name_seen.empty(); ++i) {
+    for (int i = 0; i < 200 && thread->out.empty(); ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
     thread->shutdown("done");
-    EXPECT_EQ(name_seen, "heartbeat");
+    EXPECT_EQ(thread->out, "heartbeat");
 }
 
 TEST_F(ApplicationThreadTest, MultipleTimersIndependent)
@@ -1108,21 +1178,12 @@ TEST_F(ApplicationThreadTest, MultipleTimersIndependent)
     std::atomic<int> a_count{0};
     std::atomic<int> b_count{0};
 
-    struct MultiThread : TestThread {
-        using TestThread::TestThread;
-        std::atomic<int>* a{nullptr};
-        std::atomic<int>* b{nullptr};
-        void on_timer_event(const std::string& name) override {
-            if (name == "A") a->fetch_add(1);
-            if (name == "B") b->fetch_add(1);
-        }
-    };
-
     auto thread = std::make_shared<TestThread>(logger_with_sink_.logger, *reactor_,
-                      "TimerThread1", ThreadID(1),
+                                                         "TimerThread1", ThreadID(1),
                       make_queue_config(), make_allocator_config());
 
-    auto mthread = std::make_shared<MultiThread>(logger_with_sink_.logger, *reactor_, "TimerThread2", ThreadID(2),
+    auto mthread = std::make_shared<TestThreadMultiTimer>(logger_with_sink_.logger, *reactor_,
+                                                          "TimerThread2", ThreadID(2),
                         make_queue_config(), make_allocator_config());
     mthread->a = &a_count;
     mthread->b = &b_count;
@@ -1132,12 +1193,10 @@ TEST_F(ApplicationThreadTest, MultipleTimersIndependent)
     reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>( [this] { reactor_->run(); });
 
     // Wait until Reactor is initialized
+    // This will start both timers.
     for (int i = 0; i < 200 && !reactor_->is_initialized(); ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-
-    mthread->start_recurring_timer("A", std::chrono::milliseconds(5));
-    mthread->start_recurring_timer("B", std::chrono::milliseconds(7));
 
 #ifdef USING_VALGRIND
     const int max_iterations = 3000; // ~3 seconds
@@ -1148,10 +1207,27 @@ TEST_F(ApplicationThreadTest, MultipleTimersIndependent)
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
-    mthread->cancel_timer("A");
-    mthread->cancel_timer("B");
+    // Post ITC message to cancel the timers.
+    EventMessage msg = EventMessage::create_itc_message(thread->get_thread_id(), nullptr, 0);
+    mthread->post_message(ThreadID(1), std::move(msg));
 
     mthread->shutdown("done");
     EXPECT_GE(a_count.load(), 2);
     EXPECT_GE(b_count.load(), 2);
+}
+
+TEST_F(ApplicationThreadTest, CreatingTimerFromWrongThreadThrows)
+{
+    auto thread = std::make_shared<TestThread>(logger_with_sink_.logger, *reactor_,
+                      "TestThread1", ThreadID(1), make_queue_config(), make_allocator_config());
+
+    reactor_->register_thread(thread);
+    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>( [this] { reactor_->run(); });
+
+    // Wait until Reactor has started the thread and it is Operational
+    for (int i = 0; i < 200 && thread->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    EXPECT_THROW(thread->start_one_off_timer("once", std::chrono::milliseconds(5)), PreconditionAssertion);
 }

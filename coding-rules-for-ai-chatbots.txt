@@ -32,7 +32,7 @@ Never say "using namespace std"
 when checking if a ptr is nullptr, do not say "if (ptr)", say "if (ptr != nullptr)"
 when checking if a ptr is not nullptr, do not say "if (!ptr)", say "if (ptr == nullptr)"
 When a variable is a pointer or a reference, the * or & should be with the typename, not with the variable name, so, for example, instead of T *myvar it should be T* myvar. Also have a space before the variable name  (T* obj, not T*obj). This rule also applies to function argument declarations.
-
+Do not add spaces to variable declarations to make adjacent declarations all line up. That is fragile when new variable declarations are added.
 Naming Conventions
 
 snake_case for: variables, function names, member functions, parameters

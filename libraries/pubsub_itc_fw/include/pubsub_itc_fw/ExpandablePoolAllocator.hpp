@@ -198,8 +198,10 @@ template <typename T> class ExpandablePoolAllocator {
      * @param[in] use_huge_pages_flag Whether to attempt 2MB huge page allocation.
      */
     ExpandablePoolAllocator(std::string const& pool_name, int objects_per_pool, int initial_pools, int expansion_threshold_hint,
-                            std::function<void(void*, int)> handler_for_pool_exhausted, std::function<void(void*, void*)> handler_for_invalid_free,
-                            std::function<void(void*)> handler_for_huge_pages_error, UseHugePagesFlag use_huge_pages_flag);
+                            std::function<void(void*, int)> handler_for_pool_exhausted, //
+                            std::function<void(void*, void*)> handler_for_invalid_free, //
+                            std::function<void(void*)> handler_for_huge_pages_error, //
+                            UseHugePagesFlag use_huge_pages_flag);
 
     ExpandablePoolAllocator(ExpandablePoolAllocator const&) = delete;
     ExpandablePoolAllocator& operator=(ExpandablePoolAllocator const&) = delete;
@@ -273,11 +275,11 @@ template <typename T> class ExpandablePoolAllocator {
     mutable std::mutex expansion_mutex_;
     std::vector<std::unique_ptr<FixedSizeMemoryPool<T>>> cleanup_list_;
 
-    CacheLine<std::atomic<uint64_t>> total_allocations_{0};
-    CacheLine<std::atomic<uint64_t>> fast_path_allocations_{0};
-    CacheLine<std::atomic<uint64_t>> slow_path_allocations_{0};
-    CacheLine<std::atomic<uint64_t>> expansion_events_{0};
-    CacheLine<std::atomic<uint64_t>> failed_allocations_{0};
+    CacheLine<std::atomic<uint64_t>> total_allocations_;
+    CacheLine<std::atomic<uint64_t>> fast_path_allocations_;
+    CacheLine<std::atomic<uint64_t>> slow_path_allocations_;
+    CacheLine<std::atomic<uint64_t>> expansion_events_;
+    CacheLine<std::atomic<uint64_t>> failed_allocations_;
 };
 
 template <typename T>
@@ -296,6 +298,13 @@ ExpandablePoolAllocator<T>::ExpandablePoolAllocator(std::string const& pool_name
     , handler_for_pool_exhausted_(std::move(handler_for_pool_exhausted))
     , handler_for_invalid_free_(std::move(handler_for_invalid_free))
     , handler_for_huge_pages_error_(std::move(handler_for_huge_pages_error)) {
+
+    total_allocations_.value.store(0, std::memory_order_relaxed);
+    fast_path_allocations_.value.store(0, std::memory_order_relaxed);
+    slow_path_allocations_.value.store(0, std::memory_order_relaxed);
+    expansion_events_.value.store(0, std::memory_order_relaxed);
+    failed_allocations_.value.store(0, std::memory_order_relaxed);
+
     for (int i = 0; i < initial_pools_; ++i) {
         add_pool_to_chain();
     }

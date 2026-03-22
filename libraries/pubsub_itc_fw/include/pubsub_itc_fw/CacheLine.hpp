@@ -32,14 +32,20 @@ namespace pubsub_itc_fw {
  * @note The struct is aligned to 64 bytes and padded to exactly one cache line.
  *       This does not change the semantics of T; it only affects placement.
  */
-template <typename T> struct alignas(64) CacheLine {
-    static_assert(std::is_trivially_copyable_v<T>, "CacheLine<T> requires T to be trivially copyable.");
+template <typename T>
+struct alignas(64) CacheLine {
+    static_assert(std::is_trivially_copyable_v<T>,
+                  "CacheLine<T> requires T to be trivially copyable.");
 
-    T value;
+    T value{};  // zero-initialised, so decls of CacheLine variables do not need braces
 
-    // Pad the remainder of the 64‑byte cache line.
-    // sizeof(T) may be smaller than 64, so we fill the rest.
-    char padding[64 - sizeof(T)];
+    CacheLine() = default;
+    CacheLine(CacheLine const&) = default;
+    CacheLine& operator=(CacheLine const&) = default;
 };
+
+static_assert(sizeof(CacheLine<std::atomic<uint64_t>>) >= 64 &&
+              sizeof(CacheLine<std::atomic<uint64_t>>) % 64 == 0,
+              "CacheLine must occupy at least one full cache line.");
 
 } // namespace pubsub_itc_fw

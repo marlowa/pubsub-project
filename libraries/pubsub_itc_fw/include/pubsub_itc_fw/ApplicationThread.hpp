@@ -259,17 +259,26 @@ protected:
 
     virtual void on_app_ready_event() {}
 
-    virtual void on_termination_event(const std::string& reason) {}
+    virtual void on_termination_event([[maybe_unused]] const std::string& reason) {}
 
     virtual void on_itc_message(const EventMessage& msg) = 0;
 
     void on_timer_id_event(TimerID id);
 
-    virtual void on_timer_event(const std::string& name) {}
+    virtual void on_timer_event([[maybe_unused]] const std::string& name) {}
 
-    virtual void on_pubsub_message(const EventMessage& msg) {}
+    virtual void on_pubsub_message([[maybe_unused]] const EventMessage& msg) {}
 
-    virtual void on_raw_socket_message(const EventMessage& msg) {}
+    virtual void on_raw_socket_message([[maybe_unused]] const EventMessage& msg) {}
+
+    void assert_called_from_owner() const {
+        pthread_t owner = thread_->get_pthread_id();
+        if (!pthread_equal(owner, pthread_self())) {
+            throw PreconditionAssertion(
+                "Timer APIs must be called from within the owning ApplicationThread's callbacks",
+                __FILE__, __LINE__);
+        }
+    }
 
 private:
     QuillLogger& logger_;

@@ -29,15 +29,12 @@ public:
     void record(int64_t duration_ns) {
         int64_t bucket_start = (duration_ns / 10) * 10;
 
-        // Thread-safe find
+        std::lock_guard<std::mutex> lock(buckets_mutex_);
+
         auto it = buckets_.find(bucket_start);
         if (it != buckets_.end()) {
             it->second.fetch_add(1, std::memory_order_relaxed);
         } else {
-            // Only if a completely unexpected latency occurs do we lock.
-            // For NFT, this should be extremely rare after warm-up.
-            static std::mutex registration_mutex;
-            std::lock_guard<std::mutex> lock(registration_mutex);
             buckets_[bucket_start].fetch_add(1, std::memory_order_relaxed);
         }
     }
@@ -48,6 +45,8 @@ public:
      * @param label The dataset identifier (e.g., ALLOCATION).
      */
     void dump_space_delimited(const std::string& label) const {
+        std::lock_guard<std::mutex> lock(buckets_mutex_);
+
         std::cout << "\n# DATASET: " << label << "\n";
         std::cout << "# ns_bucket_start count\n";
 
@@ -72,6 +71,8 @@ public:
      * @brief Human-readable dump for quick console inspection.
      */
     void dump_results(const std::string& label) const {
+        std::lock_guard<std::mutex> lock(buckets_mutex_);
+
         std::cout << "\n--- Latency Histogram: " << label << " ---\n";
         std::cout << std::left << std::setw(15) << "Bucket (ns)" << " | Count\n";
         std::cout << "------------------\n";
@@ -94,6 +95,7 @@ public:
 private:
     // map bucket_start -> atomic_counter
     mutable std::map<int64_t, std::atomic<size_t>> buckets_;
+    mutable std::mutex buckets_mutex_;
 };
 
 } // namespace pubsub_itc_fw::tests

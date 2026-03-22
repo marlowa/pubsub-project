@@ -12,8 +12,16 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF) # Ensure strict C++17
 
 # --- Global Compiler Options ---
-# Always use debug symbols (-g) and enable all standard warnings and treat warnings as error (-Wall -pedantic -Werror).
-add_compile_options(-g -Wall -pedantic -Werror)
+# Always use debug symbols (-g) and enable all standard warnings and treat warnings as error
+add_compile_options(
+    -g
+    -O2
+    -Wall
+    -Wextra
+    -pedantic
+    -Wstrict-aliasing=2
+    -Werror
+)
 
 # --- Optional Valgrind Support ---
 option(ENABLE_VALGRIND "Build with Valgrind compatibility (disables lock-free optimizations)" OFF)
@@ -262,6 +270,9 @@ add_subdirectory(libraries/pubsub_itc_fw/tests_common)
 # This includes the CMakeLists.txt file in the 'test' directory,
 # allowing it to define and build the GTest executables.
 add_subdirectory(libraries/pubsub_itc_fw/tests)
+
+# This is for performance study applications
+add_subdirectory(libraries/pubsub_itc_fw/performance)
 
 # Optional: Install the library and headers
 # install(TARGETS pubsub_itc_fw_lib DESTINATION lib)

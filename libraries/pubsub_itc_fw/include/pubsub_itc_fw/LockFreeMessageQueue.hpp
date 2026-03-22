@@ -159,7 +159,8 @@ public:
      */
     LockFreeMessageQueue(QueueConfig const& queue_config,
                          AllocatorConfig const& allocator_config)
-        : head_(&stub_)
+        : stub_()
+        , head_(&stub_)
         , tail_(&stub_)
         , queue_config_(queue_config)
         , allocator_config_(allocator_config)
@@ -171,7 +172,6 @@ public:
                           allocator_config_.handler_for_invalid_free,
                           allocator_config_.handler_for_huge_pages_error,
                           allocator_config_.use_huge_pages_flag)
-        , stub_()
         , size_{0}
     {
         stub_.next_.store(nullptr, std::memory_order_relaxed);
@@ -313,6 +313,30 @@ private:
 
     static constexpr size_t cache_line_size_ = 64;
 
+    /**
+     * @brief Permanent dummy node required by the Vyukov MPSC queue algorithm.
+     *
+     * The queue is implemented as a singly-linked list with multiple producers
+     * and a single consumer. A permanent dummy node (the "stub") anchors the list
+     * so that the queue is never structurally empty:
+     *
+     *     head_ --> stub_ --> first real node --> ...
+     *     tail_ ------------------------------------^
+     *
+     * Invariants provided by the stub:
+     *   - head_ and tail_ always point to valid nodes; neither is ever nullptr.
+     *   - Producers always append to a well-formed list without needing empty-queue
+     *     special cases.
+     *   - The consumer always pops from stub_.next_, never from head_ itself.
+     *   - The stub is never allocated from, or returned to, the memory pool; its
+     *     address is stable for the lifetime of the queue.
+     *
+     * These invariants eliminate empty/non-empty transition races and simplify the
+     * lock-free enqueue/dequeue logic. The stub must be constructed before head_
+     * and tail_ are initialised.
+     */
+    Node stub_;
+
     alignas(cache_line_size_) std::atomic<Node*> head_;
     alignas(cache_line_size_) Node* tail_;
 
@@ -320,13 +344,11 @@ private:
     AllocatorConfig allocator_config_;
     ExpandablePoolAllocator<Node> node_allocator_;
 
-    Node stub_;
-
     std::atomic<int> size_{0};
     std::atomic<bool> is_high_watermark_breached_{false};
     std::atomic<bool> shutting_down_{false};
 };
 
-#endif // USING_VALGRIND
+#endif // check for is or is not USING_VALGRIND
 
 } // namespace pubsub_itc_fw

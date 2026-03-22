@@ -103,6 +103,8 @@ TimerID ApplicationThread::start_recurring_timer(const std::string& name, std::c
 }
 
 void ApplicationThread::cancel_timer(const std::string& name) {
+    assert_called_from_owner();
+
     auto it = name_to_id_.find(name);
     if (it == name_to_id_.end()) {
         return;
@@ -306,6 +308,8 @@ void ApplicationThread::set_lifecycle_state(ThreadLifecycleState::Tag new_tag) {
 }
 
 TimerID ApplicationThread::schedule_timer(const std::string& name, std::chrono::microseconds interval, TimerType type) {
+    assert_called_from_owner();
+
     // If a timer with this name already exists, cancel it first.
     // TODO I am not sure about this. Perhaps it is a precondition violation.
     auto it = name_to_id_.find(name);
