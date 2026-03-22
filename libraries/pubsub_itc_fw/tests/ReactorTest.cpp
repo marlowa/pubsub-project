@@ -93,9 +93,15 @@ public:
     void SetUp() override {
         logger_with_sink_.sink->clear();
         reactor_configuration_.inactivity_check_interval_ = std::chrono::milliseconds(100);
+    #ifdef USING_VALGRIND
+        // TSan (and Valgrind) add significant instrumentation overhead which
+        // can delay thread startup. Use a longer timeout to avoid intermittent
+        // failures caused by scheduling delays under instrumentation.
+        reactor_configuration_.init_phase_timeout_ = MillisecondClock::duration{10000};
+    #else
         reactor_configuration_.init_phase_timeout_ = MillisecondClock::duration{2000};
+    #endif
         reactor_configuration_.shutdown_timeout_ = std::chrono::milliseconds(50);
-
         reactor_ = std::make_unique<Reactor>(reactor_configuration_, logger_with_sink_.logger);
         reactor_thread_.reset(); // not started yet
         std::cerr << fmt::format("{}:{} reactor initialised\n", __FILE__, __LINE__);

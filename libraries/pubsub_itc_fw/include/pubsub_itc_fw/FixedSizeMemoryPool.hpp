@@ -590,9 +590,18 @@ template <typename T> class FixedSizeMemoryPool {
      *       the head was stored.
      */
     [[nodiscard]] HeadPtr load_head() const {
+        // On x86-64, a 16-byte aligned load via SSE movdqa is atomic.
+        // This avoids both the libatomic PLT call (__atomic_load_16) and
+        // the cost of CMPXCHG16B for a read-only load. The alignas(16) on
+        // head_raw_ guarantees the required alignment.
         unsigned __int128 val;
-        __atomic_load(&head_raw_, &val, __ATOMIC_ACQUIRE);
-
+        __asm__ volatile (
+            "movdqa %1, %%xmm0\n\t"
+            "movdqa %%xmm0, %0\n\t"
+            : "=m" (val)
+            : "m" (head_raw_)
+            : "xmm0", "memory"
+        );
         HeadPtr head{};
         static_assert(sizeof(head) == sizeof(val), "HeadPtr must be 128 bits");
         std::memcpy(&head, &val, sizeof(head));
@@ -602,15 +611,17 @@ template <typename T> class FixedSizeMemoryPool {
     /**
      * @brief Attempts to atomically update the free list head.
      *
-     * This is the core of the lock-free algorithm. It uses CMPXCHG16B to
-     * atomically compare-and-swap the 128-bit head value.
+     * This is the core of the lock-free algorithm.
+     * It uses CMPXCHG16B to atomically compare-and-swap the 128-bit head value.
      *
      * @param[in,out] expected Current expected value. Updated with actual value on failure.
      * @param[in] desired New value to write if expected matches current value.
      * @return true if swap succeeded, false if another thread modified the head.
      *
-     * @note Uses ACQ_REL ordering on success (our writes visible before update,
-     *       we see all prior writes). Uses ACQUIRE on failure (we see actual value).
+     *  __sync_bool_compare_and_swap implies SEQ_CST ordering.
+     *  On x86-64 this is identical to ACQ_REL in generated code since
+     *  CMPXCHG16B with lock prefix provides full sequential consistency.
+     *  The stronger ordering annotation has no runtime cost on this architecture.
      *
      * @note The "weak" variant may spuriously fail even when expected == current.
      *       This is acceptable in a loop (as used in push/pop).
@@ -623,13 +634,14 @@ template <typename T> class FixedSizeMemoryPool {
         std::memcpy(&expected_raw, &expected, sizeof(expected));
         std::memcpy(&desired_raw, &desired, sizeof(desired));
 
-        bool ok = __atomic_compare_exchange(&head_raw_,
-                                            &expected_raw,
-                                            &desired_raw,
-                                            true,
-                                            __ATOMIC_ACQ_REL,
-                                            __ATOMIC_ACQUIRE);
+        // __sync_bool_compare_and_swap on unsigned __int128 emits CMPXCHG16B
+        // inline when -mcx16 is present. __atomic_compare_exchange on GCC 13+
+        // calls libatomic regardless of -mcx16, adding PLT dispatch overhead
+        // on every CAS in the hot path.
+        bool ok = __sync_bool_compare_and_swap(&head_raw_, expected_raw, desired_raw);
         if (!ok) {
+            // On failure, reload the actual current value so the caller can retry.
+            __atomic_load(&head_raw_, &expected_raw, __ATOMIC_ACQUIRE);
             std::memcpy(&expected, &expected_raw, sizeof(expected));
         }
         return ok;

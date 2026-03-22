@@ -1,5 +1,5 @@
 #! /bin/bash
-./build.sh --clean --no-tests --verbose
+./build.sh --clean --no-tests
 
 # Only sample on CPU 2 and 3 where your threads are pinned
 # Use cpu_core cycles only, not cpu_atom
