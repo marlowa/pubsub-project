@@ -207,13 +207,22 @@ public:
 
 TEST_F(ReactorTest, InitializationTimeoutTriggersShutdown)
 {
+    ReactorConfiguration cfg;
+    cfg.init_phase_timeout_ = std::chrono::milliseconds(50);
+
+    // A short shutdown_timeout_ is essential here. finalize_threads_after_shutdown()
+    // waits up to shutdown_timeout_ twice — once for the thread run loop to exit and
+    // once for join_with_timeout(). BadThread never stops, so both waits will always
+    // exhaust the full timeout. If shutdown_timeout_ is left at its default of 1000ms,
+    // finalize_threads_after_shutdown() blocks for ~2000ms, exceeding TearDown's
+    // join_reactor_or_die() budget and causing std::terminate().
+    cfg.shutdown_timeout_    = std::chrono::milliseconds(100);
+
+    reactor_ = std::make_unique<Reactor>(cfg, logger_with_sink_.logger);
+
     auto bad_thread = std::make_shared<NeverStartingThread>(logger_with_sink_.logger, *reactor_,
                                                             "BadThread", ThreadID(99),
                                                             make_queue_config(), make_allocator_config());
-    ReactorConfiguration cfg;
-    cfg.init_phase_timeout_ = std::chrono::milliseconds(50);
-    reactor_ = std::make_unique<Reactor>(cfg, logger_with_sink_.logger);
-
     reactor_->register_thread(bad_thread);
     reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>( [this] { reactor_->run(); });
 

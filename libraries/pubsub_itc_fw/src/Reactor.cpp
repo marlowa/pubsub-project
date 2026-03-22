@@ -125,6 +125,8 @@ int Reactor::run() {
     shutdown_reason_ = "";
 
     if (!initialize_threads()) {
+        lifecycle_.store(ReactorLifecycleState::FinalizingThreads, std::memory_order_release);
+        finalize_threads_after_shutdown();
         lifecycle_.store(ReactorLifecycleState::Finished, std::memory_order_release);
         return -1;
     }
@@ -176,7 +178,9 @@ void Reactor::shutdown(const std::string& reason) {
 
 void Reactor::finalize_threads_after_shutdown() {
     // 1. Snapshot under lock
-    PUBSUB_LOG_STR(logger_, LogLevel::Info, "finalize_threads_after_shutdown step 1");
+    PUBSUB_LOG(logger_, LogLevel::Info, "finalize_threads_after_shutdown entered: threads_.size()={}, shutdown_timeout_={}ms",
+               threads_.size(), config_.shutdown_timeout_.count());
+
     std::vector<std::shared_ptr<ApplicationThread>> snapshot;
     {
         std::lock_guard<std::mutex> lock(thread_registry_mutex_);
@@ -211,7 +215,11 @@ void Reactor::finalize_threads_after_shutdown() {
     PUBSUB_LOG_STR(logger_, LogLevel::Info, "finalize_threads_after_shutdown step 3");
     for (auto& thread : snapshot) {
         if (!thread->join_with_timeout(config_.shutdown_timeout_)) {
-            PUBSUB_LOG(logger_, LogLevel::Error, "Thread {} failed to join within shutdown_timeout", thread->get_thread_name());
+            PUBSUB_LOG(logger_, LogLevel::Error,
+                "Thread {} failed to join within shutdown_timeout. "
+                "The thread is still running and cannot be safely destroyed. "
+                "This is a fatal condition in production — the process should be terminated.",
+                thread->get_thread_name());
         }
     }
 
