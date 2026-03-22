@@ -609,39 +609,63 @@ template <typename T> class FixedSizeMemoryPool {
     }
 
     /**
-     * @brief Attempts to atomically update the free list head.
+     * @brief Attempts to atomically update the free list head using CMPXCHG16B.
      *
-     * This is the core of the lock-free algorithm.
-     * It uses CMPXCHG16B to atomically compare-and-swap the 128-bit head value.
+     * This is the core of the lock-free Treiber stack algorithm. It performs a
+     * 128-bit compare-and-swap on the free list head, which contains both a pointer
+     * and an ABA counter packed into a single @c HeadPtr.
      *
-     * @param[in,out] expected Current expected value. Updated with actual value on failure.
-     * @param[in] desired New value to write if expected matches current value.
-     * @return true if swap succeeded, false if another thread modified the head.
+     * @param[in,out] expected The value expected to be current. On failure, updated
+     *                         with the actual current value so the caller can retry.
+     * @param[in]    desired   The value to write if @p expected matches current.
+     * @return @c true if the swap succeeded; @c false if another thread had already
+     *         modified the head before this attempt.
      *
-     *  __sync_bool_compare_and_swap implies SEQ_CST ordering.
-     *  On x86-64 this is identical to ACQ_REL in generated code since
-     *  CMPXCHG16B with lock prefix provides full sequential consistency.
-     *  The stronger ordering annotation has no runtime cost on this architecture.
+     * @par Implementation notes
+     * GCC 13 and later emit a @c libatomic PLT call for @c __atomic_compare_exchange
+     * on 16-byte types regardless of @c -mcx16, adding indirect-call overhead on
+     * every CAS in the hot path. @c __sync_bool_compare_and_swap does not have this
+     * behaviour and reliably emits an inline @c lock @c cmpxchg16b instruction when
+     * @c -mcx16 is present.
      *
-     * @note The "weak" variant may spuriously fail even when expected == current.
-     *       This is acceptable in a loop (as used in push/pop).
+     * @c __sync_bool_compare_and_swap implies sequentially-consistent ordering.
+     * On x86-64 this is identical to acquire-release in the generated machine code:
+     * @c lock @c cmpxchg16b provides full sequential consistency regardless of the
+     * C++ memory order annotation, so the stronger ordering carries no runtime cost
+     * on this architecture.
+     *
+     * On CAS failure the current head is reloaded via an inline SSE @c movdqa
+     * instruction rather than @c __atomic_load, which would also call @c libatomic
+     * on GCC 13+. A 16-byte aligned @c movdqa load is atomic on x86-64; the
+     * @c alignas(16) on @c head_raw_ satisfies the alignment requirement.
+     *
+     * @note The "weak" variant may spuriously fail even when @p expected matches
+     *       the current value. This is acceptable when called from a retry loop,
+     *       as it is in @c push_slot_to_free_list and @c pop_slot_from_free_list.
+     *
+     * @warning This function is x86-64 specific. Porting to another architecture
+     *          requires replacing both the @c __sync_bool_compare_and_swap call and
+     *          the inline assembler reload with appropriate equivalents.
      */
     bool compare_exchange_weak(HeadPtr& expected, HeadPtr desired) {
         unsigned __int128 expected_raw;
         unsigned __int128 desired_raw;
-
         static_assert(sizeof(expected_raw) == sizeof(expected), "HeadPtr must be 128 bits");
         std::memcpy(&expected_raw, &expected, sizeof(expected));
         std::memcpy(&desired_raw, &desired, sizeof(desired));
-
-        // __sync_bool_compare_and_swap on unsigned __int128 emits CMPXCHG16B
-        // inline when -mcx16 is present. __atomic_compare_exchange on GCC 13+
-        // calls libatomic regardless of -mcx16, adding PLT dispatch overhead
-        // on every CAS in the hot path.
         bool ok = __sync_bool_compare_and_swap(&head_raw_, expected_raw, desired_raw);
         if (!ok) {
-            // On failure, reload the actual current value so the caller can retry.
-            __atomic_load(&head_raw_, &expected_raw, __ATOMIC_ACQUIRE);
+            // Reload the current head using inline SSE movdqa to avoid the
+            // libatomic PLT call that __atomic_load generates on GCC 13+.
+            // On x86-64, movdqa on a 16-byte aligned address is atomic.
+            // The alignas(16) on head_raw_ guarantees the required alignment.
+            __asm__ volatile (
+                "movdqa %1, %%xmm0\n\t"
+                "movdqa %%xmm0, %0\n\t"
+                : "=m" (expected_raw)
+                : "m" (head_raw_)
+                : "xmm0", "memory"
+            );
             std::memcpy(&expected, &expected_raw, sizeof(expected));
         }
         return ok;
