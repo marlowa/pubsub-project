@@ -223,7 +223,7 @@ template <typename T> class ExpandablePoolAllocator {
      * @brief Destructs and deallocates an object.
      *
      * Searches the pool chain to find the owning pool and returns the memory.
-     * Performs double-free detection using the per-slot flag. Invokes
+     * Performs double-free detection using the per-slot is_constructed. Invokes
      * handler_for_invalid_free if the pointer does not belong to any pool
      * or if a double free is detected.
      *
@@ -243,7 +243,7 @@ template <typename T> class ExpandablePoolAllocator {
   private:
     FixedSizeMemoryPool<T>* add_pool_to_chain();
 
-    static std::uintptr_t* get_flag_for_object(T* obj);
+    static std::atomic<std::uintptr_t>* get_is_constructed_for_object(T* obj);
 
     std::string pool_name_;
     int objects_per_pool_;
@@ -320,10 +320,9 @@ template <typename T> T* ExpandablePoolAllocator<T>::allocate() {
 
             total_allocations_.value.fetch_add(1, std::memory_order_relaxed);
             fast_path_allocations_.value.fetch_add(1, std::memory_order_relaxed);
-
             T* obj = ::new (static_cast<void*>(raw_mem)) T();
-            std::uintptr_t* flag = get_flag_for_object(obj);
-            *flag = 1U;
+            std::atomic<std::uintptr_t>* is_constructed = get_is_constructed_for_object(obj);
+            is_constructed->store(1U, std::memory_order_release);
             return obj;
         }
     }
@@ -342,8 +341,8 @@ template <typename T> T* ExpandablePoolAllocator<T>::allocate() {
 
             __atomic_store_n(&current_pool_ptr_.value, traverse, __ATOMIC_RELEASE);
             T* obj = ::new (static_cast<void*>(raw_mem)) T();
-            std::uintptr_t* flag = get_flag_for_object(obj);
-            *flag = 1U;
+            std::atomic<std::uintptr_t>* is_constructed = get_is_constructed_for_object(obj);
+            is_constructed->store(1U, std::memory_order_release);
             return obj;
         }
         traverse = traverse->get_next_pool();
@@ -367,8 +366,8 @@ template <typename T> T* ExpandablePoolAllocator<T>::allocate() {
             }
 
             T* obj = ::new (static_cast<void*>(raw_mem)) T();
-            std::uintptr_t* flag = get_flag_for_object(obj);
-            *flag = 1U;
+            std::atomic<std::uintptr_t>* is_constructed = get_is_constructed_for_object(obj);
+            is_constructed->store(1U, std::memory_order_release);
             return obj;
         }
     }
@@ -408,13 +407,13 @@ template <typename T> void ExpandablePoolAllocator<T>::deallocate(T* obj) {
         return;
     }
 
-    auto* flag = reinterpret_cast<std::atomic<std::uintptr_t>*>(get_flag_for_object(obj));
+    std::atomic<std::uintptr_t>* is_constructed = get_is_constructed_for_object(obj);
 
     std::uintptr_t expected = 1U;
-    if (!flag->compare_exchange_strong(expected, 0U,
+    if (!is_constructed->compare_exchange_strong(expected, 0U,
                                        std::memory_order_acq_rel,
                                        std::memory_order_acquire)) {
-        // flag was already 0 — double free or invalid free
+        // is_constructed was already 0 — double free or invalid free
         if (handler_for_invalid_free_ != nullptr) {
            std::lock_guard<std::mutex> lock(callback_mutex_);
            handler_for_invalid_free_(nullptr, obj);
@@ -474,15 +473,16 @@ template <typename T> PoolStatistics ExpandablePoolAllocator<T>::get_pool_statis
     return stats;
 }
 
-template <typename T> std::uintptr_t* ExpandablePoolAllocator<T>::get_flag_for_object(T* obj) {
+template <typename T> std::atomic<std::uintptr_t>* ExpandablePoolAllocator<T>::get_is_constructed_for_object(T* obj) {
     using SlotType = Slot<T>;
 
     auto* storage_ptr = reinterpret_cast<std::aligned_storage_t<sizeof(T), alignof(T)>*>(obj);
 
     auto* slot = reinterpret_cast<SlotType*>(reinterpret_cast<char*>(storage_ptr) - offsetof(SlotType, storage));
 
-    return &slot->flag;
+    return &slot->is_constructed;
 }
+
 
 template <typename T> AllocatorBehaviourStatistics ExpandablePoolAllocator<T>::get_behaviour_statistics() const {
     AllocatorBehaviourStatistics stats;

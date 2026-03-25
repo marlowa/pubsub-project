@@ -520,6 +520,7 @@ void Reactor::create_timer_fd(TimerID timer_id, const std::string& name, ThreadI
         throw PreconditionAssertion(fmt::format("Thread {} already has a timer named '{}'", owner_thread_id.get_value(), name), __FILE__, __LINE__);
     }
 
+    // TODO the line below contains a logging error that is not detected during compilation
     PUBSUB_LOG(logger_, LogLevel::Info, "Reactor created timer id {}\n", __FILE__, __LINE__, timer_id.get_value());
     Timer timer(name, owner_thread_id, timer_id, type, interval);
     auto timer_handler = std::make_unique<TimerHandler>(timer, *this);

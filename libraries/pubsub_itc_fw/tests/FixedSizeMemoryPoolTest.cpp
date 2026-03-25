@@ -231,13 +231,14 @@ TEST_F(FixedSizeMemoryPoolTest, DestructorDestroysLeakedObjects) {
             auto* p = new (raw) TestObject();
             p->id_ = i;
 
-            // Mark slot as allocated (normally done by ExpandablePoolAllocator)
+            // Mark slot as constructed (simulating ExpandablePoolAllocator’s lifetime protocol).
+            // FixedSizeMemoryPool does not set this bit; it only reads it in its destructor.”
             using SlotType = Slot<TestObject>;
             auto* storage_ptr = reinterpret_cast<std::aligned_storage_t<sizeof(TestObject), alignof(TestObject)>*>(p);
             auto* slot = reinterpret_cast<SlotType*>(
                 reinterpret_cast<char*>(storage_ptr) - offsetof(SlotType, storage)
             );
-            slot->flag = 1;
+            slot->is_constructed.store(1, std::memory_order_relaxed);
         }
 
         EXPECT_EQ(TestObject::s_ctor.load(), capacity);

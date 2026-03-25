@@ -100,7 +100,14 @@ template <typename T> struct SlotStorage {
 };
 
 template <typename T> struct Slot {
-    std::uintptr_t flag; // 0 = free, 1 = allocated
+    // Must be std::atomic so that allocate() (plain store) and deallocate()
+    // (atomic CAS) access the same object without violating the C++ memory
+    // model. In the Valgrind/TSan path all accesses are under the pool mutex,
+    // so relaxed ordering is sufficient — the mutex provides the necessary
+    // happens-before relationship. The type must match the production path
+    // Slot<T> since ExpandablePoolAllocator::get_is_constructed_for_object() operates
+    // on both paths identically.
+    std::atomic<std::uintptr_t> is_constructed{0};
     SlotStorage<T> storage;
 };
 
@@ -127,7 +134,12 @@ template <typename T> class FixedSizeMemoryPool {
         free_list_v_.reserve(objects_per_pool_);
 
         for (int i = 0; i < objects_per_pool_; ++i) {
-            slots_[i].flag = 0;
+            // Placement-new is required to properly construct the std::atomic
+            // member in the mmap'd region before any atomic operations are used.
+            // mmap returns raw uninitialised memory — the C++ object model requires
+            // construction before any member access, including atomic stores.
+            new (&slots_[i]) SlotType();
+            slots_[i].is_constructed.store(0, std::memory_order_relaxed);
             free_list_v_.push_back(&slots_[i]);
         }
     }
@@ -136,24 +148,24 @@ template <typename T> class FixedSizeMemoryPool {
      * @brief Destructs all remaining allocated objects and releases pool memory.
      *
      * @note This destructor explicitly calls the destructor on any slot whose
-     *       flag is 1 (allocated). These are objects that were allocated by the
+     *       is_constructed is 1 (allocated). These are objects that were allocated by the
      *       caller but never returned to the pool via deallocate() before the
      *       allocator was destroyed — in other words, caller-leaked objects.
      *
      *       This is intentional cleanup, not a double-destruction hazard.
      *       ExpandablePoolAllocator::deallocate() always calls obj->~T() and
-     *       clears the flag to 0 before returning the slot to this pool.
-     *       Therefore any slot still flagged as 1 at destruction time has
+     *       clears is_constructed to 0 before returning the slot to this pool.
+     *       Therefore any slot still marked as is_constructed at destruction time has
      *       definitely not had its destructor called yet.
      *
-     *       The flag is cleared to 0 after destruction here purely for
+     *       The is_constructed is cleared to 0 after destruction here purely for
      *       consistency, since the pool memory is about to be unmapped anyway.
      */
     ~FixedSizeMemoryPool() {
         if (pool_memory_ != MAP_FAILED) {
             std::lock_guard<std::mutex> lock(mutex_);
             for (int i = 0; i < objects_per_pool_; ++i) {
-                if (slots_[i].flag == 1) {
+                if (slots_[i].is_constructed.load(std::memory_order_relaxed) == 1U) {
                     slots_[i].storage.object_ptr()->~T();
                 }
             }
@@ -172,22 +184,23 @@ template <typename T> class FixedSizeMemoryPool {
         SlotType* slot = free_list_v_.back();
         free_list_v_.pop_back();
 
-        slot->flag = 1;
+        // Note: We leave is_constructed alone since that is used at a higher level (ExpandablePoolAllocator) where we have objects.
         allocation_count_++;
         return slot->storage.object_ptr();
     }
 
     /**
-     * @brief Returns raw memory to the pool.
+     * @brief Returns raw memory to the pool (valgrind path).
      * * Does NOT call the destructor, as ExpandablePoolAllocator has already
      * handled the object lifetime before calling this method.
      */
     void deallocate(T* ptr) {
-        if (!ptr)
+        if (!ptr) {
             throw PreconditionAssertion("deallocate called with nullptr", __FILE__, __LINE__);
+        }
 
-        SlotType* slot = reinterpret_cast<SlotType*>(reinterpret_cast<char*>(ptr) - offsetof(SlotType, storage.storage));
-
+        auto* storage_ptr = reinterpret_cast<std::aligned_storage_t<sizeof(T), alignof(T)>*>(ptr);
+        SlotType* slot = reinterpret_cast<SlotType*>(reinterpret_cast<char*>(storage_ptr) - offsetof(SlotType, storage));
         std::lock_guard<std::mutex> lock(mutex_);
         free_list_v_.push_back(slot);
     }
@@ -249,11 +262,13 @@ template <typename T> class FixedSizeMemoryPool {
  * This memory pool implements a lock-free stack (Treiber stack) for object
  * allocation using an ABA-prevention technique with a tagged pointer.
  *
+ * NOTE: TODO Revise comments for is_constructed
+ *
  * KEY DESIGN ELEMENTS:
  *
  * 1. INTRUSIVE FREE LIST VIA SLOT STORAGE
  *    - Each pool element is a Slot<T>, which contains:
- *        * a flag indicating whether the slot is allocated or free
+ *        * a flag (is_constructed) indicating whether the slot is allocated or free
  *        * a SlotStorage<T> union that can hold either:
  *            - a FreeListNode (used when the slot is on the free list), or
  *            - raw storage for a T object (used when the slot is allocated)
@@ -333,11 +348,15 @@ namespace pubsub_itc_fw {
 template <typename T> struct SlotStorage; // forward declaration
 
 // ============================================================
-// Slot<T> — one allocator slot: [flag][storage]
+// Slot<T> — one allocator slot: [is_constructed][storage]
 // ============================================================
 
 template <typename T> struct Slot {
-    std::uintptr_t flag; // 0 = free, 1 = allocated
+    // Must be std::atomic so that allocate() (plain store) and deallocate()
+    // (atomic CAS) access the same object without violating the C++ memory
+    // model. On x86-64 a release store compiles to the same plain MOV
+    // instruction as a non-atomic store, so there is no runtime cost.
+    std::atomic<std::uintptr_t> is_constructed{0};
     SlotStorage<T> storage;
 };
 
@@ -411,14 +430,14 @@ template <typename T> class FixedSizeMemoryPool {
      * @brief Destructs all remaining allocated objects and releases pool memory.
      *
      * @note This destructor explicitly calls the destructor on any slot whose
-     *       flag is 1 (allocated). These are objects that were allocated by the
+     *       is_constructed is 1 (allocated). These are objects that were allocated by the
      *       caller but never returned to the pool via deallocate() before the
      *       allocator was destroyed — in other words, caller-leaked objects.
      *
      *       This is intentional cleanup, not a double-destruction hazard.
      *       ExpandablePoolAllocator::deallocate() always calls obj->~T() and
-     *       clears the flag to 0 before returning the slot to this pool.
-     *       Therefore any slot still flagged as 1 at destruction time has
+     *       clears the is_constructed to 0 before returning the slot to this pool.
+     *       Therefore any slot still marked as is_constructed at destruction time has
      *       definitely not had its destructor called yet.
      *
      * @note The mutex is held during iteration to satisfy Helgrind and DRD,
@@ -740,8 +759,12 @@ FixedSizeMemoryPool<T>::FixedSizeMemoryPool(int objects_per_pool, UseHugePagesFl
     slots_ = reinterpret_cast<SlotType*>(pool_memory_);
 
     for (int i = 0; i < objects_per_pool_; ++i) {
-        SlotType* slot = &slots_[i];
-        slot->flag = 0U;
+        // Placement-new is required to properly construct the std::atomic
+        // member in the mmap'd region before any atomic operations are used.
+        // mmap returns raw uninitialised memory — the C++ object model requires
+        // construction before any member access, including atomic stores.
+        SlotType* slot = new (&slots_[i]) SlotType();
+        slot->is_constructed.store(0U, std::memory_order_relaxed);
         slot->storage.free_node_ptr()->next = nullptr;
         push_slot_to_free_list(slot);
     }
@@ -753,10 +776,10 @@ template <typename T> FixedSizeMemoryPool<T>::~FixedSizeMemoryPool() {
         // Destruct any objects that are still allocated in this pool.
         for (int i = 0; i < objects_per_pool_; ++i) {
             SlotType* slot = &slots_[i];
-            if (slot->flag == 1U) {
+            if (slot->is_constructed.load(std::memory_order_relaxed) == 1U) {
                 T* obj = slot->storage.object_ptr();
                 obj->~T();
-                slot->flag = 0U;
+                slot->is_constructed.store(0U, std::memory_order_relaxed);
             }
         }
 

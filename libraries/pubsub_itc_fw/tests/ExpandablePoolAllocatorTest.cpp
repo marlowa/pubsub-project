@@ -166,7 +166,7 @@ TEST_F(ExpandablePoolAllocatorTest, MaxChainLengthEnforcement) {
 
     auto statistics_after_initial_allocations = allocator.get_behaviour_statistics();
 
-    // double-free: flag check should catch it
+    // double-free: is_constructed check should catch it
     for (int* pointer : pointers) {
         allocator.deallocate(pointer);
     }
@@ -709,9 +709,10 @@ TEST_F(ExpandablePoolAllocatorTest, AbaStressTest) {
 /**
  * DoubleFreeDetection.
  *
- * Verifies that the flag-based double-free guard in deallocate() fires the
+ * Verifies that the is_constructed double-free guard in deallocate() fires the
  * invalid_free callback and does NOT corrupt the free list.
  *
+ * TODO we need to double check this comment about tsan
  * Note: this test exposes Bug 1 — the flag read/write is currently a plain
  * (non-atomic) access in the production path. Under TSan this will be
  * flagged as a data race. The test still passes functionally.
@@ -725,7 +726,7 @@ TEST_F(ExpandablePoolAllocatorTest, DoubleFreeDetection) {
     allocator.deallocate(obj); // valid free
     EXPECT_EQ(invalid_free_callback_count_.load(), 0);
 
-    allocator.deallocate(obj); // double free — flag should catch it
+    allocator.deallocate(obj); // double free — is_constructed should catch it
     EXPECT_EQ(invalid_free_callback_count_.load(), 1);
 
     // Pool must remain fully usable after a double-free attempt.
@@ -751,7 +752,7 @@ TEST_F(ExpandablePoolAllocatorTest, DoubleFreeDetection) {
  *
  * Many threads race to free the same set of objects. Only the first
  * deallocate() on each object is valid; subsequent ones must be caught by
- * the flag guard and must not corrupt the free list.
+ * the is_constructed guard and must not corrupt the free list.
  *
  * Final invariant: zero allocated objects remain after all threads exit.
  */
@@ -984,7 +985,7 @@ TEST_F(ExpandablePoolAllocatorTest, BehaviouralStatisticsStressTest) {
  *
  * The test exercises both invalid-free code paths:
  *   (a) pointer does not belong to any pool
- *   (b) double-free of a previously freed pointer (flag == 0)
+ *   (b) double-free of a previously freed pointer (is_constructed == 0)
  */
 TEST_F(ExpandablePoolAllocatorTest, ConcurrentInvalidFreeCallbackRace) {
 #ifdef USING_VALGRIND
@@ -1033,7 +1034,7 @@ TEST_F(ExpandablePoolAllocatorTest, ConcurrentInvalidFreeCallbackRace) {
     // and keep a stack object whose address is not in any pool.
     TestObject* valid_object  = allocator.allocate();
     ASSERT_NE(valid_object, nullptr);
-    allocator.deallocate(valid_object);    // now flag == 0, double-free bait
+    allocator.deallocate(valid_object);    // now is_constructed == 0, double-free bait
 
     TestObject stack_object;               // not in the pool at all
 
@@ -1052,7 +1053,7 @@ TEST_F(ExpandablePoolAllocatorTest, ConcurrentInvalidFreeCallbackRace) {
                     // Path (a): pointer not in any pool.
                     allocator.deallocate(&stack_object);
                 } else {
-                    // Path (b): double-free — flag is 0 after the
+                    // Path (b): double-free — is_constructed is 0 after the
                     // initial valid deallocate above.
                     allocator.deallocate(valid_object);
                 }
