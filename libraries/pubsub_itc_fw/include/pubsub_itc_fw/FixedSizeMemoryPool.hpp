@@ -91,8 +91,8 @@ template <typename T> struct SlotStorage {
     T* object_ptr() {
         return reinterpret_cast<T*>(&storage);
     }
-    T const* object_ptr() const {
-        return reinterpret_cast<T const*>(&storage);
+    const T* object_ptr() const {
+        return reinterpret_cast<const T*>(&storage);
     }
     FreeListNode* free_node_ptr() {
         return &free_node;
@@ -228,7 +228,7 @@ template <typename T> class FixedSizeMemoryPool {
 
     [[nodiscard]] FixedSizeMemoryPool<T>* get_next_pool() const;
 
-    [[nodiscard]] bool contains(T const* ptr) const;
+    [[nodiscard]] bool contains(const T* ptr) const;
 
   private:
     int objects_per_pool_;
@@ -378,15 +378,15 @@ template <typename T> struct SlotStorage {
         return reinterpret_cast<T*>(&storage);
     }
 
-    T const* object_ptr() const {
-        return reinterpret_cast<T const*>(&storage);
+    const T* object_ptr() const {
+        return reinterpret_cast<const T*>(&storage);
     }
 
     FreeListNode* free_node_ptr() {
         return &free_node;
     }
 
-    FreeListNode const* free_node_ptr() const {
+    const FreeListNode* free_node_ptr() const {
         return &free_node;
     }
 };
@@ -464,8 +464,8 @@ template <typename T> class FixedSizeMemoryPool {
     FixedSizeMemoryPool(int objects_per_pool, UseHugePagesFlag use_huge_pages_flag, //
                         std::function<void(void*, std::size_t)> handler_for_huge_pages_error);
 
-    FixedSizeMemoryPool(FixedSizeMemoryPool const&) = delete;
-    FixedSizeMemoryPool& operator=(FixedSizeMemoryPool const&) = delete;
+    FixedSizeMemoryPool(const FixedSizeMemoryPool&) = delete;
+    FixedSizeMemoryPool& operator=(const FixedSizeMemoryPool&) = delete;
     FixedSizeMemoryPool(FixedSizeMemoryPool&&) = delete;
     FixedSizeMemoryPool& operator=(FixedSizeMemoryPool&&) = delete;
 
@@ -510,7 +510,7 @@ template <typename T> class FixedSizeMemoryPool {
      * @param[in] ptr Pointer to check.
      * @return true if ptr is within this pool's allocated memory range.
      */
-    [[nodiscard]] bool contains(T const* ptr) const;
+    [[nodiscard]] bool contains(const T* ptr) const;
 
     /**
      * @brief Checks if the pool has no available objects.
@@ -860,17 +860,17 @@ typename FixedSizeMemoryPool<T>::SlotType* FixedSizeMemoryPool<T>::pop_slot_from
 namespace pubsub_itc_fw {
 
 template <typename T>
-bool FixedSizeMemoryPool<T>::contains(T const* ptr) const {
-    auto const* byte_ptr     = reinterpret_cast<std::byte const*>(ptr);
-    auto const* start        = static_cast<std::byte const*>(pool_memory_);
-    auto const* end          = start + total_pool_size_;
+bool FixedSizeMemoryPool<T>::contains(const T* ptr) const {
+    const auto* byte_ptr     = reinterpret_cast<const std::byte*>(ptr);
+    const auto* start        = static_cast<const std::byte*>(pool_memory_);
+    const auto* end          = start + total_pool_size_;
 
     if (byte_ptr < start || byte_ptr >= end) {
         return false;
     }
 
-    auto const offset         = static_cast<std::size_t>(byte_ptr - start);
-    auto const storage_offset = offsetof(SlotType, storage);
+    const auto offset         = static_cast<std::size_t>(byte_ptr - start);
+    const auto storage_offset = offsetof(SlotType, storage);
 
     if (offset < storage_offset) {
         return false;
