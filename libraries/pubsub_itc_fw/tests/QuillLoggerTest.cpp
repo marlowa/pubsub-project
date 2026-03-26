@@ -150,7 +150,7 @@ TEST_F(QuillLoggerTest, LogsFormattedMessageWithInteger) {
 TEST_F(QuillLoggerTest, LogsFormattedMessageWithString) {
     // Arrange
     logger_->set_log_level(LogLevel::Info);
-    const std::string name = "Alice";
+    [[maybe_unused]] const std::string name = "Alice"; // not unused but logger macros neutralised for clang-tidy
 
     // Act
     PUBSUB_LOG(*logger_, LogLevel::Info, "Hello {}", name);

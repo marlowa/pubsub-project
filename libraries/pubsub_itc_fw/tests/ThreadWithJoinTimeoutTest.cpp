@@ -123,7 +123,7 @@ TEST_F(ThreadWithJoinTimeoutTest, MoveConstructorTransfersOwnership) {
 
     ThreadWithJoinTimeout t2(std::move(t1));
 
-    // NOLINTNEXTLINE(bugprone-use-after-move)
+    // NOLINTNEXTLINE(bugprone-use-after-move,hicpp-invalid-access-moved)
     EXPECT_FALSE(t1.joinable());
     EXPECT_TRUE(t2.joinable());
 

@@ -298,29 +298,39 @@ TEST_F(ReactorTest, AllThreadsReceiveInitThenAppReady) {
     auto thread2 = std::make_shared<TestApplicationThread>(logger_with_sink_.logger, *reactor_,
         "thread2", ThreadID{2}, make_queue_config(), make_allocator_config());
 
-    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>( [this] { reactor_->run(); });
     reactor_->register_thread(thread1);
     reactor_->register_thread(thread2);
+
+    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>( [this] { reactor_->run(); });
+
+    Backoff backoff;
+    while (!reactor_->is_running()) {
+        backoff.pause();
+    }
 
     // -------------------------------------------------------------------------
     // Wait until both threads have seen their Initial event.
     // -------------------------------------------------------------------------
-    Backoff backoff;
+    backoff.reset();
     while (reactor_->is_running() && (
                !thread1->saw_initial_event.load(std::memory_order_acquire) ||
                !thread2->saw_initial_event.load(std::memory_order_acquire))) {
         backoff.pause();
     }
 
+    EXPECT_TRUE(reactor_->is_running());
+
     // -------------------------------------------------------------------------
     // Now wait until both threads have seen their AppReady event.
     // -------------------------------------------------------------------------
+    backoff.reset();
     while (reactor_->is_running() && (
                !thread1->saw_app_ready_event.load(std::memory_order_acquire) ||
                !thread2->saw_app_ready_event.load(std::memory_order_acquire))) {
         backoff.pause();
     }
 
+    EXPECT_TRUE(reactor_->is_running());
     // -------------------------------------------------------------------------
     // Final assertions
     // -------------------------------------------------------------------------

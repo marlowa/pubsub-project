@@ -72,7 +72,7 @@ public:
 
     // Find best node with at least min_cpus cores
     [[nodiscard]] int find_best_node(int min_cpus) const {
-        for (size_t i = 0; i < cpus_per_node_.size(); ++i) {
+        for (int i = 0; i < static_cast<int>(cpus_per_node_.size()); ++i) {
             if (static_cast<int>(cpus_per_node_[i].size()) >= min_cpus) {
                 return i;
             }

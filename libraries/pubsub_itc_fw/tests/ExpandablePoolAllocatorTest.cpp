@@ -946,7 +946,7 @@ TEST_F(ExpandablePoolAllocatorTest, BehaviouralStatisticsStressTest) {
         // Deterministic per-thread jitter (1–10 microseconds)
 #ifndef USING_VALGRIND
             const auto tid_hash = std::hash<std::thread::id>{}(std::this_thread::get_id());
-            const int jitter_us = 1 + (tid_hash % 10);
+            const int jitter_us = 1 + static_cast<int>(tid_hash % 10);
 #endif
             for (int j = 0; j < iterations; ++j) {
                 TestObject* obj = allocator.allocate();
