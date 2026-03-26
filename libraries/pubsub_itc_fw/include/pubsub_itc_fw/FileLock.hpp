@@ -1,3 +1,9 @@
+#pragma once
+
+#include <pubsub_itc_fw/StringUtils.hpp>
+
+namespce pubsub_itc_fw {
+
 class FileLock {
 public:
     explicit FileLock(const std::string& path)
@@ -6,15 +12,13 @@ public:
         fd_ = ::open(file_path_.c_str(), O_CREAT | O_RDWR, 0644);
         if (fd_ < 0) {
             throw std::runtime_error(
-                "Failed to open lock file '" + file_path_ +
-                "': " + std::strerror(errno));
+                "Failed to open lock file '" + file_path_ + "': " + StringUtils::get_errno_string();
         }
 
         if (flock(fd_, LOCK_EX) != 0) {
             ::close(fd_);
-            throw std::runtime_error(
-                "Failed to acquire lock on '" + file_path_ +
-                "': " + std::strerror(errno));
+            throw std::runtime_error("Failed to acquire lock on '" + file_path_ +
+                                     "': " + StringUtils::get_errno_string());
         }
     }
 
@@ -53,3 +57,5 @@ private:
     int fd_{-1};
     std::string file_path_;
 };
+
+} // namespaces

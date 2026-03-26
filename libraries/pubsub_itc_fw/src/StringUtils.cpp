@@ -46,6 +46,13 @@ std::string StringUtils::get_error_string(int errnum) {
     return error_message;
 }
 
+std::string StringUtils::get_errno_string() {
+    // Capture errno immediately — it is thread-local but can change
+    // between calls if any library function runs.
+    const int err = errno;
+    return get_error_string(err);
+}
+
 std::string StringUtils::leafname(const std::string& filename) {
     // Find the last slash or backslash to get the leaf name.
     const auto last_slash = filename.find_last_of("/\\");

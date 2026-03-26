@@ -39,12 +39,12 @@ namespace {
     const int flags = fcntl(socket_fd, F_GETFL, 0);
     if (flags == -1) {
         return {false, fmt::format("Failed to get socket flags for fd {}: {}",
-                                   socket_fd, StringUtils::get_error_string(errno))};
+                                   socket_fd, StringUtils::get_errno_string())};
     }
 
     if (fcntl(socket_fd, F_SETFL, flags | O_NONBLOCK) == -1) {
         return {false, fmt::format("Failed to set socket {} to non-blocking mode: {}",
-                                   socket_fd, StringUtils::get_error_string(errno))};
+                                   socket_fd, StringUtils::get_errno_string())};
     }
     return {true, ""};
 }
@@ -202,7 +202,7 @@ TcpSocketImpl::TcpSocketImpl(int socket_fd) : socketFileDescriptor(socket_fd) {
             return {0, ""}; // No bytes sent, operation would block. Not an error to report in string.
         }
         return {-errno, fmt::format("Failed to send data on socket {}: {}", socketFileDescriptor,
-                                    StringUtils::get_error_string(errno))};
+                                    StringUtils::get_errno_string())};
     }
 
     return {static_cast<int>(bytes_sent), ""};
@@ -223,7 +223,7 @@ TcpSocketImpl::TcpSocketImpl(int socket_fd) : socketFileDescriptor(socket_fd) {
         if (errno == EWOULDBLOCK || errno == EAGAIN) {
             return {0, ""}; // No bytes received, operation would block. Not an error to report in string.
         }
-        return {-errno, fmt::format("Failed to receive data on socket {}: {}", socketFileDescriptor, StringUtils::get_error_string(errno))};
+        return {-errno, fmt::format("Failed to receive data on socket {}: {}", socketFileDescriptor, StringUtils::get_errno_string())};
     }
 
     // A return of 0 bytes with no error typically means the peer closed its writing half.
@@ -251,7 +251,7 @@ void TcpSocketImpl::close() {
     socklen_t remote_addr_len = sizeof(remote_addr_storage);
 
     if (::getpeername(socketFileDescriptor, reinterpret_cast<sockaddr*>(&remote_addr_storage), &remote_addr_len) == -1) {
-        return {nullptr, fmt::format("Failed to get peer address for socket {}: {}", socketFileDescriptor, StringUtils::get_error_string(errno))};
+        return {nullptr, fmt::format("Failed to get peer address for socket {}: {}", socketFileDescriptor, StringUtils::get_errno_string())};
     }
 
     return InetAddress::create(reinterpret_cast<const sockaddr*>(&remote_addr_storage), remote_addr_len);
@@ -266,7 +266,7 @@ void TcpSocketImpl::close() {
     socklen_t local_addr_len = sizeof(local_addr_storage);
 
     if (::getsockname(socketFileDescriptor, reinterpret_cast<sockaddr*>(&local_addr_storage), &local_addr_len) == -1) {
-        return {nullptr, fmt::format("Failed to get local address for socket {}: {}", socketFileDescriptor, StringUtils::get_error_string(errno))};
+        return {nullptr, fmt::format("Failed to get local address for socket {}: {}", socketFileDescriptor, StringUtils::get_errno_string())};
     }
 
     return InetAddress::create(reinterpret_cast<const sockaddr*>(&local_addr_storage), local_addr_len);
@@ -290,7 +290,7 @@ void TcpSocketImpl::close() {
                                    socketFileDescriptor,
                                    remote_address.get_ip_address_string(),
                                    remote_address.get_port(),
-                                   StringUtils::get_error_string(errno))};
+                                   StringUtils::get_errno_string())};
     }
 
     return {true, ""}; // Connection established immediately (e.g., to localhost)
@@ -305,7 +305,7 @@ void TcpSocketImpl::close() {
     int reuseAddressValue = 1;
     // NOLINTNEXTLINE(misc-include-cleaner)
     if (::setsockopt(socketFileDescriptor, SOL_SOCKET, SO_REUSEADDR, &reuseAddressValue, sizeof(reuseAddressValue)) == -1) {
-        return {false, fmt::format("Failed to set SO_REUSEADDR on socket {}: {}", socketFileDescriptor, StringUtils::get_error_string(errno))};
+        return {false, fmt::format("Failed to set SO_REUSEADDR on socket {}: {}", socketFileDescriptor, StringUtils::get_errno_string())};
     }
 
     const int result = ::bind(socketFileDescriptor, local_address.get_sockaddr(), local_address.get_sockaddr_size());
@@ -314,7 +314,7 @@ void TcpSocketImpl::close() {
                                    socketFileDescriptor,
                                    local_address.get_ip_address_string(),
                                    local_address.get_port(),
-                                   StringUtils::get_error_string(errno))};
+                                   StringUtils::get_errno_string())};
     }
 
     return {true, ""};
@@ -327,7 +327,7 @@ void TcpSocketImpl::close() {
 
     const int result = ::listen(socketFileDescriptor, backlog);
     if (result == -1) {
-        return {false, fmt::format("Failed to listen on socket {}: {}", socketFileDescriptor, StringUtils::get_error_string(errno))};
+        return {false, fmt::format("Failed to listen on socket {}: {}", socketFileDescriptor, StringUtils::get_errno_string())};
     }
     return {true, ""};
 }
@@ -346,7 +346,7 @@ void TcpSocketImpl::close() {
         if (errno == EWOULDBLOCK || errno == EAGAIN) {
             return {nullptr, nullptr, ""}; // No pending connections, operation would block. Not an error to report in string.
         }
-        return {nullptr, nullptr, fmt::format("Failed to accept new connection on socket {}: {}", socketFileDescriptor, StringUtils::get_error_string(errno))};
+        return {nullptr, nullptr, fmt::format("Failed to accept new connection on socket {}: {}", socketFileDescriptor, StringUtils::get_errno_string())};
     }
 
     // Create InetAddress for the client
@@ -376,7 +376,7 @@ int TcpSocketImpl::get_file_descriptor() const {
     }
 
     if (::shutdown(socketFileDescriptor, how) == -1) {
-        return {false, fmt::format("Failed to shutdown socket {} (how={}): {}", socketFileDescriptor, how, StringUtils::get_error_string(errno))};
+        return {false, fmt::format("Failed to shutdown socket {} (how={}): {}", socketFileDescriptor, how, StringUtils::get_errno_string())};
     }
     return {true, ""};
 }
@@ -390,7 +390,7 @@ int TcpSocketImpl::get_file_descriptor() const {
     socklen_t len = sizeof(error);
     // NOLINTNEXTLINE(misc-include-cleaner)
     if (::getsockopt(socketFileDescriptor, SOL_SOCKET, SO_ERROR, &error, &len) == -1) {
-        return {false, fmt::format("Failed to get SO_ERROR for socket {}: {}", socketFileDescriptor, StringUtils::get_error_string(errno))};
+        return {false, fmt::format("Failed to get SO_ERROR for socket {}: {}", socketFileDescriptor, StringUtils::get_errno_string())};
     }
 
     if (error == 0) {
@@ -398,7 +398,7 @@ int TcpSocketImpl::get_file_descriptor() const {
     }
 
     // An error occurred during connection
-    return {false, fmt::format("Non-blocking connect failed for socket {}: {}", socketFileDescriptor, StringUtils::get_error_string(errno))};
+    return {false, fmt::format("Non-blocking connect failed for socket {}: {}", socketFileDescriptor, StringUtils::get_errno_string())};
 }
 
 // --- TcpSocket Public Methods (forwarding to Pimpl) ---
@@ -413,7 +413,7 @@ TcpSocket::TcpSocket(int socket_fd) : p_impl_(std::make_unique<TcpSocketImpl>(so
 [[nodiscard]] std::tuple<std::unique_ptr<TcpSocket>, std::string> TcpSocket::create(int ip_version) {
     const int socket_fd = ::socket(ip_version, SOCK_STREAM, 0);
     if (socket_fd == -1) {
-        return {nullptr, fmt::format("Failed to create socket (IP version {}): {}", ip_version, StringUtils::get_error_string(errno))};
+        return {nullptr, fmt::format("Failed to create socket (IP version {}): {}", ip_version, StringUtils::get_errno_string())};
     }
 
     auto [nonBlockingSuccess, nonBlockingError] = set_non_blocking(socket_fd);

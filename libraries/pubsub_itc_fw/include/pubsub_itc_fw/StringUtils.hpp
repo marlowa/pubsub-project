@@ -54,6 +54,14 @@ public:
     static std::string get_error_string(int errnum);
 
     /**
+     * @brief Thread-safe equivalent of strerror(errno).
+     *
+     * Captures the current thread's errno value and returns the corresponding
+     * error string using the thread-safe get_error_string(int) implementation.
+     */
+    static std::string get_errno_string();
+
+    /**
      * @brief Extracts the file name (leaf name) from a full file path.
      * @param [in] filename The full path to the file.
      * @returns std::string The leaf name of the file.

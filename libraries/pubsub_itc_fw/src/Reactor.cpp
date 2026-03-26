@@ -11,6 +11,7 @@
 #include <pubsub_itc_fw/MillisecondClock.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
+#include <pubsub_itc_fw/StringUtils.hpp>
 #include <pubsub_itc_fw/TimerHandler.hpp>
 
 namespace pubsub_itc_fw {
@@ -171,7 +172,8 @@ void Reactor::shutdown(const std::string& reason) {
             PUBSUB_LOG_STR(logger_, LogLevel::Info, "in Reactor::shutdown, wrote wake_fd");
         } else {
             [[maybe_unused]] auto err = errno;
-            PUBSUB_LOG(logger_, LogLevel::Error, "in Reactor::shutdown, failed to write wake_fd, errno {}", err);
+            PUBSUB_LOG(logger_, LogLevel::Error, "in Reactor::shutdown, failed to write wake_fd, errno {} [{}]",
+                       err, StringUtils::get_error_string(err));
         }
     }
 }
@@ -503,7 +505,7 @@ void Reactor::enqueue_control_command(const ReactorControlCommand& command) {
         }
 
         // Anything else is a real logic error.
-        throw PubSubItcException(fmt::format("Reactor wakeup write() failed: {}", strerror(errno)));
+        throw PubSubItcException(fmt::format("Reactor wakeup write() failed: {}", StringUtils::get_errno_string()));
     }
 }
 

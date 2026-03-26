@@ -36,7 +36,7 @@ public:
             fmt::format("{}. Error(errno) = {} ({}). Thrown from {}:{}.",
                 errorText,
                 errno,
-                StringUtils::get_error_string(errno), // Uses strerror_r internally
+                StringUtils::get_errno_string(), // Uses strerror_r internally
                 StringUtils::leafname(filename),
                 lineNumber
             )
