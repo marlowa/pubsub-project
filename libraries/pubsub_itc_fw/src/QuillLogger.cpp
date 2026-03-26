@@ -1,4 +1,9 @@
+#include <atomic>
 #include <mutex> // for std::once_flag
+#include <memory>
+#include <string>
+
+#include <cstdint>
 
 #include <quill/Backend.h>
 #include <quill/Frontend.h>
@@ -12,12 +17,14 @@
 
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/FileOpenMode.hpp>
+#include <pubsub_itc_fw/LogLevel.hpp>
+#include <pubsub_itc_fw/LoggerUtils.hpp>
 
 namespace {
 std::once_flag backend_started;
 
 // Helper to start backend exactly once
-static void ensure_backend_started() {
+void ensure_backend_started() {
     std::call_once(backend_started, []() {
         const quill::BackendOptions backend_options{};
         quill::Backend::start(backend_options);

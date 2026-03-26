@@ -1,9 +1,12 @@
 #include <atomic>
 #include <chrono>
+#include <exception>
 #include <iostream>
 #include <thread>
 #include <future>
 #include <memory>
+#include <utility>
+#include <stdexcept>
 
 #include <gtest/gtest.h>
 
@@ -12,8 +15,12 @@
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/AllocatorConfig.hpp>
 #include <pubsub_itc_fw/Backoff.hpp>
+#include <pubsub_itc_fw/EventType.hpp>
+#include <pubsub_itc_fw/HighResolutionClock.hpp>
+#include <pubsub_itc_fw/ThreadID.hpp>
 #include <pubsub_itc_fw/ThreadLifecycleState.hpp>
 #include <pubsub_itc_fw/ThreadWithJoinTimeout.hpp>
+#include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/QueueConfig.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
@@ -719,7 +726,7 @@ TEST_F(ApplicationThreadTest, ExceptionLoggingContainsThreadMetadata)
     for (const auto& rec : records) {
         const auto& msg_text = rec.message;
         if (msg_text.find("TestThread9") != std::string::npos &&
-            msg_text.find("1") != std::string::npos) {
+            msg_text.find('1') != std::string::npos) {
             found = true;
             break;
         }

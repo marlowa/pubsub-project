@@ -1,4 +1,5 @@
 #include <cerrno>
+#include <cstdint>
 
 #include <memory>
 #include <string>
@@ -14,7 +15,8 @@
 
 namespace pubsub_itc_fw {
 
-enum class ConnectState {
+enum class ConnectState : uint8_t {
+    uninitialised,
     idle,
     connecting,
     connected
@@ -125,7 +127,7 @@ public:
     }
 
 private:
-    ConnectState state_;
+    ConnectState state_{ConnectState::uninitialised};
     std::unique_ptr<InetAddress> remote_address_;
     std::unique_ptr<TcpSocket> tcp_socket_;
 };

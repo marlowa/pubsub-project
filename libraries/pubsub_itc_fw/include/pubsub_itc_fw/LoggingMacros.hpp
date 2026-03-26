@@ -8,10 +8,15 @@
 
 /** @ingroup logging_subsystem */
 
-// TODO we need to do something so that critcals, errors etc cause log flushing.
+// TODO we need to do something so that criticals, errors etc cause log flushing.
 // There is a new way to do this in quill v11.
 
 // Note: In Quill 11.x, the macros are LOG_CRITICAL, LOG_ERROR, etc. (not QUILL_LOG_*)
+
+#ifdef CLANG_TIDY
+#define PUBSUB_LOG(logger_expr, log_level_expr, fmt, ...) do {} while (0)
+#define PUBSUB_LOG_STR(logger_expr, log_level_expr, msg)  do {} while (0)
+#else
 #define PUBSUB_LOG(logger_expr, log_level_expr, fmt, ...)                               \
     do {                                                                                \
         auto& logger_local_ref = (logger_expr);                                         \
@@ -34,3 +39,4 @@
 
 #define PUBSUB_LOG_STR(logger_expr, log_level_expr, msg)                                \
     PUBSUB_LOG(logger_expr, log_level_expr, "{}", msg)
+#endif

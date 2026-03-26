@@ -6,6 +6,7 @@
 
 // System C++ headers
 // (No specific system C++ headers are needed beyond what's included by the header)
+#include <string>
 
 // Third party headers
 // none yet

@@ -1,13 +1,16 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
+#include <functional>
 #include <set>
 #include <thread>
 #include <mutex>
 #include <vector>
-#include <algorithm>
 #include <random>
+#include <type_traits> // for std::aligned_storage_t
 
 #include <pubsub_itc_fw/FixedSizeMemoryPool.hpp>
 #include <pubsub_itc_fw/UseHugePagesFlag.hpp>
@@ -297,7 +300,7 @@ TEST_F(FixedSizeMemoryPoolTest, DirectAbaStress) {
         threads.emplace_back([&]() {
             for (int i = 0; i < iterations; ++i) {
                 TestObject* obj = pool.allocate();
-                if (!obj) {
+                if (obj == nullptr) {
                     continue;
                 }
                 pool.deallocate(obj);

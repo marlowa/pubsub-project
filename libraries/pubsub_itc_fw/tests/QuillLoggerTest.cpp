@@ -1,13 +1,18 @@
+#include <algorithm>
 #include <thread>
 #include <chrono>
+#include <memory>
+#include <string>
 
 #include <gtest/gtest.h>
 
 #include <quill/Backend.h>
 #include <quill/Frontend.h>
 
+#include <pubsub_itc_fw/FileOpenMode.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
+#include <pubsub_itc_fw/LogLevel.hpp>
 #include <pubsub_itc_fw/tests_common/TestSink.hpp>
 
 using namespace pubsub_itc_fw;
@@ -132,7 +137,7 @@ TEST_F(QuillLoggerTest, LogsAlertMessage) {
 TEST_F(QuillLoggerTest, LogsFormattedMessageWithInteger) {
     // Arrange
     logger_->set_log_level(LogLevel::Info);
-    const int value = 42;
+    [[maybe_unused]] const int value = 42; // not really unused but in clang-tidy we neutralise the logging macros
 
     // Act
     PUBSUB_LOG(*logger_, LogLevel::Info, "Value is {}", value);
@@ -364,14 +369,14 @@ TEST(QuillLoggerIsolationTest, TwoLoggersWithSeparateSinksDoNotCrossTalk) {
 
     // Create first logger with unique sink
     auto sink1 = quill::Frontend::create_or_get_sink<TestSink>("isolation_test_sink_1");
-    auto test_sink1 = static_cast<TestSink*>(sink1.get());
+    auto* test_sink1 = static_cast<TestSink*>(sink1.get());
     test_sink1->clear();
 
     const QuillLogger logger1("isolation_logger_1", sink1, LogLevel::Debug);
 
     // Create second logger with unique sink
     auto sink2 = quill::Frontend::create_or_get_sink<TestSink>("isolation_test_sink_2");
-    auto test_sink2 = static_cast<TestSink*>(sink2.get());
+    auto* test_sink2 = static_cast<TestSink*>(sink2.get());
     test_sink2->clear();
 
     const QuillLogger logger2("isolation_logger_2", sink2, LogLevel::Debug);
@@ -399,14 +404,14 @@ TEST(QuillLoggerIsolationTest, TwoLoggersWithSameSinkNameShareSink) {
 
     // Create first logger
     auto sink1 = quill::Frontend::create_or_get_sink<TestSink>("shared_sink_name");
-    auto test_sink1 = static_cast<TestSink*>(sink1.get());
+    auto* test_sink1 = static_cast<TestSink*>(sink1.get());
     test_sink1->clear();
 
     const QuillLogger logger1("shared_test_logger_1", sink1, LogLevel::Debug);
 
     // Create second logger with SAME sink name - it will get the same sink!
     auto sink2 = quill::Frontend::create_or_get_sink<TestSink>("shared_sink_name");
-    auto test_sink2 = static_cast<TestSink*>(sink2.get());
+    auto* test_sink2 = static_cast<TestSink*>(sink2.get());
 
     const QuillLogger logger2("shared_test_logger_2", sink2, LogLevel::Debug);
 
@@ -431,11 +436,11 @@ TEST(QuillLoggerIsolationTest, TwoLoggersWithSameLoggerNameShareLogger) {
     // This is the root cause of the ApplicationThreadTest bug.
 
     auto sink1 = quill::Frontend::create_or_get_sink<TestSink>("logger_name_test_sink1");
-    auto test_sink1 = static_cast<TestSink*>(sink1.get());
+    auto* test_sink1 = static_cast<TestSink*>(sink1.get());
     test_sink1->clear();
 
     auto sink2 = quill::Frontend::create_or_get_sink<TestSink>("logger_name_test_sink2");
-    auto test_sink2 = static_cast<TestSink*>(sink2.get());
+    auto* test_sink2 = static_cast<TestSink*>(sink2.get());
     test_sink2->clear();
 
     // Create first logger with name "duplicate_name" and sink1
@@ -488,8 +493,8 @@ TEST(QuillLoggerFileConstructorTest, MultipleInstancesShareLoggerAndSink) {
         << "Expected both loggers to have separate underlying Quill loggers "
         << "due to unique name generation in file constructor (fix applied)";
 
-    std::remove(file1.c_str());
-    std::remove(file2.c_str());
+    (void)std::remove(file1.c_str()); // we don't care if these removes fail
+    (void)std::remove(file2.c_str());
 }
 
 // =============================================================================
@@ -598,7 +603,7 @@ TEST(QuillLoggerSyslogTest, FileConstructorEnablesSyslogFiltering) {
     // Verify logger was created successfully
     EXPECT_NE(logger.quill_logger(), nullptr);
 
-    std::remove(temp_file.c_str());
+    (void) std::remove(temp_file.c_str()); // we don't care if this remove fail
 }
 
 TEST(QuillLoggerSyslogTest, SyslogLevelIndependentFromOtherSinks) {
@@ -616,5 +621,5 @@ TEST(QuillLoggerSyslogTest, SyslogLevelIndependentFromOtherSinks) {
     EXPECT_TRUE(logger.should_log_to_syslog(LogLevel::Critical));
     EXPECT_FALSE(logger.should_log_to_syslog(LogLevel::Error));
 
-    std::remove(temp_file.c_str());
+    (void)std::remove(temp_file.c_str()); // we don't care if this remove fail
 }

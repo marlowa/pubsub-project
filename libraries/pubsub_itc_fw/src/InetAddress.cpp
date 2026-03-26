@@ -68,7 +68,8 @@ InetAddress::InetAddress(const struct sockaddr* sockaddr_ptr, socklen_t sockaddr
     const int status = getaddrinfo(ip_address_str.empty() ? nullptr : ip_address_str.c_str(), port_str.c_str(), &hints, &result);
 
     if (status != 0) {
-        const std::string error_message = fmt::format("Failed to resolve address {}:{}. Error: {}", ip_address_str, port, gai_strerror(status));
+        const std::string error_message = fmt::format("Failed to resolve address {}:{}. Error: {}",
+                                                      ip_address_str, port, gai_strerror(status));
         return {nullptr, error_message};
     }
 

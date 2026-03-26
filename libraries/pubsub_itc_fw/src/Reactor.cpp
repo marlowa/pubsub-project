@@ -1,18 +1,39 @@
+#include <array>
+#include <atomic>
+#include <memory>
+#include <functional>
+#include <utility>
+#include <vector>
+#include <mutex>
+
+#include <cerrno>
+#include <cstdint>
+
+#include <sys/types.h> // for ssize_t
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/timerfd.h>
 #include <unistd.h>
 
-#include <pubsub_itc_fw/Reactor.hpp>
+#include <fmt/format.h>
 
+#include <pubsub_itc_fw/Reactor.hpp>
+#include <pubsub_itc_fw/ReactorControlCommand.hpp>
 #include <pubsub_itc_fw/Backoff.hpp>
+#include <pubsub_itc_fw/EventHandler.hpp>
+#include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/HighResolutionClock.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/MillisecondClock.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
+#include <pubsub_itc_fw/ReactorConfiguration.hpp>
+#include <pubsub_itc_fw/ReactorLifecycleState.hpp>
 #include <pubsub_itc_fw/StringUtils.hpp>
+#include <pubsub_itc_fw/Timer.hpp>
 #include <pubsub_itc_fw/TimerHandler.hpp>
+#include <pubsub_itc_fw/TimerType.hpp>
+#include <pubsub_itc_fw/ThreadID.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -319,8 +340,6 @@ void Reactor::cancel_all_timer_fds_for_thread(ThreadID owner_thread_id) {
 
             // This removes the TimerHandler and closes the fd
             deregister_handler(fd);
-
-            std::cerr << fmt::format("{}:{} Reactor cancelled timer id {}\n", __FILE__, __LINE__, id.get_value());
         }
 
         it = timers_by_name.erase(it);
@@ -492,7 +511,7 @@ bool Reactor::initialize_threads() {
 void Reactor::enqueue_control_command(const ReactorControlCommand& command) {
     command_queue_.enqueue(command);
     uint64_t one = 1;
-    ssize_t n;
+    ssize_t n{0};
 
     do {
         n = ::write(wake_fd_, &one, sizeof(one));
@@ -578,8 +597,6 @@ void Reactor::cancel_timer_fd(ThreadID owner_thread_id, TimerID id) {
     // 5. De-register from epoll and remove from the handlers_ map
     // This triggers the TimerHandler dtor, which calls ::close(fd)
     deregister_handler(fd);
-
-    std::cerr << fmt::format("{}:{} Reactor cancelled timer id {}\n", __FILE__, __LINE__, id.get_value());
 }
 
 void Reactor::register_handler(std::unique_ptr<EventHandler> handler) {
@@ -656,7 +673,7 @@ void Reactor::dispatch_events(int nfds, epoll_event* events) {
         const int fd = events[i].data.fd;
 
         if (fd == wake_fd_) {
-            uint64_t dummy;
+            uint64_t dummy{0};
             PUBSUB_LOG_STR(logger_, LogLevel::Info, "dispatch_events got event on wake_fd");
 
             while (::read(wake_fd_, &dummy, sizeof(dummy)) == sizeof(dummy)) {

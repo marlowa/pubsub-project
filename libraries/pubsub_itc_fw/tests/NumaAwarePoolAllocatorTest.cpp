@@ -1,14 +1,32 @@
-#include <gtest/gtest.h>
+
 #include <pthread.h>
 #include <numa.h>
 #include <sched.h>
 
-#include <atomic>
-#include <thread>
-#include <vector>
+#include <cstdint>
+#include <cstddef>
+
 #include <algorithm>
+#include <atomic>
+#include <iostream>
+#include <thread>
+#include <utility>
+#include <functional>
+#include <vector>
+
+#include <gtest/gtest.h>
 
 #include <pubsub_itc_fw/ExpandablePoolAllocator.hpp>
+#include <pubsub_itc_fw/UseHugePagesFlag.hpp>
+
+#ifdef CLANG_TIDY
+struct ClangTidyGtestSkipSink {
+    template <typename T>
+    ClangTidyGtestSkipSink& operator<<([[maybe_unused]] const T& rhs) { return *this; }
+};
+// NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
+#define GTEST_SKIP(...) ClangTidyGtestSkipSink()
+#endif
 
 namespace pubsub_itc_fw::tests {
 
@@ -181,7 +199,7 @@ TEST_F(NumaAwarePoolAllocatorTest, NumaPinnedThunderingHerd) {
 
     int success_count = 0;
     for (auto* ptr : results) {
-        if (ptr) {
+        if (ptr != nullptr) {
             success_count++;
             allocator.deallocate(ptr);
         }
@@ -235,11 +253,11 @@ TEST_F(NumaAwarePoolAllocatorTest, NumaPinnedContentionStress) {
             // Allocate many objects
             for (int j = 0; j < allocations_per_thread; ++j) {
                 TestObject* obj = allocator.allocate();
-                if (obj) {
+                if (obj == nullptr) {
+                    allocation_failures++;
+                } else {
                     obj->id_ = j;
                     my_objects.push_back(obj);
-                } else {
-                    allocation_failures++;
                 }
             }
 

@@ -1,8 +1,27 @@
+#include <cstdint>
+
 #include <unistd.h> // for close
 
+#ifdef CLANG_TIDY
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+#endif
+
+#include <sys/timerfd.h>
+
+#include <chrono>
+#include <utility>
+
+#include <pubsub_itc_fw/LoggingMacros.hpp>
+#include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
 #include <pubsub_itc_fw/Timer.hpp>
+#include <pubsub_itc_fw/TimerType.hpp>
 #include <pubsub_itc_fw/TimerHandler.hpp>
+#include <pubsub_itc_fw/ThreadLifecycleState.hpp>
+#include <pubsub_itc_fw/ThreadID.hpp>
+#include <pubsub_itc_fw/PubSubItcException.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -12,7 +31,8 @@ TimerHandler::~TimerHandler() {
     }
 }
 
-TimerHandler::TimerHandler(const Timer& timer, Reactor& reactor) : fd_(-1), timer_(timer), reactor_(reactor), owner_thread_(nullptr) {
+TimerHandler::TimerHandler(const Timer& timer, Reactor& reactor) : timer_(timer), reactor_(reactor), owner_thread_(nullptr) {
+    // NOLINTNEXTLINE(cppcoreguidelines-prefer-member-initializer)
     fd_ = ::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
     if (fd_ == -1) {
         PUBSUB_LOG_STR(reactor_.get_logger(), LogLevel::Error, "TimerHandler ctor: timerfd_create failed");

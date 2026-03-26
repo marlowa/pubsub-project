@@ -1,6 +1,13 @@
 #include <atomic>
 #include <chrono>
+#include <cstdint>
+#include <exception>
+#include <iostream>
 #include <thread>
+#include <utility>
+#include <memory>
+
+#include <sys/epoll.h>
 
 #include <gtest/gtest.h>
 
@@ -12,9 +19,16 @@
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/EventType.hpp>
 #include <pubsub_itc_fw/ReactorConfiguration.hpp>
+#include <pubsub_itc_fw/HighResolutionClock.hpp>
 #include <pubsub_itc_fw/MillisecondClock.hpp>
+#include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/QueueConfig.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
+#include <pubsub_itc_fw/ReactorLifecycleState.hpp>
+#include <pubsub_itc_fw/ThreadLifecycleState.hpp>
+#include <pubsub_itc_fw/ThreadID.hpp>
+#include <pubsub_itc_fw/TimerID.hpp>
+#include <pubsub_itc_fw/TimerType.hpp>
 
 #include <pubsub_itc_fw/tests_common/LoggerWithSink.hpp>
 #include <pubsub_itc_fw/tests_common/MisbehavingThreads.hpp>
@@ -103,7 +117,6 @@ public:
         reactor_configuration_.shutdown_timeout_ = std::chrono::milliseconds(50);
         reactor_ = std::make_unique<Reactor>(reactor_configuration_, logger_with_sink_.logger);
         reactor_thread_.reset(); // not started yet
-        std::cerr << fmt::format("{}:{} reactor initialised\n", __FILE__, __LINE__);
     }
 
     void TearDown() override {
@@ -121,8 +134,7 @@ public:
         ASSERT_TRUE(reactor_thread_); // if this fails, it’s a test bug
 
         if (!reactor_thread_->join_with_timeout(timeout)) {
-            std::cerr << "FATAL: reactor thread did not join (timeout "
-                      << timeout.count() << " ms)\n";
+            std::cerr << "FATAL: reactor thread did not join (timeout " << timeout.count() << " ms)\n";
             std::terminate();
         }
     }

@@ -1,3 +1,9 @@
+#ifndef CLANG_TIDY
+// TODO this whole file has to be neutralised for clang-tidy
+// The quill backend sleep parameters are part of the problem
+// but there is aslso a weird include cycle reported by clang-tidy from the gtest headers.
+#include <chrono>
+
 #include <gtest/gtest.h>
 
 #include <quill/Backend.h>
@@ -26,3 +32,4 @@ int main(int argc, char** argv) {
     using namespace pubsub_itc_fw::tests_common;
     return TestRunner::runTests(argc, argv);
 }
+#endif

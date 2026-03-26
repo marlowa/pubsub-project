@@ -1,6 +1,6 @@
 #include <algorithm>  // For std::find
 #include <atomic>     // For std::atomic
-#include <cstddef>    // for size_t
+
 #include <chrono>
 #include <functional> // For std::function
 #include <iostream>   // for cout in statistics
@@ -10,16 +10,44 @@
 #include <thread>     // For std::thread
 #include <vector>     // For std::vector
 #include <unordered_set>
+#include <utility>
+#include <set>
+#include <mutex>
+
+#include <cstdint>
+#include <cstddef>    // for size_t
 
 #include <gtest/gtest.h> // Google Test framework
 
 #include <pubsub_itc_fw/ExpandablePoolAllocator.hpp>
+#include <pubsub_itc_fw/FixedSizeMemoryPool.hpp>
 #include <pubsub_itc_fw/LogLevel.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
+#include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/PoolStatistics.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/UseHugePagesFlag.hpp>
 #include <pubsub_itc_fw/tests_common/LatencyRecorder.hpp>
+
+namespace pubsub_itc_fw::tests {
+struct TestObject;
+}
+
+namespace {
+// ---------------------------------------------------------------------------
+// Helper: verify all pointers are unique and non-null
+// ---------------------------------------------------------------------------
+void expect_unique_non_null(const std::vector<pubsub_itc_fw::tests::TestObject*>& ptrs, const char* context) {
+    for (size_t i = 0; i < ptrs.size(); ++i) {
+        ASSERT_NE(ptrs[i], nullptr) << context << ": nullptr at index " << i;
+    }
+    std::unordered_set<pubsub_itc_fw::tests::TestObject*> seen;
+    for (auto* p : ptrs) {
+        EXPECT_TRUE(seen.insert(p).second) << context << ": duplicate pointer " << p;
+    }
+}
+
+} // unnamed namespace
 
 namespace pubsub_itc_fw::tests {
 
@@ -89,19 +117,6 @@ class ExpandablePoolAllocatorTest : public ::testing::Test {
                  UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages) };
     }
 };
-
-// ---------------------------------------------------------------------------
-// Helper: verify all pointers are unique and non-null
-// ---------------------------------------------------------------------------
-static void expect_unique_non_null(const std::vector<TestObject*>& ptrs, const char* context) {
-    for (size_t i = 0; i < ptrs.size(); ++i) {
-        ASSERT_NE(ptrs[i], nullptr) << context << ": nullptr at index " << i;
-    }
-    std::unordered_set<TestObject*> seen;
-    for (auto* p : ptrs) {
-        EXPECT_TRUE(seen.insert(p).second) << context << ": duplicate pointer " << p;
-    }
-}
 
 TEST_F(ExpandablePoolAllocatorTest, BasicAllocationAndDeallocation) {
     const int objects_per_pool = 10;
@@ -369,7 +384,7 @@ TEST_F(ExpandablePoolAllocatorTest, ProducerConsumerStressTest) {
                         should_exit = true;
                     }
                 }
-                if (obj) {
+                if (obj != nullptr) {
                     allocator.deallocate(obj);
                     total_consumed++;
                 } else if (!should_exit) {
@@ -403,7 +418,7 @@ TEST_F(ExpandablePoolAllocatorTest, CacheLineContentionStress) {
         threads.emplace_back([&]() {
             for (int j = 0; j < iterations; ++j) {
                 TestObject* obj = allocator.allocate();
-                if (obj) {
+                if (obj != nullptr) {
                     obj->id_ = j;
                     allocator.deallocate(obj);
                 }
@@ -563,7 +578,7 @@ TEST_F(ExpandablePoolAllocatorTest, LatencyStressTest) {
         TestObject* obj = allocator.allocate();
         auto end = std::chrono::high_resolution_clock::now();
 
-        if (obj) {
+        if (obj != nullptr) {
             alloc_recorder.record(std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count());
             sentinel_objects.push_back(obj);
         }
@@ -981,7 +996,7 @@ TEST_F(ExpandablePoolAllocatorTest, BehaviouralStatisticsStressTest) {
     std::cout << "pool_count " << stats.per_pool_allocation_counts.counts.size() << "\n";
 
     std::cout << "per_pool_counts";
-    for (uint64_t count : stats.per_pool_allocation_counts.counts) {
+    for (const uint64_t count : stats.per_pool_allocation_counts.counts) {
         std::cout << " " << count;
     }
     std::cout << "\n";

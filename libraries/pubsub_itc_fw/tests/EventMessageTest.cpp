@@ -1,3 +1,6 @@
+#include <cstdint>
+#include <utility>
+
 #include <gtest/gtest.h>
 
 #include <pubsub_itc_fw/EventMessage.hpp>
@@ -45,9 +48,9 @@ TEST_F(EventMessageTest, ItcMessageWithPayload)
     EXPECT_EQ(msg.type().as_tag(), EventType::InterthreadCommunication);
     EXPECT_EQ(msg.originating_thread_id().get_value(), 42);
 
-    ASSERT_EQ(msg.payload_size(), 4u);
+    ASSERT_EQ(msg.payload_size(), 4U);
 
-    auto p = msg.payload();
+    const auto* p = msg.payload();
     EXPECT_EQ(p[0], 10);
     EXPECT_EQ(p[1], 20);
     EXPECT_EQ(p[2], 30);
@@ -116,7 +119,7 @@ TEST_F(EventMessageTest, MoveSemantics)
     EXPECT_EQ(moved.originating_thread_id().get_value(), 11);
     EXPECT_EQ(moved.payload_size(), 2u);
 
-    auto p = moved.payload();
+    const auto* p = moved.payload();
     EXPECT_EQ(p[0], 9);
     EXPECT_EQ(p[1], 8);
 }

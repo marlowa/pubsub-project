@@ -1,16 +1,30 @@
+#include <atomic>
 #include <chrono>
 #include <exception>
 #include <memory>
+#include <string>
 #include <thread>
 #include <utility>
 
+#include <fmt/format.h>
+
 #include <pubsub_itc_fw/ApplicationThread.hpp>
+#include <pubsub_itc_fw/AllocatorConfig.hpp>
 #include <pubsub_itc_fw/Backoff.hpp>
+#include <pubsub_itc_fw/EventMessage.hpp>
+#include <pubsub_itc_fw/EventType.hpp>
 #include <pubsub_itc_fw/HighResolutionClock.hpp>
+#include <pubsub_itc_fw/LockFreeMessageQueue.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
+#include <pubsub_itc_fw/QueueConfig.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
+#include <pubsub_itc_fw/ReactorControlCommand.hpp>
+#include <pubsub_itc_fw/ThreadID.hpp>
+#include <pubsub_itc_fw/ThreadLifecycleState.hpp>
+#include <pubsub_itc_fw/TimerID.hpp>
+#include <pubsub_itc_fw/TimerType.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -81,12 +95,10 @@ void ApplicationThread::resume() {
 void ApplicationThread::post_message(ThreadID target_thread_id, EventMessage message) {
     if (target_thread_id == thread_id_) {
         // Direct self-post
-        std::cerr << fmt::format("{}:{} self post event type {}\n", __FILE__, __LINE__, message.type().as_string());
         message_queue_->enqueue(std::move(message));
         return;
     }
 
-    std::cerr << fmt::format("{}:{} routed by reactor\n", __FILE__, __LINE__);
     reactor_.route_message(target_thread_id, std::move(message));
 }
 
@@ -117,7 +129,8 @@ void ApplicationThread::cancel_timer(const std::string& name) {
     name_to_id_.erase(it);
 }
 
-void ApplicationThread::shutdown(const std::string& reason) {
+// Note: reason is used in the logging macros but we have to neutralise those for clang-tidy
+void ApplicationThread::shutdown([[maybe_unused]] const std::string& reason) {
     set_lifecycle_state(ThreadLifecycleState::ShuttingDown);
     message_queue_->shutdown();
 
@@ -128,16 +141,14 @@ void ApplicationThread::shutdown(const std::string& reason) {
                 PUBSUB_LOG_STR(logger_, LogLevel::Error, "join with timeout failed");
             }
         } catch (const std::exception& ex) {
-            PUBSUB_LOG_STR(logger_, LogLevel::Error, "Failed to join thread during shutdown: " + thread_name_ + " " + ex.what());
+            PUBSUB_LOG(logger_, LogLevel::Error, "Failed to join thread {} during shutdown: {}", thread_name_, ex.what());
         }
     }
 }
 
 void ApplicationThread::run() {
     try {
-        std::cerr << fmt::format("{}:{} ApplicationThread::run starting run_internal, thread {}\n", __FILE__, __LINE__, thread_name_);
         run_internal();
-        std::cerr << fmt::format("{}:{} ApplicationThread::run run_internal returned, thread {}\n", __FILE__, __LINE__, thread_name_);
     } catch (const std::exception& ex) {
         PUBSUB_LOG(logger_, LogLevel::Error, "{} [{}] terminating due to exception: {}", thread_name_, thread_id_.get_value(), ex.what());
         set_lifecycle_state(ThreadLifecycleState::ShuttingDown);

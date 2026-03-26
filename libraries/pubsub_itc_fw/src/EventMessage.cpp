@@ -1,5 +1,11 @@
+#include <cstdint>
+
+#include <string>
+
 #include <pubsub_itc_fw/EventMessage.hpp>
+#include <pubsub_itc_fw/EventType.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
+#include <pubsub_itc_fw/TimerID.hpp>
 
 namespace pubsub_itc_fw {
 

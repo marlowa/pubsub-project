@@ -140,14 +140,17 @@ TEST(LockFreeMessageQueueTest, BasicEnqueueDequeue) {
 
     auto m1 = queue.dequeue();
     ASSERT_TRUE(m1.has_value());
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     EXPECT_EQ(m1->value, 1);
 
     auto m2 = queue.dequeue();
     ASSERT_TRUE(m2.has_value());
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     EXPECT_EQ(m2->value, 2);
 
     auto m3 = queue.dequeue();
     ASSERT_TRUE(m3.has_value());
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     EXPECT_EQ(m3->value, 3);
 
     EXPECT_TRUE(queue.empty());
@@ -1173,10 +1176,12 @@ TEST(LockFreeMessageQueueTest, ShouldSufferFromPriorityInversion) {
     // Now consumer can see both in order
     auto msg1 = queue.dequeue();
     ASSERT_TRUE(msg1.has_value());
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     EXPECT_EQ(msg1->value, 42);
 
     auto msg2 = queue.dequeue();
     ASSERT_TRUE(msg2.has_value());
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     EXPECT_EQ(msg2->value, 84);
 
     EXPECT_FALSE(queue.dequeue().has_value());

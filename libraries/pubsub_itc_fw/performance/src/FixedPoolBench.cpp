@@ -84,6 +84,7 @@ install imagemagick to be able to convert svg files to jpg.
 #include <cstdint>
 #include <cassert>
 #include <chrono>
+#include <functional>
 #include <iostream>
 #include <thread>
 #include <vector>
@@ -94,6 +95,30 @@ install imagemagick to be able to convert svg files to jpg.
 #include <pubsub_itc_fw/FixedSizeMemoryPool.hpp>
 #include <pubsub_itc_fw/UseHugePagesFlag.hpp>
 
+namespace {
+
+// -----------------------------------------------------------------------------
+// CPU pinning helper
+// -----------------------------------------------------------------------------
+bool PinToCpu(int cpu) {
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    CPU_SET(cpu, &set);
+    return pthread_setaffinity_np(pthread_self(), sizeof(set), &set) == 0;
+}
+
+// -----------------------------------------------------------------------------
+// Optional huge-page error handler (no-op for this bench)
+// -----------------------------------------------------------------------------
+std::function<void(void*, std::size_t)> MakeHugePageErrorHandler() {
+    return [](void*, std::size_t) {
+        // Intentionally no-op: we just want the production path,
+        // and we don't care about logging here.
+    };
+}
+
+} // unnamed namespace
+
 using namespace pubsub_itc_fw;
 
 // -----------------------------------------------------------------------------
@@ -103,16 +128,6 @@ struct TestObject {
     int id_{0};
     std::byte padding_[64]; // keep it non-trivial, but not huge
 };
-
-// -----------------------------------------------------------------------------
-// CPU pinning helper
-// -----------------------------------------------------------------------------
-static bool PinToCpu(int cpu) {
-    cpu_set_t set;
-    CPU_ZERO(&set);
-    CPU_SET(cpu, &set);
-    return pthread_setaffinity_np(pthread_self(), sizeof(set), &set) == 0;
-}
 
 // -----------------------------------------------------------------------------
 // Single-producer / single-consumer ring buffer of pointers
@@ -150,22 +165,12 @@ class SpscRing {
     }
 
   private:
-    const std::size_t capacity_;
-    const std::size_t mask_;
+    std::size_t capacity_{0};
+    std::size_t mask_{0};
     std::vector<T*> buffer_;
     std::atomic<std::size_t> head_{0};
     std::atomic<std::size_t> tail_{0};
 };
-
-// -----------------------------------------------------------------------------
-// Optional huge-page error handler (no-op for this bench)
-// -----------------------------------------------------------------------------
-static std::function<void(void*, std::size_t)> MakeHugePageErrorHandler() {
-    return [](void*, std::size_t) {
-        // Intentionally no-op: we just want the production path,
-        // and we don't care about logging here.
-    };
-}
 
 // -----------------------------------------------------------------------------
 // Main benchmark
@@ -240,7 +245,7 @@ int main() {
 
         for (;;) {
             TestObject* obj = ring.Pop();
-            if (obj) {
+            if (obj != nullptr) {
                 // Simulate slightly slower consumer
                 if (simulateSlowConsumer) {
                     for (int k = 0; k < consumerBusyWorkIters; ++k) {

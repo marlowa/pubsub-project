@@ -1,5 +1,10 @@
-#include <chrono>
+#ifdef CLANG_TIDY
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+#endif
 #include <ctime>
+#include <cstdint>
 
 #include <pubsub_itc_fw/MillisecondClock.hpp>
 
@@ -8,6 +13,7 @@ namespace pubsub_itc_fw {
 MillisecondClock::time_point MillisecondClock::now()
 {
     timespec ts{};
+    // NOLINTNEXTLINE(misc-include-cleaner)
     clock_gettime(CLOCK_MONOTONIC_COARSE, &ts);
 
     // Convert to milliseconds. CLOCK_MONOTONIC_COARSE guarantees millisecond-level resolution and VDSO fast-path access.

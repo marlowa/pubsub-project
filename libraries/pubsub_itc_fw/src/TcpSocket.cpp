@@ -36,16 +36,20 @@ namespace {
  * @return A `std::tuple<bool, std::string>` indicating success or failure.
  */
 [[nodiscard]] std::tuple<bool, std::string> set_non_blocking(int socket_fd) {
-    const int flags = fcntl(socket_fd, F_GETFL, 0);
-    if (flags == -1) {
+    const int raw_flags = fcntl(socket_fd, F_GETFL, 0);
+    if (raw_flags == -1) {
         return {false, fmt::format("Failed to get socket flags for fd {}: {}",
                                    socket_fd, StringUtils::get_errno_string())};
     }
 
-    if (fcntl(socket_fd, F_SETFL, flags | O_NONBLOCK) == -1) {
+    auto flags = static_cast<unsigned>(raw_flags);
+    flags |= O_NONBLOCK;
+
+    if (fcntl(socket_fd, F_SETFL, static_cast<int>(flags)) == -1) {
         return {false, fmt::format("Failed to set socket {} to non-blocking mode: {}",
                                    socket_fd, StringUtils::get_errno_string())};
     }
+
     return {true, ""};
 }
 

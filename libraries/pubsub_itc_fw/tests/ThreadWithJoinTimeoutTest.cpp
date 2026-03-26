@@ -7,11 +7,11 @@
 
 #include <chrono>
 #include <thread>
-#include <future>
+#include <utility>
+#include <stdexcept>
 
 #include <gtest/gtest.h>
 
-#include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/ThreadWithJoinTimeout.hpp>
 
 namespace pubsub_itc_fw {

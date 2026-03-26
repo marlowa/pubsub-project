@@ -1,3 +1,5 @@
+#ifndef CLANG_TIDY
+// TODO We have to neutralise this for now with clang-tidy, it gives all sort of impossible errors
 #include <chrono>
 #include <fstream>
 #include <string>
@@ -160,3 +162,4 @@ TEST_F(LoggerTest, theOneTest) {
 }
 
 } // namespace pubsub_itc_fw
+#endif

@@ -1,8 +1,9 @@
+#include <array>
+#include <cerrno>
 #include <string>
 #include <string_view>
-#include <array>
 
-#include <fmt/format.h>
+#include <cstring> // for strerror_r
 
 #include <pubsub_itc_fw/StringUtils.hpp>
 

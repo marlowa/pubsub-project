@@ -725,7 +725,9 @@ FixedSizeMemoryPool<T>::FixedSizeMemoryPool(int objects_per_pool, UseHugePagesFl
                                             std::function<void(void*, std::size_t)> handler_for_huge_pages_error)
     : objects_per_pool_(objects_per_pool), use_huge_pages_flag_(use_huge_pages_flag) {
 #ifndef __GCC_HAVE_SYNC_COMPARE_AND_SWAP_16
+#ifndef CLANG_TIDY
     static_assert(false, "Hardware 128-bit atomics not supported. Add -mcx16 to compiler flags.");
+#endif
 #endif
     static_assert(alignof(HeadPtr) == 16, "HeadPtr must be 16-byte aligned.");
 
