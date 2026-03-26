@@ -249,7 +249,7 @@ int main() {
                 }
 
                 // Consume: trivial read
-                int id = obj->id_;
+                const int id = obj->id_;
                 (void)id;
 
                 // Destroy and return to pool
@@ -281,7 +281,7 @@ int main() {
     std::cout << "  consumed: " << consumed.load() << "\n";
     std::cout << "  elapsed:  " << elapsedNs << " ns\n";
     if (elapsedNs > 0) {
-        double opsPerSec = static_cast<double>(consumed.load()) * 1e9 / static_cast<double>(elapsedNs);
+        const double opsPerSec = static_cast<double>(consumed.load()) * 1e9 / static_cast<double>(elapsedNs);
         std::cout << "  throughput: " << opsPerSec << " ops/sec\n";
     }
 

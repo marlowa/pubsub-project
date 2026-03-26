@@ -1,4 +1,7 @@
+#include <unistd.h> // for close
+
 #include <pubsub_itc_fw/Reactor.hpp>
+#include <pubsub_itc_fw/Timer.hpp>
 #include <pubsub_itc_fw/TimerHandler.hpp>
 
 namespace pubsub_itc_fw {
@@ -9,7 +12,7 @@ TimerHandler::~TimerHandler() {
     }
 }
 
-TimerHandler::TimerHandler(const Timer& timer, Reactor& reactor) : timer_(timer), reactor_(reactor), owner_thread_(nullptr) {
+TimerHandler::TimerHandler(const Timer& timer, Reactor& reactor) : fd_(-1), timer_(timer), reactor_(reactor), owner_thread_(nullptr) {
     fd_ = ::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
     if (fd_ == -1) {
         PUBSUB_LOG_STR(reactor_.get_logger(), LogLevel::Error, "TimerHandler ctor: timerfd_create failed");
@@ -17,14 +20,14 @@ TimerHandler::TimerHandler(const Timer& timer, Reactor& reactor) : timer_(timer)
     }
 
     // Resolve the owner ApplicationThread* from the reactor's fast-path map
-    ThreadID owner_id = timer_.get_owner_thread_id();
+    const ThreadID owner_id = timer_.get_owner_thread_id();
 
     // Special case: reactor backstop timer (owner thread ID == 0)
     if (owner_id.get_value() == 0) {
         PUBSUB_LOG(reactor_.get_logger(), LogLevel::Info, "TimerHandler ctor: created backstop timerfd {} for timer '{}'", fd_, timer_.get_name());
     } else {
         owner_thread_ = reactor_.get_fast_path_thread(owner_id);
-        if (!owner_thread_) {
+        if (owner_thread_ == nullptr) {
             PUBSUB_LOG(reactor_.get_logger(), LogLevel::Error,
                        "TimerHandler ctor: owner thread {} not found in fast-path map "
                        "for timer '{}'",
@@ -63,7 +66,7 @@ bool TimerHandler::handle_event(uint32_t events) {
 
     // 2. Drain the timerfd once (non-blocking)
     uint64_t expirations = 0;
-    ssize_t s = ::read(fd_, &expirations, sizeof(expirations));
+    const ssize_t s = ::read(fd_, &expirations, sizeof(expirations));
 
     if (s != sizeof(expirations)) {
         // Nothing to read (EAGAIN) or interrupted — treat as consumed
@@ -86,7 +89,7 @@ bool TimerHandler::handle_event(uint32_t events) {
     }
 
     // 4. Application-owned timer
-    ThreadID owner = timer_.get_owner_thread_id();
+    const ThreadID owner = timer_.get_owner_thread_id();
     auto state = reactor_.get_thread_state(owner);
 
     // ---- RACE-AVOIDANCE GUARD ----

@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <set>
 #include <thread>
+#include <mutex>
 #include <vector>
 #include <algorithm>
 #include <random>
@@ -159,7 +160,7 @@ TEST_F(FixedSizeMemoryPoolTest, ContainsCorrectness) {
     }
 
     // Some obviously invalid pointers
-    TestObject stack_obj;
+    const TestObject stack_obj;
     EXPECT_FALSE(pool.contains(&stack_obj));
 
     // Pointer just outside the pool region: we approximate by taking min/max
@@ -248,9 +249,31 @@ TEST_F(FixedSizeMemoryPoolTest, DestructorDestroysLeakedObjects) {
     EXPECT_EQ(TestObject::s_dtor.load(), TestObject::s_ctor.load());
 }
 
-// ------------------------------------------------------------
-// Direct ABA-ish stress via allocate/deallocate loops
-// ------------------------------------------------------------
+/**
+ * DirectAbaStress
+ * ----------------
+ * This test exercises the FixedSizeMemoryPool under intense concurrent
+ * allocate/deallocate pressure to detect *structural* corruption of the
+ * lock‑free Treiber free list.
+ *
+ * What this test *does* verify:
+ *   • No nullptrs appear during the final drain (free list not truncated)
+ *   • The number of drained slots equals the pool capacity (no lost nodes)
+ *   • All drained pointers are unique (no duplicated nodes)
+ *   • No extra nodes appear (free list not corrupted or expanded)
+ *
+ * What this test deliberately does *NOT* verify:
+ *   • That every slot was allocated at least once during the stress phase
+ *
+ * Rationale:
+ *   A Treiber stack is LIFO. Under contention, threads may repeatedly pop and
+ *   push the same subset of slots. It is *not* guaranteed that all slots will
+ *   be used during the stress loop. Requiring full coverage would produce false
+ *   failures without indicating corruption.
+ *
+ * This test therefore focuses on the invariants that *must* hold for a correct
+ * lock‑free free list and that *will* be violated by ABA‑related corruption.
+ */
 
 TEST_F(FixedSizeMemoryPoolTest, DirectAbaStress) {
 #ifdef USING_VALGRIND
@@ -268,9 +291,7 @@ TEST_F(FixedSizeMemoryPoolTest, DirectAbaStress) {
         huge_page_handler()
     );
 
-    std::set<TestObject*> seen;
-    std::mutex seen_mutex;
-
+    // Threads hammer allocate()/deallocate() concurrently.
     std::vector<std::thread> threads;
     for (int t = 0; t < num_threads; ++t) {
         threads.emplace_back([&]() {
@@ -278,10 +299,6 @@ TEST_F(FixedSizeMemoryPoolTest, DirectAbaStress) {
                 TestObject* obj = pool.allocate();
                 if (!obj) {
                     continue;
-                }
-                {
-                    std::lock_guard<std::mutex> lock(seen_mutex);
-                    seen.insert(obj);
                 }
                 pool.deallocate(obj);
             }
@@ -292,22 +309,25 @@ TEST_F(FixedSizeMemoryPoolTest, DirectAbaStress) {
         th.join();
     }
 
-    // Drain the pool completely and verify all drained pointers were seen.
+    // Drain the pool completely and verify structural integrity.
     std::vector<TestObject*> drained;
     drained.reserve(capacity);
+
     for (int i = 0; i < capacity; ++i) {
-        auto* obj = pool.allocate();
-        ASSERT_NE(obj, nullptr) << "free-list corruption: nullptr during drain at " << i;
+        TestObject* obj = pool.allocate();
+        ASSERT_NE(obj, nullptr) << "free-list corruption: nullptr during drain at index " << i;
         drained.push_back(obj);
     }
-    EXPECT_EQ(pool.allocate(), nullptr) << "free-list corruption: more slots than capacity";
 
-    std::set<TestObject*> drained_set(drained.begin(), drained.end());
-    EXPECT_EQ(drained_set.size(), drained.size()) << "duplicate pointers in drained set";
+    // No more slots must be available.
+    EXPECT_EQ(pool.allocate(), nullptr) << "free-list corruption: allocator returned more than capacity slots";
 
+    // All drained pointers must be unique.
+    const std::set<TestObject*> drained_set(drained.begin(), drained.end());
+    EXPECT_EQ(drained_set.size(), drained.size()) << "free-list corruption: duplicate pointer detected during drain";
+
+    // Return drained objects to the pool.
     for (auto* obj : drained) {
-        EXPECT_NE(seen.find(obj), seen.end())
-            << "free-list corruption: drained pointer never seen during stress";
         pool.deallocate(obj);
     }
 }

@@ -56,7 +56,7 @@ public:
                 accept_error};
     }
 
-    int get_listening_file_descriptor() const {
+    [[nodiscard]] int get_listening_file_descriptor() const {
         return listening_socket_ ? listening_socket_->get_file_descriptor() : -1;
     }
 

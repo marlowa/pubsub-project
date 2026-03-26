@@ -44,16 +44,16 @@ public:
         }
     }
 
-    bool is_available() const { return available_; }
-    int num_nodes() const { return num_nodes_; }
+    [[nodiscard]] bool is_available() const { return available_; }
+    [[nodiscard]] int num_nodes() const { return num_nodes_; }
 
     // Get CPUs for a specific NUMA node
-    const std::vector<int>& get_cpus_for_node(int node) const {
+    [[nodiscard]] const std::vector<int>& get_cpus_for_node(int node) const {
         return cpus_per_node_[node];
     }
 
     // Find best node with at least min_cpus cores
-    int find_best_node(int min_cpus) const {
+    [[nodiscard]] int find_best_node(int min_cpus) const {
         for (size_t i = 0; i < cpus_per_node_.size(); ++i) {
             if (static_cast<int>(cpus_per_node_[i].size()) >= min_cpus) {
                 return i;
@@ -121,7 +121,7 @@ std::atomic<int> NumaAwarePoolAllocatorTest::TestObject::s_constructor_count(0);
 std::atomic<int> NumaAwarePoolAllocatorTest::TestObject::s_destructor_count(0);
 
 TEST_F(NumaAwarePoolAllocatorTest, NumaPinnedThunderingHerd) {
-    NumaTopology topo;
+    const NumaTopology topo;
 
     if (!topo.is_available()) {
         GTEST_SKIP() << "NUMA not available on this system";
@@ -129,7 +129,7 @@ TEST_F(NumaAwarePoolAllocatorTest, NumaPinnedThunderingHerd) {
 
     // Use 10 threads - enough for good contention without saturating all cores
     const int target_threads = 10;
-    int numa_node = topo.find_best_node(target_threads);
+    const int numa_node = topo.find_best_node(target_threads);
 
     if (numa_node < 0) {
         GTEST_SKIP() << "No NUMA node with at least " << target_threads << " cores found";
@@ -194,14 +194,14 @@ TEST_F(NumaAwarePoolAllocatorTest, NumaPinnedThunderingHerd) {
 }
 
 TEST_F(NumaAwarePoolAllocatorTest, NumaPinnedContentionStress) {
-    NumaTopology topo;
+    const NumaTopology topo;
 
     if (!topo.is_available()) {
         GTEST_SKIP() << "NUMA not available on this system";
     }
 
     const int target_threads = 10;
-    int numa_node = topo.find_best_node(target_threads);
+    const int numa_node = topo.find_best_node(target_threads);
 
     if (numa_node < 0) {
         GTEST_SKIP() << "No NUMA node with at least " << target_threads << " cores found";

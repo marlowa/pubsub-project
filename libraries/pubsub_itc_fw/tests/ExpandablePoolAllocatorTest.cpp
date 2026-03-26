@@ -1,6 +1,9 @@
 #include <algorithm>  // For std::find
 #include <atomic>     // For std::atomic
+#include <cstddef>    // for size_t
+#include <chrono>
 #include <functional> // For std::function
+#include <iostream>   // for cout in statistics
 #include <memory>     // For std::unique_ptr
 #include <random>     // For std::shuffle
 #include <string>     // For std::string
@@ -81,9 +84,9 @@ class ExpandablePoolAllocatorTest : public ::testing::Test {
 
     // Convenience factory.
     ExpandablePoolAllocator<TestObject> make_allocator(std::string name, int objects_per_pool, int initial_pools = 1, int threshold = 1) {
-        return ExpandablePoolAllocator<TestObject>(std::move(name), objects_per_pool, initial_pools, threshold, handler_for_pool_exhausted_,
-                                                   handler_for_invalid_free_, handler_for_huge_pages_error_,
-                                                   UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
+        return { std::move(name), objects_per_pool, initial_pools, threshold,
+                 handler_for_pool_exhausted_, handler_for_invalid_free_, handler_for_huge_pages_error_,
+                 UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages) };
     }
 };
 
@@ -205,7 +208,7 @@ TEST_F(ExpandablePoolAllocatorTest, ConcurrentAllocationAndDeallocation) {
     const int objects_per_pool = 10;
     const int initial_pools = 1;
     const int expansion_threshold = 8;
-    const int total_threads = 4;
+    const int64_t total_threads = 4; // not an int due to use in multiplication result
     const int allocations_per_thread = 20;
 
     auto allocator = make_allocator("ConcurrentTest", objects_per_pool, initial_pools, expansion_threshold);
@@ -220,7 +223,7 @@ TEST_F(ExpandablePoolAllocatorTest, ConcurrentAllocationAndDeallocation) {
                 TestObject* obj = allocator.allocate();
                 if (obj != nullptr) {
                     obj->id_ = j + 1;
-                    int index = thread_safe_counter.fetch_add(1, std::memory_order_relaxed);
+                    const int index = thread_safe_counter.fetch_add(1, std::memory_order_relaxed);
                     thread_safe_allocated_objects_ptr_list[index] = obj;
                 }
             }
@@ -267,14 +270,14 @@ TEST_F(ExpandablePoolAllocatorTest, HugePagesBehavior) {
     const int initial_pools = 1;
     const int expansion_threshold = 1;
 
-    ExpandablePoolAllocator<TestObject> allocator_hp("HugePagesTest", objects_per_pool, initial_pools, expansion_threshold, handler_for_pool_exhausted_,
+    const ExpandablePoolAllocator<TestObject> allocator_hp("HugePagesTest", objects_per_pool, initial_pools, expansion_threshold, handler_for_pool_exhausted_,
                                                      handler_for_invalid_free_, handler_for_huge_pages_error_,
                                                      UseHugePagesFlag(UseHugePagesFlag::DoUseHugePages));
 
     EXPECT_GE(huge_pages_error_callback_count_.load(), 0);
 
     huge_pages_error_callback_count_ = 0;
-    ExpandablePoolAllocator<TestObject> allocator_no_hp("NoHugePagesTest", objects_per_pool, initial_pools, expansion_threshold, handler_for_pool_exhausted_,
+    const ExpandablePoolAllocator<TestObject> allocator_no_hp("NoHugePagesTest", objects_per_pool, initial_pools, expansion_threshold, handler_for_pool_exhausted_,
                                                         handler_for_invalid_free_, handler_for_huge_pages_error_,
                                                         UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
 
@@ -311,7 +314,7 @@ TEST_F(ExpandablePoolAllocatorTest, ThunderingHerdExpansionRace) {
 
     int success_count = 0;
     for (auto* ptr : results) {
-        if (ptr) {
+        if (ptr != nullptr) {
             success_count++;
             allocator.deallocate(ptr);
         }
@@ -345,7 +348,7 @@ TEST_F(ExpandablePoolAllocatorTest, ProducerConsumerStressTest) {
                     std::this_thread::yield();
                 }
                 obj->id_ = j;
-                std::lock_guard<std::mutex> lock(queue_mutex);
+                const std::lock_guard<std::mutex> lock(queue_mutex);
                 queue.push_back(obj);
             }
         });
@@ -358,7 +361,7 @@ TEST_F(ExpandablePoolAllocatorTest, ProducerConsumerStressTest) {
             while (!should_exit) {
                 TestObject* obj = nullptr;
                 {
-                    std::lock_guard<std::mutex> lock(queue_mutex);
+                    const std::lock_guard<std::mutex> lock(queue_mutex);
                     if (!queue.empty()) {
                         obj = queue.back();
                         queue.pop_back();
@@ -494,17 +497,20 @@ TEST_F(ExpandablePoolAllocatorTest, DeterministicThunderingHerdOrdering) {
     for (int i = 0; i < thread_count; ++i) {
         threads.emplace_back([&, i]() {
             ready_count.fetch_add(1);
-            while (!start_flag.load())
+            while (!start_flag.load()) {
                 std::this_thread::yield();
+            }
             results[i] = allocator.allocate();
         });
     }
 
-    while (ready_count.load() != thread_count)
+    while (ready_count.load() != thread_count) {
         std::this_thread::yield();
+    }
     start_flag.store(true);
-    for (auto& t : threads)
+    for (auto& t : threads) {
         t.join();
+    }
 
     auto stats_after = allocator.get_behaviour_statistics();
 
@@ -512,14 +518,18 @@ TEST_F(ExpandablePoolAllocatorTest, DeterministicThunderingHerdOrdering) {
     EXPECT_GE(stats_after.expansion_events, stats_before.expansion_events + 1) << "at least one expansion must occur when demand exceeds pool capacity";
 
     // Every thread must have received a valid, unique pointer.
-    for (int i = 0; i < thread_count; ++i)
+    for (int i = 0; i < thread_count; ++i) {
         ASSERT_NE(results[i], nullptr) << "thread " << i << " got nullptr";
-    for (int i = 0; i < thread_count; ++i)
-        for (int j = i + 1; j < thread_count; ++j)
+    }
+    for (int i = 0; i < thread_count; ++i) {
+        for (int j = i + 1; j < thread_count; ++j) {
             EXPECT_NE(results[i], results[j]) << "threads " << i << " and " << j << " got duplicate pointers";
+        }
+    }
 
-    for (int* p : results)
+    for (int* p : results) {
         allocator.deallocate(p);
+    }
 }
 
 TEST_F(ExpandablePoolAllocatorTest, NullptrDeallocateThrows) {
@@ -615,15 +625,15 @@ TEST_F(ExpandablePoolAllocatorTest, AbaStressTest) {
     // Each thread holds at most one slot at a time, so with pool_slots >= num_threads
     // the pool can never be fully exhausted and expansion will never fire.
     const int pool_slots = num_threads;
-
+    const int initial_pools = 1;
+    const int expansion_threshold_hint = 1;
     ExpandablePoolAllocator<TestObject> allocator(
-        "AbaStress", pool_slots, /*initial_pools=*/1, /*threshold=*/1,
+        "AbaStress", pool_slots, initial_pools, expansion_threshold_hint,
         handler_for_pool_exhausted_, handler_for_invalid_free_,
         handler_for_huge_pages_error_,
         UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
 
     std::atomic<bool> stop{false};
-    std::atomic<int>  corruption_count{0};
 
     // Collect every address returned by allocate() during the stress phase.
     // We do this concurrently using a mutex-protected set so that valid_addresses
@@ -648,18 +658,17 @@ TEST_F(ExpandablePoolAllocatorTest, AbaStressTest) {
                 }
                 // Record every address we legitimately receive.
                 {
-                    std::lock_guard<std::mutex> lock(valid_addresses_mutex);
+                    const std::lock_guard<std::mutex> lock(valid_addresses_mutex);
                     valid_addresses.insert(allocated_object);
                 }
                 allocator.deallocate(allocated_object);
             }
         });
     }
-    for (auto& thread : threads)
-        thread.join();
 
-    EXPECT_EQ(corruption_count.load(), 0)
-        << "ABA corruption detected: allocate() returned an address outside the pool";
+    for (auto& thread : threads) {
+        thread.join();
+    }
 
     // After all threads finish, drain the pool and verify structural integrity.
     // We use get_pool_statistics() to find the true total capacity across all
@@ -702,8 +711,9 @@ TEST_F(ExpandablePoolAllocatorTest, AbaStressTest) {
         << "free-list corruption: expected " << total_capacity
         << " slots drained, got " << drained_objects.size();
 
-    for (auto* drained_object : drained_objects)
+    for (auto* drained_object : drained_objects) {
         allocator.deallocate(drained_object);
+    }
 }
 
 /**
@@ -743,8 +753,9 @@ TEST_F(ExpandablePoolAllocatorTest, DoubleFreeDetection) {
     }
     expect_unique_non_null(ptrs, "DoubleFreeDetection post-check");
 
-    for (auto* p : ptrs)
+    for (auto* p : ptrs) {
         allocator.deallocate(p);
+    }
 }
 
 /**
@@ -784,8 +795,9 @@ TEST_F(ExpandablePoolAllocatorTest, ConcurrentDoubleFreeStress) {
     // per pointer is valid; the rest should be silently handled by the guard.
     for (int t = 0; t < num_threads; ++t) {
         threads.emplace_back([&]() {
-            while (!gate.load(std::memory_order_acquire))
+            while (!gate.load(std::memory_order_acquire)) {
                 std::this_thread::yield();
+            }
             for (auto* p : ptrs) {
                 allocator.deallocate(p);
             }
@@ -793,8 +805,9 @@ TEST_F(ExpandablePoolAllocatorTest, ConcurrentDoubleFreeStress) {
     }
 
     gate.store(true, std::memory_order_release);
-    for (auto& th : threads)
+    for (auto& th : threads) {
         th.join();
+    }
 
     auto stats = allocator.get_pool_statistics();
     EXPECT_EQ(stats.number_of_allocated_objects_, 0) << "pool has leaked objects after concurrent double-free stress";
@@ -807,8 +820,9 @@ TEST_F(ExpandablePoolAllocatorTest, ConcurrentDoubleFreeStress) {
         recovered.push_back(p);
     }
     expect_unique_non_null(recovered, "ConcurrentDoubleFreeStress");
-    for (auto* p : recovered)
+    for (auto* p : recovered) {
         allocator.deallocate(p);
+    }
 }
 
 /**
@@ -835,8 +849,9 @@ TEST_F(ExpandablePoolAllocatorTest, FrequentExpansionAndShrinkPattern) {
         }
         // Free all (exercises slow path on next iteration when current_pool_ptr_
         // may point to a now-full later pool).
-        for (auto* p : held)
+        for (auto* p : held) {
             allocator.deallocate(p);
+        }
         held.clear();
     }
 
@@ -863,13 +878,16 @@ TEST_F(ExpandablePoolAllocatorTest, StatisticsConsistency) {
             for (int j = 0; j < iterations; ++j) {
                 TestObject* obj = allocator.allocate();
                 std::this_thread::yield();
-                if (obj)
+                if (obj != nullptr) {
                     allocator.deallocate(obj);
+                }
             }
         });
     }
-    for (auto& t : threads)
+
+    for (auto& t : threads) {
         t.join();
+    }
 
     auto stats = allocator.get_behaviour_statistics();
 
@@ -878,8 +896,9 @@ TEST_F(ExpandablePoolAllocatorTest, StatisticsConsistency) {
     ASSERT_GE(stats.per_pool_allocation_counts.counts.size(), 1U);
 
     uint64_t sum = 0;
-    for (auto c : stats.per_pool_allocation_counts.counts)
+    for (auto c : stats.per_pool_allocation_counts.counts) {
         sum += c;
+    }
     EXPECT_LE(sum, stats.total_allocations) << "per-pool sum must not exceed total allocations";
     EXPECT_GT(sum, 0U);
 
@@ -943,8 +962,8 @@ TEST_F(ExpandablePoolAllocatorTest, BehaviouralStatisticsStressTest) {
     ASSERT_GE(stats.per_pool_allocation_counts.counts.size(), 1U) << "allocator must have at least one pool";
 
     uint64_t sum_per_pool = 0;
-    for (uint64_t i = 0; i < stats.per_pool_allocation_counts.counts.size(); ++i) {
-        sum_per_pool += stats.per_pool_allocation_counts.counts[i];
+    for (const uint64_t count : stats.per_pool_allocation_counts.counts) {
+        sum_per_pool += count;
     }
 
     ASSERT_LE(sum_per_pool, stats.total_allocations) << "sum of per-pool counts must never exceed total allocations";
@@ -962,8 +981,8 @@ TEST_F(ExpandablePoolAllocatorTest, BehaviouralStatisticsStressTest) {
     std::cout << "pool_count " << stats.per_pool_allocation_counts.counts.size() << "\n";
 
     std::cout << "per_pool_counts";
-    for (uint64_t i = 0; i < stats.per_pool_allocation_counts.counts.size(); ++i) {
-        std::cout << " " << stats.per_pool_allocation_counts.counts[i];
+    for (uint64_t count : stats.per_pool_allocation_counts.counts) {
+        std::cout << " " << count;
     }
     std::cout << "\n";
 
@@ -1022,9 +1041,10 @@ TEST_F(ExpandablePoolAllocatorTest, ConcurrentInvalidFreeCallbackRace) {
         };
 
     const int pool_size = 8;
-
+    const int initial_pools = 1;
+    const int expansion_threshold_hint = 1;
     ExpandablePoolAllocator<TestObject> allocator(
-        "CallbackRaceTest", pool_size, /*initial_pools=*/1, /*threshold=*/1,
+        "CallbackRaceTest", pool_size, initial_pools, expansion_threshold_hint,
         handler_for_pool_exhausted_,
         concurrency_measuring_callback,   // our measuring callback
         handler_for_huge_pages_error_,
@@ -1043,8 +1063,9 @@ TEST_F(ExpandablePoolAllocatorTest, ConcurrentInvalidFreeCallbackRace) {
 
     for (int thread_index = 0; thread_index < num_threads; ++thread_index) {
         threads.emplace_back([&]() {
-            while (!start_gate.load(std::memory_order_acquire))
+            while (!start_gate.load(std::memory_order_acquire)) {
                 std::this_thread::yield();
+            }
 
             for (int iteration = 0; iteration < iterations_per_thread; ++iteration) {
                 // Alternate between the two invalid-free paths so both
@@ -1062,8 +1083,9 @@ TEST_F(ExpandablePoolAllocatorTest, ConcurrentInvalidFreeCallbackRace) {
     }
 
     start_gate.store(true, std::memory_order_release);
-    for (auto& thread : threads)
+    for (auto& thread : threads) {
         thread.join();
+    }
 
     std::cout << "ConcurrentInvalidFreeCallbackRace:\n"
               << "  total callback invocations : " << total_callback_invocations.load() << "\n"

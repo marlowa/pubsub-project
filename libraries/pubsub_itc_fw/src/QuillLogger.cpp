@@ -1,4 +1,4 @@
-#include <pubsub_itc_fw/QuillLogger.hpp>
+#include <mutex> // for std::once_flag
 
 #include <quill/Backend.h>
 #include <quill/Frontend.h>
@@ -10,32 +10,36 @@
 #include <quill/sinks/ConsoleSink.h>
 #include <quill/sinks/SyslogSink.h>
 
+#include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/FileOpenMode.hpp>
 
-namespace pubsub_itc_fw {
-
-static std::once_flag backend_started;
+namespace {
+std::once_flag backend_started;
 
 // Helper to start backend exactly once
 static void ensure_backend_started() {
     std::call_once(backend_started, []() {
-        quill::BackendOptions backend_options{};
+        const quill::BackendOptions backend_options{};
         quill::Backend::start(backend_options);
     });
 }
+
+}
+
+namespace pubsub_itc_fw {
 
 // Initialize static counter
 std::atomic<uint64_t> QuillLogger::instance_counter_{0};
 
 // Helper function to generate unique logger names
 std::string QuillLogger::generate_unique_logger_name(const std::string& prefix) {
-    uint64_t id = instance_counter_.fetch_add(1, std::memory_order_relaxed);
+    const uint64_t id = instance_counter_.fetch_add(1, std::memory_order_relaxed);
     return prefix + "_" + std::to_string(id);
 }
 
 // Helper function to generate unique sink names
 std::string QuillLogger::generate_unique_sink_name(const std::string& prefix) {
-    uint64_t id = instance_counter_.fetch_add(1, std::memory_order_relaxed);
+    const uint64_t id = instance_counter_.fetch_add(1, std::memory_order_relaxed);
     return prefix + "_" + std::to_string(id);
 }
 

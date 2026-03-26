@@ -92,7 +92,7 @@ TEST_F(StringUtilsTest, StartsWithAllOverloadsExplicit)
     EXPECT_FALSE(StringUtils::starts_with(std::string("hello world"), std::string("world")));
 
     // std::string_view overload
-    std::string_view sv = "hello";
+    const std::string_view sv = "hello";
     EXPECT_TRUE(StringUtils::starts_with("hello world", sv));
     EXPECT_FALSE(StringUtils::starts_with("hello world", std::string_view("world")));
 

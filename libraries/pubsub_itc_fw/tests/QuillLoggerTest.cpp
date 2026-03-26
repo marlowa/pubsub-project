@@ -20,7 +20,7 @@ protected:
 
     QuillLoggerTest() {
         // Generate a unique name for this specific test case
-        std::string unique_name = ::testing::UnitTest::GetInstance()->current_test_info()->name();
+        const std::string unique_name = ::testing::UnitTest::GetInstance()->current_test_info()->name();
 
         test_sink_ = quill::Frontend::create_or_get_sink<TestSink>("quill_logger_test_sink");
         test_sink_ptr_ = static_cast<TestSink*>(test_sink_.get());
@@ -132,7 +132,7 @@ TEST_F(QuillLoggerTest, LogsAlertMessage) {
 TEST_F(QuillLoggerTest, LogsFormattedMessageWithInteger) {
     // Arrange
     logger_->set_log_level(LogLevel::Info);
-    int value = 42;
+    const int value = 42;
 
     // Act
     PUBSUB_LOG(*logger_, LogLevel::Info, "Value is {}", value);
@@ -145,7 +145,7 @@ TEST_F(QuillLoggerTest, LogsFormattedMessageWithInteger) {
 TEST_F(QuillLoggerTest, LogsFormattedMessageWithString) {
     // Arrange
     logger_->set_log_level(LogLevel::Info);
-    std::string name = "Alice";
+    const std::string name = "Alice";
 
     // Act
     PUBSUB_LOG(*logger_, LogLevel::Info, "Hello {}", name);
@@ -167,7 +167,7 @@ TEST_F(QuillLoggerTest, LogsFormattedMessageWithMultipleArgs) {
     EXPECT_TRUE(test_sink_ptr_->contains_message("User Bob has 100 points"));
 }
 
-TEST_F(QuillLoggerTest, LogsStringWithPUBSUB_LOG_STR) {
+TEST_F(QuillLoggerTest, LogsStringWithPubSubLogStr) {
     // Arrange
     logger_->set_log_level(LogLevel::Info);
 
@@ -367,14 +367,14 @@ TEST(QuillLoggerIsolationTest, TwoLoggersWithSeparateSinksDoNotCrossTalk) {
     auto test_sink1 = static_cast<TestSink*>(sink1.get());
     test_sink1->clear();
 
-    QuillLogger logger1("isolation_logger_1", sink1, LogLevel::Debug);
+    const QuillLogger logger1("isolation_logger_1", sink1, LogLevel::Debug);
 
     // Create second logger with unique sink
     auto sink2 = quill::Frontend::create_or_get_sink<TestSink>("isolation_test_sink_2");
     auto test_sink2 = static_cast<TestSink*>(sink2.get());
     test_sink2->clear();
 
-    QuillLogger logger2("isolation_logger_2", sink2, LogLevel::Debug);
+    const QuillLogger logger2("isolation_logger_2", sink2, LogLevel::Debug);
 
     // Log unique messages to each logger
     PUBSUB_LOG_STR(logger1, LogLevel::Info, "Message from logger1");
@@ -402,13 +402,13 @@ TEST(QuillLoggerIsolationTest, TwoLoggersWithSameSinkNameShareSink) {
     auto test_sink1 = static_cast<TestSink*>(sink1.get());
     test_sink1->clear();
 
-    QuillLogger logger1("shared_test_logger_1", sink1, LogLevel::Debug);
+    const QuillLogger logger1("shared_test_logger_1", sink1, LogLevel::Debug);
 
     // Create second logger with SAME sink name - it will get the same sink!
     auto sink2 = quill::Frontend::create_or_get_sink<TestSink>("shared_sink_name");
     auto test_sink2 = static_cast<TestSink*>(sink2.get());
 
-    QuillLogger logger2("shared_test_logger_2", sink2, LogLevel::Debug);
+    const QuillLogger logger2("shared_test_logger_2", sink2, LogLevel::Debug);
 
     // Verify they're the same sink instance
     EXPECT_EQ(sink1.get(), sink2.get());
@@ -439,12 +439,12 @@ TEST(QuillLoggerIsolationTest, TwoLoggersWithSameLoggerNameShareLogger) {
     test_sink2->clear();
 
     // Create first logger with name "duplicate_name" and sink1
-    QuillLogger logger1("duplicate_name", sink1, LogLevel::Debug);
+    const QuillLogger logger1("duplicate_name", sink1, LogLevel::Debug);
 
     // Create second logger with SAME name but different sink
     // QuillLogger constructor calls create_or_get_logger("duplicate_name", {sink2})
     // but Quill will return the EXISTING logger with sink1!
-    QuillLogger logger2("duplicate_name", sink2, LogLevel::Debug);
+    const QuillLogger logger2("duplicate_name", sink2, LogLevel::Debug);
 
     // Verify both QuillLogger instances point to the same underlying quill::Logger
     EXPECT_EQ(logger1.quill_logger(), logger2.quill_logger());
@@ -464,8 +464,8 @@ TEST(QuillLoggerIsolationTest, TwoLoggersWithSameLoggerNameShareLogger) {
 // =============================================================================
 
 TEST(QuillLoggerDefaultConstructorTest, MultipleInstancesShareLoggerAndSink) {
-    QuillLogger logger1;
-    QuillLogger logger2;
+    const QuillLogger logger1;
+    const QuillLogger logger2;
 
     EXPECT_NE(logger1.quill_logger(), logger2.quill_logger())
         << "Expected both loggers to have separate underlying Quill loggers "
@@ -477,11 +477,11 @@ TEST(QuillLoggerDefaultConstructorTest, MultipleInstancesShareLoggerAndSink) {
 // =============================================================================
 
 TEST(QuillLoggerFileConstructorTest, MultipleInstancesShareLoggerAndSink) {
-    std::string file1 = "/tmp/quill_test_log1.log";
-    std::string file2 = "/tmp/quill_test_log2.log";
+    const std::string file1 = "/tmp/quill_test_log1.log";
+    const std::string file2 = "/tmp/quill_test_log2.log";
 
-    QuillLogger logger1(file1, FileOpenMode(FileOpenMode::Truncate), LogLevel::Debug, LogLevel::Debug, LogLevel::Debug);
-    QuillLogger logger2(file2, FileOpenMode(FileOpenMode::Truncate), LogLevel::Debug, LogLevel::Debug, LogLevel::Debug);
+    const QuillLogger logger1(file1, FileOpenMode(FileOpenMode::Truncate), LogLevel::Debug, LogLevel::Debug, LogLevel::Debug);
+    const QuillLogger logger2(file2, FileOpenMode(FileOpenMode::Truncate), LogLevel::Debug, LogLevel::Debug, LogLevel::Debug);
 
     // After fix: loggers should be SEPARATE
     EXPECT_NE(logger1.quill_logger(), logger2.quill_logger())
@@ -518,8 +518,8 @@ TEST(QuillLoggerDefaultConstructorTest, LoggingCrossTalkBetweenInstances) {
 // =============================================================================
 
 TEST(QuillLoggerDefaultConstructorTest, MultipleInstancesShareConsoleSink) {
-    QuillLogger logger1;
-    QuillLogger logger2;
+    const QuillLogger logger1;
+    const QuillLogger logger2;
 
     // After fix: loggers should be separate (sink separation follows)
     EXPECT_NE(logger1.quill_logger(), logger2.quill_logger())
@@ -580,10 +580,10 @@ TEST(QuillLoggerIsolationTest, ShouldProvideIsolation) {
 }
 
 TEST(QuillLoggerSyslogTest, FileConstructorEnablesSyslogFiltering) {
-    std::string temp_file = "/tmp/test_syslog_config.log";
+    const std::string temp_file = "/tmp/test_syslog_config.log";
 
     // Create logger with different syslog level
-    QuillLogger logger(temp_file,
+    const QuillLogger logger(temp_file,
                        FileOpenMode(FileOpenMode::Truncate),
                        LogLevel::Debug,   // file logs everything
                        LogLevel::Error,   // syslog only errors
@@ -602,9 +602,9 @@ TEST(QuillLoggerSyslogTest, FileConstructorEnablesSyslogFiltering) {
 }
 
 TEST(QuillLoggerSyslogTest, SyslogLevelIndependentFromOtherSinks) {
-    std::string temp_file = "/tmp/test_syslog_independence.log";
+    const std::string temp_file = "/tmp/test_syslog_independence.log";
 
-    QuillLogger logger(temp_file,
+    const QuillLogger logger(temp_file,
                        FileOpenMode(FileOpenMode::Truncate),
                        LogLevel::Debug,     // file
                        LogLevel::Critical,  // syslog - most restrictive

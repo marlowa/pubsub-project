@@ -104,7 +104,7 @@ void Reactor::route_message(ThreadID target_id, EventMessage message) {
     if (message.originating_thread_id().get_value() != system_thread_id_value) {
         ApplicationThread* origin = nullptr;
         {
-            std::lock_guard<std::mutex> lock(thread_registry_mutex_);
+            const std::lock_guard<std::mutex> lock(thread_registry_mutex_);
             auto origin_it = fast_path_threads_.find(message.originating_thread_id());
             if (origin_it != fast_path_threads_.end()) {
                 origin = origin_it->second;
@@ -166,7 +166,7 @@ void Reactor::shutdown(const std::string& reason) {
     } else {
         uint64_t one = 1;
         PUBSUB_LOG_STR(logger_, LogLevel::Info, "in Reactor::shutdown, writing wake_fd");
-        ssize_t n = write(wake_fd_, &one, sizeof(one));
+        const ssize_t n = write(wake_fd_, &one, sizeof(one));
         if (n == sizeof(one)) {
             PUBSUB_LOG_STR(logger_, LogLevel::Info, "in Reactor::shutdown, wrote wake_fd");
         } else {
@@ -183,11 +183,12 @@ void Reactor::finalize_threads_after_shutdown() {
 
     std::vector<std::shared_ptr<ApplicationThread>> snapshot;
     {
-        std::lock_guard<std::mutex> lock(thread_registry_mutex_);
+        const std::lock_guard<std::mutex> lock(thread_registry_mutex_);
         snapshot.reserve(threads_.size());
         for (auto const& [name, thread] : threads_) {
-            if (thread)
+            if (thread) {
                 snapshot.push_back(thread);
+            }
         }
     }
 
@@ -226,7 +227,7 @@ void Reactor::finalize_threads_after_shutdown() {
     // 4. Final cleanup under lock
     PUBSUB_LOG_STR(logger_, LogLevel::Info, "finalize_threads_after_shutdown step 4");
     {
-        std::lock_guard<std::mutex> lock(thread_registry_mutex_);
+        const std::lock_guard<std::mutex> lock(thread_registry_mutex_);
         for (auto it = threads_.begin(); it != threads_.end();) {
             auto& thread = it->second;
             if (!thread) {
@@ -244,7 +245,7 @@ void Reactor::finalize_threads_after_shutdown() {
             }
 
             if (state == ThreadLifecycleState::Terminated) {
-                ThreadID id = thread->get_thread_id();
+                const ThreadID id = thread->get_thread_id();
                 threads_by_thread_id_.erase(id);
                 fast_path_threads_.erase(id);
                 it = threads_.erase(it);
@@ -265,7 +266,7 @@ void Reactor::register_thread(std::shared_ptr<ApplicationThread> thread) {
     const std::string& name = thread->get_thread_name();
     const ThreadID id = thread->get_thread_id();
 
-    std::lock_guard<std::mutex> lock(thread_registry_mutex_);
+    const std::lock_guard<std::mutex> lock(thread_registry_mutex_);
 
     // 1. Check for Name Collision
     auto name_it = threads_.find(name);
@@ -292,7 +293,7 @@ void Reactor::register_thread(std::shared_ptr<ApplicationThread> thread) {
 
 // Reactor.cpp
 void Reactor::cancel_all_timer_fds_for_thread(ThreadID owner_thread_id) {
-    std::lock_guard<std::mutex> lock(timer_registry_mutex_);
+    const std::lock_guard<std::mutex> lock(timer_registry_mutex_);
 
     PUBSUB_LOG(logger_, LogLevel::Info, "Reactor::run event loop has finished, will cancel all timers for thread {}", owner_thread_id.get_value());
 
@@ -304,12 +305,12 @@ void Reactor::cancel_all_timer_fds_for_thread(ThreadID owner_thread_id) {
     auto& timers_by_name = it_thread->second;
 
     for (auto it = timers_by_name.begin(); it != timers_by_name.end();) {
-        TimerID id = it->second;
+        const TimerID id = it->second;
 
         // Look up FD for this timer
         auto id_it = timer_id_to_fd_.find(id);
         if (id_it != timer_id_to_fd_.end()) {
-            int fd = id_it->second;
+            const int fd = id_it->second;
 
             // Remove from ID→FD map before touching handlers
             timer_id_to_fd_.erase(id_it);
@@ -328,7 +329,7 @@ void Reactor::cancel_all_timer_fds_for_thread(ThreadID owner_thread_id) {
 }
 
 void Reactor::deregister_thread(ThreadID thread_id, const std::string& name) {
-    std::lock_guard<std::mutex> lock(thread_registry_mutex_);
+    const std::lock_guard<std::mutex> lock(thread_registry_mutex_);
 
     PUBSUB_LOG(logger_, LogLevel::Info, "Deregistering thread: {} (ID: {})", name, thread_id.get_value());
 
@@ -358,7 +359,7 @@ bool Reactor::wait_for_all_threads(std::function<bool(const ApplicationThread&)>
     // 1. Snapshot using shared_ptr
     std::vector<std::shared_ptr<ApplicationThread>> thread_snapshots;
     {
-        std::lock_guard<std::mutex> lock(thread_registry_mutex_);
+        const std::lock_guard<std::mutex> lock(thread_registry_mutex_);
         for (auto const& [name, thread] : threads_) {
             thread_snapshots.push_back(thread);
         }
@@ -370,8 +371,9 @@ bool Reactor::wait_for_all_threads(std::function<bool(const ApplicationThread&)>
 
         while (true) {
             // If the thread is gone, it can't satisfy the predicate, but it's not "active"
-            if (!thread)
+            if (!thread) {
                 break;
+            }
 
             auto state = thread->get_lifecycle_state().as_tag();
 
@@ -402,7 +404,7 @@ bool Reactor::wait_for_all_threads(std::function<bool(const ApplicationThread&)>
  * @brief Helper to send a reactor event to all living threads.
  */
 void Reactor::broadcast_reactor_event(EventType::EventTypeTag tag) {
-    std::lock_guard<std::mutex> lock(thread_registry_mutex_);
+    const std::lock_guard<std::mutex> lock(thread_registry_mutex_);
     for (auto& [name, thread] : threads_) {
         if (thread != nullptr) {
             EventMessage msg = EventMessage::create_reactor_event(EventType(tag));
@@ -416,9 +418,9 @@ bool Reactor::initialize_threads() {
     // 1. Surgical Cleanup: Remove all Tombstones
     //    (With shared_ptr, there are no expired entries, but we preserve the structure.)
     {
-        std::lock_guard<std::mutex> lock(thread_registry_mutex_);
+        const std::lock_guard<std::mutex> lock(thread_registry_mutex_);
 
-        if (threads_.size() == 0) {
+        if (threads_.empty()) {
             PUBSUB_LOG_STR(logger_, LogLevel::Error, "Reactor has no registered threads to run");
             return false;
         }
@@ -444,7 +446,7 @@ bool Reactor::initialize_threads() {
 
     // 2. Start all threads
     {
-        std::lock_guard<std::mutex> lock(thread_registry_mutex_);
+        const std::lock_guard<std::mutex> lock(thread_registry_mutex_);
         for (auto& [name, thread] : threads_) {
             if (thread != nullptr) {
                 thread->start();
@@ -506,14 +508,14 @@ void Reactor::enqueue_control_command(const ReactorControlCommand& command) {
 }
 
 TimerID Reactor::allocate_timer_id() {
-    std::lock_guard<std::mutex> lock(timer_registry_mutex_);
+    const std::lock_guard<std::mutex> lock(timer_registry_mutex_);
     TimerID id = next_timer_id_;
     ++next_timer_id_;
     return id;
 }
 
 void Reactor::create_timer_fd(TimerID timer_id, const std::string& name, ThreadID owner_thread_id, std::chrono::microseconds interval, TimerType type) {
-    std::lock_guard<std::mutex> lock(timer_registry_mutex_);
+    const std::lock_guard<std::mutex> lock(timer_registry_mutex_);
 
     auto& thread_timers = thread_timer_names_[owner_thread_id];
     if (thread_timers.find(name) != thread_timers.end()) {
@@ -522,7 +524,7 @@ void Reactor::create_timer_fd(TimerID timer_id, const std::string& name, ThreadI
 
     // TODO the line below contains a logging error that is not detected during compilation
     PUBSUB_LOG(logger_, LogLevel::Info, "Reactor created timer id {}\n", __FILE__, __LINE__, timer_id.get_value());
-    Timer timer(name, owner_thread_id, timer_id, type, interval);
+    const Timer timer(name, owner_thread_id, timer_id, type, interval);
     auto timer_handler = std::make_unique<TimerHandler>(timer, *this);
     thread_timers[name] = timer_id;
     timer_id_to_fd_[timer_id] = timer_handler->get_fd();
@@ -530,7 +532,7 @@ void Reactor::create_timer_fd(TimerID timer_id, const std::string& name, ThreadI
 }
 
 void Reactor::cancel_timer_fd(ThreadID owner_thread_id, TimerID id) {
-    std::lock_guard<std::mutex> lock(timer_registry_mutex_);
+    const std::lock_guard<std::mutex> lock(timer_registry_mutex_);
 
     // 1. Find the FD associated with this TimerID
     auto id_it = timer_id_to_fd_.find(id);
@@ -540,7 +542,7 @@ void Reactor::cancel_timer_fd(ThreadID owner_thread_id, TimerID id) {
         return;
     }
 
-    int fd = id_it->second;
+    const int fd = id_it->second;
 
     // 2. Access the handler to get the name (the metadata source of truth)
     auto handler_it = handlers_.find(fd);
@@ -607,7 +609,7 @@ void Reactor::event_loop() {
 
     while (lifecycle_.load(std::memory_order_acquire) == ReactorLifecycleState::Running) {
         PUBSUB_LOG_STR(logger_, LogLevel::Info, "event_loop about to call epoll_wait");
-        int nfds = ::epoll_wait(epoll_fd_, events.data(), static_cast<int>(events.size()), -1);
+        const int nfds = ::epoll_wait(epoll_fd_, events.data(), static_cast<int>(events.size()), -1);
         PUBSUB_LOG(logger_, LogLevel::Info, "epoll_wait returned nfds = {}", nfds);
         if (nfds == -1) {
             if (errno == EINTR) {
@@ -649,7 +651,7 @@ void Reactor::dispatch_events(int nfds, epoll_event* events) {
     PUBSUB_LOG_STR(logger_, LogLevel::Info, "entered dispatch_events");
 
     for (int i = 0; i < nfds; ++i) {
-        int fd = events[i].data.fd;
+        const int fd = events[i].data.fd;
 
         if (fd == wake_fd_) {
             uint64_t dummy;
@@ -704,7 +706,7 @@ void Reactor::on_housekeeping_tick() {
 }
 
 void Reactor::check_for_exited_threads() {
-    std::lock_guard<std::mutex> lock(thread_registry_mutex_);
+    const std::lock_guard<std::mutex> lock(thread_registry_mutex_);
     PUBSUB_LOG_STR(logger_, LogLevel::Info, "checking for exited threads");
     for (auto& [name, thread] : threads_) {
         if (thread != nullptr) {
@@ -732,7 +734,7 @@ void Reactor::check_for_stuck_threads() {
     // config_.itc_maximum_inactivity_interval_
     // we also have a separate config interval for the init event because that might be costly.
 
-    std::lock_guard<std::mutex> lock(thread_registry_mutex_);
+    const std::lock_guard<std::mutex> lock(thread_registry_mutex_);
     PUBSUB_LOG_STR(logger_, LogLevel::Info, "checking for stuck threads");
     for (auto& [name, thread] : threads_) {
         if (thread != nullptr) {

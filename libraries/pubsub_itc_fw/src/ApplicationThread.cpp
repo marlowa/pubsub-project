@@ -106,7 +106,7 @@ void ApplicationThread::cancel_timer(const std::string& name) {
         return;
     }
 
-    TimerID id = it->second;
+    const TimerID id = it->second;
     PUBSUB_LOG(logger_, LogLevel::Info, "Thread {} sending cancel timer command to reactor for timer {}", thread_name_, name);
     ReactorControlCommand command(ReactorControlCommand::CommandTag::CancelTimer);
     command.owner_thread_id_ = thread_id_;

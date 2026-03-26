@@ -15,7 +15,7 @@
 namespace {
 boost::filesystem::path test_log_dir_{boost::filesystem::temp_directory_path() / "logger_test"};
 
-pubsub_itc_fw::QuillLogger test_logger
+pubsub_itc_fw::QuillLogger test_logger;
 
 } // namespace
 

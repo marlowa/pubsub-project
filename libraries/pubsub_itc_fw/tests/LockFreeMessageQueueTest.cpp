@@ -58,8 +58,8 @@
 //
 // ============================================================================
 
-#include <pthread.h>
-#include <sched.h>
+// include the gtest header first avoid spurious cyclic include warning from clang-tidy
+#include <gtest/gtest.h>
 
 #include <atomic>
 #include <thread>
@@ -67,7 +67,8 @@
 #include <chrono>
 #include <random>
 
-#include <gtest/gtest.h>
+#include <pthread.h>
+#include <sched.h>
 
 #include <pubsub_itc_fw/Backoff.hpp>
 #include <pubsub_itc_fw/LockFreeMessageQueue.hpp>
@@ -91,7 +92,7 @@ void pin_current_thread_to_cpu(int cpu_index) {
     CPU_ZERO(&cpuset);
     CPU_SET(cpu_index, &cpuset);
 
-    int rc = pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+    const int rc = pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
     ASSERT_EQ(rc, 0) << "Failed to set thread affinity";
 }
 
@@ -128,8 +129,8 @@ QueueConfig make_default_queue_config() {
 // as expected before layering on concurrency tests.
 // ------------------------------------------------------------
 TEST(LockFreeMessageQueueTest, BasicEnqueueDequeue) {
-    QueueConfig queue_config = make_default_queue_config();
-    AllocatorConfig allocator_config = make_default_allocator_config();
+    const QueueConfig queue_config = make_default_queue_config();
+    const AllocatorConfig allocator_config = make_default_allocator_config();
 
     LockFreeMessageQueue<TestMessage> queue(queue_config, allocator_config);
 
@@ -160,8 +161,8 @@ TEST(LockFreeMessageQueueTest, BasicEnqueueDequeue) {
 // contention.
 // ------------------------------------------------------------
 TEST(LockFreeMessageQueueTest, MultiProducerSingleConsumer) {
-    QueueConfig queue_config = make_default_queue_config();
-    AllocatorConfig allocator_config = make_default_allocator_config();
+    const QueueConfig queue_config = make_default_queue_config();
+    const AllocatorConfig allocator_config = make_default_allocator_config();
 
     LockFreeMessageQueue<TestMessage> queue(queue_config, allocator_config);
 
@@ -222,7 +223,7 @@ TEST(LockFreeMessageQueueTest, WatermarkHandlersFireOnce) {
     queue_config.gone_above_high_watermark_handler =
         [&](void*) { high_calls.fetch_add(1); };
 
-    AllocatorConfig allocator_config = make_default_allocator_config();
+    const AllocatorConfig allocator_config = make_default_allocator_config();
 
     LockFreeMessageQueue<TestMessage> queue(queue_config, allocator_config);
 
@@ -249,8 +250,8 @@ TEST(LockFreeMessageQueueTest, WatermarkHandlersFireOnce) {
 // safe, inert state.
 // ------------------------------------------------------------
 TEST(LockFreeMessageQueueTest, EnqueueAfterShutdownIsDropped) {
-    QueueConfig queue_config = make_default_queue_config();
-    AllocatorConfig allocator_config = make_default_allocator_config();
+    const QueueConfig queue_config = make_default_queue_config();
+    const AllocatorConfig allocator_config = make_default_allocator_config();
 
     auto* queue = new LockFreeMessageQueue<TestMessage>(queue_config, allocator_config);
 
@@ -276,8 +277,8 @@ TEST(LockFreeMessageQueueTest, EnqueueAfterShutdownIsDropped) {
 // invokes shutdown semantics.
 // ------------------------------------------------------------
 TEST(LockFreeMessageQueueTest, DestructorDrainsQueue) {
-    QueueConfig queue_config = make_default_queue_config();
-    AllocatorConfig allocator_config = make_default_allocator_config();
+    const QueueConfig queue_config = make_default_queue_config();
+    const AllocatorConfig allocator_config = make_default_allocator_config();
 
     auto* queue = new LockFreeMessageQueue<TestMessage>(queue_config, allocator_config);
 
@@ -298,8 +299,8 @@ TEST(LockFreeMessageQueueTest, DestructorDrainsQueue) {
 // contention.
 // ------------------------------------------------------------
 TEST(LockFreeMessageQueueTest, HeavyMultiProducerStress) {
-    QueueConfig queue_config = make_default_queue_config();
-    AllocatorConfig allocator_config = make_default_allocator_config();
+    const QueueConfig queue_config = make_default_queue_config();
+    const AllocatorConfig allocator_config = make_default_allocator_config();
 
     LockFreeMessageQueue<TestMessage> queue(queue_config, allocator_config);
 
@@ -358,8 +359,8 @@ TEST(LockFreeMessageQueueTest, HeavyMultiProducerStress) {
 // do not migrate and memory access patterns are stable.
 // ------------------------------------------------------------
 TEST(LockFreeMessageQueueTest, ProducerConsumerPinnedToSeparateCores) {
-    QueueConfig queue_config = make_default_queue_config();
-    AllocatorConfig allocator_config = make_default_allocator_config();
+    const QueueConfig queue_config = make_default_queue_config();
+    const AllocatorConfig allocator_config = make_default_allocator_config();
 
     LockFreeMessageQueue<TestMessage> queue(queue_config, allocator_config);
 
@@ -414,8 +415,8 @@ TEST(LockFreeMessageQueueTest, ProducerConsumerPinnedToSeparateCores) {
 // ------------------------------------------------------------
 #ifdef ENABLE_PERFORMANCE_TESTS
 TEST(LockFreeMessageQueueTest, SoakTestMillionsOfMessages) {
-    QueueConfig queue_config = make_default_queue_config();
-    AllocatorConfig allocator_config = make_default_allocator_config();
+    const QueueConfig queue_config = make_default_queue_config();
+    const AllocatorConfig allocator_config = make_default_allocator_config();
 
     LockFreeMessageQueue<TestMessage> queue(queue_config, allocator_config);
 
@@ -475,8 +476,8 @@ TEST(LockFreeMessageQueueTest, SoakTestMillionsOfMessages) {
 // layout issues.
 // ------------------------------------------------------------
 TEST(LockFreeMessageQueueTest, FalseSharingDetection) {
-    QueueConfig queue_config = make_default_queue_config();
-    AllocatorConfig allocator_config = make_default_allocator_config();
+    const QueueConfig queue_config = make_default_queue_config();
+    const AllocatorConfig allocator_config = make_default_allocator_config();
 
     LockFreeMessageQueue<TestMessage> queue(queue_config, allocator_config);
 
@@ -529,8 +530,8 @@ TEST(LockFreeMessageQueueTest, FalseSharingDetection) {
 // other ABA-adjacent failure modes in the linked-list structure.
 // ------------------------------------------------------------
 TEST(LockFreeMessageQueueTest, AbaResistanceStress) {
-    QueueConfig queue_config = make_default_queue_config();
-    AllocatorConfig allocator_config = make_default_allocator_config();
+    const QueueConfig queue_config = make_default_queue_config();
+    const AllocatorConfig allocator_config = make_default_allocator_config();
 
     LockFreeMessageQueue<TestMessage> queue(queue_config, allocator_config);
 
@@ -606,7 +607,7 @@ TEST(LockFreeMessageQueueTest, WatermarkStormTest) {
     queue_config.gone_above_high_watermark_handler =
         [&](void*) { high_calls.fetch_add(1, std::memory_order_relaxed); };
 
-    AllocatorConfig allocator_config = make_default_allocator_config();
+    const AllocatorConfig allocator_config = make_default_allocator_config();
 
     LockFreeMessageQueue<TestMessage> queue(queue_config, allocator_config);
 
@@ -642,8 +643,8 @@ TEST(LockFreeMessageQueueTest, WatermarkStormTest) {
 // and that the queue drains cleanly without undefined behavior.
 // ------------------------------------------------------------
 TEST(LockFreeMessageQueueTest, ShutdownRaceTest) {
-    QueueConfig queue_config = make_default_queue_config();
-    AllocatorConfig allocator_config = make_default_allocator_config();
+    const QueueConfig queue_config = make_default_queue_config();
+    const AllocatorConfig allocator_config = make_default_allocator_config();
 
     LockFreeMessageQueue<TestMessage> queue(queue_config, allocator_config);
 
@@ -699,7 +700,9 @@ TEST(LockFreeMessageQueueTest, ShutdownRaceTest) {
     // After shutdown, queue must be in a safe state
     while (true) {
         auto msg = queue.dequeue();
-        if (!msg.has_value()) break;
+        if (!msg.has_value()) {
+            break;
+        }
     }
 
     EXPECT_TRUE(queue.empty());
@@ -724,7 +727,7 @@ TEST(LockFreeMessageQueueTest, LowWatermarkStormTest) {
     queue_config.gone_above_high_watermark_handler =
         [&](void*) { high_calls.fetch_add(1, std::memory_order_relaxed); };
 
-    AllocatorConfig allocator_config = make_default_allocator_config();
+    const AllocatorConfig allocator_config = make_default_allocator_config();
 
     LockFreeMessageQueue<TestMessage> queue(queue_config, allocator_config);
 
@@ -762,8 +765,8 @@ TEST(LockFreeMessageQueueTest, LowWatermarkStormTest) {
 // ------------------------------------------------------------
 #ifdef ENABLE_PERFORMANCE_TESTS
 TEST(LockFreeMessageQueueTest, ThroughputBenchmark) {
-    QueueConfig queue_config = make_default_queue_config();
-    AllocatorConfig allocator_config = make_default_allocator_config();
+    const QueueConfig queue_config = make_default_queue_config();
+    const AllocatorConfig allocator_config = make_default_allocator_config();
 
     LockFreeMessageQueue<TestMessage> queue(queue_config, allocator_config);
 
@@ -836,8 +839,8 @@ TEST(LockFreeMessageQueueTest, ThroughputBenchmark) {
 // exposes subtle races that fixed-rate tests cannot detect.
 // ------------------------------------------------------------
 TEST(LockFreeMessageQueueTest, MixedRateJitterSoakTest) {
-    QueueConfig queue_config = make_default_queue_config();
-    AllocatorConfig allocator_config = make_default_allocator_config();
+    const QueueConfig queue_config = make_default_queue_config();
+    const AllocatorConfig allocator_config = make_default_allocator_config();
 
     LockFreeMessageQueue<TestMessage> queue(queue_config, allocator_config);
 
@@ -872,24 +875,27 @@ TEST(LockFreeMessageQueueTest, MixedRateJitterSoakTest) {
 
             for (int i = 0; i < iterations; ) {
 
-                int burst = burst_dist(rng);
+                const int burst = burst_dist(rng);
                 for (int b = 0; b < burst && i < iterations; ++b, ++i) {
                     queue.enqueue(TestMessage{i});
                 }
 
                 producer_backoff.pause();
 
-                int s = stall_type(rng);
+                const int s = stall_type(rng);
 
                 if (s <= 850) {
-                    for (int k = 0, n = tiny_stall(rng); k < n; ++k)
+                    for (int k = 0, n = tiny_stall(rng); k < n; ++k) {
                         std::this_thread::yield();
+                    }
                 } else if (s <= 990) {
-                    for (int k = 0, n = medium_stall(rng); k < n; ++k)
+                    for (int k = 0, n = medium_stall(rng); k < n; ++k) {
                         std::this_thread::yield();
+                    }
                 } else {
-                    for (int k = 0, n = large_stall(rng); k < n; ++k)
+                    for (int k = 0, n = large_stall(rng); k < n; ++k) {
                         std::this_thread::yield();
+                    }
                 }
             }
         });
@@ -914,13 +920,15 @@ TEST(LockFreeMessageQueueTest, MixedRateJitterSoakTest) {
                 ++local_count;
                 consumed.fetch_add(1, std::memory_order_relaxed);
             } else {
-                int s = stall_type(rng);
+                const int s = stall_type(rng);
                 if (s <= 900) {
-                    for (int k = 0, n = tiny_stall(rng); k < n; ++k)
+                    for (int k = 0, n = tiny_stall(rng); k < n; ++k) {
                         std::this_thread::yield();
+                    }
                 } else {
-                    for (int k = 0, n = medium_stall(rng); k < n; ++k)
+                    for (int k = 0, n = medium_stall(rng); k < n; ++k) {
                         std::this_thread::yield();
+                    }
                 }
             }
         }
@@ -942,8 +950,8 @@ TEST(LockFreeMessageQueueTest, MixedRateJitterSoakTest) {
 // node reuse, and memory-ordering under high churn.
 // ------------------------------------------------------------
 TEST(LockFreeMessageQueueTest, MemoryPressureBurstTest) {
-    QueueConfig queue_config = make_default_queue_config();
-    AllocatorConfig allocator_config = make_default_allocator_config();
+    const QueueConfig queue_config = make_default_queue_config();
+    const AllocatorConfig allocator_config = make_default_allocator_config();
 
     LockFreeMessageQueue<TestMessage> queue(queue_config, allocator_config);
 
@@ -967,8 +975,8 @@ TEST(LockFreeMessageQueueTest, MemoryPressureBurstTest) {
     // Producers: rapid bursts with forced pauses to simulate allocator pressure
     for (int p = 0; p < producers; ++p) {
         threads.emplace_back([&, p] {
-            std::mt19937 rng(p + 123);
-            std::uniform_int_distribution<int> pause_dist(50, 500);
+            const std::mt19937 rng(p + 123);
+            const std::uniform_int_distribution<int> pause_dist(50, 500);
 
             Backoff producer_backoff;
             while (!start_flag.load(std::memory_order_acquire)) {
@@ -1026,10 +1034,10 @@ TEST(LockFreeMessageQueueTest, MemoryPressureBurstTest) {
 // the Python plotting script for visualization.
 // ------------------------------------------------------------
 TEST(LockFreeMessageQueueTest, QueueDepthHistogramTest) {
-    QueueConfig queue_config = make_default_queue_config();
-    AllocatorConfig allocator_config = make_default_allocator_config();
+    const QueueConfig queue_config = make_default_queue_config();
+    const AllocatorConfig allocator_config = make_default_allocator_config();
 
-    LockFreeMessageQueue<TestMessage> queue(queue_config, allocator_config);
+    const LockFreeMessageQueue<TestMessage> queue(queue_config, allocator_config);
 
     // The rest of this test was truncated in the original snippet.
     // You can reinsert your existing histogram logic here unchanged,
@@ -1116,8 +1124,8 @@ TEST(LockFreeMessageQueueTest, QueueDepthHistogramTest) {
  * ============================================================================
  */
 TEST(LockFreeMessageQueueTest, ShouldSufferFromPriorityInversion) {
-    QueueConfig queue_config = make_default_queue_config();
-    AllocatorConfig allocator_config = make_default_allocator_config();
+    const QueueConfig queue_config = make_default_queue_config();
+    const AllocatorConfig allocator_config = make_default_allocator_config();
     LockFreeMessageQueue<TestMessage> queue(queue_config, allocator_config);
 
     std::atomic<bool> stall_producer{true};

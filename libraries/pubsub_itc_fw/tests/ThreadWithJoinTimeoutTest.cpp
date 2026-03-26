@@ -123,6 +123,7 @@ TEST_F(ThreadWithJoinTimeoutTest, MoveConstructorTransfersOwnership) {
 
     ThreadWithJoinTimeout t2(std::move(t1));
 
+    // NOLINTNEXTLINE(bugprone-use-after-move)
     EXPECT_FALSE(t1.joinable());
     EXPECT_TRUE(t2.joinable());
 
@@ -143,6 +144,7 @@ TEST_F(ThreadWithJoinTimeoutTest, MoveAssignmentTransfersOwnership) {
 
     t2 = std::move(t1);
 
+    // NOLINTNEXTLINE(bugprone-use-after-move)
     EXPECT_FALSE(t1.joinable());
     EXPECT_TRUE(t2.joinable());
 

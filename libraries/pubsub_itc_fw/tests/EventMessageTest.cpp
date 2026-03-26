@@ -22,7 +22,7 @@ public:
 // -----------------------------------------------------------------------------
 TEST_F(EventMessageTest, ReactorEventCreation)
 {
-    EventMessage m = EventMessage::create_reactor_event(EventType(EventType::Initial));
+    const EventMessage m = EventMessage::create_reactor_event(EventType(EventType::Initial));
 
     EXPECT_EQ(m.type().as_tag(), EventType::Initial);
     EXPECT_EQ(m.originating_thread_id().get_value(), system_thread_id_value);
@@ -37,10 +37,10 @@ TEST_F(EventMessageTest, ReactorEventCreation)
 // -----------------------------------------------------------------------------
 TEST_F(EventMessageTest, ItcMessageWithPayload)
 {
-    ThreadID origin(42);
+    const ThreadID origin(42);
     const uint8_t payload[4] = {10, 20, 30, 40};
 
-    EventMessage msg = EventMessage::create_itc_message(origin, payload, 4);
+    const EventMessage msg = EventMessage::create_itc_message(origin, payload, 4);
 
     EXPECT_EQ(msg.type().as_tag(), EventType::InterthreadCommunication);
     EXPECT_EQ(msg.originating_thread_id().get_value(), 42);
@@ -59,9 +59,9 @@ TEST_F(EventMessageTest, ItcMessageWithPayload)
 // -----------------------------------------------------------------------------
 TEST_F(EventMessageTest, ItcMessageZeroLengthPayload)
 {
-    ThreadID origin(7);
+    const ThreadID origin(7);
 
-    EventMessage msg = EventMessage::create_itc_message(origin, nullptr, 0);
+    const EventMessage msg = EventMessage::create_itc_message(origin, nullptr, 0);
 
     EXPECT_EQ(msg.type().as_tag(), EventType::InterthreadCommunication);
     EXPECT_EQ(msg.originating_thread_id().get_value(), 7);
@@ -75,9 +75,9 @@ TEST_F(EventMessageTest, ItcMessageZeroLengthPayload)
 // -----------------------------------------------------------------------------
 TEST_F(EventMessageTest, TimerEventCreation)
 {
-    TimerID tid(12345);
+    const TimerID tid(12345);
 
-    EventMessage msg = EventMessage::create_timer_event(tid);
+    const EventMessage msg = EventMessage::create_timer_event(tid);
 
     EXPECT_EQ(msg.type().as_tag(), EventType::Timer);
     EXPECT_EQ(msg.timer_id().get_value(), 12345);
@@ -91,7 +91,7 @@ TEST_F(EventMessageTest, TimerEventCreation)
 // -----------------------------------------------------------------------------
 TEST_F(EventMessageTest, TerminationEventReason)
 {
-    EventMessage msg = EventMessage::create_termination_event("catastrophic failure");
+    const EventMessage msg = EventMessage::create_termination_event("catastrophic failure");
 
     EXPECT_EQ(msg.type().as_tag(), EventType::Termination);
     EXPECT_EQ(msg.reason(), "catastrophic failure");
@@ -106,11 +106,11 @@ TEST_F(EventMessageTest, TerminationEventReason)
 // -----------------------------------------------------------------------------
 TEST_F(EventMessageTest, MoveSemantics)
 {
-    ThreadID origin(11);
+    const ThreadID origin(11);
     const uint8_t payload[2] = {9, 8};
 
     EventMessage original = EventMessage::create_itc_message(origin, payload, 2);
-    EventMessage moved = std::move(original);
+    const EventMessage moved = std::move(original);
 
     EXPECT_EQ(moved.type().as_tag(), EventType::InterthreadCommunication);
     EXPECT_EQ(moved.originating_thread_id().get_value(), 11);

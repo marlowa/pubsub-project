@@ -1,7 +1,9 @@
 #include <atomic>
 #include <chrono>
+#include <iostream>
 #include <thread>
 #include <future>
+#include <memory>
 
 #include <gtest/gtest.h>
 
@@ -99,7 +101,7 @@ public:
          reactor_.reset();
     }
 
-    void join_reactor_or_die(std::chrono::milliseconds timeout)
+    void join_reactor_or_die(std::chrono::milliseconds timeout) const
     {
         ASSERT_TRUE(reactor_thread_); // if this fails, it’s a test bug
 
@@ -194,7 +196,7 @@ public:
     }
 
     std::atomic<int>* counter{nullptr};
-    void on_timer_event(const std::string&) override {
+    void on_timer_event([[maybe_unused]] const std::string& timer_name) override {
         counter->fetch_add(1, std::memory_order_release);
     }
 };
@@ -215,7 +217,7 @@ public:
     }
 
     std::atomic<int>* counter{nullptr};
-    void on_timer_event(const std::string&) override {
+    void on_timer_event([[maybe_unused]] const std::string& timer_name) override {
         counter->fetch_add(1, std::memory_order_release);
     }
 
@@ -265,8 +267,12 @@ public:
     }
 
     void on_timer_event(const std::string& name) override {
-        if (name == "A") a->fetch_add(1);
-        if (name == "B") b->fetch_add(1);
+        if (name == "A") {
+            a->fetch_add(1);
+        }
+        if (name == "B") {
+            b->fetch_add(1);
+        }
     }
 
     void on_itc_message([[maybe_unused]] const EventMessage& msg) override {
@@ -279,7 +285,7 @@ public:
 
 TEST_F(ApplicationThreadTest, GetThreadNameReturnsCorrectName)
 {
-    TestThread thread(logger_with_sink_.logger,
+    const TestThread thread(logger_with_sink_.logger,
                       *reactor_,
                       "GetThreadNameTest", ThreadID(123),
                       make_queue_config(), make_allocator_config());
@@ -878,7 +884,7 @@ TEST_F(ApplicationThreadTest, JoinWithTimeoutSucceeds)
     thread->shutdown("test");
 
     // Thread should finish quickly
-    bool joined = thread->join_with_timeout(std::chrono::milliseconds(500));
+    const bool joined = thread->join_with_timeout(std::chrono::milliseconds(500));
     EXPECT_TRUE(joined);
 }
 
@@ -891,7 +897,7 @@ TEST_F(ApplicationThreadTest, JoinWithTimeoutBeforeStartReturnsFalse)
                      ThreadID(1), make_queue_config(), make_allocator_config());
 
     // Should return false immediately
-    bool joined = thread.join_with_timeout(std::chrono::milliseconds(100));
+    const bool joined = thread.join_with_timeout(std::chrono::milliseconds(100));
     EXPECT_FALSE(joined);
 }
 
@@ -936,7 +942,7 @@ TEST_F(ApplicationThreadTest, ThreadNameAndIDGetters)
     const std::string expected_name = "MyTestThread";
     const ThreadID expected_id(123);
 
-    TestThread thread(logger_with_sink_.logger, *reactor_, expected_name,
+    const TestThread thread(logger_with_sink_.logger, *reactor_, expected_name,
                      expected_id, make_queue_config(), make_allocator_config());
 
     EXPECT_EQ(thread.get_thread_name(), expected_name);
@@ -1026,8 +1032,8 @@ TEST_F(ApplicationThreadTest, ExceptionTriggersReactorShutdown)
 
 TEST_F(ApplicationThreadTest, InterThreadRoutingDeliversMessage)
 {
-    QueueConfig qc = make_queue_config();
-    AllocatorConfig ac = make_allocator_config();
+    const QueueConfig qc = make_queue_config();
+    const AllocatorConfig ac = make_allocator_config();
 
     auto threadA = std::make_shared<TestThread>(logger_with_sink_.logger, *reactor_, "ThreadA", ThreadID(1), qc, ac);
     auto threadB = std::make_shared<TestThread>(logger_with_sink_.logger, *reactor_, "ThreadB", ThreadID(2), qc, ac);
@@ -1138,7 +1144,7 @@ TEST_F(ApplicationThreadTest, CancelTimerStopsEvents)
     EventMessage msg = EventMessage::create_itc_message(cthread->get_thread_id(), nullptr, 0);
     cthread->post_message(ThreadID(1), std::move(msg));
 
-    int after_cancel = count.load();
+    const int after_cancel = count.load();
 
     // Wait a bit longer — count should not increase
     std::this_thread::sleep_for(std::chrono::milliseconds(50));

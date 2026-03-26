@@ -39,3 +39,12 @@ readability-magic-numbers
 
 # It is annoying that clang-tidy objects to this when it is so much better than a C-style cast. When it's needed, it's needed.
 cppcoreguidelines-pro-type-reinterpret-cast
+
+# Our Treiber stack uses inline assembler to avoid the costs of libatomic.
+hicpp-no-assembler
+
+# we want to be able to have short names
+readability-identifier-length
+
+# we want to be able to say #if 0 ... #endif
+readability-avoid-unconditional-preprocessor-if

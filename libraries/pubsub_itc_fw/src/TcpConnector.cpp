@@ -102,7 +102,7 @@ public:
         return {false, ""};
     }
 
-    bool is_connecting() const {
+    [[nodiscard]] bool is_connecting() const {
         return state_ == ConnectState::connecting && tcp_socket_ != nullptr;
     }
 

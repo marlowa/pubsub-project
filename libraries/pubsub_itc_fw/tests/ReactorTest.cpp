@@ -8,7 +8,6 @@
 
 #include <pubsub_itc_fw/AllocatorConfig.hpp>
 #include <pubsub_itc_fw/ApplicationThread.hpp>
-#include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/Backoff.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/EventType.hpp>
@@ -117,7 +116,7 @@ public:
          reactor_.reset();
     }
 
-    void join_reactor_or_die(std::chrono::milliseconds timeout)
+    void join_reactor_or_die(std::chrono::milliseconds timeout) const
     {
         ASSERT_TRUE(reactor_thread_); // if this fails, it’s a test bug
 
@@ -188,7 +187,7 @@ protected:
         saw_app_ready_event.store(true, std::memory_order_release);
     }
 
-    void on_itc_message(const EventMessage&) override {
+    void on_itc_message([[maybe_unused]] const EventMessage& eventMessage) override {
         // Not used in this test.
     }
 };
@@ -206,7 +205,7 @@ public:
         set_lifecycle_state(ThreadLifecycleState::Operational);
     }
 
-    void on_itc_message(const EventMessage&) override {}
+    void on_itc_message([[maybe_unused]] const EventMessage& eventMessage) override {}
 };
 
 } // un-named namespace
@@ -351,7 +350,7 @@ TEST_F(ReactorTest, ShutdownBroadcastsTerminationAndThreadExits)
 // Reactor shutdown test: thread ignores Termination and never exits
 // -----------------------------------------------------------------------------
 
-TEST_F(ReactorTest, RogueThreadBlocksInITCMessage_ReactorStillShutsDown)
+TEST_F(ReactorTest, RogueThreadBlocksInITCMessageReactorStillShutsDown)
 {
     auto rogue = std::make_shared<RogueITCThread>(logger_with_sink_.logger, *reactor_,
                                                   "RogueThread", ThreadID{777},
@@ -510,7 +509,7 @@ TEST_F(ReactorTest, ReactorRequiresAtLeastOneRegisteredThreadTest)
 
 TEST_F(ReactorTest, RouteMessageBeforeInitializationThrows)
 {
-    ReactorConfiguration cfg;
+    const ReactorConfiguration cfg;
     Reactor reactor(cfg, logger_with_sink_.logger);
 
     EventMessage msg = EventMessage::create_itc_message(ThreadID(1), nullptr, 0);
@@ -520,7 +519,7 @@ TEST_F(ReactorTest, RouteMessageBeforeInitializationThrows)
 
 TEST_F(ReactorTest, RouteMessageFromNonRunningOriginIsIgnored)
 {
-    ReactorConfiguration cfg;
+    const ReactorConfiguration cfg;
     Reactor reactor(cfg, logger_with_sink_.logger);
 
     auto target_thread = std::make_shared<NeverStartingThread>(
@@ -545,7 +544,7 @@ TEST_F(ReactorTest, RouteMessageFromNonRunningOriginIsIgnored)
 
 TEST_F(ReactorTest, FinalizePromotesShuttingDownToTerminated)
 {
-    ReactorConfiguration cfg;
+    const ReactorConfiguration cfg;
     Reactor reactor(cfg, logger_with_sink_.logger);
 
     auto t = std::make_shared<NeverStartingThread>(logger_with_sink_.logger, reactor,
@@ -564,7 +563,7 @@ TEST_F(ReactorTest, FinalizePromotesShuttingDownToTerminated)
 
 TEST_F(ReactorTest, CancelTimerWrongOwnerThrows)
 {
-    ReactorConfiguration cfg;
+    const ReactorConfiguration cfg;
     Reactor reactor(cfg, logger_with_sink_.logger);
 
     auto t1 = std::make_shared<CooperativeShutdownThread>(logger_with_sink_.logger, reactor,
@@ -577,7 +576,7 @@ TEST_F(ReactorTest, CancelTimerWrongOwnerThrows)
     reactor.register_thread(t1);
     reactor.register_thread(t2);
 
-    TimerID tid = reactor.allocate_timer_id();
+    const TimerID tid = reactor.allocate_timer_id();
     reactor.create_timer_fd(tid, "X", ThreadID(1), std::chrono::milliseconds(10), TimerType::SingleShot);
 
     EXPECT_THROW(
@@ -588,7 +587,7 @@ TEST_F(ReactorTest, CancelTimerWrongOwnerThrows)
 
 TEST_F(ReactorTest, DispatchEventsUnknownFdIsIgnored)
 {
-    ReactorConfiguration cfg;
+    const ReactorConfiguration cfg;
     Reactor reactor(cfg, logger_with_sink_.logger);
 
     epoll_event ev{};
@@ -599,7 +598,7 @@ TEST_F(ReactorTest, DispatchEventsUnknownFdIsIgnored)
 
 TEST_F(ReactorTest, ExitedThreadTriggersShutdown)
 {
-    ReactorConfiguration cfg;
+    const ReactorConfiguration cfg;
     Reactor reactor(cfg, logger_with_sink_.logger);
 
     auto thread = std::make_shared<FakeThread>(logger_with_sink_.logger, reactor,
@@ -649,7 +648,7 @@ TEST_F(ReactorTest, StuckOperationalThreadTriggersShutdown)
 
 TEST_F(ReactorTest, DeregisterThreadRemovesThreadAndTimers)
 {
-    ReactorConfiguration configuration;
+    const ReactorConfiguration configuration;
     Reactor reactor(configuration, logger_with_sink_.logger);
 
     // Create and register a thread
@@ -664,7 +663,7 @@ TEST_F(ReactorTest, DeregisterThreadRemovesThreadAndTimers)
     reactor.register_thread(thread);
 
     // Create a timer owned by this thread
-    TimerID timer_id = reactor.allocate_timer_id();
+    const TimerID timer_id = reactor.allocate_timer_id();
     reactor.create_timer_fd(
         timer_id,
         "TimerA",
