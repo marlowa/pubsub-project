@@ -271,9 +271,24 @@ def next_nontrivial(tokens: list, pos: int):
     return None
 
 
-def _is_type_token(t: Token) -> bool:
+def _is_type_token(t: Token, tokens: list, idx: int) -> bool:
     """Could this token be the rightmost token of a type expression?"""
-    return t.kind in (TK.WORD, TK.RANGLE, TK.RBRACKET)
+    if t.kind == TK.WORD:
+        return True
+    if t.kind == TK.RANGLE:
+        return True
+    if t.kind == TK.RBRACKET:
+        # A ']' that closes a C++ attribute '[[...]]' must not be treated as
+        # a type token — it is followed by 'const' that qualifies the
+        # declaration, not a type. Detect this by checking if the previous
+        # non-trivial token is also ']'.
+        prev = idx - 1
+        while prev >= 0 and tokens[prev].is_trivial():
+            prev -= 1
+        if prev >= 0 and tokens[prev].kind == TK.RBRACKET:
+            return False  # closing ']]' of an attribute
+        return True
+    return False
 
 
 def _is_ptr_or_ref(t: Token) -> bool:
@@ -371,7 +386,7 @@ def transform(tokens: list) -> list:
             continue
 
         # After a type-like token → East const → move it
-        if not _is_type_token(prev):
+        if not _is_type_token(prev, tokens, prev_idx):
             continue
 
         type_start = _find_type_start(tokens, prev_idx)
@@ -397,15 +412,23 @@ def transform(tokens: list) -> list:
         cv_ln   = result[cv_idx].line
         cv_cl   = result[cv_idx].col
 
-        # --- Remove cv token and one adjacent whitespace token ---
+        # --- Remove cv token and the whitespace immediately to its LEFT ---
+        # The whitespace between the type and const (e.g. "int [space] const")
+        # becomes redundant once const moves to the front. We identify it by
+        # walking left from cv_idx past any trivial tokens to find the type's
+        # rightmost non-trivial token, then removing any whitespace that sits
+        # strictly between that token and cv_idx.
+        # We must NOT touch whitespace to the right of const (e.g. before *
+        # or &) — that belongs to the surrounding expression.
         remove = {cv_idx}
+        # Walk left from cv_idx to find the whitespace between type and const
         left = cv_idx - 1
         if left >= 0 and result[left].kind == TK.WHITESPACE:
-            remove.add(left)
-        else:
-            right = cv_idx + 1
-            if right < len(result) and result[right].kind == TK.WHITESPACE:
-                remove.add(right)
+            # Only remove it if the token before the whitespace is a non-trivial
+            # type token (not a newline, not another whitespace run)
+            before_ws = left - 1
+            if before_ws >= 0 and not result[before_ws].is_trivial():
+                remove.add(left)
 
         result = [t for i, t in enumerate(result) if i not in remove]
 
@@ -413,10 +436,12 @@ def transform(tokens: list) -> list:
         removed_before = sum(1 for i in remove if i < type_start)
         type_start -= removed_before
 
-        # --- Insert  "cv " before the type start ---
-        new_cv    = Token(TK.WORD,       cv_text, cv_ln, cv_cl)
-        new_space = Token(TK.WHITESPACE, ' ',     cv_ln, cv_cl)
-        result = result[:type_start] + [new_cv, new_space] + result[type_start:]
+        # --- Insert "cv " before the type start ---
+        # Always insert [const, space]. Any resulting runs of whitespace are
+        # squeezed to a single space by normalise_whitespace() afterwards.
+        new_cv = Token(TK.WORD, cv_text, cv_ln, cv_cl)
+        new_sp = Token(TK.WHITESPACE, ' ', cv_ln, cv_cl)
+        result = result[:type_start] + [new_cv, new_sp] + result[type_start:]
 
     return result
 
@@ -434,8 +459,35 @@ def render(tokens: list) -> str:
     return ''.join(parts)
 
 
+def normalise_whitespace(tokens: list) -> list:
+    """
+    Squeeze any run of whitespace tokens that falls between two non-whitespace,
+    non-newline tokens down to a single space token.  Newlines are left alone so
+    that indentation and blank lines are preserved.
+    """
+    result = []
+    i = 0
+    while i < len(tokens):
+        t = tokens[i]
+        if t.kind == TK.WHITESPACE:
+            # Collect the whole run
+            j = i
+            while j < len(tokens) and tokens[j].kind == TK.WHITESPACE:
+                j += 1
+            # If this run is longer than one token, squeeze it
+            if j - i > 1:
+                result.append(Token(TK.WHITESPACE, ' ', t.line, t.col))
+            else:
+                result.append(t)
+            i = j
+        else:
+            result.append(t)
+            i += 1
+    return result
+
+
 def process_source(src: str) -> str:
-    return render(transform(lex(src)))
+    return render(normalise_whitespace(transform(lex(src))))
 
 
 # ---------------------------------------------------------------------------
@@ -490,6 +542,19 @@ def run_tests():
         # Function parameter
         ("void f(int const n);",         "void f(const int n);"),
         ("void f(int const * p);",       "void f(const int * p);"),
+
+        # No double space should appear after const
+        ("int const x;",                 "const int x;"),
+        ("unsigned long const n;",       "const unsigned long n;"),
+
+        # Attributes: must not be treated as type tokens; space after ]] preserved
+        ("void f([[maybe_unused]] std::string const& s) {}",
+         "void f([[maybe_unused]] const std::string& s) {}"),
+        ("[[nodiscard]] std::string const& get() const;",
+         "[[nodiscard]] const std::string& get() const;"),
+        # Already West const with attribute — must be left completely alone
+        ("virtual void on_timer_event([[maybe_unused]] const std::string& name) {}",
+         "virtual void on_timer_event([[maybe_unused]] const std::string& name) {}"),
 
         # asm volatile — must NOT be touched (volatile is not a type qualifier here)
         ("asm volatile (\"nop\");",       "asm volatile (\"nop\");"),

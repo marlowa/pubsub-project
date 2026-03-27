@@ -197,14 +197,14 @@ template <typename T> class ExpandablePoolAllocator {
      * @param[in] handler_for_huge_pages_error Callback if huge page allocation fails.
      * @param[in] use_huge_pages_flag Whether to attempt 2MB huge page allocation.
      */
-    ExpandablePoolAllocator(std::string const& pool_name, int objects_per_pool, int initial_pools, int expansion_threshold_hint,
+    ExpandablePoolAllocator(const std::string& pool_name, int objects_per_pool, int initial_pools, int expansion_threshold_hint,
                             std::function<void(void*, int)> handler_for_pool_exhausted, //
                             std::function<void(void*, void*)> handler_for_invalid_free, //
                             std::function<void(void*)> handler_for_huge_pages_error, //
                             UseHugePagesFlag use_huge_pages_flag);
 
-    ExpandablePoolAllocator(ExpandablePoolAllocator const&) = delete;
-    ExpandablePoolAllocator& operator=(ExpandablePoolAllocator const&) = delete;
+    ExpandablePoolAllocator(const ExpandablePoolAllocator&) = delete;
+    ExpandablePoolAllocator& operator=(const ExpandablePoolAllocator&) = delete;
     ExpandablePoolAllocator(ExpandablePoolAllocator&&) = delete;
     ExpandablePoolAllocator& operator=(ExpandablePoolAllocator&&) = delete;
 
@@ -283,7 +283,7 @@ template <typename T> class ExpandablePoolAllocator {
 };
 
 template <typename T>
-ExpandablePoolAllocator<T>::ExpandablePoolAllocator(std::string const& pool_name, //
+ExpandablePoolAllocator<T>::ExpandablePoolAllocator(const std::string& pool_name, //
                                                     int objects_per_pool, int initial_pools,
                                                     int expansion_threshold_hint,                               //
                                                     std::function<void(void*, int)> handler_for_pool_exhausted, //

@@ -40,8 +40,8 @@ struct alignas(64) CacheLine {
     T value{};  // zero-initialised, so decls of CacheLine variables do not need braces
 
     CacheLine() = default;
-    CacheLine(CacheLine const&) = default;
-    CacheLine& operator=(CacheLine const&) = default;
+    CacheLine(const CacheLine&) = default;
+    CacheLine& operator=(const CacheLine&) = default;
 };
 
 static_assert(sizeof(CacheLine<std::atomic<uint64_t>>) >= 64 &&

@@ -101,8 +101,8 @@ class ApplicationThread {
                       const QueueConfig& queue_config,
                       const AllocatorConfig& allocator_config);
 
-    ApplicationThread(ApplicationThread const&) = delete;
-    ApplicationThread& operator=(ApplicationThread const&) = delete;
+    ApplicationThread(const ApplicationThread&) = delete;
+    ApplicationThread& operator=(const ApplicationThread&) = delete;
     ApplicationThread(ApplicationThread&&) = delete;
     ApplicationThread& operator=(ApplicationThread&&) = delete;
 
