@@ -1147,4 +1147,304 @@ TEST_F(ExpandablePoolAllocatorTest, MisalignedPointerRejectedByContains) {
     pool.deallocate(valid_object);
 }
 
+TEST_F(ExpandablePoolAllocatorTest, AbaStressWithMidDrain) {
+#ifdef USING_VALGRIND
+    const int iterations     = 200;
+    const int num_threads    = 4;
+    const int num_mid_drains = 4;
+#else
+    const int iterations     = 100'000;
+    const int num_threads    = 8;
+    const int num_mid_drains = 16;
+#endif
+
+    const int pool_slots               = num_threads;
+    const int initial_pools            = 1;
+    const int expansion_threshold_hint = 1;
+
+    ExpandablePoolAllocator<TestObject> allocator(
+        "AbaStressWithMidDrain",
+        pool_slots,
+        initial_pools,
+        expansion_threshold_hint,
+        handler_for_pool_exhausted_,
+        handler_for_invalid_free_,
+        handler_for_huge_pages_error_,
+        UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
+
+    std::atomic<bool> start_gate{false};
+    std::atomic<int>  ready_count{0};
+
+    // All addresses ever legitimately returned by allocate() during the stress phase.
+    std::set<TestObject*> valid_addresses;
+    std::mutex            valid_addresses_mutex;
+
+    // Worker threads: allocate/deallocate hammer.
+    std::vector<std::thread> threads;
+    threads.reserve(num_threads);
+    for (int thread_index = 0; thread_index < num_threads; ++thread_index) {
+        threads.emplace_back([&]() {
+            ready_count.fetch_add(1, std::memory_order_relaxed);
+            while (!start_gate.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+
+            for (int iteration = 0; iteration < iterations; ++iteration) {
+                TestObject* allocated_object = allocator.allocate();
+                if (allocated_object == nullptr) {
+                    continue;
+                }
+
+                {
+                    const std::lock_guard<std::mutex> lock(valid_addresses_mutex);
+                    valid_addresses.insert(allocated_object);
+                }
+
+                allocator.deallocate(allocated_object);
+
+                if ((iteration & 0xFF) == 0) {
+                    std::this_thread::yield();
+                }
+            }
+        });
+    }
+
+    // Start all workers together.
+    while (ready_count.load(std::memory_order_acquire) != num_threads) {
+        std::this_thread::yield();
+    }
+    start_gate.store(true, std::memory_order_release);
+
+    // Mid‑run partial drains: steal a subset of slots from the allocator,
+    // verify structural invariants on that subset, then return them.
+    for (int drain_round = 0; drain_round < num_mid_drains; ++drain_round) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+
+        // Snapshot current capacity across all pools.
+        auto stats = allocator.get_pool_statistics();
+        const int total_capacity =
+            stats.number_of_pools_ * stats.number_of_objects_per_pool_;
+
+        const int max_drain = std::max(1, total_capacity / 2);
+        std::vector<TestObject*> drained;
+        drained.reserve(max_drain);
+
+        for (int i = 0; i < max_drain; ++i) {
+            TestObject* obj = allocator.allocate();
+            if (obj == nullptr) {
+                // Some slots are in use by workers; stop this mid‑drain.
+                break;
+            }
+            drained.push_back(obj);
+        }
+
+        if (!drained.empty()) {
+            // Structural check: no duplicates in the mid‑drain slice.
+            std::unordered_set<TestObject*> seen;
+            for (auto* obj : drained) {
+                EXPECT_TRUE(seen.insert(obj).second)
+                    << "allocator free-list corruption: duplicate pointer "
+                    << obj << " in mid‑drain round " << drain_round;
+                // NOTE: we deliberately do NOT require membership in valid_addresses
+                // here, because mid‑drain may be the first user of a slot from a
+                // newly expanded pool under coverage/timing variations.
+            }
+        }
+
+        for (auto* obj : drained) {
+            allocator.deallocate(obj);
+        }
+    }
+
+    for (auto& thread : threads) {
+        thread.join();
+    }
+
+    // After all threads finish, drain the pool and verify structural integrity.
+    auto pool_stats_before_drain = allocator.get_pool_statistics();
+    const int total_capacity = pool_stats_before_drain.number_of_pools_
+                               * pool_stats_before_drain.number_of_objects_per_pool_;
+
+    std::vector<TestObject*> drained_objects;
+    drained_objects.reserve(total_capacity);
+    for (int slot_index = 0; slot_index < total_capacity; ++slot_index) {
+        TestObject* allocated_object = allocator.allocate();
+        if (allocated_object == nullptr) {
+            ADD_FAILURE() << "free-list corruption: allocator returned nullptr at slot "
+                          << slot_index << " of expected " << total_capacity;
+            break;
+        }
+        drained_objects.push_back(allocated_object);
+    }
+
+    // Every drained address must be unique and must have been legitimately
+    // returned by allocate() at some point during the stress phase.
+    std::unordered_set<TestObject*> seen_during_drain;
+    for (auto* drained_object : drained_objects) {
+        EXPECT_TRUE(seen_during_drain.insert(drained_object).second)
+            << "free-list corruption: duplicate pointer " << drained_object
+            << " after ABA mid‑drain stress";
+        {
+            const std::lock_guard<std::mutex> lock(valid_addresses_mutex);
+            EXPECT_NE(valid_addresses.find(drained_object), valid_addresses.end())
+                << "free-list corruption: unknown pointer " << drained_object
+                << " after ABA mid‑drain stress";
+        }
+    }
+
+    EXPECT_EQ(static_cast<int>(drained_objects.size()), total_capacity)
+        << "free-list corruption: expected " << total_capacity
+        << " slots drained, got " << drained_objects.size();
+
+    for (auto* drained_object : drained_objects) {
+        allocator.deallocate(drained_object);
+    }
+}
+
+TEST_F(ExpandablePoolAllocatorTest, CrossPoolAbaInterleaving) {
+#ifdef USING_VALGRIND
+    const int iterations     = 200;
+    const int num_threads    = 4;
+    const int num_mid_drains = 4;
+#else
+    const int iterations     = 100'000;
+    const int num_threads    = 8;
+    const int num_mid_drains = 12;
+#endif
+
+    // Small pool to force expansion quickly.
+    const int objects_per_pool = 4;
+    const int initial_pools    = 1;
+    const int threshold_hint   = 1;
+
+    ExpandablePoolAllocator<TestObject> allocator(
+        "CrossPoolAbaInterleaving",
+        objects_per_pool,
+        initial_pools,
+        threshold_hint,
+        handler_for_pool_exhausted_,
+        handler_for_invalid_free_,
+        handler_for_huge_pages_error_,
+        UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
+
+    std::atomic<bool> start_gate{false};
+    std::atomic<int>  ready_count{0};
+
+    std::set<TestObject*> valid_addresses;
+    std::mutex            valid_mutex;
+
+    // Worker threads: hammer allocate/deallocate, triggering expansions.
+    std::vector<std::thread> threads;
+    for (int t = 0; t < num_threads; ++t) {
+        threads.emplace_back([&]() {
+            ready_count.fetch_add(1, std::memory_order_relaxed);
+            while (!start_gate.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+
+            for (int i = 0; i < iterations; ++i) {
+                TestObject* obj = allocator.allocate();
+                if (!obj) {
+                    continue;
+                }
+
+                {
+                    std::lock_guard<std::mutex> lock(valid_mutex);
+                    valid_addresses.insert(obj);
+                }
+
+                allocator.deallocate(obj);
+
+                if ((i & 0xFF) == 0) {
+                    std::this_thread::yield();
+                }
+            }
+        });
+    }
+
+    while (ready_count.load(std::memory_order_acquire) != num_threads) {
+        std::this_thread::yield();
+    }
+    start_gate.store(true, std::memory_order_release);
+
+    // Mid‑run partial drains across all pools.
+    for (int round = 0; round < num_mid_drains; ++round) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+
+        auto stats = allocator.get_pool_statistics();
+        const int total_capacity =
+            stats.number_of_pools_ * stats.number_of_objects_per_pool_;
+
+        const int max_drain = std::max(1, total_capacity / 2);
+        std::vector<TestObject*> drained;
+        drained.reserve(max_drain);
+
+        for (int i = 0; i < max_drain; ++i) {
+            TestObject* obj = allocator.allocate();
+            if (!obj) {
+                break;
+            }
+            drained.push_back(obj);
+        }
+
+        // Structural checks on drained slice.
+        std::unordered_set<TestObject*> seen;
+        for (auto* obj : drained) {
+            EXPECT_TRUE(seen.insert(obj).second)
+                << "allocator free-list corruption: duplicate pointer "
+                << obj << " in mid‑drain round " << round;
+            // No membership check here: mid‑drain may be first user of a new pool.
+        }
+
+        for (auto* obj : drained) {
+            allocator.deallocate(obj);
+        }
+    }
+
+    for (auto& th : threads) {
+        th.join();
+    }
+
+    // Final drain: snapshot capacity once, then drain exactly that many slots
+    // without triggering further expansion.
+    auto stats = allocator.get_pool_statistics();
+    const int total_capacity =
+        stats.number_of_pools_ * stats.number_of_objects_per_pool_;
+
+    std::vector<TestObject*> drained;
+    drained.reserve(total_capacity);
+
+    for (int i = 0; i < total_capacity; ++i) {
+        TestObject* obj = allocator.allocate();
+        ASSERT_NE(obj, nullptr)
+            << "allocator free-list corruption: nullptr during final drain at index "
+            << i << " of " << total_capacity;
+        drained.push_back(obj);
+    }
+
+    // Do NOT call allocator.allocate() again here: that would legitimately
+    // trigger expansion and invalidate the notion of "total_capacity".
+
+    // All drained pointers must be unique.
+    std::unordered_set<TestObject*> final_seen;
+    for (auto* obj : drained) {
+        EXPECT_TRUE(final_seen.insert(obj).second)
+            << "allocator free-list corruption: duplicate pointer in final drain";
+    }
+
+    // Every drained pointer must have been legitimately returned by allocate()
+    // at some point during the stress phase.
+    {
+        std::lock_guard<std::mutex> lock(valid_mutex);
+        for (auto* obj : drained) {
+            EXPECT_NE(valid_addresses.find(obj), valid_addresses.end())
+                << "allocator free-list corruption: unknown pointer in final drain";
+        }
+    }
+
+    for (auto* obj : drained) {
+        allocator.deallocate(obj);
+    }
+}
+
 } // namespace pubsub_itc_fw::tests

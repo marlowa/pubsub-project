@@ -362,4 +362,124 @@ TEST_F(FixedSizeMemoryPoolTest, HugePagesHandlerIsCallable) {
     }
 }
 
+TEST_F(FixedSizeMemoryPoolTest, DirectAbaStressWithMidDrain) {
+#ifdef USING_VALGRIND
+    const int iterations     = 200;
+    const int num_threads    = 4;
+    const int num_mid_drains = 4;
+#else
+    const int iterations     = 100'000;
+    const int num_threads    = 8;
+    const int num_mid_drains = 16;
+#endif
+
+    // Capacity == num_threads to maximise contention at the boundary.
+    const int capacity = num_threads;
+    FixedSizeMemoryPool<TestObject> pool(
+        capacity,
+        UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages),
+        huge_page_handler()
+    );
+
+    std::atomic<bool> start_gate{false};
+    std::atomic<bool> stop{false};
+    std::atomic<int>  ready_count{0};
+
+    // Worker threads: pure Treiber-stack pressure (allocate/deallocate).
+    std::vector<std::thread> workers;
+    workers.reserve(num_threads);
+    for (int t = 0; t < num_threads; ++t) {
+        workers.emplace_back([&]() {
+            ready_count.fetch_add(1, std::memory_order_relaxed);
+            while (!start_gate.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+
+            for (int i = 0; i < iterations && !stop.load(std::memory_order_relaxed); ++i) {
+                TestObject* obj = pool.allocate();
+                if (obj == nullptr) {
+                    // Pool temporarily empty; this is fine, just try again.
+                    continue;
+                }
+                obj->id_ = i;
+                pool.deallocate(obj);
+
+                if ((i & 0xFF) == 0) {
+                    std::this_thread::yield();
+                }
+            }
+        });
+    }
+
+    // Wait until all workers are ready, then start them.
+    while (ready_count.load(std::memory_order_acquire) != num_threads) {
+        std::this_thread::yield();
+    }
+    start_gate.store(true, std::memory_order_release);
+
+    // Mid‑run partial drains: steal a subset of slots, verify structural
+    // integrity on whatever we successfully drain, then return them.
+    for (int drain_round = 0; drain_round < num_mid_drains; ++drain_round) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+
+        const int max_drain = capacity / 2;
+        std::vector<TestObject*> drained;
+        drained.reserve(max_drain);
+
+        for (int i = 0; i < max_drain; ++i) {
+            TestObject* obj = pool.allocate();
+            if (obj == nullptr) {
+                // Pool is temporarily empty because workers are holding slots.
+                // This is expected under contention; just stop this mid‑drain.
+                break;
+            }
+            drained.push_back(obj);
+        }
+
+        // If we drained anything at all, it must be structurally sound:
+        // no duplicates in the sample.
+        if (!drained.empty()) {
+            std::set<TestObject*> drained_set(drained.begin(), drained.end());
+            EXPECT_EQ(drained_set.size(), drained.size())
+                << "mid‑drain corruption: duplicate pointer detected in round "
+                << drain_round;
+        }
+
+        // Return drained objects to the pool so workers can continue.
+        for (auto* obj : drained) {
+            pool.deallocate(obj);
+        }
+    }
+
+    // Stop workers and join.
+    stop.store(true, std::memory_order_release);
+    for (auto& th : workers) {
+        th.join();
+    }
+
+    // Final full drain: must recover exactly `capacity` unique slots,
+    // no nullptrs, no extras.
+    std::vector<TestObject*> final_drained;
+    final_drained.reserve(capacity);
+
+    for (int i = 0; i < capacity; ++i) {
+        TestObject* obj = pool.allocate();
+        ASSERT_NE(obj, nullptr)
+            << "final drain corruption: nullptr at index " << i
+            << " (expected " << capacity << " slots)";
+        final_drained.push_back(obj);
+    }
+
+    EXPECT_EQ(pool.allocate(), nullptr)
+        << "final drain corruption: allocator returned more than capacity slots";
+
+    const std::set<TestObject*> final_set(final_drained.begin(), final_drained.end());
+    EXPECT_EQ(final_set.size(), final_drained.size())
+        << "final drain corruption: duplicate pointer detected";
+
+    for (auto* obj : final_drained) {
+        pool.deallocate(obj);
+    }
+}
+
 } // namespace
