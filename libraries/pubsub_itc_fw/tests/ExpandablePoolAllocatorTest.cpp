@@ -255,6 +255,7 @@ TEST_F(ExpandablePoolAllocatorTest, ConcurrentAllocationAndDeallocation) {
     EXPECT_EQ(successful_allocations, total_expected_allocations);
     EXPECT_EQ(TestObject::s_constructor_count.load(), total_expected_allocations);
 
+    // Note: We do not care that on some embedded Linux targets `std::random_device` is deterministic, this is just a test after all.
     std::shuffle(thread_safe_allocated_objects_ptr_list.begin(), thread_safe_allocated_objects_ptr_list.end(),
                  std::default_random_engine(std::random_device()()));
 

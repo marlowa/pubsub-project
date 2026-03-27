@@ -115,3 +115,5 @@ prefer functions scoped to the unnamed namespace rather than the old C-style sta
 do not use noexcept, not even on destructors or move operations.
 dont use the "final" keyword.
 refrain from making a class non-movable just because you think it is advisable or useful.
+when writing unit tests please do not add comments numbering the tests. That is fragile.
+It creates extra work to keep the comments accurate when tests are prepended or inserted in the middle.

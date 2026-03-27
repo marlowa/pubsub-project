@@ -112,10 +112,9 @@ TEST_F(FixedSizeMemoryPoolTest, RandomisedReuse) {
         first_round.push_back(p);
     }
 
-    // Shuffle and deallocate in random order
+    // Shuffle and deallocate in random order. We do not care that on some embedded Linux targets `std::random_device` is deterministic.
     std::vector<TestObject*> shuffled = first_round;
-    std::shuffle(shuffled.begin(), shuffled.end(),
-                 std::default_random_engine(std::random_device()()));
+    std::shuffle(shuffled.begin(), shuffled.end(), std::default_random_engine(std::random_device()()));
     for (auto* p : shuffled) {
         pool.deallocate(p);
     }

@@ -129,7 +129,7 @@ public:
 
     void on_housekeeping_tick();
 
-    TimerID allocate_timer_id();
+    [[nodiscard]] TimerID allocate_timer_id();
 
     QuillLogger& get_logger() { return logger_; }
 

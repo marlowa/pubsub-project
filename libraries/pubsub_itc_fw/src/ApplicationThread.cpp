@@ -16,6 +16,7 @@
 #include <pubsub_itc_fw/HighResolutionClock.hpp>
 #include <pubsub_itc_fw/LockFreeMessageQueue.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
+#include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/QueueConfig.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
@@ -52,10 +53,12 @@ ApplicationThread::~ApplicationThread() {
 ApplicationThread::ApplicationThread(QuillLogger& logger, Reactor& reactor, const std::string& thread_name, ThreadID thread_id, const QueueConfig& queue_config,
                                      const AllocatorConfig& allocator_config)
     : logger_(logger), reactor_(reactor), time_event_started_(), time_event_finished_(), thread_name_(thread_name), thread_id_(thread_id), thread_(nullptr) {
+    if (thread_id.get_value() == 0) {
+        throw PreconditionAssertion("ThreadID of zero is reserved for the reactor", __FILE__, __LINE__);
+    }
+
     message_queue_ = std::make_unique<LockFreeMessageQueue<EventMessage>>(queue_config, allocator_config);
     set_lifecycle_state(ThreadLifecycleState::Created);
-
-    // TODO prohibit threadID of zero since that is reserved for the reactor.
 }
 
 const std::string& ApplicationThread::get_thread_name() const {

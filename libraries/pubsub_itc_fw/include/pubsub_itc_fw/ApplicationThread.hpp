@@ -24,10 +24,6 @@
 #include <pubsub_itc_fw/QuillLogger.hpp>
 
 
-// TODO not sure about the user specifying threadIDs
-// need to think some more about this
-// If we do allow it then zero should throw an exception since it is reserved
-
 // TODO we also want users to create an application thread using make_shared.
 // we might need a factory function to enforce this. The factory function might use CRTP.
 
@@ -72,6 +68,36 @@ class SocketHandler;
  *   - While the queue remains below the low watermark, the low watermark handler
  *     will NOT fire again.
  *   - This prevents handler storms when the queue size fluctuates near a boundary.
+ *
+ * BACKPRESSURE AND MEMORY EXHAUSTION
+ * ------------------------------------
+ * The message queue is backed by an ExpandablePoolAllocator, which means the
+ * queue is never "full" in the traditional sense. When the current fixed-size
+ * memory pool is exhausted, the allocator transparently chains in a new pool
+ * and allocation continues. There is therefore no producer-side blocking or
+ * message dropping due to queue capacity.
+ *
+ * Two independent notification mechanisms exist:
+ *
+ * WATERMARK CALLBACKS (queue-depth layer):
+ *   The high- and low-watermark callbacks on LockFreeMessageQueue fire based
+ *   on the number of messages currently in the queue. They are the intended
+ *   backpressure mechanism: the high-watermark callback signals that the
+ *   consumer is falling behind and producers should slow down or shed load;
+ *   the low-watermark callback signals recovery. See WATERMARK SEMANTICS above.
+ *
+ * POOL EXHAUSTION HANDLER (memory layer):
+ *   The handler in AllocatorConfig fires when a FixedSizeMemoryPool slab
+ *   within the ExpandablePoolAllocator is exhausted and a new slab must be
+ *   allocated from the heap. This is a memory-layer event entirely independent
+ *   of queue depth. It signals that the queue has grown beyond its
+ *   pre-allocated capacity and that heap allocation is occurring. It may be
+ *   used to log or raise an alert, but it is not a backpressure mechanism —
+ *   by the time it fires, the message has already been enqueued successfully.
+ *
+ * Note that because the allocator can grow without bound, the only true
+ * protection against unbounded memory growth is the high-watermark handler
+ * combined with appropriate producer-side flow control.
  *
  * THREADING MODEL:
  *   - enqueue() is wait-free for multiple producers.

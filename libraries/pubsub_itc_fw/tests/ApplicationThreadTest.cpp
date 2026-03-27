@@ -300,6 +300,12 @@ TEST_F(ApplicationThreadTest, GetThreadNameReturnsCorrectName)
     EXPECT_EQ(thread.get_thread_name(), "GetThreadNameTest");
 }
 
+TEST_F(ApplicationThreadTest, ThreadIDOfZeroReserved)
+{
+    EXPECT_THROW(std::make_shared<TestThread>(logger_with_sink_.logger, *reactor_, "TestThread", ThreadID(0),
+                                              make_queue_config(), make_allocator_config()), PreconditionAssertion);
+}
+
 // ------------------------------------------------------------
 // TEST 1: Start and shutdown
 // ------------------------------------------------------------
