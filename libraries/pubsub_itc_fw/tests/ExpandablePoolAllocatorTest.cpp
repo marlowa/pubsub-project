@@ -1447,4 +1447,724 @@ TEST_F(ExpandablePoolAllocatorTest, CrossPoolAbaInterleaving) {
     }
 }
 
+TEST_F(ExpandablePoolAllocatorTest, ConcurrentInvalidFreeDuringExpansion) {
+#ifdef USING_VALGRIND
+    const int iterations  = 200;
+    const int num_threads = 4;
+#else
+    const int iterations  = 50'000;
+    const int num_threads = 8;
+#endif
+
+    const int objects_per_pool = 4;   // small to force expansion
+    const int initial_pools    = 1;
+    const int threshold_hint   = 1;
+
+    std::atomic<int> invalid_free_count{0};
+
+    // Wrap the existing invalid-free handler so we can count invocations.
+    std::function<void(void*, void*)> counting_invalid_free_handler =
+        [&](void* allocator_ptr, void* ptr) {
+            invalid_free_count.fetch_add(1, std::memory_order_relaxed);
+            if (handler_for_invalid_free_) {
+                handler_for_invalid_free_(allocator_ptr, ptr);
+            }
+        };
+
+    ExpandablePoolAllocator<TestObject> allocator(
+        "ConcurrentInvalidFreeDuringExpansion",
+        objects_per_pool,
+        initial_pools,
+        threshold_hint,
+        handler_for_pool_exhausted_,
+        counting_invalid_free_handler,
+        handler_for_huge_pages_error_,
+        UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
+
+    std::atomic<bool> start_gate{false};
+    std::atomic<int>  ready_count{0};
+
+    // Worker threads: hammer allocate/deallocate, triggering expansions and occasional invalid frees.
+    std::vector<std::thread> threads;
+    threads.reserve(num_threads);
+
+    for (int t = 0; t < num_threads; ++t) {
+        threads.emplace_back([&, t]() {
+            ready_count.fetch_add(1, std::memory_order_relaxed);
+            while (!start_gate.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+
+            for (int i = 0; i < iterations; ++i) {
+                TestObject* obj = allocator.allocate();
+                if (obj) {
+                    allocator.deallocate(obj);
+                }
+
+                // Occasionally attempt an invalid free with a stack object.
+                if ((i % 1024) == 0) {
+                    TestObject bogus;
+                    allocator.deallocate(&bogus);  // must trigger invalid-free
+                }
+
+                if ((i & 0xFF) == 0) {
+                    std::this_thread::yield();
+                }
+            }
+        });
+    }
+
+    while (ready_count.load(std::memory_order_acquire) != num_threads) {
+        std::this_thread::yield();
+    }
+    start_gate.store(true, std::memory_order_release);
+
+    for (auto& th : threads) {
+        th.join();
+    }
+
+    // After stress, allocator must still be structurally sound.
+    auto stats = allocator.get_pool_statistics();
+    const int total_capacity =
+        stats.number_of_pools_ * stats.number_of_objects_per_pool_;
+
+    std::vector<TestObject*> drained;
+    drained.reserve(total_capacity);
+
+    for (int i = 0; i < total_capacity; ++i) {
+        TestObject* obj = allocator.allocate();
+        ASSERT_NE(obj, nullptr)
+            << "allocator corruption after invalid-free stress";
+        drained.push_back(obj);
+    }
+
+    // Must have detected at least some invalid frees.
+    EXPECT_GT(invalid_free_count.load(std::memory_order_relaxed), 0)
+        << "invalid-free handler was never invoked";
+
+    // All drained pointers must be unique.
+    std::unordered_set<TestObject*> seen;
+    for (auto* obj : drained) {
+        EXPECT_TRUE(seen.insert(obj).second)
+            << "duplicate pointer detected after invalid-free stress";
+    }
+
+    for (auto* obj : drained) {
+        allocator.deallocate(obj);
+    }
+}
+
+TEST_F(ExpandablePoolAllocatorTest, StalePointerInvalidFree) {
+    const int objects_per_pool = 4;
+    const int initial_pools    = 1;
+    const int threshold_hint   = 1;
+
+    std::atomic<int> invalid_free_count{0};
+
+    // Wrap the existing invalid-free handler so we can count invocations.
+    std::function<void(void*, void*)> counting_invalid_free_handler =
+        [&](void* allocator_ptr, void* ptr) {
+            invalid_free_count.fetch_add(1, std::memory_order_relaxed);
+            if (handler_for_invalid_free_) {
+                handler_for_invalid_free_(allocator_ptr, ptr);
+            }
+        };
+
+    ExpandablePoolAllocator<TestObject> allocator(
+        "StalePointerInvalidFree",
+        objects_per_pool,
+        initial_pools,
+        threshold_hint,
+        handler_for_pool_exhausted_,
+        counting_invalid_free_handler,
+        handler_for_huge_pages_error_,
+        UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
+
+    // Step 1: allocate and free once.
+    TestObject* first = allocator.allocate();
+    ASSERT_NE(first, nullptr);
+    allocator.deallocate(first);
+
+    // Step 2: reallocate; with LIFO free-list this should be the same slot.
+    TestObject* second = allocator.allocate();
+    ASSERT_NE(second, nullptr);
+    EXPECT_EQ(first, second) << "expected immediate reuse of freed slot";
+
+    // Step 3: stale-pointer free: use the old pointer again.
+    allocator.deallocate(first);  // stale / double free, must be reported
+
+    // Step 4: now free the "current" owner pointer.
+    allocator.deallocate(second);
+
+    // We must have seen exactly one invalid-free.
+    EXPECT_EQ(invalid_free_count.load(std::memory_order_relaxed), 1)
+        << "stale-pointer invalid free was not detected exactly once";
+
+    // Final structural sanity: allocator still consistent.
+    auto stats = allocator.get_pool_statistics();
+    const int total_capacity =
+        stats.number_of_pools_ * stats.number_of_objects_per_pool_;
+
+    std::vector<TestObject*> drained;
+    drained.reserve(total_capacity);
+
+    for (int i = 0; i < total_capacity; ++i) {
+        TestObject* obj = allocator.allocate();
+        ASSERT_NE(obj, nullptr)
+            << "allocator corruption after stale-pointer invalid-free test";
+        drained.push_back(obj);
+    }
+
+    std::unordered_set<TestObject*> seen;
+    for (auto* obj : drained) {
+        EXPECT_TRUE(seen.insert(obj).second)
+            << "duplicate pointer detected after stale-pointer invalid-free test";
+    }
+
+    for (auto* obj : drained) {
+        allocator.deallocate(obj);
+    }
+}
+
+TEST_F(ExpandablePoolAllocatorTest, InvalidFreeDuringMidDrain) {
+#ifdef USING_VALGRIND
+    const int iterations     = 200;
+    const int num_threads    = 4;
+    const int num_mid_drains = 4;
+#else
+    const int iterations     = 80'000;
+    const int num_threads    = 8;
+    const int num_mid_drains = 12;
+#endif
+
+    const int objects_per_pool = 4;   // small to force expansion
+    const int initial_pools    = 1;
+    const int threshold_hint   = 1;
+
+    std::atomic<int> invalid_free_count{0};
+
+    // Wrap the existing invalid-free handler so we can count invocations.
+    std::function<void(void*, void*)> counting_invalid_free_handler =
+        [&](void* allocator_ptr, void* ptr) {
+            invalid_free_count.fetch_add(1, std::memory_order_relaxed);
+            if (handler_for_invalid_free_) {
+                handler_for_invalid_free_(allocator_ptr, ptr);
+            }
+        };
+
+    ExpandablePoolAllocator<TestObject> allocator(
+        "InvalidFreeDuringMidDrain",
+        objects_per_pool,
+        initial_pools,
+        threshold_hint,
+        handler_for_pool_exhausted_,
+        counting_invalid_free_handler,
+        handler_for_huge_pages_error_,
+        UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
+
+    std::atomic<bool> start_gate{false};
+    std::atomic<int>  ready_count{0};
+
+    // Worker threads: hammer allocate/deallocate and occasionally perform invalid frees.
+    std::vector<std::thread> threads;
+    threads.reserve(num_threads);
+
+    for (int t = 0; t < num_threads; ++t) {
+        threads.emplace_back([&, t]() {
+            ready_count.fetch_add(1, std::memory_order_relaxed);
+            while (!start_gate.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+
+            for (int i = 0; i < iterations; ++i) {
+                TestObject* obj = allocator.allocate();
+                if (obj) {
+                    allocator.deallocate(obj);
+                }
+
+                // Occasionally attempt an invalid free with a stack object.
+                if ((i % 2048) == 0) {
+                    TestObject bogus;
+                    allocator.deallocate(&bogus);  // must trigger invalid-free
+                }
+
+                if ((i & 0xFF) == 0) {
+                    std::this_thread::yield();
+                }
+            }
+        });
+    }
+
+    while (ready_count.load(std::memory_order_acquire) != num_threads) {
+        std::this_thread::yield();
+    }
+    start_gate.store(true, std::memory_order_release);
+
+    // Mid‑run partial drains: steal a subset of slots while workers are active.
+    for (int round = 0; round < num_mid_drains; ++round) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+
+        auto stats = allocator.get_pool_statistics();
+        const int total_capacity =
+            stats.number_of_pools_ * stats.number_of_objects_per_pool_;
+
+        const int max_drain = std::max(1, total_capacity / 3);
+        std::vector<TestObject*> drained;
+        drained.reserve(max_drain);
+
+        for (int i = 0; i < max_drain; ++i) {
+            TestObject* obj = allocator.allocate();
+            if (!obj) {
+                break;
+            }
+            drained.push_back(obj);
+        }
+
+        // Structural check: no duplicates in the mid‑drain slice.
+        std::unordered_set<TestObject*> seen;
+        for (auto* obj : drained) {
+            EXPECT_TRUE(seen.insert(obj).second)
+                << "allocator free-list corruption: duplicate pointer "
+                << obj << " in mid‑drain round " << round;
+        }
+
+        // Return drained objects.
+        for (auto* obj : drained) {
+            allocator.deallocate(obj);
+        }
+    }
+
+    for (auto& th : threads) {
+        th.join();
+    }
+
+    // After all stress, allocator must still be structurally sound.
+    auto stats = allocator.get_pool_statistics();
+    const int total_capacity =
+        stats.number_of_pools_ * stats.number_of_objects_per_pool_;
+
+    std::vector<TestObject*> drained;
+    drained.reserve(total_capacity);
+
+    for (int i = 0; i < total_capacity; ++i) {
+        TestObject* obj = allocator.allocate();
+        ASSERT_NE(obj, nullptr)
+            << "allocator corruption after invalid-free mid-drain stress";
+        drained.push_back(obj);
+    }
+
+    // Must have detected at least some invalid frees.
+    EXPECT_GT(invalid_free_count.load(std::memory_order_relaxed), 0)
+        << "invalid-free handler was never invoked during mid-drain stress";
+
+    // All drained pointers must be unique.
+    std::unordered_set<TestObject*> seen;
+    for (auto* obj : drained) {
+        EXPECT_TRUE(seen.insert(obj).second)
+            << "duplicate pointer detected after invalid-free mid-drain stress";
+    }
+
+    for (auto* obj : drained) {
+        allocator.deallocate(obj);
+    }
+}
+
+TEST_F(ExpandablePoolAllocatorTest, CrossAllocatorInvalidFree) {
+    const int objects_per_pool = 4;
+    const int initial_pools    = 1;
+    const int threshold_hint   = 1;
+
+    std::atomic<int> invalid_free_count{0};
+
+    // Wrap the existing invalid-free handler so we can count invocations for allocator B.
+    std::function<void(void*, void*)> counting_invalid_free_handler =
+        [&](void* allocator_ptr, void* ptr) {
+            invalid_free_count.fetch_add(1, std::memory_order_relaxed);
+            if (handler_for_invalid_free_) {
+                handler_for_invalid_free_(allocator_ptr, ptr);
+            }
+        };
+
+    // Allocator A: normal handlers.
+    ExpandablePoolAllocator<TestObject> allocator_a(
+        "CrossAllocatorInvalidFree_A",
+        objects_per_pool,
+        initial_pools,
+        threshold_hint,
+        handler_for_pool_exhausted_,
+        handler_for_invalid_free_,
+        handler_for_huge_pages_error_,
+        UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
+
+    // Allocator B: counts invalid frees.
+    ExpandablePoolAllocator<TestObject> allocator_b(
+        "CrossAllocatorInvalidFree_B",
+        objects_per_pool,
+        initial_pools,
+        threshold_hint,
+        handler_for_pool_exhausted_,
+        counting_invalid_free_handler,
+        handler_for_huge_pages_error_,
+        UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
+
+    // Allocate from allocator A.
+    TestObject* from_a = allocator_a.allocate();
+    ASSERT_NE(from_a, nullptr);
+
+    // Illegally free into allocator B: must be detected as invalid.
+    allocator_b.deallocate(from_a);
+
+    EXPECT_GT(invalid_free_count.load(std::memory_order_relaxed), 0)
+        << "cross-allocator invalid free was not detected";
+
+    // Structural sanity: allocator A still consistent.
+    {
+        auto stats_a = allocator_a.get_pool_statistics();
+        const int total_capacity_a =
+            stats_a.number_of_pools_ * stats_a.number_of_objects_per_pool_;
+
+        std::vector<TestObject*> drained_a;
+        drained_a.reserve(total_capacity_a);
+
+        for (int i = 0; i < total_capacity_a; ++i) {
+            TestObject* obj = allocator_a.allocate();
+            ASSERT_NE(obj, nullptr)
+                << "allocator A corruption after cross-allocator invalid-free test";
+            drained_a.push_back(obj);
+        }
+
+        std::unordered_set<TestObject*> seen_a;
+        for (auto* obj : drained_a) {
+            EXPECT_TRUE(seen_a.insert(obj).second)
+                << "allocator A duplicate pointer after cross-allocator invalid-free test";
+        }
+
+        for (auto* obj : drained_a) {
+            allocator_a.deallocate(obj);
+        }
+    }
+
+    // Structural sanity: allocator B still consistent.
+    {
+        auto stats_b = allocator_b.get_pool_statistics();
+        const int total_capacity_b =
+            stats_b.number_of_pools_ * stats_b.number_of_objects_per_pool_;
+
+        std::vector<TestObject*> drained_b;
+        drained_b.reserve(total_capacity_b);
+
+        for (int i = 0; i < total_capacity_b; ++i) {
+            TestObject* obj = allocator_b.allocate();
+            ASSERT_NE(obj, nullptr)
+                << "allocator B corruption after cross-allocator invalid-free test";
+            drained_b.push_back(obj);
+        }
+
+        std::unordered_set<TestObject*> seen_b;
+        for (auto* obj : drained_b) {
+            EXPECT_TRUE(seen_b.insert(obj).second)
+                << "allocator B duplicate pointer after cross-allocator invalid-free test";
+        }
+
+        for (auto* obj : drained_b) {
+            allocator_b.deallocate(obj);
+        }
+    }
+}
+
+TEST_F(ExpandablePoolAllocatorTest, ConcurrentExpansionFreeListIntegrity) {
+#ifdef USING_VALGRIND
+    const int iterations  = 500;
+    const int num_threads = 4;
+#else
+    const int iterations  = 50'000;
+    const int num_threads = 8;
+#endif
+
+    const int objects_per_pool = 4;   // tiny to force many expansions
+    const int initial_pools    = 1;
+    const int threshold_hint   = 1;
+
+    ExpandablePoolAllocator<TestObject> allocator(
+        "ConcurrentExpansionFreeListIntegrity",
+        objects_per_pool,
+        initial_pools,
+        threshold_hint,
+        handler_for_pool_exhausted_,
+        handler_for_invalid_free_,
+        handler_for_huge_pages_error_,
+        UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
+
+    std::atomic<bool> start_gate{false};
+    std::atomic<int>  ready_count{0};
+
+    std::vector<std::thread> threads;
+    threads.reserve(num_threads);
+
+    for (int t = 0; t < num_threads; ++t) {
+        threads.emplace_back([&, t]() {
+            ready_count.fetch_add(1, std::memory_order_relaxed);
+            while (!start_gate.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+
+            for (int i = 0; i < iterations; ++i) {
+                TestObject* obj = allocator.allocate();
+                if (obj) {
+                    allocator.deallocate(obj);
+                }
+
+                if ((i & 0xFF) == 0) {
+                    std::this_thread::yield();
+                }
+            }
+        });
+    }
+
+    while (ready_count.load(std::memory_order_acquire) != num_threads) {
+        std::this_thread::yield();
+    }
+    start_gate.store(true, std::memory_order_release);
+
+    for (auto& th : threads) {
+        th.join();
+    }
+
+    // We expect expansion to have happened.
+    auto stats = allocator.get_pool_statistics();
+    EXPECT_GT(stats.number_of_pools_, 1)
+        << "no expansion occurred during concurrent stress; test did not exercise multi-pool free-list";
+
+    const int total_capacity =
+        stats.number_of_pools_ * stats.number_of_objects_per_pool_;
+
+    std::vector<TestObject*> drained;
+    drained.reserve(total_capacity);
+
+    for (int i = 0; i < total_capacity; ++i) {
+        TestObject* obj = allocator.allocate();
+        ASSERT_NE(obj, nullptr)
+            << "allocator corruption after concurrent expansion stress at index "
+            << i << " of " << total_capacity;
+        drained.push_back(obj);
+    }
+
+    // All drained pointers must be unique: no cross-pool linking, no cycles, no duplicates.
+    std::unordered_set<TestObject*> seen;
+    for (auto* obj : drained) {
+        EXPECT_TRUE(seen.insert(obj).second)
+            << "free-list corruption: duplicate pointer after concurrent expansion stress";
+    }
+
+    for (auto* obj : drained) {
+        allocator.deallocate(obj);
+    }
+}
+
+TEST_F(ExpandablePoolAllocatorTest, MixedChaosInvalidFreeStress) {
+#ifdef USING_VALGRIND
+    const int iterations  = 500;
+    const int num_threads = 4;
+#else
+    const int iterations  = 20'000;
+    const int num_threads = 8;
+#endif
+
+    const int objects_per_pool = 8;
+    const int initial_pools    = 1;
+    const int threshold_hint   = 1;
+
+    // Two allocators sharing the same test-level callbacks.
+    auto allocator_a = make_allocator("MixedChaos_A", objects_per_pool, initial_pools, threshold_hint);
+    auto allocator_b = make_allocator("MixedChaos_B", objects_per_pool, initial_pools, threshold_hint);
+
+    std::atomic<bool> start_gate{false};
+    std::atomic<int>  ready_count{0};
+
+    std::vector<std::thread> threads;
+    threads.reserve(num_threads);
+
+    for (int t = 0; t < num_threads; ++t) {
+        threads.emplace_back([&, t]() {
+            ready_count.fetch_add(1, std::memory_order_relaxed);
+            while (!start_gate.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+
+            std::mt19937 rng(static_cast<unsigned>(t + 1));
+            std::uniform_int_distribution<int> op_dist(0, 3);
+
+            std::vector<TestObject*> owned_a;
+            std::vector<TestObject*> owned_b;
+            owned_a.reserve(64);
+            owned_b.reserve(64);
+
+            for (int i = 0; i < iterations; ++i) {
+                const int op = op_dist(rng);
+
+                switch (op) {
+                case 0: { // allocate from A
+                    TestObject* obj = allocator_a.allocate();
+                    if (obj) {
+                        owned_a.push_back(obj);
+                    }
+                    break;
+                }
+                case 1: { // allocate from B
+                    TestObject* obj = allocator_b.allocate();
+                    if (obj) {
+                        owned_b.push_back(obj);
+                    }
+                    break;
+                }
+                case 2: { // valid deallocate from A or B if available
+                    if (!owned_a.empty()) {
+                        TestObject* obj = owned_a.back();
+                        owned_a.pop_back();
+                        allocator_a.deallocate(obj);
+                    } else if (!owned_b.empty()) {
+                        TestObject* obj = owned_b.back();
+                        owned_b.pop_back();
+                        allocator_b.deallocate(obj);
+                    }
+                    break;
+                }
+                case 3: { // invalid frees: stack object and cross-allocator free
+                    // Stack object -> invalid free into A
+                    TestObject bogus;
+                    allocator_a.deallocate(&bogus);
+
+                    // Cross-allocator free: take from A, free into B
+                    if (!owned_a.empty()) {
+                        TestObject* obj = owned_a.back();
+                        owned_a.pop_back();
+                        allocator_b.deallocate(obj); // must be detected as invalid
+                    }
+                    break;
+                }
+                }
+
+                if ((i & 0xFF) == 0) {
+                    std::this_thread::yield();
+                }
+            }
+
+            // Clean up any remaining valid ownership.
+            for (auto* obj : owned_a) {
+                allocator_a.deallocate(obj);
+            }
+            for (auto* obj : owned_b) {
+                allocator_b.deallocate(obj);
+            }
+        });
+    }
+
+    while (ready_count.load(std::memory_order_acquire) != num_threads) {
+        std::this_thread::yield();
+    }
+    start_gate.store(true, std::memory_order_release);
+
+    for (auto& th : threads) {
+        th.join();
+    }
+
+    // We must have seen some invalid frees (stack + cross-allocator).
+    EXPECT_GT(invalid_free_callback_count_.load(), 0)
+        << "mixed chaos stress did not trigger any invalid-free callbacks";
+
+    // Structural sanity for allocator A.
+    {
+        auto stats = allocator_a.get_pool_statistics();
+        const int total_capacity =
+            stats.number_of_pools_ * stats.number_of_objects_per_pool_;
+
+        std::vector<TestObject*> drained;
+        drained.reserve(total_capacity);
+        for (int i = 0; i < total_capacity; ++i) {
+            TestObject* obj = allocator_a.allocate();
+            ASSERT_NE(obj, nullptr)
+                << "allocator A corruption after mixed chaos stress at index "
+                << i << " of " << total_capacity;
+            drained.push_back(obj);
+        }
+        expect_unique_non_null(drained, "allocator A mixed chaos drain");
+        for (auto* obj : drained) {
+            allocator_a.deallocate(obj);
+        }
+    }
+
+    // Structural sanity for allocator B.
+    {
+        auto stats = allocator_b.get_pool_statistics();
+        const int total_capacity =
+            stats.number_of_pools_ * stats.number_of_objects_per_pool_;
+
+        std::vector<TestObject*> drained;
+        drained.reserve(total_capacity);
+        for (int i = 0; i < total_capacity; ++i) {
+            TestObject* obj = allocator_b.allocate();
+            ASSERT_NE(obj, nullptr)
+                << "allocator B corruption after mixed chaos stress at index "
+                << i << " of " << total_capacity;
+            drained.push_back(obj);
+        }
+        expect_unique_non_null(drained, "allocator B mixed chaos drain");
+        for (auto* obj : drained) {
+            allocator_b.deallocate(obj);
+        }
+    }
+}
+
+TEST_F(ExpandablePoolAllocatorTest, OobScribbleBeforeObjectFragilityProbe) {
+#ifdef USING_VALGRIND
+    GTEST_SKIP() << "Intentional out-of-bounds scribble; disabled under Valgrind.";
+#endif
+
+#if defined(__has_feature)
+#  if __has_feature(address_sanitizer)
+    GTEST_SKIP() << "Intentional out-of-bounds scribble; disabled under ASan.";
+#  endif
+#endif
+
+    const int objects_per_pool   = 16;
+    const int initial_pools      = 1;
+    const int expansion_threshold = 1;
+
+    auto allocator = make_allocator("OobScribbleBeforeObjectFragilityProbe",
+                                    objects_per_pool, initial_pools, expansion_threshold);
+
+    // Step 1: allocate a single object.
+    TestObject* obj = allocator.allocate();
+    ASSERT_NE(obj, nullptr) << "allocator failed initial allocation";
+
+    // Step 2: scribble a few bytes *before* the returned pointer.
+    // This simulates the production bug pattern: user writes slightly before
+    // the object, into whatever header/metadata the allocator might keep there.
+    std::byte* raw = reinterpret_cast<std::byte*>(obj);
+    constexpr int kBytesBefore = 8;
+    for (int i = 1; i <= kBytesBefore; ++i) {
+        raw[-i] = std::byte{0x5A}; // UB by design: fragility probe
+    }
+
+    // Step 3: try to keep using the allocator.
+    // If the allocator stores critical metadata immediately before the object,
+    // this is where things will blow up (either now or on subsequent allocs).
+    allocator.deallocate(obj);
+
+    // Allocate a full pool and then drain it to check structural integrity.
+    std::vector<TestObject*> ptrs;
+    ptrs.reserve(objects_per_pool);
+    for (int i = 0; i < objects_per_pool; ++i) {
+        TestObject* p = allocator.allocate();
+        ASSERT_NE(p, nullptr) << "allocator corruption after OOB scribble at index " << i;
+        ptrs.push_back(p);
+    }
+
+    expect_unique_non_null(ptrs, "OobScribbleBeforeObjectFragilityProbe drain");
+
+    for (auto* p : ptrs) {
+        allocator.deallocate(p);
+    }
+}
+
 } // namespace pubsub_itc_fw::tests
