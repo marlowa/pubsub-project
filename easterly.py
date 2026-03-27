@@ -310,6 +310,11 @@ def _find_type_start(tokens: list, rightmost_idx: int) -> int:
     while i >= 0:
         t = tokens[i]
 
+        # Never walk past a newline — a type and its const qualifier must be
+        # on the same line. This also prevents crossing preprocessor directives.
+        if t.kind == TK.NEWLINE:
+            break
+
         if t.is_trivial():
             i -= 1
             continue
@@ -380,6 +385,12 @@ def transform(tokens: list) -> list:
             continue
 
         prev = tokens[prev_idx]
+
+        # If the previous non-trivial token is on a different line, there is a
+        # newline between it and const — they cannot be part of the same type
+        # declaration. This also prevents crossing preprocessor directives.
+        if prev.line != tok.line:
+            continue
 
         # After * or & → qualifies the pointer itself → don't move
         if _is_ptr_or_ref(prev):
@@ -527,6 +538,12 @@ def run_tests():
 
         # Already West const — should be unchanged
         ("const int x = 0;",             "const int x = 0;"),
+
+        # Preprocessor directives must not be touched
+        ("#ifdef FOO\n    const int x = 0;\n#endif",
+         "#ifdef FOO\n    const int x = 0;\n#endif"),
+        ("#ifdef A\n    const int n = 3000;\n#else\n    const int n = 300;\n#endif",
+         "#ifdef A\n    const int n = 3000;\n#else\n    const int n = 300;\n#endif"),
         ("const int * p;",               "const int * p;"),
         ("int * const p;",               "int * const p;"),
 

@@ -208,7 +208,7 @@ void Reactor::finalize_threads_after_shutdown() {
     {
         const std::lock_guard<std::mutex> lock(thread_registry_mutex_);
         snapshot.reserve(threads_.size());
-        for (auto const& [name, thread] : threads_) {
+        for (const auto& [name, thread] : threads_) {
             if (thread) {
                 snapshot.push_back(thread);
             }
@@ -381,7 +381,7 @@ bool Reactor::wait_for_all_threads(std::function<bool(const ApplicationThread&)>
     std::vector<std::shared_ptr<ApplicationThread>> thread_snapshots;
     {
         const std::lock_guard<std::mutex> lock(thread_registry_mutex_);
-        for (auto const& [name, thread] : threads_) {
+        for (const auto& [name, thread] : threads_) {
             thread_snapshots.push_back(thread);
         }
     }

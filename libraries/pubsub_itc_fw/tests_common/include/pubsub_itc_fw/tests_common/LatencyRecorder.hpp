@@ -52,7 +52,7 @@ public:
 
         // Collect and sort buckets for chronological output
         std::vector<std::pair<int64_t, size_t>> sorted_buckets;
-        for (auto const& [bucket, count] : buckets_) {
+        for (const auto& [bucket, count] : buckets_) {
             size_t val = count.load(std::memory_order_relaxed);
             if (val > 0) {
                 sorted_buckets.push_back({bucket, val});
@@ -78,7 +78,7 @@ public:
         std::cout << "------------------\n";
 
         std::vector<std::pair<int64_t, size_t>> sorted_buckets;
-        for (auto const& [bucket, count] : buckets_) {
+        for (const auto& [bucket, count] : buckets_) {
             sorted_buckets.push_back({bucket, count.load()});
         }
         std::sort(sorted_buckets.begin(), sorted_buckets.end());

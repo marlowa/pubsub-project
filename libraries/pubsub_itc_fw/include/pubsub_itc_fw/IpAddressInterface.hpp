@@ -81,7 +81,7 @@ class IpAddressInterface {
      * @returns A constant pointer to the `sockaddr` structure. The caller must
      * not modify the returned pointer or its contents.
      */
-    virtual const struct sockaddr* get_sockaddr() const = 0;
+    const virtual struct sockaddr* get_sockaddr() const = 0;
 
     /**
      * @brief Returns the size of the underlying system `sockaddr` structure.

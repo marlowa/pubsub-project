@@ -13,7 +13,7 @@ namespace pubsub_itc_fw {
 
 class LoggerUtils {
 public:
-    static const char* leafname(const char* filename)
+    const static char* leafname(const char* filename)
     {
         auto slen = std::strlen(filename);
         const char* ptr = filename + slen;

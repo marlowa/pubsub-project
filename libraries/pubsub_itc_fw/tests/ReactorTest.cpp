@@ -477,7 +477,7 @@ TEST_F(ReactorTest, ThreadThrowsDuringRunLoopReactorShutsDown)
 
     {
         Backoff backoff;
-        auto const start = MillisecondClock::now();
+        const auto start = MillisecondClock::now();
         while (!reactor_->is_finished()) {
             if (MillisecondClock::now() - start > MillisecondClock::duration{1000}) {
                 FAIL() << "Reactor did not finish after thread threw";

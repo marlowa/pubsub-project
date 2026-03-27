@@ -60,8 +60,8 @@ public:
         start(std::forward<Callable>(func), std::forward<Args>(args)...);
     }
 
-    ThreadWithJoinTimeout(ThreadWithJoinTimeout const&) = delete;
-    ThreadWithJoinTimeout& operator=(ThreadWithJoinTimeout const&) = delete;
+    ThreadWithJoinTimeout(const ThreadWithJoinTimeout&) = delete;
+    ThreadWithJoinTimeout& operator=(const ThreadWithJoinTimeout&) = delete;
 
     ThreadWithJoinTimeout(ThreadWithJoinTimeout&& other)
         : thread_(other.thread_)

@@ -33,13 +33,13 @@ class LockFreeMessageQueue {
                   "LockFreeMessageQueue requires a move-constructible element type.");
 
 public:
-    LockFreeMessageQueue(LockFreeMessageQueue const&) = delete;
-    LockFreeMessageQueue& operator=(LockFreeMessageQueue const&) = delete;
+    LockFreeMessageQueue(const LockFreeMessageQueue&) = delete;
+    LockFreeMessageQueue& operator=(const LockFreeMessageQueue&) = delete;
     LockFreeMessageQueue(LockFreeMessageQueue&&) = delete;
     LockFreeMessageQueue& operator=(LockFreeMessageQueue&&) = delete;
 
-    LockFreeMessageQueue(QueueConfig const& queue_config,
-                         AllocatorConfig const& allocator_config)
+    LockFreeMessageQueue(const QueueConfig& queue_config,
+                         const AllocatorConfig& allocator_config)
         : queue_config_(queue_config)
         , allocator_config_(allocator_config)
     {
@@ -149,16 +149,16 @@ private:
     };
 
 public:
-    LockFreeMessageQueue(LockFreeMessageQueue const&) = delete;
-    LockFreeMessageQueue& operator=(LockFreeMessageQueue const&) = delete;
+    LockFreeMessageQueue(const LockFreeMessageQueue&) = delete;
+    LockFreeMessageQueue& operator=(const LockFreeMessageQueue&) = delete;
     LockFreeMessageQueue(LockFreeMessageQueue&&) = delete;
     LockFreeMessageQueue& operator=(LockFreeMessageQueue&&) = delete;
 
     /**
      * @brief Constructs a queue using the provided configuration objects.
      */
-    LockFreeMessageQueue(QueueConfig const& queue_config,
-                         AllocatorConfig const& allocator_config)
+    LockFreeMessageQueue(const QueueConfig& queue_config,
+                         const AllocatorConfig& allocator_config)
         : stub_()
         , head_(&stub_)
         , tail_(&stub_)

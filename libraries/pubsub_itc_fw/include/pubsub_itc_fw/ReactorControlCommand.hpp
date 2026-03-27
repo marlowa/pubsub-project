@@ -37,7 +37,7 @@ public:
         return fmt::format("unknown ({})", static_cast<int>(tag_));
     }
 
-    bool is_equal(ReactorControlCommand const& rhs) const {
+    bool is_equal(const ReactorControlCommand& rhs) const {
         return tag_ == rhs.tag_;
     }
 
@@ -53,14 +53,14 @@ private:
     CommandTag tag_{AddTimer};
 };
 
-inline bool operator==(ReactorControlCommand const& lhs,
-                       ReactorControlCommand const& rhs)
+inline bool operator==(const ReactorControlCommand& lhs,
+                       const ReactorControlCommand& rhs)
 {
     return lhs.is_equal(rhs);
 }
 
-inline bool operator!=(ReactorControlCommand const& lhs,
-                       ReactorControlCommand const& rhs)
+inline bool operator!=(const ReactorControlCommand& lhs,
+                       const ReactorControlCommand& rhs)
 {
     return !lhs.is_equal(rhs);
 }

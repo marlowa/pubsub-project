@@ -68,16 +68,16 @@ public:
      *
      * Several of the args here are not needed since this is test code.
      */
-    void write_log(quill::MacroMetadata const* log_metadata,
+    void write_log(const quill::MacroMetadata* log_metadata,
                    uint64_t log_timestamp,
                    [[maybe_unused]] std::string_view thread_id,
                    [[maybe_unused]] std::string_view thread_name,
-                   [[maybe_unused]] std::string const& process_id, // we dont need the pid on every record
+                   [[maybe_unused]] const std::string& process_id, // we dont need the pid on every record
                    std::string_view logger_name,
                    quill::LogLevel log_level,
                    std::string_view log_level_description,
                    [[maybe_unused]] std::string_view log_level_short_code, // we dont need this
-                   [[maybe_unused]] std::vector<std::pair<std::string, std::string>> const* named_args,
+                   [[maybe_unused]] const std::vector<std::pair<std::string, std::string>>* named_args,
                    std::string_view log_message,
                    [[maybe_unused]] std::string_view log_statement) override
     {
