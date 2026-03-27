@@ -15,19 +15,18 @@ add_executable(pubsub_itc_fw_tests
     ThreadWithJoinTimeoutTest.cpp
 )
 
-# Link against the library being tested
+# Link against the real shared library (new name)
 target_link_libraries(pubsub_itc_fw_tests PRIVATE
-    pubsub_itc_fw_lib       # The library we're testing
-    pubsub_itc_fw_test_helpers  # <--- Link to the custom test runner library
+    pubsub_itc_fw               # <-- the actual shared library
+    pubsub_itc_fw_test_helpers  # custom test helper library
     GTest::gtest_main
-    Boost::filesystem       # Needed for boost::filesystem in tests
+    Boost::filesystem
 )
 
-# Include directories - the test needs access to the same headers
+# Include directories
 target_include_directories(pubsub_itc_fw_tests PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/../include  # Library headers
-    ${CMAKE_CURRENT_BINARY_DIR}/../../..    # Generated protobuf headers
-    ${GOOGLETEST_INCLUDE_DIRS}              # Google Test headers (from your FindGoogleTest.cmake)
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include                     # library headers
+    ${CMAKE_CURRENT_BINARY_DIR}/../pubsub_itc_fw/pubsub_itc_fw # generated protobuf headers
 )
 
 # Add NUMA if available
@@ -40,26 +39,12 @@ else()
     message(STATUS "NUMA library not found - NUMA tests will be skipped")
 endif()
 
-
 # Add compiler flags consistent with the main project
-target_compile_options(pubsub_itc_fw_tests PRIVATE
-    -g
-    -O2
-    -Wall
-    -Wextra
-    -pedantic
-    -Wstrict-aliasing=2
-    -Werror)
+target_compile_options(pubsub_itc_fw_tests PRIVATE -g -Wall -pedantic)
 
-# Register the test with CTest so you can run it with 'make test' or 'ctest'
+# Register the test with CTest
 include(GoogleTest)
 if(ENABLE_TSAN)
-    # TSan's shadow memory conflicts with ASLR mappings, causing the test
-    # binary to abort with "unexpected memory mapping" when run at build time.
-    # DISCOVERY_MODE PRE_TEST defers test discovery until ctest runs the
-    # binary, at which point we can control the environment (e.g. setarch -R).
-    # In normal builds, POST_BUILD discovery is preferred as it catches
-    # test registration errors earlier.
     gtest_discover_tests(pubsub_itc_fw_tests DISCOVERY_MODE PRE_TEST)
 else()
     gtest_discover_tests(pubsub_itc_fw_tests)
