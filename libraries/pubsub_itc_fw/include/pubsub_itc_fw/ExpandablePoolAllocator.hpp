@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstddef>
+#include <cstdio>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -101,6 +102,36 @@
  *      removed, so readers may safely traverse the chain without additional
  *      synchronisation.
  *
+ * BACKPRESSURE AND MEMORY EXHAUSTION
+ *    - The message queue is backed by an ExpandablePoolAllocator, which means
+ *      the queue is never "full" in the traditional sense. When the current
+ *      fixed-size memory pool is exhausted, the allocator transparently chains
+ *      in a new pool and allocation continues. There is therefore no
+ *      producer-side blocking or message dropping due to queue capacity.
+ *
+ *    - Two independent notification mechanisms exist, and must not be confused:
+ *
+ *      WATERMARK CALLBACKS (queue-depth layer):
+ *        The high- and low-watermark callbacks on LockFreeMessageQueue fire
+ *        based on the number of messages currently in the queue. They are the
+ *        intended backpressure mechanism: the high-watermark callback signals
+ *        that the consumer is falling behind and producers should slow down or
+ *        shed load; the low-watermark callback signals recovery.
+ *
+ *      POOL EXHAUSTION HANDLER (memory layer):
+ *        The handler_for_pool_exhausted callback fires when a FixedSizeMemoryPool
+ *        slab within this allocator is exhausted and a new slab must be
+ *        allocated from the heap. This is a memory-layer event entirely
+ *        independent of queue depth. It signals that the allocator has grown
+ *        beyond its pre-allocated capacity and that heap allocation is
+ *        occurring. It may be used to log or raise an alert, but it is not a
+ *        backpressure mechanism — by the time it fires, the allocation has
+ *        already succeeded.
+ *
+ *    - Because the allocator can grow without bound, the only true protection
+ *      against unbounded memory growth is the high-watermark handler combined
+ *      with appropriate producer-side flow control.
+ *
  * CALLBACK SEMANTICS
  *    - Callback functions may be invoked from threads performing allocation or
  *      deallocation. They are not invoked concurrently by multiple threads at
@@ -122,10 +153,6 @@
  *    - handler_for_huge_pages_error_ is invoked from add_pool_to_chain(),
  *      which is called under expansion_mutex_, so it also cannot be called
  *      concurrently by multiple threads.
- *
- *    - Callbacks are expected to be lightweight. They may log messages, and
- *      they may allocate memory if required, although this is not recommended
- *      for performance-critical paths.
  *
  * DEALLOCATION COST
  *    - Deallocation performs a linear search through the pool chain to locate
@@ -154,6 +181,18 @@
  *    - The pool chain is traversed using __ATOMIC_ACQUIRE loads. Pools are only
  *      added, never removed, so traversal is safe even while another thread is
  *      expanding the chain.
+ *
+ * CANARY PROTECTION
+ *    - Each Slot<T> (defined in FixedSizeMemoryPool.hpp) contains a canary
+ *      field placed between is_constructed and the object storage. See the
+ *      CANARY DESIGN section in FixedSizeMemoryPool.hpp for full details.
+ *
+ *    - deallocate() checks the canary before calling ~T(). If the canary is
+ *      corrupt, handler_for_invalid_free_ is called and the object is neither
+ *      destructed nor returned to the pool. The corrupted slot is deliberately
+ *      left out of the pool so that the object pointer remains valid for
+ *      post-mortem examination in a core dump.
+ *
  * ============================================================================
  */
 
@@ -193,14 +232,15 @@ template <typename T> class ExpandablePoolAllocator {
      * @param[in] initial_pools Number of pools to pre-allocate at construction.
      * @param[in] expansion_threshold_hint Soft limit for monitoring (not enforced).
      * @param[in] handler_for_pool_exhausted Callback invoked when a new pool is added.
-     * @param[in] handler_for_invalid_free Callback for invalid deallocate() calls.
+     * @param[in] handler_for_invalid_free Callback for invalid deallocate() calls,
+     *            including double-free and canary corruption.
      * @param[in] handler_for_huge_pages_error Callback if huge page allocation fails.
      * @param[in] use_huge_pages_flag Whether to attempt 2MB huge page allocation.
      */
     ExpandablePoolAllocator(const std::string& pool_name, int objects_per_pool, int initial_pools, int expansion_threshold_hint,
-                            std::function<void(void*, int)> handler_for_pool_exhausted, //
-                            std::function<void(void*, void*)> handler_for_invalid_free, //
-                            std::function<void(void*)> handler_for_huge_pages_error, //
+                            std::function<void(void*, int)> handler_for_pool_exhausted,
+                            std::function<void(void*, void*)> handler_for_invalid_free,
+                            std::function<void(void*)> handler_for_huge_pages_error,
                             UseHugePagesFlag use_huge_pages_flag);
 
     ExpandablePoolAllocator(const ExpandablePoolAllocator&) = delete;
@@ -223,11 +263,19 @@ template <typename T> class ExpandablePoolAllocator {
      * @brief Destructs and deallocates an object.
      *
      * Searches the pool chain to find the owning pool and returns the memory.
-     * Performs double-free detection using the per-slot is_constructed. Invokes
-     * handler_for_invalid_free if the pointer does not belong to any pool
-     * or if a double free is detected.
      *
-     * @param[in] obj Pointer to object to deallocate (nullptr is safe).
+     * Performs the following checks before calling ~T():
+     *   1. Canary check: if the slot canary has been corrupted (indicating a
+     *      buffer underrun by the T object), handler_for_invalid_free_ is called
+     *      and the function returns without calling ~T() or returning the slot
+     *      to the pool. The corrupted slot is deliberately left out of the pool
+     *      so the object pointer remains valid for core dump examination.
+     *   2. Double-free detection: uses an atomic CAS on is_constructed to ensure
+     *      exactly one thread calls ~T() per allocation. If is_constructed is
+     *      already 0, handler_for_invalid_free_ is called.
+     *
+     * @param[in] obj Pointer to object to deallocate (nullptr is safe — throws
+     *            PreconditionAssertion).
      */
     void deallocate(T* obj);
 
@@ -243,7 +291,33 @@ template <typename T> class ExpandablePoolAllocator {
   private:
     FixedSizeMemoryPool<T>* add_pool_to_chain();
 
+    /**
+     * @brief Returns a pointer to the is_constructed atomic flag for a given object.
+     *
+     * Performs reverse pointer arithmetic from the object pointer to locate the
+     * Slot<T> that owns it, then returns a pointer to its is_constructed field.
+     *
+     * This relies on the Slot<T> layout being:
+     *   [ is_constructed | canary | storage ]
+     *
+     * offsetof(SlotType, storage) accounts for both is_constructed and canary,
+     * so this calculation remains correct regardless of the canary's presence.
+     *
+     * @param[in] obj Pointer to a live object previously returned by allocate().
+     * @return Pointer to the is_constructed atomic for that object's slot.
+     */
     static std::atomic<std::uintptr_t>* get_is_constructed_for_object(T* obj);
+
+    /**
+     * @brief Returns a pointer to the canary field for a given object.
+     *
+     * Performs reverse pointer arithmetic from the object pointer to locate the
+     * Slot<T> that owns it, then returns a pointer to its canary field.
+     *
+     * @param[in] obj Pointer to a live object previously returned by allocate().
+     * @return Pointer to the canary for that object's slot.
+     */
+    static const std::uint64_t* get_canary_for_object(T* obj);
 
     std::string pool_name_;
     int objects_per_pool_;
@@ -283,12 +357,12 @@ template <typename T> class ExpandablePoolAllocator {
 };
 
 template <typename T>
-ExpandablePoolAllocator<T>::ExpandablePoolAllocator(const std::string& pool_name, //
+ExpandablePoolAllocator<T>::ExpandablePoolAllocator(const std::string& pool_name,
                                                     int objects_per_pool, int initial_pools,
-                                                    int expansion_threshold_hint,                               //
-                                                    std::function<void(void*, int)> handler_for_pool_exhausted, //
-                                                    std::function<void(void*, void*)> handler_for_invalid_free, //
-                                                    std::function<void(void*)> handler_for_huge_pages_error,    //
+                                                    int expansion_threshold_hint,
+                                                    std::function<void(void*, int)> handler_for_pool_exhausted,
+                                                    std::function<void(void*, void*)> handler_for_invalid_free,
+                                                    std::function<void(void*)> handler_for_huge_pages_error,
                                                     UseHugePagesFlag use_huge_pages_flag)
     : pool_name_(pool_name)
     , objects_per_pool_(objects_per_pool)
@@ -317,7 +391,6 @@ template <typename T> T* ExpandablePoolAllocator<T>::allocate() {
     if (pool != nullptr) {
         raw_mem = pool->allocate();
         if (raw_mem != nullptr) {
-
             total_allocations_.value.fetch_add(1, std::memory_order_relaxed);
             fast_path_allocations_.value.fetch_add(1, std::memory_order_relaxed);
             T* obj = ::new (static_cast<void*>(raw_mem)) T();
@@ -336,9 +409,7 @@ template <typename T> T* ExpandablePoolAllocator<T>::allocate() {
     while (traverse != nullptr) {
         raw_mem = traverse->allocate();
         if (raw_mem != nullptr) {
-
             total_allocations_.value.fetch_add(1, std::memory_order_relaxed);
-
             __atomic_store_n(&current_pool_ptr_.value, traverse, __ATOMIC_RELEASE);
             T* obj = ::new (static_cast<void*>(raw_mem)) T();
             std::atomic<std::uintptr_t>* is_constructed = get_is_constructed_for_object(obj);
@@ -350,15 +421,11 @@ template <typename T> T* ExpandablePoolAllocator<T>::allocate() {
 
     FixedSizeMemoryPool<T>* new_pool = add_pool_to_chain();
     if (new_pool != nullptr) {
-
         expansion_events_.value.fetch_add(1, std::memory_order_relaxed);
-
         raw_mem = new_pool->allocate();
 
         if (raw_mem != nullptr) {
-
             total_allocations_.value.fetch_add(1, std::memory_order_relaxed);
-
             __atomic_store_n(&current_pool_ptr_.value, new_pool, __ATOMIC_RELEASE);
 
             if (handler_for_pool_exhausted_ != nullptr) {
@@ -375,11 +442,7 @@ template <typename T> T* ExpandablePoolAllocator<T>::allocate() {
     failed_allocations_.value.fetch_add(1, std::memory_order_relaxed);
 
     // At this point, the operating system has refused to provide memory for a new pool.
-    // On an overcommitting system this is already a catastrophic condition: the process cannot reasonably continue.
-    // Treat this as a hard precondition failure rather than a recoverable runtime condition.
-    // It is a precondition that the OS will always give us the memory we need.
-    // We have to run on a machine where we can be very confident indeed that this is the case.
-    // Strictly speaking, this is a post condition violation.
+    // On an overcommitting system this is already a catastrophic condition.
     throw PreconditionAssertion("ExpandablePoolAllocator::allocate: operating system refused memory for new pool", __FILE__, __LINE__);
 }
 
@@ -407,21 +470,48 @@ template <typename T> void ExpandablePoolAllocator<T>::deallocate(T* obj) {
         return;
     }
 
-    std::atomic<std::uintptr_t>* is_constructed = get_is_constructed_for_object(obj);
-
-    std::uintptr_t expected = 1U;
-    if (!is_constructed->compare_exchange_strong(expected, 0U,
-                                       std::memory_order_acq_rel,
-                                       std::memory_order_acquire)) {
-        // is_constructed was already 0 — double free or invalid free
+    // --- Canary check ---
+    // Check the canary before touching is_constructed or calling ~T().
+    // A corrupt canary means the T object wrote before its own start address.
+    // In that case we must not call ~T() — the object may be corrupt and doing
+    // so risks a secondary crash that would obscure the real failure. The slot
+    // is deliberately not returned to the pool so the object pointer remains
+    // valid for post-mortem examination in a core dump.
+    const std::uint64_t* canary_ptr = get_canary_for_object(obj);
+    if (*canary_ptr != slot_canary_value) {
+        std::fprintf(stderr,
+            "[ExpandablePoolAllocator] CANARY CORRUPTED in deallocate: "
+            "pool '%s', object at %p. "
+            "Expected canary 0x%016llX, found 0x%016llX. "
+            "The T object wrote before its own start address. "
+            "Slot is not returned to pool. "
+            "Calling handler_for_invalid_free_.\n",
+            pool_name_.c_str(),
+            static_cast<void*>(obj),
+            static_cast<unsigned long long>(slot_canary_value),
+            static_cast<unsigned long long>(*canary_ptr));
         if (handler_for_invalid_free_ != nullptr) {
-           std::lock_guard<std::mutex> lock(callback_mutex_);
-           handler_for_invalid_free_(nullptr, obj);
+            std::lock_guard<std::mutex> lock(callback_mutex_);
+            handler_for_invalid_free_(nullptr, obj);
         }
         return;
     }
 
-    // Exactly one thread reaches here — safe to destruct and return to pool
+    // --- Double-free detection ---
+    std::atomic<std::uintptr_t>* is_constructed = get_is_constructed_for_object(obj);
+    std::uintptr_t expected = 1U;
+    if (!is_constructed->compare_exchange_strong(expected, 0U,
+                                                 std::memory_order_acq_rel,
+                                                 std::memory_order_acquire)) {
+        // is_constructed was already 0 — double free
+        if (handler_for_invalid_free_ != nullptr) {
+            std::lock_guard<std::mutex> lock(callback_mutex_);
+            handler_for_invalid_free_(nullptr, obj);
+        }
+        return;
+    }
+
+    // Exactly one thread reaches here — safe to destruct and return to pool.
     obj->~T();
     owner_pool->deallocate(obj);
 }
@@ -473,16 +563,21 @@ template <typename T> PoolStatistics ExpandablePoolAllocator<T>::get_pool_statis
     return stats;
 }
 
-template <typename T> std::atomic<std::uintptr_t>* ExpandablePoolAllocator<T>::get_is_constructed_for_object(T* obj) {
+template <typename T>
+std::atomic<std::uintptr_t>* ExpandablePoolAllocator<T>::get_is_constructed_for_object(T* obj) {
     using SlotType = Slot<T>;
-
-    auto* storage_ptr = reinterpret_cast<std::aligned_storage_t<sizeof(T), alignof(T)>*>(obj);
-
-    auto* slot = reinterpret_cast<SlotType*>(reinterpret_cast<char*>(storage_ptr) - offsetof(SlotType, storage));
-
+    auto* byte_ptr = reinterpret_cast<char*>(obj);
+    auto* slot = reinterpret_cast<SlotType*>(byte_ptr - offsetof(SlotType, storage));
     return &slot->is_constructed;
 }
 
+template <typename T>
+const std::uint64_t* ExpandablePoolAllocator<T>::get_canary_for_object(T* obj) {
+    using SlotType = Slot<T>;
+    auto* byte_ptr = reinterpret_cast<char*>(obj);
+    auto* slot = reinterpret_cast<SlotType*>(byte_ptr - offsetof(SlotType, storage));
+    return &slot->canary;
+}
 
 template <typename T> AllocatorBehaviourStatistics ExpandablePoolAllocator<T>::get_behaviour_statistics() const {
     AllocatorBehaviourStatistics stats;

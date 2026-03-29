@@ -51,20 +51,78 @@
  *      The CMakeLists.txt sets this macro for both Valgrind and TSan builds.
  *
  * ============================================================================
+ *
+ * ============================================================================
+ * CANARY DESIGN
+ * ============================================================================
+ *
+ * Each Slot<T> contains a canary field placed between is_constructed and the
+ * object storage union. The canary is always present in all build configurations
+ * (production, ASAN, Valgrind, TSan) to ensure that core dumps from production
+ * builds are diagnosable.
+ *
+ * LAYOUT (both build paths):
+ *
+ *   [ is_constructed | canary | storage union ]
+ *
+ * PURPOSE:
+ *   A T object that writes one byte before its own start (a one-byte underrun)
+ *   will corrupt the canary rather than is_constructed. This means:
+ *     - is_constructed remains trustworthy as long as the canary is intact.
+ *     - A corrupt canary in a core dump is unambiguous evidence that the
+ *       caller's T object wrote outside its own bounds.
+ *     - A clean canary in a core dump confirms that the allocator's own state
+ *       machine was not corrupted — the bug lies elsewhere.
+ *
+ * MAGIC VALUE:
+ *   slot_canary_value = 0xDEADC0DEFEEDFACEU
+ *   This value is written into every slot at construction time and checked:
+ *     - In ExpandablePoolAllocator::deallocate() before calling ~T()
+ *     - In FixedSizeMemoryPool::deallocate() as a backstop
+ *     - In ~FixedSizeMemoryPool() before calling ~T() on leaked objects
+ *
+ * ON DETECTION:
+ *   - ExpandablePoolAllocator::deallocate(): calls handler_for_invalid_free_
+ *     and returns without calling ~T() or returning memory to the pool.
+ *     The corrupted slot is deliberately left out of the pool so that the
+ *     object pointer remains valid in a subsequent core dump examination.
+ *   - FixedSizeMemoryPool::deallocate(): calls std::terminate() after writing
+ *     a diagnostic message to stderr. This is the backstop for callers that
+ *     bypass ExpandablePoolAllocator.
+ *   - ~FixedSizeMemoryPool(): writes a diagnostic message to stderr and skips
+ *     the destructor call for the corrupted slot. Continues with remaining
+ *     slots to produce as complete a diagnostic picture as possible.
+ *
+ * ============================================================================
  */
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstring> // for memcpy
 #include <functional>
 #include <new>
 #include <stdexcept>
-#include <cstring> // for memcpy
 
 #include <unistd.h>
 
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/UseHugePagesFlag.hpp>
+
+namespace pubsub_itc_fw {
+
+/**
+ * @brief Magic value written into every slot canary at construction time.
+ *
+ * Chosen to be visually distinctive in a hex dump and statistically
+ * unlikely to arise from legitimate object data or zero-initialisation.
+ * A corrupted canary in a core dump unambiguously indicates a buffer
+ * underrun by the T object stored in the adjacent storage field.
+ */
+static constexpr std::uint64_t slot_canary_value = 0xDEADC0DEFEEDFACEU;
+
+} // namespace pubsub_itc_fw
 
 #ifdef USING_VALGRIND
 
@@ -85,7 +143,7 @@ template <typename T> struct SlotStorage {
 
     union {
         FreeListNode free_node;
-        std::aligned_storage_t<sizeof(T), alignof(T)> storage;
+        alignas(T) std::byte storage[sizeof(T)];
     };
 
     T* object_ptr() {
@@ -99,21 +157,46 @@ template <typename T> struct SlotStorage {
     }
 };
 
+/**
+ * @brief One slot in the pool.
+ *
+ * Layout:
+ *   [ is_constructed | canary | storage ]
+ *
+ * The canary sits between is_constructed and the object storage so that a
+ * one-byte underrun from the T object corrupts the canary rather than
+ * is_constructed. See the CANARY DESIGN section at the top of this file.
+ *
+ * Both the Valgrind and production Slot<T> definitions are identical in
+ * layout so that ExpandablePoolAllocator::get_is_constructed_for_object()
+ * works correctly on both build paths.
+ */
 template <typename T> struct Slot {
     // Must be std::atomic so that allocate() (plain store) and deallocate()
     // (atomic CAS) access the same object without violating the C++ memory
     // model. In the Valgrind/TSan path all accesses are under the pool mutex,
     // so relaxed ordering is sufficient — the mutex provides the necessary
     // happens-before relationship. The type must match the production path
-    // Slot<T> since ExpandablePoolAllocator::get_is_constructed_for_object() operates
-    // on both paths identically.
+    // Slot<T> since ExpandablePoolAllocator::get_is_constructed_for_object()
+    // operates on both paths identically.
     std::atomic<std::uintptr_t> is_constructed{0};
+
+    /**
+     * @brief Buffer underrun guard.
+     *
+     * Must equal slot_canary_value at all times. A value other than
+     * slot_canary_value indicates that the T object stored in the adjacent
+     * storage field has written before its own start address.
+     */
+    std::uint64_t canary{slot_canary_value};
+
     SlotStorage<T> storage;
 };
 
 /**
  * @brief Valgrind-friendly FixedSizeMemoryPool.
- * * Provides mutex-protected memory management that satisfies Valgrind's
+ *
+ * Provides mutex-protected memory management that satisfies Valgrind's
  * synchronization requirements while maintaining compatibility with the
  * ExpandablePoolAllocator's flag-based diagnostic checks.
  */
@@ -121,7 +204,7 @@ template <typename T> class FixedSizeMemoryPool {
   public:
     using SlotType = Slot<T>;
 
-    FixedSizeMemoryPool(int objects_per_pool, UseHugePagesFlag use_huge_pages_flag, //
+    FixedSizeMemoryPool(int objects_per_pool, UseHugePagesFlag use_huge_pages_flag,
                         [[maybe_unused]] std::function<void(void*, std::size_t)> handler_for_huge_pages_error)
         : objects_per_pool_(objects_per_pool), use_huge_pages_flag_(use_huge_pages_flag) {
         total_pool_size_ = static_cast<std::size_t>(objects_per_pool_) * sizeof(SlotType);
@@ -140,6 +223,7 @@ template <typename T> class FixedSizeMemoryPool {
             // construction before any member access, including atomic stores.
             new (&slots_[i]) SlotType();
             slots_[i].is_constructed.store(0, std::memory_order_relaxed);
+            slots_[i].canary = slot_canary_value;
             free_list_v_.push_back(&slots_[i]);
         }
     }
@@ -148,25 +232,44 @@ template <typename T> class FixedSizeMemoryPool {
      * @brief Destructs all remaining allocated objects and releases pool memory.
      *
      * @note This destructor explicitly calls the destructor on any slot whose
-     *       is_constructed is 1 (allocated). These are objects that were allocated by the
-     *       caller but never returned to the pool via deallocate() before the
-     *       allocator was destroyed — in other words, caller-leaked objects.
+     *       is_constructed is 1 (allocated). These are objects that were allocated
+     *       by the caller but never returned to the pool via deallocate() before
+     *       the allocator was destroyed — in other words, caller-leaked objects.
      *
      *       This is intentional cleanup, not a double-destruction hazard.
      *       ExpandablePoolAllocator::deallocate() always calls obj->~T() and
      *       clears is_constructed to 0 before returning the slot to this pool.
-     *       Therefore any slot still marked as is_constructed at destruction time has
-     *       definitely not had its destructor called yet.
+     *       Therefore any slot still marked as is_constructed at destruction time
+     *       has definitely not had its destructor called yet.
      *
-     *       The is_constructed is cleared to 0 after destruction here purely for
-     *       consistency, since the pool memory is about to be unmapped anyway.
+     * @note If the canary is corrupt for a given slot, the destructor is skipped
+     *       for that slot and a diagnostic message is written to stderr. This is
+     *       intentional: calling ~T() on a potentially corrupt object risks a
+     *       secondary crash that would obscure the real cause of failure. The
+     *       pool continues with remaining slots to produce as complete a
+     *       diagnostic picture as possible.
      */
     ~FixedSizeMemoryPool() {
         if (pool_memory_ != MAP_FAILED) {
             std::lock_guard<std::mutex> lock(mutex_);
             for (int i = 0; i < objects_per_pool_; ++i) {
-                if (slots_[i].is_constructed.load(std::memory_order_relaxed) == 1U) {
-                    slots_[i].storage.object_ptr()->~T();
+                SlotType* slot = &slots_[i];
+                if (slot->is_constructed.load(std::memory_order_relaxed) == 1U) {
+                    if (slot->canary != slot_canary_value) {
+                        std::fprintf(stderr,
+                            "[FixedSizeMemoryPool] CANARY CORRUPTED in destructor: "
+                            "slot %d at %p, object at %p. "
+                            "Expected canary 0x%016llX, found 0x%016llX. "
+                            "The T object wrote before its own start address. "
+                            "Skipping destructor call for this slot.\n",
+                            i,
+                            static_cast<void*>(slot),
+                            static_cast<void*>(slot->storage.object_ptr()),
+                            static_cast<unsigned long long>(slot_canary_value),
+                            static_cast<unsigned long long>(slot->canary));
+                    } else {
+                        slot->storage.object_ptr()->~T();
+                    }
                 }
             }
             munmap(pool_memory_, total_pool_size_);
@@ -184,23 +287,48 @@ template <typename T> class FixedSizeMemoryPool {
         SlotType* slot = free_list_v_.back();
         free_list_v_.pop_back();
 
-        // Note: We leave is_constructed alone since that is used at a higher level (ExpandablePoolAllocator) where we have objects.
+        // Note: We leave is_constructed alone since that is managed at a higher
+        // level by ExpandablePoolAllocator after object construction.
         allocation_count_++;
         return slot->storage.object_ptr();
     }
 
     /**
-     * @brief Returns raw memory to the pool (valgrind path).
-     * * Does NOT call the destructor, as ExpandablePoolAllocator has already
-     * handled the object lifetime before calling this method.
+     * @brief Returns raw memory to the pool (Valgrind path).
+     *
+     * Does NOT call the destructor — ExpandablePoolAllocator has already
+     * handled object lifetime before calling this method.
+     *
+     * Checks the canary before accepting the memory back. A corrupt canary
+     * means the T object wrote before its own start address. In that case
+     * std::terminate() is called after writing a diagnostic to stderr. This
+     * is the backstop for callers that bypass ExpandablePoolAllocator. In
+     * normal usage ExpandablePoolAllocator::deallocate() will have already
+     * detected the corruption and called handler_for_invalid_free_ before
+     * reaching this point.
      */
     void deallocate(T* ptr) {
         if (!ptr) {
             throw PreconditionAssertion("deallocate called with nullptr", __FILE__, __LINE__);
         }
 
-        auto* storage_ptr = reinterpret_cast<std::aligned_storage_t<sizeof(T), alignof(T)>*>(ptr);
-        SlotType* slot = reinterpret_cast<SlotType*>(reinterpret_cast<char*>(storage_ptr) - offsetof(SlotType, storage));
+        auto* storage_ptr = reinterpret_cast<std::byte*>(ptr);
+        SlotType* slot = reinterpret_cast<SlotType*>(storage_ptr - offsetof(SlotType, storage));
+
+        if (slot->canary != slot_canary_value) {
+            std::fprintf(stderr,
+                "[FixedSizeMemoryPool] CANARY CORRUPTED in deallocate: "
+                "object at %p, slot at %p. "
+                "Expected canary 0x%016llX, found 0x%016llX. "
+                "The T object wrote before its own start address. "
+                "Calling std::terminate().\n",
+                static_cast<void*>(ptr),
+                static_cast<void*>(slot),
+                static_cast<unsigned long long>(slot_canary_value),
+                static_cast<unsigned long long>(slot->canary));
+            std::terminate();
+        }
+
         std::lock_guard<std::mutex> lock(mutex_);
         free_list_v_.push_back(slot);
     }
@@ -262,13 +390,12 @@ template <typename T> class FixedSizeMemoryPool {
  * This memory pool implements a lock-free stack (Treiber stack) for object
  * allocation using an ABA-prevention technique with a tagged pointer.
  *
- * NOTE: TODO Revise comments for is_constructed
- *
  * KEY DESIGN ELEMENTS:
  *
  * 1. INTRUSIVE FREE LIST VIA SLOT STORAGE
  *    - Each pool element is a Slot<T>, which contains:
- *        * a flag (is_constructed) indicating whether the slot is allocated or free
+ *        * is_constructed: atomic flag indicating whether the slot is allocated
+ *        * canary: magic value guarding against buffer underruns from T objects
  *        * a SlotStorage<T> union that can hold either:
  *            - a FreeListNode (used when the slot is on the free list), or
  *            - raw storage for a T object (used when the slot is allocated)
@@ -348,15 +475,39 @@ namespace pubsub_itc_fw {
 template <typename T> struct SlotStorage; // forward declaration
 
 // ============================================================
-// Slot<T> — one allocator slot: [is_constructed][storage]
+// Slot<T> — one allocator slot: [is_constructed][canary][storage]
 // ============================================================
 
+/**
+ * @brief One slot in the pool.
+ *
+ * Layout:
+ *   [ is_constructed | canary | storage ]
+ *
+ * The canary sits between is_constructed and the object storage so that a
+ * one-byte underrun from the T object corrupts the canary rather than
+ * is_constructed. See the CANARY DESIGN section at the top of this file.
+ *
+ * Both the Valgrind and production Slot<T> definitions are identical in
+ * layout so that ExpandablePoolAllocator::get_is_constructed_for_object()
+ * works correctly on both build paths.
+ */
 template <typename T> struct Slot {
     // Must be std::atomic so that allocate() (plain store) and deallocate()
     // (atomic CAS) access the same object without violating the C++ memory
     // model. On x86-64 a release store compiles to the same plain MOV
     // instruction as a non-atomic store, so there is no runtime cost.
     std::atomic<std::uintptr_t> is_constructed{0};
+
+    /**
+     * @brief Buffer underrun guard.
+     *
+     * Must equal slot_canary_value at all times. A value other than
+     * slot_canary_value indicates that the T object stored in the adjacent
+     * storage field has written before its own start address.
+     */
+    std::uint64_t canary{slot_canary_value};
+
     SlotStorage<T> storage;
 };
 
@@ -371,7 +522,7 @@ template <typename T> struct SlotStorage {
 
     union {
         FreeListNode free_node;
-        std::aligned_storage_t<sizeof(T), alignof(T)> storage;
+        alignas(T) std::byte storage[sizeof(T)];
     };
 
     T* object_ptr() {
@@ -430,21 +581,22 @@ template <typename T> class FixedSizeMemoryPool {
      * @brief Destructs all remaining allocated objects and releases pool memory.
      *
      * @note This destructor explicitly calls the destructor on any slot whose
-     *       is_constructed is 1 (allocated). These are objects that were allocated by the
-     *       caller but never returned to the pool via deallocate() before the
-     *       allocator was destroyed — in other words, caller-leaked objects.
+     *       is_constructed is 1 (allocated). These are objects that were allocated
+     *       by the caller but never returned to the pool via deallocate() before
+     *       the allocator was destroyed — in other words, caller-leaked objects.
      *
      *       This is intentional cleanup, not a double-destruction hazard.
      *       ExpandablePoolAllocator::deallocate() always calls obj->~T() and
-     *       clears the is_constructed to 0 before returning the slot to this pool.
-     *       Therefore any slot still marked as is_constructed at destruction time has
-     *       definitely not had its destructor called yet.
+     *       clears is_constructed to 0 before returning the slot to this pool.
+     *       Therefore any slot still marked as is_constructed at destruction time
+     *       has definitely not had its destructor called yet.
      *
-     * @note The mutex is held during iteration to satisfy Helgrind and DRD,
-     *       which require that all accesses to shared state are covered by
-     *       a recognised synchronisation primitive. In practice, the
-     *       allocator lifetime guarantee (no threads active during destruction)
-     *       means the lock is not strictly necessary for correctness.
+     * @note If the canary is corrupt for a given slot, the destructor is skipped
+     *       for that slot and a diagnostic message is written to stderr. This is
+     *       intentional: calling ~T() on a potentially corrupt object risks a
+     *       secondary crash that would obscure the real cause of failure. The
+     *       pool continues with remaining slots to produce as complete a
+     *       diagnostic picture as possible.
      */
     ~FixedSizeMemoryPool();
 
@@ -461,7 +613,7 @@ template <typename T> class FixedSizeMemoryPool {
      *       If huge pages are requested but unavailable, the pool falls back
      *       to standard pages and invokes the error handler.
      */
-    FixedSizeMemoryPool(int objects_per_pool, UseHugePagesFlag use_huge_pages_flag, //
+    FixedSizeMemoryPool(int objects_per_pool, UseHugePagesFlag use_huge_pages_flag,
                         std::function<void(void*, std::size_t)> handler_for_huge_pages_error);
 
     FixedSizeMemoryPool(const FixedSizeMemoryPool&) = delete;
@@ -494,6 +646,13 @@ template <typename T> class FixedSizeMemoryPool {
      *
      * This method is lock-free and thread-safe. It uses a compare-and-swap
      * operation to atomically push a slot onto the free list.
+     *
+     * Checks the slot canary before accepting the memory. A corrupt canary
+     * indicates that the T object wrote before its own start address. In that
+     * case a diagnostic message is written to stderr and std::terminate() is
+     * called. This is a backstop — in normal usage ExpandablePoolAllocator::
+     * deallocate() will have already detected the corruption via its own canary
+     * check and called handler_for_invalid_free_ before reaching this point.
      *
      * @param[in] node_to_push Pointer to memory previously obtained from allocate().
      *
@@ -590,11 +749,8 @@ template <typename T> class FixedSizeMemoryPool {
      * @return SlotType* Pointer to the owning slot.
      */
     static SlotType* slot_from_object(T* obj) {
-        auto* storage_ptr = reinterpret_cast<std::aligned_storage_t<sizeof(T), alignof(T)>*>(obj);
-
-        auto* slot = reinterpret_cast<SlotType*>(reinterpret_cast<char*>(storage_ptr) - offsetof(SlotType, storage));
-
-        return slot;
+        auto* byte_ptr = reinterpret_cast<char*>(obj);
+        return reinterpret_cast<SlotType*>(byte_ptr - offsetof(SlotType, storage));
     }
 
     /**
@@ -721,7 +877,7 @@ template <typename T> class FixedSizeMemoryPool {
 };
 
 template <typename T>
-FixedSizeMemoryPool<T>::FixedSizeMemoryPool(int objects_per_pool, UseHugePagesFlag use_huge_pages_flag, //
+FixedSizeMemoryPool<T>::FixedSizeMemoryPool(int objects_per_pool, UseHugePagesFlag use_huge_pages_flag,
                                             std::function<void(void*, std::size_t)> handler_for_huge_pages_error)
     : objects_per_pool_(objects_per_pool), use_huge_pages_flag_(use_huge_pages_flag) {
 #ifndef __GCC_HAVE_SYNC_COMPARE_AND_SWAP_16
@@ -767,21 +923,35 @@ FixedSizeMemoryPool<T>::FixedSizeMemoryPool(int objects_per_pool, UseHugePagesFl
         // construction before any member access, including atomic stores.
         SlotType* slot = new (&slots_[i]) SlotType();
         slot->is_constructed.store(0U, std::memory_order_relaxed);
+        slot->canary = slot_canary_value;
         slot->storage.free_node_ptr()->next = nullptr;
         push_slot_to_free_list(slot);
     }
 }
 
 template <typename T> FixedSizeMemoryPool<T>::~FixedSizeMemoryPool() {
-
     if (pool_memory_ != MAP_FAILED) {
         // Destruct any objects that are still allocated in this pool.
         for (int i = 0; i < objects_per_pool_; ++i) {
             SlotType* slot = &slots_[i];
             if (slot->is_constructed.load(std::memory_order_relaxed) == 1U) {
-                T* obj = slot->storage.object_ptr();
-                obj->~T();
-                slot->is_constructed.store(0U, std::memory_order_relaxed);
+                if (slot->canary != slot_canary_value) {
+                    std::fprintf(stderr,
+                        "[FixedSizeMemoryPool] CANARY CORRUPTED in destructor: "
+                        "slot %d at %p, object at %p. "
+                        "Expected canary 0x%016llX, found 0x%016llX. "
+                        "The T object wrote before its own start address. "
+                        "Skipping destructor call for this slot.\n",
+                        i,
+                        static_cast<void*>(slot),
+                        static_cast<void*>(slot->storage.object_ptr()),
+                        static_cast<unsigned long long>(slot_canary_value),
+                        static_cast<unsigned long long>(slot->canary));
+                } else {
+                    T* obj = slot->storage.object_ptr();
+                    obj->~T();
+                    slot->is_constructed.store(0U, std::memory_order_relaxed);
+                }
             }
         }
 
@@ -794,7 +964,7 @@ template <typename T> T* FixedSizeMemoryPool<T>::allocate() {
     if (slot == nullptr) {
         return nullptr;
     }
-    allocation_count_.fetch_add(1, std::memory_order_relaxed);;
+    allocation_count_.fetch_add(1, std::memory_order_relaxed);
     return object_from_slot(slot);
 }
 
@@ -804,6 +974,21 @@ template <typename T> void FixedSizeMemoryPool<T>::deallocate(T* node_to_push) {
     }
 
     SlotType* slot = slot_from_object(node_to_push);
+
+    if (slot->canary != slot_canary_value) {
+        std::fprintf(stderr,
+            "[FixedSizeMemoryPool] CANARY CORRUPTED in deallocate: "
+            "object at %p, slot at %p. "
+            "Expected canary 0x%016llX, found 0x%016llX. "
+            "The T object wrote before its own start address. "
+            "Calling std::terminate().\n",
+            static_cast<void*>(node_to_push),
+            static_cast<void*>(slot),
+            static_cast<unsigned long long>(slot_canary_value),
+            static_cast<unsigned long long>(slot->canary));
+        std::terminate();
+    }
+
     push_slot_to_free_list(slot);
 }
 
@@ -863,9 +1048,9 @@ namespace pubsub_itc_fw {
 
 template <typename T>
 bool FixedSizeMemoryPool<T>::contains(const T* ptr) const {
-    const auto* byte_ptr     = reinterpret_cast<const std::byte*>(ptr);
-    const auto* start        = static_cast<const std::byte*>(pool_memory_);
-    const auto* end          = start + total_pool_size_;
+    const auto* byte_ptr = reinterpret_cast<const std::byte*>(ptr);
+    const auto* start    = static_cast<const std::byte*>(pool_memory_);
+    const auto* end      = start + total_pool_size_;
 
     if (byte_ptr < start || byte_ptr >= end) {
         return false;
