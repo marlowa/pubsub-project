@@ -2043,4 +2043,101 @@ TEST_F(ExpandablePoolAllocatorTest, OobScribbleBeforeObjectFragilityProbe) {
     }
 }
 
+// ============================================================================
+// Canary corruption tests
+//
+// These tests verify the behaviour of the allocator when a T object writes
+// before its own start address, corrupting the canary that sits between
+// is_constructed and the object storage in each Slot<T>.
+//
+// All three tests are skipped under ASAN and Valgrind because the
+// deliberate out-of-bounds write is what those tools are designed to catch —
+// they would abort the process before the canary logic even runs.
+// ============================================================================
+
+TEST_F(ExpandablePoolAllocatorTest, CanaryCorruptionDeallocateCallsHandler) {
+#ifdef USING_VALGRIND
+    GTEST_SKIP() << "Intentional out-of-bounds scribble; disabled under Valgrind/TSan.";
+#endif
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer)
+    GTEST_SKIP() << "Intentional out-of-bounds scribble; disabled under ASan.";
+#endif
+#endif
+
+    auto allocator = make_allocator("CanaryCorruptionDeallocateCallsHandler", 16);
+
+    TestObject* obj = allocator.allocate();
+    ASSERT_NE(obj, nullptr);
+
+    // Corrupt the canary by writing one byte immediately before the object.
+    // The canary occupies the 8 bytes before the object in the Slot layout:
+    //   [ is_constructed | canary | storage ]
+    // A one-byte underrun lands in the canary, not in is_constructed.
+    *reinterpret_cast<std::byte*>(obj) = std::byte{0xAB}; // NOLINT — intentional OOB
+    reinterpret_cast<std::byte*>(obj)[-1] = std::byte{0xAB}; // NOLINT — intentional OOB
+
+    allocator.deallocate(obj);
+
+    EXPECT_EQ(invalid_free_callback_count_.load(), 1);
+}
+
+TEST_F(ExpandablePoolAllocatorTest, CanaryCorruptionDeallocateDoesNotDestruct) {
+#ifdef USING_VALGRIND
+    GTEST_SKIP() << "Intentional out-of-bounds scribble; disabled under Valgrind/TSan.";
+#endif
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer)
+    GTEST_SKIP() << "Intentional out-of-bounds scribble; disabled under ASan.";
+#endif
+#endif
+
+    auto allocator = make_allocator("CanaryCorruptionDeallocateDoesNotDestruct", 16);
+
+    TestObject* obj = allocator.allocate();
+    ASSERT_NE(obj, nullptr);
+    EXPECT_EQ(TestObject::s_constructor_count.load(), 1);
+
+    reinterpret_cast<std::byte*>(obj)[-1] = std::byte{0xAB}; // NOLINT — intentional OOB
+
+    allocator.deallocate(obj);
+
+    // ~TestObject must not have been called — doing so on a potentially
+    // corrupt object risks a secondary crash that would obscure the real failure.
+    EXPECT_EQ(TestObject::s_destructor_count.load(), 0);
+}
+
+TEST_F(ExpandablePoolAllocatorTest, CanaryCorruptionDestructorCallsHandlerAndSkipsDestructor) {
+#ifdef USING_VALGRIND
+    GTEST_SKIP() << "Intentional out-of-bounds scribble; disabled under Valgrind/TSan.";
+#endif
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer)
+    GTEST_SKIP() << "Intentional out-of-bounds scribble; disabled under ASan.";
+#endif
+#endif
+
+    {
+        auto allocator = make_allocator("CanaryCorruptionDestructorCallsHandlerAndSkipsDestructor", 16);
+
+        TestObject* obj_clean   = allocator.allocate();
+        TestObject* obj_corrupt = allocator.allocate();
+        ASSERT_NE(obj_clean,   nullptr);
+        ASSERT_NE(obj_corrupt, nullptr);
+        EXPECT_EQ(TestObject::s_constructor_count.load(), 2);
+
+        // Corrupt the canary on one object and leave both unreturned —
+        // they become caller-leaked objects discovered by the allocator destructor.
+        reinterpret_cast<std::byte*>(obj_corrupt)[-1] = std::byte{0xAB}; // NOLINT — intentional OOB
+
+        // allocator goes out of scope here, triggering ~ExpandablePoolAllocator()
+    }
+
+    // The handler must have fired exactly once for the corrupt slot.
+    EXPECT_EQ(invalid_free_callback_count_.load(), 1);
+
+    // ~TestObject must have been called for the clean object only.
+    EXPECT_EQ(TestObject::s_destructor_count.load(), 1);
+}
+
 } // namespace pubsub_itc_fw::tests

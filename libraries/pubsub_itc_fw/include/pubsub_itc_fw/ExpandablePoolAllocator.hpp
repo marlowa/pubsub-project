@@ -220,7 +220,19 @@ template <typename T> class ExpandablePoolAllocator {
      *       that still have allocated slots will have their objects destructed
      *       here — see FixedSizeMemoryPool destructor for details.
      */
-    ~ExpandablePoolAllocator() = default;
+    /**
+     * @brief Destroys the allocator, checking canaries on any leaked objects.
+     *
+     * Sweeps all pools for slots still marked is_constructed (caller-leaked
+     * objects). For each such slot, checks the canary before calling ~T().
+     * If the canary is corrupt, handler_for_invalid_free_ is called and the
+     * destructor is skipped for that slot — calling ~T() on a corrupt object
+     * risks a secondary crash that would obscure the real failure.
+     *
+     * @pre No other thread may be calling allocate() or deallocate() when
+     *      this destructor runs.
+     */
+    ~ExpandablePoolAllocator();
 
     /** @ingroup allocator_subsystem */
 
@@ -561,6 +573,28 @@ template <typename T> PoolStatistics ExpandablePoolAllocator<T>::get_pool_statis
     }
 
     return stats;
+}
+
+template <typename T>
+ExpandablePoolAllocator<T>::~ExpandablePoolAllocator() {
+    // Sweep all pools for caller-leaked objects (slots still marked is_constructed).
+    // For each such slot, check the canary before calling ~T(). If the canary is
+    // corrupt, call handler_for_invalid_free_ and clear is_constructed without
+    // calling ~T() — doing so on a corrupt object risks a secondary crash.
+    // The pool destructor (run when cleanup_list_ is destroyed) will then find
+    // is_constructed already cleared and skip those slots cleanly.
+    for (auto& pool_uptr : cleanup_list_) {
+        pool_uptr->sweep_constructed_slots([this](T* obj, bool canary_ok) {
+            if (!canary_ok) {
+                if (handler_for_invalid_free_ != nullptr) {
+                    std::lock_guard<std::mutex> lock(callback_mutex_);
+                    handler_for_invalid_free_(nullptr, obj);
+                }
+            } else {
+                obj->~T();
+            }
+        });
+    }
 }
 
 template <typename T>
