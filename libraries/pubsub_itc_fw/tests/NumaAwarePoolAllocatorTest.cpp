@@ -170,11 +170,12 @@ TEST_F(NumaAwarePoolAllocatorTest, NumaPinnedThunderingHerd) {
         handler_for_pool_exhausted_, handler_for_invalid_free_, handler_for_huge_pages_error_,
         UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
 
-    std::vector<std::thread> threads;
     std::atomic<bool> start_gate{false};
     std::vector<TestObject*> results(num_threads, nullptr);
     std::atomic<int> pin_failures{0};
 
+    std::vector<std::thread> threads;
+    threads.reserve(num_threads);
     for (int i = 0; i < num_threads; ++i) {
         threads.emplace_back([&, i, cpu = cpus[i]]() {
             if (!NumaTopology::pin_to_cpu(cpu)) {
@@ -240,9 +241,10 @@ TEST_F(NumaAwarePoolAllocatorTest, NumaPinnedContentionStress) {
         handler_for_pool_exhausted_, handler_for_invalid_free_, handler_for_huge_pages_error_,
         UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
 
-    std::vector<std::thread> threads;
     std::atomic<int> allocation_failures{0};
 
+    std::vector<std::thread> threads;
+    threads.reserve(num_threads);
     for (int i = 0; i < num_threads; ++i) {
         threads.emplace_back([&, cpu = cpus[i]]() {
             NumaTopology::pin_to_cpu(cpu);

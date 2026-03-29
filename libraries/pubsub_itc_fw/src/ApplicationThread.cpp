@@ -73,9 +73,29 @@ void ApplicationThread::start() {
     thread_ = std::make_unique<ThreadWithJoinTimeout>();
     thread_->start([this]() { run(); });
 
-    // Make sure we do not return until the started thread is in the run loop.
+    // Wait for the thread to enter its run loop, but with a bounded number of iterations.
     Backoff backoff;
+
+    // Instrumentation-aware iteration bound.
+    // These values are chosen to be:
+    // - deterministic
+    // - extremely fast in normal builds
+    // - generous enough under TSAN/Valgrind
+    constexpr int max_iterations =
+    #if defined(USING_TSAN)
+        200000;   // TSAN is slow
+    #elif defined(USING_VALGRIND)
+        500000;   // Valgrind is slower
+    #else
+        20000;    // normal builds
+    #endif
+
+    int iterations = 0;
+
     while (get_lifecycle_state().as_tag() < ThreadLifecycleState::Started) {
+        if (++iterations > max_iterations) {
+            throw PubSubItcException(fmt::format("Thread {} failed to reach Started state (startup timeout)", thread_name_));
+        }
         backoff.pause();
     }
 }
@@ -132,21 +152,28 @@ void ApplicationThread::cancel_timer(const std::string& name) {
     name_to_id_.erase(it);
 }
 
-// Note: reason is used in the logging macros but we have to neutralise those for clang-tidy
+// Note: reason is used in the logging macros but we have to neutralise those macros for clang-tidy
+// Note: reason is used in the logging macros but we have to neutralise those macros for clang-tidy
 void ApplicationThread::shutdown([[maybe_unused]] const std::string& reason) {
+    auto state = get_lifecycle_state().as_tag();
+    if (state >= ThreadLifecycleState::ShuttingDown) {
+        // Already shutting down or terminated; ensure queue is shut down and return.
+        if (message_queue_ != nullptr) {
+            message_queue_->shutdown();
+        }
+        return;
+    }
+
     set_lifecycle_state(ThreadLifecycleState::ShuttingDown);
-    message_queue_->shutdown();
+
+    if (message_queue_ != nullptr) {
+        message_queue_->shutdown();
+    }
 
     PUBSUB_LOG(logger_, LogLevel::Info, "Thread {} received shutdown signal: {}", thread_name_, reason);
-    if (thread_ != nullptr && thread_->joinable()) {
-        try {
-            if (!thread_->join_with_timeout(std::chrono::seconds(2))) {
-                PUBSUB_LOG_STR(logger_, LogLevel::Error, "join with timeout failed");
-            }
-        } catch (const std::exception& ex) {
-            PUBSUB_LOG(logger_, LogLevel::Error, "Failed to join thread {} during shutdown: {}", thread_name_, ex.what());
-        }
-    }
+
+    // Joining is the sole responsibility of Reactor::finalize_threads_after_shutdown().
+    // ApplicationThread::shutdown() only requests shutdown and makes the queue stop accepting messages.
 }
 
 void ApplicationThread::run() {

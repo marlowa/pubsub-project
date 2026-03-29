@@ -201,6 +201,45 @@ class ApplicationThread {
     }
 
     /**
+     * @name Timer API Contract
+     *
+     * The timer APIs (`start_one_off_timer`, `start_recurring_timer`,
+     * `cancel_timer`, and all user-overridable timer callbacks) have strict
+     * lifecycle and threading requirements. Violating any of these is a precondition failure.
+     *
+     * **Threading Requirements**
+     * --------------------------
+     * - Timer APIs must be called **only from within the owning
+     *   ApplicationThread’s callback context** (e.g., `on_initial_event`,
+     *   `on_app_ready_event`, `on_itc_message`, `on_timer_event`, etc.).
+     * - They must never be called from other threads, including the Reactor
+     *   thread or application threads posting messages to each other.
+     * - Enforcement is performed by `assert_called_from_owner()`, which
+     *   compares the current pthread ID with the owning thread’s ID.
+     *
+     * **Lifecycle Requirements**
+     * --------------------------
+     * - Timer APIs must not be called **before `start()` has been invoked**.
+     *   Prior to `start()`, the underlying thread object does not exist and
+     *   no timer operations are valid.
+     * - Timer APIs must not be called **after the thread has left the
+     *   Running band** (i.e., after entering `ShuttingDown` or `Terminated`).
+     * - Timers are created and owned by the Reactor; ApplicationThread only
+     *   schedules and cancels them.
+     *
+     * **Safety Guarantees**
+     * ---------------------
+     * - If a timer API is called before the thread has started, or from the
+     *   wrong thread, a `PreconditionAssertion` is thrown.
+     * - These checks prevent undefined behaviour such as dereferencing a
+     *   null `thread_` pointer or manipulating timer state from the wrong
+     *   execution context.
+     *
+     * These constraints ensure that timer operations are deterministic,
+     * thread-safe, and consistent with the Reactor’s ownership model.
+     */
+
+    /**
      * @brief Starts a one-off timer.
      * @param [in] name The name of the timer.
      * @param [in] interval The timer interval.
@@ -254,6 +293,13 @@ class ApplicationThread {
         time_event_finished_ = time_event_finished;
     }
 
+    /**
+     * Requests shutdown of this ApplicationThread.
+     *
+     * This does NOT join the underlying thread. Threads are joined exclusively
+     * by Reactor::finalize_threads_after_shutdown(). Calling shutdown() is
+     * idempotent once the thread has entered ShuttingDown or a later state.
+     */
     void shutdown(const std::string& reason);
 
     bool is_running() const {
@@ -298,6 +344,10 @@ protected:
     virtual void on_raw_socket_message([[maybe_unused]] const EventMessage& msg) {}
 
     void assert_called_from_owner() const {
+        if (thread_ == nullptr) {
+            throw PreconditionAssertion("Timer APIs must not be called before the ApplicationThread has been started", __FILE__, __LINE__);
+        }
+
         pthread_t owner = thread_->get_pthread_id();
         if (!pthread_equal(owner, pthread_self())) {
             throw PreconditionAssertion(

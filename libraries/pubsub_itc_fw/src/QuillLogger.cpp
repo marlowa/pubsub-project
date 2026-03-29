@@ -163,7 +163,7 @@ void QuillLogger::set_log_level(LogLevel level)
 {
     level_ = level;
     file_level_ = syslog_level_ = console_level_ = level;
-    if (quill_logger_) {
+    if (quill_logger_ != nullptr) {
         quill_logger_->set_log_level(LoggerUtils::to_quill_log_level(level));
     }
 }

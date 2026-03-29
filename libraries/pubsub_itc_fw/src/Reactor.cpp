@@ -99,7 +99,7 @@ void Reactor::route_message(ThreadID target_id, EventMessage message) {
         target = it->second;
     }
 
-    if (!target) {
+    if (target == nullptr) {
         return;
     }
 
@@ -695,7 +695,7 @@ ApplicationThread* Reactor::get_fast_path_thread(ThreadID id) const {
 
 ThreadLifecycleState::Tag Reactor::get_thread_state(ThreadID id) const {
     ApplicationThread* t = get_fast_path_thread(id);
-    if (!t) {
+    if (t == nullptr) {
         return ThreadLifecycleState::Terminated;
     }
     return t->get_lifecycle_state().as_tag();

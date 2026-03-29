@@ -536,7 +536,7 @@ TEST_F(ReactorTest, RouteMessageBeforeInitializationThrows)
 
     EventMessage msg = EventMessage::create_itc_message(ThreadID(1), nullptr, 0);
 
-    EXPECT_THROW(reactor.route_message(ThreadID(1), std::move(msg)), PreconditionAssertion);
+    EXPECT_THROW(reactor.route_message(ThreadID(1), std::move(msg)), PreconditionAssertion); // NOLINT(cppcoreguidelines-avoid-goto,hicpp-avoid-goto)
 }
 
 TEST_F(ReactorTest, RouteMessageFromNonRunningOriginIsIgnored)
@@ -601,10 +601,7 @@ TEST_F(ReactorTest, CancelTimerWrongOwnerThrows)
     const TimerID tid = reactor.allocate_timer_id();
     reactor.create_timer_fd(tid, "X", ThreadID(1), std::chrono::milliseconds(10), TimerType::SingleShot);
 
-    EXPECT_THROW(
-        reactor.cancel_timer_fd(ThreadID(2), tid),
-        PreconditionAssertion
-    );
+    EXPECT_THROW(reactor.cancel_timer_fd(ThreadID(2), tid), PreconditionAssertion); // NOLINT(cppcoreguidelines-avoid-goto,hicpp-avoid-goto)
 }
 
 TEST_F(ReactorTest, DispatchEventsUnknownFdIsIgnored)

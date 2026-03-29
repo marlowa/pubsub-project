@@ -31,7 +31,7 @@ TEST_F(EventMessageTest, ReactorEventCreation)
     EXPECT_EQ(m.originating_thread_id().get_value(), system_thread_id_value);
 
     // Reactor events have no payload
-    EXPECT_EQ(m.payload_size(), 0u);
+    EXPECT_EQ(m.payload_size(), 0U);
     EXPECT_EQ(m.payload(), nullptr);
 }
 
@@ -69,7 +69,7 @@ TEST_F(EventMessageTest, ItcMessageZeroLengthPayload)
     EXPECT_EQ(msg.type().as_tag(), EventType::InterthreadCommunication);
     EXPECT_EQ(msg.originating_thread_id().get_value(), 7);
 
-    EXPECT_EQ(msg.payload_size(), 0u);
+    EXPECT_EQ(msg.payload_size(), 0U);
     EXPECT_EQ(msg.payload(), nullptr);
 }
 
@@ -85,7 +85,7 @@ TEST_F(EventMessageTest, TimerEventCreation)
     EXPECT_EQ(msg.type().as_tag(), EventType::Timer);
     EXPECT_EQ(msg.timer_id().get_value(), 12345);
 
-    EXPECT_EQ(msg.payload_size(), 0u);
+    EXPECT_EQ(msg.payload_size(), 0U);
     EXPECT_EQ(msg.payload(), nullptr);
 }
 
@@ -100,7 +100,7 @@ TEST_F(EventMessageTest, TerminationEventReason)
     EXPECT_EQ(msg.reason(), "catastrophic failure");
     EXPECT_EQ(msg.originating_thread_id().get_value(), system_thread_id_value);
 
-    EXPECT_EQ(msg.payload_size(), 0u);
+    EXPECT_EQ(msg.payload_size(), 0U);
     EXPECT_EQ(msg.payload(), nullptr);
 }
 
@@ -117,7 +117,7 @@ TEST_F(EventMessageTest, MoveSemantics)
 
     EXPECT_EQ(moved.type().as_tag(), EventType::InterthreadCommunication);
     EXPECT_EQ(moved.originating_thread_id().get_value(), 11);
-    EXPECT_EQ(moved.payload_size(), 2u);
+    EXPECT_EQ(moved.payload_size(), 2U);
 
     const auto* p = moved.payload();
     EXPECT_EQ(p[0], 9);

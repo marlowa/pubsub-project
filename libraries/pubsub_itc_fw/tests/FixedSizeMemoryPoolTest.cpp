@@ -1,16 +1,17 @@
-#include <gtest/gtest.h>
-
 #include <algorithm>
 #include <atomic>
-#include <cstddef>
-#include <cstdint>
+#include <chrono>
 #include <functional>
 #include <set>
 #include <thread>
-#include <mutex>
 #include <vector>
 #include <random>
 #include <type_traits> // for std::aligned_storage_t
+
+#include <cstddef>
+#include <cstdint>
+
+#include <gtest/gtest.h>
 
 #include <pubsub_itc_fw/FixedSizeMemoryPool.hpp>
 #include <pubsub_itc_fw/UseHugePagesFlag.hpp>
@@ -170,10 +171,10 @@ TEST_F(FixedSizeMemoryPoolTest, ContainsCorrectness) {
     auto* max_ptr = *std::max_element(ptrs.begin(), ptrs.end());
 
     // These are heuristic checks; we just want "clearly outside" to be false.
-    EXPECT_FALSE(pool.contains(reinterpret_cast<TestObject*>(
-        reinterpret_cast<char*>(min_ptr) - sizeof(TestObject))));
-    EXPECT_FALSE(pool.contains(reinterpret_cast<TestObject*>(
-        reinterpret_cast<char*>(max_ptr) + sizeof(TestObject) * 2)));
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+    EXPECT_FALSE(pool.contains(reinterpret_cast<TestObject*>(reinterpret_cast<char*>(min_ptr) - sizeof(TestObject))));
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+    EXPECT_FALSE(pool.contains(reinterpret_cast<TestObject*>(reinterpret_cast<char*>(max_ptr) + sizeof(TestObject) * 2)));
 
     for (auto* p : ptrs) {
         pool.deallocate(p);
@@ -238,8 +239,8 @@ TEST_F(FixedSizeMemoryPoolTest, DestructorDestroysLeakedObjects) {
             // FixedSizeMemoryPool does not set this bit; it only reads it in its destructor.”
             using SlotType = Slot<TestObject>;
             auto* storage_ptr = reinterpret_cast<std::aligned_storage_t<sizeof(TestObject), alignof(TestObject)>*>(p);
-            auto* slot = reinterpret_cast<SlotType*>(
-                reinterpret_cast<char*>(storage_ptr) - offsetof(SlotType, storage)
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+            auto* slot = reinterpret_cast<SlotType*>(reinterpret_cast<char*>(storage_ptr) - offsetof(SlotType, storage)
             );
             slot->is_constructed.store(1, std::memory_order_relaxed);
         }
@@ -295,6 +296,7 @@ TEST_F(FixedSizeMemoryPoolTest, DirectAbaStress) {
 
     // Threads hammer allocate()/deallocate() concurrently.
     std::vector<std::thread> threads;
+    threads.reserve(num_threads);
     for (int t = 0; t < num_threads; ++t) {
         threads.emplace_back([&]() {
             for (int i = 0; i < iterations; ++i) {
@@ -404,7 +406,7 @@ TEST_F(FixedSizeMemoryPoolTest, DirectAbaStressWithMidDrain) {
                 obj->id_ = i;
                 pool.deallocate(obj);
 
-                if ((i & 0xFF) == 0) {
+                if ((static_cast<unsigned>(i) & 0xFFU) == 0) {
                     std::this_thread::yield();
                 }
             }
@@ -439,7 +441,7 @@ TEST_F(FixedSizeMemoryPoolTest, DirectAbaStressWithMidDrain) {
         // If we drained anything at all, it must be structurally sound:
         // no duplicates in the sample.
         if (!drained.empty()) {
-            std::set<TestObject*> drained_set(drained.begin(), drained.end());
+            const std::set<TestObject*> drained_set(drained.begin(), drained.end());
             EXPECT_EQ(drained_set.size(), drained.size())
                 << "mid‑drain corruption: duplicate pointer detected in round "
                 << drain_round;

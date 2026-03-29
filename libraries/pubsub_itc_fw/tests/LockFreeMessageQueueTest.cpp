@@ -174,6 +174,7 @@ TEST(LockFreeMessageQueueTest, MultiProducerSingleConsumer) {
 
     std::atomic<bool> start_flag{false};
     std::vector<std::thread> threads;
+    threads.reserve(producers);
 
     // Launch producers
     for (int p = 0; p < producers; ++p) {

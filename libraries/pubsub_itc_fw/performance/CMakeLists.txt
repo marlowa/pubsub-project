@@ -17,7 +17,7 @@ add_executable(fixed_pool_bench
 )
 
 target_link_libraries(fixed_pool_bench PRIVATE
-    pubsub_itc_fw_lib
+    pubsub_itc_fw
     pthread
 )
 

@@ -303,7 +303,8 @@ TEST_F(ApplicationThreadTest, GetThreadNameReturnsCorrectName)
 TEST_F(ApplicationThreadTest, ThreadIDOfZeroReserved)
 {
     EXPECT_THROW(std::make_shared<TestThread>(logger_with_sink_.logger, *reactor_, "TestThread", ThreadID(0),
-                                              make_queue_config(), make_allocator_config()), PreconditionAssertion);
+                                              make_queue_config(), make_allocator_config()),
+                 PreconditionAssertion); // NOLINT(cppcoreguidelines-avoid-goto,hicpp-avoid-goto)
 }
 
 // ------------------------------------------------------------
@@ -857,7 +858,7 @@ TEST_F(ApplicationThreadTest, DoubleStartThrowsException)
     // Why:  Prevents undefined behavior from multiple thread starts
     // How:  Start thread, then attempt to start again
 
-    EXPECT_THROW(thread->start(), PreconditionAssertion);
+    EXPECT_THROW(thread->start(), PreconditionAssertion); // NOLINT(cppcoreguidelines-avoid-goto,hicpp-avoid-goto)
     thread->shutdown("done");
 }
 
@@ -871,7 +872,7 @@ TEST_F(ApplicationThreadTest, ShutdownBeforeStartIsGraceful)
                      ThreadID(1), make_queue_config(), make_allocator_config());
 
     // Should not crash or hang
-    EXPECT_NO_THROW(thread.shutdown("never started"));
+    EXPECT_NO_THROW(thread.shutdown("never started")); // NOLINT(cppcoreguidelines-avoid-goto,hicpp-avoid-goto)
     EXPECT_FALSE(thread.is_running());
 }
 
@@ -1248,13 +1249,13 @@ TEST_F(ApplicationThreadTest, CreatingTimerFromWrongThreadThrows)
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
-    EXPECT_THROW(thread->start_one_off_timer("once", std::chrono::milliseconds(5)), PreconditionAssertion);
+    EXPECT_THROW(thread->start_one_off_timer("once", std::chrono::milliseconds(5)), PreconditionAssertion); // NOLINT(cppcoreguidelines-avoid-goto,hicpp-avoid-goto)
 }
 
 struct DefaultHandlerProbe : public ApplicationThread {
     using ApplicationThread::ApplicationThread;
     // Override the one pure virtual
-    void on_itc_message(const EventMessage&) override {}
+    void on_itc_message([[maybe_unused]] const EventMessage& eventMessage) override {}
 
     using ApplicationThread::on_initial_event;
     using ApplicationThread::on_app_ready_event;

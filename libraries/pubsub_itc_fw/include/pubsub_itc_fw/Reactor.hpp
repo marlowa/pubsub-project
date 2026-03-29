@@ -82,6 +82,9 @@ public:
      * PRECONDITION: Must only be called before Reactor::run().
      * Thread registration is not allowed once the reactor is running.
      *
+     * All registry structures (threads_, threads_by_thread_id_, fast_path_threads_)
+     * are updated atomically under thread_registry_mutex_.
+     *
      * @param [in] thread A reference to the application thread.
      */
     void register_thread(std::shared_ptr<ApplicationThread> thread);
@@ -220,7 +223,20 @@ private:
 
     std::unordered_map<TimerID, int> timer_id_to_fd_;
 
+    /**
+     * Thread registry invariants:
+     *
+     * - threads_ owns the shared_ptr<ApplicationThread>.
+     * - threads_by_thread_id_ provides ID-based lookup of the same shared_ptr.
+     * - fast_path_threads_ provides a raw-pointer fast-path for routing.
+     *
+     * All three structures are mutated only during initialization and shutdown,
+     * and always under thread_registry_mutex_. During steady-state running,
+     * they are read-only. This guarantees that fast_path_threads_ never contains
+     * dangling pointers.
+     */
     mutable std::mutex thread_registry_mutex_;
+
     std::map<std::string, std::shared_ptr<ApplicationThread>> threads_;
     std::map<ThreadID, std::shared_ptr<ApplicationThread>> threads_by_thread_id_;
 
