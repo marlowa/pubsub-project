@@ -1250,3 +1250,36 @@ TEST_F(ApplicationThreadTest, CreatingTimerFromWrongThreadThrows)
 
     EXPECT_THROW(thread->start_one_off_timer("once", std::chrono::milliseconds(5)), PreconditionAssertion);
 }
+
+struct DefaultHandlerProbe : public ApplicationThread {
+    using ApplicationThread::ApplicationThread;
+    // Override the one pure virtual
+    void on_itc_message(const EventMessage&) override {}
+
+    using ApplicationThread::on_initial_event;
+    using ApplicationThread::on_app_ready_event;
+    using ApplicationThread::on_termination_event;
+    using ApplicationThread::on_timer_event;
+    using ApplicationThread::on_pubsub_message;
+    using ApplicationThread::on_raw_socket_message;
+};
+
+TEST_F(ApplicationThreadTest, DefaultHandlersAreCallableAndNoop)
+{
+    DefaultHandlerProbe t(
+        logger_with_sink_.logger,
+        *reactor_,
+        "DefaultHandlerProbe",
+        ThreadID(999),
+        make_queue_config(),
+        make_allocator_config()
+    );
+
+    // Call each default handler once
+    t.on_initial_event();
+    t.on_app_ready_event();
+    t.on_termination_event("reason");
+    t.on_timer_event("timer");
+    t.on_pubsub_message(EventMessage::create_pubsub_message(nullptr, 0));
+    t.on_raw_socket_message(EventMessage::create_raw_socket_message(nullptr, 0));
+}

@@ -281,6 +281,10 @@ void Reactor::finalize_threads_after_shutdown() {
 }
 
 void Reactor::register_thread(std::shared_ptr<ApplicationThread> thread) {
+    if (lifecycle_.load(std::memory_order_acquire) != ReactorLifecycleState::NotStarted) {
+        throw PreconditionAssertion("register_thread() called after Reactor has started running", __FILE__, __LINE__);
+    }
+
     // Safety check: ensure we didn't get a null pointer
     if (thread == nullptr) {
         throw PreconditionAssertion("Cannot register a null thread", __FILE__, __LINE__);
@@ -347,33 +351,6 @@ void Reactor::cancel_all_timer_fds_for_thread(ThreadID owner_thread_id) {
 
     // No timers left for this thread
     thread_timer_names_.erase(it_thread);
-}
-
-void Reactor::deregister_thread(ThreadID thread_id, const std::string& name) {
-    const std::lock_guard<std::mutex> lock(thread_registry_mutex_);
-
-    PUBSUB_LOG(logger_, LogLevel::Info, "Deregistering thread: {} (ID: {})", name, thread_id.get_value());
-
-    // Drop all timers owned by this thread
-    cancel_all_timer_fds_for_thread(thread_id);
-
-    // 1. Remove from name map
-    auto it_name = threads_.find(name);
-    if (it_name != threads_.end()) {
-        threads_.erase(it_name);
-    }
-
-    // 2. Remove from ID map
-    auto it_id = threads_by_thread_id_.find(thread_id);
-    if (it_id != threads_by_thread_id_.end()) {
-        threads_by_thread_id_.erase(it_id);
-    }
-
-    // 3. Remove from fast-path routing map
-    auto it_fast = fast_path_threads_.find(thread_id);
-    if (it_fast != fast_path_threads_.end()) {
-        fast_path_threads_.erase(it_fast);
-    }
 }
 
 bool Reactor::wait_for_all_threads(std::function<bool(const ApplicationThread&)> predicate, const std::string& phase_name) {
@@ -528,6 +505,9 @@ void Reactor::enqueue_control_command(const ReactorControlCommand& command) {
     }
 }
 
+// Thread-safe: this function acquires timer_registry_mutex_ internally.
+// Callers must NOT hold the mutex. The entire timer registry, including
+// next_timer_id_, is protected by this lock.
 TimerID Reactor::allocate_timer_id() {
     const std::lock_guard<std::mutex> lock(timer_registry_mutex_);
     TimerID id = next_timer_id_;
@@ -623,6 +603,13 @@ void Reactor::deregister_handler(int fd) {
     ::close(fd);
 }
 
+std::string Reactor::get_shutdown_reason() const
+{
+    // A plain load is fine: shutdown_reason_ is written once during shutdown
+    // and then treated as immutable. Returning a copy avoids lifetime issues.
+    return shutdown_reason_;
+}
+
 void Reactor::event_loop() {
     std::array<epoll_event, 64> events{};
 
@@ -698,6 +685,9 @@ void Reactor::dispatch_events(int nfds, epoll_event* events) {
     PUBSUB_LOG_STR(logger_, LogLevel::Info, "dispatch_events returning");
 }
 
+// Thread-safe under the reactor lifecycle model:
+// - No writes occur while the reactor is Running.
+// - No reads occur during initialization or shutdown.
 ApplicationThread* Reactor::get_fast_path_thread(ThreadID id) const {
     auto it = fast_path_threads_.find(id);
     return (it != fast_path_threads_.end()) ? it->second : nullptr;

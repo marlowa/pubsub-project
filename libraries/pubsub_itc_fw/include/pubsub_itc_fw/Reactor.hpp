@@ -78,11 +78,13 @@ public:
 
     /**
      * @brief Registers an application thread with the reactor.
+     *
+     * PRECONDITION: Must only be called before Reactor::run().
+     * Thread registration is not allowed once the reactor is running.
+     *
      * @param [in] thread A reference to the application thread.
      */
     void register_thread(std::shared_ptr<ApplicationThread> thread);
-
-    void deregister_thread(ThreadID thread_id, const std::string& name);
 
     /**
      * @brief Returns the name of a thread given its ID.
@@ -135,6 +137,14 @@ public:
 
     ThreadLifecycleState::Tag get_thread_state(ThreadID id) const;
 
+    /**
+     * Fast-path lookup.
+     * SAFE WITHOUT LOCKING under the reactor lifecycle model:
+     *
+     * - No writes to fast_path_threads_ occur while the reactor is Running.
+     * - No reads occur during initialization or shutdown.
+     * Violating this contract is a precondition failure.
+     */
     ApplicationThread* get_fast_path_thread(ThreadID id) const;
 
     // Made public for unit test purposes only
@@ -142,20 +152,39 @@ public:
     void check_for_exited_threads();
     void check_for_stuck_threads();
     void dispatch_events(int nfds, epoll_event* events);
+
+    /**
+     * TEST SEAM: This method exists solely for unit tests to force lifecycle transitions without running
+     * the full event loop. It must not be used by application code.
+     */
     void set_lifecycle_state(ReactorLifecycleState::Tag state)
     {
         lifecycle_.store(state, std::memory_order_release);
     }
 
+    /**
+     * TEST SEAM: This method exists solely for unit tests to force lifecycle transitions without running
+     * the full event loop. It must not be used by application code.
+     */
     void set_initialization_complete(bool is_complete)
     {
         initialization_complete_.store(is_complete, std::memory_order_release);
     }
 
+    /**
+     * @brief Returns the human-readable reason why the reactor shut down.
+     *
+     * This value is set when shutdown is initiated and remains stable for the
+     * remainder of the reactor's lifetime. It is intended for application-level
+     * diagnostics and logging. The returned string is meaningful only after the
+     * reactor has left the @ref ReactorLifecycleState::Running state.
+     *
+     * @return A copy of the shutdown reason string. May be empty if shutdown has not yet been requested.
+     */
+    std::string get_shutdown_reason() const;
+
 protected:
     std::atomic<ReactorLifecycleState::Tag> lifecycle_{ReactorLifecycleState::NotStarted};
-
-    std::string shutdown_reason_;
 
 private:
     [[nodiscard]] bool initialize_threads();
@@ -195,10 +224,28 @@ private:
     std::map<std::string, std::shared_ptr<ApplicationThread>> threads_;
     std::map<ThreadID, std::shared_ptr<ApplicationThread>> threads_by_thread_id_;
 
-    // Fast-path routing: non-owning raw pointers
+    /**
+     * Fast-path routing: non-owning raw pointers
+     * Written only during initialization and shutdown.
+     * Read only during steady-state running.
+     * Therefore safe without locking under the reactor lifecycle model.
+     */
     std::unordered_map<ThreadID, ApplicationThread*> fast_path_threads_;
 
+    /**
+     * command_queue_ is backed by ExpandablePoolAllocator and cannot overflow.
+     * It grows by allocating new pools as needed. No fixed capacity exists.
+     */
     LockFreeMessageQueue<ReactorControlCommand> command_queue_;
+
+    /**
+     * @brief Internal storage for the human-readable shutdown reason.
+     *
+     * This is written exactly once when shutdown is initiated and then exposed
+     * to applications via @ref get_shutdown_reason() for diagnostics and logging.
+     * It is not intended for direct access outside the Reactor implementation.
+     */
+    std::string shutdown_reason_;
 
     // Configuration parameters
     ReactorConfiguration config_;
