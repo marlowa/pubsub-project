@@ -54,7 +54,7 @@ void EventDistributor::run() {
     }
 
     // After the loop terminates, log the shutdown.
-    PUBSUB_LOG_STR(get_logger(), LogLevel::Info, "EventDistributor thread is terminating.");
+    PUBSUB_LOG_STR(get_logger(), FwLogLevel::Info, "EventDistributor thread is terminating.");
 }
 
 /**
@@ -113,14 +113,14 @@ void EventDistributor::process_message(EventMessage& message) {
                 }
             } catch (const std::bad_variant_access& e) {
                 // This should not happen in a correctly designed system.
-                PUBSUB_LOG_STR(get_logger(), LogLevel::Error, "Bad variant access when processing Message event: " + std::string(e.what()));
+                PUBSUB_LOG_STR(get_logger(), FwLogLevel::Error, "Bad variant access when processing Message event: " + std::string(e.what()));
             }
             break;
         }
         case EventMessage::EventType::Termination: {
             // Log the termination event reason before shutting down.
             std::string reason = std::get<std::string>(message.payload_);
-            PUBSUB_LOG_STR(get_logger(), LogLevel::Info, "Received termination message: " + reason);
+            PUBSUB_LOG_STR(get_logger(), FwLogLevel::Info, "Received termination message: " + reason);
             is_running_ = false;
             break;
         }
@@ -130,7 +130,7 @@ void EventDistributor::process_message(EventMessage& message) {
         }
         default:
             // Log an unknown event type.
-            PUBSUB_LOG_STR(get_logger(), LogLevel::Warning, "Received an unknown event type.");
+            PUBSUB_LOG_STR(get_logger(), FwLogLevel::Warning, "Received an unknown event type.");
             break;
     }
 }

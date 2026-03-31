@@ -44,20 +44,20 @@ struct PoolStatistics {
      * @param logger The logger to use for output.
      */
     void log_statistics(QuillLogger& logger) const {
-        PUBSUB_LOG(logger, LogLevel::Info, "--- Pool Statistics for '{}' ---", pool_name_);
-        PUBSUB_LOG(logger, LogLevel::Info, "Object Size: {} bytes", object_size_);
-        PUBSUB_LOG(logger, LogLevel::Info, "Objects Per Pool: {}", number_of_objects_per_pool_);
-        PUBSUB_LOG(logger, LogLevel::Info, "Total Pools: {}", number_of_pools_);
-        PUBSUB_LOG(logger, LogLevel::Info, "Huge Pages In Use: {}", (use_huge_pages_flag_ == UseHugePagesFlag::DoUseHugePages ? "Yes" : "No"));
+        PUBSUB_LOG(logger, FwLogLevel::Info, "--- Pool Statistics for '{}' ---", pool_name_);
+        PUBSUB_LOG(logger, FwLogLevel::Info, "Object Size: {} bytes", object_size_);
+        PUBSUB_LOG(logger, FwLogLevel::Info, "Objects Per Pool: {}", number_of_objects_per_pool_);
+        PUBSUB_LOG(logger, FwLogLevel::Info, "Total Pools: {}", number_of_pools_);
+        PUBSUB_LOG(logger, FwLogLevel::Info, "Huge Pages In Use: {}", (use_huge_pages_flag_ == UseHugePagesFlag::DoUseHugePages ? "Yes" : "No"));
         if (use_huge_pages_flag_ == UseHugePagesFlag::DoUseHugePages) {
-            PUBSUB_LOG(logger, LogLevel::Info, "  Huge Page Size: {} bytes", huge_page_size_);
-            PUBSUB_LOG(logger, LogLevel::Info, "  Huge Page Pools: {}", number_of_huge_page_pools_);
+            PUBSUB_LOG(logger, FwLogLevel::Info, "  Huge Page Size: {} bytes", huge_page_size_);
+            PUBSUB_LOG(logger, FwLogLevel::Info, "  Huge Page Pools: {}", number_of_huge_page_pools_);
         }
-        PUBSUB_LOG(logger, LogLevel::Info, "Allocated Objects: {}", number_of_allocated_objects_);
-        PUBSUB_LOG(logger, LogLevel::Info, "Available Objects: {}", number_of_objects_available_);
-        PUBSUB_LOG(logger, LogLevel::Info, "Full Pools: {}", number_of_full_pools_);
+        PUBSUB_LOG(logger, FwLogLevel::Info, "Allocated Objects: {}", number_of_allocated_objects_);
+        PUBSUB_LOG(logger, FwLogLevel::Info, "Available Objects: {}", number_of_objects_available_);
+        PUBSUB_LOG(logger, FwLogLevel::Info, "Full Pools: {}", number_of_full_pools_);
         // Fix for the C++11 warning: Pass a dummy empty string for the variadic argument.
-        PUBSUB_LOG(logger, LogLevel::Info, "-------------------------------------", "");
+        PUBSUB_LOG(logger, FwLogLevel::Info, "-------------------------------------", "");
     }
 };
 

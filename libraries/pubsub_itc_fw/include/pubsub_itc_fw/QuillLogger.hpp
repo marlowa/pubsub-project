@@ -9,7 +9,7 @@
 #include <quill/sinks/Sink.h>
 #include <quill/core/LogLevel.h>
 
-#include <pubsub_itc_fw/LogLevel.hpp>
+#include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/LoggerUtils.hpp>
 #include <pubsub_itc_fw/FileOpenMode.hpp>
 
@@ -23,24 +23,24 @@ public:
 
     QuillLogger(const std::string& file_path,
                          FileOpenMode file_mode,
-                         LogLevel file_level,
-                         LogLevel syslog_level,
-                         LogLevel console_level);
+                         FwLogLevel file_level,
+                         FwLogLevel syslog_level,
+                         FwLogLevel console_level);
 
     explicit QuillLogger(); // for unit tests
 
     QuillLogger(const std::string& logger_name, std::shared_ptr<quill::Sink> test_sink,
-                         LogLevel log_level = LogLevel::Debug);
+                         FwLogLevel log_level = FwLogLevel::Debug);
 
     quill::Logger* quill_logger() const { return quill_logger_; }
 
-    void set_log_level(LogLevel level);
-    LogLevel log_level() const { return level_; }
+    void set_log_level(FwLogLevel level);
+    FwLogLevel log_level() const { return level_; }
 
     // Per-destination filtering
-    bool should_log_to_file(LogLevel level) const;
-    bool should_log_to_syslog(LogLevel level) const;
-    bool should_log_to_console(LogLevel level) const;
+    bool should_log_to_file(FwLogLevel level) const;
+    bool should_log_to_syslog(FwLogLevel level) const;
+    bool should_log_to_console(FwLogLevel level) const;
 
 private:
 
@@ -56,11 +56,11 @@ private:
     std::shared_ptr<quill::Sink> syslog_sink_;
 
     // TODO APM not sure about this, having a single level here.
-    LogLevel level_{LogLevel::Info};
+    FwLogLevel level_{FwLogLevel::Info};
 
-    LogLevel file_level_{LogLevel::Info};
-    LogLevel console_level_{LogLevel::Info};
-    LogLevel syslog_level_{LogLevel::Info};
+    FwLogLevel file_level_{FwLogLevel::Info};
+    FwLogLevel console_level_{FwLogLevel::Info};
+    FwLogLevel syslog_level_{FwLogLevel::Info};
 
     quill::Logger* quill_logger_{nullptr};
 };

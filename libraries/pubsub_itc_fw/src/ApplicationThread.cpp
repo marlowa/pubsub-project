@@ -39,7 +39,7 @@ ApplicationThread::~ApplicationThread() {
     //       still holds a reference to this object. std::terminate() is the only
     //       honest response.
     if (thread_ != nullptr && thread_->joinable()) {
-        PUBSUB_LOG(logger_, LogLevel::Error,
+        PUBSUB_LOG(logger_, FwLogLevel::Error,
             "ApplicationThread {} destroyed while thread is still joinable. "
             "This indicates finalize_threads_after_shutdown() was not called "
             "or the thread refused to stop. Terminating.", thread_name_);
@@ -142,7 +142,7 @@ void ApplicationThread::cancel_timer(const std::string& name) {
     }
 
     const TimerID id = it->second;
-    PUBSUB_LOG(logger_, LogLevel::Info, "Thread {} sending cancel timer command to reactor for timer {}", thread_name_, name);
+    PUBSUB_LOG(logger_, FwLogLevel::Info, "Thread {} sending cancel timer command to reactor for timer {}", thread_name_, name);
     ReactorControlCommand command(ReactorControlCommand::CommandTag::CancelTimer);
     command.owner_thread_id_ = thread_id_;
     command.timer_id_ = id;
@@ -152,7 +152,6 @@ void ApplicationThread::cancel_timer(const std::string& name) {
     name_to_id_.erase(it);
 }
 
-// Note: reason is used in the logging macros but we have to neutralise those macros for clang-tidy
 // Note: reason is used in the logging macros but we have to neutralise those macros for clang-tidy
 void ApplicationThread::shutdown([[maybe_unused]] const std::string& reason) {
     auto state = get_lifecycle_state().as_tag();
@@ -170,7 +169,7 @@ void ApplicationThread::shutdown([[maybe_unused]] const std::string& reason) {
         message_queue_->shutdown();
     }
 
-    PUBSUB_LOG(logger_, LogLevel::Info, "Thread {} received shutdown signal: {}", thread_name_, reason);
+    PUBSUB_LOG(logger_, FwLogLevel::Info, "Thread {} received shutdown signal: {}", thread_name_, reason);
 
     // Joining is the sole responsibility of Reactor::finalize_threads_after_shutdown().
     // ApplicationThread::shutdown() only requests shutdown and makes the queue stop accepting messages.
@@ -180,12 +179,12 @@ void ApplicationThread::run() {
     try {
         run_internal();
     } catch (const std::exception& ex) {
-        PUBSUB_LOG(logger_, LogLevel::Error, "{} [{}] terminating due to exception: {}", thread_name_, thread_id_.get_value(), ex.what());
+        PUBSUB_LOG(logger_, FwLogLevel::Error, "{} [{}] terminating due to exception: {}", thread_name_, thread_id_.get_value(), ex.what());
         set_lifecycle_state(ThreadLifecycleState::ShuttingDown);
         reactor_.shutdown(fmt::format("Thread {} [{}] terminated due to exception: {}", thread_name_, thread_id_.get_value(), ex.what()));
         set_lifecycle_state(ThreadLifecycleState::Terminated);
     } catch (...) {
-        PUBSUB_LOG(logger_, LogLevel::Error, "{} [{}] terminating due to unknown exception", thread_name_, thread_id_.get_value());
+        PUBSUB_LOG(logger_, FwLogLevel::Error, "{} [{}] terminating due to unknown exception", thread_name_, thread_id_.get_value());
         set_lifecycle_state(ThreadLifecycleState::ShuttingDown);
         reactor_.shutdown(fmt::format("Thread {} [{}] terminated due to unknown exception", thread_name_, thread_id_.get_value()));
         set_lifecycle_state(ThreadLifecycleState::Terminated);
@@ -195,7 +194,7 @@ void ApplicationThread::run() {
 void ApplicationThread::run_internal() {
     set_lifecycle_state(ThreadLifecycleState::Started);
 
-    PUBSUB_LOG(logger_, LogLevel::Info, "Starting thread {}", thread_name_);
+    PUBSUB_LOG(logger_, FwLogLevel::Info, "Starting thread {}", thread_name_);
 
     Backoff backoff;
 
@@ -213,13 +212,13 @@ void ApplicationThread::run_internal() {
 
         // If the Reactor has begun shutdown, this thread should exit promptly
         if (!reactor_.is_running()) {
-            PUBSUB_LOG(logger_, LogLevel::Warning, "Thread {} detected Reactor shutdown, exiting", thread_name_);
+            PUBSUB_LOG(logger_, FwLogLevel::Warning, "Thread {} detected Reactor shutdown, exiting", thread_name_);
             break;
         }
 
         // Defensive: queue must exist while the thread is running
         if (message_queue_ == nullptr) {
-            PUBSUB_LOG(logger_, LogLevel::Error, "Thread {} no longer has message queue, shutting down.", thread_name_);
+            PUBSUB_LOG(logger_, FwLogLevel::Error, "Thread {} no longer has message queue, shutting down.", thread_name_);
             break;
         }
 
@@ -243,7 +242,7 @@ void ApplicationThread::run_internal() {
         }
     }
 
-    PUBSUB_LOG(logger_, LogLevel::Info, "Thread {} is shutting down.", thread_name_);
+    PUBSUB_LOG(logger_, FwLogLevel::Info, "Thread {} is shutting down.", thread_name_);
     set_lifecycle_state(ThreadLifecycleState::ShuttingDown);
 }
 
@@ -266,7 +265,7 @@ void ApplicationThread::process_message(EventMessage& message) {
         case EventType::Initial: {
             on_initial_event();
             set_lifecycle_state(ThreadLifecycleState::InitialProcessed);
-            PUBSUB_LOG(logger_, LogLevel::Info, "Thread {}: Initialisation complete", thread_name_);
+            PUBSUB_LOG(logger_, FwLogLevel::Info, "Thread {}: Initialisation complete", thread_name_);
             break;
         }
 
@@ -277,14 +276,14 @@ void ApplicationThread::process_message(EventMessage& message) {
 
             on_app_ready_event();
 
-            PUBSUB_LOG(logger_, LogLevel::Info, "Thread {}: Received AppReady. Moving to operational state.", thread_name_);
+            PUBSUB_LOG(logger_, FwLogLevel::Info, "Thread {}: Received AppReady. Moving to operational state.", thread_name_);
             set_lifecycle_state(ThreadLifecycleState::Operational);
             break;
         }
 
         case EventType::Termination: {
             on_termination_event(message.reason());
-            PUBSUB_LOG(logger_, LogLevel::Info, "ApplicationThread {} has received Termination event", thread_name_);
+            PUBSUB_LOG(logger_, FwLogLevel::Info, "ApplicationThread {} has received Termination event", thread_name_);
             set_lifecycle_state(ThreadLifecycleState::Terminated);
             break;
         }
@@ -311,7 +310,7 @@ void ApplicationThread::process_message(EventMessage& message) {
 
         case EventType::None:
         default: {
-            PUBSUB_LOG(logger_, LogLevel::Warning, "Thread {}: Received unknown or None event type: {}", thread_name_, type.as_string());
+            PUBSUB_LOG(logger_, FwLogLevel::Warning, "Thread {}: Received unknown or None event type: {}", thread_name_, type.as_string());
             break;
         }
     }
@@ -321,7 +320,7 @@ void ApplicationThread::process_message(EventMessage& message) {
 void ApplicationThread::on_timer_id_event(TimerID id) {
     auto it = id_to_name_.find(id);
     if (it == id_to_name_.end()) {
-        PUBSUB_LOG(logger_, LogLevel::Warning, "Thread {} received timer event for unknown TimerID {}", thread_name_, id.get_value());
+        PUBSUB_LOG(logger_, FwLogLevel::Warning, "Thread {} received timer event for unknown TimerID {}", thread_name_, id.get_value());
         return;
     }
 
@@ -338,7 +337,7 @@ void ApplicationThread::set_lifecycle_state(ThreadLifecycleState::Tag new_tag) {
         return;
     }
 
-    PUBSUB_LOG(logger_, LogLevel::Info, "Thread {} lifecycle transition {} to {}", thread_name_, ThreadLifecycleState::to_string(old_tag),
+    PUBSUB_LOG(logger_, FwLogLevel::Info, "Thread {} lifecycle transition {} to {}", thread_name_, ThreadLifecycleState::to_string(old_tag),
                ThreadLifecycleState::to_string(new_tag));
 
     lifecycle_state_.store(new_tag, std::memory_order_release);

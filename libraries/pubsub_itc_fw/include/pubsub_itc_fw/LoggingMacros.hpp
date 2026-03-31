@@ -3,7 +3,7 @@
 #include <quill/LogMacros.h>
 
 #include <pubsub_itc_fw/LoggerUtils.hpp>
-#include <pubsub_itc_fw/LogLevel.hpp>
+#include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 
 /** @ingroup logging_subsystem */
@@ -20,19 +20,19 @@
 #define PUBSUB_LOG(logger_expr, log_level_expr, fmt, ...)                               \
     do {                                                                                \
         auto& logger_local_ref = (logger_expr);                                         \
-        ::pubsub_itc_fw::LogLevel level_obj = (log_level_expr);                         \
-        if (level_obj == ::pubsub_itc_fw::LogLevel::Alert ||                            \
-            level_obj == ::pubsub_itc_fw::LogLevel::Critical) {                         \
+        ::pubsub_itc_fw::FwLogLevel level_obj = (log_level_expr);                         \
+        if (level_obj == ::pubsub_itc_fw::FwLogLevel::Alert ||                            \
+            level_obj == ::pubsub_itc_fw::FwLogLevel::Critical) {                         \
             LOG_CRITICAL(logger_local_ref.quill_logger(), fmt, ##__VA_ARGS__);          \
-        } else if (level_obj == ::pubsub_itc_fw::LogLevel::Error) {                     \
+        } else if (level_obj == ::pubsub_itc_fw::FwLogLevel::Error) {                     \
             LOG_ERROR(logger_local_ref.quill_logger(), fmt, ##__VA_ARGS__);             \
-        } else if (level_obj == ::pubsub_itc_fw::LogLevel::Warning) {                   \
+        } else if (level_obj == ::pubsub_itc_fw::FwLogLevel::Warning) {                   \
             LOG_WARNING(logger_local_ref.quill_logger(), fmt, ##__VA_ARGS__);           \
-        } else if (level_obj == ::pubsub_itc_fw::LogLevel::Notice) {                    \
+        } else if (level_obj == ::pubsub_itc_fw::FwLogLevel::Notice) {                    \
             LOG_INFO(logger_local_ref.quill_logger(), fmt, ##__VA_ARGS__);              \
-        } else if (level_obj == ::pubsub_itc_fw::LogLevel::Info) {                      \
+        } else if (level_obj == ::pubsub_itc_fw::FwLogLevel::Info) {                      \
             LOG_INFO(logger_local_ref.quill_logger(), fmt, ##__VA_ARGS__);              \
-        } else if (level_obj == ::pubsub_itc_fw::LogLevel::Debug) {                     \
+        } else if (level_obj == ::pubsub_itc_fw::FwLogLevel::Debug) {                     \
             LOG_DEBUG(logger_local_ref.quill_logger(), fmt, ##__VA_ARGS__);             \
         }                                                                               \
     } while (0)

@@ -17,7 +17,7 @@
 
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/FileOpenMode.hpp>
-#include <pubsub_itc_fw/LogLevel.hpp>
+#include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/LoggerUtils.hpp>
 
 namespace {
@@ -52,9 +52,9 @@ std::string QuillLogger::generate_unique_sink_name(const std::string& prefix) {
 
 QuillLogger::QuillLogger(const std::string& file_path,
                          FileOpenMode file_mode,
-                         LogLevel file_level,
-                         LogLevel syslog_level,
-                         LogLevel console_level)
+                         FwLogLevel file_level,
+                         FwLogLevel syslog_level,
+                         FwLogLevel console_level)
     : file_level_{file_level},
       console_level_{console_level},
       syslog_level_{syslog_level}
@@ -105,22 +105,22 @@ QuillLogger::QuillLogger(const std::string& file_path,
  * It also writes at debug level and above.
  */
 QuillLogger::QuillLogger()
-    : file_level_{LogLevel::Debug},
-      console_level_{LogLevel::Debug},
-      syslog_level_{LogLevel::Debug}  {
+    : file_level_{FwLogLevel::Debug},
+      console_level_{FwLogLevel::Debug},
+      syslog_level_{FwLogLevel::Debug}  {
 
     ensure_backend_started();
 
     console_sink_ = quill::Frontend::create_or_get_sink<quill::ConsoleSink>(generate_unique_sink_name("console_sink"));
     quill_logger_ = quill::Frontend::create_or_get_logger(generate_unique_logger_name("pubsub_logger"), {console_sink_} );
 
-    quill_logger_->set_log_level(LoggerUtils::to_quill_log_level(LogLevel::Debug));
+    quill_logger_->set_log_level(LoggerUtils::to_quill_log_level(FwLogLevel::Debug));
 }
 
 /**
  * Constructor for unit tests with custom sink (e.g., TestSink)
  */
-QuillLogger::QuillLogger(const std::string& logger_name, std::shared_ptr<quill::Sink> test_sink, LogLevel log_level)
+QuillLogger::QuillLogger(const std::string& logger_name, std::shared_ptr<quill::Sink> test_sink, FwLogLevel log_level)
     :
       console_sink_{test_sink},
       level_{log_level},
@@ -141,17 +141,17 @@ QuillLogger::QuillLogger(const std::string& logger_name, std::shared_ptr<quill::
 // -----------------------------------------------------------------------------
 // Filtering
 // -----------------------------------------------------------------------------
-bool QuillLogger::should_log_to_file(LogLevel level) const
+bool QuillLogger::should_log_to_file(FwLogLevel level) const
 {
     return level <= file_level_;
 }
 
-bool QuillLogger::should_log_to_syslog(LogLevel level) const
+bool QuillLogger::should_log_to_syslog(FwLogLevel level) const
 {
     return level <= syslog_level_;
 }
 
-bool QuillLogger::should_log_to_console(LogLevel level) const
+bool QuillLogger::should_log_to_console(FwLogLevel level) const
 {
     return level <= console_level_;
 }
@@ -159,7 +159,7 @@ bool QuillLogger::should_log_to_console(LogLevel level) const
 // -----------------------------------------------------------------------------
 // Unified log level control
 // -----------------------------------------------------------------------------
-void QuillLogger::set_log_level(LogLevel level)
+void QuillLogger::set_log_level(FwLogLevel level)
 {
     level_ = level;
     file_level_ = syslog_level_ = console_level_ = level;

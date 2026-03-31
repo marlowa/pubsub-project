@@ -19,7 +19,7 @@ public:
     LoggerWithSink(const std::string& logger_name, const std::string& sink_name) {
         auto sink_base = quill::Frontend::create_or_get_sink<TestSink>(sink_name);
         auto sink_typed = std::static_pointer_cast<TestSink>(sink_base);
-        logger = QuillLogger(logger_name, sink_base, LogLevel::Debug);
+        logger = QuillLogger(logger_name, sink_base, FwLogLevel::Debug);
         sink = sink_typed;
     }
 

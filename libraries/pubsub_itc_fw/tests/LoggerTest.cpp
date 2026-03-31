@@ -10,7 +10,7 @@
 #include <boost/filesystem.hpp>
 #include <gtest/gtest.h>
 
-#include <pubsub_itc_fw/LogLevel.hpp>
+#include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 
@@ -63,28 +63,28 @@ TEST_F(LoggerTest, theOneTest) {
     //
     // 1. should_log semantics
     //
-    test_logger.set_log_level(LogLevel::Info);
+    test_logger.set_log_level(FwLogLevel::Info);
 
-    EXPECT_TRUE(test_logger.should_log(LogLevel::Critical));
-    EXPECT_TRUE(test_logger.should_log(LogLevel::Error));
-    EXPECT_TRUE(test_logger.should_log(LogLevel::Warning));
-    EXPECT_TRUE(test_logger.should_log(LogLevel::Info));
-    EXPECT_FALSE(test_logger.should_log(LogLevel::Debug));
+    EXPECT_TRUE(test_logger.should_log(FwLogLevel::Critical));
+    EXPECT_TRUE(test_logger.should_log(FwLogLevel::Error));
+    EXPECT_TRUE(test_logger.should_log(FwLogLevel::Warning));
+    EXPECT_TRUE(test_logger.should_log(FwLogLevel::Info));
+    EXPECT_FALSE(test_logger.should_log(FwLogLevel::Debug));
 
-    test_logger.set_log_level(LogLevel::Error);
+    test_logger.set_log_level(FwLogLevel::Error);
 
-    EXPECT_TRUE(test_logger.should_log(LogLevel::Critical));
-    EXPECT_TRUE(test_logger.should_log(LogLevel::Error));
-    EXPECT_FALSE(test_logger.should_log(LogLevel::Warning));
-    EXPECT_FALSE(test_logger.should_log(LogLevel::Info));
-    EXPECT_FALSE(test_logger.should_log(LogLevel::Debug));
+    EXPECT_TRUE(test_logger.should_log(FwLogLevel::Critical));
+    EXPECT_TRUE(test_logger.should_log(FwLogLevel::Error));
+    EXPECT_FALSE(test_logger.should_log(FwLogLevel::Warning));
+    EXPECT_FALSE(test_logger.should_log(FwLogLevel::Info));
+    EXPECT_FALSE(test_logger.should_log(FwLogLevel::Debug));
 
     //
     // 2. Basic logging + metadata + formatting
     //
-    test_logger.set_log_level(LogLevel::Info);
+    test_logger.set_log_level(FwLogLevel::Info);
 
-    PUBSUB_LOG(test_logger, LogLevel::Info, "Test message: {}", "hello world");
+    PUBSUB_LOG(test_logger, FwLogLevel::Info, "Test message: {}", "hello world");
     test_logger.flush();
 
     auto [found1, content1] = findLogFileContent("test.log");
@@ -102,7 +102,7 @@ TEST_F(LoggerTest, theOneTest) {
     //
     // 3. Multi‑argument formatting
     //
-    PUBSUB_LOG(test_logger, LogLevel::Info, "Two values: {} {}", 1, 2);
+    PUBSUB_LOG(test_logger, FwLogLevel::Info, "Two values: {} {}", 1, 2);
     test_logger.flush();
 
     auto [found2, content2] = findLogFileContent("test.log");
@@ -114,8 +114,8 @@ TEST_F(LoggerTest, theOneTest) {
     //
     // 4. Multiple messages + ordering (weak check)
     //
-    PUBSUB_LOG_STR(test_logger, LogLevel::Info, "First message");
-    PUBSUB_LOG_STR(test_logger, LogLevel::Info, "Second message");
+    PUBSUB_LOG_STR(test_logger, FwLogLevel::Info, "First message");
+    PUBSUB_LOG_STR(test_logger, FwLogLevel::Info, "Second message");
     test_logger.flush();
 
     auto [found3, content3] = findLogFileContent("test.log");
@@ -131,10 +131,10 @@ TEST_F(LoggerTest, theOneTest) {
     //
     // 5. Log‑level filtering in actual output
     //
-    test_logger.set_log_level(LogLevel::Warning);
+    test_logger.set_log_level(FwLogLevel::Warning);
 
-    PUBSUB_LOG_STR(test_logger, LogLevel::Error, "Error message should be logged");
-    PUBSUB_LOG_STR(test_logger, LogLevel::Info, "Info message should not be logged");
+    PUBSUB_LOG_STR(test_logger, FwLogLevel::Error, "Error message should be logged");
+    PUBSUB_LOG_STR(test_logger, FwLogLevel::Info, "Info message should not be logged");
 
     test_logger.flush();
 
@@ -147,10 +147,10 @@ TEST_F(LoggerTest, theOneTest) {
     //
     // 6. Immediate flush behavior
     //
-    test_logger.set_log_level(LogLevel::Info);
+    test_logger.set_log_level(FwLogLevel::Info);
     test_logger.set_immediate_flush();
 
-    PUBSUB_LOG_STR(test_logger, LogLevel::Info, "Immediate flush test");
+    PUBSUB_LOG_STR(test_logger, FwLogLevel::Info, "Immediate flush test");
 
     auto [found5, content5] = findLogFileContent("test.log");
     ASSERT_TRUE(found5);
@@ -158,7 +158,7 @@ TEST_F(LoggerTest, theOneTest) {
     EXPECT_NE(content5.find("Immediate flush test"), std::string::npos);
 
     // Reset
-    test_logger.set_log_level(LogLevel::Debug);
+    test_logger.set_log_level(FwLogLevel::Debug);
 }
 
 } // namespace pubsub_itc_fw

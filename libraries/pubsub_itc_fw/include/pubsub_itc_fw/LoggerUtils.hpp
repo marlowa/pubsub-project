@@ -5,7 +5,7 @@
 
 #include <quill/core/LogLevel.h>
 
-#include <pubsub_itc_fw/LogLevel.hpp>
+#include <pubsub_itc_fw/FwLogLevel.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -38,25 +38,25 @@ public:
     }
 
     /**
-     * @brief Convert pubsub_itc_fw::LogLevel to quill::LogLevel
+     * @brief Convert pubsub_itc_fw::FwLogLevel to quill::LogLevel
      */
-    static quill::LogLevel to_quill_log_level(LogLevel level)
+    static quill::LogLevel to_quill_log_level(FwLogLevel level)
     {
         switch (level.log_level_) {
-            case LogLevel::Trace:
+            case FwLogLevel::Trace:
                 return quill::LogLevel::TraceL3;
-            case LogLevel::Debug:
+            case FwLogLevel::Debug:
                 return quill::LogLevel::Debug;
-            case LogLevel::Info:
+            case FwLogLevel::Info:
                 return quill::LogLevel::Info;
-            case LogLevel::Notice:
+            case FwLogLevel::Notice:
                 return quill::LogLevel::Info;  // Quill doesn't have Notice, map to Info
-            case LogLevel::Warning:
+            case FwLogLevel::Warning:
                 return quill::LogLevel::Warning;
-            case LogLevel::Error:
+            case FwLogLevel::Error:
                 return quill::LogLevel::Error;
-            case LogLevel::Critical:
-            case LogLevel::Alert:
+            case FwLogLevel::Critical:
+            case FwLogLevel::Alert:
                 return quill::LogLevel::Critical;
             default:
                 return quill::LogLevel::Info;
@@ -66,26 +66,26 @@ public:
     /**
      * @brief Convert quill::LogLevel to pubsub_itc_fw::LogLevel
      */
-    static LogLevel from_quill_log_level(quill::LogLevel level)
+    static FwLogLevel from_quill_log_level(quill::LogLevel level)
     {
         switch (level) {
             case quill::LogLevel::TraceL1:
             case quill::LogLevel::TraceL2:
             case quill::LogLevel::TraceL3:
-                return LogLevel::Trace;
+                return FwLogLevel::Trace;
             case quill::LogLevel::Debug:
-                return LogLevel::Debug;
+                return FwLogLevel::Debug;
             case quill::LogLevel::Info:
-                return LogLevel::Info;
+                return FwLogLevel::Info;
             case quill::LogLevel::Warning:
-                return LogLevel::Warning;
+                return FwLogLevel::Warning;
             case quill::LogLevel::Error:
-                return LogLevel::Error;
+                return FwLogLevel::Error;
             case quill::LogLevel::Critical:
             case quill::LogLevel::Backtrace:
-                return LogLevel::Critical;
+                return FwLogLevel::Critical;
             default:
-                return LogLevel::Info;
+                return FwLogLevel::Info;
         }
     }
 

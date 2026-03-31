@@ -21,7 +21,7 @@
 
 #include <pubsub_itc_fw/ExpandablePoolAllocator.hpp>
 #include <pubsub_itc_fw/FixedSizeMemoryPool.hpp>
-#include <pubsub_itc_fw/LogLevel.hpp>
+#include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/PoolStatistics.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
@@ -90,7 +90,7 @@ class ExpandablePoolAllocatorTest : public ::testing::Test {
         invalid_free_callback_count_ = 0;
         huge_pages_error_callback_count_ = 0;
 
-        // Corrected: Pass LogLevel::Info to the constructor of UnitTestLogger
+        // Corrected: Pass FwLogLevel::Info to the constructor of UnitTestLogger
         unit_test_logger_ = std::make_unique<pubsub_itc_fw::QuillLogger>();
     }
 
