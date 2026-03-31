@@ -1,9 +1,7 @@
 #pragma once
 
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
-
-// C headers including posix API headers
-// (None directly here)
+// SPDX-License-Identifier: Apache-2.0
 
 // C++ headers whose names start with ‘c’
 // (None directly here)

@@ -1,4 +1,5 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
 
 #include <arpa/inet.h>  // For inet_pton, inet_ntop
 #include <netdb.h>      // For getaddrinfo, freeaddrinfo, gai_strerror

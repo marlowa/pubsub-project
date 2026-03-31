@@ -1,6 +1,7 @@
 #pragma once
 
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
 
 // C headers
 #include <sys/socket.h> // For socket(), bind(), listen(), accept(), connect(), shutdown(), setsockopt(), getsockopt(), socklen_t

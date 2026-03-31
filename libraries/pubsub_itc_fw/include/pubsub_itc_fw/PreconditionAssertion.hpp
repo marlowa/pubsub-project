@@ -1,6 +1,7 @@
 #pragma once
 
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
 
 #include <sstream>   // For std::ostringstream
 #include <stdexcept> // For std::logic_error

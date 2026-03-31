@@ -1,4 +1,5 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
 
 #ifndef CLANG_TIDY
 // TODO this whole file has to be neutralised for clang-tidy

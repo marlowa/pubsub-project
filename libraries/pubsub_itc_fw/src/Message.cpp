@@ -1,4 +1,5 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
 
 // C++ headers whose names start with ‘c’
 #include <cstdint> // For uint8_t
