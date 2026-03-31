@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
+
 #ifndef CLANG_TIDY
 // TODO this whole file has to be neutralised for clang-tidy
 // The quill backend sleep parameters are part of the problem

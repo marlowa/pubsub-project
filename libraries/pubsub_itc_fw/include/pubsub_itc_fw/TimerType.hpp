@@ -1,5 +1,7 @@
 #pragma once
 
+// Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
+
 namespace pubsub_itc_fw {
 
 /** @ingroup threading_subsystem */

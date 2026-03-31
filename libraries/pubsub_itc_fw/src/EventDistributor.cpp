@@ -1,4 +1,7 @@
+// Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
+
 #if 0
+// TODO need to resume work on this at some point
 // C++ headers whose names start with ‘c’
 #include <cstdint>
 

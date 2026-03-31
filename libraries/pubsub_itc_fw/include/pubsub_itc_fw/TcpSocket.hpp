@@ -1,5 +1,7 @@
 #pragma once
 
+// Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
+
 // C headers
 #include <sys/socket.h> // For socket(), bind(), listen(), accept(), connect(), shutdown(), setsockopt(), getsockopt(), socklen_t
 #include <unistd.h>     // For close()
@@ -23,7 +25,7 @@
 namespace pubsub_itc_fw {
 
 // Forward declaration for the Pimpl implementation class
-class TcpSocketImpl; // Corrected to PascalCase as per your rule
+class TcpSocketImpl;
 
 /**
  * @brief Concrete implementation of `ByteStreamInterface` for TCP/IP sockets.

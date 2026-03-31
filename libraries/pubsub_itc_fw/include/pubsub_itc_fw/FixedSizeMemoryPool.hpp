@@ -1,5 +1,7 @@
 #pragma once
 
+// Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
+
 /**
  * @warning This class requires the compiler flag @c -mcx16 on x86-64 platforms.
  *          This flag enables the @c CMPXCHG16B instruction, which provides

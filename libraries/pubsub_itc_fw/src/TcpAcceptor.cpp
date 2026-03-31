@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
+
 #include <sys/socket.h>
 #include <cerrno>
 
@@ -17,14 +19,14 @@ namespace pubsub_itc_fw {
 
 class TcpAcceptorImpl {
 public:
+    ~TcpAcceptorImpl() {
+        close_listening_socket();
+    }
+
     TcpAcceptorImpl(const InetAddress& local_address,
                     std::unique_ptr<TcpSocket> listening_socket)
         : local_address_(local_address),
           listening_socket_(std::move(listening_socket)) {}
-
-    ~TcpAcceptorImpl() {
-        close_listening_socket();
-    }
 
     TcpAcceptorImpl(const TcpAcceptorImpl&) = delete;
     TcpAcceptorImpl& operator=(const TcpAcceptorImpl&) = delete;

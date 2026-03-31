@@ -1,5 +1,7 @@
 #pragma once
 
+// Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
+
 #include <memory>
 
 /*
@@ -7,7 +9,7 @@ Note: This central unit test runner was going to ensure that each unit test prog
 so that by default the program runs all the tests twice, doing a random shuffle between. The idea is to shake out
 idempotency issues in the tests and possibly in the code being tested as well. However, this doesn't work with quill.
 
-I am not sure what to do about this for the moment because one of our unit tests performs tests on the quill wrapper.
+TODO I am not sure what to do about this for the moment because one of our unit tests performs tests on the quill wrapper.
 These cannot be repeated within a single invocation of the executable.
 
  */

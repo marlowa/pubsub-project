@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
+
 #include <array>
 #include <atomic>
 #include <memory>
@@ -784,5 +786,5 @@ void Reactor::check_for_stuck_threads() {
 }
 
 void Reactor::check_for_inactive_sockets() {}
-
+// TODO!
 } // namespace pubsub_itc_fw

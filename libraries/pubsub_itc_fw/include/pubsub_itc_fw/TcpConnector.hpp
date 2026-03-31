@@ -1,5 +1,7 @@
 #pragma once
 
+// Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
+
 #include <memory>
 #include <string>
 #include <tuple>
@@ -23,8 +25,8 @@ class TcpConnectorImpl;
  */
 class TcpConnector {
 public:
-    TcpConnector();
     ~TcpConnector();
+    TcpConnector();
 
     TcpConnector(const TcpConnector&) = delete;
     TcpConnector& operator=(const TcpConnector&) = delete;

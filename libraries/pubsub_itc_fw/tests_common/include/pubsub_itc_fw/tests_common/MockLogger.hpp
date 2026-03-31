@@ -1,5 +1,7 @@
 #pragma once
 
+// Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
+
 #include <pubsub_itc_fw/LoggerInterface.hpp>
 
 namespace pubsub_itc_fw::tests {

@@ -1,5 +1,7 @@
 #pragma once
 
+// Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
+
 #include <sstream>   // For std::ostringstream
 #include <stdexcept> // For std::logic_error
 #include <string>    // For std::string
@@ -11,7 +13,7 @@
 
 namespace pubsub_itc_fw {
 
-// Assuming a StringUtils::leafname exists, or we simplify how filename is handled.
+// TODO Assuming a StringUtils::leafname exists, or we simplify how filename is handled.
 // For now, we'll implement a simple leafname logic locally or use StringUtils if available.
 // If not, a direct filename might be used, or StringUtils needs to be designed.
 // Let's create a local helper for now to avoid a circular dependency if StringUtils uses PreconditionAssertion.

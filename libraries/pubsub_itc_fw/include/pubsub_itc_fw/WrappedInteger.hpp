@@ -1,6 +1,7 @@
 #pragma once
 
-// System C++ headers
+// Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
+
 #include <cstdint>
 #include <functional> // For std::hash
 #include <iosfwd>     // For std::ostream

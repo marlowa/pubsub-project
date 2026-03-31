@@ -1,5 +1,7 @@
 #pragma once
 
+// Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
+
 namespace pubsub_itc_fw {
 
 // A trivial type used only for forcing template instantiation in coverage builds.
@@ -9,4 +11,3 @@ struct CoverageDummy {
 };
 
 } // namespace pubsub_itc_fw
-

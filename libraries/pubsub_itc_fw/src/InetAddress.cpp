@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
+
 #include <arpa/inet.h>  // For inet_pton, inet_ntop
 #include <netdb.h>      // For getaddrinfo, freeaddrinfo, gai_strerror
 #include <netinet/in.h> // For sockaddr_in, sockaddr_in6

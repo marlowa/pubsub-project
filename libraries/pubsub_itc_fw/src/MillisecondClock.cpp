@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
+
 #ifdef CLANG_TIDY
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE

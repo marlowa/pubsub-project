@@ -1,5 +1,7 @@
+// Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
+
 #ifndef CLANG_TIDY
-// TODO We have to neutralise this for now with clang-tidy, it gives all sort of impossible errors
+// TODO We have to neutralise this entire test for now with clang-tidy, it gives all sort of impossible errors
 #include <chrono>
 #include <fstream>
 #include <string>

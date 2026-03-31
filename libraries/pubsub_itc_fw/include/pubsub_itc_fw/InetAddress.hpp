@@ -1,5 +1,7 @@
 #pragma once
 
+// Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
+
 #include <arpa/inet.h>  // For inet_pton, inet_ntop
 #include <cstdint>      // For uint8_t, uint16_t
 #include <netinet/in.h> // For sockaddr_in, sockaddr_in6

@@ -1,5 +1,7 @@
 #pragma once
 
+// Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
+
 // C++ headers whose names start with ‘c’
 // (None directly here)
 
@@ -34,7 +36,7 @@ class PubSubItcApplication {
      * @brief Virtual destructor to ensure proper cleanup of derived classes.
      */
     virtual ~PubSubItcApplication() = default;
-    
+
     /**
      * @brief Constructs the application orchestrator.
      * @param [in] config_file_path The path to the configuration file.

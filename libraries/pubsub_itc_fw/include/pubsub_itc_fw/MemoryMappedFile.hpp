@@ -1,9 +1,11 @@
+#pragma once
+
+// Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
+
 /**
     @brief Provides a class for high-performance, crash-resilient state persistence.
     This class encapsulates the platform-specific details of creating, mapping, and unmapping a file to memory, providing a simple, fast, and durable storage solution for an ApplicationThread's state.
 */
-
-#pragma once
 
 #include <string>
 #include <vector>

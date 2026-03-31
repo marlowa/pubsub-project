@@ -1,8 +1,6 @@
-/**
- * @file SocketHandler.hpp
- * @brief Defines the SocketHandler class.
- */
 #pragma once
+
+// Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 
 #include <pubsub_itc_fw/EventHandler.hpp>
 #include <pubsub_itc_fw/ApplicationThread.hpp>
@@ -23,6 +21,8 @@ namespace pubsub_itc_fw {
  */
 class SocketHandler  : public EventHandler {
 public:
+    ~SocketHandler() override;
+
     /**
      * @brief Constructs a SocketHandler.
      * @param [in] fd The file descriptor of the socket.
@@ -30,8 +30,6 @@ public:
      */
     SocketHandler(int fd, std::shared_ptr<ApplicationThread> processing_thread)
         : fd_(fd), processing_thread_(std::move(processing_thread)) {}
-
-    ~SocketHandler() override;
 
     /**
      * @brief Handles a socket event detected by the Reactor.

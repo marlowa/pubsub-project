@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
+
 #include <fcntl.h>      // For fcntl, O_NONBLOCK
 #include <sys/socket.h> // For socket(), bind(), listen(), accept(), connect(), shutdown(), setsockopt(), getsockopt(), socklen_t
 #include <unistd.h>     // For close()

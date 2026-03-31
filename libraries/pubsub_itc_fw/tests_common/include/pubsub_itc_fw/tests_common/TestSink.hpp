@@ -1,10 +1,12 @@
 #pragma once
 
+// Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
+
 #include <vector>
 #include <string>
 #include <mutex>
 
-#include <iostream> // HACK
+#include <iostream> // HACK TODO
 
 #include <quill/sinks/Sink.h>
 #include <quill/core/LogLevel.h>

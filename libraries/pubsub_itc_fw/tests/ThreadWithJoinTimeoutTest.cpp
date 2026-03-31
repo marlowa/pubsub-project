@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
+
 /**
  * @brief Unit tests for the ThreadWithJoinTimeout class.
  *

@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
+
 #include <cerrno>
 #include <cstdint>
 
@@ -15,6 +17,7 @@
 
 namespace pubsub_itc_fw {
 
+// TODO we might want to make this to conform to our enum pattern
 enum class ConnectState : uint8_t {
     uninitialised,
     idle,
@@ -24,14 +27,14 @@ enum class ConnectState : uint8_t {
 
 class TcpConnectorImpl {
 public:
+    ~TcpConnectorImpl() {
+        cancel();
+    }
+
     TcpConnectorImpl()
         : state_(ConnectState::idle),
           remote_address_(nullptr),
           tcp_socket_(nullptr) {}
-
-    ~TcpConnectorImpl() {
-        cancel();
-    }
 
     TcpConnectorImpl(const TcpConnectorImpl&) = delete;
     TcpConnectorImpl& operator=(const TcpConnectorImpl&) = delete;

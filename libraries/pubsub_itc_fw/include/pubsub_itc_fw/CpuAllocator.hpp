@@ -1,5 +1,7 @@
 #pragma once
 
+// Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
+
 #include <map>
 #include <set>
 #include <string>
@@ -153,4 +155,3 @@ private:
 };
 
 } // namespace cpualloc
-

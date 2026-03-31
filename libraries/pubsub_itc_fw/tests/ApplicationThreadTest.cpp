@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
+
 #include <atomic>
 #include <chrono>
 #include <exception>
@@ -32,6 +34,8 @@
 using namespace pubsub_itc_fw;
 
 namespace {
+
+    // TODO centralise these helpers in test_common
 
 // ------------------------------------------------------------
 // Helpers: QueueConfig, AllocatorConfig
