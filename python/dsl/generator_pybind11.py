@@ -64,7 +64,8 @@ class Pybind11Generator:
         w('')
 
         # Bind ListView<T> instantiations
-        for cpp_type, depth in sorted(list_types):
+        # Sort by depth first so ListView<T> is registered before ListView<ListView<T>>.
+        for cpp_type, depth in sorted(list_types, key=lambda x: (x[1], x[0])):
             self._emit_listview_binding(cpp_type, depth, w)
 
         # Bind all messages
@@ -111,18 +112,27 @@ class Pybind11Generator:
 
     def _collect_list_types(self, t, acc: Set[Tuple[str, int]], depth: int = 1):
         """
-        For a ListType, record (base_cpp_type, max_depth_of_nesting).
-        E.g. list<list<i32>> -> ("int32_t", 2)
-             list<list<Child>> -> ("ns::Child", 2)
+        For a ListType, record (base_cpp_type, depth) for EVERY nesting level.
+
+        E.g. list<list<i32>> records both ("int32_t", 1) and ("int32_t", 2)
+        so that bindings are emitted for both ListView<int32_t> and
+        ListView<ListView<int32_t>>. Without the depth-1 entry, pybind11
+        cannot convert the return value of ListView<ListView<int32_t>>::__getitem__
+        because the inner ListView<int32_t> type is unregistered.
         """
         if isinstance(t, ListType):
             elem = t.element_type
             if isinstance(elem, PrimitiveType):
                 cpp = self._cpp_primitive(elem)
-                acc.add((cpp, depth))
+                # Record this depth and all shallower depths up to the root.
+                for d in range(1, depth + 1):
+                    acc.add((cpp, d))
             elif isinstance(elem, ReferenceType):
-                acc.add((f"ns::{elem.name}", depth))
+                for d in range(1, depth + 1):
+                    acc.add((f"ns::{elem.name}", d))
             elif isinstance(elem, ListType):
+                # Recurse first to discover the base type and max depth,
+                # then the loop above will fill in all intermediate depths.
                 self._collect_list_types(elem, acc, depth + 1)
             else:
                 raise RuntimeError(f"Unsupported list element type in bindings: {elem}")

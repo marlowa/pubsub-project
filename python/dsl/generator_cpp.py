@@ -179,31 +179,53 @@ class CppGenerator:
         w("    return total;")
         w("}")
 
-    def _emit_size_for_list(self, t: ListType, expr: str, prefix: str, w):
-        # expr is something like "msg.field" or "msg.field.data[i]"
-        w(f"    {prefix}total += sizeof(int32_t);")
+    def _emit_size_for_list(self, t: ListType, expr: str, prefix: str, w,
+                            indent: str = "    ", loop_var: str = "i"):
+        """
+        Emit the size contribution of a list field or nested list element.
+
+        'prefix'   — conditional guard applied only to the outermost statement,
+                     e.g. "if (msg.has_foo) ". Empty string for nested calls.
+        'indent'   — current indentation level (grows by 4 spaces per nesting).
+        'loop_var' — loop variable name; uses successive letters to avoid
+                     shadowing when loops are nested (i, j, k, ...).
+        """
+        next_var = chr(ord(loop_var) + 1) if loop_var < "z" else loop_var + "_"
+        inner_indent = indent + "    "
+
+        # count: 4 bytes for the element count
+        w(f"{indent}{prefix}total += sizeof(int32_t);")
+
         elem = t.element_type
 
         if isinstance(elem, PrimitiveType):
             elem_cpp = self._cpp_type(elem)
-            w(f"    {prefix}total += sizeof({elem_cpp}) * {expr}.size;")
+            w(f"{indent}{prefix}total += sizeof({elem_cpp}) * {expr}.size;")
+
         elif isinstance(elem, ReferenceType):
-            w(f"    {prefix}for (std::size_t i = 0; i < {expr}.size; ++i) {{")
-            w(f"        total += encoded_size({expr}.data[i]);")
-            w("    }")
+            w(f"{indent}{prefix}for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
+            w(f"{inner_indent}total += encoded_size({expr}.data[{loop_var}]);")
+            w(f"{indent}}}")
+
         elif isinstance(elem, ListType):
-            w(f"    {prefix}for (std::size_t i = 0; i < {expr}.size; ++i) {{")
-            # recurse on the inner list: element is itself a ListView<...>
-            self._emit_size_for_list(elem, f"{expr}.data[i]", "", w)
-            w("    }")
+            w(f"{indent}{prefix}for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
+            self._emit_size_for_list(elem, f"{expr}.data[{loop_var}]", "",
+                                     w, inner_indent, next_var)
+            w(f"{indent}}}")
+
+        elif isinstance(elem, StringType):
+            w(f"{indent}{prefix}for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
+            w(f"{inner_indent}total += sizeof(int32_t) + {expr}.data[{loop_var}].size();")
+            w(f"{indent}}}")
+
         else:
-            raise RuntimeError("Unsupported list element type in size: {elem}")
+            raise RuntimeError(f"Unsupported list element type in size: {elem}")
 
     def _emit_size_for_field(self, field: Field, w):
         t = field.type
         prefix = ""
         if field.optional:
-            # presence flag
+            # presence flag: always 1 byte
             w("    total += 1;")
             prefix = f"if (msg.has_{field.name}) "
 
@@ -221,87 +243,169 @@ class CppGenerator:
         else:
             raise RuntimeError(f"Unknown field type in size: {t}")
 
-    def _emit_encode_list(self, t: ListType, expr: str, name: str, w, need):
-        # expr is something like "msg.field" or "msg.field.data[i]"
-        # name is the field name (used only for count variable naming)
+    def _emit_encode_list(self, t: ListType, expr: str, name: str, w, need,
+                          indent: str = "    ", loop_var: str = "i"):
+        """
+        Emit encode logic for a list field or nested list element.
 
-        # write count
-        need("sizeof(int32_t)")
-        w(f"    int32_t count_{name} = static_cast<int32_t>({expr}.size);")
-        w(f"    std::memcpy(ptr, &count_{name}, sizeof(int32_t));")
-        w("    ptr += sizeof(int32_t);")
-        w("    remaining -= sizeof(int32_t);")
+        'expr'     — C++ expression for the ListView<T> being encoded.
+        'name'     — unique suffix used for local variable names.
+        'need'     — callable that emits a bounds check for N bytes.
+        'indent'   — current indentation level (grows by 4 spaces per nesting).
+        'loop_var' — loop variable name; uses successive letters to avoid
+                     shadowing when loops are nested (i, j, k, ...).
+        """
+        next_var = chr(ord(loop_var) + 1) if loop_var < "z" else loop_var + "_"
+        inner_indent = indent + "    "
+
+        def w_ind(line):
+            w(indent + line)
+
+        def need_ind(nbytes):
+            w(f"{indent}if (remaining < {nbytes}) return false;")
+
+        # write element count
+        need_ind("sizeof(int32_t)")
+        w_ind(f"int32_t count_{name} = static_cast<int32_t>({expr}.size);")
+        w_ind(f"std::memcpy(ptr, &count_{name}, sizeof(int32_t));")
+        w_ind("ptr += sizeof(int32_t);")
+        w_ind("remaining -= sizeof(int32_t);")
 
         elem = t.element_type
 
         if isinstance(elem, PrimitiveType):
             elem_cpp = self._cpp_type(elem)
-            w(f"    std::size_t bytes_{name} = sizeof({elem_cpp}) * {expr}.size;")
-            w(f"    if (remaining < bytes_{name}) return false;")
-            w(f"    std::memcpy(ptr, {expr}.data, bytes_{name});")
-            w(f"    ptr += bytes_{name};")
-            w(f"    remaining -= bytes_{name};")
+            w_ind(f"std::size_t bytes_{name} = sizeof({elem_cpp}) * {expr}.size;")
+            need_ind(f"bytes_{name}")
+            w_ind(f"std::memcpy(ptr, {expr}.data, bytes_{name});")
+            w_ind(f"ptr += bytes_{name};")
+            w_ind(f"remaining -= bytes_{name};")
 
         elif isinstance(elem, ReferenceType):
-            w(f"    for (std::size_t i = 0; i < {expr}.size; ++i) {{")
-            w("        std::size_t written_elem = 0;")
-            w(f"        if (!encode({expr}.data[i], ptr, remaining, written_elem)) return false;")
-            w("        ptr += written_elem;")
-            w("        remaining -= written_elem;")
-            w("    }")
+            w_ind(f"for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
+            w(f"{inner_indent}std::size_t written_elem_{name} = 0;")
+            w(f"{inner_indent}if (!encode({expr}.data[{loop_var}], ptr, remaining, written_elem_{name})) return false;")
+            w(f"{inner_indent}ptr += written_elem_{name};")
+            w(f"{inner_indent}remaining -= written_elem_{name};")
+            w_ind("}")
 
         elif isinstance(elem, ListType):
-            # recursive nested list
-            w(f"    for (std::size_t i = 0; i < {expr}.size; ++i) {{")
-            self._emit_encode_list(elem, f"{expr}.data[i]", f"{name}_inner", w, need)
-            w("    }")
+            w_ind(f"for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
+            self._emit_encode_list(elem, f"{expr}.data[{loop_var}]", f"{name}_{loop_var}",
+                                   w, need, inner_indent, next_var)
+            w_ind("}")
+
+        elif isinstance(elem, StringType):
+            w_ind(f"for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
+            w(f"{inner_indent}int32_t slen_{name}_{loop_var} = static_cast<int32_t>({expr}.data[{loop_var}].size());")
+            w(f"{inner_indent}if (remaining < sizeof(int32_t) + {expr}.data[{loop_var}].size()) return false;")
+            w(f"{inner_indent}std::memcpy(ptr, &slen_{name}_{loop_var}, sizeof(int32_t));")
+            w(f"{inner_indent}ptr += sizeof(int32_t);")
+            w(f"{inner_indent}remaining -= sizeof(int32_t);")
+            w(f"{inner_indent}std::memcpy(ptr, {expr}.data[{loop_var}].data(), {expr}.data[{loop_var}].size());")
+            w(f"{inner_indent}ptr += {expr}.data[{loop_var}].size();")
+            w(f"{inner_indent}remaining -= {expr}.data[{loop_var}].size();")
+            w_ind("}")
 
         else:
-            raise RuntimeError("Unsupported list element type in encode: {elem}")
+            raise RuntimeError(f"Unsupported list element type in encode: {elem}")
 
-    def _emit_decode_list(self, t: ListType, expr: str, name: str, w, need):
-        # expr is something like "msg.field"
-        # name is the field name
+    def _emit_decode_list(self, t: ListType, expr: str, name: str, w, need,
+                          indent: str = "    ", loop_var: str = "i"):
+        """
+        Emit decode logic for a list field or nested list element.
 
-        # read count
-        need("sizeof(int32_t)")
-        w(f"    int32_t count_{name} = 0;")
-        w(f"    std::memcpy(&count_{name}, ptr, sizeof(int32_t));")
-        w("    ptr += sizeof(int32_t);")
-        w("    remaining -= sizeof(int32_t);")
-        w(f"    if (count_{name} < 0) return false;")
-        w(f"    {expr}.size = static_cast<std::size_t>(count_{name});")
+        'expr'     — C++ expression for the ListView<T> being populated.
+        'name'     — unique suffix used for local variable names.
+        'need'     — callable that emits a bounds check (unused at nested levels;
+                     bounds checks are emitted directly at the correct indent).
+        'indent'   — current indentation level (grows by 4 spaces per nesting).
+        'loop_var' — loop variable name; uses successive letters to avoid
+                     shadowing when loops are nested (i, j, k, ...).
+
+        MEMORY MODEL
+        ------------
+        Primitive lists: zero-copy. data points directly into the wire buffer.
+        Message lists:   heap-allocated via new[]. Each element is decoded in-place.
+        Nested lists:    heap-allocated via new[]. Each inner ListView is decoded
+                         recursively.
+        String lists:    string_view pointing into the wire buffer; array of
+                         string_views is heap-allocated.
+
+        The caller is responsible for ensuring the wire buffer remains alive
+        for the lifetime of any zero-copy views.
+        """
+        next_var = chr(ord(loop_var) + 1) if loop_var < "z" else loop_var + "_"
+        inner_indent = indent + "    "
+
+        def w_ind(line):
+            w(indent + line)
+
+        def need_ind(nbytes):
+            w(f"{indent}if (remaining < {nbytes}) return false;")
+
+        # read element count
+        need_ind("sizeof(int32_t)")
+        w_ind(f"int32_t count_{name} = 0;")
+        w_ind(f"std::memcpy(&count_{name}, ptr, sizeof(int32_t));")
+        w_ind("ptr += sizeof(int32_t);")
+        w_ind("remaining -= sizeof(int32_t);")
+        w_ind(f"if (count_{name} < 0) return false;")
+        w_ind(f"{expr}.size = static_cast<std::size_t>(count_{name});")
 
         elem = t.element_type
 
         if isinstance(elem, PrimitiveType):
+            # Zero-copy: point data directly into the wire buffer.
             elem_cpp = self._cpp_type(elem)
-            w(f"    std::size_t bytes_{name} = sizeof({elem_cpp}) * {expr}.size;")
-            need(f"bytes_{name}")
-            w(f"    {expr}.data = reinterpret_cast<{elem_cpp}*>(ptr);")
-            w(f"    ptr += bytes_{name};")
-            w(f"    remaining -= bytes_{name};")
+            w_ind(f"std::size_t bytes_{name} = sizeof({elem_cpp}) * {expr}.size;")
+            need_ind(f"bytes_{name}")
+            w_ind(f"{expr}.data = reinterpret_cast<{elem_cpp}*>(ptr);")
+            w_ind(f"ptr += bytes_{name};")
+            w_ind(f"remaining -= bytes_{name};")
 
         elif isinstance(elem, ReferenceType):
+            # Heap-allocate decoded structs. Wire buffer contains encoded bytes,
+            # not raw structs, so we cannot point into it directly.
             elem_cpp = elem.name
-            w(f"    {expr}.data = reinterpret_cast<{elem_cpp}*>(ptr);")
-            w(f"    for (std::size_t i = 0; i < {expr}.size; ++i) {{")
-            w("        std::size_t consumed_elem = 0;")
-            w(f"        if (!decode(const_cast<{elem_cpp}&>({expr}.data[i]), ptr, remaining, consumed_elem)) return false;")
-            w("        ptr += consumed_elem;")
-            w("        remaining -= consumed_elem;")
-            w("    }")
+            w_ind(f"{expr}.data = new {elem_cpp}[{expr}.size];")
+            w_ind(f"for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
+            w(f"{inner_indent}{expr}.data[{loop_var}] = {elem_cpp}{{}};")
+            w(f"{inner_indent}std::size_t consumed_{name}_{loop_var} = 0;")
+            w(f"{inner_indent}if (!decode({expr}.data[{loop_var}], ptr, remaining, consumed_{name}_{loop_var})) return false;")
+            w(f"{inner_indent}ptr += consumed_{name}_{loop_var};")
+            w(f"{inner_indent}remaining -= consumed_{name}_{loop_var};")
+            w_ind("}")
 
         elif isinstance(elem, ListType):
-            # nested list: decode each inner list recursively
+            # Each element is itself a ListView — heap-allocate the array of
+            # ListViews and recursively decode each one.
             inner_cpp = self._cpp_type(elem)
-            w(f"    {expr}.data = reinterpret_cast<{inner_cpp}*>(ptr);")
-            w(f"    for (std::size_t i = 0; i < {expr}.size; ++i) {{")
-            self._emit_decode_list(elem, f"{expr}.data[i]", f"{name}_inner", w, need)
-            w("    }")
+            w_ind(f"{expr}.data = new {inner_cpp}[{expr}.size];")
+            w_ind(f"for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
+            w(f"{inner_indent}{expr}.data[{loop_var}] = {inner_cpp}{{}};")
+            self._emit_decode_list(elem, f"{expr}.data[{loop_var}]", f"{name}_{loop_var}",
+                                   w, need, inner_indent, next_var)
+            w_ind("}")
+
+        elif isinstance(elem, StringType):
+            # Each string_view points into the wire buffer zero-copy;
+            # the array of string_views itself is heap-allocated.
+            w_ind(f"{expr}.data = new std::string_view[{expr}.size];")
+            w_ind(f"for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
+            w(f"{inner_indent}int32_t slen_{name}_{loop_var} = 0;")
+            w(f"{inner_indent}if (remaining < sizeof(int32_t)) return false;")
+            w(f"{inner_indent}std::memcpy(&slen_{name}_{loop_var}, ptr, sizeof(int32_t));")
+            w(f"{inner_indent}ptr += sizeof(int32_t);")
+            w(f"{inner_indent}remaining -= sizeof(int32_t);")
+            w(f"{inner_indent}if (slen_{name}_{loop_var} < 0 || remaining < static_cast<std::size_t>(slen_{name}_{loop_var})) return false;")
+            w(f"{inner_indent}{expr}.data[{loop_var}] = std::string_view(reinterpret_cast<const char*>(ptr), static_cast<std::size_t>(slen_{name}_{loop_var}));")
+            w(f"{inner_indent}ptr += slen_{name}_{loop_var};")
+            w(f"{inner_indent}remaining -= static_cast<std::size_t>(slen_{name}_{loop_var});")
+            w_ind("}")
 
         else:
-            raise RuntimeError("Unsupported list element type in decode: {elem}")
+            raise RuntimeError(f"Unsupported list element type in decode: {elem}")
 
     def _emit_encode_impl(self, msg: MessageDecl, w):
         name = msg.name
