@@ -14,4 +14,8 @@ message MediumMessage (id=2, version=1)
     i64          sequence
 end
 
-
+# Large message: tests nested list performance
+message LargeMessage (id=3, version=1)
+    list<list<string>> groups
+    i64                sequence
+end
