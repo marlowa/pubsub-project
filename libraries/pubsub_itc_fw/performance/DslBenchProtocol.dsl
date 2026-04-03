@@ -14,3 +14,4 @@ message MediumMessage (id=2, version=1)
     i64          sequence
 end
 
+

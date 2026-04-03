@@ -15,7 +15,7 @@ add_custom_command(
         ${CMAKE_CURRENT_BINARY_DIR}/pubsub_itc_fw/system_messages.pb.cc
         ${CMAKE_CURRENT_BINARY_DIR}/pubsub_itc_fw/system_messages.pb.h
     COMMAND protobuf::protoc
-        --cpp_out=${CMAKE_CURRENT_BINARY_DIR}   # protoc auto-creates pubsub_itc_fw/
+        --cpp_out=${CMAKE_CURRENT_BINARY_DIR}
         --proto_path=${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}/include/pubsub_itc_fw/message_types.proto
         ${CMAKE_CURRENT_SOURCE_DIR}/include/pubsub_itc_fw/system_messages.proto
@@ -29,6 +29,43 @@ add_custom_target(pubsub_itc_fw_protos
     DEPENDS
         ${CMAKE_CURRENT_BINARY_DIR}/pubsub_itc_fw/message_types.pb.cc
         ${CMAKE_CURRENT_BINARY_DIR}/pubsub_itc_fw/system_messages.pb.cc
+)
+
+# ------------------------------------------------------------
+# DSL generation
+# ------------------------------------------------------------
+
+# Find all DSL files anywhere under libraries/pubsub_itc_fw/
+file(GLOB_RECURSE DSL_SCHEMAS
+    ${CMAKE_CURRENT_SOURCE_DIR}/*.dsl
+)
+
+# Output directory for generated DSL headers
+set(DSL_OUTPUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/dsl)
+file(MAKE_DIRECTORY ${DSL_OUTPUT_DIR})
+
+set(GENERATED_DSL_HEADERS "")
+
+foreach(DSL_FILE ${DSL_SCHEMAS})
+    get_filename_component(DSL_NAME ${DSL_FILE} NAME_WE)
+    set(OUT_HPP ${DSL_OUTPUT_DIR}/${DSL_NAME}.hpp)
+
+    add_custom_command(
+        OUTPUT ${OUT_HPP}
+        COMMAND ${Python3_EXECUTABLE}
+           ${CMAKE_CURRENT_SOURCE_DIR}/../../python/tools/generate_cpp_from_dsl.py
+            ${DSL_FILE}
+            ${OUT_HPP}
+            --namespace pubsub_itc_fw
+        DEPENDS ${DSL_FILE}
+        COMMENT "Generating DSL header ${OUT_HPP}"
+    )
+
+    list(APPEND GENERATED_DSL_HEADERS ${OUT_HPP})
+endforeach()
+
+add_custom_target(pubsub_itc_fw_dsl
+    DEPENDS ${GENERATED_DSL_HEADERS}
 )
 
 # ------------------------------------------------------------
@@ -61,9 +98,13 @@ set(PUBSUB_ITC_FW_PROTO_SRCS
 add_library(pubsub_itc_fw SHARED
     ${PUBSUB_ITC_FW_SRC}
     ${PUBSUB_ITC_FW_PROTO_SRCS}
+    ${GENERATED_DSL_HEADERS}   # optional but IDE-friendly
 )
 
-add_dependencies(pubsub_itc_fw pubsub_itc_fw_protos)
+add_dependencies(pubsub_itc_fw
+    pubsub_itc_fw_protos
+    pubsub_itc_fw_dsl
+)
 
 # ------------------------------------------------------------
 # Include paths
@@ -71,6 +112,7 @@ add_dependencies(pubsub_itc_fw pubsub_itc_fw_protos)
 target_include_directories(pubsub_itc_fw PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/dsl>
     $<INSTALL_INTERFACE:include>
 )
 
@@ -97,3 +139,26 @@ if(ENABLE_COVERAGE)
         PROPERTIES COMPILE_FLAGS "-O0 -fno-inline -fno-inline-small-functions -fno-default-inline"
     )
 endif()
+
+# ------------------------------------------------------------
+# Performance benchmark executable
+# ------------------------------------------------------------
+
+add_executable(pubsub_itc_fw_bench
+    performance/DslBenchMain.cpp
+)
+
+# Ensure DSL + protobuf are generated before building the bench
+add_dependencies(pubsub_itc_fw_bench
+    pubsub_itc_fw_dsl
+    pubsub_itc_fw_protos
+)
+
+target_link_libraries(pubsub_itc_fw_bench
+    PRIVATE pubsub_itc_fw
+)
+
+target_include_directories(pubsub_itc_fw_bench PRIVATE
+    ${CMAKE_CURRENT_BINARY_DIR}
+    ${CMAKE_CURRENT_BINARY_DIR}/dsl
+)
