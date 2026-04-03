@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
 
+import sys
+import os
+
+# Add the parent directory (which contains the 'dsl' package) to sys.path
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_PYTHON_DIR = os.path.join(SCRIPT_DIR, "..")
+sys.path.insert(0, PROJECT_PYTHON_DIR)
+
 import argparse
 from pathlib import Path
 
@@ -7,7 +15,6 @@ from dsl.lexer import Lexer
 from dsl.parser import Parser
 from dsl.validator import Validator
 from dsl.generator_cpp import CppGenerator
-
 
 def main():
     ap = argparse.ArgumentParser(description="Generate C++17 header from DSL schema")
