@@ -121,6 +121,34 @@ class CppGenerator:
         w("    return value;")
         w("}")
 
+    def _is_fixed_size(self, msg: MessageDecl) -> bool:
+        for field in msg.fields:
+            t = field.type
+            # optional is fine: presence byte + fixed payload
+            if isinstance(t, PrimitiveType):
+                continue
+            if isinstance(t, ArrayType):
+                # only arrays of primitive types are considered fixed-size
+                if not isinstance(t.element_type, PrimitiveType):
+                    return False
+                continue
+            # anything else (string, list, nested message) is variable-size
+            return False
+        return True
+
+    def _emit_fixed_size_for_field(self, field: Field, w):
+        t = field.type
+        if field.optional:
+            w("    total_bytes += 1;")
+        if isinstance(t, PrimitiveType):
+            w(f"    total_bytes += sizeof({self._cpp_type(t)});")
+        elif isinstance(t, ArrayType):
+            element_cpp = self._cpp_type(t.element_type)
+            w(f"    total_bytes += sizeof({element_cpp}) * {t.length};")
+        else:
+            raise RuntimeError(f"Non-fixed-size field encountered in fixed size computation: {t}")
+
+
     def _emit_list_view(self, w):
         w("template<typename T>")
         w("struct ListView {")
@@ -316,7 +344,17 @@ class CppGenerator:
 
         # encode/size use owning struct
         w(f"std::size_t encoded_size(const {name}& message);")
-        w(f"bool encode(const {name}& message, uint8_t* out_buffer, std::size_t out_size, std::size_t& bytes_written);")
+        w(f"bool encode(const {name}& message, uint8_t* out_buffer, std::size_t out_size, std::size_t& bytes_written, std::size_t& bytes_needed);")
+
+        # fixed-size helper (only for fixed-size PDUs)
+        if self._is_fixed_size(msg):
+            w(f"inline constexpr std::size_t fixed_encoded_size(const {name}&) {{")
+            w("    std::size_t total_bytes = 0;")
+            for field in msg.fields:
+                self._emit_fixed_size_for_field(field, w)
+            w("    return total_bytes;")
+            w("}")
+            w("")
 
         # decode/skip use view struct
         w(f"bool decode_{name}({name}View& out, const uint8_t*& read_cursor, std::size_t& bytes_remaining);")
@@ -605,7 +643,8 @@ class CppGenerator:
         elif isinstance(element_type, ReferenceType):
             w_ind(f"for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
             w(f"{inner_indent}std::size_t element_bytes_written_{field_suffix} = 0;")
-            w(f"{inner_indent}if (!encode({expr}.data[{loop_var}], write_cursor, bytes_remaining, element_bytes_written_{field_suffix})) return false;")
+            w(f"{inner_indent}std::size_t element_bytes_needed_{field_suffix} = 0;")
+            w(f"{inner_indent}if (!encode({expr}.data[{loop_var}], write_cursor, bytes_remaining, element_bytes_written_{field_suffix}, element_bytes_needed_{field_suffix})) return false;")
             w(f"{inner_indent}write_cursor += element_bytes_written_{field_suffix};")
             w(f"{inner_indent}bytes_remaining -= element_bytes_written_{field_suffix};")
             w_ind("}")
@@ -749,7 +788,18 @@ class CppGenerator:
 
     def _emit_encode_impl(self, msg: MessageDecl, w):
         name = msg.name
-        w(f"inline bool encode(const {name}& message, uint8_t* out_buffer, std::size_t out_size, std::size_t& bytes_written) {{")
+        w(f"inline bool encode(const {name}& message, uint8_t* out_buffer, std::size_t out_size, std::size_t& bytes_written, std::size_t& bytes_needed) {{")
+
+        if self._is_fixed_size(msg):
+            w("    bytes_needed = fixed_encoded_size(message);")
+        else:
+            w("    bytes_needed = encoded_size(message);")
+
+        w("    if (out_size < bytes_needed) {")
+        w("        bytes_written = 0;")
+        w("        return false;")
+        w("    }")
+
         w("    uint8_t* write_cursor = out_buffer;")
         w("    std::size_t bytes_remaining = out_size;")
         for field in msg.fields:
@@ -983,7 +1033,8 @@ class CppGenerator:
         elif isinstance(t, ReferenceType):
             w("    {")
             w("        std::size_t element_bytes_written = 0;")
-            w(f"        if (!encode(message.{name}, write_cursor, bytes_remaining, element_bytes_written)) return false;")
+            w("        std::size_t element_bytes_needed = 0;")
+            w(f"        if (!encode(message.{name}, write_cursor, bytes_remaining, element_bytes_written, element_bytes_needed)) return false;")
             w("        write_cursor += element_bytes_written;")
             w("        bytes_remaining -= element_bytes_written;")
             w("    }")

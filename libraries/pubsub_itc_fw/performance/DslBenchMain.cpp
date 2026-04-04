@@ -45,14 +45,14 @@ void benchmark_message(const char* name, OwningMsg& msg, int iterations)
     uint8_t buffer[65536];
     std::size_t written = 0;
     std::size_t consumed = 0;
-
+    std::size_t bytes_needed{0};
     ViewMsg decoded{};  // note: view, not owning
 
     long long min_enc, max_enc;
     long long min_dec, max_dec;
 
     auto avg_enc = measure_avg_ns([&] {
-        encode(msg, buffer, sizeof(buffer), written);
+        encode(msg, buffer, sizeof(buffer), written, bytes_needed);
     }, iterations, min_enc, max_enc);
 
     auto avg_dec = measure_avg_ns([&] {
