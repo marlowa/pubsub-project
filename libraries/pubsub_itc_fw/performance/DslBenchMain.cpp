@@ -39,14 +39,14 @@ long long measure_avg_ns(F&& fn, int iterations, long long& min_ns, long long& m
 // ------------------------------------------------------------
 // Benchmark runner for a single encode/decode pair
 // ------------------------------------------------------------
-template<typename Msg>
-void benchmark_message(const char* name, Msg& msg, int iterations)
+template<typename OwningMsg, typename ViewMsg>
+void benchmark_message(const char* name, OwningMsg& msg, int iterations)
 {
     uint8_t buffer[65536];
     std::size_t written = 0;
     std::size_t consumed = 0;
 
-    Msg decoded{};
+    ViewMsg decoded{};  // note: view, not owning
 
     long long min_enc, max_enc;
     long long min_dec, max_dec;
@@ -79,7 +79,7 @@ int main()
     small.name = "example-name";
     small.value = 12345;
 
-    benchmark_message("SmallMessage", small, iterations);
+    benchmark_message<SmallMessage, SmallMessageView>("SmallMessage", small, iterations);
 
     // ------------------------------------------------------------
     // MediumMessage
@@ -95,7 +95,7 @@ int main()
     medium.tags.size = 10;
     medium.sequence = 987654321;
 
-    benchmark_message("MediumMessage", medium, iterations);
+    benchmark_message<MediumMessage, MediumMessageView>("MediumMessage", medium, iterations);
 
     // ------------------------------------------------------------
     // LargeMessage (list<list<string>>)
@@ -117,7 +117,7 @@ int main()
     large.groups.size = 3;
     large.sequence = 123456789;
 
-    benchmark_message("LargeMessage", large, iterations);
+    benchmark_message<LargeMessage, LargeMessageView>("LargeMessage", large, iterations);
 
     return 0;
 }

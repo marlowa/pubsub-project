@@ -18,4 +18,5 @@ end
 message LargeMessage (id=3, version=1)
     list<list<string>> groups
     i64                sequence
+    list<MediumMessage> items
 end
