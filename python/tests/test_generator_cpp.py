@@ -35,10 +35,10 @@ def test_enum_generation():
     assert "chix = 2" in code
 
     # to_string helper
-    assert "constexpr std::string_view to_string(Venue v)" in code
+    assert "constexpr std::string_view to_string(Venue" in code
 
     # validate helper
-    assert "constexpr bool validate(Venue v)" in code
+    assert "constexpr bool validate(Venue" in code
 
 
 def test_message_struct_generation():

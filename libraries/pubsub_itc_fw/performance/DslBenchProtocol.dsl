@@ -17,6 +17,7 @@ end
 # Large message: tests nested list performance
 message LargeMessage (id=3, version=1)
     list<list<string>> groups
+    optional i32       some_value
     i64                sequence
     list<MediumMessage> items
 end
