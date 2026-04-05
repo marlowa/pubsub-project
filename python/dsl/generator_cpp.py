@@ -285,7 +285,7 @@ class CppGenerator:
         w(f"[[nodiscard]] bool encode(const {name}& message, uint8_t* out_buffer, std::size_t out_size, std::size_t& bytes_written, std::size_t& bytes_needed);")
         if self._is_fixed_size(msg):
             w(f"inline void encode_fast(const {name}& message, uint8_t* out_buffer);")
-        w(f"[[nodiscard]] bool decode_{name}({name}View& out, const uint8_t*& read_cursor, std::size_t& bytes_remaining, pubsub_itc_fw::BumpAllocator& decode_arena);")
+        w(f"[[nodiscard]] bool decode_{name}({name}View& out, const uint8_t*& read_cursor, std::size_t& bytes_remaining, [[maybe_unused]] pubsub_itc_fw::BumpAllocator& decode_arena);")
         w(f"[[nodiscard]] bool skip_{name}(const uint8_t*& read_cursor, std::size_t& bytes_remaining);")
         w("")
 
@@ -572,7 +572,7 @@ class CppGenerator:
 
     def _emit_decode_view_impl(self, msg: MessageDecl, w):
         name = msg.name
-        w(f"inline bool decode_{name}({name}View& out, const uint8_t*& read_cursor, std::size_t& bytes_remaining, pubsub_itc_fw::BumpAllocator& decode_arena) {{")
+        w(f"inline bool decode_{name}({name}View& out, const uint8_t*& read_cursor, std::size_t& bytes_remaining, [[maybe_unused]] pubsub_itc_fw::BumpAllocator& decode_arena) {{")
         for field in msg.fields:
             self._emit_decode_field(field, w)
         w("    return true;")
@@ -809,7 +809,7 @@ class CppGenerator:
         w(f"                                 const uint8_t* buffer,")
         w(f"                                 std::size_t bytes_available,")
         w(f"                                 std::size_t& bytes_consumed,")
-        w(f"                                 pubsub_itc_fw::BumpAllocator& decode_arena)")
+        w(f"                                 [[maybe_unused]] pubsub_itc_fw::BumpAllocator& decode_arena)")
         w("{")
         w("    const uint8_t* cursor = buffer;")
         w("    std::size_t remaining = bytes_available;")
@@ -825,7 +825,7 @@ class CppGenerator:
     # ------------------------------------------------------------------
 
     def _emit_max_decode_arena_bytes(self, msg: MessageDecl, w):
-        w(f"inline constexpr std::size_t max_decode_arena_bytes_{msg.name}(std::size_t max_elements_per_list = 256) {{")
+        w(f"inline constexpr std::size_t max_decode_arena_bytes_{msg.name}([[maybe_unused]] std::size_t max_elements_per_list = 256) {{")
         w("    std::size_t total = 0;")
         for field in msg.fields:
             self._emit_decode_arena_size_for_field(field.type, "total", w, "    ", max_depth=8)
@@ -853,7 +853,7 @@ class CppGenerator:
             w(f"{indent}{total_var} += max_decode_arena_bytes_{type_node.name}(max_elements_per_list);")
 
     def _emit_max_encode_arena_bytes(self, msg: MessageDecl, w):
-        w(f"inline constexpr std::size_t max_encode_arena_bytes_{msg.name}(std::size_t max_elements_per_list = 256) {{")
+        w(f"inline constexpr std::size_t max_encode_arena_bytes_{msg.name}([[maybe_unused]] std::size_t max_elements_per_list = 256) {{")
         w("    std::size_t total = 0;")
         for field in msg.fields:
             self._emit_encode_arena_size_for_field(field.type, "total", w, "    ", max_depth=8)

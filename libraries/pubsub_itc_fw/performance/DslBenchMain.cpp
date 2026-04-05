@@ -1,10 +1,10 @@
 #include "DslBenchProtocol.hpp"
 
+#include <algorithm>
+#include <array>
 #include <chrono>
 #include <iostream>
 #include <string_view>
-#include <vector>
-#include <algorithm>
 
 using namespace pubsub_itc_fw;
 
@@ -14,7 +14,6 @@ using namespace pubsub_itc_fw;
 template<typename F>
 long long measure_avg_ns(F&& fn, int iterations, long long& min_ns, long long& max_ns)
 {
-    // Warm-up
     for (int i = 0; i < 100; ++i)
         fn();
 
@@ -45,18 +44,23 @@ void benchmark_message(const char* name, OwningMsg& msg, int iterations)
     uint8_t buffer[65536];
     std::size_t written = 0;
     std::size_t consumed = 0;
-    std::size_t bytes_needed{0};
-    ViewMsg decoded{};  // note: view, not owning
+    std::size_t bytes_needed = 0;
+    ViewMsg decoded{};
+
+    alignas(64) std::array<uint8_t, 4096> decode_arena_storage{};
+    BumpAllocator decode_arena(decode_arena_storage.data(), decode_arena_storage.size());
 
     long long min_enc, max_enc;
     long long min_dec, max_dec;
 
     auto avg_enc = measure_avg_ns([&] {
-        encode(msg, buffer, sizeof(buffer), written, bytes_needed);
+        static_cast<void>(encode(msg, buffer, sizeof(buffer), written, bytes_needed));
     }, iterations, min_enc, max_enc);
 
     auto avg_dec = measure_avg_ns([&] {
-        decode(decoded, buffer, written, consumed);
+        decode_arena.reset();
+        decoded = ViewMsg{};
+        static_cast<void>(decode(decoded, buffer, written, consumed, decode_arena));
     }, iterations, min_dec, max_dec);
 
     std::cout << "------------------------------------------------------------\n";
@@ -102,7 +106,6 @@ int main()
     // ------------------------------------------------------------
     LargeMessage large{};
 
-    // Inner lists
     static std::string_view group1[] = {"a", "b", "c"};
     static std::string_view group2[] = {"d", "e", "f", "g"};
     static std::string_view group3[] = {"h"};
