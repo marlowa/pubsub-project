@@ -1,3 +1,5 @@
+"""Parser for the pubsub_itc_fw DSL code generator."""
+
 from __future__ import annotations
 from typing import List, Dict
 
@@ -18,7 +20,9 @@ from .ast import (
 )
 
 
-class Parser:
+class Parser:  # pylint: disable=too-few-public-methods
+    """Recursive-descent parser that converts DSL source text into an AST."""
+
     def __init__(self, text: str):
         self.lexer = Lexer(text)
         self.current = self.lexer.next_token()
@@ -44,7 +48,7 @@ class Parser:
         return False
 
     def _expect_keyword(self, value: str) -> int:
-        """Consume the named keyword and return its line number."""
+        """Consume the named keyword token and return its line number."""
         if self.current.kind != "KEYWORD" or self.current.value != value:
             raise ParseError(
                 f"Expected keyword '{value}', got {self.current.value} "
@@ -59,6 +63,7 @@ class Parser:
     # -----------------------------
 
     def parse(self) -> DslFile:
+        """Parse the full DSL source and return a DslFile AST node."""
         declarations: List[Declaration] = []
 
         while self.current.kind != "EOF":

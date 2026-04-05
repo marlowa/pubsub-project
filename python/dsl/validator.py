@@ -1,9 +1,11 @@
+"""Semantic validation for the pubsub_itc_fw DSL code generator."""
+
 from __future__ import annotations
 from typing import Dict, Set, List
 
+from .errors import ValidationError
 from .ast import (
     DslFile,
-    Declaration,
     EnumDecl,
     MessageDecl,
     Field,
@@ -13,10 +15,10 @@ from .ast import (
     ArrayType,
     ReferenceType,
 )
-from .errors import ValidationError
 
+class Validator:  # pylint: disable=too-few-public-methods
+    """Validates a parsed DSL AST for semantic correctness."""
 
-class Validator:
     def __init__(self, ast: DslFile):
         self.ast = ast
         self.enums: Dict[str, EnumDecl] = {}
@@ -27,6 +29,7 @@ class Validator:
     # -----------------------------
 
     def validate(self):
+        """Run all validation checks. Raises ValidationError on any violation."""
         self._collect_declarations()
         self._validate_enums()
         self._validate_messages()

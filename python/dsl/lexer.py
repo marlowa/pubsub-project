@@ -1,3 +1,5 @@
+"""Lexer for the pubsub_itc_fw DSL code generator."""
+
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
@@ -6,6 +8,7 @@ from .errors import LexError
 
 @dataclass
 class Token:
+    """A single lexical token with kind, value, and source location."""
     kind: str
     value: Optional[str]
     line: int
@@ -15,7 +18,9 @@ class Token:
         return f"Token({self.kind}, {self.value}, {self.line}:{self.column})"
 
 
-class Lexer:
+class Lexer:  # pylint: disable=too-few-public-methods
+    """Tokenises DSL source text into a stream of Token objects."""
+
     KEYWORDS = {
         "enum",
         "message",
@@ -65,6 +70,7 @@ class Lexer:
         return ch
 
     def next_token(self) -> Token:
+        """Return the next token from the input, skipping whitespace and comments."""
         while True:
             ch = self._peek()
 

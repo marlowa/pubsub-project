@@ -1,3 +1,6 @@
+"""Pybind11 binding code generator for the pubsub_itc_fw DSL."""
+# pylint: disable=duplicate-code
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -254,7 +257,7 @@ class Pybind11Generator:
     # Field keyword-argument assignment for owning struct construction
     # ------------------------------------------------------------------
 
-    def _emit_field_kw_assign(self, msg: MessageDecl, field: Field, w):
+    def _emit_field_kw_assign(self, msg: MessageDecl, field: Field, w):  # pylint: disable=unused-argument
         name = field.name
         w(f'                if (key == "{name}") {{')
         if isinstance(field.type, ListType):
@@ -275,11 +278,11 @@ class Pybind11Generator:
             w(f'                    obj.has_{name} = true;')
         w('                }')
 
-    def _emit_list_from_py(self, list_type: ListType, target_expr: str,
-                           source_expr: str, w, indent: str = " " * 20, prefix: str = ""):
+    def _emit_list_from_py(self, list_type: ListType, target_expr: str,  # pylint: disable=too-many-arguments,too-many-positional-arguments
+                           source_expr: str, w, indent: str = " " * 20, prefix: str = ""):  # pylint: disable=too-many-arguments,too-many-positional-arguments
         """Emit C++ code to populate a ListView<T> from a Python list.
 
-        Uses heap allocation (new[]) intentionally — this runs in the pybind11
+        Uses heap allocation (new[]) intentionally -- this runs in the pybind11
         test harness only, not in production encode or decode paths.
         """
         elem = list_type.element_type
@@ -321,7 +324,7 @@ class Pybind11Generator:
         name = msg.name
 
         w(f'    m.def("encoded_size_{name}", [](const ns::{name}& msg) {{')
-        w(f'        return ns::encoded_size(msg);')
+        w('        return ns::encoded_size(msg);')
         w('    });')
 
         w(f'    m.def("encode_{name}", [](const ns::{name}& msg) {{')
@@ -344,11 +347,11 @@ class Pybind11Generator:
         # Callers must not call decode_{name} again while still using a prior result.
         arena_size = f'ns::max_decode_arena_bytes_{name}()'
         w(f'    m.def("decode_{name}", [](py::object obj) -> ns::{name}View& {{')
-        w(f'        static thread_local std::vector<std::uint8_t> arena_storage;')
+        w('        static thread_local std::vector<std::uint8_t> arena_storage;')
         w(f'        static thread_local ns::{name}View view;')
         w(f'        arena_storage.assign({arena_size}, std::uint8_t{{0}});')
         w(f'        view = ns::{name}View{{}};')
-        w(f'        pubsub_itc_fw::BumpAllocator decode_arena(arena_storage.data(), arena_storage.size());')
+        w('        pubsub_itc_fw::BumpAllocator decode_arena(arena_storage.data(), arena_storage.size());')
         w('        std::size_t consumed = 0;')
         w('        std::size_t arena_bytes_needed = 0;')
         w('        if (py::isinstance<EncodedBuffer>(obj)) {')
