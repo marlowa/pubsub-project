@@ -48,6 +48,7 @@ private:
     Header header_;
     const uint8_t* payload_{nullptr};
     int itc_message_type_{-1};
+    int pdu_id_{-1};
 
     /**
      * @brief Private constructor to enforce use of static factory methods.
@@ -83,6 +84,22 @@ public:
      */
     [[nodiscard]] int itc_message_type() const {
         return itc_message_type_;
+    }
+
+    /**
+     * @brief Gets the PDU message identifier.
+     *
+     * This value is meaningful only when the event type is
+     * EventType::FrameworkPdu. It identifies the specific PDU
+     * type as defined by the DSL-generated message ID constants.
+     *
+     * The ApplicationThread uses this value to select the correct
+     * decode function for the incoming PDU payload.
+     *
+     * @return The PDU identifier as a signed 16-bit integer.
+     */
+    [[nodiscard]] int pdu_id() const {
+        return pdu_id_;
     }
 
     /**
@@ -133,6 +150,18 @@ public:
      * @return EventMessage instance.
      */
     [[nodiscard]] static EventMessage create_raw_socket_message(const uint8_t* data, int size);
+
+    /**
+     * @brief Factory method for framework PDU messages.
+     *
+     * These messages represent fully packetized PDUs decoded by the reactor’s
+     * framing layer. The payload is the raw PDU bytes (after header removal).
+     *
+     * @param[in] data Pointer to the PDU payload.
+     * @param[in] size Size of the PDU payload in bytes.
+     * @return EventMessage instance.
+     */
+    [[nodiscard]] static EventMessage create_framework_pdu_message(const uint8_t* data, int size);
 
     /**
      * @brief Gets the event type.

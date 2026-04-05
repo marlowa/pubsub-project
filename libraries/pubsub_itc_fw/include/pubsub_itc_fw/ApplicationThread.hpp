@@ -346,6 +346,20 @@ protected:
 
     virtual void on_raw_socket_message([[maybe_unused]] const EventMessage& msg) {}
 
+    /**
+     * @brief Handler for fully packetized framework PDUs.
+     *
+     * The Reactor’s framing layer has already assembled a complete PDU and
+     * stripped any transport header. The payload in the EventMessage is the
+     * exact PDU byte sequence expected by the DSL-generated decode functions.
+     *
+     * Override this in ApplicationThread subclasses that consume framework
+     * PDUs (e.g., leader–follower, replication, or component-to-component
+     * protocols). Threads that only care about foreign protocols (e.g. FIX)
+     * may ignore this and rely solely on on_raw_socket_message().
+     */
+    virtual void on_framework_pdu_message([[maybe_unused]] const EventMessage& msg) {}
+
     void assert_called_from_owner() const {
         if (thread_ == nullptr) {
             throw PreconditionAssertion("Timer APIs must not be called before the ApplicationThread has been started", __FILE__, __LINE__);

@@ -3,8 +3,8 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-#include <string>
 #include <fmt/format.h>
+#include <string>
 
 namespace pubsub_itc_fw {
 
@@ -13,25 +13,14 @@ namespace pubsub_itc_fw {
 /**
  * @brief Event type enumeration for EventMessage classification.
  */
-class EventType
-{
-public:
+class EventType {
+  public:
     /**
      * @brief C-style enumeration of event types.
      */
-    enum EventTypeTag
-    {
-        None,
-        Initial,
-        AppReady,
-        Termination,
-        InterthreadCommunication,
-        Timer,
-        PubSubCommunication,
-        RawSocketCommunication
-    };
+    enum EventTypeTag { None, Initial, AppReady, Termination, InterthreadCommunication, Timer, PubSubCommunication, RawSocketCommunication, FrameworkPdu };
 
-public:
+  public:
     /**
      * @brief Constructs EventType from tag value.
      * @param tag Event type tag
@@ -47,22 +36,31 @@ public:
     [[nodiscard]] std::string as_string() const {
         if (event_type_ == None) {
             return "None";
-        } if (event_type_ == Initial) {
+        }
+        if (event_type_ == Initial) {
             return "Initial";
-        } if (event_type_ == AppReady) {
-                return "AppReady";
-        } if (event_type_ == Termination) {
+        }
+        if (event_type_ == AppReady) {
+            return "AppReady";
+        }
+        if (event_type_ == Termination) {
             return "Termination";
-        } if (event_type_ == InterthreadCommunication) {
+        }
+        if (event_type_ == InterthreadCommunication) {
             return "InterthreadCommunication";
-        } if (event_type_ == Timer) {
+        }
+        if (event_type_ == Timer) {
             return "Timer";
-        } if (event_type_ == PubSubCommunication) {
+        }
+        if (event_type_ == PubSubCommunication) {
             return "PubSubCommunication";
-        } if (event_type_ == RawSocketCommunication) {
+        }
+        if (event_type_ == RawSocketCommunication) {
             return "RawSocketCommunication";
         }
-
+        if (event_type_ == FrameworkPdu) {
+            return "FrameworkPdu";
+        }
         return fmt::format("unknown ({})", static_cast<int>(event_type_));
     }
 
@@ -79,7 +77,7 @@ public:
         return event_type_ == rhs.event_type_;
     }
 
-private:
+  private:
     EventTypeTag event_type_{None};
 };
 
@@ -89,14 +87,12 @@ private:
  * @param[in] rhs Right-hand side EventType
  * @return True if equal, false otherwise
  */
-inline bool operator==(const EventType& lhs, const EventType& rhs)
-{
+inline bool operator==(const EventType& lhs, const EventType& rhs) {
     return lhs.is_equal(rhs);
 }
 
-inline bool operator!=(const EventType& lhs, const EventType& rhs)
-{
+inline bool operator!=(const EventType& lhs, const EventType& rhs) {
     return !lhs.is_equal(rhs);
 }
 
-}
+} // namespace pubsub_itc_fw
