@@ -1,23 +1,94 @@
 from __future__ import annotations
+
 from dataclasses import dataclass
 from datetime import datetime
 from typing import List
 
 from .ast import (
+    ArrayType,
     DslFile,
     EnumDecl,
-    MessageDecl,
     Field,
-    PrimitiveType,
-    StringType,
     ListType,
-    ArrayType,
+    MessageDecl,
+    PrimitiveType,
     ReferenceType,
+    StringType,
 )
+
 
 @dataclass
 class CppGenerator:
+    """Generates a C++17 header from a validated DSL AST.
+
+    The generated header contains:
+      - Endian helper functions
+      - ListView<T> template
+      - Enum declarations with to_string and validate helpers
+      - Owning structs (for encode) and View structs (for decode)
+      - encoded_size, encode, decode, skip functions per message
+      - max_decode_arena_bytes and max_encode_arena_bytes helpers per message
+    """
+
     namespace: str
+
+    # ------------------------------------------------------------------
+    # Public entry point
+    # ------------------------------------------------------------------
+
+    def emit(self, ast: DslFile) -> str:
+        """Generate and return the complete C++ header as a string."""
+        lines: List[str] = []
+        w = lines.append
+
+        self._emit_header_preamble(w)
+        w("#pragma once")
+        w("")
+        w("#include <array>")
+        w("#include <cstdint>")
+        w("#include <cstring>")
+        w("#include <string_view>")
+        w("")
+        w("#include <pubsub_itc_fw/BumpAllocator.hpp>")
+        w("")
+        w(f"namespace {self.namespace} {{")
+        w("")
+        self._emit_endian_macros(w)
+        w("")
+        self._emit_endian_helpers(w)
+        w("")
+        self._emit_list_view(w)
+        w("")
+
+        for decl in ast.declarations:
+            if isinstance(decl, EnumDecl):
+                self._emit_enum(decl, w)
+                w("")
+
+        for decl in ast.declarations:
+            if isinstance(decl, MessageDecl):
+                w(f"struct {decl.name};")
+        if any(isinstance(d, MessageDecl) for d in ast.declarations):
+            w("")
+
+        for decl in ast.declarations:
+            if isinstance(decl, MessageDecl):
+                self._emit_message_structs(decl, w)
+                w("")
+
+        for decl in ast.declarations:
+            if isinstance(decl, MessageDecl):
+                self._emit_message_functions(decl, w)
+                self._emit_decode_wrapper(decl, w)
+                w("")
+
+        w(f"}} // namespace {self.namespace}")
+        w("")
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # Header preamble
+    # ------------------------------------------------------------------
 
     def _emit_header_preamble(self, w):
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -29,61 +100,9 @@ class CppGenerator:
         w("// -----------------------------------------------------------------------------")
         w("")
 
-    def emit(self, ast: DslFile) -> str:
-        lines: List[str] = []
-        w = lines.append
-
-        # Preamble
-        self._emit_header_preamble(w)
-        w("#pragma once")
-        w("")
-        w("#include <cstdint>")
-        w("#include <string_view>")
-        w("#include <cstring>")
-        w("#include <array>")
-        w("")
-        w(f"namespace {self.namespace} {{")
-        w("")
-        self._emit_endian_macros(w)
-        w("")
-        self._emit_endian_helpers(w)
-        w("")
-        self._emit_list_view(w)
-        w("")
-
-        # Enums
-        for decl in ast.declarations:
-            if isinstance(decl, EnumDecl):
-                self._emit_enum(decl, w)
-                w("")
-
-        # Forward declare messages
-        for decl in ast.declarations:
-            if isinstance(decl, MessageDecl):
-                w(f"struct {decl.name};")
-        if any(isinstance(d, MessageDecl) for d in ast.declarations):
-            w("")
-
-        # Messages
-        for decl in ast.declarations:
-            if isinstance(decl, MessageDecl):
-                self._emit_message_structs(decl, w)
-                w("")
-
-        # Functions (encode/decode/size)
-        for decl in ast.declarations:
-            if isinstance(decl, MessageDecl):
-                self._emit_message_functions(decl, w)
-                self._emit_decode_wrappers(decl, w)
-                w("")
-
-        w(f"}} // namespace {self.namespace}")
-        w("")
-        return "\n".join(lines)
-
-    # -----------------------------
-    # Helpers
-    # -----------------------------
+    # ------------------------------------------------------------------
+    # Endian support
+    # ------------------------------------------------------------------
 
     def _emit_endian_macros(self, w):
         w("#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__")
@@ -100,22 +119,22 @@ class CppGenerator:
         w("")
         w("inline std::uint16_t read_uint16_le(const uint8_t* buffer) {")
         w("    return static_cast<std::uint16_t>(")
-        w("        (std::uint16_t(buffer[0])      ) |")
+        w("        (std::uint16_t(buffer[0])     ) |")
         w("        (std::uint16_t(buffer[1]) << 8));")
         w("}")
         w("")
         w("inline void write_uint32_le(uint8_t* buffer, std::uint32_t value) {")
         w("    buffer[0] = static_cast<std::uint8_t>( value        & 0xFF);")
-        w("    buffer[1] = static_cast<std::uint8_t>((value >> 8)  & 0xFF);")
+        w("    buffer[1] = static_cast<std::uint8_t>((value >>  8) & 0xFF);")
         w("    buffer[2] = static_cast<std::uint8_t>((value >> 16) & 0xFF);")
         w("    buffer[3] = static_cast<std::uint8_t>((value >> 24) & 0xFF);")
         w("}")
         w("")
         w("inline std::uint32_t read_uint32_le(const uint8_t* buffer) {")
-        w("    return ( std::uint32_t(buffer[0])       ) |")
-        w("           ( std::uint32_t(buffer[1]) <<  8 ) |")
-        w("           ( std::uint32_t(buffer[2]) << 16 ) |")
-        w("           ( std::uint32_t(buffer[3]) << 24 );")
+        w("    return (std::uint32_t(buffer[0])      ) |")
+        w("           (std::uint32_t(buffer[1]) <<  8) |")
+        w("           (std::uint32_t(buffer[2]) << 16) |")
+        w("           (std::uint32_t(buffer[3]) << 24);")
         w("}")
         w("")
         w("inline void write_uint64_le(uint8_t* buffer, std::uint64_t value) {")
@@ -132,39 +151,9 @@ class CppGenerator:
         w("    return value;")
         w("}")
 
-    def _is_fixed_size(self, msg: MessageDecl) -> bool:
-        for field in msg.fields:
-            if field.optional:
-                return False
-            t = field.type
-            # optional is fine: presence byte + fixed payload
-            if isinstance(t, PrimitiveType):
-                continue
-            if isinstance(t, ArrayType):
-                # only arrays of primitive types are considered fixed-size
-                if not isinstance(t.element_type, PrimitiveType):
-                    return False
-                continue
-            # anything else (string, list, nested message) is variable-size
-            return False
-        return True
-
-    # -----------------------------
-    # End Helpers
-    # -----------------------------
-
-    def _emit_fixed_size_for_field(self, field: Field, w):
-        t = field.type
-        if field.optional:
-            w("    total_bytes += 1;")
-        if isinstance(t, PrimitiveType):
-            w(f"    total_bytes += sizeof({self._cpp_type(t)});")
-        elif isinstance(t, ArrayType):
-            element_cpp = self._cpp_type(t.element_type)
-            w(f"    total_bytes += sizeof({element_cpp}) * {t.length};")
-        else:
-            raise RuntimeError(f"Non-fixed-size field encountered in fixed size computation: {t}")
-
+    # ------------------------------------------------------------------
+    # ListView<T>
+    # ------------------------------------------------------------------
 
     def _emit_list_view(self, w):
         w("template<typename T>")
@@ -173,40 +162,28 @@ class CppGenerator:
         w("    std::size_t size = 0;")
         w("")
         w("    const T* begin() const { return data; }")
-        w("    const T* end() const { return data + size; }")
+        w("    const T* end()   const { return data + size; }")
         w("    const T& operator[](std::size_t index) const { return data[index]; }")
         w("")
-        w("    bool empty() const { return size == 0; }")
+        w("    bool empty()        const { return size == 0; }")
         w("    std::size_t length() const { return size; }")
         w("};")
-        w("")
-        w("struct StringListView {")
-        w("    const uint8_t* data = nullptr;")
-        w("    std::size_t    size = 0;")
-        w("};")
-        w("")
-        w("struct StringListListView {")
-        w("    const uint8_t* data = nullptr;")
-        w("    std::size_t    size = 0;")
-        w("};")
-        w("")
-        w("template<typename MessageView>")
-        w("struct MessageListView {")
-        w("    const uint8_t* data = nullptr;")
-        w("    std::size_t    size = 0;")
-        w("};")
+
+    # ------------------------------------------------------------------
+    # Enum
+    # ------------------------------------------------------------------
 
     def _emit_enum(self, enum: EnumDecl, w):
         w(f"enum {enum.name} : {self._cpp_int_type(enum.underlying_type)} {{")
-        for i, entry in enumerate(enum.entries):
-            comma = "," if i + 1 < len(enum.entries) else ""
+        for index, entry in enumerate(enum.entries):
+            comma = "," if index + 1 < len(enum.entries) else ""
             w(f"    {entry.name} = {entry.value}{comma}")
         w("};")
         w("")
         w(f"constexpr std::string_view to_string({enum.name} value) {{")
         w("    switch (value) {")
         for entry in enum.entries:
-            w(f"    case {entry.name}: return std::string_view(\"{entry.name}\");")
+            w(f"    case {enum.name}::{entry.name}: return std::string_view(\"{entry.name}\");")
         w("    default: return std::string_view(\"<unknown>\");")
         w("    }")
         w("}")
@@ -214,227 +191,109 @@ class CppGenerator:
         w(f"constexpr bool validate({enum.name} value) {{")
         w("    switch (value) {")
         for entry in enum.entries:
-            w(f"    case {entry.name}: return true;")
+            w(f"    case {enum.name}::{entry.name}: return true;")
         w("    default: return false;")
         w("    }")
         w("}")
 
-    def _emit_decode_wrappers(self, msg: MessageDecl, w):
-        name = msg.name
-        view = f"{name}View"
-
-        w(f"inline bool decode({view}& out,")
-        w(f"                   const uint8_t* buffer,")
-        w(f"                   std::size_t bytes_available,")
-        w(f"                   std::size_t& bytes_consumed)")
-        w("{")
-        w("    const uint8_t* cursor = buffer;")
-        w("    std::size_t remaining = bytes_available;")
-        w(f"    if (!decode_{name}(out, cursor, remaining)) {{")
-        w("        return false;")
-        w("    }")
-        w("    bytes_consumed = bytes_available - remaining;")
-        w("    return true;")
-        w("}")
-        w("")
-
+    # ------------------------------------------------------------------
+    # Message structs (owning and view)
+    # ------------------------------------------------------------------
 
     def _emit_message_structs(self, msg: MessageDecl, w):
         name = msg.name
 
-        # ------------------------------------------------------------
-        # 1. Owning struct (used for encode)
-        # ------------------------------------------------------------
         w(f"struct {name} {{")
         for field in msg.fields:
-            cpp = self._cpp_type_owning(field.type)   # NEW FUNCTION
-            w(f"    {cpp} {field.name};")
+            if field.optional:
+                w(f"    bool has_{field.name} = false;")
+            w(f"    {self._cpp_type_owning(field.type)} {field.name}{{}};")
         w("};")
         w("")
 
-        # ------------------------------------------------------------
-        # 2. View struct (used for decode)
-        # ------------------------------------------------------------
         w(f"struct {name}View {{")
         for field in msg.fields:
-            cpp = self._cpp_type_view(field.type)     # NEW FUNCTION
-            w(f"    {cpp} {field.name};")
+            if field.optional:
+                w(f"    bool has_{field.name} = false;")
+            w(f"    {self._cpp_type_view(field.type)} {field.name}{{}};")
         w("};")
-        w("")
 
-    def _cpp_type_owning(self, t):
-        # Encode-side types (owning)
-        if isinstance(t, StringType):
-            return "std::string_view"
-        if isinstance(t, PrimitiveType):
-            return self._cpp_type(t)
-        if isinstance(t, ArrayType):
-            elem = self._cpp_type_owning(t.element_type)
-            return f"std::array<{elem}, {t.length}>"
-        if isinstance(t, ListType):
-            elem = self._cpp_type_owning(t.element_type)
-            return f"ListView<{elem}>"
-        if isinstance(t, ReferenceType):
-            return t.name  # owning message
-        raise RuntimeError(f"Unsupported type in owning struct: {t}")
-
-
-    def _cpp_type_view(self, t):
-        # Decode-side types (views)
-        if isinstance(t, StringType):
-            return "std::string_view"
-        if isinstance(t, PrimitiveType):
-            return self._cpp_type(t)
-        if isinstance(t, ArrayType):
-            elem = self._cpp_type_view(t.element_type)
-            return f"std::array<{elem}, {t.length}>"
-        if isinstance(t, ListType):
-            elem = t.element_type
-            if isinstance(elem, StringType):
-                return "StringListView"
-            if isinstance(elem, ListType) and isinstance(elem.element_type, StringType):
-                return "StringListListView"
-            if isinstance(elem, ReferenceType):
-                return f"MessageListView<{elem.name}View>"
-            # nested lists
-            return "StringListListView"
-        if isinstance(t, ReferenceType):
-            return f"{t.name}View"
-        raise RuntimeError(f"Unsupported type in view struct: {t}")
-
-
-    def _emit_field(self, field: Field, w):
-        if field.optional:
-            w(f"    bool has_{field.name} = false;")
-        cpp_type = self._cpp_type(field.type)
-        w(f"    {cpp_type} {field.name};")
+    # ------------------------------------------------------------------
+    # Type mappings
+    # ------------------------------------------------------------------
 
     def _cpp_int_type(self, name: str) -> str:
         mapping = {
-            "i8": "int8_t",
+            "i8":  "int8_t",
             "i16": "int16_t",
             "i32": "int32_t",
             "i64": "int64_t",
         }
         return mapping[name]
 
-    def _cpp_type(self, t) -> str:
-        if isinstance(t, PrimitiveType):
-            mapping = {
-                "i8": "int8_t",
-                "i16": "int16_t",
-                "i32": "int32_t",
-                "i64": "int64_t",
-                "bool": "bool",
-                "datetime_ns": "int64_t",
-            }
-            return mapping[t.name]
-        if isinstance(t, StringType):
+    def _cpp_primitive_type(self, name: str) -> str:
+        mapping = {
+            "i8":          "int8_t",
+            "i16":         "int16_t",
+            "i32":         "int32_t",
+            "i64":         "int64_t",
+            "bool":        "bool",
+            "datetime_ns": "int64_t",
+        }
+        return mapping[name]
+
+    def _cpp_type_owning(self, type_node) -> str:
+        """Return the C++ type used in the owning (encode-side) struct."""
+        if isinstance(type_node, PrimitiveType):
+            return self._cpp_primitive_type(type_node.name)
+        if isinstance(type_node, StringType):
             return "std::string_view"
-        if isinstance(t, ListType):
-            elem = t.element_type
-            # list<string>
-            if isinstance(elem, StringType):
-                return "StringListView"
-            # list<list<string>>
-            if isinstance(elem, ListType) and isinstance(elem.element_type, StringType):
-                return "StringListListView"
-            # list<SomeMessage>
-            if isinstance(elem, ReferenceType):
-                return f"MessageListView<{elem.name}>"
-            # list<primitive> or other: keep old ListView<T>
-            element_cpp = self._cpp_type(elem)
-            return f"ListView<{element_cpp}>"
-        if isinstance(t, ArrayType):
-            element_cpp = self._cpp_type(t.element_type)
-            return f"std::array<{element_cpp}, {t.length}>"
-        if isinstance(t, ReferenceType):
-            return t.name
-        raise RuntimeError(f"Unknown type node: {t}")
+        if isinstance(type_node, ArrayType):
+            elem = self._cpp_type_owning(type_node.element_type)
+            return f"std::array<{elem}, {type_node.length}>"
+        if isinstance(type_node, ListType):
+            elem = self._cpp_type_owning(type_node.element_type)
+            return f"ListView<{elem}>"
+        if isinstance(type_node, ReferenceType):
+            return type_node.name
+        raise RuntimeError(f"Unsupported type in owning struct: {type_node}")
 
-    def _emit_encode_fast_impl(self, msg: MessageDecl, w):
-        w("    uint8_t* write_cursor = out_buffer;")
-        for field in msg.fields:
-            t = field.type
-            name = field.name
+    def _cpp_type_view(self, type_node) -> str:
+        """Return the C++ type used in the view (decode-side) struct."""
+        if isinstance(type_node, PrimitiveType):
+            return self._cpp_primitive_type(type_node.name)
+        if isinstance(type_node, StringType):
+            return "std::string_view"
+        if isinstance(type_node, ArrayType):
+            elem = self._cpp_type_view(type_node.element_type)
+            return f"std::array<{elem}, {type_node.length}>"
+        if isinstance(type_node, ListType):
+            elem = self._cpp_type_view(type_node.element_type)
+            return f"ListView<{elem}>"
+        if isinstance(type_node, ReferenceType):
+            return f"{type_node.name}View"
+        raise RuntimeError(f"Unsupported type in view struct: {type_node}")
 
-            if isinstance(t, PrimitiveType):
-                if t.name == "i8":
-                    w(f"    *write_cursor = static_cast<std::uint8_t>(message.{name});")
-                    w("    write_cursor += 1;")
-                elif t.name == "i16":
-                    w(f"    write_uint16_le(write_cursor, static_cast<std::uint16_t>(message.{name}));")
-                    w("    write_cursor += 2;")
-                elif t.name == "i32":
-                    w(f"    write_uint32_le(write_cursor, static_cast<std::uint32_t>(message.{name}));")
-                    w("    write_cursor += 4;")
-                elif t.name in ('i64', 'datetime_ns'):
-                    w(f"    write_uint64_le(write_cursor, static_cast<std::uint64_t>(message.{name}));")
-                    w("    write_cursor += 8;")
-                elif t.name == "bool":
-                    w(f"    *write_cursor = message.{name} ? 1 : 0;")
-                    w("    write_cursor += 1;")
-                else:
-                    raise RuntimeError(f"Unsupported primitive in encode_fast: {t.name}")
-
-            elif isinstance(t, ArrayType):
-                elem = t.element_type
-                if elem.name == "i8":
-                    w(f"    std::memcpy(write_cursor, message.{name}.data(), {t.length});")
-                    w(f"    write_cursor += {t.length};")
-                elif elem.name == "i16":
-                    w(f"    for (std::size_t i = 0; i < {t.length}; ++i) {{")
-                    w(f"        write_uint16_le(write_cursor, static_cast<std::uint16_t>(message.{name}[i]));")
-                    w("        write_cursor += 2;")
-                    w("    }")
-                elif elem.name == "i32":
-                    w(f"    for (std::size_t i = 0; i < {t.length}; ++i) {{")
-                    w(f"        write_uint32_le(write_cursor, static_cast<std::uint32_t>(message.{name}[i]));")
-                    w("        write_cursor += 4;")
-                    w("    }")
-                elif elem.name in ('i64', 'datetime_ns'):
-                    w(f"    for (std::size_t i = 0; i < {t.length}; ++i) {{")
-                    w(f"        write_uint64_le(write_cursor, static_cast<std::uint64_t>(message.{name}[i]));")
-                    w("        write_cursor += 8;")
-                    w("    }")
-                elif elem.name == "bool":
-                    w(f"    for (std::size_t i = 0; i < {t.length}; ++i) {{")
-                    w(f"        *write_cursor = message.{name}[i] ? 1 : 0;")
-                    w("        write_cursor += 1;")
-                    w("    }")
-                else:
-                    raise RuntimeError(f"Unsupported array element in encode_fast: {elem.name}")
-
-            else:
-                raise RuntimeError(f"Non-fixed-size field in encode_fast: {t}")
-
+    # ------------------------------------------------------------------
+    # Message functions: declarations, size, encode, decode, skip
+    # ------------------------------------------------------------------
 
     def _emit_message_functions(self, msg: MessageDecl, w):
         name = msg.name
 
-        # encode/size use owning struct
-        w(f"std::size_t encoded_size(const {name}& message);")
-        w(f"bool encode(const {name}& message, uint8_t* out_buffer, std::size_t out_size, std::size_t& bytes_written, std::size_t& bytes_needed);")
-
-        # fixed-size helper (only for fixed-size PDUs)
+        w(f"[[nodiscard]] std::size_t encoded_size(const {name}& message);")
+        w(f"[[nodiscard]] bool encode(const {name}& message, uint8_t* out_buffer, std::size_t out_size, std::size_t& bytes_written, std::size_t& bytes_needed);")
         if self._is_fixed_size(msg):
-            w(f"inline constexpr std::size_t fixed_encoded_size(const {name}&) {{")
-            w("    std::size_t total_bytes = 0;")
-            for field in msg.fields:
-                self._emit_fixed_size_for_field(field, w)
-            w("    return total_bytes;")
-            w("}")
-            w("")
-        if self._is_fixed_size(msg):
-            w(f"inline void encode_fast(const {name}& message, uint8_t* out_buffer) {{")
-            self._emit_encode_fast_impl(msg, w)
-            w("}")
-            w("")
-
-        # decode/skip use view struct
-        w(f"bool decode_{name}({name}View& out, const uint8_t*& read_cursor, std::size_t& bytes_remaining);")
-        w(f"bool skip_{name}(const uint8_t*& read_cursor, std::size_t& bytes_remaining);")
+            w(f"inline void encode_fast(const {name}& message, uint8_t* out_buffer);")
+        w(f"[[nodiscard]] bool decode_{name}({name}View& out, const uint8_t*& read_cursor, std::size_t& bytes_remaining, pubsub_itc_fw::BumpAllocator& decode_arena);")
+        w(f"[[nodiscard]] bool skip_{name}(const uint8_t*& read_cursor, std::size_t& bytes_remaining);")
         w("")
+
+        if self._is_fixed_size(msg):
+            self._emit_fixed_encoded_size(msg, w)
+            w("")
+            self._emit_encode_fast_impl(msg, w)
+            w("")
 
         self._emit_encoded_size_impl(msg, w)
         w("")
@@ -443,428 +302,145 @@ class CppGenerator:
         self._emit_decode_view_impl(msg, w)
         w("")
         self._emit_skip_impl(msg, w)
+        w("")
+        self._emit_max_decode_arena_bytes(msg, w)
+        w("")
+        self._emit_max_encode_arena_bytes(msg, w)
 
-    def _emit_skip_impl(self, msg: MessageDecl, w):
-        name = msg.name
-        self._skip_declared_count = False  # reset for each message
-        w(f"inline bool skip_{name}(const uint8_t*& read_cursor, std::size_t& bytes_remaining) {{")
+    # ------------------------------------------------------------------
+    # Fixed-size helpers
+    # ------------------------------------------------------------------
+
+    def _is_fixed_size(self, msg: MessageDecl) -> bool:
         for field in msg.fields:
-            self._emit_skip_field(field, w)
-        w("    return true;")
+            if field.optional:
+                return False
+            if isinstance(field.type, PrimitiveType):
+                continue
+            if isinstance(field.type, ArrayType):
+                if not isinstance(field.type.element_type, PrimitiveType):
+                    return False
+                continue
+            return False
+        return True
+
+    def _emit_fixed_encoded_size(self, msg: MessageDecl, w):
+        w(f"inline constexpr std::size_t fixed_encoded_size(const {msg.name}&) {{")
+        w("    std::size_t total_bytes = 0;")
+        for field in msg.fields:
+            self._emit_fixed_size_for_field(field, w)
+        w("    return total_bytes;")
         w("}")
 
-    def _emit_skip_field(self, field: Field, w):
-        t = field.type
+    def _emit_fixed_size_for_field(self, field: Field, w):
+        type_node = field.type
+        if isinstance(type_node, PrimitiveType):
+            w(f"    total_bytes += sizeof({self._cpp_primitive_type(type_node.name)});")
+        elif isinstance(type_node, ArrayType):
+            elem_cpp = self._cpp_primitive_type(type_node.element_type.name)
+            w(f"    total_bytes += sizeof({elem_cpp}) * {type_node.length};")
+        else:
+            raise RuntimeError(f"Non-fixed-size field in fixed size computation: {type_node}")
+
+    def _emit_encode_fast_impl(self, msg: MessageDecl, w):
+        w(f"inline void encode_fast(const {msg.name}& message, uint8_t* out_buffer) {{")
+        w("    uint8_t* write_cursor = out_buffer;")
+        for field in msg.fields:
+            self._emit_encode_fast_field(field, w)
+        w("}")
+
+    def _emit_encode_fast_field(self, field: Field, w):
+        type_node = field.type
         name = field.name
-
-        def need(nbytes: str):
-            w(f"    if (bytes_remaining < {nbytes}) return false;")
-
-        if field.optional:
-            need("1")
-            w("    {")
-            w("        std::uint8_t presence_flag = *read_cursor;")
-            w("        read_cursor += 1;")
-            w("        bytes_remaining -= 1;")
-            w(f"        if (!presence_flag) goto skip_field_{name};")
-            w("    }")
-
-        if isinstance(t, PrimitiveType):
-            if t.name == "i8" or t.name == "bool":
-                need("1")
-                w("    read_cursor += 1;")
-                w("    bytes_remaining -= 1;")
-            elif t.name == "i16":
-                need("2")
-                w("    read_cursor += 2;")
-                w("    bytes_remaining -= 2;")
-            elif t.name == "i32":
-                need("4")
-                w("    read_cursor += 4;")
-                w("    bytes_remaining -= 4;")
-            elif t.name in ("i64", "datetime_ns"):
-                need("8")
-                w("    read_cursor += 8;")
-                w("    bytes_remaining -= 8;")
+        if isinstance(type_node, PrimitiveType):
+            self._emit_encode_fast_primitive(type_node.name, f"message.{name}", w)
+        elif isinstance(type_node, ArrayType):
+            elem_name = type_node.element_type.name
+            if elem_name == "i8":
+                w(f"    std::memcpy(write_cursor, message.{name}.data(), {type_node.length});")
+                w(f"    write_cursor += {type_node.length};")
             else:
-                raise RuntimeError(f"Unsupported primitive in skip: {t.name}")
-
-        elif isinstance(t, StringType):
-            need("sizeof(std::uint32_t)")
-            w("    std::uint32_t len = read_uint32_le(read_cursor);")
-            w("    read_cursor += sizeof(std::uint32_t);")
-            w("    bytes_remaining -= sizeof(std::uint32_t);")
-            w("    if (bytes_remaining < static_cast<std::size_t>(len)) return false;")
-            w("    read_cursor += len;")
-            w("    bytes_remaining -= static_cast<std::size_t>(len);")
-
-        elif isinstance(t, ArrayType):
-            elem = t.element_type
-            if elem.name in ("i8", "bool"):
-                need(f"{t.length}")
-                w(f"    read_cursor += {t.length};")
-                w(f"    bytes_remaining -= {t.length};")
-            elif elem.name == "i16":
-                need(f"{t.length} * 2")
-                w(f"    read_cursor += {t.length} * 2;")
-                w(f"    bytes_remaining -= {t.length} * 2;")
-            elif elem.name == "i32":
-                need(f"{t.length} * 4")
-                w(f"    read_cursor += {t.length} * 4;")
-                w(f"    bytes_remaining -= {t.length} * 4;")
-            elif elem.name in ("i64", "datetime_ns"):
-                need(f"{t.length} * 8")
-                w(f"    read_cursor += {t.length} * 8;")
-                w(f"    bytes_remaining -= {t.length} * 8;")
-            else:
-                raise RuntimeError(f"Unsupported array element in skip: {elem.name}")
-
-        elif isinstance(t, ListType):
-            self._emit_skip_list(t, w)
-
-        elif isinstance(t, ReferenceType):
-            w(f"    if (!skip_{t.name}(read_cursor, bytes_remaining)) return false;")
-
+                width = self._primitive_wire_size(elem_name)
+                w(f"    for (std::size_t i = 0; i < {type_node.length}; ++i) {{")
+                self._emit_write_primitive(elem_name, f"message.{name}[i]", "        ", w)
+                w(f"        write_cursor += {width};")
+                w("    }")
         else:
-            raise RuntimeError(f"Unknown field type in skip: {t}")
+            raise RuntimeError(f"Non-fixed-size field in encode_fast: {type_node}")
 
-        if field.optional:
-            w(f"skip_field_{name}: ;")
+    def _emit_encode_fast_primitive(self, prim_name: str, expr: str, w):
+        width = self._primitive_wire_size(prim_name)
+        self._emit_write_primitive(prim_name, expr, "    ", w)
+        w(f"    write_cursor += {width};")
 
-    def _emit_skip_list(self, t: ListType, w,
-                        indent: str = "    ", loop_var: str = "i"):
-        next_var = chr(ord(loop_var) + 1) if loop_var < "z" else loop_var + "_"
-        inner_indent = indent + "    "
-
-        def w_ind(line: str):
-            w(indent + line)
-
-        def need_ind(nbytes: str):
-            w(f"{indent}if (bytes_remaining < {nbytes}) return false;")
-
-        need_ind("sizeof(std::uint32_t)")
-
-        if indent == "    ":
-            # top-level list in this skip_Message
-            if not getattr(self, "_skip_declared_count", False):
-                w_ind("std::uint32_t element_count = read_uint32_le(read_cursor);")
-                self._skip_declared_count = True
-            else:
-                w_ind("element_count = read_uint32_le(read_cursor);")
-        else:
-            # nested list: always declare a fresh local counter
-            w_ind("std::uint32_t element_count = read_uint32_le(read_cursor);")
-
-        w_ind("read_cursor += sizeof(std::uint32_t);")
-        w_ind("bytes_remaining -= sizeof(std::uint32_t);")
-
-        elem = t.element_type
-
-        if isinstance(elem, PrimitiveType):
-            # same layout as decode_list primitive case
-            if elem.name in ("i8", "bool"):
-                w_ind("std::size_t bytes = static_cast<std::size_t>(element_count);")
-            elif elem.name == "i16":
-                w_ind("std::size_t bytes = static_cast<std::size_t>(element_count) * 2;")
-            elif elem.name == "i32":
-                w_ind("std::size_t bytes = static_cast<std::size_t>(element_count) * 4;")
-            elif elem.name in ("i64", "datetime_ns"):
-                w_ind("std::size_t bytes = static_cast<std::size_t>(element_count) * 8;")
-            else:
-                raise RuntimeError(f"Unsupported primitive in list skip: {elem.name}")
-            w_ind("if (bytes_remaining < bytes) return false;")
-            w_ind("read_cursor += bytes;")
-            w_ind("bytes_remaining -= bytes;")
-
-        elif isinstance(elem, StringType):
-            w_ind(f"for (std::size_t {loop_var} = 0; {loop_var} < element_count; ++{loop_var}) {{")
-            w(f"{inner_indent}if (bytes_remaining < sizeof(std::uint32_t)) return false;")
-            w(f"{inner_indent}std::uint32_t len = read_uint32_le(read_cursor);")
-            w(f"{inner_indent}read_cursor += sizeof(std::uint32_t);")
-            w(f"{inner_indent}bytes_remaining -= sizeof(std::uint32_t);")
-            w(f"{inner_indent}if (bytes_remaining < static_cast<std::size_t>(len)) return false;")
-            w(f"{inner_indent}read_cursor += len;")
-            w(f"{inner_indent}bytes_remaining -= static_cast<std::size_t>(len);")
-            w_ind("}")
-
-        elif isinstance(elem, ListType):
-            w_ind(f"for (std::size_t {loop_var} = 0; {loop_var} < element_count; ++{loop_var}) {{")
-            self._emit_skip_list(elem, w, inner_indent, next_var)
-            w_ind("}")
-
-        elif isinstance(elem, ReferenceType):
-            w_ind(f"for (std::size_t {loop_var} = 0; {loop_var} < element_count; ++{loop_var}) {{")
-            w(f"{inner_indent}if (!skip_{elem.name}(read_cursor, bytes_remaining)) return false;")
-            w_ind("}")
-
-        else:
-            raise RuntimeError(f"Unsupported list element type in skip: {elem}")
-
+    # ------------------------------------------------------------------
+    # encoded_size
+    # ------------------------------------------------------------------
 
     def _emit_encoded_size_impl(self, msg: MessageDecl, w):
-        name = msg.name
-        w(f"inline std::size_t encoded_size(const {name}& message) {{")
+        w(f"inline std::size_t encoded_size(const {msg.name}& message) {{")
         w("    std::size_t total_bytes = 0;")
         for field in msg.fields:
             self._emit_size_for_field(field, w)
         w("    return total_bytes;")
         w("}")
 
-    def _emit_size_for_list(self, t: ListType, expr: str, prefix: str, w,
-                            indent: str = "    ", loop_var: str = "i"):
-        next_var = chr(ord(loop_var) + 1) if loop_var < "z" else loop_var + "_"
-        inner_indent = indent + "    "
-
-        w(f"{indent}{prefix}total_bytes += sizeof(std::uint32_t);")
-
-        element_type = t.element_type
-
-        if isinstance(element_type, PrimitiveType):
-            element_cpp = self._cpp_type(element_type)
-            w(f"{indent}{prefix}total_bytes += sizeof({element_cpp}) * {expr}.size;")
-
-        elif isinstance(element_type, ReferenceType):
-            w(f"{indent}{prefix}for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
-            w(f"{inner_indent}total_bytes += encoded_size({expr}.data[{loop_var}]);")
-            w(f"{indent}}}")
-
-        elif isinstance(element_type, ListType):
-            w(f"{indent}{prefix}for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
-            self._emit_size_for_list(element_type, f"{expr}.data[{loop_var}]", "",
-                                     w, inner_indent, next_var)
-            w(f"{indent}}}")
-
-        elif isinstance(element_type, StringType):
-            w(f"{indent}{prefix}for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
-            w(f"{inner_indent}total_bytes += sizeof(std::uint32_t) + {expr}.data[{loop_var}].size();")
-            w(f"{indent}}}")
-
-        else:
-            raise RuntimeError(f"Unsupported list element type in size: {element_type}")
-
     def _emit_size_for_field(self, field: Field, w):
-        t = field.type
+        type_node = field.type
+        name = field.name
         prefix = ""
         if field.optional:
             w("    total_bytes += 1;")
-            prefix = f"if (message.has_{field.name}) "
-
-        if isinstance(t, PrimitiveType):
-            w(f"    {prefix}total_bytes += sizeof({self._cpp_type(t)});")
-        elif isinstance(t, StringType):
-            w(f"    {prefix}total_bytes += sizeof(std::uint32_t) + message.{field.name}.size();")
-        elif isinstance(t, ArrayType):
-            element_cpp = self._cpp_type(t.element_type)
-            w(f"    {prefix}total_bytes += sizeof({element_cpp}) * {t.length};")
-        elif isinstance(t, ListType):
-            self._emit_size_for_list(t, f"message.{field.name}", prefix, w)
-        elif isinstance(t, ReferenceType):
-            w(f"    {prefix}total_bytes += encoded_size(message.{field.name});")
+            prefix = f"if (message.has_{name}) "
+        if isinstance(type_node, PrimitiveType):
+            w(f"    {prefix}total_bytes += sizeof({self._cpp_primitive_type(type_node.name)});")
+        elif isinstance(type_node, StringType):
+            w(f"    {prefix}total_bytes += sizeof(std::uint32_t) + message.{name}.size();")
+        elif isinstance(type_node, ArrayType):
+            elem_cpp = self._cpp_primitive_type(type_node.element_type.name)
+            w(f"    {prefix}total_bytes += sizeof({elem_cpp}) * {type_node.length};")
+        elif isinstance(type_node, ListType):
+            if prefix:
+                w(f"    if (message.has_{name}) {{")
+                self._emit_size_for_list(type_node, f"message.{name}", w, "        ")
+                w("    }")
+            else:
+                self._emit_size_for_list(type_node, f"message.{name}", w, "    ")
+        elif isinstance(type_node, ReferenceType):
+            w(f"    {prefix}total_bytes += encoded_size(message.{name});")
         else:
-            raise RuntimeError(f"Unknown field type in size: {t}")
+            raise RuntimeError(f"Unknown field type in size: {type_node}")
 
-    def _emit_encode_list(self, t: ListType, expr: str, field_suffix: str, w, need,
-                          indent: str = "    ", loop_var: str = "i"):
+    def _emit_size_for_list(self, list_type: ListType, expr: str, w, indent: str, loop_var: str = "i"):
         next_var = chr(ord(loop_var) + 1) if loop_var < "z" else loop_var + "_"
         inner_indent = indent + "    "
-
-        def w_ind(line: str):
-            w(indent + line)
-
-        def need_ind(nbytes: str):
-            w(f"{indent}if (bytes_remaining < {nbytes}) return false;")
-
-        # write element count (u32 LE)
-        need_ind("sizeof(std::uint32_t)")
-        w_ind(f"std::uint32_t element_count_{field_suffix} = static_cast<std::uint32_t>({expr}.size);")
-        w_ind(f"write_uint32_le(write_cursor, element_count_{field_suffix});")
-        w_ind("write_cursor += sizeof(std::uint32_t);")
-        w_ind("bytes_remaining -= sizeof(std::uint32_t);")
-
-        element_type = t.element_type
-
-        if isinstance(element_type, PrimitiveType):
-            element_cpp = self._cpp_type(element_type)
-            w_ind(f"for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
-            if element_type.name == "i8":
-                w(f"{inner_indent}if (bytes_remaining < 1) return false;")
-                w(f"{inner_indent}*write_cursor = static_cast<std::uint8_t>({expr}.data[{loop_var}]);")
-                w(f"{inner_indent}write_cursor += 1;")
-                w(f"{inner_indent}bytes_remaining -= 1;")
-            elif element_type.name == "i16":
-                w(f"{inner_indent}if (bytes_remaining < 2) return false;")
-                w(f"{inner_indent}write_uint16_le(write_cursor, static_cast<std::uint16_t>({expr}.data[{loop_var}]));")
-                w(f"{inner_indent}write_cursor += 2;")
-                w(f"{inner_indent}bytes_remaining -= 2;")
-            elif element_type.name == "i32":
-                w(f"{inner_indent}if (bytes_remaining < 4) return false;")
-                w(f"{inner_indent}write_uint32_le(write_cursor, static_cast<std::uint32_t>({expr}.data[{loop_var}]));")
-                w(f"{inner_indent}write_cursor += 4;")
-                w(f"{inner_indent}bytes_remaining -= 4;")
-            elif element_type.name in ("i64", "datetime_ns"):
-                w(f"{inner_indent}if (bytes_remaining < 8) return false;")
-                w(f"{inner_indent}write_uint64_le(write_cursor, static_cast<std::uint64_t>({expr}.data[{loop_var}]));")
-                w(f"{inner_indent}write_cursor += 8;")
-                w(f"{inner_indent}bytes_remaining -= 8;")
-            elif element_type.name == "bool":
-                w(f"{inner_indent}if (bytes_remaining < 1) return false;")
-                w(f"{inner_indent}*write_cursor = {expr}.data[{loop_var}] ? 1 : 0;")
-                w(f"{inner_indent}write_cursor += 1;")
-                w(f"{inner_indent}bytes_remaining -= 1;")
-            else:
-                raise RuntimeError(f"Unsupported primitive in list encode: {element_type.name}")
-            w_ind("}")
-
-        elif isinstance(element_type, ReferenceType):
-            w_ind(f"for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
-            w(f"{inner_indent}std::size_t element_bytes_written_{field_suffix} = 0;")
-            w(f"{inner_indent}std::size_t element_bytes_needed_{field_suffix} = 0;")
-            w(f"{inner_indent}if (!encode({expr}.data[{loop_var}], write_cursor, bytes_remaining, element_bytes_written_{field_suffix}, element_bytes_needed_{field_suffix})) return false;")
-            w(f"{inner_indent}write_cursor += element_bytes_written_{field_suffix};")
-            w(f"{inner_indent}bytes_remaining -= element_bytes_written_{field_suffix};")
-            w_ind("}")
-
-        elif isinstance(element_type, ListType):
-            w_ind(f"for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
-            self._emit_encode_list(element_type, f"{expr}.data[{loop_var}]", f"{field_suffix}_{loop_var}",
-                                   w, need, inner_indent, next_var)
-            w_ind("}")
-
-        elif isinstance(element_type, StringType):
-            w_ind(f"for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
-            w(f"{inner_indent}std::uint32_t string_length_{field_suffix}_{loop_var} = static_cast<std::uint32_t>({expr}.data[{loop_var}].size());")
-            w(f"{inner_indent}if (bytes_remaining < sizeof(std::uint32_t) + {expr}.data[{loop_var}].size()) return false;")
-            w(f"{inner_indent}write_uint32_le(write_cursor, string_length_{field_suffix}_{loop_var});")
-            w(f"{inner_indent}write_cursor += sizeof(std::uint32_t);")
-            w(f"{inner_indent}bytes_remaining -= sizeof(std::uint32_t);")
-            w(f"{inner_indent}std::memcpy(write_cursor, {expr}.data[{loop_var}].data(), {expr}.data[{loop_var}].size());")
-            w(f"{inner_indent}write_cursor += {expr}.data[{loop_var}].size();")
-            w(f"{inner_indent}bytes_remaining -= {expr}.data[{loop_var}].size();")
-            w_ind("}")
-
+        w(f"{indent}total_bytes += sizeof(std::uint32_t);")
+        elem = list_type.element_type
+        if isinstance(elem, PrimitiveType):
+            elem_cpp = self._cpp_primitive_type(elem.name)
+            w(f"{indent}total_bytes += sizeof({elem_cpp}) * {expr}.size;")
+        elif isinstance(elem, StringType):
+            w(f"{indent}for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
+            w(f"{inner_indent}total_bytes += sizeof(std::uint32_t) + {expr}.data[{loop_var}].size();")
+            w(f"{indent}}}")
+        elif isinstance(elem, ReferenceType):
+            w(f"{indent}for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
+            w(f"{inner_indent}total_bytes += encoded_size({expr}.data[{loop_var}]);")
+            w(f"{indent}}}")
+        elif isinstance(elem, ListType):
+            w(f"{indent}for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
+            self._emit_size_for_list(elem, f"{expr}.data[{loop_var}]", w, inner_indent, next_var)
+            w(f"{indent}}}")
         else:
-            raise RuntimeError(f"Unsupported list element type in encode: {element_type}")
+            raise RuntimeError(f"Unsupported list element type in size: {elem}")
 
-    def _emit_decode_list(self, t: ListType, expr: str, field_suffix: str, w, need,
-                          indent: str = "    ", loop_var: str = "i"):
-        next_var = chr(ord(loop_var) + 1) if loop_var < "z" else loop_var + "_"
-        inner_indent = indent + "    "
-
-        def w_ind(line: str):
-            w(indent + line)
-
-        def need_ind(nbytes: str):
-            w(f"{indent}if (bytes_remaining < {nbytes}) return false;")
-
-        # Read element count
-        need_ind("sizeof(std::uint32_t)")
-        w_ind(f"std::uint32_t element_count_{field_suffix} = read_uint32_le(read_cursor);")
-        w_ind("read_cursor += sizeof(std::uint32_t);")
-        w_ind("bytes_remaining -= sizeof(std::uint32_t);")
-        w_ind(f"{expr}.size = static_cast<std::size_t>(element_count_{field_suffix});")
-
-        element_type = t.element_type
-
-        # ------------------------------------------------------------
-        # Case 1: Primitive lists (already zero-copy on little-endian)
-        # ------------------------------------------------------------
-        if isinstance(element_type, PrimitiveType):
-            element_cpp = self._cpp_type(element_type)
-            w_ind(f"{expr}.data = nullptr;")
-            w_ind("#if HOST_IS_LITTLE_ENDIAN")
-            w_ind(f"std::size_t element_bytes_{field_suffix} = sizeof({element_cpp}) * {expr}.size;")
-            w_ind(f"if (bytes_remaining < element_bytes_{field_suffix}) return false;")
-            w_ind(f"{expr}.data = reinterpret_cast<{element_cpp}*>(read_cursor);")
-            w_ind(f"read_cursor += element_bytes_{field_suffix};")
-            w_ind(f"bytes_remaining -= element_bytes_{field_suffix};")
-            w_ind("#else")
-            w_ind(f"{expr}.data = new {element_cpp}[{expr}.size];")
-            w_ind(f"for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
-            if element_type.name == "i8":
-                w(f"{inner_indent}if (bytes_remaining < 1) return false;")
-                w(f"{inner_indent}{expr}.data[{loop_var}] = static_cast<{element_cpp}>(*read_cursor);")
-                w(f"{inner_indent}read_cursor += 1;")
-                w(f"{inner_indent}bytes_remaining -= 1;")
-            elif element_type.name == "i16":
-                w(f"{inner_indent}if (bytes_remaining < 2) return false;")
-                w(f"{inner_indent}{expr}.data[{loop_var}] = static_cast<{element_cpp}>(read_uint16_le(read_cursor));")
-                w(f"{inner_indent}read_cursor += 2;")
-                w(f"{inner_indent}bytes_remaining -= 2;")
-            elif element_type.name == "i32":
-                w(f"{inner_indent}if (bytes_remaining < 4) return false;")
-                w(f"{inner_indent}{expr}.data[{loop_var}] = static_cast<{element_cpp}>(read_uint32_le(read_cursor));")
-                w(f"{inner_indent}read_cursor += 4;")
-                w(f"{inner_indent}bytes_remaining -= 4;")
-            elif element_type.name in ("i64", "datetime_ns"):
-                w(f"{inner_indent}if (bytes_remaining < 8) return false;")
-                w(f"{inner_indent}{expr}.data[{loop_var}] = static_cast<{element_cpp}>(read_uint64_le(read_cursor));")
-                w(f"{inner_indent}read_cursor += 8;")
-                w(f"{inner_indent}bytes_remaining -= 8;")
-            elif element_type.name == "bool":
-                w(f"{inner_indent}if (bytes_remaining < 1) return false;")
-                w(f"{inner_indent}{expr}.data[{loop_var}] = (*read_cursor != 0);")
-                w(f"{inner_indent}read_cursor += 1;")
-                w(f"{inner_indent}bytes_remaining -= 1;")
-            else:
-                raise RuntimeError(f"Unsupported primitive in list decode: {element_type.name}")
-            w_ind("}")
-            w_ind("#endif")
-            return
-
-        # ------------------------------------------------------------
-        # Case 2: list<string> → StringListView
-        # ------------------------------------------------------------
-        if isinstance(element_type, StringType):
-            w_ind(f"{expr}.data = read_cursor;")
-            w_ind(f"for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
-            w(f"{inner_indent}if (bytes_remaining < sizeof(std::uint32_t)) return false;")
-            w(f"{inner_indent}std::uint32_t len = read_uint32_le(read_cursor);")
-            w(f"{inner_indent}read_cursor += sizeof(std::uint32_t);")
-            w(f"{inner_indent}bytes_remaining -= sizeof(std::uint32_t);")
-            w(f"{inner_indent}if (bytes_remaining < static_cast<std::size_t>(len)) return false;")
-            w(f"{inner_indent}read_cursor += len;")
-            w(f"{inner_indent}bytes_remaining -= static_cast<std::size_t>(len);")
-            w_ind("}")
-            return
-
-        # ------------------------------------------------------------
-        # Case 3: list<list<string>> → StringListListView
-        # ------------------------------------------------------------
-        if isinstance(element_type, ListType) and isinstance(element_type.element_type, StringType):
-            w_ind(f"{expr}.data = read_cursor;")
-            w_ind(f"for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
-            # recursively skip inner list<string>
-            self._emit_skip_list(element_type, w, inner_indent, next_var)
-            w_ind("}")
-            return
-
-        # ------------------------------------------------------------
-        # Case 4: list<SomeMessage> → MessageListView<SomeMessage>
-        # ------------------------------------------------------------
-        if isinstance(element_type, ReferenceType):
-            msg_name = element_type.name
-            w_ind(f"{expr}.data = read_cursor;")
-            w_ind(f"for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
-            w(f"{inner_indent}if (!skip_{msg_name}(read_cursor, bytes_remaining)) return false;")
-            w_ind("}")
-            return
-
-        # ------------------------------------------------------------
-        # Case 5: list<list<...>> (nested lists)
-        # ------------------------------------------------------------
-        if isinstance(element_type, ListType):
-            w_ind(f"{expr}.data = read_cursor;")
-            w_ind(f"for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
-            self._emit_skip_list(element_type, w, inner_indent, next_var)
-            w_ind("}")
-            return
-
-        raise RuntimeError(f"Unsupported list element type in decode: {element_type}")
+    # ------------------------------------------------------------------
+    # encode
+    # ------------------------------------------------------------------
 
     def _emit_encode_impl(self, msg: MessageDecl, w):
         name = msg.name
         w(f"inline bool encode(const {name}& message, uint8_t* out_buffer, std::size_t out_size, std::size_t& bytes_written, std::size_t& bytes_needed) {{")
-
         if self._is_fixed_size(msg):
             w("    bytes_needed = fixed_encoded_size(message);")
             w("    if (out_size < bytes_needed) { bytes_written = 0; return false; }")
@@ -876,7 +452,6 @@ class CppGenerator:
         else:
             w("    bytes_needed = encoded_size(message);")
             w("    if (out_size < bytes_needed) { bytes_written = 0; return false; }")
-
         w("    uint8_t* write_cursor = out_buffer;")
         w("    std::size_t bytes_remaining = out_size;")
         for field in msg.fields:
@@ -885,183 +460,27 @@ class CppGenerator:
         w("    return true;")
         w("}")
 
-    def _emit_decode_view_impl(self, msg: MessageDecl, w):
-        name = msg.name
-        w(f"inline bool decode_{name}({name}View& out, const uint8_t*& read_cursor, std::size_t& bytes_remaining) {{")
-
-        for field in msg.fields:
-            t = field.type
-            fname = field.name
-
-            def need(nbytes: str):
-                w(f"    if (bytes_remaining < {nbytes}) return false;")
-
-            # ------------------------------------------------------------
-            # Optional field prefix
-            # ------------------------------------------------------------
-            if field.optional:
-                need("1")
-                w("    {")
-                w("        std::uint8_t presence_flag = *read_cursor;")
-                w("        read_cursor += 1;")
-                w("        bytes_remaining -= 1;")
-                w(f"        out.has_{fname} = (presence_flag != 0);")
-                w(f"        if (!out.has_{fname}) goto skip_field_{fname};")
-                w("    }")
-
-            # ------------------------------------------------------------
-            # Primitive fields
-            # ------------------------------------------------------------
-            if isinstance(t, PrimitiveType):
-                cpp = self._cpp_type(t)
-                if t.name == "i8":
-                    need("1")
-                    w(f"    out.{fname} = static_cast<{cpp}>(*read_cursor);")
-                    w("    read_cursor += 1;")
-                    w("    bytes_remaining -= 1;")
-                elif t.name == "i16":
-                    need("2")
-                    w(f"    out.{fname} = static_cast<{cpp}>(read_uint16_le(read_cursor));")
-                    w("    read_cursor += 2;")
-                    w("    bytes_remaining -= 2;")
-                elif t.name == "i32":
-                    need("4")
-                    w(f"    out.{fname} = static_cast<{cpp}>(read_uint32_le(read_cursor));")
-                    w("    read_cursor += 4;")
-                    w("    bytes_remaining -= 4;")
-                elif t.name in ("i64", "datetime_ns"):
-                    need("8")
-                    w(f"    out.{fname} = static_cast<{cpp}>(read_uint64_le(read_cursor));")
-                    w("    read_cursor += 8;")
-                    w("    bytes_remaining -= 8;")
-                elif t.name == "bool":
-                    need("1")
-                    w(f"    out.{fname} = (*read_cursor != 0);")
-                    w("    read_cursor += 1;")
-                    w("    bytes_remaining -= 1;")
-                else:
-                    raise RuntimeError(f"Unsupported primitive type in decode_view: {t.name}")
-
-            # ------------------------------------------------------------
-            # String field
-            # ------------------------------------------------------------
-            elif isinstance(t, StringType):
-                need("sizeof(std::uint32_t)")
-                w(f"    std::uint32_t len_{fname} = read_uint32_le(read_cursor);")
-                w("    read_cursor += sizeof(std::uint32_t);")
-                w("    bytes_remaining -= sizeof(std::uint32_t);")
-                w(f"    if (bytes_remaining < static_cast<std::size_t>(len_{fname})) return false;")
-                w(f"    out.{fname} = std::string_view(reinterpret_cast<const char*>(read_cursor), len_{fname});")
-                w(f"    read_cursor += len_{fname};")
-                w(f"    bytes_remaining -= static_cast<std::size_t>(len_{fname});")
-
-            # ------------------------------------------------------------
-            # Array field (unchanged)
-            # ------------------------------------------------------------
-            elif isinstance(t, ArrayType):
-                elem_cpp = self._cpp_type(t.element_type)
-                w(f"    for (std::size_t i = 0; i < {t.length}; ++i) {{")
-                if t.element_type.name == "i8":
-                    w("        if (bytes_remaining < 1) return false;")
-                    w(f"        out.{fname}[i] = static_cast<{elem_cpp}>(*read_cursor);")
-                    w("        read_cursor += 1;")
-                    w("        bytes_remaining -= 1;")
-                elif t.element_type.name == "i16":
-                    w("        if (bytes_remaining < 2) return false;")
-                    w(f"        out.{fname}[i] = static_cast<{elem_cpp}>(read_uint16_le(read_cursor));")
-                    w("        read_cursor += 2;")
-                    w("        bytes_remaining -= 2;")
-                elif t.element_type.name == "i32":
-                    w("        if (bytes_remaining < 4) return false;")
-                    w(f"        out.{fname}[i] = static_cast<{elem_cpp}>(read_uint32_le(read_cursor));")
-                    w("        read_cursor += 4;")
-                    w("        bytes_remaining -= 4;")
-                elif t.element_type.name in ("i64", "datetime_ns"):
-                    w("        if (bytes_remaining < 8) return false;")
-                    w(f"        out.{fname}[i] = static_cast<{elem_cpp}>(read_uint64_le(read_cursor));")
-                    w("        read_cursor += 8;")
-                    w("        bytes_remaining -= 8;")
-                elif t.element_type.name == "bool":
-                    w("        if (bytes_remaining < 1) return false;")
-                    w(f"        out.{fname}[i] = (*read_cursor != 0);")
-                    w("        read_cursor += 1;")
-                    w("        bytes_remaining -= 1;")
-                else:
-                    raise RuntimeError(f"Unsupported array element type in decode_view: {t.element_type.name}")
-                w("    }")
-
-            # ------------------------------------------------------------
-            # List field → delegate to _emit_decode_list
-            # ------------------------------------------------------------
-            elif isinstance(t, ListType):
-                self._emit_decode_list(t, f"out.{fname}", fname, w, need)
-
-            # ------------------------------------------------------------
-            # Nested message field
-            # ------------------------------------------------------------
-            elif isinstance(t, ReferenceType):
-                w(f"    if (!decode_{t.name}(out.{fname}, read_cursor, bytes_remaining)) return false;")
-
-            else:
-                raise RuntimeError(f"Unknown field type in decode_view: {t}")
-
-            # ------------------------------------------------------------
-            # Optional field suffix
-            # ------------------------------------------------------------
-            if field.optional:
-                w(f"skip_field_{fname}: ;")
-
-        w("    return true;")
-        w("}")
-
-
     def _emit_encode_field(self, field: Field, w):
-        t = field.type
+        type_node = field.type
         name = field.name
 
-        def need(nbytes: str):
-            w(f"    if (bytes_remaining < {nbytes}) return false;")
-
         if field.optional:
-            need("1")
+            w(f"    if (bytes_remaining < 1) return false;")
             w(f"    *write_cursor = message.has_{name} ? 1 : 0;")
             w("    write_cursor += 1;")
             w("    bytes_remaining -= 1;")
             w(f"    if (!message.has_{name}) {{")
-            w("        goto skip_field_" + name + ";")
+            w(f"        goto skip_field_{name};")
             w("    }")
 
-        if isinstance(t, PrimitiveType):
-            if t.name == "i8":
-                need("1")
-                w(f"    *write_cursor = static_cast<std::uint8_t>(message.{name});")
-                w("    write_cursor += 1;")
-                w("    bytes_remaining -= 1;")
-            elif t.name == "i16":
-                need("2")
-                w(f"    write_uint16_le(write_cursor, static_cast<std::uint16_t>(message.{name}));")
-                w("    write_cursor += 2;")
-                w("    bytes_remaining -= 2;")
-            elif t.name == "i32":
-                need("4")
-                w(f"    write_uint32_le(write_cursor, static_cast<std::uint32_t>(message.{name}));")
-                w("    write_cursor += 4;")
-                w("    bytes_remaining -= 4;")
-            elif t.name in ("i64", "datetime_ns"):
-                need("8")
-                w(f"    write_uint64_le(write_cursor, static_cast<std::uint64_t>(message.{name}));")
-                w("    write_cursor += 8;")
-                w("    bytes_remaining -= 8;")
-            elif t.name == "bool":
-                need("1")
-                w(f"    *write_cursor = message.{name} ? 1 : 0;")
-                w("    write_cursor += 1;")
-                w("    bytes_remaining -= 1;")
-            else:
-                raise RuntimeError(f"Unsupported primitive type in encode: {t.name}")
-
-        elif isinstance(t, StringType):
-            need("sizeof(std::uint32_t)")
+        if isinstance(type_node, PrimitiveType):
+            width = self._primitive_wire_size(type_node.name)
+            w(f"    if (bytes_remaining < {width}) return false;")
+            self._emit_write_primitive(type_node.name, f"message.{name}", "    ", w)
+            w(f"    write_cursor += {width};")
+            w(f"    bytes_remaining -= {width};")
+        elif isinstance(type_node, StringType):
+            w("    if (bytes_remaining < sizeof(std::uint32_t)) return false;")
             w(f"    std::uint32_t string_length_{name} = static_cast<std::uint32_t>(message.{name}.size());")
             w(f"    write_uint32_le(write_cursor, string_length_{name});")
             w("    write_cursor += sizeof(std::uint32_t);")
@@ -1070,44 +489,11 @@ class CppGenerator:
             w(f"    std::memcpy(write_cursor, message.{name}.data(), message.{name}.size());")
             w(f"    write_cursor += message.{name}.size();")
             w(f"    bytes_remaining -= message.{name}.size();")
-
-        elif isinstance(t, ArrayType):
-            element_cpp = self._cpp_type(t.element_type)
-            w(f"    for (std::size_t i = 0; i < {t.length}; ++i) {{")
-            if t.element_type.name == "i8":
-                w("        if (bytes_remaining < 1) return false;")
-                w(f"        *write_cursor = static_cast<std::uint8_t>(message.{name}[i]);")
-                w("        write_cursor += 1;")
-                w("        bytes_remaining -= 1;")
-            elif t.element_type.name == "i16":
-                w("        if (bytes_remaining < 2) return false;")
-                w(f"        write_uint16_le(write_cursor, static_cast<std::uint16_t>(message.{name}[i]));")
-                w("        write_cursor += 2;")
-                w("        bytes_remaining -= 2;")
-            elif t.element_type.name == "i32":
-                w("        if (bytes_remaining < 4) return false;")
-                w(f"        write_uint32_le(write_cursor, static_cast<std::uint32_t>(message.{name}[i]));")
-                w("        write_cursor += 4;")
-                w("        bytes_remaining -= 4;")
-            elif t.element_type.name in ("i64", "datetime_ns"):
-                w("        if (bytes_remaining < 8) return false;")
-                w(f"        write_uint64_le(write_cursor, static_cast<std::uint64_t>(message.{name}[i]));")
-                w("        write_cursor += 8;")
-                w("        bytes_remaining -= 8;")
-            elif t.element_type.name == "bool":
-                w("        if (bytes_remaining < 1) return false;")
-                w(f"        *write_cursor = message.{name}[i] ? 1 : 0;")
-                w("        write_cursor += 1;")
-                w("        bytes_remaining -= 1;")
-            else:
-                w(f"        static_assert(sizeof({element_cpp}) == 0, \"Unsupported array element type\");")
-
-            w("    }")
-
-        elif isinstance(t, ListType):
-            self._emit_encode_list(t, f"message.{name}", name, w, need)
-
-        elif isinstance(t, ReferenceType):
+        elif isinstance(type_node, ArrayType):
+            self._emit_encode_array(type_node, name, w)
+        elif isinstance(type_node, ListType):
+            self._emit_encode_list(type_node, f"message.{name}", name, w, "    ")
+        elif isinstance(type_node, ReferenceType):
             w("    {")
             w("        std::size_t element_bytes_written = 0;")
             w("        std::size_t element_bytes_needed = 0;")
@@ -1115,9 +501,424 @@ class CppGenerator:
             w("        write_cursor += element_bytes_written;")
             w("        bytes_remaining -= element_bytes_written;")
             w("    }")
-
         else:
-            raise RuntimeError(f"Unknown field type in encode: {t}")
+            raise RuntimeError(f"Unknown field type in encode: {type_node}")
 
         if field.optional:
             w(f"skip_field_{name}: ;")
+
+    def _emit_encode_array(self, array_type: ArrayType, field_name: str, w):
+        elem_name = array_type.element_type.name
+        length = array_type.length
+        if elem_name == "i8":
+            w(f"    if (bytes_remaining < {length}) return false;")
+            w(f"    std::memcpy(write_cursor, message.{field_name}.data(), {length});")
+            w(f"    write_cursor += {length};")
+            w(f"    bytes_remaining -= {length};")
+        else:
+            width = self._primitive_wire_size(elem_name)
+            w(f"    for (std::size_t i = 0; i < {length}; ++i) {{")
+            w(f"        if (bytes_remaining < {width}) return false;")
+            self._emit_write_primitive(elem_name, f"message.{field_name}[i]", "        ", w)
+            w(f"        write_cursor += {width};")
+            w(f"        bytes_remaining -= {width};")
+            w("    }")
+
+    def _emit_encode_list(self, list_type: ListType, expr: str, suffix: str, w, indent: str, loop_var: str = "i"):
+        next_var = chr(ord(loop_var) + 1) if loop_var < "z" else loop_var + "_"
+        inner_indent = indent + "    "
+        w(f"{indent}if (bytes_remaining < sizeof(std::uint32_t)) return false;")
+        w(f"{indent}write_uint32_le(write_cursor, static_cast<std::uint32_t>({expr}.size));")
+        w(f"{indent}write_cursor += sizeof(std::uint32_t);")
+        w(f"{indent}bytes_remaining -= sizeof(std::uint32_t);")
+        elem = list_type.element_type
+        if isinstance(elem, PrimitiveType):
+            width = self._primitive_wire_size(elem.name)
+            w(f"{indent}for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
+            w(f"{inner_indent}if (bytes_remaining < {width}) return false;")
+            self._emit_write_primitive(elem.name, f"{expr}.data[{loop_var}]", inner_indent, w)
+            w(f"{inner_indent}write_cursor += {width};")
+            w(f"{inner_indent}bytes_remaining -= {width};")
+            w(f"{indent}}}")
+        elif isinstance(elem, StringType):
+            w(f"{indent}for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
+            w(f"{inner_indent}if (bytes_remaining < sizeof(std::uint32_t) + {expr}.data[{loop_var}].size()) return false;")
+            w(f"{inner_indent}std::uint32_t string_length_{suffix}_{loop_var} = static_cast<std::uint32_t>({expr}.data[{loop_var}].size());")
+            w(f"{inner_indent}write_uint32_le(write_cursor, string_length_{suffix}_{loop_var});")
+            w(f"{inner_indent}write_cursor += sizeof(std::uint32_t);")
+            w(f"{inner_indent}bytes_remaining -= sizeof(std::uint32_t);")
+            w(f"{inner_indent}std::memcpy(write_cursor, {expr}.data[{loop_var}].data(), {expr}.data[{loop_var}].size());")
+            w(f"{inner_indent}write_cursor += {expr}.data[{loop_var}].size();")
+            w(f"{inner_indent}bytes_remaining -= {expr}.data[{loop_var}].size();")
+            w(f"{indent}}}")
+        elif isinstance(elem, ReferenceType):
+            w(f"{indent}for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
+            w(f"{inner_indent}std::size_t element_bytes_written_{suffix} = 0;")
+            w(f"{inner_indent}std::size_t element_bytes_needed_{suffix} = 0;")
+            w(f"{inner_indent}if (!encode({expr}.data[{loop_var}], write_cursor, bytes_remaining, element_bytes_written_{suffix}, element_bytes_needed_{suffix})) return false;")
+            w(f"{inner_indent}write_cursor += element_bytes_written_{suffix};")
+            w(f"{inner_indent}bytes_remaining -= element_bytes_written_{suffix};")
+            w(f"{indent}}}")
+        elif isinstance(elem, ListType):
+            w(f"{indent}for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
+            self._emit_encode_list(elem, f"{expr}.data[{loop_var}]", f"{suffix}_{loop_var}", w, inner_indent, next_var)
+            w(f"{indent}}}")
+        else:
+            raise RuntimeError(f"Unsupported list element type in encode: {elem}")
+
+    # ------------------------------------------------------------------
+    # decode
+    # ------------------------------------------------------------------
+
+    def _emit_decode_view_impl(self, msg: MessageDecl, w):
+        name = msg.name
+        w(f"inline bool decode_{name}({name}View& out, const uint8_t*& read_cursor, std::size_t& bytes_remaining, pubsub_itc_fw::BumpAllocator& decode_arena) {{")
+        for field in msg.fields:
+            self._emit_decode_field(field, w)
+        w("    return true;")
+        w("}")
+
+    def _emit_decode_field(self, field: Field, w):
+        type_node = field.type
+        fname = field.name
+
+        if field.optional:
+            w("    if (bytes_remaining < 1) return false;")
+            w("    {")
+            w("        std::uint8_t presence_flag = *read_cursor;")
+            w("        read_cursor += 1;")
+            w("        bytes_remaining -= 1;")
+            w(f"        out.has_{fname} = (presence_flag != 0);")
+            w(f"        if (!out.has_{fname}) goto skip_field_{fname};")
+            w("    }")
+
+        if isinstance(type_node, PrimitiveType):
+            width = self._primitive_wire_size(type_node.name)
+            cpp = self._cpp_primitive_type(type_node.name)
+            w(f"    if (bytes_remaining < {width}) return false;")
+            self._emit_read_primitive(type_node.name, cpp, f"out.{fname}", "    ", w)
+            w(f"    read_cursor += {width};")
+            w(f"    bytes_remaining -= {width};")
+        elif isinstance(type_node, StringType):
+            w("    if (bytes_remaining < sizeof(std::uint32_t)) return false;")
+            w(f"    std::uint32_t len_{fname} = read_uint32_le(read_cursor);")
+            w("    read_cursor += sizeof(std::uint32_t);")
+            w("    bytes_remaining -= sizeof(std::uint32_t);")
+            w(f"    if (bytes_remaining < static_cast<std::size_t>(len_{fname})) return false;")
+            w(f"    out.{fname} = std::string_view(reinterpret_cast<const char*>(read_cursor), len_{fname});")
+            w(f"    read_cursor += len_{fname};")
+            w(f"    bytes_remaining -= static_cast<std::size_t>(len_{fname});")
+        elif isinstance(type_node, ArrayType):
+            self._emit_decode_array(type_node, fname, w)
+        elif isinstance(type_node, ListType):
+            self._emit_decode_list(type_node, f"out.{fname}", fname, w, "    ")
+        elif isinstance(type_node, ReferenceType):
+            w(f"    if (!decode_{type_node.name}(out.{fname}, read_cursor, bytes_remaining, decode_arena)) return false;")
+        else:
+            raise RuntimeError(f"Unknown field type in decode: {type_node}")
+
+        if field.optional:
+            w(f"skip_field_{fname}: ;")
+
+    def _emit_decode_array(self, array_type: ArrayType, field_name: str, w):
+        elem_name = array_type.element_type.name
+        elem_cpp = self._cpp_primitive_type(elem_name)
+        length = array_type.length
+        w(f"    for (std::size_t i = 0; i < {length}; ++i) {{")
+        width = self._primitive_wire_size(elem_name)
+        w(f"        if (bytes_remaining < {width}) return false;")
+        self._emit_read_primitive(elem_name, elem_cpp, f"out.{field_name}[i]", "        ", w)
+        w(f"        read_cursor += {width};")
+        w(f"        bytes_remaining -= {width};")
+        w("    }")
+
+    def _emit_decode_list(self, list_type: ListType, expr: str, suffix: str, w, indent: str, loop_var: str = "i"):
+        next_var = chr(ord(loop_var) + 1) if loop_var < "z" else loop_var + "_"
+        inner_indent = indent + "    "
+        w(f"{indent}if (bytes_remaining < sizeof(std::uint32_t)) return false;")
+        w(f"{indent}{{")
+        w(f"{inner_indent}std::uint32_t element_count_{suffix} = read_uint32_le(read_cursor);")
+        w(f"{inner_indent}read_cursor += sizeof(std::uint32_t);")
+        w(f"{inner_indent}bytes_remaining -= sizeof(std::uint32_t);")
+        w(f"{inner_indent}{expr}.size = static_cast<std::size_t>(element_count_{suffix});")
+        elem = list_type.element_type
+        if isinstance(elem, PrimitiveType):
+            elem_cpp = self._cpp_primitive_type(elem.name)
+            width = self._primitive_wire_size(elem.name)
+            w(f"{inner_indent}{expr}.data = nullptr;")
+            w(f"{inner_indent}if ({expr}.size > 0) {{")
+            w(f"{inner_indent}#if HOST_IS_LITTLE_ENDIAN")
+            w(f"{inner_indent}    std::size_t element_bytes_{suffix} = sizeof({elem_cpp}) * {expr}.size;")
+            w(f"{inner_indent}    if (bytes_remaining < element_bytes_{suffix}) return false;")
+            w(f"{inner_indent}    {expr}.data = reinterpret_cast<{elem_cpp}*>(const_cast<uint8_t*>(read_cursor));")
+            w(f"{inner_indent}    read_cursor += element_bytes_{suffix};")
+            w(f"{inner_indent}    bytes_remaining -= element_bytes_{suffix};")
+            w(f"{inner_indent}#else")
+            w(f"{inner_indent}    {expr}.data = decode_arena.allocate<{elem_cpp}>({expr}.size);")
+            w(f"{inner_indent}    if ({expr}.data == nullptr) return false;")
+            w(f"{inner_indent}    for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
+            w(f"{inner_indent}        if (bytes_remaining < {width}) return false;")
+            self._emit_read_primitive(elem.name, elem_cpp, f"{expr}.data[{loop_var}]", inner_indent + "        ", w)
+            w(f"{inner_indent}        read_cursor += {width};")
+            w(f"{inner_indent}        bytes_remaining -= {width};")
+            w(f"{inner_indent}    }}")
+            w(f"{inner_indent}#endif")
+            w(f"{inner_indent}}}")
+        elif isinstance(elem, StringType):
+            w(f"{inner_indent}{expr}.data = nullptr;")
+            w(f"{inner_indent}if ({expr}.size > 0) {{")
+            w(f"{inner_indent}    {expr}.data = decode_arena.allocate<std::string_view>({expr}.size);")
+            w(f"{inner_indent}    if ({expr}.data == nullptr) return false;")
+            w(f"{inner_indent}    for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
+            w(f"{inner_indent}        if (bytes_remaining < sizeof(std::uint32_t)) return false;")
+            w(f"{inner_indent}        std::uint32_t str_len_{suffix}_{loop_var} = read_uint32_le(read_cursor);")
+            w(f"{inner_indent}        read_cursor += sizeof(std::uint32_t);")
+            w(f"{inner_indent}        bytes_remaining -= sizeof(std::uint32_t);")
+            w(f"{inner_indent}        if (bytes_remaining < static_cast<std::size_t>(str_len_{suffix}_{loop_var})) return false;")
+            w(f"{inner_indent}        {expr}.data[{loop_var}] = std::string_view(reinterpret_cast<const char*>(read_cursor), str_len_{suffix}_{loop_var});")
+            w(f"{inner_indent}        read_cursor += str_len_{suffix}_{loop_var};")
+            w(f"{inner_indent}        bytes_remaining -= static_cast<std::size_t>(str_len_{suffix}_{loop_var});")
+            w(f"{inner_indent}    }}")
+            w(f"{inner_indent}}}")
+        elif isinstance(elem, ReferenceType):
+            view_type = f"{elem.name}View"
+            w(f"{inner_indent}{expr}.data = nullptr;")
+            w(f"{inner_indent}if ({expr}.size > 0) {{")
+            w(f"{inner_indent}    {expr}.data = decode_arena.allocate<{view_type}>({expr}.size);")
+            w(f"{inner_indent}    if ({expr}.data == nullptr) return false;")
+            w(f"{inner_indent}    for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
+            w(f"{inner_indent}        {expr}.data[{loop_var}] = {view_type}{{}};")
+            w(f"{inner_indent}        if (!decode_{elem.name}({expr}.data[{loop_var}], read_cursor, bytes_remaining, decode_arena)) return false;")
+            w(f"{inner_indent}    }}")
+            w(f"{inner_indent}}}")
+        elif isinstance(elem, ListType):
+            inner_elem_cpp = self._cpp_type_view(elem)
+            w(f"{inner_indent}{expr}.data = nullptr;")
+            w(f"{inner_indent}if ({expr}.size > 0) {{")
+            w(f"{inner_indent}    {expr}.data = decode_arena.allocate<{inner_elem_cpp}>({expr}.size);")
+            w(f"{inner_indent}    if ({expr}.data == nullptr) return false;")
+            w(f"{inner_indent}    for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
+            w(f"{inner_indent}        {expr}.data[{loop_var}] = {inner_elem_cpp}{{}};")
+            self._emit_decode_list(elem, f"{expr}.data[{loop_var}]", f"{suffix}_{loop_var}", w, inner_indent + "        ", next_var)
+            w(f"{inner_indent}    }}")
+            w(f"{inner_indent}}}")
+        else:
+            raise RuntimeError(f"Unsupported list element type in decode: {elem}")
+        w(f"{indent}}}")
+
+    # ------------------------------------------------------------------
+    # skip
+    # ------------------------------------------------------------------
+
+    def _emit_skip_impl(self, msg: MessageDecl, w):
+        w(f"inline bool skip_{msg.name}(const uint8_t*& read_cursor, std::size_t& bytes_remaining) {{")
+        for field in msg.fields:
+            self._emit_skip_field(field, w)
+        w("    return true;")
+        w("}")
+
+    def _emit_skip_field(self, field: Field, w):
+        type_node = field.type
+        name = field.name
+
+        if field.optional:
+            w("    if (bytes_remaining < 1) return false;")
+            w("    {")
+            w("        std::uint8_t presence_flag = *read_cursor;")
+            w("        read_cursor += 1;")
+            w("        bytes_remaining -= 1;")
+            w(f"        if (!presence_flag) goto skip_field_{name};")
+            w("    }")
+
+        if isinstance(type_node, PrimitiveType):
+            width = self._primitive_wire_size(type_node.name)
+            w(f"    if (bytes_remaining < {width}) return false;")
+            w(f"    read_cursor += {width};")
+            w(f"    bytes_remaining -= {width};")
+        elif isinstance(type_node, StringType):
+            w("    if (bytes_remaining < sizeof(std::uint32_t)) return false;")
+            w("    {")
+            w("        std::uint32_t str_len = read_uint32_le(read_cursor);")
+            w("        read_cursor += sizeof(std::uint32_t);")
+            w("        bytes_remaining -= sizeof(std::uint32_t);")
+            w("        if (bytes_remaining < static_cast<std::size_t>(str_len)) return false;")
+            w("        read_cursor += str_len;")
+            w("        bytes_remaining -= static_cast<std::size_t>(str_len);")
+            w("    }")
+        elif isinstance(type_node, ArrayType):
+            total = f"{type_node.length} * {self._primitive_wire_size(type_node.element_type.name)}"
+            w(f"    if (bytes_remaining < {total}) return false;")
+            w(f"    read_cursor += {total};")
+            w(f"    bytes_remaining -= {total};")
+        elif isinstance(type_node, ListType):
+            self._emit_skip_list(type_node, w, "    ", "i")
+        elif isinstance(type_node, ReferenceType):
+            w(f"    if (!skip_{type_node.name}(read_cursor, bytes_remaining)) return false;")
+        else:
+            raise RuntimeError(f"Unknown field type in skip: {type_node}")
+
+        if field.optional:
+            w(f"skip_field_{name}: ;")
+
+    def _emit_skip_list(self, list_type: ListType, w, indent: str, loop_var: str):
+        next_var = chr(ord(loop_var) + 1) if loop_var < "z" else loop_var + "_"
+        inner_indent = indent + "    "
+        w(f"{indent}if (bytes_remaining < sizeof(std::uint32_t)) return false;")
+        w(f"{indent}{{")
+        w(f"{inner_indent}std::uint32_t skip_count = read_uint32_le(read_cursor);")
+        w(f"{inner_indent}read_cursor += sizeof(std::uint32_t);")
+        w(f"{inner_indent}bytes_remaining -= sizeof(std::uint32_t);")
+        elem = list_type.element_type
+        if isinstance(elem, PrimitiveType):
+            width = self._primitive_wire_size(elem.name)
+            elem_cpp = self._cpp_primitive_type(elem.name)
+            w(f"{inner_indent}std::size_t skip_bytes = sizeof({elem_cpp}) * static_cast<std::size_t>(skip_count);")
+            w(f"{inner_indent}if (bytes_remaining < skip_bytes) return false;")
+            w(f"{inner_indent}read_cursor += skip_bytes;")
+            w(f"{inner_indent}bytes_remaining -= skip_bytes;")
+        elif isinstance(elem, StringType):
+            w(f"{inner_indent}for (std::size_t {loop_var} = 0; {loop_var} < skip_count; ++{loop_var}) {{")
+            w(f"{inner_indent}    if (bytes_remaining < sizeof(std::uint32_t)) return false;")
+            w(f"{inner_indent}    std::uint32_t str_len = read_uint32_le(read_cursor);")
+            w(f"{inner_indent}    read_cursor += sizeof(std::uint32_t);")
+            w(f"{inner_indent}    bytes_remaining -= sizeof(std::uint32_t);")
+            w(f"{inner_indent}    if (bytes_remaining < static_cast<std::size_t>(str_len)) return false;")
+            w(f"{inner_indent}    read_cursor += str_len;")
+            w(f"{inner_indent}    bytes_remaining -= static_cast<std::size_t>(str_len);")
+            w(f"{inner_indent}}}")
+        elif isinstance(elem, ReferenceType):
+            w(f"{inner_indent}for (std::size_t {loop_var} = 0; {loop_var} < skip_count; ++{loop_var}) {{")
+            w(f"{inner_indent}    if (!skip_{elem.name}(read_cursor, bytes_remaining)) return false;")
+            w(f"{inner_indent}}}")
+        elif isinstance(elem, ListType):
+            w(f"{inner_indent}for (std::size_t {loop_var} = 0; {loop_var} < skip_count; ++{loop_var}) {{")
+            self._emit_skip_list(elem, w, inner_indent + "    ", next_var)
+            w(f"{inner_indent}}}")
+        else:
+            raise RuntimeError(f"Unsupported list element type in skip: {elem}")
+        w(f"{indent}}}")
+
+    # ------------------------------------------------------------------
+    # decode wrapper (public API)
+    # ------------------------------------------------------------------
+
+    def _emit_decode_wrapper(self, msg: MessageDecl, w):
+        name = msg.name
+        view = f"{name}View"
+        w(f"[[nodiscard]] inline bool decode({view}& out,")
+        w(f"                                 const uint8_t* buffer,")
+        w(f"                                 std::size_t bytes_available,")
+        w(f"                                 std::size_t& bytes_consumed,")
+        w(f"                                 pubsub_itc_fw::BumpAllocator& decode_arena)")
+        w("{")
+        w("    const uint8_t* cursor = buffer;")
+        w("    std::size_t remaining = bytes_available;")
+        w(f"    if (!decode_{name}(out, cursor, remaining, decode_arena)) {{")
+        w("        return false;")
+        w("    }")
+        w("    bytes_consumed = bytes_available - remaining;")
+        w("    return true;")
+        w("}")
+
+    # ------------------------------------------------------------------
+    # Arena sizing helpers
+    # ------------------------------------------------------------------
+
+    def _emit_max_decode_arena_bytes(self, msg: MessageDecl, w):
+        w(f"inline constexpr std::size_t max_decode_arena_bytes_{msg.name}(std::size_t max_elements_per_list = 256) {{")
+        w("    std::size_t total = 0;")
+        for field in msg.fields:
+            self._emit_decode_arena_size_for_field(field.type, "total", w, "    ", max_depth=8)
+        w("    return total;")
+        w("}")
+
+    def _emit_decode_arena_size_for_field(self, type_node, total_var: str, w, indent: str, max_depth: int):
+        if max_depth == 0:
+            return
+        if isinstance(type_node, ListType):
+            elem = type_node.element_type
+            if isinstance(elem, PrimitiveType):
+                elem_cpp = self._cpp_primitive_type(elem.name)
+                w(f"{indent}{total_var} += sizeof({elem_cpp}) * max_elements_per_list;")
+            elif isinstance(elem, StringType):
+                w(f"{indent}{total_var} += sizeof(std::string_view) * max_elements_per_list;")
+            elif isinstance(elem, ReferenceType):
+                w(f"{indent}{total_var} += sizeof({elem.name}View) * max_elements_per_list;")
+                w(f"{indent}{total_var} += max_elements_per_list * max_decode_arena_bytes_{elem.name}(max_elements_per_list);")
+            elif isinstance(elem, ListType):
+                inner_cpp = self._cpp_type_view(elem)
+                w(f"{indent}{total_var} += sizeof(ListView<{inner_cpp}>) * max_elements_per_list;")
+                self._emit_decode_arena_size_for_field(elem, total_var, w, indent, max_depth - 1)
+        elif isinstance(type_node, ReferenceType):
+            w(f"{indent}{total_var} += max_decode_arena_bytes_{type_node.name}(max_elements_per_list);")
+
+    def _emit_max_encode_arena_bytes(self, msg: MessageDecl, w):
+        w(f"inline constexpr std::size_t max_encode_arena_bytes_{msg.name}(std::size_t max_elements_per_list = 256) {{")
+        w("    std::size_t total = 0;")
+        for field in msg.fields:
+            self._emit_encode_arena_size_for_field(field.type, "total", w, "    ", max_depth=8)
+        w("    return total;")
+        w("}")
+
+    def _emit_encode_arena_size_for_field(self, type_node, total_var: str, w, indent: str, max_depth: int):
+        if max_depth == 0:
+            return
+        if isinstance(type_node, ListType):
+            elem = type_node.element_type
+            if isinstance(elem, PrimitiveType):
+                elem_cpp = self._cpp_primitive_type(elem.name)
+                w(f"{indent}{total_var} += sizeof({elem_cpp}) * max_elements_per_list;")
+            elif isinstance(elem, StringType):
+                w(f"{indent}{total_var} += sizeof(std::string_view) * max_elements_per_list;")
+            elif isinstance(elem, ReferenceType):
+                w(f"{indent}{total_var} += sizeof({elem.name}) * max_elements_per_list;")
+                w(f"{indent}{total_var} += max_elements_per_list * max_encode_arena_bytes_{elem.name}(max_elements_per_list);")
+            elif isinstance(elem, ListType):
+                inner_cpp = self._cpp_type_owning(elem)
+                w(f"{indent}{total_var} += sizeof(ListView<{inner_cpp}>) * max_elements_per_list;")
+                self._emit_encode_arena_size_for_field(elem, total_var, w, indent, max_depth - 1)
+        elif isinstance(type_node, ReferenceType):
+            w(f"{indent}{total_var} += max_encode_arena_bytes_{type_node.name}(max_elements_per_list);")
+
+    # ------------------------------------------------------------------
+    # Primitive wire-format helpers
+    # ------------------------------------------------------------------
+
+    def _primitive_wire_size(self, prim_name: str) -> int:
+        sizes = {
+            "i8":          1,
+            "bool":        1,
+            "i16":         2,
+            "i32":         4,
+            "i64":         8,
+            "datetime_ns": 8,
+        }
+        return sizes[prim_name]
+
+    def _emit_write_primitive(self, prim_name: str, expr: str, indent: str, w):
+        if prim_name == "i8":
+            w(f"{indent}*write_cursor = static_cast<std::uint8_t>({expr});")
+        elif prim_name == "bool":
+            w(f"{indent}*write_cursor = {expr} ? 1 : 0;")
+        elif prim_name == "i16":
+            w(f"{indent}write_uint16_le(write_cursor, static_cast<std::uint16_t>({expr}));")
+        elif prim_name == "i32":
+            w(f"{indent}write_uint32_le(write_cursor, static_cast<std::uint32_t>({expr}));")
+        elif prim_name in ("i64", "datetime_ns"):
+            w(f"{indent}write_uint64_le(write_cursor, static_cast<std::uint64_t>({expr}));")
+        else:
+            raise RuntimeError(f"Unsupported primitive type in write: {prim_name}")
+
+    def _emit_read_primitive(self, prim_name: str, cpp_type: str, target: str, indent: str, w):
+        if prim_name == "i8":
+            w(f"{indent}{target} = static_cast<{cpp_type}>(*read_cursor);")
+        elif prim_name == "bool":
+            w(f"{indent}{target} = (*read_cursor != 0);")
+        elif prim_name == "i16":
+            w(f"{indent}{target} = static_cast<{cpp_type}>(read_uint16_le(read_cursor));")
+        elif prim_name == "i32":
+            w(f"{indent}{target} = static_cast<{cpp_type}>(read_uint32_le(read_cursor));")
+        elif prim_name in ("i64", "datetime_ns"):
+            w(f"{indent}{target} = static_cast<{cpp_type}>(read_uint64_le(read_cursor));")
+        else:
+            raise RuntimeError(f"Unsupported primitive type in read: {prim_name}")

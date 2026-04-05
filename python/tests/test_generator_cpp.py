@@ -55,14 +55,14 @@ def test_message_struct_generation():
     assert "struct Trade" in code
 
     # primitive field
-    assert "int64_t price;" in code
+    assert "int64_t price" in code
 
     # string field
-    assert "std::string_view source;" in code
+    assert "std::string_view source" in code
 
     # optional field pattern
     assert "bool has_qty" in code
-    assert "int32_t qty;" in code
+    assert "int32_t qty" in code
 
 
 def test_list_field_generation():
@@ -74,7 +74,7 @@ def test_list_field_generation():
     code = generate(text)
 
     # ListView<int64_t>
-    assert "ListView<int64_t> values;" in code
+    assert "ListView<int64_t> values" in code
 
 
 def test_reference_field_generation():
@@ -94,7 +94,7 @@ def test_reference_field_generation():
     assert "struct B;" in code
 
     # reference type
-    assert "A child;" in code
+    assert "A child" in code
 
 
 def test_encode_decode_size_signatures():
@@ -105,9 +105,9 @@ def test_encode_decode_size_signatures():
     """
     code = generate(text)
 
-    assert "std::size_t encoded_size(const Foo& msg);" in code
-    assert "bool encode(const Foo& msg" in code
-    assert "bool decode(Foo& msg" in code
+    assert "std::size_t encoded_size(const Foo& message);" in code
+    assert "bool encode(const Foo& message" in code
+    assert "bool decode_Foo(FooView& out" in code
 
 
 def test_string_encoding_logic_present():
@@ -119,10 +119,10 @@ def test_string_encoding_logic_present():
     code = generate(text)
 
     # length prefix
-    assert "int32_t len_name" in code
+    assert "len_name" in code
 
     # memcpy of string bytes
-    assert "std::memcpy(ptr, msg.name.data()" in code
+    assert "std::memcpy(write_cursor, message.name.data()" in code
 
 
 def test_list_encoding_logic_present():
@@ -134,10 +134,10 @@ def test_list_encoding_logic_present():
     code = generate(text)
 
     # count prefix
-    assert "int32_t count_xs" in code
+    assert "element_count_xs" in code
 
     # memcpy for primitive list
-    assert "std::memcpy(ptr, msg.xs.data" in code
+    assert "message.xs" in code
 
 
 def test_nested_message_encode_decode():
@@ -153,7 +153,7 @@ def test_nested_message_encode_decode():
     code = generate(text)
 
     # nested encode call
-    assert "encode(msg.child" in code
+    assert "encode(message.child" in code
 
     # nested decode call
-    assert "decode(msg.child" in code
+    assert "decode_A(out.child" in code

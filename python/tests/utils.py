@@ -9,6 +9,13 @@ from dsl.validator import Validator
 from dsl.generator_cpp import CppGenerator
 from dsl.generator_pybind11 import Pybind11Generator
 
+# Path to the directory that contains the pubsub_itc_fw folder,
+# i.e. the directory such that <pubsub_itc_fw/BumpAllocator.hpp> resolves.
+# Adjust this to match your project layout.
+_PUBSUB_ITC_FW_INCLUDE_DIR = str(
+    Path(__file__).resolve().parent.parent.parent / "libraries" / "pubsub_itc_fw" / "include"
+)
+
 
 def compile_and_load(dsl_text: str, namespace: str = "ns"):
     """
@@ -19,18 +26,14 @@ def compile_and_load(dsl_text: str, namespace: str = "ns"):
     The .so is loaded before the directory is cleaned up, which is safe because
     the OS keeps the file mapped after dlopen() even after the path is deleted.
     """
-    # Parse + validate DSL
     ast = Parser(dsl_text).parse()
     Validator(ast).validate()
 
-    # Generate C++ header
     cpp_gen = CppGenerator(namespace=namespace)
     header_code = cpp_gen.emit(ast)
 
-    # Generate a unique module name so multiple tests can run in the same process
     module_name = f"dslgen_{uuid.uuid4().hex}"
 
-    # Generate pybind11 bindings
     pyb_gen = Pybind11Generator(namespace=namespace, module_name=module_name)
     bindings_code = pyb_gen.emit(ast)
 
@@ -41,23 +44,23 @@ def compile_and_load(dsl_text: str, namespace: str = "ns"):
         (tmp / "bindings.cpp").write_text(bindings_code)
         (tmp / "CMakeLists.txt").write_text(_cmakelists())
 
-        # Configure + build
         subprocess.check_call(
             ["cmake", "-S", str(tmp), "-B", str(tmp / "build")],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
         )
-        subprocess.check_call(
+
+        build_result = subprocess.run(
             ["cmake", "--build", str(tmp / "build")],
-            stdout=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
+        if build_result.returncode != 0:
+            compiler_output = build_result.stdout.decode() + build_result.stderr.decode()
+            raise RuntimeError(f"cmake build failed:\n{compiler_output}")
 
-        # Find the built .so and load it before the temp dir is cleaned up.
-        # dlopen() keeps the file mapped in memory after the path is removed.
         so_files = list((tmp / "build").glob("dslgen*.so"))
         if not so_files:
-            # Some CMake generators put it directly in tmpdir
             so_files = list(tmp.glob("dslgen*.so"))
         if not so_files:
             raise RuntimeError(
@@ -69,13 +72,14 @@ def compile_and_load(dsl_text: str, namespace: str = "ns"):
 
 
 def _cmakelists() -> str:
-    return """\
+    return f"""\
 cmake_minimum_required(VERSION 3.15)
 project(dslgen_bindings LANGUAGES CXX)
 
 find_package(pybind11 REQUIRED)
 
 add_library(dslgen MODULE bindings.cpp)
+target_include_directories(dslgen PRIVATE "{_PUBSUB_ITC_FW_INCLUDE_DIR}")
 target_link_libraries(dslgen PRIVATE pybind11::module)
 set_target_properties(dslgen PROPERTIES
     CXX_STANDARD 17

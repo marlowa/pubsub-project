@@ -1,44 +1,62 @@
 from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import List, Set, Tuple
 
 from .ast import (
-    DslFile,
-    MessageDecl,
-    Field,
-    PrimitiveType,
-    StringType,
-    ListType,
     ArrayType,
+    DslFile,
+    Field,
+    ListType,
+    MessageDecl,
+    PrimitiveType,
     ReferenceType,
+    StringType,
 )
 
 
 @dataclass
 class Pybind11Generator:
-    namespace: str  # same as CppGenerator namespace
+    """Generates a pybind11 C++ binding source file from a validated DSL AST.
+
+    The generated bindings expose:
+      - EncodedBuffer: a view over an encoded byte buffer
+      - ListView<T> bindings for each list type used in the schema
+      - Owning struct bindings (Xxx construction from Python kwargs for encode)
+      - View struct bindings (XxxView returned from decode to Python)
+      - encode_Xxx, decode_Xxx, encoded_size_Xxx functions per message
+
+    Lifetime note for decode:
+      XxxView fields may contain raw pointers into arena storage. To keep those
+      pointers valid while Python holds the view, both the arena storage and the
+      view are stored as static thread_local variables inside the decode lambda.
+      This means callers must not call decode_Xxx again while still inspecting a
+      previously returned view. This constraint is acceptable for the test harness.
+    """
+
+    namespace: str
     module_name: str = "dslgen"
 
     def emit(self, ast: DslFile) -> str:
+        """Generate and return the complete pybind11 bindings source as a string."""
         lines: List[str] = []
         w = lines.append
 
         w('#include <pybind11/pybind11.h>')
         w('#include <pybind11/stl.h>')
+        w('#include <vector>')
         w('#include "generated.hpp"')
         w('')
         w('namespace py = pybind11;')
         w(f'namespace ns = {self.namespace};')
         w('')
 
-        # EncodedBuffer view type
         w('struct EncodedBuffer {')
         w('    const std::uint8_t* data = nullptr;')
         w('    std::size_t size = 0;')
         w('};')
         w('')
 
-        # Collect all list types we need bindings for
         list_types: Set[Tuple[str, int]] = set()
         for decl in ast.declarations:
             if isinstance(decl, MessageDecl):
@@ -49,7 +67,6 @@ class Pybind11Generator:
         w('    m.doc() = "DSL-generated bindings";')
         w('')
 
-        # Bind EncodedBuffer
         w('    py::class_<EncodedBuffer>(m, "EncodedBuffer", py::module_local())')
         w('        .def_readonly("data", &EncodedBuffer::data)')
         w('        .def_readonly("size", &EncodedBuffer::size)')
@@ -63,17 +80,17 @@ class Pybind11Generator:
         w('        }, py::keep_alive<0, 1>());')
         w('')
 
-        # Bind ListView<T> instantiations
-        # Sort by depth first so ListView<T> is registered before ListView<ListView<T>>.
         for cpp_type, depth in sorted(list_types, key=lambda x: (x[1], x[0])):
             self._emit_listview_binding(cpp_type, depth, w)
 
-        # Bind all messages
         for decl in ast.declarations:
             if isinstance(decl, MessageDecl):
                 self._emit_message_binding(decl, w)
 
-        # Bind encode/decode/encoded_size for each message
+        for decl in ast.declarations:
+            if isinstance(decl, MessageDecl):
+                self._emit_view_binding(decl, w)
+
         for decl in ast.declarations:
             if isinstance(decl, MessageDecl):
                 self._emit_functions_binding(decl, w)
@@ -82,132 +99,115 @@ class Pybind11Generator:
         w('')
         return "\n".join(lines)
 
-    # ---------- helpers ----------
+    # ------------------------------------------------------------------
+    # Type helpers
+    # ------------------------------------------------------------------
 
-    def _cpp_primitive(self, t: PrimitiveType) -> str:
-        # Match CppGenerator
+    def _cpp_primitive(self, type_node: PrimitiveType) -> str:
         mapping = {
-            "i8": "int8_t",
-            "i16": "int16_t",
-            "i32": "int32_t",
-            "i64": "int64_t",
-            "bool": "bool",
+            "i8":          "int8_t",
+            "i16":         "int16_t",
+            "i32":         "int32_t",
+            "i64":         "int64_t",
+            "bool":        "bool",
             "datetime_ns": "int64_t",
         }
-        return mapping[t.name]
+        return mapping[type_node.name]
 
-    def _cpp_type(self, t) -> str:
-        # Mirror CppGenerator’s notion of types, but as strings
-        if isinstance(t, PrimitiveType):
-            return self._cpp_primitive(t)
-        if isinstance(t, ReferenceType):
-            return f"ns::{t.name}"
-        if isinstance(t, ListType):
-            inner = self._cpp_type(t.element_type)
+    def _cpp_type_owning(self, type_node) -> str:
+        """Return the C++ owning-side type string for a field type node."""
+        if isinstance(type_node, PrimitiveType):
+            return self._cpp_primitive(type_node)
+        if isinstance(type_node, StringType):
+            return "std::string_view"
+        if isinstance(type_node, ReferenceType):
+            return f"ns::{type_node.name}"
+        if isinstance(type_node, ListType):
+            inner = self._cpp_type_owning(type_node.element_type)
             return f"ns::ListView<{inner}>"
-        if isinstance(t, ArrayType):
-            inner = self._cpp_type(t.element_type)
-            return f"std::array<{inner}, {t.length}>"
-        raise RuntimeError(f"Unsupported type in _cpp_type: {t}")
+        if isinstance(type_node, ArrayType):
+            inner = self._cpp_type_owning(type_node.element_type)
+            return f"std::array<{inner}, {type_node.length}>"
+        raise RuntimeError(f"Unsupported type in _cpp_type_owning: {type_node}")
 
-    def _collect_list_types(self, t, acc: Set[Tuple[str, int]], depth: int = 1):
-        """
-        For a ListType, record (base_cpp_type, depth) for EVERY nesting level.
+    def _cpp_type_view(self, type_node) -> str:
+        """Return the C++ view-side type string for a field type node."""
+        if isinstance(type_node, PrimitiveType):
+            return self._cpp_primitive(type_node)
+        if isinstance(type_node, StringType):
+            return "std::string_view"
+        if isinstance(type_node, ReferenceType):
+            return f"ns::{type_node.name}View"
+        if isinstance(type_node, ListType):
+            inner = self._cpp_type_view(type_node.element_type)
+            return f"ns::ListView<{inner}>"
+        if isinstance(type_node, ArrayType):
+            inner = self._cpp_type_view(type_node.element_type)
+            return f"std::array<{inner}, {type_node.length}>"
+        raise RuntimeError(f"Unsupported type in _cpp_type_view: {type_node}")
 
-        E.g. list<list<i32>> records both ("int32_t", 1) and ("int32_t", 2)
-        so that bindings are emitted for both ListView<int32_t> and
-        ListView<ListView<int32_t>>. Without the depth-1 entry, pybind11
-        cannot convert the return value of ListView<ListView<int32_t>>::__getitem__
-        because the inner ListView<int32_t> type is unregistered.
+    # ------------------------------------------------------------------
+    # List type collection for ListView<T> binding generation
+    # ------------------------------------------------------------------
+
+    def _collect_list_types(self, type_node, acc: Set[Tuple[str, int]], depth: int = 1):
+        """Record (base_cpp_view_type, depth) for every nesting level of a ListType.
+
+        Ensures ListView<T> is registered before ListView<ListView<T>> in the
+        pybind11 module, which is required for __getitem__ return types to be
+        recognised correctly by pybind11.
         """
-        if isinstance(t, ListType):
-            elem = t.element_type
+        if isinstance(type_node, ListType):
+            elem = type_node.element_type
             if isinstance(elem, PrimitiveType):
                 cpp = self._cpp_primitive(elem)
-                # Record this depth and all shallower depths up to the root.
-                for d in range(1, depth + 1):
-                    acc.add((cpp, d))
+                for depth_level in range(1, depth + 1):
+                    acc.add((cpp, depth_level))
+            elif isinstance(elem, StringType):
+                for depth_level in range(1, depth + 1):
+                    acc.add(("std::string_view", depth_level))
             elif isinstance(elem, ReferenceType):
-                for d in range(1, depth + 1):
-                    acc.add((f"ns::{elem.name}", d))
+                for depth_level in range(1, depth + 1):
+                    acc.add((f"ns::{elem.name}View", depth_level))
             elif isinstance(elem, ListType):
-                # Recurse first to discover the base type and max depth,
-                # then the loop above will fill in all intermediate depths.
                 self._collect_list_types(elem, acc, depth + 1)
             else:
                 raise RuntimeError(f"Unsupported list element type in bindings: {elem}")
-        elif isinstance(t, ArrayType):
-            self._collect_list_types(t.element_type, acc, depth)
-        # other types: nothing to do
+        elif isinstance(type_node, ArrayType):
+            self._collect_list_types(type_node.element_type, acc, depth)
+
+    # ------------------------------------------------------------------
+    # ListView<T> binding emission
+    # ------------------------------------------------------------------
 
     def _emit_listview_binding(self, cpp_type: str, depth: int, w):
-        # depth 1: ListView<T>
-        # depth 2: ListView<ListView<T>>
-        # etc.
-        name = cpp_type.replace("::", "_").replace(" ", "_")
-        inst = ""
-        pyname = ""
-        for d in range(1, depth + 1):
-            if d == 1:
-                inst = f'ns::ListView<{cpp_type}>'
-                pyname = f'ListView_{name}'
+        safe_name = cpp_type.replace("::", "_").replace(" ", "_").replace("<", "_").replace(">", "_")
+        instance_type = ""
+        py_name = ""
+        for depth_level in range(1, depth + 1):
+            if depth_level == 1:
+                instance_type = f'ns::ListView<{cpp_type}>'
+                py_name = f'ListView_{safe_name}'
             else:
-                inst = f'ns::ListView<{inst}>'
-                pyname = f'ListView_{pyname}'
+                instance_type = f'ns::ListView<{instance_type}>'
+                py_name = f'ListView_{py_name}'
 
-        w(f'    py::class_<{inst}>(m, "{pyname}", py::module_local())')
-        w(f'        .def_readwrite("data", &{inst}::data)')
-        w(f'        .def_readwrite("size", &{inst}::size)')
-        w(f'        .def("__len__", []({inst} const& v) {{ return v.size; }})')
-        w(f'        .def("__getitem__", []({inst} const& v, std::size_t i) {{')
+        w(f'    py::class_<{instance_type}>(m, "{py_name}", py::module_local())')
+        w(f'        .def_readwrite("data", &{instance_type}::data)')
+        w(f'        .def_readwrite("size", &{instance_type}::size)')
+        w(f'        .def("__len__", []({instance_type} const& v) {{ return v.size; }})')
+        w(f'        .def("__getitem__", []({instance_type} const& v, std::size_t i) {{')
         w('            if (i >= v.size) throw py::index_error();')
         w('            return v.data[i];')
         w('        })')
-        w(f'        .def("__iter__", []({inst} const& v) {{')
+        w(f'        .def("__iter__", []({instance_type} const& v) {{')
         w('            return py::make_iterator(v.begin(), v.end());')
         w('        }, py::keep_alive<0, 1>());')
         w('')
 
-    def _emit_list_from_py(
-        self,
-        list_type: ListType,
-        target_expr: str,   # C++: ns::ListView<...>
-        source_expr: str,   # C++: py::object / py::list
-        w,
-        indent: str = " " * 20,
-        prefix: str = "",
-       ):
-        elem = list_type.element_type
-        elem_cpp = self._cpp_type(elem)
-
-        lst_name = f"lst_{prefix or '0'}"
-        n_name   = f"n_{prefix or '0'}"
-        buf_name = f"buf_{prefix or '0'}"
-        i_name   = f"i_{prefix or '0'}"
-
-        w(f'{indent}{{')
-        w(f'{indent}    py::list {lst_name} = {source_expr}.cast<py::list>();')
-        w(f'{indent}    std::size_t {n_name} = {lst_name}.size();')
-        w(f'{indent}    auto* {buf_name} = new {elem_cpp}[{n_name}];')
-        w(f'{indent}    for (std::size_t {i_name} = 0; {i_name} < {n_name}; ++{i_name}) {{')
-
-        if isinstance(elem, ListType):
-            # buf_name[i_name] is a ns::ListView<...>, lst_name[i_name] is a Python list
-            self._emit_list_from_py(
-                elem,
-                target_expr=f'{buf_name}[{i_name}]',
-                source_expr=f'{lst_name}[{i_name}]',
-                w=w,
-                indent=indent + "        ",
-                prefix=f"{prefix or '0'}_{i_name}",
-            )
-        else:
-            w(f'{indent}        {buf_name}[{i_name}] = {lst_name}[{i_name}].cast<{elem_cpp}>();')
-
-        w(f'{indent}    }}')
-        w(f'{indent}    {target_expr}.data = {buf_name};')
-        w(f'{indent}    {target_expr}.size = {n_name};')
-        w(f'{indent}}}')
+    # ------------------------------------------------------------------
+    # Owning struct binding (for construction from Python kwargs and encode)
+    # ------------------------------------------------------------------
 
     def _emit_message_binding(self, msg: MessageDecl, w):
         name = msg.name
@@ -235,6 +235,25 @@ class Pybind11Generator:
         w('        ;')
         w('')
 
+    # ------------------------------------------------------------------
+    # View struct binding (returned by decode to Python)
+    # ------------------------------------------------------------------
+
+    def _emit_view_binding(self, msg: MessageDecl, w):
+        name = msg.name
+        view_name = f"{name}View"
+        w(f'    py::class_<ns::{view_name}>(m, "{view_name}", py::module_local())')
+        for field in msg.fields:
+            w(f'        .def_readwrite("{field.name}", &ns::{view_name}::{field.name})')
+            if field.optional:
+                w(f'        .def_readwrite("has_{field.name}", &ns::{view_name}::has_{field.name})')
+        w('        ;')
+        w('')
+
+    # ------------------------------------------------------------------
+    # Field keyword-argument assignment for owning struct construction
+    # ------------------------------------------------------------------
+
     def _emit_field_kw_assign(self, msg: MessageDecl, field: Field, w):
         name = field.name
         w(f'                if (key == "{name}") {{')
@@ -256,20 +275,61 @@ class Pybind11Generator:
             w(f'                    obj.has_{name} = true;')
         w('                }')
 
+    def _emit_list_from_py(self, list_type: ListType, target_expr: str,
+                           source_expr: str, w, indent: str = " " * 20, prefix: str = ""):
+        """Emit C++ code to populate a ListView<T> from a Python list.
+
+        Uses heap allocation (new[]) intentionally — this runs in the pybind11
+        test harness only, not in production encode or decode paths.
+        """
+        elem = list_type.element_type
+        elem_cpp = self._cpp_type_owning(elem)
+
+        list_name = f"lst_{prefix or '0'}"
+        count_name = f"n_{prefix or '0'}"
+        buf_name = f"buf_{prefix or '0'}"
+        index_name = f"i_{prefix or '0'}"
+
+        w(f'{indent}{{')
+        w(f'{indent}    py::list {list_name} = {source_expr}.cast<py::list>();')
+        w(f'{indent}    std::size_t {count_name} = {list_name}.size();')
+        w(f'{indent}    auto* {buf_name} = new {elem_cpp}[{count_name}];')
+        w(f'{indent}    for (std::size_t {index_name} = 0; {index_name} < {count_name}; ++{index_name}) {{')
+
+        if isinstance(elem, ListType):
+            self._emit_list_from_py(
+                elem,
+                target_expr=f'{buf_name}[{index_name}]',
+                source_expr=f'{list_name}[{index_name}]',
+                w=w,
+                indent=indent + "        ",
+                prefix=f"{prefix or '0'}_{index_name}",
+            )
+        else:
+            w(f'{indent}        {buf_name}[{index_name}] = {list_name}[{index_name}].cast<{elem_cpp}>();')
+
+        w(f'{indent}    }}')
+        w(f'{indent}    {target_expr}.data = {buf_name};')
+        w(f'{indent}    {target_expr}.size = {count_name};')
+        w(f'{indent}}}')
+
+    # ------------------------------------------------------------------
+    # encode / decode / encoded_size function bindings
+    # ------------------------------------------------------------------
+
     def _emit_functions_binding(self, msg: MessageDecl, w):
         name = msg.name
 
-        # encoded_size
         w(f'    m.def("encoded_size_{name}", [](const ns::{name}& msg) {{')
         w(f'        return ns::encoded_size(msg);')
         w('    });')
 
-        # encode -> EncodedBuffer
         w(f'    m.def("encode_{name}", [](const ns::{name}& msg) {{')
         w('        std::size_t sz = ns::encoded_size(msg);')
         w('        auto* buf = new std::uint8_t[sz];')
         w('        std::size_t written = 0;')
-        w('        if (!ns::encode(msg, buf, sz, written)) {')
+        w('        std::size_t needed = 0;')
+        w('        if (!ns::encode(msg, buf, sz, written, needed)) {')
         w('            delete[] buf;')
         w('            throw std::runtime_error("encode failed");')
         w('        }')
@@ -279,22 +339,29 @@ class Pybind11Generator:
         w('        return view;')
         w('    }, py::return_value_policy::move);')
 
-        # decode from EncodedBuffer or bytes
-        w(f'    m.def("decode_{name}", [](py::object obj) {{')
-        w(f'        ns::{name} msg{{}};')
+        # Both the arena storage and the view are stored as static thread_local
+        # so they outlive the lambda and remain valid while Python holds the view.
+        # Callers must not call decode_{name} again while still using a prior result.
+        arena_size = f'ns::max_decode_arena_bytes_{name}()'
+        w(f'    m.def("decode_{name}", [](py::object obj) -> ns::{name}View& {{')
+        w(f'        static thread_local std::vector<std::uint8_t> arena_storage;')
+        w(f'        static thread_local ns::{name}View view;')
+        w(f'        arena_storage.assign({arena_size}, std::uint8_t{{0}});')
+        w(f'        view = ns::{name}View{{}};')
+        w(f'        pubsub_itc_fw::BumpAllocator decode_arena(arena_storage.data(), arena_storage.size());')
         w('        std::size_t consumed = 0;')
         w('        if (py::isinstance<EncodedBuffer>(obj)) {')
         w('            auto buf = obj.cast<EncodedBuffer>();')
-        w('            if (!ns::decode(msg, buf.data, buf.size, consumed))')
+        w('            if (!ns::decode(view, buf.data, buf.size, consumed, decode_arena))')
         w('                throw std::runtime_error("decode failed");')
-        w('            return msg;')
+        w('            return view;')
         w('        }')
         w('        if (py::isinstance<py::bytes>(obj)) {')
         w('            std::string tmp = obj.cast<std::string>();')
-        w('            if (!ns::decode(msg, reinterpret_cast<const std::uint8_t*>(tmp.data()), tmp.size(), consumed))')
+        w('            if (!ns::decode(view, reinterpret_cast<const std::uint8_t*>(tmp.data()), tmp.size(), consumed, decode_arena))')
         w('                throw std::runtime_error("decode failed");')
-        w('            return msg;')
+        w('            return view;')
         w('        }')
         w('        throw py::type_error("decode expects EncodedBuffer or bytes");')
-        w('    });')
+        w('    }, py::return_value_policy::reference);')
         w('')

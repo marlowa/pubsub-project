@@ -14,7 +14,7 @@ def test_generator_optional_field_emits_has_flag():
         end
     """)
     assert "bool has_x" in code
-    assert "msg.has_x" in code
+    assert "message.has_x" in code
 
 
 def test_generator_array_field_emits_std_array():
@@ -35,5 +35,5 @@ def test_generator_reference_field_calls_encode_decode():
             A child
         end
     """)
-    assert "encode(msg.child" in code
-    assert "decode(msg.child" in code
+    assert "encode(message.child" in code
+    assert "decode_A(out.child" in code
