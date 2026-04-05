@@ -1,6 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import List, Optional, Dict, Union
+from typing import List, Dict
 
 # -----------------------------
 # Top-level AST container
@@ -27,6 +27,7 @@ class Declaration:
 class EnumEntry:
     name: str
     value: int
+    line: int = 0
 
 
 @dataclass
@@ -34,6 +35,7 @@ class EnumDecl(Declaration):
     name: str
     underlying_type: str  # "i8", "i16", "i32", "i64"
     entries: List[EnumEntry]
+    line: int = 0
 
 
 # -----------------------------
@@ -45,6 +47,7 @@ class MessageDecl(Declaration):
     name: str
     metadata: Dict[str, int]  # e.g. {"id": 10, "version": 1}
     fields: List[Field]
+    line: int = 0
 
 
 # -----------------------------
@@ -56,6 +59,7 @@ class Field:
     name: str
     type: Type
     optional: bool = False
+    line: int = 0
 
 
 # -----------------------------
@@ -85,8 +89,10 @@ class ListType(Type):
 class ArrayType(Type):
     element_type: PrimitiveType
     length: int
+    line: int = 0
 
 
 @dataclass
 class ReferenceType(Type):
     name: str  # refers to a MessageDecl or EnumDecl by name
+    line: int = 0

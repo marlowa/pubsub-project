@@ -249,11 +249,11 @@ class CppGenerator:
         if isinstance(type_node, StringType):
             return "std::string_view"
         if isinstance(type_node, ArrayType):
-            elem = self._cpp_type_owning(type_node.element_type)
-            return f"std::array<{elem}, {type_node.length}>"
+            element_type = self._cpp_type_owning(type_node.element_type)
+            return f"std::array<{element_type}, {type_node.length}>"
         if isinstance(type_node, ListType):
-            elem = self._cpp_type_owning(type_node.element_type)
-            return f"ListView<{elem}>"
+            element_type = self._cpp_type_owning(type_node.element_type)
+            return f"ListView<{element_type}>"
         if isinstance(type_node, ReferenceType):
             return type_node.name
         raise RuntimeError(f"Unsupported type in owning struct: {type_node}")
@@ -265,11 +265,11 @@ class CppGenerator:
         if isinstance(type_node, StringType):
             return "std::string_view"
         if isinstance(type_node, ArrayType):
-            elem = self._cpp_type_view(type_node.element_type)
-            return f"std::array<{elem}, {type_node.length}>"
+            element_type = self._cpp_type_view(type_node.element_type)
+            return f"std::array<{element_type}, {type_node.length}>"
         if isinstance(type_node, ListType):
-            elem = self._cpp_type_view(type_node.element_type)
-            return f"ListView<{elem}>"
+            element_type = self._cpp_type_view(type_node.element_type)
+            return f"ListView<{element_type}>"
         if isinstance(type_node, ReferenceType):
             return f"{type_node.name}View"
         raise RuntimeError(f"Unsupported type in view struct: {type_node}")
@@ -285,7 +285,7 @@ class CppGenerator:
         w(f"[[nodiscard]] bool encode(const {name}& message, uint8_t* out_buffer, std::size_t out_size, std::size_t& bytes_written, std::size_t& bytes_needed);")
         if self._is_fixed_size(msg):
             w(f"inline void encode_fast(const {name}& message, uint8_t* out_buffer);")
-        w(f"[[nodiscard]] bool decode_{name}({name}View& out, const uint8_t*& read_cursor, std::size_t& bytes_remaining, [[maybe_unused]] pubsub_itc_fw::BumpAllocator& decode_arena);")
+        w(f"[[nodiscard]] bool decode_{name}({name}View& out, const uint8_t*& read_cursor, std::size_t& bytes_remaining, [[maybe_unused]] pubsub_itc_fw::BumpAllocator& decode_arena, [[maybe_unused]] std::size_t& arena_bytes_needed);")
         w(f"[[nodiscard]] bool skip_{name}(const uint8_t*& read_cursor, std::size_t& bytes_remaining);")
         w("")
 
@@ -337,8 +337,8 @@ class CppGenerator:
         if isinstance(type_node, PrimitiveType):
             w(f"    total_bytes += sizeof({self._cpp_primitive_type(type_node.name)});")
         elif isinstance(type_node, ArrayType):
-            elem_cpp = self._cpp_primitive_type(type_node.element_type.name)
-            w(f"    total_bytes += sizeof({elem_cpp}) * {type_node.length};")
+            element_cpp = self._cpp_primitive_type(type_node.element_type.name)
+            w(f"    total_bytes += sizeof({element_cpp}) * {type_node.length};")
         else:
             raise RuntimeError(f"Non-fixed-size field in fixed size computation: {type_node}")
 
@@ -355,22 +355,22 @@ class CppGenerator:
         if isinstance(type_node, PrimitiveType):
             self._emit_encode_fast_primitive(type_node.name, f"message.{name}", w)
         elif isinstance(type_node, ArrayType):
-            elem_name = type_node.element_type.name
-            if elem_name == "i8":
+            element_name = type_node.element_type.name
+            if element_name == "i8":
                 w(f"    std::memcpy(write_cursor, message.{name}.data(), {type_node.length});")
                 w(f"    write_cursor += {type_node.length};")
             else:
-                width = self._primitive_wire_size(elem_name)
+                width = self._primitive_wire_size(element_name)
                 w(f"    for (std::size_t i = 0; i < {type_node.length}; ++i) {{")
-                self._emit_write_primitive(elem_name, f"message.{name}[i]", "        ", w)
+                self._emit_write_primitive(element_name, f"message.{name}[i]", "        ", w)
                 w(f"        write_cursor += {width};")
                 w("    }")
         else:
             raise RuntimeError(f"Non-fixed-size field in encode_fast: {type_node}")
 
-    def _emit_encode_fast_primitive(self, prim_name: str, expr: str, w):
-        width = self._primitive_wire_size(prim_name)
-        self._emit_write_primitive(prim_name, expr, "    ", w)
+    def _emit_encode_fast_primitive(self, primitive_name: str, expr: str, w):
+        width = self._primitive_wire_size(primitive_name)
+        self._emit_write_primitive(primitive_name, expr, "    ", w)
         w(f"    write_cursor += {width};")
 
     # ------------------------------------------------------------------
@@ -397,8 +397,8 @@ class CppGenerator:
         elif isinstance(type_node, StringType):
             w(f"    {prefix}total_bytes += sizeof(std::uint32_t) + message.{name}.size();")
         elif isinstance(type_node, ArrayType):
-            elem_cpp = self._cpp_primitive_type(type_node.element_type.name)
-            w(f"    {prefix}total_bytes += sizeof({elem_cpp}) * {type_node.length};")
+            element_cpp = self._cpp_primitive_type(type_node.element_type.name)
+            w(f"    {prefix}total_bytes += sizeof({element_cpp}) * {type_node.length};")
         elif isinstance(type_node, ListType):
             if prefix:
                 w(f"    if (message.has_{name}) {{")
@@ -415,24 +415,24 @@ class CppGenerator:
         next_var = chr(ord(loop_var) + 1) if loop_var < "z" else loop_var + "_"
         inner_indent = indent + "    "
         w(f"{indent}total_bytes += sizeof(std::uint32_t);")
-        elem = list_type.element_type
-        if isinstance(elem, PrimitiveType):
-            elem_cpp = self._cpp_primitive_type(elem.name)
-            w(f"{indent}total_bytes += sizeof({elem_cpp}) * {expr}.size;")
-        elif isinstance(elem, StringType):
+        element_type = list_type.element_type
+        if isinstance(element_type, PrimitiveType):
+            element_cpp = self._cpp_primitive_type(element_type.name)
+            w(f"{indent}total_bytes += sizeof({element_cpp}) * {expr}.size;")
+        elif isinstance(element_type, StringType):
             w(f"{indent}for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
             w(f"{inner_indent}total_bytes += sizeof(std::uint32_t) + {expr}.data[{loop_var}].size();")
             w(f"{indent}}}")
-        elif isinstance(elem, ReferenceType):
+        elif isinstance(element_type, ReferenceType):
             w(f"{indent}for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
             w(f"{inner_indent}total_bytes += encoded_size({expr}.data[{loop_var}]);")
             w(f"{indent}}}")
-        elif isinstance(elem, ListType):
+        elif isinstance(element_type, ListType):
             w(f"{indent}for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
-            self._emit_size_for_list(elem, f"{expr}.data[{loop_var}]", w, inner_indent, next_var)
+            self._emit_size_for_list(element_type, f"{expr}.data[{loop_var}]", w, inner_indent, next_var)
             w(f"{indent}}}")
         else:
-            raise RuntimeError(f"Unsupported list element type in size: {elem}")
+            raise RuntimeError(f"Unsupported list element type in size: {element_type}")
 
     # ------------------------------------------------------------------
     # encode
@@ -508,18 +508,18 @@ class CppGenerator:
             w(f"skip_field_{name}: ;")
 
     def _emit_encode_array(self, array_type: ArrayType, field_name: str, w):
-        elem_name = array_type.element_type.name
+        element_name = array_type.element_type.name
         length = array_type.length
-        if elem_name == "i8":
+        if element_name == "i8":
             w(f"    if (bytes_remaining < {length}) return false;")
             w(f"    std::memcpy(write_cursor, message.{field_name}.data(), {length});")
             w(f"    write_cursor += {length};")
             w(f"    bytes_remaining -= {length};")
         else:
-            width = self._primitive_wire_size(elem_name)
+            width = self._primitive_wire_size(element_name)
             w(f"    for (std::size_t i = 0; i < {length}; ++i) {{")
             w(f"        if (bytes_remaining < {width}) return false;")
-            self._emit_write_primitive(elem_name, f"message.{field_name}[i]", "        ", w)
+            self._emit_write_primitive(element_name, f"message.{field_name}[i]", "        ", w)
             w(f"        write_cursor += {width};")
             w(f"        bytes_remaining -= {width};")
             w("    }")
@@ -531,16 +531,16 @@ class CppGenerator:
         w(f"{indent}write_uint32_le(write_cursor, static_cast<std::uint32_t>({expr}.size));")
         w(f"{indent}write_cursor += sizeof(std::uint32_t);")
         w(f"{indent}bytes_remaining -= sizeof(std::uint32_t);")
-        elem = list_type.element_type
-        if isinstance(elem, PrimitiveType):
-            width = self._primitive_wire_size(elem.name)
+        element_type = list_type.element_type
+        if isinstance(element_type, PrimitiveType):
+            width = self._primitive_wire_size(element_type.name)
             w(f"{indent}for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
             w(f"{inner_indent}if (bytes_remaining < {width}) return false;")
-            self._emit_write_primitive(elem.name, f"{expr}.data[{loop_var}]", inner_indent, w)
+            self._emit_write_primitive(element_type.name, f"{expr}.data[{loop_var}]", inner_indent, w)
             w(f"{inner_indent}write_cursor += {width};")
             w(f"{inner_indent}bytes_remaining -= {width};")
             w(f"{indent}}}")
-        elif isinstance(elem, StringType):
+        elif isinstance(element_type, StringType):
             w(f"{indent}for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
             w(f"{inner_indent}if (bytes_remaining < sizeof(std::uint32_t) + {expr}.data[{loop_var}].size()) return false;")
             w(f"{inner_indent}std::uint32_t string_length_{suffix}_{loop_var} = static_cast<std::uint32_t>({expr}.data[{loop_var}].size());")
@@ -551,7 +551,7 @@ class CppGenerator:
             w(f"{inner_indent}write_cursor += {expr}.data[{loop_var}].size();")
             w(f"{inner_indent}bytes_remaining -= {expr}.data[{loop_var}].size();")
             w(f"{indent}}}")
-        elif isinstance(elem, ReferenceType):
+        elif isinstance(element_type, ReferenceType):
             w(f"{indent}for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
             w(f"{inner_indent}std::size_t element_bytes_written_{suffix} = 0;")
             w(f"{inner_indent}std::size_t element_bytes_needed_{suffix} = 0;")
@@ -559,23 +559,52 @@ class CppGenerator:
             w(f"{inner_indent}write_cursor += element_bytes_written_{suffix};")
             w(f"{inner_indent}bytes_remaining -= element_bytes_written_{suffix};")
             w(f"{indent}}}")
-        elif isinstance(elem, ListType):
+        elif isinstance(element_type, ListType):
             w(f"{indent}for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
-            self._emit_encode_list(elem, f"{expr}.data[{loop_var}]", f"{suffix}_{loop_var}", w, inner_indent, next_var)
+            self._emit_encode_list(element_type, f"{expr}.data[{loop_var}]", f"{suffix}_{loop_var}", w, inner_indent, next_var)
             w(f"{indent}}}")
         else:
-            raise RuntimeError(f"Unsupported list element type in encode: {elem}")
+            raise RuntimeError(f"Unsupported list element type in encode: {element_type}")
 
     # ------------------------------------------------------------------
     # decode
     # ------------------------------------------------------------------
 
+    def _message_requires_arena(self, msg: MessageDecl) -> bool:
+        """Return True if decoding this message requires any arena allocation.
+
+        A message requires arena allocation if it has any list field whose
+        element type is not a primitive — i.e. list<string>, list<Message>,
+        list<list<T>>, or any nested message that itself requires arena allocation.
+        """
+        for field in msg.fields:
+            if self._type_requires_arena(field.type):
+                return True
+        return False
+
+    def _type_requires_arena(self, type_node) -> bool:
+        """Return True if decoding this type requires any arena allocation."""
+        if isinstance(type_node, ListType):
+            element_type = type_node.element_type
+            if isinstance(element_type, PrimitiveType):
+                return False  # little-endian: zero-copy pointer into wire buffer
+            return True  # string, message, or nested list all need arena
+        if isinstance(type_node, ReferenceType):
+            return True  # nested message may need arena (conservative)
+        return False
+
     def _emit_decode_view_impl(self, msg: MessageDecl, w):
         name = msg.name
-        w(f"inline bool decode_{name}({name}View& out, const uint8_t*& read_cursor, std::size_t& bytes_remaining, [[maybe_unused]] pubsub_itc_fw::BumpAllocator& decode_arena) {{")
+        requires_arena = self._message_requires_arena(msg)
+        w(f"inline bool decode_{name}({name}View& out, const uint8_t*& read_cursor, std::size_t& bytes_remaining, [[maybe_unused]] pubsub_itc_fw::BumpAllocator& decode_arena, [[maybe_unused]] std::size_t& arena_bytes_needed) {{")
+        if requires_arena:
+            w("    bool arena_exhausted = false;")
         for field in msg.fields:
             self._emit_decode_field(field, w)
-        w("    return true;")
+        if requires_arena:
+            w("    return !arena_exhausted;")
+        else:
+            w("    return true;")
         w("}")
 
     def _emit_decode_field(self, field: Field, w):
@@ -613,7 +642,7 @@ class CppGenerator:
         elif isinstance(type_node, ListType):
             self._emit_decode_list(type_node, f"out.{fname}", fname, w, "    ")
         elif isinstance(type_node, ReferenceType):
-            w(f"    if (!decode_{type_node.name}(out.{fname}, read_cursor, bytes_remaining, decode_arena)) return false;")
+            w(f"    if (!decode_{type_node.name}(out.{fname}, read_cursor, bytes_remaining, decode_arena, arena_bytes_needed)) return false;")
         else:
             raise RuntimeError(f"Unknown field type in decode: {type_node}")
 
@@ -621,13 +650,13 @@ class CppGenerator:
             w(f"skip_field_{fname}: ;")
 
     def _emit_decode_array(self, array_type: ArrayType, field_name: str, w):
-        elem_name = array_type.element_type.name
-        elem_cpp = self._cpp_primitive_type(elem_name)
+        element_name = array_type.element_type.name
+        element_cpp = self._cpp_primitive_type(element_name)
         length = array_type.length
         w(f"    for (std::size_t i = 0; i < {length}; ++i) {{")
-        width = self._primitive_wire_size(elem_name)
+        width = self._primitive_wire_size(element_name)
         w(f"        if (bytes_remaining < {width}) return false;")
-        self._emit_read_primitive(elem_name, elem_cpp, f"out.{field_name}[i]", "        ", w)
+        self._emit_read_primitive(element_name, element_cpp, f"out.{field_name}[i]", "        ", w)
         w(f"        read_cursor += {width};")
         w(f"        bytes_remaining -= {width};")
         w("    }")
@@ -641,69 +670,93 @@ class CppGenerator:
         w(f"{inner_indent}read_cursor += sizeof(std::uint32_t);")
         w(f"{inner_indent}bytes_remaining -= sizeof(std::uint32_t);")
         w(f"{inner_indent}{expr}.size = static_cast<std::size_t>(element_count_{suffix});")
-        elem = list_type.element_type
-        if isinstance(elem, PrimitiveType):
-            elem_cpp = self._cpp_primitive_type(elem.name)
-            width = self._primitive_wire_size(elem.name)
+        element_type = list_type.element_type
+        if isinstance(element_type, PrimitiveType):
+            element_cpp = self._cpp_primitive_type(element_type.name)
+            width = self._primitive_wire_size(element_type.name)
             w(f"{inner_indent}{expr}.data = nullptr;")
             w(f"{inner_indent}if ({expr}.size > 0) {{")
             w(f"{inner_indent}#if HOST_IS_LITTLE_ENDIAN")
-            w(f"{inner_indent}    std::size_t element_bytes_{suffix} = sizeof({elem_cpp}) * {expr}.size;")
+            w(f"{inner_indent}    std::size_t element_bytes_{suffix} = sizeof({element_cpp}) * {expr}.size;")
             w(f"{inner_indent}    if (bytes_remaining < element_bytes_{suffix}) return false;")
-            w(f"{inner_indent}    {expr}.data = reinterpret_cast<{elem_cpp}*>(const_cast<uint8_t*>(read_cursor));")
+            w(f"{inner_indent}    {expr}.data = reinterpret_cast<{element_cpp}*>(const_cast<uint8_t*>(read_cursor));")
             w(f"{inner_indent}    read_cursor += element_bytes_{suffix};")
             w(f"{inner_indent}    bytes_remaining -= element_bytes_{suffix};")
             w(f"{inner_indent}#else")
-            w(f"{inner_indent}    {expr}.data = decode_arena.allocate<{elem_cpp}>({expr}.size);")
-            w(f"{inner_indent}    if ({expr}.data == nullptr) return false;")
+            w(f"{inner_indent}    {{")
+            w(f"{inner_indent}        std::size_t arena_aligned_offset = (arena_bytes_needed + alignof({element_cpp}) - 1) & ~(alignof({element_cpp}) - 1);")
+            w(f"{inner_indent}        arena_bytes_needed = arena_aligned_offset + sizeof({element_cpp}) * {expr}.size;")
+            w(f"{inner_indent}    }}")
+            w(f"{inner_indent}    {expr}.data = decode_arena.allocate<{element_cpp}>({expr}.size);")
+            w(f"{inner_indent}    if ({expr}.data == nullptr) arena_exhausted = true;")
+            w(f"{inner_indent}    {element_cpp} dummy_primitive_{suffix}{{0}};")
             w(f"{inner_indent}    for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
             w(f"{inner_indent}        if (bytes_remaining < {width}) return false;")
-            self._emit_read_primitive(elem.name, elem_cpp, f"{expr}.data[{loop_var}]", inner_indent + "        ", w)
+            w(f"{inner_indent}        {element_cpp}& primitive_element_{suffix} = arena_exhausted ? dummy_primitive_{suffix} : {expr}.data[{loop_var}];")
+            self._emit_read_primitive(element_type.name, element_cpp, f"primitive_element_{suffix}", inner_indent + "        ", w)
             w(f"{inner_indent}        read_cursor += {width};")
             w(f"{inner_indent}        bytes_remaining -= {width};")
             w(f"{inner_indent}    }}")
             w(f"{inner_indent}#endif")
             w(f"{inner_indent}}}")
-        elif isinstance(elem, StringType):
+        elif isinstance(element_type, StringType):
+            w(f"{inner_indent}{{")
+            w(f"{inner_indent}    std::size_t arena_aligned_offset = (arena_bytes_needed + alignof(std::string_view) - 1) & ~(alignof(std::string_view) - 1);")
+            w(f"{inner_indent}    arena_bytes_needed = arena_aligned_offset + sizeof(std::string_view) * {expr}.size;")
+            w(f"{inner_indent}}}")
             w(f"{inner_indent}{expr}.data = nullptr;")
             w(f"{inner_indent}if ({expr}.size > 0) {{")
             w(f"{inner_indent}    {expr}.data = decode_arena.allocate<std::string_view>({expr}.size);")
-            w(f"{inner_indent}    if ({expr}.data == nullptr) return false;")
+            w(f"{inner_indent}    if ({expr}.data == nullptr) arena_exhausted = true;")
             w(f"{inner_indent}    for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
             w(f"{inner_indent}        if (bytes_remaining < sizeof(std::uint32_t)) return false;")
             w(f"{inner_indent}        std::uint32_t str_len_{suffix}_{loop_var} = read_uint32_le(read_cursor);")
             w(f"{inner_indent}        read_cursor += sizeof(std::uint32_t);")
             w(f"{inner_indent}        bytes_remaining -= sizeof(std::uint32_t);")
             w(f"{inner_indent}        if (bytes_remaining < static_cast<std::size_t>(str_len_{suffix}_{loop_var})) return false;")
-            w(f"{inner_indent}        {expr}.data[{loop_var}] = std::string_view(reinterpret_cast<const char*>(read_cursor), str_len_{suffix}_{loop_var});")
+            w(f"{inner_indent}        if (!arena_exhausted) {{")
+            w(f"{inner_indent}            {expr}.data[{loop_var}] = std::string_view(reinterpret_cast<const char*>(read_cursor), str_len_{suffix}_{loop_var});")
+            w(f"{inner_indent}        }}")
             w(f"{inner_indent}        read_cursor += str_len_{suffix}_{loop_var};")
             w(f"{inner_indent}        bytes_remaining -= static_cast<std::size_t>(str_len_{suffix}_{loop_var});")
             w(f"{inner_indent}    }}")
             w(f"{inner_indent}}}")
-        elif isinstance(elem, ReferenceType):
-            view_type = f"{elem.name}View"
+        elif isinstance(element_type, ReferenceType):
+            view_type = f"{element_type.name}View"
+            w(f"{inner_indent}{{")
+            w(f"{inner_indent}    std::size_t arena_aligned_offset = (arena_bytes_needed + alignof({element_type.name}View) - 1) & ~(alignof({element_type.name}View) - 1);")
+            w(f"{inner_indent}    arena_bytes_needed = arena_aligned_offset + sizeof({element_type.name}View) * {expr}.size;")
+            w(f"{inner_indent}}}")
             w(f"{inner_indent}{expr}.data = nullptr;")
             w(f"{inner_indent}if ({expr}.size > 0) {{")
             w(f"{inner_indent}    {expr}.data = decode_arena.allocate<{view_type}>({expr}.size);")
-            w(f"{inner_indent}    if ({expr}.data == nullptr) return false;")
+            w(f"{inner_indent}    if ({expr}.data == nullptr) arena_exhausted = true;")
+            w(f"{inner_indent}    {view_type} dummy_{suffix}{{}};")
             w(f"{inner_indent}    for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
-            w(f"{inner_indent}        {expr}.data[{loop_var}] = {view_type}{{}};")
-            w(f"{inner_indent}        if (!decode_{elem.name}({expr}.data[{loop_var}], read_cursor, bytes_remaining, decode_arena)) return false;")
+            w(f"{inner_indent}        {view_type}& element_{suffix} = arena_exhausted ? dummy_{suffix} : {expr}.data[{loop_var}];")
+            w(f"{inner_indent}        element_{suffix} = {view_type}{{}};")
+            w(f"{inner_indent}        if (!decode_{element_type.name}(element_{suffix}, read_cursor, bytes_remaining, decode_arena, arena_bytes_needed)) return false;")
             w(f"{inner_indent}    }}")
             w(f"{inner_indent}}}")
-        elif isinstance(elem, ListType):
-            inner_elem_cpp = self._cpp_type_view(elem)
+        elif isinstance(element_type, ListType):
+            inner_element_cpp = self._cpp_type_view(element_type)
+            w(f"{inner_indent}{{")
+            w(f"{inner_indent}    std::size_t arena_aligned_offset = (arena_bytes_needed + alignof({inner_element_cpp}) - 1) & ~(alignof({inner_element_cpp}) - 1);")
+            w(f"{inner_indent}    arena_bytes_needed = arena_aligned_offset + sizeof({inner_element_cpp}) * {expr}.size;")
+            w(f"{inner_indent}}}")
             w(f"{inner_indent}{expr}.data = nullptr;")
             w(f"{inner_indent}if ({expr}.size > 0) {{")
-            w(f"{inner_indent}    {expr}.data = decode_arena.allocate<{inner_elem_cpp}>({expr}.size);")
-            w(f"{inner_indent}    if ({expr}.data == nullptr) return false;")
+            w(f"{inner_indent}    {expr}.data = decode_arena.allocate<{inner_element_cpp}>({expr}.size);")
+            w(f"{inner_indent}    if ({expr}.data == nullptr) arena_exhausted = true;")
+            w(f"{inner_indent}    {inner_element_cpp} dummy_{suffix}{{}};")
             w(f"{inner_indent}    for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
-            w(f"{inner_indent}        {expr}.data[{loop_var}] = {inner_elem_cpp}{{}};")
-            self._emit_decode_list(elem, f"{expr}.data[{loop_var}]", f"{suffix}_{loop_var}", w, inner_indent + "        ", next_var)
+            w(f"{inner_indent}        {inner_element_cpp}& element_{suffix} = arena_exhausted ? dummy_{suffix} : {expr}.data[{loop_var}];")
+            w(f"{inner_indent}        element_{suffix} = {inner_element_cpp}{{}};")
+            self._emit_decode_list(element_type, f"element_{suffix}", f"{suffix}_{loop_var}", w, inner_indent + "        ", next_var)
             w(f"{inner_indent}    }}")
             w(f"{inner_indent}}}")
         else:
-            raise RuntimeError(f"Unsupported list element type in decode: {elem}")
+            raise RuntimeError(f"Unsupported list element type in decode: {element_type}")
         w(f"{indent}}}")
 
     # ------------------------------------------------------------------
@@ -768,15 +821,15 @@ class CppGenerator:
         w(f"{inner_indent}std::uint32_t skip_count = read_uint32_le(read_cursor);")
         w(f"{inner_indent}read_cursor += sizeof(std::uint32_t);")
         w(f"{inner_indent}bytes_remaining -= sizeof(std::uint32_t);")
-        elem = list_type.element_type
-        if isinstance(elem, PrimitiveType):
-            width = self._primitive_wire_size(elem.name)
-            elem_cpp = self._cpp_primitive_type(elem.name)
-            w(f"{inner_indent}std::size_t skip_bytes = sizeof({elem_cpp}) * static_cast<std::size_t>(skip_count);")
+        element_type = list_type.element_type
+        if isinstance(element_type, PrimitiveType):
+            width = self._primitive_wire_size(element_type.name)
+            element_cpp = self._cpp_primitive_type(element_type.name)
+            w(f"{inner_indent}std::size_t skip_bytes = sizeof({element_cpp}) * static_cast<std::size_t>(skip_count);")
             w(f"{inner_indent}if (bytes_remaining < skip_bytes) return false;")
             w(f"{inner_indent}read_cursor += skip_bytes;")
             w(f"{inner_indent}bytes_remaining -= skip_bytes;")
-        elif isinstance(elem, StringType):
+        elif isinstance(element_type, StringType):
             w(f"{inner_indent}for (std::size_t {loop_var} = 0; {loop_var} < skip_count; ++{loop_var}) {{")
             w(f"{inner_indent}    if (bytes_remaining < sizeof(std::uint32_t)) return false;")
             w(f"{inner_indent}    std::uint32_t str_len = read_uint32_le(read_cursor);")
@@ -786,16 +839,16 @@ class CppGenerator:
             w(f"{inner_indent}    read_cursor += str_len;")
             w(f"{inner_indent}    bytes_remaining -= static_cast<std::size_t>(str_len);")
             w(f"{inner_indent}}}")
-        elif isinstance(elem, ReferenceType):
+        elif isinstance(element_type, ReferenceType):
             w(f"{inner_indent}for (std::size_t {loop_var} = 0; {loop_var} < skip_count; ++{loop_var}) {{")
-            w(f"{inner_indent}    if (!skip_{elem.name}(read_cursor, bytes_remaining)) return false;")
+            w(f"{inner_indent}    if (!skip_{element_type.name}(read_cursor, bytes_remaining)) return false;")
             w(f"{inner_indent}}}")
-        elif isinstance(elem, ListType):
+        elif isinstance(element_type, ListType):
             w(f"{inner_indent}for (std::size_t {loop_var} = 0; {loop_var} < skip_count; ++{loop_var}) {{")
-            self._emit_skip_list(elem, w, inner_indent + "    ", next_var)
+            self._emit_skip_list(element_type, w, inner_indent + "    ", next_var)
             w(f"{inner_indent}}}")
         else:
-            raise RuntimeError(f"Unsupported list element type in skip: {elem}")
+            raise RuntimeError(f"Unsupported list element type in skip: {element_type}")
         w(f"{indent}}}")
 
     # ------------------------------------------------------------------
@@ -809,11 +862,13 @@ class CppGenerator:
         w(f"                                 const uint8_t* buffer,")
         w(f"                                 std::size_t bytes_available,")
         w(f"                                 std::size_t& bytes_consumed,")
-        w(f"                                 [[maybe_unused]] pubsub_itc_fw::BumpAllocator& decode_arena)")
+        w(f"                                 [[maybe_unused]] pubsub_itc_fw::BumpAllocator& decode_arena,")
+        w(f"                                 std::size_t& arena_bytes_needed)")
         w("{")
         w("    const uint8_t* cursor = buffer;")
         w("    std::size_t remaining = bytes_available;")
-        w(f"    if (!decode_{name}(out, cursor, remaining, decode_arena)) {{")
+        w("    arena_bytes_needed = 0;")
+        w(f"    if (!decode_{name}(out, cursor, remaining, decode_arena, arena_bytes_needed)) {{")
         w("        return false;")
         w("    }")
         w("    bytes_consumed = bytes_available - remaining;")
@@ -836,19 +891,19 @@ class CppGenerator:
         if max_depth == 0:
             return
         if isinstance(type_node, ListType):
-            elem = type_node.element_type
-            if isinstance(elem, PrimitiveType):
-                elem_cpp = self._cpp_primitive_type(elem.name)
-                w(f"{indent}{total_var} += sizeof({elem_cpp}) * max_elements_per_list;")
-            elif isinstance(elem, StringType):
+            element_type = type_node.element_type
+            if isinstance(element_type, PrimitiveType):
+                element_cpp = self._cpp_primitive_type(element_type.name)
+                w(f"{indent}{total_var} += sizeof({element_cpp}) * max_elements_per_list;")
+            elif isinstance(element_type, StringType):
                 w(f"{indent}{total_var} += sizeof(std::string_view) * max_elements_per_list;")
-            elif isinstance(elem, ReferenceType):
-                w(f"{indent}{total_var} += sizeof({elem.name}View) * max_elements_per_list;")
-                w(f"{indent}{total_var} += max_elements_per_list * max_decode_arena_bytes_{elem.name}(max_elements_per_list);")
-            elif isinstance(elem, ListType):
-                inner_cpp = self._cpp_type_view(elem)
+            elif isinstance(element_type, ReferenceType):
+                w(f"{indent}{total_var} += sizeof({element_type.name}View) * max_elements_per_list;")
+                w(f"{indent}{total_var} += max_elements_per_list * max_decode_arena_bytes_{element_type.name}(max_elements_per_list);")
+            elif isinstance(element_type, ListType):
+                inner_cpp = self._cpp_type_view(element_type)
                 w(f"{indent}{total_var} += sizeof(ListView<{inner_cpp}>) * max_elements_per_list;")
-                self._emit_decode_arena_size_for_field(elem, total_var, w, indent, max_depth - 1)
+                self._emit_decode_arena_size_for_field(element_type, total_var, w, indent, max_depth - 1)
         elif isinstance(type_node, ReferenceType):
             w(f"{indent}{total_var} += max_decode_arena_bytes_{type_node.name}(max_elements_per_list);")
 
@@ -864,19 +919,19 @@ class CppGenerator:
         if max_depth == 0:
             return
         if isinstance(type_node, ListType):
-            elem = type_node.element_type
-            if isinstance(elem, PrimitiveType):
-                elem_cpp = self._cpp_primitive_type(elem.name)
-                w(f"{indent}{total_var} += sizeof({elem_cpp}) * max_elements_per_list;")
-            elif isinstance(elem, StringType):
+            element_type = type_node.element_type
+            if isinstance(element_type, PrimitiveType):
+                element_cpp = self._cpp_primitive_type(element_type.name)
+                w(f"{indent}{total_var} += sizeof({element_cpp}) * max_elements_per_list;")
+            elif isinstance(element_type, StringType):
                 w(f"{indent}{total_var} += sizeof(std::string_view) * max_elements_per_list;")
-            elif isinstance(elem, ReferenceType):
-                w(f"{indent}{total_var} += sizeof({elem.name}) * max_elements_per_list;")
-                w(f"{indent}{total_var} += max_elements_per_list * max_encode_arena_bytes_{elem.name}(max_elements_per_list);")
-            elif isinstance(elem, ListType):
-                inner_cpp = self._cpp_type_owning(elem)
+            elif isinstance(element_type, ReferenceType):
+                w(f"{indent}{total_var} += sizeof({element_type.name}) * max_elements_per_list;")
+                w(f"{indent}{total_var} += max_elements_per_list * max_encode_arena_bytes_{element_type.name}(max_elements_per_list);")
+            elif isinstance(element_type, ListType):
+                inner_cpp = self._cpp_type_owning(element_type)
                 w(f"{indent}{total_var} += sizeof(ListView<{inner_cpp}>) * max_elements_per_list;")
-                self._emit_encode_arena_size_for_field(elem, total_var, w, indent, max_depth - 1)
+                self._emit_encode_arena_size_for_field(element_type, total_var, w, indent, max_depth - 1)
         elif isinstance(type_node, ReferenceType):
             w(f"{indent}{total_var} += max_encode_arena_bytes_{type_node.name}(max_elements_per_list);")
 
@@ -884,7 +939,7 @@ class CppGenerator:
     # Primitive wire-format helpers
     # ------------------------------------------------------------------
 
-    def _primitive_wire_size(self, prim_name: str) -> int:
+    def _primitive_wire_size(self, primitive_name: str) -> int:
         sizes = {
             "i8":          1,
             "bool":        1,
@@ -893,32 +948,32 @@ class CppGenerator:
             "i64":         8,
             "datetime_ns": 8,
         }
-        return sizes[prim_name]
+        return sizes[primitive_name]
 
-    def _emit_write_primitive(self, prim_name: str, expr: str, indent: str, w):
-        if prim_name == "i8":
+    def _emit_write_primitive(self, primitive_name: str, expr: str, indent: str, w):
+        if primitive_name == "i8":
             w(f"{indent}*write_cursor = static_cast<std::uint8_t>({expr});")
-        elif prim_name == "bool":
+        elif primitive_name == "bool":
             w(f"{indent}*write_cursor = {expr} ? 1 : 0;")
-        elif prim_name == "i16":
+        elif primitive_name == "i16":
             w(f"{indent}write_uint16_le(write_cursor, static_cast<std::uint16_t>({expr}));")
-        elif prim_name == "i32":
+        elif primitive_name == "i32":
             w(f"{indent}write_uint32_le(write_cursor, static_cast<std::uint32_t>({expr}));")
-        elif prim_name in ("i64", "datetime_ns"):
+        elif primitive_name in ("i64", "datetime_ns"):
             w(f"{indent}write_uint64_le(write_cursor, static_cast<std::uint64_t>({expr}));")
         else:
-            raise RuntimeError(f"Unsupported primitive type in write: {prim_name}")
+            raise RuntimeError(f"Unsupported primitive type in write: {primitive_name}")
 
-    def _emit_read_primitive(self, prim_name: str, cpp_type: str, target: str, indent: str, w):
-        if prim_name == "i8":
+    def _emit_read_primitive(self, primitive_name: str, cpp_type: str, target: str, indent: str, w):
+        if primitive_name == "i8":
             w(f"{indent}{target} = static_cast<{cpp_type}>(*read_cursor);")
-        elif prim_name == "bool":
+        elif primitive_name == "bool":
             w(f"{indent}{target} = (*read_cursor != 0);")
-        elif prim_name == "i16":
+        elif primitive_name == "i16":
             w(f"{indent}{target} = static_cast<{cpp_type}>(read_uint16_le(read_cursor));")
-        elif prim_name == "i32":
+        elif primitive_name == "i32":
             w(f"{indent}{target} = static_cast<{cpp_type}>(read_uint32_le(read_cursor));")
-        elif prim_name in ("i64", "datetime_ns"):
+        elif primitive_name in ("i64", "datetime_ns"):
             w(f"{indent}{target} = static_cast<{cpp_type}>(read_uint64_le(read_cursor));")
         else:
-            raise RuntimeError(f"Unsupported primitive type in read: {prim_name}")
+            raise RuntimeError(f"Unsupported primitive type in read: {primitive_name}")

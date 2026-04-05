@@ -60,7 +60,8 @@ void benchmark_message(const char* name, OwningMsg& msg, int iterations)
     auto avg_dec = measure_avg_ns([&] {
         decode_arena.reset();
         decoded = ViewMsg{};
-        static_cast<void>(decode(decoded, buffer, written, consumed, decode_arena));
+        std::size_t arena_bytes_needed = 0;
+        static_cast<void>(decode(decoded, buffer, written, consumed, decode_arena, arena_bytes_needed));
     }, iterations, min_dec, max_dec);
 
     std::cout << "------------------------------------------------------------\n";

@@ -5,7 +5,6 @@ from .ast import (
     DslFile,
     Declaration,
     EnumDecl,
-    EnumEntry,
     MessageDecl,
     Field,
     PrimitiveType,
@@ -14,17 +13,12 @@ from .ast import (
     ArrayType,
     ReferenceType,
 )
-
-
-class ValidationError(Exception):
-    pass
+from .errors import ValidationError
 
 
 class Validator:
     def __init__(self, ast: DslFile):
         self.ast = ast
-
-        # Maps for quick lookup
         self.enums: Dict[str, EnumDecl] = {}
         self.messages: Dict[str, MessageDecl] = {}
 
@@ -46,12 +40,16 @@ class Validator:
         for decl in self.ast.declarations:
             if isinstance(decl, EnumDecl):
                 if decl.name in self.enums or decl.name in self.messages:
-                    raise ValidationError(f"Duplicate declaration name: {decl.name}")
+                    raise ValidationError(
+                        f"line {decl.line}: duplicate declaration name '{decl.name}'"
+                    )
                 self.enums[decl.name] = decl
 
             elif isinstance(decl, MessageDecl):
                 if decl.name in self.enums or decl.name in self.messages:
-                    raise ValidationError(f"Duplicate declaration name: {decl.name}")
+                    raise ValidationError(
+                        f"line {decl.line}: duplicate declaration name '{decl.name}'"
+                    )
                 self.messages[decl.name] = decl
 
             else:
@@ -63,17 +61,19 @@ class Validator:
 
     def _validate_enums(self):
         for enum in self.enums.values():
-            # Underlying type must be signed integer
             if enum.underlying_type not in {"i8", "i16", "i32", "i64"}:
                 raise ValidationError(
-                    f"Enum {enum.name} has invalid underlying type: {enum.underlying_type}"
+                    f"line {enum.line}: enum '{enum.name}' has invalid "
+                    f"underlying type '{enum.underlying_type}' "
+                    f"(must be i8, i16, i32, or i64)"
                 )
 
-            seen_values = set()
+            seen_values: Set[int] = set()
             for entry in enum.entries:
                 if entry.value in seen_values:
                     raise ValidationError(
-                        f"Enum {enum.name} has duplicate value: {entry.value}"
+                        f"line {entry.line}: enum '{enum.name}' has duplicate "
+                        f"value {entry.value} (on entry '{entry.name}')"
                     )
                 seen_values.add(entry.value)
 
@@ -82,102 +82,107 @@ class Validator:
     # -----------------------------
 
     def _validate_messages(self):
-        used_ids = set()
+        seen_ids: Set[int] = set()
 
         for msg in self.messages.values():
-            # Metadata must contain id
             if "id" not in msg.metadata:
-                raise ValidationError(f"Message {msg.name} missing required metadata 'id'")
+                raise ValidationError(
+                    f"line {msg.line}: message '{msg.name}' is missing "
+                    f"required metadata 'id'"
+                )
 
-            msg_id = msg.metadata["id"]
-            if msg_id in used_ids:
-                raise ValidationError(f"Duplicate message id: {msg_id}")
-            used_ids.add(msg_id)
+            message_id = msg.metadata["id"]
+            if message_id in seen_ids:
+                raise ValidationError(
+                    f"line {msg.line}: message '{msg.name}' has duplicate "
+                    f"message id {message_id}"
+                )
+            seen_ids.add(message_id)
 
-            # Validate fields
             for field in msg.fields:
-                self._validate_field(field)
+                self._validate_field(field, msg.name)
 
-    def _validate_field(self, field: Field):
-        self._validate_type(field.type)
+    def _validate_field(self, field: Field, message_name: str):
+        self._validate_type(field.type, field, message_name)
 
     # -----------------------------
     # Type validation
     # -----------------------------
 
-    def _validate_type(self, t):
-        if isinstance(t, PrimitiveType):
+    def _validate_type(self, type_node, field: Field, message_name: str):
+        if isinstance(type_node, PrimitiveType):
             return
 
-        if isinstance(t, StringType):
+        if isinstance(type_node, StringType):
             return
 
-        if isinstance(t, ListType):
-            self._validate_type(t.element_type)
+        if isinstance(type_node, ListType):
+            self._validate_type(type_node.element_type, field, message_name)
             return
 
-        if isinstance(t, ArrayType):
-            if not isinstance(t.element_type, PrimitiveType):
+        if isinstance(type_node, ArrayType):
+            if not isinstance(type_node.element_type, PrimitiveType):
                 raise ValidationError(
-                    f"Array element type must be primitive, got {t.element_type}"
+                    f"line {field.line}: in message '{message_name}', "
+                    f"field '{field.name}': array element type must be primitive"
                 )
-            if t.length <= 0:
-                raise ValidationError("Array length must be positive")
+            if type_node.length <= 0:
+                raise ValidationError(
+                    f"line {field.line}: in message '{message_name}', "
+                    f"field '{field.name}': array length must be greater than zero"
+                )
             return
 
-        if isinstance(t, ReferenceType):
-            if t.name not in self.messages and t.name not in self.enums:
-                raise ValidationError(f"Unknown type reference: {t.name}")
+        if isinstance(type_node, ReferenceType):
+            if type_node.name not in self.messages and type_node.name not in self.enums:
+                raise ValidationError(
+                    f"line {field.line}: in message '{message_name}', "
+                    f"field '{field.name}': unknown type '{type_node.name}'"
+                )
             return
 
-        raise ValidationError(f"Unknown type node: {t}")
+        raise ValidationError(
+            f"line {field.line}: in message '{message_name}', "
+            f"field '{field.name}': unknown type node {type_node}"
+        )
 
     # -----------------------------
     # Cycle detection
     # -----------------------------
 
     def _validate_no_cycles(self):
-        # Build adjacency: message -> referenced messages
         graph: Dict[str, Set[str]] = {name: set() for name in self.messages}
 
         for msg in self.messages.values():
             for field in msg.fields:
-                self._collect_message_refs(msg.name, field.type, graph[msg.name])
+                self._collect_message_refs(field.type, graph[msg.name])
 
-        # DFS cycle detection
-        visited = set()
-        stack = set()
+        visited: Set[str] = set()
+        path: List[str] = []
 
         def dfs(node: str):
-            if node in stack:
-                raise ValidationError(f"Cyclic message reference detected at {node}")
+            if node in path:
+                cycle = " -> ".join(path[path.index(node):] + [node])
+                raise ValidationError(
+                    f"line {self.messages[node].line}: "
+                    f"cyclic message reference detected: {cycle}"
+                )
             if node in visited:
                 return
 
             visited.add(node)
-            stack.add(node)
+            path.append(node)
 
-            for neighbor in graph[node]:
-                dfs(neighbor)
+            for neighbour in graph[node]:
+                dfs(neighbour)
 
-            stack.remove(node)
+            path.pop()
 
         for name in graph:
             dfs(name)
 
-    def _collect_message_refs(self, msg_name: str, t, out: Set[str]):
-        if isinstance(t, ReferenceType) and t.name in self.messages:
-            out.add(t.name)
-
-        elif isinstance(t, ListType):
-            self._collect_message_refs(msg_name, t.element_type, out)
-
-        elif isinstance(t, ArrayType):
-            pass  # arrays cannot contain messages
-
-        elif isinstance(t, PrimitiveType) or isinstance(t, StringType):
-            pass
-
-        else:
-            # Nested message types (ReferenceType) handled above
-            pass
+    def _collect_message_refs(self, type_node, out: Set[str]):
+        if isinstance(type_node, ReferenceType) and type_node.name in self.messages:
+            out.add(type_node.name)
+        elif isinstance(type_node, ListType):
+            self._collect_message_refs(type_node.element_type, out)

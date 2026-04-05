@@ -43,13 +43,16 @@ class Parser:
             return True
         return False
 
-    def _expect_keyword(self, value: str):
+    def _expect_keyword(self, value: str) -> int:
+        """Consume the named keyword and return its line number."""
         if self.current.kind != "KEYWORD" or self.current.value != value:
             raise ParseError(
                 f"Expected keyword '{value}', got {self.current.value} "
                 f"at {self.current.line}:{self.current.column}"
             )
+        line = self.current.line
         self.current = self.lexer.next_token()
+        return line
 
     # -----------------------------
     # Entry point
@@ -84,14 +87,11 @@ class Parser:
     # -----------------------------
 
     def _parse_enum(self) -> EnumDecl:
-        # enum Name : i32 { x = 1 y = 2 }
-        self._expect_keyword("enum")
+        enum_line = self._expect_keyword("enum")
 
-        name = self._eat("IDENT").value
+        name_tok = self._eat("IDENT")
         self._eat("COLON")
 
-        # Underlying type must be i8/i16/i32/i64
-        # Accept any keyword here; validator will enforce allowed types
         if self.current.kind != "KEYWORD":
             raise ParseError(
                 f"Expected type after ':', got {self.current.value} "
@@ -104,24 +104,32 @@ class Parser:
 
         entries: List[EnumEntry] = []
         while self.current.kind == "IDENT":
-            entry_name = self._eat("IDENT").value
+            entry_tok = self._eat("IDENT")
             self._eat("EQUAL")
             value = int(self._eat("INT").value)
-            entries.append(EnumEntry(entry_name, value))
+            entries.append(EnumEntry(
+                name=entry_tok.value,
+                value=value,
+                line=entry_tok.line,
+            ))
 
         self._eat("RBRACE")
 
-        return EnumDecl(name, underlying, entries)
+        return EnumDecl(
+            name=name_tok.value,
+            underlying_type=underlying,
+            entries=entries,
+            line=enum_line,
+        )
 
     # -----------------------------
     # Message
     # -----------------------------
 
     def _parse_message(self) -> MessageDecl:
-        # message Name (id=1, version=1) ... end
-        self._expect_keyword("message")
+        message_line = self._expect_keyword("message")
 
-        name = self._eat("IDENT").value
+        name_tok = self._eat("IDENT")
 
         self._eat("LPAREN")
         metadata = self._parse_metadata()
@@ -129,18 +137,21 @@ class Parser:
 
         fields: List[Field] = []
 
-        # Read fields until "end"
         while not (self.current.kind == "KEYWORD" and self.current.value == "end"):
             if self.current.kind == "EOF":
                 raise ParseError(
-                    f"Unexpected EOF while parsing fields for message '{name}'"
+                    f"Unexpected EOF while parsing fields for message '{name_tok.value}'"
                 )
             fields.append(self._parse_field())
 
-        # Consume "end"
         self._expect_keyword("end")
 
-        return MessageDecl(name, metadata, fields)
+        return MessageDecl(
+            name=name_tok.value,
+            metadata=metadata,
+            fields=fields,
+            line=message_line,
+        )
 
     # -----------------------------
     # Metadata
@@ -167,17 +178,21 @@ class Parser:
     # -----------------------------
 
     def _parse_field(self) -> Field:
-        # [optional] <type> <name>
         optional = False
 
         if self.current.kind == "KEYWORD" and self.current.value == "optional":
             optional = True
             self.current = self.lexer.next_token()
 
-        t = self._parse_type()
-        name = self._eat("IDENT").value
+        field_type = self._parse_type()
+        name_tok = self._eat("IDENT")
 
-        return Field(name=name, type=t, optional=optional)
+        return Field(
+            name=name_tok.value,
+            type=field_type,
+            optional=optional,
+            line=name_tok.line,
+        )
 
     # -----------------------------
     # Type
@@ -186,31 +201,26 @@ class Parser:
     def _parse_type(self):
         tok = self.current
 
-        # Primitive
         if tok.kind == "KEYWORD" and tok.value in {
             "i8", "i16", "i32", "i64", "bool", "datetime_ns"
         }:
             self.current = self.lexer.next_token()
             base = PrimitiveType(tok.value)
 
-        # string
         elif tok.kind == "KEYWORD" and tok.value == "string":
             self.current = self.lexer.next_token()
             base = StringType()
 
-        # list<T>
         elif tok.kind == "KEYWORD" and tok.value == "list":
             self.current = self.lexer.next_token()
             self._eat("LT")
-            elem = self._parse_type()
+            element_type = self._parse_type()
             self._eat("GT")
-            base = ListType(elem)
+            base = ListType(element_type)
 
-        # Reference type (message or enum)
         elif tok.kind == "IDENT":
-            name = tok.value
             self.current = self.lexer.next_token()
-            base = ReferenceType(name)
+            base = ReferenceType(name=tok.value, line=tok.line)
 
         else:
             raise ParseError(
@@ -218,11 +228,11 @@ class Parser:
                 f"{tok.line}:{tok.column}"
             )
 
-        # Array suffix: T[n]
         if self.current.kind == "LBRACKET":
+            bracket_line = self.current.line
             self.current = self.lexer.next_token()
             length = int(self._eat("INT").value)
             self._eat("RBRACKET")
-            base = ArrayType(base, length)
+            base = ArrayType(element_type=base, length=length, line=bracket_line)
 
         return base
