@@ -11,10 +11,10 @@ sys.path.insert(0, PROJECT_PYTHON_DIR)
 import argparse
 from pathlib import Path
 
-from dsl.lexer import Lexer
 from dsl.parser import Parser
-from dsl.validator import Validator
+from dsl.validator import Validator, ValidationError
 from dsl.generator_cpp import CppGenerator
+
 
 def main():
     ap = argparse.ArgumentParser(description="Generate C++17 header from DSL schema")
@@ -29,17 +29,16 @@ def main():
 
     text = input_path.read_text()
 
-    # Parse
-    ast = Parser(text).parse()
+    try:
+        ast = Parser(text).parse()
+        Validator(ast).validate()
+    except ValidationError as error:
+        print(f"{input_path}: {error}", file=sys.stderr)
+        sys.exit(1)
 
-    # Validate
-    Validator(ast).validate()
-
-    # Generate C++
     gen = CppGenerator(namespace=args.namespace)
     code = gen.emit(ast)
 
-    # Write output
     output_path.write_text(code)
 
 
