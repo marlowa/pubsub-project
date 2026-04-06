@@ -877,6 +877,7 @@ template <typename T> class FixedSizeMemoryPool {
 
     FixedSizeMemoryPool<T>* next_pool_{nullptr};
     std::atomic<uint64_t> allocation_count_{0};
+    std::atomic<uint64_t> deallocation_count_{0};
 };
 
 template <typename T>
@@ -970,6 +971,7 @@ template <typename T> void FixedSizeMemoryPool<T>::deallocate(T* node_to_push) {
     // which always checks the canary before calling this method.
     SlotType* slot = slot_from_object(node_to_push);
     push_slot_to_free_list(slot);
+    deallocation_count_.fetch_add(1, std::memory_order_relaxed);
 }
 
 template <typename T> bool FixedSizeMemoryPool<T>::is_full() const {
@@ -977,14 +979,28 @@ template <typename T> bool FixedSizeMemoryPool<T>::is_full() const {
 }
 
 template <typename T> int FixedSizeMemoryPool<T>::get_number_of_available_objects() const {
-    int count = 0;
-    HeadPtr head = load_head();
-    SlotType* current = head.ptr;
-    while (current != nullptr) {
-        ++count;
-        current = current->storage.free_node_ptr()->next;
+    // Computed from atomic counters rather than by traversing the free list.
+    // Free-list traversal is unsafe under concurrent allocation/deallocation
+    // because a concurrent thread may modify next pointers mid-traversal,
+    // producing a dangling pointer and a crash.
+    //
+    // allocation_count_ is incremented on every successful allocate().
+    // deallocation_count_ is incremented on every deallocate().
+    // The difference is the number of currently outstanding (live) objects.
+    // available = total capacity - outstanding.
+    //
+    // Under concurrency this value is approximate: a thread may be
+    // mid-allocate or mid-deallocate when we read. That is acceptable —
+    // get_number_of_available_objects() is used only for diagnostics and
+    // statistics, never for correctness decisions.
+    const uint64_t allocated   = allocation_count_.load(std::memory_order_relaxed);
+    const uint64_t deallocated = deallocation_count_.load(std::memory_order_relaxed);
+    const uint64_t outstanding = allocated - deallocated;
+    const uint64_t capacity    = static_cast<uint64_t>(objects_per_pool_);
+    if (outstanding >= capacity) {
+        return 0;
     }
-    return count;
+    return static_cast<int>(capacity - outstanding);
 }
 
 template <typename T> void FixedSizeMemoryPool<T>::push_slot_to_free_list(SlotType* slot) {
