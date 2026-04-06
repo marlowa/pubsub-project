@@ -27,6 +27,7 @@
 #include <pubsub_itc_fw/QueueConfig.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
+#include <pubsub_itc_fw/ServiceRegistry.hpp>
 
 #include <pubsub_itc_fw/tests_common/TestSink.hpp>
 #include <pubsub_itc_fw/tests_common/LoggerWithSink.hpp>
@@ -99,7 +100,7 @@ public:
     void SetUp() override {
         logger_with_sink_.sink->clear();
         reactor_configuration_.inactivity_check_interval_ = std::chrono::milliseconds(100);
-        reactor_ = std::make_unique<Reactor>(reactor_configuration_, logger_with_sink_.logger);
+        reactor_ = std::make_unique<Reactor>(reactor_configuration_, service_registry_, logger_with_sink_.logger);
         reactor_thread_.reset(); // not started yet
     }
 
@@ -125,6 +126,7 @@ public:
 
     LoggerWithSink& logger_with_sink_;
     ReactorConfiguration reactor_configuration_;
+    ServiceRegistry service_registry_;
     std::unique_ptr<Reactor> reactor_;
     std::unique_ptr<ThreadWithJoinTimeout> reactor_thread_;
 };

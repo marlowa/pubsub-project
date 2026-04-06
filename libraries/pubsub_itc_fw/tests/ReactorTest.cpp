@@ -22,6 +22,7 @@
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/EventType.hpp>
 #include <pubsub_itc_fw/ReactorConfiguration.hpp>
+#include <pubsub_itc_fw/ServiceRegistry.hpp>
 #include <pubsub_itc_fw/HighResolutionClock.hpp>
 #include <pubsub_itc_fw/MillisecondClock.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
@@ -118,7 +119,7 @@ public:
         reactor_configuration_.init_phase_timeout_ = MillisecondClock::duration{2000};
     #endif
         reactor_configuration_.shutdown_timeout_ = std::chrono::milliseconds(50);
-        reactor_ = std::make_unique<Reactor>(reactor_configuration_, logger_with_sink_.logger);
+        reactor_ = std::make_unique<Reactor>(reactor_configuration_, service_registry_, logger_with_sink_.logger);
         reactor_thread_.reset(); // not started yet
     }
 
@@ -144,6 +145,7 @@ public:
 
     LoggerWithSink& logger_with_sink_;
     ReactorConfiguration reactor_configuration_;
+    ServiceRegistry service_registry_;
     std::unique_ptr<Reactor> reactor_;
     std::unique_ptr<ThreadWithJoinTimeout> reactor_thread_;
 };
@@ -238,7 +240,7 @@ TEST_F(ReactorTest, InitializationTimeoutTriggersShutdown)
     // join_reactor_or_die() budget and causing std::terminate().
     cfg.shutdown_timeout_    = std::chrono::milliseconds(100);
 
-    reactor_ = std::make_unique<Reactor>(cfg, logger_with_sink_.logger);
+    reactor_ = std::make_unique<Reactor>(cfg, service_registry_, logger_with_sink_.logger);
 
     auto bad_thread = std::make_shared<NeverStartingThread>(logger_with_sink_.logger, *reactor_,
                                                             "BadThread", ThreadID(99),
@@ -291,7 +293,7 @@ all threads have completed their Initial processing.
 TEST_F(ReactorTest, AllThreadsReceiveInitThenAppReady) {
     ReactorConfiguration cfg;
     cfg.init_phase_timeout_ = std::chrono::milliseconds(2000);
-    reactor_ = std::make_unique<Reactor>(cfg, logger_with_sink_.logger);
+    reactor_ = std::make_unique<Reactor>(cfg, service_registry_, logger_with_sink_.logger);
 
     // -------------------------------------------------------------------------
     // Create two test threads
@@ -535,7 +537,7 @@ TEST_F(ReactorTest, ReactorRequiresAtLeastOneRegisteredThreadTest)
 TEST_F(ReactorTest, RouteMessageBeforeInitializationThrows)
 {
     const ReactorConfiguration cfg;
-    Reactor reactor(cfg, logger_with_sink_.logger);
+    Reactor reactor(cfg, service_registry_, logger_with_sink_.logger);
 
     EventMessage msg = EventMessage::create_itc_message(ThreadID(1), nullptr, 0);
 
@@ -545,7 +547,7 @@ TEST_F(ReactorTest, RouteMessageBeforeInitializationThrows)
 TEST_F(ReactorTest, RouteMessageFromNonRunningOriginIsIgnored)
 {
     const ReactorConfiguration cfg;
-    Reactor reactor(cfg, logger_with_sink_.logger);
+    Reactor reactor(cfg, service_registry_, logger_with_sink_.logger);
 
     auto target_thread = std::make_shared<NeverStartingThread>(
         logger_with_sink_.logger, reactor,
@@ -570,7 +572,7 @@ TEST_F(ReactorTest, RouteMessageFromNonRunningOriginIsIgnored)
 TEST_F(ReactorTest, FinalizePromotesShuttingDownToTerminated)
 {
     const ReactorConfiguration cfg;
-    Reactor reactor(cfg, logger_with_sink_.logger);
+    Reactor reactor(cfg, service_registry_, logger_with_sink_.logger);
 
     auto t = std::make_shared<NeverStartingThread>(logger_with_sink_.logger, reactor,
                                                    "T", ThreadID(1),
@@ -589,7 +591,7 @@ TEST_F(ReactorTest, FinalizePromotesShuttingDownToTerminated)
 TEST_F(ReactorTest, CancelTimerWrongOwnerThrows)
 {
     const ReactorConfiguration cfg;
-    Reactor reactor(cfg, logger_with_sink_.logger);
+    Reactor reactor(cfg, service_registry_, logger_with_sink_.logger);
 
     auto t1 = std::make_shared<CooperativeShutdownThread>(logger_with_sink_.logger, reactor,
                                                           "A", ThreadID(1),
@@ -610,7 +612,7 @@ TEST_F(ReactorTest, CancelTimerWrongOwnerThrows)
 TEST_F(ReactorTest, DispatchEventsUnknownFdIsIgnored)
 {
     const ReactorConfiguration cfg;
-    Reactor reactor(cfg, logger_with_sink_.logger);
+    Reactor reactor(cfg, service_registry_, logger_with_sink_.logger);
 
     epoll_event ev{};
     ev.data.fd = 9999; // bogus FD
@@ -621,7 +623,7 @@ TEST_F(ReactorTest, DispatchEventsUnknownFdIsIgnored)
 TEST_F(ReactorTest, ExitedThreadTriggersShutdown)
 {
     const ReactorConfiguration cfg;
-    Reactor reactor(cfg, logger_with_sink_.logger);
+    Reactor reactor(cfg, service_registry_, logger_with_sink_.logger);
 
     auto thread = std::make_shared<FakeThread>(logger_with_sink_.logger, reactor,
                                           "T", ThreadID(1), make_queue_config(), make_allocator_config());
@@ -643,7 +645,7 @@ TEST_F(ReactorTest, StuckOperationalThreadTriggersShutdown)
 {
     ReactorConfiguration cfg;
     cfg.itc_maximum_inactivity_interval_ = std::chrono::milliseconds(1);
-    Reactor reactor(cfg, logger_with_sink_.logger);
+    Reactor reactor(cfg, service_registry_, logger_with_sink_.logger);
 
     auto thread = std::make_shared<FakeThread>(
         logger_with_sink_.logger, reactor,

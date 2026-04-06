@@ -8,6 +8,7 @@
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/EventType.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
+#include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/TimerID.hpp>
 
 namespace pubsub_itc_fw {
@@ -55,6 +56,35 @@ EventMessage EventMessage::create_raw_socket_message(const uint8_t* data, int si
     return msg;
 }
 
+EventMessage EventMessage::create_framework_pdu_message(const uint8_t* data, int size)
+{
+    EventMessage msg(EventType(EventType::FrameworkPdu), data, size);
+    return msg;
+}
+
+EventMessage EventMessage::create_connection_established_event(ConnectionID connection_id)
+{
+    EventMessage msg(EventType(EventType::ConnectionEstablished), nullptr, 0);
+    msg.header_.connection_id = connection_id;
+    return msg;
+}
+
+EventMessage EventMessage::create_connection_failed_event(const std::string& reason)
+{
+    EventMessage msg(EventType(EventType::ConnectionFailed), nullptr, 0);
+    msg.header_.reason = reason;
+    return msg;
+}
+
+EventMessage EventMessage::create_connection_lost_event(ConnectionID connection_id,
+                                                        const std::string& reason)
+{
+    EventMessage msg(EventType(EventType::ConnectionLost), nullptr, 0);
+    msg.header_.connection_id = connection_id;
+    msg.header_.reason = reason;
+    return msg;
+}
+
 // Getter method implementations
 EventType EventMessage::type() const
 {
@@ -79,6 +109,11 @@ const std::string& EventMessage::reason() const
 ThreadID EventMessage::originating_thread_id() const
 {
     return header_.originating_thread_id;
+}
+
+ConnectionID EventMessage::connection_id() const
+{
+    return header_.connection_id;
 }
 
 const uint8_t* EventMessage::payload() const

@@ -74,12 +74,17 @@ add_custom_target(pubsub_itc_fw_dsl
 set(PUBSUB_ITC_FW_SRC
     src/ApplicationThread.cpp
     src/InetAddress.cpp
+    src/EmptySlabQueue.cpp
     src/EventMessage.cpp
+    src/ExpandableSlabAllocator.cpp
     src/Message.cpp
     src/EventDistributor.cpp
     src/MillisecondClock.cpp
+    src/PduFramer.cpp
+    src/PduParser.cpp
     src/QuillLogger.cpp
     src/Reactor.cpp
+    src/SlabAllocator.cpp
     src/StringUtils.cpp
     src/TcpAcceptor.cpp
     src/TcpConnector.cpp

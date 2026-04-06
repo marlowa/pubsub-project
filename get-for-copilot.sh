@@ -1,5 +1,5 @@
 #! /bin/bash
-for i in $(find . \( -name '*.hpp' -o -name '*.cpp' -o -name '*.py' -o -name '*.sh' \))
+for i in $(find . \( -name '*.hpp' -o -name '*.cpp' -o -name '*.py' -o -name '*.sh' -o -name '*.dsl' \))
 do
   f=$(basename $i)
   cp $i for-copilot/${f}.txt

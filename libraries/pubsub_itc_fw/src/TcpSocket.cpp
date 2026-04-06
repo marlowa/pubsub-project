@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <fcntl.h>      // For fcntl, O_NONBLOCK
+#include <netinet/tcp.h> // For TCP_NODELAY
 #include <sys/socket.h> // For socket(), bind(), listen(), accept(), connect(), shutdown(), setsockopt(), getsockopt(), socklen_t
 #include <unistd.h>     // For close()
 
@@ -53,6 +54,15 @@ namespace {
                                    socket_fd, StringUtils::get_errno_string())};
     }
 
+    return {true, ""};
+}
+
+[[nodiscard]] std::tuple<bool, std::string> set_tcp_no_delay(int socket_fd) {
+    int flag = 1;
+    if (::setsockopt(socket_fd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag)) == -1) {
+        return {false, fmt::format("Failed to set TCP_NODELAY on socket {}: {}",
+                                   socket_fd, StringUtils::get_errno_string())};
+    }
     return {true, ""};
 }
 
@@ -180,13 +190,15 @@ TcpSocketImpl::~TcpSocketImpl() {
 }
 
 TcpSocketImpl::TcpSocketImpl(int socket_fd) : socketFileDescriptor(socket_fd) {
-    // If a valid socket_fd is provided, ensure it's non-blocking.
     if (socketFileDescriptor != -1) {
-        auto [success, error] = set_non_blocking(socketFileDescriptor);
-        if (!success) {
-            // Log this error, or handle it by marking the socket as invalid if needed.
-            // For now, the socketFileDescriptor will remain as provided.
-            // Factory methods should already handle this.
+        auto [nb_success, nb_error] = set_non_blocking(socketFileDescriptor);
+        if (!nb_success) {
+            // Factory methods handle this; the fd remains as provided.
+            return;
+        }
+        auto [nd_success, nd_error] = set_tcp_no_delay(socketFileDescriptor);
+        if (!nd_success) {
+            // Non-fatal: log in production via the caller if needed.
         }
     }
 }

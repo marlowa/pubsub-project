@@ -9,6 +9,45 @@
  * scratch region, advancing an internal cursor on each allocation. All allocations
  * share the same lifetime and are released together by calling reset().
  *
+ * snprintf contract:
+ *   BumpAllocator follows the same contract as snprintf:
+ *
+ *   - When constructed with a real buffer, allocate<T>() returns a pointer into
+ *     that buffer and advances the cursor. If the buffer is too small,
+ *     allocate<T>() returns nullptr but bytes_used() still reflects the number
+ *     of bytes that WOULD have been needed. The caller can use this to size a
+ *     larger buffer and retry, exactly as one would with snprintf.
+ *
+ *   - When constructed with nullptr and capacity zero (the "measuring" mode),
+ *     allocate<T>() always returns nullptr but advances bytes_used() as if
+ *     allocation had succeeded. This allows the caller to perform a dry run to
+ *     discover exactly how many bytes are needed before allocating any real
+ *     storage -- again, exactly as with snprintf:
+ *
+ *       // snprintf equivalent: passing nullptr/0 to measure required size
+ *       BumpAllocator arena(nullptr, 0);
+ *
+ *   Typical two-pass pattern for variable-length encode:
+ *
+ *     // Pass 1: measure
+ *     BumpAllocator measuring_arena(nullptr, 0);
+ *     encode(message, wire_buffer, measuring_arena);
+ *     std::size_t needed = measuring_arena.bytes_used();
+ *
+ *     // Pass 2: allocate real storage and retry
+ *     auto [slab_id, ptr] = slab_allocator.allocate(needed);
+ *     BumpAllocator real_arena(static_cast<uint8_t*>(ptr), needed);
+ *     encode(message, wire_buffer, real_arena);
+ *
+ *   For fixed-size messages (encode_fast), no arena is needed at all.
+ *
+ *   For the common case where the maximum list size is known in advance, use the
+ *   DSL-generated max_encode_arena_bytes_<MessageName>(max_elements) or
+ *   max_decode_arena_bytes_<MessageName>(max_elements) helpers to pre-size a
+ *   stack buffer and avoid the two-pass pattern entirely. These helpers return
+ *   a conservative upper bound for a given maximum number of list elements. If
+ *   at runtime the actual data fits within that bound, no two-pass retry is needed.
+ *
  * Typical uses within the pubsub_itc_fw DSL layer:
  *
  *   Decode context (variable named decode_arena):
@@ -33,17 +72,6 @@
  * Thread safety:
  *   BumpAllocator is not thread-safe. Each thread must own its own instance.
  *   A BumpAllocator must never be shared across threads.
- *
- * Sizing:
- *   For decode contexts, the generated header for each DSL message type provides
- *   a max_decode_arena_bytes_<MessageName>() helper that returns a conservative
- *   upper bound on the number of bytes required to decode one message of that
- *   type given a maximum number of elements per list.
- *
- *   For encode contexts, a corresponding max_encode_arena_bytes_<MessageName>()
- *   helper is provided for the same purpose.
- *
- *   Use these helpers to size the backing buffer at the declaration site.
  */
 
 #include <cstddef>
@@ -56,9 +84,12 @@ namespace pubsub_itc_fw {
 /**
  * @brief Non-owning bump allocator over a caller-supplied byte buffer.
  *
- * Provides typed allocation without heap allocation. All allocations are
- * released together by calling reset(). Intended for use as a short-lived
- * scratch allocator in DSL message encode and decode operations.
+ * Follows the snprintf contract: allocate() always advances bytes_used() by
+ * the number of bytes that would be required, whether or not a real buffer
+ * was supplied and whether or not capacity was sufficient. When storage is
+ * nullptr or capacity is exhausted, allocate() returns nullptr. This allows
+ * a two-pass pattern -- measure with nullptr, then allocate real storage and
+ * retry -- without any heap allocation.
  *
  * Name the instance to reflect its use context:
  *   BumpAllocator decode_arena  -- when used during message decoding
@@ -67,22 +98,23 @@ namespace pubsub_itc_fw {
 class BumpAllocator {
 public:
     /**
-     * @brief Constructs a BumpAllocator over a caller-supplied buffer.
+     * @brief Constructs a BumpAllocator.
      *
-     * @param[in] storage Pointer to the backing byte buffer. Must not be nullptr.
-     *                    Must remain valid for the lifetime of this BumpAllocator.
-     * @param[in] capacity Size of the backing buffer in bytes. Must be greater than zero.
+     * Pass a real buffer and its size for normal allocation. Pass nullptr and
+     * zero to use measuring mode, where allocate() always returns nullptr but
+     * bytes_used() accurately reflects the bytes that would have been needed.
+     * This is the same contract as snprintf(nullptr, 0, ...).
+     *
+     * @param[in] storage  Pointer to the backing byte buffer, or nullptr for
+     *                     measuring mode. If non-null, must remain valid for
+     *                     the lifetime of this BumpAllocator.
+     * @param[in] capacity Size of the backing buffer in bytes, or zero for
+     *                     measuring mode.
      */
     BumpAllocator(uint8_t* storage, std::size_t capacity)
         : storage_(storage)
         , capacity_(capacity)
         , bytes_used_(0) {
-        if (storage_ == nullptr) {
-            throw PreconditionAssertion("BumpAllocator: storage must not be nullptr", __FILE__, __LINE__);
-        }
-        if (capacity_ == 0) {
-            throw PreconditionAssertion("BumpAllocator: capacity must be greater than zero", __FILE__, __LINE__);
-        }
     }
 
     ~BumpAllocator() = default;
@@ -93,10 +125,14 @@ public:
     /**
      * @brief Allocates storage for element_count objects of type T.
      *
-     * Aligns the internal cursor to alignof(T), then advances it by
-     * sizeof(T) * element_count. Returns nullptr if the allocator does not
-     * have sufficient remaining capacity. The caller must treat a nullptr
-     * return as a failure and propagate it accordingly.
+     * Always advances bytes_used() by the aligned size required, regardless
+     * of whether allocation succeeds. This mirrors the snprintf contract:
+     * the return value indicates success or failure, but bytes_used() always
+     * reflects the true bytes needed.
+     *
+     * When storage is nullptr or remaining capacity is insufficient, returns
+     * nullptr. The caller may then inspect bytes_used() to determine how large
+     * a real buffer must be, allocate it, and retry.
      *
      * No constructors are called on the returned memory. The caller is
      * responsible for constructing objects into the returned region via
@@ -105,7 +141,7 @@ public:
      * @param[in] element_count Number of T objects to allocate space for.
      *                          Must be greater than zero.
      * @return Pointer to aligned storage for element_count T objects,
-     *         or nullptr if capacity is exhausted.
+     *         or nullptr if storage is nullptr or capacity is exhausted.
      */
     template<typename T>
     [[nodiscard]] T* allocate(std::size_t element_count) {
@@ -119,11 +155,12 @@ public:
         std::size_t aligned_offset = (bytes_used_ + alignment - 1) & ~(alignment - 1);
         std::size_t required_bytes = aligned_offset + sizeof(T) * element_count;
 
-        if (required_bytes > capacity_) {
+        bytes_used_ = required_bytes;
+
+        if (storage_ == nullptr || required_bytes > capacity_) {
             return nullptr;
         }
 
-        bytes_used_ = required_bytes;
         return reinterpret_cast<T*>(storage_ + aligned_offset);
     }
 
@@ -139,9 +176,13 @@ public:
     }
 
     /**
-     * @brief Returns the number of bytes currently allocated from this allocator.
+     * @brief Returns the number of bytes that have been (or would have been)
+     *        allocated since the last reset().
      *
-     * @return Bytes allocated since the last reset().
+     * In measuring mode (storage is nullptr), this reflects the true bytes
+     * that would have been needed, even though no real allocation occurred.
+     *
+     * @return Bytes used or required since the last reset().
      */
     [[nodiscard]] std::size_t bytes_used() const {
         return bytes_used_;
@@ -149,6 +190,8 @@ public:
 
     /**
      * @brief Returns the total capacity of this allocator in bytes.
+     *
+     * Returns zero when in measuring mode.
      *
      * @return Total capacity of the backing buffer.
      */
@@ -159,10 +202,26 @@ public:
     /**
      * @brief Returns the number of bytes still available for allocation.
      *
+     * Returns zero when in measuring mode or when capacity is exhausted.
+     *
      * @return Remaining capacity in bytes.
      */
     [[nodiscard]] std::size_t bytes_remaining() const {
+        if (bytes_used_ >= capacity_) {
+            return 0;
+        }
         return capacity_ - bytes_used_;
+    }
+
+    /**
+     * @brief Returns true if this allocator is in measuring mode.
+     *
+     * Measuring mode is active when storage is nullptr. In this mode,
+     * allocate() always returns nullptr but bytes_used() accurately
+     * reflects the bytes that would have been needed.
+     */
+    [[nodiscard]] bool is_measuring() const {
+        return storage_ == nullptr;
     }
 
 private:

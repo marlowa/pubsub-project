@@ -5,9 +5,10 @@
 
 #include <string>
 
+#include <pubsub_itc_fw/ConnectionID.hpp>
+#include <pubsub_itc_fw/EventType.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 #include <pubsub_itc_fw/TimerID.hpp>
-#include <pubsub_itc_fw/EventType.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -19,17 +20,19 @@ namespace pubsub_itc_fw {
  * This class is designed as a lightweight, non-owning wrapper around event data.
  * It uses raw pointers for its payload to avoid heap allocations and overhead
  * in the critical path. All messages are created via static factory methods to
- * ensure consistent state and initialization.
+ * ensure consistent state and initialisation.
  *
- * **Payload Ownership:**
- * The payload applies to ITC messages, not to system event messages
- * such as INIT or TERM. In those system event cases the payload pointer is nullptr.
- * Where the payload pointer is not nullptr, the buffer is managed by the allocator of
- * the receiving component. Thus the reeiving thread is responsible for freeing it.
+ * Payload ownership:
+ *   The payload applies to ITC messages, not to system event messages such as
+ *   INIT or TERM. In those system event cases the payload pointer is nullptr.
+ *   Where the payload pointer is not nullptr, the buffer is managed by the
+ *   allocator of the receiving component. The receiving thread is responsible
+ *   for freeing it.
  *
- * **Type Safety:**
- * This class relies on explicit type checking and casting. The `get_as()` method
- * is highly unsafe and must only be used after verifying the message type.
+ * Type safety:
+ *   This class relies on explicit type checking and casting. The get_as()
+ *   method is highly unsafe and must only be used after verifying the message
+ *   type.
  */
 class EventMessage {
 public:
@@ -39,9 +42,10 @@ public:
     struct Header {
         EventType type;
         int payload_size;
-        TimerID timer_id;                   ///< Used for Timer events
-        std::string reason;                 ///< Used for Termination events
-        ThreadID originating_thread_id; ///< Used for InterthreadCommunication events
+        TimerID timer_id;                    ///< Used for Timer events.
+        std::string reason;                  ///< Used for Termination and ConnectionFailed/ConnectionLost events.
+        ThreadID originating_thread_id;      ///< Used for InterthreadCommunication events.
+        ConnectionID connection_id;          ///< Used for ConnectionEstablished and ConnectionLost events.
     };
 
 private:
@@ -57,16 +61,16 @@ private:
 
     /**
      * @brief Private constructor for events with a payload.
-     * @param [in] type The type of the event.
-     * @param [in] payload_data The raw pointer to the payload data.
-     * @param [in] size The size of the payload in bytes.
+     * @param[in] type         The type of the event.
+     * @param[in] payload_data The raw pointer to the payload data.
+     * @param[in] size         The size of the payload in bytes.
      */
     EventMessage(EventType type, const uint8_t* payload_data, int size)
-        : header_{type, size, TimerID(), "", ThreadID()}, payload_(payload_data) {}
+        : header_{type, size, TimerID(), "", ThreadID(), ConnectionID()}
+        , payload_(payload_data) {}
 
 public:
-
-    // Disallow copy, allow move
+    // Disallow copy, allow move.
     EventMessage(const EventMessage&) = delete;
     EventMessage& operator=(const EventMessage&) = delete;
     EventMessage(EventMessage&& other) = default;
@@ -75,9 +79,8 @@ public:
     /**
      * @brief Gets the ITC message subtype.
      *
-     * This value is meaningful only when the event type is
-     * EventType::InterthreadCommunication. It identifies the
-     * specific ITC message variant as defined by the receiving
+     * Meaningful only when the event type is EventType::InterthreadCommunication.
+     * Identifies the specific ITC message variant as defined by the receiving
      * thread's local ITC type registry.
      *
      * @return The ITC message subtype as a signed integer.
@@ -89,14 +92,12 @@ public:
     /**
      * @brief Gets the PDU message identifier.
      *
-     * This value is meaningful only when the event type is
-     * EventType::FrameworkPdu. It identifies the specific PDU
-     * type as defined by the DSL-generated message ID constants.
+     * Meaningful only when the event type is EventType::FrameworkPdu. Identifies
+     * the specific PDU type as defined by the DSL-generated message ID constants.
+     * The ApplicationThread uses this value to select the correct decode function
+     * for the incoming PDU payload.
      *
-     * The ApplicationThread uses this value to select the correct
-     * decode function for the incoming PDU payload.
-     *
-     * @return The PDU identifier as a signed 16-bit integer.
+     * @return The PDU identifier as a signed integer.
      */
     [[nodiscard]] int pdu_id() const {
         return pdu_id_;
@@ -104,49 +105,46 @@ public:
 
     /**
      * @brief Factory method for reactor internal events (Initial, AppReady).
-     * @param [in] type Event type.
+     * @param[in] type Event type.
      * @return EventMessage instance.
      */
     [[nodiscard]] static EventMessage create_reactor_event(EventType type);
 
     /**
      * @brief Factory method for timer events.
-     * @param [in] timer_id The ID of the expired timer.
+     * @param[in] timer_id The ID of the expired timer.
      * @return EventMessage instance.
      */
     [[nodiscard]] static EventMessage create_timer_event(TimerID timer_id);
 
     /**
      * @brief Factory method for termination events.
-     * @param [in] reason Termination reason string.
+     * @param[in] reason Termination reason string.
      * @return EventMessage instance.
      */
     [[nodiscard]] static EventMessage create_termination_event(const std::string& reason);
 
     /**
-     * @brief Factory method for Pub/Sub communication messages.
-     *
-     * @param [in] data Raw pointer to the protocol packet data.
-     * @param [in] size Size of the data in bytes.
+     * @brief Factory method for pub/sub communication messages.
+     * @param[in] data Raw pointer to the protocol packet data.
+     * @param[in] size Size of the data in bytes.
      * @return EventMessage instance.
      */
     [[nodiscard]] static EventMessage create_pubsub_message(const uint8_t* data, int size);
 
     /**
      * @brief Factory method for inter-thread communication messages.
-     *
-     * @param [in] originating_thread_id The ID of the thread that created the message.
-     * @param [in] data Raw pointer to the serialized C++ object data.
-     * @param [in] size Size of the data in bytes.
+     * @param[in] originating_thread_id The ID of the thread that created the message.
+     * @param[in] data                  Raw pointer to the serialised object data.
+     * @param[in] size                  Size of the data in bytes.
      * @return EventMessage instance.
      */
     [[nodiscard]] static EventMessage create_itc_message(ThreadID originating_thread_id, const uint8_t* data, int size);
 
     /**
-     * @brief Factory method for raw socket data (e.g., for foreign protocols).
-     *
-     * @param [in] data Raw pointer to the socket data.
-     * @param [in] size Size of the data in bytes.
+     * @brief Factory method for raw socket data (e.g. for foreign protocols).
+     * @param[in] data Raw pointer to the socket data.
+     * @param[in] size Size of the data in bytes.
      * @return EventMessage instance.
      */
     [[nodiscard]] static EventMessage create_raw_socket_message(const uint8_t* data, int size);
@@ -154,14 +152,48 @@ public:
     /**
      * @brief Factory method for framework PDU messages.
      *
-     * These messages represent fully packetized PDUs decoded by the reactor’s
-     * framing layer. The payload is the raw PDU bytes (after header removal).
+     * These messages represent fully packetised PDUs decoded by the reactor's
+     * framing layer. The payload is the raw PDU bytes after header removal.
      *
      * @param[in] data Pointer to the PDU payload.
      * @param[in] size Size of the PDU payload in bytes.
      * @return EventMessage instance.
      */
     [[nodiscard]] static EventMessage create_framework_pdu_message(const uint8_t* data, int size);
+
+    /**
+     * @brief Factory method for a successful outbound connection event.
+     *
+     * Delivered to the ApplicationThread that requested the connection when the
+     * reactor has fully established the TCP connection and assigned a ConnectionID.
+     *
+     * @param[in] connection_id The ConnectionID assigned by the reactor.
+     * @return EventMessage instance.
+     */
+    [[nodiscard]] static EventMessage create_connection_established_event(ConnectionID connection_id);
+
+    /**
+     * @brief Factory method for a failed outbound connection attempt.
+     *
+     * Delivered to the ApplicationThread that requested the connection when the
+     * TCP connect attempt fails (e.g. connection refused, timeout).
+     *
+     * @param[in] reason Human-readable description of the failure.
+     * @return EventMessage instance.
+     */
+    [[nodiscard]] static EventMessage create_connection_failed_event(const std::string& reason);
+
+    /**
+     * @brief Factory method for an unexpected connection loss event.
+     *
+     * Delivered to the ApplicationThread associated with a connection when the
+     * reactor detects that the TCP connection has been dropped.
+     *
+     * @param[in] connection_id The ConnectionID of the lost connection.
+     * @param[in] reason        Human-readable description of why the connection was lost.
+     * @return EventMessage instance.
+     */
+    [[nodiscard]] static EventMessage create_connection_lost_event(ConnectionID connection_id, const std::string& reason);
 
     /**
      * @brief Gets the event type.
@@ -178,15 +210,15 @@ public:
     /**
      * @brief Gets the timer ID.
      *
-     * This method is only valid for Timer events.
+     * Valid only for Timer events.
      * @return The timer ID.
      */
     [[nodiscard]] TimerID timer_id() const;
 
     /**
-     * @brief Gets the termination reason string.
+     * @brief Gets the reason string.
      *
-     * This method is only valid for Termination events.
+     * Valid for Termination, ConnectionFailed, and ConnectionLost events.
      * @return A const reference to the reason string.
      */
     [[nodiscard]] const std::string& reason() const;
@@ -194,27 +226,35 @@ public:
     /**
      * @brief Gets the ID of the thread that sent the message.
      *
-     * This method is only valid for InterthreadCommunication events.
+     * Valid only for InterthreadCommunication events.
      * @return The originating thread ID.
      */
     [[nodiscard]] ThreadID originating_thread_id() const;
 
     /**
+     * @brief Gets the connection ID.
+     *
+     * Valid for ConnectionEstablished and ConnectionLost events.
+     * @return The ConnectionID.
+     */
+    [[nodiscard]] ConnectionID connection_id() const;
+
+    /**
      * @brief Gets read-only access to the payload data.
      *
-     * @warning This method returns a raw pointer. The caller must not
-     * attempt to free or modify the memory.
-     * @return A const pointer to the payload bytes, or `nullptr` if no payload.
+     * @warning Returns a raw pointer. The caller must not attempt to free
+     * or modify the memory.
+     * @return A const pointer to the payload bytes, or nullptr if no payload.
      */
     [[nodiscard]] const uint8_t* payload() const;
 
     /**
      * @brief Casts the payload to the specified type.
      *
-     * @warning This function is extremely unsafe. It performs a `reinterpret_cast`
-     * and relies entirely on the caller to ensure the underlying data is of type `T`.
-     * It should only be used in performance-critical code after the `type()`
-     * method has been checked.
+     * @warning Extremely unsafe. Performs a reinterpret_cast and relies
+     * entirely on the caller to ensure the underlying data is of type T.
+     * Must only be used in performance-critical code after type() has been
+     * checked.
      *
      * @tparam T The type to cast the payload to.
      * @return A const reference to the payload cast as type T.

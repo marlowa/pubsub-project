@@ -29,12 +29,57 @@ TEST_F(BumpAllocatorTest, ConstructionSucceedsWithValidArguments) {
     EXPECT_EQ(allocator.bytes_remaining(), small_buffer_size);
 }
 
-TEST_F(BumpAllocatorTest, ConstructionThrowsOnNullStorage) {
-    EXPECT_THROW(BumpAllocator(nullptr, small_buffer_size), PreconditionAssertion);
+TEST_F(BumpAllocatorTest, MeasuringModeConstructionSucceeds) {
+    // nullptr + 0 is the measuring mode, equivalent to snprintf(nullptr, 0, ...).
+    BumpAllocator arena(nullptr, 0);
+    EXPECT_EQ(arena.bytes_capacity(), 0u);
+    EXPECT_EQ(arena.bytes_used(), 0u);
+    EXPECT_TRUE(arena.is_measuring());
 }
 
-TEST_F(BumpAllocatorTest, ConstructionThrowsOnZeroCapacity) {
-    EXPECT_THROW(BumpAllocator(small_buffer_.data(), 0), PreconditionAssertion);
+TEST_F(BumpAllocatorTest, MeasuringModeAllocateReturnsNullptr) {
+    BumpAllocator arena(nullptr, 0);
+    int32_t* ptr = arena.allocate<int32_t>(1);
+    EXPECT_EQ(ptr, nullptr);
+}
+
+TEST_F(BumpAllocatorTest, MeasuringModeAllocateStillAdvancesBytesUsed) {
+    // Even though no real buffer exists, bytes_used() tracks what would
+    // have been needed -- exactly as snprintf returns the required length.
+    BumpAllocator arena(nullptr, 0);
+    [[maybe_unused]] int32_t* p1 = arena.allocate<int32_t>(4);
+    EXPECT_EQ(arena.bytes_used(), sizeof(int32_t) * 4);
+    [[maybe_unused]] int64_t* p2 = arena.allocate<int64_t>(2);
+    EXPECT_GT(arena.bytes_used(), sizeof(int32_t) * 4);
+}
+
+TEST_F(BumpAllocatorTest, TwoPassPatternMeasureThenAllocate) {
+    // Pass 1: measure with nullptr to discover bytes needed.
+    BumpAllocator measuring_arena(nullptr, 0);
+    [[maybe_unused]] int32_t* m1 = measuring_arena.allocate<int32_t>(4);
+    [[maybe_unused]] int64_t* m2 = measuring_arena.allocate<int64_t>(2);
+    std::size_t needed = measuring_arena.bytes_used();
+    EXPECT_GT(needed, 0u);
+
+    // Pass 2: allocate a real buffer of exactly that size and retry.
+    std::vector<uint8_t> real_storage(needed);
+    BumpAllocator real_arena(real_storage.data(), needed);
+    int32_t* r1 = real_arena.allocate<int32_t>(4);
+    int64_t* r2 = real_arena.allocate<int64_t>(2);
+    EXPECT_NE(r1, nullptr);
+    EXPECT_NE(r2, nullptr);
+    EXPECT_EQ(real_arena.bytes_used(), needed);
+}
+
+TEST_F(BumpAllocatorTest, ExhaustedBufferReturnsNullptrButStillTracksBytesUsed) {
+    // When the real buffer is too small, allocate() returns nullptr but
+    // bytes_used() still reflects the bytes that would have been needed.
+    BumpAllocator arena(small_buffer_.data(), small_buffer_.size());
+    [[maybe_unused]] uint8_t* fill = arena.allocate<uint8_t>(small_buffer_size);
+    std::size_t used_before = arena.bytes_used();
+    int32_t* ptr = arena.allocate<int32_t>(1);
+    EXPECT_EQ(ptr, nullptr);
+    EXPECT_GT(arena.bytes_used(), used_before);
 }
 
 TEST_F(BumpAllocatorTest, AllocateSingleInt32ReturnsNonNull) {

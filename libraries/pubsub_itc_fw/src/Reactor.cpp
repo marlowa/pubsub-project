@@ -31,6 +31,7 @@
 #include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/ReactorConfiguration.hpp>
+#include <pubsub_itc_fw/ServiceRegistry.hpp>
 #include <pubsub_itc_fw/ReactorLifecycleState.hpp>
 #include <pubsub_itc_fw/StringUtils.hpp>
 #include <pubsub_itc_fw/Timer.hpp>
@@ -51,12 +52,15 @@ Reactor::~Reactor() {
     }
 }
 
-Reactor::Reactor(const ReactorConfiguration& reactor_configuration, QuillLogger& logger)
+Reactor::Reactor(const ReactorConfiguration& reactor_configuration,
+                 const ServiceRegistry& service_registry,
+                 QuillLogger& logger)
     : handlers_{}
     , threads_{}
     , threads_by_thread_id_{}
     , command_queue_(reactor_configuration.command_queue_config_, reactor_configuration.command_allocator_config_)
     , config_(reactor_configuration)
+    , service_registry_(service_registry)
     , logger_(logger) {
     epoll_fd_ = ::epoll_create1(EPOLL_CLOEXEC);
     if (epoll_fd_ == -1) {
@@ -651,6 +655,18 @@ void Reactor::process_control_commands() {
 
             case ReactorControlCommand::CancelTimer:
                 cancel_timer_fd(command.owner_thread_id_, command.timer_id_);
+                break;
+
+            case ReactorControlCommand::Connect:
+                // TODO: resolve service_name_ via service_registry_, initiate non-blocking connect.
+                break;
+
+            case ReactorControlCommand::Disconnect:
+                // TODO: tear down connection identified by connection_id_.
+                break;
+
+            case ReactorControlCommand::SendPdu:
+                // TODO: route PDU frame to per-connection outbound queue for connection_id_.
                 break;
         }
     }

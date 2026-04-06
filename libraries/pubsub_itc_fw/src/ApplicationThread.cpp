@@ -155,6 +155,16 @@ void ApplicationThread::cancel_timer(const std::string& name) {
     name_to_id_.erase(it);
 }
 
+void ApplicationThread::connect_to_service(const std::string& service_name)
+{
+    assert_called_from_owner();
+
+    ReactorControlCommand command(ReactorControlCommand::CommandTag::Connect);
+    command.requesting_thread_id_ = thread_id_;
+    command.service_name_ = service_name;
+    reactor_.enqueue_control_command(command);
+}
+
 // Note: reason is used in the logging macros but we have to neutralise those macros for clang-tidy
 void ApplicationThread::shutdown([[maybe_unused]] const std::string& reason) {
     auto state = get_lifecycle_state().as_tag();
@@ -308,6 +318,26 @@ void ApplicationThread::process_message(EventMessage& message) {
 
         case EventType::RawSocketCommunication: {
             on_raw_socket_message(message);
+            break;
+        }
+
+        case EventType::FrameworkPdu: {
+            on_framework_pdu_message(message);
+            break;
+        }
+
+        case EventType::ConnectionEstablished: {
+            on_connection_established(message.connection_id());
+            break;
+        }
+
+        case EventType::ConnectionFailed: {
+            on_connection_failed(message.reason());
+            break;
+        }
+
+        case EventType::ConnectionLost: {
+            on_connection_lost(message.connection_id(), message.reason());
             break;
         }
 

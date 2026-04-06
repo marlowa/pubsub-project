@@ -10,6 +10,7 @@
 #include <memory>
 #include <string>
 
+#include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/EventHandler.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/HighResolutionClock.hpp>
@@ -265,6 +266,40 @@ class ApplicationThread {
     void cancel_timer(const std::string& name);
 
     /**
+     * @name Connection API Contract
+     *
+     * connect_to_service() follows the same threading and lifecycle rules as
+     * the timer APIs. It must only be called from within the owning
+     * ApplicationThread's callback context (e.g. on_initial_event,
+     * on_app_ready_event, on_itc_message, etc.) and never from another thread.
+     *
+     * The reactor resolves the service name via the ServiceRegistry, initiates
+     * a non-blocking TCP connect, and delivers one of the following events to
+     * this thread's queue when the attempt completes:
+     *
+     *   ConnectionEstablished — carrying the assigned ConnectionID.
+     *   ConnectionFailed      — carrying a human-readable reason string.
+     *
+     * If the connection is later lost, a ConnectionLost event is delivered
+     * carrying the ConnectionID and a reason string.
+     */
+
+    /**
+     * @brief Requests the reactor to establish an outbound TCP connection to a
+     *        named service.
+     *
+     * The service name is resolved via the ServiceRegistry supplied to the
+     * Reactor at construction. The reactor tries the primary endpoint first
+     * and falls back to the secondary if the primary is unreachable.
+     *
+     * The result is delivered asynchronously via on_connection_established()
+     * or on_connection_failed().
+     *
+     * @param[in] service_name Logical name of the service to connect to.
+     */
+    void connect_to_service(const std::string& service_name);
+
+    /**
      * @brief Schedules a high-resolution timer.
      * @param [in] name The name of the timer.
      * @param [in] interval The delay or interval before the timer rings.
@@ -359,6 +394,34 @@ protected:
      * may ignore this and rely solely on on_raw_socket_message().
      */
     virtual void on_framework_pdu_message([[maybe_unused]] const EventMessage& msg) {}
+
+    /**
+     * @brief Called when an outbound TCP connection requested via
+     *        connect_to_service() has been successfully established.
+     *
+     * @param[in] id The ConnectionID assigned by the reactor. Use this in
+     *               subsequent send_pdu() calls to identify the connection.
+     */
+    virtual void on_connection_established([[maybe_unused]] ConnectionID id) {}
+
+    /**
+     * @brief Called when an outbound TCP connection attempt has failed.
+     *
+     * @param[in] reason Human-readable description of the failure.
+     */
+    virtual void on_connection_failed([[maybe_unused]] const std::string& reason) {}
+
+    /**
+     * @brief Called when an established TCP connection has been lost unexpectedly.
+     *
+     * The application should re-issue connect_to_service() if it wishes to
+     * reconnect.
+     *
+     * @param[in] id     The ConnectionID of the lost connection.
+     * @param[in] reason Human-readable description of why the connection was lost.
+     */
+    virtual void on_connection_lost([[maybe_unused]] ConnectionID id,
+                                    [[maybe_unused]] const std::string& reason) {}
 
     void assert_called_from_owner() const {
         if (thread_ == nullptr) {
