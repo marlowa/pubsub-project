@@ -14,6 +14,7 @@
 
 #include <pubsub_itc_fw/AllocatorConfig.hpp>
 #include <pubsub_itc_fw/ByteStreamInterface.hpp>
+#include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/EventType.hpp>
 #include <pubsub_itc_fw/InetAddress.hpp>
@@ -212,6 +213,7 @@ protected:
     std::unique_ptr<Reactor> reactor_;
     std::shared_ptr<StubApplicationThread> thread_;
     StubStream stream_;
+    ExpandableSlabAllocator slab_allocator_{4096};
 };
 
 // ============================================================
@@ -343,7 +345,7 @@ TEST_F(PduFramerParserTest, NoPendingDataInitially)
 TEST_F(PduFramerParserTest, ParseSingleCompletePdu)
 {
     bool disconnected = false;
-    PduParser parser(stream_, *thread_, [&disconnected]() { disconnected = true; });
+    PduParser parser(stream_, *thread_, slab_allocator_, [&disconnected]() { disconnected = true; });
 
     const uint8_t payload[] = {0x10, 0x20, 0x30};
     stream_.feed_pdu(100, 1, payload, sizeof(payload));
@@ -361,11 +363,13 @@ TEST_F(PduFramerParserTest, ParseSingleCompletePdu)
     EXPECT_EQ(msg->type().as_tag(), EventType::FrameworkPdu);
     EXPECT_EQ(msg->payload_size(), static_cast<int>(sizeof(payload)));
     EXPECT_EQ(std::memcmp(msg->payload(), payload, sizeof(payload)), 0);
+    EXPECT_GE(msg->slab_id(), 0);
+    slab_allocator_.deallocate(msg->slab_id(), const_cast<uint8_t*>(msg->payload()));
 }
 
 TEST_F(PduFramerParserTest, ParseTwoConsecutivePdus)
 {
-    PduParser parser(stream_, *thread_, nullptr);
+    PduParser parser(stream_, *thread_, slab_allocator_, nullptr);
 
     const uint8_t p1[] = {0xAA, 0xBB};
     const uint8_t p2[] = {0xCC, 0xDD, 0xEE};
@@ -383,11 +387,13 @@ TEST_F(PduFramerParserTest, ParseTwoConsecutivePdus)
     ASSERT_TRUE(msg2.has_value());
     EXPECT_EQ(msg1->payload_size(), static_cast<int>(sizeof(p1)));
     EXPECT_EQ(msg2->payload_size(), static_cast<int>(sizeof(p2)));
+    slab_allocator_.deallocate(msg1->slab_id(), const_cast<uint8_t*>(msg1->payload()));
+    slab_allocator_.deallocate(msg2->slab_id(), const_cast<uint8_t*>(msg2->payload()));
 }
 
 TEST_F(PduFramerParserTest, ParseWithPartialHeaderDelivery)
 {
-    PduParser parser(stream_, *thread_, nullptr);
+    PduParser parser(stream_, *thread_, slab_allocator_, nullptr);
 
     const uint8_t payload[] = {0x01, 0x02};
     stream_.feed_pdu(100, 1, payload, sizeof(payload));
@@ -404,7 +410,7 @@ TEST_F(PduFramerParserTest, ParseWithPartialHeaderDelivery)
 
 TEST_F(PduFramerParserTest, ParseDetectsCanaryMismatch)
 {
-    PduParser parser(stream_, *thread_, nullptr);
+    PduParser parser(stream_, *thread_, slab_allocator_, nullptr);
 
     // Feed a frame with a corrupt canary.
     PduHeader hdr{};
@@ -432,7 +438,7 @@ TEST_F(PduFramerParserTest, ParseDetectsCanaryMismatch)
 TEST_F(PduFramerParserTest, ParseDetectsPeerDisconnect)
 {
     bool disconnected = false;
-    PduParser parser(stream_, *thread_, [&disconnected]() { disconnected = true; });
+    PduParser parser(stream_, *thread_, slab_allocator_, [&disconnected]() { disconnected = true; });
 
     stream_.recv_disconnect = true;
 
@@ -445,7 +451,7 @@ TEST_F(PduFramerParserTest, ParseDetectsPeerDisconnect)
 
 TEST_F(PduFramerParserTest, ParseEagainWithNoDataReturnsOk)
 {
-    PduParser parser(stream_, *thread_, nullptr);
+    PduParser parser(stream_, *thread_, slab_allocator_, nullptr);
 
     // No data at all — socket returns EAGAIN immediately.
     stream_.recv_eagain = true;
@@ -481,7 +487,7 @@ TEST_F(PduFramerParserTest, RoundTripFramerToParser)
     }
     parser_stream.recv_eagain = true;
 
-    PduParser parser(parser_stream, *thread_, nullptr);
+    PduParser parser(parser_stream, *thread_, slab_allocator_, nullptr);
     auto [recv_ok, recv_error] = parser.receive();
 
     ASSERT_TRUE(recv_ok);
@@ -491,6 +497,8 @@ TEST_F(PduFramerParserTest, RoundTripFramerToParser)
     EXPECT_EQ(msg->type().as_tag(), EventType::FrameworkPdu);
     EXPECT_EQ(msg->payload_size(), static_cast<int>(sizeof(payload)));
     EXPECT_EQ(std::memcmp(msg->payload(), payload, sizeof(payload)), 0);
+    EXPECT_GE(msg->slab_id(), 0);
+    slab_allocator_.deallocate(msg->slab_id(), const_cast<uint8_t*>(msg->payload()));
 }
 
 } // namespace pubsub_itc_fw

@@ -56,9 +56,10 @@ EventMessage EventMessage::create_raw_socket_message(const uint8_t* data, int si
     return msg;
 }
 
-EventMessage EventMessage::create_framework_pdu_message(const uint8_t* data, int size)
+EventMessage EventMessage::create_framework_pdu_message(const uint8_t* data, int size, int slab_id)
 {
     EventMessage msg(EventType(EventType::FrameworkPdu), data, size);
+    msg.slab_id_ = slab_id;
     return msg;
 }
 
@@ -114,6 +115,11 @@ ThreadID EventMessage::originating_thread_id() const
 ConnectionID EventMessage::connection_id() const
 {
     return header_.connection_id;
+}
+
+int EventMessage::slab_id() const
+{
+    return slab_id_;
 }
 
 const uint8_t* EventMessage::payload() const

@@ -4,130 +4,157 @@
 #include <arpa/inet.h>
 #include <cstring>
 
-#include <pubsub_itc_fw/PduParser.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
+#include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
+#include <pubsub_itc_fw/PduParser.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 
 namespace pubsub_itc_fw {
 
 PduParser::PduParser(ByteStreamInterface& stream,
                      ApplicationThread& target_thread,
+                     ExpandableSlabAllocator& slab_allocator,
                      std::function<void()> disconnect_handler)
     : stream_(stream)
     , target_thread_(target_thread)
+    , slab_allocator_(slab_allocator)
     , disconnect_handler_(std::move(disconnect_handler))
-    , bytes_in_buffer_{0}
-    , current_payload_size_{0}
+    , header_bytes_{0}
     , header_validated_{false}
+    , current_payload_size_{0}
+    , current_pdu_id_{0}
+    , payload_chunk_{nullptr}
+    , payload_slab_id_{-1}
+    , payload_bytes_received_{0}
 {
 }
 
 std::tuple<bool, std::string> PduParser::receive()
 {
     for (;;) {
-        // Fill the buffer with as many bytes as the socket will give us.
-        const size_t space = receive_buffer_size - bytes_in_buffer_;
-        if (space == 0) {
-            // Buffer is full — should not happen with correctly sized PDUs.
-            return {false, "PduParser: receive buffer full — PDU exceeds maximum size"};
-        }
+        // Phase 1: accumulate header bytes.
+        if (!header_validated_) {
+            const size_t header_space = sizeof(PduHeader) - header_bytes_;
 
-        auto [bytes_read, error] = stream_.receive(
-            utils::SimpleSpan<uint8_t>(buffer_ + bytes_in_buffer_, space));
+            if (header_space > 0) {
+                auto [bytes_read, error] = stream_.receive(
+                    utils::SimpleSpan<uint8_t>(header_buffer_ + header_bytes_, header_space));
 
-        if (bytes_read == 0 && error.empty()) {
-            // Peer closed the connection gracefully.
-            if (disconnect_handler_ != nullptr) {
-                disconnect_handler_();
-            }
-            return {false, ""};
-        }
-
-        if (bytes_read < 0) {
-            if (bytes_read == -EAGAIN || bytes_read == -EWOULDBLOCK) {
-                // No more data available right now — done for this epoll event.
-                return {true, ""};
-            }
-            return {false, error};
-        }
-
-        bytes_in_buffer_ += static_cast<size_t>(bytes_read);
-
-        // Dispatch as many complete frames as the buffer contains.
-        for (;;) {
-            if (!header_validated_) {
-                if (!has_complete_header()) {
-                    break; // Need more data.
+                if (bytes_read == 0 && error.empty()) {
+                    if (disconnect_handler_ != nullptr) {
+                        disconnect_handler_();
+                    }
+                    return {false, ""};
                 }
 
-                // Validate the canary.
-                const PduHeader* hdr = reinterpret_cast<const PduHeader*>(buffer_);
-                if (ntohl(hdr->canary) != pdu_canary_value) {
-                    return {false, "PduParser: canary mismatch — wire corruption or framing error"};
+                if (bytes_read < 0) {
+                    if (bytes_read == -EAGAIN || bytes_read == -EWOULDBLOCK) {
+                        return {true, ""};
+                    }
+                    return {false, error};
                 }
 
-                current_payload_size_ = ntohl(hdr->byte_count);
-
-                if (current_payload_size_ > max_payload_size) {
-                    return {false, "PduParser: payload size exceeds maximum"};
-                }
-
-                header_validated_ = true;
+                header_bytes_ += static_cast<size_t>(bytes_read);
             }
 
-            if (!has_complete_payload()) {
-                break; // Need more data.
+            if (!has_complete_header()) {
+                return {true, ""}; // Need more data; wait for next epoll event.
             }
 
-            dispatch_pdu();
-            consume_frame();
+            // Full header received — validate canary.
+            const PduHeader* hdr = reinterpret_cast<const PduHeader*>(header_buffer_);
+            if (ntohl(hdr->canary) != pdu_canary_value) {
+                return {false, "PduParser: canary mismatch — wire corruption or framing error"};
+            }
+
+            current_payload_size_ = ntohl(hdr->byte_count);
+            current_pdu_id_ = static_cast<int16_t>(ntohs(static_cast<uint16_t>(hdr->pdu_id)));
+
+            if (current_payload_size_ == 0) {
+                return {false, "PduParser: zero-length payload is not permitted"};
+            }
+
+            // Allocate a slab chunk to receive the payload directly — zero copy.
+            auto [slab_id, chunk] = slab_allocator_.allocate(current_payload_size_);
+            if (chunk == nullptr) {
+                return {false, "PduParser: slab allocation failed for incoming PDU payload"};
+            }
+
+            payload_slab_id_        = slab_id;
+            payload_chunk_          = chunk;
+            payload_bytes_received_ = 0;
+            header_validated_       = true;
         }
+
+        // Phase 2: read payload bytes directly into the slab chunk.
+        const size_t payload_remaining =
+            current_payload_size_ - payload_bytes_received_;
+
+        if (payload_remaining > 0) {
+            uint8_t* dest = static_cast<uint8_t*>(payload_chunk_) + payload_bytes_received_;
+
+            auto [bytes_read, error] = stream_.receive(
+                utils::SimpleSpan<uint8_t>(dest, payload_remaining));
+
+            if (bytes_read == 0 && error.empty()) {
+                slab_allocator_.deallocate(payload_slab_id_, payload_chunk_);
+                payload_chunk_   = nullptr;
+                payload_slab_id_ = -1;
+                if (disconnect_handler_ != nullptr) {
+                    disconnect_handler_();
+                }
+                return {false, ""};
+            }
+
+            if (bytes_read < 0) {
+                if (bytes_read == -EAGAIN || bytes_read == -EWOULDBLOCK) {
+                    return {true, ""}; // Partial payload — resume on next epoll event.
+                }
+                slab_allocator_.deallocate(payload_slab_id_, payload_chunk_);
+                payload_chunk_   = nullptr;
+                payload_slab_id_ = -1;
+                return {false, error};
+            }
+
+            payload_bytes_received_ += static_cast<size_t>(bytes_read);
+        }
+
+        if (payload_bytes_received_ < current_payload_size_) {
+            return {true, ""}; // Payload not yet complete.
+        }
+
+        // Complete frame — dispatch to target thread.
+        dispatch_pdu(payload_slab_id_, payload_chunk_);
+
+        payload_chunk_          = nullptr;
+        payload_slab_id_        = -1;
+        payload_bytes_received_ = 0;
+        reset_header();
     }
 }
 
 bool PduParser::has_complete_header() const
 {
-    return bytes_in_buffer_ >= sizeof(PduHeader);
+    return header_bytes_ >= sizeof(PduHeader);
 }
 
-bool PduParser::has_complete_payload() const
+void PduParser::dispatch_pdu(int slab_id, void* payload_chunk)
 {
-    return bytes_in_buffer_ >= sizeof(PduHeader) + current_payload_size_;
-}
+    const uint8_t* payload    = static_cast<const uint8_t*>(payload_chunk);
+    const int      payload_size = static_cast<int>(current_payload_size_);
 
-void PduParser::dispatch_pdu()
-{
-    const PduHeader* hdr = reinterpret_cast<const PduHeader*>(buffer_);
-    const uint8_t* payload = buffer_ + sizeof(PduHeader);
-    const int payload_size = static_cast<int>(current_payload_size_);
+    EventMessage msg = EventMessage::create_framework_pdu_message(
+        payload, payload_size, slab_id);
 
-    EventMessage msg = EventMessage::create_framework_pdu_message(payload, payload_size);
     target_thread_.get_queue().enqueue(std::move(msg));
-
-    // Suppress unused variable warning when pdu_id is not yet used.
-    [[maybe_unused]] int16_t pdu_id = static_cast<int16_t>(ntohs(
-        static_cast<uint16_t>(hdr->pdu_id)));
 }
 
-void PduParser::consume_frame()
+void PduParser::reset_header()
 {
-    const size_t frame_size = sizeof(PduHeader) + current_payload_size_;
-    const size_t remaining  = bytes_in_buffer_ - frame_size;
-
-    if (remaining > 0) {
-        std::memmove(buffer_, buffer_ + frame_size, remaining);
-    }
-
-    bytes_in_buffer_      = remaining;
-    current_payload_size_ = 0;
+    header_bytes_         = 0;
     header_validated_     = false;
-}
-
-void PduParser::reset_buffer()
-{
-    bytes_in_buffer_      = 0;
     current_payload_size_ = 0;
-    header_validated_     = false;
+    current_pdu_id_       = 0;
 }
 
 } // namespace pubsub_itc_fw

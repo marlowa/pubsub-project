@@ -23,9 +23,17 @@ namespace pubsub_itc_fw {
  * ensure consistent state and initialisation.
  *
  * Payload ownership:
- *   The payload applies to ITC messages, not to system event messages such as
- *   INIT or TERM. In those system event cases the payload pointer is nullptr.
- *   Where the payload pointer is not nullptr, the buffer is managed by the
+ *   The payload applies to ITC messages and FrameworkPdu messages, not to system
+ *   event messages such as INIT or TERM. In those system event cases the payload
+ *   pointer is nullptr.
+ *
+ *   For FrameworkPdu messages, the payload points into a slab chunk allocated by
+ *   the reactor's inbound slab allocator. The slab_id() accessor returns the
+ *   corresponding slab ID. The receiving ApplicationThread must call
+ *   release_pdu_payload() (or deallocate directly) after processing the payload.
+ *   Failure to do so leaks the slab chunk.
+ *
+ *   For all other messages with a non-null payload, the buffer is managed by the
  *   allocator of the receiving component. The receiving thread is responsible
  *   for freeing it.
  *
@@ -53,6 +61,7 @@ private:
     const uint8_t* payload_{nullptr};
     int itc_message_type_{-1};
     int pdu_id_{-1};
+    int slab_id_{-1};  ///< Slab ID for FrameworkPdu messages. -1 means not slab-allocated.
 
     /**
      * @brief Private constructor to enforce use of static factory methods.
@@ -153,13 +162,17 @@ public:
      * @brief Factory method for framework PDU messages.
      *
      * These messages represent fully packetised PDUs decoded by the reactor's
-     * framing layer. The payload is the raw PDU bytes after header removal.
+     * framing layer. The payload is a slab-allocated chunk containing the raw
+     * PDU bytes after header removal. The caller must pass the slab_id returned
+     * by ExpandableSlabAllocator::allocate() so the receiving thread can free
+     * the chunk after processing.
      *
-     * @param[in] data Pointer to the PDU payload.
-     * @param[in] size Size of the PDU payload in bytes.
+     * @param[in] data     Pointer to the slab-allocated PDU payload. Must not be nullptr.
+     * @param[in] size     Size of the PDU payload in bytes.
+     * @param[in] slab_id  Slab ID from ExpandableSlabAllocator::allocate().
      * @return EventMessage instance.
      */
-    [[nodiscard]] static EventMessage create_framework_pdu_message(const uint8_t* data, int size);
+    [[nodiscard]] static EventMessage create_framework_pdu_message(const uint8_t* data, int size, int slab_id);
 
     /**
      * @brief Factory method for a successful outbound connection event.
@@ -238,6 +251,17 @@ public:
      * @return The ConnectionID.
      */
     [[nodiscard]] ConnectionID connection_id() const;
+
+    /**
+     * @brief Gets the slab ID for FrameworkPdu messages.
+     *
+     * Valid only for FrameworkPdu events. Returns -1 for all other event types.
+     * The receiving ApplicationThread must pass this value to
+     * ExpandableSlabAllocator::deallocate() along with payload() after processing.
+     *
+     * @return The slab ID, or -1 if not a slab-allocated payload.
+     */
+    [[nodiscard]] int slab_id() const;
 
     /**
      * @brief Gets read-only access to the payload data.
