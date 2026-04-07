@@ -139,23 +139,13 @@ namespace pubsub_itc_fw {
 template <typename T> struct Slot;
 
 template <typename T> struct SlotStorage {
-    struct FreeListNode {
-        Slot<T>* next;
-    };
-
-    union {
-        FreeListNode free_node;
-        alignas(T) std::byte storage[sizeof(T)];
-    };
+    alignas(T) std::byte storage[sizeof(T)];
 
     T* object_ptr() {
         return reinterpret_cast<T*>(&storage);
     }
     const T* object_ptr() const {
         return reinterpret_cast<const T*>(&storage);
-    }
-    FreeListNode* free_node_ptr() {
-        return &free_node;
     }
 };
 
@@ -486,11 +476,26 @@ template <typename T> struct Slot {
     std::atomic<std::uintptr_t> is_constructed{0};
 
     /**
+     * @brief Intrusive free-list next pointer.
+     *
+     * Kept outside SlotStorage so it never lives inside a union, which would
+     * require trivial construction and prevent use of std::atomic.
+     * Written with release by push_slot_to_free_list; read with acquire by
+     * pop_slot_from_free_list. This eliminates the data race that existed
+     * when next was stored inside the union alongside T's object storage.
+     *
+     * Placed before canary so that the canary remains directly adjacent to
+     * storage — a one-byte underrun from T still hits canary, not free_next.
+     */
+    std::atomic<Slot<T>*> free_next{nullptr};
+
+    /**
      * @brief Buffer underrun guard.
      *
      * Must equal slot_canary_value at all times. A value other than
      * slot_canary_value indicates that the T object stored in the adjacent
      * storage field has written before its own start address.
+     * Must remain directly adjacent to storage for this guard to work.
      */
     std::uint64_t canary{slot_canary_value};
 
@@ -502,14 +507,7 @@ template <typename T> struct Slot {
 // ============================================================
 
 template <typename T> struct SlotStorage {
-    struct FreeListNode {
-        Slot<T>* next;
-    };
-
-    union {
-        FreeListNode free_node;
-        alignas(T) std::byte storage[sizeof(T)];
-    };
+    alignas(T) std::byte storage[sizeof(T)];
 
     T* object_ptr() {
         return reinterpret_cast<T*>(&storage);
@@ -517,14 +515,6 @@ template <typename T> struct SlotStorage {
 
     const T* object_ptr() const {
         return reinterpret_cast<const T*>(&storage);
-    }
-
-    FreeListNode* free_node_ptr() {
-        return &free_node;
-    }
-
-    const FreeListNode* free_node_ptr() const {
-        return &free_node;
     }
 };
 
@@ -928,7 +918,7 @@ FixedSizeMemoryPool<T>::FixedSizeMemoryPool(int objects_per_pool, UseHugePagesFl
         SlotType* slot = new (&slots_[i]) SlotType();
         slot->is_constructed.store(0U, std::memory_order_relaxed);
         slot->canary = slot_canary_value;
-        slot->storage.free_node_ptr()->next = nullptr;
+        slot->free_next.store(nullptr, std::memory_order_relaxed);
         push_slot_to_free_list(slot);
     }
 }
@@ -1008,7 +998,7 @@ template <typename T> void FixedSizeMemoryPool<T>::push_slot_to_free_list(SlotTy
     HeadPtr next_head;
 
     do {
-        slot->storage.free_node_ptr()->next = old_head.ptr;
+        slot->free_next.store(old_head.ptr, std::memory_order_release);
         next_head.ptr = slot;
         next_head.counter = old_head.counter + 1U;
     } while (!compare_exchange_weak(old_head, next_head));
@@ -1021,7 +1011,7 @@ typename FixedSizeMemoryPool<T>::SlotType* FixedSizeMemoryPool<T>::pop_slot_from
 
     while (old_head.ptr != nullptr) {
         SlotType* head_slot = old_head.ptr;
-        next_head.ptr = head_slot->storage.free_node_ptr()->next;
+        next_head.ptr = head_slot->free_next.load(std::memory_order_acquire);
         next_head.counter = old_head.counter + 1U;
 
         if (compare_exchange_weak(old_head, next_head)) {
