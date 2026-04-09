@@ -387,3 +387,96 @@ Joe's reactor receives a PDU from fred:
 5. Dispatches `EventMessage::create_framework_pdu_message(payload, size, slab_id)` to joe's thread queue
 6. Joe's thread calls `on_framework_pdu_message(msg)`, processes payload
 7. Joe's thread calls `inbound_slab_allocator_.deallocate(msg.slab_id(), msg.payload())`
+
+---
+
+## Session 3 Accomplishments
+
+### TcpSocket EAGAIN/EOF contract fix [CRITICAL BUG FIX]
+`TcpSocketImpl::send()` and `TcpSocketImpl::receive()` were returning `{0, ""}` for
+`EAGAIN`/`EWOULDBLOCK`. `PduParser::receive()` treats `bytes_read == 0 && error.empty()`
+as peer-closed (EOF) and calls the disconnect handler. This caused all inbound connections
+to be torn down immediately after the first PDU was received — the `PduParser` looped back,
+got EAGAIN on the now-empty socket, and mistakenly called `teardown_inbound_connection`.
+
+**Fix:** Both methods now return `{-EAGAIN, ""}` for EAGAIN/EWOULDBLOCK.
+The `PduParser` already handled `-EAGAIN` correctly by returning `{true, ""}`.
+
+**File:** `src/TcpSocket.cpp`
+
+### Use-after-free in on_data_ready / on_inbound_data_ready [BUG FIX]
+`PduParser` holds the disconnect handler lambda and calls it synchronously when
+`recv()` returns 0. This destroys the `OutboundConnection`/`InboundConnection`
+while still inside `receive()`. After `receive()` returns, `on_data_ready` and
+`on_inbound_data_ready` were accessing `conn.peer_description()` and `conn.id()`
+on the already-destroyed object — undefined behaviour (SIGBUS under fmt::format).
+
+**Fix:** Capture `id` and `peer_description`/`service_name` by value before calling
+`conn.parser()->receive()` in both functions.
+
+**File:** `src/Reactor.cpp`
+
+### InboundConnection infrastructure [COMPLETED]
+- `InboundConnection` — server-side accepted TCP connection; `PduFramer` and `PduParser`
+  constructed immediately; `target_thread_id_` stored for `ConnectionLost` delivery
+- `InboundListener` — struct owning `TcpAcceptor`, `target_thread_id`, `current_connection_id`;
+  enforces one-connection-per-port contract
+- `AcceptorHandler` — `EventHandler` subclass registered on listening socket fd;
+  calls `Reactor::on_accept()`
+- `Reactor::register_inbound_listener(address, thread_id)` — call before `run()`;
+  port=0 supported (OS assigns free port)
+- `Reactor::initialize_listeners()` — called from `initialize_threads()`; binds,
+  listens, registers with epoll via `register_handler()` (not manually)
+- `Reactor::on_accept()` — enforces one-connection rule; creates `InboundConnection`;
+  delivers `ConnectionEstablished`
+- `Reactor::on_inbound_data_ready()`, `on_inbound_write_ready()`, `teardown_inbound_connection()`
+- `process_send_pdu_command()` and `process_disconnect_command()` updated to check
+  both `connections_` (outbound) and `inbound_connections_`
+- `Reactor::get_first_inbound_listener_port()` — TEST SEAM for dynamic port discovery
+
+### DSL generator fixes [COMPLETED]
+Three bugs fixed in `python/dsl/generator_cpp.py`:
+1. `RoleView` — `_cpp_type_view()` appended `View` to enum `ReferenceType` fields,
+   generating undefined `RoleView`. Fix: check `enum_names` set; enums have no View variant.
+2. `encoded_size` unused parameter — for fixed-size messages the `message` parameter
+   was unused. Fix: emit `[[maybe_unused]]` and delegate to `fixed_encoded_size()`.
+3. Missing enum wire functions — `encoded_size`, `encode`, `decode_EnumName`, `skip_EnumName`,
+   `max_decode_arena_bytes_EnumName`, `max_encode_arena_bytes_EnumName` were never generated
+   for enums, causing link errors in messages that contain enum fields (`ArbitrationReport`).
+   Fix: `_emit_enum_functions()` generates all six functions respecting the actual underlying
+   type (`i8`/`i16`/`i32`/`i64`).
+
+### Integration test infrastructure [COMPLETED]
+- `libraries/pubsub_itc_fw/integration_tests/StatusQueryResponseTest.cpp`
+- `libraries/pubsub_itc_fw/integration_tests/CMakeLists.txt`
+- `build.py` updated: `run_integration_tests()` runs after unit tests pass; signal kills
+  reported by name (SIGABRT, SIGSEGV etc.)
+- `cmake-library.txt` DEPENDS updated to include `generator_cpp.py` so DSL headers
+  are regenerated when the generator changes
+- Top-level `CMakeLists.txt` needs `add_subdirectory(libraries/pubsub_itc_fw/integration_tests)`
+
+### Test: StatusQueryResponseRoundTrip [PASSING]
+Full stack end-to-end: two reactors on loopback, connector sends StatusQuery (PDU 100),
+listener decodes and sends StatusResponse (PDU 101), connector decodes and verifies
+field values, then disconnects cleanly. Both sides receive ConnectionEstablished and
+ConnectionLost. All field values verified.
+
+### ApplicationThread [UPDATED]
+Added `protected: Reactor& get_reactor()` accessor so subclasses can enqueue
+`ReactorControlCommand` objects from within their callbacks.
+
+## What Is Not Yet Done (updated)
+
+1. **Leader-follower protocol** — state machine, heartbeat timers, arbitration
+2. **Pub/sub fanout**
+3. **`ExpandablePoolAllocatorTest.CrossPoolAbaInterleaving`** — intermittent 1-in-500
+   failure; `free_next` atomic fix resolved main race; residual failure still present,
+   likely needs TSan investigation
+4. **Logging levels** — everything currently at Info; once framework applications are
+   running, verbose paths should be moved to Debug
+
+## Immediate Next Task
+Leader-follower protocol state machine. Prerequisites now complete:
+- Both outbound (connect_to_service) and inbound (register_inbound_listener) paths working
+- StatusQuery/StatusResponse exchange verified end-to-end
+- Integration test framework in place for regression testing
