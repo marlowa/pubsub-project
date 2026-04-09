@@ -1,3 +1,5 @@
+#ifndef CLANG_TIDY
+// TODO not sure why DslBenchProtocol.hpp is not found during clang-tidy.
 #include "DslBenchProtocol.hpp"
 
 #include <algorithm>
@@ -125,3 +127,4 @@ int main()
 
     return 0;
 }
+#endif

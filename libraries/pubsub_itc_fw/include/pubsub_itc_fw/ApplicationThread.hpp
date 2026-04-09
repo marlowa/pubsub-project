@@ -436,6 +436,16 @@ protected:
         }
     }
 
+protected:
+    /**
+     * @brief Returns a reference to the owning Reactor.
+     *
+     * Available to subclasses so they can enqueue ReactorControlCommands
+     * (e.g. Connect, SendPdu, Disconnect) and access slab allocators
+     * from within their callback implementations.
+     */
+    Reactor& get_reactor() { return reactor_; }
+
 private:
     QuillLogger& logger_;
     Reactor& reactor_;

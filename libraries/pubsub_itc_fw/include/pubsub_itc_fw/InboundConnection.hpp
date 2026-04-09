@@ -126,6 +126,12 @@ public:
     [[nodiscard]] int get_fd() const;
 
     /**
+     * @brief Returns the ThreadID of the ApplicationThread that receives
+     *        events and PDUs from this connection.
+     */
+    [[nodiscard]] ThreadID target_thread_id() const { return target_thread_id_; }
+
+    /**
      * @brief Returns the TcpSocket for this connection.
      */
     [[nodiscard]] TcpSocket* socket() const { return socket_.get(); }
@@ -192,6 +198,8 @@ private:
     int      current_slab_id_{-1};
     void*    current_chunk_ptr_{nullptr};
     uint32_t current_total_bytes_{0};
+
+    ThreadID target_thread_id_;
 
     // Not owned
     ExpandableSlabAllocator& inbound_allocator_;

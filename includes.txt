@@ -1,6 +1,7 @@
 libraries
 libraries/pubsub_itc_fw/include
 libraries/pubsub_itc_fw/tests_common/include/
+build/libraries/pubsub_itc_fw/dsl
 /usr/include/c++/13/
 /usr/include/x86_64-linux-gnu/c++/13
 /usr/include

@@ -4,8 +4,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <atomic>
+#include <cstdint>
 #include <chrono>
 #include <map>
+#include <vector>
 #include <optional>
 #include <memory>
 #include <stdexcept>
@@ -17,6 +19,10 @@
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
+#include <pubsub_itc_fw/AcceptorHandler.hpp>
+#include <pubsub_itc_fw/InboundConnection.hpp>
+#include <pubsub_itc_fw/InboundListener.hpp>
+#include <pubsub_itc_fw/NetworkEndpointConfig.hpp>
 #include <pubsub_itc_fw/OutboundConnection.hpp>
 #include <pubsub_itc_fw/EventHandler.hpp>
 #include <pubsub_itc_fw/EventType.hpp>
@@ -117,6 +123,31 @@ public:
     void register_thread(std::shared_ptr<ApplicationThread> thread);
 
     /**
+     * @brief Registers a TCP listener that accepts inbound framework PDU connections.
+     *
+     * Must be called before Reactor::run(). The reactor binds and listens on the
+     * given address during initialisation, and routes all inbound PDUs from
+     * accepted connections to the specified ApplicationThread.
+     *
+     * One-connection contract:
+     *   Each registered listener accepts exactly one peer connection at a time.
+     *   Framework-to-framework PDU communication is unicast — only one peer should
+     *   connect to a given port. If a second peer attempts to connect while a
+     *   connection is already established, the reactor accepts and immediately closes
+     *   the socket, logs a Warning, and does NOT notify the application thread.
+     *   This is a framework misuse by the connecting application.
+     *
+     * When the established connection is lost, the listener resumes accepting and
+     * will accept the next peer to connect normally.
+     *
+     * @param[in] address         The address and port to listen on.
+     * @param[in] target_thread_id The ThreadID to receive ConnectionEstablished,
+     *                             FrameworkPdu, and ConnectionLost events.
+     * @throws PreconditionAssertion if called after run() or if address.port == 0.
+     */
+    void register_inbound_listener(NetworkEndpointConfig address, ThreadID target_thread_id);
+
+    /**
      * @brief Returns the name of a thread given its ID.
      *
      * @param[in] id The ID of the thread.
@@ -133,6 +164,18 @@ public:
     }
 
     void route_message(ThreadID target_id, EventMessage message);
+
+    /**
+     * @brief Called by AcceptorHandler when EPOLLIN fires on a listening socket.
+     *
+     * Enforces the one-connection rule: if the listener already has an established
+     * connection, the new socket is accepted and immediately closed with a Warning log.
+     * Otherwise creates an InboundConnection, registers it with epoll, and delivers
+     * ConnectionEstablished to the target thread.
+     *
+     * @param[in] listener The InboundListener whose listening socket became readable.
+     */
+    void on_accept(InboundListener& listener);
 
     bool is_initialized() const {
         return initialization_complete_.load(std::memory_order_acquire);
@@ -218,6 +261,14 @@ public:
     }
 
     /**
+     * TEST SEAM: returns the port number that the first registered inbound
+     * listener was assigned by the OS (when registered with port=0).
+     * Valid only after the reactor has been initialized (is_initialized() == true).
+     * Returns 0 if no listeners are registered or the port cannot be determined.
+     */
+    [[nodiscard]] uint16_t get_first_inbound_listener_port() const;
+
+    /**
      * @brief Returns the human-readable reason why the reactor shut down.
      *
      * Meaningful only after the reactor has left ReactorLifecycleState::Running.
@@ -301,6 +352,36 @@ private:
      * @brief Allocates the next ConnectionID.
      */
     [[nodiscard]] ConnectionID allocate_connection_id();
+
+    /**
+     * @brief Initialises all registered inbound listeners: binds, listens, and
+     *        registers each acceptor socket with epoll. Called from initialize_threads().
+     * @return false if any listener fails to bind or listen, true otherwise.
+     */
+    [[nodiscard]] bool initialize_listeners();
+
+    /**
+     * @brief Called when epoll signals EPOLLIN on an established inbound connection.
+     *        Delegates to PduParser::receive(). On error or peer disconnect tears
+     *        down the connection and delivers ConnectionLost.
+     */
+    void on_inbound_data_ready(InboundConnection& conn);
+
+    /**
+     * @brief Called when epoll signals EPOLLOUT on an established inbound connection
+     *        that has a partial send in flight.
+     *        Calls PduFramer::continue_send(). On completion clears pending send
+     *        state, deallocates the slab chunk, and deregisters EPOLLOUT.
+     */
+    void on_inbound_write_ready(InboundConnection& conn);
+
+    /**
+     * @brief Tears down an inbound connection: deregisters from epoll, clears
+     *        the listener's current_connection_id, frees any in-flight slab chunk,
+     *        and optionally delivers ConnectionLost to the target thread.
+     */
+    void teardown_inbound_connection(ConnectionID id, const std::string& reason,
+                                     bool deliver_lost_event);
 
     std::atomic<bool> initialization_complete_{false};
 
@@ -390,6 +471,34 @@ private:
      * process_control_commands() before touching the command queue.
      */
     std::optional<ReactorControlCommand> pending_send_;
+
+    // --- Inbound connection management ---
+
+    /**
+     * Staging area for inbound listeners registered before run().
+     * Moved into inbound_listeners_ during initialize_listeners(),
+     * keyed by listening socket fd after bind.
+     */
+    std::vector<InboundListener> inbound_listeners_staging_;
+
+    /**
+     * Registered inbound listeners, keyed by listening socket fd.
+     * Populated during initialize_listeners() from inbound_listeners_staging_.
+     * Each entry owns its TcpAcceptor and records the target ThreadID.
+     */
+    std::map<int, InboundListener> inbound_listeners_;
+
+    /**
+     * Owns all InboundConnection instances.
+     * Keyed by ConnectionID for SendPdu / Disconnect command dispatch.
+     */
+    std::unordered_map<ConnectionID, std::unique_ptr<InboundConnection>> inbound_connections_;
+
+    /**
+     * Non-owning lookup by socket fd for epoll event dispatch.
+     * Shares lifetime with inbound_connections_.
+     */
+    std::unordered_map<int, InboundConnection*> inbound_connections_by_fd_;
 
     // Configuration and dependencies — must precede slab allocators in
     // declaration order so the constructor initialiser list is valid.
