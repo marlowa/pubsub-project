@@ -109,6 +109,7 @@
 
 #include <unistd.h>
 
+#include <pubsub_itc_fw/BackoffWithoutYield.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/UseHugePagesFlag.hpp>
 
@@ -1006,16 +1007,48 @@ template <typename T> void FixedSizeMemoryPool<T>::push_slot_to_free_list(SlotTy
 
 template <typename T>
 typename FixedSizeMemoryPool<T>::SlotType* FixedSizeMemoryPool<T>::pop_slot_from_free_list() {
-    HeadPtr old_head = load_head();
-    HeadPtr next_head;
+    // We retry a small number of times when the list appears empty.
+    //
+    // Rationale: push_slot_to_free_list writes slot->free_next (step A) and
+    // then updates head_raw_ via CAS (step B). Between A and B the slot is not
+    // yet reachable from the list head. A concurrent pop that samples the head
+    // between A and B sees the list as empty (or shorter than it truly is) and
+    // returns nullptr, triggering a spurious slow-path hit and possible pool
+    // expansion even though a slot is about to become available.
+    //
+    // The retry loop closes this window. The bound (max_retries) is small
+    // enough that it adds no measurable cost on the common path — a push_to_free
+    // in flight will complete within a handful of CPU cycles. If the list is
+    // genuinely empty after max_retries attempts, we return nullptr as before.
+    //
+    // This does NOT change the correctness of the ABA-protected CAS; it only
+    // reduces spurious nullptr returns under transient contention.
+    // Retry briefly when the list appears empty. A concurrent push_slot_to_free_list
+    // may be between writing free_next (step A) and updating head_raw_ via CAS
+    // (step B). During that window the list appears shorter than it truly is.
+    // BackoffWithoutYield provides exponentially increasing _mm_pause spin-waits
+    // that close this nanosecond-scale window without yielding to the OS scheduler.
+    // See BackoffWithoutYield.hpp for a full explanation of why BackoffWithYield
+    // is not appropriate here.
+    static constexpr int max_retries = 8;
+    BackoffWithoutYield backoff;
 
-    while (old_head.ptr != nullptr) {
-        SlotType* head_slot = old_head.ptr;
-        next_head.ptr = head_slot->free_next.load(std::memory_order_acquire);
-        next_head.counter = old_head.counter + 1U;
+    for (int attempt = 0; attempt <= max_retries; ++attempt) {
+        HeadPtr old_head = load_head();
+        HeadPtr next_head;
 
-        if (compare_exchange_weak(old_head, next_head)) {
-            return head_slot;
+        while (old_head.ptr != nullptr) {
+            SlotType* head_slot = old_head.ptr;
+            next_head.ptr = head_slot->free_next.load(std::memory_order_acquire);
+            next_head.counter = old_head.counter + 1U;
+
+            if (compare_exchange_weak(old_head, next_head)) {
+                return head_slot;
+            }
+        }
+
+        if (attempt < max_retries) {
+            backoff.pause();
         }
     }
 

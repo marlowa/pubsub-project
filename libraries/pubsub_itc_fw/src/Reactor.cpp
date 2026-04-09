@@ -22,7 +22,7 @@
 
 #include <pubsub_itc_fw/Reactor.hpp>
 #include <pubsub_itc_fw/ReactorControlCommand.hpp>
-#include <pubsub_itc_fw/Backoff.hpp>
+#include <pubsub_itc_fw/BackoffWithYield.hpp>
 #include <pubsub_itc_fw/EventHandler.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/HighResolutionClock.hpp>
@@ -256,7 +256,7 @@ void Reactor::finalize_threads_after_shutdown() {
     // 2. Wait for run loops to exit
     PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "finalize_threads_after_shutdown step 2");
     for (auto& thread : snapshot) {
-        Backoff backoff;
+        BackoffWithYield backoff;
         auto start = MillisecondClock::now();
         while (thread->is_running()) {
             if (MillisecondClock::now() - start > config_.shutdown_timeout_) {
@@ -396,7 +396,7 @@ bool Reactor::wait_for_all_threads(std::function<bool(const ApplicationThread&)>
     }
 
     for (auto& thread : thread_snapshots) {
-        Backoff backoff;
+        BackoffWithYield backoff;
         auto start = MillisecondClock::now();
 
         while (true) {

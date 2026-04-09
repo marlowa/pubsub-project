@@ -22,7 +22,7 @@ namespace pubsub_itc_fw {
  * 2. Thread yielding to allow other threads (or Valgrind) to progress.
  * 3. Targeted sleeping for sustained contention to reduce CPU heat/noise.
  */
-class Backoff {
+class BackoffWithYield {
   public:
     // Constants for tuning the backoff behaviour
     static constexpr uint32_t UP_TO_YIELD = 10;

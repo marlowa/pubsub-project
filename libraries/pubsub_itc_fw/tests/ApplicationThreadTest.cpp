@@ -17,7 +17,7 @@
 
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/AllocatorConfig.hpp>
-#include <pubsub_itc_fw/Backoff.hpp>
+#include <pubsub_itc_fw/BackoffWithYield.hpp>
 #include <pubsub_itc_fw/EventType.hpp>
 #include <pubsub_itc_fw/HighResolutionClock.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
@@ -1077,7 +1077,7 @@ TEST_F(ApplicationThreadTest, InterThreadRoutingDeliversMessage)
 
     // Wait for B to process the message
     {
-        Backoff backoff;
+        BackoffWithYield backoff;
         while (threadB->last_processed_type.load(std::memory_order_acquire) != EventType(EventType::InterthreadCommunication)) {
             backoff.pause();
         }

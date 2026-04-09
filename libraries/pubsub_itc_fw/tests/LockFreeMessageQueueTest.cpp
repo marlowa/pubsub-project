@@ -73,7 +73,7 @@
 #include <pthread.h>
 #include <sched.h>
 
-#include <pubsub_itc_fw/Backoff.hpp>
+#include <pubsub_itc_fw/BackoffWithYield.hpp>
 #include <pubsub_itc_fw/LockFreeMessageQueue.hpp>
 #include <pubsub_itc_fw/QueueConfig.hpp>
 #include <pubsub_itc_fw/AllocatorConfig.hpp>
@@ -444,7 +444,7 @@ TEST(LockFreeMessageQueueTest, SoakTestMillionsOfMessages) {
 
     for (int p = 0; p < producers; ++p) {
         threads.emplace_back([&, p] {
-            Backoff start_backoff;
+            BackoffWithYield start_backoff;
             while (!start_flag.load(std::memory_order_acquire)) {
                 start_backoff.pause();
             }
@@ -457,7 +457,7 @@ TEST(LockFreeMessageQueueTest, SoakTestMillionsOfMessages) {
     start_flag.store(true, std::memory_order_release);
 
     int local_count = 0;
-    Backoff count_backoff;
+    BackoffWithYield count_backoff;
     while (local_count < total) {
         auto msg = queue.dequeue();
         if (msg.has_value()) {
@@ -875,7 +875,7 @@ TEST(LockFreeMessageQueueTest, MixedRateJitterSoakTest) {
             std::uniform_int_distribution<int> large_stall(200, 2000);
             std::uniform_int_distribution<int> stall_type(1, 1000);
 
-            Backoff producer_backoff;
+            BackoffWithYield producer_backoff;
             while (!start_flag.load(std::memory_order_acquire)) {
                 producer_backoff.pause();
             }
@@ -985,7 +985,7 @@ TEST(LockFreeMessageQueueTest, MemoryPressureBurstTest) {
             const std::mt19937 rng(p + 123);
             const std::uniform_int_distribution<int> pause_dist(50, 500);
 
-            Backoff producer_backoff;
+            BackoffWithYield producer_backoff;
             while (!start_flag.load(std::memory_order_acquire)) {
                 producer_backoff.pause();
             }
@@ -1010,7 +1010,7 @@ TEST(LockFreeMessageQueueTest, MemoryPressureBurstTest) {
     std::thread consumer([&] {
         start_flag.store(true, std::memory_order_release);
 
-        Backoff consumer_backoff;
+        BackoffWithYield consumer_backoff;
         int local_count = 0;
         while (local_count < total) {
             auto msg = queue.dequeue();
@@ -1148,7 +1148,7 @@ TEST(LockFreeMessageQueueTest, ShouldSufferFromPriorityInversion) {
         }
 
         producer_a_claimed.store(true);
-        Backoff backoff;
+        BackoffWithYield backoff;
         while (stall_producer.load()) {
             backoff.pause();
         }
@@ -1160,7 +1160,7 @@ TEST(LockFreeMessageQueueTest, ShouldSufferFromPriorityInversion) {
     });
 
     // Wait for Producer A to claim head but not link
-    Backoff wait_backoff;
+    BackoffWithYield wait_backoff;
     while (!producer_a_claimed.load()) {
         wait_backoff.pause();
     }

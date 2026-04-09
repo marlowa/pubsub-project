@@ -18,7 +18,7 @@
 
 #include <pubsub_itc_fw/AllocatorConfig.hpp>
 #include <pubsub_itc_fw/ApplicationThread.hpp>
-#include <pubsub_itc_fw/Backoff.hpp>
+#include <pubsub_itc_fw/BackoffWithYield.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/EventType.hpp>
 #include <pubsub_itc_fw/ReactorConfiguration.hpp>
@@ -250,7 +250,7 @@ TEST_F(ReactorTest, InitializationTimeoutTriggersShutdown)
 
     // Wait for Reactor to detect timeout and shut down.
     {
-        Backoff backoff;
+        BackoffWithYield backoff;
         auto start = MillisecondClock::now();
 
         while (!reactor_->is_finished()) {
@@ -308,7 +308,7 @@ TEST_F(ReactorTest, AllThreadsReceiveInitThenAppReady) {
 
     reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>( [this] { reactor_->run(); });
 
-    Backoff backoff;
+    BackoffWithYield backoff;
     while (!reactor_->is_running()) {
         backoff.pause();
     }
@@ -358,7 +358,7 @@ TEST_F(ReactorTest, ShutdownBroadcastsTerminationAndThreadExits)
 
     // Wait until initialization completes.
     {
-        Backoff backoff;
+        BackoffWithYield backoff;
         while (!reactor_->is_initialized()) {
             backoff.pause();
         }
@@ -367,7 +367,7 @@ TEST_F(ReactorTest, ShutdownBroadcastsTerminationAndThreadExits)
     // Trigger shutdown by explicitly shutting the reactor down.
     reactor_->shutdown("test shutdown");
 
-    { Backoff backoff; while (!reactor_->is_finished() || thread->is_running()) { backoff.pause(); } }
+    { BackoffWithYield backoff; while (!reactor_->is_finished() || thread->is_running()) { backoff.pause(); } }
 
     EXPECT_TRUE(reactor_->is_finished());
     EXPECT_FALSE(thread->is_running());
@@ -387,7 +387,7 @@ TEST_F(ReactorTest, RogueThreadBlocksInITCMessageReactorStillShutsDown)
 
     // Wait for initialization to complete, give it 2s.
     {
-        Backoff backoff;
+        BackoffWithYield backoff;
         auto start = MillisecondClock::now();
         while (!reactor_->is_initialized()) {
             if (MillisecondClock::now() - start > MillisecondClock::duration{2000}) {
@@ -425,7 +425,7 @@ TEST_F(ReactorTest, ThreadThrowsDuringTerminationReactorStillShutsDown)
 
     // Wait for initialization to complete.
     {
-        Backoff backoff;
+        BackoffWithYield backoff;
         auto start = MillisecondClock::now();
         while (!reactor_->is_initialized()) {
             if (MillisecondClock::now() - start > MillisecondClock::duration{2000}) {
@@ -438,7 +438,7 @@ TEST_F(ReactorTest, ThreadThrowsDuringTerminationReactorStillShutsDown)
     // Trigger shutdown. The thread will throw during Termination.
     reactor_->shutdown("test shutdown");
 
-    { Backoff backoff; while (!reactor_->is_finished() || bad_thread->is_running()) { backoff.pause(); } }
+    { BackoffWithYield backoff; while (!reactor_->is_finished() || bad_thread->is_running()) { backoff.pause(); } }
 
     EXPECT_TRUE(reactor_->is_finished());
     EXPECT_FALSE(bad_thread->is_running());  // Thread must have been shut down
@@ -470,7 +470,7 @@ TEST_F(ReactorTest, ThreadThrowsDuringRunLoopReactorShutsDown)
 
     // wait for bad thread to be no longer running
     {
-        Backoff backoff;
+        BackoffWithYield backoff;
         auto start = MillisecondClock::now();
         while (!bad_thread->is_running()) {
             if (MillisecondClock::now() - start > MillisecondClock::duration{1000}) {
@@ -481,7 +481,7 @@ TEST_F(ReactorTest, ThreadThrowsDuringRunLoopReactorShutsDown)
     }
 
     {
-        Backoff backoff;
+        BackoffWithYield backoff;
         const auto start = MillisecondClock::now();
         while (!reactor_->is_finished()) {
             if (MillisecondClock::now() - start > MillisecondClock::duration{1000}) {
@@ -520,7 +520,7 @@ TEST_F(ReactorTest, ThreadThrowsDuringAppReadyProcessingReactorShutsDown)
     // Give the reactor some time to start things up and send the init event.
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
-    { Backoff backoff; while (!reactor_->is_finished() || bad_thread->is_running()) { backoff.pause(); } }
+    { BackoffWithYield backoff; while (!reactor_->is_finished() || bad_thread->is_running()) { backoff.pause(); } }
 
     EXPECT_TRUE(reactor_->is_finished());
     EXPECT_FALSE(bad_thread->is_running());

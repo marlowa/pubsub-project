@@ -13,7 +13,7 @@
 
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/AllocatorConfig.hpp>
-#include <pubsub_itc_fw/Backoff.hpp>
+#include <pubsub_itc_fw/BackoffWithYield.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/EventType.hpp>
 #include <pubsub_itc_fw/HighResolutionClock.hpp>
@@ -77,7 +77,7 @@ void ApplicationThread::start() {
     thread_->start([this]() { run(); });
 
     // Wait for the thread to enter its run loop, but with a bounded number of iterations.
-    Backoff backoff;
+    BackoffWithYield backoff;
 
     // Instrumentation-aware iteration bound.
     // These values are chosen to be:
@@ -209,7 +209,7 @@ void ApplicationThread::run_internal() {
 
     PUBSUB_LOG(logger_, FwLogLevel::Info, "Starting thread {}", thread_name_);
 
-    Backoff backoff;
+    BackoffWithYield backoff;
 
     for (;;) {
         // Optional pause mechanism
