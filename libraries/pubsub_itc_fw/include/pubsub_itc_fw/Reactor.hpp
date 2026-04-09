@@ -6,6 +6,7 @@
 #include <atomic>
 #include <chrono>
 #include <map>
+#include <optional>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -14,6 +15,9 @@
 #include <sys/epoll.h>
 
 #include <pubsub_itc_fw/ApplicationThread.hpp>
+#include <pubsub_itc_fw/ConnectionID.hpp>
+#include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
+#include <pubsub_itc_fw/OutboundConnection.hpp>
 #include <pubsub_itc_fw/EventHandler.hpp>
 #include <pubsub_itc_fw/EventType.hpp>
 #include <pubsub_itc_fw/LockFreeMessageQueue.hpp>
@@ -163,6 +167,22 @@ public:
 
     QuillLogger& get_logger() { return logger_; }
 
+    /**
+     * @brief Returns the outbound slab allocator.
+     *
+     * ApplicationThreads use this to allocate PDU frame chunks before
+     * enqueuing SendPdu commands.
+     */
+    ExpandableSlabAllocator& outbound_slab_allocator() { return outbound_slab_allocator_; }
+
+    /**
+     * @brief Returns the inbound slab allocator.
+     *
+     * ApplicationThreads use this to deallocate inbound PDU payload chunks
+     * after processing FrameworkPdu messages.
+     */
+    ExpandableSlabAllocator& inbound_slab_allocator() { return inbound_slab_allocator_; }
+
     ThreadLifecycleState::Tag get_thread_state(ThreadID id) const;
 
     /**
@@ -217,6 +237,70 @@ private:
     bool wait_for_all_threads(std::function<bool(const ApplicationThread&)> predicate, const std::string& phase_name);
     void broadcast_reactor_event(EventType::EventTypeTag tag);
     void process_control_commands();
+
+    // --- Connection management ---
+
+    /**
+     * @brief Processes a Connect command: resolves the service name, initiates
+     *        a non-blocking connect to the primary endpoint, and registers the
+     *        socket with epoll for EPOLLOUT.
+     */
+    void process_connect_command(const ReactorControlCommand& command);
+
+    /**
+     * @brief Called from on_housekeeping_tick(). Checks all connecting
+     *        OutboundConnections against config_.connect_timeout and tears
+     *        down any that have exceeded it, delivering ConnectionFailed.
+     */
+    void check_for_timed_out_connections();
+
+    /**
+     * @brief Called when epoll signals EPOLLOUT on a connecting socket.
+     *        Calls finish_connect(); on success transitions to established phase
+     *        and delivers ConnectionEstablished. On failure retries the secondary
+     *        endpoint or delivers ConnectionFailed.
+     */
+    void on_connect_ready(OutboundConnection& conn);
+
+    /**
+     * @brief Called when epoll signals EPOLLIN on an established connection.
+     *        Delegates to PduParser::receive(). On parse error or peer disconnect,
+     *        tears down the connection and delivers ConnectionLost.
+     */
+    void on_data_ready(OutboundConnection& conn);
+
+    /**
+     * @brief Called when epoll signals EPOLLOUT on an established connection
+     *        that has a partial send in flight.
+     *        Calls PduFramer::continue_send(). On completion clears pending send
+     *        state, deallocates the slab chunk, and deregisters EPOLLOUT.
+     */
+    void on_write_ready(OutboundConnection& conn);
+
+    /**
+     * @brief Processes a SendPdu command for an established connection.
+     *        If no partial send is in flight, attempts to send immediately.
+     *        On partial write, records pending state and registers EPOLLOUT.
+     */
+    void process_send_pdu_command(const ReactorControlCommand& command);
+
+    /**
+     * @brief Processes a Disconnect command: tears down the connection,
+     *        delivers ConnectionLost to the requesting thread, and removes
+     *        the connection from all maps.
+     */
+    void process_disconnect_command(const ReactorControlCommand& command);
+
+    /**
+     * @brief Tears down a connection unconditionally: deregisters from epoll,
+     *        removes from all maps, and optionally delivers ConnectionLost.
+     */
+    void teardown_connection(ConnectionID id, const std::string& reason, bool deliver_lost_event);
+
+    /**
+     * @brief Allocates the next ConnectionID.
+     */
+    [[nodiscard]] ConnectionID allocate_connection_id();
 
     std::atomic<bool> initialization_complete_{false};
 
@@ -280,10 +364,57 @@ private:
      */
     std::string shutdown_reason_;
 
-    // Configuration and dependencies.
+    // --- Outbound connection management ---
+
+    /**
+     * Owns all OutboundConnection instances.
+     * Keyed by ConnectionID for SendPdu / Disconnect command dispatch.
+     */
+    std::unordered_map<ConnectionID, std::unique_ptr<OutboundConnection>> connections_;
+
+    /**
+     * Non-owning lookup by socket fd for epoll event dispatch.
+     * Shares lifetime with connections_.
+     */
+    std::unordered_map<int, OutboundConnection*> connections_by_fd_;
+
+    /**
+     * Monotonically increasing counter for ConnectionID assignment.
+     * ConnectionID(0) is reserved as invalid; first real ID is 1.
+     */
+    ConnectionID next_connection_id_{1};
+
+    /**
+     * Holds a SendPdu command that could not be processed because the target
+     * connection had a partial write in flight. Drained at the start of
+     * process_control_commands() before touching the command queue.
+     */
+    std::optional<ReactorControlCommand> pending_send_;
+
+    // Configuration and dependencies — must precede slab allocators in
+    // declaration order so the constructor initialiser list is valid.
     ReactorConfiguration config_;
     const ServiceRegistry& service_registry_;
     QuillLogger& logger_;
+
+    /**
+     * Inbound slab allocator: used by PduParser to allocate receive buffers.
+     * Payload bytes from the socket are read directly into slab chunks.
+     * Slab size is configured via ReactorConfiguration::inbound_slab_size.
+     * Declared after config_ so it can be initialised from config_ in the
+     * constructor initialiser list.
+     */
+    ExpandableSlabAllocator inbound_slab_allocator_;
+
+    /**
+     * Outbound slab allocator: used by ApplicationThreads to allocate PDU
+     * frame chunks before enqueuing SendPdu commands.
+     * Accessible via outbound_slab_allocator() for use by ApplicationThreads.
+     * Slab size is configured via ReactorConfiguration::outbound_slab_size.
+     * Declared after config_ so it can be initialised from config_ in the
+     * constructor initialiser list.
+     */
+    ExpandableSlabAllocator outbound_slab_allocator_;
 };
 
 } // namespace pubsub_itc_fw

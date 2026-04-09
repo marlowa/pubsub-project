@@ -130,6 +130,10 @@ public:
         state_ = ConnectState::idle;
     }
 
+    [[nodiscard]] int get_fd() const {
+        return tcp_socket_ ? tcp_socket_->get_file_descriptor() : -1;
+    }
+
 private:
     ConnectState state_{ConnectState::uninitialised};
     std::unique_ptr<InetAddress> remote_address_;
@@ -164,6 +168,10 @@ std::unique_ptr<TcpSocket> TcpConnector::get_connected_socket() {
 
 void TcpConnector::cancel() {
     p_impl_->cancel();
+}
+
+int TcpConnector::get_fd() const {
+    return p_impl_->get_fd();
 }
 
 } // namespace pubsub_itc_fw

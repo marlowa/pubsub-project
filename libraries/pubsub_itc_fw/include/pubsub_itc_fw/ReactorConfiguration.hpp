@@ -154,6 +154,43 @@ struct ReactorConfiguration {
      */
     int64_t secondary_instance_id{0};
 
+    /**
+     * @brief Maximum time to wait for a non-blocking TCP connect() to complete.
+     *
+     * If finish_connect() has not succeeded within this interval after connect()
+     * was called, the reactor tears down the connection attempt and delivers a
+     * ConnectionFailed event to the requesting ApplicationThread. This bounds
+     * the worst-case connection setup time when the remote end is unreachable
+     * or slow to respond.
+     *
+     * Default: 5 seconds — appropriate for LAN connections. Increase for WAN.
+     */
+    std::chrono::milliseconds connect_timeout{std::chrono::seconds{5}};
+
+    /**
+     * @brief Size in bytes of each slab used by the reactor's inbound PDU slab allocator.
+     *
+     * The inbound allocator receives payload bytes directly from the socket into
+     * slab-allocated chunks (zero-copy). This value should be at least as large as
+     * the largest expected inbound PDU payload. The allocator grows by adding new
+     * slabs of this size when the current slab is full.
+     *
+     * Default: 65536 bytes (64 KB).
+     */
+    size_t inbound_slab_size{65536};
+
+    /**
+     * @brief Size in bytes of each slab used by the reactor's outbound PDU slab allocator.
+     *
+     * Application threads allocate outbound PDU frame chunks from this allocator
+     * before enqueuing SendPdu commands. This value should be at least as large as
+     * the largest expected outbound PDU frame (sizeof(PduHeader) + max payload).
+     * The allocator grows by adding new slabs of this size when the current slab is full.
+     *
+     * Default: 65536 bytes (64 KB).
+     */
+    size_t outbound_slab_size{65536};
+
 };
 
 } // namespace pubsub_itc_fw

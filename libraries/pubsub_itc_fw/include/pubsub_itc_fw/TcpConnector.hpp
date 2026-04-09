@@ -79,6 +79,16 @@ public:
      */
     void cancel();
 
+    /**
+     * @brief Returns the file descriptor of the underlying socket.
+     *
+     * Valid only while a connection attempt is in progress (i.e. after
+     * connect() and before get_connected_socket()). Used by the reactor
+     * to register the socket with epoll for EPOLLOUT to detect connect
+     * completion. Returns -1 if no socket is currently held.
+     */
+    [[nodiscard]] int get_fd() const;
+
 private:
     std::unique_ptr<TcpConnectorImpl> p_impl_;
 };

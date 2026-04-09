@@ -80,6 +80,7 @@ set(PUBSUB_ITC_FW_SRC
     src/Message.cpp
     src/EventDistributor.cpp
     src/MillisecondClock.cpp
+    src/OutboundConnection.cpp
     src/PduFramer.cpp
     src/PduParser.cpp
     src/QuillLogger.cpp

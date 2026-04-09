@@ -339,6 +339,162 @@ TEST_F(PduFramerParserTest, NoPendingDataInitially)
 }
 
 // ============================================================
+// PduFramer::send_prebuilt() tests
+// ============================================================
+
+// Helper: build a complete frame (PduHeader + payload) into a buffer,
+// exactly as an application thread would before enqueuing a SendPdu command.
+static std::vector<uint8_t> make_prebuilt_frame(int16_t pdu_id, int8_t version,
+                                                 const uint8_t* payload, uint32_t payload_size)
+{
+    std::vector<uint8_t> frame(sizeof(PduHeader) + payload_size);
+    PduHeader* hdr = reinterpret_cast<PduHeader*>(frame.data());
+    hdr->byte_count = htonl(payload_size);
+    hdr->pdu_id     = htons(static_cast<uint16_t>(pdu_id));
+    hdr->version    = version;
+    hdr->filler_a   = 0;
+    hdr->canary     = htonl(pdu_canary_value);
+    hdr->filler_b   = 0;
+    std::memcpy(frame.data() + sizeof(PduHeader), payload, payload_size);
+    return frame;
+}
+
+TEST_F(PduFramerParserTest, SendPrebuiltTransmitsCompleteFrame)
+{
+    PduFramer framer(stream_);
+
+    const uint8_t payload[] = {0x11, 0x22, 0x33, 0x44};
+    auto frame = make_prebuilt_frame(200, 2, payload, sizeof(payload));
+
+    auto [ok, error] = framer.send_prebuilt(frame.data(), static_cast<uint32_t>(frame.size()));
+
+    EXPECT_TRUE(ok);
+    EXPECT_TRUE(error.empty());
+    EXPECT_FALSE(framer.has_pending_data());
+
+    // The bytes sent must exactly match the pre-built frame — no rewriting.
+    ASSERT_EQ(stream_.sent_bytes.size(), frame.size());
+    EXPECT_EQ(std::memcmp(stream_.sent_bytes.data(), frame.data(), frame.size()), 0);
+}
+
+TEST_F(PduFramerParserTest, SendPrebuiltNoPendingDataWhenFullySent)
+{
+    PduFramer framer(stream_);
+
+    const uint8_t payload[] = {0xAA};
+    auto frame = make_prebuilt_frame(201, 1, payload, sizeof(payload));
+
+    auto [ok, error] = framer.send_prebuilt(frame.data(), static_cast<uint32_t>(frame.size()));
+
+    EXPECT_TRUE(ok);
+    EXPECT_FALSE(framer.has_pending_data());
+}
+
+TEST_F(PduFramerParserTest, SendPrebuiltPartialWriteLeavesPendingData)
+{
+    PduFramer framer(stream_);
+    stream_.send_limit = 4;
+    stream_.send_eagain_after = 1;
+
+    const uint8_t payload[] = {0x01, 0x02, 0x03, 0x04};
+    auto frame = make_prebuilt_frame(202, 1, payload, sizeof(payload));
+
+    auto [ok, error] = framer.send_prebuilt(frame.data(), static_cast<uint32_t>(frame.size()));
+
+    EXPECT_TRUE(ok);
+    EXPECT_TRUE(framer.has_pending_data());
+    EXPECT_EQ(stream_.sent_bytes.size(), 4u);
+}
+
+TEST_F(PduFramerParserTest, SendPrebuiltContinueSendCompletesPartialWrite)
+{
+    PduFramer framer(stream_);
+    stream_.send_limit = 4;
+    stream_.send_eagain_after = 1;
+
+    const uint8_t payload[] = {0x01, 0x02, 0x03, 0x04};
+    auto frame = make_prebuilt_frame(202, 1, payload, sizeof(payload));
+
+    [[maybe_unused]] auto first = framer.send_prebuilt(frame.data(), static_cast<uint32_t>(frame.size()));
+    ASSERT_TRUE(framer.has_pending_data());
+
+    stream_.send_limit = 0;
+    stream_.send_eagain_after = 0;
+    auto [ok, error] = framer.continue_send();
+
+    EXPECT_TRUE(ok);
+    EXPECT_TRUE(error.empty());
+    EXPECT_FALSE(framer.has_pending_data());
+    EXPECT_EQ(stream_.sent_bytes.size(), frame.size());
+}
+
+TEST_F(PduFramerParserTest, SendPrebuiltWhilePendingThrows)
+{
+    PduFramer framer(stream_);
+    stream_.send_limit = 1;
+    stream_.send_eagain_after = 1;
+
+    const uint8_t payload[] = {0x01};
+    auto frame = make_prebuilt_frame(203, 1, payload, sizeof(payload));
+
+    [[maybe_unused]] auto first = framer.send_prebuilt(frame.data(), static_cast<uint32_t>(frame.size()));
+    ASSERT_TRUE(framer.has_pending_data());
+
+    EXPECT_THROW(framer.send_prebuilt(frame.data(), static_cast<uint32_t>(frame.size())), PreconditionAssertion);
+}
+
+TEST_F(PduFramerParserTest, SendPrebuiltNullptrThrows)
+{
+    PduFramer framer(stream_);
+    EXPECT_THROW(framer.send_prebuilt(nullptr, 32), PreconditionAssertion);
+}
+
+TEST_F(PduFramerParserTest, SendPrebuiltTooSmallThrows)
+{
+    PduFramer framer(stream_);
+    const uint8_t buf[4] = {};
+    // total_bytes must be > sizeof(PduHeader) — passing exactly sizeof(PduHeader) is invalid.
+    EXPECT_THROW(framer.send_prebuilt(buf, static_cast<uint32_t>(sizeof(PduHeader))), PreconditionAssertion);
+}
+
+TEST_F(PduFramerParserTest, SendPrebuiltErrorReturnsFalse)
+{
+    PduFramer framer(stream_);
+    stream_.send_error = true;
+
+    const uint8_t payload[] = {0x01};
+    auto frame = make_prebuilt_frame(204, 1, payload, sizeof(payload));
+
+    auto [ok, error] = framer.send_prebuilt(frame.data(), static_cast<uint32_t>(frame.size()));
+
+    EXPECT_FALSE(ok);
+    EXPECT_FALSE(error.empty());
+    EXPECT_FALSE(framer.has_pending_data());
+}
+
+TEST_F(PduFramerParserTest, SendPrebuiltDoesNotCopyPayload)
+{
+    // Verifies zero-copy: the bytes sent must be identical to the original frame
+    // buffer without any intermediate copy or header rewriting.
+    PduFramer framer(stream_);
+
+    const uint8_t payload[] = {0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE};
+    auto frame = make_prebuilt_frame(205, 3, payload, sizeof(payload));
+
+    // Corrupt the payload area of frame AFTER building but BEFORE sending — if
+    // send_prebuilt() copied the bytes internally the corruption would not show
+    // in sent_bytes. If it stores the pointer (zero-copy) the corruption will.
+    // This is a white-box test: it confirms pointer semantics.
+    frame[sizeof(PduHeader) + 0] = 0xFF;
+
+    [[maybe_unused]] auto result = framer.send_prebuilt(frame.data(), static_cast<uint32_t>(frame.size()));
+
+    ASSERT_EQ(stream_.sent_bytes.size(), frame.size());
+    // The first payload byte should be 0xFF (the modified value), not 0xDE.
+    EXPECT_EQ(stream_.sent_bytes[sizeof(PduHeader)], 0xFF);
+}
+
+// ============================================================
 // PduParser tests
 // ============================================================
 
