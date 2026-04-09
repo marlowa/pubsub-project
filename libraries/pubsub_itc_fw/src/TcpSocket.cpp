@@ -218,7 +218,7 @@ TcpSocketImpl::TcpSocketImpl(int socket_fd) : socketFileDescriptor(socket_fd) {
 
     if (bytes_sent == -1) {
         if (errno == EWOULDBLOCK || errno == EAGAIN) {
-            return {0, ""}; // No bytes sent, operation would block. Not an error to report in string.
+            return {-EAGAIN, ""}; // Socket send buffer full — caller should wait for EPOLLOUT.
         }
         return {-errno, fmt::format("Failed to send data on socket {}: {}", socketFileDescriptor,
                                     StringUtils::get_errno_string())};
@@ -240,7 +240,7 @@ TcpSocketImpl::TcpSocketImpl(int socket_fd) : socketFileDescriptor(socket_fd) {
 
     if (bytes_received == -1) {
         if (errno == EWOULDBLOCK || errno == EAGAIN) {
-            return {0, ""}; // No bytes received, operation would block. Not an error to report in string.
+            return {-EAGAIN, ""}; // No data available — caller should wait for next EPOLLIN.
         }
         return {-errno, fmt::format("Failed to receive data on socket {}: {}", socketFileDescriptor, StringUtils::get_errno_string())};
     }

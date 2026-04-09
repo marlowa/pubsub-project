@@ -143,7 +143,7 @@ public:
      * @param[in] address         The address and port to listen on.
      * @param[in] target_thread_id The ThreadID to receive ConnectionEstablished,
      *                             FrameworkPdu, and ConnectionLost events.
-     * @throws PreconditionAssertion if called after run() or if address.port == 0.
+     * @throws PreconditionAssertion if called after run().
      */
     void register_inbound_listener(NetworkEndpointConfig address, ThreadID target_thread_id);
 

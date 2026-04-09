@@ -58,6 +58,8 @@ foreach(DSL_FILE ${DSL_SCHEMAS})
             ${OUT_HPP}
             --namespace pubsub_itc_fw
         DEPENDS ${DSL_FILE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/../../python/tools/generate_cpp_from_dsl.py
+                ${CMAKE_CURRENT_SOURCE_DIR}/../../python/dsl/generator_cpp.py
         COMMENT "Generating DSL header ${OUT_HPP}"
     )
 

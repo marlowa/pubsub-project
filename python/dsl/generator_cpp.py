@@ -1,5 +1,5 @@
 """C++17 header code generator for the pubsub_itc_fw DSL."""
-# pylint: disable=duplicate-code
+# pylint: disable=duplicate-code,too-many-lines
 
 from __future__ import annotations
 
@@ -67,6 +67,8 @@ class CppGenerator:
             if isinstance(decl, EnumDecl):
                 self._emit_enum(decl, w)
                 w("")
+                self._emit_enum_functions(decl, w)
+                w("")
 
         for decl in ast.declarations:
             if isinstance(decl, MessageDecl):
@@ -74,9 +76,11 @@ class CppGenerator:
         if any(isinstance(d, MessageDecl) for d in ast.declarations):
             w("")
 
+        enum_names = {decl.name for decl in ast.declarations if isinstance(decl, EnumDecl)}
+
         for decl in ast.declarations:
             if isinstance(decl, MessageDecl):
-                self._emit_message_structs(decl, w)
+                self._emit_message_structs(decl, w, enum_names)
                 w("")
 
         for decl in ast.declarations:
@@ -203,7 +207,7 @@ class CppGenerator:
     # Message structs (owning and view)
     # ------------------------------------------------------------------
 
-    def _emit_message_structs(self, msg: MessageDecl, w):
+    def _emit_message_structs(self, msg: MessageDecl, w, enum_names=None):
         name = msg.name
 
         w(f"struct {name} {{")
@@ -218,8 +222,87 @@ class CppGenerator:
         for field in msg.fields:
             if field.optional:
                 w(f"    bool has_{field.name} = false;")
-            w(f"    {self._cpp_type_view(field.type)} {field.name}{{}};")
+            w(f"    {self._cpp_type_view(field.type, enum_names)} {field.name}{{}};")
         w("};")
+
+    # ------------------------------------------------------------------
+    # Enum wire-format functions
+    # ------------------------------------------------------------------
+
+    def _emit_enum_functions(self, enum: EnumDecl, w):
+        """Emit encoded_size, encode, and decode functions for an enum.
+
+        Enums are encoded as their underlying integer type. This allows
+        message encode/decode to call encoded_size() and encode()/decode_*()
+        on enum-typed fields without any special-casing in the message paths.
+        """
+        name = enum.name
+        cpp_type = self._cpp_int_type(enum.underlying_type)
+        # Map underlying type to wire-format write/read helpers and byte width.
+        wire_helpers = {
+            "int8_t":  ("1", None,              None),
+            "int16_t": ("2", "write_uint16_le",  "read_uint16_le"),
+            "int32_t": ("4", "write_uint32_le",  "read_uint32_le"),
+            "int64_t": ("8", "write_uint64_le",  "read_uint64_le"),
+        }
+        width, write_fn, read_fn = wire_helpers[cpp_type]
+
+        # encoded_size
+        w(f"inline constexpr std::size_t encoded_size([[maybe_unused]] {name} value) {{")
+        w(f"    return {width};")
+        w("}")
+        w("")
+
+        # encode
+        w(f"inline bool encode({name} value, uint8_t* out_buffer, std::size_t out_size,")
+        w("                    std::size_t& bytes_written, std::size_t& bytes_needed) {")
+        w(f"    bytes_needed = {width};")
+        w("    if (out_size < bytes_needed) { bytes_written = 0; return false; }")
+        if write_fn:
+            unsigned_type = "uint" + cpp_type[3:]  # int32_t -> uint32_t
+            w(f"    {write_fn}(out_buffer, static_cast<std::{unsigned_type}>(value));")
+        else:
+            w("    *out_buffer = static_cast<std::uint8_t>(value);")
+        w(f"    bytes_written = {width};")
+        w("    return true;")
+        w("}")
+        w("")
+
+        # decode
+        w(f"inline bool decode_{name}({name}& out, const uint8_t*& read_cursor,")
+        w("                           std::size_t& bytes_remaining,")
+        w("                           [[maybe_unused]] pubsub_itc_fw::BumpAllocator& decode_arena,")
+        w("                           [[maybe_unused]] std::size_t& arena_bytes_needed) {")
+        w(f"    if (bytes_remaining < {width}) return false;")
+        if read_fn:
+            w(f"    out = static_cast<{name}>({read_fn}(read_cursor));")
+        else:
+            w(f"    out = static_cast<{name}>(*read_cursor);")
+        w(f"    read_cursor += {width};")
+        w(f"    bytes_remaining -= {width};")
+        w("    return true;")
+        w("}")
+        w("")
+
+        # skip
+        w(f"inline bool skip_{name}(const uint8_t*& read_cursor, std::size_t& bytes_remaining) {{")
+        w(f"    if (bytes_remaining < {width}) return false;")
+        w(f"    read_cursor += {width};")
+        w(f"    bytes_remaining -= {width};")
+        w("    return true;")
+        w("}")
+        w("")
+
+        # max_decode_arena_bytes — enums need no arena
+        w(f"inline constexpr std::size_t max_decode_arena_bytes_{name}([[maybe_unused]] std::size_t max_elements_per_list = 256) {{")
+        w("    return 0;")
+        w("}")
+        w("")
+
+        # max_encode_arena_bytes — enums need no arena
+        w(f"inline constexpr std::size_t max_encode_arena_bytes_{name}([[maybe_unused]] std::size_t max_elements_per_list = 256) {{")
+        w("    return 0;")
+        w("}")
 
     # ------------------------------------------------------------------
     # Type mappings
@@ -261,19 +344,26 @@ class CppGenerator:
             return type_node.name
         raise RuntimeError(f"Unsupported type in owning struct: {type_node}")
 
-    def _cpp_type_view(self, type_node) -> str:
-        """Return the C++ type used in the view (decode-side) struct."""
+    def _cpp_type_view(self, type_node, enum_names=None) -> str:
+        """Return the C++ type used in the view (decode-side) struct.
+
+        Enum types are fixed-size values with no separate View variant —
+        they are used directly in both owning and view structs.
+        """
         if isinstance(type_node, PrimitiveType):
             return self._cpp_primitive_type(type_node.name)
         if isinstance(type_node, StringType):
             return "std::string_view"
         if isinstance(type_node, ArrayType):
-            element_type = self._cpp_type_view(type_node.element_type)
+            element_type = self._cpp_type_view(type_node.element_type, enum_names)
             return f"std::array<{element_type}, {type_node.length}>"
         if isinstance(type_node, ListType):
-            element_type = self._cpp_type_view(type_node.element_type)
+            element_type = self._cpp_type_view(type_node.element_type, enum_names)
             return f"ListView<{element_type}>"
         if isinstance(type_node, ReferenceType):
+            # Enums have no View variant — use the enum type name directly.
+            if enum_names and type_node.name in enum_names:
+                return type_node.name
             return f"{type_node.name}View"
         raise RuntimeError(f"Unsupported type in view struct: {type_node}")
 
@@ -383,6 +473,12 @@ class CppGenerator:
     # ------------------------------------------------------------------
 
     def _emit_encoded_size_impl(self, msg: MessageDecl, w):
+        # For fixed-size messages the parameter is unused; delegate to fixed_encoded_size().
+        if self._is_fixed_size(msg):
+            w(f"inline std::size_t encoded_size([[maybe_unused]] const {msg.name}& message) {{")
+            w("    return fixed_encoded_size(message);")
+            w("}")
+            return
         w(f"inline std::size_t encoded_size(const {msg.name}& message) {{")
         w("    std::size_t total_bytes = 0;")
         for field in msg.fields:

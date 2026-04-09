@@ -168,11 +168,6 @@ void Reactor::register_inbound_listener(NetworkEndpointConfig address, ThreadID 
         throw PreconditionAssertion(
             "Reactor::register_inbound_listener: must be called before run()", __FILE__, __LINE__);
     }
-    if (address.port == 0) {
-        throw PreconditionAssertion(
-            "Reactor::register_inbound_listener: address.port must not be zero", __FILE__, __LINE__);
-    }
-
     InboundListener listener;
     listener.address          = std::move(address);
     listener.target_thread_id = target_thread_id;
@@ -1113,16 +1108,21 @@ void Reactor::on_connect_ready(OutboundConnection& conn)
 
 void Reactor::on_data_ready(OutboundConnection& conn)
 {
+    // Capture before receive() — the disconnect handler may destroy conn
+    // synchronously during receive(). See on_inbound_data_ready for details.
+    const ConnectionID id           = conn.id();
+    const std::string  service_name = conn.service_name();
+
     auto [ok, error] = conn.parser()->receive();
     if (!ok) {
         const std::string reason = error.empty()
-            ? fmt::format("peer closed connection on service '{}'", conn.service_name())
-            : fmt::format("parse error on service '{}': {}", conn.service_name(), error);
+            ? fmt::format("peer closed connection on service '{}'", service_name)
+            : fmt::format("parse error on service '{}': {}", service_name, error);
 
         PUBSUB_LOG(logger_, FwLogLevel::Warning,
             "Reactor::on_data_ready: {}", reason);
 
-        teardown_connection(conn.id(), reason, true);
+        teardown_connection(id, reason, true);
     }
 }
 
@@ -1372,22 +1372,15 @@ bool Reactor::initialize_listeners()
         const int listen_fd = acceptor->get_listening_file_descriptor();
         listener.acceptor = std::move(acceptor);
 
-        epoll_event ev{};
-        ev.events  = EPOLLIN;
-        ev.data.fd = listen_fd;
-        if (::epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, listen_fd, &ev) == -1) {
-            PUBSUB_LOG(logger_, FwLogLevel::Error,
-                "Reactor::initialize_listeners: epoll_ctl ADD failed for listen fd {} — {}",
-                listen_fd, StringUtils::get_errno_string());
-            return false;
-        }
-
         PUBSUB_LOG(logger_, FwLogLevel::Info,
             "Reactor::initialize_listeners: listening on {}:{}",
             listener.address.host, listener.address.port);
 
-        auto handler = std::make_unique<AcceptorHandler>(listen_fd, listener, *this, logger_);
+        // Move listener into the map first so AcceptorHandler holds a stable reference.
         inbound_listeners_[listen_fd] = std::move(listener);
+        auto handler = std::make_unique<AcceptorHandler>(
+            listen_fd, inbound_listeners_[listen_fd], *this, logger_);
+        // register_handler calls epoll_ctl ADD internally — do not call it separately.
         register_handler(std::move(handler));
     }
     inbound_listeners_staging_.clear();
@@ -1476,14 +1469,21 @@ void Reactor::on_accept(InboundListener& listener)
 
 void Reactor::on_inbound_data_ready(InboundConnection& conn)
 {
+    // Capture id and peer description before calling receive(). The disconnect
+    // handler lambda inside PduParser may call teardown_inbound_connection()
+    // synchronously during receive(), destroying conn. Accessing conn after
+    // receive() returns would be a use-after-free.
+    const ConnectionID id               = conn.id();
+    const std::string  peer_description = conn.peer_description();
+
     auto [ok, error] = conn.parser()->receive();
     if (!ok) {
         const std::string reason = error.empty()
-            ? fmt::format("peer '{}' closed connection", conn.peer_description())
-            : fmt::format("parse error from peer '{}': {}", conn.peer_description(), error);
+            ? fmt::format("peer '{}' closed connection", peer_description)
+            : fmt::format("parse error from peer '{}': {}", peer_description, error);
         PUBSUB_LOG(logger_, FwLogLevel::Warning,
             "Reactor::on_inbound_data_ready: {}", reason);
-        teardown_inbound_connection(conn.id(), reason, true);
+        teardown_inbound_connection(id, reason, true);
     }
 }
 
@@ -1564,6 +1564,27 @@ void Reactor::teardown_inbound_connection(ConnectionID id, const std::string& re
     }
 
     inbound_connections_.erase(it);
+}
+
+
+uint16_t Reactor::get_first_inbound_listener_port() const
+{
+    if (inbound_listeners_.empty()) {
+        return 0;
+    }
+    const int listen_fd = inbound_listeners_.begin()->first;
+    sockaddr_storage addr{};
+    socklen_t len = sizeof(addr);
+    if (::getsockname(listen_fd, reinterpret_cast<sockaddr*>(&addr), &len) == -1) {
+        return 0;
+    }
+    if (addr.ss_family == AF_INET) {
+        return ntohs(reinterpret_cast<const sockaddr_in*>(&addr)->sin_port);
+    }
+    if (addr.ss_family == AF_INET6) {
+        return ntohs(reinterpret_cast<const sockaddr_in6*>(&addr)->sin6_port);
+    }
+    return 0;
 }
 
 } // namespace pubsub_itc_fw

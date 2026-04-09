@@ -73,6 +73,7 @@ C++ block comments /* */ for design overviews - not Doxygen style
 Inline comments // for implementation details
 No end-of-line comments on braces (no } // end if)
 Do not have doxygen comments for functions where we say " = default".
+doxygen comments should not use @throws
 
 Modern C++ Preferences
 
