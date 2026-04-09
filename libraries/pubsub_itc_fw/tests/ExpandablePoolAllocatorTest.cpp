@@ -1856,7 +1856,12 @@ TEST_F(ExpandablePoolAllocatorTest, MixedChaosInvalidFreeStress) {
     const int iterations = 500;
     const int num_threads = 4;
 #else
-    const int iterations = 20'000;
+    // There is a balancing act to do here. The larger the number of iterations,
+    // the better the test at shaking out potential issues, but the longer it takes
+    // to run. 20'000 takes nearly 3 minutes, so we had to reduce it.
+    // 10'000 takes around 40s, still far too long.
+    // 7'000 takes around 20s, still long but let's put up with that for now.
+    const int iterations = 7'000;
     const int num_threads = 8;
 #endif
 
