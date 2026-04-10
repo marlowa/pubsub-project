@@ -89,7 +89,9 @@ int SlabAllocator::slab_id() const {
 void SlabAllocator::reset() {
     bump_ = 0;
     outstanding_allocations_count_.store(0, std::memory_order_release);
-    queue_node_.next.store(nullptr, std::memory_order_relaxed);
+    // queue_node_.next is owned by EmptySlabQueue and must not be touched here.
+    // After dequeue, head_ points to this node as the new dummy; zeroing next
+    // would sever any link the queue has already established through it.
     queue_node_.slab_id = slab_id_;
 }
 

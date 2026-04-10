@@ -110,8 +110,15 @@ class SlabAllocator {
     /**
      * @brief Resets the slab for reuse.
      *
-     * Resets the bump pointer to zero. Must only be called by the reactor
-     * after confirming the slab is empty.
+     * Resets the bump pointer to zero and clears the outstanding allocation
+     * count. Must only be called by the reactor after confirming the slab
+     * is empty (i.e. after the slab's node has been dequeued from the
+     * EmptySlabQueue).
+     *
+     * Does NOT touch queue_node_.next. That field is structural state owned
+     * by EmptySlabQueue. After dequeue, head_ points to this node as the
+     * new dummy; zeroing next would sever any link the queue has already
+     * established through it.
      */
     void reset();
 

@@ -13,7 +13,7 @@
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/SlabAllocator.hpp>
 
-namespace pubsub_itc_fw {
+namespace pubsub_itc_fw::tests {
 
 // ============================================================
 // EmptySlabQueue adversarial tests
@@ -454,4 +454,4 @@ TEST_F(ExpandableSlabAllocatorAdversarialTest, NoStarvationUnderSustainedLoad)
     EXPECT_EQ(errors.load(), 0) << "allocator returned nullptr under sustained load";
 }
 
-} // namespace pubsub_itc_fw
+} // namespace pubsub_itc_fw::tests

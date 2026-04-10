@@ -6,7 +6,7 @@
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/ServiceRegistry.hpp>
 
-namespace pubsub_itc_fw {
+namespace pubsub_itc_fw::tests {
 
 class ServiceRegistryTest : public ::testing::Test {
 protected:

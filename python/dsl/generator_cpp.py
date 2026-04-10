@@ -85,7 +85,7 @@ class CppGenerator:
 
         for decl in ast.declarations:
             if isinstance(decl, MessageDecl):
-                self._emit_message_functions(decl, w)
+                self._emit_message_functions(decl, w, enum_names)
                 self._emit_decode_wrapper(decl, w)
                 w("")
 
@@ -371,28 +371,28 @@ class CppGenerator:
     # Message functions: declarations, size, encode, decode, skip
     # ------------------------------------------------------------------
 
-    def _emit_message_functions(self, msg: MessageDecl, w):
+    def _emit_message_functions(self, msg: MessageDecl, w, enum_names=None):
         name = msg.name
 
         w(f"[[nodiscard]] std::size_t encoded_size(const {name}& message);")
         w(f"[[nodiscard]] bool encode(const {name}& message,"  # pylint: disable=line-too-long
           f"    uint8_t* out_buffer, std::size_t out_size,"  # noqa
           f"    std::size_t& bytes_written, std::size_t& bytes_needed);")
-        if self._is_fixed_size(msg):
+        if self._is_fixed_size(msg, enum_names):
             w(f"inline void encode_fast(const {name}& message, uint8_t* out_buffer);")
         w(f"[[nodiscard]] bool decode_{name}({name}View& out, const uint8_t*& read_cursor, std::size_t& bytes_remaining, [[maybe_unused]] pubsub_itc_fw::BumpAllocator& decode_arena, [[maybe_unused]] std::size_t& arena_bytes_needed);")  # pylint: disable=line-too-long
         w(f"[[nodiscard]] bool skip_{name}(const uint8_t*& read_cursor, std::size_t& bytes_remaining);")
         w("")
 
-        if self._is_fixed_size(msg):
-            self._emit_fixed_encoded_size(msg, w)
+        if self._is_fixed_size(msg, enum_names):
+            self._emit_fixed_encoded_size(msg, w, enum_names)
             w("")
-            self._emit_encode_fast_impl(msg, w)
+            self._emit_encode_fast_impl(msg, w, enum_names)
             w("")
 
-        self._emit_encoded_size_impl(msg, w)
+        self._emit_encoded_size_impl(msg, w, enum_names)
         w("")
-        self._emit_encode_impl(msg, w)
+        self._emit_encode_impl(msg, w, enum_names)
         w("")
         self._emit_decode_view_impl(msg, w)
         w("")
@@ -406,7 +406,7 @@ class CppGenerator:
     # Fixed-size helpers
     # ------------------------------------------------------------------
 
-    def _is_fixed_size(self, msg: MessageDecl) -> bool:
+    def _is_fixed_size(self, msg: MessageDecl, enum_names=None) -> bool:
         for field in msg.fields:
             if field.optional:
                 return False
@@ -416,35 +416,42 @@ class CppGenerator:
                 if not isinstance(field.type.element_type, PrimitiveType):
                     return False
                 continue
+            if isinstance(field.type, ReferenceType):
+                # Enum fields are fixed-size (encoded as their underlying integer type).
+                if enum_names and field.type.name in enum_names:
+                    continue
             return False
         return True
 
-    def _emit_fixed_encoded_size(self, msg: MessageDecl, w):
+    def _emit_fixed_encoded_size(self, msg: MessageDecl, w, enum_names=None):
         w(f"inline constexpr std::size_t fixed_encoded_size(const {msg.name}&) {{")
         w("    std::size_t total_bytes = 0;")
         for field in msg.fields:
-            self._emit_fixed_size_for_field(field, w)
+            self._emit_fixed_size_for_field(field, w, enum_names)
         w("    return total_bytes;")
         w("}")
 
-    def _emit_fixed_size_for_field(self, field: Field, w):
+    def _emit_fixed_size_for_field(self, field: Field, w, enum_names=None):
         type_node = field.type
         if isinstance(type_node, PrimitiveType):
             w(f"    total_bytes += sizeof({self._cpp_primitive_type(type_node.name)});")
         elif isinstance(type_node, ArrayType):
             element_cpp = self._cpp_primitive_type(type_node.element_type.name)
             w(f"    total_bytes += sizeof({element_cpp}) * {type_node.length};")
+        elif isinstance(type_node, ReferenceType) and enum_names and type_node.name in enum_names:
+            # Enum fields have a fixed wire size — delegate to the enum's encoded_size.
+            w(f"    total_bytes += encoded_size({type_node.name}{{}});")
         else:
             raise RuntimeError(f"Non-fixed-size field in fixed size computation: {type_node}")
 
-    def _emit_encode_fast_impl(self, msg: MessageDecl, w):
+    def _emit_encode_fast_impl(self, msg: MessageDecl, w, enum_names=None):
         w(f"inline void encode_fast(const {msg.name}& message, uint8_t* out_buffer) {{")
         w("    uint8_t* write_cursor = out_buffer;")
         for field in msg.fields:
-            self._emit_encode_fast_field(field, w)
+            self._emit_encode_fast_field(field, w, enum_names)
         w("}")
 
-    def _emit_encode_fast_field(self, field: Field, w):
+    def _emit_encode_fast_field(self, field: Field, w, enum_names=None):
         type_node = field.type
         name = field.name
         if isinstance(type_node, PrimitiveType):
@@ -460,6 +467,13 @@ class CppGenerator:
                 self._emit_write_primitive(element_name, f"message.{name}[i]", "        ", w)
                 w(f"        write_cursor += {width};")
                 w("    }")
+        elif isinstance(type_node, ReferenceType) and enum_names and type_node.name in enum_names:
+            # Enum fields: encode via the enum's encode function, advancing write_cursor.
+            w("    {")
+            w("        std::size_t bw = 0, bn = 0;")
+            w(f"        encode(message.{name}, write_cursor, encoded_size(message.{name}), bw, bn);")
+            w("        write_cursor += bw;")
+            w("    }")
         else:
             raise RuntimeError(f"Non-fixed-size field in encode_fast: {type_node}")
 
@@ -472,9 +486,9 @@ class CppGenerator:
     # encoded_size
     # ------------------------------------------------------------------
 
-    def _emit_encoded_size_impl(self, msg: MessageDecl, w):
+    def _emit_encoded_size_impl(self, msg: MessageDecl, w, enum_names=None):
         # For fixed-size messages the parameter is unused; delegate to fixed_encoded_size().
-        if self._is_fixed_size(msg):
+        if self._is_fixed_size(msg, enum_names):
             w(f"inline std::size_t encoded_size([[maybe_unused]] const {msg.name}& message) {{")
             w("    return fixed_encoded_size(message);")
             w("}")
@@ -539,10 +553,10 @@ class CppGenerator:
     # encode
     # ------------------------------------------------------------------
 
-    def _emit_encode_impl(self, msg: MessageDecl, w):
+    def _emit_encode_impl(self, msg: MessageDecl, w, enum_names=None):
         name = msg.name
         w(f"inline bool encode(const {name}& message, uint8_t* out_buffer, std::size_t out_size, std::size_t& bytes_written, std::size_t& bytes_needed) {{")
-        if self._is_fixed_size(msg):
+        if self._is_fixed_size(msg, enum_names):
             w("    bytes_needed = fixed_encoded_size(message);")
             w("    if (out_size < bytes_needed) { bytes_written = 0; return false; }")
             w("    if (out_size == bytes_needed) {")

@@ -24,7 +24,7 @@ pubsub_itc_fw::QuillLogger test_logger;
 
 } // namespace
 
-namespace pubsub_itc_fw {
+namespace pubsub_itc_fw::tests {
 
 class LoggerTest : public ::testing::Test {
 protected:

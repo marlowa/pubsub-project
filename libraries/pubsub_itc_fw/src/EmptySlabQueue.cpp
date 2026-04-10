@@ -39,4 +39,10 @@ DequeueResult EmptySlabQueue::try_dequeue(int& slab_id) {
     return DequeueResult::Retry;
 }
 
+void EmptySlabQueue::reset_to_empty() {
+    dummy_.next.store(nullptr, std::memory_order_relaxed);
+    head_ = &dummy_;
+    tail_.store(&dummy_, std::memory_order_relaxed);
+}
+
 } // namespace pubsub_itc_fw

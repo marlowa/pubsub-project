@@ -30,7 +30,7 @@
 
 #include <pubsub_itc_fw/tests_common/LoggerWithSink.hpp>
 
-namespace pubsub_itc_fw {
+namespace pubsub_itc_fw::tests {
 
 // ============================================================
 // Stub ByteStreamInterface

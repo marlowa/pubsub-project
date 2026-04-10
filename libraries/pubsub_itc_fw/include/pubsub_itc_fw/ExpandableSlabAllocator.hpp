@@ -130,9 +130,16 @@ public:
      *
      *   auto [slab_id, ptr] = allocator.allocate(payload_size);
      *
+     * This function always returns a valid, non-null pointer. If the current
+     * slab is full, a new slab is chained automatically. If allocation still
+     * fails after chaining (e.g. mmap exhaustion), PubSubItcException is thrown.
+     *
      * @param[in] size Number of bytes to allocate. Must be greater than zero
      *                 and must not exceed slab_size.
-     * @return A tuple of { slab_id, ptr }. ptr is nullptr on failure.
+     * @return A tuple of { slab_id, ptr }. ptr is guaranteed non-null.
+     * @throws PreconditionAssertion if size is zero or exceeds slab_size.
+     * @throws PubSubItcException if a new slab was chained but allocation
+     *         still failed — this should never happen under normal conditions.
      */
     [[nodiscard]] std::tuple<int, void*> allocate(size_t size);
 

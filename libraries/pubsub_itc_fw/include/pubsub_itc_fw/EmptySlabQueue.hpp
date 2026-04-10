@@ -88,6 +88,21 @@ class EmptySlabQueue {
      */
     [[nodiscard]] DequeueResult try_dequeue(int& slab_id);
 
+    /**
+     * @brief Resets the queue to the empty state after a full drain.
+     *
+     * Must only be called by the reactor thread after try_dequeue has
+     * returned Empty. Restores head_ and tail_ to point at dummy_ so
+     * that slab nodes can safely be re-enqueued without forming self-loops.
+     *
+     * Background: after a node is dequeued it becomes the new head_ (dummy).
+     * If tail_ still points to that node when it is re-enqueued, the Vyukov
+     * exchange sets prev == node and node->next = node — a self-loop that
+     * causes try_dequeue to spin forever. Resetting to dummy_ after a full
+     * drain breaks this cycle.
+     */
+    void reset_to_empty();
+
   private:
     EmptySlabQueueNode dummy_;
     EmptySlabQueueNode* head_;

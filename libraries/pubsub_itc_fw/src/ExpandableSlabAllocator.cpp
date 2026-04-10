@@ -7,6 +7,7 @@
 #include <tuple>
 
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
+#include <pubsub_itc_fw/PubSubItcException.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -41,7 +42,9 @@ std::tuple<int, void*> ExpandableSlabAllocator::allocate(size_t size) {
     }
 
     if (ptr == nullptr) {
-        return {-1, nullptr};
+        throw PubSubItcException(
+            "ExpandableSlabAllocator::allocate: allocation failed after chaining a new slab — "
+            "this should not happen; mmap may have failed during slab construction");
     }
 
     return {current_slab_id_, ptr};
@@ -94,6 +97,10 @@ void ExpandableSlabAllocator::drain_empty_slab_queue() {
             // Producer is mid-enqueue; yield and retry once.
             continue;
         } else {
+            // Queue is empty. Reset it to the initial dummy state so that
+            // any slab node that was consumed (and became head_) can safely
+            // be re-enqueued in a future cycle without forming a self-loop.
+            empty_slab_queue_.reset_to_empty();
             keep_draining = false;
         }
     }

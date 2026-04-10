@@ -17,7 +17,7 @@
 
 #include <pubsub_itc_fw/ThreadWithJoinTimeout.hpp>
 
-namespace pubsub_itc_fw {
+namespace pubsub_itc_fw::tests {
 
 // Define a test fixture for ThreadWithJoinTimeout
 class ThreadWithJoinTimeoutTest : public ::testing::Test {};

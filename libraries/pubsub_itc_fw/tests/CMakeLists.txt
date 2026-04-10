@@ -6,6 +6,7 @@ add_executable(pubsub_itc_fw_tests
     BumpAllocatorTest.cpp
     EventMessageTest.cpp
     ExpandablePoolAllocatorTest.cpp
+    ExpandableSlabAllocatorTest.cpp
     FixedSizeMemoryPoolTest.cpp
     NumaAwarePoolAllocatorTest.cpp
     LockFreeMessageQueueTest.cpp

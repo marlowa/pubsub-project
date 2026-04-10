@@ -17,7 +17,7 @@
 
 #include <pubsub_itc_fw/StringUtils.hpp>
 
-namespace pubsub_itc_fw {
+namespace pubsub_itc_fw::tests {
 
 // Define a test fixture for StringUtils
 class StringUtilsTest : public ::testing::Test {};

@@ -12,7 +12,7 @@
 #include <pubsub_itc_fw/EmptySlabQueue.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 
-namespace pubsub_itc_fw {
+namespace pubsub_itc_fw::tests {
 
 // ============================================================
 // EmptySlabQueue tests
