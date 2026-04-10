@@ -120,7 +120,7 @@ Target environment is **low-latency** (sub-100ns encode/decode). Heap allocation
 
 ### 5. OutboundConnection
 
-Represents one reactor-managed outbound TCP connection (fred → joe). Lives in `Reactor::connections_` map.
+Represents one reactor-managed outbound TCP connection. Lives in `Reactor::connections_` map.
 
 **Two lifecycle phases:**
 
@@ -202,13 +202,92 @@ Python code generator producing C++17 headers for zero-copy binary encode/decode
 
 ### 10. Leader-Follower Protocol (DSL defined, not yet implemented)
 
+#### Overview
+
+This is a bespoke, intentionally simple protocol. There is no need for a full consensus algorithm such as Raft or Paxos. The deployment topology is fixed: exactly two active nodes per site, with a third node (DR arbiter) available to break ties at startup. Leader election is deterministic — the node with the lowest `instance_id` wins. The arbiter never becomes a leader or follower; it only resolves startup ambiguity when both nodes are undecided.
+
+#### Topology
+
+Four instances in total, each with a unique integer `instance_id` configured in `ReactorConfiguration`:
+
+| Instance | Site | Role in election |
+|---|---|---|
+| Node A (primary) | Main | Participant |
+| Node B (secondary) | Main | Participant |
+| Node C (primary-DR) | DR | Arbiter |
+| Node D (secondary-DR) | DR | Arbiter |
+
+Main-site nodes use DR-site nodes as arbiters. DR-site nodes use main-site nodes as arbiters. Primary arbiter is tried first; secondary arbiter is the fallback if the primary is unreachable.
+
+#### PDU Summary
+
 | Message | ID | Purpose |
 |---|---|---|
-| `StatusQuery` | 100 | Identity + epoch on TCP connect |
-| `StatusResponse` | 101 | Identity confirmation + peer echo |
-| `Heartbeat` | 102 | Liveness + epoch propagation |
+| `StatusQuery` | 100 | Identity + epoch announced on TCP connect |
+| `StatusResponse` | 101 | Identity confirmation + peer echo + current role |
+| `Heartbeat` | 102 | Liveness detection + epoch propagation |
 | `ArbitrationReport` | 200 | Sent to DR when arbitration needed |
-| `ArbitrationDecision` | 201 | DR's authoritative tie-break |
+| `ArbitrationDecision` | 201 | DR's authoritative tie-break + epoch assignment |
+
+#### Epoch Semantics
+
+The epoch is a generation counter that exists to detect stale nodes from a previous leadership cycle.
+
+Rules:
+1. A node that has never participated in an election starts with epoch 0.
+2. At startup, when DR arbitration is used, the DR arbiter assigns the epoch in `ArbitrationDecision`. Both nodes adopt this value.
+3. When a follower detects leader death and promotes itself to leader (no DR contact), it increments its own epoch by 1. This is the sole mechanism for local epoch advancement.
+4. When a restarting node connects and receives a `StatusResponse`, it compares epochs. If the peer's epoch is higher, the restarting node is stale and adopts the follower role immediately without contacting DR.
+5. A heartbeat carrying an epoch lower than the receiver's own epoch indicates a stale sender; the receiver logs a warning and ignores the heartbeat.
+
+#### Startup Election Flow
+
+1. On startup, each node attempts TCP connection to its peer (A→B, B→A).
+2. On connection, both sides immediately send `StatusQuery` (identity + epoch).
+3. On receiving `StatusQuery`, each side replies with `StatusResponse` including its `current_role`.
+4. **If the peer's `StatusResponse` carries `Role::leader`:** the connecting node adopts `Role::follower` immediately. No DR contact needed. This handles the case where one node restarts and the peer is already an established leader.
+5. **If the peer's `StatusResponse` carries `Role::unknown`:** both sides are undecided. Both send `ArbitrationReport` to DR (primary-DR first, secondary-DR as fallback).
+6. DR receives both reports and issues `ArbitrationDecision` assigning leader and follower deterministically by lowest `instance_id`, and sets the epoch for this generation.
+7. Both nodes adopt their assigned roles and the DR connection is closed — it is not kept open between elections.
+
+#### Post-Election Steady State
+
+- The peer-to-peer TCP connection remains open with `Heartbeat` messages sent at regular intervals in both directions.
+- Heartbeats carry `instance_id` and `epoch` for liveness detection and stale-node detection.
+- If the **follower** dies: the leader logs a warning. No other action is taken. Operations staff will restart the failed instance, which will rejoin as follower (see Restart Flow below).
+- If the **leader** dies: the follower promotes itself (see Leader Death below).
+
+#### Restart Flow (Restarting Node Rejoins)
+
+When a node restarts it connects to the peer and exchanges `StatusQuery`/`StatusResponse`. If the peer's `StatusResponse` carries `Role::leader` and a higher epoch, the restarting node adopts `Role::follower` without contacting DR. The running leader always takes precedence regardless of `instance_id` — the epoch is the proof of authority.
+
+#### Leader Death and Follower Promotion
+
+On heartbeat loss:
+1. The surviving node first attempts to reconnect to the peer.
+2. If reconnection succeeds: exchange `StatusQuery`/`StatusResponse`; the epoch resolves roles as normal (see Restart Flow).
+3. If reconnection fails, the peer is presumed dead:
+   - **Lowest `instance_id` node:** promotes itself to leader and increments its epoch by 1. Logs a warning if DR was also unreachable.
+   - **Highest `instance_id` node:** enters a degraded waiting state. Does NOT promote itself. Logs a warning. Waits for the peer or DR to become reachable again.
+
+The promoted leader operates solo and does not contact DR. The system accepts reduced resiliency until operations staff restart the failed instance, at which point it rejoins as follower.
+
+#### Split-Brain Protection
+
+Split-brain (both nodes simultaneously believing they are leader) is a key concern with two-node deployments. The protocol addresses it at each failure scenario:
+
+**Normal startup with DR reachable:** DR is the sole authority and assigns exactly one leader. Split-brain is impossible.
+
+**DR unreachable at startup:** The lowest `instance_id` node declares itself leader unilaterally. A warning is logged on both sides. This is the one scenario where split-brain could theoretically arise — but it is eliminated by the asymmetric promotion rule: only the lowest `instance_id` node may self-elect without an arbiter. The higher `instance_id` node always defers, entering a degraded waiting state.
+
+**Network partition (both nodes alive, link down):** Both nodes lose heartbeats. On reconnection attempt failure, the lowest `instance_id` node promotes and increments its epoch; the highest `instance_id` node enters degraded waiting state and does not promote. Split-brain is eliminated at the cost of the higher-`instance_id` node going leaderless. Since the lower-`instance_id` node continues serving, there is no functional loss — only reduced resiliency, consistent with the overall HA philosophy of the framework.
+
+**Restarting node vs established leader:** The epoch difference immediately resolves this. The restarting node will always have a lower epoch than the established leader and unconditionally adopts the follower role.
+
+#### Open Design Questions
+
+- **Epoch at DR site:** The DR-site election mirrors the main-site election with main-site nodes acting as arbiters. The exact interaction between DR-site epoch management and main-site epoch management has not yet been fully specified.
+- **Heartbeat interval and loss threshold:** The number of missed heartbeats before declaring peer death, and the heartbeat interval, are not yet specified. These will be `ReactorConfiguration` parameters.
 
 ---
 
@@ -251,8 +330,8 @@ Python code generator producing C++17 headers for zero-copy binary encode/decode
 
 ## What Is Not Yet Done (in dependency order)
 
-1. **`InboundConnection`** — joe accepting fred's connection via `TcpAcceptor`; needs its own struct analogous to `OutboundConnection` but for the server side
-2. **Leader-follower protocol** — state machine, heartbeat timers, arbitration; requires both outbound (fred→joe) and inbound (joe accepts fred) connection management
+1. **`InboundConnection`** — server-side accepted TCP connection via `TcpAcceptor`; needs its own struct analogous to `OutboundConnection` but for the server side
+2. **Leader-follower protocol** — state machine, heartbeat timers, arbitration; requires both outbound and inbound connection management
 3. **Pub/sub fanout** — unicast fanout to simulate topic-based pub/sub
 4. **Connection management unit tests** — end-to-end test using loopback sockets; deferred until inbound path is also implemented so both sides can be tested together
 5. **`ExpandablePoolAllocatorTest.CrossPoolAbaInterleaving`** — intermittent 1-in-500 failure; the `free_next` atomic fix resolved the main race; residual failures may indicate a secondary issue worth investigating under TSan
@@ -269,12 +348,13 @@ Implement `InboundConnection` and the reactor's acceptor path:
 
 ## HA Architecture
 
-- Two main nodes: **primary** and **secondary** (per site)
-- Two DR nodes: **DR primary** and **DR secondary** (fallback arbiters)
-- Leadership determined by lowest `instance_id` — deterministic, no votes
-- On partition or startup, nodes send `ArbitrationReport` to DR; DR responds with `ArbitrationDecision`
-- Heartbeat A↔B only; DR is pure arbiter, never becomes leader/follower
-- All endpoints configured via `ReactorConfiguration` (`primary_address`, `secondary_address`, `dr_primary_address`, `dr_secondary_address`) and `ServiceRegistry`
+- Four instances total: two at main site (primary, secondary), two at DR site (primary-DR, secondary-DR)
+- Each instance has a unique integer `instance_id` configured in `ReactorConfiguration`
+- Leadership is deterministic — lowest `instance_id` wins; no voting required
+- DR is a pure arbiter and never becomes leader or follower
+- Main-site nodes arbitrate via DR-site nodes; DR-site nodes arbitrate via main-site nodes
+- Full election, epoch, split-brain protection, and failure handling documented in Section 10 above
+- All endpoints configured via `ReactorConfiguration` and `ServiceRegistry`
 
 ---
 
@@ -368,25 +448,25 @@ encode(msg, wire_buf, real);
 
 ## Outbound PDU Path (implemented, tested)
 
-Fred sends a PDU to joe:
-1. Fred calls `reactor.outbound_slab_allocator().allocate(sizeof(PduHeader) + payload_size)`
-2. Fred writes `PduHeader` in network byte order at chunk start
-3. Fred encodes payload after header using DSL `encode()` / `encode_fast()`
-4. Fred enqueues `ReactorControlCommand{SendPdu}` with `connection_id_`, `slab_id_`, `pdu_chunk_ptr_`, `pdu_byte_count_`
+The sending node allocates a slab chunk, writes the `PduHeader` in network byte order, encodes the payload using the DSL, then enqueues a `SendPdu` reactor control command:
+1. Call `reactor.outbound_slab_allocator().allocate(sizeof(PduHeader) + payload_size)`
+2. Write `PduHeader` in network byte order at chunk start
+3. Encode payload after header using DSL `encode()` / `encode_fast()`
+4. Enqueue `ReactorControlCommand{SendPdu}` with `connection_id_`, `slab_id_`, `pdu_chunk_ptr_`, `pdu_byte_count_`
 5. Reactor calls `PduFramer::send_prebuilt(chunk_ptr, total_bytes)` — zero copy
 6. On partial write: reactor records `current_*` in `OutboundConnection`, registers `EPOLLOUT`
 7. `EPOLLOUT` fires: `PduFramer::continue_send()` resumes; when complete reactor calls `outbound_slab_allocator_.deallocate()`
 
 ## Inbound PDU Path (implemented, tested, zero-copy)
 
-Joe's reactor receives a PDU from fred:
+The receiving node's reactor accepts data via epoll and delivers it zero-copy to the application thread:
 1. epoll signals `EPOLLIN` on connected socket
 2. `PduParser::receive()` reads 16-byte `PduHeader` into `header_buffer_`; validates canary
 3. `PduParser` allocates slab chunk: `auto [slab_id, chunk] = inbound_slab_allocator_.allocate(byte_count)`
 4. `PduParser` reads payload **directly from socket into slab chunk** — zero copy
-5. Dispatches `EventMessage::create_framework_pdu_message(payload, size, slab_id)` to joe's thread queue
-6. Joe's thread calls `on_framework_pdu_message(msg)`, processes payload
-7. Joe's thread calls `inbound_slab_allocator_.deallocate(msg.slab_id(), msg.payload())`
+5. Dispatches `EventMessage::create_framework_pdu_message(payload, size, slab_id)` to thread queue
+6. Application thread calls `on_framework_pdu_message(msg)`, processes payload
+7. Application thread calls `inbound_slab_allocator_.deallocate(msg.slab_id(), msg.payload())`
 
 ---
 
@@ -467,16 +547,14 @@ Added `protected: Reactor& get_reactor()` accessor so subclasses can enqueue
 
 ## What Is Not Yet Done (updated)
 
-1. **Leader-follower protocol** — state machine, heartbeat timers, arbitration
+1. **Leader-follower protocol** — state machine, heartbeat timers, arbitration (design now fully documented in Section 10)
 2. **Pub/sub fanout**
-3. **`ExpandablePoolAllocatorTest.CrossPoolAbaInterleaving`** — intermittent 1-in-500
-   failure; `free_next` atomic fix resolved main race; residual failure still present,
-   likely needs TSan investigation
-4. **Logging levels** — everything currently at Info; once framework applications are
-   running, verbose paths should be moved to Debug
+3. **`ExpandablePoolAllocatorTest.CrossPoolAbaInterleaving`** — intermittent 1-in-500 failure; `free_next` atomic fix resolved main race; residual failure still present, likely needs TSan investigation
+4. **Logging levels** — everything currently at Info; once framework applications are running, verbose paths should be moved to Debug
 
 ## Immediate Next Task
 Leader-follower protocol state machine. Prerequisites now complete:
 - Both outbound (connect_to_service) and inbound (register_inbound_listener) paths working
 - StatusQuery/StatusResponse exchange verified end-to-end
 - Integration test framework in place for regression testing
+- Full protocol design documented in Section 10 including epoch semantics, split-brain protection, and all failure scenarios
