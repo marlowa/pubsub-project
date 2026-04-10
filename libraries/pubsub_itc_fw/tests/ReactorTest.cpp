@@ -18,6 +18,7 @@
 
 #include <pubsub_itc_fw/AllocatorConfig.hpp>
 #include <pubsub_itc_fw/ApplicationThread.hpp>
+#include <pubsub_itc_fw/ApplicationThreadConfig.hpp>
 #include <pubsub_itc_fw/BackoffWithYield.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/EventType.hpp>
@@ -159,7 +160,7 @@ public:
                               ThreadID id,
                               const QueueConfig& qc,
                               const AllocatorConfig& ac)
-        : ApplicationThread(logger, reactor, name, id, qc, ac)
+        : ApplicationThread(logger, reactor, name, id, qc, ac, ApplicationThreadConfig{})
     {}
 
 protected:
@@ -187,7 +188,7 @@ public:
                           ThreadID id,
                           const QueueConfig& queue_config,
                           const AllocatorConfig& allocator_config)
-        : ApplicationThread(logger, reactor, name, id, queue_config, allocator_config)
+        : ApplicationThread(logger, reactor, name, id, queue_config, allocator_config, ApplicationThreadConfig{})
     {}
 
     std::atomic<bool> saw_initial_event{false};
@@ -217,7 +218,7 @@ public:
                ThreadID id,
                const QueueConfig& qc,
                const AllocatorConfig& ac)
-        : ApplicationThread(logger, reactor, name, id, qc, ac)
+        : ApplicationThread(logger, reactor, name, id, qc, ac, ApplicationThreadConfig{})
     {
         set_lifecycle_state(ThreadLifecycleState::Operational);
     }

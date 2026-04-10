@@ -15,7 +15,6 @@ OutboundConnection::OutboundConnection(ConnectionID id,
                                        ServiceEndpoints endpoints,
                                        std::unique_ptr<TcpConnector> connector,
                                        ExpandableSlabAllocator& inbound_allocator,
-                                       ExpandableSlabAllocator& outbound_allocator,
                                        ApplicationThread& target_thread)
     : id_(id)
     , requesting_thread_id_(requesting_thread_id)
@@ -23,7 +22,6 @@ OutboundConnection::OutboundConnection(ConnectionID id,
     , endpoints_(std::move(endpoints))
     , connector_(std::move(connector))
     , inbound_allocator_(inbound_allocator)
-    , outbound_allocator_(outbound_allocator)
     , target_thread_(target_thread)
 {
     if (!connector_) {
@@ -76,12 +74,17 @@ int OutboundConnection::get_fd() const
     return -1;
 }
 
-void OutboundConnection::set_pending_send(int slab_id, void* chunk_ptr, uint32_t total_bytes)
+void OutboundConnection::set_pending_send(ExpandableSlabAllocator* allocator, int slab_id, void* chunk_ptr, uint32_t total_bytes)
 {
+    if (allocator == nullptr) {
+        throw PreconditionAssertion(
+            "OutboundConnection::set_pending_send: allocator must not be null", __FILE__, __LINE__);
+    }
     if (chunk_ptr == nullptr) {
         throw PreconditionAssertion(
             "OutboundConnection::set_pending_send: chunk_ptr must not be null", __FILE__, __LINE__);
     }
+    current_allocator_   = allocator;
     current_slab_id_     = slab_id;
     current_chunk_ptr_   = chunk_ptr;
     current_total_bytes_ = total_bytes;
@@ -89,6 +92,7 @@ void OutboundConnection::set_pending_send(int slab_id, void* chunk_ptr, uint32_t
 
 void OutboundConnection::clear_pending_send()
 {
+    current_allocator_   = nullptr;
     current_slab_id_     = -1;
     current_chunk_ptr_   = nullptr;
     current_total_bytes_ = 0;

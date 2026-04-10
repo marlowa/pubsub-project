@@ -13,6 +13,7 @@
 #include <gtest/gtest.h>
 
 #include <pubsub_itc_fw/AllocatorConfig.hpp>
+#include <pubsub_itc_fw/ApplicationThreadConfig.hpp>
 #include <pubsub_itc_fw/ByteStreamInterface.hpp>
 #include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
@@ -30,7 +31,7 @@
 
 #include <pubsub_itc_fw/tests_common/LoggerWithSink.hpp>
 
-namespace pubsub_itc_fw::tests {
+namespace pubsub_itc_fw {
 
 // ============================================================
 // Stub ByteStreamInterface
@@ -167,7 +168,7 @@ class StubApplicationThread : public ApplicationThread {
 public:
     StubApplicationThread(QuillLogger& logger, Reactor& reactor)
         : ApplicationThread(logger, reactor, "StubThread", ThreadID{1},
-                            make_queue_config(), make_allocator_config())
+                            make_queue_config(), make_allocator_config(), ApplicationThreadConfig{})
     {}
 
     void on_itc_message([[maybe_unused]] const EventMessage& msg) override {}

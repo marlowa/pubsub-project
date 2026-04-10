@@ -16,6 +16,7 @@
 #include <quill/Frontend.h>
 
 #include <pubsub_itc_fw/ApplicationThread.hpp>
+#include <pubsub_itc_fw/ApplicationThreadConfig.hpp>
 #include <pubsub_itc_fw/AllocatorConfig.hpp>
 #include <pubsub_itc_fw/BackoffWithYield.hpp>
 #include <pubsub_itc_fw/EventType.hpp>
@@ -141,7 +142,7 @@ public:
 
     TestThread(QuillLogger& logger, Reactor& reactor, const std::string& name, ThreadID id,
                const QueueConfig& queueConfig, const AllocatorConfig& allocatorConfig)
-        : ApplicationThread(logger, reactor, name, id, queueConfig, allocatorConfig)
+        : ApplicationThread(logger, reactor, name, id, queueConfig, allocatorConfig, ApplicationThreadConfig{})
     {
     }
 
@@ -1280,7 +1281,8 @@ TEST_F(ApplicationThreadTest, DefaultHandlersAreCallableAndNoop)
         "DefaultHandlerProbe",
         ThreadID(999),
         make_queue_config(),
-        make_allocator_config()
+        make_allocator_config(),
+        ApplicationThreadConfig{}
     );
 
     // Call each default handler once

@@ -12,6 +12,7 @@
 #include <fmt/format.h>
 
 #include <pubsub_itc_fw/ApplicationThread.hpp>
+#include <pubsub_itc_fw/ApplicationThreadConfig.hpp>
 #include <pubsub_itc_fw/AllocatorConfig.hpp>
 #include <pubsub_itc_fw/BackoffWithYield.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
@@ -54,8 +55,15 @@ ApplicationThread::~ApplicationThread() {
 }
 
 ApplicationThread::ApplicationThread(QuillLogger& logger, Reactor& reactor, const std::string& thread_name, ThreadID thread_id, const QueueConfig& queue_config,
-                                     const AllocatorConfig& allocator_config)
-    : logger_(logger), reactor_(reactor), time_event_started_(), time_event_finished_(), thread_name_(thread_name), thread_id_(thread_id), thread_(nullptr) {
+                                     const AllocatorConfig& allocator_config, const ApplicationThreadConfig& thread_config)
+    : logger_(logger)
+    , reactor_(reactor)
+    , outbound_allocator_(thread_config.outbound_slab_size)
+    , time_event_started_()
+    , time_event_finished_()
+    , thread_name_(thread_name)
+    , thread_id_(thread_id)
+    , thread_(nullptr) {
     if (thread_id.get_value() == 0) {
         throw PreconditionAssertion("ThreadID of zero is reserved for the reactor", __FILE__, __LINE__);
     }
@@ -401,6 +409,16 @@ TimerID ApplicationThread::schedule_timer(const std::string& name, std::chrono::
     id_to_name_[id] = name;
 
     return id;
+}
+
+void ApplicationThread::enqueue_send_pdu_command(ConnectionID conn_id, int slab_id, void* chunk, uint32_t payload_bytes) {
+    ReactorControlCommand cmd(ReactorControlCommand::CommandTag::SendPdu);
+    cmd.connection_id_  = conn_id;
+    cmd.allocator_      = &outbound_allocator_;
+    cmd.slab_id_        = slab_id;
+    cmd.pdu_chunk_ptr_  = chunk;
+    cmd.pdu_byte_count_ = payload_bytes;
+    reactor_.enqueue_control_command(cmd);
 }
 
 } // namespace pubsub_itc_fw

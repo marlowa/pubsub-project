@@ -4,10 +4,9 @@
 # simultaneously on separate threads. They are kept separate from unit
 # tests because they exercise the full stack end-to-end and are slower.
 #
-# Disabled under sanitizers and coverage to avoid false positives from
-# multi-threaded socket interaction.
+# Disabled under sanitizers to avoid false positives from multi-threaded socket interaction.
 
-if(ENABLE_COVERAGE OR ENABLE_ASAN OR ENABLE_TSAN)
+if(ENABLE_ASAN OR ENABLE_TSAN)
     message(STATUS "Integration tests disabled (coverage/sanitizer build)")
     return()
 endif()

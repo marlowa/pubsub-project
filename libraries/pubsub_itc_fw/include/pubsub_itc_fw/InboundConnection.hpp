@@ -95,8 +95,6 @@ public:
      *                                 Must outlive this object.
      * @param[in] inbound_allocator    Slab allocator for inbound PDU payloads.
      *                                 Must outlive this object.
-     * @param[in] outbound_allocator   Slab allocator for outbound PDU chunks.
-     *                                 Must outlive this object.
      * @param[in] disconnect_handler   Called by PduParser on graceful peer disconnect.
      *                                 Typically a lambda calling Reactor::teardown_inbound_connection().
      * @param[in] peer_description     Human-readable description of the remote peer
@@ -106,7 +104,6 @@ public:
                       std::unique_ptr<TcpSocket> socket,
                       ApplicationThread& target_thread,
                       ExpandableSlabAllocator& inbound_allocator,
-                      ExpandableSlabAllocator& outbound_allocator,
                       std::function<void()> disconnect_handler,
                       std::string peer_description);
 
@@ -157,16 +154,29 @@ public:
     /**
      * @brief Records the state of a partial outbound PDU send.
      *
+     * The allocator pointer is stored so the reactor can deallocate the chunk
+     * via current_allocator_->deallocate() when the send eventually completes.
+     * Each ApplicationThread owns its own outbound ExpandableSlabAllocator;
+     * storing the pointer here avoids any assumption about which thread initiated
+     * the send.
+     *
+     * @param[in] allocator   The ApplicationThread's outbound slab allocator. Must not be nullptr.
      * @param[in] slab_id     Slab ID for deallocation when send completes.
      * @param[in] chunk_ptr   Pointer to the start of the PDU frame.
      * @param[in] total_bytes Total frame size in bytes.
      */
-    void set_pending_send(int slab_id, void* chunk_ptr, uint32_t total_bytes);
+    void set_pending_send(ExpandableSlabAllocator* allocator, int slab_id, void* chunk_ptr, uint32_t total_bytes);
 
     /**
      * @brief Clears the partial send state after a send completes.
      */
     void clear_pending_send();
+
+    /**
+     * @brief Returns the allocator that owns the currently in-flight PDU chunk.
+     * Valid only when has_pending_send() is true.
+     */
+    [[nodiscard]] ExpandableSlabAllocator* current_allocator() const { return current_allocator_; }
 
     /**
      * @brief Returns the slab ID of the currently in-flight PDU chunk.
@@ -194,7 +204,13 @@ private:
     std::unique_ptr<PduFramer>  framer_;
     std::unique_ptr<PduParser>  parser_;
 
-    // Partial send state
+    // Partial send state.
+    // current_allocator_ is the ApplicationThread-owned outbound slab allocator
+    // that allocated current_chunk_ptr_. Stored here so the reactor can call
+    // current_allocator_->deallocate() on send completion without needing to
+    // know which thread initiated the send. ExpandableSlabAllocator::deallocate()
+    // is thread-safe so the reactor may call it from the reactor thread.
+    ExpandableSlabAllocator* current_allocator_{nullptr};
     int      current_slab_id_{-1};
     void*    current_chunk_ptr_{nullptr};
     uint32_t current_total_bytes_{0};
@@ -203,7 +219,6 @@ private:
 
     // Not owned
     ExpandableSlabAllocator& inbound_allocator_;
-    ExpandableSlabAllocator& outbound_allocator_;
     ApplicationThread&       target_thread_;
 };
 

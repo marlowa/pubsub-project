@@ -73,8 +73,7 @@ Reactor::Reactor(const ReactorConfiguration& reactor_configuration,
     , config_(reactor_configuration)
     , service_registry_(service_registry)
     , logger_(logger)
-    , inbound_slab_allocator_(reactor_configuration.inbound_slab_size)
-    , outbound_slab_allocator_(reactor_configuration.outbound_slab_size) {
+    , inbound_slab_allocator_(reactor_configuration.inbound_slab_size) {
     epoll_fd_ = ::epoll_create1(EPOLL_CLOEXEC);
     if (epoll_fd_ == -1) {
         throw PubSubItcException("epoll_create1 failed in Reactor constructor");
@@ -975,7 +974,6 @@ void Reactor::process_connect_command(const ReactorControlCommand& command)
         endpoints,
         std::move(connector),
         inbound_slab_allocator_,
-        outbound_slab_allocator_,
         *target_thread);
 
     OutboundConnection* conn_ptr = conn.get();
@@ -1139,7 +1137,7 @@ void Reactor::on_write_ready(OutboundConnection& conn)
 
     if (!conn.framer()->has_pending_data()) {
         // Send complete — free the slab chunk and clear EPOLLOUT.
-        outbound_slab_allocator_.deallocate(conn.current_slab_id(), conn.current_chunk_ptr());
+        conn.current_allocator()->deallocate(conn.current_slab_id(), conn.current_chunk_ptr());
         conn.clear_pending_send();
 
         const int fd = conn.get_fd();
@@ -1188,7 +1186,7 @@ void Reactor::process_send_pdu_command(const ReactorControlCommand& command)
             PUBSUB_LOG(logger_, FwLogLevel::Warning,
                 "Reactor::process_send_pdu_command: unknown connection id {}",
                 cid.get_value());
-            outbound_slab_allocator_.deallocate(command.slab_id_, command.pdu_chunk_ptr_);
+            command.allocator_->deallocate(command.slab_id_, command.pdu_chunk_ptr_);
             pending_send_.reset();
             return;
         }
@@ -1219,7 +1217,7 @@ void Reactor::process_send_pdu_command(const ReactorControlCommand& command)
         PUBSUB_LOG(logger_, FwLogLevel::Error,
             "Reactor::process_send_pdu_command: send error to '{}': {}",
             peer_name, send_error);
-        outbound_slab_allocator_.deallocate(command.slab_id_, command.pdu_chunk_ptr_);
+        command.allocator_->deallocate(command.slab_id_, command.pdu_chunk_ptr_);
         pending_send_.reset();
         on_error(send_error);
         return;
@@ -1228,9 +1226,9 @@ void Reactor::process_send_pdu_command(const ReactorControlCommand& command)
     if (framer->has_pending_data()) {
         // Partial send — record state in the connection and register EPOLLOUT.
         if (out_it != connections_.end()) {
-            out_it->second->set_pending_send(command.slab_id_, command.pdu_chunk_ptr_, total_bytes);
+            out_it->second->set_pending_send(command.allocator_, command.slab_id_, command.pdu_chunk_ptr_, total_bytes);
         } else {
-            inbound_connections_[cid]->set_pending_send(command.slab_id_, command.pdu_chunk_ptr_, total_bytes);
+            inbound_connections_[cid]->set_pending_send(command.allocator_, command.slab_id_, command.pdu_chunk_ptr_, total_bytes);
         }
         pending_send_.reset();
 
@@ -1240,7 +1238,7 @@ void Reactor::process_send_pdu_command(const ReactorControlCommand& command)
         ::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, conn_fd, &ev);
     } else {
         // Fully sent — deallocate the slab chunk immediately.
-        outbound_slab_allocator_.deallocate(command.slab_id_, command.pdu_chunk_ptr_);
+        command.allocator_->deallocate(command.slab_id_, command.pdu_chunk_ptr_);
         pending_send_.reset();
     }
 }
@@ -1276,14 +1274,14 @@ void Reactor::teardown_connection(ConnectionID id, const std::string& reason, bo
 
     // Free any in-flight outbound slab chunk.
     if (conn.has_pending_send()) {
-        outbound_slab_allocator_.deallocate(conn.current_slab_id(), conn.current_chunk_ptr());
+        conn.current_allocator()->deallocate(conn.current_slab_id(), conn.current_chunk_ptr());
         conn.clear_pending_send();
     }
 
     // Also clear pending_send_ if it refers to this connection.
     if (pending_send_.has_value() &&
         pending_send_->connection_id_ == id) {
-        outbound_slab_allocator_.deallocate(
+        pending_send_->allocator_->deallocate(
             pending_send_->slab_id_, pending_send_->pdu_chunk_ptr_);
         pending_send_.reset();
     }
@@ -1439,7 +1437,6 @@ void Reactor::on_accept(InboundListener& listener)
         std::move(socket),
         *target_thread,
         inbound_slab_allocator_,
-        outbound_slab_allocator_,
         std::move(disconnect_handler),
         peer_desc);
 
@@ -1500,7 +1497,7 @@ void Reactor::on_inbound_write_ready(InboundConnection& conn)
     }
 
     if (!conn.framer()->has_pending_data()) {
-        outbound_slab_allocator_.deallocate(conn.current_slab_id(), conn.current_chunk_ptr());
+        conn.current_allocator()->deallocate(conn.current_slab_id(), conn.current_chunk_ptr());
         conn.clear_pending_send();
 
         const int fd = conn.get_fd();
@@ -1528,13 +1525,13 @@ void Reactor::teardown_inbound_connection(ConnectionID id, const std::string& re
 
     // Free any in-flight outbound slab chunk.
     if (conn.has_pending_send()) {
-        outbound_slab_allocator_.deallocate(conn.current_slab_id(), conn.current_chunk_ptr());
+        conn.current_allocator()->deallocate(conn.current_slab_id(), conn.current_chunk_ptr());
         conn.clear_pending_send();
     }
 
     // Clear pending_send_ if it refers to this connection.
     if (pending_send_.has_value() && pending_send_->connection_id_ == id) {
-        outbound_slab_allocator_.deallocate(
+        pending_send_->allocator_->deallocate(
             pending_send_->slab_id_, pending_send_->pdu_chunk_ptr_);
         pending_send_.reset();
     }

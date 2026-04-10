@@ -211,14 +211,6 @@ public:
     QuillLogger& get_logger() { return logger_; }
 
     /**
-     * @brief Returns the outbound slab allocator.
-     *
-     * ApplicationThreads use this to allocate PDU frame chunks before
-     * enqueuing SendPdu commands.
-     */
-    ExpandableSlabAllocator& outbound_slab_allocator() { return outbound_slab_allocator_; }
-
-    /**
      * @brief Returns the inbound slab allocator.
      *
      * ApplicationThreads use this to deallocate inbound PDU payload chunks
@@ -514,16 +506,6 @@ private:
      * constructor initialiser list.
      */
     ExpandableSlabAllocator inbound_slab_allocator_;
-
-    /**
-     * Outbound slab allocator: used by ApplicationThreads to allocate PDU
-     * frame chunks before enqueuing SendPdu commands.
-     * Accessible via outbound_slab_allocator() for use by ApplicationThreads.
-     * Slab size is configured via ReactorConfiguration::outbound_slab_size.
-     * Declared after config_ so it can be initialised from config_ in the
-     * constructor initialiser list.
-     */
-    ExpandableSlabAllocator outbound_slab_allocator_;
 };
 
 } // namespace pubsub_itc_fw

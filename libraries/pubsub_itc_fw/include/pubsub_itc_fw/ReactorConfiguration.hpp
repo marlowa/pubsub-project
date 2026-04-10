@@ -171,25 +171,19 @@ struct ReactorConfiguration {
      * @brief Size in bytes of each slab used by the reactor's inbound PDU slab allocator.
      *
      * The inbound allocator receives payload bytes directly from the socket into
-     * slab-allocated chunks (zero-copy). This value should be at least as large as
-     * the largest expected inbound PDU payload. The allocator grows by adding new
-     * slabs of this size when the current slab is full.
+     * slab-allocated chunks (zero-copy). This is a hard upper bound on the size of
+     * any single inbound PDU payload — an attempt to receive a payload larger than
+     * this value will throw PreconditionAssertion. This constraint is intentional:
+     * it encourages application designers to decompose large responses into multiple
+     * focused messages rather than sending unbounded payloads in a single PDU.
+     *
+     * The allocator grows automatically by chaining new slabs of this size when the
+     * current slab is exhausted, so overall throughput is not limited — only the
+     * size of any individual PDU payload.
      *
      * Default: 65536 bytes (64 KB).
      */
     size_t inbound_slab_size{65536};
-
-    /**
-     * @brief Size in bytes of each slab used by the reactor's outbound PDU slab allocator.
-     *
-     * Application threads allocate outbound PDU frame chunks from this allocator
-     * before enqueuing SendPdu commands. This value should be at least as large as
-     * the largest expected outbound PDU frame (sizeof(PduHeader) + max payload).
-     * The allocator grows by adding new slabs of this size when the current slab is full.
-     *
-     * Default: 65536 bytes (64 KB).
-     */
-    size_t outbound_slab_size{65536};
 
 };
 

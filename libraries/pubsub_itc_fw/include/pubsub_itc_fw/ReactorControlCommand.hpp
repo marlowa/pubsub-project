@@ -10,6 +10,7 @@
 #include <fmt/format.h>
 
 #include <pubsub_itc_fw/ConnectionID.hpp>
+#include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 #include <pubsub_itc_fw/TimerID.hpp>
 #include <pubsub_itc_fw/TimerType.hpp>
@@ -33,7 +34,7 @@ namespace pubsub_itc_fw {
  *   CancelTimer — owner_thread_id_, timer_id_
  *   Connect     — requesting_thread_id_, service_name_
  *   Disconnect  — connection_id_
- *   SendPdu     — connection_id_, slab_id_, pdu_chunk_ptr_, pdu_byte_count_
+ *   SendPdu     — connection_id_, allocator_, slab_id_, pdu_chunk_ptr_, pdu_byte_count_
  */
 class ReactorControlCommand {
 public:
@@ -128,10 +129,27 @@ public:
     // ----------------------------------------------------------------
 
     /**
+     * @brief Pointer to the ExpandableSlabAllocator that owns the PDU chunk.
+     *
+     * Each ApplicationThread owns its own outbound ExpandableSlabAllocator.
+     * When enqueuing a SendPdu command the thread sets this field to a pointer
+     * to its own allocator. The reactor calls allocator_->deallocate(slab_id_,
+     * pdu_chunk_ptr_) after the frame has been fully transmitted.
+     *
+     * This pointer is never sent over the network — it is purely local
+     * bookkeeping so the reactor knows which allocator to return the chunk to.
+     * ExpandableSlabAllocator::deallocate() is thread-safe so the reactor
+     * may call it from the reactor thread without synchronisation.
+     *
+     * Must not be nullptr when the SendPdu command is processed.
+     */
+    ExpandableSlabAllocator* allocator_{nullptr};
+
+    /**
      * @brief Slab ID of the chunk holding the complete PDU frame.
      *
-     * The reactor calls outbound_slab_allocator_.deallocate(slab_id_, pdu_chunk_ptr_)
-     * after the frame has been fully transmitted.
+     * Passed to allocator_->deallocate() alongside pdu_chunk_ptr_ after
+     * the frame has been fully transmitted.
      */
     int slab_id_{-1};
 

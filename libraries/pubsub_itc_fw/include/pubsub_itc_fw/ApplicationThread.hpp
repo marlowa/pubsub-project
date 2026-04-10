@@ -10,22 +10,27 @@
 #include <memory>
 #include <string>
 
+#include <arpa/inet.h>
+
+#include <pubsub_itc_fw/AllocatorConfig.hpp>
+#include <pubsub_itc_fw/ApplicationThreadConfig.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/EventHandler.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
+#include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
 #include <pubsub_itc_fw/HighResolutionClock.hpp>
-#include <pubsub_itc_fw/ThreadLifecycleState.hpp>
 #include <pubsub_itc_fw/LockFreeMessageQueue.hpp>
+#include <pubsub_itc_fw/PduHeader.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
+#include <pubsub_itc_fw/QueueConfig.hpp>
+#include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
+#include <pubsub_itc_fw/ThreadLifecycleState.hpp>
 #include <pubsub_itc_fw/ThreadWithJoinTimeout.hpp>
 #include <pubsub_itc_fw/TimerHandler.hpp>
 #include <pubsub_itc_fw/TimerID.hpp>
 #include <pubsub_itc_fw/TimerType.hpp>
-#include <pubsub_itc_fw/QueueConfig.hpp>
-#include <pubsub_itc_fw/AllocatorConfig.hpp>
-#include <pubsub_itc_fw/QuillLogger.hpp>
 
 
 // TODO we also want users to create an application thread using make_shared.
@@ -129,7 +134,8 @@ class ApplicationThread {
                       const std::string& thread_name,
                       ThreadID thread_id,
                       const QueueConfig& queue_config,
-                      const AllocatorConfig& allocator_config);
+                      const AllocatorConfig& allocator_config,
+                      const ApplicationThreadConfig& thread_config);
 
     ApplicationThread(const ApplicationThread&) = delete;
     ApplicationThread& operator=(const ApplicationThread&) = delete;
@@ -446,12 +452,89 @@ protected:
      */
     Reactor& get_reactor() { return reactor_; }
 
+    /**
+     * @brief Returns a reference to this thread's outbound PDU slab allocator.
+     *
+     * Each ApplicationThread owns its own ExpandableSlabAllocator for outbound
+     * PDUs. Subclasses call this from their callback implementations to allocate
+     * a chunk, encode a PDU into it, and enqueue a SendPdu command to the reactor.
+     * The reactor deallocates the chunk once the send is complete, using the
+     * allocator pointer carried in the SendPdu command.
+     *
+     * This allocator is not shared with the reactor or any other thread. Allocation
+     * happens entirely on this application thread. Deallocation is performed by the
+     * reactor thread, which is safe because ExpandableSlabAllocator::deallocate()
+     * is thread-safe.
+     */
+    ExpandableSlabAllocator& outbound_slab_allocator() { return outbound_allocator_; }
+
+    /**
+     * @brief Sends a DSL-encoded PDU on an established connection.
+     *
+     * Handles all framing details: measures the encoded payload size, allocates
+     * a slab chunk, writes the PduHeader in network byte order, encodes the
+     * message payload, and enqueues a SendPdu command to the reactor. Both
+     * fixed-size and variable-length messages are supported.
+     *
+     * Must only be called from within the owning ApplicationThread's callback
+     * context (e.g. on_connection_established, on_framework_pdu_message, etc.)
+     * and never from another thread.
+     *
+     * The reactor deallocates the slab chunk once the send is complete.
+     *
+     * @param[in] conn_id  The ConnectionID of the established connection to send on.
+     * @param[in] pdu_id   The DSL message ID as defined in the .dsl file.
+     * @param[in] msg      The DSL message struct to encode and send.
+     */
+    template <typename MsgT>
+    void send_pdu(ConnectionID conn_id, int16_t pdu_id, const MsgT& msg) {
+        // Pass 1: measure payload size. encode() with out_size=0 sets bytes_needed
+        // without writing anything. The call cannot fail on the measuring pass
+        // (out_size=0 guarantees the buffer-too-small branch is not reached for
+        // variable-length messages), but we check anyway for safety.
+        std::size_t bytes_written = 0;
+        std::size_t bytes_needed  = 0;
+        [[maybe_unused]] bool ok = encode(msg, nullptr, 0, bytes_written, bytes_needed);
+
+        const std::size_t frame_size = sizeof(PduHeader) + bytes_needed;
+        auto [slab_id, chunk] = outbound_allocator_.allocate(frame_size);
+
+        // Write PduHeader in network byte order.
+        auto* hdr        = reinterpret_cast<PduHeader*>(chunk);
+        hdr->byte_count  = htonl(static_cast<uint32_t>(bytes_needed));
+        hdr->pdu_id      = htons(static_cast<uint16_t>(pdu_id));
+        hdr->version     = 1;
+        hdr->filler_a    = 0;
+        hdr->canary      = htonl(pdu_canary_value);
+        hdr->filler_b    = 0;
+
+        // Pass 2: encode payload directly into the slab chunk after the header.
+        // The buffer is sized exactly to bytes_needed so this must succeed.
+        auto* payload = static_cast<uint8_t*>(chunk) + sizeof(PduHeader);
+        if (!encode(msg, payload, bytes_needed, bytes_written, bytes_needed)) {
+            outbound_allocator_.deallocate(slab_id, chunk);
+            throw PubSubItcException("ApplicationThread::send_pdu: encode failed on second pass — this should not happen");
+        }
+
+        // Delegate the reactor call to a non-template method defined in the .cpp,
+        // where Reactor is fully defined. This avoids an incomplete-type error when
+        // send_pdu is instantiated in translation units that only have a forward
+        // declaration of Reactor.
+        enqueue_send_pdu_command(conn_id, slab_id, chunk, static_cast<uint32_t>(bytes_written));
+    }
+
 private:
     QuillLogger& logger_;
     Reactor& reactor_;
+    ExpandableSlabAllocator outbound_allocator_;
 
     HighResolutionClock::time_point time_event_started_;
     HighResolutionClock::time_point time_event_finished_;
+
+    // Non-template helper for send_pdu. Defined in ApplicationThread.cpp where
+    // Reactor is fully defined, avoiding incomplete-type errors in translation
+    // units that include ApplicationThread.hpp with only a forward-declared Reactor.
+    void enqueue_send_pdu_command(ConnectionID conn_id, int slab_id, void* chunk, uint32_t payload_bytes);
 
     std::string thread_name_;
     ThreadID thread_id_;

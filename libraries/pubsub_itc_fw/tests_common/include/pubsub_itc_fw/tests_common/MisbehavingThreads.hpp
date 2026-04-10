@@ -10,6 +10,7 @@
 #include <pubsub_itc_fw/ThreadID.hpp>
 #include <pubsub_itc_fw/QueueConfig.hpp>
 #include <pubsub_itc_fw/AllocatorConfig.hpp>
+#include <pubsub_itc_fw/ApplicationThreadConfig.hpp>
 
 #include <thread>
 #include <chrono>
@@ -23,7 +24,7 @@ class NeverStartingThread : public ApplicationThread {
 public:
     NeverStartingThread(QuillLogger& logger, Reactor& reactor, const std::string& thread_name, ThreadID thread_id,
                         const QueueConfig& queue_config, const AllocatorConfig& allocator_config)
-        : ApplicationThread(logger, reactor, thread_name, thread_id, queue_config, allocator_config) {}
+        : ApplicationThread(logger, reactor, thread_name, thread_id, queue_config, allocator_config, ApplicationThreadConfig{}) {}
 
 protected:
     void on_initial_event() override {
@@ -42,7 +43,7 @@ class ThrowingInitialThread : public ApplicationThread {
 public:
     ThrowingInitialThread(QuillLogger& logger, Reactor& reactor, const std::string& thread_name, ThreadID thread_id,
                           const QueueConfig& queue_config, const AllocatorConfig& allocator_config)
-        : ApplicationThread(logger, reactor, thread_name, thread_id, queue_config, allocator_config) {}
+        : ApplicationThread(logger, reactor, thread_name, thread_id, queue_config, allocator_config, ApplicationThreadConfig{}) {}
 
 protected:
     void on_initial_event() override {
@@ -59,7 +60,7 @@ class ThrowingAppReadyThread : public ApplicationThread {
 public:
     ThrowingAppReadyThread(QuillLogger& logger, Reactor& reactor, const std::string& thread_name, ThreadID thread_id,
                            const QueueConfig& queue_config, const AllocatorConfig& allocator_config)
-        : ApplicationThread(logger, reactor, thread_name, thread_id, queue_config, allocator_config) {}
+        : ApplicationThread(logger, reactor, thread_name, thread_id, queue_config, allocator_config, ApplicationThreadConfig{}) {}
 
 protected:
     void on_initial_event() override {}
@@ -78,7 +79,7 @@ class ThrowingDuringRunThread : public ApplicationThread {
 public:
     ThrowingDuringRunThread(QuillLogger& logger, Reactor& reactor, const std::string& thread_name, ThreadID thread_id,
                             const QueueConfig& queue_config, const AllocatorConfig& allocator_config)
-        : ApplicationThread(logger, reactor, thread_name, thread_id, queue_config, allocator_config) {}
+        : ApplicationThread(logger, reactor, thread_name, thread_id, queue_config, allocator_config, ApplicationThreadConfig{}) {}
 
 protected:
     void on_initial_event() override {}
@@ -96,7 +97,7 @@ class ThrowingTerminationThread : public ApplicationThread {
 public:
     ThrowingTerminationThread(QuillLogger& logger, Reactor& reactor, const std::string& thread_name, ThreadID thread_id,
                               const QueueConfig& queue_config, const AllocatorConfig& allocator_config)
-        : ApplicationThread(logger, reactor, thread_name, thread_id, queue_config, allocator_config) {}
+        : ApplicationThread(logger, reactor, thread_name, thread_id, queue_config, allocator_config, ApplicationThreadConfig{}) {}
 
 protected:
     void on_initial_event() override {}
@@ -116,7 +117,7 @@ class RogueITCThread : public ApplicationThread {
 public:
     RogueITCThread(QuillLogger& logger, Reactor& reactor, const std::string& thread_name, ThreadID thread_id,
                    const QueueConfig& queue_config, const AllocatorConfig& allocator_config)
-        : ApplicationThread(logger, reactor, thread_name, thread_id, queue_config, allocator_config) {}
+        : ApplicationThread(logger, reactor, thread_name, thread_id, queue_config, allocator_config, ApplicationThreadConfig{}) {}
 
 protected:
     void on_initial_event() override {}

@@ -32,16 +32,15 @@
 
 #include <pubsub_itc_fw/AllocatorConfig.hpp>
 #include <pubsub_itc_fw/ApplicationThread.hpp>
+#include <pubsub_itc_fw/ApplicationThreadConfig.hpp>
 #include <pubsub_itc_fw/BumpAllocator.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/NetworkEndpointConfig.hpp>
-#include <pubsub_itc_fw/PduHeader.hpp>
 #include <pubsub_itc_fw/QueueConfig.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
 #include <pubsub_itc_fw/ReactorConfiguration.hpp>
-#include <pubsub_itc_fw/ReactorControlCommand.hpp>
 #include <pubsub_itc_fw/ServiceRegistry.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 
@@ -76,40 +75,6 @@ static AllocatorConfig make_allocator_config(const std::string& name) {
     return cfg;
 }
 
-// Build a complete PDU frame (PduHeader + DSL-encoded payload) in the
-// outbound slab allocator. Returns {slab_id, frame_ptr, total_frame_bytes}.
-// Returns {-1, nullptr, 0} on allocation failure.
-template <typename MsgT> static std::tuple<int, void*, uint32_t> build_pdu_frame(Reactor& reactor, int16_t pdu_id, const MsgT& msg) {
-    const size_t payload_size = fixed_encoded_size(msg);
-    const size_t frame_size = sizeof(PduHeader) + payload_size;
-
-    auto [slab_id, chunk] = reactor.outbound_slab_allocator().allocate(frame_size);
-    if (chunk == nullptr) {
-        return {-1, nullptr, 0};
-    }
-
-    PduHeader* hdr = reinterpret_cast<PduHeader*>(chunk);
-    hdr->byte_count = htonl(static_cast<uint32_t>(payload_size));
-    hdr->pdu_id = htons(static_cast<uint16_t>(pdu_id));
-    hdr->version = 1;
-    hdr->filler_a = 0;
-    hdr->canary = htonl(pdu_canary_value);
-    hdr->filler_b = 0;
-
-    encode_fast(msg, static_cast<uint8_t*>(chunk) + sizeof(PduHeader));
-
-    return {slab_id, chunk, static_cast<uint32_t>(frame_size)};
-}
-
-static void enqueue_send_pdu(Reactor& reactor, ConnectionID conn_id, int slab_id, void* chunk, uint32_t total_bytes) {
-    ReactorControlCommand cmd(ReactorControlCommand::CommandTag::SendPdu);
-    cmd.connection_id_ = conn_id;
-    cmd.slab_id_ = slab_id;
-    cmd.pdu_chunk_ptr_ = chunk;
-    cmd.pdu_byte_count_ = total_bytes - static_cast<uint32_t>(sizeof(PduHeader));
-    reactor.enqueue_control_command(cmd);
-}
-
 static void enqueue_disconnect(Reactor& reactor, ConnectionID conn_id) {
     ReactorControlCommand cmd(ReactorControlCommand::CommandTag::Disconnect);
     cmd.connection_id_ = conn_id;
@@ -125,7 +90,7 @@ static void enqueue_disconnect(Reactor& reactor, ConnectionID conn_id) {
 class ConnectorThread : public ApplicationThread {
   public:
     ConnectorThread(QuillLogger& logger, Reactor& reactor)
-        : ApplicationThread(logger, reactor, "ConnectorThread", ThreadID{1}, make_queue_config(), make_allocator_config("ConnectorPool")) {}
+        : ApplicationThread(logger, reactor, "ConnectorThread", ThreadID{1}, make_queue_config(), make_allocator_config("ConnectorPool"), ApplicationThreadConfig{}) {}
 
     std::atomic<bool> connection_established{false};
     std::atomic<bool> query_sent{false};
@@ -148,12 +113,7 @@ class ConnectorThread : public ApplicationThread {
         query.instance_id = 42;
         query.epoch = 7;
 
-        auto [slab_id, chunk, total_bytes] = build_pdu_frame(get_reactor(), PDU_ID_STATUS_QUERY, query);
-        if (chunk == nullptr) {
-            return;
-        }
-
-        enqueue_send_pdu(get_reactor(), id, slab_id, chunk, total_bytes);
+        send_pdu(id, PDU_ID_STATUS_QUERY, query);
         query_sent.store(true, std::memory_order_release);
     }
 
@@ -194,7 +154,7 @@ class ConnectorThread : public ApplicationThread {
 class ListenerThread : public ApplicationThread {
   public:
     ListenerThread(QuillLogger& logger, Reactor& reactor)
-        : ApplicationThread(logger, reactor, "ListenerThread", ThreadID{2}, make_queue_config(), make_allocator_config("ListenerPool")) {}
+        : ApplicationThread(logger, reactor, "ListenerThread", ThreadID{2}, make_queue_config(), make_allocator_config("ListenerPool"), ApplicationThreadConfig{}) {}
 
     std::atomic<bool> connection_established{false};
     std::atomic<bool> query_received{false};
@@ -230,11 +190,8 @@ class ListenerThread : public ApplicationThread {
             response.peer_instance_id = received_query.instance_id;
             response.epoch = received_query.epoch;
 
-            auto [slab_id, chunk, total_bytes] = build_pdu_frame(get_reactor(), PDU_ID_STATUS_RESPONSE, response);
-            if (chunk != nullptr) {
-                enqueue_send_pdu(get_reactor(), conn_id, slab_id, chunk, total_bytes);
-                response_sent.store(true, std::memory_order_release);
-            }
+            send_pdu(conn_id, PDU_ID_STATUS_RESPONSE, response);
+            response_sent.store(true, std::memory_order_release);
         }
 
         get_reactor().inbound_slab_allocator().deallocate(msg.slab_id(), const_cast<uint8_t*>(payload));
