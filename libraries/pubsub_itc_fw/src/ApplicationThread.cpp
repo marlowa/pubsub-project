@@ -59,6 +59,7 @@ ApplicationThread::ApplicationThread(QuillLogger& logger, Reactor& reactor, cons
     : logger_(logger)
     , reactor_(reactor)
     , outbound_allocator_(thread_config.outbound_slab_size)
+    , decode_arena_buffer_()
     , time_event_started_()
     , time_event_finished_()
     , thread_name_(thread_name)
@@ -68,6 +69,7 @@ ApplicationThread::ApplicationThread(QuillLogger& logger, Reactor& reactor, cons
         throw PreconditionAssertion("ThreadID of zero is reserved for the reactor", __FILE__, __LINE__);
     }
 
+    decode_arena_buffer_.reserve(thread_config.inbound_decode_arena_size);
     message_queue_ = std::make_unique<LockFreeMessageQueue<EventMessage>>(queue_config, allocator_config);
     set_lifecycle_state(ThreadLifecycleState::Created);
 }
@@ -330,7 +332,14 @@ void ApplicationThread::process_message(EventMessage& message) {
         }
 
         case EventType::FrameworkPdu: {
+            // The inbound slab chunk that carries the raw PDU payload is owned by
+            // the reactor's inbound slab allocator. The subclass callback processes
+            // the payload and must not hold any references to it after returning.
+            // The framework deallocates the chunk here unconditionally so that
+            // subclasses never need to do so — and cannot forget to.
             on_framework_pdu_message(message);
+            reactor_.inbound_slab_allocator().deallocate(
+                message.slab_id(), const_cast<uint8_t*>(message.payload()));
             break;
         }
 

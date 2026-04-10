@@ -45,9 +45,6 @@ else()
     message(STATUS "NUMA library not found - NUMA tests will be skipped")
 endif()
 
-# Add compiler flags consistent with the main project
-target_compile_options(pubsub_itc_fw_tests PRIVATE -g -Wall -pedantic)
-
 # Register the test with CTest
 include(GoogleTest)
 if(ENABLE_TSAN)

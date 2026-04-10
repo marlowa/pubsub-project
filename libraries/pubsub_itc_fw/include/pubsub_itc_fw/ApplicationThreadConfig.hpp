@@ -1,12 +1,8 @@
 #pragma once
-
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
-
 #include <cstddef>
-
 namespace pubsub_itc_fw {
-
 /**
  * @brief Configuration data for an ApplicationThread.
  *
@@ -41,6 +37,22 @@ struct ApplicationThreadConfig {
      * Default: 65536 bytes (64 KB).
      */
     size_t outbound_slab_size{65536};
-};
 
+    /**
+     * @brief Size in bytes of the decode arena buffer owned by this thread.
+     *
+     * This buffer provides backing store for BumpAllocator when decoding
+     * variable-length inbound PDUs. It is reserved once at construction time
+     * and reused for every inbound PDU — there is no heap allocation on the
+     * message handling path.
+     *
+     * This value must be at least as large as the maximum arena bytes required
+     * by any inbound PDU type this thread will receive, which is bounded by
+     * the reactor's inbound_slab_size. The two values should be kept consistent:
+     * set this to the same value as ReactorConfiguration::inbound_slab_size.
+     *
+     * Default: 65536 bytes (64 KB).
+     */
+    size_t inbound_decode_arena_size{65536};
+};
 } // namespace pubsub_itc_fw

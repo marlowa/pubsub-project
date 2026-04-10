@@ -33,6 +33,7 @@ when checking if a ptr is nullptr, do not say "if (ptr)", say "if (ptr != nullpt
 when checking if a ptr is not nullptr, do not say "if (!ptr)", say "if (ptr == nullptr)"
 When a variable is a pointer or a reference, the * or & should be with the typename, not with the variable name, so, for example, instead of T *myvar it should be T* myvar. Also have a space before the variable name  (T* obj, not T*obj). This rule also applies to function argument declarations.
 Do not add spaces to variable declarations to make adjacent declarations all line up. That is fragile when new variable declarations are added.
+
 Naming Conventions
 
 snake_case for: variables, function names, member functions, parameters
@@ -47,6 +48,7 @@ Do not use Hebrew‑style consonant writing, e.g say "plot" instead of "plt".
 Use English, not American English.
 Use English variable names but American API spellings.
 Abstract interface classes should end with the word "Interface", not start with "I" which is a cryptic one letter code for "Interface".
+Do not use shortened variable names to save on typing, e.g. msg instead of message. Certain abbreviations that are de facto standards are allowed such as ID for "indentifer" and IP for "InternetProtocol". Non-standard abbreviations done out of sheer laziness are not allowed.
 
 Function parameters
 When passing fundamental types by value do not qulaify with const

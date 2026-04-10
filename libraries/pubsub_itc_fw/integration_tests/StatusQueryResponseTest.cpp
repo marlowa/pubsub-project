@@ -129,15 +129,13 @@ class ConnectorThread : public ApplicationThread {
     void on_framework_pdu_message(const EventMessage& msg) override {
         const uint8_t* payload = msg.payload();
         const size_t size = static_cast<size_t>(msg.payload_size());
-        size_t consumed = 0;
-        size_t arena_bytes = 0;
-        BumpAllocator dummy(nullptr, 0);
+        BumpAllocator arena(decode_arena_buffer().data(), decode_arena_buffer().capacity());
+        size_t consumed     = 0;
+        size_t arena_needed = 0;
 
-        if (decode(received_response, payload, size, consumed, dummy, arena_bytes)) {
+        if (decode(received_response, payload, size, consumed, arena, arena_needed)) {
             response_received.store(true, std::memory_order_release);
         }
-
-        get_reactor().inbound_slab_allocator().deallocate(msg.slab_id(), const_cast<uint8_t*>(payload));
 
         // Disconnect now that we have the response.
         enqueue_disconnect(get_reactor(), conn_id);
@@ -178,11 +176,11 @@ class ListenerThread : public ApplicationThread {
     void on_framework_pdu_message(const EventMessage& msg) override {
         const uint8_t* payload = msg.payload();
         const size_t size = static_cast<size_t>(msg.payload_size());
-        size_t consumed = 0;
-        size_t arena_bytes = 0;
-        BumpAllocator dummy(nullptr, 0);
+        BumpAllocator arena(decode_arena_buffer().data(), decode_arena_buffer().capacity());
+        size_t consumed     = 0;
+        size_t arena_needed = 0;
 
-        if (decode(received_query, payload, size, consumed, dummy, arena_bytes)) {
+        if (decode(received_query, payload, size, consumed, arena, arena_needed)) {
             query_received.store(true, std::memory_order_release);
 
             StatusResponse response{};
@@ -194,7 +192,6 @@ class ListenerThread : public ApplicationThread {
             response_sent.store(true, std::memory_order_release);
         }
 
-        get_reactor().inbound_slab_allocator().deallocate(msg.slab_id(), const_cast<uint8_t*>(payload));
     }
 
     void on_itc_message([[maybe_unused]] const EventMessage& msg) override {}

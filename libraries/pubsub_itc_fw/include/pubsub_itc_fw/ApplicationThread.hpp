@@ -9,11 +9,13 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <arpa/inet.h>
 
 #include <pubsub_itc_fw/AllocatorConfig.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfig.hpp>
+#include <pubsub_itc_fw/BumpAllocator.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/EventHandler.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
@@ -469,6 +471,32 @@ protected:
     ExpandableSlabAllocator& outbound_slab_allocator() { return outbound_allocator_; }
 
     /**
+     * @brief Returns a reference to this thread's inbound PDU decode arena buffer.
+     *
+     * This buffer provides the backing store for a BumpAllocator used when decoding
+     * variable-length inbound PDUs (those containing string, optional, or list fields).
+     * It is reserved once at construction to ApplicationThreadConfig::inbound_decode_arena_size
+     * bytes and reused for every inbound PDU callback — no heap allocation occurs on
+     * the message handling path.
+     *
+     * Usage in on_framework_pdu_message:
+     * @code
+     *     BumpAllocator arena(decode_arena_buffer().data(), decode_arena_buffer().capacity());
+     *     size_t consumed = 0;
+     *     size_t arena_bytes_needed = 0;
+     *     if (decode(view, payload, size, consumed, arena, arena_bytes_needed)) { ... }
+     * @endcode
+     *
+     * The decoded view's string_view and ListView fields point into this buffer.
+     * They are valid only for the duration of the current callback — the buffer
+     * is reused on the next call.
+     *
+     * Must only be called from within the owning ApplicationThread's callback
+     * context and never from another thread.
+     */
+    std::vector<uint8_t>& decode_arena_buffer() { return decode_arena_buffer_; }
+
+    /**
      * @brief Sends a DSL-encoded PDU on an established connection.
      *
      * Handles all framing details: measures the encoded payload size, allocates
@@ -527,6 +555,13 @@ private:
     QuillLogger& logger_;
     Reactor& reactor_;
     ExpandableSlabAllocator outbound_allocator_;
+
+    // Backing store for BumpAllocator when decoding variable-length inbound PDUs.
+    // Reserved once at construction to inbound_decode_arena_size bytes and reused
+    // for every inbound PDU. No heap allocation occurs on the message handling path
+    // because reserve() is called in the constructor and the buffer is never allowed
+    // to grow beyond its initial capacity.
+    std::vector<uint8_t> decode_arena_buffer_;
 
     HighResolutionClock::time_point time_event_started_;
     HighResolutionClock::time_point time_event_finished_;

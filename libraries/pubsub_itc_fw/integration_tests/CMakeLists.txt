@@ -15,6 +15,7 @@ message(STATUS "Building integration tests for pubsub_itc_fw")
 
 add_executable(pubsub_itc_fw_integration_tests
     StatusQueryResponseTest.cpp
+    VariableLengthPduTest.cpp
 )
 
 # Ensure DSL and protobuf headers are generated before building.
@@ -33,9 +34,8 @@ target_link_libraries(pubsub_itc_fw_integration_tests PRIVATE
 target_include_directories(pubsub_itc_fw_integration_tests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../include
     ${CMAKE_CURRENT_BINARY_DIR}/../pubsub_itc_fw/pubsub_itc_fw
+    ${CMAKE_CURRENT_BINARY_DIR}/../pubsub_itc_fw/dsl
 )
-
-target_compile_options(pubsub_itc_fw_integration_tests PRIVATE -g -Wall -pedantic)
 
 include(GoogleTest)
 gtest_discover_tests(pubsub_itc_fw_integration_tests
@@ -43,3 +43,4 @@ gtest_discover_tests(pubsub_itc_fw_integration_tests
 )
 
 message(STATUS "  Added integration test: StatusQueryResponseTest")
+message(STATUS "  Added integration test: VariableLengthPduTest")
