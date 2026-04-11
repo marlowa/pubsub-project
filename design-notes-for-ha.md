@@ -255,3 +255,177 @@ Define full HA state machine
 Specify message protocol (request/renew/release)
 Handle race conditions (simultaneous fencing attempts)
 Integrate into DSL/codegen system
+
+🧠 Think in Layers (this is the missing piece)
+
+A well-designed HA system has two separate layers:
+
+1. Local failure handling (process-level)
+
+This handles:
+
+core dumps
+
+crashes
+
+bugs
+
+transient failures
+
+Typical behaviour:
+
+restart the process
+
+fail over locally if needed
+
+no fencing involved
+
+👉 This is where most failures happen.
+
+2. Cluster-level failure handling (node-level uncertainty)
+
+This handles:
+
+node unreachable
+network partition
+OS hang
+scheduler stalls
+kernel lockups
+
+👉 This is where STONITH is used
+
+⚠️ Why This Distinction Matters
+
+Let’s walk your exact concern:
+
+Scenario: process core dumps on Node A
+
+Correct behaviour:
+    Process dies
+    Local supervisor (systemd, etc.) restarts it
+    Node A remains leader (or briefly unavailable)
+    No STONITH occurs
+
+👉 This is normal and frequent.
+
+🚨 When STONITH does trigger
+
+STONITH is used when something like this happens:
+
+Scenario: Node A becomes unresponsive
+
+B cannot contact A
+A might still:
+    be running
+    be sending messages
+    be writing state
+
+B must decide:
+
+    “Is A dead?”
+    or
+    “Is the network broken?”
+
+It cannot know.
+
+So:
+
+B must fence A before taking over
+
+🧠 Key Insight
+
+STONITH is about:
+
+    uncertainty at the node level, not process failure
+
+💡 Why Killing the Whole Machine Is Actually Rational
+
+Because partial failure is the dangerous case:
+    process is alive but misbehaving
+    OS is wedged but not dead
+    network stack is broken one way
+
+These are far worse than a clean crash.
+
+👉 They can cause split-brain or corruption
+
+So the rule becomes:
+
+    If we cannot prove the node is safe, we make it safe by removing it entirely.
+
+🔍 Real-World Perspective
+
+In production HA systems:
+
+    Process crashes → handled locally, no fencing
+    Node ambiguity → fencing
+
+STONITH events are:
+
+    relatively rare
+    but critical when they occur
+
+⚖️ What Happens If You Don’t Use STONITH
+
+In your system:
+
+Without fencing:
+    A is slow / partitioned
+    B promotes
+    A is still running
+
+👉 both active → split brain
+
+Now compare:
+
+Approach	Outcome
+No STONITH	silent corruption / double processing
+STONITH	one node forcibly stopped
+
+In most domains (especially finance):
+
+👉 STONITH is the lesser evil
+
+🧩 How Systems Avoid “Over-Fencing”
+
+Good HA systems are careful:
+    multiple missed heartbeats required
+    timeouts tuned conservatively
+    sometimes multiple channels checked
+    fencing is last resort, not first reaction
+
+💡 Design Guidance for You
+
+You can explicitly encode this philosophy:
+
+Separate failure domains in your design
+
+Local supervision:
+    process restart
+    crash recovery
+    fast and frequent
+
+Cluster logic:
+only triggers after:
+    sustained loss of communication
+    inability to verify peer state
+
+🧠 Mental Model Upgrade
+
+Instead of:
+
+“STONITH kills machines when processes crash”
+
+Think:
+
+“STONITH resolves uncertainty when a node might still be dangerous”
+
+most failures are process-level; STONITH is not used for those.
+It is used only when:
+    node state is uncertain
+    and correctness is at risk
+
+👉 Properly used, STONITH is:
+    rare
+    deliberate
+    and essential for safety
