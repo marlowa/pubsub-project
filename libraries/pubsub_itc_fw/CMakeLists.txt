@@ -97,6 +97,8 @@ set(PUBSUB_ITC_FW_SRC
     src/TimerHandler.cpp
     src/MirroredBuffer.cpp
     src/PduProtocolHandler.cpp
+    src/InboundConnectionManager.cpp
+    src/OutboundConnectionManager.cpp
 )
 
 set(PUBSUB_ITC_FW_PROTO_SRCS

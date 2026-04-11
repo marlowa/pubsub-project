@@ -63,6 +63,8 @@ Target environment is **low-latency** (sub-100ns encode/decode). Heap allocation
 
 **Bug history:** Two bugs fixed in `FixedSizeMemoryPool`: (1) unsafe free-list traversal in `get_number_of_available_objects` — fixed with atomic counters; (2) data race on `next` pointer inside union — fixed by moving to `std::atomic<Slot<T>*> free_next` outside the union. Both produced ~1-in-100 failure rate under stress. Likely present in the closed-source production allocator as well.
 
+**Bug fixed in `ExpandableSlabAllocator`:** `drain_empty_slab_queue()` was destroying a `SlabAllocator` (via `unique_ptr::reset()`) while still traversing the Vyukov queue whose nodes are embedded inside that slab. Fixed by collecting all slab IDs into a `std::vector` first, then processing them after the queue traversal completes. The vector allocation is on a cold path and not a hot-path concern. Detected by ASan on `ExpandableSlabAllocatorTest.OldSlabIsDestroyedAfterChaining`.
+
 ---
 
 ### 2. Lock-Free Queue Subsystem
@@ -97,30 +99,34 @@ Target environment is **low-latency** (sub-100ns encode/decode). Heap allocation
 
 | Class | One-liner |
 |---|---|
-| `Reactor` | epoll event loop; owns all threads, timers, outbound connections; `ServiceRegistry` for service name resolution; inbound and outbound slab allocators sized from config |
-| `ReactorConfiguration` | All config: timeouts, slab sizes, HA topology, command queue config, `connect_timeout` (default 5s) |
+| `Reactor` | epoll event loop; owns all threads, timers; inherits `ThreadLookupInterface`; delegates inbound and outbound connection management to dedicated managers |
+| `ThreadLookupInterface` | Pure abstract interface with single method `get_fast_path_thread(ThreadID)`; implemented by `Reactor`; allows connection managers to deliver events to threads without depending on `Reactor` |
+| `InboundConnectionManager` | Owns all inbound connection state: listener registry, accepted connection maps, accept/read/write/teardown/idle-timeout logic |
+| `OutboundConnectionManager` | Owns all outbound connection state: connection maps, connect/read/write/teardown/timeout logic |
+| `ReactorConfiguration` | All config: timeouts, slab sizes, HA topology, command queue config, `connect_timeout` (default 5s), `socket_maximum_inactivity_interval_` (default 60s) |
 | `ReactorControlCommand` | Commands: `AddTimer`, `CancelTimer`, `Connect`, `Disconnect`, `SendPdu` |
 | `ServiceRegistry` | Static name→`ServiceEndpoints` map; populated before threads start; no file I/O |
 | `ServiceEndpoints` | Primary + secondary `NetworkEndpointConfig`; secondary port==0 means not configured |
-| `ConnectionID` | Strongly-typed connection identifier; 0 = invalid; monotonically increasing from 1 |
+| `ConnectionID` | Strongly-typed connection identifier; 0 = invalid; monotonically increasing from 1; allocated by `Reactor::allocate_connection_id()` which is shared between both managers |
 | `OutboundConnection` | Per-connection state for reactor-managed outbound TCP connections (see below) |
-
-**`ReactorConfiguration` slab sizes:**
-- `inbound_slab_size{65536}` — size each inbound slab (used by `PduParser`)
-- `outbound_slab_size{65536}` — size of each outbound slab (used by application threads)
-- Both default to 64KB; should be at least as large as the largest expected PDU
+| `InboundConnection` | Per-connection state for reactor-managed inbound TCP connections (see below) |
 
 **Key reactor design rules:**
 - All socket I/O on reactor thread only
 - `fast_path_threads_` written only during init/shutdown, read-only during running
-- Connect timeout checked by `on_housekeeping_tick()` via backstop timer
-- `pending_send_` — `std::optional<ReactorControlCommand>` holding slot for a blocked `SendPdu`
+- Connect timeout checked by `on_housekeeping_tick()` via backstop timer — now delegated to `OutboundConnectionManager::check_for_timed_out_connections()`
+- Idle socket timeout checked by `on_housekeeping_tick()` — delegated to `InboundConnectionManager::check_for_inactive_connections()`
+- `pending_send_` — each manager owns its own `std::optional<ReactorControlCommand>` for blocked `SendPdu` commands
+- ConnectionID space is shared between inbound and outbound: the Reactor allocates the ID and passes it into both managers as a parameter, avoiding coupling
+
+**Reactor decomposition (in progress — see Immediate Next Task):**
+The Reactor has been partially refactored. `InboundConnectionManager` and `OutboundConnectionManager` have been written and are ready. The Reactor itself still needs to be rewritten to inherit `ThreadLookupInterface`, remove the extracted members, and construct/delegate to the two managers. This is the immediate next task.
 
 ---
 
 ### 5. OutboundConnection
 
-Represents one reactor-managed outbound TCP connection. Lives in `Reactor::connections_` map.
+Represents one reactor-managed outbound TCP connection. Lives in `OutboundConnectionManager::connections_` map.
 
 **Two lifecycle phases:**
 
@@ -130,7 +136,7 @@ Represents one reactor-managed outbound TCP connection. Lives in `Reactor::conne
 | Established | `is_established()` true | `socket_`, `framer_`, `parser_` |
 
 **Connection flow:**
-1. `Connect` command → `process_connect_command()` → `TcpConnector::connect(primary)` → register fd for `EPOLLOUT`
+1. `Connect` command → `OutboundConnectionManager::process_connect_command()` → `TcpConnector::connect(primary)` → register fd for `EPOLLOUT`
 2. `EPOLLOUT` fires → `on_connect_ready()` → `finish_connect()`:
    - Success → `on_connected(socket, disconnect_handler)` → create `PduFramer` + `PduParser` → re-register for `EPOLLIN` → deliver `ConnectionEstablished`
    - Failure + secondary configured → `retry_with_secondary()` → repeat from step 1 with secondary endpoint
@@ -141,15 +147,62 @@ Represents one reactor-managed outbound TCP connection. Lives in `Reactor::conne
 6. Partial send → store in `current_*` fields + register `EPOLLOUT` → `on_write_ready()` → `continue_send()` → deallocate slab when complete
 7. `Disconnect` or peer close → `teardown_connection()` → deliver `ConnectionLost`
 
-**Reactor maps for OutboundConnection:**
+**OutboundConnectionManager maps:**
 - `connections_` — `ConnectionID → unique_ptr<OutboundConnection>` (owns)
 - `connections_by_fd_` — `int fd → OutboundConnection*` (non-owning, for epoll dispatch)
 
-**`pending_send_` pattern:** `process_control_commands()` checks `pending_send_` before draining the command queue. If a `SendPdu` cannot proceed (partial write in flight), it is stashed in `pending_send_` and the queue is not drained further for that connection. Cleared when `on_write_ready()` completes the send.
+**`pending_send_` pattern:** `OutboundConnectionManager::drain_pending_send()` is called by the Reactor at the start of `process_control_commands()`. If a `SendPdu` cannot proceed (partial write in flight or connection not yet established), it is stashed in the manager's `pending_send_`. Cleared when `on_write_ready()` completes the send.
 
 ---
 
-### 6. Messaging Subsystem
+### 6. InboundConnection and Protocol Handler Strategy
+
+**`InboundConnection`** is a thin transport shell representing one accepted TCP connection. It owns:
+- `TcpSocket` — the accepted socket
+- `unique_ptr<ProtocolHandlerInterface>` — the protocol handler (Strategy pattern)
+- `last_activity_time_` — for idle timeout enforcement
+- `target_thread_id_` — for `ConnectionLost` delivery
+
+`InboundConnection` no longer owns `PduParser`, `PduFramer`, or any slab bookkeeping — all of that lives in the handler.
+
+**Protocol handler strategy:**
+
+| Class | One-liner |
+|---|---|
+| `ProtocolHandlerInterface` | Pure abstract interface: `on_data_ready()`, `send_prebuilt()`, `has_pending_send()`, `continue_send()`, `deallocate_pending_send()` |
+| `PduProtocolHandler` | Strategy A: owns `PduParser` + `PduFramer` + pending-send slab state; handles framework-native PDU streams |
+| `RawBytesProtocolHandler` | Strategy B: not yet implemented; will own a `MirroredBuffer` for alien (e.g. FIX) streams |
+
+**`PduProtocolHandler` responsibilities:**
+- Inbound: `PduParser::receive()` reads and dispatches complete PDU frames; disconnect handler invoked on EOF or protocol error
+- Outbound: owns `current_allocator_`, `current_slab_id_`, `current_chunk_ptr_`, `current_total_bytes_`; `release_pending_send()` deallocates on completion or teardown
+- All slab bookkeeping is internal to the handler; the Reactor and `InboundConnectionManager` never touch slab state directly for inbound connections
+
+**`InboundConnectionManager` maps:**
+- `connections_` — `ConnectionID → unique_ptr<InboundConnection>` (owns)
+- `connections_by_fd_` — `int fd → InboundConnection*` (non-owning, for epoll dispatch)
+- `inbound_listeners_` — `int fd → InboundListener` (owns, keyed by listening socket fd)
+
+**Idle timeout:** `InboundConnectionManager::check_for_inactive_connections()` uses the two-phase identify-then-process pattern. Uses `socket_maximum_inactivity_interval_` from `ReactorConfiguration`.
+
+---
+
+### 7. MirroredBuffer (implemented, tested)
+
+Stream-oriented ring buffer using virtual memory mirroring for alien protocol support.
+
+| Detail | Value |
+|---|---|
+| Backing | `memfd_create` + double `mmap` |
+| Purpose | Provides contiguous view of a byte stream even when data wraps the ring buffer end |
+| Head/tail arithmetic | Modular wrap; one-byte sentinel to distinguish full from empty |
+| Owner | Will be owned by `RawBytesProtocolHandler` (not yet implemented) |
+
+Unit tests: `MirroredBufferTest` — including `VerifiesVirtualMemoryMirroringContinuity` (adversarial straddle test) and `HandlesExhaustiveWrapAroundStress` (1000 iterations).
+
+---
+
+### 8. Messaging Subsystem
 
 | Class | One-liner |
 |---|---|
@@ -158,13 +211,14 @@ Represents one reactor-managed outbound TCP connection. Lives in `Reactor::conne
 
 **Key factory methods:**
 - `create_framework_pdu_message(data, size, slab_id)` — receiver must deallocate
+- `create_raw_socket_message(data, size)` — for alien protocol byte streams
 - `create_connection_established_event(connection_id)`
 - `create_connection_failed_event(reason)`
 - `create_connection_lost_event(connection_id, reason)`
 
 ---
 
-### 7. Socket / IPC Subsystem
+### 9. Socket / IPC Subsystem
 
 | Class | One-liner |
 |---|---|
@@ -176,7 +230,7 @@ Represents one reactor-managed outbound TCP connection. Lives in `Reactor::conne
 
 ---
 
-### 8. PDU Framing Subsystem
+### 10. PDU Framing Subsystem
 
 | Class | One-liner |
 |---|---|
@@ -190,7 +244,7 @@ Represents one reactor-managed outbound TCP connection. Lives in `Reactor::conne
 
 ---
 
-### 9. DSL Subsystem
+### 11. DSL Subsystem
 
 Python code generator producing C++17 headers for zero-copy binary encode/decode.
 
@@ -200,7 +254,7 @@ Python code generator producing C++17 headers for zero-copy binary encode/decode
 
 ---
 
-### 10. Leader-Follower Protocol (DSL defined, not yet implemented)
+### 12. Leader-Follower Protocol (DSL defined, not yet implemented)
 
 #### Overview
 
@@ -245,55 +299,53 @@ Rules:
 1. On startup, each node attempts TCP connection to its peer (A→B, B→A).
 2. On connection, both sides immediately send `StatusQuery` (identity + epoch).
 3. On receiving `StatusQuery`, each side replies with `StatusResponse` including its `current_role`.
-4. **If the peer's `StatusResponse` carries `Role::leader`:** the connecting node adopts `Role::follower` immediately. No DR contact needed. This handles the case where one node restarts and the peer is already an established leader.
+4. **If the peer's `StatusResponse` carries `Role::leader`:** the connecting node adopts `Role::follower` immediately. No DR contact needed.
 5. **If the peer's `StatusResponse` carries `Role::unknown`:** both sides are undecided. Both send `ArbitrationReport` to DR (primary-DR first, secondary-DR as fallback).
 6. DR receives both reports and issues `ArbitrationDecision` assigning leader and follower deterministically by lowest `instance_id`, and sets the epoch for this generation.
-7. Both nodes adopt their assigned roles and the DR connection is closed — it is not kept open between elections.
+7. Both nodes adopt their assigned roles and the DR connection is closed.
 
 #### Post-Election Steady State
 
 - The peer-to-peer TCP connection remains open with `Heartbeat` messages sent at regular intervals in both directions.
 - Heartbeats carry `instance_id` and `epoch` for liveness detection and stale-node detection.
-- If the **follower** dies: the leader logs a warning. No other action is taken. Operations staff will restart the failed instance, which will rejoin as follower (see Restart Flow below).
+- If the **follower** dies: the leader logs a warning. No other action is taken.
 - If the **leader** dies: the follower promotes itself (see Leader Death below).
 
-#### Restart Flow (Restarting Node Rejoins)
+#### Restart Flow
 
-When a node restarts it connects to the peer and exchanges `StatusQuery`/`StatusResponse`. If the peer's `StatusResponse` carries `Role::leader` and a higher epoch, the restarting node adopts `Role::follower` without contacting DR. The running leader always takes precedence regardless of `instance_id` — the epoch is the proof of authority.
+When a node restarts it connects to the peer and exchanges `StatusQuery`/`StatusResponse`. If the peer's `StatusResponse` carries `Role::leader` and a higher epoch, the restarting node adopts `Role::follower` without contacting DR.
 
 #### Leader Death and Follower Promotion
 
 On heartbeat loss:
 1. The surviving node first attempts to reconnect to the peer.
-2. If reconnection succeeds: exchange `StatusQuery`/`StatusResponse`; the epoch resolves roles as normal (see Restart Flow).
+2. If reconnection succeeds: exchange `StatusQuery`/`StatusResponse`; the epoch resolves roles as normal.
 3. If reconnection fails, the peer is presumed dead:
-   - **Lowest `instance_id` node:** promotes itself to leader and increments its epoch by 1. Logs a warning if DR was also unreachable.
-   - **Highest `instance_id` node:** enters a degraded waiting state. Does NOT promote itself. Logs a warning. Waits for the peer or DR to become reachable again.
-
-The promoted leader operates solo and does not contact DR. The system accepts reduced resiliency until operations staff restart the failed instance, at which point it rejoins as follower.
+   - **Lowest `instance_id` node:** promotes itself to leader and increments its epoch by 1.
+   - **Highest `instance_id` node:** enters a degraded waiting state. Does NOT promote itself.
 
 #### Split-Brain Protection
 
-Split-brain (both nodes simultaneously believing they are leader) is a key concern with two-node deployments. The protocol addresses it at each failure scenario:
-
 **Normal startup with DR reachable:** DR is the sole authority and assigns exactly one leader. Split-brain is impossible.
 
-**DR unreachable at startup:** The lowest `instance_id` node declares itself leader unilaterally. A warning is logged on both sides. This is the one scenario where split-brain could theoretically arise — but it is eliminated by the asymmetric promotion rule: only the lowest `instance_id` node may self-elect without an arbiter. The higher `instance_id` node always defers, entering a degraded waiting state.
+**One node already established:** The epoch difference immediately resolves this — the restarting node unconditionally adopts follower role.
 
-**Network partition (both nodes alive, link down):** Both nodes lose heartbeats. On reconnection attempt failure, the lowest `instance_id` node promotes and increments its epoch; the highest `instance_id` node enters degraded waiting state and does not promote. Split-brain is eliminated at the cost of the higher-`instance_id` node going leaderless. Since the lower-`instance_id` node continues serving, there is no functional loss — only reduced resiliency, consistent with the overall HA philosophy of the framework.
-
-**Restarting node vs established leader:** The epoch difference immediately resolves this. The restarting node will always have a lower epoch than the established leader and unconditionally adopts the follower role.
+**Network partition (both nodes alive, link down):** The lowest `instance_id` node promotes and increments its epoch; the highest `instance_id` node enters degraded waiting state and does not promote.
 
 #### Open Design Questions
 
-- **Epoch at DR site:** The DR-site election mirrors the main-site election with main-site nodes acting as arbiters. The exact interaction between DR-site epoch management and main-site epoch management has not yet been fully specified.
-- **Heartbeat interval and loss threshold:** The number of missed heartbeats before declaring peer death, and the heartbeat interval, are not yet specified. These will be `ReactorConfiguration` parameters.
+- **Epoch at DR site:** The exact interaction between DR-site epoch management and main-site epoch management has not yet been fully specified.
+- **Heartbeat interval and loss threshold:** Not yet specified. These will be `ReactorConfiguration` parameters.
 
 ---
 
-### 11. Logging Subsystem
+### 13. Logging Subsystem
 
 `QuillLogger` wrapping `quill::Logger*`. `PUBSUB_LOG(logger, level, fmt, ...)` for format args; `PUBSUB_LOG_STR(logger, level, str)` for single string (required by `-Werror=variadic-macros`).
+
+Log levels: `FwLogLevel::Alert`, `Critical`, `Error`, `Warning`, `Notice`, `Info`, `Debug`, `Trace`. Currently everything is logged at `Info`; level differentiation is a future task.
+
+Any class that needs to log receives a `QuillLogger&` in its constructor and stores it as a member. The Reactor does not own all logging — each class logs for itself.
 
 ---
 
@@ -308,41 +360,103 @@ Split-brain (both nodes simultaneously believing they are leader) is a key conce
 
 ---
 
+## Outbound PDU Path (implemented, tested)
+
+The sending node allocates a slab chunk, writes the `PduHeader` in network byte order, encodes the payload using the DSL, then enqueues a `SendPdu` reactor control command:
+1. Call `reactor.outbound_slab_allocator().allocate(sizeof(PduHeader) + payload_size)`
+2. Write `PduHeader` in network byte order at chunk start
+3. Encode payload after header using DSL `encode()` / `encode_fast()`
+4. Enqueue `ReactorControlCommand{SendPdu}` with `connection_id_`, `slab_id_`, `pdu_chunk_ptr_`, `pdu_byte_count_`
+5. Reactor delegates to `OutboundConnectionManager::process_send_pdu_command()`
+6. On partial write: handler records `current_*` state, registers `EPOLLOUT`
+7. `EPOLLOUT` fires: `continue_send()` resumes; when complete `release_pending_send()` deallocates
+
+## Inbound PDU Path (implemented, tested, zero-copy)
+
+The receiving node's reactor accepts data via epoll and delivers it zero-copy to the application thread:
+1. epoll signals `EPOLLIN` on connected socket
+2. Reactor delegates to `InboundConnectionManager::on_data_ready()` → `InboundConnection::handle_read()` → `PduProtocolHandler::on_data_ready()` → `PduParser::receive()`
+3. `PduParser` reads 16-byte `PduHeader` into `header_buffer_`; validates canary
+4. `PduParser` allocates slab chunk: `auto [slab_id, chunk] = inbound_slab_allocator_.allocate(byte_count)`
+5. `PduParser` reads payload **directly from socket into slab chunk** — zero copy
+6. Dispatches `EventMessage::create_framework_pdu_message(payload, size, slab_id)` to thread queue
+7. Application thread calls `on_framework_pdu_message(msg)`, processes payload
+8. Application thread calls `inbound_slab_allocator_.deallocate(msg.slab_id(), msg.payload())`
+
+---
+
+## Session Accomplishments
+
+### Session 3
+- TcpSocket EAGAIN/EOF contract fix
+- Use-after-free fix in on_data_ready / on_inbound_data_ready
+- InboundConnection infrastructure completed
+- DSL generator fixes (3 bugs)
+- Integration test infrastructure
+- StatusQueryResponseRoundTrip integration test passing
+- ApplicationThread `get_reactor()` accessor added
+
+### Session 4 (current)
+- **`MirroredBuffer`** — implemented and fully tested (virtual memory double-mapping for alien protocol support)
+- **`ProtocolType`** — value class discriminating `FrameworkPdu` vs `RawBytes` connections
+- **Protocol handler Strategy pattern** — `ProtocolHandlerInterface` with `on_data_ready()`, `send_prebuilt()`, `has_pending_send()`, `continue_send()`, `deallocate_pending_send()`
+- **`PduProtocolHandler`** — Strategy A; owns `PduParser`, `PduFramer`, and all outbound slab bookkeeping; `release_pending_send()` handles both normal completion and teardown
+- **`InboundConnection` refactored** — now a thin transport shell owning `unique_ptr<ProtocolHandlerInterface>` and `last_activity_time_`; all protocol logic moved into handler
+- **`Reactor` updated** — `on_accept` builds `PduProtocolHandler`, `dispatch_events` uses `handler()`, `teardown_inbound_connection` uses `deallocate_pending_send()`, `check_for_inactive_sockets` implemented using two-phase pattern
+- **`InboundConnectionManager`** — extracted from Reactor; owns listener registry, accepted connection maps, all inbound logic; receives `ThreadLookupInterface&` for event delivery
+- **`OutboundConnectionManager`** — extracted from Reactor; owns outbound connection maps and all outbound logic; receives `ThreadLookupInterface&` for event delivery
+- **`ThreadLookupInterface`** — pure abstract interface implemented by Reactor; allows managers to deliver events without coupling to Reactor
+- **`ExpandableSlabAllocator` bug fix** — use-after-free in `drain_empty_slab_queue()` fixed by two-phase collect-then-process pattern; detected by ASan
+- All unit tests and integration tests passing; Valgrind clean; ASan clean
+
+---
+
 ## What Is Done
 
-- Allocator subsystem — complete, tested, all races fixed (500-iteration stress test clean)
+- Allocator subsystem — complete, tested, all races fixed
 - Lock-free MPSC queue — complete, tested
 - Reactor event loop — complete, tested
 - ApplicationThread — complete, tested
-- Socket layer — complete, tested (`TcpConnector` has `get_fd()` added)
+- Socket layer — complete, tested
 - PDU framing (`PduFramer` two-mode, `PduParser` zero-copy) — complete, tested
-- `OutboundConnection` — complete (connecting, established, partial send, disconnect, timeout, secondary retry)
-- Reactor connection management (`Connect`, `SendPdu`, `Disconnect`) — complete
-- Connect timeout via housekeeping tick — complete
-- Secondary endpoint automatic retry — complete
+- `OutboundConnection` — complete
+- `InboundConnection` — complete (refactored to thin shell + strategy handler)
+- `ProtocolHandlerInterface` / `PduProtocolHandler` — complete
+- `MirroredBuffer` — complete, tested
+- `InboundConnectionManager` — complete (ready for integration into Reactor)
+- `OutboundConnectionManager` — complete (ready for integration into Reactor)
+- `ThreadLookupInterface` — complete
+- Reactor connection management — complete (pending final Reactor refactor)
 - `ServiceRegistry` / `ServiceEndpoints` / `ConnectionID` — complete
-- `EventType` / `EventMessage` with connection lifecycle events and slab_id — complete
-- `ReactorControlCommand` with all five tags — complete
-- `ReactorConfiguration` with slab sizes and connect timeout — complete
+- `EventType` / `EventMessage` — complete (includes `create_raw_socket_message`)
+- `ReactorControlCommand` — complete
+- `ReactorConfiguration` — complete
 - DSL code generator — complete, 61 tests passing
 - Leader-follower DSL messages — defined and generated
 - Logging subsystem — complete
 
 ## What Is Not Yet Done (in dependency order)
 
-1. **`InboundConnection`** — server-side accepted TCP connection via `TcpAcceptor`; needs its own struct analogous to `OutboundConnection` but for the server side
-2. **Leader-follower protocol** — state machine, heartbeat timers, arbitration; requires both outbound and inbound connection management
-3. **Pub/sub fanout** — unicast fanout to simulate topic-based pub/sub
-4. **Connection management unit tests** — end-to-end test using loopback sockets; deferred until inbound path is also implemented so both sides can be tested together
-5. **`ExpandablePoolAllocatorTest.CrossPoolAbaInterleaving`** — intermittent 1-in-500 failure; the `free_next` atomic fix resolved the main race; residual failures may indicate a secondary issue worth investigating under TSan
+1. **Reactor refactor (immediate)** — Reactor must be rewritten to inherit `ThreadLookupInterface`, remove extracted connection members, construct `InboundConnectionManager` and `OutboundConnectionManager`, and delegate all inbound/outbound operations to them. `InboundConnectionManager` and `OutboundConnectionManager` are fully written and ready.
+2. **`RawBytesProtocolHandler`** — Strategy B; will own `MirroredBuffer`; requires `CommitRawBytes` tag added to `ReactorControlCommand`
+3. **Leader-follower protocol** — state machine, heartbeat timers, arbitration
+4. **Pub/sub fanout**
+5. **`ExpandablePoolAllocatorTest.CrossPoolAbaInterleaving`** — intermittent 1-in-500 failure under TSan; the `free_next` atomic fix resolved the main race; residual failure still present
+6. **Logging levels** — everything currently at Info; verbose paths should move to Debug once framework applications are running
 
 ## Immediate Next Task
 
-Implement `InboundConnection` and the reactor's acceptor path:
-- `TcpAcceptor` registered with epoll on `primary_address` from `ReactorConfiguration`
-- On `EPOLLIN`: `accept_connection()` → create `InboundConnection` with `PduParser` and `PduFramer` → register fd for `EPOLLIN`
-- `InboundConnection` needs: `TcpSocket`, `PduFramer`, `PduParser`, partial send state — same pattern as `OutboundConnection` minus the connecting phase
-- Decide which ApplicationThread receives inbound PDUs (probably a registered handler or a default thread)
+Rewrite `Reactor.hpp` and `Reactor.cpp` from scratch to complete the manager extraction:
+- `Reactor` inherits `ThreadLookupInterface` and provides `get_fast_path_thread()` as the override
+- Constructor initialises `InboundConnectionManager` and `OutboundConnectionManager`, passing `epoll_fd_`, `config_`, `inbound_slab_allocator_`, `service_registry_` (outbound only), `*this` (as `ThreadLookupInterface&`), and `logger_`
+- `next_connection_id_` stays on Reactor; `allocate_connection_id()` is called by Reactor before delegating to `on_accept(listener, id)` and `process_connect_command(command, id)`
+- `dispatch_events` uses `inbound_manager_.find_by_fd()`, `outbound_manager_.find_by_fd()`, `inbound_manager_.find_listener_by_fd()`
+- `process_control_commands` drains both `inbound_manager_.drain_pending_send()` and `outbound_manager_.drain_pending_send()` before queue; delegates `Connect`/`SendPdu`/`Disconnect` to appropriate manager
+- `on_housekeeping_tick` calls `inbound_manager_.check_for_inactive_connections()` and `outbound_manager_.check_for_timed_out_connections()`
+- `on_accept(listener)` allocates ID and calls `inbound_manager_.on_accept(listener, id)`
+- `initialize_listeners()` delegates to `inbound_manager_.initialize_listeners()`
+- `get_first_inbound_listener_port()` delegates to `inbound_manager_.get_first_listener_port()`
+- All extracted functions removed from Reactor: `on_inbound_data_ready`, `on_inbound_write_ready`, `teardown_inbound_connection`, `check_for_inactive_sockets`, `on_data_ready(OutboundConnection&)`, `on_write_ready(OutboundConnection&)`, `teardown_connection`, `process_connect_command`, `process_send_pdu_command`, `process_disconnect_command`, `check_for_timed_out_connections`
 
 ---
 
@@ -353,7 +467,7 @@ Implement `InboundConnection` and the reactor's acceptor path:
 - Leadership is deterministic — lowest `instance_id` wins; no voting required
 - DR is a pure arbiter and never becomes leader or follower
 - Main-site nodes arbitrate via DR-site nodes; DR-site nodes arbitrate via main-site nodes
-- Full election, epoch, split-brain protection, and failure handling documented in Section 10 above
+- Full election, epoch, split-brain protection, and failure handling documented in Section 12 above
 - All endpoints configured via `ReactorConfiguration` and `ServiceRegistry`
 
 ---
@@ -443,118 +557,3 @@ encode(msg, wire_buf, real);
 | `MisbehavingThreads` | Test helpers that simulate stuck/crashed threads |
 | `LatencyRecorder` | Nanosecond-bucket histogram recorder; thread-safe; dump to file |
 | `UnitTestLogger` | Logger configured for unit tests |
-
----
-
-## Outbound PDU Path (implemented, tested)
-
-The sending node allocates a slab chunk, writes the `PduHeader` in network byte order, encodes the payload using the DSL, then enqueues a `SendPdu` reactor control command:
-1. Call `reactor.outbound_slab_allocator().allocate(sizeof(PduHeader) + payload_size)`
-2. Write `PduHeader` in network byte order at chunk start
-3. Encode payload after header using DSL `encode()` / `encode_fast()`
-4. Enqueue `ReactorControlCommand{SendPdu}` with `connection_id_`, `slab_id_`, `pdu_chunk_ptr_`, `pdu_byte_count_`
-5. Reactor calls `PduFramer::send_prebuilt(chunk_ptr, total_bytes)` — zero copy
-6. On partial write: reactor records `current_*` in `OutboundConnection`, registers `EPOLLOUT`
-7. `EPOLLOUT` fires: `PduFramer::continue_send()` resumes; when complete reactor calls `outbound_slab_allocator_.deallocate()`
-
-## Inbound PDU Path (implemented, tested, zero-copy)
-
-The receiving node's reactor accepts data via epoll and delivers it zero-copy to the application thread:
-1. epoll signals `EPOLLIN` on connected socket
-2. `PduParser::receive()` reads 16-byte `PduHeader` into `header_buffer_`; validates canary
-3. `PduParser` allocates slab chunk: `auto [slab_id, chunk] = inbound_slab_allocator_.allocate(byte_count)`
-4. `PduParser` reads payload **directly from socket into slab chunk** — zero copy
-5. Dispatches `EventMessage::create_framework_pdu_message(payload, size, slab_id)` to thread queue
-6. Application thread calls `on_framework_pdu_message(msg)`, processes payload
-7. Application thread calls `inbound_slab_allocator_.deallocate(msg.slab_id(), msg.payload())`
-
----
-
-## Session 3 Accomplishments
-
-### TcpSocket EAGAIN/EOF contract fix [CRITICAL BUG FIX]
-`TcpSocketImpl::send()` and `TcpSocketImpl::receive()` were returning `{0, ""}` for
-`EAGAIN`/`EWOULDBLOCK`. `PduParser::receive()` treats `bytes_read == 0 && error.empty()`
-as peer-closed (EOF) and calls the disconnect handler. This caused all inbound connections
-to be torn down immediately after the first PDU was received — the `PduParser` looped back,
-got EAGAIN on the now-empty socket, and mistakenly called `teardown_inbound_connection`.
-
-**Fix:** Both methods now return `{-EAGAIN, ""}` for EAGAIN/EWOULDBLOCK.
-The `PduParser` already handled `-EAGAIN` correctly by returning `{true, ""}`.
-
-**File:** `src/TcpSocket.cpp`
-
-### Use-after-free in on_data_ready / on_inbound_data_ready [BUG FIX]
-`PduParser` holds the disconnect handler lambda and calls it synchronously when
-`recv()` returns 0. This destroys the `OutboundConnection`/`InboundConnection`
-while still inside `receive()`. After `receive()` returns, `on_data_ready` and
-`on_inbound_data_ready` were accessing `conn.peer_description()` and `conn.id()`
-on the already-destroyed object — undefined behaviour (SIGBUS under fmt::format).
-
-**Fix:** Capture `id` and `peer_description`/`service_name` by value before calling
-`conn.parser()->receive()` in both functions.
-
-**File:** `src/Reactor.cpp`
-
-### InboundConnection infrastructure [COMPLETED]
-- `InboundConnection` — server-side accepted TCP connection; `PduFramer` and `PduParser`
-  constructed immediately; `target_thread_id_` stored for `ConnectionLost` delivery
-- `InboundListener` — struct owning `TcpAcceptor`, `target_thread_id`, `current_connection_id`;
-  enforces one-connection-per-port contract
-- `AcceptorHandler` — `EventHandler` subclass registered on listening socket fd;
-  calls `Reactor::on_accept()`
-- `Reactor::register_inbound_listener(address, thread_id)` — call before `run()`;
-  port=0 supported (OS assigns free port)
-- `Reactor::initialize_listeners()` — called from `initialize_threads()`; binds,
-  listens, registers with epoll via `register_handler()` (not manually)
-- `Reactor::on_accept()` — enforces one-connection rule; creates `InboundConnection`;
-  delivers `ConnectionEstablished`
-- `Reactor::on_inbound_data_ready()`, `on_inbound_write_ready()`, `teardown_inbound_connection()`
-- `process_send_pdu_command()` and `process_disconnect_command()` updated to check
-  both `connections_` (outbound) and `inbound_connections_`
-- `Reactor::get_first_inbound_listener_port()` — TEST SEAM for dynamic port discovery
-
-### DSL generator fixes [COMPLETED]
-Three bugs fixed in `python/dsl/generator_cpp.py`:
-1. `RoleView` — `_cpp_type_view()` appended `View` to enum `ReferenceType` fields,
-   generating undefined `RoleView`. Fix: check `enum_names` set; enums have no View variant.
-2. `encoded_size` unused parameter — for fixed-size messages the `message` parameter
-   was unused. Fix: emit `[[maybe_unused]]` and delegate to `fixed_encoded_size()`.
-3. Missing enum wire functions — `encoded_size`, `encode`, `decode_EnumName`, `skip_EnumName`,
-   `max_decode_arena_bytes_EnumName`, `max_encode_arena_bytes_EnumName` were never generated
-   for enums, causing link errors in messages that contain enum fields (`ArbitrationReport`).
-   Fix: `_emit_enum_functions()` generates all six functions respecting the actual underlying
-   type (`i8`/`i16`/`i32`/`i64`).
-
-### Integration test infrastructure [COMPLETED]
-- `libraries/pubsub_itc_fw/integration_tests/StatusQueryResponseTest.cpp`
-- `libraries/pubsub_itc_fw/integration_tests/CMakeLists.txt`
-- `build.py` updated: `run_integration_tests()` runs after unit tests pass; signal kills
-  reported by name (SIGABRT, SIGSEGV etc.)
-- `cmake-library.txt` DEPENDS updated to include `generator_cpp.py` so DSL headers
-  are regenerated when the generator changes
-- Top-level `CMakeLists.txt` needs `add_subdirectory(libraries/pubsub_itc_fw/integration_tests)`
-
-### Test: StatusQueryResponseRoundTrip [PASSING]
-Full stack end-to-end: two reactors on loopback, connector sends StatusQuery (PDU 100),
-listener decodes and sends StatusResponse (PDU 101), connector decodes and verifies
-field values, then disconnects cleanly. Both sides receive ConnectionEstablished and
-ConnectionLost. All field values verified.
-
-### ApplicationThread [UPDATED]
-Added `protected: Reactor& get_reactor()` accessor so subclasses can enqueue
-`ReactorControlCommand` objects from within their callbacks.
-
-## What Is Not Yet Done (updated)
-
-1. **Leader-follower protocol** — state machine, heartbeat timers, arbitration (design now fully documented in Section 10)
-2. **Pub/sub fanout**
-3. **`ExpandablePoolAllocatorTest.CrossPoolAbaInterleaving`** — intermittent 1-in-500 failure; `free_next` atomic fix resolved main race; residual failure still present, likely needs TSan investigation
-4. **Logging levels** — everything currently at Info; once framework applications are running, verbose paths should be moved to Debug
-
-## Immediate Next Task
-Leader-follower protocol state machine. Prerequisites now complete:
-- Both outbound (connect_to_service) and inbound (register_inbound_listener) paths working
-- StatusQuery/StatusResponse exchange verified end-to-end
-- Integration test framework in place for regression testing
-- Full protocol design documented in Section 10 including epoch semantics, split-brain protection, and all failure scenarios

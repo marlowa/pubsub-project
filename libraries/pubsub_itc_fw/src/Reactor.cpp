@@ -3,25 +3,24 @@
 
 #include <array>
 #include <atomic>
-#include <memory>
 #include <functional>
+#include <memory>
+#include <mutex>
 #include <utility>
 #include <vector>
-#include <mutex>
 
 #include <cerrno>
 #include <cstdint>
 
-#include <sys/types.h> // for ssize_t
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/timerfd.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 #include <fmt/format.h>
 
 #include <pubsub_itc_fw/Reactor.hpp>
-#include <pubsub_itc_fw/ReactorControlCommand.hpp>
 #include <pubsub_itc_fw/BackoffWithYield.hpp>
 #include <pubsub_itc_fw/EventHandler.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
@@ -31,20 +30,9 @@
 #include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/ReactorConfiguration.hpp>
-#include <pubsub_itc_fw/AcceptorHandler.hpp>
-#include <pubsub_itc_fw/InetAddress.hpp>
-#include <pubsub_itc_fw/InboundConnection.hpp>
-#include <pubsub_itc_fw/PduProtocolHandler.hpp>
-#include <pubsub_itc_fw/InboundListener.hpp>
-#include <pubsub_itc_fw/OutboundConnection.hpp>
-#include <pubsub_itc_fw/PduHeader.hpp>
-#include <pubsub_itc_fw/ServiceRegistry.hpp>
-#include <pubsub_itc_fw/StringUtils.hpp>
-#include <pubsub_itc_fw/MillisecondClock.hpp>
-#include <pubsub_itc_fw/InetAddress.hpp>
-#include <pubsub_itc_fw/OutboundConnection.hpp>
-#include <pubsub_itc_fw/PduHeader.hpp>
+#include <pubsub_itc_fw/ReactorControlCommand.hpp>
 #include <pubsub_itc_fw/ReactorLifecycleState.hpp>
+#include <pubsub_itc_fw/ServiceRegistry.hpp>
 #include <pubsub_itc_fw/StringUtils.hpp>
 #include <pubsub_itc_fw/Timer.hpp>
 #include <pubsub_itc_fw/TimerHandler.hpp>
@@ -64,6 +52,14 @@ Reactor::~Reactor() {
     }
 }
 
+int Reactor::create_epoll_fd() {
+    const int fd = ::epoll_create1(EPOLL_CLOEXEC);
+    if (fd == -1) {
+        throw PubSubItcException("epoll_create1 failed in Reactor constructor");
+    }
+    return fd;
+}
+
 Reactor::Reactor(const ReactorConfiguration& reactor_configuration,
                  const ServiceRegistry& service_registry,
                  QuillLogger& logger)
@@ -74,12 +70,10 @@ Reactor::Reactor(const ReactorConfiguration& reactor_configuration,
     , config_(reactor_configuration)
     , service_registry_(service_registry)
     , logger_(logger)
-    , inbound_slab_allocator_(reactor_configuration.inbound_slab_size) {
-    epoll_fd_ = ::epoll_create1(EPOLL_CLOEXEC);
-    if (epoll_fd_ == -1) {
-        throw PubSubItcException("epoll_create1 failed in Reactor constructor");
-    }
-
+    , epoll_fd_(create_epoll_fd())
+    , inbound_slab_allocator_(reactor_configuration.inbound_slab_size)
+    , inbound_manager_(epoll_fd_, config_, inbound_slab_allocator_, *this, logger_)
+    , outbound_manager_(epoll_fd_, config_, inbound_slab_allocator_, service_registry_, *this, logger_) {
     wake_fd_ = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
     if (wake_fd_ == -1) {
         throw PubSubItcException("eventfd for wake_fd failed in Reactor constructor");
@@ -98,23 +92,28 @@ Reactor::Reactor(const ReactorConfiguration& reactor_configuration,
     PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "backstop timer created");
 }
 
-void Reactor::route_message(ThreadID target_id, EventMessage message) {
-    // 1. Identify if this is a system bootstrap message
-    const auto tag = message.type().as_tag();
-    const bool is_reactor_event = (tag == EventType::Initial || tag == EventType::AppReady || tag == EventType::Timer || tag == EventType::Termination);
+ApplicationThread* Reactor::get_fast_path_thread(ThreadID id) const {
+    auto it = fast_path_threads_.find(id);
+    return (it != fast_path_threads_.end()) ? it->second : nullptr;
+}
 
-    // 2. Initialization gate
+void Reactor::route_message(ThreadID target_id, EventMessage message) {
+    const auto tag = message.type().as_tag();
+    const bool is_reactor_event = (tag == EventType::Initial || tag == EventType::AppReady
+                                   || tag == EventType::Timer || tag == EventType::Termination);
+
     if (!initialization_complete_.load(std::memory_order_acquire) && !is_reactor_event) {
-        throw PreconditionAssertion(fmt::format("Standard message posted before Reactor initialization completed, event type {}", message.type().as_string()),
-                                    __FILE__, __LINE__);
+        throw PreconditionAssertion(
+            fmt::format("Standard message posted before Reactor initialization completed, event type {}",
+                        message.type().as_string()),
+            __FILE__, __LINE__);
     }
 
-    // 3. Fast-path lookup (non-owning pointer)
     ApplicationThread* target = nullptr;
     {
         auto it = fast_path_threads_.find(target_id);
         if (it == fast_path_threads_.end()) {
-            return; // No such thread
+            return;
         }
         target = it->second;
     }
@@ -123,26 +122,26 @@ void Reactor::route_message(ThreadID target_id, EventMessage message) {
         return;
     }
 
-    // 4. Physical state check
     if (!target->is_running()) {
         return;
     }
 
-    // 5. Lifecycle state guard
     const auto lifecycle_state = target->get_lifecycle_state().as_tag();
     if (!is_reactor_event) {
-        // Drop silently if shutting down.
-        if (lifecycle_state == ThreadLifecycleState::ShuttingDown || lifecycle_state == ThreadLifecycleState::Terminated) {
+        if (lifecycle_state == ThreadLifecycleState::ShuttingDown
+            || lifecycle_state == ThreadLifecycleState::Terminated) {
             return;
         }
 
         if (lifecycle_state != ThreadLifecycleState::Operational) {
-            throw PubSubItcException(fmt::format("Attempted to route non-reactor event {} to non-operational thread {} state {}", message.type().as_string(),
-                                                 target->get_thread_name(), target->get_lifecycle_state().as_string()));
+            throw PubSubItcException(
+                fmt::format("Attempted to route non-reactor event {} to non-operational thread {} state {}",
+                            message.type().as_string(),
+                            target->get_thread_name(),
+                            target->get_lifecycle_state().as_string()));
         }
     }
 
-    // 6. Origin validation (unchanged)
     if (message.originating_thread_id().get_value() != system_thread_id_value) {
         ApplicationThread* origin = nullptr;
         {
@@ -158,20 +157,15 @@ void Reactor::route_message(ThreadID target_id, EventMessage message) {
         }
     }
 
-    // 7. Enqueue into target queue (hot path)
     target->get_queue().enqueue(std::move(message));
 }
 
-void Reactor::register_inbound_listener(NetworkEndpointConfig address, ThreadID target_thread_id)
-{
+void Reactor::register_inbound_listener(NetworkEndpointConfig address, ThreadID target_thread_id) {
     if (is_running()) {
         throw PreconditionAssertion(
             "Reactor::register_inbound_listener: must be called before run()", __FILE__, __LINE__);
     }
-    InboundListener listener;
-    listener.address          = std::move(address);
-    listener.target_thread_id = target_thread_id;
-    inbound_listeners_staging_.push_back(std::move(listener));
+    inbound_manager_.register_inbound_listener(std::move(address), target_thread_id);
 }
 
 int Reactor::run() {
@@ -193,28 +187,23 @@ int Reactor::run() {
 
     PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "Reactor::run has finished. Returning.");
 
-    // TODO we should exit with a non-zero status if any thread got a critical error.
     return 0;
 }
 
 void Reactor::shutdown(const std::string& reason) {
-    // Note: if the reactor is already shutting down we cannot safely use the quill logger.
-
     auto prev = lifecycle_.exchange(ReactorLifecycleState::ShutdownRequested);
-    if (prev == ReactorLifecycleState::ShutdownRequested ||
-        prev == ReactorLifecycleState::FinalizingThreads ||
-        prev == ReactorLifecycleState::Finished) {
-        return; // already shutting down or done
+    if (prev == ReactorLifecycleState::ShutdownRequested
+        || prev == ReactorLifecycleState::FinalizingThreads
+        || prev == ReactorLifecycleState::Finished) {
+        return;
     }
 
     PUBSUB_LOG(logger_, FwLogLevel::Info, "Reactor::shutdown entered. Reason: {}", reason);
 
-    // 1. Mark Reactor as shutting down
     lifecycle_.store(ReactorLifecycleState::ShutdownRequested, std::memory_order_release);
     PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "Reactor::shutdown is requested, event_loop will finish");
     shutdown_reason_ = reason;
 
-    // wake epoll_wait immediately
     if (wake_fd_ == -1) {
         PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "Reactor::shutdown wake_fd == -1");
     } else {
@@ -225,16 +214,17 @@ void Reactor::shutdown(const std::string& reason) {
             PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "in Reactor::shutdown, wrote wake_fd");
         } else {
             [[maybe_unused]] auto err = errno;
-            PUBSUB_LOG(logger_, FwLogLevel::Error, "in Reactor::shutdown, failed to write wake_fd, errno {} [{}]",
-                       err, StringUtils::get_error_string(err));
+            PUBSUB_LOG(logger_, FwLogLevel::Error,
+                "in Reactor::shutdown, failed to write wake_fd, errno {} [{}]",
+                err, StringUtils::get_error_string(err));
         }
     }
 }
 
 void Reactor::finalize_threads_after_shutdown() {
-    // 1. Snapshot under lock
-    PUBSUB_LOG(logger_, FwLogLevel::Info, "finalize_threads_after_shutdown entered: threads_.size()={}, shutdown_timeout_={}ms",
-               threads_.size(), config_.shutdown_timeout_.count());
+    PUBSUB_LOG(logger_, FwLogLevel::Info,
+        "finalize_threads_after_shutdown entered: threads_.size()={}, shutdown_timeout_={}ms",
+        threads_.size(), config_.shutdown_timeout_.count());
 
     std::vector<std::shared_ptr<ApplicationThread>> snapshot;
     {
@@ -247,27 +237,25 @@ void Reactor::finalize_threads_after_shutdown() {
         }
     }
 
-    // 1b. Cancel all timers for all threads in this reactor
     PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "finalize_threads_after_shutdown canceling timers");
     for (auto& thread : snapshot) {
         cancel_all_timer_fds_for_thread(thread->get_thread_id());
     }
 
-    // 2. Wait for run loops to exit
     PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "finalize_threads_after_shutdown step 2");
     for (auto& thread : snapshot) {
         BackoffWithYield backoff;
         auto start = MillisecondClock::now();
         while (thread->is_running()) {
             if (MillisecondClock::now() - start > config_.shutdown_timeout_) {
-                PUBSUB_LOG(logger_, FwLogLevel::Error, "Thread {} did not stop within shutdown_timeout", thread->get_thread_name());
+                PUBSUB_LOG(logger_, FwLogLevel::Error,
+                    "Thread {} did not stop within shutdown_timeout", thread->get_thread_name());
                 break;
             }
             backoff.pause();
         }
     }
 
-    // 3. Join worker threads
     PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "finalize_threads_after_shutdown step 3");
     for (auto& thread : snapshot) {
         if (!thread->join_with_timeout(config_.shutdown_timeout_)) {
@@ -279,7 +267,6 @@ void Reactor::finalize_threads_after_shutdown() {
         }
     }
 
-    // 4. Final cleanup under lock
     PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "finalize_threads_after_shutdown step 4");
     {
         const std::lock_guard<std::mutex> lock(thread_registry_mutex_);
@@ -291,12 +278,12 @@ void Reactor::finalize_threads_after_shutdown() {
             }
 
             auto state = thread->get_lifecycle_state().as_tag();
-            // If the thread has stopped running but is still marked ShuttingDown,
-            // promote it to Terminated now that the reactor has fully finalized it.
             if (state == ThreadLifecycleState::ShuttingDown && !thread->is_running()) {
                 thread->set_lifecycle_state(ThreadLifecycleState::Terminated);
                 state = ThreadLifecycleState::Terminated;
-                PUBSUB_LOG(logger_, FwLogLevel::Warning, "Thread {} is shutting down state, will promote to Terminated", thread->get_thread_name());
+                PUBSUB_LOG(logger_, FwLogLevel::Warning,
+                    "Thread {} is shutting down state, will promote to Terminated",
+                    thread->get_thread_name());
             }
 
             if (state == ThreadLifecycleState::Terminated) {
@@ -314,10 +301,10 @@ void Reactor::finalize_threads_after_shutdown() {
 
 void Reactor::register_thread(std::shared_ptr<ApplicationThread> thread) {
     if (lifecycle_.load(std::memory_order_acquire) != ReactorLifecycleState::NotStarted) {
-        throw PreconditionAssertion("register_thread() called after Reactor has started running", __FILE__, __LINE__);
+        throw PreconditionAssertion(
+            "register_thread() called after Reactor has started running", __FILE__, __LINE__);
     }
 
-    // Safety check: ensure we didn't get a null pointer
     if (thread == nullptr) {
         throw PreconditionAssertion("Cannot register a null thread", __FILE__, __LINE__);
     }
@@ -327,34 +314,34 @@ void Reactor::register_thread(std::shared_ptr<ApplicationThread> thread) {
 
     const std::lock_guard<std::mutex> lock(thread_registry_mutex_);
 
-    // 1. Check for Name Collision
     auto name_it = threads_.find(name);
     if (name_it != threads_.end()) {
-        // With shared_ptr, if it's present, it's active.
-        throw PreconditionAssertion(fmt::format("Thread name '{}' is already registered and active.", name), __FILE__, __LINE__);
+        throw PreconditionAssertion(
+            fmt::format("Thread name '{}' is already registered and active.", name),
+            __FILE__, __LINE__);
     }
 
-    // 2. Check for ThreadID Collision
     auto id_it = threads_by_thread_id_.find(id);
     if (id_it != threads_by_thread_id_.end()) {
-        throw PreconditionAssertion(fmt::format("Thread ID '{}' is already registered and active.", id.get_value()), __FILE__, __LINE__);
+        throw PreconditionAssertion(
+            fmt::format("Thread ID '{}' is already registered and active.", id.get_value()),
+            __FILE__, __LINE__);
     }
 
-    // 3. Perform the Registration
     threads_[name] = thread;
     threads_by_thread_id_[id] = thread;
-
-    // Fast-path routing pointer (non-owning)
     fast_path_threads_[id] = thread.get();
 
-    PUBSUB_LOG(logger_, FwLogLevel::Info, "Registered application thread: {} (ID: {})", name, id.get_value());
+    PUBSUB_LOG(logger_, FwLogLevel::Info, "Registered application thread: {} (ID: {})",
+        name, id.get_value());
 }
 
-// Reactor.cpp
 void Reactor::cancel_all_timer_fds_for_thread(ThreadID owner_thread_id) {
     const std::lock_guard<std::mutex> lock(timer_registry_mutex_);
 
-    PUBSUB_LOG(logger_, FwLogLevel::Info, "Reactor::run event loop has finished, will cancel all timers for thread {}", owner_thread_id.get_value());
+    PUBSUB_LOG(logger_, FwLogLevel::Info,
+        "Reactor::run event loop has finished, will cancel all timers for thread {}",
+        owner_thread_id.get_value());
 
     auto it_thread = thread_timer_names_.find(owner_thread_id);
     if (it_thread == thread_timer_names_.end()) {
@@ -366,27 +353,21 @@ void Reactor::cancel_all_timer_fds_for_thread(ThreadID owner_thread_id) {
     for (auto it = timers_by_name.begin(); it != timers_by_name.end();) {
         const TimerID id = it->second;
 
-        // Look up FD for this timer
         auto id_it = timer_id_to_fd_.find(id);
         if (id_it != timer_id_to_fd_.end()) {
             const int fd = id_it->second;
-
-            // Remove from ID→FD map before touching handlers
             timer_id_to_fd_.erase(id_it);
-
-            // This removes the TimerHandler and closes the fd
             deregister_handler(fd);
         }
 
         it = timers_by_name.erase(it);
     }
 
-    // No timers left for this thread
     thread_timer_names_.erase(it_thread);
 }
 
-bool Reactor::wait_for_all_threads(std::function<bool(const ApplicationThread&)> predicate, const std::string& phase_name) {
-    // 1. Snapshot using shared_ptr
+bool Reactor::wait_for_all_threads(std::function<bool(const ApplicationThread&)> predicate,
+                                   const std::string& phase_name) {
     std::vector<std::shared_ptr<ApplicationThread>> thread_snapshots;
     {
         const std::lock_guard<std::mutex> lock(thread_registry_mutex_);
@@ -400,27 +381,27 @@ bool Reactor::wait_for_all_threads(std::function<bool(const ApplicationThread&)>
         auto start = MillisecondClock::now();
 
         while (true) {
-            // If the thread is gone, it can't satisfy the predicate, but it's not "active"
             if (!thread) {
                 break;
             }
 
             auto state = thread->get_lifecycle_state().as_tag();
 
-            // Fatal states must be detected immediately
-            if (state == ThreadLifecycleState::ShuttingDown || state == ThreadLifecycleState::Terminated) {
-                shutdown(fmt::format("Thread {} failed during {}, state = {}", thread->get_thread_name(), phase_name,
+            if (state == ThreadLifecycleState::ShuttingDown
+                || state == ThreadLifecycleState::Terminated) {
+                shutdown(fmt::format("Thread {} failed during {}, state = {}",
+                                     thread->get_thread_name(), phase_name,
                                      ThreadLifecycleState::to_string(state)));
                 return false;
             }
-
 
             if (predicate(*thread)) {
                 break;
             }
 
             if (MillisecondClock::now() - start > config_.init_phase_timeout_) {
-                shutdown(fmt::format("Thread {} timed out during {} within init_phase_timeout", thread->get_thread_name(), phase_name));
+                shutdown(fmt::format("Thread {} timed out during {} within init_phase_timeout",
+                                     thread->get_thread_name(), phase_name));
                 return false;
             }
 
@@ -430,23 +411,17 @@ bool Reactor::wait_for_all_threads(std::function<bool(const ApplicationThread&)>
     return true;
 }
 
-/**
- * @brief Helper to send a reactor event to all living threads.
- */
 void Reactor::broadcast_reactor_event(EventType::EventTypeTag tag) {
     const std::lock_guard<std::mutex> lock(thread_registry_mutex_);
     for (auto& [name, thread] : threads_) {
         if (thread != nullptr) {
             EventMessage msg = EventMessage::create_reactor_event(EventType(tag));
-            // Route via the ID to ensure all route_message safety checks are applied.
             route_message(thread->get_thread_id(), std::move(msg));
         }
     }
 }
 
 bool Reactor::initialize_threads() {
-    // 1. Surgical Cleanup: Remove all Tombstones
-    //    (With shared_ptr, there are no expired entries, but we preserve the structure.)
     {
         const std::lock_guard<std::mutex> lock(thread_registry_mutex_);
 
@@ -455,7 +430,6 @@ bool Reactor::initialize_threads() {
             return false;
         }
 
-        // Cleanup name map
         for (auto it = threads_.begin(); it != threads_.end();) {
             if (it->second == nullptr) {
                 it = threads_.erase(it);
@@ -464,7 +438,6 @@ bool Reactor::initialize_threads() {
             }
         }
 
-        // Cleanup ID map
         for (auto it = threads_by_thread_id_.begin(); it != threads_by_thread_id_.end();) {
             if (it->second == nullptr) {
                 it = threads_by_thread_id_.erase(it);
@@ -474,7 +447,6 @@ bool Reactor::initialize_threads() {
         }
     }
 
-    // 2. Start all threads
     {
         const std::lock_guard<std::mutex> lock(thread_registry_mutex_);
         for (auto& [name, thread] : threads_) {
@@ -484,40 +456,41 @@ bool Reactor::initialize_threads() {
         }
     }
 
-    // 3. Wait for all threads to enter run loops
     if (!wait_for_all_threads([](const ApplicationThread& t) { return t.is_running(); }, "Startup")) {
         return false;
     }
 
-    // 4. Post Initial event and wait for processing completion
     broadcast_reactor_event(EventType::Initial);
 
-    if (!wait_for_all_threads([](const ApplicationThread& t) { return t.get_lifecycle_state().as_tag() == ThreadLifecycleState::InitialProcessed; },
-                              "Initial Processing")) {
+    if (!wait_for_all_threads(
+            [](const ApplicationThread& t) {
+                return t.get_lifecycle_state().as_tag() == ThreadLifecycleState::InitialProcessed;
+            },
+            "Initial Processing")) {
         return false;
     }
 
-    // 5. Post AppReady event (Check is_finished_ in case a thread aborted during Initial)
     if (lifecycle_.load(std::memory_order_acquire) != ReactorLifecycleState::Running) {
         return false;
     }
 
     broadcast_reactor_event(EventType::AppReady);
 
-    // 6. Final Wait: Ensure all threads reach the Operational state
-    if (!wait_for_all_threads([](const ApplicationThread& t) { return t.get_lifecycle_state().as_tag() >= ThreadLifecycleState::Operational; },
-                              "Operational Transition")) {
+    if (!wait_for_all_threads(
+            [](const ApplicationThread& t) {
+                return t.get_lifecycle_state().as_tag() >= ThreadLifecycleState::Operational;
+            },
+            "Operational Transition")) {
         return false;
     }
 
-    // 7. Initialise inbound listeners
-    if (!initialize_listeners()) {
+    if (!inbound_manager_.initialize_listeners()) {
         return false;
     }
 
-    // 8. Success
     initialization_complete_.store(true, std::memory_order_release);
-    PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "Registered application threads are now Operational. Reactor initialization complete.");
+    PUBSUB_LOG_STR(logger_, FwLogLevel::Info,
+        "Registered application threads are now Operational. Reactor initialization complete.");
 
     return true;
 }
@@ -533,18 +506,13 @@ void Reactor::enqueue_control_command(const ReactorControlCommand& command) {
 
     if (n == -1) {
         if (errno == EAGAIN) {
-            // Pipe/eventfd already full — reactor is already awake.
             return;
         }
-
-        // Anything else is a real logic error.
-        throw PubSubItcException(fmt::format("Reactor wakeup write() failed: {}", StringUtils::get_errno_string()));
+        throw PubSubItcException(
+            fmt::format("Reactor wakeup write() failed: {}", StringUtils::get_errno_string()));
     }
 }
 
-// Thread-safe: this function acquires timer_registry_mutex_ internally.
-// Callers must NOT hold the mutex. The entire timer registry, including
-// next_timer_id_, is protected by this lock.
 TimerID Reactor::allocate_timer_id() {
     const std::lock_guard<std::mutex> lock(timer_registry_mutex_);
     TimerID id = next_timer_id_;
@@ -552,16 +520,21 @@ TimerID Reactor::allocate_timer_id() {
     return id;
 }
 
-void Reactor::create_timer_fd(TimerID timer_id, const std::string& name, ThreadID owner_thread_id, std::chrono::microseconds interval, TimerType type) {
+void Reactor::create_timer_fd(TimerID timer_id, const std::string& name,
+                              ThreadID owner_thread_id, std::chrono::microseconds interval,
+                              TimerType type) {
     const std::lock_guard<std::mutex> lock(timer_registry_mutex_);
 
     auto& thread_timers = thread_timer_names_[owner_thread_id];
     if (thread_timers.find(name) != thread_timers.end()) {
-        throw PreconditionAssertion(fmt::format("Thread {} already has a timer named '{}'", owner_thread_id.get_value(), name), __FILE__, __LINE__);
+        throw PreconditionAssertion(
+            fmt::format("Thread {} already has a timer named '{}'",
+                        owner_thread_id.get_value(), name),
+            __FILE__, __LINE__);
     }
 
-    // TODO the line below contains a logging error that is not detected during compilation
-    PUBSUB_LOG(logger_, FwLogLevel::Info, "Reactor created timer id {}\n", __FILE__, __LINE__, timer_id.get_value());
+    PUBSUB_LOG(logger_, FwLogLevel::Info, "Reactor created timer id {}\n",
+        __FILE__, __LINE__, timer_id.get_value());
     const Timer timer(name, owner_thread_id, timer_id, type, interval);
     auto timer_handler = std::make_unique<TimerHandler>(timer, *this);
     thread_timers[name] = timer_id;
@@ -572,47 +545,37 @@ void Reactor::create_timer_fd(TimerID timer_id, const std::string& name, ThreadI
 void Reactor::cancel_timer_fd(ThreadID owner_thread_id, TimerID id) {
     const std::lock_guard<std::mutex> lock(timer_registry_mutex_);
 
-    // 1. Find the FD associated with this TimerID
     auto id_it = timer_id_to_fd_.find(id);
     if (id_it == timer_id_to_fd_.end()) {
-        // Technically not a precondition failure if it's already gone,
-        // but you could throw if you want strictness.
         return;
     }
 
     const int fd = id_it->second;
 
-    // 2. Access the handler to get the name (the metadata source of truth)
     auto handler_it = handlers_.find(fd);
     if (handler_it == handlers_.end()) {
-        // This should never happen if our maps are in sync
         return;
     }
 
-    // We need to cast the base EventHandler to our specific TimerHandler
     auto* timer_handler = static_cast<TimerHandler*>(handler_it->second.get());
     const std::string& timer_name = timer_handler->get_timer().get_name();
 
-    // 3. Verify the precondition: Ensure this thread actually owns this timer name
     auto& thread_timers = thread_timer_names_[owner_thread_id];
     auto name_it = thread_timers.find(timer_name);
 
     if (name_it == thread_timers.end()) {
-        throw PreconditionAssertion(fmt::format("Thread {} does not have a timer named '{}'", owner_thread_id.get_value(), timer_name), __FILE__, __LINE__);
+        throw PreconditionAssertion(
+            fmt::format("Thread {} does not have a timer named '{}'",
+                        owner_thread_id.get_value(), timer_name),
+            __FILE__, __LINE__);
     }
 
-    // 4. Cleanup all registries
-    // Remove from the name-tracking map
     thread_timers.erase(name_it);
     if (thread_timers.empty()) {
         thread_timer_names_.erase(owner_thread_id);
     }
 
-    // Remove from the ID-to-FD management map
     timer_id_to_fd_.erase(id_it);
-
-    // 5. De-register from epoll and remove from the handlers_ map
-    // This triggers the TimerHandler dtor, which calls ::close(fd)
     deregister_handler(fd);
 }
 
@@ -621,11 +584,11 @@ void Reactor::register_handler(std::unique_ptr<EventHandler> handler) {
         throw PreconditionAssertion("Cannot register null EventHandler", __FILE__, __LINE__);
     }
 
-    int fd = handler->get_fd();
+    const int fd = handler->get_fd();
 
     epoll_event ev{};
     ev.events = EPOLLIN;
-    ev.data.fd = fd; // we key everything by fd
+    ev.data.fd = fd;
 
     if (::epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, fd, &ev) == -1) {
         throw PubSubItcException("epoll_ctl ADD failed in register_handler");
@@ -640,11 +603,116 @@ void Reactor::deregister_handler(int fd) {
     ::close(fd);
 }
 
-std::string Reactor::get_shutdown_reason() const
-{
-    // A plain load is fine: shutdown_reason_ is written once during shutdown
-    // and then treated as immutable. Returning a copy avoids lifetime issues.
+std::string Reactor::get_shutdown_reason() const {
     return shutdown_reason_;
+}
+
+ThreadLifecycleState::Tag Reactor::get_thread_state(ThreadID id) const {
+    ApplicationThread* t = get_fast_path_thread(id);
+    if (t == nullptr) {
+        return ThreadLifecycleState::Terminated;
+    }
+    return t->get_lifecycle_state().as_tag();
+}
+
+void Reactor::on_housekeeping_tick() {
+    auto state = lifecycle_.load(std::memory_order_acquire);
+    if (state == ReactorLifecycleState::ShutdownRequested
+        || state == ReactorLifecycleState::FinalizingThreads
+        || state == ReactorLifecycleState::Finished) {
+        return;
+    }
+
+    check_for_exited_threads();
+    check_for_stuck_threads();
+    inbound_manager_.check_for_inactive_connections();
+    outbound_manager_.check_for_timed_out_connections();
+}
+
+void Reactor::check_for_exited_threads() {
+    const std::lock_guard<std::mutex> lock(thread_registry_mutex_);
+    PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "checking for exited threads");
+    for (auto& [name, thread] : threads_) {
+        if (thread != nullptr) {
+            auto state = thread->get_lifecycle_state().as_tag();
+            PUBSUB_LOG(logger_, FwLogLevel::Info, "   thread {} state {}",
+                thread->get_thread_name(), thread->get_lifecycle_state().as_string());
+            if (state == ThreadLifecycleState::ShuttingDown) {
+                auto rstate = lifecycle_.load(std::memory_order_acquire);
+                if (rstate == ReactorLifecycleState::Running) {
+                    shutdown("Thread " + name + " is shutting down, will terminate reactor");
+                    return;
+                }
+            }
+        }
+    }
+}
+
+void Reactor::check_for_stuck_threads() {
+    auto rstate = lifecycle_.load(std::memory_order_acquire);
+    if (rstate != ReactorLifecycleState::Running) {
+        return;
+    }
+
+    const std::lock_guard<std::mutex> lock(thread_registry_mutex_);
+    PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "checking for stuck threads");
+    for (auto& [name, thread] : threads_) {
+        if (thread != nullptr) {
+            auto state = thread->get_lifecycle_state().as_tag();
+            PUBSUB_LOG(logger_, FwLogLevel::Info, "   thread {} state {}",
+                thread->get_thread_name(), thread->get_lifecycle_state().as_string());
+            if (state == ThreadLifecycleState::Operational) {
+                if (thread->get_time_event_started() <= thread->get_time_event_finished()) {
+                    auto duration = thread->get_time_event_finished() - thread->get_time_event_started();
+                    if (duration > config_.itc_maximum_inactivity_interval_) {
+                        auto reason = fmt::format("Thread {} callback took too long",
+                                                  thread->get_thread_name());
+                        shutdown(reason);
+                        return;
+                    }
+                } else {
+                    PUBSUB_LOG(logger_, FwLogLevel::Info,
+                        "Thread {} callback not finished, checking if stuck",
+                        thread->get_thread_name());
+                    auto now = HighResolutionClock::now();
+                    auto duration = now - thread->get_time_event_started();
+                    if (duration > config_.itc_maximum_inactivity_interval_) {
+                        auto reason = fmt::format("Thread {} callback appears to be stuck",
+                                                  thread->get_thread_name());
+                        shutdown(reason);
+                        return;
+                    }
+                }
+            } else if (state == ThreadLifecycleState::Started) {
+                PUBSUB_LOG(logger_, FwLogLevel::Info,
+                    "Thread {} is started but init not complete, checking if stuck",
+                    thread->get_thread_name());
+                auto now = HighResolutionClock::now();
+                auto duration = now - thread->get_time_event_started();
+                if (duration > config_.init_phase_timeout_) {
+                    auto reason = fmt::format("Thread {} callback appears to be stuck during Init",
+                                              thread->get_thread_name());
+                    shutdown(reason);
+                    return;
+                }
+            }
+        }
+    }
+}
+
+ConnectionID Reactor::allocate_connection_id() {
+    ConnectionID id = next_connection_id_;
+    next_connection_id_ = ConnectionID(next_connection_id_.get_value() + 1);
+    return id;
+}
+
+void Reactor::on_accept(InboundListener& listener) {
+    const ConnectionID id = allocate_connection_id();
+    inbound_manager_.on_accept(listener, id);
+}
+
+uint16_t Reactor::get_first_inbound_listener_port() const {
+    return inbound_manager_.get_first_listener_port();
 }
 
 void Reactor::event_loop() {
@@ -652,14 +720,16 @@ void Reactor::event_loop() {
 
     while (lifecycle_.load(std::memory_order_acquire) == ReactorLifecycleState::Running) {
         PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "event_loop about to call epoll_wait");
-        const int nfds = ::epoll_wait(epoll_fd_, events.data(), static_cast<int>(events.size()), -1);
+        const int nfds = ::epoll_wait(epoll_fd_, events.data(),
+                                      static_cast<int>(events.size()), -1);
         PUBSUB_LOG(logger_, FwLogLevel::Info, "epoll_wait returned nfds = {}", nfds);
         if (nfds == -1) {
             if (errno == EINTR) {
-                continue; // interrupted by signal, retry
+                continue;
             }
-            PUBSUB_LOG(logger_, FwLogLevel::Error, "epoll_wait failed in Reactor::event_loop, errno {}", errno);
-            break; // will make reactor shutdown
+            PUBSUB_LOG(logger_, FwLogLevel::Error,
+                "epoll_wait failed in Reactor::event_loop, errno {}", errno);
+            break;
         }
 
         dispatch_events(nfds, events.data());
@@ -668,15 +738,13 @@ void Reactor::event_loop() {
 }
 
 void Reactor::process_control_commands() {
-    // Drain the pending_send_ slot first — a SendPdu that was dequeued but
-    // could not be sent because the target connection had a partial write in
-    // flight. Try again now before touching the command queue.
-    if (pending_send_.has_value()) {
-        process_send_pdu_command(*pending_send_);
-        if (pending_send_.has_value()) {
-            // Still blocked — do not drain the queue further.
-            return;
-        }
+    // Drain any blocked SendPdu commands from both managers before touching
+    // the command queue. Each manager owns its own pending_send_ slot.
+    if (!inbound_manager_.drain_pending_send()) {
+        return;
+    }
+    if (!outbound_manager_.drain_pending_send()) {
+        return;
     }
 
     for (;;) {
@@ -687,28 +755,49 @@ void Reactor::process_control_commands() {
 
         const ReactorControlCommand& command = maybe_command.value();
 
-        PUBSUB_LOG(logger_, FwLogLevel::Info, "Reactor process_control_commands picked up command {}", command.as_string());
+        PUBSUB_LOG(logger_, FwLogLevel::Info,
+            "Reactor process_control_commands picked up command {}", command.as_string());
 
         switch (command.as_tag()) {
             case ReactorControlCommand::AddTimer:
-                create_timer_fd(command.timer_id_, command.timer_name_, command.owner_thread_id_, command.interval_, command.timer_type_);
+                create_timer_fd(command.timer_id_, command.timer_name_,
+                                command.owner_thread_id_, command.interval_, command.timer_type_);
                 break;
 
             case ReactorControlCommand::CancelTimer:
                 cancel_timer_fd(command.owner_thread_id_, command.timer_id_);
                 break;
 
-            case ReactorControlCommand::Connect:
-                process_connect_command(command);
+            case ReactorControlCommand::Connect: {
+                const ConnectionID id = allocate_connection_id();
+                outbound_manager_.process_connect_command(command, id);
                 break;
+            }
 
-            case ReactorControlCommand::Disconnect:
-                process_disconnect_command(command);
+            case ReactorControlCommand::Disconnect: {
+                const ConnectionID cid = command.connection_id_;
+                const std::string reason = "disconnect requested by application thread";
+                if (!outbound_manager_.process_disconnect_command(cid)) {
+                    if (!inbound_manager_.process_disconnect_command(cid)) {
+                        PUBSUB_LOG(logger_, FwLogLevel::Warning,
+                            "Reactor::process_control_commands: unknown connection id {} for Disconnect",
+                            cid.get_value());
+                    }
+                }
                 break;
+            }
 
-            case ReactorControlCommand::SendPdu:
-                process_send_pdu_command(command);
+            case ReactorControlCommand::SendPdu: {
+                if (!outbound_manager_.process_send_pdu_command(command)) {
+                    if (!inbound_manager_.process_send_pdu_command(command)) {
+                        PUBSUB_LOG(logger_, FwLogLevel::Warning,
+                            "Reactor::process_control_commands: unknown connection id {} for SendPdu",
+                            command.connection_id_.get_value());
+                        command.allocator_->deallocate(command.slab_id_, command.pdu_chunk_ptr_);
+                    }
+                }
                 break;
+            }
         }
     }
 }
@@ -725,18 +814,16 @@ void Reactor::dispatch_events(int nfds, epoll_event* events) {
 
             while (::read(wake_fd_, &dummy, sizeof(dummy)) == sizeof(dummy)) {
                 PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "dispatch_events draining wake_fd");
-                // keep draining until EAGAIN
             }
 
             process_control_commands();
             continue;
         }
 
-        // Check if this fd belongs to an outbound connection.
+        // Check outbound connections first.
         {
-            auto conn_it = connections_by_fd_.find(fd);
-            if (conn_it != connections_by_fd_.end()) {
-                OutboundConnection* conn = conn_it->second;
+            OutboundConnection* conn = outbound_manager_.find_by_fd(fd);
+            if (conn != nullptr) {
                 const uint32_t ev = events[i].events;
 
                 if (ev & EPOLLERR) {
@@ -747,26 +834,25 @@ void Reactor::dispatch_events(int nfds, epoll_event* events) {
                         "socket error on connection {} to service {}: {}",
                         conn->id().get_value(), conn->service_name(),
                         StringUtils::get_error_string(err));
-                    teardown_connection(conn->id(), reason, true);
+                    outbound_manager_.teardown_connection(conn->id(), reason, true);
                 } else if (conn->is_connecting() && (ev & EPOLLOUT)) {
-                    on_connect_ready(*conn);
+                    outbound_manager_.on_connect_ready(*conn);
                 } else if (conn->is_established()) {
                     if ((ev & EPOLLOUT) && conn->has_pending_send()) {
-                        on_write_ready(*conn);
+                        outbound_manager_.on_write_ready(*conn);
                     }
                     if (ev & EPOLLIN) {
-                        on_data_ready(*conn);
+                        outbound_manager_.on_data_ready(*conn);
                     }
                 }
                 continue;
             }
         }
 
-        // Check if this fd belongs to an inbound connection.
+        // Check inbound connections.
         {
-            auto inbound_it = inbound_connections_by_fd_.find(fd);
-            if (inbound_it != inbound_connections_by_fd_.end()) {
-                InboundConnection* conn = inbound_it->second;
+            InboundConnection* conn = inbound_manager_.find_by_fd(fd);
+            if (conn != nullptr) {
                 const uint32_t ev = events[i].events;
 
                 if (ev & EPOLLERR) {
@@ -776,827 +862,54 @@ void Reactor::dispatch_events(int nfds, epoll_event* events) {
                     const std::string reason = fmt::format(
                         "socket error on inbound connection from '{}': {}",
                         conn->peer_description(), StringUtils::get_error_string(err));
-                    teardown_inbound_connection(conn->id(), reason, true);
+                    inbound_manager_.teardown_connection(conn->id(), reason, true);
                 } else {
                     if ((ev & EPOLLOUT) && conn->handler()->has_pending_send()) {
-                        on_inbound_write_ready(*conn);
+                        inbound_manager_.on_write_ready(*conn);
                     }
                     if (ev & EPOLLIN) {
-                        on_inbound_data_ready(*conn);
+                        inbound_manager_.on_data_ready(*conn);
                     }
                 }
                 continue;
             }
         }
 
+        // Check inbound listeners.
+        {
+            InboundListener* listener = inbound_manager_.find_listener_by_fd(fd);
+            if (listener != nullptr) {
+                on_accept(*listener);
+                continue;
+            }
+        }
+
+        // Fall through to generic event handlers (timers, etc.).
         auto handler_it = handlers_.find(fd);
         if (handler_it == handlers_.end()) {
             PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "dispatch_events unknown fd, ignore defensively");
-            continue; // unknown fd, ignore defensively
+            continue;
         }
         PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "dispatch_events about to handle event");
-        // TODO There is more to do here
         handler_it->second->handle_event(events[i].events);
         PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "dispatch_events event handled");
     }
     PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "dispatch_events returning");
 }
 
-// Thread-safe under the reactor lifecycle model:
-// - No writes occur while the reactor is Running.
-// - No reads occur during initialization or shutdown.
-ApplicationThread* Reactor::get_fast_path_thread(ThreadID id) const {
-    auto it = fast_path_threads_.find(id);
-    return (it != fast_path_threads_.end()) ? it->second : nullptr;
-}
-
-ThreadLifecycleState::Tag Reactor::get_thread_state(ThreadID id) const {
-    ApplicationThread* t = get_fast_path_thread(id);
-    if (t == nullptr) {
-        return ThreadLifecycleState::Terminated;
-    }
-    return t->get_lifecycle_state().as_tag();
-}
-
-void Reactor::on_housekeeping_tick() {
-    auto state = lifecycle_.load(std::memory_order_acquire);
-    if (state == ReactorLifecycleState::ShutdownRequested ||
-        state == ReactorLifecycleState::FinalizingThreads ||
-        state == ReactorLifecycleState::Finished) {
-        return;
-    }
-
-    check_for_exited_threads();
-    check_for_stuck_threads();
-    check_for_inactive_sockets();
-    check_for_timed_out_connections();
-}
-
-void Reactor::check_for_exited_threads() {
+std::string Reactor::get_thread_name_from_id(ThreadID id) const {
     const std::lock_guard<std::mutex> lock(thread_registry_mutex_);
-    PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "checking for exited threads");
-    for (auto& [name, thread] : threads_) {
-        if (thread != nullptr) {
-            auto state = thread->get_lifecycle_state().as_tag();
-            PUBSUB_LOG(logger_, FwLogLevel::Info, "   thread {} state {}", thread->get_thread_name(), thread->get_lifecycle_state().as_string());
-            if (state == ThreadLifecycleState::ShuttingDown) {
-                auto rstate = lifecycle_.load(std::memory_order_acquire);
-                if (rstate == ReactorLifecycleState::Running) {
-                    shutdown("Thread " + name + " is shutting down, will terminate reactor");
-                    return;
-                }
-            }
-        }
+    auto it = threads_by_thread_id_.find(id);
+    if (it == threads_by_thread_id_.end()) {
+        throw PreconditionAssertion(
+            fmt::format("get_thread_name_from_id: no thread with id {}", id.get_value()),
+            __FILE__, __LINE__);
     }
+    return it->second->get_thread_name();
 }
 
-void Reactor::check_for_stuck_threads() {
-    // Only meaningful while the reactor is running.
-    auto rstate = lifecycle_.load(std::memory_order_acquire);
-    if (rstate != ReactorLifecycleState::Running) {
-        return;
-    }
-
-    // TODO we currently have separate inactivity times for ITC and sockets. Maybe only need one.
-    // config_.itc_maximum_inactivity_interval_
-    // we also have a separate config interval for the init event because that might be costly.
-
-    const std::lock_guard<std::mutex> lock(thread_registry_mutex_);
-    PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "checking for stuck threads");
-    for (auto& [name, thread] : threads_) {
-        if (thread != nullptr) {
-            auto state = thread->get_lifecycle_state().as_tag();
-            PUBSUB_LOG(logger_, FwLogLevel::Info, "   thread {} state {}", thread->get_thread_name(), thread->get_lifecycle_state().as_string());
-            if (state == ThreadLifecycleState::Operational) {
-                if (thread->get_time_event_started() <= thread->get_time_event_finished()) {
-                    // Callback finished but did it take too long?
-                    auto duration = thread->get_time_event_finished() - thread->get_time_event_started();
-                    if (duration > config_.itc_maximum_inactivity_interval_) {
-                        auto shutdown_reason = fmt::format("Thread {} callback took too long", thread->get_thread_name());
-                        shutdown(shutdown_reason);
-                        return; // only need to trigger once
-                    }
-                } else {
-                    // Callback did not finish. How long has it been in there?
-                    PUBSUB_LOG(logger_, FwLogLevel::Info, "Thread {} callback not finished, checking if stuck", thread->get_thread_name());
-                    auto now = HighResolutionClock::now();
-                    auto duration = now - thread->get_time_event_started();
-                    if (duration > config_.itc_maximum_inactivity_interval_) {
-                        auto shutdown_reason = fmt::format("Thread {} callback appears to be stuck", thread->get_thread_name());
-                        shutdown(shutdown_reason);
-                        return; // only need to trigger once
-                    }
-                }
-            } else if (state == ThreadLifecycleState::Started) {
-                PUBSUB_LOG(logger_, FwLogLevel::Info, "Thread {} is started but init not complete, checking if stuck", thread->get_thread_name());
-                auto now = HighResolutionClock::now();
-                auto duration = now - thread->get_time_event_started();
-                if (duration > config_.init_phase_timeout_) {
-                    auto shutdown_reason = fmt::format("Thread {} callback appears to be stuck during Init", thread->get_thread_name());
-                    shutdown(shutdown_reason);
-                    return; // only need to trigger once
-                }
-            }
-        }
-    }
-}
-
-void Reactor::check_for_inactive_sockets()
-{
-    const auto now = std::chrono::steady_clock::now();
-
-    // Phase 1: identify connections that have exceeded the idle timeout.
-    // Collect into a vector first to avoid iterator invalidation when
-    // teardown_inbound_connection() modifies inbound_connections_.
-    std::vector<ConnectionID> idle_connections;
-    for (const auto& [id, conn] : inbound_connections_) {
-        const auto elapsed = now - conn->last_activity_time();
-        if (elapsed > config_.socket_maximum_inactivity_interval_) {
-            idle_connections.push_back(id);
-        }
-    }
-
-    // Phase 2: tear down each idle connection.
-    for (const ConnectionID& id : idle_connections) {
-        auto it = inbound_connections_.find(id);
-        if (it == inbound_connections_.end()) {
-            continue; // already torn down by a concurrent event in this loop
-        }
-        const std::string reason = fmt::format(
-            "connection from '{}' closed: no data received for {}s",
-            it->second->peer_description(),
-            std::chrono::duration_cast<std::chrono::seconds>(
-                config_.socket_maximum_inactivity_interval_).count());
-
-        PUBSUB_LOG(logger_, FwLogLevel::Info,
-            "Reactor::check_for_inactive_sockets: {}", reason);
-
-        teardown_inbound_connection(id, reason, true);
-    }
-}
-
-ConnectionID Reactor::allocate_connection_id()
-{
-    ConnectionID id = next_connection_id_;
-    next_connection_id_ = ConnectionID(next_connection_id_.get_value() + 1);
-    return id;
-}
-
-void Reactor::process_connect_command(const ReactorControlCommand& command)
-{
-    const std::string& service_name = command.service_name_;
-
-    auto [endpoints, lookup_error] = service_registry_.lookup(service_name);
-    if (!lookup_error.empty()) {
-        PUBSUB_LOG(logger_, FwLogLevel::Error,
-            "Reactor::process_connect_command: unknown service '{}'", service_name);
-        auto* thread = get_fast_path_thread(command.requesting_thread_id_);
-        if (thread != nullptr) {
-            thread->get_queue().enqueue(
-                EventMessage::create_connection_failed_event(
-                    fmt::format("Unknown service: {}", service_name)));
-        }
-        return;
-    }
-
-    const NetworkEndpointConfig& primary = endpoints.primary;
-
-    auto [addr, addr_error] = InetAddress::create(primary.host, primary.port);
-    if (!addr) {
-        PUBSUB_LOG(logger_, FwLogLevel::Error,
-            "Reactor::process_connect_command: failed to resolve {}:{} — {}",
-            primary.host, primary.port, addr_error);
-        auto* thread = get_fast_path_thread(command.requesting_thread_id_);
-        if (thread != nullptr) {
-            thread->get_queue().enqueue(
-                EventMessage::create_connection_failed_event(addr_error));
-        }
-        return;
-    }
-
-    auto connector = std::make_unique<TcpConnector>();
-    auto [connected_immediately, connect_error] = connector->connect(*addr);
-
-    if (!connect_error.empty()) {
-        PUBSUB_LOG(logger_, FwLogLevel::Error,
-            "Reactor::process_connect_command: connect() to {}:{} failed — {}",
-            primary.host, primary.port, connect_error);
-        // TODO: retry secondary endpoint before giving up.
-        auto* thread = get_fast_path_thread(command.requesting_thread_id_);
-        if (thread != nullptr) {
-            thread->get_queue().enqueue(
-                EventMessage::create_connection_failed_event(connect_error));
-        }
-        return;
-    }
-
-    const int fd = connector->get_fd();
-    const ConnectionID id = allocate_connection_id();
-
-    auto* target_thread = get_fast_path_thread(command.requesting_thread_id_);
-    if (target_thread == nullptr) {
-        PUBSUB_LOG_STR(logger_, FwLogLevel::Error, "Reactor::process_connect_command: requesting thread not found");
-        return;
-    }
-
-    auto conn = std::make_unique<OutboundConnection>(
-        id,
-        command.requesting_thread_id_,
-        service_name,
-        endpoints,
-        std::move(connector),
-        inbound_slab_allocator_,
-        *target_thread);
-
-    OutboundConnection* conn_ptr = conn.get();
-    connections_[id] = std::move(conn);
-    connections_by_fd_[fd] = conn_ptr;
-
-    if (connected_immediately) {
-        // Rare case: connect completed without going through EPOLLOUT.
-        auto socket = conn_ptr->connector()->get_connected_socket();
-        on_connect_ready(*conn_ptr);
-    } else {
-        // Register for EPOLLOUT to detect connect completion.
-        epoll_event ev{};
-        ev.events   = EPOLLOUT | EPOLLERR;
-        ev.data.fd  = fd;
-        if (::epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, fd, &ev) == -1) {
-            PUBSUB_LOG(logger_, FwLogLevel::Error,
-                "Reactor::process_connect_command: epoll_ctl ADD failed for fd {}", fd);
-            teardown_connection(id, "epoll_ctl failed during connect", false);
-            target_thread->get_queue().enqueue(
-                EventMessage::create_connection_failed_event("epoll_ctl failed during connect"));
-        }
-    }
-}
-
-void Reactor::on_connect_ready(OutboundConnection& conn)
-{
-    auto [connected, error] = conn.connector()->finish_connect();
-
-    if (!connected) {
-        if (!error.empty()) {
-            PUBSUB_LOG(logger_, FwLogLevel::Warning,
-                "Reactor::on_connect_ready: finish_connect failed for service '{}': {}",
-                conn.service_name(), error);
-
-            // If we haven't tried the secondary yet and one is configured, retry.
-            const NetworkEndpointConfig& secondary = conn.endpoints().secondary;
-            if (!conn.is_trying_secondary() && secondary.port != 0) {
-                PUBSUB_LOG(logger_, FwLogLevel::Info,
-                    "Reactor::on_connect_ready: retrying service '{}' on secondary {}:{}",
-                    conn.service_name(), secondary.host, secondary.port);
-
-                auto [addr, addr_error] = InetAddress::create(secondary.host, secondary.port);
-                if (!addr) {
-                    PUBSUB_LOG(logger_, FwLogLevel::Error,
-                        "Reactor::on_connect_ready: failed to resolve secondary {}:{} — {}",
-                        secondary.host, secondary.port, addr_error);
-                    teardown_connection(conn.id(), addr_error, false);
-                    auto* thread = get_fast_path_thread(conn.requesting_thread_id());
-                    if (thread != nullptr) {
-                        thread->get_queue().enqueue(EventMessage::create_connection_failed_event(addr_error));
-                    }
-                    return;
-                }
-
-                // Remove old fd from epoll and fd map before replacing connector.
-                const int old_fd = conn.get_fd();
-                ::epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, old_fd, nullptr);
-                connections_by_fd_.erase(old_fd);
-
-                auto new_connector = std::make_unique<TcpConnector>();
-                auto [connected_immediately, connect_error] = new_connector->connect(*addr);
-
-                if (!connect_error.empty()) {
-                    PUBSUB_LOG(logger_, FwLogLevel::Error,
-                        "Reactor::on_connect_ready: secondary connect() failed for service '{}': {}",
-                        conn.service_name(), connect_error);
-                    teardown_connection(conn.id(), connect_error, false);
-                    auto* thread = get_fast_path_thread(conn.requesting_thread_id());
-                    if (thread != nullptr) {
-                        thread->get_queue().enqueue(EventMessage::create_connection_failed_event(connect_error));
-                    }
-                    return;
-                }
-
-                const int new_fd = new_connector->get_fd();
-                conn.retry_with_secondary(std::move(new_connector));
-                connections_by_fd_[new_fd] = &conn;
-
-                if (connected_immediately) {
-                    on_connect_ready(conn);
-                } else {
-                    epoll_event ev{};
-                    ev.events  = EPOLLOUT | EPOLLERR;
-                    ev.data.fd = new_fd;
-                    ::epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, new_fd, &ev);
-                }
-                return;
-            }
-
-            // Both endpoints failed — deliver ConnectionFailed.
-            teardown_connection(conn.id(), error, false);
-            auto* thread = get_fast_path_thread(conn.requesting_thread_id());
-            if (thread != nullptr) {
-                thread->get_queue().enqueue(EventMessage::create_connection_failed_event(error));
-            }
-        }
-        // else still in progress — wait for next EPOLLOUT
-        return;
-    }
-
-    const int fd = conn.get_fd();
-
-    // Transition to established: move socket from connector into connection.
-    // The disconnect handler is a lambda that calls teardown_connection() when
-    // PduParser detects the peer has closed the connection gracefully.
-    auto socket = conn.connector()->get_connected_socket();
-    const ConnectionID conn_id = conn.id();
-    auto disconnect_handler = [this, conn_id]() {
-        teardown_connection(conn_id, "peer closed connection", true);
-    };
-    conn.on_connected(std::move(socket), std::move(disconnect_handler));
-
-    // Re-register fd for EPOLLIN (and keep EPOLLERR).
-    epoll_event ev{};
-    ev.events  = EPOLLIN | EPOLLERR;
-    ev.data.fd = fd;
-    ::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, fd, &ev);
-
-    PUBSUB_LOG(logger_, FwLogLevel::Info,
-        "Reactor::on_connect_ready: connection {} to service '{}' established",
-        conn.id().get_value(), conn.service_name());
-
-    auto* thread = get_fast_path_thread(conn.requesting_thread_id());
-    if (thread != nullptr) {
-        thread->get_queue().enqueue(
-            EventMessage::create_connection_established_event(conn.id()));
-    }
-}
-
-void Reactor::on_data_ready(OutboundConnection& conn)
-{
-    // Capture before receive() — the disconnect handler may destroy conn
-    // synchronously during receive(). See on_inbound_data_ready for details.
-    const ConnectionID id           = conn.id();
-    const std::string  service_name = conn.service_name();
-
-    auto [ok, error] = conn.parser()->receive();
-    if (!ok) {
-        const std::string reason = error.empty()
-            ? fmt::format("peer closed connection on service '{}'", service_name)
-            : fmt::format("parse error on service '{}': {}", service_name, error);
-
-        PUBSUB_LOG(logger_, FwLogLevel::Warning,
-            "Reactor::on_data_ready: {}", reason);
-
-        teardown_connection(id, reason, true);
-    }
-}
-
-void Reactor::on_write_ready(OutboundConnection& conn)
-{
-    auto [ok, error] = conn.framer()->continue_send();
-    if (!ok) {
-        const std::string reason = fmt::format(
-            "send error on service '{}': {}", conn.service_name(), error);
-        PUBSUB_LOG(logger_, FwLogLevel::Error, "Reactor::on_write_ready: {}", reason);
-        teardown_connection(conn.id(), reason, true);
-        return;
-    }
-
-    if (!conn.framer()->has_pending_data()) {
-        // Send complete — free the slab chunk and clear EPOLLOUT.
-        conn.current_allocator()->deallocate(conn.current_slab_id(), conn.current_chunk_ptr());
-        conn.clear_pending_send();
-
-        const int fd = conn.get_fd();
-        epoll_event ev{};
-        ev.events  = EPOLLIN | EPOLLERR;
-        ev.data.fd = fd;
-        ::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, fd, &ev);
-    }
-}
-
-void Reactor::process_send_pdu_command(const ReactorControlCommand& command)
-{
-    const ConnectionID cid = command.connection_id_;
-
-    auto out_it = connections_.find(cid);
-    if (out_it != connections_.end()) {
-        OutboundConnection& conn = *out_it->second;
-
-        if (!conn.is_established()) {
-            PUBSUB_LOG(logger_, FwLogLevel::Warning,
-                "Reactor::process_send_pdu_command: outbound connection {} not yet established",
-                cid.get_value());
-            pending_send_ = command;
-            return;
-        }
-        if (conn.has_pending_send()) {
-            pending_send_ = command;
-            return;
-        }
-
-        const uint32_t total_bytes =
-            static_cast<uint32_t>(sizeof(PduHeader)) + command.pdu_byte_count_;
-        const uint8_t* frame_ptr = static_cast<const uint8_t*>(command.pdu_chunk_ptr_);
-        auto [ok, send_error] = conn.framer()->send_prebuilt(frame_ptr, total_bytes);
-
-        if (!ok) {
-            PUBSUB_LOG(logger_, FwLogLevel::Error,
-                "Reactor::process_send_pdu_command: send error to '{}': {}",
-                conn.service_name(), send_error);
-            command.allocator_->deallocate(command.slab_id_, command.pdu_chunk_ptr_);
-            pending_send_.reset();
-            teardown_connection(conn.id(), send_error, true);
-            return;
-        }
-
-        if (conn.framer()->has_pending_data()) {
-            conn.set_pending_send(command.allocator_, command.slab_id_,
-                                  command.pdu_chunk_ptr_, total_bytes);
-            pending_send_.reset();
-            const int conn_fd = conn.get_fd();
-            epoll_event ev{};
-            ev.events  = EPOLLIN | EPOLLOUT | EPOLLERR;
-            ev.data.fd = conn_fd;
-            ::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, conn_fd, &ev);
-        } else {
-            command.allocator_->deallocate(command.slab_id_, command.pdu_chunk_ptr_);
-            pending_send_.reset();
-        }
-        return;
-    }
-
-    auto in_it = inbound_connections_.find(cid);
-    if (in_it == inbound_connections_.end()) {
-        PUBSUB_LOG(logger_, FwLogLevel::Warning,
-            "Reactor::process_send_pdu_command: unknown connection id {}",
-            cid.get_value());
-        command.allocator_->deallocate(command.slab_id_, command.pdu_chunk_ptr_);
-        pending_send_.reset();
-        return;
-    }
-
-    InboundConnection& conn = *in_it->second;
-
-    if (conn.handler()->has_pending_send()) {
-        pending_send_ = command;
-        return;
-    }
-
-    const uint32_t total_bytes =
-        static_cast<uint32_t>(sizeof(PduHeader)) + command.pdu_byte_count_;
-
-    // The handler takes ownership of the slab bookkeeping from this point.
-    // It stores allocator, slab_id, and chunk_ptr internally and will
-    // deallocate on completion or teardown.
-    conn.handler()->send_prebuilt(command.allocator_, command.slab_id_,
-                                  command.pdu_chunk_ptr_, total_bytes);
-    pending_send_.reset();
-
-    if (conn.handler()->has_pending_send()) {
-        const int conn_fd = conn.get_fd();
-        epoll_event ev{};
-        ev.events  = EPOLLIN | EPOLLOUT | EPOLLERR;
-        ev.data.fd = conn_fd;
-        ::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, conn_fd, &ev);
-    }
-}
-
-void Reactor::process_disconnect_command(const ReactorControlCommand& command)
-{
-    const ConnectionID cid = command.connection_id_;
-    const std::string reason = "disconnect requested by application thread";
-
-    if (connections_.count(cid)) {
-        teardown_connection(cid, reason, true);
-    } else if (inbound_connections_.count(cid)) {
-        teardown_inbound_connection(cid, reason, true);
-    } else {
-        PUBSUB_LOG(logger_, FwLogLevel::Warning,
-            "Reactor::process_disconnect_command: unknown connection id {}",
-            cid.get_value());
-    }
-}
-
-void Reactor::teardown_connection(ConnectionID id, const std::string& reason, bool deliver_lost_event)
-{
-    auto it = connections_.find(id);
-    if (it == connections_.end()) {
-        return;
-    }
-
-    OutboundConnection& conn = *it->second;
-
-    PUBSUB_LOG(logger_, FwLogLevel::Info,
-        "Reactor::teardown_connection: connection {} service '{}': {}",
-        id.get_value(), conn.service_name(), reason);
-
-    // Free any in-flight outbound slab chunk.
-    if (conn.has_pending_send()) {
-        conn.current_allocator()->deallocate(conn.current_slab_id(), conn.current_chunk_ptr());
-        conn.clear_pending_send();
-    }
-
-    // Also clear pending_send_ if it refers to this connection.
-    if (pending_send_.has_value() &&
-        pending_send_->connection_id_ == id) {
-        pending_send_->allocator_->deallocate(
-            pending_send_->slab_id_, pending_send_->pdu_chunk_ptr_);
-        pending_send_.reset();
-    }
-
-    // Deregister from epoll and remove from fd map.
-    const int fd = conn.get_fd();
-    if (fd != -1) {
-        ::epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, fd, nullptr);
-        connections_by_fd_.erase(fd);
-    }
-
-    // Deliver ConnectionLost if requested and the connection was established.
-    if (deliver_lost_event && conn.is_established()) {
-        auto* thread = get_fast_path_thread(conn.requesting_thread_id());
-        if (thread != nullptr) {
-            thread->get_queue().enqueue(
-                EventMessage::create_connection_lost_event(id, reason));
-        }
-    }
-
-    // Destroy the connection.
-    connections_.erase(it);
-}
-
-
-void Reactor::check_for_timed_out_connections()
-{
-    const auto now = MillisecondClock::now();
-
-    // Collect IDs of timed-out connections first to avoid modifying the map
-    // while iterating over it.
-    std::vector<ConnectionID> timed_out;
-
-    for (auto& [id, conn] : connections_) {
-        if (conn->is_connecting()) {
-            const auto elapsed = now - conn->connect_started_at();
-            if (elapsed > config_.connect_timeout) {
-                timed_out.push_back(id);
-            }
-        }
-    }
-
-    for (const ConnectionID& id : timed_out) {
-        auto it = connections_.find(id);
-        if (it == connections_.end()) {
-            continue;
-        }
-        const std::string reason = fmt::format(
-            "connect timeout after {}ms for service '{}'",
-            std::chrono::duration_cast<std::chrono::milliseconds>(config_.connect_timeout).count(),
-            it->second->service_name());
-
-        PUBSUB_LOG(logger_, FwLogLevel::Warning,
-            "Reactor::check_for_timed_out_connections: {}", reason);
-
-        const ThreadID requesting_thread_id = it->second->requesting_thread_id();
-        teardown_connection(id, reason, false);
-
-        auto* thread = get_fast_path_thread(requesting_thread_id);
-        if (thread != nullptr) {
-            thread->get_queue().enqueue(EventMessage::create_connection_failed_event(reason));
-        }
-    }
-}
-
-
-bool Reactor::initialize_listeners()
-{
-    for (auto& listener : inbound_listeners_staging_) {
-        auto [addr, addr_error] = InetAddress::create(listener.address.host, listener.address.port);
-        if (!addr) {
-            PUBSUB_LOG(logger_, FwLogLevel::Error,
-                "Reactor::initialize_listeners: failed to resolve {}:{} — {}",
-                listener.address.host, listener.address.port, addr_error);
-            return false;
-        }
-
-        auto [acceptor, accept_error] = TcpAcceptor::create(*addr, /*backlog=*/4);
-        if (!acceptor) {
-            PUBSUB_LOG(logger_, FwLogLevel::Error,
-                "Reactor::initialize_listeners: failed to create acceptor on {}:{} — {}",
-                listener.address.host, listener.address.port, accept_error);
-            return false;
-        }
-
-        const int listen_fd = acceptor->get_listening_file_descriptor();
-        listener.acceptor = std::move(acceptor);
-
-        PUBSUB_LOG(logger_, FwLogLevel::Info,
-            "Reactor::initialize_listeners: listening on {}:{}",
-            listener.address.host, listener.address.port);
-
-        // Move listener into the map first so AcceptorHandler holds a stable reference.
-        inbound_listeners_[listen_fd] = std::move(listener);
-        auto handler = std::make_unique<AcceptorHandler>(
-            listen_fd, inbound_listeners_[listen_fd], *this, logger_);
-        // register_handler calls epoll_ctl ADD internally — do not call it separately.
-        register_handler(std::move(handler));
-    }
-    inbound_listeners_staging_.clear();
-    return true;
-}
-
-void Reactor::on_accept(InboundListener& listener)
-{
-    auto [socket, peer_addr, error] = listener.acceptor->accept_connection();
-
-    if (!socket) {
-        if (!error.empty()) {
-            PUBSUB_LOG(logger_, FwLogLevel::Error,
-                "Reactor::on_accept: accept_connection failed on port {} — {}",
-                listener.address.port, error);
-        }
-        return; // EAGAIN — no connection waiting
-    }
-
-    const std::string peer_desc = peer_addr
-        ? fmt::format("{}:{}", peer_addr->get_ip_address_string(), peer_addr->get_port())
-        : "unknown peer";
-
-    // Enforce the one-connection rule.
-    if (listener.has_connection()) {
-        PUBSUB_LOG(logger_, FwLogLevel::Warning,
-            "Reactor::on_accept: listener on port {} already has an established connection "
-            "(connection id {}). Rejecting new connection attempt from {}. "
-            "This indicates a framework misuse by the connecting application — "
-            "only one peer should connect to a given framework listener port.",
-            listener.address.port,
-            listener.current_connection_id.get_value(),
-            peer_desc);
-        socket->close();
-        return;
-    }
-
-    const ConnectionID id = allocate_connection_id();
-    const int fd = socket->get_file_descriptor();
-
-    auto* target_thread = get_fast_path_thread(listener.target_thread_id);
-    if (target_thread == nullptr) {
-        PUBSUB_LOG(logger_, FwLogLevel::Error,
-            "Reactor::on_accept: target thread {} not found — rejecting connection from {}",
-            listener.target_thread_id.get_value(), peer_desc);
-        socket->close();
-        return;
-    }
-
-    auto disconnect_handler = [this, id]() {
-        teardown_inbound_connection(id, "peer closed connection", true);
-    };
-
-    auto handler = std::make_unique<PduProtocolHandler>(
-        *socket,
-        *target_thread,
-        inbound_slab_allocator_,
-        std::move(disconnect_handler),
-        logger_);
-
-    auto conn = std::make_unique<InboundConnection>(
-        id,
-        std::move(socket),
-        listener.target_thread_id,
-        std::move(handler),
-        peer_desc);
-
-    InboundConnection* conn_ptr = conn.get();
-    inbound_connections_[id]       = std::move(conn);
-    inbound_connections_by_fd_[fd] = conn_ptr;
-    listener.current_connection_id = id;
-
-    epoll_event ev{};
-    ev.events  = EPOLLIN | EPOLLERR;
-    ev.data.fd = fd;
-    if (::epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, fd, &ev) == -1) {
-        PUBSUB_LOG(logger_, FwLogLevel::Error,
-            "Reactor::on_accept: epoll_ctl ADD failed for connection from {} — {}",
-            peer_desc, StringUtils::get_errno_string());
-        teardown_inbound_connection(id, "epoll_ctl failed", false);
-        return;
-    }
-
-    PUBSUB_LOG(logger_, FwLogLevel::Info,
-        "Reactor::on_accept: accepted connection {} from {} on port {}",
-        id.get_value(), peer_desc, listener.address.port);
-
-    target_thread->get_queue().enqueue(
-        EventMessage::create_connection_established_event(id));
-}
-
-void Reactor::on_inbound_data_ready(InboundConnection& conn)
-{
-    conn.handle_read();
-    // Note: handle_read() may invoke the disconnect handler synchronously,
-    // which calls teardown_inbound_connection() and destroys conn.
-    // Any access to conn after this point would be a use-after-free error.
-}
-
-void Reactor::on_inbound_write_ready(InboundConnection& conn)
-{
-    const ConnectionID id = conn.id();
-
-    conn.handler()->continue_send();
-
-    // continue_send() may have invoked the disconnect handler synchronously
-    // on an unrecoverable send error, destroying conn. Check whether the
-    // connection still exists before touching it again.
-    if (inbound_connections_.find(id) == inbound_connections_.end()) {
-        return;
-    }
-
-    if (!conn.handler()->has_pending_send()) {
-        const int fd = conn.get_fd();
-        epoll_event ev{};
-        ev.events  = EPOLLIN | EPOLLERR;
-        ev.data.fd = fd;
-        ::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, fd, &ev);
-    }
-}
-
-void Reactor::teardown_inbound_connection(ConnectionID id, const std::string& reason,
-                                           bool deliver_lost_event)
-{
-    auto it = inbound_connections_.find(id);
-    if (it == inbound_connections_.end()) {
-        return;
-    }
-
-    InboundConnection& conn = *it->second;
-    const ThreadID target_thread_id = conn.target_thread_id();
-
-    PUBSUB_LOG(logger_, FwLogLevel::Info,
-        "Reactor::teardown_inbound_connection: connection {} from '{}': {}",
-        id.get_value(), conn.peer_description(), reason);
-
-    // Free any in-flight outbound slab chunk via the handler.
-    if (conn.handler()->has_pending_send()) {
-        conn.handler()->deallocate_pending_send();
-    }
-
-    // Clear pending_send_ if it refers to this connection.
-    if (pending_send_.has_value() && pending_send_->connection_id_ == id) {
-        pending_send_->allocator_->deallocate(
-            pending_send_->slab_id_, pending_send_->pdu_chunk_ptr_);
-        pending_send_.reset();
-    }
-
-    // Deregister from epoll and fd map.
-    const int fd = conn.get_fd();
-    if (fd != -1) {
-        ::epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, fd, nullptr);
-        inbound_connections_by_fd_.erase(fd);
-    }
-
-    // Clear the listener's current connection so it can accept again.
-    for (auto& [listen_fd, listener] : inbound_listeners_) {
-        if (listener.current_connection_id == id) {
-            listener.current_connection_id = ConnectionID{};
-            break;
-        }
-    }
-
-    // Deliver ConnectionLost if requested.
-    if (deliver_lost_event) {
-        auto* thread = get_fast_path_thread(target_thread_id);
-        if (thread != nullptr) {
-            thread->get_queue().enqueue(
-                EventMessage::create_connection_lost_event(id, reason));
-        }
-    }
-
-    inbound_connections_.erase(it);
-}
-
-
-uint16_t Reactor::get_first_inbound_listener_port() const
-{
-    if (inbound_listeners_.empty()) {
-        return 0;
-    }
-    const int listen_fd = inbound_listeners_.begin()->first;
-    sockaddr_storage addr{};
-    socklen_t len = sizeof(addr);
-    if (::getsockname(listen_fd, reinterpret_cast<sockaddr*>(&addr), &len) == -1) {
-        return 0;
-    }
-    if (addr.ss_family == AF_INET) {
-        return ntohs(reinterpret_cast<const sockaddr_in*>(&addr)->sin_port);
-    }
-    if (addr.ss_family == AF_INET6) {
-        return ntohs(reinterpret_cast<const sockaddr_in6*>(&addr)->sin6_port);
-    }
-    return 0;
+void Reactor::handleSIGTERM() {
+    shutdown("SIGTERM received");
 }
 
 } // namespace pubsub_itc_fw

@@ -4,29 +4,29 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <atomic>
-#include <cstdint>
 #include <chrono>
+#include <cstdint>
+#include <functional>
 #include <map>
-#include <vector>
-#include <optional>
 #include <memory>
-#include <stdexcept>
+#include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include <sys/epoll.h>
 
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
-#include <pubsub_itc_fw/AcceptorHandler.hpp>
-#include <pubsub_itc_fw/InboundConnection.hpp>
-#include <pubsub_itc_fw/InboundListener.hpp>
-#include <pubsub_itc_fw/NetworkEndpointConfig.hpp>
-#include <pubsub_itc_fw/OutboundConnection.hpp>
 #include <pubsub_itc_fw/EventHandler.hpp>
 #include <pubsub_itc_fw/EventType.hpp>
+#include <pubsub_itc_fw/InboundConnectionManager.hpp>
+#include <pubsub_itc_fw/InboundListener.hpp>
 #include <pubsub_itc_fw/LockFreeMessageQueue.hpp>
+#include <pubsub_itc_fw/NetworkEndpointConfig.hpp>
+#include <pubsub_itc_fw/OutboundConnectionManager.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
@@ -36,6 +36,7 @@
 #include <pubsub_itc_fw/ServiceRegistry.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 #include <pubsub_itc_fw/ThreadLifecycleState.hpp>
+#include <pubsub_itc_fw/ThreadLookupInterface.hpp>
 #include <pubsub_itc_fw/TimerID.hpp>
 
 namespace pubsub_itc_fw {
@@ -51,11 +52,17 @@ namespace pubsub_itc_fw {
  * from application threads. All socket I/O is performed exclusively on the
  * reactor thread.
  *
- * The ServiceRegistry supplied at construction is used to resolve logical service
- * names to their primary and secondary network endpoints when processing Connect
- * commands.
+ * Inbound and outbound connection management is fully delegated to
+ * InboundConnectionManager and OutboundConnectionManager respectively. The
+ * Reactor inherits ThreadLookupInterface so that both managers can deliver
+ * EventMessages to ApplicationThreads without depending on the Reactor class
+ * directly.
+ *
+ * The ServiceRegistry supplied at construction is used by the
+ * OutboundConnectionManager to resolve logical service names to their primary
+ * and secondary network endpoints when processing Connect commands.
  */
-class Reactor {
+class Reactor : public ThreadLookupInterface {
 public:
     /**
      * @brief Destroys the Reactor instance, closing the epoll file descriptor.
@@ -140,7 +147,7 @@ public:
      * When the established connection is lost, the listener resumes accepting and
      * will accept the next peer to connect normally.
      *
-     * @param[in] address         The address and port to listen on.
+     * @param[in] address          The address and port to listen on.
      * @param[in] target_thread_id The ThreadID to receive ConnectionEstablished,
      *                             FrameworkPdu, and ConnectionLost events.
      * @throws PreconditionAssertion if called after run().
@@ -168,10 +175,7 @@ public:
     /**
      * @brief Called by AcceptorHandler when EPOLLIN fires on a listening socket.
      *
-     * Enforces the one-connection rule: if the listener already has an established
-     * connection, the new socket is accepted and immediately closed with a Warning log.
-     * Otherwise creates an InboundConnection, registers it with epoll, and delivers
-     * ConnectionEstablished to the target thread.
+     * Allocates a ConnectionID and delegates to InboundConnectionManager::on_accept().
      *
      * @param[in] listener The InboundListener whose listening socket became readable.
      */
@@ -221,14 +225,17 @@ public:
     ThreadLifecycleState::Tag get_thread_state(ThreadID id) const;
 
     /**
-     * Fast-path lookup.
-     * SAFE WITHOUT LOCKING under the reactor lifecycle model:
+     * @brief Returns a non-owning pointer to the ApplicationThread with the given
+     *        ThreadID, or nullptr if no such thread is registered.
      *
-     * - No writes to fast_path_threads_ occur while the reactor is Running.
-     * - No reads occur during initialisation or shutdown.
-     * Violating this contract is a precondition failure.
+     * Implements ThreadLookupInterface. Safe without locking under the reactor
+     * lifecycle model: fast_path_threads_ is written only during initialisation
+     * and shutdown, and read only while running.
+     *
+     * @param[in] id The ThreadID to look up.
+     * @return A non-owning pointer to the thread, or nullptr if not found.
      */
-    ApplicationThread* get_fast_path_thread(ThreadID id) const;
+    [[nodiscard]] ApplicationThread* get_fast_path_thread(ThreadID id) const override;
 
     // Made public for unit test purposes only.
     void finalize_threads_after_shutdown();
@@ -276,110 +283,34 @@ protected:
 private:
     [[nodiscard]] bool initialize_threads();
     void event_loop();
-    void check_for_inactive_sockets();
-    bool wait_for_all_threads(std::function<bool(const ApplicationThread&)> predicate, const std::string& phase_name);
+    bool wait_for_all_threads(std::function<bool(const ApplicationThread&)> predicate,
+                              const std::string& phase_name);
     void broadcast_reactor_event(EventType::EventTypeTag tag);
     void process_control_commands();
 
-    // --- Connection management ---
-
     /**
-     * @brief Processes a Connect command: resolves the service name, initiates
-     *        a non-blocking connect to the primary endpoint, and registers the
-     *        socket with epoll for EPOLLOUT.
-     */
-    void process_connect_command(const ReactorControlCommand& command);
-
-    /**
-     * @brief Called from on_housekeeping_tick(). Checks all connecting
-     *        OutboundConnections against config_.connect_timeout and tears
-     *        down any that have exceeded it, delivering ConnectionFailed.
-     */
-    void check_for_timed_out_connections();
-
-    /**
-     * @brief Called when epoll signals EPOLLOUT on a connecting socket.
-     *        Calls finish_connect(); on success transitions to established phase
-     *        and delivers ConnectionEstablished. On failure retries the secondary
-     *        endpoint or delivers ConnectionFailed.
-     */
-    void on_connect_ready(OutboundConnection& conn);
-
-    /**
-     * @brief Called when epoll signals EPOLLIN on an established connection.
-     *        Delegates to PduParser::receive(). On parse error or peer disconnect,
-     *        tears down the connection and delivers ConnectionLost.
-     */
-    void on_data_ready(OutboundConnection& conn);
-
-    /**
-     * @brief Called when epoll signals EPOLLOUT on an established connection
-     *        that has a partial send in flight.
-     *        Calls PduFramer::continue_send(). On completion clears pending send
-     *        state, deallocates the slab chunk, and deregisters EPOLLOUT.
-     */
-    void on_write_ready(OutboundConnection& conn);
-
-    /**
-     * @brief Processes a SendPdu command for an established connection.
-     *        If no partial send is in flight, attempts to send immediately.
-     *        On partial write, records pending state and registers EPOLLOUT.
-     */
-    void process_send_pdu_command(const ReactorControlCommand& command);
-
-    /**
-     * @brief Processes a Disconnect command: tears down the connection,
-     *        delivers ConnectionLost to the requesting thread, and removes
-     *        the connection from all maps.
-     */
-    void process_disconnect_command(const ReactorControlCommand& command);
-
-    /**
-     * @brief Tears down a connection unconditionally: deregisters from epoll,
-     *        removes from all maps, and optionally delivers ConnectionLost.
-     */
-    void teardown_connection(ConnectionID id, const std::string& reason, bool deliver_lost_event);
-
-    /**
-     * @brief Allocates the next ConnectionID.
+     * @brief Allocates the next ConnectionID from the shared monotonic counter.
+     *
+     * Called by on_accept() and process_connect_command() before delegating to
+     * the respective manager. Keeping the counter here ensures the ID space is
+     * unified across inbound and outbound connections without coupling the
+     * managers to each other.
      */
     [[nodiscard]] ConnectionID allocate_connection_id();
 
     /**
-     * @brief Initialises all registered inbound listeners: binds, listens, and
-     *        registers each acceptor socket with epoll. Called from initialize_threads().
-     * @return false if any listener fails to bind or listen, true otherwise.
+     * @brief Creates an epoll file descriptor and returns it.
+     *
+     * Called from the constructor initialiser list so that epoll_fd_ holds
+     * the real descriptor before InboundConnectionManager and
+     * OutboundConnectionManager are constructed. Both managers store epoll_fd_
+     * by value, so they must receive the final descriptor, not the -1 sentinel.
+     *
+     * @throws PubSubItcException if epoll_create1 fails.
      */
-    [[nodiscard]] bool initialize_listeners();
-
-    /**
-     * @brief Called when epoll signals EPOLLIN on an established inbound connection.
-     *        Delegates to PduParser::receive(). On error or peer disconnect tears
-     *        down the connection and delivers ConnectionLost.
-     */
-    void on_inbound_data_ready(InboundConnection& conn);
-
-    /**
-     * @brief Called when epoll signals EPOLLOUT on an established inbound connection
-     *        that has a partial send in flight.
-     *        Calls PduFramer::continue_send(). On completion clears pending send
-     *        state, deallocates the slab chunk, and deregisters EPOLLOUT.
-     */
-    void on_inbound_write_ready(InboundConnection& conn);
-
-    /**
-     * @brief Tears down an inbound connection: deregisters from epoll, clears
-     *        the listener's current_connection_id, frees any in-flight slab chunk,
-     *        and optionally delivers ConnectionLost to the target thread.
-     */
-    void teardown_inbound_connection(ConnectionID id, const std::string& reason,
-                                     bool deliver_lost_event);
+    [[nodiscard]] static int create_epoll_fd();
 
     std::atomic<bool> initialization_complete_{false};
-
-    // The core of the reactor.
-    int epoll_fd_{-1};
-    int wake_fd_{-1};
 
     /**
      * @brief Mutex protecting all timer-related collections and next_timer_id_.
@@ -429,74 +360,29 @@ private:
      */
     LockFreeMessageQueue<ReactorControlCommand> command_queue_;
 
-    /**
-     * @brief Internal storage for the human-readable shutdown reason.
-     *
-     * Written exactly once when shutdown is initiated. Not intended for direct
-     * access outside the Reactor implementation.
-     */
     std::string shutdown_reason_;
-
-    // --- Outbound connection management ---
-
-    /**
-     * Owns all OutboundConnection instances.
-     * Keyed by ConnectionID for SendPdu / Disconnect command dispatch.
-     */
-    std::unordered_map<ConnectionID, std::unique_ptr<OutboundConnection>> connections_;
-
-    /**
-     * Non-owning lookup by socket fd for epoll event dispatch.
-     * Shares lifetime with connections_.
-     */
-    std::unordered_map<int, OutboundConnection*> connections_by_fd_;
 
     /**
      * Monotonically increasing counter for ConnectionID assignment.
      * ConnectionID(0) is reserved as invalid; first real ID is 1.
+     * Shared between inbound and outbound: the Reactor allocates the ID and
+     * passes it into the appropriate manager as a parameter.
      */
     ConnectionID next_connection_id_{1};
 
-    /**
-     * Holds a SendPdu command that could not be processed because the target
-     * connection had a partial write in flight. Drained at the start of
-     * process_control_commands() before touching the command queue.
-     */
-    std::optional<ReactorControlCommand> pending_send_;
-
-    // --- Inbound connection management ---
-
-    /**
-     * Staging area for inbound listeners registered before run().
-     * Moved into inbound_listeners_ during initialize_listeners(),
-     * keyed by listening socket fd after bind.
-     */
-    std::vector<InboundListener> inbound_listeners_staging_;
-
-    /**
-     * Registered inbound listeners, keyed by listening socket fd.
-     * Populated during initialize_listeners() from inbound_listeners_staging_.
-     * Each entry owns its TcpAcceptor and records the target ThreadID.
-     */
-    std::map<int, InboundListener> inbound_listeners_;
-
-    /**
-     * Owns all InboundConnection instances.
-     * Keyed by ConnectionID for SendPdu / Disconnect command dispatch.
-     */
-    std::unordered_map<ConnectionID, std::unique_ptr<InboundConnection>> inbound_connections_;
-
-    /**
-     * Non-owning lookup by socket fd for epoll event dispatch.
-     * Shares lifetime with inbound_connections_.
-     */
-    std::unordered_map<int, InboundConnection*> inbound_connections_by_fd_;
-
-    // Configuration and dependencies — must precede slab allocators in
-    // declaration order so the constructor initialiser list is valid.
+    // Configuration and dependencies — must precede slab allocators and managers
+    // in declaration order so the constructor initialiser list is valid.
     ReactorConfiguration config_;
     const ServiceRegistry& service_registry_;
     QuillLogger& logger_;
+
+    // epoll_fd_ is initialised via create_epoll_fd() in the constructor initialiser
+    // list. It must be declared after config_ and logger_ (which it does not depend
+    // on directly) but — critically — before inbound_manager_ and outbound_manager_,
+    // which receive it by value at construction time. Declaration order governs
+    // initialisation order, so these two ints sit here, just above the managers.
+    int epoll_fd_{-1};
+    int wake_fd_{-1};
 
     /**
      * Inbound slab allocator: used by PduParser to allocate receive buffers.
@@ -506,6 +392,22 @@ private:
      * constructor initialiser list.
      */
     ExpandableSlabAllocator inbound_slab_allocator_;
+
+    /**
+     * Manages all inbound TCP connections: listener registry, accept, read,
+     * write, idle-timeout, and teardown. Declared after epoll_fd_,
+     * inbound_slab_allocator_, config_, and logger_ so that all four are
+     * fully constructed before this manager's constructor runs.
+     */
+    InboundConnectionManager inbound_manager_;
+
+    /**
+     * Manages all outbound TCP connections: connect, read, write, connect-timeout,
+     * and teardown. Declared after epoll_fd_, inbound_slab_allocator_, config_,
+     * service_registry_, and logger_ so that all five are fully constructed before
+     * this manager's constructor runs.
+     */
+    OutboundConnectionManager outbound_manager_;
 };
 
 } // namespace pubsub_itc_fw
