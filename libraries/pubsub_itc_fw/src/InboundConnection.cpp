@@ -1,7 +1,6 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-#include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/InboundConnection.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 
@@ -9,28 +8,24 @@ namespace pubsub_itc_fw {
 
 InboundConnection::InboundConnection(ConnectionID id,
                                      std::unique_ptr<TcpSocket> socket,
-                                     ApplicationThread& target_thread,
-                                     ExpandableSlabAllocator& inbound_allocator,
-                                     std::function<void()> disconnect_handler,
+                                     ThreadID target_thread_id,
+                                     std::unique_ptr<ProtocolHandlerInterface> handler,
                                      std::string peer_description)
     : id_(id)
     , peer_description_(std::move(peer_description))
+    , target_thread_id_(target_thread_id)
     , socket_(std::move(socket))
-    , target_thread_id_(target_thread.get_thread_id())
-    , inbound_allocator_(inbound_allocator)
-    , target_thread_(target_thread)
+    , handler_(std::move(handler))
+    , last_activity_time_(std::chrono::steady_clock::now())
 {
-    if (!socket_) {
+    if (socket_ == nullptr) {
         throw PreconditionAssertion(
             "InboundConnection: socket must not be null", __FILE__, __LINE__);
     }
-
-    framer_ = std::make_unique<PduFramer>(*socket_);
-    parser_ = std::make_unique<PduParser>(
-        *socket_,
-        target_thread_,
-        inbound_allocator_,
-        std::move(disconnect_handler));
+    if (handler_ == nullptr) {
+        throw PreconditionAssertion(
+            "InboundConnection: handler must not be null", __FILE__, __LINE__);
+    }
 }
 
 int InboundConnection::get_fd() const
@@ -38,30 +33,10 @@ int InboundConnection::get_fd() const
     return socket_ ? socket_->get_file_descriptor() : -1;
 }
 
-void InboundConnection::set_pending_send(ExpandableSlabAllocator* allocator, int slab_id, void* chunk_ptr, uint32_t total_bytes)
+void InboundConnection::handle_read()
 {
-    if (allocator == nullptr) {
-        throw PreconditionAssertion(
-            "InboundConnection::set_pending_send: allocator must not be null",
-            __FILE__, __LINE__);
-    }
-    if (chunk_ptr == nullptr) {
-        throw PreconditionAssertion(
-            "InboundConnection::set_pending_send: chunk_ptr must not be null",
-            __FILE__, __LINE__);
-    }
-    current_allocator_   = allocator;
-    current_slab_id_     = slab_id;
-    current_chunk_ptr_   = chunk_ptr;
-    current_total_bytes_ = total_bytes;
-}
-
-void InboundConnection::clear_pending_send()
-{
-    current_allocator_   = nullptr;
-    current_slab_id_     = -1;
-    current_chunk_ptr_   = nullptr;
-    current_total_bytes_ = 0;
+    last_activity_time_ = std::chrono::steady_clock::now();
+    handler_->on_data_ready();
 }
 
 } // namespace pubsub_itc_fw

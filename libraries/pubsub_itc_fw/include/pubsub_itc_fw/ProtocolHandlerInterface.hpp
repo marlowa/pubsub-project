@@ -1,0 +1,102 @@
+#pragma once
+
+// Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+#include <cstdint>
+
+namespace pubsub_itc_fw {
+
+class ExpandableSlabAllocator;
+
+/**
+ * @brief Strategy interface for transforming raw socket streams into application events.
+ *
+ * @ingroup reactor_subsystem
+ *
+ * This interface decouples the Reactor's connection management (epoll handling,
+ * idle timeouts, and socket lifecycle) from the protocol-specific framing logic.
+ *
+ * Each concrete implementation is constructed with all the resources it needs
+ * (socket, target thread, allocator, disconnect handler, logger) bound at
+ * construction time. The handler owns all protocol-specific state including
+ * outbound partial-send bookkeeping, so InboundConnection remains a thin
+ * transport shell.
+ *
+ * Lifecycle and responsibilities of each implementation:
+ *   - Read:       call receive() or equivalent on the bound socket.
+ *   - Frame:      identify message boundaries according to the specific protocol.
+ *   - Package:    wrap data in EventMessage envelopes.
+ *   - Route:      dispatch messages to the target thread via the Vyukov queue.
+ *   - Disconnect: invoke the stored disconnect handler on EOF or protocol error.
+ *   - Send:       manage outbound framing and partial-send state.
+ */
+class ProtocolHandlerInterface {
+public:
+    /**
+     * @brief Virtual destructor to ensure correct cleanup of protocol-specific
+     *        resources such as MirroredBuffers or PduParsers.
+     */
+    virtual ~ProtocolHandlerInterface() = default;
+
+    /**
+     * @brief Service routine called by the Reactor when the underlying socket
+     *        has data available to read (EPOLLIN).
+     *
+     * Implementations must drain the socket or read as much as internal
+     * buffering allows, performing in-place framing where possible to
+     * minimise copies.
+     */
+    virtual void on_data_ready() = 0;
+
+    /**
+     * @brief Initiates a zero-copy send of a pre-built frame.
+     *
+     * Called by the Reactor to transmit a complete outbound frame that has
+     * been pre-built by the ApplicationThread in a slab-allocated chunk.
+     * If the send cannot complete immediately the implementation must record
+     * the partial-send state internally so that continue_send() can resume it.
+     *
+     * The allocator and slab_id are stored by the implementation so that the
+     * slab chunk can be returned to the correct allocator when the send
+     * completes or when deallocate_pending_send() is called on teardown.
+     *
+     * @param[in] allocator   The slab allocator that owns chunk_ptr. Must not be nullptr.
+     * @param[in] slab_id     Slab ID for deallocation when the send completes.
+     * @param[in] chunk_ptr   Pointer to the start of the frame. Must not be nullptr.
+     * @param[in] total_bytes Total frame size in bytes.
+     */
+    virtual void send_prebuilt(ExpandableSlabAllocator* allocator,
+                               int slab_id,
+                               void* chunk_ptr,
+                               uint32_t total_bytes) = 0;
+
+    /**
+     * @brief Returns true if a partial outbound send is in progress.
+     *
+     * When true the Reactor must have registered EPOLLOUT and will call
+     * continue_send() when the socket becomes writable again.
+     */
+    [[nodiscard]] virtual bool has_pending_send() const = 0;
+
+    /**
+     * @brief Resumes a partial outbound send.
+     *
+     * Called by the Reactor when epoll signals EPOLLOUT and has_pending_send()
+     * is true. The implementation must attempt to write the remaining bytes.
+     * When the send completes it must deallocate the slab chunk and clear its
+     * internal pending-send state.
+     */
+    virtual void continue_send() = 0;
+
+    /**
+     * @brief Deallocates any in-flight outbound slab chunk.
+     *
+     * Called by the Reactor during connection teardown when has_pending_send()
+     * is true. Ensures the slab chunk is returned to the allocator even if the
+     * send never completes.
+     */
+    virtual void deallocate_pending_send() = 0;
+};
+
+} // namespace pubsub_itc_fw

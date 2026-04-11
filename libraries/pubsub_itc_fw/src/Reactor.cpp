@@ -34,6 +34,7 @@
 #include <pubsub_itc_fw/AcceptorHandler.hpp>
 #include <pubsub_itc_fw/InetAddress.hpp>
 #include <pubsub_itc_fw/InboundConnection.hpp>
+#include <pubsub_itc_fw/PduProtocolHandler.hpp>
 #include <pubsub_itc_fw/InboundListener.hpp>
 #include <pubsub_itc_fw/OutboundConnection.hpp>
 #include <pubsub_itc_fw/PduHeader.hpp>
@@ -777,7 +778,7 @@ void Reactor::dispatch_events(int nfds, epoll_event* events) {
                         conn->peer_description(), StringUtils::get_error_string(err));
                     teardown_inbound_connection(conn->id(), reason, true);
                 } else {
-                    if ((ev & EPOLLOUT) && conn->has_pending_send()) {
+                    if ((ev & EPOLLOUT) && conn->handler()->has_pending_send()) {
                         on_inbound_write_ready(*conn);
                     }
                     if (ev & EPOLLIN) {
@@ -900,8 +901,39 @@ void Reactor::check_for_stuck_threads() {
     }
 }
 
-void Reactor::check_for_inactive_sockets() {}
-// TODO!
+void Reactor::check_for_inactive_sockets()
+{
+    const auto now = std::chrono::steady_clock::now();
+
+    // Phase 1: identify connections that have exceeded the idle timeout.
+    // Collect into a vector first to avoid iterator invalidation when
+    // teardown_inbound_connection() modifies inbound_connections_.
+    std::vector<ConnectionID> idle_connections;
+    for (const auto& [id, conn] : inbound_connections_) {
+        const auto elapsed = now - conn->last_activity_time();
+        if (elapsed > config_.socket_maximum_inactivity_interval_) {
+            idle_connections.push_back(id);
+        }
+    }
+
+    // Phase 2: tear down each idle connection.
+    for (const ConnectionID& id : idle_connections) {
+        auto it = inbound_connections_.find(id);
+        if (it == inbound_connections_.end()) {
+            continue; // already torn down by a concurrent event in this loop
+        }
+        const std::string reason = fmt::format(
+            "connection from '{}' closed: no data received for {}s",
+            it->second->peer_description(),
+            std::chrono::duration_cast<std::chrono::seconds>(
+                config_.socket_maximum_inactivity_interval_).count());
+
+        PUBSUB_LOG(logger_, FwLogLevel::Info,
+            "Reactor::check_for_inactive_sockets: {}", reason);
+
+        teardown_inbound_connection(id, reason, true);
+    }
+}
 
 ConnectionID Reactor::allocate_connection_id()
 {
@@ -1152,13 +1184,6 @@ void Reactor::process_send_pdu_command(const ReactorControlCommand& command)
 {
     const ConnectionID cid = command.connection_id_;
 
-    // Look up in outbound connections first, then inbound.
-    // Both use the same ConnectionID space (allocated by allocate_connection_id()).
-    PduFramer* framer        = nullptr;
-    int        conn_fd       = -1;
-    std::string peer_name;
-    std::function<void(const std::string&)> on_error;
-
     auto out_it = connections_.find(cid);
     if (out_it != connections_.end()) {
         OutboundConnection& conn = *out_it->second;
@@ -1174,72 +1199,71 @@ void Reactor::process_send_pdu_command(const ReactorControlCommand& command)
             pending_send_ = command;
             return;
         }
-        framer    = conn.framer();
-        conn_fd   = conn.get_fd();
-        peer_name = conn.service_name();
-        on_error  = [this, &conn](const std::string& reason) {
-            teardown_connection(conn.id(), reason, true);
-        };
-    } else {
-        auto in_it = inbound_connections_.find(cid);
-        if (in_it == inbound_connections_.end()) {
-            PUBSUB_LOG(logger_, FwLogLevel::Warning,
-                "Reactor::process_send_pdu_command: unknown connection id {}",
-                cid.get_value());
+
+        const uint32_t total_bytes =
+            static_cast<uint32_t>(sizeof(PduHeader)) + command.pdu_byte_count_;
+        const uint8_t* frame_ptr = static_cast<const uint8_t*>(command.pdu_chunk_ptr_);
+        auto [ok, send_error] = conn.framer()->send_prebuilt(frame_ptr, total_bytes);
+
+        if (!ok) {
+            PUBSUB_LOG(logger_, FwLogLevel::Error,
+                "Reactor::process_send_pdu_command: send error to '{}': {}",
+                conn.service_name(), send_error);
             command.allocator_->deallocate(command.slab_id_, command.pdu_chunk_ptr_);
             pending_send_.reset();
+            teardown_connection(conn.id(), send_error, true);
             return;
         }
-        InboundConnection& conn = *in_it->second;
-        if (conn.has_pending_send()) {
-            pending_send_ = command;
-            return;
+
+        if (conn.framer()->has_pending_data()) {
+            conn.set_pending_send(command.allocator_, command.slab_id_,
+                                  command.pdu_chunk_ptr_, total_bytes);
+            pending_send_.reset();
+            const int conn_fd = conn.get_fd();
+            epoll_event ev{};
+            ev.events  = EPOLLIN | EPOLLOUT | EPOLLERR;
+            ev.data.fd = conn_fd;
+            ::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, conn_fd, &ev);
+        } else {
+            command.allocator_->deallocate(command.slab_id_, command.pdu_chunk_ptr_);
+            pending_send_.reset();
         }
-        framer    = conn.framer();
-        conn_fd   = conn.get_fd();
-        peer_name = conn.peer_description();
-        on_error  = [this, &conn](const std::string& reason) {
-            teardown_inbound_connection(conn.id(), reason, true);
-        };
+        return;
+    }
+
+    auto in_it = inbound_connections_.find(cid);
+    if (in_it == inbound_connections_.end()) {
+        PUBSUB_LOG(logger_, FwLogLevel::Warning,
+            "Reactor::process_send_pdu_command: unknown connection id {}",
+            cid.get_value());
+        command.allocator_->deallocate(command.slab_id_, command.pdu_chunk_ptr_);
+        pending_send_.reset();
+        return;
+    }
+
+    InboundConnection& conn = *in_it->second;
+
+    if (conn.handler()->has_pending_send()) {
+        pending_send_ = command;
+        return;
     }
 
     const uint32_t total_bytes =
         static_cast<uint32_t>(sizeof(PduHeader)) + command.pdu_byte_count_;
 
-    // Zero-copy send: the application thread has pre-built the complete frame
-    // (PduHeader in network byte order followed by the encoded payload) into a
-    // slab-allocated chunk. We hand the pointer directly to send_prebuilt()
-    // which stores it without copying and handles partial writes transparently.
-    const uint8_t* frame_ptr = static_cast<const uint8_t*>(command.pdu_chunk_ptr_);
-    auto [ok, send_error] = framer->send_prebuilt(frame_ptr, total_bytes);
+    // The handler takes ownership of the slab bookkeeping from this point.
+    // It stores allocator, slab_id, and chunk_ptr internally and will
+    // deallocate on completion or teardown.
+    conn.handler()->send_prebuilt(command.allocator_, command.slab_id_,
+                                  command.pdu_chunk_ptr_, total_bytes);
+    pending_send_.reset();
 
-    if (!ok) {
-        PUBSUB_LOG(logger_, FwLogLevel::Error,
-            "Reactor::process_send_pdu_command: send error to '{}': {}",
-            peer_name, send_error);
-        command.allocator_->deallocate(command.slab_id_, command.pdu_chunk_ptr_);
-        pending_send_.reset();
-        on_error(send_error);
-        return;
-    }
-
-    if (framer->has_pending_data()) {
-        // Partial send — record state in the connection and register EPOLLOUT.
-        if (out_it != connections_.end()) {
-            out_it->second->set_pending_send(command.allocator_, command.slab_id_, command.pdu_chunk_ptr_, total_bytes);
-        } else {
-            inbound_connections_[cid]->set_pending_send(command.allocator_, command.slab_id_, command.pdu_chunk_ptr_, total_bytes);
-        }
-        pending_send_.reset();
-
+    if (conn.handler()->has_pending_send()) {
+        const int conn_fd = conn.get_fd();
         epoll_event ev{};
         ev.events  = EPOLLIN | EPOLLOUT | EPOLLERR;
         ev.data.fd = conn_fd;
         ::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, conn_fd, &ev);
-    } else {
-        // Fully sent — deallocate the slab chunk immediately.
-        command.allocator_->deallocate(command.slab_id_, command.pdu_chunk_ptr_);
-        pending_send_.reset();
     }
 }
 
@@ -1432,12 +1456,18 @@ void Reactor::on_accept(InboundListener& listener)
         teardown_inbound_connection(id, "peer closed connection", true);
     };
 
-    auto conn = std::make_unique<InboundConnection>(
-        id,
-        std::move(socket),
+    auto handler = std::make_unique<PduProtocolHandler>(
+        *socket,
         *target_thread,
         inbound_slab_allocator_,
         std::move(disconnect_handler),
+        logger_);
+
+    auto conn = std::make_unique<InboundConnection>(
+        id,
+        std::move(socket),
+        listener.target_thread_id,
+        std::move(handler),
         peer_desc);
 
     InboundConnection* conn_ptr = conn.get();
@@ -1466,40 +1496,26 @@ void Reactor::on_accept(InboundListener& listener)
 
 void Reactor::on_inbound_data_ready(InboundConnection& conn)
 {
-    // Capture id and peer description before calling receive(). The disconnect
-    // handler lambda inside PduParser may call teardown_inbound_connection()
-    // synchronously during receive(), destroying conn. Accessing conn after
-    // receive() returns would be a use-after-free.
-    const ConnectionID id               = conn.id();
-    const std::string  peer_description = conn.peer_description();
-
-    auto [ok, error] = conn.parser()->receive();
-    if (!ok) {
-        const std::string reason = error.empty()
-            ? fmt::format("peer '{}' closed connection", peer_description)
-            : fmt::format("parse error from peer '{}': {}", peer_description, error);
-        PUBSUB_LOG(logger_, FwLogLevel::Warning,
-            "Reactor::on_inbound_data_ready: {}", reason);
-        teardown_inbound_connection(id, reason, true);
-    }
+    conn.handle_read();
+    // Note: handle_read() may invoke the disconnect handler synchronously,
+    // which calls teardown_inbound_connection() and destroys conn.
+    // Any access to conn after this point would be a use-after-free error.
 }
 
 void Reactor::on_inbound_write_ready(InboundConnection& conn)
 {
-    auto [ok, error] = conn.framer()->continue_send();
-    if (!ok) {
-        const std::string reason = fmt::format(
-            "send error to peer '{}': {}", conn.peer_description(), error);
-        PUBSUB_LOG(logger_, FwLogLevel::Error,
-            "Reactor::on_inbound_write_ready: {}", reason);
-        teardown_inbound_connection(conn.id(), reason, true);
+    const ConnectionID id = conn.id();
+
+    conn.handler()->continue_send();
+
+    // continue_send() may have invoked the disconnect handler synchronously
+    // on an unrecoverable send error, destroying conn. Check whether the
+    // connection still exists before touching it again.
+    if (inbound_connections_.find(id) == inbound_connections_.end()) {
         return;
     }
 
-    if (!conn.framer()->has_pending_data()) {
-        conn.current_allocator()->deallocate(conn.current_slab_id(), conn.current_chunk_ptr());
-        conn.clear_pending_send();
-
+    if (!conn.handler()->has_pending_send()) {
         const int fd = conn.get_fd();
         epoll_event ev{};
         ev.events  = EPOLLIN | EPOLLERR;
@@ -1523,10 +1539,9 @@ void Reactor::teardown_inbound_connection(ConnectionID id, const std::string& re
         "Reactor::teardown_inbound_connection: connection {} from '{}': {}",
         id.get_value(), conn.peer_description(), reason);
 
-    // Free any in-flight outbound slab chunk.
-    if (conn.has_pending_send()) {
-        conn.current_allocator()->deallocate(conn.current_slab_id(), conn.current_chunk_ptr());
-        conn.clear_pending_send();
+    // Free any in-flight outbound slab chunk via the handler.
+    if (conn.handler()->has_pending_send()) {
+        conn.handler()->deallocate_pending_send();
     }
 
     // Clear pending_send_ if it refers to this connection.

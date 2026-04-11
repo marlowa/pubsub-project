@@ -76,22 +76,28 @@ size_t ExpandableSlabAllocator::slab_size() const {
     return slab_size_;
 }
 
-void ExpandableSlabAllocator::drain_empty_slab_queue() {
-    int slab_id = -1;
-    bool keep_draining = true;
+void ExpandableSlabAllocator::drain_empty_slab_queue()
+{
+    // Collect all slab IDs from the queue before processing any of them.
+    // The Vyukov MPSC queue threads pointers through the embedded node inside
+    // each SlabAllocator. Destroying a slab while still traversing the queue
+    // frees the node that the queue's internal head pointer may still reference,
+    // causing a use-after-free. Separating collection from processing ensures
+    // the queue traversal completes before any slab is reset or destroyed.
+    //
+    // The vector allocation here is not a hot-path concern. This function only
+    // does real work when one or more slabs have become fully empty, which is an
+    // infrequent event relative to the steady-state allocation rate. On the
+    // common path the queue is empty and the vector is never allocated at all.
+    std::vector<int> ids_to_reclaim;
 
-    while (keep_draining) {
+    for (;;) {
+        int slab_id = -1;
         DequeueResult result = empty_slab_queue_.try_dequeue(slab_id);
 
         if (result == DequeueResult::GotItem) {
-            if (slab_id < 0 || slab_id >= static_cast<int>(slabs_.size())) {
-                continue;
-            }
-
-            if (slab_id == current_slab_id_) {
-                slabs_[slab_id]->reset();
-            } else {
-                slabs_[slab_id].reset();
+            if (slab_id >= 0 && slab_id < static_cast<int>(slabs_.size())) {
+                ids_to_reclaim.push_back(slab_id);
             }
         } else if (result == DequeueResult::Retry) {
             // Producer is mid-enqueue; yield and retry once.
@@ -101,7 +107,15 @@ void ExpandableSlabAllocator::drain_empty_slab_queue() {
             // any slab node that was consumed (and became head_) can safely
             // be re-enqueued in a future cycle without forming a self-loop.
             empty_slab_queue_.reset_to_empty();
-            keep_draining = false;
+            break;
+        }
+    }
+
+    for (int slab_id : ids_to_reclaim) {
+        if (slab_id == current_slab_id_) {
+            slabs_[slab_id]->reset();
+        } else {
+            slabs_[slab_id].reset();
         }
     }
 }
