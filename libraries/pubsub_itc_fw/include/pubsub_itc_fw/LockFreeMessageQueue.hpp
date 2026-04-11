@@ -152,6 +152,10 @@ private:
     };
 
 public:
+    ~LockFreeMessageQueue() {
+        shutdown();
+    }
+
     LockFreeMessageQueue(const LockFreeMessageQueue&) = delete;
     LockFreeMessageQueue& operator=(const LockFreeMessageQueue&) = delete;
     LockFreeMessageQueue(LockFreeMessageQueue&&) = delete;
@@ -178,10 +182,6 @@ public:
         , size_{0}
     {
         stub_.next_.store(nullptr, std::memory_order_relaxed);
-    }
-
-    ~LockFreeMessageQueue() {
-        shutdown();
     }
 
     /**

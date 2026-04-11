@@ -19,6 +19,7 @@ add_executable(pubsub_itc_fw_tests
     SlabAllocatorAdversarialTest.cpp
     StringUtilsTest.cpp
     ThreadWithJoinTimeoutTest.cpp
+    MirroredBufferTest.cpp
 )
 
 # Link against the real shared library (new name)

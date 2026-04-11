@@ -95,6 +95,7 @@ set(PUBSUB_ITC_FW_SRC
     src/TcpConnector.cpp
     src/TcpSocket.cpp
     src/TimerHandler.cpp
+    src/MirroredBuffer.cpp
 )
 
 set(PUBSUB_ITC_FW_PROTO_SRCS
