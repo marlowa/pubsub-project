@@ -429,3 +429,47 @@ It is used only when:
     rare
     deliberate
     and essential for safety
+
+# High Availability Design: Process vs. Machine Recovery
+
+## 1. The Core Philosophy: Layered Recovery
+In high-performance systems, treating a **process crash** (deterministic software failure) the same as a **machine death** (non-deterministic hardware failure) leads to unnecessary complexity and slower recovery. A robust design treats these as two distinct "loops" of availability.
+
+---
+
+## 2. Dealing with Process Death (The "Inner Loop")
+Process death occurs when a software bug leads to a core dump or a kernel-initiated termination (e.g., OOM). The hardware and kernel remain healthy, providing a unique opportunity for high-speed, local recovery.
+
+### The Shared Memory (SHM) Journal Approach
+Instead of triggering a network failover, the system uses a local **State Journal** to recover in place.
+
+* **Mechanism:** The application writes its state changes and inbound sequence numbers into a pre-allocated `/dev/shm` segment.
+* **Mechanical Sympathy:** Like the **Aeron Log Buffer**, this uses lock-free, concurrent ring buffers. Writing to SHM is a memory-to-memory operation, maintaining sub-microsecond latency.
+* **Zero-Copy Persistence:** The journal acts as a "Warm Handoff." When the process crashes, the Linux kernel preserves the SHM segment.
+* **Local Restart:** A supervisor (e.g., systemd) restarts the process on the same CPU core. The new instance re-attaches to the existing SHM segment and replays the journal.
+* **The Poison Pill Filter:** Recovery logic checks if a specific sequence number caused the previous crash. If a restart occurs at the exact same sequence multiple times, the message is skipped to prevent a crash loop.
+
+---
+
+## 3. Dealing with Machine Death (The "Outer Loop")
+Machine death (power loss, kernel panic, or motherboard failure) results in total silence from the node. This is a connectivity problem that requires a peer to take over.
+
+### The "Last Resort" Failover
+* **Trigger:** Failover is triggered only when the Heartbeat timer expires **and** the primary node fails to reconnect after the local recovery grace period.
+* **Safety via STONITH:** If a follower suspects a machine death, it may use "Shoot The Other Node In The Head" (STONITH) to ensure the primary is truly dead before promoting itself, preventing "Split-Brain."
+* **Asymmetric Strictness:** Without a third-party arbiter, the system relies on pre-ordained logic (e.g., "Lowest Instance ID Wins") to decide which node is allowed to lead during a network partition.
+
+---
+
+## 4. Why Differentiate the Two?
+
+| Feature | Local (Process) Recovery | Network (Machine) Failover |
+| :--- | :--- | :--- |
+| **Recovery Target** | < 50ms | 100ms - Seconds |
+| **Data Locality** | Remains on the same hardware | Must be replicated/moved |
+| **Complexity** | Low (Single-host state) | High (Distributed consensus) |
+| **TCP State** | Often preserved by stack retries | Connections must be re-established |
+| **Primary Risk** | Poison Pill messages | Split-Brain / Ghost Leaders |
+
+### Conclusion
+By using an **Aeron-like SHM Journal**, we solve 99% of failures (software crashes) locally and instantly. This allows the **Leader-Follower network protocol** to remain simple, acting only as the fallback for the rare 1% of hardware disasters.
