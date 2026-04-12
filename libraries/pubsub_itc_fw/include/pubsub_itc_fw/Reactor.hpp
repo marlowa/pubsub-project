@@ -27,6 +27,7 @@
 #include <pubsub_itc_fw/LockFreeMessageQueue.hpp>
 #include <pubsub_itc_fw/NetworkEndpointConfig.hpp>
 #include <pubsub_itc_fw/OutboundConnectionManager.hpp>
+#include <pubsub_itc_fw/ProtocolType.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
@@ -130,29 +131,38 @@ public:
     void register_thread(std::shared_ptr<ApplicationThread> thread);
 
     /**
-     * @brief Registers a TCP listener that accepts inbound framework PDU connections.
+     * @brief Registers a TCP listener that accepts inbound connections.
      *
      * Must be called before Reactor::run(). The reactor binds and listens on the
-     * given address during initialisation, and routes all inbound PDUs from
+     * given address during initialisation, and routes all inbound data from
      * accepted connections to the specified ApplicationThread.
      *
      * One-connection contract:
      *   Each registered listener accepts exactly one peer connection at a time.
-     *   Framework-to-framework PDU communication is unicast — only one peer should
-     *   connect to a given port. If a second peer attempts to connect while a
-     *   connection is already established, the reactor accepts and immediately closes
-     *   the socket, logs a Warning, and does NOT notify the application thread.
-     *   This is a framework misuse by the connecting application.
+     *   If a second peer attempts to connect while a connection is already
+     *   established, the reactor accepts and immediately closes the socket, logs
+     *   a Warning, and does NOT notify the application thread.
+     *   When the established connection is lost, the listener resumes accepting.
      *
-     * When the established connection is lost, the listener resumes accepting and
-     * will accept the next peer to connect normally.
+     * Protocol type:
+     *   Pass ProtocolType::FrameworkPdu (the default) for connections carrying
+     *   framework PDUs. Pass ProtocolType::RawBytes for connections carrying
+     *   foreign or alien byte streams; in that case raw_buffer_capacity sets the
+     *   minimum size of the MirroredBuffer allocated per accepted connection.
      *
-     * @param[in] address          The address and port to listen on.
-     * @param[in] target_thread_id The ThreadID to receive ConnectionEstablished,
-     *                             FrameworkPdu, and ConnectionLost events.
+     * @param[in] address             The address and port to listen on.
+     * @param[in] target_thread_id    The ThreadID to receive ConnectionEstablished,
+     *                                data, and ConnectionLost events.
+     * @param[in] protocol_type       Handler strategy for accepted connections.
+     *                                Defaults to FrameworkPdu.
+     * @param[in] raw_buffer_capacity Minimum MirroredBuffer size in bytes for
+     *                                RawBytes listeners. Ignored for FrameworkPdu.
      * @throws PreconditionAssertion if called after run().
      */
-    void register_inbound_listener(NetworkEndpointConfig address, ThreadID target_thread_id);
+    void register_inbound_listener(NetworkEndpointConfig address,
+                                   ThreadID target_thread_id,
+                                   ProtocolType protocol_type = ProtocolType{ProtocolType::FrameworkPdu},
+                                   int64_t raw_buffer_capacity = 0);
 
     /**
      * @brief Returns the name of a thread given its ID.

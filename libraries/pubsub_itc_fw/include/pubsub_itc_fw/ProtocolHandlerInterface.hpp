@@ -30,6 +30,13 @@ class ExpandableSlabAllocator;
  *   - Route:      dispatch messages to the target thread via the Vyukov queue.
  *   - Disconnect: invoke the stored disconnect handler on EOF or protocol error.
  *   - Send:       manage outbound framing and partial-send state.
+ *
+ * Two concrete implementations exist:
+ *   - PduProtocolHandler (Strategy A): framework-native PDU framing via
+ *     PduParser and PduFramer; delivers FrameworkPdu EventMessages.
+ *   - RawBytesProtocolHandler (Strategy B): raw byte streaming via
+ *     MirroredBuffer; delivers RawSocketCommunication EventMessages and
+ *     exposes commit_bytes() for application-driven tail advancement.
  */
 class ProtocolHandlerInterface {
 public:
@@ -97,6 +104,17 @@ public:
      * send never completes.
      */
     virtual void deallocate_pending_send() = 0;
+
+    /**
+     * @brief Advances the inbound ring buffer tail by the given number of bytes.
+     *
+     * Called by the Reactor in response to a CommitRawBytes command. Only
+     * meaningful for RawBytesProtocolHandler; the default implementation is a
+     * no-op so that PduProtocolHandler does not need to override it.
+     *
+     * @param[in] bytes Number of bytes the application has finished processing.
+     */
+    virtual void commit_bytes([[maybe_unused]] int64_t bytes) {}
 };
 
 } // namespace pubsub_itc_fw

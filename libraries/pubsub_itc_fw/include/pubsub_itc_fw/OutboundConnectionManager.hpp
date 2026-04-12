@@ -129,6 +129,22 @@ public:
     [[nodiscard]] bool process_send_pdu_command(const ReactorControlCommand& command);
 
     /**
+     * @brief Advances the inbound MirroredBuffer tail for a RawBytesProtocolHandler
+     *        connection by the number of bytes the application has consumed.
+     *
+     * Called by the Reactor in response to a CommitRawBytes command. Looks up
+     * the connection by ID and forwards the call to
+     * ProtocolHandlerInterface::commit_bytes(). For PduProtocolHandler connections
+     * this is a no-op. If the connection ID is not found, returns false so the
+     * Reactor can log an appropriate warning.
+     *
+     * @param[in] id             The ConnectionID of the raw-bytes connection.
+     * @param[in] bytes_consumed Number of bytes the application has finished processing.
+     * @return true if the ConnectionID belongs to an outbound connection, false otherwise.
+     */
+    [[nodiscard]] bool process_commit_raw_bytes(ConnectionID id, int64_t bytes_consumed);
+
+    /**
      * @brief Drains the pending_send_ slot if one is waiting.
      *
      * Called by the Reactor at the start of process_control_commands() before

@@ -30,20 +30,23 @@ namespace pubsub_itc_fw {
  *
  * Tag / payload field mapping:
  *
- *   AddTimer    — owner_thread_id_, timer_id_, timer_name_, interval_, timer_type_
- *   CancelTimer — owner_thread_id_, timer_id_
- *   Connect     — requesting_thread_id_, service_name_
- *   Disconnect  — connection_id_
- *   SendPdu     — connection_id_, allocator_, slab_id_, pdu_chunk_ptr_, pdu_byte_count_
+ *   AddTimer       — owner_thread_id_, timer_id_, timer_name_, interval_, timer_type_
+ *   CancelTimer    — owner_thread_id_, timer_id_
+ *   Connect        — requesting_thread_id_, service_name_
+ *   Disconnect     — connection_id_
+ *   SendPdu        — connection_id_, allocator_, slab_id_, pdu_chunk_ptr_, pdu_byte_count_
+ *   CommitRawBytes — connection_id_, bytes_consumed_
  */
 class ReactorControlCommand {
 public:
     enum CommandTag {
         AddTimer,
         CancelTimer,
-        Connect,    ///< Request the reactor to establish an outbound TCP connection.
-        Disconnect, ///< Request the reactor to close an established connection.
-        SendPdu     ///< Request the reactor to send a framed PDU on an established connection.
+        Connect,         ///< Request the reactor to establish an outbound TCP connection.
+        Disconnect,      ///< Request the reactor to close an established connection.
+        SendPdu,         ///< Request the reactor to send a framed PDU on an established connection.
+        CommitRawBytes   ///< Notify the reactor that the application has consumed N bytes from
+                         ///< the MirroredBuffer of a RawBytesProtocolHandler connection.
     };
 
 public:
@@ -71,6 +74,9 @@ public:
         }
         if (tag_ == SendPdu) {
             return "SendPdu";
+        }
+        if (tag_ == CommitRawBytes) {
+            return "CommitRawBytes";
         }
         return fmt::format("unknown ({})", static_cast<int>(tag_));
     }
@@ -113,14 +119,14 @@ public:
     std::string service_name_;
 
     // ----------------------------------------------------------------
-    // Disconnect / SendPdu payload fields
+    // Disconnect / SendPdu / CommitRawBytes payload fields
     // ----------------------------------------------------------------
 
     /**
      * @brief Identifies the target connection.
      *
-     * Used by Disconnect and SendPdu commands. Must be a valid ConnectionID
-     * previously delivered via a ConnectionEstablished event.
+     * Used by Disconnect, SendPdu, and CommitRawBytes commands. Must be a valid
+     * ConnectionID previously delivered via a ConnectionEstablished event.
      */
     ConnectionID connection_id_{};
 
@@ -169,6 +175,20 @@ public:
      * sizeof(PduHeader) + pdu_byte_count_.
      */
     uint32_t pdu_byte_count_{0};
+
+    // ----------------------------------------------------------------
+    // CommitRawBytes payload fields
+    // ----------------------------------------------------------------
+
+    /**
+     * @brief Number of bytes the application has finished processing.
+     *
+     * The reactor calls RawBytesProtocolHandler::commit_bytes(bytes_consumed_)
+     * which advances the MirroredBuffer tail by this amount, freeing space for
+     * future reads. Must be > 0 and <= MirroredBuffer::bytes_available() at the
+     * time the command is processed.
+     */
+    int64_t bytes_consumed_{0};
 
 private:
     CommandTag tag_{AddTimer};

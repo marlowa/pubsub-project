@@ -17,6 +17,7 @@
 #include <pubsub_itc_fw/InboundConnection.hpp>
 #include <pubsub_itc_fw/InboundListener.hpp>
 #include <pubsub_itc_fw/NetworkEndpointConfig.hpp>
+#include <pubsub_itc_fw/ProtocolType.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/ReactorConfiguration.hpp>
 #include <pubsub_itc_fw/ReactorControlCommand.hpp>
@@ -84,10 +85,17 @@ public:
      * Must be called before initialize_listeners(). The listener is bound
      * and registered with epoll during initialize_listeners().
      *
-     * @param[in] address          The address and port to listen on.
-     * @param[in] target_thread_id The ThreadID to receive connection events.
+     * @param[in] address             The address and port to listen on.
+     * @param[in] target_thread_id    The ThreadID to receive connection events.
+     * @param[in] protocol_type       Whether accepted connections use PduProtocolHandler
+     *                                or RawBytesProtocolHandler. Defaults to FrameworkPdu.
+     * @param[in] raw_buffer_capacity Minimum MirroredBuffer capacity in bytes for RawBytes
+     *                                listeners. Ignored for FrameworkPdu listeners.
      */
-    void register_inbound_listener(NetworkEndpointConfig address, ThreadID target_thread_id);
+    void register_inbound_listener(NetworkEndpointConfig address,
+                                   ThreadID target_thread_id,
+                                   ProtocolType protocol_type = ProtocolType{ProtocolType::FrameworkPdu},
+                                   int64_t raw_buffer_capacity = 0);
 
     /**
      * @brief Binds, listens, and registers all staged listeners with epoll.
@@ -163,6 +171,22 @@ public:
      *         (command was processed or stashed), false if not found here.
      */
     [[nodiscard]] bool process_send_pdu_command(const ReactorControlCommand& command);
+
+    /**
+     * @brief Advances the inbound MirroredBuffer tail for a RawBytesProtocolHandler
+     *        connection by the number of bytes the application has consumed.
+     *
+     * Called by the Reactor in response to a CommitRawBytes command. Looks up
+     * the connection by ID and forwards the call to
+     * ProtocolHandlerInterface::commit_bytes(). For PduProtocolHandler connections
+     * this is a no-op. If the connection ID is not found, returns false so the
+     * Reactor can try the outbound manager.
+     *
+     * @param[in] id             The ConnectionID of the raw-bytes connection.
+     * @param[in] bytes_consumed Number of bytes the application has finished processing.
+     * @return true if the ConnectionID belongs to an inbound connection, false otherwise.
+     */
+    [[nodiscard]] bool process_commit_raw_bytes(ConnectionID id, int64_t bytes_consumed);
 
     /**
      * @brief Drains the pending_send_ slot if one is waiting.

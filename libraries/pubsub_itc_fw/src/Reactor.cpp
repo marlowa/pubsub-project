@@ -27,6 +27,8 @@
 #include <pubsub_itc_fw/HighResolutionClock.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/MillisecondClock.hpp>
+#include <pubsub_itc_fw/NetworkEndpointConfig.hpp>
+#include <pubsub_itc_fw/ProtocolType.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/ReactorConfiguration.hpp>
@@ -34,10 +36,10 @@
 #include <pubsub_itc_fw/ReactorLifecycleState.hpp>
 #include <pubsub_itc_fw/ServiceRegistry.hpp>
 #include <pubsub_itc_fw/StringUtils.hpp>
+#include <pubsub_itc_fw/ThreadID.hpp>
 #include <pubsub_itc_fw/Timer.hpp>
 #include <pubsub_itc_fw/TimerHandler.hpp>
 #include <pubsub_itc_fw/TimerType.hpp>
-#include <pubsub_itc_fw/ThreadID.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -160,12 +162,16 @@ void Reactor::route_message(ThreadID target_id, EventMessage message) {
     target->get_queue().enqueue(std::move(message));
 }
 
-void Reactor::register_inbound_listener(NetworkEndpointConfig address, ThreadID target_thread_id) {
+void Reactor::register_inbound_listener(NetworkEndpointConfig address,
+                                        ThreadID target_thread_id,
+                                        ProtocolType protocol_type,
+                                        int64_t raw_buffer_capacity) {
     if (is_running()) {
         throw PreconditionAssertion(
             "Reactor::register_inbound_listener: must be called before run()", __FILE__, __LINE__);
     }
-    inbound_manager_.register_inbound_listener(std::move(address), target_thread_id);
+    inbound_manager_.register_inbound_listener(std::move(address), target_thread_id,
+                                               protocol_type, raw_buffer_capacity);
 }
 
 int Reactor::run() {
@@ -794,6 +800,18 @@ void Reactor::process_control_commands() {
                             "Reactor::process_control_commands: unknown connection id {} for SendPdu",
                             command.connection_id_.get_value());
                         command.allocator_->deallocate(command.slab_id_, command.pdu_chunk_ptr_);
+                    }
+                }
+                break;
+            }
+
+            case ReactorControlCommand::CommitRawBytes: {
+                const ConnectionID cid = command.connection_id_;
+                if (!outbound_manager_.process_commit_raw_bytes(cid, command.bytes_consumed_)) {
+                    if (!inbound_manager_.process_commit_raw_bytes(cid, command.bytes_consumed_)) {
+                        PUBSUB_LOG(logger_, FwLogLevel::Warning,
+                            "Reactor::process_control_commands: unknown connection id {} for CommitRawBytes",
+                            cid.get_value());
                     }
                 }
                 break;

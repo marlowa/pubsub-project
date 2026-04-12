@@ -232,8 +232,6 @@ void OutboundConnectionManager::on_connect_ready(OutboundConnection& conn)
 
 void OutboundConnectionManager::on_data_ready(OutboundConnection& conn)
 {
-    // Capture before receive() — the disconnect handler may destroy conn
-    // synchronously during receive(). See on_inbound_data_ready for details.
     const ConnectionID id           = conn.id();
     const std::string  service_name = conn.service_name();
 
@@ -326,6 +324,17 @@ bool OutboundConnectionManager::process_send_pdu_command(const ReactorControlCom
     }
 
     return true;
+}
+
+bool OutboundConnectionManager::process_commit_raw_bytes(ConnectionID id, int64_t bytes_consumed)
+{
+    // OutboundConnection does not use the ProtocolHandlerInterface strategy —
+    // it owns its parser and framer directly and is always PDU-based. A
+    // CommitRawBytes command targeting an outbound connection ID is therefore
+    // a no-op. Return true if we own the ID so the Reactor does not log a
+    // spurious warning.
+    [[maybe_unused]] int64_t ignored = bytes_consumed;
+    return connections_.count(id) != 0;
 }
 
 bool OutboundConnectionManager::drain_pending_send()

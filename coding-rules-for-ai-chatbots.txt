@@ -98,10 +98,15 @@ These sections/groupings need to be separated by a blank line
 
 #include statements must always use angled brackets, never double quotes.
 
+cpp files that have a direct dependency on a header should always explicitly include that header.
+They should not avoid the include statement based on assumptions of indirect inclusion.
+This is especially true when including system or standard headers.
+
 Error Handling
 
 avoid exceptions, prefer returning a tuple that contains the good value when it worked and an additional error_string when it didn't, and make such functions no_discard.
 Throw PreconditionAssertion when a precondition is violated
+Throw a different exception when a post-condition is violated.
 
 Function Style
 

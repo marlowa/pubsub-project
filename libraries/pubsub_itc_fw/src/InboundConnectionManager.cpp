@@ -21,6 +21,8 @@
 #include <pubsub_itc_fw/PduHeader.hpp>
 #include <pubsub_itc_fw/PduProtocolHandler.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
+#include <pubsub_itc_fw/ProtocolHandlerInterface.hpp>
+#include <pubsub_itc_fw/RawBytesProtocolHandler.hpp>
 #include <pubsub_itc_fw/StringUtils.hpp>
 #include <pubsub_itc_fw/TcpAcceptor.hpp>
 
@@ -40,11 +42,15 @@ InboundConnectionManager::InboundConnectionManager(int epoll_fd,
 }
 
 void InboundConnectionManager::register_inbound_listener(NetworkEndpointConfig address,
-                                                          ThreadID target_thread_id)
+                                                          ThreadID target_thread_id,
+                                                          ProtocolType protocol_type,
+                                                          int64_t raw_buffer_capacity)
 {
     InboundListener listener;
-    listener.address          = std::move(address);
-    listener.target_thread_id = target_thread_id;
+    listener.address              = std::move(address);
+    listener.target_thread_id     = target_thread_id;
+    listener.protocol_type        = protocol_type;
+    listener.raw_buffer_capacity  = raw_buffer_capacity;
     inbound_listeners_staging_.push_back(std::move(listener));
 }
 
@@ -138,12 +144,22 @@ void InboundConnectionManager::on_accept(InboundListener& listener, ConnectionID
         teardown_connection(id, "peer closed connection", true);
     };
 
-    auto handler = std::make_unique<PduProtocolHandler>(
-        *socket,
-        *target_thread,
-        inbound_allocator_,
-        std::move(disconnect_handler),
-        logger_);
+    std::unique_ptr<ProtocolHandlerInterface> handler;
+    if (listener.protocol_type == ProtocolType::RawBytes) {
+        handler = std::make_unique<RawBytesProtocolHandler>(
+            *socket,
+            *target_thread,
+            listener.raw_buffer_capacity,
+            std::move(disconnect_handler),
+            logger_);
+    } else {
+        handler = std::make_unique<PduProtocolHandler>(
+            *socket,
+            *target_thread,
+            inbound_allocator_,
+            std::move(disconnect_handler),
+            logger_);
+    }
 
     auto conn = std::make_unique<InboundConnection>(
         id,
@@ -329,6 +345,16 @@ bool InboundConnectionManager::process_send_pdu_command(const ReactorControlComm
         ::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, conn_fd, &ev);
     }
 
+    return true;
+}
+
+bool InboundConnectionManager::process_commit_raw_bytes(ConnectionID id, int64_t bytes_consumed)
+{
+    auto it = connections_.find(id);
+    if (it == connections_.end()) {
+        return false;
+    }
+    it->second->handler()->commit_bytes(bytes_consumed);
     return true;
 }
 
