@@ -23,7 +23,6 @@ target_link_libraries(fixed_pool_bench PRIVATE
 
 target_include_directories(fixed_pool_bench PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../include
-    ${CMAKE_CURRENT_BINARY_DIR}/../../..   # protobuf generated headers
 )
 
 # Profiling-friendly flags: optimized, debuggable, frame pointers

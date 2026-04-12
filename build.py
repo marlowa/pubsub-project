@@ -97,8 +97,6 @@ def check_environment_variables():
     """Verify required environment variables are set"""
     required_vars = [
         'THIRDPARTY_DIR',
-        'PROTOBUF_VERSION',
-        'ABSEIL_VERSION',
         'FMT_VERSION',
         'QUILL_VERSION',
         'ARGPARSE_VERSION',

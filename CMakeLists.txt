@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.16 FATAL_ERROR)
+cmake_minimum_required(VERSION 3.11 FATAL_ERROR)
 
 project(pubsub_itc_fw_project
     VERSION 0.1.0
@@ -73,8 +73,6 @@ if (NOT DEFINED ENV{THIRDPARTY_DIR})
 endif()
 
 set(THIRDPARTY_DIR $ENV{THIRDPARTY_DIR})
-set(ABSEIL_VERSION $ENV{ABSEIL_VERSION})
-set(PROTOBUF_VERSION $ENV{PROTOBUF_VERSION})
 set(FMT_VERSION $ENV{FMT_VERSION})
 set(QUILL_VERSION $ENV{QUILL_VERSION})
 set(ARGPARSE_VERSION_FROM_ENV $ENV{ARGPARSE_VERSION})
@@ -83,16 +81,38 @@ set(GOOGLETEST_VERSION $ENV{GOOGLETEST_VERSION})
 list(PREPEND CMAKE_PREFIX_PATH ${THIRDPARTY_DIR})
 list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake_modules")
 
-list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/abseil/${ABSEIL_VERSION}")
-list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/protobuf/${PROTOBUF_VERSION}")
 list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/fmt/${FMT_VERSION}")
+list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/quill/${QUILL_VERSION}")
+list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/argparse/${ARGPARSE_VERSION_FROM_ENV}")
 list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/googletest/${GOOGLETEST_VERSION}")
 
-find_package(Protobuf REQUIRED CONFIG)
-find_package(Boost REQUIRED COMPONENTS headers filesystem)
+# On RHEL/Rocky/CentOS cmake config files are installed under lib64/cmake
+# rather than lib/cmake. Set _DIR explicitly for each package so
+# find_package works on both Mint (lib) and RHEL8 (lib64).
+if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+    set(LIB_SUFFIX "64")
+else()
+    set(LIB_SUFFIX "")
+endif()
+
+set(fmt_DIR
+    "${THIRDPARTY_DIR}/installed/fmt/${FMT_VERSION}/lib${LIB_SUFFIX}/cmake/fmt")
+set(quill_DIR
+    "${THIRDPARTY_DIR}/installed/quill/${QUILL_VERSION}/lib${LIB_SUFFIX}/cmake/quill")
+set(argparse_DIR
+    "${THIRDPARTY_DIR}/installed/argparse/${ARGPARSE_VERSION_FROM_ENV}/lib${LIB_SUFFIX}/cmake/argparse")
+set(GTest_DIR
+    "${THIRDPARTY_DIR}/installed/googletest/${GOOGLETEST_VERSION}/lib${LIB_SUFFIX}/cmake/GTest")
+
+message(STATUS "fmt_DIR:      ${fmt_DIR}")
+message(STATUS "quill_DIR:    ${quill_DIR}")
+message(STATUS "argparse_DIR: ${argparse_DIR}")
+message(STATUS "GTest_DIR:    ${GTest_DIR}")
+
+find_package(Boost REQUIRED COMPONENTS system filesystem)
 find_package(fmt REQUIRED CONFIG)
-find_package(quill REQUIRED)
-find_package(argparse REQUIRED)
+find_package(quill REQUIRED CONFIG)
+find_package(argparse REQUIRED CONFIG)
 find_package(GTest REQUIRED CONFIG)
 
 find_package(PkgConfig)
@@ -101,15 +121,7 @@ if(PkgConfig_FOUND)
 endif()
 
 # ------------------------------------------------------------
-# Pass proto file list to the library directory
-# ------------------------------------------------------------
-set(PUBSUB_ITC_FW_PROTO_FILES
-    ${CMAKE_CURRENT_SOURCE_DIR}/libraries/pubsub_itc_fw/include/pubsub_itc_fw/message_types.proto
-    ${CMAKE_CURRENT_SOURCE_DIR}/libraries/pubsub_itc_fw/include/pubsub_itc_fw/system_messages.proto
-)
-
-# ------------------------------------------------------------
-# Add the real library (protobuf generation now happens inside it)
+# Add the library
 # ------------------------------------------------------------
 add_subdirectory(libraries/pubsub_itc_fw)
 

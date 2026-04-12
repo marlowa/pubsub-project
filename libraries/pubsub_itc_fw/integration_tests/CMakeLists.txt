@@ -19,10 +19,9 @@ add_executable(pubsub_itc_fw_integration_tests
     RawBytesProtocolHandlerTest.cpp
 )
 
-# Ensure DSL and protobuf headers are generated before building.
+# Ensure DSL headers are generated before building.
 add_dependencies(pubsub_itc_fw_integration_tests
     pubsub_itc_fw_dsl
-    pubsub_itc_fw_protos
 )
 
 target_link_libraries(pubsub_itc_fw_integration_tests PRIVATE

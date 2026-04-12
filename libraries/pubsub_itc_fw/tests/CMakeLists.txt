@@ -36,7 +36,6 @@ target_link_libraries(pubsub_itc_fw_tests PRIVATE
 # Include directories
 target_include_directories(pubsub_itc_fw_tests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../include                     # library headers
-    ${CMAKE_CURRENT_BINARY_DIR}/../pubsub_itc_fw/pubsub_itc_fw # generated protobuf headers
 )
 
 # Add NUMA if available
