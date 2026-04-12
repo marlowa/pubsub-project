@@ -32,13 +32,14 @@ def generate_coverage_report(build_dir, source_dir):
         "--ignore-errors", "mismatch"
     ], description="Capturing coverage data")
 
-    # 2. Filter out system, thirdparty, tests, and generated code
+    # 2. Filter out system, thirdparty, tests, test helpers, and generated code
     run_command([
         "lcov",
         "--remove", str(raw_info),
         "/usr/*",
         "*/thirdparty/*",
         "*/tests/*",
+        "*/tests_common/*",
         "*/integration_tests/*",
         "*/build/libraries/pubsub_itc_fw/dsl/*",
         "*/build/libraries/pubsub_itc_fw/pubsub_itc_fw/*",

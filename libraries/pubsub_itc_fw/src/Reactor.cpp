@@ -856,7 +856,8 @@ void Reactor::dispatch_events(int nfds, epoll_event* events) {
             if (conn != nullptr) {
                 const uint32_t ev = events[i].events;
 
-                if (ev & EPOLLERR) {
+                if ((ev & EPOLLERR) && conn->is_established()) {
+                    // Error on an established connection -- tear down immediately.
                     int err = 0;
                     socklen_t len = sizeof(err);
                     ::getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len);
@@ -865,7 +866,12 @@ void Reactor::dispatch_events(int nfds, epoll_event* events) {
                         conn->id().get_value(), conn->service_name(),
                         StringUtils::get_error_string(err));
                     outbound_manager_.teardown_connection(conn->id(), reason, true);
-                } else if (conn->is_connecting() && (ev & EPOLLOUT)) {
+                } else if (conn->is_connecting() && ((ev & EPOLLOUT) || (ev & EPOLLERR))) {
+                    // EPOLLOUT signals connect completion (success or failure).
+                    // EPOLLERR on a connecting socket (e.g. ECONNREFUSED) also
+                    // surfaces here -- delegate to on_connect_ready which calls
+                    // finish_connect() to read the error and attempt the secondary
+                    // endpoint if one is configured.
                     outbound_manager_.on_connect_ready(*conn);
                 } else if (conn->is_established()) {
                     if ((ev & EPOLLOUT) && conn->has_pending_send()) {

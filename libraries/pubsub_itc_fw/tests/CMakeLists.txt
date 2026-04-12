@@ -20,6 +20,9 @@ add_executable(pubsub_itc_fw_tests
     StringUtilsTest.cpp
     ThreadWithJoinTimeoutTest.cpp
     MirroredBufferTest.cpp
+    InetAddressTest.cpp
+    TcpConnectorTest.cpp
+    OutboundConnectionTest.cpp
 )
 
 # Link against the real shared library (new name)

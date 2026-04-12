@@ -16,6 +16,7 @@ message(STATUS "Building integration tests for pubsub_itc_fw")
 add_executable(pubsub_itc_fw_integration_tests
     StatusQueryResponseTest.cpp
     VariableLengthPduTest.cpp
+    RawBytesProtocolHandlerTest.cpp
 )
 
 # Ensure DSL and protobuf headers are generated before building.
