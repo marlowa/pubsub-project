@@ -64,13 +64,13 @@ class SocketHandler;
  *   - When the queue size grows to >= high_watermark, the queue fires the
  *     "gone_above_high_watermark" handler exactly once.
  *   - This handler is invoked by the *producer* thread performing the enqueue().
- *   - It fires only on the transition from below → above the high watermark.
+ *   - It fires only on the transition from below -> above the high watermark.
  *
  * LOW WATERMARK:
  *   - When the queue size later drops to < low_watermark, the queue fires the
  *     "gone_below_low_watermark" handler exactly once.
  *   - This handler is invoked by the *consumer* thread performing the dequeue().
- *   - It fires only on the transition from above → below the low watermark.
+ *   - It fires only on the transition from above -> below the low watermark.
  *
  * HYSTERESIS:
  *   - The pair (low_watermark, high_watermark) defines a hysteresis band.
@@ -103,7 +103,7 @@ class SocketHandler;
  *   allocated from the heap. This is a memory-layer event entirely independent
  *   of queue depth. It signals that the queue has grown beyond its
  *   pre-allocated capacity and that heap allocation is occurring. It may be
- *   used to log or raise an alert, but it is not a backpressure mechanism —
+ *   used to log or raise an alert, but it is not a backpressure mechanism -
  *   by the time it fires, the message has already been enqueued successfully.
  *
  * Note that because the allocator can grow without bound, the only true
@@ -222,12 +222,12 @@ class ApplicationThread {
      * **Threading Requirements**
      * --------------------------
      * - Timer APIs must be called **only from within the owning
-     *   ApplicationThread’s callback context** (e.g., `on_initial_event`,
+     *   ApplicationThread's callback context** (e.g., `on_initial_event`,
      *   `on_app_ready_event`, `on_itc_message`, `on_timer_event`, etc.).
      * - They must never be called from other threads, including the Reactor
      *   thread or application threads posting messages to each other.
      * - Enforcement is performed by `assert_called_from_owner()`, which
-     *   compares the current pthread ID with the owning thread’s ID.
+     *   compares the current pthread ID with the owning thread's ID.
      *
      * **Lifecycle Requirements**
      * --------------------------
@@ -248,7 +248,7 @@ class ApplicationThread {
      *   execution context.
      *
      * These constraints ensure that timer operations are deterministic,
-     * thread-safe, and consistent with the Reactor’s ownership model.
+     * thread-safe, and consistent with the Reactor's ownership model.
      */
 
     /**
@@ -285,8 +285,8 @@ class ApplicationThread {
      * a non-blocking TCP connect, and delivers one of the following events to
      * this thread's queue when the attempt completes:
      *
-     *   ConnectionEstablished — carrying the assigned ConnectionID.
-     *   ConnectionFailed      — carrying a human-readable reason string.
+     *   ConnectionEstablished - carrying the assigned ConnectionID.
+     *   ConnectionFailed      - carrying a human-readable reason string.
      *
      * If the connection is later lost, a ConnectionLost event is delivered
      * carrying the ConnectionID and a reason string.
@@ -306,6 +306,45 @@ class ApplicationThread {
      * @param[in] service_name Logical name of the service to connect to.
      */
     void connect_to_service(const std::string& service_name);
+
+    /**
+     * @brief Notifies the reactor that the application has finished processing
+     *        a contiguous region of bytes from a RawBytesProtocolHandler connection.
+     *
+     * Must be called from within the owning ApplicationThread's callback context
+     * (typically on_raw_socket_message()) after the application has read and
+     * processed bytes_consumed bytes starting from EventMessage::payload().
+     * The reactor advances the MirroredBuffer tail by this amount, freeing space
+     * for future reads.
+     *
+     * Failing to call this will prevent the buffer from draining and will
+     * eventually trigger the buffer-full backpressure policy, which closes
+     * the connection.
+     *
+     * @param[in] conn_id        The ConnectionID of the raw-bytes connection.
+     * @param[in] bytes_consumed The number of bytes the application has finished
+     *                           processing. Must be > 0 and <= the bytes_available
+     *                           count delivered in the most recent RawSocketCommunication
+     *                           event for this connection.
+     */
+    void commit_raw_bytes(ConnectionID conn_id, int64_t bytes_consumed);
+
+    /**
+     * @brief Sends raw bytes on a RawBytesProtocolHandler connection.
+     *
+     * Allocates a slab chunk, copies the supplied bytes into it, and enqueues a
+     * SendRaw command to the reactor. The reactor transmits the bytes as-is — no
+     * header is prepended. The slab chunk is deallocated by the reactor once the
+     * send completes.
+     *
+     * Must be called from within the owning ApplicationThread's callback context
+     * and never from another thread.
+     *
+     * @param[in] conn_id The ConnectionID of the raw-bytes connection.
+     * @param[in] data    Pointer to the bytes to send. Must not be nullptr.
+     * @param[in] size    Number of bytes to send. Must be > 0.
+     */
+    void send_raw(ConnectionID conn_id, const void* data, uint32_t size);
 
     /**
      * @brief Schedules a high-resolution timer.
@@ -368,69 +407,6 @@ class ApplicationThread {
 
     void set_lifecycle_state(ThreadLifecycleState::Tag new_tag);
 
-protected:
-    void run_internal();
-
-    void process_message(EventMessage& message);
-
-    virtual void on_initial_event() {}
-
-    virtual void on_app_ready_event() {}
-
-    virtual void on_termination_event([[maybe_unused]] const std::string& reason) {}
-
-    virtual void on_itc_message(const EventMessage& msg) = 0;
-
-    void on_timer_id_event(TimerID id);
-
-    virtual void on_timer_event([[maybe_unused]] const std::string& name) {}
-
-    virtual void on_pubsub_message([[maybe_unused]] const EventMessage& msg) {}
-
-    virtual void on_raw_socket_message([[maybe_unused]] const EventMessage& msg) {}
-
-    /**
-     * @brief Handler for fully packetized framework PDUs.
-     *
-     * The Reactor’s framing layer has already assembled a complete PDU and
-     * stripped any transport header. The payload in the EventMessage is the
-     * exact PDU byte sequence expected by the DSL-generated decode functions.
-     *
-     * Override this in ApplicationThread subclasses that consume framework
-     * PDUs (e.g., leader–follower, replication, or component-to-component
-     * protocols). Threads that only care about foreign protocols (e.g. FIX)
-     * may ignore this and rely solely on on_raw_socket_message().
-     */
-    virtual void on_framework_pdu_message([[maybe_unused]] const EventMessage& msg) {}
-
-    /**
-     * @brief Called when an outbound TCP connection requested via
-     *        connect_to_service() has been successfully established.
-     *
-     * @param[in] id The ConnectionID assigned by the reactor. Use this in
-     *               subsequent send_pdu() calls to identify the connection.
-     */
-    virtual void on_connection_established([[maybe_unused]] ConnectionID id) {}
-
-    /**
-     * @brief Called when an outbound TCP connection attempt has failed.
-     *
-     * @param[in] reason Human-readable description of the failure.
-     */
-    virtual void on_connection_failed([[maybe_unused]] const std::string& reason) {}
-
-    /**
-     * @brief Called when an established TCP connection has been lost unexpectedly.
-     *
-     * The application should re-issue connect_to_service() if it wishes to
-     * reconnect.
-     *
-     * @param[in] id     The ConnectionID of the lost connection.
-     * @param[in] reason Human-readable description of why the connection was lost.
-     */
-    virtual void on_connection_lost([[maybe_unused]] ConnectionID id,
-                                    [[maybe_unused]] const std::string& reason) {}
-
     void assert_called_from_owner() const {
         if (thread_ == nullptr) {
             throw PreconditionAssertion("Timer APIs must not be called before the ApplicationThread has been started", __FILE__, __LINE__);
@@ -476,7 +452,7 @@ protected:
      * This buffer provides the backing store for a BumpAllocator used when decoding
      * variable-length inbound PDUs (those containing string, optional, or list fields).
      * It is reserved once at construction to ApplicationThreadConfig::inbound_decode_arena_size
-     * bytes and reused for every inbound PDU callback — no heap allocation occurs on
+     * bytes and reused for every inbound PDU callback - no heap allocation occurs on
      * the message handling path.
      *
      * Usage in on_framework_pdu_message:
@@ -488,7 +464,7 @@ protected:
      * @endcode
      *
      * The decoded view's string_view and ListView fields point into this buffer.
-     * They are valid only for the duration of the current callback — the buffer
+     * They are valid only for the duration of the current callback - the buffer
      * is reused on the next call.
      *
      * Must only be called from within the owning ApplicationThread's callback
@@ -541,7 +517,7 @@ protected:
         auto* payload = static_cast<uint8_t*>(chunk) + sizeof(PduHeader);
         if (!encode(msg, payload, bytes_needed, bytes_written, bytes_needed)) {
             outbound_allocator_.deallocate(slab_id, chunk);
-            throw PubSubItcException("ApplicationThread::send_pdu: encode failed on second pass — this should not happen");
+            throw PubSubItcException("ApplicationThread::send_pdu: encode failed on second pass - this should not happen");
         }
 
         // Delegate the reactor call to a non-template method defined in the .cpp,
@@ -550,6 +526,69 @@ protected:
         // declaration of Reactor.
         enqueue_send_pdu_command(conn_id, slab_id, chunk, static_cast<uint32_t>(bytes_written));
     }
+
+protected:
+    void run_internal();
+
+    void process_message(EventMessage& message);
+
+    virtual void on_initial_event() {}
+
+    virtual void on_app_ready_event() {}
+
+    virtual void on_termination_event([[maybe_unused]] const std::string& reason) {}
+
+    virtual void on_itc_message(const EventMessage& msg) = 0;
+
+    void on_timer_id_event(TimerID id);
+
+    virtual void on_timer_event([[maybe_unused]] const std::string& name) {}
+
+    virtual void on_pubsub_message([[maybe_unused]] const EventMessage& msg) {}
+
+    virtual void on_raw_socket_message([[maybe_unused]] const EventMessage& msg) {}
+
+    /**
+     * @brief Handler for fully packetized framework PDUs.
+     *
+     * The Reactor's framing layer has already assembled a complete PDU and
+     * stripped any transport header. The payload in the EventMessage is the
+     * exact PDU byte sequence expected by the DSL-generated decode functions.
+     *
+     * Override this in ApplicationThread subclasses that consume framework
+     * PDUs (e.g., leader-follower, replication, or component-to-component
+     * protocols). Threads that only care about foreign protocols (e.g. FIX)
+     * may ignore this and rely solely on on_raw_socket_message().
+     */
+    virtual void on_framework_pdu_message([[maybe_unused]] const EventMessage& msg) {}
+
+    /**
+     * @brief Called when an outbound TCP connection requested via
+     *        connect_to_service() has been successfully established.
+     *
+     * @param[in] id The ConnectionID assigned by the reactor. Use this in
+     *               subsequent send_pdu() calls to identify the connection.
+     */
+    virtual void on_connection_established([[maybe_unused]] ConnectionID id) {}
+
+    /**
+     * @brief Called when an outbound TCP connection attempt has failed.
+     *
+     * @param[in] reason Human-readable description of the failure.
+     */
+    virtual void on_connection_failed([[maybe_unused]] const std::string& reason) {}
+
+    /**
+     * @brief Called when an established TCP connection has been lost unexpectedly.
+     *
+     * The application should re-issue connect_to_service() if it wishes to
+     * reconnect.
+     *
+     * @param[in] id     The ConnectionID of the lost connection.
+     * @param[in] reason Human-readable description of why the connection was lost.
+     */
+    virtual void on_connection_lost([[maybe_unused]] ConnectionID id,
+                                    [[maybe_unused]] const std::string& reason) {}
 
 private:
     QuillLogger& logger_;

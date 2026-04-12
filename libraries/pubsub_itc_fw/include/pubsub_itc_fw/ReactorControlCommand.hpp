@@ -35,7 +35,17 @@ namespace pubsub_itc_fw {
  *   Connect        — requesting_thread_id_, service_name_
  *   Disconnect     — connection_id_
  *   SendPdu        — connection_id_, allocator_, slab_id_, pdu_chunk_ptr_, pdu_byte_count_
+ *   SendRaw        — connection_id_, allocator_, slab_id_, raw_chunk_ptr_, raw_byte_count_
  *   CommitRawBytes — connection_id_, bytes_consumed_
+ *
+ * SendPdu vs SendRaw:
+ *   SendPdu is for framework-native PDU connections (PduProtocolHandler). The
+ *   reactor prepends a PduHeader and the total wire size is
+ *   sizeof(PduHeader) + pdu_byte_count_.
+ *
+ *   SendRaw is for raw-bytes connections (RawBytesProtocolHandler). The chunk
+ *   contains the complete outbound bytes exactly as they should appear on the
+ *   wire. No header is prepended. The total wire size is raw_byte_count_.
  */
 class ReactorControlCommand {
 public:
@@ -44,7 +54,8 @@ public:
         CancelTimer,
         Connect,         ///< Request the reactor to establish an outbound TCP connection.
         Disconnect,      ///< Request the reactor to close an established connection.
-        SendPdu,         ///< Request the reactor to send a framed PDU on an established connection.
+        SendPdu,         ///< Request the reactor to send a framed PDU on a PDU connection.
+        SendRaw,         ///< Request the reactor to send raw bytes on a raw-bytes connection.
         CommitRawBytes   ///< Notify the reactor that the application has consumed N bytes from
                          ///< the MirroredBuffer of a RawBytesProtocolHandler connection.
     };
@@ -74,6 +85,9 @@ public:
         }
         if (tag_ == SendPdu) {
             return "SendPdu";
+        }
+        if (tag_ == SendRaw) {
+            return "SendRaw";
         }
         if (tag_ == CommitRawBytes) {
             return "CommitRawBytes";
@@ -119,14 +133,15 @@ public:
     std::string service_name_;
 
     // ----------------------------------------------------------------
-    // Disconnect / SendPdu / CommitRawBytes payload fields
+    // Disconnect / SendPdu / SendRaw / CommitRawBytes payload fields
     // ----------------------------------------------------------------
 
     /**
      * @brief Identifies the target connection.
      *
-     * Used by Disconnect, SendPdu, and CommitRawBytes commands. Must be a valid
-     * ConnectionID previously delivered via a ConnectionEstablished event.
+     * Used by Disconnect, SendPdu, SendRaw, and CommitRawBytes commands. Must
+     * be a valid ConnectionID previously delivered via a ConnectionEstablished
+     * event.
      */
     ConnectionID connection_id_{};
 
@@ -135,26 +150,27 @@ public:
     // ----------------------------------------------------------------
 
     /**
-     * @brief Pointer to the ExpandableSlabAllocator that owns the PDU chunk.
+     * @brief Pointer to the ExpandableSlabAllocator that owns the PDU or raw chunk.
      *
      * Each ApplicationThread owns its own outbound ExpandableSlabAllocator.
-     * When enqueuing a SendPdu command the thread sets this field to a pointer
-     * to its own allocator. The reactor calls allocator_->deallocate(slab_id_,
-     * pdu_chunk_ptr_) after the frame has been fully transmitted.
+     * When enqueuing a SendPdu or SendRaw command the thread sets this field to
+     * a pointer to its own allocator. The reactor calls
+     * allocator_->deallocate(slab_id_, chunk_ptr) after the frame has been fully
+     * transmitted.
      *
      * This pointer is never sent over the network — it is purely local
      * bookkeeping so the reactor knows which allocator to return the chunk to.
      * ExpandableSlabAllocator::deallocate() is thread-safe so the reactor
      * may call it from the reactor thread without synchronisation.
      *
-     * Must not be nullptr when the SendPdu command is processed.
+     * Must not be nullptr when the SendPdu or SendRaw command is processed.
      */
     ExpandableSlabAllocator* allocator_{nullptr};
 
     /**
-     * @brief Slab ID of the chunk holding the complete PDU frame.
+     * @brief Slab ID of the chunk holding the outbound frame.
      *
-     * Passed to allocator_->deallocate() alongside pdu_chunk_ptr_ after
+     * Passed to allocator_->deallocate() alongside the chunk pointer after
      * the frame has been fully transmitted.
      */
     int slab_id_{-1};
@@ -175,6 +191,34 @@ public:
      * sizeof(PduHeader) + pdu_byte_count_.
      */
     uint32_t pdu_byte_count_{0};
+
+    // ----------------------------------------------------------------
+    // SendRaw payload fields
+    // ----------------------------------------------------------------
+
+    /**
+     * @brief Pointer to the start of the raw outbound bytes in the slab chunk.
+     *
+     * The chunk contains the complete wire bytes exactly as they should be
+     * transmitted — no header is prepended by the reactor. The total number
+     * of bytes transmitted is raw_byte_count_.
+     *
+     * The same allocator_ and slab_id_ fields used by SendPdu are reused for
+     * slab ownership bookkeeping. The reactor calls
+     * allocator_->deallocate(slab_id_, raw_chunk_ptr_) after transmission
+     * completes.
+     *
+     * Must not be nullptr when the SendRaw command is processed.
+     */
+    void* raw_chunk_ptr_{nullptr};
+
+    /**
+     * @brief Total number of raw bytes to transmit.
+     *
+     * Unlike pdu_byte_count_, this is the complete wire size — no header
+     * arithmetic is applied.
+     */
+    uint32_t raw_byte_count_{0};
 
     // ----------------------------------------------------------------
     // CommitRawBytes payload fields

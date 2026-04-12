@@ -173,6 +173,21 @@ public:
     [[nodiscard]] bool process_send_pdu_command(const ReactorControlCommand& command);
 
     /**
+     * @brief Attempts to dispatch a SendRaw command to an inbound connection.
+     *
+     * Calls ProtocolHandlerInterface::send_prebuilt() with the exact byte count
+     * from raw_byte_count_ — no PduHeader arithmetic is applied. Intended for
+     * RawBytesProtocolHandler connections; a no-op (returns true) if the
+     * connection uses PduProtocolHandler, since send_prebuilt is defined on
+     * the interface.
+     *
+     * @param[in] command The SendRaw command to process.
+     * @return true if the ConnectionID belongs to an inbound connection
+     *         (command was processed or stashed), false if not found here.
+     */
+    [[nodiscard]] bool process_send_raw_command(const ReactorControlCommand& command);
+
+    /**
      * @brief Advances the inbound MirroredBuffer tail for a RawBytesProtocolHandler
      *        connection by the number of bytes the application has consumed.
      *

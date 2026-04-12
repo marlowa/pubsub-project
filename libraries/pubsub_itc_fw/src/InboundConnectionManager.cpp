@@ -348,6 +348,36 @@ bool InboundConnectionManager::process_send_pdu_command(const ReactorControlComm
     return true;
 }
 
+bool InboundConnectionManager::process_send_raw_command(const ReactorControlCommand& command)
+{
+    const ConnectionID cid = command.connection_id_;
+
+    auto it = connections_.find(cid);
+    if (it == connections_.end()) {
+        return false;
+    }
+
+    InboundConnection& conn = *it->second;
+
+    if (conn.handler()->has_pending_send()) {
+        pending_send_ = command;
+        return true;
+    }
+
+    conn.handler()->send_prebuilt(command.allocator_, command.slab_id_,
+                                  command.raw_chunk_ptr_, command.raw_byte_count_);
+
+    if (conn.handler()->has_pending_send()) {
+        const int conn_fd = conn.get_fd();
+        epoll_event ev{};
+        ev.events  = EPOLLIN | EPOLLOUT | EPOLLERR;
+        ev.data.fd = conn_fd;
+        ::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, conn_fd, &ev);
+    }
+
+    return true;
+}
+
 bool InboundConnectionManager::process_commit_raw_bytes(ConnectionID id, int64_t bytes_consumed)
 {
     auto it = connections_.find(id);
@@ -367,14 +397,23 @@ bool InboundConnectionManager::drain_pending_send()
     const ReactorControlCommand command = *pending_send_;
     pending_send_.reset();
 
-    const bool processed = process_send_pdu_command(command);
-    if (!processed) {
-        // Connection vanished while the command was stashed — deallocate.
-        command.allocator_->deallocate(command.slab_id_, command.pdu_chunk_ptr_);
-        return true;
+    bool processed = false;
+    if (command.as_tag() == ReactorControlCommand::SendRaw) {
+        processed = process_send_raw_command(command);
+        if (!processed) {
+            command.allocator_->deallocate(command.slab_id_, command.raw_chunk_ptr_);
+            return true;
+        }
+    } else {
+        processed = process_send_pdu_command(command);
+        if (!processed) {
+            // Connection vanished while the command was stashed — deallocate.
+            command.allocator_->deallocate(command.slab_id_, command.pdu_chunk_ptr_);
+            return true;
+        }
     }
 
-    // If still blocked, process_send_pdu_command will have re-stashed it.
+    // If still blocked, the relevant process_send_*_command will have re-stashed it.
     return !pending_send_.has_value();
 }
 

@@ -326,6 +326,14 @@ bool OutboundConnectionManager::process_send_pdu_command(const ReactorControlCom
     return true;
 }
 
+bool OutboundConnectionManager::process_send_raw_command(const ReactorControlCommand& command)
+{
+    // OutboundConnection does not support raw-bytes connections in the current
+    // implementation. Return false so the Reactor tries the inbound manager.
+    [[maybe_unused]] const ConnectionID cid = command.connection_id_;
+    return false;
+}
+
 bool OutboundConnectionManager::process_commit_raw_bytes(ConnectionID id, int64_t bytes_consumed)
 {
     // OutboundConnection does not use the ProtocolHandlerInterface strategy —

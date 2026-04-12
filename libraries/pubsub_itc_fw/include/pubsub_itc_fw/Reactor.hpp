@@ -183,9 +183,11 @@ public:
     void route_message(ThreadID target_id, EventMessage message);
 
     /**
-     * @brief Called by AcceptorHandler when EPOLLIN fires on a listening socket.
+     * @brief Called by dispatch_events() when EPOLLIN fires on a listening socket fd.
      *
-     * Allocates a ConnectionID and delegates to InboundConnectionManager::on_accept().
+     * The Reactor's epoll dispatch loop uses InboundConnectionManager::find_listener_by_fd()
+     * to identify the listener, then calls this method directly. Allocates a ConnectionID
+     * and delegates to InboundConnectionManager::on_accept().
      *
      * @param[in] listener The InboundListener whose listening socket became readable.
      */

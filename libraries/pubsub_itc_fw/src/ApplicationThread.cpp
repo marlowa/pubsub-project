@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstring>
 #include <exception>
 #include <memory>
 #include <string>
@@ -15,6 +16,7 @@
 #include <pubsub_itc_fw/ApplicationThreadConfig.hpp>
 #include <pubsub_itc_fw/AllocatorConfig.hpp>
 #include <pubsub_itc_fw/BackoffWithYield.hpp>
+#include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/EventType.hpp>
 #include <pubsub_itc_fw/HighResolutionClock.hpp>
@@ -37,8 +39,8 @@ ApplicationThread::~ApplicationThread() {
     // The Reactor's finalize_threads_after_shutdown() is responsible for joining
     // all threads before their shared_ptrs are released. If this destructor is
     // reached with a joinable thread, it means either:
-    //   (a) finalize_threads_after_shutdown() was not called — a programming error, or
-    //   (b) the thread refused to join within the shutdown timeout — an unrecoverable
+    //   (a) finalize_threads_after_shutdown() was not called -- a programming error, or
+    //   (b) the thread refused to join within the shutdown timeout -- an unrecoverable
     //       condition. Detaching is not safe because the thread is still running and
     //       still holds a reference to this object. std::terminate() is the only
     //       honest response.
@@ -173,6 +175,37 @@ void ApplicationThread::connect_to_service(const std::string& service_name)
     command.requesting_thread_id_ = thread_id_;
     command.service_name_ = service_name;
     reactor_.enqueue_control_command(command);
+}
+
+void ApplicationThread::commit_raw_bytes(ConnectionID conn_id, int64_t bytes_consumed)
+{
+    ReactorControlCommand command(ReactorControlCommand::CommandTag::CommitRawBytes);
+    command.connection_id_  = conn_id;
+    command.bytes_consumed_ = bytes_consumed;
+    reactor_.enqueue_control_command(command);
+}
+
+void ApplicationThread::send_raw(ConnectionID conn_id, const void* data, uint32_t size)
+{
+    if (data == nullptr) {
+        throw PreconditionAssertion(
+            "ApplicationThread::send_raw: data must not be nullptr", __FILE__, __LINE__);
+    }
+    if (size == 0) {
+        throw PreconditionAssertion(
+            "ApplicationThread::send_raw: size must be greater than zero", __FILE__, __LINE__);
+    }
+
+    auto [slab_id, chunk] = outbound_allocator_.allocate(size);
+    std::memcpy(chunk, data, size);
+
+    ReactorControlCommand cmd(ReactorControlCommand::CommandTag::SendRaw);
+    cmd.connection_id_  = conn_id;
+    cmd.allocator_      = &outbound_allocator_;
+    cmd.slab_id_        = slab_id;
+    cmd.raw_chunk_ptr_  = chunk;
+    cmd.raw_byte_count_ = size;
+    reactor_.enqueue_control_command(cmd);
 }
 
 // Note: reason is used in the logging macros but we have to neutralise those macros for clang-tidy
@@ -336,7 +369,7 @@ void ApplicationThread::process_message(EventMessage& message) {
             // the reactor's inbound slab allocator. The subclass callback processes
             // the payload and must not hold any references to it after returning.
             // The framework deallocates the chunk here unconditionally so that
-            // subclasses never need to do so — and cannot forget to.
+            // subclasses never need to do so -- and cannot forget to.
             on_framework_pdu_message(message);
             reactor_.inbound_slab_allocator().deallocate(
                 message.slab_id(), const_cast<uint8_t*>(message.payload()));

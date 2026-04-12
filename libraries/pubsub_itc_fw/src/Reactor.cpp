@@ -805,6 +805,18 @@ void Reactor::process_control_commands() {
                 break;
             }
 
+            case ReactorControlCommand::SendRaw: {
+                if (!outbound_manager_.process_send_raw_command(command)) {
+                    if (!inbound_manager_.process_send_raw_command(command)) {
+                        PUBSUB_LOG(logger_, FwLogLevel::Warning,
+                            "Reactor::process_control_commands: unknown connection id {} for SendRaw",
+                            command.connection_id_.get_value());
+                        command.allocator_->deallocate(command.slab_id_, command.raw_chunk_ptr_);
+                    }
+                }
+                break;
+            }
+
             case ReactorControlCommand::CommitRawBytes: {
                 const ConnectionID cid = command.connection_id_;
                 if (!outbound_manager_.process_commit_raw_bytes(cid, command.bytes_consumed_)) {

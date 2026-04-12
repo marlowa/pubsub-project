@@ -129,6 +129,18 @@ public:
     [[nodiscard]] bool process_send_pdu_command(const ReactorControlCommand& command);
 
     /**
+     * @brief Attempts to dispatch a SendRaw command to an outbound connection.
+     *
+     * OutboundConnection uses PduProtocolHandler and does not support raw-bytes
+     * connections in the current implementation. This method returns false for
+     * all connection IDs so the Reactor can try the inbound manager.
+     *
+     * @param[in] command The SendRaw command to process.
+     * @return false always, since outbound connections do not support SendRaw.
+     */
+    [[nodiscard]] bool process_send_raw_command(const ReactorControlCommand& command);
+
+    /**
      * @brief Advances the inbound MirroredBuffer tail for a RawBytesProtocolHandler
      *        connection by the number of bytes the application has consumed.
      *
