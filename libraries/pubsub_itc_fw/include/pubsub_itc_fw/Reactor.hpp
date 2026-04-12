@@ -101,7 +101,16 @@ public:
     void shutdown(const std::string& reason);
 
     /**
-     * @brief Handles a SIGTERM signal to trigger shutdown.
+     * @brief Handles a SIGTERM signal, broadcasting Termination to all threads
+     *        and initiating a graceful reactor shutdown.
+     *
+     * Called exclusively from the reactor thread when the signalfd registered
+     * in the constructor becomes readable. SIGTERM is blocked on all threads
+     * via pthread_sigmask in the constructor so it is never delivered directly
+     * to any thread -- it arrives only through the signalfd epoll path.
+     *
+     * May also be called programmatically (e.g. from tests) to simulate a
+     * SIGTERM without sending an actual signal.
      */
     void handleSIGTERM();
 
@@ -322,6 +331,19 @@ private:
      */
     [[nodiscard]] static int create_epoll_fd();
 
+    /**
+     * @brief Blocks SIGTERM on the calling thread and creates a signalfd for it.
+     *
+     * Must be called on the main thread before any ApplicationThreads are
+     * spawned so that all threads inherit the blocked signal mask. The returned
+     * fd is registered with epoll by the constructor so that SIGTERM is
+     * delivered to the reactor thread as a normal readable event, with no C
+     * signal handler or global state required.
+     *
+     * @throws PubSubItcException if pthread_sigmask or signalfd fails.
+     */
+    [[nodiscard]] static int create_signal_fd();
+
     std::atomic<bool> initialization_complete_{false};
 
     /**
@@ -390,11 +412,18 @@ private:
 
     // epoll_fd_ is initialised via create_epoll_fd() in the constructor initialiser
     // list. It must be declared after config_ and logger_ (which it does not depend
-    // on directly) but — critically — before inbound_manager_ and outbound_manager_,
+    // on directly) but -- critically -- before inbound_manager_ and outbound_manager_,
     // which receive it by value at construction time. Declaration order governs
-    // initialisation order, so these two ints sit here, just above the managers.
+    // initialisation order, so these ints sit here, just above the managers.
     int epoll_fd_{-1};
     int wake_fd_{-1};
+
+    // signal_fd_ receives SIGTERM as a readable epoll event, avoiding any need
+    // for a C signal handler or global state. SIGTERM is blocked on all threads
+    // via pthread_sigmask in the constructor so it can only be consumed here.
+    // Declared after epoll_fd_ (which it is registered with) and before the
+    // managers so the initialiser list order is respected.
+    int signal_fd_{-1};
 
     /**
      * Inbound slab allocator: used by PduParser to allocate receive buffers.

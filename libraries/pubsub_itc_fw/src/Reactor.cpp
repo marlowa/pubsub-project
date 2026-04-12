@@ -14,8 +14,10 @@
 
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
+#include <sys/signalfd.h>
 #include <sys/timerfd.h>
 #include <sys/types.h>
+#include <signal.h>
 #include <unistd.h>
 
 #include <fmt/format.h>
@@ -52,12 +54,36 @@ Reactor::~Reactor() {
         ::close(wake_fd_);
         wake_fd_ = -1;
     }
+    if (signal_fd_ != -1) {
+        ::close(signal_fd_);
+        signal_fd_ = -1;
+    }
 }
 
 int Reactor::create_epoll_fd() {
     const int fd = ::epoll_create1(EPOLL_CLOEXEC);
     if (fd == -1) {
         throw PubSubItcException("epoll_create1 failed in Reactor constructor");
+    }
+    return fd;
+}
+
+int Reactor::create_signal_fd() {
+    // Block SIGTERM on the calling thread. Because this is called from the
+    // Reactor constructor on the main thread before any ApplicationThreads
+    // are spawned, all subsequently created threads inherit the blocked mask.
+    // SIGTERM will therefore never be delivered to any thread directly --
+    // it is consumed exclusively via the signalfd registered with epoll.
+    sigset_t mask;
+    ::sigemptyset(&mask);
+    ::sigaddset(&mask, SIGTERM);
+    if (::pthread_sigmask(SIG_BLOCK, &mask, nullptr) != 0) {
+        throw PubSubItcException("pthread_sigmask failed in Reactor constructor");
+    }
+
+    const int fd = ::signalfd(-1, &mask, SFD_NONBLOCK | SFD_CLOEXEC);
+    if (fd == -1) {
+        throw PubSubItcException("signalfd failed in Reactor constructor");
     }
     return fd;
 }
@@ -73,6 +99,7 @@ Reactor::Reactor(const ReactorConfiguration& reactor_configuration,
     , service_registry_(service_registry)
     , logger_(logger)
     , epoll_fd_(create_epoll_fd())
+    , signal_fd_(create_signal_fd())
     , inbound_slab_allocator_(reactor_configuration.inbound_slab_size)
     , inbound_manager_(epoll_fd_, config_, inbound_slab_allocator_, *this, logger_)
     , outbound_manager_(epoll_fd_, config_, inbound_slab_allocator_, service_registry_, *this, logger_) {
@@ -87,6 +114,13 @@ Reactor::Reactor(const ReactorConfiguration& reactor_configuration,
 
     if (::epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, wake_fd_, &ev) == -1) {
         throw PubSubItcException("epoll_ctl ADD failed for wake_fd in Reactor constructor");
+    }
+
+    epoll_event sev{};
+    sev.events   = EPOLLIN;
+    sev.data.fd  = signal_fd_;
+    if (::epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, signal_fd_, &sev) == -1) {
+        throw PubSubItcException("epoll_ctl ADD failed for signal_fd in Reactor constructor");
     }
 
     auto timer_id = allocate_timer_id();
@@ -850,6 +884,18 @@ void Reactor::dispatch_events(int nfds, epoll_event* events) {
             continue;
         }
 
+        if (fd == signal_fd_) {
+            // Drain all pending signals from the signalfd. Multiple SIGTERMs
+            // may have been queued; we handle them all but only act once.
+            struct signalfd_siginfo sig_info{};
+            while (::read(signal_fd_, &sig_info, sizeof(sig_info)) == static_cast<ssize_t>(sizeof(sig_info))) {
+                if (sig_info.ssi_signo == SIGTERM) {
+                    handleSIGTERM();
+                }
+            }
+            continue;
+        }
+
         // Check outbound connections first.
         {
             OutboundConnection* conn = outbound_manager_.find_by_fd(fd);
@@ -945,6 +991,21 @@ std::string Reactor::get_thread_name_from_id(ThreadID id) const {
 }
 
 void Reactor::handleSIGTERM() {
+    PUBSUB_LOG_STR(logger_, FwLogLevel::Info,
+        "Reactor::handleSIGTERM: SIGTERM received -- broadcasting Termination to all threads");
+
+    // Broadcast Termination to all registered threads so each can perform
+    // any necessary cleanup before the reactor shuts down.
+    {
+        const std::lock_guard<std::mutex> lock(thread_registry_mutex_);
+        for (auto& [name, thread] : threads_) {
+            if (thread != nullptr) {
+                thread->get_queue().enqueue(
+                    EventMessage::create_termination_event("SIGTERM received"));
+            }
+        }
+    }
+
     shutdown("SIGTERM received");
 }
 
