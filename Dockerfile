@@ -7,13 +7,18 @@ RUN dnf install -y \
     git \
     cmake \
     make \
-    python3 \
+    python38 \
     boost-devel \
     boost-filesystem \
     boost-system \
     findutils \
-    which \
     wget \
+    tar \
+    which \
+    perl \
+    libatomic \
+    numactl-devel \
+    && alternatives --set python3 /usr/bin/python3.8 \
     && dnf clean all
 
 # Configure git to allow /workspace

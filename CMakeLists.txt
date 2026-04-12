@@ -36,7 +36,13 @@ if(ENABLE_VALGRIND)
 else()
     message(STATUS "Valgrind mode disabled")
     if(NOT ENABLE_TSAN)
-        add_compile_options(-mcx16 -march=x86-64-v2)
+        if(CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL "11.0")
+            add_compile_options(-mcx16 -march=x86-64-v2)
+        else()
+            # gcc 8.x does not support the x86-64-v2 march name.
+            # Specify the individual features that matter for lock-free code.
+            add_compile_options(-mcx16 -msse4.2 -mpopcnt)
+        endif()
     endif()
 endif()
 
