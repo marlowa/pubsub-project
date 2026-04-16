@@ -16,9 +16,9 @@
 
 #include <pubsub_itc_fw/Reactor.hpp>
 
-#include <pubsub_itc_fw/AllocatorConfig.hpp>
+#include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThread.hpp>
-#include <pubsub_itc_fw/ApplicationThreadConfig.hpp>
+#include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
 #include <pubsub_itc_fw/BackoffWithYield.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/EventType.hpp>
@@ -27,7 +27,7 @@
 #include <pubsub_itc_fw/HighResolutionClock.hpp>
 #include <pubsub_itc_fw/MillisecondClock.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
-#include <pubsub_itc_fw/QueueConfig.hpp>
+#include <pubsub_itc_fw/QueueConfiguration.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/ReactorLifecycleState.hpp>
 #include <pubsub_itc_fw/ThreadLifecycleState.hpp>
@@ -50,11 +50,11 @@ namespace {
 // TODO these are copied from ApplicationThreadTest.
 
 // ------------------------------------------------------------
-// Helpers: QueueConfig, AllocatorConfig
+// Helpers: QueueConfiguration, AllocatorConfiguration
 // ------------------------------------------------------------
-pubsub_itc_fw::QueueConfig make_queue_config()
+pubsub_itc_fw::QueueConfiguration make_queue_config()
 {
-    pubsub_itc_fw::QueueConfig cfg{};
+    pubsub_itc_fw::QueueConfiguration cfg{};
     cfg.low_watermark = 1;
     cfg.high_watermark = 3;
     cfg.for_client_use = nullptr;
@@ -63,9 +63,9 @@ pubsub_itc_fw::QueueConfig make_queue_config()
     return cfg;
 }
 
-pubsub_itc_fw::AllocatorConfig make_allocator_config()
+pubsub_itc_fw::AllocatorConfiguration make_allocator_config()
 {
-    pubsub_itc_fw::AllocatorConfig cfg{};
+    pubsub_itc_fw::AllocatorConfiguration cfg{};
     cfg.pool_name = "ATestPool";
     cfg.objects_per_pool = 128;
     cfg.initial_pools = 1;
@@ -158,9 +158,9 @@ public:
                               Reactor& reactor,
                               const std::string& name,
                               ThreadID id,
-                              const QueueConfig& qc,
-                              const AllocatorConfig& ac)
-        : ApplicationThread(logger, reactor, name, id, qc, ac, ApplicationThreadConfig{})
+                              const QueueConfiguration& qc,
+                              const AllocatorConfiguration& ac)
+        : ApplicationThread(logger, reactor, name, id, qc, ac, ApplicationThreadConfiguration{})
     {}
 
 protected:
@@ -186,9 +186,9 @@ public:
                           Reactor& reactor,
                           const std::string& name,
                           ThreadID id,
-                          const QueueConfig& queue_config,
-                          const AllocatorConfig& allocator_config)
-        : ApplicationThread(logger, reactor, name, id, queue_config, allocator_config, ApplicationThreadConfig{})
+                          const QueueConfiguration& queue_config,
+                          const AllocatorConfiguration& allocator_config)
+        : ApplicationThread(logger, reactor, name, id, queue_config, allocator_config, ApplicationThreadConfiguration{})
     {}
 
     std::atomic<bool> saw_initial_event{false};
@@ -216,9 +216,9 @@ public:
                Reactor& reactor,
                const std::string& name,
                ThreadID id,
-               const QueueConfig& qc,
-               const AllocatorConfig& ac)
-        : ApplicationThread(logger, reactor, name, id, qc, ac, ApplicationThreadConfig{})
+               const QueueConfiguration& qc,
+               const AllocatorConfiguration& ac)
+        : ApplicationThread(logger, reactor, name, id, qc, ac, ApplicationThreadConfiguration{})
     {
         set_lifecycle_state(ThreadLifecycleState::Operational);
     }

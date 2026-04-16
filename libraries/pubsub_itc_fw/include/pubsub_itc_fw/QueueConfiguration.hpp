@@ -7,7 +7,7 @@
 
 namespace pubsub_itc_fw {
 
-class QueueConfig
+class QueueConfiguration
 {
 public:
     // Watermark thresholds
@@ -23,7 +23,7 @@ public:
     // Called when queue size rises above high_watermark
     std::function<void(void* for_client_use)> gone_above_high_watermark_handler;
 
-    QueueConfig() = default;
+    QueueConfiguration() = default;
 };
 
 } // namespaces

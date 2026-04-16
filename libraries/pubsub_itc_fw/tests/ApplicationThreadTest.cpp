@@ -16,8 +16,8 @@
 #include <quill/Frontend.h>
 
 #include <pubsub_itc_fw/ApplicationThread.hpp>
-#include <pubsub_itc_fw/ApplicationThreadConfig.hpp>
-#include <pubsub_itc_fw/AllocatorConfig.hpp>
+#include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
+#include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/BackoffWithYield.hpp>
 #include <pubsub_itc_fw/EventType.hpp>
 #include <pubsub_itc_fw/HighResolutionClock.hpp>
@@ -25,7 +25,7 @@
 #include <pubsub_itc_fw/ThreadLifecycleState.hpp>
 #include <pubsub_itc_fw/ThreadWithJoinTimeout.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
-#include <pubsub_itc_fw/QueueConfig.hpp>
+#include <pubsub_itc_fw/QueueConfiguration.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
 #include <pubsub_itc_fw/ServiceRegistry.hpp>
@@ -41,11 +41,11 @@ namespace {
     // TODO centralise these helpers in test_common
 
 // ------------------------------------------------------------
-// Helpers: QueueConfig, AllocatorConfig
+// Helpers: QueueConfiguration, AllocatorConfiguration
 // ------------------------------------------------------------
-QueueConfig make_queue_config()
+QueueConfiguration make_queue_config()
 {
-    QueueConfig cfg{};
+    QueueConfiguration cfg{};
     cfg.low_watermark = 1;
     cfg.high_watermark = 3;
     cfg.for_client_use = nullptr;
@@ -54,9 +54,9 @@ QueueConfig make_queue_config()
     return cfg;
 }
 
-AllocatorConfig make_allocator_config()
+AllocatorConfiguration make_allocator_config()
 {
-    AllocatorConfig cfg{};
+    AllocatorConfiguration cfg{};
     cfg.pool_name = "ATestPool";
     cfg.objects_per_pool = 128;
     cfg.initial_pools = 1;
@@ -141,8 +141,8 @@ public:
     ~TestThread() override = default;
 
     TestThread(QuillLogger& logger, Reactor& reactor, const std::string& name, ThreadID id,
-               const QueueConfig& queueConfig, const AllocatorConfig& allocatorConfig)
-        : ApplicationThread(logger, reactor, name, id, queueConfig, allocatorConfig, ApplicationThreadConfig{})
+               const QueueConfiguration& queueConfig, const AllocatorConfiguration& allocatorConfig)
+        : ApplicationThread(logger, reactor, name, id, queueConfig, allocatorConfig, ApplicationThreadConfiguration{})
     {
     }
 
@@ -183,7 +183,7 @@ class TestThreadOneOffTimer : public TestThread
 {
 public:
     TestThreadOneOffTimer(QuillLogger& logger, Reactor& reactor, const std::string& name, ThreadID id,
-               const QueueConfig& queueConfig, const AllocatorConfig& allocatorConfig)
+               const QueueConfiguration& queueConfig, const AllocatorConfiguration& allocatorConfig)
         : TestThread(logger, reactor, name, id, queueConfig, allocatorConfig)
     {
     }
@@ -199,7 +199,7 @@ class TestThreadRecurringTimer : public TestThread
 {
 public:
     TestThreadRecurringTimer(QuillLogger& logger, Reactor& reactor, const std::string& name, ThreadID id,
-               const QueueConfig& queueConfig, const AllocatorConfig& allocatorConfig)
+               const QueueConfiguration& queueConfig, const AllocatorConfiguration& allocatorConfig)
         : TestThread(logger, reactor, name, id, queueConfig, allocatorConfig)
     {
     }
@@ -220,7 +220,7 @@ class TestThreadCancelTimer : public TestThread
 {
 public:
     TestThreadCancelTimer(QuillLogger& logger, Reactor& reactor, const std::string& name, ThreadID id,
-               const QueueConfig& queueConfig, const AllocatorConfig& allocatorConfig)
+               const QueueConfiguration& queueConfig, const AllocatorConfiguration& allocatorConfig)
         : TestThread(logger, reactor, name, id, queueConfig, allocatorConfig)
     {
     }
@@ -246,7 +246,7 @@ class TestThreadNameTimer : public TestThread
 public:
     std::string out;
     TestThreadNameTimer(QuillLogger& logger, Reactor& reactor, const std::string& name, ThreadID id,
-               const QueueConfig& queueConfig, const AllocatorConfig& allocatorConfig)
+               const QueueConfiguration& queueConfig, const AllocatorConfiguration& allocatorConfig)
         : TestThread(logger, reactor, name, id, queueConfig, allocatorConfig)
     {
     }
@@ -269,7 +269,7 @@ public:
     std::atomic<int>* b{nullptr};
 
     TestThreadMultiTimer(QuillLogger& logger, Reactor& reactor, const std::string& name, ThreadID id,
-               const QueueConfig& queueConfig, const AllocatorConfig& allocatorConfig)
+               const QueueConfiguration& queueConfig, const AllocatorConfiguration& allocatorConfig)
         : TestThread(logger, reactor, name, id, queueConfig, allocatorConfig)
     {
     }
@@ -612,7 +612,7 @@ TEST_F(ApplicationThreadTest, PauseResumeUnderLoad)
 //       fire using futures for deterministic synchronization.
 TEST_F(ApplicationThreadTest, WatermarkTransitions)
 {
-    QueueConfig qc = make_queue_config();
+    QueueConfiguration qc = make_queue_config();
     qc.low_watermark = 1;
     qc.high_watermark = 3;
 
@@ -1054,8 +1054,8 @@ TEST_F(ApplicationThreadTest, ExceptionTriggersReactorShutdown)
 
 TEST_F(ApplicationThreadTest, InterThreadRoutingDeliversMessage)
 {
-    const QueueConfig qc = make_queue_config();
-    const AllocatorConfig ac = make_allocator_config();
+    const QueueConfiguration qc = make_queue_config();
+    const AllocatorConfiguration ac = make_allocator_config();
 
     auto threadA = std::make_shared<TestThread>(logger_with_sink_.logger, *reactor_, "ThreadA", ThreadID(1), qc, ac);
     auto threadB = std::make_shared<TestThread>(logger_with_sink_.logger, *reactor_, "ThreadB", ThreadID(2), qc, ac);
@@ -1282,7 +1282,7 @@ TEST_F(ApplicationThreadTest, DefaultHandlersAreCallableAndNoop)
         ThreadID(999),
         make_queue_config(),
         make_allocator_config(),
-        ApplicationThreadConfig{}
+        ApplicationThreadConfiguration{}
     );
 
     // Call each default handler once

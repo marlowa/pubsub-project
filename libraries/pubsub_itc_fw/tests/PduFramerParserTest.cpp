@@ -12,8 +12,8 @@
 #include <arpa/inet.h>
 #include <gtest/gtest.h>
 
-#include <pubsub_itc_fw/AllocatorConfig.hpp>
-#include <pubsub_itc_fw/ApplicationThreadConfig.hpp>
+#include <pubsub_itc_fw/AllocatorConfiguration.hpp>
+#include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
 #include <pubsub_itc_fw/ByteStreamInterface.hpp>
 #include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
@@ -23,7 +23,7 @@
 #include <pubsub_itc_fw/PduHeader.hpp>
 #include <pubsub_itc_fw/PduParser.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
-#include <pubsub_itc_fw/QueueConfig.hpp>
+#include <pubsub_itc_fw/QueueConfiguration.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
 #include <pubsub_itc_fw/ReactorConfiguration.hpp>
 #include <pubsub_itc_fw/ServiceRegistry.hpp>
@@ -168,20 +168,20 @@ class StubApplicationThread : public ApplicationThread {
 public:
     StubApplicationThread(QuillLogger& logger, Reactor& reactor)
         : ApplicationThread(logger, reactor, "StubThread", ThreadID{1},
-                            make_queue_config(), make_allocator_config(), ApplicationThreadConfig{})
+                            make_queue_config(), make_allocator_config(), ApplicationThreadConfiguration{})
     {}
 
     void on_itc_message([[maybe_unused]] const EventMessage& msg) override {}
 
-    static QueueConfig make_queue_config() {
-        QueueConfig cfg{};
+    static QueueConfiguration make_queue_config() {
+        QueueConfiguration cfg{};
         cfg.low_watermark  = 1;
         cfg.high_watermark = 64;
         return cfg;
     }
 
-    static AllocatorConfig make_allocator_config() {
-        AllocatorConfig cfg{};
+    static AllocatorConfiguration make_allocator_config() {
+        AllocatorConfiguration cfg{};
         cfg.pool_name         = "StubPool";
         cfg.objects_per_pool  = 64;
         cfg.initial_pools     = 1;

@@ -56,7 +56,7 @@ void OutboundConnectionManager::process_connect_command(const ReactorControlComm
         return;
     }
 
-    const NetworkEndpointConfig& primary = endpoints.primary;
+    const NetworkEndpointConfiguration& primary = endpoints.primary;
 
     auto [addr, addr_error] = InetAddress::create(primary.host, primary.port);
     if (!addr) {
@@ -136,7 +136,7 @@ void OutboundConnectionManager::on_connect_ready(OutboundConnection& conn)
                 "service '{}': {}",
                 conn.service_name(), error);
 
-            const NetworkEndpointConfig& secondary = conn.endpoints().secondary;
+            const NetworkEndpointConfiguration& secondary = conn.endpoints().secondary;
             if (!conn.is_trying_secondary() && secondary.port != 0) {
                 PUBSUB_LOG(logger_, FwLogLevel::Info,
                     "OutboundConnectionManager::on_connect_ready: retrying service '{}' on "

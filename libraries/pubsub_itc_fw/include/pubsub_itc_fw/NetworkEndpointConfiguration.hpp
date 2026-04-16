@@ -19,7 +19,7 @@ namespace pubsub_itc_fw {
  * This type is intentionally lightweight and free of OS-specific details.
  * It is suitable for use in configuration files and in ReactorConfiguration.
  */
-struct NetworkEndpointConfig {
+struct NetworkEndpointConfiguration {
     /**
      * @brief The host component of the endpoint.
      *

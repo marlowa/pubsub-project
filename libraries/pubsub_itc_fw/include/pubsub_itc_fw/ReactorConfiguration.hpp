@@ -7,9 +7,9 @@
 
 #include <chrono>
 
-#include <pubsub_itc_fw/AllocatorConfig.hpp>
-#include <pubsub_itc_fw/QueueConfig.hpp>
-#include <pubsub_itc_fw/NetworkEndpointConfig.hpp>
+#include <pubsub_itc_fw/AllocatorConfiguration.hpp>
+#include <pubsub_itc_fw/QueueConfiguration.hpp>
+#include <pubsub_itc_fw/NetworkEndpointConfiguration.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -55,8 +55,8 @@ struct ReactorConfiguration {
 
     std::chrono::milliseconds shutdown_timeout_{std::chrono::seconds{1}};
 
-    QueueConfig command_queue_config_;
-    AllocatorConfig command_allocator_config_;
+    QueueConfiguration command_queue_config_;
+    AllocatorConfiguration command_allocator_config_;
 
     /**
      * @brief The network endpoint on which this application instance listens for
@@ -67,7 +67,7 @@ struct ReactorConfiguration {
      * clients) is accepted on this endpoint. The host may be IPv4, IPv6, or a DNS
      * name, and the port is the single TCP port owned by this reactor.
      */
-    NetworkEndpointConfig primary_address;
+    NetworkEndpointConfiguration primary_address;
 
     /**
      * @brief The network endpoint of the sibling node in the high-availability pair.
@@ -78,7 +78,7 @@ struct ReactorConfiguration {
      * higher-level application logic to replicate state or traffic to a hot
      * standby, depending on the chosen replication strategy.
      */
-    NetworkEndpointConfig secondary_address;
+    NetworkEndpointConfiguration secondary_address;
 
     /**
      * @brief The preferred DR (Disaster Recovery) arbitration endpoint.
@@ -87,7 +87,7 @@ struct ReactorConfiguration {
      * instance to obtain an ArbitrationDecision. If this endpoint is unreachable,
      * the node will fall back to @ref dr_secondary_address.
      */
-    NetworkEndpointConfig dr_primary_address;
+    NetworkEndpointConfiguration dr_primary_address;
 
     /**
      * @brief The fallback DR arbitration endpoint.
@@ -96,7 +96,7 @@ struct ReactorConfiguration {
      * the node attempts to contact this secondary DR instance. Only one DR node is
      * required to be reachable for arbitration to succeed.
      */
-    NetworkEndpointConfig dr_secondary_address;
+    NetworkEndpointConfiguration dr_secondary_address;
 
     /**
      * @brief Interval at which this node sends heartbeat messages to its peer.

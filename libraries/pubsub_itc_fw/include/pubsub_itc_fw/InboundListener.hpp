@@ -8,7 +8,7 @@
 #include <string>
 
 #include <pubsub_itc_fw/ConnectionID.hpp>
-#include <pubsub_itc_fw/NetworkEndpointConfig.hpp>
+#include <pubsub_itc_fw/NetworkEndpointConfiguration.hpp>
 #include <pubsub_itc_fw/ProtocolType.hpp>
 #include <pubsub_itc_fw/TcpAcceptor.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
@@ -62,7 +62,7 @@ struct InboundListener {
     /**
      * @brief The address and port this listener binds to.
      */
-    NetworkEndpointConfig address;
+    NetworkEndpointConfiguration address;
 
     /**
      * @brief The ApplicationThread that receives all events and data from

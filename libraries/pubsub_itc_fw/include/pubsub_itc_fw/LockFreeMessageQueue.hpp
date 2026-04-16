@@ -16,9 +16,9 @@
 #include <deque>
 #endif
 
-#include <pubsub_itc_fw/AllocatorConfig.hpp>
+#include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ExpandablePoolAllocator.hpp>
-#include <pubsub_itc_fw/QueueConfig.hpp>
+#include <pubsub_itc_fw/QueueConfiguration.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -164,8 +164,8 @@ public:
     /**
      * @brief Constructs a queue using the provided configuration objects.
      */
-    LockFreeMessageQueue(const QueueConfig& queue_config,
-                         const AllocatorConfig& allocator_config)
+    LockFreeMessageQueue(const QueueConfiguration& queue_config,
+                         const AllocatorConfiguration& allocator_config)
         : stub_()
         , head_(&stub_)
         , tail_(&stub_)
@@ -343,8 +343,8 @@ private:
     alignas(cache_line_size_) std::atomic<Node*> head_;
     alignas(cache_line_size_) Node* tail_;
 
-    QueueConfig queue_config_;
-    AllocatorConfig allocator_config_;
+    QueueConfiguration queue_config_;
+    AllocatorConfiguration allocator_config_;
     ExpandablePoolAllocator<Node> node_allocator_;
 
     std::atomic<int> size_{0};

@@ -33,13 +33,13 @@
 #include <thread>
 #include <gtest/gtest.h>
 
-#include <pubsub_itc_fw/AllocatorConfig.hpp>
+#include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThread.hpp>
-#include <pubsub_itc_fw/ApplicationThreadConfig.hpp>
+#include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
-#include <pubsub_itc_fw/NetworkEndpointConfig.hpp>
-#include <pubsub_itc_fw/QueueConfig.hpp>
+#include <pubsub_itc_fw/NetworkEndpointConfiguration.hpp>
+#include <pubsub_itc_fw/QueueConfiguration.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
 #include <pubsub_itc_fw/ReactorConfiguration.hpp>
@@ -63,15 +63,15 @@ static constexpr int16_t PDU_ID_DATA_RESPONSE = 301;
 // Helpers
 // ============================================================
 
-static QueueConfig make_queue_config() {
-    QueueConfig cfg{};
+static QueueConfiguration make_queue_config() {
+    QueueConfiguration cfg{};
     cfg.low_watermark  = 1;
     cfg.high_watermark = 64;
     return cfg;
 }
 
-static AllocatorConfig make_allocator_config(const std::string& name) {
-    AllocatorConfig cfg{};
+static AllocatorConfiguration make_allocator_config(const std::string& name) {
+    AllocatorConfiguration cfg{};
     cfg.pool_name       = name;
     cfg.objects_per_pool = 64;
     cfg.initial_pools   = 1;
@@ -89,7 +89,7 @@ public:
     ConnectorThread(QuillLogger& logger, Reactor& reactor)
         : ApplicationThread(logger, reactor, "ConnectorThread", ThreadID{1},
                             make_queue_config(), make_allocator_config("ConnectorPool"),
-                            ApplicationThreadConfig{}) {}
+                            ApplicationThreadConfiguration{}) {}
 
     std::atomic<bool> connection_established{false};
     std::atomic<bool> query_sent{false};
@@ -164,7 +164,7 @@ public:
     ListenerThread(QuillLogger& logger, Reactor& reactor)
         : ApplicationThread(logger, reactor, "ListenerThread", ThreadID{2},
                             make_queue_config(), make_allocator_config("ListenerPool"),
-                            ApplicationThreadConfig{}) {}
+                            ApplicationThreadConfiguration{}) {}
 
     std::atomic<bool> connection_established{false};
     std::atomic<bool> query_received{false};
@@ -273,7 +273,7 @@ TEST_F(VariableLengthPduTest, DataQueryResponseRoundTrip) {
         make_reactor_config(), listener_registry, logger_->logger);
 
     listener_reactor->register_inbound_listener(
-        NetworkEndpointConfig{"127.0.0.1", 0}, ThreadID{2});
+        NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
 
     auto listener_thread = std::make_shared<ListenerThread>(
         logger_->logger, *listener_reactor);
@@ -290,8 +290,8 @@ TEST_F(VariableLengthPduTest, DataQueryResponseRoundTrip) {
     // --- Connector side ---
     ServiceRegistry connector_registry;
     connector_registry.add("listener",
-        NetworkEndpointConfig{"127.0.0.1", listen_port},
-        NetworkEndpointConfig{});
+        NetworkEndpointConfiguration{"127.0.0.1", listen_port},
+        NetworkEndpointConfiguration{});
 
     auto connector_reactor = std::make_unique<Reactor>(
         make_reactor_config(), connector_registry, logger_->logger);

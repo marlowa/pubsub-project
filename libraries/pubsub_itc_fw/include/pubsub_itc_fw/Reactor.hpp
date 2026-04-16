@@ -25,7 +25,7 @@
 #include <pubsub_itc_fw/InboundConnectionManager.hpp>
 #include <pubsub_itc_fw/InboundListener.hpp>
 #include <pubsub_itc_fw/LockFreeMessageQueue.hpp>
-#include <pubsub_itc_fw/NetworkEndpointConfig.hpp>
+#include <pubsub_itc_fw/NetworkEndpointConfiguration.hpp>
 #include <pubsub_itc_fw/OutboundConnectionManager.hpp>
 #include <pubsub_itc_fw/ProtocolType.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
@@ -168,7 +168,7 @@ public:
      *                                RawBytes listeners. Ignored for FrameworkPdu.
      * @throws PreconditionAssertion if called after run().
      */
-    void register_inbound_listener(NetworkEndpointConfig address,
+    void register_inbound_listener(NetworkEndpointConfiguration address,
                                    ThreadID target_thread_id,
                                    ProtocolType protocol_type = ProtocolType{ProtocolType::FrameworkPdu},
                                    int64_t raw_buffer_capacity = 0);

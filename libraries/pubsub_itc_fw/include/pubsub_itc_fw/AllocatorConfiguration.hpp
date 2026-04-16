@@ -12,7 +12,7 @@ namespace pubsub_itc_fw {
 
 /** @ingroup allocator_subsystem */
 
-class AllocatorConfig
+class AllocatorConfiguration
 {
 public:
     std::string pool_name;
@@ -33,7 +33,7 @@ public:
     // Optional context pointer for allocator callbacks
     void* context{nullptr};
 
-    AllocatorConfig() = default;
+    AllocatorConfiguration() = default;
 };
 
 } // namespaces

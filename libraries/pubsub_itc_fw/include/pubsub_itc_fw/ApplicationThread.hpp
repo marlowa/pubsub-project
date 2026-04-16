@@ -13,8 +13,8 @@
 
 #include <arpa/inet.h>
 
-#include <pubsub_itc_fw/AllocatorConfig.hpp>
-#include <pubsub_itc_fw/ApplicationThreadConfig.hpp>
+#include <pubsub_itc_fw/AllocatorConfiguration.hpp>
+#include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
 #include <pubsub_itc_fw/BumpAllocator.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/EventHandler.hpp>
@@ -25,7 +25,7 @@
 #include <pubsub_itc_fw/PduHeader.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
-#include <pubsub_itc_fw/QueueConfig.hpp>
+#include <pubsub_itc_fw/QueueConfiguration.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 #include <pubsub_itc_fw/ThreadLifecycleState.hpp>
@@ -98,7 +98,7 @@ class SocketHandler;
  *   the low-watermark callback signals recovery. See WATERMARK SEMANTICS above.
  *
  * POOL EXHAUSTION HANDLER (memory layer):
- *   The handler in AllocatorConfig fires when a FixedSizeMemoryPool slab
+ *   The handler in AllocatorConfiguration fires when a FixedSizeMemoryPool slab
  *   within the ExpandablePoolAllocator is exhausted and a new slab must be
  *   allocated from the heap. This is a memory-layer event entirely independent
  *   of queue depth. It signals that the queue has grown beyond its
@@ -135,9 +135,9 @@ class ApplicationThread {
                       Reactor& reactor,
                       const std::string& thread_name,
                       ThreadID thread_id,
-                      const QueueConfig& queue_config,
-                      const AllocatorConfig& allocator_config,
-                      const ApplicationThreadConfig& thread_config);
+                      const QueueConfiguration& queue_config,
+                      const AllocatorConfiguration& allocator_config,
+                      const ApplicationThreadConfiguration& thread_config);
 
     ApplicationThread(const ApplicationThread&) = delete;
     ApplicationThread& operator=(const ApplicationThread&) = delete;
@@ -451,7 +451,7 @@ protected:
      *
      * This buffer provides the backing store for a BumpAllocator used when decoding
      * variable-length inbound PDUs (those containing string, optional, or list fields).
-     * It is reserved once at construction to ApplicationThreadConfig::inbound_decode_arena_size
+     * It is reserved once at construction to ApplicationThreadConfiguration::inbound_decode_arena_size
      * bytes and reused for every inbound PDU callback - no heap allocation occurs on
      * the message handling path.
      *

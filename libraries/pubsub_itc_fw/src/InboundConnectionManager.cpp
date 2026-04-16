@@ -41,7 +41,7 @@ InboundConnectionManager::InboundConnectionManager(int epoll_fd,
 {
 }
 
-void InboundConnectionManager::register_inbound_listener(NetworkEndpointConfig address,
+void InboundConnectionManager::register_inbound_listener(NetworkEndpointConfiguration address,
                                                           ThreadID target_thread_id,
                                                           ProtocolType protocol_type,
                                                           int64_t raw_buffer_capacity)

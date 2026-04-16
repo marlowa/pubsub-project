@@ -13,8 +13,8 @@
 #include <fmt/format.h>
 
 #include <pubsub_itc_fw/ApplicationThread.hpp>
-#include <pubsub_itc_fw/ApplicationThreadConfig.hpp>
-#include <pubsub_itc_fw/AllocatorConfig.hpp>
+#include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
+#include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/BackoffWithYield.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
@@ -24,7 +24,7 @@
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
-#include <pubsub_itc_fw/QueueConfig.hpp>
+#include <pubsub_itc_fw/QueueConfiguration.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
 #include <pubsub_itc_fw/ReactorControlCommand.hpp>
@@ -56,8 +56,8 @@ ApplicationThread::~ApplicationThread() {
     // The reactor owns the threads.
 }
 
-ApplicationThread::ApplicationThread(QuillLogger& logger, Reactor& reactor, const std::string& thread_name, ThreadID thread_id, const QueueConfig& queue_config,
-                                     const AllocatorConfig& allocator_config, const ApplicationThreadConfig& thread_config)
+ApplicationThread::ApplicationThread(QuillLogger& logger, Reactor& reactor, const std::string& thread_name, ThreadID thread_id, const QueueConfiguration& queue_config,
+                                     const AllocatorConfiguration& allocator_config, const ApplicationThreadConfiguration& thread_config)
     : logger_(logger)
     , reactor_(reactor)
     , outbound_allocator_(thread_config.outbound_slab_size)

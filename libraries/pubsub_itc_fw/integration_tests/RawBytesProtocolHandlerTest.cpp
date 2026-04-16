@@ -73,14 +73,14 @@
 
 #include <gtest/gtest.h>
 
-#include <pubsub_itc_fw/AllocatorConfig.hpp>
+#include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThread.hpp>
-#include <pubsub_itc_fw/ApplicationThreadConfig.hpp>
+#include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
-#include <pubsub_itc_fw/NetworkEndpointConfig.hpp>
+#include <pubsub_itc_fw/NetworkEndpointConfiguration.hpp>
 #include <pubsub_itc_fw/ProtocolType.hpp>
-#include <pubsub_itc_fw/QueueConfig.hpp>
+#include <pubsub_itc_fw/QueueConfiguration.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
 #include <pubsub_itc_fw/ReactorConfiguration.hpp>
@@ -250,15 +250,15 @@ static int decode_all_framed(const uint8_t* data, int available,
 // Application thread helpers
 // ============================================================
 
-static QueueConfig make_queue_config() {
-    QueueConfig cfg{};
+static QueueConfiguration make_queue_config() {
+    QueueConfiguration cfg{};
     cfg.low_watermark  = 1;
     cfg.high_watermark = 64;
     return cfg;
 }
 
-static AllocatorConfig make_allocator_config(const std::string& name) {
-    AllocatorConfig cfg{};
+static AllocatorConfiguration make_allocator_config(const std::string& name) {
+    AllocatorConfiguration cfg{};
     cfg.pool_name        = name;
     cfg.objects_per_pool = 64;
     cfg.initial_pools    = 1;
@@ -290,7 +290,7 @@ public:
     RawListenerThread(QuillLogger& logger, Reactor& reactor)
         : ApplicationThread(logger, reactor, "RawListenerThread", ThreadID{2},
                             make_queue_config(), make_allocator_config("RawListenerPool"),
-                            ApplicationThreadConfig{}) {}
+                            ApplicationThreadConfiguration{}) {}
 
     std::atomic<bool> connection_established{false};
     std::atomic<bool> message_received{false};
@@ -350,7 +350,7 @@ public:
     BurstListenerThread(QuillLogger& logger, Reactor& reactor, int expected_count)
         : ApplicationThread(logger, reactor, "BurstListenerThread", ThreadID{2},
                             make_queue_config(), make_allocator_config("BurstListenerPool"),
-                            ApplicationThreadConfig{})
+                            ApplicationThreadConfiguration{})
         , expected_count_(expected_count) {}
 
     std::atomic<bool> connection_established{false};
@@ -406,7 +406,7 @@ public:
     PassiveListenerThread(QuillLogger& logger, Reactor& reactor)
         : ApplicationThread(logger, reactor, "PassiveListenerThread", ThreadID{2},
                             make_queue_config(), make_allocator_config("PassiveListenerPool"),
-                            ApplicationThreadConfig{}) {}
+                            ApplicationThreadConfiguration{}) {}
 
     std::atomic<bool> connection_established{false};
     std::atomic<bool> connection_lost{false};
@@ -485,7 +485,7 @@ TEST_F(RawBytesProtocolHandlerTest, RawByteRoundTrip) {
         make_reactor_config(), listener_registry, logger_->logger);
 
     listener_reactor->register_inbound_listener(
-        NetworkEndpointConfig{"127.0.0.1", 0}, ThreadID{2},
+        NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2},
         ProtocolType{ProtocolType::RawBytes}, raw_buffer_capacity);
 
     auto listener_thread = std::make_shared<RawListenerThread>(
@@ -536,7 +536,7 @@ TEST_F(RawBytesProtocolHandlerTest, FragmentedDelivery) {
         make_reactor_config(), listener_registry, logger_->logger);
 
     listener_reactor->register_inbound_listener(
-        NetworkEndpointConfig{"127.0.0.1", 0}, ThreadID{2},
+        NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2},
         ProtocolType{ProtocolType::RawBytes}, raw_buffer_capacity);
 
     auto listener_thread = std::make_shared<RawListenerThread>(
@@ -607,7 +607,7 @@ TEST_F(RawBytesProtocolHandlerTest, BurstDelivery) {
         make_reactor_config(), listener_registry, logger_->logger);
 
     listener_reactor->register_inbound_listener(
-        NetworkEndpointConfig{"127.0.0.1", 0}, ThreadID{2},
+        NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2},
         ProtocolType{ProtocolType::RawBytes}, raw_buffer_capacity);
 
     auto listener_thread = std::make_shared<BurstListenerThread>(
@@ -654,7 +654,7 @@ TEST_F(RawBytesProtocolHandlerTest, PeerDisconnect) {
         make_reactor_config(), listener_registry, logger_->logger);
 
     listener_reactor->register_inbound_listener(
-        NetworkEndpointConfig{"127.0.0.1", 0}, ThreadID{2},
+        NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2},
         ProtocolType{ProtocolType::RawBytes}, raw_buffer_capacity);
 
     auto listener_thread = std::make_shared<PassiveListenerThread>(
@@ -690,7 +690,7 @@ TEST_F(RawBytesProtocolHandlerTest, OneConnectionRejection) {
         make_reactor_config(), listener_registry, logger_->logger);
 
     listener_reactor->register_inbound_listener(
-        NetworkEndpointConfig{"127.0.0.1", 0}, ThreadID{2},
+        NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2},
         ProtocolType{ProtocolType::RawBytes}, raw_buffer_capacity);
 
     auto listener_thread = std::make_shared<PassiveListenerThread>(
@@ -742,7 +742,7 @@ TEST_F(RawBytesProtocolHandlerTest, IdleTimeout) {
         make_short_idle_reactor_config(), listener_registry, logger_->logger);
 
     listener_reactor->register_inbound_listener(
-        NetworkEndpointConfig{"127.0.0.1", 0}, ThreadID{2},
+        NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2},
         ProtocolType{ProtocolType::RawBytes}, raw_buffer_capacity);
 
     auto listener_thread = std::make_shared<PassiveListenerThread>(

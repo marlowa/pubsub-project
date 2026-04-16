@@ -44,13 +44,13 @@
 
 #include <gtest/gtest.h>
 
-#include <pubsub_itc_fw/AllocatorConfig.hpp>
+#include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThread.hpp>
-#include <pubsub_itc_fw/ApplicationThreadConfig.hpp>
+#include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
-#include <pubsub_itc_fw/NetworkEndpointConfig.hpp>
-#include <pubsub_itc_fw/QueueConfig.hpp>
+#include <pubsub_itc_fw/NetworkEndpointConfiguration.hpp>
+#include <pubsub_itc_fw/QueueConfiguration.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
 #include <pubsub_itc_fw/ReactorConfiguration.hpp>
@@ -65,15 +65,15 @@ namespace pubsub_itc_fw::tests {
 // Helpers
 // ============================================================
 
-static QueueConfig make_queue_config() {
-    QueueConfig cfg{};
+static QueueConfiguration make_queue_config() {
+    QueueConfiguration cfg{};
     cfg.low_watermark  = 1;
     cfg.high_watermark = 64;
     return cfg;
 }
 
-static AllocatorConfig make_allocator_config(const std::string& name) {
-    AllocatorConfig cfg{};
+static AllocatorConfiguration make_allocator_config(const std::string& name) {
+    AllocatorConfiguration cfg{};
     cfg.pool_name        = name;
     cfg.objects_per_pool = 64;
     cfg.initial_pools    = 1;
@@ -121,7 +121,7 @@ public:
                        const std::string& service_name)
         : ApplicationThread(logger, reactor, "OutboundTestThread", ThreadID{1},
                             make_queue_config(), make_allocator_config("OutboundTestPool"),
-                            ApplicationThreadConfig{})
+                            ApplicationThreadConfiguration{})
         , service_name_(service_name) {}
 
     std::atomic<bool> connection_established{false};
@@ -210,8 +210,8 @@ TEST_F(OutboundConnectionTest, ConnectTimeout) {
 
     ServiceRegistry registry;
     registry.add("slow_service",
-        NetworkEndpointConfig{"192.0.2.1", 9999}, // TEST-NET -- non-routable
-        NetworkEndpointConfig{});
+        NetworkEndpointConfiguration{"192.0.2.1", 9999}, // TEST-NET -- non-routable
+        NetworkEndpointConfiguration{});
 
     auto reactor = std::make_unique<Reactor>(cfg, registry, logger_->logger);
     auto thread  = std::make_shared<OutboundTestThread>(
@@ -270,8 +270,8 @@ TEST_F(OutboundConnectionTest, SecondaryEndpointRetry) {
 
     ServiceRegistry registry;
     registry.add("my_service",
-        NetworkEndpointConfig{"127.0.0.1", refused_port},
-        NetworkEndpointConfig{"127.0.0.1", listen_port});
+        NetworkEndpointConfiguration{"127.0.0.1", refused_port},
+        NetworkEndpointConfiguration{"127.0.0.1", listen_port});
 
     auto reactor = std::make_unique<Reactor>(cfg, registry, logger_->logger);
     auto thread  = std::make_shared<OutboundTestThread>(

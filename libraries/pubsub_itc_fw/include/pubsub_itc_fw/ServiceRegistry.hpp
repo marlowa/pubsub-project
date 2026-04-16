@@ -39,7 +39,7 @@
 #include <tuple>
 #include <unordered_map>
 
-#include <pubsub_itc_fw/NetworkEndpointConfig.hpp>
+#include <pubsub_itc_fw/NetworkEndpointConfiguration.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/ServiceEndpoints.hpp>
 
@@ -72,8 +72,8 @@ public:
      * @throws PreconditionAssertion if name is empty or has already been registered.
      */
     void add(const std::string& name,
-             NetworkEndpointConfig primary,
-             NetworkEndpointConfig secondary) {
+             NetworkEndpointConfiguration primary,
+             NetworkEndpointConfiguration secondary) {
         if (name.empty()) {
             throw PreconditionAssertion(
                 "ServiceRegistry::add: service name must not be empty",

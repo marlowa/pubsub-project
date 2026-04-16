@@ -29,7 +29,7 @@
 #include <pubsub_itc_fw/HighResolutionClock.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/MillisecondClock.hpp>
-#include <pubsub_itc_fw/NetworkEndpointConfig.hpp>
+#include <pubsub_itc_fw/NetworkEndpointConfiguration.hpp>
 #include <pubsub_itc_fw/ProtocolType.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
@@ -196,7 +196,7 @@ void Reactor::route_message(ThreadID target_id, EventMessage message) {
     target->get_queue().enqueue(std::move(message));
 }
 
-void Reactor::register_inbound_listener(NetworkEndpointConfig address,
+void Reactor::register_inbound_listener(NetworkEndpointConfiguration address,
                                         ThreadID target_thread_id,
                                         ProtocolType protocol_type,
                                         int64_t raw_buffer_capacity) {

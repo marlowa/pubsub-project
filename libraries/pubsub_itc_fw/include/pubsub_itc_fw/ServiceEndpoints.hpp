@@ -3,7 +3,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-#include <pubsub_itc_fw/NetworkEndpointConfig.hpp>
+#include <pubsub_itc_fw/NetworkEndpointConfiguration.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -15,8 +15,8 @@ namespace pubsub_itc_fw {
  * secondary address has been configured for this service.
  */
 struct ServiceEndpoints {
-    NetworkEndpointConfig primary;    ///< Primary endpoint. Must be configured (port != 0).
-    NetworkEndpointConfig secondary;  ///< Secondary (fallback) endpoint. port == 0 means not configured.
+    NetworkEndpointConfiguration primary;    ///< Primary endpoint. Must be configured (port != 0).
+    NetworkEndpointConfiguration secondary;  ///< Secondary (fallback) endpoint. port == 0 means not configured.
 };
 
 } // namespace pubsub_itc_fw

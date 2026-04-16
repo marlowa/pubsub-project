@@ -16,7 +16,7 @@
 #include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
 #include <pubsub_itc_fw/InboundConnection.hpp>
 #include <pubsub_itc_fw/InboundListener.hpp>
-#include <pubsub_itc_fw/NetworkEndpointConfig.hpp>
+#include <pubsub_itc_fw/NetworkEndpointConfiguration.hpp>
 #include <pubsub_itc_fw/ProtocolType.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/ReactorConfiguration.hpp>
@@ -92,7 +92,7 @@ public:
      * @param[in] raw_buffer_capacity Minimum MirroredBuffer capacity in bytes for RawBytes
      *                                listeners. Ignored for FrameworkPdu listeners.
      */
-    void register_inbound_listener(NetworkEndpointConfig address,
+    void register_inbound_listener(NetworkEndpointConfiguration address,
                                    ThreadID target_thread_id,
                                    ProtocolType protocol_type = ProtocolType{ProtocolType::FrameworkPdu},
                                    int64_t raw_buffer_capacity = 0);

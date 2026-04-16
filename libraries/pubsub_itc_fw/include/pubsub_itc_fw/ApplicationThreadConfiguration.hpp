@@ -14,7 +14,7 @@ namespace pubsub_itc_fw {
  * Threads within the same application may share the same configuration values or
  * use distinct ones depending on their roles.
  */
-struct ApplicationThreadConfig {
+struct ApplicationThreadConfiguration {
     /**
      * @brief Size in bytes of each slab used by this thread's outbound PDU slab allocator.
      *
