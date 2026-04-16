@@ -47,22 +47,22 @@ void InboundConnectionManager::register_inbound_listener(NetworkEndpointConfigur
                                                           int64_t raw_buffer_capacity)
 {
     InboundListener listener;
-    listener.address              = std::move(address);
-    listener.target_thread_id     = target_thread_id;
-    listener.protocol_type        = protocol_type;
-    listener.raw_buffer_capacity  = raw_buffer_capacity;
+    listener.configuration.address              = std::move(address);
+    listener.configuration.target_thread_id     = target_thread_id;
+    listener.configuration.protocol_type        = protocol_type;
+    listener.configuration.raw_buffer_capacity  = raw_buffer_capacity;
     inbound_listeners_staging_.push_back(std::move(listener));
 }
 
 bool InboundConnectionManager::initialize_listeners()
 {
     for (auto& listener : inbound_listeners_staging_) {
-        auto [addr, addr_error] = InetAddress::create(listener.address.host,
-                                                       listener.address.port);
+        auto [addr, addr_error] = InetAddress::create(listener.configuration.address.host,
+                                                       listener.configuration.address.port);
         if (!addr) {
             PUBSUB_LOG(logger_, FwLogLevel::Error,
                 "InboundConnectionManager::initialize_listeners: failed to resolve {}:{} — {}",
-                listener.address.host, listener.address.port, addr_error);
+                listener.configuration.address.host, listener.configuration.address.port, addr_error);
             return false;
         }
 
@@ -70,7 +70,7 @@ bool InboundConnectionManager::initialize_listeners()
         if (!acceptor) {
             PUBSUB_LOG(logger_, FwLogLevel::Error,
                 "InboundConnectionManager::initialize_listeners: failed to create acceptor on {}:{} — {}",
-                listener.address.host, listener.address.port, accept_error);
+                listener.configuration.address.host, listener.configuration.address.port, accept_error);
             return false;
         }
 
@@ -79,7 +79,7 @@ bool InboundConnectionManager::initialize_listeners()
 
         PUBSUB_LOG(logger_, FwLogLevel::Info,
             "InboundConnectionManager::initialize_listeners: listening on {}:{}",
-            listener.address.host, listener.address.port);
+            listener.configuration.address.host, listener.configuration.address.port);
 
         inbound_listeners_[listen_fd] = std::move(listener);
 
@@ -105,7 +105,7 @@ void InboundConnectionManager::on_accept(InboundListener& listener, ConnectionID
         if (!error.empty()) {
             PUBSUB_LOG(logger_, FwLogLevel::Error,
                 "InboundConnectionManager::on_accept: accept_connection failed on port {} — {}",
-                listener.address.port, error);
+                listener.configuration.address.port, error);
         }
         return; // EAGAIN — no connection waiting
     }
@@ -121,7 +121,7 @@ void InboundConnectionManager::on_accept(InboundListener& listener, ConnectionID
             "connection (connection id {}). Rejecting new connection attempt from {}. "
             "This indicates a framework misuse by the connecting application — "
             "only one peer should connect to a given framework listener port.",
-            listener.address.port,
+            listener.configuration.address.port,
             listener.current_connection_id.get_value(),
             peer_desc);
         socket->close();
@@ -130,12 +130,12 @@ void InboundConnectionManager::on_accept(InboundListener& listener, ConnectionID
 
     const int fd = socket->get_file_descriptor();
 
-    auto* target_thread = thread_lookup_.get_fast_path_thread(listener.target_thread_id);
+    auto* target_thread = thread_lookup_.get_fast_path_thread(listener.configuration.target_thread_id);
     if (target_thread == nullptr) {
         PUBSUB_LOG(logger_, FwLogLevel::Error,
             "InboundConnectionManager::on_accept: target thread {} not found — "
             "rejecting connection from {}",
-            listener.target_thread_id.get_value(), peer_desc);
+            listener.configuration.target_thread_id.get_value(), peer_desc);
         socket->close();
         return;
     }
@@ -145,11 +145,11 @@ void InboundConnectionManager::on_accept(InboundListener& listener, ConnectionID
     };
 
     std::unique_ptr<ProtocolHandlerInterface> handler;
-    if (listener.protocol_type == ProtocolType::RawBytes) {
+    if (listener.configuration.protocol_type == ProtocolType::RawBytes) {
         handler = std::make_unique<RawBytesProtocolHandler>(
             *socket,
             *target_thread,
-            listener.raw_buffer_capacity,
+            listener.configuration.raw_buffer_capacity,
             std::move(disconnect_handler),
             logger_);
     } else {
@@ -164,7 +164,7 @@ void InboundConnectionManager::on_accept(InboundListener& listener, ConnectionID
     auto conn = std::make_unique<InboundConnection>(
         id,
         std::move(socket),
-        listener.target_thread_id,
+        listener.configuration.target_thread_id,
         std::move(handler),
         peer_desc);
 
@@ -187,7 +187,7 @@ void InboundConnectionManager::on_accept(InboundListener& listener, ConnectionID
 
     PUBSUB_LOG(logger_, FwLogLevel::Info,
         "InboundConnectionManager::on_accept: accepted connection {} from {} on port {}",
-        id.get_value(), peer_desc, listener.address.port);
+        id.get_value(), peer_desc, listener.configuration.address.port);
 
     target_thread->get_queue().enqueue(
         EventMessage::create_connection_established_event(id));
