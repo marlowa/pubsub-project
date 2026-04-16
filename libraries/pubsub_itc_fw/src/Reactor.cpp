@@ -94,7 +94,7 @@ Reactor::Reactor(const ReactorConfiguration& reactor_configuration,
     : handlers_{}
     , threads_{}
     , threads_by_thread_id_{}
-    , command_queue_(reactor_configuration.command_queue_config_, reactor_configuration.command_allocator_config_)
+    , command_queue_(reactor_configuration.command_queue_configuration_, reactor_configuration.command_allocator_configuration_)
     , config_(reactor_configuration)
     , service_registry_(service_registry)
     , logger_(logger)

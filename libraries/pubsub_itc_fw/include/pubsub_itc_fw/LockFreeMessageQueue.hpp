@@ -43,8 +43,8 @@ public:
 
     LockFreeMessageQueue(const QueueConfig& queue_config,
                          const AllocatorConfig& allocator_config)
-        : queue_config_(queue_config)
-        , allocator_config_(allocator_config)
+        : queue_configuration_(queue_config)
+        , allocator_configuration_(allocator_config)
     {
     }
 
@@ -72,12 +72,12 @@ public:
         queue_.emplace_back(std::forward<Args>(args)...);
 
         int current_size = static_cast<int>(queue_.size());
-        if (queue_config_.gone_above_high_watermark_handler &&
-            current_size >= queue_config_.high_watermark &&
+        if (queue_configuration_.gone_above_high_watermark_handler &&
+            current_size >= queue_configuration_.high_watermark &&
             !is_high_watermark_breached_)
         {
             is_high_watermark_breached_ = true;
-            queue_config_.gone_above_high_watermark_handler(queue_config_.for_client_use);
+            queue_configuration_.gone_above_high_watermark_handler(queue_configuration_.for_client_use);
         }
     }
 
@@ -92,12 +92,12 @@ public:
         queue_.pop_front();
 
         int current_size = static_cast<int>(queue_.size());
-        if (queue_config_.gone_below_low_watermark_handler &&
-            current_size < queue_config_.low_watermark &&
+        if (queue_configuration_.gone_below_low_watermark_handler &&
+            current_size < queue_configuration_.low_watermark &&
             is_high_watermark_breached_)
         {
             is_high_watermark_breached_ = false;
-            queue_config_.gone_below_low_watermark_handler(queue_config_.for_client_use);
+            queue_configuration_.gone_below_low_watermark_handler(queue_configuration_.for_client_use);
         }
 
         return value;
@@ -111,8 +111,8 @@ public:
 private:
     mutable std::mutex mutex_;
     std::deque<T> queue_;
-    QueueConfig queue_config_;
-    AllocatorConfig allocator_config_;
+    QueueConfig queue_configuration_;
+    AllocatorConfig allocator_configuration_;
     bool shutting_down_{false};
     bool is_high_watermark_breached_{false};
 };
@@ -169,16 +169,16 @@ public:
         : stub_()
         , head_(&stub_)
         , tail_(&stub_)
-        , queue_config_(queue_config)
-        , allocator_config_(allocator_config)
-        , node_allocator_(allocator_config_.pool_name,
-                          allocator_config_.objects_per_pool,
-                          allocator_config_.initial_pools,
-                          allocator_config_.expansion_threshold_hint,
-                          allocator_config_.handler_for_pool_exhausted,
-                          allocator_config_.handler_for_invalid_free,
-                          allocator_config_.handler_for_huge_pages_error,
-                          allocator_config_.use_huge_pages_flag)
+        , queue_configuration_(queue_config)
+        , allocator_configuration_(allocator_config)
+        , node_allocator_(allocator_configuration_.pool_name,
+                          allocator_configuration_.objects_per_pool,
+                          allocator_configuration_.initial_pools,
+                          allocator_configuration_.expansion_threshold_hint,
+                          allocator_configuration_.handler_for_pool_exhausted,
+                          allocator_configuration_.handler_for_invalid_free,
+                          allocator_configuration_.handler_for_huge_pages_error,
+                          allocator_configuration_.use_huge_pages_flag)
         , size_{0}
     {
         stub_.next_.store(nullptr, std::memory_order_relaxed);
@@ -225,11 +225,11 @@ public:
         prev_head->next_.store(node, std::memory_order_release);
 
         int current_size = ++size_;
-        if (queue_config_.gone_above_high_watermark_handler &&
-            current_size >= queue_config_.high_watermark &&
+        if (queue_configuration_.gone_above_high_watermark_handler &&
+            current_size >= queue_configuration_.high_watermark &&
             !is_high_watermark_breached_.exchange(true))
         {
-            queue_config_.gone_above_high_watermark_handler(queue_config_.for_client_use);
+            queue_configuration_.gone_above_high_watermark_handler(queue_configuration_.for_client_use);
         }
     }
 
@@ -256,11 +256,11 @@ public:
             node_allocator_.deallocate(tail);
 
             int current_size = --size_;
-            if (queue_config_.gone_below_low_watermark_handler &&
-                current_size < queue_config_.low_watermark &&
+            if (queue_configuration_.gone_below_low_watermark_handler &&
+                current_size < queue_configuration_.low_watermark &&
                 is_high_watermark_breached_.exchange(false))
             {
-                queue_config_.gone_below_low_watermark_handler(queue_config_.for_client_use);
+                queue_configuration_.gone_below_low_watermark_handler(queue_configuration_.for_client_use);
             }
             return result;
         }
@@ -280,11 +280,11 @@ public:
             node_allocator_.deallocate(tail);
 
             int current_size = --size_;
-            if (queue_config_.gone_below_low_watermark_handler &&
-                current_size < queue_config_.low_watermark &&
+            if (queue_configuration_.gone_below_low_watermark_handler &&
+                current_size < queue_configuration_.low_watermark &&
                 is_high_watermark_breached_.exchange(false))
             {
-                queue_config_.gone_below_low_watermark_handler(queue_config_.for_client_use);
+                queue_configuration_.gone_below_low_watermark_handler(queue_configuration_.for_client_use);
             }
             return result;
         }
@@ -343,8 +343,8 @@ private:
     alignas(cache_line_size_) std::atomic<Node*> head_;
     alignas(cache_line_size_) Node* tail_;
 
-    QueueConfiguration queue_config_;
-    AllocatorConfiguration allocator_config_;
+    QueueConfiguration queue_configuration_;
+    AllocatorConfiguration allocator_configuration_;
     ExpandablePoolAllocator<Node> node_allocator_;
 
     std::atomic<int> size_{0};
