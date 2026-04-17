@@ -69,14 +69,15 @@ int Reactor::create_epoll_fd() {
 }
 
 int Reactor::create_signal_fd() {
-    // Block SIGTERM on the calling thread. Because this is called from the
+    // Block SIGTERM and SIGINT on the calling thread. Because this is called from the
     // Reactor constructor on the main thread before any ApplicationThreads
     // are spawned, all subsequently created threads inherit the blocked mask.
-    // SIGTERM will therefore never be delivered to any thread directly --
+    // SIGTERM/SIGINT will therefore never be delivered to any thread directly --
     // it is consumed exclusively via the signalfd registered with epoll.
     sigset_t mask;
     ::sigemptyset(&mask);
     ::sigaddset(&mask, SIGTERM);
+    ::sigaddset(&mask, SIGINT);
     if (::pthread_sigmask(SIG_BLOCK, &mask, nullptr) != 0) {
         throw PubSubItcException("pthread_sigmask failed in Reactor constructor");
     }
@@ -671,12 +672,9 @@ void Reactor::on_housekeeping_tick() {
 
 void Reactor::check_for_exited_threads() {
     const std::lock_guard<std::mutex> lock(thread_registry_mutex_);
-    PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "checking for exited threads");
     for (auto& [name, thread] : threads_) {
         if (thread != nullptr) {
             auto state = thread->get_lifecycle_state().as_tag();
-            PUBSUB_LOG(logger_, FwLogLevel::Info, "   thread {} state {}",
-                thread->get_thread_name(), thread->get_lifecycle_state().as_string());
             if (state == ThreadLifecycleState::ShuttingDown) {
                 auto rstate = lifecycle_.load(std::memory_order_acquire);
                 if (rstate == ReactorLifecycleState::Running) {
@@ -695,12 +693,9 @@ void Reactor::check_for_stuck_threads() {
     }
 
     const std::lock_guard<std::mutex> lock(thread_registry_mutex_);
-    PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "checking for stuck threads");
     for (auto& [name, thread] : threads_) {
         if (thread != nullptr) {
             auto state = thread->get_lifecycle_state().as_tag();
-            PUBSUB_LOG(logger_, FwLogLevel::Info, "   thread {} state {}",
-                thread->get_thread_name(), thread->get_lifecycle_state().as_string());
             if (state == ThreadLifecycleState::Operational) {
                 if (thread->get_time_event_started() <= thread->get_time_event_finished()) {
                     auto duration = thread->get_time_event_finished() - thread->get_time_event_started();
@@ -759,10 +754,8 @@ void Reactor::event_loop() {
     std::array<epoll_event, 64> events{};
 
     while (lifecycle_.load(std::memory_order_acquire) == ReactorLifecycleState::Running) {
-        PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "event_loop about to call epoll_wait");
         const int nfds = ::epoll_wait(epoll_fd_, events.data(),
                                       static_cast<int>(events.size()), -1);
-        PUBSUB_LOG(logger_, FwLogLevel::Info, "epoll_wait returned nfds = {}", nfds);
         if (nfds == -1) {
             if (errno == EINTR) {
                 continue;
@@ -867,11 +860,8 @@ void Reactor::process_control_commands() {
 }
 
 void Reactor::dispatch_events(int nfds, epoll_event* events) {
-    PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "entered dispatch_events");
-
     for (int i = 0; i < nfds; ++i) {
         const int fd = events[i].data.fd;
-
         if (fd == wake_fd_) {
             uint64_t dummy{0};
             PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "dispatch_events got event on wake_fd");
@@ -885,11 +875,11 @@ void Reactor::dispatch_events(int nfds, epoll_event* events) {
         }
 
         if (fd == signal_fd_) {
-            // Drain all pending signals from the signalfd. Multiple SIGTERMs
+            // Drain all pending signals from the signalfd. Multiple SIGTERMs/SIGINTs
             // may have been queued; we handle them all but only act once.
             struct signalfd_siginfo sig_info{};
             while (::read(signal_fd_, &sig_info, sizeof(sig_info)) == static_cast<ssize_t>(sizeof(sig_info))) {
-                if (sig_info.ssi_signo == SIGTERM) {
+                if (sig_info.ssi_signo == SIGTERM || sig_info.ssi_signo == SIGINT) {
                     handleSIGTERM();
                 }
             }
@@ -972,11 +962,8 @@ void Reactor::dispatch_events(int nfds, epoll_event* events) {
             PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "dispatch_events unknown fd, ignore defensively");
             continue;
         }
-        PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "dispatch_events about to handle event");
         handler_it->second->handle_event(events[i].events);
-        PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "dispatch_events event handled");
     }
-    PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "dispatch_events returning");
 }
 
 std::string Reactor::get_thread_name_from_id(ThreadID id) const {

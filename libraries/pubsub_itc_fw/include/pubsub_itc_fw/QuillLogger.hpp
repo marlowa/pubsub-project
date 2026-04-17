@@ -22,7 +22,22 @@ namespace pubsub_itc_fw {
 
 class QuillLogger {
 public:
-    ~QuillLogger() = default;
+    /**
+    * @brief Blocks SIGINT and SIGTERM on the calling thread before any threads
+    *        are spawned, including the quill backend thread.
+    *
+    * Must be called once on the main thread before constructing any QuillLogger
+    * instance. All threads spawned after this call inherit the blocked signal
+    * mask. The Reactor consumes these signals via signalfd.
+    *
+    * Failure to call this before constructing a QuillLogger will result in the
+    * quill backend thread having an unblocked signal mask, causing SIGINT or
+    * SIGTERM to terminate the process immediately via the default handler rather
+    * than being handled gracefully by the Reactor.
+    */
+    static void block_signals_before_construction();
+
+    ~QuillLogger();
 
     QuillLogger(const std::string& file_path,
                          FileOpenMode file_mode,

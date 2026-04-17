@@ -79,8 +79,6 @@ TimerHandler::TimerHandler(const Timer& timer, Reactor& reactor) : timer_(timer)
 }
 
 bool TimerHandler::handle_event(uint32_t events) {
-    PUBSUB_LOG_STR(reactor_.get_logger(), FwLogLevel::Info, "TimerHandle::handle_event");
-
     // 1. Must be a read event
     if (!(events & EPOLLIN)) {
         PUBSUB_LOG_STR(reactor_.get_logger(), FwLogLevel::Error, "handle_event not a read event");
@@ -99,7 +97,6 @@ bool TimerHandler::handle_event(uint32_t events) {
 
     // 3. Reactor-owned housekeeping timer (owner thread ID == 0)
     if (timer_.get_owner_thread_id().get_value() == 0) {
-        PUBSUB_LOG_STR(reactor_.get_logger(), FwLogLevel::Info, "handle_event calling housekeeping function");
         reactor_.on_housekeeping_tick();
         return true;
     }

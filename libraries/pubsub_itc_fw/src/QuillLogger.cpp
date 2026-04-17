@@ -4,6 +4,7 @@
 #include <atomic>
 #include <mutex> // for std::once_flag
 #include <memory>
+#include <csignal>
 #include <string>
 
 #include <cstdint>
@@ -38,7 +39,7 @@ void ensure_backend_started() {
 
 namespace pubsub_itc_fw {
 
-// Initialize static counter
+// Initialise static counter
 std::atomic<uint64_t> QuillLogger::instance_counter_{0};
 
 // Helper function to generate unique logger names
@@ -51,6 +52,22 @@ std::string QuillLogger::generate_unique_logger_name(const std::string& prefix) 
 std::string QuillLogger::generate_unique_sink_name(const std::string& prefix) {
     const uint64_t id = instance_counter_.fetch_add(1, std::memory_order_relaxed);
     return prefix + "_" + std::to_string(id);
+}
+
+void QuillLogger::block_signals_before_construction()
+{
+    sigset_t mask;
+    ::sigemptyset(&mask);
+    ::sigaddset(&mask, SIGTERM);
+    ::sigaddset(&mask, SIGINT);
+    ::pthread_sigmask(SIG_BLOCK, &mask, nullptr);
+}
+
+QuillLogger::~QuillLogger()
+{
+    if (quill_logger_ != nullptr) {
+        quill::Backend::stop();
+    }
 }
 
 QuillLogger::QuillLogger(const std::string& file_path,
