@@ -21,17 +21,32 @@
  * including commit_raw_bytes() and send_raw(), which is the production code
  * path that needs coverage.
  *
+ * MirroredBuffer re-delivery contract:
+ *   RawBytesProtocolHandler calls on_raw_socket_message() every time new
+ *   bytes arrive on the socket. Each call receives a view of ALL currently
+ *   unprocessed bytes starting from the tail -- not just the newly arrived
+ *   bytes. The tail only advances when the reactor processes a CommitRawBytes
+ *   command, which happens asynchronously. Between two on_raw_socket_message()
+ *   calls, if the tail has not yet advanced, payload() points to the same
+ *   start address and payload_size() is LARGER (old bytes + new bytes).
+ *
+ *   Application threads that decode statefully must track how many bytes they
+ *   have already decoded and skip them on re-entry. The pattern used here:
+ *     - bytes_decoded_: bytes decoded since the last tail advancement
+ *     - last_available_: payload_size() from the previous call
+ *   When payload_size() shrinks relative to last_available_, the tail advanced
+ *   (reactor processed our commit) -- reset bytes_decoded_ to 0.
+ *   Otherwise skip the first bytes_decoded_ bytes on each call.
+ *
  * Tests in this file:
  *
  *   RawByteRoundTrip
  *     Happy-path: raw socket sends one framed message, listener replies via
- *     send_raw(), raw socket reads and verifies the reply. Covers the basic
- *     on_data_ready / commit_bytes / send_prebuilt path.
+ *     send_raw(), raw socket reads and verifies the reply.
  *
  *   FragmentedDelivery
  *     The raw socket sends the 4-byte length prefix and the payload bytes in
- *     two separate ::send() calls with a short sleep between them to maximise
- *     the chance of separate TCP segments reaching the listener. The listener
+ *     two separate ::send() calls with a short sleep between them. The listener
  *     must return without acting on the first callback (incomplete message),
  *     then decode correctly when the full message has accumulated.
  *
@@ -45,9 +60,10 @@
  *     must detect recv==0 and deliver ConnectionLost.
  *
  *   OneConnectionRejection
- *     While the listener already has an established connection, a second raw
- *     socket attempts to connect. InboundConnectionManager must silently close
- *     it and deliver no event. The first connection must remain alive.
+ *     Tests the one-connection-per-listener rule for FrameworkPdu listeners.
+ *     RawBytes listeners allow multiple concurrent connections (e.g. a FIX
+ *     gateway serving multiple clients). The one-connection rule applies only
+ *     to FrameworkPdu listeners, which is what this test uses.
  *
  *   IdleTimeout
  *     The listener is configured with a very short idle timeout. The raw socket
@@ -106,10 +122,6 @@ static constexpr std::size_t length_prefix_size  = sizeof(uint32_t);
 // Raw POSIX socket helpers
 // ============================================================
 
-/*
- * Builds a framed message [ uint32_t length (big-endian) ][ payload bytes ]
- * into a std::string and returns it. No framework dependency.
- */
 static std::string make_framed(const std::string& payload) {
     const uint32_t length_be = htonl(static_cast<uint32_t>(payload.size()));
     std::string frame(length_prefix_size + payload.size(), '\0');
@@ -118,68 +130,42 @@ static std::string make_framed(const std::string& payload) {
     return frame;
 }
 
-/*
- * Sends all bytes in buf on sock_fd, retrying on short writes.
- * Returns true on success.
- */
 static bool send_all(int sock_fd, const void* buf, std::size_t size) {
     const auto* ptr = static_cast<const char*>(buf);
     std::size_t remaining = size;
     while (remaining > 0) {
         const ssize_t sent = ::send(sock_fd, ptr, remaining, 0);
-        if (sent <= 0) {
-            return false;
-        }
+        if (sent <= 0) return false;
         ptr       += sent;
         remaining -= static_cast<std::size_t>(sent);
     }
     return true;
 }
 
-/*
- * Receives exactly size bytes from sock_fd into buf, retrying on short reads.
- * Returns true on success.
- */
 static bool recv_all(int sock_fd, void* buf, std::size_t size) {
     auto* ptr = static_cast<char*>(buf);
     std::size_t remaining = size;
     while (remaining > 0) {
         const ssize_t received = ::recv(sock_fd, ptr, remaining, 0);
-        if (received <= 0) {
-            return false;
-        }
+        if (received <= 0) return false;
         ptr       += received;
         remaining -= static_cast<std::size_t>(received);
     }
     return true;
 }
 
-/*
- * Reads and decodes one framed reply from sock_fd.
- * Returns the decoded payload string, or empty string on error.
- */
 static std::string recv_framed(int sock_fd) {
     uint32_t length_be = 0;
-    if (!recv_all(sock_fd, &length_be, sizeof(length_be))) {
-        return {};
-    }
+    if (!recv_all(sock_fd, &length_be, sizeof(length_be))) return {};
     const uint32_t payload_length = ntohl(length_be);
     std::string payload(payload_length, '\0');
-    if (!recv_all(sock_fd, payload.data(), payload_length)) {
-        return {};
-    }
+    if (!recv_all(sock_fd, payload.data(), payload_length)) return {};
     return payload;
 }
 
-/*
- * Opens and connects a raw TCP socket to 127.0.0.1:port.
- * Returns the fd on success or -1 on failure.
- */
 static int connect_raw_socket(uint16_t port) {
     const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (fd == -1) {
-        return -1;
-    }
+    if (fd == -1) return -1;
     sockaddr_in addr{};
     addr.sin_family      = AF_INET;
     addr.sin_port        = htons(port);
@@ -192,37 +178,24 @@ static int connect_raw_socket(uint16_t port) {
 }
 
 // ============================================================
-// Test protocol decode helpers (used by listener threads)
+// Test protocol decode helpers
 // ============================================================
 
-/*
- * Attempts to decode one length-prefixed message from a raw byte view.
- * Returns the payload on success; sets bytes_consumed. Returns empty and
- * bytes_consumed=0 if the message is incomplete.
- */
 static std::string try_decode_framed(const uint8_t* data, int available,
                                      int64_t& bytes_consumed) {
     bytes_consumed = 0;
-    if (available < static_cast<int>(length_prefix_size)) {
-        return {};
-    }
+    if (available < static_cast<int>(length_prefix_size)) return {};
     uint32_t length_be = 0;
     std::memcpy(&length_be, data, length_prefix_size);
     const uint32_t payload_length = ntohl(length_be);
     const int64_t total = static_cast<int64_t>(length_prefix_size + payload_length);
-    if (available < static_cast<int>(total)) {
-        return {};
-    }
+    if (available < static_cast<int>(total)) return {};
     std::string payload(reinterpret_cast<const char*>(data + length_prefix_size),
                         payload_length);
     bytes_consumed = total;
     return payload;
 }
 
-/*
- * Decodes all complete framed messages from the buffer, appending payloads
- * to results and accumulating total_consumed.
- */
 static int decode_all_framed(const uint8_t* data, int available,
                               std::vector<std::string>& results,
                               int64_t& total_consumed) {
@@ -230,13 +203,10 @@ static int decode_all_framed(const uint8_t* data, int available,
     total_consumed     = 0;
     int remaining      = available;
     const uint8_t* ptr = data;
-
     while (remaining > 0) {
         int64_t consumed = 0;
         std::string payload = try_decode_framed(ptr, remaining, consumed);
-        if (consumed == 0) {
-            break;
-        }
+        if (consumed == 0) break;
         results.push_back(std::move(payload));
         ptr            += consumed;
         remaining      -= static_cast<int>(consumed);
@@ -318,20 +288,28 @@ protected:
         const uint8_t* data = message.payload();
         const int available = message.payload_size();
 
-        if (data == nullptr || available <= 0) {
-            return;
+        if (data == nullptr || available <= 0) return;
+
+        // If available shrank, the reactor processed our commit and the tail
+        // advanced -- reset decode tracking.
+        if (available < last_available_) {
+            bytes_decoded_ = 0;
         }
+        last_available_ = available;
+
+        const int unprocessed = available - bytes_decoded_;
+        if (unprocessed <= 0) return;
 
         int64_t bytes_consumed = 0;
-        std::string payload = try_decode_framed(data, available, bytes_consumed);
-        if (bytes_consumed == 0) {
-            return; // incomplete -- wait for more data
-        }
+        std::string payload = try_decode_framed(
+            data + bytes_decoded_, unprocessed, bytes_consumed);
+        if (bytes_consumed == 0) return; // incomplete -- wait for more data
 
         received_payload = payload;
         message_received.store(true, std::memory_order_release);
 
-        commit_raw_bytes(conn_id, bytes_consumed);
+        bytes_decoded_ += static_cast<int>(bytes_consumed);
+        commit_raw_bytes(conn_id, static_cast<int64_t>(bytes_decoded_));
 
         const std::string reply = make_framed(response_payload);
         send_raw(conn_id, reply.data(), static_cast<uint32_t>(reply.size()));
@@ -339,6 +317,10 @@ protected:
     }
 
     void on_itc_message([[maybe_unused]] const EventMessage& msg) override {}
+
+private:
+    int bytes_decoded_{0};
+    int last_available_{0};
 };
 
 // ============================================================
@@ -375,15 +357,25 @@ protected:
         const uint8_t* data = message.payload();
         const int available = message.payload_size();
 
-        if (data == nullptr || available <= 0) {
-            return;
+        if (data == nullptr || available <= 0) return;
+
+        // If available shrank, the reactor processed our commit and the tail
+        // advanced -- reset decode tracking.
+        if (available < last_available_) {
+            bytes_decoded_ = 0;
         }
+        last_available_ = available;
+
+        const int unprocessed = available - bytes_decoded_;
+        if (unprocessed <= 0) return;
 
         int64_t total_consumed = 0;
-        decode_all_framed(data, available, received_payloads, total_consumed);
+        decode_all_framed(data + bytes_decoded_, unprocessed,
+                          received_payloads, total_consumed);
 
         if (total_consumed > 0) {
-            commit_raw_bytes(conn_id, total_consumed);
+            bytes_decoded_ += static_cast<int>(total_consumed);
+            commit_raw_bytes(conn_id, static_cast<int64_t>(bytes_decoded_));
         }
 
         if (static_cast<int>(received_payloads.size()) >= expected_count_) {
@@ -395,6 +387,8 @@ protected:
 
 private:
     int expected_count_;
+    int bytes_decoded_{0};
+    int last_available_{0};
 };
 
 // ============================================================
@@ -426,9 +420,7 @@ protected:
         shutdown("connection lost");
     }
 
-    // Does not commit bytes -- used by IdleTimeout.
     void on_raw_socket_message([[maybe_unused]] const EventMessage& msg) override {}
-
     void on_itc_message([[maybe_unused]] const EventMessage& msg) override {}
 };
 
@@ -449,9 +441,7 @@ protected:
         const auto deadline =
             std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
         while (!pred()) {
-            if (std::chrono::steady_clock::now() > deadline) {
-                return false;
-            }
+            if (std::chrono::steady_clock::now() > deadline) return false;
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
         return true;
@@ -468,9 +458,7 @@ protected:
     static void shutdown_and_join(Reactor& reactor, std::thread& reactor_thread,
                                   const std::string& reason = "test complete") {
         reactor.shutdown(reason);
-        if (reactor_thread.joinable()) {
-            reactor_thread.join();
-        }
+        if (reactor_thread.joinable()) reactor_thread.join();
     }
 
     std::unique_ptr<LoggerWithSink> logger_;
@@ -495,7 +483,6 @@ TEST_F(RawBytesProtocolHandlerTest, RawByteRoundTrip) {
     std::thread listener_reactor_thread([&]() { listener_reactor->run(); });
     const uint16_t listen_port = start_listener_reactor(*listener_reactor);
 
-    // Use a raw POSIX socket as the connector.
     const int sock_fd = connect_raw_socket(listen_port);
     ASSERT_NE(sock_fd, -1) << "Failed to connect raw socket";
 
@@ -503,7 +490,6 @@ TEST_F(RawBytesProtocolHandlerTest, RawByteRoundTrip) {
         return listener_thread->connection_established.load(std::memory_order_acquire);
     })) << "Listener: ConnectionEstablished not received";
 
-    // Send one framed message.
     const std::string frame = make_framed(request_payload);
     ASSERT_TRUE(send_all(sock_fd, frame.data(), frame.size()))
         << "Failed to send framed request";
@@ -512,10 +498,8 @@ TEST_F(RawBytesProtocolHandlerTest, RawByteRoundTrip) {
         return listener_thread->reply_sent.load(std::memory_order_acquire);
     })) << "Listener: reply not sent";
 
-    // Read the reply on the raw socket.
     const std::string reply = recv_framed(sock_fd);
     EXPECT_EQ(reply, response_payload);
-
     EXPECT_EQ(listener_thread->received_payload, request_payload);
 
     ::close(sock_fd);
@@ -549,9 +533,6 @@ TEST_F(RawBytesProtocolHandlerTest, FragmentedDelivery) {
     const int sock_fd = connect_raw_socket(listen_port);
     ASSERT_NE(sock_fd, -1) << "Failed to connect raw socket";
 
-    // Disable Nagle's algorithm so that the two sends below are not coalesced
-    // by the kernel into a single TCP segment, maximising the chance of the
-    // listener seeing an incomplete message on the first callback.
     const int one = 1;
     ::setsockopt(sock_fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
 
@@ -559,15 +540,12 @@ TEST_F(RawBytesProtocolHandlerTest, FragmentedDelivery) {
         return listener_thread->connection_established.load(std::memory_order_acquire);
     })) << "Listener: ConnectionEstablished not received";
 
-    // Send length prefix only.
     const uint32_t length_be = htonl(static_cast<uint32_t>(request_payload.size()));
     ASSERT_TRUE(send_all(sock_fd, &length_be, sizeof(length_be)))
         << "Failed to send length prefix";
 
-    // Brief pause to let the reactor process the first partial delivery.
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
 
-    // Send payload bytes.
     ASSERT_TRUE(send_all(sock_fd, request_payload.data(), request_payload.size()))
         << "Failed to send payload";
 
@@ -624,7 +602,6 @@ TEST_F(RawBytesProtocolHandlerTest, BurstDelivery) {
         return listener_thread->connection_established.load(std::memory_order_acquire);
     })) << "Listener: ConnectionEstablished not received";
 
-    // Send all messages back-to-back as a single burst.
     for (const auto& payload : burst_payloads) {
         const std::string frame = make_framed(payload);
         ASSERT_TRUE(send_all(sock_fd, frame.data(), frame.size()))
@@ -671,7 +648,6 @@ TEST_F(RawBytesProtocolHandlerTest, PeerDisconnect) {
         return listener_thread->connection_established.load(std::memory_order_acquire);
     })) << "Listener: ConnectionEstablished not received";
 
-    // Close the socket -- sends FIN, triggering recv==0 in on_data_ready().
     ::close(sock_fd);
 
     EXPECT_TRUE(wait_for([&]() {
@@ -682,16 +658,19 @@ TEST_F(RawBytesProtocolHandlerTest, PeerDisconnect) {
 }
 
 // ============================================================
-// Test: one-connection-per-listener enforcement
+// Test: one-connection-per-listener enforcement (FrameworkPdu listener).
+//
+// RawBytes listeners allow multiple concurrent connections. The one-connection
+// rule applies only to FrameworkPdu listeners, which is what this test uses.
 // ============================================================
 TEST_F(RawBytesProtocolHandlerTest, OneConnectionRejection) {
     ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(
         make_reactor_config(), listener_registry, logger_->logger);
 
+    // FrameworkPdu listener -- one-connection rule enforced.
     listener_reactor->register_inbound_listener(
-        NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2},
-        ProtocolType{ProtocolType::RawBytes}, raw_buffer_capacity);
+        NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
 
     auto listener_thread = std::make_shared<PassiveListenerThread>(
         logger_->logger, *listener_reactor);
@@ -700,7 +679,6 @@ TEST_F(RawBytesProtocolHandlerTest, OneConnectionRejection) {
     std::thread listener_reactor_thread([&]() { listener_reactor->run(); });
     const uint16_t listen_port = start_listener_reactor(*listener_reactor);
 
-    // First connection -- must be accepted.
     const int first_fd = connect_raw_socket(listen_port);
     ASSERT_NE(first_fd, -1) << "First socket failed to connect";
 
@@ -708,18 +686,14 @@ TEST_F(RawBytesProtocolHandlerTest, OneConnectionRejection) {
         return listener_thread->connection_established.load(std::memory_order_acquire);
     })) << "Listener: ConnectionEstablished not received for first connection";
 
-    // Second connection -- must be silently rejected.
     const int second_fd = connect_raw_socket(listen_port);
     ASSERT_NE(second_fd, -1) << "Second socket failed to connect at TCP level";
 
-    // Give the reactor time to process and silently close the second socket.
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    // Only one ConnectionEstablished must have been delivered.
     EXPECT_EQ(listener_thread->connection_established_count.load(std::memory_order_acquire), 1)
         << "Listener received more than one ConnectionEstablished -- rejection failed";
 
-    // The first connection must still be alive.
     EXPECT_FALSE(listener_thread->connection_lost.load(std::memory_order_acquire))
         << "First connection was incorrectly lost after second connector arrived";
 
@@ -752,7 +726,6 @@ TEST_F(RawBytesProtocolHandlerTest, IdleTimeout) {
     std::thread listener_reactor_thread([&]() { listener_reactor->run(); });
     const uint16_t listen_port = start_listener_reactor(*listener_reactor);
 
-    // Connect and send nothing -- the connection will go idle.
     const int sock_fd = connect_raw_socket(listen_port);
     ASSERT_NE(sock_fd, -1) << "Failed to connect raw socket";
 
@@ -760,7 +733,6 @@ TEST_F(RawBytesProtocolHandlerTest, IdleTimeout) {
         return listener_thread->connection_established.load(std::memory_order_acquire);
     })) << "Listener: ConnectionEstablished not received";
 
-    // Idle timeout is 300ms, check interval 50ms. Allow 2 seconds total.
     EXPECT_TRUE(wait_for([&]() {
         return listener_thread->connection_lost.load(std::memory_order_acquire);
     }, 2000)) << "Listener: ConnectionLost not received after idle timeout";

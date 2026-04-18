@@ -72,7 +72,8 @@ void RawBytesProtocolHandler::on_data_ready()
     buffer_.advance_head(bytes_read);
 
     target_thread_.get_queue().enqueue(
-        EventMessage::create_raw_socket_message(connection_id_, buffer_.read_ptr(),
+        EventMessage::create_raw_socket_message(connection_id_,
+                                                buffer_.read_ptr(),
                                                 static_cast<int>(buffer_.bytes_available())));
 }
 

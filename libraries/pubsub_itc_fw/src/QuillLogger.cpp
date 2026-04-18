@@ -65,9 +65,13 @@ void QuillLogger::block_signals_before_construction()
 
 QuillLogger::~QuillLogger()
 {
-    if (quill_logger_ != nullptr) {
-        quill::Backend::stop();
-    }
+    // Do not call quill::Backend::stop here.
+    // The only way to get the logger to flush here seems to be to change to immediate flush
+    // and then log something. But that does not seem nice so we leave it for now.
+#if 0
+    quill_logger_->set_immediate_flush(true);
+    LOG_CRITICAL(quill_logger_, "Logging finished");
+#endif
 }
 
 QuillLogger::QuillLogger(const std::string& file_path,

@@ -144,8 +144,6 @@ public:
                const QueueConfiguration& queueConfig, const AllocatorConfiguration& allocatorConfig)
         : ApplicationThread(logger, reactor, name, id, queueConfig, allocatorConfig, ApplicationThreadConfiguration{})
     {
-        std::cerr << fmt::format("{}:{} got here\n", __FILE__, __LINE__);
-
     }
 
     void on_initial_event() override
@@ -302,13 +300,11 @@ public:
 
 TEST_F(ApplicationThreadTest, GetThreadNameReturnsCorrectName)
 {
-    std::cerr << fmt::format("{}:{} got here\n", __FILE__, __LINE__);
     const TestThread thread(logger_with_sink_.logger,
                       *reactor_,
                       "GetThreadNameTest", ThreadID(123),
                       make_queue_config(), make_allocator_config());
 
-    std::cerr << fmt::format("{}:{} got here\n", __FILE__, __LINE__);
     EXPECT_EQ(thread.get_thread_name(), "GetThreadNameTest");
 }
 

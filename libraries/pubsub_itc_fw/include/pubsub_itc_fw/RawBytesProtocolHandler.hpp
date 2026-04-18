@@ -8,6 +8,7 @@
 #include <memory>
 
 #include <pubsub_itc_fw/ApplicationThread.hpp>
+#include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/MirroredBuffer.hpp>
 #include <pubsub_itc_fw/PduFramer.hpp>
 #include <pubsub_itc_fw/ProtocolHandlerInterface.hpp>
@@ -80,6 +81,10 @@ public:
     /**
      * @brief Constructs a RawBytesProtocolHandler for an already-connected socket.
      *
+     * @param[in] connection_id      The ConnectionID assigned to this connection.
+     *                               Included in every RawSocketCommunication event
+     *                               so the application can demultiplex messages
+     *                               when multiple raw connections are active.
      * @param[in] socket             The connected TCP socket. Must outlive this object.
      * @param[in] target_thread      The ApplicationThread to receive
      *                               RawSocketCommunication events. Must outlive this object.
@@ -119,7 +124,7 @@ public:
      * @param[in] bytes Number of bytes consumed by the application.
      * @throws PreconditionAssertion if bytes is negative or exceeds bytes_available().
      */
-    void commit_bytes(int64_t bytes) override;
+    void commit_bytes(int64_t bytes);
 
     /**
      * @brief Initiates a zero-copy send of a pre-built outbound frame.
@@ -162,7 +167,7 @@ public:
 private:
     void release_pending_send();
 
-    ConnectionID connection_id_;
+    ConnectionID        connection_id_;
     TcpSocket&          socket_;
     ApplicationThread&  target_thread_;
     std::function<void()> disconnect_handler_;
