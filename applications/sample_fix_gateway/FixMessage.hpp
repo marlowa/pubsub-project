@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <string>
+#include <string_view>
 #include <unordered_map>
 
 namespace sample_fix_gateway {
@@ -141,5 +142,17 @@ namespace Tag {
     static constexpr int LeavesQty     = 151;
     static constexpr int Text          = 58;
 } // namespace Tag
+
+/**
+ * @brief The expected byte sequence at the start of every inbound FIX 5.0SP2
+ *        / FIXT 1.1 message stream.
+ *
+ * Any inbound connection whose first bytes do not match this preamble is not
+ * a valid FIX FIXT.1.1 client and should be disconnected immediately.
+ *
+ * The length is computed at compile time via string_view::size() -- no magic
+ * numbers are needed in code that checks the preamble.
+ */
+static constexpr std::string_view expected_preamble = "8=FIXT.1.1\x01";
 
 } // namespace sample_fix_gateway

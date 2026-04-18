@@ -151,13 +151,15 @@ public:
     [[nodiscard]] static EventMessage create_itc_message(ThreadID originating_thread_id, const uint8_t* data, int size);
 
     /**
+     * TODO  connection_id
      * @brief Factory method for raw socket data (e.g. for foreign protocols).
      * @param[in] data Raw pointer to the socket data.
      * @param[in] size Size of the data in bytes.
      * @return EventMessage instance.
      */
-    [[nodiscard]] static EventMessage create_raw_socket_message(const uint8_t* data, int size);
-
+    [[nodiscard]] static EventMessage create_raw_socket_message(ConnectionID connection_id,
+                                                                 const uint8_t* data,
+                                                                 int size);
     /**
      * @brief Factory method for framework PDU messages.
      *

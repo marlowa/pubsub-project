@@ -179,6 +179,12 @@ void ApplicationThread::connect_to_service(const std::string& service_name)
 
 void ApplicationThread::commit_raw_bytes(ConnectionID conn_id, int64_t bytes_consumed)
 {
+    if (active_connection_ids_.find(conn_id) == active_connection_ids_.end()) {
+        throw PreconditionAssertion(
+            fmt::format("ApplicationThread::commit_raw_bytes: ConnectionID {} "
+                        "does not belong to this thread", conn_id.get_value()),
+            __FILE__, __LINE__);
+    }
     ReactorControlCommand command(ReactorControlCommand::CommandTag::CommitRawBytes);
     command.connection_id_  = conn_id;
     command.bytes_consumed_ = bytes_consumed;
@@ -187,6 +193,13 @@ void ApplicationThread::commit_raw_bytes(ConnectionID conn_id, int64_t bytes_con
 
 void ApplicationThread::send_raw(ConnectionID conn_id, const void* data, uint32_t size)
 {
+    if (active_connection_ids_.find(conn_id) == active_connection_ids_.end()) {
+        throw PreconditionAssertion(
+            fmt::format("ApplicationThread::send_raw: ConnectionID {} "
+                        "does not belong to this thread", conn_id.get_value()),
+            __FILE__, __LINE__);
+    }
+
     if (data == nullptr) {
         throw PreconditionAssertion(
             "ApplicationThread::send_raw: data must not be nullptr", __FILE__, __LINE__);
@@ -377,6 +390,7 @@ void ApplicationThread::process_message(EventMessage& message) {
         }
 
         case EventType::ConnectionEstablished: {
+            active_connection_ids_.insert(message.connection_id());
             on_connection_established(message.connection_id());
             break;
         }
@@ -387,6 +401,7 @@ void ApplicationThread::process_message(EventMessage& message) {
         }
 
         case EventType::ConnectionLost: {
+            active_connection_ids_.erase(message.connection_id());
             on_connection_lost(message.connection_id(), message.reason());
             break;
         }

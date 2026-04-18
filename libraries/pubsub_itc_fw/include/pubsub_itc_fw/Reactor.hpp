@@ -112,7 +112,7 @@ public:
      * May also be called programmatically (e.g. from tests) to simulate a
      * SIGTERM without sending an actual signal.
      */
-    void handleSIGTERM();
+    void handle_sigterm_and_singint();
 
     /**
      * @brief Registers an event handler with the reactor's event loop.

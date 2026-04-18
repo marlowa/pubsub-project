@@ -20,12 +20,14 @@
 
 namespace pubsub_itc_fw {
 
-RawBytesProtocolHandler::RawBytesProtocolHandler(TcpSocket& socket,
+RawBytesProtocolHandler::RawBytesProtocolHandler(ConnectionID connection_id,
+                                                 TcpSocket& socket,
                                                  ApplicationThread& target_thread,
                                                  int64_t buffer_capacity,
                                                  std::function<void()> disconnect_handler,
                                                  QuillLogger& logger)
-    : socket_(socket)
+    : connection_id_(connection_id)
+    , socket_(socket)
     , target_thread_(target_thread)
     , disconnect_handler_(std::move(disconnect_handler))
     , logger_(logger)
@@ -70,7 +72,7 @@ void RawBytesProtocolHandler::on_data_ready()
     buffer_.advance_head(bytes_read);
 
     target_thread_.get_queue().enqueue(
-        EventMessage::create_raw_socket_message(buffer_.read_ptr(),
+        EventMessage::create_raw_socket_message(connection_id_, buffer_.read_ptr(),
                                                 static_cast<int>(buffer_.bytes_available())));
 }
 

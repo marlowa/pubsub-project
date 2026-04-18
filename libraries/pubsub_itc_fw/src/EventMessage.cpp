@@ -16,7 +16,6 @@ namespace pubsub_itc_fw {
 // Factory method implementations
 EventMessage EventMessage::create_reactor_event(EventType type)
 {
-    // Reactor events have no payload
     EventMessage msg(type, nullptr, 0);
     return msg;
 }
@@ -50,9 +49,12 @@ EventMessage EventMessage::create_itc_message(ThreadID originating_thread_id,
     return msg;
 }
 
-EventMessage EventMessage::create_raw_socket_message(const uint8_t* data, int size)
+EventMessage EventMessage::create_raw_socket_message(ConnectionID connection_id,
+                                                      const uint8_t* data,
+                                                      int size)
 {
     EventMessage msg(EventType(EventType::RawSocketCommunication), data, size);
+    msg.header_.connection_id = connection_id;
     return msg;
 }
 

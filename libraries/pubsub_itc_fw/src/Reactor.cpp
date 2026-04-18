@@ -220,15 +220,29 @@ int Reactor::run() {
         return -1;
     }
 
-    event_loop();
+    bool exception_caught = false;
+
+    try {
+        event_loop();
+    } catch (const std::exception& ex) {
+        PUBSUB_LOG(logger_, FwLogLevel::Error,
+            "Reactor::run: unhandled exception in event loop: {}", ex.what());
+        shutdown(fmt::format("reactor event loop terminated due to exception: {}", ex.what()));
+        exception_caught = true;
+    } catch (...) {
+        PUBSUB_LOG_STR(logger_, FwLogLevel::Error,
+            "Reactor::run: unknown exception in event loop");
+        shutdown("reactor event loop terminated due to unknown exception");
+        exception_caught = true;
+    }
+
     cancel_all_timer_fds_for_thread(ThreadID(system_thread_id_value));
     lifecycle_.store(ReactorLifecycleState::FinalizingThreads, std::memory_order_release);
     finalize_threads_after_shutdown();
     lifecycle_.store(ReactorLifecycleState::Finished, std::memory_order_release);
 
     PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "Reactor::run has finished. Returning.");
-
-    return 0;
+    return exception_caught ? -1 : 0;
 }
 
 void Reactor::shutdown(const std::string& reason) {
@@ -880,7 +894,7 @@ void Reactor::dispatch_events(int nfds, epoll_event* events) {
             struct signalfd_siginfo sig_info{};
             while (::read(signal_fd_, &sig_info, sizeof(sig_info)) == static_cast<ssize_t>(sizeof(sig_info))) {
                 if (sig_info.ssi_signo == SIGTERM || sig_info.ssi_signo == SIGINT) {
-                    handleSIGTERM();
+                    handle_sigterm_and_singint();
                 }
             }
             continue;
@@ -977,9 +991,9 @@ std::string Reactor::get_thread_name_from_id(ThreadID id) const {
     return it->second->get_thread_name();
 }
 
-void Reactor::handleSIGTERM() {
+void Reactor::handle_sigterm_and_singint() {
     PUBSUB_LOG_STR(logger_, FwLogLevel::Info,
-        "Reactor::handleSIGTERM: SIGTERM received -- broadcasting Termination to all threads");
+        "Reactor::handle_sigterm_and_singint: SIGTERM/SIGINT received -- broadcasting Termination to all threads");
 
     // Broadcast Termination to all registered threads so each can perform
     // any necessary cleanup before the reactor shuts down.

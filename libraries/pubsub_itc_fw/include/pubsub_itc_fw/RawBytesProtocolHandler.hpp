@@ -89,7 +89,8 @@ public:
      *                               a read error occurs, or the buffer overflows.
      * @param[in] logger             Logger for diagnostics. Must outlive this object.
      */
-    RawBytesProtocolHandler(TcpSocket& socket,
+    RawBytesProtocolHandler(ConnectionID connection_id,
+                             TcpSocket& socket,
                              ApplicationThread& target_thread,
                              int64_t buffer_capacity,
                              std::function<void()> disconnect_handler,
@@ -118,7 +119,7 @@ public:
      * @param[in] bytes Number of bytes consumed by the application.
      * @throws PreconditionAssertion if bytes is negative or exceeds bytes_available().
      */
-    void commit_bytes(int64_t bytes);
+    void commit_bytes(int64_t bytes) override;
 
     /**
      * @brief Initiates a zero-copy send of a pre-built outbound frame.
@@ -161,6 +162,7 @@ public:
 private:
     void release_pending_send();
 
+    ConnectionID connection_id_;
     TcpSocket&          socket_;
     ApplicationThread&  target_thread_;
     std::function<void()> disconnect_handler_;

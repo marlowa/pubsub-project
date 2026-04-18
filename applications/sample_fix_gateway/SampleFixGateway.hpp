@@ -4,17 +4,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <memory>
-#include <string>
 
-#include <pubsub_itc_fw/FileOpenMode.hpp>
-#include <pubsub_itc_fw/NetworkEndpointConfiguration.hpp>
-#include <pubsub_itc_fw/ProtocolType.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
 #include <pubsub_itc_fw/ReactorConfiguration.hpp>
 #include <pubsub_itc_fw/ServiceRegistry.hpp>
-#include <pubsub_itc_fw/ThreadID.hpp>
 
+#include "FixGatewayConfiguration.hpp"
 #include "FixGatewayThread.hpp"
 
 namespace sample_fix_gateway {
@@ -25,51 +21,48 @@ namespace sample_fix_gateway {
  * SampleFixGateway owns all framework objects -- the logger, reactor, and
  * gateway thread -- and wires them together. It registers a single inbound
  * RawBytes listener on the configured host and port, registers the
- * FixGatewayThread with the reactor, and runs until a SIGTERM is received
- * or the reactor shuts down for any other reason.
- *
- * Configuration is hardcoded for the sample. A production gateway would
- * load configuration from a TOML file.
+ * FixGatewayThread with the reactor, and runs until a SIGTERM or SIGINT is
+ * received or the reactor shuts down for any other reason.
  *
  * Usage:
- *   SampleFixGateway gateway;
- *   gateway.run();
+ *   FixGatewayConfiguration config;
+ *   config.logon_timeout = std::chrono::seconds{10};  // override defaults as needed
+ *   SampleFixGateway gateway{config};
+ *   return gateway.run();
  */
 class SampleFixGateway {
 public:
     /**
-     * @brief Constructs the gateway with hardcoded sample configuration.
+     * @brief Constructs the gateway with the given configuration.
      *
      * Creates the logger, reactor, and gateway thread. Registers the inbound
      * listener and the gateway thread with the reactor. Does not start the
      * reactor event loop -- call run() for that.
+     *
+     * @param[in] config Gateway configuration. The configuration is copied
+     *                   and owned by this object.
      */
-    SampleFixGateway();
+    explicit SampleFixGateway(const FixGatewayConfiguration& config);
 
     /**
      * @brief Starts the reactor event loop.
      *
-     * Blocks until the reactor shuts down (e.g. on SIGTERM or unrecoverable
-     * error). Returns the reactor's exit code.
+     * Blocks until the reactor shuts down (e.g. on SIGTERM/SIGINT or
+     * unrecoverable error).
      *
      * @return 0 on normal shutdown, non-zero on error.
      */
     int run();
 
 private:
-    // Configuration constants for the sample.
-    static constexpr uint16_t    listen_port        = 9878;
-    static constexpr int64_t     raw_buffer_capacity = 65536;
-    static const     std::string listen_host;
-    static const     std::string sender_comp_id;
-    static const     std::string target_comp_id;
-    static const     std::string logger_name;
+    static const std::string log_file_name;
 
+    FixGatewayConfiguration                       config_;
     std::unique_ptr<pubsub_itc_fw::QuillLogger>   logger_;
     pubsub_itc_fw::ServiceRegistry                service_registry_;
     pubsub_itc_fw::ReactorConfiguration           reactor_configuration_;
-    std::unique_ptr<pubsub_itc_fw::Reactor>        reactor_;
-    std::shared_ptr<FixGatewayThread>              gateway_thread_;
+    std::unique_ptr<pubsub_itc_fw::Reactor>       reactor_;
+    std::shared_ptr<FixGatewayThread>             gateway_thread_;
 };
 
 } // namespace sample_fix_gateway

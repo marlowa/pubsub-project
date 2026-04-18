@@ -11,56 +11,53 @@
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/NetworkEndpointConfiguration.hpp>
 #include <pubsub_itc_fw/ProtocolType.hpp>
-#include <pubsub_itc_fw/QuillLogger.hpp>
+#include <pubsub_itc_fw/ThreadID.hpp>
 
 namespace sample_fix_gateway {
 
-// Configuration constants
-const std::string SampleFixGateway::listen_host    = "127.0.0.1";
-const std::string SampleFixGateway::sender_comp_id = "GATEWAY";
-const std::string SampleFixGateway::target_comp_id = "CLIENT";
-const std::string SampleFixGateway::logger_name    = "sample_fix_gateway";
+const std::string SampleFixGateway::log_file_name = "sample_fix_gateway.log";
 
-SampleFixGateway::SampleFixGateway()
+SampleFixGateway::SampleFixGateway(const FixGatewayConfiguration& config)
+    : config_(config)
 {
+    // Block SIGINT and SIGTERM before spawning any threads -- including the
+    // quill backend thread. The Reactor consumes these signals via signalfd.
     pubsub_itc_fw::QuillLogger::block_signals_before_construction();
-    // Create logger -- log to file, with Info level for file and console,
-    // Warning for syslog.
+
     logger_ = std::make_unique<pubsub_itc_fw::QuillLogger>(
-        "sample_fix_gateway.log",
+        log_file_name,
         pubsub_itc_fw::FileOpenMode{pubsub_itc_fw::FileOpenMode::Truncate},
         pubsub_itc_fw::FwLogLevel::Info,
         pubsub_itc_fw::FwLogLevel::Warning,
         pubsub_itc_fw::FwLogLevel::Info);
 
-    // Configure reactor -- use defaults, just tighten timeouts for the sample.
-    reactor_configuration_.connect_timeout                   = std::chrono::seconds{5};
-    reactor_configuration_.socket_maximum_inactivity_interval_ = std::chrono::seconds{60};
+    // Reactor configuration -- use defaults, adjusted for the sample.
+    reactor_configuration_.connect_timeout                     = std::chrono::seconds{5};
+    reactor_configuration_.socket_maximum_inactivity_interval_ = std::chrono::seconds{120};
     reactor_configuration_.inactivity_check_interval_          = std::chrono::milliseconds{500};
     reactor_configuration_.shutdown_timeout_                    = std::chrono::seconds{2};
 
-    // Create reactor.
     reactor_ = std::make_unique<pubsub_itc_fw::Reactor>(
         reactor_configuration_, service_registry_, *logger_);
 
-    // Register inbound RawBytes listener -- fix8 will connect here.
     reactor_->register_inbound_listener(
-        pubsub_itc_fw::NetworkEndpointConfiguration{listen_host, listen_port},
+        pubsub_itc_fw::NetworkEndpointConfiguration{config_.listen_host, config_.listen_port},
         pubsub_itc_fw::ThreadID{1},
         pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::RawBytes},
-        raw_buffer_capacity);
+        config_.raw_buffer_capacity);
 
-    // Create and register the gateway thread.
-    gateway_thread_ = std::make_shared<FixGatewayThread>(
-        *logger_, *reactor_, sender_comp_id, target_comp_id);
-
+    gateway_thread_ = std::make_shared<FixGatewayThread>(*logger_, *reactor_, config_);
     reactor_->register_thread(gateway_thread_);
 
     PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info,
-        "SampleFixGateway: listening on {}:{}", listen_host, listen_port);
+        "SampleFixGateway: listening on {}:{}",
+        config_.listen_host, config_.listen_port);
     PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info,
         "SampleFixGateway: SenderCompID={} TargetCompID={}",
-        sender_comp_id, target_comp_id);
+        config_.sender_comp_id, config_.default_target_comp_id);
+    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info,
+        "SampleFixGateway: logon timeout={}s",
+        config_.logon_timeout.count());
 }
 
 int SampleFixGateway::run()
@@ -79,9 +76,12 @@ int SampleFixGateway::run()
 
 int main()
 {
-
     try {
-        sample_fix_gateway::SampleFixGateway gateway;
+        // Construct configuration with defaults. In a production gateway this
+        // would be populated from a TOML file before constructing SampleFixGateway.
+        sample_fix_gateway::FixGatewayConfiguration config;
+
+        sample_fix_gateway::SampleFixGateway gateway{config};
         return gateway.run();
     } catch (const std::exception& ex) {
         std::cerr << "SampleFixGateway: fatal exception: " << ex.what() << "\n";

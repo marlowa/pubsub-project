@@ -9,6 +9,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include <arpa/inet.h>
@@ -626,6 +627,13 @@ private:
 
     std::unordered_map<std::string, TimerID> name_to_id_;
     std::unordered_map<TimerID, std::string> id_to_name_;
+
+    /** Set of ConnectionIDs currently active on this thread.
+    * Maintained by process_message() on ConnectionEstablished/ConnectionLost.
+    * Used by commit_raw_bytes() and send_raw() to detect misuse early,
+    * on the application thread, before any command reaches the reactor.
+    * */
+    std::unordered_set<ConnectionID> active_connection_ids_;
 };
 
 } // namespace pubsub_itc_fw
