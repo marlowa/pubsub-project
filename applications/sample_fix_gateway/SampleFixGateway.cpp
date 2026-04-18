@@ -2,15 +2,18 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "SampleFixGateway.hpp"
+#include "FixGatewayConfigurationLoader.hpp"
 
 #include <chrono>
 #include <iostream>
 
+#include <pubsub_itc_fw/ConfigurationException.hpp>
 #include <pubsub_itc_fw/FileOpenMode.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/NetworkEndpointConfiguration.hpp>
 #include <pubsub_itc_fw/ProtocolType.hpp>
+#include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 
 namespace sample_fix_gateway {
@@ -74,15 +77,29 @@ int SampleFixGateway::run()
 // main
 // ============================================================
 
-int main()
+int main(int argc, char* argv[])
 {
     try {
-        // Construct configuration with defaults. In a production gateway this
-        // would be populated from a TOML file before constructing SampleFixGateway.
         sample_fix_gateway::FixGatewayConfiguration config;
+
+        if (argc >= 2) {
+            // Load configuration from the TOML file given as the first argument.
+            const std::string config_file = argv[1];
+            std::cout << "SampleFixGateway: loading configuration from "
+                      << config_file << "\n";
+            config = sample_fix_gateway::FixGatewayConfigurationLoader::load(config_file);
+        } else {
+            // No config file supplied -- use compiled-in defaults and warn.
+            std::cout << "SampleFixGateway: no configuration file supplied, "
+                         "using built-in defaults\n";
+        }
 
         sample_fix_gateway::SampleFixGateway gateway{config};
         return gateway.run();
+
+    } catch (const pubsub_itc_fw::ConfigurationException& ex) {
+        std::cerr << "SampleFixGateway: configuration error: " << ex.what() << "\n";
+        return 1;
     } catch (const std::exception& ex) {
         std::cerr << "SampleFixGateway: fatal exception: " << ex.what() << "\n";
         return 1;

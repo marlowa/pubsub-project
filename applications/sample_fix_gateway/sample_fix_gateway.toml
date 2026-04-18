@@ -1,0 +1,11 @@
+[network]
+listen_host         = "127.0.0.1"
+listen_port         = 9878
+raw_buffer_capacity = 65536
+
+[fix_session]
+sender_comp_id         = "GATEWAY"
+default_target_comp_id = "CLIENT"
+
+[timeouts]
+logon_timeout = "30s"
