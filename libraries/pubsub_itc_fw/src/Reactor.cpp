@@ -878,10 +878,8 @@ void Reactor::dispatch_events(int nfds, epoll_event* events) {
         const int fd = events[i].data.fd;
         if (fd == wake_fd_) {
             uint64_t dummy{0};
-            PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "dispatch_events got event on wake_fd");
-
             while (::read(wake_fd_, &dummy, sizeof(dummy)) == sizeof(dummy)) {
-                PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "dispatch_events draining wake_fd");
+                // drain the wake_fd
             }
 
             process_control_commands();

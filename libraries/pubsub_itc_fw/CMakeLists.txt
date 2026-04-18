@@ -61,6 +61,7 @@ set(PUBSUB_ITC_FW_SRC
     src/TcpConnector.cpp
     src/TcpSocket.cpp
     src/TimerHandler.cpp
+    src/TomlConfiguration.cpp
     src/MirroredBuffer.cpp
     src/PduProtocolHandler.cpp
     src/InboundConnectionManager.cpp
@@ -89,6 +90,10 @@ target_include_directories(pubsub_itc_fw PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/dsl>
     $<INSTALL_INTERFACE:include>
+)
+
+target_include_directories(pubsub_itc_fw SYSTEM PRIVATE
+        ${THIRDPARTY_DIR}/installed/tomlplusplus/${TOMLPLUSPLUS_VERSION}/include
 )
 
 # ------------------------------------------------------------

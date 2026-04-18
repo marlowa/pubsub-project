@@ -19,6 +19,7 @@ add_executable(pubsub_itc_fw_tests
     SlabAllocatorAdversarialTest.cpp
     StringUtilsTest.cpp
     ThreadWithJoinTimeoutTest.cpp
+    TomlConfigurationTest.cpp
     MirroredBufferTest.cpp
     InetAddressTest.cpp
     TcpConnectorTest.cpp

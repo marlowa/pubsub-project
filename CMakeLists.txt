@@ -50,6 +50,12 @@ else()
     endif()
 endif()
 
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    add_compile_options(-g -O0)
+else()
+    add_compile_options(-g -O2)
+endif()
+
 if(ENABLE_COVERAGE)
     message(STATUS "Building with code coverage instrumentation")
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
@@ -87,6 +93,7 @@ set(FMT_VERSION $ENV{FMT_VERSION})
 set(QUILL_VERSION $ENV{QUILL_VERSION})
 set(ARGPARSE_VERSION_FROM_ENV $ENV{ARGPARSE_VERSION})
 set(GOOGLETEST_VERSION $ENV{GOOGLETEST_VERSION})
+set(TOMLPLUSPLUS_VERSION $ENV{TOMLPLUSPLUS_VERSION})
 
 list(PREPEND CMAKE_PREFIX_PATH ${THIRDPARTY_DIR})
 list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake_modules")
@@ -95,6 +102,7 @@ list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/fmt/${FMT_VERSION}")
 list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/quill/${QUILL_VERSION}")
 list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/argparse/${ARGPARSE_VERSION_FROM_ENV}")
 list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/googletest/${GOOGLETEST_VERSION}")
+list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/tomlplusplus/${TOMLPLUSPLUS_VERSION}")
 
 # On RHEL/Rocky/CentOS cmake config files are installed under lib64/cmake
 # rather than lib/cmake. Set _DIR explicitly for each package so

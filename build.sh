@@ -21,6 +21,7 @@ case "${PLATFORM_ID}" in
         export QUILL_VERSION=11.0.2
         export ARGPARSE_VERSION=3.2
         export GOOGLETEST_VERSION=1.17.0
+        export TOMLPLUSPLUS_VERSION=3.4.0
         ;;
     rocky8*|rhel8*|centos8*)
         export THIRDPARTY_DIR=/workspace/thirdparty
@@ -28,6 +29,7 @@ case "${PLATFORM_ID}" in
         export QUILL_VERSION="11.0.2"
         export ARGPARSE_VERSION="3.2"
         export GOOGLETEST_VERSION="1.10.0"
+        export TOMLPLUSPLUS_VERSION=3.4.0
         ;;
     *)
         echo "ERROR: Unrecognised platform: ${PLATFORM_ID}" >&2
