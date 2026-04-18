@@ -1299,9 +1299,6 @@ TEST_F(ExpandablePoolAllocatorTest, CrossPoolAbaInterleaving) {
     std::atomic<bool> start_gate{false};
     std::atomic<int> ready_count{0};
 
-    std::set<TestObject*> valid_addresses;
-    std::mutex valid_mutex;
-
     // Worker threads: hammer allocate/deallocate, triggering expansions.
     std::vector<std::thread> threads;
     threads.reserve(num_threads);
@@ -1316,11 +1313,6 @@ TEST_F(ExpandablePoolAllocatorTest, CrossPoolAbaInterleaving) {
                 TestObject* obj = allocator.allocate();
                 if (obj == nullptr) {
                     continue;
-                }
-
-                {
-                    const std::lock_guard<std::mutex> lock(valid_mutex);
-                    valid_addresses.insert(obj);
                 }
 
                 allocator.deallocate(obj);
@@ -1356,11 +1348,12 @@ TEST_F(ExpandablePoolAllocatorTest, CrossPoolAbaInterleaving) {
             drained.push_back(obj);
         }
 
-        // Structural checks on drained slice.
+        // Structural checks on drained slice: no duplicates.
         std::unordered_set<TestObject*> seen;
         for (auto* obj : drained) {
-            EXPECT_TRUE(seen.insert(obj).second) << "allocator free-list corruption: duplicate pointer " << obj << " in mid‑drain round " << round;
-            // No membership check here: mid‑drain may be first user of a new pool.
+            EXPECT_TRUE(seen.insert(obj).second)
+                << "allocator free-list corruption: duplicate pointer "
+                << obj << " in mid-drain round " << round;
         }
 
         for (auto* obj : drained) {
@@ -1382,26 +1375,29 @@ TEST_F(ExpandablePoolAllocatorTest, CrossPoolAbaInterleaving) {
 
     for (int i = 0; i < total_capacity; ++i) {
         TestObject* obj = allocator.allocate();
-        ASSERT_NE(obj, nullptr) << "allocator free-list corruption: nullptr during final drain at index " << i << " of " << total_capacity;
+        ASSERT_NE(obj, nullptr)
+            << "allocator free-list corruption: nullptr during final drain at index "
+            << i << " of " << total_capacity;
         drained.push_back(obj);
     }
 
     // Do NOT call allocator.allocate() again here: that would legitimately
     // trigger expansion and invalidate the notion of "total_capacity".
 
-    // All drained pointers must be unique.
+    // All drained pointers must be unique. This is the meaningful ABA
+    // corruption detector: a duplicate pointer in the final drain is the
+    // true signature of free-list corruption.
+    //
+    // Note: we do not check that every drained pointer was seen during the
+    // stress phase. The pool may expand late -- during mid-drain rounds after
+    // worker threads have wound down -- so some slots may never have been
+    // allocated by any caller before the final drain. Wild pointers are already
+    // guarded against by the canary and contains() checks in
+    // ExpandablePoolAllocator::deallocate().
     std::unordered_set<TestObject*> final_seen;
     for (auto* obj : drained) {
-        EXPECT_TRUE(final_seen.insert(obj).second) << "allocator free-list corruption: duplicate pointer in final drain";
-    }
-
-    // Every drained pointer must have been legitimately returned by allocate()
-    // at some point during the stress phase.
-    {
-        const std::lock_guard<std::mutex> lock(valid_mutex);
-        for (auto* obj : drained) {
-            EXPECT_NE(valid_addresses.find(obj), valid_addresses.end()) << "allocator free-list corruption: unknown pointer in final drain";
-        }
+        EXPECT_TRUE(final_seen.insert(obj).second)
+            << "allocator free-list corruption: duplicate pointer in final drain";
     }
 
     for (auto* obj : drained) {

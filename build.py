@@ -44,7 +44,7 @@ def generate_coverage_report(build_dir, source_dir):
         "*/build/libraries/pubsub_itc_fw/dsl/*",
         "*/build/libraries/pubsub_itc_fw/pubsub_itc_fw/*",
         "--output-file", str(filtered_info),
-        "--ignore-errors", "mismatch"
+        "--ignore-errors", "mismatch,unused"
     ], description="Filtering coverage data")
 
     # 3. Generate HTML
