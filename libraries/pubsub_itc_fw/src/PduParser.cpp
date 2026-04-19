@@ -4,6 +4,8 @@
 #include <arpa/inet.h>
 #include <cstring>
 
+#include <fmt/format.h>
+
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
 #include <pubsub_itc_fw/PduParser.hpp>
@@ -72,6 +74,21 @@ std::tuple<bool, std::string> PduParser::receive()
 
             if (current_payload_size_ == 0) {
                 return {false, "PduParser: zero-length payload is not permitted"};
+            }
+
+            // Guard against payloads that exceed the inbound slab size before
+            // calling allocate() — whose precondition is size <= slab_size().
+            // Violating that precondition would throw PreconditionAssertion and
+            // crash the reactor. Instead we return a descriptive error so the
+            // reactor tears down this connection cleanly and stays alive for all
+            // other connections. The fix is to increase
+            // ReactorConfiguration::inbound_slab_size.
+            if (current_payload_size_ > slab_allocator_.slab_size()) {
+                return {false, fmt::format(
+                    "PduParser: inbound PDU payload of {} bytes exceeds "
+                    "inbound_slab_size of {} bytes — increase "
+                    "ReactorConfiguration::inbound_slab_size",
+                    current_payload_size_, slab_allocator_.slab_size())};
             }
 
             // Allocate a slab chunk to receive the payload directly — zero copy.

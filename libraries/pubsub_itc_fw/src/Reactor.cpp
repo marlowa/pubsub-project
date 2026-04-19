@@ -924,6 +924,12 @@ void Reactor::dispatch_events(int nfds, epoll_event* events) {
                 } else if (conn->is_established()) {
                     if ((ev & EPOLLOUT) && conn->has_pending_send()) {
                         outbound_manager_.on_write_ready(*conn);
+                        // on_write_ready() may have invoked the disconnect handler
+                        // synchronously, destroying this connection. Check whether
+                        // it still exists before touching it again.
+                        if (outbound_manager_.find_by_fd(fd) == nullptr) {
+                            continue;
+                        }
                     }
                     if (ev & EPOLLIN) {
                         outbound_manager_.on_data_ready(*conn);
@@ -950,6 +956,12 @@ void Reactor::dispatch_events(int nfds, epoll_event* events) {
                 } else {
                     if ((ev & EPOLLOUT) && conn->handler()->has_pending_send()) {
                         inbound_manager_.on_write_ready(*conn);
+                        // on_write_ready() may have invoked the disconnect handler
+                        // synchronously, destroying this connection. Check whether
+                        // it still exists before touching it again.
+                        if (inbound_manager_.find_by_fd(fd) == nullptr) {
+                            continue;
+                        }
                     }
                     if (ev & EPOLLIN) {
                         inbound_manager_.on_data_ready(*conn);

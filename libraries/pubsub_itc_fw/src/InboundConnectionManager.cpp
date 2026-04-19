@@ -439,11 +439,6 @@ bool InboundConnectionManager::process_disconnect_command(ConnectionID id)
     return true;
 }
 
-bool InboundConnectionManager::owns_connection(ConnectionID id) const
-{
-    return connections_.count(id) != 0;
-}
-
 InboundConnection* InboundConnectionManager::find_by_fd(int fd) const
 {
     auto it = connections_by_fd_.find(fd);

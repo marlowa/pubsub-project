@@ -182,11 +182,6 @@ public:
     void check_for_timed_out_connections();
 
     /**
-     * @brief Returns true if the given ConnectionID belongs to an outbound connection.
-     */
-    [[nodiscard]] bool owns_connection(ConnectionID id) const;
-
-    /**
      * @brief Returns a non-owning pointer to an outbound connection by fd,
      *        or nullptr if not found. Used by the Reactor's epoll dispatch.
      */

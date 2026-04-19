@@ -251,8 +251,8 @@ protected:
 // ============================================================
 TEST_F(PduProtocolHandlerTest, SendPrebuiltCompletesImmediately) {
     // Use a small payload that fits easily in the kernel send buffer.
-    constexpr size_t kPayloadSize = 128;
-    auto [slab_id, chunk, total_bytes] = make_frame(outbound_allocator(), kPayloadSize);
+    constexpr size_t payload_size = 128;
+    auto [slab_id, chunk, total_bytes] = make_frame(outbound_allocator(), payload_size);
 
     handler_->send_prebuilt(&outbound_allocator(), slab_id, chunk, total_bytes);
 
@@ -282,8 +282,8 @@ TEST_F(PduProtocolHandlerTest, SendPrebuiltProducesPartialSend) {
     // Fill the kernel send buffer with a large frame. A socketpair on Linux
     // has a default buffer of 212992 bytes per direction. A 512 KB payload
     // reliably exceeds this.
-    constexpr size_t kPayloadSize = 512 * 1024;
-    auto [slab_id, chunk, total_bytes] = make_frame(outbound_allocator(), kPayloadSize);
+    constexpr size_t payload_size = 512 * 1024;
+    auto [slab_id, chunk, total_bytes] = make_frame(outbound_allocator(), payload_size);
 
     handler_->send_prebuilt(&outbound_allocator(), slab_id, chunk, total_bytes);
 
@@ -313,11 +313,11 @@ TEST_F(PduProtocolHandlerTest, SendPrebuiltProducesPartialSend) {
 // Test: continue_send releases the slab chunk on completion.
 // ============================================================
 TEST_F(PduProtocolHandlerTest, ContinueSendReleasesChunkOnCompletion) {
-    constexpr size_t kPayloadSize = 512 * 1024;
+    constexpr size_t payload_size = 512 * 1024;
 
     // Use a separate allocator so we can observe its slab count.
     ExpandableSlabAllocator send_allocator(4 * 1024 * 1024);
-    auto [slab_id, chunk, total_bytes] = make_frame(send_allocator, kPayloadSize);
+    auto [slab_id, chunk, total_bytes] = make_frame(send_allocator, payload_size);
 
     handler_->send_prebuilt(&send_allocator, slab_id, chunk, total_bytes);
     ASSERT_TRUE(handler_->has_pending_send());
@@ -349,10 +349,10 @@ TEST_F(PduProtocolHandlerTest, ContinueSendReleasesChunkOnCompletion) {
 // Test: deallocate_pending_send releases the chunk during teardown.
 // ============================================================
 TEST_F(PduProtocolHandlerTest, DeallocatePendingSendReleasesChunk) {
-    constexpr size_t kPayloadSize = 512 * 1024;
+    constexpr size_t payload_size = 512 * 1024;
 
     ExpandableSlabAllocator send_allocator(4 * 1024 * 1024);
-    auto [slab_id, chunk, total_bytes] = make_frame(send_allocator, kPayloadSize);
+    auto [slab_id, chunk, total_bytes] = make_frame(send_allocator, payload_size);
 
     handler_->send_prebuilt(&send_allocator, slab_id, chunk, total_bytes);
     ASSERT_TRUE(handler_->has_pending_send());

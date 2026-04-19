@@ -223,11 +223,6 @@ public:
     [[nodiscard]] bool process_disconnect_command(ConnectionID id);
 
     /**
-     * @brief Returns true if the given ConnectionID belongs to an inbound connection.
-     */
-    [[nodiscard]] bool owns_connection(ConnectionID id) const;
-
-    /**
      * @brief Returns a non-owning pointer to an inbound connection by fd,
      *        or nullptr if not found. Used by the Reactor's epoll dispatch.
      */

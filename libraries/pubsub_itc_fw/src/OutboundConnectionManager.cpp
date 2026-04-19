@@ -425,11 +425,6 @@ void OutboundConnectionManager::check_for_timed_out_connections()
     }
 }
 
-bool OutboundConnectionManager::owns_connection(ConnectionID id) const
-{
-    return connections_.count(id) != 0;
-}
-
 OutboundConnection* OutboundConnectionManager::find_by_fd(int fd) const
 {
     auto it = connections_by_fd_.find(fd);
