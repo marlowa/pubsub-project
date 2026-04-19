@@ -59,7 +59,7 @@ void PduProtocolHandler::send_prebuilt(ExpandableSlabAllocator* allocator,
     current_chunk_ptr_   = chunk_ptr;
     current_total_bytes_ = total_bytes;
 
-    const uint8_t* frame = static_cast<const uint8_t*>(chunk_ptr);
+    const auto* frame = static_cast<const uint8_t*>(chunk_ptr);
     auto [success, error] = framer_->send_prebuilt(frame, total_bytes);
     if (!success && !error.empty()) {
         PUBSUB_LOG(logger_, FwLogLevel::Info,

@@ -4,7 +4,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <chrono>
-#include <cstdint>
 #include <string>
 
 namespace sample_fix_gateway {

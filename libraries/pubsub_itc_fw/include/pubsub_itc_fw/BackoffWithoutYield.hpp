@@ -5,8 +5,6 @@
 
 #include <thread>
 
-#include <cstdint>
-
 #ifdef __x86_64__
 #include <immintrin.h>
 #endif

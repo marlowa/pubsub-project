@@ -6,7 +6,6 @@
 #include <atomic>
 #include <chrono>
 #include <functional>
-#include <map>
 #include <memory>
 #include <string>
 #include <unordered_set>
@@ -16,9 +15,7 @@
 
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
-#include <pubsub_itc_fw/BumpAllocator.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
-#include <pubsub_itc_fw/EventHandler.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
 #include <pubsub_itc_fw/HighResolutionClock.hpp>

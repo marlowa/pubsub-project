@@ -4,7 +4,6 @@
 #include "FixParser.hpp"
 
 #include <cstdio>
-#include <cstring>
 #include <string>
 
 namespace sample_fix_gateway {

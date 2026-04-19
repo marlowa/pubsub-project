@@ -17,7 +17,7 @@
 #include <sys/signalfd.h>
 #include <sys/timerfd.h>
 #include <sys/types.h>
-#include <signal.h>
+#include <csignal>
 #include <unistd.h>
 
 #include <fmt/format.h>
@@ -612,7 +612,7 @@ void Reactor::cancel_timer_fd(ThreadID owner_thread_id, TimerID id) {
         return;
     }
 
-    auto* timer_handler = static_cast<TimerHandler*>(handler_it->second.get());
+    auto* timer_handler = dynamic_cast<TimerHandler*>(handler_it->second.get());
     const std::string& timer_name = timer_handler->get_timer().get_name();
 
     auto& thread_timers = thread_timer_names_[owner_thread_id];

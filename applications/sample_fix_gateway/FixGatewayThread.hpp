@@ -7,11 +7,8 @@
 #include <unordered_map>
 
 #include <pubsub_itc_fw/ApplicationThread.hpp>
-#include <pubsub_itc_fw/AllocatorConfiguration.hpp>
-#include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
-#include <pubsub_itc_fw/QueueConfiguration.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>

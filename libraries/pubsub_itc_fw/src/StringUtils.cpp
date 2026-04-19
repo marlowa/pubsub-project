@@ -37,7 +37,6 @@ std::string StringUtils::get_error_string(int errnum) {
     // This is typically sufficient for most system error strings.
     constexpr size_t ErrorStringBufferLength = 256;
     std::array<char, ErrorStringBufferLength> error_buffer{};
-    std::string error_message;
 
     // Use GNU-specific strerror_r (returns char*).
     // It attempts to write into error_buffer, but might return a pointer
@@ -46,7 +45,7 @@ std::string StringUtils::get_error_string(int errnum) {
     char* strerror_result_ptr = strerror_r(errnum, error_buffer.data(), error_buffer.size());
 
     // GNU strerror_r returns a pointer to the string.
-    error_message = strerror_result_ptr;
+    std::string error_message = strerror_result_ptr;
     return error_message;
 }
 

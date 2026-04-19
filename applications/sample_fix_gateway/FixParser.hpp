@@ -6,7 +6,6 @@
 #include <cstdint>
 #include <functional>
 #include <string>
-#include <vector>
 
 #include "FixMessage.hpp"
 
@@ -92,12 +91,6 @@ private:
      * Returns true on success.
      */
     static bool parse_fields(const std::string& buf, FixMessage& msg);
-
-    /*
-     * Extracts the integer value of a specific tag from a raw FIX string.
-     * Returns -1 if the tag is not found or the value is not a valid integer.
-     */
-    static int extract_int_tag(const std::string& buf, int tag);
 
     /*
      * Validates the FIX checksum. msg_bytes is the raw bytes of the message

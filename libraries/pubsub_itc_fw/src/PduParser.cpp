@@ -64,7 +64,7 @@ std::tuple<bool, std::string> PduParser::receive()
             }
 
             // Full header received — validate canary.
-            const PduHeader* hdr = reinterpret_cast<const PduHeader*>(header_buffer_);
+            const auto* hdr = reinterpret_cast<const PduHeader*>(header_buffer_);
             if (ntohl(hdr->canary) != pdu_canary_value) {
                 return {false, "PduParser: canary mismatch — wire corruption or framing error"};
             }
@@ -79,7 +79,7 @@ std::tuple<bool, std::string> PduParser::receive()
             // Guard against payloads that exceed the inbound slab size before
             // calling allocate() — whose precondition is size <= slab_size().
             // Violating that precondition would throw PreconditionAssertion and
-            // crash the reactor. Instead we return a descriptive error so the
+            // crash the reactor. Instead, we return a descriptive error so the
             // reactor tears down this connection cleanly and stays alive for all
             // other connections. The fix is to increase
             // ReactorConfiguration::inbound_slab_size.
@@ -157,7 +157,7 @@ bool PduParser::has_complete_header() const
 
 void PduParser::dispatch_pdu(int slab_id, void* payload_chunk)
 {
-    const uint8_t* payload    = static_cast<const uint8_t*>(payload_chunk);
+    const auto* payload    = static_cast<const uint8_t*>(payload_chunk);
     const int      payload_size = static_cast<int>(current_payload_size_);
 
     EventMessage msg = EventMessage::create_framework_pdu_message(

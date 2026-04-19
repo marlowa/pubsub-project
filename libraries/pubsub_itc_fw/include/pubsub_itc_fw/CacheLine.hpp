@@ -4,7 +4,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <atomic>
-#include <cstddef>
 #include <type_traits>
 
 namespace pubsub_itc_fw {

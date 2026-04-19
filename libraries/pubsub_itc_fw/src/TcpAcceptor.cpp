@@ -115,6 +115,7 @@ TcpAcceptor::create(const InetAddress& local_address, int backlog) {
 
     // 4. Construct acceptor
     auto impl = std::make_unique<TcpAcceptorImpl>(local_address, std::move(socket_ptr));
+    // TODO clang-tidy says the below leaks, maybe used make_unique?
     return {std::unique_ptr<TcpAcceptor>(new TcpAcceptor(std::move(impl))), ""};
 }
 

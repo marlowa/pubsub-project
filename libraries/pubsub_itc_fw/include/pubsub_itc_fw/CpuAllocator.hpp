@@ -78,8 +78,8 @@ public:
     FileLock& operator=(const FileLock&) = delete;
 
     /// Movable
-    FileLock(FileLock&& other);
-    FileLock& operator=(FileLock&& other);
+    FileLock(FileLock&& other) noexcept;
+    FileLock& operator=(FileLock&& other) noexcept;
 
     /// Destructor releases the lock.
     ~FileLock();
@@ -155,4 +155,4 @@ private:
     std::string state_file_;
 };
 
-} // namespace cpualloc
+} // namespaces

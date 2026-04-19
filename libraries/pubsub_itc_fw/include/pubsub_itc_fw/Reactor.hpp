@@ -281,6 +281,14 @@ public:
     }
 
     /**
+     * TEST SEAM: exposes the OutboundConnectionManager for unit tests that need
+     * to drive its internals directly (e.g. injecting pending-send state and
+     * calling teardown_connection without a running event loop). Must not be
+     * used by application code.
+     */
+    OutboundConnectionManager& outbound_manager() { return outbound_manager_; }
+
+    /**
      * TEST SEAM: returns the port number that the first registered inbound
      * listener was assigned by the OS (when registered with port=0).
      * Valid only after the reactor has been initialized (is_initialized() == true).

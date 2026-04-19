@@ -77,7 +77,6 @@ InetAddress::InetAddress(const struct sockaddr* sockaddr_ptr, socklen_t sockaddr
     }
 
     std::unique_ptr<InetAddress> new_address = nullptr;
-    std::string error_detail;
 
     // Iterate through the results to find a suitable address.
     // Prefer IPv6 if available, then IPv4.
@@ -94,7 +93,7 @@ InetAddress::InetAddress(const struct sockaddr* sockaddr_ptr, socklen_t sockaddr
     if (new_address) {
         return {std::move(new_address), ""};
     }
-    error_detail = fmt::format("No suitable IPv4 or IPv6 address found for {}:{}.", ip_address_str, port);
+    std::string error_detail = fmt::format("No suitable IPv4 or IPv6 address found for {}:{}.", ip_address_str, port);
     return {nullptr, error_detail};
 }
 
@@ -112,7 +111,7 @@ InetAddress::InetAddress(const struct sockaddr* sockaddr_ptr, socklen_t sockaddr
 }
 
 std::string InetAddress::get_ip_address_string() const {
-    std::array<char, MaximumIpAddressStringLength> ipStringBuffer;
+    std::array<char, MaximumIpAddressStringLength> ipStringBuffer{};
     const void* src_address = nullptr;
 
     if (addr_storage_.ss_family == AF_INET) {

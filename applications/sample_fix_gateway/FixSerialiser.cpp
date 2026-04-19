@@ -34,7 +34,7 @@ std::string FixSerialiser::serialise(const FixMessage& msg, int seq_num) const
     // We iterate by known application tags rather than exposing the map
     // to keep FixMessage's internals private. For this sample the set of
     // application tags is small and fixed.
-    const int app_tags[] = {
+    constexpr int app_tags[] = {
         Tag::EncryptMethod,
         Tag::HeartBtInt,
         Tag::Text,

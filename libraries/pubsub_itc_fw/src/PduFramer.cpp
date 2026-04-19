@@ -38,7 +38,7 @@ std::tuple<bool, std::string> PduFramer::send(int16_t pdu_id, int8_t version,
     }
 
     // Build the frame into the internal buffer.
-    PduHeader* hdr = reinterpret_cast<PduHeader*>(frame_buffer_);
+    auto  hdr = reinterpret_cast<PduHeader*>(frame_buffer_);
     hdr->byte_count = htonl(size);
     hdr->pdu_id     = htons(static_cast<uint16_t>(pdu_id));
     hdr->version    = version;

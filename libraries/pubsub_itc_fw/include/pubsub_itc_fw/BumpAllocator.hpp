@@ -75,7 +75,6 @@
  */
 
 #include <cstddef>
-#include <cstdint>
 
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 
