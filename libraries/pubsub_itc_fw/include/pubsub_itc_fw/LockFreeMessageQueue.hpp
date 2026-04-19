@@ -41,8 +41,8 @@ public:
     LockFreeMessageQueue(LockFreeMessageQueue&&) = delete;
     LockFreeMessageQueue& operator=(LockFreeMessageQueue&&) = delete;
 
-    LockFreeMessageQueue(const QueueConfig& queue_config,
-                         const AllocatorConfig& allocator_config)
+    LockFreeMessageQueue(const QueueConfiguration& queue_config,
+                         const AllocatorConfiguration& allocator_config)
         : queue_configuration_(queue_config)
         , allocator_configuration_(allocator_config)
     {
@@ -111,8 +111,8 @@ public:
 private:
     mutable std::mutex mutex_;
     std::deque<T> queue_;
-    QueueConfig queue_configuration_;
-    AllocatorConfig allocator_configuration_;
+    QueueConfiguration queue_configuration_;
+    AllocatorConfiguration allocator_configuration_;
     bool shutting_down_{false};
     bool is_high_watermark_breached_{false};
 };

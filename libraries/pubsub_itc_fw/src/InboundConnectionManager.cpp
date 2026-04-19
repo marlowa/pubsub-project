@@ -132,6 +132,15 @@ void InboundConnectionManager::on_accept(InboundListener& listener, ConnectionID
 
     const int fd = socket->get_file_descriptor();
 
+    if (config_.socket_send_buffer_size > 0) {
+        ::setsockopt(fd, SOL_SOCKET, SO_SNDBUF,
+                     &config_.socket_send_buffer_size, sizeof(config_.socket_send_buffer_size));
+    }
+    if (config_.socket_receive_buffer_size > 0) {
+        ::setsockopt(fd, SOL_SOCKET, SO_RCVBUF,
+                     &config_.socket_receive_buffer_size, sizeof(config_.socket_receive_buffer_size));
+    }
+
     auto* target_thread = thread_lookup_.get_fast_path_thread(listener.configuration.target_thread_id);
     if (target_thread == nullptr) {
         PUBSUB_LOG(logger_, FwLogLevel::Error,

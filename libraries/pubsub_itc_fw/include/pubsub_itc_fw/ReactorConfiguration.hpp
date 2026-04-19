@@ -116,6 +116,30 @@ struct ReactorConfiguration {
     size_t inbound_slab_size{65536};
 
     /**
+     * @brief Size in bytes of the SO_SNDBUF socket option applied to each
+     * accepted inbound connection socket, and to each outbound connection
+     * socket after connect() succeeds. A value of zero means do not set
+     * the option (use the OS default).
+     *
+     * Setting this to a value smaller than the PDU being sent is the
+     * reliable way to force partial sends and exercise the continue_send()
+     * path in protocol handlers.
+     *
+     * Default: 0 (OS default, typically ~212 KB on Linux loopback).
+     */
+    int socket_send_buffer_size{0};
+
+    /**
+     * @brief Size in bytes of the SO_RCVBUF socket option applied to each
+     * accepted inbound connection socket, and to each outbound connection
+     * socket after connect() succeeds. A value of zero means do not set
+     * the option (use the OS default).
+     *
+     * Default: 0 (OS default).
+     */
+    int socket_receive_buffer_size{0};
+
+    /**
      * @brief Queue configuration for the reactor's internal command queue.
      *
      * ApplicationThreads enqueue ReactorControlCommands here. The defaults

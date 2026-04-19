@@ -5,6 +5,7 @@
 #include <vector>
 
 #include <sys/epoll.h>
+#include <sys/socket.h>
 
 #include <fmt/format.h>
 
@@ -213,6 +214,15 @@ void OutboundConnectionManager::on_connect_ready(OutboundConnection& conn)
         teardown_connection(conn_id, "peer closed connection", true);
     };
     conn.on_connected(std::move(socket), std::move(disconnect_handler));
+
+    if (config_.socket_send_buffer_size > 0) {
+        ::setsockopt(fd, SOL_SOCKET, SO_SNDBUF,
+                     &config_.socket_send_buffer_size, sizeof(config_.socket_send_buffer_size));
+    }
+    if (config_.socket_receive_buffer_size > 0) {
+        ::setsockopt(fd, SOL_SOCKET, SO_RCVBUF,
+                     &config_.socket_receive_buffer_size, sizeof(config_.socket_receive_buffer_size));
+    }
 
     epoll_event ev{};
     ev.events  = EPOLLIN | EPOLLERR;

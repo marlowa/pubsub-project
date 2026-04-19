@@ -3,7 +3,7 @@
 
 /**
  * @file OutboundConnectionTest.cpp
- * @brief Integration tests for outbound connection error paths.
+ * @brief Integration and unit tests for outbound connection error paths.
  *
  * Tests in this file:
  *
@@ -27,11 +27,39 @@
  *     The connector requests a service name that is not in the ServiceRegistry.
  *     ConnectionFailed must be delivered immediately. Covers the unknown-service
  *     error branch in OutboundConnectionManager::process_connect_command().
+ *
+ *   ConstructorRejectsNullConnector
+ *     Verifies that constructing an OutboundConnection with a null connector
+ *     throws PreconditionAssertion.
+ *
+ *   OnConnectedRejectsNullSocket
+ *     Verifies that on_connected() with a null socket throws PreconditionAssertion.
+ *
+ *   OnConnectedRejectsWhenNotConnecting
+ *     Verifies that calling on_connected() a second time (when already in the
+ *     established phase) throws PreconditionAssertion.
+ *
+ *   RetryWithSecondaryRejectsNullConnector
+ *     Verifies that retry_with_secondary() with a null connector throws
+ *     PreconditionAssertion.
+ *
+ *   SetAndClearPendingSend
+ *     Verifies the set_pending_send() / clear_pending_send() / has_pending_send()
+ *     state management and accessor correctness.
+ *
+ *   SetPendingSendRejectsNullAllocator
+ *     Verifies that set_pending_send() with a null allocator throws
+ *     PreconditionAssertion.
+ *
+ *   SetPendingSendRejectsNullChunkPtr
+ *     Verifies that set_pending_send() with a null chunk_ptr throws
+ *     PreconditionAssertion.
  */
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 #include <atomic>
@@ -49,12 +77,18 @@
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
+#include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
 #include <pubsub_itc_fw/NetworkEndpointConfiguration.hpp>
+#include <pubsub_itc_fw/OutboundConnection.hpp>
+#include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/QueueConfiguration.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
 #include <pubsub_itc_fw/ReactorConfiguration.hpp>
+#include <pubsub_itc_fw/ServiceEndpoints.hpp>
 #include <pubsub_itc_fw/ServiceRegistry.hpp>
+#include <pubsub_itc_fw/TcpConnector.hpp>
+#include <pubsub_itc_fw/TcpSocket.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 
 #include <pubsub_itc_fw/tests_common/LoggerWithSink.hpp>
@@ -159,7 +193,7 @@ private:
 };
 
 // ============================================================
-// Test fixture
+// Integration test fixture
 // ============================================================
 class OutboundConnectionTest : public ::testing::Test {
 protected:
@@ -320,6 +354,134 @@ TEST_F(OutboundConnectionTest, UnknownServiceFails) {
     EXPECT_FALSE(thread->failure_reason.empty());
 
     shutdown_and_join(*reactor, reactor_thread);
+}
+
+// ============================================================
+// Unit test fixture: OutboundConnection preconditions and state.
+// The reactor is constructed but not started -- no running event loop
+// is needed for these tests.
+// ============================================================
+class OutboundConnectionPreconditionTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        logger_ = std::make_unique<LoggerWithSink>(
+            "outbound_unit_logger", "outbound_unit_sink");
+
+        ReactorConfiguration cfg{};
+        cfg.inactivity_check_interval_ = std::chrono::milliseconds(100);
+        cfg.shutdown_timeout_          = std::chrono::milliseconds(1000);
+
+        reactor_ = std::make_unique<Reactor>(cfg, registry_, logger_->logger);
+        thread_  = std::make_shared<OutboundTestThread>(
+            logger_->logger, *reactor_, "dummy_service");
+        allocator_ = std::make_unique<ExpandableSlabAllocator>(65536);
+    }
+
+    void TearDown() override {
+        allocator_.reset();
+        thread_.reset();
+        reactor_.reset();
+        logger_.reset();
+    }
+
+    std::unique_ptr<OutboundConnection> make_connection() {
+        auto connector = std::make_unique<TcpConnector>();
+        ServiceEndpoints endpoints{
+            NetworkEndpointConfiguration{"127.0.0.1", 9999},
+            NetworkEndpointConfiguration{}
+        };
+        return std::make_unique<OutboundConnection>(
+            ConnectionID{1},
+            ThreadID{1},
+            "dummy_service",
+            endpoints,
+            std::move(connector),
+            *allocator_,
+            *thread_);
+    }
+
+    std::unique_ptr<LoggerWithSink>          logger_;
+    ServiceRegistry                          registry_;
+    std::unique_ptr<Reactor>                 reactor_;
+    std::shared_ptr<OutboundTestThread>      thread_;
+    std::unique_ptr<ExpandableSlabAllocator> allocator_;
+};
+
+TEST_F(OutboundConnectionPreconditionTest, ConstructorRejectsNullConnector) {
+    ServiceEndpoints endpoints{
+        NetworkEndpointConfiguration{"127.0.0.1", 9999},
+        NetworkEndpointConfiguration{}
+    };
+    EXPECT_THROW(
+        OutboundConnection(
+            ConnectionID{1}, ThreadID{1}, "dummy_service",
+            endpoints, nullptr, *allocator_, *thread_),
+        PreconditionAssertion);
+}
+
+TEST_F(OutboundConnectionPreconditionTest, OnConnectedRejectsNullSocket) {
+    auto conn = make_connection();
+    EXPECT_THROW(conn->on_connected(nullptr, [](){}), PreconditionAssertion);
+}
+
+TEST_F(OutboundConnectionPreconditionTest, OnConnectedRejectsWhenNotConnecting) {
+    int fds[2];
+    ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
+
+    auto conn = make_connection();
+
+    auto [socket, err1] = TcpSocket::adopt(fds[0]);
+    ASSERT_NE(socket, nullptr) << "Failed to adopt socket: " << err1;
+    EXPECT_NO_THROW(conn->on_connected(std::move(socket), [](){}));
+    EXPECT_TRUE(conn->is_established());
+    EXPECT_FALSE(conn->is_connecting());
+
+    auto [socket2, err2] = TcpSocket::adopt(fds[1]);
+    ASSERT_NE(socket2, nullptr) << "Failed to adopt socket2: " << err2;
+    EXPECT_THROW(conn->on_connected(std::move(socket2), [](){}), PreconditionAssertion);
+}
+
+TEST_F(OutboundConnectionPreconditionTest, RetryWithSecondaryRejectsNullConnector) {
+    auto conn = make_connection();
+    EXPECT_THROW(conn->retry_with_secondary(nullptr), PreconditionAssertion);
+}
+
+TEST_F(OutboundConnectionPreconditionTest, SetAndClearPendingSend) {
+    auto conn = make_connection();
+
+    EXPECT_FALSE(conn->has_pending_send());
+
+    char dummy_chunk[64]{};
+    conn->set_pending_send(allocator_.get(), 0, dummy_chunk, sizeof(dummy_chunk));
+
+    EXPECT_TRUE(conn->has_pending_send());
+    EXPECT_EQ(conn->current_allocator(), allocator_.get());
+    EXPECT_EQ(conn->current_slab_id(), 0);
+    EXPECT_EQ(conn->current_chunk_ptr(), static_cast<void*>(dummy_chunk));
+    EXPECT_EQ(conn->current_total_bytes(), static_cast<uint32_t>(sizeof(dummy_chunk)));
+
+    conn->clear_pending_send();
+
+    EXPECT_FALSE(conn->has_pending_send());
+    EXPECT_EQ(conn->current_allocator(), nullptr);
+    EXPECT_EQ(conn->current_slab_id(), -1);
+    EXPECT_EQ(conn->current_chunk_ptr(), nullptr);
+    EXPECT_EQ(conn->current_total_bytes(), 0u);
+}
+
+TEST_F(OutboundConnectionPreconditionTest, SetPendingSendRejectsNullAllocator) {
+    auto conn = make_connection();
+    char dummy_chunk[64]{};
+    EXPECT_THROW(
+        conn->set_pending_send(nullptr, 0, dummy_chunk, sizeof(dummy_chunk)),
+        PreconditionAssertion);
+}
+
+TEST_F(OutboundConnectionPreconditionTest, SetPendingSendRejectsNullChunkPtr) {
+    auto conn = make_connection();
+    EXPECT_THROW(
+        conn->set_pending_send(allocator_.get(), 0, nullptr, 64),
+        PreconditionAssertion);
 }
 
 } // namespace pubsub_itc_fw::tests

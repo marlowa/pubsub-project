@@ -14,6 +14,7 @@ endif()
 message(STATUS "Building integration tests for pubsub_itc_fw")
 
 add_executable(pubsub_itc_fw_integration_tests
+    PduProtocolHandlerIntegrationTest.cpp
     StatusQueryResponseTest.cpp
     VariableLengthPduTest.cpp
     RawBytesProtocolHandlerTest.cpp

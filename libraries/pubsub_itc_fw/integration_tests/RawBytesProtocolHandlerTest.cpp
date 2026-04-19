@@ -359,8 +359,6 @@ protected:
 
         if (data == nullptr || available <= 0) return;
 
-        // If available shrank, the reactor processed our commit and the tail
-        // advanced -- reset decode tracking.
         if (available < last_available_) {
             bytes_decoded_ = 0;
         }
@@ -375,7 +373,7 @@ protected:
 
         if (total_consumed > 0) {
             bytes_decoded_ += static_cast<int>(total_consumed);
-            commit_raw_bytes(conn_id, static_cast<int64_t>(bytes_decoded_));
+            commit_raw_bytes(conn_id, total_consumed);  // incremental, not cumulative
         }
 
         if (static_cast<int>(received_payloads.size()) >= expected_count_) {

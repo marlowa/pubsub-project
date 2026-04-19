@@ -12,12 +12,14 @@ add_executable(pubsub_itc_fw_tests
     LockFreeMessageQueueTest.cpp
     MillisecondClockTest.cpp
     PduFramerParserTest.cpp
+    PduProtocolHandlerTest.cpp
     QuillLoggerTest.cpp
     ReactorTest.cpp
     ServiceRegistryTest.cpp
     SlabAllocatorTest.cpp
     SlabAllocatorAdversarialTest.cpp
     StringUtilsTest.cpp
+    TcpSocketTest.cpp
     ThreadWithJoinTimeoutTest.cpp
     TomlConfigurationTest.cpp
     MirroredBufferTest.cpp
