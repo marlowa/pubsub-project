@@ -24,6 +24,21 @@
  *     to block and exercises OutboundConnectionManager::on_write_ready(). The
  *     listener verifies the query arrived intact and replies with a small
  *     DataResponse.
+ *
+ *   ListenerClosesConnection
+ *     The connector connects and sends a small DataQuery. The listener closes
+ *     the connection immediately without replying. This exercises the
+ *     peer-closed path in OutboundConnectionManager::on_data_ready and the
+ *     disconnect handler lambda constructed in on_connect_ready.
+ *
+ *   DoubleSendThenTeardown
+ *     The connector sends two 2 MB DataQuerys back-to-back in
+ *     on_connection_established with a small send buffer, guaranteeing the
+ *     reactor stashes the second into pending_send_ while the first is still
+ *     blocked. The listener closes immediately, triggering teardown_connection
+ *     while both conn.has_pending_send() and pending_send_.has_value() are
+ *     true. This covers the pending-send cleanup branches in
+ *     teardown_connection and the drain_pending_send body.
  */
 
 #include <atomic>
@@ -432,6 +447,8 @@ protected:
         cfg.init_phase_timeout_        = std::chrono::milliseconds(5000);
         cfg.shutdown_timeout_          = std::chrono::milliseconds(2000);
         cfg.connect_timeout            = std::chrono::milliseconds(2000);
+        // Must accommodate the 2 MB DataResponse payload received in
+        // LargeResponseForcesPartialSend.
         cfg.inbound_slab_size          = outbound_slab_size;
         return cfg;
     }
@@ -709,6 +726,279 @@ TEST_F(PduProtocolHandlerIntegrationTest, LargeQueryNameForcesOutboundWriteReady
     EXPECT_EQ(listener_thread->received_query_name_length, large_string_bytes);
     EXPECT_TRUE(listener_thread->received_query_name_all_x)
         << "Received query_name contained unexpected characters";
+
+    listener_reactor->shutdown("test complete");
+    connector_reactor->shutdown("test complete");
+
+    if (connector_reactor_thread.joinable()) { connector_reactor_thread.join(); }
+    if (listener_reactor_thread.joinable())  { listener_reactor_thread.join(); }
+}
+
+// ============================================================
+// Listener thread: disconnects immediately on receiving a query
+// without sending any response. Used by ListenerClosesConnection.
+// ============================================================
+class DisconnectingListenerThread : public ApplicationThread {
+public:
+    DisconnectingListenerThread(QuillLogger& logger, Reactor& reactor)
+        : ApplicationThread(logger, reactor, "DisconnectingListenerThread", ThreadID{2},
+                            make_queue_config(), make_allocator_config("DisconnectingListenerPool"),
+                            ApplicationThreadConfiguration{}) {}
+
+    std::atomic<bool> connection_established{false};
+    std::atomic<bool> connection_lost{false};
+
+    ConnectionID conn_id{};
+
+protected:
+    void on_connection_established(ConnectionID id) override {
+        conn_id = id;
+        connection_established.store(true, std::memory_order_release);
+    }
+
+    void on_connection_lost(ConnectionID, const std::string&) override {
+        connection_lost.store(true, std::memory_order_release);
+        shutdown("disconnected");
+    }
+
+    void on_framework_pdu_message([[maybe_unused]] const EventMessage& msg) override {
+        // Deliberately close the connection without replying, exercising the
+        // outbound disconnect handler lambda in OutboundConnectionManager::on_connect_ready
+        // and the peer-closed path in OutboundConnectionManager::on_data_ready.
+        ReactorControlCommand cmd(ReactorControlCommand::CommandTag::Disconnect);
+        cmd.connection_id_ = conn_id;
+        get_reactor().enqueue_control_command(cmd);
+    }
+
+    void on_itc_message([[maybe_unused]] const EventMessage& msg) override {}
+};
+
+// ============================================================
+// Test: listener closes the connection after receiving a query,
+// exercising OutboundConnectionManager::on_data_ready peer-closed path
+// and the disconnect handler lambda in on_connect_ready.
+// ============================================================
+TEST_F(PduProtocolHandlerIntegrationTest, ListenerClosesConnection) {
+    ServiceRegistry listener_registry;
+    auto listener_reactor = std::make_unique<Reactor>(
+        make_listener_reactor_config(), listener_registry, logger_->logger);
+
+    listener_reactor->register_inbound_listener(
+        NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
+
+    auto listener_thread = std::make_shared<DisconnectingListenerThread>(
+        logger_->logger, *listener_reactor);
+    listener_reactor->register_thread(listener_thread);
+
+    std::thread listener_reactor_thread([&]() { listener_reactor->run(); });
+
+    ASSERT_TRUE(wait_for([&]() { return listener_reactor->is_initialized(); }))
+        << "Listener reactor did not initialise within timeout";
+
+    const uint16_t listen_port = listener_reactor->get_first_inbound_listener_port();
+    ASSERT_NE(listen_port, 0u) << "OS did not assign a valid listening port";
+
+    ServiceRegistry connector_registry;
+    connector_registry.add("listener",
+        NetworkEndpointConfiguration{"127.0.0.1", listen_port},
+        NetworkEndpointConfiguration{});
+
+    auto connector_reactor = std::make_unique<Reactor>(
+        make_connector_reactor_config(), connector_registry, logger_->logger);
+
+    // Use SmallQueryConnectorThread — it sends a small DataQuery on connect
+    // and calls shutdown on connection lost, which is what we expect here
+    // since the listener will close without replying.
+    auto connector_thread = std::make_shared<SmallQueryConnectorThread>(
+        logger_->logger, *connector_reactor);
+    connector_reactor->register_thread(connector_thread);
+
+    std::thread connector_reactor_thread([&]() { connector_reactor->run(); });
+
+    EXPECT_TRUE(wait_for([&]() {
+        return connector_thread->connection_established.load(std::memory_order_acquire);
+    })) << "Connector: ConnectionEstablished not received";
+
+    EXPECT_TRUE(wait_for([&]() {
+        return listener_thread->connection_established.load(std::memory_order_acquire);
+    })) << "Listener: ConnectionEstablished not received";
+
+    EXPECT_TRUE(wait_for([&]() {
+        return connector_thread->query_sent.load(std::memory_order_acquire);
+    })) << "Connector: DataQuery not sent";
+
+    // The listener closes the connection after receiving the query.
+    // The connector should receive ConnectionLost (peer closed, no response).
+    EXPECT_TRUE(wait_for([&]() {
+        return connector_thread->connection_lost.load(std::memory_order_acquire);
+    })) << "Connector: ConnectionLost not received after listener closed connection";
+
+    EXPECT_TRUE(wait_for([&]() {
+        return listener_thread->connection_lost.load(std::memory_order_acquire);
+    })) << "Listener: ConnectionLost not received";
+
+    listener_reactor->shutdown("test complete");
+    connector_reactor->shutdown("test complete");
+
+    if (connector_reactor_thread.joinable()) { connector_reactor_thread.join(); }
+    if (listener_reactor_thread.joinable())  { listener_reactor_thread.join(); }
+}
+
+// ============================================================
+// Connector thread: sends two large PDUs back-to-back in
+// on_connection_established, before the reactor has processed either.
+// This guarantees:
+//   1. The reactor processes the first SendPdu, finds has_pending_data()
+//      true, and calls set_pending_send — conn.has_pending_send() is true.
+//   2. The reactor processes the second SendPdu while the first is still
+//      blocked, and stashes it into pending_send_ — pending_send_.has_value()
+//      is true.
+// Used by DoubleSendThenTeardown.
+// ============================================================
+class DoubleSendConnectorThread : public ApplicationThread {
+public:
+    DoubleSendConnectorThread(QuillLogger& logger, Reactor& reactor)
+        : ApplicationThread(logger, reactor, "DoubleSendConnectorThread", ThreadID{1},
+                            make_queue_config(), make_allocator_config("DoubleSendConnectorPool"),
+                            make_double_send_connector_thread_config()) {}
+
+    std::atomic<bool> connection_established{false};
+    std::atomic<bool> both_sent{false};
+    std::atomic<bool> connection_lost{false};
+
+    ConnectionID conn_id{};
+
+protected:
+    void on_initial_event() override {
+        connect_to_service("listener");
+    }
+
+    void on_connection_established(ConnectionID id) override {
+        conn_id = id;
+        connection_established.store(true, std::memory_order_release);
+
+        // Both PDUs are enqueued before the reactor processes either.
+        // The slab holds two large frames so both allocations succeed here.
+        first_payload_.assign(large_string_bytes, 'a');
+        second_payload_.assign(large_string_bytes, 'b');
+
+        DataQuery first{};
+        first.request_id = 1;
+        first.query_name = std::string_view(first_payload_);
+        first.has_limit  = false;
+        first.limit      = 0;
+        send_pdu(id, PDU_ID_DATA_QUERY, first);
+
+        DataQuery second{};
+        second.request_id = 2;
+        second.query_name = std::string_view(second_payload_);
+        second.has_limit  = false;
+        second.limit      = 0;
+        send_pdu(id, PDU_ID_DATA_QUERY, second);
+
+        both_sent.store(true, std::memory_order_release);
+    }
+
+    void on_connection_failed(const std::string& reason) override {
+        shutdown("connection failed: " + reason);
+    }
+
+    void on_connection_lost(ConnectionID, const std::string&) override {
+        connection_lost.store(true, std::memory_order_release);
+        shutdown("connection lost");
+    }
+
+    void on_framework_pdu_message([[maybe_unused]] const EventMessage& msg) override {}
+
+    void on_itc_message([[maybe_unused]] const EventMessage& msg) override {}
+
+private:
+    static ApplicationThreadConfiguration make_double_send_connector_thread_config() {
+        ApplicationThreadConfiguration cfg{};
+        // Must fit two 2 MB frames: 2 * outbound_slab_size with margin.
+        // Each send_pdu call allocates from the same ExpandableSlabAllocator,
+        // which chains a new slab when the first is full, so outbound_slab_size
+        // per slab is sufficient — the allocator expands automatically.
+        cfg.outbound_slab_size        = outbound_slab_size;
+        cfg.inbound_decode_arena_size = inbound_decode_arena_size;
+        return cfg;
+    }
+
+    std::string first_payload_;
+    std::string second_payload_;
+};
+
+// ============================================================
+// Test: connector sends two large PDUs back-to-back with a small send
+// buffer, then the listener closes immediately on receiving the first.
+// This covers:
+//   - OutboundConnectionManager: conn.has_pending_send() branch in
+//     teardown_connection (lines 451-452)
+//   - OutboundConnectionManager: pending_send_.has_value() branch in
+//     teardown_connection (lines 457-459)
+//   - OutboundConnectionManager: drain_pending_send body (lines 364-375)
+// ============================================================
+TEST_F(PduProtocolHandlerIntegrationTest, DoubleSendThenTeardown) {
+    // Listener closes the connection immediately on receiving any PDU.
+    ServiceRegistry listener_registry;
+    auto listener_reactor = std::make_unique<Reactor>(
+        make_listener_reactor_config(), listener_registry, logger_->logger);
+
+    listener_reactor->register_inbound_listener(
+        NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
+
+    auto listener_thread = std::make_shared<DisconnectingListenerThread>(
+        logger_->logger, *listener_reactor);
+    listener_reactor->register_thread(listener_thread);
+
+    std::thread listener_reactor_thread([&]() { listener_reactor->run(); });
+
+    ASSERT_TRUE(wait_for([&]() { return listener_reactor->is_initialized(); }))
+        << "Listener reactor did not initialise within timeout";
+
+    const uint16_t listen_port = listener_reactor->get_first_inbound_listener_port();
+    ASSERT_NE(listen_port, 0u) << "OS did not assign a valid listening port";
+
+    // Small send buffer on the connector forces the first PDU to block,
+    // guaranteeing set_pending_send is called before the second SendPdu
+    // command is processed — which then stashes it into pending_send_.
+    ServiceRegistry connector_registry;
+    connector_registry.add("listener",
+        NetworkEndpointConfiguration{"127.0.0.1", listen_port},
+        NetworkEndpointConfiguration{});
+
+    auto connector_reactor = std::make_unique<Reactor>(
+        make_small_sndbuf_connector_reactor_config(), connector_registry, logger_->logger);
+
+    auto connector_thread = std::make_shared<DoubleSendConnectorThread>(
+        logger_->logger, *connector_reactor);
+    connector_reactor->register_thread(connector_thread);
+
+    std::thread connector_reactor_thread([&]() { connector_reactor->run(); });
+
+    EXPECT_TRUE(wait_for([&]() {
+        return connector_thread->connection_established.load(std::memory_order_acquire);
+    })) << "Connector: ConnectionEstablished not received";
+
+    EXPECT_TRUE(wait_for([&]() {
+        return connector_thread->both_sent.load(std::memory_order_acquire);
+    })) << "Connector: both PDUs not sent";
+
+    EXPECT_TRUE(wait_for([&]() {
+        return listener_thread->connection_established.load(std::memory_order_acquire);
+    })) << "Listener: ConnectionEstablished not received";
+
+    // The listener closes after receiving the first PDU (or any fragment of it).
+    // The connector's teardown_connection fires while:
+    //   conn.has_pending_send() is true  (first PDU still blocked), and
+    //   pending_send_.has_value() is true (second PDU stashed).
+    EXPECT_TRUE(wait_for([&]() {
+        return connector_thread->connection_lost.load(std::memory_order_acquire);
+    }, 15000)) << "Connector: ConnectionLost not received after listener teardown";
+
+    EXPECT_TRUE(wait_for([&]() {
+        return listener_thread->connection_lost.load(std::memory_order_acquire);
+    })) << "Listener: ConnectionLost not received";
 
     listener_reactor->shutdown("test complete");
     connector_reactor->shutdown("test complete");
