@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * @file RawBytesProtocolHandlerTest.cpp
+ * @file RawBytesProtocolHandlerIntegrationTest.cpp
  * @brief Integration tests for RawBytesProtocolHandler and InboundConnectionManager.
  *
  * Test protocol framing used throughout:
@@ -69,6 +69,20 @@
  *     The listener is configured with a very short idle timeout. The raw socket
  *     connects and sends nothing. After the interval the reactor must tear down
  *     the connection and deliver ConnectionLost.
+ *
+ *   LargeReplyContinueSend
+ *     The listener replies with a 512 KB frame while the raw socket has a tiny
+ *     SO_RCVBUF (4096 bytes), forcing the outbound write to block. The reactor
+ *     must call RawBytesProtocolHandler::continue_send() on EPOLLOUT until the
+ *     frame drains. The raw socket then reads all bytes and verifies the length.
+ *     Covers RawBytesProtocolHandler::continue_send().
+ *
+ *   TeardownWhilePendingSendFreesChunk
+ *     The listener replies with a large frame (tiny SO_RCVBUF), then the raw
+ *     socket closes immediately without reading. The reactor detects EPOLLERR or
+ *     peer-closed, calls teardown_connection while has_pending_send() is true,
+ *     which calls RawBytesProtocolHandler::deallocate_pending_send() to free
+ *     the in-flight slab chunk. Covers deallocate_pending_send().
  */
 
 #include <arpa/inet.h>
@@ -425,7 +439,7 @@ protected:
 // ============================================================
 // Test fixture
 // ============================================================
-class RawBytesProtocolHandlerIntegrationTest : public ::testing::Test {
+class RawBytesProtocolHandlerTest : public ::testing::Test {
 protected:
     void SetUp() override {
         logger_ = std::make_unique<LoggerWithSink>("raw_integ_logger", "raw_integ_sink");
@@ -465,7 +479,7 @@ protected:
 // ============================================================
 // Test: happy-path round-trip
 // ============================================================
-TEST_F(RawBytesProtocolHandlerIntegrationTest, RawByteRoundTrip) {
+TEST_F(RawBytesProtocolHandlerTest, RawByteRoundTrip) {
     ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(
         make_reactor_config(), listener_registry, logger_->logger);
@@ -512,7 +526,7 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, RawByteRoundTrip) {
 // ============================================================
 // Test: fragmented delivery
 // ============================================================
-TEST_F(RawBytesProtocolHandlerIntegrationTest, FragmentedDelivery) {
+TEST_F(RawBytesProtocolHandlerTest, FragmentedDelivery) {
     ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(
         make_reactor_config(), listener_registry, logger_->logger);
@@ -571,7 +585,7 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, FragmentedDelivery) {
 // ============================================================
 // Test: burst delivery
 // ============================================================
-TEST_F(RawBytesProtocolHandlerIntegrationTest, BurstDelivery) {
+TEST_F(RawBytesProtocolHandlerTest, BurstDelivery) {
     const std::vector<std::string> burst_payloads = {
         "MESSAGE_ONE", "MESSAGE_TWO", "MESSAGE_THREE",
         "MESSAGE_FOUR", "MESSAGE_FIVE"
@@ -623,7 +637,7 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, BurstDelivery) {
 // ============================================================
 // Test: peer disconnect detected by listener (exercises recv==0 path)
 // ============================================================
-TEST_F(RawBytesProtocolHandlerIntegrationTest, PeerDisconnect) {
+TEST_F(RawBytesProtocolHandlerTest, PeerDisconnect) {
     ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(
         make_reactor_config(), listener_registry, logger_->logger);
@@ -661,7 +675,7 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, PeerDisconnect) {
 // RawBytes listeners allow multiple concurrent connections. The one-connection
 // rule applies only to FrameworkPdu listeners, which is what this test uses.
 // ============================================================
-TEST_F(RawBytesProtocolHandlerIntegrationTest, OneConnectionRejection) {
+TEST_F(RawBytesProtocolHandlerTest, OneConnectionRejection) {
     ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(
         make_reactor_config(), listener_registry, logger_->logger);
@@ -708,7 +722,7 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, OneConnectionRejection) {
 // ============================================================
 // Test: idle timeout teardown
 // ============================================================
-TEST_F(RawBytesProtocolHandlerIntegrationTest, IdleTimeout) {
+TEST_F(RawBytesProtocolHandlerTest, IdleTimeout) {
     ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(
         make_short_idle_reactor_config(), listener_registry, logger_->logger);
@@ -736,6 +750,183 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, IdleTimeout) {
     }, 2000)) << "Listener: ConnectionLost not received after idle timeout";
 
     ::close(sock_fd);
+    shutdown_and_join(*listener_reactor, listener_reactor_thread);
+}
+
+// ============================================================
+// Listener thread: on receiving any message sends a large reply
+// (512 KB) to force a partial send. Used by LargeReplyContinueSend
+// and TeardownWhilePendingSendFreesChunk.
+// ============================================================
+
+static constexpr size_t large_reply_payload_size = 512 * 1024;
+static constexpr int    tiny_rcvbuf_size         = 4096;
+
+class LargeReplyListenerThread : public ApplicationThread {
+public:
+    LargeReplyListenerThread(QuillLogger& logger, Reactor& reactor)
+        : ApplicationThread(logger, reactor, "LargeReplyListenerThread", ThreadID{2},
+                            make_queue_config(), make_allocator_config("LargeReplyListenerPool"),
+                            make_thread_config()) {}
+
+private:
+    static ApplicationThreadConfiguration make_thread_config() {
+        ApplicationThreadConfiguration cfg{};
+        cfg.outbound_slab_size = 2 * 1024 * 1024;
+        return cfg;
+    }
+
+public:
+
+    std::atomic<bool> connection_established{false};
+    std::atomic<bool> reply_sent{false};
+    std::atomic<bool> connection_lost{false};
+
+    ConnectionID conn_id{};
+
+protected:
+    void on_connection_established(ConnectionID id) override {
+        conn_id = id;
+        connection_established.store(true, std::memory_order_release);
+    }
+
+    void on_connection_lost(ConnectionID, const std::string&) override {
+        connection_lost.store(true, std::memory_order_release);
+        shutdown("peer disconnected");
+    }
+
+    void on_raw_socket_message(const EventMessage& message) override {
+        // Commit the incoming bytes immediately so the buffer stays clear.
+        commit_raw_bytes(conn_id, message.payload_size());
+
+        if (reply_sent.load(std::memory_order_acquire)) return;
+
+        // Send a 512 KB reply — large enough to overflow a 4096-byte SO_RCVBUF
+        // and force framer_->has_pending_data() to be true, exercising
+        // continue_send() on EPOLLOUT and deallocate_pending_send() on teardown.
+        large_reply_.assign(large_reply_payload_size, 'Z');
+        send_raw(conn_id, large_reply_.data(),
+                 static_cast<uint32_t>(large_reply_.size()));
+        reply_sent.store(true, std::memory_order_release);
+    }
+
+    void on_itc_message([[maybe_unused]] const EventMessage& msg) override {}
+
+private:
+    std::string large_reply_;
+};
+
+// ============================================================
+// Test: large reply forces partial send, exercising continue_send().
+// ============================================================
+TEST_F(RawBytesProtocolHandlerTest, LargeReplyContinueSend) {
+    ServiceRegistry listener_registry;
+
+    // Small send buffer on the listener's accepted socket forces the 512 KB
+    // reply to block, guaranteeing continue_send() is called on EPOLLOUT.
+    ReactorConfiguration listener_cfg = make_reactor_config();
+    listener_cfg.socket_send_buffer_size = tiny_rcvbuf_size;
+
+    auto listener_reactor = std::make_unique<Reactor>(
+        listener_cfg, listener_registry, logger_->logger);
+
+    listener_reactor->register_inbound_listener(
+        NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2},
+        ProtocolType{ProtocolType::RawBytes}, raw_buffer_capacity);
+
+    auto listener_thread = std::make_shared<LargeReplyListenerThread>(
+        logger_->logger, *listener_reactor);
+    listener_reactor->register_thread(listener_thread);
+
+    std::thread listener_reactor_thread([&]() { listener_reactor->run(); });
+    const uint16_t listen_port = start_listener_reactor(*listener_reactor);
+
+    const int sock_fd = connect_raw_socket(listen_port);
+    ASSERT_NE(sock_fd, -1) << "Failed to connect raw socket";
+
+    EXPECT_TRUE(wait_for([&]() {
+        return listener_thread->connection_established.load(std::memory_order_acquire);
+    })) << "Listener: ConnectionEstablished not received";
+
+    // Send a small trigger message so the listener fires its large reply.
+    const std::string trigger = make_framed(request_payload);
+    ASSERT_TRUE(send_all(sock_fd, trigger.data(), trigger.size()))
+        << "Failed to send trigger message";
+
+    EXPECT_TRUE(wait_for([&]() {
+        return listener_thread->reply_sent.load(std::memory_order_acquire);
+    })) << "Listener: large reply not sent";
+
+    // Drain all the reply bytes — this unblocks EPOLLOUT and drives continue_send().
+    std::vector<uint8_t> drain_buf(65536);
+    size_t total_received = 0;
+    while (total_received < large_reply_payload_size) {
+        const ssize_t n = ::recv(sock_fd, drain_buf.data(), drain_buf.size(), 0);
+        if (n <= 0) break;
+        total_received += static_cast<size_t>(n);
+    }
+    EXPECT_EQ(total_received, large_reply_payload_size)
+        << "Did not receive the full large reply";
+
+    ::close(sock_fd);
+
+    EXPECT_TRUE(wait_for([&]() {
+        return listener_thread->connection_lost.load(std::memory_order_acquire);
+    })) << "Listener: ConnectionLost not received";
+
+    shutdown_and_join(*listener_reactor, listener_reactor_thread);
+}
+
+// ============================================================
+// Test: peer closes while partial send is in flight, exercising
+// deallocate_pending_send() via teardown_connection.
+// ============================================================
+TEST_F(RawBytesProtocolHandlerTest, TeardownWhilePendingSendFreesChunk) {
+    ServiceRegistry listener_registry;
+
+    ReactorConfiguration listener_cfg = make_reactor_config();
+    listener_cfg.socket_send_buffer_size = tiny_rcvbuf_size;
+
+    auto listener_reactor = std::make_unique<Reactor>(
+        listener_cfg, listener_registry, logger_->logger);
+
+    listener_reactor->register_inbound_listener(
+        NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2},
+        ProtocolType{ProtocolType::RawBytes}, raw_buffer_capacity);
+
+    auto listener_thread = std::make_shared<LargeReplyListenerThread>(
+        logger_->logger, *listener_reactor);
+    listener_reactor->register_thread(listener_thread);
+
+    std::thread listener_reactor_thread([&]() { listener_reactor->run(); });
+    const uint16_t listen_port = start_listener_reactor(*listener_reactor);
+
+    const int sock_fd = connect_raw_socket(listen_port);
+    ASSERT_NE(sock_fd, -1) << "Failed to connect raw socket";
+
+    EXPECT_TRUE(wait_for([&]() {
+        return listener_thread->connection_established.load(std::memory_order_acquire);
+    })) << "Listener: ConnectionEstablished not received";
+
+    // Trigger the large reply.
+    const std::string trigger = make_framed(request_payload);
+    ASSERT_TRUE(send_all(sock_fd, trigger.data(), trigger.size()))
+        << "Failed to send trigger message";
+
+    EXPECT_TRUE(wait_for([&]() {
+        return listener_thread->reply_sent.load(std::memory_order_acquire);
+    })) << "Listener: large reply not sent";
+
+    // Close immediately without draining — the listener's partial send is still
+    // in flight. The reactor detects the peer-closed condition, calls
+    // teardown_connection, which calls deallocate_pending_send() to free the
+    // in-flight slab chunk (the uncovered function).
+    ::close(sock_fd);
+
+    EXPECT_TRUE(wait_for([&]() {
+        return listener_thread->connection_lost.load(std::memory_order_acquire);
+    })) << "Listener: ConnectionLost not received after peer closed";
+
     shutdown_and_join(*listener_reactor, listener_reactor_thread);
 }
 

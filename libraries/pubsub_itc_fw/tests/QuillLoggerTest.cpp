@@ -626,3 +626,11 @@ TEST(QuillLoggerSyslogTest, SyslogLevelIndependentFromOtherSinks) {
 
     (void)std::remove(temp_file.c_str()); // we don't care if this remove fail
 }
+
+TEST(QuillLoggerSignalTest, BlockSignalsBeforeConstructionDoesNotThrow) {
+    // block_signals_before_construction() is intended to be called before
+    // constructing a QuillLogger on the main thread so that SIGTERM and SIGINT
+    // are blocked. It must not throw or crash.
+    QuillLogger logger;
+    EXPECT_NO_THROW(logger.block_signals_before_construction());
+}

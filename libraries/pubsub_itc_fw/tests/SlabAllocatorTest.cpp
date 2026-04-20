@@ -212,6 +212,14 @@ TEST_F(SlabAllocatorTest, CapacityMatchesSlabSize)
     EXPECT_EQ(slab.capacity(), slab_size);
 }
 
+TEST_F(SlabAllocatorTest, QueueNodeReturnsNode)
+{
+    SlabAllocator slab(slab_size, 7, queue_);
+    EmptySlabQueueNode& node = slab.queue_node();
+    // The node's slab_id is set during construction.
+    EXPECT_EQ(node.slab_id, 7);
+}
+
 TEST_F(SlabAllocatorTest, AllocationsAreAligned)
 {
     SlabAllocator slab(slab_size, 0, queue_);

@@ -670,3 +670,32 @@ TEST_F(ReactorTest, StuckOperationalThreadTriggersShutdown)
 
     EXPECT_TRUE(reactor.is_finished());
 }
+
+TEST_F(ReactorTest, GetShutdownReasonReturnsReason)
+{
+    reactor_->shutdown("reason under test");
+    EXPECT_EQ(reactor_->get_shutdown_reason(), "reason under test");
+}
+
+TEST_F(ReactorTest, GetThreadNameFromIdReturnsName)
+{
+    auto thread = std::make_shared<CooperativeShutdownThread>(
+        logger_with_sink_.logger, *reactor_,
+        "NamedThread", ThreadID{1},
+        make_queue_config(), make_allocator_config());
+    reactor_->register_thread(thread);
+
+    EXPECT_EQ(reactor_->get_thread_name_from_id(ThreadID{1}), "NamedThread");
+}
+
+TEST_F(ReactorTest, HandleSigtermInitiatesShutdown)
+{
+    // handle_sigterm_and_singint() requires the reactor to be in Running state
+    // to trigger a shutdown. Set lifecycle state directly via the test seam.
+    reactor_->set_lifecycle_state(ReactorLifecycleState::Running);
+    reactor_->set_initialization_complete(true);
+
+    reactor_->handle_sigterm_and_singint();
+
+    EXPECT_TRUE(reactor_->is_finished());
+}
