@@ -571,26 +571,14 @@ protected:
         // Loopback connects complete within microseconds.
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
-        // Find the connecting connection by scanning fds via find_by_fd.
-        OutboundConnection* conn = nullptr;
-        for (int fd = 3; fd < 1024 && conn == nullptr; ++fd) {
-            OutboundConnection* candidate = mgr.find_by_fd(fd);
-            if (candidate != nullptr && candidate->id() == id) {
-                conn = candidate;
-            }
-        }
+        OutboundConnection* conn = mgr.find_by_id(id);
         if (conn == nullptr || !conn->is_connecting()) return nullptr;
 
         mgr.on_connect_ready(*conn);
 
-        // After on_connect_ready the fd changes (connector fd → socket fd).
-        conn = nullptr;
-        for (int fd = 3; fd < 1024 && conn == nullptr; ++fd) {
-            OutboundConnection* candidate = mgr.find_by_fd(fd);
-            if (candidate != nullptr && candidate->id() == id) {
-                conn = candidate;
-            }
-        }
+        // After on_connect_ready the connection transitions to established.
+        // find_by_id still works since the ConnectionID is unchanged.
+        conn = mgr.find_by_id(id);
         return (conn != nullptr && conn->is_established()) ? conn : nullptr;
     }
 
@@ -710,7 +698,8 @@ TEST_F(OutboundConnectionManagerTest, DrainPendingSendDispatchesStashedCommand) 
     cmd1.slab_id_        = slab_id1;
     cmd1.pdu_chunk_ptr_  = chunk1;
     cmd1.pdu_byte_count_ = static_cast<uint32_t>(large_payload);
-    ASSERT_TRUE(mgr.process_send_pdu_command(cmd1));
+    ASSERT_TRUE(mgr.process_send_pdu_command(cmd1))
+        << "process_send_pdu_command rejected cmd1 — connection not found in manager";
 
     if (!conn->has_pending_send()) {
         // Kernel absorbed the full frame — can't test drain_pending_send here.
@@ -730,7 +719,8 @@ TEST_F(OutboundConnectionManagerTest, DrainPendingSendDispatchesStashedCommand) 
     cmd2.slab_id_        = slab_id2;
     cmd2.pdu_chunk_ptr_  = chunk2;
     cmd2.pdu_byte_count_ = 128;
-    ASSERT_TRUE(mgr.process_send_pdu_command(cmd2));
+    ASSERT_TRUE(mgr.process_send_pdu_command(cmd2))
+        << "process_send_pdu_command rejected cmd2 — connection not found in manager";
 
     // Drain the peer socket and drive on_write_ready until the first send
     // completes.

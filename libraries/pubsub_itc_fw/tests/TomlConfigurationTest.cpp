@@ -519,4 +519,75 @@ TEST_F(TomlConfigurationTest, GetRequiredExceptFirstFailureAbortsTryBlock)
     EXPECT_EQ(port,   0);         // second fetch never completed
 }
 
+// ============================================================
+// get_required_except: one happy-path test per uncovered overload.
+// The error path (throws ConfigurationException) is already covered
+// by GetRequiredExceptThrowsOnMissingKey above — these tests exist
+// solely to ensure each overload's function body is entered.
+// ============================================================
+
+TEST_F(TomlConfigurationTest, GetRequiredExceptBool)
+{
+    config.set("flag", true);
+    bool value = false;
+    EXPECT_NO_THROW(config.get_required_except("flag", value));
+    EXPECT_TRUE(value);
+}
+
+TEST_F(TomlConfigurationTest, GetRequiredExceptDouble)
+{
+    config.set("ratio", 2.71828);
+    double value = 0.0;
+    EXPECT_NO_THROW(config.get_required_except("ratio", value));
+    EXPECT_DOUBLE_EQ(value, 2.71828);
+}
+
+TEST_F(TomlConfigurationTest, GetRequiredExceptInt64)
+{
+    config.set("big", int64_t{9'000'000'000LL});
+    int64_t value = 0;
+    EXPECT_NO_THROW(config.get_required_except("big", value));
+    EXPECT_EQ(value, 9'000'000'000LL);
+}
+
+TEST_F(TomlConfigurationTest, GetRequiredExceptNanoseconds)
+{
+    config.set("precision", std::chrono::nanoseconds{500});
+    std::chrono::nanoseconds value{0};
+    EXPECT_NO_THROW(config.get_required_except("precision", value));
+    EXPECT_EQ(value, std::chrono::nanoseconds{500});
+}
+
+TEST_F(TomlConfigurationTest, GetRequiredExceptMicroseconds)
+{
+    config.set("latency", std::chrono::microseconds{100});
+    std::chrono::microseconds value{0};
+    EXPECT_NO_THROW(config.get_required_except("latency", value));
+    EXPECT_EQ(value, std::chrono::microseconds{100});
+}
+
+TEST_F(TomlConfigurationTest, GetRequiredExceptMilliseconds)
+{
+    config.set("interval", std::chrono::milliseconds{250});
+    std::chrono::milliseconds value{0};
+    EXPECT_NO_THROW(config.get_required_except("interval", value));
+    EXPECT_EQ(value, std::chrono::milliseconds{250});
+}
+
+TEST_F(TomlConfigurationTest, GetRequiredExceptMinutes)
+{
+    config.set("window", std::chrono::minutes{15});
+    std::chrono::minutes value{0};
+    EXPECT_NO_THROW(config.get_required_except("window", value));
+    EXPECT_EQ(value, std::chrono::minutes{15});
+}
+
+TEST_F(TomlConfigurationTest, GetRequiredExceptHours)
+{
+    config.set("session", std::chrono::hours{4});
+    std::chrono::hours value{0};
+    EXPECT_NO_THROW(config.get_required_except("session", value));
+    EXPECT_EQ(value, std::chrono::hours{4});
+}
+
 } // namespace pubsub_itc_fw::tests

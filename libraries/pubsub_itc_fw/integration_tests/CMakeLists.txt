@@ -17,7 +17,7 @@ add_executable(pubsub_itc_fw_integration_tests
     PduProtocolHandlerIntegrationTest.cpp
     StatusQueryResponseTest.cpp
     VariableLengthPduTest.cpp
-    RawBytesProtocolHandlerTest.cpp
+    RawBytesProtocolHandlerIntegrationTest.cpp
 )
 
 # Ensure DSL headers are generated before building.

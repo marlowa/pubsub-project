@@ -309,7 +309,7 @@ bool OutboundConnectionManager::process_send_pdu_command(const ReactorControlCom
 
     const uint32_t total_bytes =
         static_cast<uint32_t>(sizeof(PduHeader)) + command.pdu_byte_count_;
-    auto  frame_ptr = static_cast<const uint8_t*>(command.pdu_chunk_ptr_);
+    const uint8_t* frame_ptr = static_cast<const uint8_t*>(command.pdu_chunk_ptr_);
     auto [ok, send_error] = conn.framer()->send_prebuilt(frame_ptr, total_bytes);
 
     if (!ok) {
@@ -429,6 +429,12 @@ OutboundConnection* OutboundConnectionManager::find_by_fd(int fd) const
 {
     auto it = connections_by_fd_.find(fd);
     return (it != connections_by_fd_.end()) ? it->second : nullptr;
+}
+
+OutboundConnection* OutboundConnectionManager::find_by_id(ConnectionID id) const
+{
+    auto it = connections_.find(id);
+    return (it != connections_.end()) ? it->second.get() : nullptr;
 }
 
 void OutboundConnectionManager::teardown_connection(ConnectionID id,

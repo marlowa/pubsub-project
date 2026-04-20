@@ -188,6 +188,15 @@ public:
     [[nodiscard]] OutboundConnection* find_by_fd(int fd) const;
 
     /**
+     * @brief Returns a non-owning pointer to an outbound connection by
+     *        ConnectionID, or nullptr if not found.
+     *
+     * TEST SEAM: exists solely for unit tests that drive the manager directly
+     * without a running reactor. Must not be used by application code.
+     */
+    [[nodiscard]] OutboundConnection* find_by_id(ConnectionID id) const;
+
+    /**
      * @brief Tears down an outbound connection.
      *
      * Deregisters from epoll, frees any in-flight slab chunk, and optionally

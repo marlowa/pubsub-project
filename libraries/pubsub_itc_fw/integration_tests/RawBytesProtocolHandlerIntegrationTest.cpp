@@ -425,7 +425,7 @@ protected:
 // ============================================================
 // Test fixture
 // ============================================================
-class RawBytesProtocolHandlerTest : public ::testing::Test {
+class RawBytesProtocolHandlerIntegrationTest : public ::testing::Test {
 protected:
     void SetUp() override {
         logger_ = std::make_unique<LoggerWithSink>("raw_integ_logger", "raw_integ_sink");
@@ -465,7 +465,7 @@ protected:
 // ============================================================
 // Test: happy-path round-trip
 // ============================================================
-TEST_F(RawBytesProtocolHandlerTest, RawByteRoundTrip) {
+TEST_F(RawBytesProtocolHandlerIntegrationTest, RawByteRoundTrip) {
     ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(
         make_reactor_config(), listener_registry, logger_->logger);
@@ -512,7 +512,7 @@ TEST_F(RawBytesProtocolHandlerTest, RawByteRoundTrip) {
 // ============================================================
 // Test: fragmented delivery
 // ============================================================
-TEST_F(RawBytesProtocolHandlerTest, FragmentedDelivery) {
+TEST_F(RawBytesProtocolHandlerIntegrationTest, FragmentedDelivery) {
     ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(
         make_reactor_config(), listener_registry, logger_->logger);
@@ -571,7 +571,7 @@ TEST_F(RawBytesProtocolHandlerTest, FragmentedDelivery) {
 // ============================================================
 // Test: burst delivery
 // ============================================================
-TEST_F(RawBytesProtocolHandlerTest, BurstDelivery) {
+TEST_F(RawBytesProtocolHandlerIntegrationTest, BurstDelivery) {
     const std::vector<std::string> burst_payloads = {
         "MESSAGE_ONE", "MESSAGE_TWO", "MESSAGE_THREE",
         "MESSAGE_FOUR", "MESSAGE_FIVE"
@@ -623,7 +623,7 @@ TEST_F(RawBytesProtocolHandlerTest, BurstDelivery) {
 // ============================================================
 // Test: peer disconnect detected by listener (exercises recv==0 path)
 // ============================================================
-TEST_F(RawBytesProtocolHandlerTest, PeerDisconnect) {
+TEST_F(RawBytesProtocolHandlerIntegrationTest, PeerDisconnect) {
     ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(
         make_reactor_config(), listener_registry, logger_->logger);
@@ -661,7 +661,7 @@ TEST_F(RawBytesProtocolHandlerTest, PeerDisconnect) {
 // RawBytes listeners allow multiple concurrent connections. The one-connection
 // rule applies only to FrameworkPdu listeners, which is what this test uses.
 // ============================================================
-TEST_F(RawBytesProtocolHandlerTest, OneConnectionRejection) {
+TEST_F(RawBytesProtocolHandlerIntegrationTest, OneConnectionRejection) {
     ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(
         make_reactor_config(), listener_registry, logger_->logger);
@@ -708,7 +708,7 @@ TEST_F(RawBytesProtocolHandlerTest, OneConnectionRejection) {
 // ============================================================
 // Test: idle timeout teardown
 // ============================================================
-TEST_F(RawBytesProtocolHandlerTest, IdleTimeout) {
+TEST_F(RawBytesProtocolHandlerIntegrationTest, IdleTimeout) {
     ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(
         make_short_idle_reactor_config(), listener_registry, logger_->logger);
