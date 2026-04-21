@@ -32,10 +32,6 @@
 #include <pubsub_itc_fw/TimerID.hpp>
 #include <pubsub_itc_fw/TimerType.hpp>
 
-
-// TODO we also want users to create an application thread using make_shared.
-// we might need a factory function to enforce this. The factory function might use CRTP.
-
 namespace pubsub_itc_fw {
 
 // Forward declarations
@@ -127,9 +123,26 @@ class SocketHandler;
  */
 class ApplicationThread {
   public:
+
+    // The Passkey: Constructor is public, but only we can build the 'key'
+    class ConstructorToken {
+        friend class ApplicationThread;
+        ConstructorToken() = default;
+    };
+
+    // Static Factory: The ONLY way for a user to get an instance
+    template <typename T, typename... Args>
+    static std::shared_ptr<T> create(Args&&... args) {
+        static_assert(std::is_base_of_v<ApplicationThread, T>,
+                      "Template argument T must derive from ApplicationThread");
+
+        return std::make_shared<T>(ConstructorToken{}, std::forward<Args>(args)...);
+    }
+
+
     virtual ~ApplicationThread();
 
-    ApplicationThread(QuillLogger& logger,
+    ApplicationThread(ConstructorToken, QuillLogger& logger,
                       Reactor& reactor,
                       const std::string& thread_name,
                       ThreadID thread_id,

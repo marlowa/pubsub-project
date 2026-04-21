@@ -45,6 +45,10 @@
 #include <pubsub_itc_fw/ThreadID.hpp>
 
 #include <pubsub_itc_fw/tests_common/LoggerWithSink.hpp>
+#include <pubsub_itc_fw/tests_common/TestConfigurations.hpp>
+
+using pubsub_itc_fw::tests::make_queue_config;
+using pubsub_itc_fw::tests::make_allocator_config;
 
 #include <leader_follower.hpp>
 
@@ -60,21 +64,6 @@ static constexpr int16_t PDU_ID_STATUS_RESPONSE = 101;
 // Helpers
 // ============================================================
 
-static QueueConfiguration make_queue_config() {
-    QueueConfiguration cfg{};
-    cfg.low_watermark = 1;
-    cfg.high_watermark = 64;
-    return cfg;
-}
-
-static AllocatorConfiguration make_allocator_config(const std::string& name) {
-    AllocatorConfiguration cfg{};
-    cfg.pool_name = name;
-    cfg.objects_per_pool = 64;
-    cfg.initial_pools = 1;
-    return cfg;
-}
-
 static void enqueue_disconnect(Reactor& reactor, ConnectionID conn_id) {
     ReactorControlCommand cmd(ReactorControlCommand::CommandTag::Disconnect);
     cmd.connection_id_ = conn_id;
@@ -89,8 +78,9 @@ static void enqueue_disconnect(Reactor& reactor, ConnectionID conn_id) {
 // ============================================================
 class ConnectorThread : public ApplicationThread {
   public:
-    ConnectorThread(QuillLogger& logger, Reactor& reactor)
-        : ApplicationThread(logger, reactor, "ConnectorThread", ThreadID{1}, make_queue_config(), make_allocator_config("ConnectorPool"), ApplicationThreadConfiguration{}) {}
+    ConnectorThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
+        : ApplicationThread(token, logger, reactor, "ConnectorThread", ThreadID{1}, make_queue_config(),
+            make_allocator_config("ConnectorPool"), ApplicationThreadConfiguration{}) {}
 
     std::atomic<bool> connection_established{false};
     std::atomic<bool> query_sent{false};
@@ -151,8 +141,9 @@ class ConnectorThread : public ApplicationThread {
 // ============================================================
 class ListenerThread : public ApplicationThread {
   public:
-    ListenerThread(QuillLogger& logger, Reactor& reactor)
-        : ApplicationThread(logger, reactor, "ListenerThread", ThreadID{2}, make_queue_config(), make_allocator_config("ListenerPool"), ApplicationThreadConfiguration{}) {}
+    ListenerThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
+        : ApplicationThread(token, logger, reactor, "ListenerThread", ThreadID{2},
+            make_queue_config(), make_allocator_config("ListenerPool"), ApplicationThreadConfiguration{}) {}
 
     std::atomic<bool> connection_established{false};
     std::atomic<bool> query_received{false};
@@ -244,7 +235,7 @@ TEST_F(StatusQueryResponseTest, StatusQueryResponseRoundTrip) {
     // port=0 asks the OS to assign a free port
     listener_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
 
-    auto listener_thread = std::make_shared<ListenerThread>(logger_->logger, *listener_reactor);
+    auto listener_thread = ApplicationThread::create<ListenerThread>(logger_->logger, *listener_reactor);
     listener_reactor->register_thread(listener_thread);
 
     std::thread listener_reactor_thread([&]() { listener_reactor->run(); });
@@ -262,7 +253,7 @@ TEST_F(StatusQueryResponseTest, StatusQueryResponseRoundTrip) {
 
     auto connector_reactor = std::make_unique<Reactor>(make_reactor_config(), connector_registry, logger_->logger);
 
-    auto connector_thread = std::make_shared<ConnectorThread>(logger_->logger, *connector_reactor);
+    auto connector_thread = ApplicationThread::create<ConnectorThread>(logger_->logger, *connector_reactor);
     connector_reactor->register_thread(connector_thread);
 
     std::thread connector_reactor_thread([&]() { connector_reactor->run(); });

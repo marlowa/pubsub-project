@@ -47,10 +47,9 @@ using namespace test_support;
 
 namespace {
 
-// TODO these are copied from ApplicationThreadTest.
-
 // ------------------------------------------------------------
 // Helpers: QueueConfiguration, AllocatorConfiguration
+// Note: the parameter values here are different from the helpers in TestConfigurations
 // ------------------------------------------------------------
 pubsub_itc_fw::QueueConfiguration make_queue_config()
 {
@@ -154,13 +153,13 @@ public:
 // A cooperative thread that does nothing special at all
 class CooperativeShutdownThread : public ApplicationThread {
 public:
-    CooperativeShutdownThread(QuillLogger& logger,
+    CooperativeShutdownThread(ConstructorToken token, QuillLogger& logger,
                               Reactor& reactor,
                               const std::string& name,
                               ThreadID id,
                               const QueueConfiguration& qc,
                               const AllocatorConfiguration& ac)
-        : ApplicationThread(logger, reactor, name, id, qc, ac, ApplicationThreadConfiguration{})
+        : ApplicationThread(token, logger, reactor, name, id, qc, ac, ApplicationThreadConfiguration{})
     {}
 
 protected:
@@ -182,13 +181,13 @@ protected:
 // -----------------------------------------------------------------------------
 class TestApplicationThread : public ApplicationThread {
 public:
-    TestApplicationThread(QuillLogger& logger,
+    TestApplicationThread(ConstructorToken token, QuillLogger& logger,
                           Reactor& reactor,
                           const std::string& name,
                           ThreadID id,
                           const QueueConfiguration& queue_config,
                           const AllocatorConfiguration& allocator_config)
-        : ApplicationThread(logger, reactor, name, id, queue_config, allocator_config, ApplicationThreadConfiguration{})
+        : ApplicationThread(token, logger, reactor, name, id, queue_config, allocator_config, ApplicationThreadConfiguration{})
     {}
 
     std::atomic<bool> saw_initial_event{false};
@@ -212,13 +211,13 @@ protected:
 
 class FakeThread : public ApplicationThread {
 public:
-    FakeThread(QuillLogger& logger,
+    FakeThread(ConstructorToken token, QuillLogger& logger,
                Reactor& reactor,
                const std::string& name,
                ThreadID id,
                const QueueConfiguration& qc,
                const AllocatorConfiguration& ac)
-        : ApplicationThread(logger, reactor, name, id, qc, ac, ApplicationThreadConfiguration{})
+        : ApplicationThread(token, logger, reactor, name, id, qc, ac, ApplicationThreadConfiguration{})
     {
         set_lifecycle_state(ThreadLifecycleState::Operational);
     }
@@ -243,7 +242,7 @@ TEST_F(ReactorTest, InitializationTimeoutTriggersShutdown)
 
     reactor_ = std::make_unique<Reactor>(cfg, service_registry_, logger_with_sink_.logger);
 
-    auto bad_thread = std::make_shared<NeverStartingThread>(logger_with_sink_.logger, *reactor_,
+    auto bad_thread = ApplicationThread::create<NeverStartingThread>(logger_with_sink_.logger, *reactor_,
                                                             "BadThread", ThreadID(99),
                                                             make_queue_config(), make_allocator_config());
     reactor_->register_thread(bad_thread);
@@ -299,9 +298,9 @@ TEST_F(ReactorTest, AllThreadsReceiveInitThenAppReady) {
     // -------------------------------------------------------------------------
     // Create two test threads
     // -------------------------------------------------------------------------
-    auto thread1 = std::make_shared<TestApplicationThread>(logger_with_sink_.logger, *reactor_,
+    auto thread1 = ApplicationThread::create<TestApplicationThread>(logger_with_sink_.logger, *reactor_,
         "thread1", ThreadID{1}, make_queue_config(), make_allocator_config());
-    auto thread2 = std::make_shared<TestApplicationThread>(logger_with_sink_.logger, *reactor_,
+    auto thread2 = ApplicationThread::create<TestApplicationThread>(logger_with_sink_.logger, *reactor_,
         "thread2", ThreadID{2}, make_queue_config(), make_allocator_config());
 
     reactor_->register_thread(thread1);
@@ -352,12 +351,12 @@ TEST_F(ReactorTest, AllThreadsReceiveInitThenAppReady) {
 
 TEST_F(ReactorTest, ShutdownBroadcastsTerminationAndThreadExits)
 {
-    auto thread = std::make_shared<CooperativeShutdownThread>(logger_with_sink_.logger, *reactor_,
+    auto thread = ApplicationThread::create<CooperativeShutdownThread>(logger_with_sink_.logger, *reactor_,
                               "ShutdownThread", ThreadID{123}, make_queue_config(), make_allocator_config());
     reactor_->register_thread(thread);
     reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>( [this] { reactor_->run(); });
 
-    // Wait until initialization completes.
+    // Wait until initialisation completes.
     {
         BackoffWithYield backoff;
         while (!reactor_->is_initialized()) {
@@ -380,7 +379,7 @@ TEST_F(ReactorTest, ShutdownBroadcastsTerminationAndThreadExits)
 
 TEST_F(ReactorTest, RogueThreadBlocksInITCMessageReactorStillShutsDown)
 {
-    auto rogue = std::make_shared<RogueITCThread>(logger_with_sink_.logger, *reactor_,
+    auto rogue = ApplicationThread::create<RogueITCThread>(logger_with_sink_.logger, *reactor_,
                                                   "RogueThread", ThreadID{777},
                                                   make_queue_config(), make_allocator_config());
     reactor_->register_thread(rogue);
@@ -418,7 +417,7 @@ TEST_F(ReactorTest, RogueThreadBlocksInITCMessageReactorStillShutsDown)
 
 TEST_F(ReactorTest, ThreadThrowsDuringTerminationReactorStillShutsDown)
 {
-    auto bad_thread = std::make_shared<ThrowingTerminationThread>(logger_with_sink_.logger, *reactor_,
+    auto bad_thread = ApplicationThread::create<ThrowingTerminationThread>(logger_with_sink_.logger, *reactor_,
                                                                   "ThrowingThread", ThreadID{888},
                                                             make_queue_config(), make_allocator_config());
     reactor_->register_thread(bad_thread);
@@ -451,7 +450,7 @@ TEST_F(ReactorTest, ThreadThrowsDuringTerminationReactorStillShutsDown)
 
 TEST_F(ReactorTest, ThreadThrowsDuringRunLoopReactorShutsDown)
 {
-    auto bad_thread = std::make_shared<ThrowingDuringRunThread>(logger_with_sink_.logger, *reactor_,
+    auto bad_thread = ApplicationThread::create<ThrowingDuringRunThread>(logger_with_sink_.logger, *reactor_,
                                                                 "ThrowingRunLoopThread", ThreadID{999},
                                                                 make_queue_config(), make_allocator_config());
     reactor_->register_thread(bad_thread);
@@ -497,7 +496,7 @@ TEST_F(ReactorTest, ThreadThrowsDuringRunLoopReactorShutsDown)
 
 TEST_F(ReactorTest, ThreadThrowsDuringInitialProcessingReactorShutsDown)
 {
-    auto bad_thread = std::make_shared<ThrowingInitialThread>(logger_with_sink_.logger, *reactor_,
+    auto bad_thread = ApplicationThread::create<ThrowingInitialThread>(logger_with_sink_.logger, *reactor_,
                                                               "BadInitThread", ThreadID{101},
                                                             make_queue_config(), make_allocator_config());
     reactor_->register_thread(bad_thread);
@@ -512,7 +511,7 @@ TEST_F(ReactorTest, ThreadThrowsDuringInitialProcessingReactorShutsDown)
 
 TEST_F(ReactorTest, ThreadThrowsDuringAppReadyProcessingReactorShutsDown)
 {
-    auto bad_thread = std::make_shared<ThrowingAppReadyThread>(logger_with_sink_.logger, *reactor_,
+    auto bad_thread = ApplicationThread::create<ThrowingAppReadyThread>(logger_with_sink_.logger, *reactor_,
                                                                "BadAppReadyThread", ThreadID{202},
                                                                make_queue_config(), make_allocator_config());
     reactor_->register_thread(bad_thread);
@@ -550,7 +549,7 @@ TEST_F(ReactorTest, RouteMessageFromNonRunningOriginIsIgnored)
     const ReactorConfiguration cfg;
     Reactor reactor(cfg, service_registry_, logger_with_sink_.logger);
 
-    auto target_thread = std::make_shared<NeverStartingThread>(
+    auto target_thread = ApplicationThread::create<NeverStartingThread>(
         logger_with_sink_.logger, reactor,
         "TargetThread", ThreadID(1),
         make_queue_config(), make_allocator_config());
@@ -575,7 +574,7 @@ TEST_F(ReactorTest, FinalizePromotesShuttingDownToTerminated)
     const ReactorConfiguration cfg;
     Reactor reactor(cfg, service_registry_, logger_with_sink_.logger);
 
-    auto t = std::make_shared<NeverStartingThread>(logger_with_sink_.logger, reactor,
+    auto t = ApplicationThread::create<NeverStartingThread>(logger_with_sink_.logger, reactor,
                                                    "T", ThreadID(1),
                                                    make_queue_config(), make_allocator_config());
     reactor.register_thread(t);
@@ -594,10 +593,10 @@ TEST_F(ReactorTest, CancelTimerWrongOwnerThrows)
     const ReactorConfiguration cfg;
     Reactor reactor(cfg, service_registry_, logger_with_sink_.logger);
 
-    auto t1 = std::make_shared<CooperativeShutdownThread>(logger_with_sink_.logger, reactor,
+    auto t1 = ApplicationThread::create<CooperativeShutdownThread>(logger_with_sink_.logger, reactor,
                                                           "A", ThreadID(1),
                                                           make_queue_config(), make_allocator_config());
-    auto t2 = std::make_shared<CooperativeShutdownThread>(logger_with_sink_.logger, reactor,
+    auto t2 = ApplicationThread::create<CooperativeShutdownThread>(logger_with_sink_.logger, reactor,
                                                           "B", ThreadID(2),
                                                           make_queue_config(), make_allocator_config());
 
@@ -626,7 +625,7 @@ TEST_F(ReactorTest, ExitedThreadTriggersShutdown)
     const ReactorConfiguration cfg;
     Reactor reactor(cfg, service_registry_, logger_with_sink_.logger);
 
-    auto thread = std::make_shared<FakeThread>(logger_with_sink_.logger, reactor,
+    auto thread = ApplicationThread::create<FakeThread>(logger_with_sink_.logger, reactor,
                                           "T", ThreadID(1), make_queue_config(), make_allocator_config());
     reactor.register_thread(thread);
 
@@ -648,7 +647,7 @@ TEST_F(ReactorTest, StuckOperationalThreadTriggersShutdown)
     cfg.itc_maximum_inactivity_interval_ = std::chrono::milliseconds(1);
     Reactor reactor(cfg, service_registry_, logger_with_sink_.logger);
 
-    auto thread = std::make_shared<FakeThread>(
+    auto thread = ApplicationThread::create<FakeThread>(
         logger_with_sink_.logger, reactor,
         "ThreadA", ThreadID(1),
         make_queue_config(), make_allocator_config());
@@ -679,7 +678,7 @@ TEST_F(ReactorTest, GetShutdownReasonReturnsReason)
 
 TEST_F(ReactorTest, GetThreadNameFromIdReturnsName)
 {
-    auto thread = std::make_shared<CooperativeShutdownThread>(
+    auto thread = ApplicationThread::create<CooperativeShutdownThread>(
         logger_with_sink_.logger, *reactor_,
         "NamedThread", ThreadID{1},
         make_queue_config(), make_allocator_config());

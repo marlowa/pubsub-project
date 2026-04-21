@@ -166,8 +166,8 @@ public:
 
 class StubApplicationThread : public ApplicationThread {
 public:
-    StubApplicationThread(QuillLogger& logger, Reactor& reactor)
-        : ApplicationThread(logger, reactor, "StubThread", ThreadID{1},
+    StubApplicationThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
+        : ApplicationThread(token, logger, reactor, "StubThread", ThreadID{1},
                             make_queue_config(), make_allocator_config(), ApplicationThreadConfiguration{})
     {}
 
@@ -205,8 +205,7 @@ protected:
         reactor_ = std::make_unique<Reactor>(
             ReactorConfiguration{}, service_registry_, logger_with_sink_->logger);
 
-        thread_ = std::make_shared<StubApplicationThread>(
-            logger_with_sink_->logger, *reactor_);
+        thread_ = ApplicationThread::create<StubApplicationThread>(logger_with_sink_->logger, *reactor_);
     }
 
     std::unique_ptr<LoggerWithSink> logger_with_sink_;

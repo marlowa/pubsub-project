@@ -737,15 +737,13 @@ TEST_F(ExpandablePoolAllocatorTest, AbaStressTest) {
 }
 
 /**
- * DoubleFreeDetection.
+ * @brief Verifies that the double-free guard in deallocate() fires the
+ * invalid_free callback and does not corrupt the free list.
  *
- * Verifies that the is_constructed double-free guard in deallocate() fires the
- * invalid_free callback and does NOT corrupt the free list.
- *
- * TODO we need to double check this comment about tsan
- * Note: this test exposes Bug 1 — the flag read/write is currently a plain
- * (non-atomic) access in the production path. Under TSan this will be
- * flagged as a data race. The test still passes functionally.
+ * Deallocates the same pointer twice. The second call must trigger the
+ * invalid_free callback exactly once via the atomic CAS on is_constructed.
+ * After the double-free attempt the pool must remain fully usable — all
+ * slots must still be allocatable and unique.
  */
 TEST_F(ExpandablePoolAllocatorTest, DoubleFreeDetection) {
     auto allocator = make_allocator("DoubleFreeTest", 4);
@@ -761,7 +759,6 @@ TEST_F(ExpandablePoolAllocatorTest, DoubleFreeDetection) {
 
     // Pool must remain fully usable after a double-free attempt.
     auto stats = allocator.get_pool_statistics();
-    // 1 slot was freed once (valid), so 4 slots total are available.
     EXPECT_EQ(stats.number_of_allocated_objects_, 0);
 
     // All 4 slots must still be allocatable.

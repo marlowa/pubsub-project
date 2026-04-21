@@ -66,6 +66,7 @@
 #include <pubsub_itc_fw/ThreadID.hpp>
 
 #include <pubsub_itc_fw/tests_common/LoggerWithSink.hpp>
+#include <pubsub_itc_fw/tests_common/TestConfigurations.hpp>
 
 #include <variable_length_test_protocol.hpp>
 
@@ -101,21 +102,6 @@ static constexpr size_t listener_outbound_slab_size = 4 * 1024 * 1024;
 // Helpers
 // ============================================================
 
-static QueueConfiguration make_queue_config() {
-    QueueConfiguration cfg{};
-    cfg.low_watermark  = 1;
-    cfg.high_watermark = 64;
-    return cfg;
-}
-
-static AllocatorConfiguration make_allocator_config(const std::string& name) {
-    AllocatorConfiguration cfg{};
-    cfg.pool_name        = name;
-    cfg.objects_per_pool = 64;
-    cfg.initial_pools    = 1;
-    return cfg;
-}
-
 static ApplicationThreadConfiguration make_connector_thread_config() {
     ApplicationThreadConfiguration cfg{};
     cfg.outbound_slab_size        = outbound_slab_size;
@@ -135,8 +121,8 @@ static ApplicationThreadConfiguration make_listener_thread_config() {
 // ============================================================
 class PduProtocolHandlerConnectorThread : public ApplicationThread {
 public:
-    PduProtocolHandlerConnectorThread(QuillLogger& logger, Reactor& reactor)
-        : ApplicationThread(logger, reactor, "PduProtocolHandlerConnectorThread", ThreadID{1},
+    PduProtocolHandlerConnectorThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
+        : ApplicationThread(token, logger, reactor, "PduProtocolHandlerConnectorThread", ThreadID{1},
                             make_queue_config(), make_allocator_config("PduProtocolHandlerConnectorPool"),
                             make_connector_thread_config()) {}
 
@@ -206,8 +192,8 @@ private:
 // ============================================================
 class PduProtocolHandlerListenerThread : public ApplicationThread {
 public:
-    PduProtocolHandlerListenerThread(QuillLogger& logger, Reactor& reactor)
-        : ApplicationThread(logger, reactor, "PduProtocolHandlerListenerThread", ThreadID{2},
+    PduProtocolHandlerListenerThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
+        : ApplicationThread(token, logger, reactor, "PduProtocolHandlerListenerThread", ThreadID{2},
                             make_queue_config(), make_allocator_config("PduProtocolHandlerListenerPool"),
                             make_listener_thread_config()) {}
 
@@ -276,8 +262,8 @@ protected:
 // ============================================================
 class LargeResponseListenerThread : public ApplicationThread {
 public:
-    LargeResponseListenerThread(QuillLogger& logger, Reactor& reactor)
-        : ApplicationThread(logger, reactor, "LargeResponseListenerThread", ThreadID{2},
+    LargeResponseListenerThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
+        : ApplicationThread(token, logger, reactor, "LargeResponseListenerThread", ThreadID{2},
                             make_queue_config(), make_allocator_config("LargeResponseListenerPool"),
                             make_large_response_listener_thread_config()) {}
 
@@ -342,8 +328,8 @@ private:
 // ============================================================
 class SmallQueryConnectorThread : public ApplicationThread {
 public:
-    SmallQueryConnectorThread(QuillLogger& logger, Reactor& reactor)
-        : ApplicationThread(logger, reactor, "SmallQueryConnectorThread", ThreadID{1},
+    SmallQueryConnectorThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
+        : ApplicationThread(token, logger, reactor, "SmallQueryConnectorThread", ThreadID{1},
                             make_queue_config(), make_allocator_config("SmallQueryConnectorPool"),
                             make_small_query_connector_thread_config()) {}
 
@@ -505,7 +491,7 @@ TEST_F(PduProtocolHandlerIntegrationTest, LargeQueryNameForcesPartialsend) {
     listener_reactor->register_inbound_listener(
         NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
 
-    auto listener_thread = std::make_shared<PduProtocolHandlerListenerThread>(
+    auto listener_thread = ApplicationThread::create<PduProtocolHandlerListenerThread>(
         logger_->logger, *listener_reactor);
     listener_reactor->register_thread(listener_thread);
 
@@ -525,7 +511,7 @@ TEST_F(PduProtocolHandlerIntegrationTest, LargeQueryNameForcesPartialsend) {
     auto connector_reactor = std::make_unique<Reactor>(
         make_connector_reactor_config(), connector_registry, logger_->logger);
 
-    auto connector_thread = std::make_shared<PduProtocolHandlerConnectorThread>(
+    auto connector_thread = ApplicationThread::create<PduProtocolHandlerConnectorThread>(
         logger_->logger, *connector_reactor);
     connector_reactor->register_thread(connector_thread);
 
@@ -587,7 +573,7 @@ TEST_F(PduProtocolHandlerIntegrationTest, LargeResponseForcesPartialSend) {
     listener_reactor->register_inbound_listener(
         NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
 
-    auto listener_thread = std::make_shared<LargeResponseListenerThread>(
+    auto listener_thread = ApplicationThread::create<LargeResponseListenerThread>(
         logger_->logger, *listener_reactor);
     listener_reactor->register_thread(listener_thread);
 
@@ -607,7 +593,7 @@ TEST_F(PduProtocolHandlerIntegrationTest, LargeResponseForcesPartialSend) {
     auto connector_reactor = std::make_unique<Reactor>(
         make_connector_reactor_config(), connector_registry, logger_->logger);
 
-    auto connector_thread = std::make_shared<SmallQueryConnectorThread>(
+    auto connector_thread = ApplicationThread::create<SmallQueryConnectorThread>(
         logger_->logger, *connector_reactor);
     connector_reactor->register_thread(connector_thread);
 
@@ -662,7 +648,7 @@ TEST_F(PduProtocolHandlerIntegrationTest, LargeQueryNameForcesOutboundWriteReady
     listener_reactor->register_inbound_listener(
         NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
 
-    auto listener_thread = std::make_shared<PduProtocolHandlerListenerThread>(
+    auto listener_thread = ApplicationThread::create<PduProtocolHandlerListenerThread>(
         logger_->logger, *listener_reactor);
     listener_reactor->register_thread(listener_thread);
 
@@ -684,7 +670,7 @@ TEST_F(PduProtocolHandlerIntegrationTest, LargeQueryNameForcesOutboundWriteReady
     auto connector_reactor = std::make_unique<Reactor>(
         make_small_sndbuf_connector_reactor_config(), connector_registry, logger_->logger);
 
-    auto connector_thread = std::make_shared<PduProtocolHandlerConnectorThread>(
+    auto connector_thread = ApplicationThread::create<PduProtocolHandlerConnectorThread>(
         logger_->logger, *connector_reactor);
     connector_reactor->register_thread(connector_thread);
 
@@ -740,8 +726,8 @@ TEST_F(PduProtocolHandlerIntegrationTest, LargeQueryNameForcesOutboundWriteReady
 // ============================================================
 class DisconnectingListenerThread : public ApplicationThread {
 public:
-    DisconnectingListenerThread(QuillLogger& logger, Reactor& reactor)
-        : ApplicationThread(logger, reactor, "DisconnectingListenerThread", ThreadID{2},
+    DisconnectingListenerThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
+        : ApplicationThread(token, logger, reactor, "DisconnectingListenerThread", ThreadID{2},
                             make_queue_config(), make_allocator_config("DisconnectingListenerPool"),
                             ApplicationThreadConfiguration{}) {}
 
@@ -786,7 +772,7 @@ TEST_F(PduProtocolHandlerIntegrationTest, ListenerClosesConnection) {
     listener_reactor->register_inbound_listener(
         NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
 
-    auto listener_thread = std::make_shared<DisconnectingListenerThread>(
+    auto listener_thread = ApplicationThread::create<DisconnectingListenerThread>(
         logger_->logger, *listener_reactor);
     listener_reactor->register_thread(listener_thread);
 
@@ -809,7 +795,7 @@ TEST_F(PduProtocolHandlerIntegrationTest, ListenerClosesConnection) {
     // Use SmallQueryConnectorThread — it sends a small DataQuery on connect
     // and calls shutdown on connection lost, which is what we expect here
     // since the listener will close without replying.
-    auto connector_thread = std::make_shared<SmallQueryConnectorThread>(
+    auto connector_thread = ApplicationThread::create<SmallQueryConnectorThread>(
         logger_->logger, *connector_reactor);
     connector_reactor->register_thread(connector_thread);
 
@@ -857,8 +843,8 @@ TEST_F(PduProtocolHandlerIntegrationTest, ListenerClosesConnection) {
 // ============================================================
 class DoubleSendConnectorThread : public ApplicationThread {
 public:
-    DoubleSendConnectorThread(QuillLogger& logger, Reactor& reactor)
-        : ApplicationThread(logger, reactor, "DoubleSendConnectorThread", ThreadID{1},
+    DoubleSendConnectorThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
+        : ApplicationThread(token, logger, reactor, "DoubleSendConnectorThread", ThreadID{1},
                             make_queue_config(), make_allocator_config("DoubleSendConnectorPool"),
                             make_double_send_connector_thread_config()) {}
 
@@ -947,7 +933,7 @@ TEST_F(PduProtocolHandlerIntegrationTest, DoubleSendThenTeardown) {
     listener_reactor->register_inbound_listener(
         NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
 
-    auto listener_thread = std::make_shared<DisconnectingListenerThread>(
+    auto listener_thread = ApplicationThread::create<DisconnectingListenerThread>(
         logger_->logger, *listener_reactor);
     listener_reactor->register_thread(listener_thread);
 
@@ -970,7 +956,7 @@ TEST_F(PduProtocolHandlerIntegrationTest, DoubleSendThenTeardown) {
     auto connector_reactor = std::make_unique<Reactor>(
         make_small_sndbuf_connector_reactor_config(), connector_registry, logger_->logger);
 
-    auto connector_thread = std::make_shared<DoubleSendConnectorThread>(
+    auto connector_thread = ApplicationThread::create<DoubleSendConnectorThread>(
         logger_->logger, *connector_reactor);
     connector_reactor->register_thread(connector_thread);
 

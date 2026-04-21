@@ -49,12 +49,13 @@ class FixGatewayThread : public pubsub_itc_fw::ApplicationThread {
 public:
     /**
      * @brief Constructs a FixGatewayThread.
-     *
+     * @param[in] token     Constructor token to force use of factory
      * @param[in] logger    Logger instance. Must outlive this object.
      * @param[in] reactor   The owning Reactor. Must outlive this object.
      * @param[in] config    Gateway configuration.
      */
-    FixGatewayThread(pubsub_itc_fw::QuillLogger& logger,
+    FixGatewayThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token,
+        pubsub_itc_fw::QuillLogger& logger,
                      pubsub_itc_fw::Reactor& reactor,
                      const FixGatewayConfiguration& config);
 

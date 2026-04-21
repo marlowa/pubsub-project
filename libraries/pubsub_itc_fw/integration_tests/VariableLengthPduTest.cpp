@@ -48,6 +48,7 @@
 #include <pubsub_itc_fw/ThreadID.hpp>
 
 #include <pubsub_itc_fw/tests_common/LoggerWithSink.hpp>
+#include <pubsub_itc_fw/tests_common/TestConfigurations.hpp>
 
 #include <variable_length_test_protocol.hpp>
 
@@ -63,21 +64,6 @@ static constexpr int16_t PDU_ID_DATA_RESPONSE = 301;
 // Helpers
 // ============================================================
 
-static QueueConfiguration make_queue_config() {
-    QueueConfiguration cfg{};
-    cfg.low_watermark  = 1;
-    cfg.high_watermark = 64;
-    return cfg;
-}
-
-static AllocatorConfiguration make_allocator_config(const std::string& name) {
-    AllocatorConfiguration cfg{};
-    cfg.pool_name       = name;
-    cfg.objects_per_pool = 64;
-    cfg.initial_pools   = 1;
-    return cfg;
-}
-
 // ============================================================
 // Connector-side ApplicationThread.
 // Sends DataQuery on ConnectionEstablished.
@@ -86,8 +72,8 @@ static AllocatorConfiguration make_allocator_config(const std::string& name) {
 // ============================================================
 class ConnectorThread : public ApplicationThread {
 public:
-    ConnectorThread(QuillLogger& logger, Reactor& reactor)
-        : ApplicationThread(logger, reactor, "ConnectorThread", ThreadID{1},
+    ConnectorThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
+        : ApplicationThread(token, logger, reactor, "ConnectorThread", ThreadID{1},
                             make_queue_config(), make_allocator_config("ConnectorPool"),
                             ApplicationThreadConfiguration{}) {}
 
@@ -161,8 +147,8 @@ protected:
 // ============================================================
 class ListenerThread : public ApplicationThread {
 public:
-    ListenerThread(QuillLogger& logger, Reactor& reactor)
-        : ApplicationThread(logger, reactor, "ListenerThread", ThreadID{2},
+    ListenerThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
+        : ApplicationThread(token, logger, reactor, "ListenerThread", ThreadID{2},
                             make_queue_config(), make_allocator_config("ListenerPool"),
                             ApplicationThreadConfiguration{}) {}
 
@@ -275,8 +261,7 @@ TEST_F(VariableLengthPduTest, DataQueryResponseRoundTrip) {
     listener_reactor->register_inbound_listener(
         NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
 
-    auto listener_thread = std::make_shared<ListenerThread>(
-        logger_->logger, *listener_reactor);
+    auto listener_thread = ApplicationThread::create<ListenerThread>(logger_->logger, *listener_reactor);
     listener_reactor->register_thread(listener_thread);
 
     std::thread listener_reactor_thread([&]() { listener_reactor->run(); });
@@ -296,7 +281,7 @@ TEST_F(VariableLengthPduTest, DataQueryResponseRoundTrip) {
     auto connector_reactor = std::make_unique<Reactor>(
         make_reactor_config(), connector_registry, logger_->logger);
 
-    auto connector_thread = std::make_shared<ConnectorThread>(
+    auto connector_thread = ApplicationThread::create<ConnectorThread>(
         logger_->logger, *connector_reactor);
     connector_reactor->register_thread(connector_thread);
 

@@ -56,7 +56,7 @@ ApplicationThread::~ApplicationThread() {
     // The reactor owns the threads.
 }
 
-ApplicationThread::ApplicationThread(QuillLogger& logger, Reactor& reactor, const std::string& thread_name, ThreadID thread_id, const QueueConfiguration& queue_config,
+ApplicationThread::ApplicationThread(ConstructorToken, QuillLogger& logger, Reactor& reactor, const std::string& thread_name, ThreadID thread_id, const QueueConfiguration& queue_config,
                                      const AllocatorConfiguration& allocator_config, const ApplicationThreadConfiguration& thread_config)
     : logger_(logger)
     , reactor_(reactor)

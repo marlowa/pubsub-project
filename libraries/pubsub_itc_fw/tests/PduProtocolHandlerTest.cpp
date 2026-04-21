@@ -83,8 +83,8 @@ namespace pubsub_itc_fw::tests {
 // ============================================================
 class StubApplicationThread : public ApplicationThread {
 public:
-    StubApplicationThread(QuillLogger& logger, Reactor& reactor)
-        : ApplicationThread(logger, reactor, "StubApplicationThread", ThreadID{1},
+    StubApplicationThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
+        : ApplicationThread(token, logger, reactor, "StubApplicationThread", ThreadID{1},
                             make_queue_config(), make_allocator_config(),
                             ApplicationThreadConfiguration{}) {}
 
@@ -122,8 +122,7 @@ protected:
         reactor_ = std::make_unique<Reactor>(
             ReactorConfiguration{}, service_registry_, logger_->logger);
 
-        stub_thread_ = std::make_unique<StubApplicationThread>(
-            logger_->logger, *reactor_);
+        stub_thread_ = pubsub_itc_fw::ApplicationThread::create<StubApplicationThread>(logger_->logger, *reactor_);
 
         // A modest slab for the inbound allocator passed to PduProtocolHandler.
         // The send-path tests never reach PduParser so this is just for construction.
@@ -236,7 +235,7 @@ protected:
     std::unique_ptr<LoggerWithSink>           logger_;
     ServiceRegistry                           service_registry_;
     std::unique_ptr<Reactor>                  reactor_;
-    std::unique_ptr<StubApplicationThread>    stub_thread_;
+    std::shared_ptr<StubApplicationThread>    stub_thread_;
     std::unique_ptr<ExpandableSlabAllocator>  inbound_allocator_;
     std::unique_ptr<ExpandableSlabAllocator>  outbound_allocator_;
     std::unique_ptr<TcpSocket>                socket_;

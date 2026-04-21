@@ -115,27 +115,13 @@
 #include <pubsub_itc_fw/ThreadID.hpp>
 
 #include <pubsub_itc_fw/tests_common/LoggerWithSink.hpp>
+#include <pubsub_itc_fw/tests_common/TestConfigurations.hpp>
 
 namespace pubsub_itc_fw::tests {
 
 // ============================================================
 // Helpers
 // ============================================================
-
-static QueueConfiguration make_queue_config() {
-    QueueConfiguration cfg{};
-    cfg.low_watermark  = 1;
-    cfg.high_watermark = 64;
-    return cfg;
-}
-
-static AllocatorConfiguration make_allocator_config(const std::string& name) {
-    AllocatorConfiguration cfg{};
-    cfg.pool_name        = name;
-    cfg.objects_per_pool = 64;
-    cfg.initial_pools    = 1;
-    return cfg;
-}
 
 /*
  * Creates a POSIX listening socket on 127.0.0.1:0.
@@ -174,9 +160,9 @@ static std::pair<int, uint16_t> make_listener() {
 // ============================================================
 class OutboundTestThread : public ApplicationThread {
 public:
-    OutboundTestThread(QuillLogger& logger, Reactor& reactor,
+    OutboundTestThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor,
                        const std::string& service_name)
-        : ApplicationThread(logger, reactor, "OutboundTestThread", ThreadID{1},
+        : ApplicationThread(token, logger, reactor, "OutboundTestThread", ThreadID{1},
                             make_queue_config(), make_allocator_config("OutboundTestPool"),
                             ApplicationThreadConfiguration{})
         , service_name_(service_name) {}
@@ -267,7 +253,7 @@ TEST_F(OutboundConnectionTest, ConnectTimeout) {
         NetworkEndpointConfiguration{});
 
     auto reactor = std::make_unique<Reactor>(cfg, registry, logger_->logger);
-    auto thread  = std::make_shared<OutboundTestThread>(
+    auto thread  = ApplicationThread::create<OutboundTestThread>(
         logger_->logger, *reactor, "slow_service");
     reactor->register_thread(thread);
 
@@ -321,7 +307,7 @@ TEST_F(OutboundConnectionTest, SecondaryEndpointRetry) {
         NetworkEndpointConfiguration{"127.0.0.1", listen_port});
 
     auto reactor = std::make_unique<Reactor>(cfg, registry, logger_->logger);
-    auto thread  = std::make_shared<OutboundTestThread>(
+    auto thread  = ApplicationThread::create<OutboundTestThread>(
         logger_->logger, *reactor, "my_service");
     reactor->register_thread(thread);
 
@@ -353,7 +339,7 @@ TEST_F(OutboundConnectionTest, UnknownServiceFails) {
     ServiceRegistry registry;
 
     auto reactor = std::make_unique<Reactor>(cfg, registry, logger_->logger);
-    auto thread  = std::make_shared<OutboundTestThread>(
+    auto thread  = ApplicationThread::create<OutboundTestThread>(
         logger_->logger, *reactor, "no_such_service");
     reactor->register_thread(thread);
 
@@ -383,7 +369,7 @@ protected:
         cfg.shutdown_timeout_          = std::chrono::milliseconds(1000);
 
         reactor_ = std::make_unique<Reactor>(cfg, registry_, logger_->logger);
-        thread_  = std::make_shared<OutboundTestThread>(
+        thread_  = ApplicationThread::create<OutboundTestThread>(
             logger_->logger, *reactor_, "dummy_service");
         allocator_ = std::make_unique<ExpandableSlabAllocator>(65536);
     }
@@ -521,7 +507,7 @@ protected:
         // Register stub thread. fast_path_threads_ is not populated since we
         // never call run() — but deliver_lost_event=false means teardown_connection
         // never calls get_fast_path_thread, so this is safe.
-        stub_thread_ = std::make_shared<OutboundTestThread>(
+        stub_thread_ = ApplicationThread::create<OutboundTestThread>(
             logger_->logger, *reactor_, "test_service");
         reactor_->register_thread(stub_thread_);
 

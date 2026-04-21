@@ -31,10 +31,10 @@ static pubsub_itc_fw::AllocatorConfiguration make_allocator_config() {
     return cfg;
 }
 
-FixGatewayThread::FixGatewayThread(pubsub_itc_fw::QuillLogger& logger,
+FixGatewayThread::FixGatewayThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger,
                                    pubsub_itc_fw::Reactor& reactor,
                                    const FixGatewayConfiguration& config)
-    : ApplicationThread(logger, reactor, "FixGatewayThread",
+    : ApplicationThread(token, logger, reactor, "FixGatewayThread",
                         pubsub_itc_fw::ThreadID{1},
                         make_queue_config(),
                         make_allocator_config(),

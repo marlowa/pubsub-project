@@ -49,7 +49,8 @@ SampleFixGateway::SampleFixGateway(const FixGatewayConfiguration& config)
         pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::RawBytes},
         config_.raw_buffer_capacity);
 
-    gateway_thread_ = std::make_shared<FixGatewayThread>(*logger_, *reactor_, config_);
+    gateway_thread_ = pubsub_itc_fw::ApplicationThread::create<FixGatewayThread>(*logger_, *reactor_, config_);
+
     reactor_->register_thread(gateway_thread_);
 
     PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info,

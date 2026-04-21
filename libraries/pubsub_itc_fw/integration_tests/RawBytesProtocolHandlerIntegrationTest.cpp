@@ -119,6 +119,7 @@
 #include <pubsub_itc_fw/ThreadID.hpp>
 
 #include <pubsub_itc_fw/tests_common/LoggerWithSink.hpp>
+#include <pubsub_itc_fw/tests_common/TestConfigurations.hpp>
 
 namespace pubsub_itc_fw::tests {
 
@@ -234,21 +235,6 @@ static int decode_all_framed(const uint8_t* data, int available,
 // Application thread helpers
 // ============================================================
 
-static QueueConfiguration make_queue_config() {
-    QueueConfiguration cfg{};
-    cfg.low_watermark  = 1;
-    cfg.high_watermark = 64;
-    return cfg;
-}
-
-static AllocatorConfiguration make_allocator_config(const std::string& name) {
-    AllocatorConfiguration cfg{};
-    cfg.pool_name        = name;
-    cfg.objects_per_pool = 64;
-    cfg.initial_pools    = 1;
-    return cfg;
-}
-
 static ReactorConfiguration make_reactor_config() {
     ReactorConfiguration cfg{};
     cfg.inactivity_check_interval_ = std::chrono::milliseconds(100);
@@ -271,8 +257,8 @@ static ReactorConfiguration make_short_idle_reactor_config() {
 // ============================================================
 class RawListenerThread : public ApplicationThread {
 public:
-    RawListenerThread(QuillLogger& logger, Reactor& reactor)
-        : ApplicationThread(logger, reactor, "RawListenerThread", ThreadID{2},
+    RawListenerThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
+        : ApplicationThread(token, logger, reactor, "RawListenerThread", ThreadID{2},
                             make_queue_config(), make_allocator_config("RawListenerPool"),
                             ApplicationThreadConfiguration{}) {}
 
@@ -343,8 +329,8 @@ private:
 // ============================================================
 class BurstListenerThread : public ApplicationThread {
 public:
-    BurstListenerThread(QuillLogger& logger, Reactor& reactor, int expected_count)
-        : ApplicationThread(logger, reactor, "BurstListenerThread", ThreadID{2},
+    BurstListenerThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, int expected_count)
+        : ApplicationThread(token, logger, reactor, "BurstListenerThread", ThreadID{2},
                             make_queue_config(), make_allocator_config("BurstListenerPool"),
                             ApplicationThreadConfiguration{})
         , expected_count_(expected_count) {}
@@ -409,8 +395,8 @@ private:
 // ============================================================
 class PassiveListenerThread : public ApplicationThread {
 public:
-    PassiveListenerThread(QuillLogger& logger, Reactor& reactor)
-        : ApplicationThread(logger, reactor, "PassiveListenerThread", ThreadID{2},
+    PassiveListenerThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
+        : ApplicationThread(token, logger, reactor, "PassiveListenerThread", ThreadID{2},
                             make_queue_config(), make_allocator_config("PassiveListenerPool"),
                             ApplicationThreadConfiguration{}) {}
 
@@ -488,7 +474,7 @@ TEST_F(RawBytesProtocolHandlerTest, RawByteRoundTrip) {
         NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2},
         ProtocolType{ProtocolType::RawBytes}, raw_buffer_capacity);
 
-    auto listener_thread = std::make_shared<RawListenerThread>(
+    auto listener_thread = ApplicationThread::create<RawListenerThread>(
         logger_->logger, *listener_reactor);
     listener_reactor->register_thread(listener_thread);
 
@@ -535,7 +521,7 @@ TEST_F(RawBytesProtocolHandlerTest, FragmentedDelivery) {
         NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2},
         ProtocolType{ProtocolType::RawBytes}, raw_buffer_capacity);
 
-    auto listener_thread = std::make_shared<RawListenerThread>(
+    auto listener_thread = ApplicationThread::create<RawListenerThread>(
         logger_->logger, *listener_reactor);
     listener_reactor->register_thread(listener_thread);
 
@@ -600,7 +586,7 @@ TEST_F(RawBytesProtocolHandlerTest, BurstDelivery) {
         NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2},
         ProtocolType{ProtocolType::RawBytes}, raw_buffer_capacity);
 
-    auto listener_thread = std::make_shared<BurstListenerThread>(
+    auto listener_thread = ApplicationThread::create<BurstListenerThread>(
         logger_->logger, *listener_reactor, expected_count);
     listener_reactor->register_thread(listener_thread);
 
@@ -646,7 +632,7 @@ TEST_F(RawBytesProtocolHandlerTest, PeerDisconnect) {
         NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2},
         ProtocolType{ProtocolType::RawBytes}, raw_buffer_capacity);
 
-    auto listener_thread = std::make_shared<PassiveListenerThread>(
+    auto listener_thread = ApplicationThread::create<PassiveListenerThread>(
         logger_->logger, *listener_reactor);
     listener_reactor->register_thread(listener_thread);
 
@@ -684,7 +670,7 @@ TEST_F(RawBytesProtocolHandlerTest, OneConnectionRejection) {
     listener_reactor->register_inbound_listener(
         NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
 
-    auto listener_thread = std::make_shared<PassiveListenerThread>(
+    auto listener_thread = ApplicationThread::create<PassiveListenerThread>(
         logger_->logger, *listener_reactor);
     listener_reactor->register_thread(listener_thread);
 
@@ -731,7 +717,7 @@ TEST_F(RawBytesProtocolHandlerTest, IdleTimeout) {
         NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2},
         ProtocolType{ProtocolType::RawBytes}, raw_buffer_capacity);
 
-    auto listener_thread = std::make_shared<PassiveListenerThread>(
+    auto listener_thread = ApplicationThread::create<PassiveListenerThread>(
         logger_->logger, *listener_reactor);
     listener_reactor->register_thread(listener_thread);
 
@@ -764,8 +750,8 @@ static constexpr int    tiny_rcvbuf_size         = 4096;
 
 class LargeReplyListenerThread : public ApplicationThread {
 public:
-    LargeReplyListenerThread(QuillLogger& logger, Reactor& reactor)
-        : ApplicationThread(logger, reactor, "LargeReplyListenerThread", ThreadID{2},
+    LargeReplyListenerThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
+        : ApplicationThread(token, logger, reactor, "LargeReplyListenerThread", ThreadID{2},
                             make_queue_config(), make_allocator_config("LargeReplyListenerPool"),
                             make_thread_config()) {}
 
@@ -834,7 +820,7 @@ TEST_F(RawBytesProtocolHandlerTest, LargeReplyContinueSend) {
         NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2},
         ProtocolType{ProtocolType::RawBytes}, raw_buffer_capacity);
 
-    auto listener_thread = std::make_shared<LargeReplyListenerThread>(
+    auto listener_thread = ApplicationThread::create<LargeReplyListenerThread>(
         logger_->logger, *listener_reactor);
     listener_reactor->register_thread(listener_thread);
 
@@ -894,7 +880,7 @@ TEST_F(RawBytesProtocolHandlerTest, TeardownWhilePendingSendFreesChunk) {
         NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2},
         ProtocolType{ProtocolType::RawBytes}, raw_buffer_capacity);
 
-    auto listener_thread = std::make_shared<LargeReplyListenerThread>(
+    auto listener_thread = ApplicationThread::create<LargeReplyListenerThread>(
         logger_->logger, *listener_reactor);
     listener_reactor->register_thread(listener_thread);
 
