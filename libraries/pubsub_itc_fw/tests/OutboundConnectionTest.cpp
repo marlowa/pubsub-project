@@ -207,7 +207,7 @@ private:
 class OutboundConnectionTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        logger_ = std::make_unique<LoggerWithSink>("outbound_test_logger", "outbound_test_sink");
+        logger_ = std::make_unique<LoggerWithSink>();
     }
 
     void TearDown() override {
@@ -361,8 +361,7 @@ TEST_F(OutboundConnectionTest, UnknownServiceFails) {
 class OutboundConnectionPreconditionTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        logger_ = std::make_unique<LoggerWithSink>(
-            "outbound_unit_logger", "outbound_unit_sink");
+        logger_ = std::make_unique<LoggerWithSink>();
 
         ReactorConfiguration cfg{};
         cfg.inactivity_check_interval_ = std::chrono::milliseconds(100);
@@ -494,8 +493,7 @@ TEST_F(OutboundConnectionPreconditionTest, SetPendingSendRejectsNullChunkPtr) {
 class OutboundConnectionManagerTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        logger_ = std::make_unique<LoggerWithSink>(
-            "outbound_mgr_logger", "outbound_mgr_sink");
+        logger_ = std::make_unique<LoggerWithSink>();
 
         ReactorConfiguration cfg{};
         cfg.inactivity_check_interval_ = std::chrono::milliseconds(100);

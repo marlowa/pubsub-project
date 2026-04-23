@@ -428,7 +428,7 @@ protected:
 class RawBytesProtocolHandlerTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        logger_ = std::make_unique<LoggerWithSink>("raw_integ_logger", "raw_integ_sink");
+        logger_ = std::make_unique<LoggerWithSink>();
     }
 
     void TearDown() override {

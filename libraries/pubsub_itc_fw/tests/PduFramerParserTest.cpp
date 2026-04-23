@@ -199,8 +199,7 @@ public:
 class PduFramerParserTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        logger_with_sink_ = std::make_unique<LoggerWithSink>(
-            "pdu_test_logger", "pdu_test_sink");
+        logger_with_sink_ = std::make_unique<LoggerWithSink>();
 
         reactor_ = std::make_unique<Reactor>(
             ReactorConfiguration{}, service_registry_, logger_with_sink_->logger);

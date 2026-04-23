@@ -406,8 +406,7 @@ private:
 class PduProtocolHandlerIntegrationTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        logger_ = std::make_unique<LoggerWithSink>(
-            "pdu_protocol_handler_integ_logger", "pdu_protocol_handler_integ_sink");
+        logger_ = std::make_unique<LoggerWithSink>();
     }
 
     void TearDown() override {

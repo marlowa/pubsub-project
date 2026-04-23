@@ -84,7 +84,7 @@ public:
 
     void SetUp() override {
         // Create long-lived logger + sink
-        logger_with_sink = new LoggerWithSink("global_REACT_logger", "global_REACT_sink");
+        logger_with_sink = new LoggerWithSink();
     }
 
     void TearDown() override {
@@ -108,7 +108,7 @@ public:
     }
 
     void SetUp() override {
-        logger_with_sink_.sink->clear();
+        logger_with_sink_.clear();
         reactor_configuration_.inactivity_check_interval_ = std::chrono::milliseconds(100);
     #ifdef USING_VALGRIND
         // TSan (and Valgrind) add significant instrumentation overhead which

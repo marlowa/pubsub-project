@@ -218,7 +218,7 @@ protected:
 class VariableLengthPduTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        logger_ = std::make_unique<LoggerWithSink>("vl_integ_logger", "vl_integ_sink");
+        logger_ = std::make_unique<LoggerWithSink>();
     }
 
     void TearDown() override {

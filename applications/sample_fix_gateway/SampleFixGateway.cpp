@@ -28,11 +28,10 @@ SampleFixGateway::SampleFixGateway(const FixGatewayConfiguration& config)
     pubsub_itc_fw::QuillLogger::block_signals_before_construction();
 
     logger_ = std::make_unique<pubsub_itc_fw::QuillLogger>(
-        log_file_name,
-        pubsub_itc_fw::FileOpenMode{pubsub_itc_fw::FileOpenMode::Truncate},
-        pubsub_itc_fw::FwLogLevel::Info,
-        pubsub_itc_fw::FwLogLevel::Info,
-        pubsub_itc_fw::FwLogLevel::Info);
+    log_file_name,
+    pubsub_itc_fw::FileOpenMode{pubsub_itc_fw::FileOpenMode::Truncate},
+    pubsub_itc_fw::FwLogLevel::Info,
+    pubsub_itc_fw::FwLogLevel::Info);
 
     // Reactor configuration -- use defaults, adjusted for the sample.
     reactor_configuration_.connect_timeout                     = std::chrono::seconds{5};

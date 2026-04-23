@@ -3,53 +3,85 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <string>
+
 #include <quill/core/LogLevel.h>
 
 namespace pubsub_itc_fw {
 
-// Note: The numerical value of these enumerations is significant.
-// The higher values imply use of the lower values.
-// This is why we start with critical, then error, etc.
-// The higher the number, the more stuff we log.
+/*
+ * FwLogLevel — framework log level abstraction.
+ *
+ * Numerical values are significant: lower value means more severe.
+ * The lower the number, the less is logged. Alert(7) logs everything
+ * down to and including itself; Trace(0) logs only Trace records.
+ * This matches Quill's own convention.
+ */
 
 class FwLogLevel {
-  public:
-    enum LogLevelTag { Alert = 0, Critical = 1, Error = 2, Warning = 3, Notice = 4, Info = 5, Debug = 6, Trace =7 };
+public:
+    enum LogLevelTag {
+        Trace    = 0,
+        Debug    = 1,
+        Info     = 2,
+        Notice   = 3,
+        Warning  = 4,
+        Error    = 5,
+        Critical = 6,
+        Alert    = 7
+    };
 
-    FwLogLevel(LogLevelTag LogLevel) : log_level_(LogLevel) {}
+    FwLogLevel(LogLevelTag log_level) : log_level_(log_level) {}
 
+    /**
+     * @brief Returns a fixed-width string representation of this log level.
+     * @return Eight-character string, space-padded.
+     */
     std::string as_string() const {
-        return log_level_ == Alert      ? "ALERT   "
-               : log_level_ == Critical ? "CRITICAL"
-               : log_level_ == Error    ? "ERROR   "
-               : log_level_ == Warning  ? "WARNING "
-               : log_level_ == Notice   ? "NOTICE  "
-               : log_level_ == Info     ? "INFO    "
-               : log_level_ == Debug    ? "DEBUG   "
-                                        : "UNKNOWN";
+        return log_level_ == Trace    ? "TRACE   "
+             : log_level_ == Debug    ? "DEBUG   "
+             : log_level_ == Info     ? "INFO    "
+             : log_level_ == Notice   ? "NOTICE  "
+             : log_level_ == Warning  ? "WARNING "
+             : log_level_ == Error    ? "ERROR   "
+             : log_level_ == Critical ? "CRITICAL"
+             : log_level_ == Alert    ? "ALERT   "
+                                      : "UNKNOWN ";
     }
 
-    bool isEqual(const FwLogLevel& rhs) const {
+    bool is_equal(const FwLogLevel& rhs) const {
         return log_level_ == rhs.log_level_;
     }
 
-    bool isLessThan(const FwLogLevel& rhs) const {
+    bool is_less_than(const FwLogLevel& rhs) const {
         return log_level_ < rhs.log_level_;
     }
 
     LogLevelTag log_level_;
 };
 
+inline bool operator<(const FwLogLevel& lhs, const FwLogLevel& rhs) {
+    return lhs.is_less_than(rhs);
+}
+
 inline bool operator<=(const FwLogLevel& lhs, const FwLogLevel& rhs) {
-    return lhs.isLessThan(rhs) || lhs.isEqual(rhs);
+    return lhs.is_less_than(rhs) || lhs.is_equal(rhs);
+}
+
+inline bool operator>(const FwLogLevel& lhs, const FwLogLevel& rhs) {
+    return rhs.is_less_than(lhs);
+}
+
+inline bool operator>=(const FwLogLevel& lhs, const FwLogLevel& rhs) {
+    return rhs.is_less_than(lhs) || lhs.is_equal(rhs);
 }
 
 inline bool operator==(const FwLogLevel& lhs, const FwLogLevel& rhs) {
-    return lhs.isEqual(rhs);
+    return lhs.is_equal(rhs);
 }
 
 inline bool operator!=(const FwLogLevel& lhs, const FwLogLevel& rhs) {
-    return !lhs.isEqual(rhs);
+    return !lhs.is_equal(rhs);
 }
 
 } // namespace pubsub_itc_fw

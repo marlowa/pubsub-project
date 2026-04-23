@@ -341,11 +341,44 @@ On heartbeat loss:
 
 ### 13. Logging Subsystem
 
-`QuillLogger` wrapping `quill::Logger*`. `PUBSUB_LOG(logger, level, fmt, ...)` for format args; `PUBSUB_LOG_STR(logger, level, str)` for single string (required by `-Werror=variadic-macros`).
+`QuillLogger` wraps `quill::Logger*`. Any class that needs to log receives a `QuillLogger&` in its constructor and stores it as a member. The Reactor does not own all logging — each class logs for itself.
 
-Log levels: `FwLogLevel::Alert`, `Critical`, `Error`, `Warning`, `Notice`, `Info`, `Debug`, `Trace`. Currently everything is logged at `Info`; level differentiation is a future task.
+**Two macros — zero routing logic at the call site:**
+- `PUBSUB_LOG(logger, level, fmt, ...)` — format string with variadic args; args are forwarded directly to Quill and formatted on the backend thread (never on the calling thread)
+- `PUBSUB_LOG_STR(logger, level, msg)` — single string; expands to `PUBSUB_LOG(logger, level, "{}", msg)`
 
-Any class that needs to log receives a `QuillLogger&` in its constructor and stores it as a member. The Reactor does not own all logging — each class logs for itself.
+**`FwLogLevel` enum** (lower value = more severe = always logged):
+```
+Trace=0, Debug=1, Info=2, Notice=3, Warning=4, Error=5, Critical=6, Alert=7
+```
+Comparison operators reflect this: `Alert > Debug` numerically. The logger gate is set to `min(applog_level, syslog_level)` so neither sink is starved.
+
+**Two operating modes, two constructors:**
+
+| | Production | Unit test |
+|---|---|---|
+| Destination 1 | File sink (applog) | Console sink |
+| Destination 2 | Syslog sink | *(suppressed)* |
+| Per-dest threshold | `applog_level_`, `syslog_level_` | `applog_level_` only |
+| Test callback | No | Optional; receives fully formatted strings gated by `applog_level_` |
+
+```cpp
+// Production
+QuillLogger(file_path, file_mode, applog_level, syslog_level);
+
+// Unit test
+QuillLogger(applog_level, callback);  // callback is optional/nullable
+```
+
+File and console are never both active simultaneously. Console output is discarded in production deployments; the framework never attempts file logging in a unit test context.
+
+**Sink-level filtering:** each sink owns its own threshold. The `should_log_to_*` routing functions that existed in earlier versions have been removed — policy belongs at the sink, not in wrapper code or at call sites.
+
+**Signal safety:** `QuillLogger::block_signals_before_construction()` must be called once on the main thread before any `QuillLogger` is constructed. This blocks `SIGINT`/`SIGTERM` so the Quill backend thread inherits the blocked mask and the Reactor's `signalfd` handles those signals gracefully.
+
+**Test infrastructure:**
+- `LoggerWithSink` — `QuillLogger` constructed in unit-test mode, wired to `TestSink`; lives in `pubsub_itc_fw` namespace
+- `TestSink` — in-memory sink; accumulates fully formatted log records for test assertions; callback-based
 
 ---
 
@@ -396,7 +429,10 @@ The receiving node's reactor accepts data via epoll and delivers it zero-copy to
 - StatusQueryResponseRoundTrip integration test passing
 - ApplicationThread `get_reactor()` accessor added
 
-### Session 4 (current)
+### Session 5 (current)
+- **Logging subsystem redesign** — `QuillLogger` rewritten with two clean constructors (production: file+syslog; unit test: console+optional callback); `FwLogLevel` enum values flipped so lower=more severe, matching Quill convention; `should_log_to_*` routing functions removed; sink-level filtering used throughout; macros forward args directly to Quill backend thread (no front-end formatting); `PUBSUB_LOG` and `PUBSUB_LOG_STR` are the only two call-site macros
+
+### Session 4
 - **`MirroredBuffer`** — implemented and fully tested (virtual memory double-mapping for alien protocol support)
 - **`ProtocolType`** — value class discriminating `FrameworkPdu` vs `RawBytes` connections
 - **Protocol handler Strategy pattern** — `ProtocolHandlerInterface` with `on_data_ready()`, `send_prebuilt()`, `has_pending_send()`, `continue_send()`, `deallocate_pending_send()`
@@ -433,7 +469,7 @@ The receiving node's reactor accepts data via epoll and delivers it zero-copy to
 - `ReactorConfiguration` — complete
 - DSL code generator — complete, 61 tests passing
 - Leader-follower DSL messages — defined and generated
-- Logging subsystem — complete
+- Logging subsystem — being rewritten (see Session 5)
 
 ## What Is Not Yet Done (in dependency order)
 

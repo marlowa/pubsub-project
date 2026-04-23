@@ -114,8 +114,7 @@ private:
 class PduProtocolHandlerTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        logger_ = std::make_unique<LoggerWithSink>(
-            "pdu_handler_unit_logger", "pdu_handler_unit_sink");
+        logger_ = std::make_unique<LoggerWithSink>();
 
         // Construct a Reactor purely to satisfy ApplicationThread's constructor.
         // It is never run.

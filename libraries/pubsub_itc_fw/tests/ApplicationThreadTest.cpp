@@ -75,7 +75,7 @@ public:
 
     void SetUp() override {
         // Create long-lived logger + sink
-        logger_with_sink = new LoggerWithSink("global_AT_logger", "global_AT_sink");
+        logger_with_sink = new LoggerWithSink();
     }
 
     void TearDown() override {
@@ -98,7 +98,7 @@ public:
     }
 
     void SetUp() override {
-        logger_with_sink_.sink->clear();
+        logger_with_sink_.clear();
         reactor_configuration_.inactivity_check_interval_ = std::chrono::milliseconds(100);
         reactor_ = std::make_unique<Reactor>(reactor_configuration_, service_registry_, logger_with_sink_.logger);
         reactor_thread_.reset(); // not started yet
@@ -541,8 +541,8 @@ TEST_F(ApplicationThreadTest, LoggingVerification)
 
     thread->shutdown("shutdown log test");
 
-    EXPECT_GE(logger_with_sink_.sink->count(), 1);
-    EXPECT_TRUE(logger_with_sink_.sink->contains_message("shutdown log test"));
+    EXPECT_GE(logger_with_sink_.count(), 1);
+    EXPECT_TRUE(logger_with_sink_.contains_message("shutdown log test"));
 }
 
 // ------------------------------------------------------------
@@ -729,16 +729,16 @@ TEST_F(ApplicationThreadTest, ExceptionLoggingContainsThreadMetadata)
     EXPECT_TRUE(reactor_->is_finished());
 
     // 3. Give the logger a moment to flush into the sink
-    for (int i = 0; i < 100 && logger_with_sink_.sink->records().empty(); ++i) {
+    for (int i = 0; i < 100 && logger_with_sink_.records.empty(); ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
-    const auto& records = logger_with_sink_.sink->records();
+    const auto& records = logger_with_sink_.records;
     ASSERT_FALSE(records.empty());
 
     bool found = false;
     for (const auto& rec : records) {
-        const auto& msg_text = rec.message;
+        const auto& msg_text = rec;
         if (msg_text.find("TestThread9") != std::string::npos &&
             msg_text.find('1') != std::string::npos) {
             found = true;
@@ -803,11 +803,11 @@ TEST_F(ApplicationThreadTest, MessageOrderingPreserved)
 //       shutdown reason.
 TEST_F(ApplicationThreadTest, LoggerIsolationAcrossThreads)
 {
-    auto logger1 = std::make_unique<LoggerWithSink>("logger1_LoggerIsolationAcrossThreads", "sink1_LoggerIsolationAcrossThreads");
-    auto logger2 = std::make_unique<LoggerWithSink>("logger2_LoggerIsolationAcrossThreads", "sink2_LoggerIsolationAcrossThreads");
+    auto logger1 = std::make_unique<LoggerWithSink>();
+    auto logger2 = std::make_unique<LoggerWithSink>();
 
-    logger1->sink->clear();
-    logger2->sink->clear();
+    logger1->clear();
+    logger2->clear();
 
     ReactorConfiguration cfg{};
     Reactor reactor(cfg, logger1->logger);
@@ -836,14 +836,14 @@ TEST_F(ApplicationThreadTest, LoggerIsolationAcrossThreads)
     t1->shutdown("one");
     t2->shutdown("two");
 
-    EXPECT_GT(logger1->sink->count(), 0);
-    EXPECT_GT(logger2->sink->count(), 0);
+    EXPECT_GT(logger1->count(), 0);
+    EXPECT_GT(logger2->count(), 0);
 
-    EXPECT_TRUE(logger1->sink->contains_message("one"));
-    EXPECT_TRUE(logger2->sink->contains_message("two"));
+    EXPECT_TRUE(logger1->contains_message("one"));
+    EXPECT_TRUE(logger2->contains_message("two"));
 
-    EXPECT_FALSE(logger1->sink->contains_message("two"));
-    EXPECT_FALSE(logger2->sink->contains_message("one"));
+    EXPECT_FALSE(logger1->contains_message("two"));
+    EXPECT_FALSE(logger2->contains_message("one"));
 }
 #endif
 

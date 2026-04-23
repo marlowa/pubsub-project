@@ -194,7 +194,7 @@ class ListenerThread : public ApplicationThread {
 class StatusQueryResponseTest : public ::testing::Test {
   protected:
     void SetUp() override {
-        logger_ = std::make_unique<LoggerWithSink>("integ_logger", "integ_sink");
+        logger_ = std::make_unique<LoggerWithSink>();
     }
 
     void TearDown() override {

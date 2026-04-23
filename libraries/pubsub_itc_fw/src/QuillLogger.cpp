@@ -2,60 +2,87 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <atomic>
-#include <mutex> // for std::once_flag
-#include <memory>
 #include <csignal>
-#include <string>
-
 #include <cstdint>
+#include <memory>
+#include <mutex>
+#include <string>
 
 #include <quill/Backend.h>
 #include <quill/Frontend.h>
 #include <quill/Logger.h>
 #include <quill/LogMacros.h>
-
-#include <quill/sinks/StreamSink.h>
-#include <quill/sinks/FileSink.h>
 #include <quill/sinks/ConsoleSink.h>
+#include <quill/sinks/FileSink.h>
+#include <quill/sinks/Sink.h>
 #include <quill/sinks/SyslogSink.h>
 
-#include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/FileOpenMode.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/LoggerUtils.hpp>
+#include <pubsub_itc_fw/QuillLogger.hpp>
 
 namespace {
+
 std::once_flag backend_started;
 
-// Helper to start backend exactly once
 void ensure_backend_started() {
     std::call_once(backend_started, []() {
-        const quill::BackendOptions backend_options{};
-        quill::Backend::start(backend_options);
+        quill::Backend::start(quill::BackendOptions{});
     });
 }
 
-}
+/*
+ * CallbackSink — a Quill sink that forwards each fully formatted log record
+ * to a user-supplied callback.  Used in unit-test mode so that tests can
+ * assert on the contents of logged records without touching the filesystem
+ * or syslog.
+ */
+class CallbackSink : public quill::Sink {
+public:
+    explicit CallbackSink(pubsub_itc_fw::QuillLogger::LogCallback callback)
+        : callback_(std::move(callback)) {}
+
+    void write_log(quill::MacroMetadata const* /*metadata*/,
+                   uint64_t /*log_timestamp*/,
+                   std::string_view /*thread_id*/,
+                   std::string_view /*thread_name*/,
+                   std::string const& /*process_id*/,
+                   std::string_view /*logger_name*/,
+                   quill::LogLevel /*log_level*/,
+                   std::string_view /*log_level_description*/,
+                   std::string_view /*log_level_short_code*/,
+                   std::vector<std::pair<std::string, std::string>> const* /*named_args*/,
+                   std::string_view /*log_message*/,
+                   std::string_view log_statement) override {
+        if (callback_ != nullptr) {
+            callback_(std::string{log_statement});
+        }
+    }
+
+    void flush_sink() override {}
+
+private:
+    pubsub_itc_fw::QuillLogger::LogCallback callback_;
+};
+
+} // namespace
 
 namespace pubsub_itc_fw {
 
-// Initialise static counter
 std::atomic<uint64_t> QuillLogger::instance_counter_{0};
 
-// Helper function to generate unique logger names
 std::string QuillLogger::generate_unique_logger_name(const std::string& prefix) {
     const uint64_t id = instance_counter_.fetch_add(1, std::memory_order_relaxed);
-    return prefix + "_" + std::to_string(id);
+    return prefix + "_logger_" + std::to_string(id);
 }
 
-// Helper function to generate unique sink names
 std::string QuillLogger::generate_unique_sink_name(const std::string& prefix) {
     const uint64_t id = instance_counter_.fetch_add(1, std::memory_order_relaxed);
-    return prefix + "_" + std::to_string(id);
+    return prefix + "_sink_" + std::to_string(id);
 }
 
-void QuillLogger::block_signals_before_construction()
-{
+void QuillLogger::block_signals_before_construction() {
     sigset_t mask;
     ::sigemptyset(&mask);
     ::sigaddset(&mask, SIGTERM);
@@ -63,132 +90,82 @@ void QuillLogger::block_signals_before_construction()
     ::pthread_sigmask(SIG_BLOCK, &mask, nullptr);
 }
 
-QuillLogger::~QuillLogger()
-{
-    // Do not call quill::Backend::stop here.
-    // The only way to get the logger to flush here seems to be to change to immediate flush
-    // and then log something. But that does not seem nice so we leave it for now.
-#if 0
-    quill_logger_->set_immediate_flush(true);
-    LOG_CRITICAL(quill_logger_, "Logging finished");
-#endif
-}
+QuillLogger::~QuillLogger() = default;
 
 QuillLogger::QuillLogger(const std::string& file_path,
                          FileOpenMode file_mode,
-                         FwLogLevel file_level,
-                         FwLogLevel syslog_level,
-                         FwLogLevel console_level)
-    : file_level_{file_level},
-      console_level_{console_level},
-      syslog_level_{syslog_level}
-{
+                         FwLogLevel applog_level,
+                         FwLogLevel syslog_level)
+    : applog_level_{applog_level},
+      syslog_level_{syslog_level} {
     ensure_backend_started();
 
-    auto file_sink = quill::Frontend::create_or_get_sink<quill::FileSink>(file_path,
-        [file_mode]() {
-            quill::FileSinkConfig config;
-            if (file_mode == FileOpenMode::Append) {
-                config.set_open_mode('a');
-            } else {
-                config.set_open_mode('w');
-            }
-            return config;
-        }(),
-        quill::FileEventNotifier{}
-    );
-    file_sink_ = file_sink;
+    quill::FileSinkConfig file_config;
+    file_config.set_open_mode(file_mode == FileOpenMode::Append ? 'a' : 'w');
+    applog_sink_ = quill::Frontend::create_or_get_sink<quill::FileSink>(
+        file_path, file_config, quill::FileEventNotifier{});
 
-    auto console_sink = quill::Frontend::create_or_get_sink<quill::ConsoleSink>(
-        generate_unique_sink_name("console_sink"));
-    console_sink_ = console_sink;
+    quill::SyslogSinkConfig syslog_config;
+    syslog_config.set_identifier("pubsub_app");
+    syslog_config.set_facility(LOG_USER);
+    syslog_config.set_options(LOG_PID);
+    syslog_config.set_format_message(false);
+    syslog_sink_ = quill::Frontend::create_or_get_sink<quill::SyslogSink>(
+        generate_unique_sink_name("syslog"), syslog_config);
 
-    auto syslog_sink = quill::Frontend::create_or_get_sink<quill::SyslogSink>(
-        generate_unique_sink_name("syslog_sink"),
-        []() {
-            quill::SyslogSinkConfig config;
-            config.set_identifier("pubsub_app");  // Shows as "pubsub_app" in syslog
-            config.set_facility(LOG_USER);        // Standard user-level facility
-            config.set_options(LOG_PID);          // Include PID in each message
-            config.set_format_message(false);     // Use raw message, not formatted
-            return config;
-        }()
-    );
-    syslog_sink_ = syslog_sink;
+    applog_sink_->set_log_level_filter(LoggerUtils::to_quill_log_level(applog_level));
+    syslog_sink_->set_log_level_filter(LoggerUtils::to_quill_log_level(syslog_level));
+
+    const quill::LogLevel gate = applog_level <= syslog_level
+        ? LoggerUtils::to_quill_log_level(applog_level)
+        : LoggerUtils::to_quill_log_level(syslog_level);
 
     quill_logger_ = quill::Frontend::create_or_get_logger(
-        generate_unique_logger_name("pubsub_logger"),
-        {file_sink, console_sink, syslog_sink} );
-
-    // 6. Set initial log level
-    quill_logger_->set_log_level(LoggerUtils::to_quill_log_level(file_level));
+        generate_unique_logger_name("pubsub"),
+        {applog_sink_, syslog_sink_});
+    quill_logger_->set_log_level(gate);
 }
 
-/**
- * This ctor is for unit tests were we do not want to write to a file or syslog, just the console.
- * It also writes at debug level and above.
- */
-QuillLogger::QuillLogger()
-    : file_level_{FwLogLevel::Debug},
-      console_level_{FwLogLevel::Debug},
-      syslog_level_{FwLogLevel::Debug}  {
-
+QuillLogger::QuillLogger(FwLogLevel applog_level, LogCallback callback)
+    : applog_level_{applog_level},
+      syslog_level_{applog_level} {
     ensure_backend_started();
 
-    console_sink_ = quill::Frontend::create_or_get_sink<quill::ConsoleSink>(generate_unique_sink_name("console_sink"));
-    quill_logger_ = quill::Frontend::create_or_get_logger(generate_unique_logger_name("pubsub_logger"), {console_sink_} );
+    applog_sink_ = quill::Frontend::create_or_get_sink<quill::ConsoleSink>(
+        generate_unique_sink_name("console"));
+    applog_sink_->set_log_level_filter(LoggerUtils::to_quill_log_level(applog_level));
 
-    quill_logger_->set_log_level(LoggerUtils::to_quill_log_level(FwLogLevel::Debug));
-}
+    std::vector<std::shared_ptr<quill::Sink>> sinks{applog_sink_};
 
-/**
- * Constructor for unit tests with custom sink (e.g., TestSink)
- */
-QuillLogger::QuillLogger(const std::string& logger_name, std::shared_ptr<quill::Sink> test_sink, FwLogLevel log_level)
-    :
-      console_sink_{test_sink},
-      level_{log_level},
-      file_level_{log_level},
-      console_level_{log_level},
-      syslog_level_{log_level}
-{
-    ensure_backend_started();
+    if (callback != nullptr) {
+        auto cb_sink = quill::Frontend::create_or_get_sink<CallbackSink>(
+            generate_unique_sink_name("callback"),
+            std::move(callback));
+        cb_sink->set_log_level_filter(LoggerUtils::to_quill_log_level(applog_level));
+        callback_sink_ = cb_sink;
+        sinks.push_back(std::move(cb_sink));
+    }
 
-    // Create logger with the test sink
-    quill_logger_ = quill::Frontend::create_or_get_logger(logger_name, {test_sink} );
-
-    quill_logger_->set_log_level(LoggerUtils::to_quill_log_level(log_level));
-
+    quill_logger_ = quill::Frontend::create_or_get_logger(
+        generate_unique_logger_name("pubsub_test"), sinks);
+    quill_logger_->set_log_level(LoggerUtils::to_quill_log_level(applog_level));
     quill_logger_->set_immediate_flush();
 }
 
-// -----------------------------------------------------------------------------
-// Filtering
-// -----------------------------------------------------------------------------
-bool QuillLogger::should_log_to_file(FwLogLevel level) const
-{
-    return level <= file_level_;
-}
-
-bool QuillLogger::should_log_to_syslog(FwLogLevel level) const
-{
-    return level <= syslog_level_;
-}
-
-bool QuillLogger::should_log_to_console(FwLogLevel level) const
-{
-    return level <= console_level_;
-}
-
-// -----------------------------------------------------------------------------
-// Unified log level control
-// -----------------------------------------------------------------------------
-void QuillLogger::set_log_level(FwLogLevel level)
-{
-    level_ = level;
-    file_level_ = syslog_level_ = console_level_ = level;
+void QuillLogger::set_log_level(FwLogLevel level) {
+    applog_level_ = level;
+    if (applog_sink_ != nullptr) {
+        applog_sink_->set_log_level_filter(LoggerUtils::to_quill_log_level(level));
+    }
+    if (callback_sink_ != nullptr) {
+        callback_sink_->set_log_level_filter(LoggerUtils::to_quill_log_level(level));
+    }
     if (quill_logger_ != nullptr) {
-        quill_logger_->set_log_level(LoggerUtils::to_quill_log_level(level));
+        // Recompute the gate as the minimum of applog and syslog thresholds.
+        const quill::LogLevel gate = applog_level_ <= syslog_level_
+            ? LoggerUtils::to_quill_log_level(applog_level_)
+            : LoggerUtils::to_quill_log_level(syslog_level_);
+        quill_logger_->set_log_level(gate);
     }
 }
 

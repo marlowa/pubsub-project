@@ -3,82 +3,114 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-#include <string>
+#include <atomic>
+#include <functional>
 #include <memory>
+#include <string>
 
-#include <quill/LogMacros.h>
 #include <quill/Logger.h>
-#include <quill/sinks/FileSink.h>
-#include <quill/sinks/Sink.h>
 #include <quill/core/LogLevel.h>
+#include <quill/sinks/Sink.h>
 
-#include <pubsub_itc_fw/FwLogLevel.hpp>
-#include <pubsub_itc_fw/LoggerUtils.hpp>
 #include <pubsub_itc_fw/FileOpenMode.hpp>
+#include <pubsub_itc_fw/FwLogLevel.hpp>
 
 namespace pubsub_itc_fw {
 
-/** @ingroup logging_subsystem */
+/*
+ * QuillLogger — framework wrapper around a quill::Logger.
+ *
+ * Two operating modes:
+ *
+ *   Production:  one file sink (applog) + one syslog sink, each with its own
+ *                severity threshold.  File and syslog are never both absent in
+ *                production; console is never active in production.
+ *
+ *   Unit test:   one console sink (applog replacement) with its own severity
+ *                threshold.  Syslog is suppressed entirely.  An optional
+ *                callback receives each fully formatted log record that passes
+ *                the applog threshold, allowing tests to assert on log output.
+ *
+ * The Quill logger gate is set to min(applog_level, syslog_level) so that
+ * neither sink is starved by the gate.  Per-destination filtering is owned
+ * by each sink.
+ *
+ * Any class that needs to log receives a QuillLogger& in its constructor and
+ * stores it as a member.
+ */
 
+/** @ingroup logging_subsystem */
 class QuillLogger {
 public:
-    /**
-    * @brief Blocks SIGINT and SIGTERM on the calling thread before any threads
-    *        are spawned, including the quill backend thread.
-    *
-    * Must be called once on the main thread before constructing any QuillLogger
-    * instance. All threads spawned after this call inherit the blocked signal
-    * mask. The Reactor consumes these signals via signalfd.
-    *
-    * Failure to call this before constructing a QuillLogger will result in the
-    * quill backend thread having an unblocked signal mask, causing SIGINT or
-    * SIGTERM to terminate the process immediately via the default handler rather
-    * than being handled gracefully by the Reactor.
-    */
-    static void block_signals_before_construction();
+    /// Callback type used in unit-test mode.  Receives a fully formatted log
+    /// record string for each record that passes the applog threshold.
+    using LogCallback = std::function<void(const std::string&)>;
 
     ~QuillLogger();
 
+    QuillLogger(const QuillLogger&) = delete;
+    QuillLogger& operator=(const QuillLogger&) = delete;
+    QuillLogger(QuillLogger&&) = delete;
+    QuillLogger& operator=(QuillLogger&&) = delete;
+
+    /**
+     * @brief Production constructor.  Creates a file sink and a syslog sink.
+     * @param file_path     [in] Path to the applog file.
+     * @param file_mode     [in] Truncate or append.
+     * @param applog_level  [in] Minimum severity written to the applog file.
+     * @param syslog_level  [in] Minimum severity written to syslog.
+     */
     QuillLogger(const std::string& file_path,
-                         FileOpenMode file_mode,
-                         FwLogLevel file_level,
-                         FwLogLevel syslog_level,
-                         FwLogLevel console_level);
+                FileOpenMode file_mode,
+                FwLogLevel applog_level,
+                FwLogLevel syslog_level);
 
-    explicit QuillLogger(); // for unit tests
+    /**
+     * @brief Unit-test constructor.  Creates a console sink; syslog is suppressed.
+     * @param applog_level  [in] Minimum severity written to the console.
+     * @param callback      [in] Optional.  Called with the fully formatted string
+     *                          for every record that passes applog_level.  Pass
+     *                          nullptr to receive no callbacks.
+     */
+    explicit QuillLogger(FwLogLevel applog_level, LogCallback callback = nullptr);
 
-    QuillLogger(const std::string& logger_name, std::shared_ptr<quill::Sink> test_sink,
-                         FwLogLevel log_level = FwLogLevel::Debug);
+    /**
+     * @brief Blocks SIGINT and SIGTERM on the calling thread.
+     *
+     * Must be called once on the main thread before constructing any
+     * QuillLogger.  All threads spawned after this call inherit the blocked
+     * signal mask, so the Quill backend thread will not receive SIGINT or
+     * SIGTERM directly.  The Reactor consumes those signals via signalfd.
+     */
+    static void block_signals_before_construction();
 
-    quill::Logger* quill_logger() const { return quill_logger_; }
+    /// @brief Returns the underlying quill::Logger pointer (used by the macros).
+    [[nodiscard]] quill::Logger* quill_logger() const { return quill_logger_; }
 
+    /**
+     * @brief Sets the applog severity threshold at runtime.
+     * @param level [in] New minimum severity for the applog sink.
+     */
     void set_log_level(FwLogLevel level);
-    FwLogLevel log_level() const { return level_; }
 
-    // Per-destination filtering
-    bool should_log_to_file(FwLogLevel level) const;
-    bool should_log_to_syslog(FwLogLevel level) const;
-    bool should_log_to_console(FwLogLevel level) const;
+    /**
+     * @brief Returns the current applog severity threshold.
+     * @return Current FwLogLevel.
+     */
+    [[nodiscard]] FwLogLevel log_level() const { return applog_level_; }
 
 private:
-
-    // Static counter for generating unique logger names
     static std::atomic<uint64_t> instance_counter_;
 
-    // Helper to generate unique names
     static std::string generate_unique_logger_name(const std::string& prefix);
     static std::string generate_unique_sink_name(const std::string& prefix);
 
-    std::shared_ptr<quill::Sink> file_sink_;
-    std::shared_ptr<quill::Sink> console_sink_;
+    std::shared_ptr<quill::Sink> applog_sink_;
     std::shared_ptr<quill::Sink> syslog_sink_;
+    std::shared_ptr<quill::Sink> callback_sink_;
 
-    // TODO APM not sure about this, having a single level here.
-    FwLogLevel level_{FwLogLevel::Info};
-
-    FwLogLevel file_level_{FwLogLevel::Info};
-    FwLogLevel console_level_{FwLogLevel::Info};
-    FwLogLevel syslog_level_{FwLogLevel::Info};
+    FwLogLevel applog_level_;
+    FwLogLevel syslog_level_;
 
     quill::Logger* quill_logger_{nullptr};
 };
