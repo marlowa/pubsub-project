@@ -367,18 +367,16 @@ Comparison operators reflect this: `Alert > Debug` numerically. The logger gate 
 QuillLogger(file_path, file_mode, applog_level, syslog_level);
 
 // Unit test
-QuillLogger(applog_level, callback);  // callback is optional/nullable
+QuillLogger(applog_level, callback);  // callback is optional/nullptr
 ```
 
-File and console are never both active simultaneously. Console output is discarded in production deployments; the framework never attempts file logging in a unit test context.
-
-**Sink-level filtering:** each sink owns its own threshold. The `should_log_to_*` routing functions that existed in earlier versions have been removed — policy belongs at the sink, not in wrapper code or at call sites.
+File and console are never both active simultaneously. Console output is discarded in production; the framework never attempts file logging in a unit test context. The `should_log_to_*` routing functions from the earlier design have been removed — policy belongs at the sink, not at call sites.
 
 **Signal safety:** `QuillLogger::block_signals_before_construction()` must be called once on the main thread before any `QuillLogger` is constructed. This blocks `SIGINT`/`SIGTERM` so the Quill backend thread inherits the blocked mask and the Reactor's `signalfd` handles those signals gracefully.
 
 **Test infrastructure:**
-- `LoggerWithSink` — `QuillLogger` constructed in unit-test mode, wired to `TestSink`; lives in `pubsub_itc_fw` namespace
-- `TestSink` — in-memory sink; accumulates fully formatted log records for test assertions; callback-based
+- `LoggerWithSink` — `QuillLogger` in unit-test mode with callback wired to an in-memory `std::vector<std::string> records`; provides `clear()`, `contains_message()`, `count()` helpers; lives in `pubsub_itc_fw` namespace
+- `TestSink` — Quill sink that accumulates `LogRecord` structs; used independently where structured record inspection is needed
 
 ---
 
@@ -430,7 +428,10 @@ The receiving node's reactor accepts data via epoll and delivers it zero-copy to
 - ApplicationThread `get_reactor()` accessor added
 
 ### Session 5 (current)
-- **Logging subsystem redesign** — `QuillLogger` rewritten with two clean constructors (production: file+syslog; unit test: console+optional callback); `FwLogLevel` enum values flipped so lower=more severe, matching Quill convention; `should_log_to_*` routing functions removed; sink-level filtering used throughout; macros forward args directly to Quill backend thread (no front-end formatting); `PUBSUB_LOG` and `PUBSUB_LOG_STR` are the only two call-site macros
+- **Logging subsystem rewrite** — `QuillLogger` redesigned with two clean constructors (production: file+syslog; unit test: console+optional callback); `FwLogLevel` enum values flipped so lower=more severe, matching Quill convention; `should_log_to_*` routing functions removed; sink-level filtering used throughout; macros forward args directly to Quill backend thread (no front-end formatting); `PUBSUB_LOG` and `PUBSUB_LOG_STR` are the only two call-site macros
+- **`LoggerWithSink` rewritten** — now uses unit-test constructor with callback wired to `std::vector<std::string> records`; two-argument constructor removed; `TestSink` dependency removed from `LoggerWithSink`
+- **`TestSink` fixed** — missing `<iomanip>`, `<sstream>`, `<chrono>`, `<stdexcept>` includes added
+- **All test files updated** — 12 test files migrated from old `LoggerWithSink("name","sink")` constructor and `.sink->*` accessor pattern to new API; all 410 tests passing
 
 ### Session 4
 - **`MirroredBuffer`** — implemented and fully tested (virtual memory double-mapping for alien protocol support)
@@ -469,7 +470,7 @@ The receiving node's reactor accepts data via epoll and delivers it zero-copy to
 - `ReactorConfiguration` — complete
 - DSL code generator — complete, 61 tests passing
 - Leader-follower DSL messages — defined and generated
-- Logging subsystem — being rewritten (see Session 5)
+- Logging subsystem — complete, rewritten in Session 5
 
 ## What Is Not Yet Done (in dependency order)
 
@@ -478,7 +479,8 @@ The receiving node's reactor accepts data via epoll and delivers it zero-copy to
 3. **Leader-follower protocol** — state machine, heartbeat timers, arbitration
 4. **Pub/sub fanout**
 5. **`ExpandablePoolAllocatorTest.CrossPoolAbaInterleaving`** — intermittent 1-in-500 failure under TSan; the `free_next` atomic fix resolved the main race; residual failure still present
-6. **Logging levels** — everything currently at Info; verbose paths should move to Debug once framework applications are running
+6. **`RawBytesProtocolHandlerIntegrationTest` burst receive** — intermittent failure (1-in-10 runs); listener receives fewer burst messages than expected within timeout; unrelated to logging rewrite; teardown SIGABRT secondary failure obscures diagnosis
+7. **Logging levels** — everything currently at Info; verbose paths should move to Debug once framework applications are running
 
 ## Immediate Next Task
 
