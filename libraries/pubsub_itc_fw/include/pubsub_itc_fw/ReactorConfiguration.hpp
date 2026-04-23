@@ -78,8 +78,10 @@ struct ReactorConfiguration {
      */
     std::chrono::milliseconds socket_maximum_inactivity_interval_{std::chrono::seconds{60}};
 
-    // TODO: revise -- this is how long we wait for INIT to complete.
-    // More smarts may be needed in the backstop check for this.
+    /**
+     * This is the maximum time that the reactor expects an ApplicationThread to take to process the init event.
+     * If that time is exceeded then the application is deemed to be unresponsive and the reactor shuts down.
+     */
     std::chrono::milliseconds init_phase_timeout_{std::chrono::seconds{10}};
 
     /**

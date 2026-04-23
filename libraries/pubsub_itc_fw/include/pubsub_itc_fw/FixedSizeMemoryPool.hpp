@@ -695,7 +695,6 @@ template <typename T> class FixedSizeMemoryPool {
      */
     [[nodiscard]] FixedSizeMemoryPool<T>* get_next_pool() const;
 
-    // TODO not safe make it an atomic
     uint64_t get_allocation_count() const {
         return allocation_count_.load();
     }

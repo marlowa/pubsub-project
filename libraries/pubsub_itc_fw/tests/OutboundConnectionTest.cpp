@@ -716,7 +716,7 @@ TEST_F(OutboundConnectionManagerTest, DrainPendingSendDispatchesStashedCommand) 
 
         std::vector<uint8_t> buf(65536);
         for (int i = 0; i < 100000 && conn->has_pending_send(); ++i) {
-            ::read(peer_fd_, buf.data(), buf.size());
+            ASSERT_NE(::read(peer_fd_, buf.data(), buf.size()), -1);
             mgr.on_write_ready(*conn);
         }
     }

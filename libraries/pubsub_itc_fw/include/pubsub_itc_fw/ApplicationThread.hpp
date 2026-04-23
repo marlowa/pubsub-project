@@ -162,7 +162,6 @@ class ApplicationThread {
 
     /**
      * @brief The main loop for the application thread.
-     * TODO we need to remember why we had this as pure virtual at one point.
      */
     void run();
 
@@ -368,6 +367,8 @@ class ApplicationThread {
      * the underlying timerfd, waits for it in epoll, reads it when it becomes
      * readable, and enqueues one TimerRings event per ring into this thread's
      * message queue. ApplicationThread never touches timerfds directly.
+     * Note: if a timer with the specified time exists already, then it is called,
+     * so effectively, it gets rescheduled.
      */
     TimerID schedule_timer(const std::string& name,
                            std::chrono::microseconds interval,
@@ -625,7 +626,6 @@ private:
     ThreadID thread_id_;
 
     std::atomic<bool> is_paused_{false};
-    // TODO check if we need to do something similar for EventType atomic.
     std::atomic<ThreadLifecycleState::Tag> lifecycle_state_{ThreadLifecycleState::NotCreated};
 
     // Note: We heap allocate the lock free queue so that if the application thread

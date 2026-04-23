@@ -18,7 +18,7 @@
 
 namespace pubsub_itc_fw {
 
-// TODO we might want to make this to conform to our enum pattern
+// This enum is too low level to bother wrapping in a class and providing string conversion for.
 enum class ConnectState : uint8_t {
     uninitialised,
     idle,

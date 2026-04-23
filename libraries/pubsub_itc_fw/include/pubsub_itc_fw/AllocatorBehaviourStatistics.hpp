@@ -121,7 +121,7 @@ class AllocatorBehaviourStatistics {
      * concurrency, which is acceptable for their intended diagnostic purpose.
      */
     struct PerPoolAllocationCounts {
-        std::vector<uint64_t> counts; // TODO revise use of unsigned integers
+        std::vector<uint64_t> counts;
     } per_pool_allocation_counts;
 };
 

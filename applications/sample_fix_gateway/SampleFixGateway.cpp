@@ -31,7 +31,7 @@ SampleFixGateway::SampleFixGateway(const FixGatewayConfiguration& config)
         log_file_name,
         pubsub_itc_fw::FileOpenMode{pubsub_itc_fw::FileOpenMode::Truncate},
         pubsub_itc_fw::FwLogLevel::Info,
-        pubsub_itc_fw::FwLogLevel::Warning,
+        pubsub_itc_fw::FwLogLevel::Info,
         pubsub_itc_fw::FwLogLevel::Info);
 
     // Reactor configuration -- use defaults, adjusted for the sample.

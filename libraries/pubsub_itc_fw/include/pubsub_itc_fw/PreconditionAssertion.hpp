@@ -14,11 +14,8 @@
 
 namespace pubsub_itc_fw {
 
-// TODO Assuming a StringUtils::leafname exists, or we simplify how filename is handled.
-// For now, we'll implement a simple leafname logic locally or use StringUtils if available.
-// If not, a direct filename might be used, or StringUtils needs to be designed.
-// Let's create a local helper for now to avoid a circular dependency if StringUtils uses PreconditionAssertion.
 namespace {
+
 std::string get_leafname(const char* filepath) {
     std::string path_str(filepath);
     size_t pos = path_str.find_last_of("/\\");
@@ -68,7 +65,7 @@ class PreconditionAssertion : public std::logic_error {
      * @return The formatted assertion message.
      */
     static std::string assemble_assertion_message(const std::string& message, const char* filename, int line_number) {
-        std::ostringstream output_stream; // Changed to snake_case
+        std::ostringstream output_stream;
         output_stream << message << " (thrown from " << get_leafname(filename) << ":" << line_number << ")";
         return output_stream.str();
     }
