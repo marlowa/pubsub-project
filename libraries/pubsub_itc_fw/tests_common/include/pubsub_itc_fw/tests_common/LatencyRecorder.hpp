@@ -3,13 +3,13 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <algorithm>
+#include <atomic>
+#include <iomanip>
 #include <iostream>
 #include <map>
-#include <atomic>
 #include <string>
 #include <vector>
-#include <algorithm>
-#include <iomanip>
 
 namespace pubsub_itc_fw::tests {
 
@@ -18,7 +18,7 @@ namespace pubsub_itc_fw::tests {
  * Designed for NFT performance studies to identify long-tail outliers.
  */
 class LatencyRecorder {
-public:
+  public:
     LatencyRecorder() = default;
 
     // Delete copy to avoid issues with atomic members
@@ -88,14 +88,12 @@ public:
 
         for (const auto& [bucket, count] : sorted_buckets) {
             if (count > 0) {
-                std::cout << std::right << std::setw(4) << bucket << "-"
-                          << std::left << std::setw(4) << (bucket + 10)
-                          << " | " << count << "\n";
+                std::cout << std::right << std::setw(4) << bucket << "-" << std::left << std::setw(4) << (bucket + 10) << " | " << count << "\n";
             }
         }
     }
 
-private:
+  private:
     // map bucket_start -> atomic_counter
     mutable std::map<int64_t, std::atomic<size_t>> buckets_;
     mutable std::mutex buckets_mutex_;

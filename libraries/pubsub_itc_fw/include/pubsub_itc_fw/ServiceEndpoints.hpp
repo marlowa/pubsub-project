@@ -15,8 +15,8 @@ namespace pubsub_itc_fw {
  * secondary address has been configured for this service.
  */
 struct ServiceEndpoints {
-    NetworkEndpointConfiguration primary;    ///< Primary endpoint. Must be configured (port != 0).
-    NetworkEndpointConfiguration secondary;  ///< Secondary (fallback) endpoint. port == 0 means not configured.
+    NetworkEndpointConfiguration primary;   ///< Primary endpoint. Must be configured (port != 0).
+    NetworkEndpointConfiguration secondary; ///< Secondary (fallback) endpoint. port == 0 means not configured.
 };
 
 } // namespace pubsub_itc_fw

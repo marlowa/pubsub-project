@@ -19,16 +19,16 @@
 
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
-#include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
 #include <pubsub_itc_fw/EventHandler.hpp>
 #include <pubsub_itc_fw/EventType.hpp>
+#include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
 #include <pubsub_itc_fw/InboundConnectionManager.hpp>
 #include <pubsub_itc_fw/InboundListener.hpp>
 #include <pubsub_itc_fw/LockFreeMessageQueue.hpp>
 #include <pubsub_itc_fw/NetworkEndpointConfiguration.hpp>
 #include <pubsub_itc_fw/OutboundConnectionManager.hpp>
-#include <pubsub_itc_fw/ProtocolType.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
+#include <pubsub_itc_fw/ProtocolType.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/ReactorConfiguration.hpp>
@@ -64,7 +64,7 @@ namespace pubsub_itc_fw {
  * and secondary network endpoints when processing Connect commands.
  */
 class Reactor : public ThreadLookupInterface {
-public:
+  public:
     /**
      * @brief Destroys the Reactor instance, closing the epoll file descriptor.
      *
@@ -82,9 +82,7 @@ public:
      *                                  resolve Connect commands. Must outlive this Reactor.
      * @param[in] logger                Logger instance. Must outlive this Reactor.
      */
-    Reactor(const ReactorConfiguration& reactor_configuration,
-            const ServiceRegistry& service_registry,
-            QuillLogger& logger);
+    Reactor(const ReactorConfiguration& reactor_configuration, const ServiceRegistry& service_registry, QuillLogger& logger);
 
     /**
      * @brief Starts the reactor's event loop.
@@ -168,10 +166,8 @@ public:
      *                                RawBytes listeners. Ignored for FrameworkPdu.
      * @throws PreconditionAssertion if called after run().
      */
-    void register_inbound_listener(NetworkEndpointConfiguration address,
-                                   ThreadID target_thread_id,
-                                   ProtocolType protocol_type = ProtocolType{ProtocolType::FrameworkPdu},
-                                   int64_t raw_buffer_capacity = 0);
+    void register_inbound_listener(NetworkEndpointConfiguration address, ThreadID target_thread_id,
+                                   ProtocolType protocol_type = ProtocolType{ProtocolType::FrameworkPdu}, int64_t raw_buffer_capacity = 0);
 
     /**
      * @brief Returns the name of a thread given its ID.
@@ -185,8 +181,7 @@ public:
     // Note: finished here means either fully shutdown or shutdown in progress.
     bool is_finished() const {
         auto state = lifecycle_.load(std::memory_order_acquire);
-        return state != ReactorLifecycleState::Running &&
-               state != ReactorLifecycleState::NotStarted;
+        return state != ReactorLifecycleState::Running && state != ReactorLifecycleState::NotStarted;
     }
 
     void route_message(ThreadID target_id, EventMessage message);
@@ -210,8 +205,7 @@ public:
         return lifecycle_.load(std::memory_order_acquire) == ReactorLifecycleState::Running;
     }
 
-    void create_timer_fd(TimerID timer_id, const std::string& name, ThreadID owner_thread_id,
-                         std::chrono::microseconds interval, TimerType type);
+    void create_timer_fd(TimerID timer_id, const std::string& name, ThreadID owner_thread_id, std::chrono::microseconds interval, TimerType type);
 
     /**
      * @brief Cancels and deregisters a previously created timerfd.
@@ -233,7 +227,9 @@ public:
 
     [[nodiscard]] TimerID allocate_timer_id();
 
-    QuillLogger& get_logger() { return logger_; }
+    QuillLogger& get_logger() {
+        return logger_;
+    }
 
     /**
      * @brief Returns the inbound slab allocator.
@@ -241,7 +237,9 @@ public:
      * ApplicationThreads use this to deallocate inbound PDU payload chunks
      * after processing FrameworkPdu messages.
      */
-    ExpandableSlabAllocator& inbound_slab_allocator() { return inbound_slab_allocator_; }
+    ExpandableSlabAllocator& inbound_slab_allocator() {
+        return inbound_slab_allocator_;
+    }
 
     ThreadLifecycleState::Tag get_thread_state(ThreadID id) const;
 
@@ -286,7 +284,9 @@ public:
      * calling teardown_connection without a running event loop). Must not be
      * used by application code.
      */
-    OutboundConnectionManager& outbound_manager() { return outbound_manager_; }
+    OutboundConnectionManager& outbound_manager() {
+        return outbound_manager_;
+    }
 
     /**
      * TEST SEAM: returns the port number that the first registered inbound
@@ -306,14 +306,13 @@ public:
      */
     std::string get_shutdown_reason() const;
 
-protected:
+  protected:
     std::atomic<ReactorLifecycleState::Tag> lifecycle_{ReactorLifecycleState::NotStarted};
 
-private:
+  private:
     [[nodiscard]] bool initialize_threads();
     void event_loop();
-    bool wait_for_all_threads(std::function<bool(const ApplicationThread&)> predicate,
-                              const std::string& phase_name);
+    bool wait_for_all_threads(std::function<bool(const ApplicationThread&)> predicate, const std::string& phase_name);
     void broadcast_reactor_event(EventType::EventTypeTag tag);
     void process_control_commands();
 

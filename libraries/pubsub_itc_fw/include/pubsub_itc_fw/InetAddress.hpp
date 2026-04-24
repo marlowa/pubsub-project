@@ -28,7 +28,7 @@ namespace pubsub_itc_fw {
  * or from existing system `sockaddr` structures, making it suitable for both
  * active (client) and passive (server) connection management.
  */
-class InetAddress  : public IpAddressInterface {
+class InetAddress : public IpAddressInterface {
   public:
     // Destructor is first, as per coding style.
     /**

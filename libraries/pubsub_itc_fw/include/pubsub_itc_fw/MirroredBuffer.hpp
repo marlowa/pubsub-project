@@ -31,8 +31,7 @@ namespace pubsub_itc_fw {
  * the external control block or event messages.
  */
 class MirroredBuffer {
-public:
-
+  public:
     /**
      * @brief Unmaps the virtual address ranges and closes the underlying file descriptor.
      */
@@ -101,7 +100,9 @@ public:
      *
      * @return Current tail position in bytes.
      */
-    [[nodiscard]] int64_t tail() const { return tail_; }
+    [[nodiscard]] int64_t tail() const {
+        return tail_;
+    }
 
     /**
      * @brief Calculates the number of bytes currently held in the buffer.
@@ -119,7 +120,7 @@ public:
      */
     [[nodiscard]] int64_t space_remaining() const;
 
-private:
+  private:
     /**
      * @brief Rounds the requested size up to the system page size.
      * @param size The raw size requested.
@@ -128,10 +129,10 @@ private:
     [[nodiscard]] static int64_t round_to_page_size(int64_t size);
 
     uint8_t* base_ptr_{nullptr};
-    int64_t  capacity_{0};
-    int64_t  head_{0};
-    int64_t  tail_{0};
-    int      shm_fd_{-1};
+    int64_t capacity_{0};
+    int64_t head_{0};
+    int64_t tail_{0};
+    int shm_fd_{-1};
 };
 
 } // namespace pubsub_itc_fw

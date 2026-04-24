@@ -24,10 +24,8 @@ namespace pubsub_itc_fw {
  * string is intended to be logged or displayed directly to the operator.
  */
 class ConfigurationException : public std::runtime_error {
-public:
-    explicit ConfigurationException(const std::string& message)
-        : std::runtime_error(message)
-    {}
+  public:
+    explicit ConfigurationException(const std::string& message) : std::runtime_error(message) {}
 };
 
 } // namespace pubsub_itc_fw

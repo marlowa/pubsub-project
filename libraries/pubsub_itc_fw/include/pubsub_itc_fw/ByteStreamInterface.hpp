@@ -7,15 +7,15 @@
 #include <cstdint> // For uint8_t
 
 // System C++ headers
-#include <memory>  // For std::unique_ptr (for get_peer_address)
-#include <string>  // For std::string in error messages
-#include <tuple>   // For std::tuple return types
+#include <memory> // For std::unique_ptr (for get_peer_address)
+#include <string> // For std::string in error messages
+#include <tuple>  // For std::tuple return types
 
 // Third party headers
 // (None directly here)
 
 // Project headers
-#include <pubsub_itc_fw/InetAddress.hpp>    // For get_peer_address
+#include <pubsub_itc_fw/InetAddress.hpp>      // For get_peer_address
 #include <pubsub_itc_fw/utils/SimpleSpan.hpp> // For SimpleSpan
 
 namespace pubsub_itc_fw {

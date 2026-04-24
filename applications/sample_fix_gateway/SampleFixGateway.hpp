@@ -31,7 +31,7 @@ namespace sample_fix_gateway {
  *   return gateway.run();
  */
 class SampleFixGateway {
-public:
+  public:
     /**
      * @brief Constructs the gateway with the given configuration.
      *
@@ -54,15 +54,15 @@ public:
      */
     int run();
 
-private:
+  private:
     static const std::string log_file_name;
 
-    FixGatewayConfiguration                       config_;
-    std::unique_ptr<pubsub_itc_fw::QuillLogger>   logger_;
-    pubsub_itc_fw::ServiceRegistry                service_registry_;
-    pubsub_itc_fw::ReactorConfiguration           reactor_configuration_;
-    std::unique_ptr<pubsub_itc_fw::Reactor>       reactor_;
-    std::shared_ptr<FixGatewayThread>             gateway_thread_;
+    FixGatewayConfiguration config_;
+    std::unique_ptr<pubsub_itc_fw::QuillLogger> logger_;
+    pubsub_itc_fw::ServiceRegistry service_registry_;
+    pubsub_itc_fw::ReactorConfiguration reactor_configuration_;
+    std::unique_ptr<pubsub_itc_fw::Reactor> reactor_;
+    std::shared_ptr<FixGatewayThread> gateway_thread_;
 };
 
 } // namespace sample_fix_gateway

@@ -69,7 +69,7 @@ namespace pubsub_itc_fw {
  * continue_send() when EPOLLOUT fires and has_pending_data() is true.
  */
 class PduFramer {
-public:
+  public:
     /**
      * @brief Maximum payload size supported by the built mode (send()).
      *
@@ -112,8 +112,7 @@ public:
      * @param[in] size     Payload size in bytes. Must be > 0 and <= max_payload_size.
      * @return { success, error_string }.
      */
-    [[nodiscard]] std::tuple<bool, std::string> send(int16_t pdu_id, int8_t version,
-                                                     const uint8_t* payload, uint32_t size);
+    [[nodiscard]] std::tuple<bool, std::string> send(int16_t pdu_id, int8_t version, const uint8_t* payload, uint32_t size);
 
     /**
      * @brief Pre-built mode: sends a caller-assembled frame with zero copy.
@@ -132,8 +131,7 @@ public:
      *                         Must be greater than sizeof(PduHeader).
      * @return { success, error_string }.
      */
-    [[nodiscard]] std::tuple<bool, std::string> send_prebuilt(const uint8_t* frame,
-                                                              uint32_t total_bytes);
+    [[nodiscard]] std::tuple<bool, std::string> send_prebuilt(const uint8_t* frame, uint32_t total_bytes);
 
     /**
      * @brief Continues sending any unsent data after a partial write.
@@ -155,7 +153,7 @@ public:
      */
     [[nodiscard]] bool has_pending_data() const;
 
-private:
+  private:
     ByteStreamInterface& stream_;
 
     // Internal buffer used by built mode (send()).
@@ -166,8 +164,8 @@ private:
     // In pre-built mode: points into the caller's slab chunk.
     const uint8_t* active_frame_ptr_{nullptr};
 
-    size_t frame_size_{0};    // total bytes in the active frame
-    size_t send_offset_{0};   // bytes already sent
+    size_t frame_size_{0};  // total bytes in the active frame
+    size_t send_offset_{0}; // bytes already sent
 };
 
 } // namespace pubsub_itc_fw

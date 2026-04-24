@@ -49,7 +49,7 @@ namespace pubsub_itc_fw {
  *   The PduParser and PduFramer are owned exclusively by this handler.
  */
 class PduProtocolHandler : public ProtocolHandlerInterface {
-public:
+  public:
     ~PduProtocolHandler() override = default;
 
     PduProtocolHandler(const PduProtocolHandler&) = delete;
@@ -69,11 +69,8 @@ public:
      * @param[in] logger             Logger for protocol error diagnostics.
      *                               Must outlive this object.
      */
-    PduProtocolHandler(TcpSocket& socket,
-                       ApplicationThread& target_thread,
-                       ExpandableSlabAllocator& inbound_allocator,
-                       std::function<void()> disconnect_handler,
-                       QuillLogger& logger);
+    PduProtocolHandler(TcpSocket& socket, ApplicationThread& target_thread, ExpandableSlabAllocator& inbound_allocator,
+                       std::function<void()> disconnect_handler, QuillLogger& logger);
 
     /**
      * @brief Services a readable socket by draining available PDU frames.
@@ -100,10 +97,7 @@ public:
      * @param[in] chunk_ptr   Pointer to the start of the PDU frame. Must not be nullptr.
      * @param[in] total_bytes Total frame size in bytes.
      */
-    void send_prebuilt(ExpandableSlabAllocator* allocator,
-                       int slab_id,
-                       void* chunk_ptr,
-                       uint32_t total_bytes) override;
+    void send_prebuilt(ExpandableSlabAllocator* allocator, int slab_id, void* chunk_ptr, uint32_t total_bytes) override;
 
     /**
      * @brief Returns true if a partial outbound PDU send is in progress.
@@ -125,18 +119,18 @@ public:
      */
     void deallocate_pending_send() override;
 
-private:
+  private:
     void release_pending_send();
 
-    std::unique_ptr<PduParser>  parser_;
-    std::unique_ptr<PduFramer>  framer_;
-    std::function<void()>       disconnect_handler_;
-    QuillLogger&                logger_;
+    std::unique_ptr<PduParser> parser_;
+    std::unique_ptr<PduFramer> framer_;
+    std::function<void()> disconnect_handler_;
+    QuillLogger& logger_;
 
-    ExpandableSlabAllocator*    current_allocator_{nullptr};
-    int                         current_slab_id_{-1};
-    void*                       current_chunk_ptr_{nullptr};
-    uint32_t                    current_total_bytes_{0};
+    ExpandableSlabAllocator* current_allocator_{nullptr};
+    int current_slab_id_{-1};
+    void* current_chunk_ptr_{nullptr};
+    uint32_t current_total_bytes_{0};
 };
 
 } // namespace pubsub_itc_fw

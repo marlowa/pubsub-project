@@ -92,7 +92,7 @@ namespace pubsub_itc_fw {
  * See the THREADING CONTRACT block comment above for full concurrency semantics.
  */
 class ExpandableSlabAllocator {
-public:
+  public:
     /**
      * @brief Destroys all slabs owned by this allocator.
      *
@@ -178,7 +178,7 @@ public:
      */
     [[nodiscard]] size_t slab_size() const;
 
-private:
+  private:
     void drain_empty_slab_queue();
     SlabAllocator* append_new_slab();
 

@@ -4,8 +4,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <memory>
-#include <unistd.h>
 #include <sys/epoll.h>
+#include <unistd.h>
 
 namespace pubsub_itc_fw {
 
@@ -19,7 +19,7 @@ namespace pubsub_itc_fw {
  * incoming data on a socket, a timer firing, or a message from an ITC queue.
  */
 class EventHandler {
-public:
+  public:
     /**
      * @brief The pure virtual destructor ensures that derived classes are
      * properly destroyed through a base class pointer.
@@ -45,7 +45,7 @@ public:
      */
     virtual int get_fd() const = 0;
 
-private:
+  private:
     // A deleted copy constructor and assignment operator to prevent copying.
     EventHandler(const EventHandler&) = delete;
     EventHandler& operator=(const EventHandler&) = delete;

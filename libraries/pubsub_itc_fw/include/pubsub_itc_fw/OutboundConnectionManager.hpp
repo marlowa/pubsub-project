@@ -47,7 +47,7 @@ namespace pubsub_itc_fw {
  *   Reactor is responsible for their lifetimes.
  */
 class OutboundConnectionManager {
-public:
+  public:
     ~OutboundConnectionManager() = default;
 
     OutboundConnectionManager(const OutboundConnectionManager&) = delete;
@@ -67,12 +67,8 @@ public:
      *                              Must outlive this object.
      * @param[in] logger            Logger instance. Must outlive this object.
      */
-    OutboundConnectionManager(int epoll_fd,
-                               const ReactorConfiguration& config,
-                               ExpandableSlabAllocator& inbound_allocator,
-                               const ServiceRegistry& service_registry,
-                               ThreadLookupInterface& thread_lookup,
-                               QuillLogger& logger);
+    OutboundConnectionManager(int epoll_fd, const ReactorConfiguration& config, ExpandableSlabAllocator& inbound_allocator,
+                              const ServiceRegistry& service_registry, ThreadLookupInterface& thread_lookup, QuillLogger& logger);
 
     /**
      * @brief Initiates an outbound TCP connection.
@@ -206,10 +202,9 @@ public:
      * @param[in] reason             Human-readable reason for logging and event delivery.
      * @param[in] deliver_lost_event If true, delivers ConnectionLost to the requesting thread.
      */
-    void teardown_connection(ConnectionID id, const std::string& reason,
-                             bool deliver_lost_event);
+    void teardown_connection(ConnectionID id, const std::string& reason, bool deliver_lost_event);
 
-private:
+  private:
     int epoll_fd_;
     const ReactorConfiguration& config_;
     ExpandableSlabAllocator& inbound_allocator_;
@@ -218,7 +213,7 @@ private:
     QuillLogger& logger_;
 
     std::unordered_map<ConnectionID, std::unique_ptr<OutboundConnection>> connections_;
-    std::unordered_map<int, OutboundConnection*>                          connections_by_fd_;
+    std::unordered_map<int, OutboundConnection*> connections_by_fd_;
 
     std::optional<ReactorControlCommand> pending_send_;
 };

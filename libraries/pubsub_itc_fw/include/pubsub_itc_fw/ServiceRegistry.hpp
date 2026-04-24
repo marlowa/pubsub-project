@@ -53,7 +53,7 @@ namespace pubsub_itc_fw {
  * outbound TCP connections.
  */
 class ServiceRegistry {
-public:
+  public:
     ~ServiceRegistry() = default;
     ServiceRegistry() = default;
 
@@ -71,18 +71,12 @@ public:
      * @param[in] secondary Secondary (fallback) endpoint. Set port to 0 if not required.
      * @throws PreconditionAssertion if name is empty or has already been registered.
      */
-    void add(const std::string& name,
-             NetworkEndpointConfiguration primary,
-             NetworkEndpointConfiguration secondary) {
+    void add(const std::string& name, NetworkEndpointConfiguration primary, NetworkEndpointConfiguration secondary) {
         if (name.empty()) {
-            throw PreconditionAssertion(
-                "ServiceRegistry::add: service name must not be empty",
-                __FILE__, __LINE__);
+            throw PreconditionAssertion("ServiceRegistry::add: service name must not be empty", __FILE__, __LINE__);
         }
         if (entries_.count(name) != 0) {
-            throw PreconditionAssertion(
-                "ServiceRegistry::add: duplicate service name: " + name,
-                __FILE__, __LINE__);
+            throw PreconditionAssertion("ServiceRegistry::add: duplicate service name: " + name, __FILE__, __LINE__);
         }
         entries_.emplace(name, ServiceEndpoints{std::move(primary), std::move(secondary)});
     }
@@ -118,7 +112,7 @@ public:
         return entries_.empty();
     }
 
-private:
+  private:
     std::unordered_map<std::string, ServiceEndpoints> entries_;
 };
 

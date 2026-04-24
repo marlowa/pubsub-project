@@ -34,7 +34,7 @@ namespace sample_fix_gateway {
  * to be in the range [1, 65535].
  */
 class FixGatewayConfigurationLoader {
-public:
+  public:
     /**
      * @brief Loads and validates configuration from the given TOML file path.
      *

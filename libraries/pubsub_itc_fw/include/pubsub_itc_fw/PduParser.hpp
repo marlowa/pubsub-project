@@ -70,7 +70,7 @@ namespace pubsub_itc_fw {
  * processing by calling release_pdu_payload() or deallocating directly.
  */
 class PduParser {
-public:
+  public:
     ~PduParser() = default;
 
     /**
@@ -81,10 +81,7 @@ public:
      * @param[in] slab_allocator     The slab allocator used to allocate payload chunks. Must outlive this object.
      * @param[in] disconnect_handler Called when the peer closes the connection gracefully.
      */
-    PduParser(ByteStreamInterface& stream,
-              ApplicationThread& target_thread,
-              ExpandableSlabAllocator& slab_allocator,
-              std::function<void()> disconnect_handler);
+    PduParser(ByteStreamInterface& stream, ApplicationThread& target_thread, ExpandableSlabAllocator& slab_allocator, std::function<void()> disconnect_handler);
 
     PduParser(const PduParser&) = delete;
     PduParser& operator=(const PduParser&) = delete;
@@ -102,7 +99,7 @@ public:
      */
     [[nodiscard]] std::tuple<bool, std::string> receive();
 
-private:
+  private:
     [[nodiscard]] bool has_complete_header() const;
     void dispatch_pdu(int slab_id, void* payload_chunk);
     void reset_header();

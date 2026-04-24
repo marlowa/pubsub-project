@@ -48,7 +48,7 @@ namespace sample_fix_gateway {
  *   parser.feed(data, length);  // call from on_raw_socket_message()
  */
 class FixParser {
-public:
+  public:
     using MessageCallback = std::function<void(const FixMessage&)>;
 
     /**
@@ -78,7 +78,7 @@ public:
      */
     void reset();
 
-private:
+  private:
     /*
      * Attempts to extract one complete FIX message from buffer_ starting at
      * offset_. Returns true and advances offset_ if a complete message was
@@ -97,8 +97,7 @@ private:
      * up to but not including the tag 10 field. expected is the value in
      * the Checksum field.
      */
-    static bool validate_checksum(const std::string& msg_bytes,
-                                  const std::string& expected);
+    static bool validate_checksum(const std::string& msg_bytes, const std::string& expected);
 
     /*
      * Formats a three-digit zero-padded checksum string from a byte sum.
@@ -106,8 +105,8 @@ private:
     static std::string format_checksum(int sum);
 
     MessageCallback on_message_;
-    std::string     buffer_;
-    std::size_t     offset_{0};
+    std::string buffer_;
+    std::size_t offset_{0};
 };
 
 } // namespace sample_fix_gateway

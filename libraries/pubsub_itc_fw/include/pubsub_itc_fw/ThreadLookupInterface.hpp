@@ -32,7 +32,7 @@ class ApplicationThread;
  *   is written only during initialisation and shutdown, and read only while running.
  */
 class ThreadLookupInterface {
-public:
+  public:
     /**
      * @brief Virtual destructor.
      */

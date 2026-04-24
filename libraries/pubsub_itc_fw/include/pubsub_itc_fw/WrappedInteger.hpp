@@ -22,9 +22,8 @@ namespace pubsub_itc_fw {
  * @tparam Tag A unique, empty struct used to differentiate between ID types.
  * @tparam T The underlying integer type.
  */
-template <typename Tag, typename T>
-class WrappedInteger  {
-public:
+template <typename Tag, typename T> class WrappedInteger {
+  public:
     /**
      * @brief Constructs an ID with a default (invalid) value.
      */
@@ -70,7 +69,9 @@ public:
         return value_ != other.value_;
     }
 
-    [[nodiscard]] constexpr bool operator<(const WrappedInteger& other) const { return value_ < other.value_; }
+    [[nodiscard]] constexpr bool operator<(const WrappedInteger& other) const {
+        return value_ < other.value_;
+    }
 
     /**
      * @brief Prefix increment operator.
@@ -91,7 +92,7 @@ public:
         return temp;
     }
 
-private:
+  private:
     T value_;
 };
 
@@ -107,8 +108,7 @@ private:
  * @param [in] id The ID instance to output.
  * @return A reference to the output stream.
  */
-template <typename Tag, typename T>
-std::ostream& operator<<(std::ostream& os, const WrappedInteger<Tag, T>& id) {
+template <typename Tag, typename T> std::ostream& operator<<(std::ostream& os, const WrappedInteger<Tag, T>& id) {
     return os << id.get_value();
 }
 
@@ -116,8 +116,7 @@ std::ostream& operator<<(std::ostream& os, const WrappedInteger<Tag, T>& id) {
 
 // Define a hash for the generic ID class for use in standard containers
 namespace std {
-template <typename Tag, typename T>
-struct hash<pubsub_itc_fw::WrappedInteger<Tag, T>> {
+template <typename Tag, typename T> struct hash<pubsub_itc_fw::WrappedInteger<Tag, T>> {
     [[nodiscard]] size_t operator()(const pubsub_itc_fw::WrappedInteger<Tag, T>& id) const {
         return hash<T>()(id.get_value());
     }

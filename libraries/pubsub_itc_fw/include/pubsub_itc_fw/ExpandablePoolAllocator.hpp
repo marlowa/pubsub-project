@@ -203,7 +203,6 @@ namespace pubsub_itc_fw {
 
 template <typename T> class ExpandablePoolAllocator {
   public:
-
     /**
      * @brief Destroys the allocator and releases all pool memory.
      *
@@ -253,10 +252,8 @@ template <typename T> class ExpandablePoolAllocator {
      * @param[in] use_huge_pages_flag Whether to attempt 2MB huge page allocation.
      */
     ExpandablePoolAllocator(const std::string& pool_name, int objects_per_pool, int initial_pools, int expansion_threshold_hint,
-                            std::function<void(void*, int)> handler_for_pool_exhausted,
-                            std::function<void(void*, void*)> handler_for_invalid_free,
-                            std::function<void(void*)> handler_for_huge_pages_error,
-                            UseHugePagesFlag use_huge_pages_flag);
+                            std::function<void(void*, int)> handler_for_pool_exhausted, std::function<void(void*, void*)> handler_for_invalid_free,
+                            std::function<void(void*)> handler_for_huge_pages_error, UseHugePagesFlag use_huge_pages_flag);
 
     ExpandablePoolAllocator(const ExpandablePoolAllocator&) = delete;
     ExpandablePoolAllocator& operator=(const ExpandablePoolAllocator&) = delete;
@@ -372,13 +369,10 @@ template <typename T> class ExpandablePoolAllocator {
 };
 
 template <typename T>
-ExpandablePoolAllocator<T>::ExpandablePoolAllocator(const std::string& pool_name,
-                                                    int objects_per_pool, int initial_pools,
-                                                    int expansion_threshold_hint,
+ExpandablePoolAllocator<T>::ExpandablePoolAllocator(const std::string& pool_name, int objects_per_pool, int initial_pools, int expansion_threshold_hint,
                                                     std::function<void(void*, int)> handler_for_pool_exhausted,
                                                     std::function<void(void*, void*)> handler_for_invalid_free,
-                                                    std::function<void(void*)> handler_for_huge_pages_error,
-                                                    UseHugePagesFlag use_huge_pages_flag)
+                                                    std::function<void(void*)> handler_for_huge_pages_error, UseHugePagesFlag use_huge_pages_flag)
     : pool_name_(pool_name)
     , objects_per_pool_(objects_per_pool)
     , initial_pools_(initial_pools)
@@ -495,16 +489,14 @@ template <typename T> void ExpandablePoolAllocator<T>::deallocate(T* obj) {
     const std::uint64_t* canary_ptr = get_canary_for_object(obj);
     if (*canary_ptr != slot_canary_value) {
         std::fprintf(stderr,
-            "[ExpandablePoolAllocator] CANARY CORRUPTED in deallocate: "
-            "pool '%s', object at %p. "
-            "Expected canary 0x%016llX, found 0x%016llX. "
-            "The T object wrote before its own start address. "
-            "Slot is not returned to pool. "
-            "Calling handler_for_invalid_free_.\n",
-            pool_name_.c_str(),
-            static_cast<void*>(obj),
-            static_cast<unsigned long long>(slot_canary_value),
-            static_cast<unsigned long long>(*canary_ptr));
+                     "[ExpandablePoolAllocator] CANARY CORRUPTED in deallocate: "
+                     "pool '%s', object at %p. "
+                     "Expected canary 0x%016llX, found 0x%016llX. "
+                     "The T object wrote before its own start address. "
+                     "Slot is not returned to pool. "
+                     "Calling handler_for_invalid_free_.\n",
+                     pool_name_.c_str(), static_cast<void*>(obj), static_cast<unsigned long long>(slot_canary_value),
+                     static_cast<unsigned long long>(*canary_ptr));
         if (handler_for_invalid_free_ != nullptr) {
             std::lock_guard<std::mutex> lock(callback_mutex_);
             handler_for_invalid_free_(nullptr, obj);
@@ -515,9 +507,7 @@ template <typename T> void ExpandablePoolAllocator<T>::deallocate(T* obj) {
     // --- Double-free detection ---
     std::atomic<std::uintptr_t>* is_constructed = get_is_constructed_for_object(obj);
     std::uintptr_t expected = 1U;
-    if (!is_constructed->compare_exchange_strong(expected, 0U,
-                                                 std::memory_order_acq_rel,
-                                                 std::memory_order_acquire)) {
+    if (!is_constructed->compare_exchange_strong(expected, 0U, std::memory_order_acq_rel, std::memory_order_acquire)) {
         // is_constructed was already 0 — double free
         if (handler_for_invalid_free_ != nullptr) {
             std::lock_guard<std::mutex> lock(callback_mutex_);
@@ -578,8 +568,7 @@ template <typename T> PoolStatistics ExpandablePoolAllocator<T>::get_pool_statis
     return stats;
 }
 
-template <typename T>
-ExpandablePoolAllocator<T>::~ExpandablePoolAllocator() {
+template <typename T> ExpandablePoolAllocator<T>::~ExpandablePoolAllocator() {
     // Sweep all pools for caller-leaked objects (slots still marked is_constructed).
     // For each such slot, check the canary before calling ~T(). If the canary is
     // corrupt, call handler_for_invalid_free_ and clear is_constructed without
@@ -600,16 +589,14 @@ ExpandablePoolAllocator<T>::~ExpandablePoolAllocator() {
     }
 }
 
-template <typename T>
-std::atomic<std::uintptr_t>* ExpandablePoolAllocator<T>::get_is_constructed_for_object(T* obj) {
+template <typename T> std::atomic<std::uintptr_t>* ExpandablePoolAllocator<T>::get_is_constructed_for_object(T* obj) {
     using SlotType = Slot<T>;
     auto* byte_ptr = reinterpret_cast<char*>(obj);
     auto* slot = reinterpret_cast<SlotType*>(byte_ptr - offsetof(SlotType, storage));
     return &slot->is_constructed;
 }
 
-template <typename T>
-const std::uint64_t* ExpandablePoolAllocator<T>::get_canary_for_object(T* obj) {
+template <typename T> const std::uint64_t* ExpandablePoolAllocator<T>::get_canary_for_object(T* obj) {
     using SlotType = Slot<T>;
     auto* byte_ptr = reinterpret_cast<char*>(obj);
     auto* slot = reinterpret_cast<SlotType*>(byte_ptr - offsetof(SlotType, storage));
@@ -626,16 +613,12 @@ template <typename T> AllocatorBehaviourStatistics ExpandablePoolAllocator<T>::g
     stats.failed_allocations = failed_allocations_.value.load(std::memory_order_relaxed);
 
     uint64_t pool_count = 0;
-    for (auto* p = __atomic_load_n(&head_pool_, __ATOMIC_ACQUIRE);
-             p != nullptr;
-             p = p->get_next_pool()) {
+    for (auto* p = __atomic_load_n(&head_pool_, __ATOMIC_ACQUIRE); p != nullptr; p = p->get_next_pool()) {
         pool_count++;
     }
     stats.per_pool_allocation_counts.counts.resize(pool_count);
     uint64_t i = 0;
-    for (auto* p = __atomic_load_n(&head_pool_, __ATOMIC_ACQUIRE);
-             p != nullptr;
-             p = p->get_next_pool()) {
+    for (auto* p = __atomic_load_n(&head_pool_, __ATOMIC_ACQUIRE); p != nullptr; p = p->get_next_pool()) {
         stats.per_pool_allocation_counts.counts[i++] = p->get_allocation_count();
     }
 

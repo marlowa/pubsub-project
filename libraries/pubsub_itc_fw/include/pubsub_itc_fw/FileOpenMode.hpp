@@ -13,14 +13,11 @@ namespace pubsub_itc_fw {
  * @brief File open mode for log file handling.
  */
 class FileOpenMode {
-public:
+  public:
     /**
      * @brief C-style enumeration of file open modes.
      */
-    enum FileOpenModeTag {
-        Append,
-        Truncate
-    };
+    enum FileOpenModeTag { Append, Truncate };
 
     /**
      * @brief Constructs FileOpenMode from a tag value.
@@ -31,15 +28,19 @@ public:
     /**
      * @brief Returns the underlying tag value.
      */
-    [[nodiscard]] FileOpenModeTag as_tag() const { return mode_; }
+    [[nodiscard]] FileOpenModeTag as_tag() const {
+        return mode_;
+    }
 
     /**
      * @brief Returns a string representation of the file open mode.
      * @return File open mode as string.
      */
     [[nodiscard]] std::string as_string() const {
-        if (mode_ == Append)   return "Append";
-        if (mode_ == Truncate) return "Truncate";
+        if (mode_ == Append)
+            return "Append";
+        if (mode_ == Truncate)
+            return "Truncate";
         return "unknown";
     }
 
@@ -52,7 +53,7 @@ public:
         return mode_ == rhs.mode_;
     }
 
-private:
+  private:
     FileOpenModeTag mode_{Truncate};
 };
 

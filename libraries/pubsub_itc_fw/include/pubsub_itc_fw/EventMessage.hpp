@@ -43,26 +43,26 @@ namespace pubsub_itc_fw {
  *   type.
  */
 class EventMessage {
-public:
+  public:
     /**
      * @brief Header structure containing message metadata.
      */
     struct Header {
         EventType type;
         int payload_size;
-        int64_t tail_position;               ///< Used for RawSocketCommunication events.
-        TimerID timer_id;                    ///< Used for Timer events.
-        std::string reason;                  ///< Used for Termination and ConnectionFailed/ConnectionLost events.
-        ThreadID originating_thread_id;      ///< Used for InterthreadCommunication events.
-        ConnectionID connection_id;          ///< Used for ConnectionEstablished and ConnectionLost events.
+        int64_t tail_position;          ///< Used for RawSocketCommunication events.
+        TimerID timer_id;               ///< Used for Timer events.
+        std::string reason;             ///< Used for Termination and ConnectionFailed/ConnectionLost events.
+        ThreadID originating_thread_id; ///< Used for InterthreadCommunication events.
+        ConnectionID connection_id;     ///< Used for ConnectionEstablished and ConnectionLost events.
     };
 
-private:
+  private:
     Header header_;
     const uint8_t* payload_{nullptr};
     int itc_message_type_{-1};
     int pdu_id_{-1};
-    int slab_id_{-1};  ///< Slab ID for FrameworkPdu messages. -1 means not slab-allocated.
+    int slab_id_{-1}; ///< Slab ID for FrameworkPdu messages. -1 means not slab-allocated.
 
     /**
      * @brief Private constructor to enforce use of static factory methods.
@@ -76,10 +76,9 @@ private:
      * @param[in] size         The size of the payload in bytes.
      */
     EventMessage(EventType type, const uint8_t* payload_data, int size)
-        : header_{type, size, 0, TimerID(), "", ThreadID(), ConnectionID()}
-        , payload_(payload_data) {}
+        : header_{type, size, 0, TimerID(), "", ThreadID(), ConnectionID()}, payload_(payload_data) {}
 
-public:
+  public:
     // Disallow copy, allow move.
     EventMessage(const EventMessage&) = delete;
     EventMessage& operator=(const EventMessage&) = delete;
@@ -166,10 +165,7 @@ public:
      * @param[in] tail_position  MirroredBuffer tail at enqueue time.
      * @return EventMessage instance.
      */
-    [[nodiscard]] static EventMessage create_raw_socket_message(ConnectionID connection_id,
-                                                                 const uint8_t* data,
-                                                                 int size,
-                                                                 int64_t tail_position);
+    [[nodiscard]] static EventMessage create_raw_socket_message(ConnectionID connection_id, const uint8_t* data, int size, int64_t tail_position);
     /**
      * @brief Factory method for framework PDU messages.
      *
@@ -306,8 +302,7 @@ public:
      * @tparam T The type to cast the payload to.
      * @return A const reference to the payload cast as type T.
      */
-    template<typename T>
-    [[nodiscard]] const T& get_as() const {
+    template <typename T> [[nodiscard]] const T& get_as() const {
         return *reinterpret_cast<const T*>(payload_);
     }
 };

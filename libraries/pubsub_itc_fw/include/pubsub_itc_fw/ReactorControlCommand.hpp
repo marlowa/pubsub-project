@@ -48,23 +48,20 @@ namespace pubsub_itc_fw {
  *   wire. No header is prepended. The total wire size is raw_byte_count_.
  */
 class ReactorControlCommand {
-public:
+  public:
     enum CommandTag {
         AddTimer,
         CancelTimer,
-        Connect,         ///< Request the reactor to establish an outbound TCP connection.
-        Disconnect,      ///< Request the reactor to close an established connection.
-        SendPdu,         ///< Request the reactor to send a framed PDU on a PDU connection.
-        SendRaw,         ///< Request the reactor to send raw bytes on a raw-bytes connection.
-        CommitRawBytes   ///< Notify the reactor that the application has consumed N bytes from
-                         ///< the MirroredBuffer of a RawBytesProtocolHandler connection.
+        Connect,       ///< Request the reactor to establish an outbound TCP connection.
+        Disconnect,    ///< Request the reactor to close an established connection.
+        SendPdu,       ///< Request the reactor to send a framed PDU on a PDU connection.
+        SendRaw,       ///< Request the reactor to send raw bytes on a raw-bytes connection.
+        CommitRawBytes ///< Notify the reactor that the application has consumed N bytes from
+                       ///< the MirroredBuffer of a RawBytesProtocolHandler connection.
     };
 
-public:
-    explicit ReactorControlCommand(CommandTag tag)
-        : tag_(tag)
-    {
-    }
+  public:
+    explicit ReactorControlCommand(CommandTag tag) : tag_(tag) {}
 
     CommandTag as_tag() const {
         return tag_;
@@ -99,7 +96,7 @@ public:
         return tag_ == rhs.tag_;
     }
 
-public:
+  public:
     // ----------------------------------------------------------------
     // AddTimer / CancelTimer payload fields
     // ----------------------------------------------------------------
@@ -234,19 +231,15 @@ public:
      */
     int64_t bytes_consumed_{0};
 
-private:
+  private:
     CommandTag tag_{AddTimer};
 };
 
-inline bool operator==(const ReactorControlCommand& lhs,
-                       const ReactorControlCommand& rhs)
-{
+inline bool operator==(const ReactorControlCommand& lhs, const ReactorControlCommand& rhs) {
     return lhs.is_equal(rhs);
 }
 
-inline bool operator!=(const ReactorControlCommand& lhs,
-                       const ReactorControlCommand& rhs)
-{
+inline bool operator!=(const ReactorControlCommand& lhs, const ReactorControlCommand& rhs) {
     return !lhs.is_equal(rhs);
 }
 

@@ -14,7 +14,7 @@ namespace pubsub_itc_fw {
  * @brief Event type enumeration for EventMessage classification.
  */
 class EventType {
-public:
+  public:
     /**
      * @brief C-style enumeration of event types.
      */
@@ -28,12 +28,12 @@ public:
         PubSubCommunication,
         RawSocketCommunication,
         FrameworkPdu,
-        ConnectionEstablished,  ///< Outbound TCP connection is ready; carries ConnectionID.
-        ConnectionFailed,       ///< Outbound TCP connection attempt failed; carries reason string.
-        ConnectionLost          ///< Existing connection dropped unexpectedly; carries ConnectionID and reason.
+        ConnectionEstablished, ///< Outbound TCP connection is ready; carries ConnectionID.
+        ConnectionFailed,      ///< Outbound TCP connection attempt failed; carries reason string.
+        ConnectionLost         ///< Existing connection dropped unexpectedly; carries ConnectionID and reason.
     };
 
-public:
+  public:
     /**
      * @brief Constructs EventType from tag value.
      * @param[in] tag Event type tag.
@@ -102,7 +102,7 @@ public:
         return event_type_ == rhs.event_type_;
     }
 
-private:
+  private:
     EventTypeTag event_type_{None};
 };
 

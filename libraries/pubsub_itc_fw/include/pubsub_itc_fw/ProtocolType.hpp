@@ -23,11 +23,8 @@ namespace pubsub_itc_fw {
  *   contiguous view of the stream. No framework-level parsing is performed.
  */
 class ProtocolType {
-public:
-    enum ProtocolTypeTag {
-        FrameworkPdu = 0,
-        RawBytes     = 1
-    };
+  public:
+    enum ProtocolTypeTag { FrameworkPdu = 0, RawBytes = 1 };
 
     /**
      * @brief Initialises the protocol type with a specific handling mode.
@@ -55,7 +52,7 @@ public:
         return value_;
     }
 
-private:
+  private:
     ProtocolTypeTag value_;
 };
 

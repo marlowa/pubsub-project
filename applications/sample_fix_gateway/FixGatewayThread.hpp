@@ -46,7 +46,7 @@ namespace sample_fix_gateway {
  * The FixSerialiser is stateless and shared across all sessions.
  */
 class FixGatewayThread : public pubsub_itc_fw::ApplicationThread {
-public:
+  public:
     /**
      * @brief Constructs a FixGatewayThread.
      * @param[in] token     Constructor token to force use of factory
@@ -54,9 +54,7 @@ public:
      * @param[in] reactor   The owning Reactor. Must outlive this object.
      * @param[in] config    Gateway configuration.
      */
-    FixGatewayThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token,
-        pubsub_itc_fw::QuillLogger& logger,
-                     pubsub_itc_fw::Reactor& reactor,
+    FixGatewayThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger, pubsub_itc_fw::Reactor& reactor,
                      const FixGatewayConfiguration& config);
 
     /**
@@ -66,15 +64,14 @@ public:
         return static_cast<int>(sessions_.size());
     }
 
-protected:
+  protected:
     void on_connection_established(pubsub_itc_fw::ConnectionID id) override;
-    void on_connection_lost(pubsub_itc_fw::ConnectionID id,
-                            const std::string& reason) override;
+    void on_connection_lost(pubsub_itc_fw::ConnectionID id, const std::string& reason) override;
     void on_raw_socket_message(const pubsub_itc_fw::EventMessage& message) override;
     void on_timer_event(const std::string& name) override;
     void on_itc_message(const pubsub_itc_fw::EventMessage& message) override;
 
-private:
+  private:
     // FIX session message handlers
     void handle_logon(FixSession& session, const FixMessage& msg);
     void handle_heartbeat(FixSession& session, const FixMessage& msg);

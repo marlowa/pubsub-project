@@ -24,11 +24,8 @@ namespace pubsub_itc_fw {
  * Test code can inspect records directly or use the helper methods below.
  */
 class LoggerWithSink {
-public:
-    explicit LoggerWithSink(FwLogLevel level = FwLogLevel::Debug)
-        : logger(level, [this](const std::string& record) {
-              records.push_back(record);
-          }) {}
+  public:
+    explicit LoggerWithSink(FwLogLevel level = FwLogLevel::Debug) : logger(level, [this](const std::string& record) { records.push_back(record); }) {}
 
     LoggerWithSink(const LoggerWithSink&) = delete;
     LoggerWithSink& operator=(const LoggerWithSink&) = delete;

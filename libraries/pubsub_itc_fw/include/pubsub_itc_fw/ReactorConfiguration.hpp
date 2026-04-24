@@ -28,10 +28,10 @@ namespace pubsub_itc_fw {
 struct ReactorConfiguration {
     ReactorConfiguration() {
         // Set defaults appropriate for the reactor's internal command queue.
-        command_queue_configuration_.low_watermark  = 2;
+        command_queue_configuration_.low_watermark = 2;
         command_queue_configuration_.high_watermark = 64;
         command_allocator_configuration_.objects_per_pool = 64;
-        command_allocator_configuration_.initial_pools    = 1;
+        command_allocator_configuration_.initial_pools = 1;
     }
 
     /**

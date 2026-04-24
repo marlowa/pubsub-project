@@ -25,8 +25,8 @@ class ApplicationThread;
  * `handle_event` method to process timer events. This class would be
  * registered with the Reactor to handle a specific timer file descriptor.
  */
-class TimerHandler  : public EventHandler {
-public:
+class TimerHandler : public EventHandler {
+  public:
     ~TimerHandler() override;
 
     TimerHandler(const Timer& timer, Reactor& reactor);
@@ -50,7 +50,7 @@ public:
         return timer_;
     }
 
-private:
+  private:
     int fd_{-1};
     Timer timer_;
     Reactor& reactor_;

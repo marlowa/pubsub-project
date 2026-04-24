@@ -25,7 +25,7 @@ class TcpConnectorImpl;
  * get_connected_socket() once the connection is fully established.
  */
 class TcpConnector {
-public:
+  public:
     ~TcpConnector();
     TcpConnector();
 
@@ -42,8 +42,7 @@ public:
      * - bool: true if connected immediately, false if the connection is in progress.
      * - string: error message if initiation failed; empty on success.
      */
-    [[nodiscard]] std::tuple<bool, std::string>
-    connect(const InetAddress& remote_address);
+    [[nodiscard]] std::tuple<bool, std::string> connect(const InetAddress& remote_address);
 
     /**
      * @brief Attempts to complete a non-blocking connection.
@@ -54,8 +53,7 @@ public:
      * - bool: true if the connection is now fully established.
      * - string: error message if the connection failed; empty if still in progress.
      */
-    [[nodiscard]] std::tuple<bool, std::string>
-    finish_connect();
+    [[nodiscard]] std::tuple<bool, std::string> finish_connect();
 
     /**
      * @brief Indicates whether a connection attempt is currently active.
@@ -69,8 +67,7 @@ public:
      *
      * Only returns a non-null pointer if the connection is fully established.
      */
-    [[nodiscard]] std::unique_ptr<TcpSocket>
-    get_connected_socket();
+    [[nodiscard]] std::unique_ptr<TcpSocket> get_connected_socket();
 
     /**
      * @brief Cancels any ongoing connection attempt.
@@ -89,7 +86,7 @@ public:
      */
     [[nodiscard]] int get_fd() const;
 
-private:
+  private:
     std::unique_ptr<TcpConnectorImpl> p_impl_;
 };
 

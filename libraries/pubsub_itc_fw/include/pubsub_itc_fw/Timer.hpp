@@ -20,10 +20,8 @@ namespace pubsub_itc_fw {
  */
 class Timer {
   public:
-    Timer(const std::string& name, ThreadID owner_thread_id, TimerID timer_id, TimerType type,
-          std::chrono::microseconds interval)
-        : name_(name), owner_thread_id_(owner_thread_id),
-          timer_id_(timer_id), type_(type), interval_(interval) {}
+    Timer(const std::string& name, ThreadID owner_thread_id, TimerID timer_id, TimerType type, std::chrono::microseconds interval)
+        : name_(name), owner_thread_id_(owner_thread_id), timer_id_(timer_id), type_(type), interval_(interval) {}
 
     /**
      * @brief Returns the name of the timer.

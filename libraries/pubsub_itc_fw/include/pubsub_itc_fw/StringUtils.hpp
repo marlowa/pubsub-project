@@ -3,10 +3,10 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-#include <string>
-#include <string_view>
 #include <array>
 #include <chrono>
+#include <string>
+#include <string_view>
 
 #include <fmt/chrono.h>
 #include <fmt/core.h>
@@ -24,7 +24,7 @@ namespace pubsub_itc_fw {
  * and debugging.
  */
 class StringUtils {
-public:
+  public:
     /**
      * @brief Checks if a string starts with a given prefix.
      * @param [in] str The string to check.
@@ -76,8 +76,7 @@ public:
      * @param [in] duration The duration to convert.
      * @returns std::string A string representation of the duration.
      */
-    template<typename Rep, typename Period>
-    static std::string chronoDurationAsString(const std::chrono::duration<Rep, Period>& duration) {
+    template <typename Rep, typename Period> static std::string chronoDurationAsString(const std::chrono::duration<Rep, Period>& duration) {
         return fmt::format("{}", duration);
     }
 
@@ -86,8 +85,7 @@ public:
      * @param [in] timepoint The time_point to convert.
      * @returns std::string A string representation of the time_point.
      */
-    template<typename Clock, typename Duration>
-    static std::string chronoTimepointAsString(const std::chrono::time_point<Clock, Duration>& timepoint) {
+    template <typename Clock, typename Duration> static std::string chronoTimepointAsString(const std::chrono::time_point<Clock, Duration>& timepoint) {
         return fmt::format("{}", timepoint);
     }
 };

@@ -4,8 +4,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <chrono>
-#include <stdexcept>
 #include <pthread.h>
+#include <stdexcept>
 #include <time.h>
 
 #include <pubsub_itc_fw/PubSubItcException.hpp>
@@ -43,7 +43,7 @@ namespace pubsub_itc_fw {
  *     deterministic, and valgrind-clean.
  */
 class ThreadWithJoinTimeout {
-public:
+  public:
     /**
      * @brief Destructor detaches the thread if still joinable.
      *
@@ -58,17 +58,14 @@ public:
 
     ThreadWithJoinTimeout() = default;
 
-    template <typename Callable, typename... Args>
-    explicit ThreadWithJoinTimeout(Callable&& func, Args&&... args) {
+    template <typename Callable, typename... Args> explicit ThreadWithJoinTimeout(Callable&& func, Args&&... args) {
         start(std::forward<Callable>(func), std::forward<Args>(args)...);
     }
 
     ThreadWithJoinTimeout(const ThreadWithJoinTimeout&) = delete;
     ThreadWithJoinTimeout& operator=(const ThreadWithJoinTimeout&) = delete;
 
-    ThreadWithJoinTimeout(ThreadWithJoinTimeout&& other)
-        : thread_(other.thread_)
-        , has_thread_(other.has_thread_) {
+    ThreadWithJoinTimeout(ThreadWithJoinTimeout&& other) : thread_(other.thread_), has_thread_(other.has_thread_) {
         other.has_thread_ = false;
     }
 
@@ -90,8 +87,7 @@ public:
      * The callable is heap-allocated and freed inside the thread entry point.
      * This avoids capturing by reference and ensures safe lifetime semantics.
      */
-    template <typename Callable, typename... Args>
-    void start(Callable&& func, Args&&... args) {
+    template <typename Callable, typename... Args> void start(Callable&& func, Args&&... args) {
         if (has_thread_) {
             throw PubSubItcException("Thread already running. Call join or join_with_timeout first.");
         }
@@ -100,8 +96,7 @@ public:
         auto* heap_func = new Functor(std::forward<Callable>(func));
 
         int rc = pthread_create(
-            &thread_,
-            nullptr,
+            &thread_, nullptr,
             [](void* arg) -> void* {
                 std::unique_ptr<Functor> f(static_cast<Functor*>(arg));
                 (*f)();
@@ -192,7 +187,7 @@ public:
         return thread_;
     }
 
-private:
+  private:
     pthread_t thread_{};
     bool has_thread_{false};
 };

@@ -3,8 +3,8 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow.
 // SPDX-License-Identifier: Apache-2.0
 
-#include <cstdint>   // For uint16_t
-#include <string>    // For std::string
+#include <cstdint> // For uint16_t
+#include <string>  // For std::string
 
 namespace pubsub_itc_fw {
 

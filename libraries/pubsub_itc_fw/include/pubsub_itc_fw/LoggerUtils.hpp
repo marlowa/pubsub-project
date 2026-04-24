@@ -15,7 +15,7 @@ namespace pubsub_itc_fw {
 /** @ingroup logging_subsystem */
 
 class LoggerUtils {
-public:
+  public:
     /**
      * @brief Returns a pointer to the filename component of a full path.
      * @param filename Full file path, e.g. from __FILE__.
@@ -62,7 +62,7 @@ public:
             case FwLogLevel::Info:
                 return quill::LogLevel::Info;
             case FwLogLevel::Notice:
-                return quill::LogLevel::Info;   // Quill has no Notice; map to Info
+                return quill::LogLevel::Info; // Quill has no Notice; map to Info
             case FwLogLevel::Warning:
                 return quill::LogLevel::Warning;
             case FwLogLevel::Error:

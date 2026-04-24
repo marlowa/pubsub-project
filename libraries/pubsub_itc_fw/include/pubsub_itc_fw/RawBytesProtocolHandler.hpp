@@ -72,7 +72,7 @@ namespace pubsub_itc_fw {
  *   ApplicationThread, or QuillLogger.
  */
 class RawBytesProtocolHandler : public ProtocolHandlerInterface {
-public:
+  public:
     ~RawBytesProtocolHandler() override = default;
 
     RawBytesProtocolHandler(const RawBytesProtocolHandler&) = delete;
@@ -94,12 +94,8 @@ public:
      *                               a read error occurs, or the buffer overflows.
      * @param[in] logger             Logger for diagnostics. Must outlive this object.
      */
-    RawBytesProtocolHandler(ConnectionID connection_id,
-                             TcpSocket& socket,
-                             ApplicationThread& target_thread,
-                             int64_t buffer_capacity,
-                             std::function<void()> disconnect_handler,
-                             QuillLogger& logger);
+    RawBytesProtocolHandler(ConnectionID connection_id, TcpSocket& socket, ApplicationThread& target_thread, int64_t buffer_capacity,
+                            std::function<void()> disconnect_handler, QuillLogger& logger);
 
     /**
      * @brief Services a readable socket event (EPOLLIN).
@@ -137,10 +133,7 @@ public:
      * @param[in] chunk_ptr   Pointer to the start of the frame. Must not be nullptr.
      * @param[in] total_bytes Total frame size in bytes.
      */
-    void send_prebuilt(ExpandableSlabAllocator* allocator,
-                       int slab_id,
-                       void* chunk_ptr,
-                       uint32_t total_bytes) override;
+    void send_prebuilt(ExpandableSlabAllocator* allocator, int slab_id, void* chunk_ptr, uint32_t total_bytes) override;
 
     /**
      * @brief Returns true if a partial outbound send is in progress.
@@ -163,21 +156,21 @@ public:
      */
     void deallocate_pending_send() override;
 
-private:
+  private:
     void release_pending_send();
 
-    ConnectionID          connection_id_;
-    TcpSocket&            socket_;
-    ApplicationThread&    target_thread_;
+    ConnectionID connection_id_;
+    TcpSocket& socket_;
+    ApplicationThread& target_thread_;
     std::function<void()> disconnect_handler_;
-    QuillLogger&          logger_;
+    QuillLogger& logger_;
 
-    MirroredBuffer             buffer_;
+    MirroredBuffer buffer_;
     std::unique_ptr<PduFramer> framer_;
 
     ExpandableSlabAllocator* current_allocator_{nullptr};
-    int      current_slab_id_{-1};
-    void*    current_chunk_ptr_{nullptr};
+    int current_slab_id_{-1};
+    void* current_chunk_ptr_{nullptr};
     uint32_t current_total_bytes_{0};
 };
 

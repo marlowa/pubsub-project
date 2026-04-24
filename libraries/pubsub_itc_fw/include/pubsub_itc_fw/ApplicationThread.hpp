@@ -122,7 +122,6 @@ class Reactor;
  */
 class ApplicationThread {
   public:
-
     // The Passkey: Constructor is public, but only we can build the 'key'
     class ConstructorToken {
         friend class ApplicationThread;
@@ -130,23 +129,16 @@ class ApplicationThread {
     };
 
     // Static Factory: The ONLY way for a user to get an instance
-    template <typename T, typename... Args>
-    static std::shared_ptr<T> create(Args&&... args) {
-        static_assert(std::is_base_of_v<ApplicationThread, T>,
-                      "Template argument T must derive from ApplicationThread");
+    template <typename T, typename... Args> static std::shared_ptr<T> create(Args&&... args) {
+        static_assert(std::is_base_of_v<ApplicationThread, T>, "Template argument T must derive from ApplicationThread");
 
         return std::make_shared<T>(ConstructorToken{}, std::forward<Args>(args)...);
     }
 
-
     virtual ~ApplicationThread();
 
-    ApplicationThread(ConstructorToken, QuillLogger& logger,
-                      Reactor& reactor,
-                      const std::string& thread_name,
-                      ThreadID thread_id,
-                      const QueueConfiguration& queue_config,
-                      const AllocatorConfiguration& allocator_config,
+    ApplicationThread(ConstructorToken, QuillLogger& logger, Reactor& reactor, const std::string& thread_name, ThreadID thread_id,
+                      const QueueConfiguration& queue_config, const AllocatorConfiguration& allocator_config,
                       const ApplicationThreadConfiguration& thread_config);
 
     ApplicationThread(const ApplicationThread&) = delete;
@@ -369,9 +361,7 @@ class ApplicationThread {
      * Note: if a timer with the specified time exists already, then it is called,
      * so effectively, it gets rescheduled.
      */
-    TimerID schedule_timer(const std::string& name,
-                           std::chrono::microseconds interval,
-                           TimerType type);
+    TimerID schedule_timer(const std::string& name, std::chrono::microseconds interval, TimerType type);
 
     auto get_time_event_started() const {
         return time_event_started_;
@@ -425,13 +415,11 @@ class ApplicationThread {
 
         pthread_t owner = thread_->get_pthread_id();
         if (!pthread_equal(owner, pthread_self())) {
-            throw PreconditionAssertion(
-                "Timer APIs must be called from within the owning ApplicationThread's callbacks",
-                __FILE__, __LINE__);
+            throw PreconditionAssertion("Timer APIs must be called from within the owning ApplicationThread's callbacks", __FILE__, __LINE__);
         }
     }
 
-protected:
+  protected:
     /**
      * @brief Returns a reference to the owning Reactor.
      *
@@ -439,7 +427,9 @@ protected:
      * (e.g. Connect, SendPdu, Disconnect) and access slab allocators
      * from within their callback implementations.
      */
-    Reactor& get_reactor() { return reactor_; }
+    Reactor& get_reactor() {
+        return reactor_;
+    }
 
     /**
      * @brief Returns a reference to this thread's outbound PDU slab allocator.
@@ -455,7 +445,9 @@ protected:
      * reactor thread, which is safe because ExpandableSlabAllocator::deallocate()
      * is thread-safe.
      */
-    ExpandableSlabAllocator& outbound_slab_allocator() { return outbound_allocator_; }
+    ExpandableSlabAllocator& outbound_slab_allocator() {
+        return outbound_allocator_;
+    }
 
     /**
      * @brief Returns a reference to this thread's inbound PDU decode arena buffer.
@@ -481,7 +473,9 @@ protected:
      * Must only be called from within the owning ApplicationThread's callback
      * context and never from another thread.
      */
-    std::vector<uint8_t>& decode_arena_buffer() { return decode_arena_buffer_; }
+    std::vector<uint8_t>& decode_arena_buffer() {
+        return decode_arena_buffer_;
+    }
 
     /**
      * @brief Sends a DSL-encoded PDU on an established connection.
@@ -501,27 +495,26 @@ protected:
      * @param[in] pdu_id   The DSL message ID as defined in the .dsl file.
      * @param[in] msg      The DSL message struct to encode and send.
      */
-    template <typename MsgT>
-    void send_pdu(ConnectionID conn_id, int16_t pdu_id, const MsgT& msg) {
+    template <typename MsgT> void send_pdu(ConnectionID conn_id, int16_t pdu_id, const MsgT& msg) {
         // Pass 1: measure payload size. encode() with out_size=0 sets bytes_needed
         // without writing anything. The call cannot fail on the measuring pass
         // (out_size=0 guarantees the buffer-too-small branch is not reached for
         // variable-length messages), but we check anyway for safety.
         std::size_t bytes_written = 0;
-        std::size_t bytes_needed  = 0;
+        std::size_t bytes_needed = 0;
         [[maybe_unused]] bool ok = encode(msg, nullptr, 0, bytes_written, bytes_needed);
 
         const std::size_t frame_size = sizeof(PduHeader) + bytes_needed;
         auto [slab_id, chunk] = outbound_allocator_.allocate(frame_size);
 
         // Write PduHeader in network byte order.
-        auto* hdr        = reinterpret_cast<PduHeader*>(chunk);
-        hdr->byte_count  = htonl(static_cast<uint32_t>(bytes_needed));
-        hdr->pdu_id      = htons(static_cast<uint16_t>(pdu_id));
-        hdr->version     = 1;
-        hdr->filler_a    = 0;
-        hdr->canary      = htonl(pdu_canary_value);
-        hdr->filler_b    = 0;
+        auto* hdr = reinterpret_cast<PduHeader*>(chunk);
+        hdr->byte_count = htonl(static_cast<uint32_t>(bytes_needed));
+        hdr->pdu_id = htons(static_cast<uint16_t>(pdu_id));
+        hdr->version = 1;
+        hdr->filler_a = 0;
+        hdr->canary = htonl(pdu_canary_value);
+        hdr->filler_b = 0;
 
         // Pass 2: encode payload directly into the slab chunk after the header.
         // The buffer is sized exactly to bytes_needed so this must succeed.
@@ -538,7 +531,7 @@ protected:
         enqueue_send_pdu_command(conn_id, slab_id, chunk, static_cast<uint32_t>(bytes_written));
     }
 
-protected:
+  protected:
     void run_internal();
 
     void process_message(EventMessage& message);
@@ -598,10 +591,9 @@ protected:
      * @param[in] id     The ConnectionID of the lost connection.
      * @param[in] reason Human-readable description of why the connection was lost.
      */
-    virtual void on_connection_lost([[maybe_unused]] ConnectionID id,
-                                    [[maybe_unused]] const std::string& reason) {}
+    virtual void on_connection_lost([[maybe_unused]] ConnectionID id, [[maybe_unused]] const std::string& reason) {}
 
-private:
+  private:
     QuillLogger& logger_;
     Reactor& reactor_;
     ExpandableSlabAllocator outbound_allocator_;
@@ -638,10 +630,10 @@ private:
     std::unordered_map<TimerID, std::string> id_to_name_;
 
     /** Set of ConnectionIDs currently active on this thread.
-    * Maintained by process_message() on ConnectionEstablished/ConnectionLost.
-    * Used by commit_raw_bytes() and send_raw() to detect misuse early,
-    * on the application thread, before any command reaches the reactor.
-    * */
+     * Maintained by process_message() on ConnectionEstablished/ConnectionLost.
+     * Used by commit_raw_bytes() and send_raw() to detect misuse early,
+     * on the application thread, before any command reaches the reactor.
+     * */
     std::unordered_set<ConnectionID> active_connection_ids_;
 };
 

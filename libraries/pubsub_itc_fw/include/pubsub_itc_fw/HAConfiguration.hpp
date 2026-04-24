@@ -136,4 +136,4 @@ struct HAConfiguration {
     std::chrono::milliseconds status_query_timeout{std::chrono::seconds{1}};
 };
 
-} // namespace pubsub_itc_fw//
+} // namespace pubsub_itc_fw

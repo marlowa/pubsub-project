@@ -46,7 +46,7 @@ namespace pubsub_itc_fw {
  *   Both delegate protocol-specific work to a ProtocolHandlerInterface.
  */
 class InboundConnection {
-public:
+  public:
     ~InboundConnection() = default;
 
     InboundConnection(const InboundConnection&) = delete;
@@ -70,21 +70,22 @@ public:
      * @param[in] peer_description Human-readable description of the remote peer
      *                             (e.g. "192.168.1.10:5001") for logging.
      */
-    InboundConnection(ConnectionID id,
-                      std::unique_ptr<TcpSocket> socket,
-                      ThreadID target_thread_id,
-                      std::unique_ptr<ProtocolHandlerInterface> handler,
+    InboundConnection(ConnectionID id, std::unique_ptr<TcpSocket> socket, ThreadID target_thread_id, std::unique_ptr<ProtocolHandlerInterface> handler,
                       std::string peer_description);
 
     /**
      * @brief Returns the ConnectionID assigned to this connection.
      */
-    [[nodiscard]] ConnectionID id() const { return id_; }
+    [[nodiscard]] ConnectionID id() const {
+        return id_;
+    }
 
     /**
      * @brief Returns a human-readable description of the remote peer.
      */
-    [[nodiscard]] const std::string& peer_description() const { return peer_description_; }
+    [[nodiscard]] const std::string& peer_description() const {
+        return peer_description_;
+    }
 
     /**
      * @brief Returns the file descriptor of the underlying socket.
@@ -95,7 +96,9 @@ public:
      * @brief Returns the ThreadID of the ApplicationThread that receives
      *        events and PDUs from this connection.
      */
-    [[nodiscard]] ThreadID target_thread_id() const { return target_thread_id_; }
+    [[nodiscard]] ThreadID target_thread_id() const {
+        return target_thread_id_;
+    }
 
     /**
      * @brief Returns the time point of the most recent inbound data activity.
@@ -126,14 +129,16 @@ public:
      *
      * @return A non-owning pointer to the handler. Never nullptr after construction.
      */
-    [[nodiscard]] ProtocolHandlerInterface* handler() const { return handler_.get(); }
+    [[nodiscard]] ProtocolHandlerInterface* handler() const {
+        return handler_.get();
+    }
 
-private:
+  private:
     ConnectionID id_;
-    std::string  peer_description_;
-    ThreadID     target_thread_id_;
+    std::string peer_description_;
+    ThreadID target_thread_id_;
 
-    std::unique_ptr<TcpSocket>               socket_;
+    std::unique_ptr<TcpSocket> socket_;
     std::unique_ptr<ProtocolHandlerInterface> handler_;
 
     std::chrono::steady_clock::time_point last_activity_time_;

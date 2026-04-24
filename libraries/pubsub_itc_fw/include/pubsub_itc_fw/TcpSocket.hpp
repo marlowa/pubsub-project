@@ -11,17 +11,17 @@
 #include <cstdint> // For int, uint16_t for port numbers
 
 // System C++ headers
-#include <memory>  // For std::unique_ptr, std::make_unique
-#include <string>  // For std::string in error messages
-#include <tuple>   // For std::tuple return types
+#include <memory> // For std::unique_ptr, std::make_unique
+#include <string> // For std::string in error messages
+#include <tuple>  // For std::tuple return types
 
 // Third party headers
 // (None directly here)
 
 // Project headers
-#include <pubsub_itc_fw/ByteStreamInterface.hpp>    // Base interface
-#include <pubsub_itc_fw/InetAddress.hpp>            // For address types
-#include <pubsub_itc_fw/utils/SimpleSpan.hpp>      // For SimpleSpan
+#include <pubsub_itc_fw/ByteStreamInterface.hpp> // Base interface
+#include <pubsub_itc_fw/InetAddress.hpp>         // For address types
+#include <pubsub_itc_fw/utils/SimpleSpan.hpp>    // For SimpleSpan
 
 namespace pubsub_itc_fw {
 
@@ -43,7 +43,7 @@ class TcpSocketImpl;
  * `errno`) to allow higher-level components (e.g., event loop) to handle them
  * asynchronously without blocking the calling thread.
  */
-class TcpSocket  : public ByteStreamInterface {
+class TcpSocket : public ByteStreamInterface {
   public:
     /**
      * @brief Destructor for `TcpSocket`.

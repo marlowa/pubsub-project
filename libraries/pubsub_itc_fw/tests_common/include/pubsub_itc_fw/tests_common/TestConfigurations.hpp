@@ -16,10 +16,9 @@ namespace pubsub_itc_fw::tests {
  * Uses low_watermark=1, high_watermark=64. Tests with unusual queue pressure
  * requirements should construct their own QueueConfiguration directly.
  */
-inline QueueConfiguration make_queue_config()
-{
+inline QueueConfiguration make_queue_config() {
     QueueConfiguration cfg{};
-    cfg.low_watermark  = 1;
+    cfg.low_watermark = 1;
     cfg.high_watermark = 64;
     return cfg;
 }
@@ -29,12 +28,11 @@ inline QueueConfiguration make_queue_config()
  *
  * @param[in] name The pool name, used to distinguish allocators in log output.
  */
-inline AllocatorConfiguration make_allocator_config(const std::string& name)
-{
+inline AllocatorConfiguration make_allocator_config(const std::string& name) {
     AllocatorConfiguration cfg{};
-    cfg.pool_name        = name;
+    cfg.pool_name = name;
     cfg.objects_per_pool = 64;
-    cfg.initial_pools    = 1;
+    cfg.initial_pools = 1;
     return cfg;
 }
 

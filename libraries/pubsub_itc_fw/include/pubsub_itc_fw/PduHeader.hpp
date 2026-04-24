@@ -63,19 +63,17 @@ static constexpr uint32_t pdu_canary_value = 0xC0FFEE00U;
  * connection must be closed.
  */
 struct PduHeader {
-    uint32_t byte_count;  ///< Payload size in bytes, excluding this header. Network byte order.
-    int16_t  pdu_id;      ///< DSL message ID, as defined in the .dsl file. Network byte order.
-    int8_t   version;     ///< Message version. No conversion needed.
-    uint8_t  filler_a;    ///< Reserved. Set to zero on send. No conversion needed.
-    uint32_t canary;      ///< Must equal pdu_canary_value after ntohl(). Network byte order.
-    uint32_t filler_b;    ///< Reserved. Set to zero on send. Network byte order.
+    uint32_t byte_count; ///< Payload size in bytes, excluding this header. Network byte order.
+    int16_t pdu_id;      ///< DSL message ID, as defined in the .dsl file. Network byte order.
+    int8_t version;      ///< Message version. No conversion needed.
+    uint8_t filler_a;    ///< Reserved. Set to zero on send. No conversion needed.
+    uint32_t canary;     ///< Must equal pdu_canary_value after ntohl(). Network byte order.
+    uint32_t filler_b;   ///< Reserved. Set to zero on send. Network byte order.
 };
 
-static_assert(sizeof(PduHeader) == 16,
-    "PduHeader must be exactly 16 bytes. "
-    "Check for unexpected compiler padding.");
+static_assert(sizeof(PduHeader) == 16, "PduHeader must be exactly 16 bytes. "
+                                       "Check for unexpected compiler padding.");
 
-static_assert(alignof(PduHeader) == 4,
-    "PduHeader must have 4-byte alignment.");
+static_assert(alignof(PduHeader) == 4, "PduHeader must have 4-byte alignment.");
 
 } // namespace pubsub_itc_fw

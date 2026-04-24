@@ -7,9 +7,8 @@
 
 namespace pubsub_itc_fw {
 
-class QueueConfiguration
-{
-public:
+class QueueConfiguration {
+  public:
     // Watermark thresholds
     int low_watermark{0};
     int high_watermark{0};
@@ -26,4 +25,4 @@ public:
     QueueConfiguration() = default;
 };
 
-} // namespaces
+} // namespace pubsub_itc_fw

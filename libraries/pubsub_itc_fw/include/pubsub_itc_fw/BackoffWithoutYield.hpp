@@ -92,7 +92,7 @@ namespace pubsub_itc_fw {
  * @endcode
  */
 class BackoffWithoutYield {
-public:
+  public:
     /**
      * @brief Maximum number of `_mm_pause` calls emitted in a single `pause()` step.
      *
@@ -149,7 +149,7 @@ public:
         count_ = 0;
     }
 
-private:
+  private:
     uint32_t count_{0};
 };
 

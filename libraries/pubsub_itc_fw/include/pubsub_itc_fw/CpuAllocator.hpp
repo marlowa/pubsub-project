@@ -6,8 +6,8 @@
 #include <map>
 #include <set>
 #include <string>
-#include <vector>
 #include <sys/types.h>
+#include <vector>
 
 /**
  * @brief NUMA-aware, SMT-safe CPU allocation and thread pinning class.
@@ -65,7 +65,7 @@ namespace cpualloc {
  * destructor. Ensures safe cross-process mutual exclusion for CPU allocation.
  */
 class FileLock {
-public:
+  public:
     /**
      * @brief Construct and acquire an exclusive lock on the given file.
      * @param path Path to the lock file.
@@ -84,7 +84,7 @@ public:
     /// Destructor releases the lock.
     ~FileLock();
 
-private:
+  private:
     void release();
 
     int fd_{-1};
@@ -106,15 +106,14 @@ private:
  * The allocator is safe for repeated start/stop cycles of the entire system.
  */
 class CpuAllocator {
-public:
+  public:
     /**
      * @brief Construct a CPU allocator.
      *
      * @param lock_file  Path to the global lock file.
      * @param state_file Path to the global CPU allocation state file.
      */
-    CpuAllocator(std::string lock_file = "/var/run/cpu_pinning.lock",
-                 std::string state_file = "/var/run/cpu_pinning.state");
+    CpuAllocator(std::string lock_file = "/var/run/cpu_pinning.lock", std::string state_file = "/var/run/cpu_pinning.state");
 
     /**
      * @brief Allocate a number of CPUs for the calling process.
@@ -141,10 +140,9 @@ public:
      * @param cpus Vector of CPU IDs to pin to.
      * @return true on success, false on failure.
      */
-    bool pin_threads(const std::vector<pid_t>& tids,
-                     const std::vector<int>& cpus) const;
+    bool pin_threads(const std::vector<pid_t>& tids, const std::vector<int>& cpus) const;
 
-private:
+  private:
     using CpuState = std::map<int, pid_t>;
 
     CpuState load_state() const;
@@ -155,4 +153,4 @@ private:
     std::string state_file_;
 };
 
-} // namespaces
+} // namespace cpualloc

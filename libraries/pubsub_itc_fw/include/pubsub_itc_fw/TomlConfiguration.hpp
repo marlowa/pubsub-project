@@ -81,7 +81,7 @@ namespace pubsub_itc_fw {
  * header. Application code never needs to include toml++/toml.hpp directly.
  */
 class TomlConfiguration {
-public:
+  public:
     TomlConfiguration();
     ~TomlConfiguration();
 
@@ -170,7 +170,7 @@ public:
     void get_required_except(std::string_view key, std::chrono::minutes& value) const;
     void get_required_except(std::string_view key, std::chrono::hours& value) const;
 
-private:
+  private:
     // Pimpl idiom: keeps toml++/toml.hpp entirely out of this header.
     // Application code that includes TomlConfiguration.hpp never sees toml++.
     struct Impl;

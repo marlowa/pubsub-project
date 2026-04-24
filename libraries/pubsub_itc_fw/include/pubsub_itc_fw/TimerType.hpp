@@ -13,7 +13,7 @@ namespace pubsub_itc_fw {
  * @brief Specifies whether a timer fires once or repeatedly.
  */
 class TimerType {
-public:
+  public:
     /**
      * @brief C-style enumeration of timer types.
      */
@@ -31,18 +31,22 @@ public:
     /**
      * @brief Returns the underlying tag value.
      */
-    [[nodiscard]] TimerTypeTag as_tag() const { return timer_type_; }
+    [[nodiscard]] TimerTypeTag as_tag() const {
+        return timer_type_;
+    }
 
     /**
      * @brief Returns a string representation of the timer type.
      */
     [[nodiscard]] std::string as_string() const {
-        if (timer_type_ == SingleShot) return "SingleShot";
-        if (timer_type_ == Recurring)  return "Recurring";
+        if (timer_type_ == SingleShot)
+            return "SingleShot";
+        if (timer_type_ == Recurring)
+            return "Recurring";
         return "unknown";
     }
 
-private:
+  private:
     TimerTypeTag timer_type_{SingleShot};
 };
 

@@ -55,7 +55,7 @@ namespace pubsub_itc_fw {
  *   for their lifetimes.
  */
 class InboundConnectionManager {
-public:
+  public:
     ~InboundConnectionManager() = default;
 
     InboundConnectionManager(const InboundConnectionManager&) = delete;
@@ -73,11 +73,8 @@ public:
      *                              Must outlive this object.
      * @param[in] logger            Logger instance. Must outlive this object.
      */
-    InboundConnectionManager(int epoll_fd,
-                              const ReactorConfiguration& config,
-                              ExpandableSlabAllocator& inbound_allocator,
-                              ThreadLookupInterface& thread_lookup,
-                              QuillLogger& logger);
+    InboundConnectionManager(int epoll_fd, const ReactorConfiguration& config, ExpandableSlabAllocator& inbound_allocator, ThreadLookupInterface& thread_lookup,
+                             QuillLogger& logger);
 
     /**
      * @brief Stages an inbound listener for initialisation.
@@ -92,10 +89,8 @@ public:
      * @param[in] raw_buffer_capacity Minimum MirroredBuffer capacity in bytes for RawBytes
      *                                listeners. Ignored for FrameworkPdu listeners.
      */
-    void register_inbound_listener(NetworkEndpointConfiguration address,
-                                   ThreadID target_thread_id,
-                                   ProtocolType protocol_type = ProtocolType{ProtocolType::FrameworkPdu},
-                                   int64_t raw_buffer_capacity = 0);
+    void register_inbound_listener(NetworkEndpointConfiguration address, ThreadID target_thread_id,
+                                   ProtocolType protocol_type = ProtocolType{ProtocolType::FrameworkPdu}, int64_t raw_buffer_capacity = 0);
 
     /**
      * @brief Binds, listens, and registers all staged listeners with epoll.
@@ -151,8 +146,7 @@ public:
      * @param[in] reason             Human-readable reason for logging and event delivery.
      * @param[in] deliver_lost_event If true, delivers ConnectionLost to the target thread.
      */
-    void teardown_connection(ConnectionID id, const std::string& reason,
-                             bool deliver_lost_event);
+    void teardown_connection(ConnectionID id, const std::string& reason, bool deliver_lost_event);
 
     /**
      * @brief Checks all inbound connections for idle timeout and tears down
@@ -236,17 +230,17 @@ public:
      */
     [[nodiscard]] uint16_t get_first_listener_port() const;
 
-private:
+  private:
     int epoll_fd_;
     const ReactorConfiguration& config_;
     ExpandableSlabAllocator& inbound_allocator_;
     ThreadLookupInterface& thread_lookup_;
     QuillLogger& logger_;
 
-    std::vector<InboundListener>                                         inbound_listeners_staging_;
-    std::map<int, InboundListener>                                       inbound_listeners_;
+    std::vector<InboundListener> inbound_listeners_staging_;
+    std::map<int, InboundListener> inbound_listeners_;
     std::unordered_map<ConnectionID, std::unique_ptr<InboundConnection>> connections_;
-    std::unordered_map<int, InboundConnection*>                          connections_by_fd_;
+    std::unordered_map<int, InboundConnection*> connections_by_fd_;
 
     std::optional<ReactorControlCommand> pending_send_;
 };

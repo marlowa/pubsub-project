@@ -12,9 +12,8 @@ namespace pubsub_itc_fw {
 
 /** @ingroup allocator_subsystem */
 
-class AllocatorConfiguration
-{
-public:
+class AllocatorConfiguration {
+  public:
     std::string pool_name;
 
     // Pool sizing
@@ -36,4 +35,4 @@ public:
     AllocatorConfiguration() = default;
 };
 
-} // namespaces
+} // namespace pubsub_itc_fw

@@ -10,12 +10,12 @@
 
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
+#include <pubsub_itc_fw/MillisecondClock.hpp>
 #include <pubsub_itc_fw/PduFramer.hpp>
 #include <pubsub_itc_fw/PduParser.hpp>
+#include <pubsub_itc_fw/ServiceEndpoints.hpp>
 #include <pubsub_itc_fw/TcpConnector.hpp>
 #include <pubsub_itc_fw/TcpSocket.hpp>
-#include <pubsub_itc_fw/MillisecondClock.hpp>
-#include <pubsub_itc_fw/ServiceEndpoints.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 
 namespace pubsub_itc_fw {
@@ -110,7 +110,7 @@ class ApplicationThread;
  *     connections_        : ConnectionID → unique_ptr<OutboundConnection>
  */
 class OutboundConnection {
-public:
+  public:
     ~OutboundConnection() = default;
 
     OutboundConnection(const OutboundConnection&) = delete;
@@ -137,13 +137,8 @@ public:
      * @param[in] target_thread        The ApplicationThread to which inbound PDUs
      *                                 are dispatched. Must outlive this object.
      */
-    OutboundConnection(ConnectionID id,
-                       ThreadID requesting_thread_id,
-                       std::string service_name,
-                       ServiceEndpoints endpoints,
-                       std::unique_ptr<TcpConnector> connector,
-                       ExpandableSlabAllocator& inbound_allocator,
-                       ApplicationThread& target_thread);
+    OutboundConnection(ConnectionID id, ThreadID requesting_thread_id, std::string service_name, ServiceEndpoints endpoints,
+                       std::unique_ptr<TcpConnector> connector, ExpandableSlabAllocator& inbound_allocator, ApplicationThread& target_thread);
 
     /**
      * @brief Transitions from connecting phase to established phase.
@@ -157,8 +152,7 @@ public:
      *                               connection gracefully. Typically a lambda that
      *                               calls Reactor::teardown_connection().
      */
-    void on_connected(std::unique_ptr<TcpSocket> socket,
-                      std::function<void()> disconnect_handler);
+    void on_connected(std::unique_ptr<TcpSocket> socket, std::function<void()> disconnect_handler);
 
     /**
      * @brief Returns the file descriptor of the underlying socket.
@@ -171,23 +165,31 @@ public:
     /**
      * @brief Returns the ConnectionID assigned to this connection.
      */
-    [[nodiscard]] ConnectionID id() const { return id_; }
+    [[nodiscard]] ConnectionID id() const {
+        return id_;
+    }
 
     /**
      * @brief Returns the ThreadID of the ApplicationThread that requested
      *        this connection.
      */
-    [[nodiscard]] ThreadID requesting_thread_id() const { return requesting_thread_id_; }
+    [[nodiscard]] ThreadID requesting_thread_id() const {
+        return requesting_thread_id_;
+    }
 
     /**
      * @brief Returns the logical service name this connection targets.
      */
-    [[nodiscard]] const std::string& service_name() const { return service_name_; }
+    [[nodiscard]] const std::string& service_name() const {
+        return service_name_;
+    }
 
     /**
      * @brief Returns the service endpoints (primary and secondary addresses).
      */
-    [[nodiscard]] const ServiceEndpoints& endpoints() const { return endpoints_; }
+    [[nodiscard]] const ServiceEndpoints& endpoints() const {
+        return endpoints_;
+    }
 
     /**
      * @brief Returns true if the reactor is currently attempting the secondary endpoint.
@@ -195,7 +197,9 @@ public:
      * False during the initial primary attempt. Set to true by the reactor
      * before retrying with the secondary endpoint after a primary failure.
      */
-    [[nodiscard]] bool is_trying_secondary() const { return trying_secondary_; }
+    [[nodiscard]] bool is_trying_secondary() const {
+        return trying_secondary_;
+    }
 
     /**
      * @brief Marks that the reactor is now attempting the secondary endpoint.
@@ -213,28 +217,36 @@ public:
      *
      * Returns nullptr once the connection is established.
      */
-    [[nodiscard]] TcpConnector* connector() const { return connector_.get(); }
+    [[nodiscard]] TcpConnector* connector() const {
+        return connector_.get();
+    }
 
     /**
      * @brief Returns the TcpSocket during the established phase.
      *
      * Returns nullptr during the connecting phase.
      */
-    [[nodiscard]] TcpSocket* socket() const { return socket_.get(); }
+    [[nodiscard]] TcpSocket* socket() const {
+        return socket_.get();
+    }
 
     /**
      * @brief Returns the PduFramer for this connection.
      *
      * Returns nullptr during the connecting phase.
      */
-    [[nodiscard]] PduFramer* framer() const { return framer_.get(); }
+    [[nodiscard]] PduFramer* framer() const {
+        return framer_.get();
+    }
 
     /**
      * @brief Returns the PduParser for this connection.
      *
      * Returns nullptr during the connecting phase.
      */
-    [[nodiscard]] PduParser* parser() const { return parser_.get(); }
+    [[nodiscard]] PduParser* parser() const {
+        return parser_.get();
+    }
 
     /**
      * @brief Returns the time at which the connect attempt was started.
@@ -242,7 +254,9 @@ public:
      * Used by the reactor's housekeeping tick to detect timed-out connections.
      * Valid in both connecting and established phases.
      */
-    [[nodiscard]] MillisecondClock::time_point connect_started_at() const { return connect_started_at_; }
+    [[nodiscard]] MillisecondClock::time_point connect_started_at() const {
+        return connect_started_at_;
+    }
 
     /**
      * @brief Returns true if the connection is in the connecting phase.
@@ -250,7 +264,9 @@ public:
      * Connecting phase: `connect()` has been called but `finish_connect()`
      * has not yet succeeded.
      */
-    [[nodiscard]] bool is_connecting() const { return connector_ != nullptr; }
+    [[nodiscard]] bool is_connecting() const {
+        return connector_ != nullptr;
+    }
 
     /**
      * @brief Returns true if the connection is fully established.
@@ -258,7 +274,9 @@ public:
      * Established phase: `finish_connect()` has succeeded and the socket,
      * framer, and parser are all active.
      */
-    [[nodiscard]] bool is_established() const { return socket_ != nullptr; }
+    [[nodiscard]] bool is_established() const {
+        return socket_ != nullptr;
+    }
 
     /**
      * @brief Returns true if a PDU send is partially complete.
@@ -268,7 +286,9 @@ public:
      * No further `SendPdu` commands for this connection should be dequeued
      * from the command queue until this clears.
      */
-    [[nodiscard]] bool has_pending_send() const { return current_chunk_ptr_ != nullptr; }
+    [[nodiscard]] bool has_pending_send() const {
+        return current_chunk_ptr_ != nullptr;
+    }
 
     /**
      * @brief Records the state of a partial outbound PDU send.
@@ -305,34 +325,42 @@ public:
      *
      * Valid only when `has_pending_send()` returns true.
      */
-    [[nodiscard]] ExpandableSlabAllocator* current_allocator() const { return current_allocator_; }
+    [[nodiscard]] ExpandableSlabAllocator* current_allocator() const {
+        return current_allocator_;
+    }
 
     /**
      * @brief Returns the slab ID of the currently in-flight PDU chunk.
      *
      * Valid only when `has_pending_send()` returns true.
      */
-    [[nodiscard]] int current_slab_id() const { return current_slab_id_; }
+    [[nodiscard]] int current_slab_id() const {
+        return current_slab_id_;
+    }
 
     /**
      * @brief Returns the pointer to the currently in-flight PDU chunk.
      *
      * Valid only when `has_pending_send()` returns true.
      */
-    [[nodiscard]] void* current_chunk_ptr() const { return current_chunk_ptr_; }
+    [[nodiscard]] void* current_chunk_ptr() const {
+        return current_chunk_ptr_;
+    }
 
     /**
      * @brief Returns the total byte count of the currently in-flight PDU frame.
      *
      * Valid only when `has_pending_send()` returns true.
      */
-    [[nodiscard]] uint32_t current_total_bytes() const { return current_total_bytes_; }
+    [[nodiscard]] uint32_t current_total_bytes() const {
+        return current_total_bytes_;
+    }
 
-private:
+  private:
     // --- Identity ---
     ConnectionID id_;
-    ThreadID     requesting_thread_id_;
-    std::string  service_name_;
+    ThreadID requesting_thread_id_;
+    std::string service_name_;
 
     // --- Resolved service endpoints ---
     ServiceEndpoints endpoints_;
@@ -343,9 +371,9 @@ private:
     std::unique_ptr<TcpConnector> connector_;
 
     // --- Phase 2: established ---
-    std::unique_ptr<TcpSocket>  socket_;
-    std::unique_ptr<PduFramer>  framer_;
-    std::unique_ptr<PduParser>  parser_;
+    std::unique_ptr<TcpSocket> socket_;
+    std::unique_ptr<PduFramer> framer_;
+    std::unique_ptr<PduParser> parser_;
 
     // --- Partial send state ---
     // current_allocator_ is the ApplicationThread-owned outbound slab allocator
@@ -354,13 +382,13 @@ private:
     // know which thread initiated the send. ExpandableSlabAllocator::deallocate()
     // is thread-safe so the reactor may call it from the reactor thread.
     ExpandableSlabAllocator* current_allocator_{nullptr};
-    int      current_slab_id_{-1};
-    void*    current_chunk_ptr_{nullptr};
+    int current_slab_id_{-1};
+    void* current_chunk_ptr_{nullptr};
     uint32_t current_total_bytes_{0};
 
     // --- Allocators and target thread (not owned) ---
     ExpandableSlabAllocator& inbound_allocator_;
-    ApplicationThread&       target_thread_;
+    ApplicationThread& target_thread_;
 };
 
 } // namespace pubsub_itc_fw

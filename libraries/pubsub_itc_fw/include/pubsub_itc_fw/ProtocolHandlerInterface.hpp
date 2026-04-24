@@ -39,7 +39,7 @@ class ExpandableSlabAllocator;
  *     exposes commit_bytes() for application-driven tail advancement.
  */
 class ProtocolHandlerInterface {
-public:
+  public:
     /**
      * @brief Virtual destructor to ensure correct cleanup of protocol-specific
      *        resources such as MirroredBuffers or PduParsers.
@@ -73,10 +73,7 @@ public:
      * @param[in] chunk_ptr   Pointer to the start of the frame. Must not be nullptr.
      * @param[in] total_bytes Total frame size in bytes.
      */
-    virtual void send_prebuilt(ExpandableSlabAllocator* allocator,
-                               int slab_id,
-                               void* chunk_ptr,
-                               uint32_t total_bytes) = 0;
+    virtual void send_prebuilt(ExpandableSlabAllocator* allocator, int slab_id, void* chunk_ptr, uint32_t total_bytes) = 0;
 
     /**
      * @brief Returns true if a partial outbound send is in progress.

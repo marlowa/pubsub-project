@@ -4,16 +4,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <atomic>
+#include <cstddef>
 #include <functional>
 #include <optional>
 #include <type_traits>
-#include <cstddef>
 
 /** @ingroup queue_subsystem */
 
 #ifdef USING_VALGRIND
-#include <mutex>
 #include <deque>
+#include <mutex>
 #endif
 
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
@@ -30,23 +30,17 @@ namespace pubsub_itc_fw {
  * instead of lock-free atomics. This allows Valgrind's tools (Helgrind, DRD)
  * to properly analyze the code without getting confused by lock-free algorithms.
  */
-template<typename T>
-class LockFreeMessageQueue {
-    static_assert(std::is_move_constructible_v<T>,
-                  "LockFreeMessageQueue requires a move-constructible element type.");
+template <typename T> class LockFreeMessageQueue {
+    static_assert(std::is_move_constructible_v<T>, "LockFreeMessageQueue requires a move-constructible element type.");
 
-public:
+  public:
     LockFreeMessageQueue(const LockFreeMessageQueue&) = delete;
     LockFreeMessageQueue& operator=(const LockFreeMessageQueue&) = delete;
     LockFreeMessageQueue(LockFreeMessageQueue&&) = delete;
     LockFreeMessageQueue& operator=(LockFreeMessageQueue&&) = delete;
 
-    LockFreeMessageQueue(const QueueConfiguration& queue_config,
-                         const AllocatorConfiguration& allocator_config)
-        : queue_configuration_(queue_config)
-        , allocator_configuration_(allocator_config)
-    {
-    }
+    LockFreeMessageQueue(const QueueConfiguration& queue_config, const AllocatorConfiguration& allocator_config)
+        : queue_configuration_(queue_config), allocator_configuration_(allocator_config) {}
 
     ~LockFreeMessageQueue() {
         shutdown();
@@ -61,8 +55,7 @@ public:
         queue_.clear();
     }
 
-    template<typename... Args>
-    void enqueue(Args&&... args) {
+    template <typename... Args> void enqueue(Args&&... args) {
         std::lock_guard<std::mutex> lock(mutex_);
 
         if (shutting_down_) {
@@ -72,10 +65,7 @@ public:
         queue_.emplace_back(std::forward<Args>(args)...);
 
         int current_size = static_cast<int>(queue_.size());
-        if (queue_configuration_.gone_above_high_watermark_handler &&
-            current_size >= queue_configuration_.high_watermark &&
-            !is_high_watermark_breached_)
-        {
+        if (queue_configuration_.gone_above_high_watermark_handler && current_size >= queue_configuration_.high_watermark && !is_high_watermark_breached_) {
             is_high_watermark_breached_ = true;
             queue_configuration_.gone_above_high_watermark_handler(queue_configuration_.for_client_use);
         }
@@ -92,10 +82,7 @@ public:
         queue_.pop_front();
 
         int current_size = static_cast<int>(queue_.size());
-        if (queue_configuration_.gone_below_low_watermark_handler &&
-            current_size < queue_configuration_.low_watermark &&
-            is_high_watermark_breached_)
-        {
+        if (queue_configuration_.gone_below_low_watermark_handler && current_size < queue_configuration_.low_watermark && is_high_watermark_breached_) {
             is_high_watermark_breached_ = false;
             queue_configuration_.gone_below_low_watermark_handler(queue_configuration_.for_client_use);
         }
@@ -108,7 +95,7 @@ public:
         return queue_.empty();
     }
 
-private:
+  private:
     mutable std::mutex mutex_;
     std::deque<T> queue_;
     QueueConfiguration queue_configuration_;
@@ -127,12 +114,10 @@ private:
  *
  * @tparam T Must be move-constructible.
  */
-template<typename T>
-class LockFreeMessageQueue {
-    static_assert(std::is_move_constructible_v<T>,
-                  "LockFreeMessageQueue requires a move-constructible element type.");
+template <typename T> class LockFreeMessageQueue {
+    static_assert(std::is_move_constructible_v<T>, "LockFreeMessageQueue requires a move-constructible element type.");
 
-private:
+  private:
     struct Node {
         std::atomic<Node*> next_;
         alignas(T) std::byte data_storage_[sizeof(T)];
@@ -151,7 +136,7 @@ private:
         }
     };
 
-public:
+  public:
     ~LockFreeMessageQueue() {
         shutdown();
     }
@@ -164,23 +149,17 @@ public:
     /**
      * @brief Constructs a queue using the provided configuration objects.
      */
-    LockFreeMessageQueue(const QueueConfiguration& queue_config,
-                         const AllocatorConfiguration& allocator_config)
+    LockFreeMessageQueue(const QueueConfiguration& queue_config, const AllocatorConfiguration& allocator_config)
         : stub_()
         , head_(&stub_)
         , tail_(&stub_)
         , queue_configuration_(queue_config)
         , allocator_configuration_(allocator_config)
-        , node_allocator_(allocator_configuration_.pool_name,
-                          allocator_configuration_.objects_per_pool,
-                          allocator_configuration_.initial_pools,
-                          allocator_configuration_.expansion_threshold_hint,
-                          allocator_configuration_.handler_for_pool_exhausted,
-                          allocator_configuration_.handler_for_invalid_free,
-                          allocator_configuration_.handler_for_huge_pages_error,
+        , node_allocator_(allocator_configuration_.pool_name, allocator_configuration_.objects_per_pool, allocator_configuration_.initial_pools,
+                          allocator_configuration_.expansion_threshold_hint, allocator_configuration_.handler_for_pool_exhausted,
+                          allocator_configuration_.handler_for_invalid_free, allocator_configuration_.handler_for_huge_pages_error,
                           allocator_configuration_.use_huge_pages_flag)
-        , size_{0}
-    {
+        , size_{0} {
         stub_.next_.store(nullptr, std::memory_order_relaxed);
     }
 
@@ -189,8 +168,7 @@ public:
      */
     void shutdown() {
         bool expected = false;
-        if (!shutting_down_.compare_exchange_strong(
-                expected, true, std::memory_order_acq_rel)) {
+        if (!shutting_down_.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
             return;
         }
 
@@ -203,13 +181,12 @@ public:
     /**
      * @brief Enqueues an element. Never fails unless shutting down.
      */
-    template<typename... Args>
-    void enqueue(Args&&... args) {
+    template <typename... Args> void enqueue(Args&&... args) {
         if (shutting_down_.load(std::memory_order_acquire)) {
             return;
         }
 
-        Node* node = node_allocator_.allocate();  // guaranteed non-null
+        Node* node = node_allocator_.allocate(); // guaranteed non-null
 
         node->has_data_ = true;
         new (node->data_storage_) T(std::forward<Args>(args)...);
@@ -225,10 +202,8 @@ public:
         prev_head->next_.store(node, std::memory_order_release);
 
         int current_size = ++size_;
-        if (queue_configuration_.gone_above_high_watermark_handler &&
-            current_size >= queue_configuration_.high_watermark &&
-            !is_high_watermark_breached_.exchange(true))
-        {
+        if (queue_configuration_.gone_above_high_watermark_handler && current_size >= queue_configuration_.high_watermark &&
+            !is_high_watermark_breached_.exchange(true)) {
             queue_configuration_.gone_above_high_watermark_handler(queue_configuration_.for_client_use);
         }
     }
@@ -256,10 +231,8 @@ public:
             node_allocator_.deallocate(tail);
 
             int current_size = --size_;
-            if (queue_configuration_.gone_below_low_watermark_handler &&
-                current_size < queue_configuration_.low_watermark &&
-                is_high_watermark_breached_.exchange(false))
-            {
+            if (queue_configuration_.gone_below_low_watermark_handler && current_size < queue_configuration_.low_watermark &&
+                is_high_watermark_breached_.exchange(false)) {
                 queue_configuration_.gone_below_low_watermark_handler(queue_configuration_.for_client_use);
             }
             return result;
@@ -280,10 +253,8 @@ public:
             node_allocator_.deallocate(tail);
 
             int current_size = --size_;
-            if (queue_configuration_.gone_below_low_watermark_handler &&
-                current_size < queue_configuration_.low_watermark &&
-                is_high_watermark_breached_.exchange(false))
-            {
+            if (queue_configuration_.gone_below_low_watermark_handler && current_size < queue_configuration_.low_watermark &&
+                is_high_watermark_breached_.exchange(false)) {
                 queue_configuration_.gone_below_low_watermark_handler(queue_configuration_.for_client_use);
             }
             return result;
@@ -300,14 +271,13 @@ public:
         if (tail == &stub_) {
             return tail->next_.load(std::memory_order_acquire) == nullptr;
         }
-        return tail->next_.load(std::memory_order_acquire) == nullptr &&
-               tail == head_.load(std::memory_order_acquire);
+        return tail->next_.load(std::memory_order_acquire) == nullptr && tail == head_.load(std::memory_order_acquire);
     }
 
     // To test for priority inversion we need to add some hooks that are just used by a unit test.
     std::function<void()> test_stall_callback_;
 
-private:
+  private:
     void enqueue_stub_() {
         stub_.next_.store(nullptr, std::memory_order_relaxed);
         Node* prev_head = head_.exchange(&stub_, std::memory_order_acq_rel);

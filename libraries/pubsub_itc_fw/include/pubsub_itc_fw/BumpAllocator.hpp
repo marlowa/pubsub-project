@@ -95,7 +95,7 @@ namespace pubsub_itc_fw {
  *   BumpAllocator encode_arena  -- when used during message encoding
  */
 class BumpAllocator {
-public:
+  public:
     /**
      * @brief Constructs a BumpAllocator.
      *
@@ -110,11 +110,7 @@ public:
      * @param[in] capacity Size of the backing buffer in bytes, or zero for
      *                     measuring mode.
      */
-    BumpAllocator(uint8_t* storage, std::size_t capacity)
-        : storage_(storage)
-        , capacity_(capacity)
-        , bytes_used_(0) {
-    }
+    BumpAllocator(uint8_t* storage, std::size_t capacity) : storage_(storage), capacity_(capacity), bytes_used_(0) {}
 
     ~BumpAllocator() = default;
 
@@ -142,12 +138,9 @@ public:
      * @return Pointer to aligned storage for element_count T objects,
      *         or nullptr if storage is nullptr or capacity is exhausted.
      */
-    template<typename T>
-    [[nodiscard]] T* allocate(std::size_t element_count) {
+    template <typename T> [[nodiscard]] T* allocate(std::size_t element_count) {
         if (element_count == 0) {
-            throw PreconditionAssertion(
-                "BumpAllocator::allocate: element_count must be greater than zero",
-                __FILE__, __LINE__);
+            throw PreconditionAssertion("BumpAllocator::allocate: element_count must be greater than zero", __FILE__, __LINE__);
         }
 
         constexpr std::size_t alignment = alignof(T);
@@ -223,7 +216,7 @@ public:
         return storage_ == nullptr;
     }
 
-private:
+  private:
     uint8_t* storage_;
     std::size_t capacity_;
     std::size_t bytes_used_;

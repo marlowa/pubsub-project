@@ -57,7 +57,7 @@ namespace pubsub_itc_fw {
  * @endcode
  */
 class MillisecondClock {
-public:
+  public:
     using duration = std::chrono::milliseconds;
     using time_point = std::chrono::time_point<MillisecondClock, duration>;
 
@@ -72,4 +72,4 @@ public:
     static time_point now();
 };
 
-} // namespaces
+} // namespace pubsub_itc_fw

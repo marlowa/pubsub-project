@@ -52,7 +52,7 @@ namespace pubsub_itc_fw {
 
 /** @ingroup logging_subsystem */
 class QuillLogger {
-public:
+  public:
     /// Callback type used in unit-test mode.  Receives a fully formatted log
     /// record string for each record that passes the applog threshold.
     using LogCallback = std::function<void(const std::string&)>;
@@ -71,10 +71,7 @@ public:
      * @param applog_level  [in] Minimum severity written to the applog file.
      * @param syslog_level  [in] Minimum severity written to syslog.
      */
-    QuillLogger(const std::string& file_path,
-                FileOpenMode file_mode,
-                FwLogLevel applog_level,
-                FwLogLevel syslog_level);
+    QuillLogger(const std::string& file_path, FileOpenMode file_mode, FwLogLevel applog_level, FwLogLevel syslog_level);
 
     /**
      * @brief Unit-test constructor.  Creates a console sink; syslog is suppressed.
@@ -96,7 +93,9 @@ public:
     static void block_signals_before_construction();
 
     /// @brief Returns the underlying quill::Logger pointer (used by the macros).
-    [[nodiscard]] quill::Logger* quill_logger() const { return quill_logger_; }
+    [[nodiscard]] quill::Logger* quill_logger() const {
+        return quill_logger_;
+    }
 
     /**
      * @brief Sets the applog severity threshold at runtime.
@@ -108,9 +107,11 @@ public:
      * @brief Returns the current applog severity threshold.
      * @return Current FwLogLevel.
      */
-    [[nodiscard]] FwLogLevel log_level() const { return applog_level_; }
+    [[nodiscard]] FwLogLevel log_level() const {
+        return applog_level_;
+    }
 
-private:
+  private:
     static std::atomic<uint64_t> instance_counter_;
 
     static std::string generate_unique_logger_name(const std::string& prefix);

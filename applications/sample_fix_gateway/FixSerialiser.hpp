@@ -35,7 +35,7 @@ namespace sample_fix_gateway {
  *   std::string wire = ser.serialise(msg, seq_num);
  */
 class FixSerialiser {
-public:
+  public:
     /**
      * @brief Constructs a FixSerialiser with fixed SenderCompID and TargetCompID.
      *
@@ -59,7 +59,7 @@ public:
      */
     [[nodiscard]] std::string serialise(const FixMessage& msg, int seq_num) const;
 
-private:
+  private:
     /*
      * Appends a single tag=value<SOH> field to buf.
      */

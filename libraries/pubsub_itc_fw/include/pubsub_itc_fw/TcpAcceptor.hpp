@@ -22,7 +22,7 @@ class TcpAcceptorImpl;
  * errors explicitly rather than throwing exceptions.
  */
 class TcpAcceptor {
-public:
+  public:
     ~TcpAcceptor();
 
     TcpAcceptor(const TcpAcceptor&) = delete;
@@ -39,8 +39,7 @@ public:
      * - string: error message on failure, empty on success.
      */
     [[nodiscard]]
-    static std::tuple<std::unique_ptr<TcpAcceptor>, std::string>
-    create(const InetAddress& local_address, int backlog);
+    static std::tuple<std::unique_ptr<TcpAcceptor>, std::string> create(const InetAddress& local_address, int backlog);
 
     /**
      * @brief Accepts a new incoming connection in non-blocking mode.
@@ -51,8 +50,7 @@ public:
      * - string: error message on failure; empty on success or EAGAIN/EWOULDBLOCK.
      */
     [[nodiscard]]
-    std::tuple<std::unique_ptr<TcpSocket>, std::unique_ptr<InetAddress>, std::string>
-    accept_connection();
+    std::tuple<std::unique_ptr<TcpSocket>, std::unique_ptr<InetAddress>, std::string> accept_connection();
 
     /**
      * @brief Returns the listening socket's file descriptor.
@@ -60,7 +58,7 @@ public:
     [[nodiscard]]
     int get_listening_file_descriptor() const;
 
-private:
+  private:
     explicit TcpAcceptor(std::unique_ptr<TcpAcceptorImpl> p_impl);
 
     std::unique_ptr<TcpAcceptorImpl> p_impl_;
