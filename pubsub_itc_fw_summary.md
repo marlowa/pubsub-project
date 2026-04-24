@@ -444,15 +444,6 @@ The receiving node's reactor accepts data via epoll and delivers it zero-copy to
 
 ## Session Accomplishments
 
-### Session 3
-- TcpSocket EAGAIN/EOF contract fix
-- Use-after-free fix in on_data_ready / on_inbound_data_ready
-- InboundConnection infrastructure completed
-- DSL generator fixes (3 bugs)
-- Integration test infrastructure
-- StatusQueryResponseRoundTrip integration test passing
-- ApplicationThread `get_reactor()` accessor added
-
 ### Session 6 (current)
 - **Reactor refactor confirmed complete** — `Reactor` correctly delegates all inbound/outbound connection work to `InboundConnectionManager` and `OutboundConnectionManager`; was done in Session 4 but not recorded
 - **`RawBytesProtocolHandler` implemented and all bugs fixed** — intermittent `BurstDelivery` test failure resolved; root cause was ambiguity in tail-advance detection when new data arrives simultaneously with a commit being processed; fix: `EventMessage::create_raw_socket_message` now carries `tail_position` (from `MirroredBuffer::tail()`); app thread uses exact tail comparison instead of the fragile `available < last_available_` heuristic; commit policy changed to only commit when entire window is consumed
@@ -460,8 +451,21 @@ The receiving node's reactor accepts data via epoll and delivers it zero-copy to
 - **`EventMessage`** — added `tail_position` field to `Header` and `tail_position()` getter; `create_raw_socket_message` takes `int64_t tail_position` as fourth argument
 - **`InboundConnectionManager` use-after-free fix** — `process_send_pdu_command` and `process_send_raw_command` both re-look up connection by ID after `send_prebuilt` returns, since `send_prebuilt` may invoke the disconnect handler synchronously and destroy the connection
 - **Re-delivery machinery removed** — `deliver_pending_redeliveries`, `pending_redelivery_`, `fresh_delivery_pending_`, `bytes_buffered()`, `buffered_read_ptr()`, `take_pending_redelivery()`, `has_fresh_delivery_pending()` all removed from `RawBytesProtocolHandler`, `ProtocolHandlerInterface`, `InboundConnectionManager`, and `Reactor`
-- **Format string mismatch detection documented and tested** — investigated compile-time checking options for C++17; concluded it is not possible (requires C++20 `consteval`); documented the runtime fallback: Quill 11.0.2 catches format errors in `_populate_formatted_log_message` and emits a `[Could not format log statement...]` log record (note: `error_notifier` in `BackendOptions` is NOT called for format errors, only for queue failures and backend exceptions); `LoggingMacros.hpp` and `QuillLogger.hpp` updated with full explanation; test `QuillLoggerTest.FormatMismatchIsReportedAsLogRecord` added to verify the runtime detection
-- All 411 tests passing; 1000-iteration stress test in progress
+- **Format string mismatch detection documented and tested** — In Quill 11.0.2 format errors are caught in `_populate_formatted_log_message` and emitted as `[Could not format log statement...]` log records; `error_notifier` is NOT called for format errors; `QuillLoggerTest.FormatMismatchIsReportedAsLogRecord` test added; `LoggingMacros.hpp` and `QuillLogger.hpp` updated with full explanation of C++17 limitation and C++20 path
+- **Quill flush limitation documented** — no per-severity flush in Quill 11.x; fatal signal handler approach (calling `Backend::stop()`) deliberately not implemented due to stability problems; documented in `QuillLogger.hpp`
+- **TODO cleanup** — `TimerType` converted from enum class to proper class with `as_string()`/`as_tag()`; `FileOpenMode` cleaned up and made consistent; `LoggerInterface` and `MockLogger` deleted (superseded by Quill callback sink); `LoggerTest.cpp` deleted; `SocketHandler.hpp` stale include removed
+- **CMake install support** — `include(GNUInstallDirs)` added; `install()` rules added for shared library (lib/lib64), headers, test binaries, performance harnesses, and `sample_fix_gateway`; Doxygen runs at install time; Python DSL generator installed via `pip install --prefix`
+- **`build.py` updated** — `--install-dir` argument added; `configure_cmake` passes `-DCMAKE_INSTALL_PREFIX`; `install_project()` function added
+- **Doxygen fixed** — `PROJECT_NAME` changed to `pubsub_itc_fw`; `OUTPUT_DIRECTORY` changed to `build/docs`; `INPUT` updated to include source and header directories plus `mainpage.dox` explicitly
+- **Design documentation added** — three new `.dox` files in `docs/`:
+  - `raw_socket_design.dox` -- MirroredBuffer internals, fragmentation handling, commit protocol, why `tail_position()` is needed, backpressure table
+  - `memory_management_design.dox` -- no-heap-on-hot-path principle, ExpandableSlabAllocator, ExpandablePoolAllocator, Treiber stack with ABA prevention via 128-bit tagged pointer and CMPXCHG16B, backpressure via watermark callbacks
+  - `dsl_design.dox` -- DSL grammar, all types and wire formats, generated C++ API (owning structs, view structs, encode/decode/skip/arena functions), zero-copy decode on little-endian hardware, toolchain structure
+- **`mainpage.dox`** updated with links to all three design pages, coding rules section restored, stale content removed
+- **Stale docs deleted** -- `mainpage.md`, `design_overview.md`, `dsl_grammer.md` all removed
+- **`sample_fix_gateway` tested** with fix8 -- raw bytes path confirmed working end-to-end with real FIX 5.0 SP2 traffic
+- **Coverage analysis** -- 86.1% line, 93.2% function; all uncovered lines in `RawBytesProtocolHandler` are legitimate error paths
+- All 411 tests passing; 1000-iteration stress test completed without failure
 
 ### Session 5
 - **Logging subsystem rewrite** — `QuillLogger` redesigned with two clean constructors (production: file+syslog; unit test: console+optional callback); `FwLogLevel` enum values flipped so lower=more severe, matching Quill convention; `should_log_to_*` routing functions removed; sink-level filtering used throughout; macros forward args directly to Quill backend thread (no front-end formatting); `PUBSUB_LOG` and `PUBSUB_LOG_STR` are the only two call-site macros
@@ -482,6 +486,15 @@ The receiving node's reactor accepts data via epoll and delivers it zero-copy to
 - **`ExpandableSlabAllocator` bug fix** — use-after-free in `drain_empty_slab_queue()` fixed by two-phase collect-then-process pattern; detected by ASan
 - All unit tests and integration tests passing; Valgrind clean; ASan clean
 
+### Session 3
+- TcpSocket EAGAIN/EOF contract fix
+- Use-after-free fix in on_data_ready / on_inbound_data_ready
+- InboundConnection infrastructure completed
+- DSL generator fixes (3 bugs)
+- Integration test infrastructure
+- StatusQueryResponseRoundTrip integration test passing
+- ApplicationThread `get_reactor()` accessor added
+
 ---
 
 ## What Is Done
@@ -499,7 +512,7 @@ The receiving node's reactor accepts data via epoll and delivers it zero-copy to
 - `InboundConnectionManager` — complete (ready for integration into Reactor)
 - `OutboundConnectionManager` — complete (ready for integration into Reactor)
 - `ThreadLookupInterface` — complete
-- Reactor connection management — complete (pending final Reactor refactor)
+- Reactor connection management — complete
 - `ServiceRegistry` / `ServiceEndpoints` / `ConnectionID` — complete
 - `EventType` / `EventMessage` — complete (includes `create_raw_socket_message` with `tail_position`)
 - `ReactorControlCommand` — complete
@@ -511,11 +524,9 @@ The receiving node's reactor accepts data via epoll and delivers it zero-copy to
 
 ## What Is Not Yet Done (in dependency order)
 
-1. **Reactor refactor (immediate)** — Reactor must be rewritten to inherit `ThreadLookupInterface`, remove extracted connection members, construct `InboundConnectionManager` and `OutboundConnectionManager`, and delegate all inbound/outbound operations to them. `InboundConnectionManager` and `OutboundConnectionManager` are fully written and ready.
-2. **Leader-follower protocol** — state machine, heartbeat timers, arbitration
-3. **Pub/sub fanout**
-4. **`ExpandablePoolAllocatorTest.CrossPoolAbaInterleaving`** — intermittent 1-in-500 failure under TSan; the `free_next` atomic fix resolved the main race; residual failure still present
-5. **Logging levels** — everything currently at Info; verbose paths should move to Debug once framework applications are running
+1. **Pub/sub fanout**
+2. **Logging levels** — everything currently at Info; verbose paths should move to Debug once framework applications are running
+3. **Leader-follower protocol** — state machine, heartbeat timers, arbitration (HA approach under rethink)
 
 ## Immediate Next Task
 
