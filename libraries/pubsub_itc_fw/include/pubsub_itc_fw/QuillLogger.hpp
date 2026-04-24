@@ -48,6 +48,29 @@ namespace pubsub_itc_fw {
  *   error_notifier in BackendOptions is NOT called for format errors in
  *   Quill 11.0.2 -- it is only used for queue failures and backend exceptions.
  *   See LoggingMacros.hpp for the full explanation and coding rules.
+ *
+ * Flush behaviour and known limitations:
+ *   Quill 11.x removed per-severity and per-statement flush. All log records
+ *   are processed asynchronously by the backend thread and flushed according
+ *   to the sink's flush interval. There is no way to guarantee that an
+ *   ERROR or CRITICAL record has been flushed to disk at the point the
+ *   calling thread returns from the log macro.
+ *
+ *   Concern 1 -- visibility latency: In practice the Quill backend wakes up
+ *   frequently enough that error records appear in the log file within
+ *   milliseconds. For most operational purposes this is acceptable. The
+ *   immediate-flush API (logger->set_immediate_flush()) exists but blocks
+ *   the frontend thread and is not recommended on reactor or application
+ *   threads in a low-latency system.
+ *
+ *   Concern 2 -- unexpected termination (SIGSEGV, SIGABRT etc.): If the
+ *   process receives a fatal signal, the Quill backend thread may not have
+ *   processed and flushed the final error records before the process dies.
+ *   The natural fix would be to install a fatal signal handler that calls
+ *   quill::Backend::stop() before re-raising the signal, but this has caused
+ *   serious stability problems in practice and is not done here. As a result,
+ *   the last few log records before a crash may be lost. This is a known
+ *   limitation of using Quill 11.x in a process that can die unexpectedly.
  */
 
 /** @ingroup logging_subsystem */

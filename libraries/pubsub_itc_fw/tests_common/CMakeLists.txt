@@ -4,7 +4,6 @@ add_library(pubsub_itc_fw_test_helpers STATIC
     src/TestRunner.cpp
     src/UnitTestLogger.cpp
 )
-# TODO we need to expunge mention of the "installed" directory.
 
 target_include_directories(pubsub_itc_fw_test_helpers PUBLIC
     # Include our helper headers (e.g., TestRunner.hpp)
