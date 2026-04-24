@@ -50,6 +50,7 @@ public:
     struct Header {
         EventType type;
         int payload_size;
+        int64_t tail_position;               ///< Used for RawSocketCommunication events.
         TimerID timer_id;                    ///< Used for Timer events.
         std::string reason;                  ///< Used for Termination and ConnectionFailed/ConnectionLost events.
         ThreadID originating_thread_id;      ///< Used for InterthreadCommunication events.
@@ -75,7 +76,7 @@ private:
      * @param[in] size         The size of the payload in bytes.
      */
     EventMessage(EventType type, const uint8_t* payload_data, int size)
-        : header_{type, size, TimerID(), "", ThreadID(), ConnectionID()}
+        : header_{type, size, 0, TimerID(), "", ThreadID(), ConnectionID()}
         , payload_(payload_data) {}
 
 public:
@@ -152,14 +153,23 @@ public:
 
     /**
      * @brief Factory method for raw socket data (e.g. for foreign protocols).
-     * @param[in] connection_id The connection on which the data was received.
-     * @param[in] data Raw pointer to the socket data.
-     * @param[in] size Size of the data in bytes.
+     *
+     * The tail_position parameter records the MirroredBuffer tail at the moment
+     * of enqueue. The receiving ApplicationThread compares this against its last
+     * seen tail to detect unambiguously whether the tail advanced between
+     * deliveries, without relying on the fragile available < last_available_
+     * heuristic.
+     *
+     * @param[in] connection_id  The connection on which the data was received.
+     * @param[in] data           Raw pointer to the socket data.
+     * @param[in] size           Size of the data in bytes.
+     * @param[in] tail_position  MirroredBuffer tail at enqueue time.
      * @return EventMessage instance.
      */
     [[nodiscard]] static EventMessage create_raw_socket_message(ConnectionID connection_id,
                                                                  const uint8_t* data,
-                                                                 int size);
+                                                                 int size,
+                                                                 int64_t tail_position);
     /**
      * @brief Factory method for framework PDU messages.
      *
@@ -209,6 +219,17 @@ public:
      * @return EventMessage instance.
      */
     [[nodiscard]] static EventMessage create_connection_lost_event(ConnectionID connection_id, const std::string& reason);
+
+    /**
+     * @brief Gets the MirroredBuffer tail position at enqueue time.
+     *
+     * Valid only for RawSocketCommunication events. The ApplicationThread
+     * uses this to detect unambiguously whether the tail advanced between
+     * two deliveries.
+     *
+     * @return Tail position in bytes at the time the message was enqueued.
+     */
+    [[nodiscard]] int64_t tail_position() const;
 
     /**
      * @brief Gets the event type.

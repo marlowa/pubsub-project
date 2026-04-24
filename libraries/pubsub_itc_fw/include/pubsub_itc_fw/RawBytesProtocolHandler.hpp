@@ -43,7 +43,7 @@ namespace pubsub_itc_fw {
  *   If the buffer is full when on_data_ready() fires, the handler logs an error
  *   and invokes the disconnect handler, closing that connection. This is a
  *   deliberate backpressure policy, not a bug. The reactor thread must never
- *   block waiting for the application to consume data — doing so would stall
+ *   block waiting for the application to consume data -- doing so would stall
  *   every other connection and timer in the process. Disconnecting the slow or
  *   misbehaving peer is the correct enforcement mechanism.
  *
@@ -117,36 +117,13 @@ public:
     /**
      * @brief Advances the ring buffer tail by the given number of bytes.
      *
-     * Sets the pending re-delivery flag if bytes remain after the advance.
-     * The flag is consumed by take_pending_redelivery().
+     * Called by the Reactor in response to a CommitRawBytes command from the
+     * application thread. Releases bytes that the application has finished
+     * processing, making space for future reads.
      *
      * @param[in] bytes Number of bytes consumed by the application.
      */
     void commit_bytes(int64_t bytes) override;
-
-    /**
-     * @brief Returns the number of bytes currently available in the MirroredBuffer.
-     */
-    [[nodiscard]] int64_t bytes_buffered() const override;
-
-    /**
-     * @brief Returns a pointer to the start of the unprocessed buffered data.
-     */
-    [[nodiscard]] const uint8_t* buffered_read_ptr() const override;
-
-    /**
-     * @brief Atomically checks and clears the pending re-delivery flag.
-     *
-     * Returns true exactly once after a commit_bytes() call that left bytes
-     * in the buffer. Cleared by on_data_ready() when a real EPOLLIN fires.
-     */
-    [[nodiscard]] bool take_pending_redelivery() override;
-
-    /**
-     * @brief Returns true if on_data_ready() has enqueued a delivery not yet
-     *        acknowledged by commit_bytes().
-     */
-    [[nodiscard]] bool has_fresh_delivery_pending() const override;
 
     /**
      * @brief Initiates a zero-copy send of a pre-built outbound frame.
@@ -189,17 +166,14 @@ public:
 private:
     void release_pending_send();
 
-    ConnectionID        connection_id_;
-    TcpSocket&          socket_;
-    ApplicationThread&  target_thread_;
+    ConnectionID          connection_id_;
+    TcpSocket&            socket_;
+    ApplicationThread&    target_thread_;
     std::function<void()> disconnect_handler_;
-    QuillLogger&        logger_;
+    QuillLogger&          logger_;
 
-    MirroredBuffer      buffer_;
+    MirroredBuffer             buffer_;
     std::unique_ptr<PduFramer> framer_;
-
-    bool     pending_redelivery_{false};
-    bool     fresh_delivery_pending_{false};
 
     ExpandableSlabAllocator* current_allocator_{nullptr};
     int      current_slab_id_{-1};

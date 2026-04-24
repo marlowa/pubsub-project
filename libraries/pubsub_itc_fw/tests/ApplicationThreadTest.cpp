@@ -776,7 +776,7 @@ TEST_F(ApplicationThreadTest, MessageOrderingPreserved)
 
     // Enqueue 2 messages which should both be processed.
     EventMessage m1 = EventMessage::create_itc_message(ThreadID(1), nullptr, 0);
-    EventMessage m2 = EventMessage::create_raw_socket_message(ConnectionID{}, nullptr, 0);
+    EventMessage m2 = EventMessage::create_raw_socket_message(ConnectionID{}, nullptr, 0, 0);
     thread->post_message(ThreadID(10), std::move(m1));
     thread->post_message(ThreadID(10), std::move(m2));
 
@@ -1292,5 +1292,5 @@ TEST_F(ApplicationThreadTest, DefaultHandlersAreCallableAndNoop)
     t->on_termination_event("reason");
     t->on_timer_event("timer");
     t->on_pubsub_message(EventMessage::create_pubsub_message(nullptr, 0));
-    t->on_raw_socket_message(EventMessage::create_raw_socket_message(ConnectionID{}, nullptr, 0));
+    t->on_raw_socket_message(EventMessage::create_raw_socket_message(ConnectionID{}, nullptr, 0, 0));
 }

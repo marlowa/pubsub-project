@@ -175,12 +175,6 @@ public:
     /**
      * @brief Attempts to dispatch a SendRaw command to an inbound connection.
      *
-     * Calls ProtocolHandlerInterface::send_prebuilt() with the exact byte count
-     * from raw_byte_count_ — no PduHeader arithmetic is applied. Intended for
-     * RawBytesProtocolHandler connections; a no-op (returns true) if the
-     * connection uses PduProtocolHandler, since send_prebuilt is defined on
-     * the interface.
-     *
      * @param[in] command The SendRaw command to process.
      * @return true if the ConnectionID belongs to an inbound connection
      *         (command was processed or stashed), false if not found here.
@@ -202,18 +196,6 @@ public:
      * @return true if the ConnectionID belongs to an inbound connection, false otherwise.
      */
     [[nodiscard]] bool process_commit_raw_bytes(ConnectionID id, int64_t bytes_consumed);
-
-    /**
-     * @brief Re-delivers buffered bytes to application threads for any raw-bytes
-     *        connections that have bytes remaining after a CommitRawBytes pass.
-     *
-     * Called by the Reactor once, after the entire command queue has been drained
-     * in process_control_commands(). Iterating after the full drain ensures that
-     * all CommitRawBytes commands for a given burst have been processed before any
-     * re-delivery is enqueued, preventing the cascade that results from re-delivering
-     * inline inside process_commit_raw_bytes().
-     */
-    void deliver_pending_redeliveries();
 
     /**
      * @brief Drains the pending_send_ slot if one is waiting.

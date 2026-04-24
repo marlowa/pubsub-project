@@ -51,10 +51,12 @@ EventMessage EventMessage::create_itc_message(ThreadID originating_thread_id,
 
 EventMessage EventMessage::create_raw_socket_message(ConnectionID connection_id,
                                                       const uint8_t* data,
-                                                      int size)
+                                                      int size,
+                                                      int64_t tail_position)
 {
     EventMessage msg(EventType(EventType::RawSocketCommunication), data, size);
-    msg.header_.connection_id = connection_id;
+    msg.header_.connection_id  = connection_id;
+    msg.header_.tail_position  = tail_position;
     return msg;
 }
 
@@ -122,6 +124,11 @@ ConnectionID EventMessage::connection_id() const
 int EventMessage::slab_id() const
 {
     return slab_id_;
+}
+
+int64_t EventMessage::tail_position() const
+{
+    return header_.tail_position;
 }
 
 const uint8_t* EventMessage::payload() const

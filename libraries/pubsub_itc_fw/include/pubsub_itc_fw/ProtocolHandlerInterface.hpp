@@ -115,44 +115,6 @@ public:
      * @param[in] bytes Number of bytes the application has finished processing.
      */
     virtual void commit_bytes([[maybe_unused]] int64_t bytes) {}
-
-    /**
-     * @brief Returns the number of bytes currently buffered and not yet committed.
-     *
-     * Only meaningful for RawBytesProtocolHandler. The default returns 0.
-     */
-    [[nodiscard]] virtual int64_t bytes_buffered() const { return 0; }
-
-    /**
-     * @brief Returns a pointer to the start of the buffered data, or nullptr.
-     *
-     * Only meaningful for RawBytesProtocolHandler. The default returns nullptr.
-     */
-    [[nodiscard]] virtual const uint8_t* buffered_read_ptr() const { return nullptr; }
-
-    /**
-     * @brief Returns true if on_data_ready() has enqueued a delivery that
-     *        has not yet been acknowledged by a commit_bytes() call.
-     *
-     * Used by InboundConnectionManager::deliver_pending_redeliveries() to
-     * suppress re-delivery when the original on_data_ready() message is still
-     * unprocessed in the application thread's queue, preventing duplicate
-     * deliveries. The default returns false.
-     */
-    [[nodiscard]] virtual bool has_fresh_delivery_pending() const { return false; }
-
-    /**
-     * @brief Atomically checks and clears the pending re-delivery flag.
-     *
-     * Set by commit_bytes() when bytes remain in the buffer after tail
-     * advancement. Cleared by this method and by on_data_ready().
-     * Used by InboundConnectionManager::deliver_pending_redeliveries() which
-     * is called once per process_control_commands() pass, after the entire
-     * command queue has been drained, so that all CommitRawBytes commands for
-     * a given burst are processed before any re-delivery is enqueued.
-     * The default returns false.
-     */
-    [[nodiscard]] virtual bool take_pending_redelivery() { return false; }
 };
 
 } // namespace pubsub_itc_fw

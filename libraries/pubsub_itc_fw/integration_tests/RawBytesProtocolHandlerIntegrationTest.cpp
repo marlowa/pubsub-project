@@ -21,22 +21,29 @@
  * including commit_raw_bytes() and send_raw(), which is the production code
  * path that needs coverage.
  *
- * MirroredBuffer re-delivery contract:
+ * MirroredBuffer commit contract:
  *   RawBytesProtocolHandler calls on_raw_socket_message() every time new
  *   bytes arrive on the socket. Each call receives a view of ALL currently
  *   unprocessed bytes starting from the tail -- not just the newly arrived
  *   bytes. The tail only advances when the reactor processes a CommitRawBytes
  *   command, which happens asynchronously. Between two on_raw_socket_message()
  *   calls, if the tail has not yet advanced, payload() points to the same
- *   start address and payload_size() is LARGER (old bytes + new bytes).
+ *   start address and payload_size() may be larger (old bytes + new bytes).
  *
- *   Application threads that decode statefully must track how many bytes they
- *   have already decoded and skip them on re-entry. The pattern used here:
- *     - bytes_decoded_: bytes decoded since the last tail advancement
- *     - last_available_: payload_size() from the previous call
- *   When payload_size() shrinks relative to last_available_, the tail advanced
- *   (reactor processed our commit) -- reset bytes_decoded_ to 0.
- *   Otherwise skip the first bytes_decoded_ bytes on each call.
+ *   Each EventMessage carries the MirroredBuffer tail position at enqueue time
+ *   via tail_position(). The application thread compares this against its last
+ *   seen tail to detect unambiguously whether the tail advanced between
+ *   deliveries. When it has, bytes_decoded_ is reset to 0 so decoding starts
+ *   fresh from the new tail position. This replaces the fragile
+ *   available < last_available_ heuristic which breaks when new data arrives
+ *   simultaneously with a commit being processed.
+ *
+ *   Commit policy: only commit when the entire current window has been
+ *   consumed (bytes_decoded_ == available). If a partial message remains,
+ *   do not commit -- wait for the next EPOLLIN which delivers the partial
+ *   bytes together with whatever new bytes arrive. A rogue client that sends
+ *   a partial message and goes silent will eventually fill the buffer and be
+ *   disconnected by the framework's backpressure mechanism.
  *
  * Tests in this file:
  *
@@ -354,15 +361,19 @@ protected:
     }
 
     void on_raw_socket_message(const EventMessage& message) override {
-        const uint8_t* data = message.payload();
-        const int available = message.payload_size();
+        const uint8_t* data      = message.payload();
+        const int      available = message.payload_size();
+        const int64_t  tail      = message.tail_position();
 
         if (data == nullptr || available <= 0) return;
 
-        if (available < last_available_) {
-            bytes_decoded_ = 0;
+        // Exact tail-advance detection: if the tail moved since the last
+        // delivery, start decoding from the beginning of the new window.
+        if (tail != last_tail_) {
+            bytes_decoded_  = 0;
+            last_committed_ = 0;
+            last_tail_      = tail;
         }
-        last_available_ = available;
 
         const int unprocessed = available - bytes_decoded_;
         if (unprocessed <= 0) return;
@@ -373,7 +384,16 @@ protected:
 
         if (total_consumed > 0) {
             bytes_decoded_ += static_cast<int>(total_consumed);
-            commit_raw_bytes(conn_id, total_consumed);
+            // Only commit when the entire current window is consumed.
+            // If partial bytes remain (bytes_decoded_ < available) leave them
+            // in the buffer -- the next EPOLLIN delivers them with new bytes.
+            // A rogue client sending a partial message and going silent will
+            // eventually fill the buffer and be disconnected by the framework.
+            if (bytes_decoded_ == available) {
+                const int64_t delta = static_cast<int64_t>(bytes_decoded_ - last_committed_);
+                commit_raw_bytes(conn_id, delta);
+                last_committed_ = bytes_decoded_;
+            }
         }
 
         if (static_cast<int>(received_payloads.size()) >= expected_count_) {
@@ -384,9 +404,10 @@ protected:
     void on_itc_message([[maybe_unused]] const EventMessage& msg) override {}
 
 private:
-    int expected_count_;
-    int bytes_decoded_{0};
-    int last_available_{0};
+    int     expected_count_;
+    int     bytes_decoded_{0};
+    int     last_committed_{0};
+    int64_t last_tail_{-1};
 };
 
 // ============================================================

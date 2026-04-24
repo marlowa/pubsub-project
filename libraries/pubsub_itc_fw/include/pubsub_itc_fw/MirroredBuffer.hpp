@@ -92,6 +92,18 @@ public:
     void advance_tail(int64_t bytes);
 
     /**
+     * @brief Returns the current tail index.
+     *
+     * Used by RawBytesProtocolHandler to stamp each RawSocketCommunication
+     * EventMessage with the tail position at enqueue time. The application
+     * thread compares this against its last seen tail to detect unambiguously
+     * whether the tail advanced between deliveries.
+     *
+     * @return Current tail position in bytes.
+     */
+    [[nodiscard]] int64_t tail() const { return tail_; }
+
+    /**
      * @brief Calculates the number of bytes currently held in the buffer.
      * @return Number of bytes available to read.
      */
