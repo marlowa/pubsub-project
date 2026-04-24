@@ -1,0 +1,161 @@
+/*! \page raw_socket_design Raw Socket Communication Design
+
+\tableofcontents
+
+\section rsd_overview Overview
+
+The raw socket path is used for connections carrying alien protocols -- protocols
+that the framework cannot frame itself, such as ASCII FIX, NMEA, or any custom
+binary format. In contrast to the PDU path (where the framework identifies complete
+message boundaries and only delivers complete PDUs to the application), the raw
+socket path delivers bytes as they arrive. The application thread is entirely
+responsible for finding message boundaries.
+
+\section rsd_mirrored_buffer MirroredBuffer
+
+The central data structure is the \c MirroredBuffer -- a stream-oriented ring buffer
+that uses virtual memory mirroring to provide a contiguous view of unprocessed bytes.
+
+\subsection rsd_why_mirrored Why mirroring?
+
+A conventional ring buffer wraps around: a message that straddles the end of the
+buffer appears in two non-contiguous pieces. The application would have to handle
+this split-packet case explicitly. The MirroredBuffer eliminates this by mapping the
+same physical memory to two adjacent virtual address ranges. Any contiguous slice of
+up to \c capacity bytes always appears contiguous in virtual memory, regardless of
+where it sits in the ring.
+
+\subsection rsd_implementation Implementation
+
+The buffer is backed by an anonymous shared memory object created with
+\c memfd_create. The physical memory is then mapped twice into contiguous virtual
+address space using \c mmap with \c MAP_FIXED. The result is that
+\c read_ptr()[0..bytes_available()-1] is always a valid contiguous view of all
+unprocessed bytes.
+
+\subsection rsd_invariants Threading invariants
+
+- The \b reactor thread is the sole producer: it advances the \b head by calling
+  \c advance_head(n) after each successful \c recv().
+- The \b reactor thread is also the sole tail advancer: it calls
+  \c advance_tail(n) in response to a \c CommitRawBytes command from the
+  application thread.
+- The \b application thread reads from \c read_ptr() and \c bytes_available()
+  but never modifies the buffer directly.
+- The head never overtakes the tail (buffer-full policy: disconnect the peer).
+- The tail never overtakes the head (precondition enforced by \c advance_tail).
+
+\section rsd_delivery Delivery to the application thread
+
+When \c on_data_ready() fires (EPOLLIN), the reactor:
+
+-# Calls \c recv() into \c write_ptr(), advancing the head.
+-# Enqueues a \c RawSocketCommunication \c EventMessage to the application
+   thread's Vyukov queue. The message carries:
+   - \c connection_id -- so the application can demultiplex multiple connections.
+   - \c payload() -- \c read_ptr() at enqueue time (pointer into the MirroredBuffer).
+   - \c payload_size() -- \c bytes_available() at enqueue time.
+   - \c tail_position() -- the buffer's \c tail_ value at enqueue time.
+
+Crucially, the message delivers \b all currently unprocessed bytes, not just the
+newly arrived bytes. If bytes from a previous delivery were not committed, they are
+included again in the new delivery.
+
+\section rsd_fragmentation Packet fragmentation
+
+TCP is a stream protocol. A single application-level message may arrive in multiple
+TCP segments, and multiple application-level messages may arrive in a single segment.
+The application thread must handle both cases.
+
+\subsection rsd_fragmentation_pattern Correct application thread pattern
+
+The application thread subclass tracks two pieces of state:
+
+- \c bytes_decoded_ -- bytes already decoded from the current window (since the
+  last tail advance).
+- \c last_tail_ -- the \c tail_position() value from the last delivery.
+
+On each \c on_raw_socket_message() call:
+
+-# Compare \c message.tail_position() against \c last_tail_. If different, the
+   reactor has processed a previous \c CommitRawBytes and the tail has advanced.
+   Reset \c bytes_decoded_ to 0 and update \c last_tail_.
+-# Compute \c unprocessed = \c payload_size() - \c bytes_decoded_.
+-# Decode from \c payload() + \c bytes_decoded_ for \c unprocessed bytes.
+-# If decoding consumed some bytes, update \c bytes_decoded_.
+-# \b Only commit when \c bytes_decoded_ == \c payload_size() (the entire current
+   window has been consumed). Issue a \c CommitRawBytes command for the delta
+   since the last commit.
+
+\subsection rsd_fragmentation_why_cumulative Why only commit when the window is fully consumed?
+
+If a partial message sits at the end of the delivery window and the application
+commits only the complete messages, the tail advances past them. The partial bytes
+remain in the buffer. But no new \c EPOLLIN fires because no new kernel bytes have
+arrived. The partial bytes are stranded -- the application waits forever for a
+delivery that never comes.
+
+By not committing until the entire window is consumed, the partial bytes are left
+in the buffer. When the next TCP segment arrives, \c EPOLLIN fires, \c on_data_ready
+reads the new bytes, and the new delivery includes the partial bytes plus the new
+bytes. The application can then decode the previously partial message.
+
+\subsection rsd_fragmentation_rogue_client Rogue client protection
+
+A rogue client that sends a partial message and then goes silent will cause the
+application to stop committing. The buffer fills up. When \c space_remaining()
+reaches zero, \c on_data_ready() detects the buffer-full condition, logs an error,
+and invokes the disconnect handler. The connection is closed. All other connections
+and threads in the reactor are unaffected.
+
+\section rsd_tail_position Why tail_position() is needed
+
+The naive approach to detecting tail advances is to compare \c payload_size()
+against the previous call's \c payload_size(). If \c payload_size() shrank, the
+tail must have advanced.
+
+This is unreliable. Consider:
+
+-# Delivery 1: \c available=15. Application decodes ONE message, commits 15.
+   \c last_available_=15.
+-# The reactor processes the commit. Tail advances 15. Meanwhile, 30 more bytes
+   arrive. Head advances 30. \c bytes_available() = 30.
+-# Delivery 2: \c available=30. \c 30 > 15, so the naive check does not detect
+   the tail advance. \c bytes_decoded_ is not reset. The application skips the
+   first 15 bytes of the new window -- which are now MESSAGE_TWO -- and decodes
+   from the wrong offset.
+
+The \c tail_position() field solves this unambiguously. It records the buffer's
+\c tail_ value at the moment \c on_data_ready() enqueued the message. The
+application compares this against its \c last_tail_. If they differ, the tail
+has advanced regardless of what \c payload_size() does.
+
+\section rsd_commit_protocol CommitRawBytes reactor control command
+
+The application thread does not advance the buffer tail directly. It enqueues a
+\c CommitRawBytes \c ReactorControlCommand carrying the number of bytes consumed.
+The reactor processes this command on its thread and calls
+\c RawBytesProtocolHandler::commit_bytes(n), which calls
+\c buffer_.advance_tail(n).
+
+This preserves the threading invariant: only the reactor thread ever modifies
+the buffer tail.
+
+\section rsd_outbound Outbound path
+
+Outbound raw bytes use the \c SendRaw \c ReactorControlCommand. The application
+thread allocates a slab chunk, fills it with the raw bytes to send, and enqueues
+a \c SendRaw command. The reactor calls \c send_prebuilt() on the handler, which
+delegates to \c PduFramer for partial-send management and slab chunk lifetime.
+The outbound path is identical to the PDU path in this respect.
+
+\section rsd_backpressure Backpressure summary
+
+| Condition | Response |
+|-----------|----------|
+| Buffer full on recv | Disconnect peer; deliver ConnectionLost to app thread |
+| Partial message, no new data | Leave in buffer; wait for next EPOLLIN |
+| Rogue client fills buffer | Buffer-full disconnect (see above) |
+| Slow application thread | Buffer fills; eventually buffer-full disconnect |
+
+*/

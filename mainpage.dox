@@ -1,296 +1,204 @@
-/*! \mainpage PubSubFanout Index Page
+/*! \mainpage pubsub_itc_fw
 
-@section overview_sec Project Overview
-This project is a high-performance, topic-based publish/subscribe (pubsub) and inter-threadcommunication (ITC) framework. In addition to pubsub and ITC, it provides both single-shotand recurring timers.
- Its architecture is centered on a single-threaded, non-blocking event loop, known as the Reactor. This design offloads long-running and potentially complex tasks—such as network I/O or
-computations—to a pool of dedicated worker threads, known as application threads. This ensures that the Reactor remains responsive and mitigates the risk of becoming unresponsive due to various conditions,
-including heavy load and slow consumers. While the Reactor manages the core event loop, the EventDistributor is a separate class that handles the application-level communication logic for
-the brokerless pubsub system and manages all timers, enabling efficient, topic-based routing of messages to all interested threads by simulating multicast with a unicast fanout.
-The ThreadPool is essential for managing network traffic, specifically to reassemble fragmented messages from a socket connection and to handle slow consumers that would otherwise block the Reactor.
-The pubsub system is topic-based and operates without a central broker. Its design handles late-arriving subscribers by ensuring they are immediately updated with a snapshot of the date from a specified
-message sequence number.
-In order to prevent repeated heap allocations as events occur, the framework uses a pool-based memory management strategy for messages, which provides fast allocations and minimizes memory fragmentation.
-Multicast is simulated using a unicast fanout in order to distribute messages to all subscribers on a given topic. All high-level events, including fully reassembled socket messages, inter-thread messages,
-and timer events, are delivered from the Reactor to the ApplicationThreads via a high-performance Dmitry Vyukov MPSC queue.
-Additionally, all application logging is performed asynchronously on a dedicated thread, utilizing a wrapper for the quill logging library.
+@section overview_sec Overview
 
-@section development_env_sec Development Environment
+pubsub_itc_fw is a high-performance, low-latency C++17 framework for inter-thread
+communication (ITC), topic-based publish/subscribe (pubsub), and TCP socket management.
+It is designed for use in Linux RHEL8 environments with strict latency requirements
+(publish-to-receive in under 30 microseconds for messages up to 1200 bytes).
 
-The library is for use in a linux RHEL8 low latency environment with loads of memory (100GB), loads of disk space (200GB).
-The low latency goal is from publish to receive by subscriber should take no more than 30 microseconds.
-That is for a maximum message size of 1200 bytes. Messages will typically be smaller than that, say, 200 to 300 bytes.
-The library is to use a strict dialect of C++17. Use of third party components is confined to fmt, argparse, quill, gtest and boost. Don't use boost::lockfree.
-Berkeley sockets are to be used, not asio. Also, std::filesystem is not to be used, the one from boost is to be used instead.
-The intel architecture can be assumed, hence where busy CPU loops exist, mm_pause can be called.
-In developer environments where the number of cores is limited and CPUs might not be pinned, yield can be used.
-CPU pinning will assume that the machine has been configured to dedicate certain CPUs to OS activity and that these CPUs should not be chosen by the frameworking during pinning.
-
-The messages are binary, do not assume ASCII strings. So std::string is out. So is std::vector<char> since char assumes an ASCII character. std::vector<uint8_t> could be used.
-It would be nice to use std::span but that is not available until C++20. Boost span has some problems so the project will implement its own version of std::span, called SimpleSpan.
-
-@section design_philosophy_sec Design Philosophy
-The framework's core design is built on the following principles:Non-Blocking I/O: The Reactor uses asynchronous I/O with non-blocking sockets to ensure it never blocks while waiting for external resources,
-maintaining a responsive event loop.Asynchronous Threading: All communication between the Reactor and its worker threads is asynchronous and message-based. The framework uses a high-performance
-Dmitry Vyukov MPSC queue for this purpose. The resulting CPU spinning is managed by employing CPU pinningto dedicated cores, avoiding interference with other system processes.
-This decouples thread execution and allows for independent processing.
-
-Backpressure Handling: The framework's architecture naturally handles backpressure. All work is queued and processed asynchronously, ensuring that a slow consumer on a given worker thread will
-not cause the Reactor to stall. If a consumer remains persistently slow, the framework will eventually sever its connection to protect overall system stability.
-Furthermore, the framework provides an API for ApplicationThreads to explicitly pause and resume their message publication, giving applications the ability to manage their own backpressure with external systems.
-
-Callback-based Event Delivery: Events and messages are delivered to subclasses ofApplicationThread via a predefined set of callback methods.
-This promotes a clear separation of concerns, allowing developers to focus on application logic.
-
-Zero-Copy Messaging: The framework avoids unnecessary data copying by using a non-owning SimpleSpan over raw binary data.
-This is particularly important for high-volumemessage throughput.
+The framework's architecture centres on a single-threaded, non-blocking event loop
+(the Reactor). All socket I/O, timer management, and message routing are performed
+exclusively by the Reactor thread. Application logic runs in ApplicationThread subclasses,
+which receive events via a high-performance Dmitry Vyukov MPSC lock-free queue.
 
 @section key_classes_sec Key Classes
 
-The following classes are fundamental to the framework's architecture:
+@subsection reactor_subsystem_sec Reactor Subsystem
 
-Reactor: At the heart of the framework, this is the single-threaded event loop that monitors I/O events, manages timers, and routes all incoming and outgoing messages.
-It is responsible for maintaining the framework's overall responsiveness.
+- **Reactor** -- The single-threaded epoll-based event loop. Manages all inbound and
+  outbound TCP connections, timers, and signal handling. Delegates connection management
+  to InboundConnectionManager and OutboundConnectionManager.
 
-ApplicationThread: This receives all events by reading from a Dimitry queue.
-Socket and pubsub events are sent to that queue by the Reactor.
+- **InboundConnectionManager** -- Owns all accepted inbound TCP connections. Handles
+  accept, read, write, idle timeout, and teardown for both PduProtocolHandler and
+  RawBytesProtocolHandler connections.
 
-EventDistributor: This class is central to the pubsub mechanism.
-It simulates multicast by using a unicast fanout strategy, which ensures that all interested subscribers receive messages without requiring network-level multicast support.
+- **OutboundConnectionManager** -- Owns all outbound TCP connections. Handles
+  non-blocking connect, reconnect, read, write, and timeout.
 
-ExpandablePoolAllocator: Manages memory allocation for messages. It uses a collection of expandable, fixed-size memory pools to provide fast allocations and prevent heap fragmentation.
+- **ProtocolHandlerInterface** -- Strategy interface implemented by PduProtocolHandler
+  (framework-native PDU framing) and RawBytesProtocolHandler (raw byte streams for
+  alien protocols such as ASCII FIX).
 
-EventMessage: Represents a generic message for inter-thread communication.This struct uses a discriminated union to handle different event types (e.g.,timer, socket, termination) via a single, uniform interface,
-allowing them to be passed through a single message queue.
+- **RawBytesProtocolHandler** -- Strategy B protocol handler. Owns a MirroredBuffer.
+  Delivers raw bytes to the application thread via RawSocketCommunication EventMessages
+  carrying a tail_position stamp for unambiguous window tracking. See @ref raw_socket_sec.
 
-Message: A lightweight, non-owning wrapper for binary data payloads. It provides a view (a SimpleSpan) over raw data, typically serialized from a Google Protobuf message.
-This design avoids unnecessary data copying.
+- **MirroredBuffer** -- Stream-oriented ring buffer using virtual memory mirroring.
+  Provides a contiguous view of unprocessed bytes without split-packet edge cases.
 
-ReactorConfiguration: A simple struct that holds configurable parameters for the Reactor. This includes settings for performance (e.g., max_events_per_loop)
-and inactivity monitoring.
+- **ReactorConfiguration** -- Configuration parameters for the Reactor (timeouts,
+  buffer sizes, queue parameters).
 
-TcpConnector: Manages the asynchronous process of establishing outbound TCPconnections. It handles the complexities of the connection handshake and provides a clear, simple interface to
-initiate and manage the process.
+@subsection threading_subsystem_sec Threading Subsystem
 
-TcpAcceptor: Manages the non-blocking acceptance of incoming TCP connections on a listening socket. It is the server-side counterpart to the TcpConnector and provides a simple interface
-to handle new client connections as they arrive.
+- **ApplicationThread** -- Abstract base class for all application threads. Subclasses
+  implement on_initial(), on_app_ready(), on_timer(), on_itc_message(),
+  on_raw_socket_message(), on_connection_established(), on_connection_lost() etc.
+  Receives all events from the Reactor via a Vyukov MPSC queue.
 
-@section multicast_sec Unicast fanout versus multicast
+- **Timer** -- Represents a named timer owned by an ApplicationThread. Timers are
+  either SingleShot or Recurring. Created and cancelled via reactor control commands.
 
-Multicast uses UDP which is inherently unreliable.
-There have been many attempts to implement reliable multicast. Standards abound.
-These have all failed. It is a very hard problem to solve and there may be no general solution.
-Different environments have different requirements.
-Several alternatives were considered and rejected. These include: PGM (Pretty Reliable Multicast),
-NORM (Nack-Oriented Reliable Multicast), DDS (Data Distribution Service from the OMG), Cyclone DDS,
-aeron, ACE, and POCO. In the end they were all rejected. There seems to be no choice but to simulate
-reliable multicast by using unicast fanout. This is non-trivial also, but can be done.
+- **TimerType** -- Value class discriminating SingleShot vs Recurring timers.
 
-@section event_distributor_sec The EventDistributor
+@subsection messaging_subsystem_sec Messaging Subsystem
 
-The EventDistributor has a mutex, but the publish method, which is called by the PubSubClient,
-is not where the mutex is acquired. Looking at the EventDistributor's methods,
-you'll notice that the publish method does not access the
-subscriptions_ map directly. Instead, it is an asynchronous, lock-free operation.
+- **EventMessage** -- Unified message envelope for all inter-thread and reactor events.
+  Uses static factory methods. For RawSocketCommunication events, carries
+  tail_position() for unambiguous MirroredBuffer window tracking.
 
-When a thread calls publish, it performs a very fast, non-blocking operation: it simply
-places the message onto a lock-free queue. The EventDistributor's thread, running in its run() loop,
-is the only thread that ever dequeues and processes these messages.
+- **EventType** -- Value class discriminating all event types (Initial, AppReady,
+  Timer, InterthreadCommunication, RawSocketCommunication, FrameworkPdu,
+  ConnectionEstablished, ConnectionFailed, ConnectionLost, Termination).
 
-Single-Threaded Event Processing:
+- **ReactorControlCommand** -- Commands sent from ApplicationThreads to the Reactor
+  (Connect, Disconnect, SendPdu, SendRaw, CommitRawBytes, AddTimer, CancelTimer).
 
-The EventDistributor's run() loop calls the process_message method to
-handle incoming events. This method is the one that accesses and
-iterates over the subscriptions_ map to fan out the message to all the
-subscribed threads. Since this process_message method is only ever
-executed by the EventDistributor's single thread, there is no risk of
-a race condition on the subscriptions_ map.
+@subsection memory_subsystem_sec Memory Subsystem
 
-The EventDistributor inherits from ApplicationThread.
-This is so that it automatically gains all the necessary infrastructure for
-inter-thread communication (ITC). This includes:
+- **ExpandablePoolAllocator** -- Pool-based allocator for inbound PDU payloads.
+  Uses a collection of fixed-size slabs to avoid heap fragmentation.
 
-    A dedicated thread: The run() method, which is the main loop for the EventDistributor,
-    is executed in its own std::thread, completely separate from the Reactor and other application threads.
-    This is crucial for isolating its responsibilities.
+- **ExpandableSlabAllocator** -- Slab allocator used for outbound PDU frames.
 
-    A lock-free message queue: Each ApplicationThread has its own LockFreeMessageQueue.
-    This is the mechanism that allows PubSubClients (on other threads) to post EventMessages
-    to the EventDistributor without taking a lock, which is the key to our high-performance publish path.
+@subsection logging_subsystem_sec Logging Subsystem
 
-    An event file descriptor (event_fd_): This file descriptor is used by the Reactor to monitor
-    for incoming messages on the thread's queue. When a new message is posted, the event_fd_ is triggered,
-    and the Reactor can then dispatch the event to the EventDistributor's handle_event method.
+- **QuillLogger** -- Framework wrapper around a quill::Logger. Two constructors:
+  production (file + syslog sinks) and unit-test (console + optional callback sink).
+  Format string mismatches are detected at runtime by the Quill backend and emitted
+  as [Could not format log statement...] log records. Compile-time checking requires C++20.
 
-@section reactor_and_threads_sec The Reactor and ApplicationThreads
+- **FwLogLevel** -- Value class for log severity levels (Trace through Alert).
+  Lower numerical value means higher severity, matching Quill convention.
 
-In this framework, there's a strong, bidirectional relationship between the Reactor and ApplicationThread:
+- **LoggingMacros** -- PUBSUB_LOG and PUBSUB_LOG_STR. Format strings must be
+  string literals. See LoggingMacros.hpp for the full format string safety rules.
 
-    The Reactor needs to know about the ApplicationThreads to manage their event file descriptors and dispatch events to them.
+@section memory_sec Memory Management
 
-    The ApplicationThreads need to know about the Reactor to perform actions like posting messages and communicating with other parts of the system.
+The framework uses two distinct allocators. Understanding which is used where
+and who owns the memory is essential for correct application development.
+See \ref memory_management_design "Memory Management Design".
 
-If we tried to pass the Reactor as a constructor parameter to ApplicationThread, we'd run into a problem. We couldn't create the Reactor until all the ApplicationThreads had been created (so we could register them), but we couldn't create the ApplicationThreads until the Reactor was created (to pass it to their constructors).
+@section dsl_sec DSL Schema and Code Generator
 
-This is a classic "chicken-and-egg" scenario.
+All binary message payloads are defined in a purpose-built schema language.
+A Python code generator emits self-contained C++17 encode/decode headers.
+See \ref dsl_design "DSL Schema and Code Generator".
 
-The Two-Stage Solution
+@section raw_socket_sec Raw Socket Communication
 
-The setReactor() function solves this by separating the construction of the objects from the "wiring up" of their dependencies.
+For connections carrying alien protocols (e.g. ASCII FIX, NMEA, custom binary),
+the framework delivers raw bytes to the application thread without any framing.
+The application is responsible for its own message boundary detection.
 
-    First, the PubSubItcApplication creates the Reactor.
+For the full design including MirroredBuffer internals, packet fragmentation
+handling, the commit protocol, and the tail_position fix, see:
+\ref raw_socket_design "Raw Socket Communication Design".
 
-    Next, the application creates all the ApplicationThreads. The constructor only requires a logger and the thread name, which are independent of the Reactor.
+@section design_philosophy_sec Design Philosophy
 
-    Finally, the PubSubItcApplication calls the setReactor() method on each ApplicationThread to inject the Reactor dependency and complete the setup. This is also when the ApplicationThreads are registered with the Reactor itself.
+- **Non-blocking I/O** -- The Reactor uses epoll with non-blocking sockets and never
+  blocks waiting for external resources.
 
-This design makes the system more flexible and cleanly separates the
-concerns of object creation from their runtime relationships. It
-ensures that the Reactor can manage all the ApplicationThreads, and
-that each ApplicationThread has a valid reference to the Reactor when
-it needs it, all without causing a compile-time dependency loop.
+- **Lock-free inter-thread communication** -- All communication between the Reactor
+  and ApplicationThreads uses a Dmitry Vyukov MPSC queue. No mutexes on the hot path.
 
-@section low_latency_sec Low latency considerations
+- **Backpressure by disconnection** -- A peer that fills the receive buffer (raw bytes)
+  or sends faster than the application can consume is disconnected. All other connections
+  are unaffected.
 
-Due to the low latency requirement, memory pools are to be used. Repeated heap allocation is to be avoided.
-Treat the memory pool allocator as if it cannot fail. There will be a mechanism so that this is effectively the case.
-When a pool is exhausted a registered callback is invoked but another pool of equal capacity
-is created and chained to the last one, thus continuing the service.
-Another low latency requirement is to avoid syscalls in hot paths since they force a context switch,
-and in particular avoid syscalls that block, such as mutex and other synchronisation primitives.
+- **Strategy pattern for protocol handling** -- PduProtocolHandler and
+  RawBytesProtocolHandler are interchangeable strategies selected at listener
+  registration time.
 
-@section late_subscribers_sec Late subscribers
+- **Asynchronous logging** -- All logging is performed on the Quill backend thread.
+  No string formatting occurs on the reactor or application threads.
 
-Message Sequencing: Every message published to a topic is assigned a
-unique, monotonically increasing sequence number.
+@section development_env_sec Development Environment
 
-History Cache: The EventDistributor maintains a bounded history of
-recently published messages for each topic.
+Linux RHEL8, x86-64 (Intel architecture assumed). 100GB RAM, 200GB disk.
+Latency target: publish to receive in under 30 microseconds for messages up to 1200 bytes.
 
-Explicit Catch-up: When a subscriber registers, it can specify a starting sequence number.
-The EventDistributor will then deliver all messages from that point, from its history cache, before the subscriber joins the real-time event stream.
+@section coding_rules_sec Coding Rules and Project Conventions
 
-The core principle here is to decouple the write-once-read-many live path from the persistence path. The live path must remain purely in-memory, lock-free, and non-blocking.
-This is where the EventDistributor and MPSC queues excel. Any attempt to introduce disk writes to this path would defeat the purpose.
+@subsection cr_files File Naming and Structure
 
-Instead of making the EventDistributor directly responsible for writing to the disk, there should be a dedicated, isolated persistence layer.
-The EventDistributor already has an in-memory history cache. This can be implemented as a high-speed, lock-free ring buffer.
-It will be the "live" store, holding the most recent messages.
-All new subscribers and late joiners will be served from this ultra-fast, in-memory cache.
-We need a new thread that will be the sole writer to the memory-mapped file.
-Its job is to asynchronously read messages from the EventDistributor's in-memory ring buffer and write them to a durable log on the disk. Let's call this LogReplayWriter.
-
-The Durable Log (WAL): The memory-mapped file will be used as a Write-Ahead Log (WAL). This is a common pattern in databases.
-It's an append-only, sequential log. Appending to a file is one of the fastest I/O operations and avoids random access, which minimizes disk seek times.
-The MemoryMappedFile class can be used for this.
-
-Crash and Restart:
-
-    On Process Crash: The in-memory ring buffer is lost, but the memory-mapped WAL on disk remains.
-
-    On Restart: The EventDistributor will be re-initialized. It will then read from the durable log on disk,
-    replaying messages into its in-memory ring buffer. This process is very fast because it's a simple sequential read from the memory-mapped file.
-    Once the history is reloaded, the EventDistributor is ready to handle late subscribers just as before, ensuring a transparent restart.
-
-
-@section robustness_and_resiliency_sec Robustness and resiliency
-
-@subsection process_death_sec Process death
-
-This is to cater for situations such an an unexpected SEGV, whereon we may wish to simply restart the application.
-A restarted application needs to restore the state of published messages so it can cope with late subscribers.
-It uses a MemoryMappedFile to do this. Each published message has an MSN (Message Sequence Number).
-When a subscriber first subscribes to a topic it has to quote an MSN. This is where it reads from.
-This memory mapped file is especially for holding published messages.
-Particular applications may have need of additional memory mapped files for managing state that is particular to that application.
-For example, a subscriber might forward pubsub messages onto an external system using some other technique or technology,
-e.g. kafka. In a case like that the subscriber may wish to hang on to messages it received by subscription, since it
-would only have no further need of them once kafka has notified it of delivery via the delivery report callback.
-
-@subsection machine_death_sec Machine death
-
-@subsection site_death_sec Site death
-
-@section framework_usage_sec Usage
-
-An app that uses this library is expected to create a number of threads for various activities.
-An action will typically be completed by a chain of ITC (Inter-Thread Commiunication) messages starting from
-the first thread that receives an event. This will typically correspond to an event received by topic subscription.
-One or more of the threads may publish something down this ITC chain. This will be done by sending an ITC message
-to the single publisher thread, as mentioned before. Ultimately, it will come down to socket calls.
-Berkeley sockets will be used, not boost asio or std asio. The sockets will be set up as non-blocking
-so the EWOULDBLOCK error needs to be dealt with. This must not be by busy looping directly until the operation
-succeeds. Instead the task needs to be handled off asynchronously. Publishers and Subscribers can run at different speeds
-which is why we have to handle backpressure. When a subscriber is slow the publisher may encounter
-the socket buffer being full. When that happens the publisher gets EWOULDBLOCK. Just retrying for ever might not be enough.
-But there must be some retrying. Eventually the connection to the slow consumer should be terminated.
-
-The application as a whole needs to run an event loop (via Reactor::run) which will not stop until the
-application receives a termination event, typically a SIGTERM.
-Threads will need to be registered with the Reactor and they will start as soon as the event loop is started.
-
-@section Coding rules and other project conventions:
-
-File Naming and Structure: Use PascalCase for filenames and types
-(e.g., Logger.hpp). Follow the "one type per header" rule, with the
-exception of the pimpl idiom (pimpl code all goes in the cpp file of the class that uses the pimpl).
+Use PascalCase for filenames and types (e.g., Logger.hpp). Follow the
+"one type per header" rule, with the exception of the pimpl idiom (pimpl
+code all goes in the .cpp file of the class that uses the pimpl).
 Abstract types should have the Interface suffix.
-Only have .hpp or .cpp files. Do not use .inl or anything like it for headers containing inlined code.
+Only use .hpp or .cpp files -- do not use .inl or similar for headers
+containing inlined code.
 
-Code Style and Naming: Use 1TBS for brace style. Variable names and function names should
-use snake_case, while type names should use PascalCase. Do not use UPPERCASE_TOKENS.
-Brace initialisation should be used for data members.
-Data members should have a trailing underscore.
-That should not have a leading underscore, nor contain any double underscores.
-They should not start with 'm_' or 'd_' or anything like that.
+@subsection cr_style Code Style and Naming
+
+Use 1TBS for brace style. Variable names and function names use snake_case;
+type names use PascalCase. Do not use UPPERCASE_TOKENS.
+Brace initialisation must be used for data members.
+Data members must have a trailing underscore. They must not have a leading
+underscore, contain double underscores, or start with m_ or d_.
 The trailing underscore indicates they are private.
 
-A special note on how to implement enum types: do not use enum class.
-Instead, define a class with the name desired, and make it contain
-a C-style enum that uses the type name followed by "Tag".
-The constructor should take a single argument of the type with "Tag" on the end,
-and be marked explicit, like all single argument constructors.
-It should provide a function as_string() const, which returns a string that corresponds
-to the value of the enumeration as a string rather than an integer.
-The class is to have a private data member of the type with "Tag" on the end of the type name.
-The class is to have a public is_equal function that returns true if the LHS equals the RHS.
-There is also to be an equality operator outside of the class that is implemented using the
-is_equal function.
-The code for the is_equal and as_string functions should be inline, so for enums done this way
-there is no need to have a .cpp file.
-So, for example, EventType would be in a file EventType.hpp and would have a class EventType
-containing a C-style enum called EventTypeTag.
-The equality operator would look like this:
-inline bool operator==(const EventType& lhs, const EventType& rhs) { return lhs.is_equal(rhs); }
+@subsection cr_enums Enum Types
 
-General Practices: Prefer explicit nullptr comparisons (e.g., if (ptr == nullptr)).
-Avoid one-letter variable names except for loop counters.
-Use \#pragma once instead of C-style include guards.
-Avoid use of the final keyword on class declarations - it is of dubious value.
-Avoid use of unsigned integers.
-Avoid std::byte since in practise its use often requires a reinterpret_cast.
-Also, it requires a header, <cstddef>.
+Do not use enum class. Instead, define a class containing a C-style enum
+whose name is the type name followed by "Tag". The constructor takes a
+single Tag argument and is marked explicit. The class provides as_string(),
+as_tag(), and is_equal(). A free operator== is defined outside the class
+using is_equal(). All these functions are inline so no .cpp file is needed.
 
-Documentation: All documentation must be in Doxygen format and placed in header files only.
-Use \@param to indicate parameter direction ([in], [out], or [in,out]) and use \@returns for non-void functions.
-Avoid the doxygen at class directive since it is redundant and its use merely restates the code.
-The same goes for the doxygen file keyword.
-Don't comment the use of RAII or pimpl, since the developer is expected to know these concepts.
+Example: EventType lives in EventType.hpp, contains EventTypeTag, and has:
+\code{.cpp}
+inline bool operator==(const EventType& lhs, const EventType& rhs) {
+    return lhs.is_equal(rhs);
+}
+\endcode
 
-Compilation and Safety: Treat all compiler warnings as errors. Use the
-[[nodiscard]] attribute for functions that return an error.
-Place the destructor first in a class definition.
-Single argument constructors must be declared as explicit.
+@subsection cr_general General Practices
 
-Source File Content: Source files should contain only ASCII characters.
+- Prefer explicit nullptr comparisons (e.g., if (ptr == nullptr)).
+- Avoid one-letter variable names except for loop counters.
+- Use \#pragma once instead of C-style include guards.
+- Avoid the final keyword on class declarations.
+- Avoid unsigned integers.
+- Avoid std::byte -- its use often requires reinterpret_cast and pulls in \<cstddef\>.
+- Use int for message sizes, not size_t or any unsigned type.
+- Do not use exceptions as an error handling strategy -- return a value and
+  an error string as a std::tuple instead. The error string must contain
+  enough context to be useful on its own.
+- Source files must contain only ASCII characters.
 
-Include Ordering: \#include statements should be grouped and alphabetized within each group in this specific order:
-C, C++ (c prefix), System C++, Third Party, and Project. C++ headers (e.g., cerrno) are preferred
-over their C counterparts (e.g., errno.h).
+@subsection cr_docs Documentation
 
-The error handling style is to return a value and an error string as a std::tuple. The error string should contain
-all the context needed for the error string to be useful (e.g. address already in use should contain the port number).
-The type int shall be used to denote the length of a message, not std::size or any other unsigned integer type.
-This is because an int is more than large enough to record the size of the largest message that we will support.
-The library should not use exceptions as an error handling strategy.
+All documentation must be in Doxygen format and placed in header files only.
+Use \@param to indicate parameter direction ([in], [out], or [in,out]) and
+\@return for non-void functions. Do not use the \@class or \@file directives --
+they are redundant. Do not comment the use of RAII or pimpl.
 
- */
+@subsection cr_compilation Compilation and Safety
+
+- Treat all compiler warnings as errors.
+- Use [[nodiscard]] on functions that return error indicators.
+- Place the destructor first in a class definition.
+- Single-argument constructors must be explicit.
+
+@subsection cr_includes Include Ordering
+
+Group and alphabetise \#include statements in this order:
+C headers, C++ headers (c-prefix), system C++, third-party, project.
+Prefer C++ headers (e.g., \<cerrno\>) over C counterparts (e.g., \<errno.h\>).
+
+*/

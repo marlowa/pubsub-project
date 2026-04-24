@@ -1,0 +1,171 @@
+/*! \page dsl_design DSL Schema and Code Generator
+
+\tableofcontents
+
+\section dsl_overview Overview
+
+The framework uses a purpose-built schema description language (DSL) to define
+all binary message payloads. DSL files are the single source of truth for
+message structure. A Python-based code generator reads them and emits
+self-contained C++17 headers containing encode, decode, skip, and size functions
+for each message type.
+
+The DSL is designed to compete with SBE (Simple Binary Encoding) -- prioritising
+zero-copy decode on little-endian hardware, deterministic wire sizes, no external
+dependencies in the generated code, and allocator-friendly decoding via a
+\c BumpAllocator arena.
+
+\section dsl_language DSL Language
+
+\subsection dsl_primitives Primitive types
+
+| DSL type | C++ type | Wire size |
+|----------|----------|-----------|
+| i8 | int8_t | 1 byte |
+| i16 | int16_t | 2 bytes, little-endian |
+| i32 | int32_t | 4 bytes, little-endian |
+| i64 | int64_t | 8 bytes, little-endian |
+| bool | bool | 1 byte (0 or 1) |
+| datetime_ns | int64_t | 8 bytes, little-endian nanoseconds since epoch |
+| string | std::string_view | 4-byte length prefix + UTF-8 bytes |
+
+All integers are signed. There are no unsigned integer types in the DSL -- the
+only unsigned value in the system is the magic constant in the framing header,
+which is outside the DSL.
+
+\subsection dsl_compound Compound types
+
+- \b list<T> -- variable-length sequence. Encoded as a 4-byte element count
+  followed by the encoded elements. \c T may be any DSL type including another
+  list or a message reference.
+- \b T[N] -- fixed-length array of a primitive type. No length prefix. Encoded
+  as N consecutive elements.
+- \b string -- variable-length UTF-8 string. Encoded as a 4-byte byte-count
+  followed by the UTF-8 bytes.
+- \b optional T -- presence flag (1 byte, 0 or 1) followed by the encoded value
+  if present.
+
+\subsection dsl_enums Enums
+
+Enums have an explicit signed underlying type (\c i8, \c i16, \c i32, or \c i64).
+Each entry has an explicit integer value. Generated code includes \c to_string()
+and \c validate() constexpr helpers. Enums are fixed-size on the wire and require
+no arena allocation.
+
+\subsection dsl_messages Messages
+
+Each message has a mandatory numeric \c id in its metadata, used to identify
+message types in the PDU framing header. An optional \c version field may also
+appear. Fields are listed in declaration order, which determines wire order.
+
+\subsection dsl_example Example DSL file
+
+\code
+enum OrderSide : i8 {
+    Buy  = 1
+    Sell = 2
+}
+
+message NewOrder(id=10, version=1)
+    OrderSide    side
+    i64          quantity
+    i64          price_tenths
+    string       symbol
+    optional i32 client_order_id
+end
+\endcode
+
+\section dsl_generated Generated C++ API
+
+For each DSL file, the generator produces a single \c .hpp header in the build
+output directory. The generated code has no runtime dependencies beyond the
+standard library and \c BumpAllocator.hpp.
+
+\subsection dsl_structs Owning and View structs
+
+Each message generates two structs:
+
+- \b MessageName -- the owning (encode-side) struct. Fields use value types
+  (\c int32_t, \c std::string_view, \c ListView<T> etc.). Populated by the
+  application before encoding.
+- \b MessageNameView -- the view (decode-side) struct. Fields are non-owning
+  views into the wire buffer or arena. Populated by the decode function.
+
+\subsection dsl_functions Generated functions
+
+For each message \c Foo:
+
+\code{.cpp}
+// How many bytes Foo will occupy on the wire.
+std::size_t encoded_size(const Foo& message);
+
+// Encode Foo into out_buffer. Returns false if buffer is too small.
+bool encode(const Foo& message, uint8_t* out_buffer, std::size_t out_size,
+            std::size_t& bytes_written, std::size_t& bytes_needed);
+
+// Decode Foo from a wire buffer into a FooView.
+bool decode(FooView& out, const uint8_t* buffer, std::size_t bytes_available,
+            std::size_t& bytes_consumed,
+            pubsub_itc_fw::BumpAllocator& decode_arena,
+            std::size_t& arena_bytes_needed);
+
+// Skip over a Foo in a wire buffer without decoding it.
+bool skip_Foo(const uint8_t*& read_cursor, std::size_t& bytes_remaining);
+
+// Upper bound on arena bytes needed to decode Foo.
+constexpr std::size_t max_decode_arena_bytes_Foo(std::size_t max_elements_per_list = 256);
+\endcode
+
+For fixed-size messages (no strings, lists, or optional fields), an additional
+\c encode_fast() is generated that writes directly without size checks, for use
+on the hot path when the buffer size is already known to be sufficient.
+
+\subsection dsl_arena Decode arena
+
+Decoding variable-length fields (strings, lists of non-primitives) requires
+memory to hold the decoded view objects. This memory comes from a
+\c BumpAllocator arena passed to the decode function. The arena is never used
+for primitive list elements on little-endian hardware -- those zero-copy
+directly into the wire buffer via a \c reinterpret_cast. On big-endian hardware
+(not the primary target) the generator emits a byte-swap loop and uses the arena.
+
+The \c max_decode_arena_bytes_Foo() function provides a compile-time upper bound
+on arena usage for a given maximum list size, allowing the application to
+pre-size the arena without runtime measurement.
+
+\section dsl_wire Wire format
+
+All multi-byte integers are little-endian. The wire format for each type is:
+
+| Type | Wire encoding |
+|------|---------------|
+| i8, bool | 1 byte |
+| i16 | 2 bytes LE |
+| i32, string length, list count | 4 bytes LE |
+| i64, datetime_ns | 8 bytes LE |
+| string | 4-byte byte-count + UTF-8 bytes |
+| list<T> | 4-byte element-count + N encoded elements |
+| T[N] | N consecutive elements, no length prefix |
+| optional T | 1-byte flag (0=absent, 1=present) + encoded T if present |
+
+The DSL describes payload bytes only. On the wire, payloads are preceded by
+the framework's PDU framing header (magic, length, message ID). The framing
+header is not part of the DSL.
+
+\section dsl_toolchain Toolchain
+
+The generator lives under \c python/tools/generate_cpp_from_dsl.py and is
+driven by CMake's \c add_custom_command during the build. DSL files are
+discovered automatically via \c file(GLOB_RECURSE ...) on \c *.dsl. Generated
+headers are placed in \c build/libraries/pubsub_itc_fw/dsl/ and are included
+as framework headers.
+
+The Python package is structured as:
+- \c dsl/lexer.py -- tokeniser
+- \c dsl/parser.py -- recursive-descent parser producing an AST
+- \c dsl/ast.py -- AST node dataclasses
+- \c dsl/validator.py -- semantic validation (unknown types, duplicate IDs, cycles)
+- \c dsl/generator_cpp.py -- C++17 code emitter
+- \c tools/generate_cpp_from_dsl.py -- command-line entry point
+
+*/

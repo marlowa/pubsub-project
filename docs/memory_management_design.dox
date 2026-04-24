@@ -1,0 +1,167 @@
+/*! \page memory_management_design Memory Management Design
+
+\tableofcontents
+
+\section mmd_hot_path No heap allocation on the hot path
+
+A core principle of the framework is that no heap allocation (\c malloc, \c new,
+\c std::vector growth etc.) occurs on the hot path -- the reactor event loop and
+the application thread message processing path. All memory used for message
+transport is pre-allocated at startup from pool and slab allocators. This
+eliminates the latency jitter caused by the general-purpose heap allocator and
+avoids lock contention between threads competing for the heap.
+
+Two purpose-built allocators provide this guarantee:
+
+- \b ExpandableSlabAllocator -- for variable-sized PDU frames on the reactor thread.
+- \b ExpandablePoolAllocator -- for fixed-size ITC message queue nodes, shared
+  across all threads.
+
+\section mmd_slab ExpandableSlabAllocator -- PDU transport layer
+
+The \c ExpandableSlabAllocator is a variable-sized bump allocator backed by a
+chain of \c mmap regions (slabs). It is used exclusively for PDU transport:
+outbound PDU frames and inbound PDU payloads.
+
+\subsection mmd_slab_structure Structure
+
+Each slab is a contiguous \c mmap-backed region. Allocations are bump-allocated
+from the current slab with alignment to \c alignof(std::max_align_t). When a slab
+is full, a new slab is chained and allocation continues from it.
+
+Slab IDs are monotonically increasing integers. The allocator returns a
+\c {slab_id, ptr} pair from \c allocate():
+
+\code{.cpp}
+auto [slab_id, ptr] = allocator.allocate(payload_size);
+\endcode
+
+Both values must be passed back to \c deallocate() to return the memory.
+
+\subsection mmd_slab_threading Threading model
+
+This is a strict two-thread model:
+
+- \b Allocator thread: the reactor thread only. \c allocate() must never be
+  called from an application thread.
+- \b Deallocator threads: any application thread. \c deallocate() is thread-safe
+  and may be called concurrently from multiple threads.
+
+Reclamation is demand-driven: at the start of each \c allocate() call, the
+reactor drains a lock-free queue of empty slab IDs and reclaims them. This
+eliminates the GC-starvation failure mode that arises from background reclamation
+threads.
+
+\subsection mmd_slab_ownership Ownership rules
+
+\b Inbound PDU payloads:
+- The reactor allocates a slab chunk when decoding an inbound PDU.
+- The chunk pointer and \c slab_id are embedded in the \c EventMessage via
+  \c create_framework_pdu_message().
+- The \b application thread is responsible for calling
+  \c allocator.deallocate(message.slab_id(), message.payload()) after processing.
+- Failure to deallocate leaks the slab chunk permanently.
+
+\b Outbound PDU frames:
+- The application thread allocates a slab chunk, serialises the PDU into it,
+  and enqueues a \c SendPdu \c ReactorControlCommand carrying the chunk pointer
+  and \c slab_id.
+- The reactor deallocates the chunk when the send completes or when the
+  connection is torn down.
+- The application thread must not touch the chunk after enqueuing the command.
+
+\section mmd_pool ExpandablePoolAllocator -- ITC message queue
+
+The \c ExpandablePoolAllocator manages a chain of \c FixedSizeMemoryPool instances
+for fixed-size object allocation. It is used as the backing allocator for the
+Dmitry Vyukov lock-free MPSC queues that carry \c EventMessage objects between
+threads.
+
+\subsection mmd_pool_structure Structure
+
+Each \c FixedSizeMemoryPool is a pre-allocated slab of fixed-size slots. The
+chain starts with a configurable number of pre-allocated pools and expands
+transparently on demand -- there is no hard capacity limit. The allocator never
+returns null; it always expands rather than failing.
+
+\c allocate() applies placement new to construct the object in the allocated
+slot. \c deallocate() destructs the object before returning the slot to the pool.
+Callers must not use \c delete on objects returned by \c allocate().
+
+\subsection mmd_treiber Treiber stack free list
+
+Each \c FixedSizeMemoryPool maintains its free list as a \b Treiber stack -- a
+classic lock-free stack algorithm where each push and pop is a single atomic
+compare-and-swap (CAS) operation. This allows multiple threads to allocate and
+deallocate concurrently without any mutex.
+
+The free list is \b intrusive: when a slot is free, its own memory (the space
+that will later hold the object) stores the \c next pointer in the stack. No
+separate node allocations are required, which is essential for the no-heap-on-
+hot-path guarantee.
+
+\b ABA prevention: the classic weakness of a Treiber stack is the ABA problem --
+a thread reads the head pointer, gets pre-empted, another thread pops and then
+re-pushes the same node, and the first thread's CAS succeeds incorrectly. The
+framework prevents this with a \b tagged pointer: the head is a 128-bit structure
+containing both the pointer and a monotonically increasing counter. Every CAS
+increments the counter, making each {pointer, counter} pair unique even if the
+same address is reused.
+
+On x86-64 this is implemented using the \c CMPXCHG16B instruction (enabled by
+the \c -mcx16 compiler flag) via GCC's \c __atomic_compare_exchange intrinsic,
+which avoids any dependency on \c libatomic.
+
+\subsection mmd_pool_threading Threading model
+
+Fully thread-safe:
+- \c allocate(): lock-free fast path (Treiber stack CAS on the current pool's
+  free list), mutex-guarded slow path (chain expansion).
+- \c deallocate(): lock-free traversal of the pool chain using atomic loads to
+  find the owning pool, then atomic Treiber stack push onto that pool's free list.
+
+Multiple application threads and the reactor thread may all call \c allocate()
+and \c deallocate() concurrently without external synchronisation.
+
+\subsection mmd_pool_backpressure Backpressure
+
+Because the allocator expands without bound, the queue backed by it is never
+full in the traditional sense. Backpressure is implemented at a higher level via
+watermark callbacks on \c LockFreeMessageQueue:
+
+- \b High-watermark callback: fires when the number of queued messages exceeds
+  a configured threshold. Signals that the consumer is falling behind. The
+  application should slow down or shed load.
+- \b Low-watermark callback: fires when the queue drains below the threshold.
+  Signals recovery.
+
+A separate \b pool-exhaustion callback fires when a new \c FixedSizeMemoryPool
+slab must be allocated from the heap. This is a memory-layer event, not a
+backpressure mechanism -- by the time it fires, the allocation has already
+succeeded. It may be used to log an alert that the allocator has grown beyond
+its pre-allocated capacity.
+
+\section mmd_comparison Comparison
+
+| Property | ExpandableSlabAllocator | ExpandablePoolAllocator |
+|----------|------------------------|------------------------|
+| Allocation size | Variable | Fixed |
+| Allocator thread | Reactor only | Any thread |
+| Deallocator thread | Any thread | Any thread |
+| Thread safety | Two-thread contract | Fully lock-free (Treiber stack) |
+| Free list | Lock-free MPSC queue | Treiber stack with ABA prevention |
+| Reclamation | Demand-driven on reactor | Immediate on deallocate |
+| Used for | PDU transport | ITC message queues |
+| Backpressure | Buffer-full disconnect | Watermark callbacks |
+| Heap allocation on hot path | No | No |
+
+\section mmd_raw_socket Raw socket path
+
+Raw socket connections (\c RawBytesProtocolHandler) do not use either allocator
+for their inbound path. Received bytes go directly into a \c MirroredBuffer owned
+by the handler. The application thread reads from a non-owning pointer into that
+buffer and calls \c commit_raw_bytes() to release bytes. There is no heap
+allocation on the inbound raw socket path at all. See \ref raw_socket_design for
+details.
+
+*/
