@@ -3,13 +3,10 @@
 # ------------------------------------------------------------
 # DSL generation
 # ------------------------------------------------------------
-
-# Find all DSL files anywhere under libraries/pubsub_itc_fw/
 file(GLOB_RECURSE DSL_SCHEMAS
     ${CMAKE_CURRENT_SOURCE_DIR}/*.dsl
 )
 
-# Output directory for generated DSL headers
 set(DSL_OUTPUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/dsl)
 file(MAKE_DIRECTORY ${DSL_OUTPUT_DIR})
 
@@ -22,7 +19,7 @@ foreach(DSL_FILE ${DSL_SCHEMAS})
     add_custom_command(
         OUTPUT ${OUT_HPP}
         COMMAND ${Python3_EXECUTABLE}
-           ${CMAKE_CURRENT_SOURCE_DIR}/../../python/tools/generate_cpp_from_dsl.py
+            ${CMAKE_CURRENT_SOURCE_DIR}/../../python/tools/generate_cpp_from_dsl.py
             ${DSL_FILE}
             ${OUT_HPP}
             --namespace pubsub_itc_fw
@@ -75,12 +72,10 @@ set(PUBSUB_ITC_FW_SRC
 add_library(pubsub_itc_fw SHARED
     ${PUBSUB_ITC_FW_SRC}
     ${PUBSUB_ITC_FW_PROTO_SRCS}
-    ${GENERATED_DSL_HEADERS}   # optional but IDE-friendly
+    ${GENERATED_DSL_HEADERS}
 )
 
-add_dependencies(pubsub_itc_fw
-    pubsub_itc_fw_dsl
-)
+add_dependencies(pubsub_itc_fw pubsub_itc_fw_dsl)
 
 # ------------------------------------------------------------
 # Include paths
@@ -93,7 +88,7 @@ target_include_directories(pubsub_itc_fw PUBLIC
 )
 
 target_include_directories(pubsub_itc_fw SYSTEM PRIVATE
-        ${THIRDPARTY_DIR}/installed/tomlplusplus/${TOMLPLUSPLUS_VERSION}/include
+    ${THIRDPARTY_DIR}/installed/tomlplusplus/${TOMLPLUSPLUS_VERSION}/include
 )
 
 # ------------------------------------------------------------
@@ -112,7 +107,6 @@ target_link_libraries(pubsub_itc_fw PUBLIC
 # ------------------------------------------------------------
 if(ENABLE_COVERAGE)
     target_sources(pubsub_itc_fw PRIVATE src/pubsub_itc_fw_coverage.cpp)
-
     set_source_files_properties(
         src/pubsub_itc_fw_coverage.cpp
         PROPERTIES COMPILE_FLAGS "-O0 -fno-inline -fno-inline-small-functions -fno-default-inline"
@@ -122,21 +116,42 @@ endif()
 # ------------------------------------------------------------
 # Performance benchmark executable
 # ------------------------------------------------------------
-
 add_executable(pubsub_itc_fw_bench
     performance/DslBenchMain.cpp
 )
 
-# Ensure DSL is generated before building the bench
-add_dependencies(pubsub_itc_fw_bench
-    pubsub_itc_fw_dsl
-)
+add_dependencies(pubsub_itc_fw_bench pubsub_itc_fw_dsl)
 
-target_link_libraries(pubsub_itc_fw_bench
-    PRIVATE pubsub_itc_fw
-)
+target_link_libraries(pubsub_itc_fw_bench PRIVATE pubsub_itc_fw)
 
 target_include_directories(pubsub_itc_fw_bench PRIVATE
     ${CMAKE_CURRENT_BINARY_DIR}
     ${CMAKE_CURRENT_BINARY_DIR}/dsl
+)
+
+# ------------------------------------------------------------
+# Install rules
+# ------------------------------------------------------------
+
+# Shared library -> lib or lib64
+install(TARGETS pubsub_itc_fw
+    LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+)
+
+# Public headers -> include/pubsub_itc_fw
+install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/include/pubsub_itc_fw"
+    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+    FILES_MATCHING PATTERN "*.hpp"
+)
+
+# Generated DSL headers -> include/pubsub_itc_fw
+install(DIRECTORY "${DSL_OUTPUT_DIR}/"
+    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/pubsub_itc_fw"
+    OPTIONAL
+    FILES_MATCHING PATTERN "*.hpp"
+)
+
+# Benchmark -> bin
+install(TARGETS pubsub_itc_fw_bench
+    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
 )

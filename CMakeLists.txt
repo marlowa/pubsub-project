@@ -10,6 +10,11 @@ project(pubsub_itc_fw_project
 )
 
 # ------------------------------------------------------------
+# GNU standard install directories (lib vs lib64 etc.)
+# ------------------------------------------------------------
+include(GNUInstallDirs)
+
+# ------------------------------------------------------------
 # Global C++ settings
 # ------------------------------------------------------------
 set(CMAKE_CXX_STANDARD 17)
@@ -43,8 +48,6 @@ else()
         if(CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL "11.0")
             add_compile_options(-mcx16 -march=x86-64-v2)
         else()
-            # gcc 8.x does not support the x86-64-v2 march name.
-            # Specify the individual features that matter for lock-free code.
             add_compile_options(-mcx16 -msse4.2 -mpopcnt)
         endif()
     endif()
@@ -82,9 +85,15 @@ if(ENABLE_TSAN)
 endif()
 
 # ------------------------------------------------------------
+# Python3
+# ------------------------------------------------------------
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+message(STATUS "Python3: ${Python3_EXECUTABLE}")
+
+# ------------------------------------------------------------
 # Third-party discovery
 # ------------------------------------------------------------
-if (NOT DEFINED ENV{THIRDPARTY_DIR})
+if(NOT DEFINED ENV{THIRDPARTY_DIR})
     message(FATAL_ERROR "THIRDPARTY_DIR environment variable is not set.")
 endif()
 
@@ -104,9 +113,6 @@ list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/argparse/${ARGPARSE_V
 list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/googletest/${GOOGLETEST_VERSION}")
 list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/tomlplusplus/${TOMLPLUSPLUS_VERSION}")
 
-# On RHEL/Rocky/CentOS cmake config files are installed under lib64/cmake
-# rather than lib/cmake. Set _DIR explicitly for each package so
-# find_package works on both Mint (lib) and RHEL8 (lib64).
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)
     set(LIB_SUFFIX "64")
 else()
@@ -137,6 +143,56 @@ find_package(PkgConfig)
 if(PkgConfig_FOUND)
     pkg_check_modules(NUMA numa)
 endif()
+
+# ------------------------------------------------------------
+# Doxygen target (runs at install time)
+# ------------------------------------------------------------
+find_package(Doxygen QUIET)
+if(DOXYGEN_FOUND)
+    set(DOXYGEN_OUTPUT_DIR "${CMAKE_BINARY_DIR}/docs")
+
+    add_custom_target(doxygen_docs
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${DOXYGEN_OUTPUT_DIR}"
+        COMMAND ${DOXYGEN_EXECUTABLE} "${CMAKE_SOURCE_DIR}/Doxyfile"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        COMMENT "Generating API documentation with Doxygen"
+        VERBATIM
+    )
+
+    install(CODE "
+        message(STATUS \"Running Doxygen...\")
+        execute_process(
+            COMMAND \"${CMAKE_COMMAND}\" --build \"${CMAKE_BINARY_DIR}\" --target doxygen_docs
+            RESULT_VARIABLE _doxy_result
+        )
+        if(NOT _doxy_result EQUAL 0)
+            message(WARNING \"Doxygen failed with exit code \${_doxy_result}\")
+        endif()
+    ")
+
+    install(DIRECTORY "${DOXYGEN_OUTPUT_DIR}/html/"
+        DESTINATION "${CMAKE_INSTALL_DOCDIR}"
+        OPTIONAL
+    )
+else()
+    message(STATUS "Doxygen not found -- documentation will not be generated")
+endif()
+
+# ------------------------------------------------------------
+# Python DSL generator install
+# ------------------------------------------------------------
+install(CODE "
+    message(STATUS \"Installing Python DSL generator...\")
+    execute_process(
+        COMMAND \"${Python3_EXECUTABLE}\" -m pip install
+            --prefix \"\${CMAKE_INSTALL_PREFIX}\"
+            \"${CMAKE_SOURCE_DIR}/python\"
+        RESULT_VARIABLE _pip_result
+    )
+    if(NOT _pip_result EQUAL 0)
+        message(WARNING \"pip install failed with exit code \${_pip_result}\")
+    endif()
+")
 
 # ------------------------------------------------------------
 # Add the library

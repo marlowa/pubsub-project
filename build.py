@@ -131,12 +131,14 @@ def run_doxygen(source_dir):
 
 
 def configure_cmake(build_dir, source_dir, enable_valgrind=False, enable_coverage=False,
-                    enable_asan=False, enable_tsan=False):
+                    enable_asan=False, enable_tsan=False, install_dir=None):
     cmake_args = [
         "cmake",
         str(source_dir)
     ]
 
+    if install_dir is not None:
+        cmake_args.append(f"-DCMAKE_INSTALL_PREFIX={install_dir}")
     if enable_valgrind:
         cmake_args.append("-DENABLE_VALGRIND=ON")
         print("NOTE: Building with Valgrind compatibility")
@@ -238,6 +240,15 @@ def run_integration_tests(build_dir):
     print("\n✓ All integration tests passed")
 
 
+def install_project(build_dir, install_dir):
+    """Install the project to the specified directory."""
+    run_command(
+        ["cmake", "--install", str(build_dir)],
+        description=f"Installing to {install_dir}"
+    )
+    print(f"\n✓ Installation complete: {install_dir}")
+
+
 def clean_build(build_dir):
     """Remove build directory"""
     if build_dir.exists():
@@ -254,13 +265,15 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s                          # Normal build and test
-  %(prog)s --clean                  # Clean and rebuild
-  %(prog)s --valgrind               # Build with Valgrind compatibility
-  %(prog)s --doxygen                # Build and generate docs
-  %(prog)s --doxygen-only           # Only generate documentation
-  %(prog)s --no-tests               # Build without running tests
-  %(prog)s --clean --valgrind       # Clean build for Valgrind
+  %(prog)s                                    # Normal build and test
+  %(prog)s --clean                            # Clean and rebuild
+  %(prog)s --valgrind                         # Build with Valgrind compatibility
+  %(prog)s --doxygen                          # Build and generate docs
+  %(prog)s --doxygen-only                     # Only generate documentation
+  %(prog)s --no-tests                         # Build without running tests
+  %(prog)s --clean --valgrind                 # Clean build for Valgrind
+  %(prog)s --install-dir /opt/pubsub_itc_fw  # Build, test, and install
+  %(prog)s --no-tests --install-dir ~/install # Build and install without running tests
         """
     )
 
@@ -294,6 +307,12 @@ Examples:
 
     parser.add_argument('--build-dir', type=Path, default=Path('build'),
         help='Build directory path (default: ./build)'
+    )
+
+    parser.add_argument('--install-dir', type=Path, default=None,
+        help='Installation prefix directory. If specified, runs cmake --install after a '
+             'successful build. Sets CMAKE_INSTALL_PREFIX. '
+             'The install tree will contain bin/, include/, lib/ (or lib64/), and docs/.'
     )
 
     parser.add_argument('--coverage', action='store_true',
@@ -346,7 +365,8 @@ Examples:
 
     # Configure
     configure_cmake(build_dir, source_dir, enable_valgrind=args.valgrind,
-                    enable_coverage=args.coverage, enable_asan=args.asan, enable_tsan=args.tsan)
+                    enable_coverage=args.coverage, enable_asan=args.asan, enable_tsan=args.tsan,
+                    install_dir=args.install_dir)
 
     # Build
     build_project(build_dir, jobs=args.jobs, verbose=args.verbose)
@@ -358,6 +378,10 @@ Examples:
 
     if args.coverage_report:
         generate_coverage_report(build_dir, source_dir)
+
+    # Install if requested
+    if args.install_dir is not None:
+        install_project(build_dir, args.install_dir)
 
     # Generate Doxygen if requested
     if args.doxygen:
