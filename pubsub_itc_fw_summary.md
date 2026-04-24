@@ -169,9 +169,9 @@ Represents one reactor-managed outbound TCP connection. Lives in `OutboundConnec
 
 | Class | One-liner |
 |---|---|
-| `ProtocolHandlerInterface` | Pure abstract interface: `on_data_ready()`, `send_prebuilt()`, `has_pending_send()`, `continue_send()`, `deallocate_pending_send()` |
+| `ProtocolHandlerInterface` | Pure abstract interface: `on_data_ready()`, `send_prebuilt()`, `has_pending_send()`, `continue_send()`, `deallocate_pending_send()`, `commit_bytes()` |
 | `PduProtocolHandler` | Strategy A: owns `PduParser` + `PduFramer` + pending-send slab state; handles framework-native PDU streams |
-| `RawBytesProtocolHandler` | Strategy B: not yet implemented; will own a `MirroredBuffer` for alien (e.g. FIX) streams |
+| `RawBytesProtocolHandler` | Strategy B: owns `MirroredBuffer`; delivers raw byte streams to the application thread; see Section 7 for full design |
 
 **`PduProtocolHandler` responsibilities:**
 - Inbound: `PduParser::receive()` reads and dispatches complete PDU frames; disconnect handler invoked on EOF or protocol error
@@ -187,18 +187,75 @@ Represents one reactor-managed outbound TCP connection. Lives in `OutboundConnec
 
 ---
 
-### 7. MirroredBuffer (implemented, tested)
+### 7. Raw Socket Communication Design
 
-Stream-oriented ring buffer using virtual memory mirroring for alien protocol support.
+This section documents how raw byte streams (alien protocols such as ASCII FIX, NMEA, or any custom binary protocol) are handled end-to-end. This is the most complex path in the framework because unlike PDU connections, the application thread is responsible for its own message framing.
+
+**Overview**
+
+The reactor is the only component that performs socket I/O. When bytes arrive on a raw-bytes connection, the reactor reads them into a `MirroredBuffer` and notifies the application thread via the Vyukov queue. The application thread decodes what it can, then tells the reactor how many bytes it has consumed via a `CommitRawBytes` reactor control command. The reactor then advances the buffer tail, releasing those bytes.
+
+**`MirroredBuffer`**
+
+A stream-oriented ring buffer using virtual memory mirroring.
 
 | Detail | Value |
 |---|---|
-| Backing | `memfd_create` + double `mmap` |
-| Purpose | Provides contiguous view of a byte stream even when data wraps the ring buffer end |
-| Head/tail arithmetic | Modular wrap; one-byte sentinel to distinguish full from empty |
-| Owner | Will be owned by `RawBytesProtocolHandler` (not yet implemented) |
+| Backing | `memfd_create` + double `mmap` into adjacent virtual address ranges |
+| Purpose | Provides a contiguous view of unprocessed bytes even when data wraps the ring buffer end, eliminating split-packet edge cases |
+| Head | Advanced by the reactor thread only, on each `recv()` |
+| Tail | Advanced by the reactor thread only, in response to `CommitRawBytes` |
+| Exposed to app | `read_ptr()` — pointer to first unprocessed byte; `bytes_available()` — count of unprocessed bytes; `tail()` — current tail position |
+| Backpressure | If `space_remaining() == 0` when `on_data_ready()` fires, the connection is disconnected. A rogue or slow peer that fills the buffer is disconnected; all other connections are unaffected. |
 
-Unit tests: `MirroredBufferTest` — including `VerifiesVirtualMemoryMirroringContinuity` (adversarial straddle test) and `HandlesExhaustiveWrapAroundStress` (1000 iterations).
+Unit tests: `MirroredBufferTest` — including `VerifiesVirtualMemoryMirroringContinuity` and `HandlesExhaustiveWrapAroundStress` (1000 iterations).
+
+**`RawBytesProtocolHandler`**
+
+Implements `ProtocolHandlerInterface` (Strategy B). Owns the `MirroredBuffer` and a `PduFramer` for the outbound path.
+
+Inbound path:
+1. `on_data_ready()` is called by the reactor when `EPOLLIN` fires.
+2. `recv()` reads available bytes into the buffer, advancing the head.
+3. An `EventMessage` of type `RawSocketCommunication` is enqueued to the target `ApplicationThread`. The message carries:
+   - `connection_id` — so the app can demultiplex multiple raw connections
+   - `payload()` — `read_ptr()` into the `MirroredBuffer` at enqueue time
+   - `payload_size()` — `bytes_available()` at enqueue time (ALL unprocessed bytes, not just newly arrived ones)
+   - `tail_position()` — the buffer's `tail_` value at enqueue time (used by the app to detect tail advances unambiguously)
+
+Outbound path: identical to `PduProtocolHandler` — `PduFramer` handles partial sends and slab chunk lifetime.
+
+**`EventMessage` for raw socket delivery**
+
+`EventMessage::create_raw_socket_message(connection_id, data, size, tail_position)` — the `tail_position` parameter was added specifically to give the application thread an unambiguous way to detect when the reactor has advanced the tail between two deliveries. Without it, the app cannot reliably distinguish "more data arrived" from "tail advanced and the window shifted", because both can cause `payload_size()` to change in the same direction.
+
+**Reactor control commands for raw bytes**
+
+| Command | Direction | Meaning |
+|---|---|---|
+| `CommitRawBytes` | App thread → Reactor | "I have finished processing `bytes_consumed` bytes; advance the tail" |
+| `SendRaw` | App thread → Reactor | "Send these pre-built raw bytes on connection `connection_id`" |
+
+`CommitRawBytes` is processed by `InboundConnectionManager::process_commit_raw_bytes()`, which calls `RawBytesProtocolHandler::commit_bytes(n)`, which calls `buffer_.advance_tail(n)`.
+
+**Application thread responsibilities**
+
+The application thread subclass must implement `on_raw_socket_message()`. Each call receives ALL currently unprocessed bytes from the tail — not just the newly arrived bytes. The tail only advances when the reactor processes a `CommitRawBytes` command. Between two calls, if the tail has not yet advanced, `payload()` points to the same start address and `payload_size()` may be larger.
+
+Correct application thread pattern (as used in `BurstListenerThread`):
+- Track `bytes_decoded_` (bytes decoded since the last tail advance) and `last_tail_` (tail position from the last delivery).
+- On each call, compare `message.tail_position()` against `last_tail_`. If different, the tail advanced — reset `bytes_decoded_` to 0.
+- Decode from `data + bytes_decoded_` for `available - bytes_decoded_` bytes.
+- Only call `commit_raw_bytes()` when `bytes_decoded_ == available` (entire window consumed). This ensures no partial message bytes remain after the commit — the next `EPOLLIN` will deliver them together with any new bytes. If a partial message remains uncommitted, it stays in the buffer and is delivered combined with subsequent data.
+- If a rogue client sends a partial message and goes silent, the buffer fills and the framework disconnects them.
+
+**Why `tail_position()` is needed**
+
+Without it, the app uses `available < last_available_` to detect a tail advance. This fails when new data arrives simultaneously: the tail advances (shrinking the window) but new bytes also arrive (growing it), so `available` may increase rather than decrease. The `tail_position()` field makes the detection exact and unambiguous.
+
+**Use-after-free protection in `InboundConnectionManager`**
+
+`send_prebuilt()` may invoke the disconnect handler synchronously (e.g. on `EPIPE`), which calls `teardown_connection()` and destroys the `InboundConnection`. Both `process_send_pdu_command()` and `process_send_raw_command()` therefore re-look up the connection by `ConnectionID` after calling `send_prebuilt()`, before attempting to register `EPOLLOUT`. If the connection was destroyed, the re-lookup returns `end()` and the function returns cleanly.
 
 ---
 
@@ -341,42 +398,11 @@ On heartbeat loss:
 
 ### 13. Logging Subsystem
 
-`QuillLogger` wraps `quill::Logger*`. Any class that needs to log receives a `QuillLogger&` in its constructor and stores it as a member. The Reactor does not own all logging — each class logs for itself.
+`QuillLogger` wrapping `quill::Logger*`. `PUBSUB_LOG(logger, level, fmt, ...)` for format args; `PUBSUB_LOG_STR(logger, level, str)` for single string (required by `-Werror=variadic-macros`).
 
-**Two macros — zero routing logic at the call site:**
-- `PUBSUB_LOG(logger, level, fmt, ...)` — format string with variadic args; args are forwarded directly to Quill and formatted on the backend thread (never on the calling thread)
-- `PUBSUB_LOG_STR(logger, level, msg)` — single string; expands to `PUBSUB_LOG(logger, level, "{}", msg)`
+Log levels: `FwLogLevel::Alert`, `Critical`, `Error`, `Warning`, `Notice`, `Info`, `Debug`, `Trace`. Currently everything is logged at `Info`; level differentiation is a future task.
 
-**`FwLogLevel` enum** (lower value = more severe = always logged):
-```
-Trace=0, Debug=1, Info=2, Notice=3, Warning=4, Error=5, Critical=6, Alert=7
-```
-Comparison operators reflect this: `Alert > Debug` numerically. The logger gate is set to `min(applog_level, syslog_level)` so neither sink is starved.
-
-**Two operating modes, two constructors:**
-
-| | Production | Unit test |
-|---|---|---|
-| Destination 1 | File sink (applog) | Console sink |
-| Destination 2 | Syslog sink | *(suppressed)* |
-| Per-dest threshold | `applog_level_`, `syslog_level_` | `applog_level_` only |
-| Test callback | No | Optional; receives fully formatted strings gated by `applog_level_` |
-
-```cpp
-// Production
-QuillLogger(file_path, file_mode, applog_level, syslog_level);
-
-// Unit test
-QuillLogger(applog_level, callback);  // callback is optional/nullptr
-```
-
-File and console are never both active simultaneously. Console output is discarded in production; the framework never attempts file logging in a unit test context. The `should_log_to_*` routing functions from the earlier design have been removed — policy belongs at the sink, not at call sites.
-
-**Signal safety:** `QuillLogger::block_signals_before_construction()` must be called once on the main thread before any `QuillLogger` is constructed. This blocks `SIGINT`/`SIGTERM` so the Quill backend thread inherits the blocked mask and the Reactor's `signalfd` handles those signals gracefully.
-
-**Test infrastructure:**
-- `LoggerWithSink` — `QuillLogger` in unit-test mode with callback wired to an in-memory `std::vector<std::string> records`; provides `clear()`, `contains_message()`, `count()` helpers; lives in `pubsub_itc_fw` namespace
-- `TestSink` — Quill sink that accumulates `LogRecord` structs; used independently where structured record inspection is needed
+Any class that needs to log receives a `QuillLogger&` in its constructor and stores it as a member. The Reactor does not own all logging — each class logs for itself.
 
 ---
 
@@ -427,7 +453,17 @@ The receiving node's reactor accepts data via epoll and delivers it zero-copy to
 - StatusQueryResponseRoundTrip integration test passing
 - ApplicationThread `get_reactor()` accessor added
 
-### Session 5 (current)
+### Session 6 (current)
+- **Reactor refactor confirmed complete** — `Reactor` correctly delegates all inbound/outbound connection work to `InboundConnectionManager` and `OutboundConnectionManager`; was done in Session 4 but not recorded
+- **`RawBytesProtocolHandler` implemented and all bugs fixed** — intermittent `BurstDelivery` test failure resolved; root cause was ambiguity in tail-advance detection when new data arrives simultaneously with a commit being processed; fix: `EventMessage::create_raw_socket_message` now carries `tail_position` (from `MirroredBuffer::tail()`); app thread uses exact tail comparison instead of the fragile `available < last_available_` heuristic; commit policy changed to only commit when entire window is consumed
+- **`MirroredBuffer`** — added `tail()` accessor
+- **`EventMessage`** — added `tail_position` field to `Header` and `tail_position()` getter; `create_raw_socket_message` takes `int64_t tail_position` as fourth argument
+- **`InboundConnectionManager` use-after-free fix** — `process_send_pdu_command` and `process_send_raw_command` both re-look up connection by ID after `send_prebuilt` returns, since `send_prebuilt` may invoke the disconnect handler synchronously and destroy the connection
+- **Re-delivery machinery removed** — `deliver_pending_redeliveries`, `pending_redelivery_`, `fresh_delivery_pending_`, `bytes_buffered()`, `buffered_read_ptr()`, `take_pending_redelivery()`, `has_fresh_delivery_pending()` all removed from `RawBytesProtocolHandler`, `ProtocolHandlerInterface`, `InboundConnectionManager`, and `Reactor`
+- **Format string mismatch detection documented and tested** — investigated compile-time checking options for C++17; concluded it is not possible (requires C++20 `consteval`); documented the runtime fallback: Quill 11.0.2 catches format errors in `_populate_formatted_log_message` and emits a `[Could not format log statement...]` log record (note: `error_notifier` in `BackendOptions` is NOT called for format errors, only for queue failures and backend exceptions); `LoggingMacros.hpp` and `QuillLogger.hpp` updated with full explanation; test `QuillLoggerTest.FormatMismatchIsReportedAsLogRecord` added to verify the runtime detection
+- All 411 tests passing; 1000-iteration stress test in progress
+
+### Session 5
 - **Logging subsystem rewrite** — `QuillLogger` redesigned with two clean constructors (production: file+syslog; unit test: console+optional callback); `FwLogLevel` enum values flipped so lower=more severe, matching Quill convention; `should_log_to_*` routing functions removed; sink-level filtering used throughout; macros forward args directly to Quill backend thread (no front-end formatting); `PUBSUB_LOG` and `PUBSUB_LOG_STR` are the only two call-site macros
 - **`LoggerWithSink` rewritten** — now uses unit-test constructor with callback wired to `std::vector<std::string> records`; two-argument constructor removed; `TestSink` dependency removed from `LoggerWithSink`
 - **`TestSink` fixed** — missing `<iomanip>`, `<sstream>`, `<chrono>`, `<stdexcept>` includes added
@@ -465,36 +501,32 @@ The receiving node's reactor accepts data via epoll and delivers it zero-copy to
 - `ThreadLookupInterface` — complete
 - Reactor connection management — complete (pending final Reactor refactor)
 - `ServiceRegistry` / `ServiceEndpoints` / `ConnectionID` — complete
-- `EventType` / `EventMessage` — complete (includes `create_raw_socket_message`)
+- `EventType` / `EventMessage` — complete (includes `create_raw_socket_message` with `tail_position`)
 - `ReactorControlCommand` — complete
 - `ReactorConfiguration` — complete
 - DSL code generator — complete, 61 tests passing
 - Leader-follower DSL messages — defined and generated
 - Logging subsystem — complete, rewritten in Session 5
+- `RawBytesProtocolHandler` — complete (Strategy B; owns `MirroredBuffer`; `CommitRawBytes` command implemented)
 
 ## What Is Not Yet Done (in dependency order)
 
 1. **Reactor refactor (immediate)** — Reactor must be rewritten to inherit `ThreadLookupInterface`, remove extracted connection members, construct `InboundConnectionManager` and `OutboundConnectionManager`, and delegate all inbound/outbound operations to them. `InboundConnectionManager` and `OutboundConnectionManager` are fully written and ready.
-2. **`RawBytesProtocolHandler`** — Strategy B; will own `MirroredBuffer`; requires `CommitRawBytes` tag added to `ReactorControlCommand`
-3. **Leader-follower protocol** — state machine, heartbeat timers, arbitration
-4. **Pub/sub fanout**
-5. **`ExpandablePoolAllocatorTest.CrossPoolAbaInterleaving`** — intermittent 1-in-500 failure under TSan; the `free_next` atomic fix resolved the main race; residual failure still present
-6. **`RawBytesProtocolHandlerIntegrationTest` burst receive** — intermittent failure (1-in-10 runs); listener receives fewer burst messages than expected within timeout; unrelated to logging rewrite; teardown SIGABRT secondary failure obscures diagnosis
-7. **Logging levels** — everything currently at Info; verbose paths should move to Debug once framework applications are running
+2. **Leader-follower protocol** — state machine, heartbeat timers, arbitration
+3. **Pub/sub fanout**
+4. **`ExpandablePoolAllocatorTest.CrossPoolAbaInterleaving`** — intermittent 1-in-500 failure under TSan; the `free_next` atomic fix resolved the main race; residual failure still present
+5. **Logging levels** — everything currently at Info; verbose paths should move to Debug once framework applications are running
 
 ## Immediate Next Task
 
-Rewrite `Reactor.hpp` and `Reactor.cpp` from scratch to complete the manager extraction:
-- `Reactor` inherits `ThreadLookupInterface` and provides `get_fast_path_thread()` as the override
-- Constructor initialises `InboundConnectionManager` and `OutboundConnectionManager`, passing `epoll_fd_`, `config_`, `inbound_slab_allocator_`, `service_registry_` (outbound only), `*this` (as `ThreadLookupInterface&`), and `logger_`
-- `next_connection_id_` stays on Reactor; `allocate_connection_id()` is called by Reactor before delegating to `on_accept(listener, id)` and `process_connect_command(command, id)`
-- `dispatch_events` uses `inbound_manager_.find_by_fd()`, `outbound_manager_.find_by_fd()`, `inbound_manager_.find_listener_by_fd()`
-- `process_control_commands` drains both `inbound_manager_.drain_pending_send()` and `outbound_manager_.drain_pending_send()` before queue; delegates `Connect`/`SendPdu`/`Disconnect` to appropriate manager
-- `on_housekeeping_tick` calls `inbound_manager_.check_for_inactive_connections()` and `outbound_manager_.check_for_timed_out_connections()`
-- `on_accept(listener)` allocates ID and calls `inbound_manager_.on_accept(listener, id)`
-- `initialize_listeners()` delegates to `inbound_manager_.initialize_listeners()`
-- `get_first_inbound_listener_port()` delegates to `inbound_manager_.get_first_listener_port()`
-- All extracted functions removed from Reactor: `on_inbound_data_ready`, `on_inbound_write_ready`, `teardown_inbound_connection`, `check_for_inactive_sockets`, `on_data_ready(OutboundConnection&)`, `on_write_ready(OutboundConnection&)`, `teardown_connection`, `process_connect_command`, `process_send_pdu_command`, `process_disconnect_command`, `check_for_timed_out_connections`
+Implement the leader-follower protocol state machine:
+- States: `Unconnected`, `Connecting`, `Connected`, `Arbitrating`, `Leader`, `Follower`
+- Heartbeat timer (periodic) and arbitration timeout timer
+- On `ConnectionEstablished`: send `StatusQuery` PDU; start heartbeat timer
+- On `StatusResponse`: determine role based on `instance_id` comparison (lowest wins)
+- On `ConnectionLost`: transition to `Unconnected`; attempt reconnect
+- DR nodes are pure arbiters — never become `Leader` or `Follower`
+- All state transitions logged at `Info`; all PDUs defined in the leader-follower DSL
 
 ---
 

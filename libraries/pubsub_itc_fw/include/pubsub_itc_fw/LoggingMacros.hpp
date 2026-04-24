@@ -10,6 +10,38 @@
 
 /** @ingroup logging_subsystem */
 
+// =============================================================================
+// Format string safety
+// =============================================================================
+//
+// The fmt argument to PUBSUB_LOG must always be a string literal, for example:
+//
+//   PUBSUB_LOG(logger, FwLogLevel::Info, "connected to {} on port {}", host, port);
+//
+// NEVER pass a runtime string or a variable as the fmt argument.
+//
+// Compile-time validation of the format string against the argument list is
+// NOT available in C++17. This is a fundamental limitation of the language:
+// the consteval keyword (which fmt::format_string relies on for compile-time
+// checking) was introduced in C++20. In C++17, fmt::format_string falls back
+// to a plain string_view with no validation.
+//
+// Runtime detection: if a format string does not match its argument list, the
+// Quill backend catches the error inside its formatting path and emits a normal
+// log record containing:
+//   [Could not format log statement. message: "...", location: "...", error: "..."]
+// This record appears in the applog file and any other configured sinks, so it
+// will be visible during testing. Note: the BackendOptions::error_notifier
+// callback is NOT invoked for format errors in Quill 11.0.2 -- it is only used
+// for queue failures and backend exceptions.
+//
+// C++20: upgrading to C++20 would allow compile-time checking to be added to
+// these macros using fmt::format_string's consteval constructor. Until then,
+// format string correctness is enforced by code review, testing discipline,
+// and the runtime error_notifier.
+//
+// =============================================================================
+
 // In clang-tidy analysis mode the macros are neutralised to avoid false
 // positives from the variadic forwarding.
 #ifdef CLANG_TIDY

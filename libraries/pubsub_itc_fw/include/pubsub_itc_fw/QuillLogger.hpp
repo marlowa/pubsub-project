@@ -37,6 +37,17 @@ namespace pubsub_itc_fw {
  *
  * Any class that needs to log receives a QuillLogger& in its constructor and
  * stores it as a member.
+ *
+ * Format string safety:
+ *   In C++17, format string mismatches between the fmt argument and the
+ *   variadic argument list are not caught at compile time -- this requires
+ *   C++20's consteval. At runtime, Quill's backend catches format errors
+ *   inside _populate_formatted_log_message and emits them as a normal log
+ *   record containing "[Could not format log statement. ...]". This record
+ *   is visible in the applog file and console sink. Note that the
+ *   error_notifier in BackendOptions is NOT called for format errors in
+ *   Quill 11.0.2 -- it is only used for queue failures and backend exceptions.
+ *   See LoggingMacros.hpp for the full explanation and coding rules.
  */
 
 /** @ingroup logging_subsystem */

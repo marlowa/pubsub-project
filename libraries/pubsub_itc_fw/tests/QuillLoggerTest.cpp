@@ -1,7 +1,9 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <chrono>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -281,6 +283,38 @@ TEST(QuillLoggerIsolationTest, LevelChangeOnOneLoggerDoesNotAffectOther) {
 
     EXPECT_EQ(logger1.log_level(), FwLogLevel::Error);
     EXPECT_EQ(logger2.log_level(), FwLogLevel::Debug);
+}
+
+// =============================================================================
+// Format string mismatch detection test
+// =============================================================================
+
+// Verifies that a mismatch between the format string and the argument list is
+// detected by the Quill backend and reported as a log record containing
+// "Could not format log statement".
+//
+// In Quill 11.0.2, format errors are caught inside _populate_formatted_log_message
+// and emitted as a normal log record rather than going through error_notifier.
+// The error_notifier is only called for queue failures and backend exceptions.
+//
+// Note: compile-time format string checking is not available in C++17 -- see
+// LoggingMacros.hpp for a full explanation. This test verifies the runtime
+// fallback. The mismatch is intentional.
+TEST_F(QuillLoggerTest, FormatMismatchIsReportedAsLogRecord) {
+    // NOLINTNEXTLINE -- deliberate format string mismatch for testing
+    PUBSUB_LOG((*logger_), FwLogLevel::Info, "{}:{} intentional mismatch", "only_one_arg");
+
+    // Wait for the backend to process and emit the error record.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (contains_message("Could not format")) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    EXPECT_TRUE(contains_message("Could not format"))
+        << "Expected a 'Could not format' error record for format string mismatch";
+    EXPECT_TRUE(contains_message("argument not found") || contains_message("intentional mismatch"))
+        << "Error record should identify the bad format string";
 }
 
 // =============================================================================

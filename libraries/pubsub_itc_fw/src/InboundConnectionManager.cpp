@@ -350,8 +350,16 @@ bool InboundConnectionManager::process_send_pdu_command(const ReactorControlComm
     conn.handler()->send_prebuilt(command.allocator_, command.slab_id_,
                                   command.pdu_chunk_ptr_, total_bytes);
 
-    if (conn.handler()->has_pending_send()) {
-        const int conn_fd = conn.get_fd();
+    // send_prebuilt may invoke the disconnect handler synchronously, which
+    // calls teardown_connection and erases the connection from the map.
+    // Re-look up by cid before touching conn again.
+    auto it2 = connections_.find(cid);
+    if (it2 == connections_.end()) {
+        return true;
+    }
+
+    if (it2->second->handler()->has_pending_send()) {
+        const int conn_fd = it2->second->get_fd();
         epoll_event ev{};
         ev.events  = EPOLLIN | EPOLLOUT | EPOLLERR;
         ev.data.fd = conn_fd;
@@ -380,8 +388,16 @@ bool InboundConnectionManager::process_send_raw_command(const ReactorControlComm
     conn.handler()->send_prebuilt(command.allocator_, command.slab_id_,
                                   command.raw_chunk_ptr_, command.raw_byte_count_);
 
-    if (conn.handler()->has_pending_send()) {
-        const int conn_fd = conn.get_fd();
+    // send_prebuilt may invoke the disconnect handler synchronously, which
+    // calls teardown_connection and erases the connection from the map.
+    // Re-look up by cid before touching conn again.
+    auto it2 = connections_.find(cid);
+    if (it2 == connections_.end()) {
+        return true;
+    }
+
+    if (it2->second->handler()->has_pending_send()) {
+        const int conn_fd = it2->second->get_fd();
         epoll_event ev{};
         ev.events  = EPOLLIN | EPOLLOUT | EPOLLERR;
         ev.data.fd = conn_fd;
