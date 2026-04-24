@@ -43,7 +43,7 @@ struct PoolStatistics {
     int number_of_full_pools_{0};        /**< @brief The number of pools that are completely full. */
 
     /**
-     * @brief Logs the pool statistics to a provided `LoggerInterface`.
+     * @brief Logs the pool statistics.
      * @param logger The logger to use for output.
      */
     void log_statistics(QuillLogger& logger) const {

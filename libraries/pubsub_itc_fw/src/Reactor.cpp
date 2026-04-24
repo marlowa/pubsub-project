@@ -125,7 +125,7 @@ Reactor::Reactor(const ReactorConfiguration& reactor_configuration,
     }
 
     auto timer_id = allocate_timer_id();
-    create_timer_fd(timer_id, "Backstop", ThreadID(system_thread_id_value), config_.inactivity_check_interval_, TimerType::Recurring);
+    create_timer_fd(timer_id, "Backstop", ThreadID(system_thread_id_value), config_.inactivity_check_interval_, TimerType(TimerType::Recurring));
     PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "backstop timer created");
 }
 

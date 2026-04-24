@@ -67,7 +67,7 @@ TimerHandler::TimerHandler(const Timer& timer, Reactor& reactor) : timer_(timer)
     spec.it_value.tv_sec = ns.count() / 1'000'000'000;
     spec.it_value.tv_nsec = ns.count() % 1'000'000'000;
 
-    if (timer.get_type() == TimerType::Recurring) {
+    if (timer.get_type() == TimerType(TimerType::Recurring)) {
         spec.it_interval = spec.it_value;
     }
 

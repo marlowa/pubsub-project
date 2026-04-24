@@ -36,7 +36,6 @@ namespace pubsub_itc_fw {
 
 // Forward declarations
 class Reactor;
-class SocketHandler;
 
 /** @ingroup threading_subsystem */
 

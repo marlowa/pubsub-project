@@ -141,11 +141,11 @@ void ApplicationThread::post_message(ThreadID target_thread_id, EventMessage mes
 }
 
 TimerID ApplicationThread::start_one_off_timer(const std::string& name, std::chrono::microseconds interval) {
-    return schedule_timer(name, interval, TimerType::SingleShot);
+    return schedule_timer(name, interval, TimerType(TimerType::SingleShot));
 }
 
 TimerID ApplicationThread::start_recurring_timer(const std::string& name, std::chrono::microseconds interval) {
-    return schedule_timer(name, interval, TimerType::Recurring);
+    return schedule_timer(name, interval, TimerType(TimerType::Recurring));
 }
 
 void ApplicationThread::cancel_timer(const std::string& name) {

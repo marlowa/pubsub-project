@@ -1,5 +1,3 @@
-#ifndef CLANG_TIDY
-// TODO not sure why DslBenchProtocol.hpp is not found during clang-tidy.
 #include "DslBenchProtocol.hpp"
 
 #include <algorithm>
@@ -77,7 +75,7 @@ void benchmark_message(const char* name, OwningMsg& msg, int iterations)
 // ------------------------------------------------------------
 int main()
 {
-    const int iterations = 2000;
+    constexpr int iterations = 2000;
 
     // ------------------------------------------------------------
     // SmallMessage
@@ -127,4 +125,3 @@ int main()
 
     return 0;
 }
-#endif

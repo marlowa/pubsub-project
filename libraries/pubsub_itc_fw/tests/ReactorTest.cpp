@@ -604,7 +604,7 @@ TEST_F(ReactorTest, CancelTimerWrongOwnerThrows)
     reactor.register_thread(t2);
 
     const TimerID tid = reactor.allocate_timer_id();
-    reactor.create_timer_fd(tid, "X", ThreadID(1), std::chrono::milliseconds(10), TimerType::SingleShot);
+    reactor.create_timer_fd(tid, "X", ThreadID(1), std::chrono::milliseconds(10), TimerType(TimerType::SingleShot));
 
     EXPECT_THROW(reactor.cancel_timer_fd(ThreadID(2), tid), PreconditionAssertion); // NOLINT(cppcoreguidelines-avoid-goto,hicpp-avoid-goto)
 }

@@ -101,7 +101,7 @@ QuillLogger::QuillLogger(const std::string& file_path,
     ensure_backend_started();
 
     quill::FileSinkConfig file_config;
-    file_config.set_open_mode(file_mode == FileOpenMode::Append ? 'a' : 'w');
+    file_config.set_open_mode(file_mode == FileOpenMode(FileOpenMode::Append) ? 'a' : 'w');
     applog_sink_ = quill::Frontend::create_or_get_sink<quill::FileSink>(
         file_path, file_config, quill::FileEventNotifier{});
 
