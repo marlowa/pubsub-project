@@ -204,6 +204,18 @@ public:
     [[nodiscard]] bool process_commit_raw_bytes(ConnectionID id, int64_t bytes_consumed);
 
     /**
+     * @brief Re-delivers buffered bytes to application threads for any raw-bytes
+     *        connections that have bytes remaining after a CommitRawBytes pass.
+     *
+     * Called by the Reactor once, after the entire command queue has been drained
+     * in process_control_commands(). Iterating after the full drain ensures that
+     * all CommitRawBytes commands for a given burst have been processed before any
+     * re-delivery is enqueued, preventing the cascade that results from re-delivering
+     * inline inside process_commit_raw_bytes().
+     */
+    void deliver_pending_redeliveries();
+
+    /**
      * @brief Drains the pending_send_ slot if one is waiting.
      *
      * Called by the Reactor at the start of process_control_commands() before

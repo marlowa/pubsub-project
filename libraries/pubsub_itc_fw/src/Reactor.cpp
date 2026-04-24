@@ -871,6 +871,12 @@ void Reactor::process_control_commands() {
             }
         }
     }
+
+    // After draining all commands, re-deliver any buffered raw bytes that were
+    // not yet visible to the application when EPOLLIN last fired. This covers
+    // the burst case where all messages arrived in one kernel receive and the
+    // app committed incrementally, leaving bytes stranded in the MirroredBuffer.
+    inbound_manager_.deliver_pending_redeliveries();
 }
 
 void Reactor::dispatch_events(int nfds, epoll_event* events) {

@@ -401,6 +401,34 @@ bool InboundConnectionManager::process_commit_raw_bytes(ConnectionID id, int64_t
     return true;
 }
 
+void InboundConnectionManager::deliver_pending_redeliveries()
+{
+    for (auto& [id, conn] : connections_) {
+        ProtocolHandlerInterface* handler = conn->handler();
+        // If on_data_ready() enqueued a delivery since the last commit, that
+        // message is still in the app thread queue and will show the full
+        // current window. Re-delivering now would produce a duplicate.
+        if (handler->has_fresh_delivery_pending()) {
+            continue;
+        }
+        if (!handler->take_pending_redelivery()) {
+            continue;
+        }
+        const int64_t remaining = handler->bytes_buffered();
+        if (remaining <= 0) {
+            continue;
+        }
+        ApplicationThread* target =
+            thread_lookup_.get_fast_path_thread(conn->target_thread_id());
+        if (target != nullptr) {
+            target->get_queue().enqueue(
+                EventMessage::create_raw_socket_message(id,
+                                                        handler->buffered_read_ptr(),
+                                                        static_cast<int>(remaining)));
+        }
+    }
+}
+
 bool InboundConnectionManager::drain_pending_send()
 {
     if (!pending_send_.has_value()) {

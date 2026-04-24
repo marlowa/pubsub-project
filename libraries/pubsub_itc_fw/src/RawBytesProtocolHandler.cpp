@@ -38,6 +38,10 @@ RawBytesProtocolHandler::RawBytesProtocolHandler(ConnectionID connection_id,
 
 void RawBytesProtocolHandler::on_data_ready()
 {
+    // A real EPOLLIN supersedes any pending re-delivery — the delivery below
+    // will carry the full accumulated buffer contents.
+    pending_redelivery_ = false;
+
     const int64_t space = buffer_.space_remaining();
     if (space == 0) {
         PUBSUB_LOG_STR(logger_, FwLogLevel::Error,
@@ -70,7 +74,7 @@ void RawBytesProtocolHandler::on_data_ready()
     }
 
     buffer_.advance_head(bytes_read);
-
+    fresh_delivery_pending_ = true;
     target_thread_.get_queue().enqueue(
         EventMessage::create_raw_socket_message(connection_id_,
                                                 buffer_.read_ptr(),
@@ -80,6 +84,30 @@ void RawBytesProtocolHandler::on_data_ready()
 void RawBytesProtocolHandler::commit_bytes(int64_t bytes)
 {
     buffer_.advance_tail(bytes);
+    fresh_delivery_pending_ = false;
+    pending_redelivery_ = (buffer_.bytes_available() > 0);
+}
+
+int64_t RawBytesProtocolHandler::bytes_buffered() const
+{
+    return buffer_.bytes_available();
+}
+
+const uint8_t* RawBytesProtocolHandler::buffered_read_ptr() const
+{
+    return buffer_.read_ptr();
+}
+
+bool RawBytesProtocolHandler::take_pending_redelivery()
+{
+    const bool had_pending = pending_redelivery_;
+    pending_redelivery_ = false;
+    return had_pending;
+}
+
+bool RawBytesProtocolHandler::has_fresh_delivery_pending() const
+{
+    return fresh_delivery_pending_;
 }
 
 void RawBytesProtocolHandler::send_prebuilt(ExpandableSlabAllocator* allocator,

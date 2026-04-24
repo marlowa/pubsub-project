@@ -373,7 +373,7 @@ protected:
 
         if (total_consumed > 0) {
             bytes_decoded_ += static_cast<int>(total_consumed);
-            commit_raw_bytes(conn_id, total_consumed);  // incremental, not cumulative
+            commit_raw_bytes(conn_id, total_consumed);
         }
 
         if (static_cast<int>(received_payloads.size()) >= expected_count_) {
