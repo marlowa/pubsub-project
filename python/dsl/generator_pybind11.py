@@ -109,6 +109,7 @@ class Pybind11Generator:
     def _cpp_primitive(self, type_node: PrimitiveType) -> str:
         mapping = {
             "i8":          "int8_t",
+            "char":        "char",
             "i16":         "int16_t",
             "i32":         "int32_t",
             "i64":         "int64_t",

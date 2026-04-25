@@ -124,6 +124,17 @@ def test_parser_rejects_invalid_underlying_type():
         """)
 
 
+def test_parser_rejects_comma_separated_enum_entries():
+    """Comma-separated enum entries give a clear diagnostic message."""
+    with pytest.raises(ParseError, match="do not use commas as separators"):
+        parse("""
+            enum Side : char {
+                Buy  = '1',
+                Sell = '2',
+            }
+        """)
+
+
 # =============================================================================
 # Validator: char underlying type
 # =============================================================================
@@ -167,15 +178,15 @@ def test_validator_accepts_char_enum_as_field_type():
 # Generator: char enum output
 # =============================================================================
 
-def test_generator_char_enum_uses_int8_t():
-    """A char enum is generated with int8_t as the underlying C++ type."""
+def test_generator_char_enum_uses_char():
+    """A char enum is generated with char as the underlying C++ type."""
     code = generate("""
         enum Side : char {
             Buy  = '1'
             Sell = '2'
         }
     """)
-    assert "enum Side : int8_t" in code
+    assert "enum Side : char" in code
 
 
 def test_generator_char_enum_uses_ascii_values():
@@ -217,7 +228,7 @@ def test_generator_full_fix_side_enum():
             CrossShort      = '9'
         }
     """)
-    assert "enum Side : int8_t" in code
+    assert "enum Side : char" in code
     assert f"Buy = {ord('1')}" in code
     assert f"Cross = {ord('8')}" in code
     assert f"CrossShort = {ord('9')}" in code

@@ -130,6 +130,12 @@ class Parser:  # pylint: disable=too-few-public-methods
                 line=entry_tok.line,
             ))
 
+        if self.current.kind == "COMMA":
+            raise ParseError(
+                f"Unexpected ',' in enum '{name_tok.value}' at "
+                f"{self.current.line}:{self.current.column} -- "
+                f"enum entries do not use commas as separators"
+            )
         self._eat("RBRACE")
 
         return EnumDecl(
@@ -242,7 +248,7 @@ class Parser:  # pylint: disable=too-few-public-methods
         tok = self.current
 
         if tok.kind == "KEYWORD" and tok.value in {
-            "i8", "i16", "i32", "i64", "bool", "datetime_ns"
+            "i8", "char", "i16", "i32", "i64", "bool", "datetime_ns"
         }:
             self.current = self.lexer.next_token()
             base = PrimitiveType(tok.value)

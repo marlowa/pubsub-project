@@ -292,6 +292,7 @@ class CppGenerator:
         cpp_type = self._cpp_int_type(enum.underlying_type)
         # Map underlying type to wire-format write/read helpers and byte width.
         wire_helpers = {
+            "char":    ("1", None,              None),
             "int8_t":  ("1", None,              None),
             "int16_t": ("2", "write_uint16_le",  "read_uint16_le"),
             "int32_t": ("4", "write_uint32_le",  "read_uint32_le"),
@@ -366,13 +367,14 @@ class CppGenerator:
             "i16":  "int16_t",
             "i32":  "int32_t",
             "i64":  "int64_t",
-            "char": "int8_t",  # char enums use signed byte; values are ASCII codes
+            "char": "char",    # char enums use char; values are ASCII character codes
         }
         return mapping[name]
 
     def _cpp_primitive_type(self, name: str) -> str:
         mapping = {
             "i8":          "int8_t",
+            "char":        "char",
             "i16":         "int16_t",
             "i32":         "int32_t",
             "i64":         "int64_t",
@@ -1113,6 +1115,7 @@ class CppGenerator:
     def _primitive_wire_size(self, primitive_name: str) -> int:
         sizes = {
             "i8":          1,
+            "char":        1,
             "bool":        1,
             "i16":         2,
             "i32":         4,
@@ -1122,7 +1125,7 @@ class CppGenerator:
         return sizes[primitive_name]
 
     def _emit_write_primitive(self, primitive_name: str, expr: str, indent: str, w):
-        if primitive_name == "i8":
+        if primitive_name in ("i8", "char"):
             w(f"{indent}*write_cursor = static_cast<std::uint8_t>({expr});")
         elif primitive_name == "bool":
             w(f"{indent}*write_cursor = {expr} ? 1 : 0;")
@@ -1138,6 +1141,8 @@ class CppGenerator:
     def _emit_read_primitive(self, primitive_name: str, cpp_type: str, target: str, indent: str, w):  # pylint: disable=too-many-arguments
         if primitive_name == "i8":
             w(f"{indent}{target} = static_cast<{cpp_type}>(*read_cursor);")
+        elif primitive_name == "char":
+            w(f"{indent}{target} = static_cast<char>(*read_cursor);")
         elif primitive_name == "bool":
             w(f"{indent}{target} = (*read_cursor != 0);")
         elif primitive_name == "i16":

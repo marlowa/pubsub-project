@@ -309,6 +309,22 @@ Python code generator producing C++17 headers for zero-copy binary encode/decode
 
 **Test status:** 61 Python roundtrip tests passing. Coverage 90%. Pylint 10/10.
 
+**DSL types:** `i8`, `char`, `i16`, `i32`, `i64`, `bool`, `datetime_ns`, `string`, `array<T>[N]`, `list<T>`, `optional T`, `enum : base`, named message references.
+
+**`char` field type** — single-byte wire format, C++ type `char`. Distinct from `i8` (which maps to `int8_t`). Intended for fields that directly correspond to FIX protocol char fields. Enum underlying type `char` now also generates C++ `char` (previously `int8_t`). Character literals (e.g. `'A'`, `'1'`) are accepted in enum entry values.
+
+**`fix_equity_orders.dsl`** — FIX 5.0 SP2 equity order topic registry. Defines three pub/sub topics:
+
+| Message | Topic ID | FIX MsgType | Direction |
+|---|---|---|---|
+| `NewOrderSingle` | 1000 | D | buy-side to sell-side |
+| `OrderCancelRequest` | 1001 | F | buy-side to sell-side |
+| `ExecutionReport` | 1002 | 8 | sell-side to buy-side |
+
+Enums defined (all `char` underlying type except where noted): `OrdType` (tag 40), `Side` (tag 54), `TimeInForce` (tag 59), `OrdStatus` (tag 39), `ExecType` (tag 150), `ExecInst` (tag 18), `OrdRejReason` (tag 103, `i32`), `CxlRejReason` (tag 102, `i32`).
+
+Design decisions: prices and quantities are `string` to avoid binary/decimal representation coupling; `TransactTime` is `datetime_ns`; conditionally required FIX fields are `optional`; topic IDs start at 1000 to leave 1–999 for framework internal PDUs. Enum values use FIX character literals exactly matching FIX50SP2.xml, making future XML-driven generation straightforward.
+
 ---
 
 ### 12. Leader-Follower Protocol (DSL defined, not yet implemented)
@@ -444,7 +460,19 @@ The receiving node's reactor accepts data via epoll and delivers it zero-copy to
 
 ## Session Accomplishments
 
-### Session 6 (current)
+### Session 7 (current)
+- **DSL `char` field type implemented** — `char` added as a primitive field type throughout the DSL toolchain:
+  - `parser.py` — `char` added to `_parse_type`; produces `PrimitiveType("char")`; was already a keyword and already accepted as an enum underlying type
+  - `generator_cpp.py` — `char` added to `_primitive_wire_size` (1 byte), `_cpp_primitive_type` (maps to C++ `char`), `_emit_write_primitive` (single byte, cast to `uint8_t`), `_emit_read_primitive` (cast byte to `char`); enum underlying type `char` changed from `int8_t` to `char` in `_cpp_int_type`; `char` added to `wire_helpers` in `_emit_enum_functions`
+  - `generator_pybind11.py` — `char` added to `_cpp_primitive` type mapping
+- **Four pybind11 test failures fixed** — bugs in `generator_cpp.py` and `generator_pybind11.py`:
+  - `goto` crosses variable initialisation for optional `string` fields — both encode and decode paths; fixed by wrapping string body in a `{ }` block so declaration is scoped inside and invisible to the jump
+  - `Unknown field: sender_comp_id` — all `if (key == ...)` branches in the pybind11 kwargs constructor were independent; `else { throw }` only attached to the last field; fixed by rewriting `_emit_message_binding` and `_emit_field_kw_assign` to produce a proper `if / else if / ... / else` chain
+  - `Unknown field: has_price` — `has_` kwargs for optional fields were never matched; fixed by adding `else if (key == "has_{name}")` branch per optional field
+  - `string` field cast via `decltype` produced dangling `string_view`; fixed by using a `static thread_local std::string` buffer per field in the pybind11 bindings
+- **`fix_equity_orders.dsl` created** — FIX 5.0 SP2 equity order topic registry; see DSL Subsystem section for full design rationale
+
+### Session 6
 - **Reactor refactor confirmed complete** — `Reactor` correctly delegates all inbound/outbound connection work to `InboundConnectionManager` and `OutboundConnectionManager`; was done in Session 4 but not recorded
 - **`RawBytesProtocolHandler` implemented and all bugs fixed** — intermittent `BurstDelivery` test failure resolved; root cause was ambiguity in tail-advance detection when new data arrives simultaneously with a commit being processed; fix: `EventMessage::create_raw_socket_message` now carries `tail_position` (from `MirroredBuffer::tail()`); app thread uses exact tail comparison instead of the fragile `available < last_available_` heuristic; commit policy changed to only commit when entire window is consumed
 - **`MirroredBuffer`** — added `tail()` accessor
@@ -517,8 +545,9 @@ The receiving node's reactor accepts data via epoll and delivers it zero-copy to
 - `EventType` / `EventMessage` — complete (includes `create_raw_socket_message` with `tail_position`)
 - `ReactorControlCommand` — complete
 - `ReactorConfiguration` — complete
-- DSL code generator — complete, 61 tests passing
+- DSL code generator — complete, `char` field type added, 61 tests passing
 - Leader-follower DSL messages — defined and generated
+- FIX 5.0 SP2 equity order topic registry (`fix_equity_orders.dsl`) — defined
 - Logging subsystem — complete, rewritten in Session 5
 - `RawBytesProtocolHandler` — complete (Strategy B; owns `MirroredBuffer`; `CommitRawBytes` command implemented)
 
@@ -567,7 +596,7 @@ Implement the leader-follower protocol state machine:
 
 ## DSL Subsystem — Full API
 
-**DSL types:** `i8`, `i16`, `i32`, `i64`, `bool`, `datetime_ns`, `string`, `array<T>[N]`, `list<T>`, `optional T`, `enum : base`, named message references.
+**DSL types:** `i8`, `char`, `i16`, `i32`, `i64`, `bool`, `datetime_ns`, `string`, `array<T>[N]`, `list<T>`, `optional T`, `enum : base`, named message references.
 
 **Generated API per message:**
 - `encoded_size(msg)` — wire size in bytes
