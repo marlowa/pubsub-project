@@ -233,7 +233,7 @@ class CppGenerator:
         w("")
         w(f"    [[nodiscard]] {tag} as_tag() const {{ return tag_; }}")
         w("")
-        w(f"    [[nodiscard]] std::string as_string() const {{")
+        w("    [[nodiscard]] std::string as_string() const {")
         w("        switch (tag_) {")
         for entry in enum.entries:
             w(f"        case {entry.name}: return \"{entry.name}\";")
@@ -362,10 +362,11 @@ class CppGenerator:
 
     def _cpp_int_type(self, name: str) -> str:
         mapping = {
-            "i8":  "int8_t",
-            "i16": "int16_t",
-            "i32": "int32_t",
-            "i64": "int64_t",
+            "i8":   "int8_t",
+            "i16":  "int16_t",
+            "i32":  "int32_t",
+            "i64":  "int64_t",
+            "char": "int8_t",  # char enums use signed byte; values are ASCII codes
         }
         return mapping[name]
 
@@ -578,7 +579,7 @@ class CppGenerator:
         else:
             raise RuntimeError(f"Unknown field type in size: {type_node}")
 
-    def _emit_size_for_list(self, list_type: ListType, expr: str, w, indent: str, loop_var: str = "i"):  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    def _emit_size_for_list(self, list_type: ListType, expr: str, w, indent: str, loop_var: str = "i"):  # pylint: disable=too-many-arguments
         next_var = chr(ord(loop_var) + 1) if loop_var < "z" else loop_var + "_"
         inner_indent = indent + "    "
         w(f"{indent}total_bytes += sizeof(std::uint32_t);")
@@ -647,15 +648,17 @@ class CppGenerator:
             w(f"    write_cursor += {width};")
             w(f"    bytes_remaining -= {width};")
         elif isinstance(type_node, StringType):
-            w("    if (bytes_remaining < sizeof(std::uint32_t)) return false;")
-            w(f"    std::uint32_t string_length_{name} = static_cast<std::uint32_t>(message.{name}.size());")
-            w(f"    write_uint32_le(write_cursor, string_length_{name});")
-            w("    write_cursor += sizeof(std::uint32_t);")
-            w("    bytes_remaining -= sizeof(std::uint32_t);")
-            w(f"    if (bytes_remaining < message.{name}.size()) return false;")
-            w(f"    std::memcpy(write_cursor, message.{name}.data(), message.{name}.size());")
-            w(f"    write_cursor += message.{name}.size();")
-            w(f"    bytes_remaining -= message.{name}.size();")
+            w("    {")
+            w("        if (bytes_remaining < sizeof(std::uint32_t)) return false;")
+            w(f"        std::uint32_t string_length_{name} = static_cast<std::uint32_t>(message.{name}.size());")
+            w(f"        write_uint32_le(write_cursor, string_length_{name});")
+            w("        write_cursor += sizeof(std::uint32_t);")
+            w("        bytes_remaining -= sizeof(std::uint32_t);")
+            w(f"        if (bytes_remaining < message.{name}.size()) return false;")
+            w(f"        std::memcpy(write_cursor, message.{name}.data(), message.{name}.size());")
+            w(f"        write_cursor += message.{name}.size();")
+            w(f"        bytes_remaining -= message.{name}.size();")
+            w("    }")
         elif isinstance(type_node, ArrayType):
             self._emit_encode_array(type_node, name, w)
         elif isinstance(type_node, ListType):
@@ -691,7 +694,7 @@ class CppGenerator:
             w(f"        bytes_remaining -= {width};")
             w("    }")
 
-    def _emit_encode_list(self, list_type: ListType, expr: str, suffix: str, w, indent: str, loop_var: str = "i"):  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    def _emit_encode_list(self, list_type: ListType, expr: str, suffix: str, w, indent: str, loop_var: str = "i"):  # pylint: disable=too-many-arguments
         next_var = chr(ord(loop_var) + 1) if loop_var < "z" else loop_var + "_"
         inner_indent = indent + "    "
         w(f"{indent}if (bytes_remaining < sizeof(std::uint32_t)) return false;")
@@ -796,14 +799,16 @@ class CppGenerator:
             w(f"    read_cursor += {width};")
             w(f"    bytes_remaining -= {width};")
         elif isinstance(type_node, StringType):
-            w("    if (bytes_remaining < sizeof(std::uint32_t)) return false;")
-            w(f"    std::uint32_t len_{fname} = read_uint32_le(read_cursor);")
-            w("    read_cursor += sizeof(std::uint32_t);")
-            w("    bytes_remaining -= sizeof(std::uint32_t);")
-            w(f"    if (bytes_remaining < static_cast<std::size_t>(len_{fname})) return false;")
-            w(f"    out.{fname} = std::string_view(reinterpret_cast<const char*>(read_cursor), len_{fname});")
-            w(f"    read_cursor += len_{fname};")
-            w(f"    bytes_remaining -= static_cast<std::size_t>(len_{fname});")
+            w("    {")
+            w("        if (bytes_remaining < sizeof(std::uint32_t)) return false;")
+            w(f"        std::uint32_t len_{fname} = read_uint32_le(read_cursor);")
+            w("        read_cursor += sizeof(std::uint32_t);")
+            w("        bytes_remaining -= sizeof(std::uint32_t);")
+            w(f"        if (bytes_remaining < static_cast<std::size_t>(len_{fname})) return false;")
+            w(f"        out.{fname} = std::string_view(reinterpret_cast<const char*>(read_cursor), len_{fname});")
+            w(f"        read_cursor += len_{fname};")
+            w(f"        bytes_remaining -= static_cast<std::size_t>(len_{fname});")
+            w("    }")
         elif isinstance(type_node, ArrayType):
             self._emit_decode_array(type_node, fname, w)
         elif isinstance(type_node, ListType):
@@ -828,7 +833,7 @@ class CppGenerator:
         w(f"        bytes_remaining -= {width};")
         w("    }")
 
-    def _emit_decode_list(self, list_type: ListType, expr: str, suffix: str, w, indent: str, loop_var: str = "i"):  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-statements
+    def _emit_decode_list(self, list_type: ListType, expr: str, suffix: str, w, indent: str, loop_var: str = "i"):  # pylint: disable=too-many-arguments,too-many-statements
         next_var = chr(ord(loop_var) + 1) if loop_var < "z" else loop_var + "_"
         inner_indent = indent + "    "
         w(f"{indent}if (bytes_remaining < sizeof(std::uint32_t)) return false;")
@@ -980,7 +985,7 @@ class CppGenerator:
         if field.optional:
             w(f"skip_field_{name}: ;")
 
-    def _emit_skip_list(self, list_type: ListType, w, indent: str, loop_var: str):  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    def _emit_skip_list(self, list_type: ListType, w, indent: str, loop_var: str):  # pylint: disable=too-many-arguments
         next_var = chr(ord(loop_var) + 1) if loop_var < "z" else loop_var + "_"
         inner_indent = indent + "    "
         w(f"{indent}if (bytes_remaining < sizeof(std::uint32_t)) return false;")
@@ -1053,7 +1058,7 @@ class CppGenerator:
         w("    return total;")
         w("}")
 
-    def _emit_decode_arena_size_for_field(self, type_node, total_var: str, w, indent: str, max_depth: int):  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    def _emit_decode_arena_size_for_field(self, type_node, total_var: str, w, indent: str, max_depth: int):  # pylint: disable=too-many-arguments
         if max_depth == 0:
             return
         if isinstance(type_node, ListType):
@@ -1081,7 +1086,7 @@ class CppGenerator:
         w("    return total;")
         w("}")
 
-    def _emit_encode_arena_size_for_field(self, type_node, total_var: str, w, indent: str, max_depth: int):  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    def _emit_encode_arena_size_for_field(self, type_node, total_var: str, w, indent: str, max_depth: int):  # pylint: disable=too-many-arguments
         if max_depth == 0:
             return
         if isinstance(type_node, ListType):
@@ -1130,7 +1135,7 @@ class CppGenerator:
         else:
             raise RuntimeError(f"Unsupported primitive type in write: {primitive_name}")
 
-    def _emit_read_primitive(self, primitive_name: str, cpp_type: str, target: str, indent: str, w):  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    def _emit_read_primitive(self, primitive_name: str, cpp_type: str, target: str, indent: str, w):  # pylint: disable=too-many-arguments
         if primitive_name == "i8":
             w(f"{indent}{target} = static_cast<{cpp_type}>(*read_cursor);")
         elif primitive_name == "bool":

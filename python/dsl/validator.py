@@ -68,11 +68,11 @@ class Validator:  # pylint: disable=too-few-public-methods
 
     def _validate_enums(self):
         for enum in self.enums.values():
-            if enum.underlying_type not in {"i8", "i16", "i32", "i64"}:
+            if enum.underlying_type not in {"i8", "i16", "i32", "i64", "char"}:
                 raise ValidationError(
                     f"line {enum.line}: enum '{enum.name}' has invalid "
                     f"underlying type '{enum.underlying_type}' "
-                    f"(must be i8, i16, i32, or i64)"
+                    f"(must be i8, i16, i32, i64, or char)"
                 )
 
             seen_values: Set[int] = set()

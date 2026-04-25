@@ -27,6 +27,7 @@ class Lexer:  # pylint: disable=too-few-public-methods
         "optional",
         "list",
         "string",
+        "char",
         "i8",
         "i16",
         "i32",
@@ -91,6 +92,9 @@ class Lexer:  # pylint: disable=too-few-public-methods
                 self._advance()
                 return tok
 
+            if ch == "'":
+                return self._lex_char_lit()
+
             if ch.isalpha() or ch == "_":
                 return self._lex_ident()
 
@@ -101,8 +105,8 @@ class Lexer:  # pylint: disable=too-few-public-methods
 
     def _peek_next_digit(self) -> bool:
         return (
-                self.pos + 1 < len(self.text)
-                and self.text[self.pos + 1].isdigit()
+            self.pos + 1 < len(self.text)
+            and self.text[self.pos + 1].isdigit()
         )
 
     def _skip_comment(self):
@@ -110,6 +114,27 @@ class Lexer:  # pylint: disable=too-few-public-methods
             self._advance()
         if self._peek() == "\n":
             self._advance()
+
+    def _lex_char_lit(self) -> Token:
+        """Lex a single-quoted character literal e.g. '1', 'B'.
+
+        The token value is the decimal ASCII code of the character as a string,
+        so it can be treated identically to an INT token by the parser.
+        """
+        line, col = self.line, self.col
+        self._advance()  # consume opening quote
+        ch = self._peek()
+        if ch in ("", "\n"):
+            raise LexError(f"Unterminated character literal at {line}:{col}")
+        self._advance()  # consume the character
+        closing = self._peek()
+        if closing != "'":
+            raise LexError(
+                f"Expected closing quote for character literal at {line}:{col}, "
+                f"got '{closing}'"
+            )
+        self._advance()  # consume closing quote
+        return Token("CHAR_LIT", str(ord(ch)), line, col)
 
     def _lex_ident(self) -> Token:
         line, col = self.line, self.col

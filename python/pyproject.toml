@@ -20,8 +20,8 @@ dev = ["pylint", "pytest", "coverage"]
 dependencies = []
 
 [project.urls]
-homepage = "https://example.com"   # optional placeholder
-repository = "https://example.com/repo"  # optional placeholder
+homepage = "https://github.com/marlowa/pubsub-project"
+repository = "https://github.com/marlowa/pubsub-project"
 
 [project.scripts]
 generate-cpp-from-dsl = "tools.generate_cpp_from_dsl:main"

@@ -220,12 +220,19 @@ class Pybind11Generator:
         w('            for (auto& item : kwargs) {')
         w('                std::string key = py::str(item.first);')
 
+        first_branch = True
         for field in msg.fields:
-            self._emit_field_kw_assign(msg, field, w)
+            first_branch = self._emit_field_kw_assign(msg, field, w, first_branch)
 
-        w('                else {')
-        w('                    throw py::type_error("Unknown field: " + key);')
-        w('                }')
+        if first_branch:
+            # No fields at all — any key is unknown.
+            w('                {')
+            w('                    throw py::type_error("Unknown field: " + key);')
+            w('                }')
+        else:
+            w('                else {')
+            w('                    throw py::type_error("Unknown field: " + key);')
+            w('                }')
         w('            }')
         w('            return obj;')
         w('        }))')
@@ -257,9 +264,19 @@ class Pybind11Generator:
     # Field keyword-argument assignment for owning struct construction
     # ------------------------------------------------------------------
 
-    def _emit_field_kw_assign(self, msg: MessageDecl, field: Field, w):  # pylint: disable=unused-argument
+    def _emit_field_kw_assign(self, msg: MessageDecl, field: Field, w, first_branch: bool) -> bool:  # pylint: disable=unused-argument
         name = field.name
-        w(f'                if (key == "{name}") {{')
+        prefix = "if" if first_branch else "else if"
+
+        if field.optional:
+            w(f'                {prefix} (key == "has_{name}") {{')
+            w(f'                    obj.has_{name} = item.second.cast<bool>();')
+            w('                }')
+            # value branch is always else if after the has_ branch
+            w(f'                else if (key == "{name}") {{')
+        else:
+            w(f'                {prefix} (key == "{name}") {{')
+
         if isinstance(field.type, ListType):
             w('                    if (py::isinstance<py::list>(item.second)) {')
             self._emit_list_from_py(
@@ -272,11 +289,14 @@ class Pybind11Generator:
             w('                    } else {')
             w(f'                        obj.{name} = item.second.cast<decltype(obj.{name})>();')
             w('                    }')
+        elif isinstance(field.type, StringType):
+            w(f'                    static thread_local std::string str_{name};')
+            w(f'                    str_{name} = item.second.cast<std::string>();')
+            w(f'                    obj.{name} = std::string_view(str_{name});')
         else:
             w(f'                    obj.{name} = item.second.cast<decltype(obj.{name})>();')
-        if field.optional:
-            w(f'                    obj.has_{name} = true;')
         w('                }')
+        return False
 
     def _emit_list_from_py(self, list_type: ListType, target_expr: str,  # pylint: disable=too-many-arguments
                            source_expr: str, w, indent: str = " " * 20, prefix: str = ""):  # pylint: disable=too-many-arguments

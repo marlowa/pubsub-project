@@ -2,6 +2,7 @@ import pytest
 
 from dsl.parser import Parser
 from dsl.validator import Validator, ValidationError
+from dsl.errors import ParseError
 
 
 def validate(text: str):
@@ -151,7 +152,7 @@ def test_enum_underlying_type_must_be_signed_int():
             x = 1
         }
     """
-    with pytest.raises(ValidationError):
+    with pytest.raises(ParseError):
         validate(text)
 
 

@@ -104,6 +104,12 @@ class Parser:  # pylint: disable=too-few-public-methods
                 f"at {self.current.line}:{self.current.column}"
             )
         underlying = self.current.value
+        if underlying not in {"i8", "i16", "i32", "i64", "char"}:
+            raise ParseError(
+                f"Invalid enum underlying type '{underlying}' "
+                f"at {self.current.line}:{self.current.column}; "
+                f"expected i8, i16, i32, i64, or char"
+            )
         self.current = self.lexer.next_token()
 
         self._eat("LBRACE")
@@ -112,7 +118,12 @@ class Parser:  # pylint: disable=too-few-public-methods
         while self.current.kind == "IDENT":
             entry_tok = self._eat("IDENT")
             self._eat("EQUAL")
-            value = int(self._eat("INT").value)
+            if self.current.kind not in ("INT", "CHAR_LIT"):
+                raise ParseError(
+                    f"Expected integer or character literal for enum entry value, "
+                    f"got {self.current.kind} at {self.current.line}:{self.current.column}"
+                )
+            value = int(self._eat(self.current.kind).value)
             entries.append(EnumEntry(
                 name=entry_tok.value,
                 value=value,

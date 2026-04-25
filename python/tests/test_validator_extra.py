@@ -1,6 +1,7 @@
 import pytest
 from dsl.parser import Parser
 from dsl.validator import Validator, ValidationError
+from dsl.errors import ParseError
 
 
 def validate(text):
@@ -97,11 +98,15 @@ def test_duplicate_enum_value_includes_line_number():
 
 
 def test_invalid_enum_underlying_type_includes_line_number():
-    _raises_with("""
-        enum Flags : string {
-            on = 1
-        }
-    """, "line 2", "Flags", "invalid underlying type")
+    with pytest.raises(ParseError) as exc_info:
+        validate("""
+            enum Flags : string {
+                on = 1
+            }
+        """)
+    message = str(exc_info.value)
+    assert "string" in message
+    assert "expected i8, i16, i32, i64, or char" in message
 
 
 def test_array_of_non_primitive_includes_line_number():
