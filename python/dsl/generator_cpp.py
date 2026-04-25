@@ -39,7 +39,7 @@ class CppGenerator:
     # Public entry point
     # ------------------------------------------------------------------
 
-    def emit(self, ast: DslFile) -> str:
+    def emit(self, ast: DslFile, topics: bool = False) -> str:
         """Generate and return the complete C++ header as a string."""
         lines: List[str] = []
         w = lines.append
@@ -50,6 +50,7 @@ class CppGenerator:
         w("#include <array>")
         w("#include <cstdint>")
         w("#include <cstring>")
+        w("#include <string>")
         w("#include <string_view>")
         w("")
         w("#include <pubsub_itc_fw/BumpAllocator.hpp>")
@@ -65,9 +66,12 @@ class CppGenerator:
 
         for decl in ast.declarations:
             if isinstance(decl, EnumDecl):
-                self._emit_enum(decl, w)
-                w("")
-                self._emit_enum_functions(decl, w)
+                if topics and decl.name == "Topics":
+                    self._emit_topics_enum_class(decl, w)
+                else:
+                    self._emit_enum(decl, w)
+                    w("")
+                    self._emit_enum_functions(decl, w)
                 w("")
 
         for decl in ast.declarations:
@@ -201,6 +205,54 @@ class CppGenerator:
             w(f"    case {enum.name}::{entry.name}: return true;")
         w("    default: return false;")
         w("    }")
+        w("}")
+
+    # ------------------------------------------------------------------
+    # Topics enum class (framework enum pattern)
+    # ------------------------------------------------------------------
+
+    def _emit_topics_enum_class(self, enum: EnumDecl, w):
+        """Emit the Topics enum as a framework enum class.
+
+        Follows the project's enum pattern: a class containing a C-style
+        Tag enum, an explicit single-argument constructor, as_tag(),
+        as_string(), is_equal(), and a free operator==.
+        The underlying integer type matches the DSL declaration.
+        """
+        cpp_type = self._cpp_int_type(enum.underlying_type)
+        tag = f"{enum.name}Tag"
+
+        w(f"class {enum.name} {{")
+        w("public:")
+        w(f"    enum {tag} : {cpp_type} {{")
+        for entry in enum.entries:
+            w(f"        {entry.name} = {entry.value},")
+        w("    };")
+        w("")
+        w(f"    constexpr explicit {enum.name}({tag} t) : tag_(t) {{}}")
+        w("")
+        w(f"    [[nodiscard]] {tag} as_tag() const {{ return tag_; }}")
+        w("")
+        w(f"    [[nodiscard]] std::string as_string() const {{")
+        w("        switch (tag_) {")
+        for entry in enum.entries:
+            w(f"        case {entry.name}: return \"{entry.name}\";")
+        w("        default: return \"<unknown Topics: \" + std::to_string(static_cast<int>(tag_)) + \">\";")
+        w("        }")
+        w("    }")
+        w("")
+        w(f"    [[nodiscard]] bool is_equal(const {enum.name}& rhs) const {{ return tag_ == rhs.tag_; }}")
+        w("")
+        w("private:")
+        w(f"    {tag} tag_;")
+        w("};")
+        w("")
+        w(f"inline bool operator==(const {enum.name}& lhs, const {enum.name}& rhs) {{")
+        w("    return lhs.is_equal(rhs);")
+        w("}")
+        w("")
+        w(f"inline bool operator!=(const {enum.name}& lhs, const {enum.name}& rhs) {{")
+        w("    return !lhs.is_equal(rhs);")
         w("}")
 
     # ------------------------------------------------------------------

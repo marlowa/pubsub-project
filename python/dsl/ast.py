@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import List, Dict
+from typing import List, Dict, Union
 
 
 @dataclass
@@ -36,11 +36,28 @@ class EnumDecl(Declaration):
 
 
 @dataclass
+class EnumRef:
+    """An unresolved reference to an enum entry used as a metadata value.
+
+    Produced by the parser when metadata contains EnumName.EntryName instead
+    of a bare integer literal. Resolved to an integer by the validator.
+    """
+
+    enum_name: str
+    entry_name: str
+    line: int = 0
+
+
+# A metadata value is either a resolved integer or an unresolved enum reference.
+MetadataValue = Union[int, EnumRef]
+
+
+@dataclass
 class MessageDecl(Declaration):
     """A message declaration with metadata (e.g. id, version) and a list of fields."""
 
     name: str
-    metadata: Dict[str, int]  # e.g. {"id": 10, "version": 1}
+    metadata: Dict[str, MetadataValue]  # values resolved to int by validator
     fields: List[Field]
     line: int = 0
 

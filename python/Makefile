@@ -1,12 +1,14 @@
+.PHONY: lint test coverage all
+
 lint:
 	pylint dsl
 
 test:
-	pytest -q
+	python3 -m pytest -q
 
 coverage:
-	coverage run -m pytest
-	coverage report
-	coverage html
+	python3 -m coverage run -m pytest
+	python3 -m coverage report
+	python3 -m coverage html
 
 all: lint test coverage

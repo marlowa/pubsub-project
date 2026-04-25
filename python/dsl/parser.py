@@ -1,7 +1,7 @@
 """Parser for the pubsub_itc_fw DSL code generator."""
 
 from __future__ import annotations
-from typing import List, Dict
+from typing import List
 
 from .lexer import Lexer, Token
 from .errors import ParseError
@@ -10,6 +10,7 @@ from .ast import (
     Declaration,
     EnumDecl,
     EnumEntry,
+    EnumRef,
     MessageDecl,
     Field,
     PrimitiveType,
@@ -162,19 +163,42 @@ class Parser:  # pylint: disable=too-few-public-methods
     # Metadata
     # -----------------------------
 
-    def _parse_metadata(self) -> Dict[str, int]:
-        metadata: Dict[str, int] = {}
+    def _parse_metadata_value(self):
+        """Parse a metadata value: either an integer literal or EnumName.EntryName."""
+        if self.current.kind == "INT":
+            return int(self._eat("INT").value)
+
+        if self.current.kind == "IDENT":
+            enum_tok = self._eat("IDENT")
+            if self.current.kind == "DOT":
+                self._eat("DOT")
+                entry_tok = self._eat("IDENT")
+                return EnumRef(
+                    enum_name=enum_tok.value,
+                    entry_name=entry_tok.value,
+                    line=enum_tok.line,
+                )
+            raise ParseError(
+                f"Expected '.' after enum name '{enum_tok.value}' in metadata "
+                f"at {enum_tok.line}:{enum_tok.column}"
+            )
+
+        raise ParseError(
+            f"Expected integer or EnumName.EntryName in metadata, "
+            f"got {self.current.kind} at {self.current.line}:{self.current.column}"
+        )
+
+    def _parse_metadata(self) -> dict:
+        metadata = {}
 
         key = self._eat("IDENT").value
         self._eat("EQUAL")
-        value = int(self._eat("INT").value)
-        metadata[key] = value
+        metadata[key] = self._parse_metadata_value()
 
         while self._accept("COMMA"):
             key = self._eat("IDENT").value
             self._eat("EQUAL")
-            value = int(self._eat("INT").value)
-            metadata[key] = value
+            metadata[key] = self._parse_metadata_value()
 
         return metadata
 

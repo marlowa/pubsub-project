@@ -48,6 +48,7 @@ class Lexer:  # pylint: disable=too-few-public-methods
         ":": "COLON",
         "[": "LBRACKET",
         "]": "RBRACKET",
+        ".": "DOT",
     }
 
     def __init__(self, text: str):
@@ -100,8 +101,8 @@ class Lexer:  # pylint: disable=too-few-public-methods
 
     def _peek_next_digit(self) -> bool:
         return (
-            self.pos + 1 < len(self.text)
-            and self.text[self.pos + 1].isdigit()
+                self.pos + 1 < len(self.text)
+                and self.text[self.pos + 1].isdigit()
         )
 
     def _skip_comment(self):

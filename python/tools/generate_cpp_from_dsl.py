@@ -22,6 +22,10 @@ def main():
     ap.add_argument("output", help="Output .hpp file to write")
     ap.add_argument("--namespace", required=True,
                     help="C++ namespace for generated code (e.g. pubsub_itc_fw)")
+    ap.add_argument("--topics", action="store_true",
+                    help="Topic registry mode: enforce that a 'Topics' enum exists and "
+                         "every message id references it via Topics.EntryName syntax. "
+                         "Generates the Topics enum as a framework enum class.")
     args = ap.parse_args()
 
     input_path = Path(args.input)
@@ -31,13 +35,13 @@ def main():
 
     try:
         ast = Parser(text).parse()
-        Validator(ast).validate()
+        Validator(ast).validate(topics=args.topics)
     except ValidationError as error:
         print(f"{input_path}: {error}", file=sys.stderr)
         sys.exit(1)
 
     gen = CppGenerator(namespace=args.namespace)
-    code = gen.emit(ast)
+    code = gen.emit(ast, topics=args.topics)
 
     output_path.write_text(code)
 

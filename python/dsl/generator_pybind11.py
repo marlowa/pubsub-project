@@ -278,8 +278,8 @@ class Pybind11Generator:
             w(f'                    obj.has_{name} = true;')
         w('                }')
 
-    def _emit_list_from_py(self, list_type: ListType, target_expr: str,  # pylint: disable=too-many-arguments,too-many-positional-arguments
-                           source_expr: str, w, indent: str = " " * 20, prefix: str = ""):  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    def _emit_list_from_py(self, list_type: ListType, target_expr: str,  # pylint: disable=too-many-arguments
+                           source_expr: str, w, indent: str = " " * 20, prefix: str = ""):  # pylint: disable=too-many-arguments
         """Emit C++ code to populate a ListView<T> from a Python list.
 
         Uses heap allocation (new[]) intentionally -- this runs in the pybind11

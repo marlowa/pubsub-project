@@ -7,6 +7,7 @@ from .errors import ValidationError
 from .ast import (
     DslFile,
     EnumDecl,
+    EnumRef,
     MessageDecl,
     Field,
     PrimitiveType,
@@ -23,17 +24,20 @@ class Validator:  # pylint: disable=too-few-public-methods
         self.ast = ast
         self.enums: Dict[str, EnumDecl] = {}
         self.messages: Dict[str, MessageDecl] = {}
+        self._topic_ref_messages: Set[str] = set()  # messages whose id was Topics.X
 
     # -----------------------------
     # Entry point
     # -----------------------------
 
-    def validate(self):
+    def validate(self, topics: bool = False):
         """Run all validation checks. Raises ValidationError on any violation."""
         self._collect_declarations()
         self._validate_enums()
         self._validate_messages()
         self._validate_no_cycles()
+        if topics:
+            self._validate_topics()
 
     # -----------------------------
     # Collect declarations
@@ -94,6 +98,29 @@ class Validator:  # pylint: disable=too-few-public-methods
                     f"required metadata 'id'"
                 )
 
+            # Resolve any EnumRef metadata values to integers.
+            for key, value in msg.metadata.items():
+                if isinstance(value, EnumRef):
+                    ref = value
+                    if ref.enum_name not in self.enums:
+                        raise ValidationError(
+                            f"line {ref.line}: in message '{msg.name}' metadata '{key}': "
+                            f"unknown enum '{ref.enum_name}'"
+                        )
+                    enum_decl = self.enums[ref.enum_name]
+                    entry = next(
+                        (e for e in enum_decl.entries if e.name == ref.entry_name),
+                        None
+                    )
+                    if entry is None:
+                        raise ValidationError(
+                            f"line {ref.line}: in message '{msg.name}' metadata '{key}': "
+                            f"enum '{ref.enum_name}' has no entry '{ref.entry_name}'"
+                        )
+                    if key == "id" and ref.enum_name == "Topics":
+                        self._topic_ref_messages.add(msg.name)
+                    msg.metadata[key] = entry.value
+
             message_id = msg.metadata["id"]
             if message_id in seen_ids:
                 raise ValidationError(
@@ -148,6 +175,31 @@ class Validator:  # pylint: disable=too-few-public-methods
             f"line {field.line}: in message '{message_name}', "
             f"field '{field.name}': unknown type node {type_node}"
         )
+
+    # -----------------------------
+    # Topics validation
+    # -----------------------------
+
+    def _validate_topics(self):
+        """Validate topic registry constraints when --topics is active.
+
+        Requires:
+          - A 'Topics' enum must be present in the file.
+          - Every message 'id' metadata value must be an EnumRef referencing
+            the 'Topics' enum. Bare integers are rejected.
+        """
+        if "Topics" not in self.enums:
+            raise ValidationError(
+                "topics mode requires a 'Topics' enum declaration in the DSL file"
+            )
+
+        for msg in self.messages.values():
+            if msg.name not in self._topic_ref_messages:
+                raise ValidationError(
+                    f"line {msg.line}: in topics mode, message '{msg.name}' id "
+                    f"must reference the Topics enum (e.g. id=Topics.{msg.name}); "
+                    f"bare integers are not allowed"
+                )
 
     # -----------------------------
     # Cycle detection
