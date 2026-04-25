@@ -1,0 +1,14 @@
+[network]
+listen_host = "127.0.0.1"
+listen_port = 7001
+
+[matching_engine]
+host = "127.0.0.1"
+port = 7020
+
+[ha]
+instance_id  = 1
+peer_host    = "127.0.0.1"
+peer_port    = 7003
+arbiter_host = "127.0.0.1"
+arbiter_port = 7100

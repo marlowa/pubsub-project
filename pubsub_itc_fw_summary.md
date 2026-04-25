@@ -307,23 +307,15 @@ Python code generator producing C++17 headers for zero-copy binary encode/decode
 
 **Benchmark results:** SmallMessage 17ns/15ns, MediumMessage 40ns/56ns, LargeMessage 51ns/44ns.
 
-**Test status:** 61 Python roundtrip tests passing. Coverage 90%. Pylint 10/10.
+**Test status:** 133 Python roundtrip tests passing. Coverage 90%. Pylint 10/10.
 
 **DSL types:** `i8`, `char`, `i16`, `i32`, `i64`, `bool`, `datetime_ns`, `string`, `array<T>[N]`, `list<T>`, `optional T`, `enum : base`, named message references.
 
-**`char` field type** — single-byte wire format, C++ type `char`. Distinct from `i8` (which maps to `int8_t`). Intended for fields that directly correspond to FIX protocol char fields. Enum underlying type `char` now also generates C++ `char` (previously `int8_t`). Character literals (e.g. `'A'`, `'1'`) are accepted in enum entry values.
+**`char` field type** — single-byte wire format, C++ type `char`. Distinct from `i8` (maps to `int8_t`). For FIX protocol char fields. Enum underlying type `char` generates C++ `char`. Character literals (e.g. `'A'`, `'1'`) accepted in enum entry values.
 
-**`fix_equity_orders.dsl`** — FIX 5.0 SP2 equity order topic registry. Defines three pub/sub topics:
+**`fix_equity_orders.dsl`** — FIX 5.0 SP2 equity order topic registry at `applications/fix_equity_orders.dsl`. Topics: `NewOrderSingle` (1000), `OrderCancelRequest` (1001), `ExecutionReport` (1002). Prices/quantities are `string`; `TransactTime` is `datetime_ns`; conditionally required fields are `optional`. Topic IDs start at 1000.
 
-| Message | Topic ID | FIX MsgType | Direction |
-|---|---|---|---|
-| `NewOrderSingle` | 1000 | D | buy-side to sell-side |
-| `OrderCancelRequest` | 1001 | F | buy-side to sell-side |
-| `ExecutionReport` | 1002 | 8 | sell-side to buy-side |
-
-Enums defined (all `char` underlying type except where noted): `OrdType` (tag 40), `Side` (tag 54), `TimeInForce` (tag 59), `OrdStatus` (tag 39), `ExecType` (tag 150), `ExecInst` (tag 18), `OrdRejReason` (tag 103, `i32`), `CxlRejReason` (tag 102, `i32`).
-
-Design decisions: prices and quantities are `string` to avoid binary/decimal representation coupling; `TransactTime` is `datetime_ns`; conditionally required FIX fields are `optional`; topic IDs start at 1000 to leave 1–999 for framework internal PDUs. Enum values use FIX character literals exactly matching FIX50SP2.xml, making future XML-driven generation straightforward.
+**generate_cpp_from_dsl.py** — takes input DSL path and output **file path** (not directory) as positional arguments, plus `--namespace` and `--topics` flags.
 
 ---
 
@@ -460,19 +452,7 @@ The receiving node's reactor accepts data via epoll and delivers it zero-copy to
 
 ## Session Accomplishments
 
-### Session 7 (current)
-- **DSL `char` field type implemented** — `char` added as a primitive field type throughout the DSL toolchain:
-  - `parser.py` — `char` added to `_parse_type`; produces `PrimitiveType("char")`; was already a keyword and already accepted as an enum underlying type
-  - `generator_cpp.py` — `char` added to `_primitive_wire_size` (1 byte), `_cpp_primitive_type` (maps to C++ `char`), `_emit_write_primitive` (single byte, cast to `uint8_t`), `_emit_read_primitive` (cast byte to `char`); enum underlying type `char` changed from `int8_t` to `char` in `_cpp_int_type`; `char` added to `wire_helpers` in `_emit_enum_functions`
-  - `generator_pybind11.py` — `char` added to `_cpp_primitive` type mapping
-- **Four pybind11 test failures fixed** — bugs in `generator_cpp.py` and `generator_pybind11.py`:
-  - `goto` crosses variable initialisation for optional `string` fields — both encode and decode paths; fixed by wrapping string body in a `{ }` block so declaration is scoped inside and invisible to the jump
-  - `Unknown field: sender_comp_id` — all `if (key == ...)` branches in the pybind11 kwargs constructor were independent; `else { throw }` only attached to the last field; fixed by rewriting `_emit_message_binding` and `_emit_field_kw_assign` to produce a proper `if / else if / ... / else` chain
-  - `Unknown field: has_price` — `has_` kwargs for optional fields were never matched; fixed by adding `else if (key == "has_{name}")` branch per optional field
-  - `string` field cast via `decltype` produced dangling `string_view`; fixed by using a `static thread_local std::string` buffer per field in the pybind11 bindings
-- **`fix_equity_orders.dsl` created** — FIX 5.0 SP2 equity order topic registry; see DSL Subsystem section for full design rationale
-
-### Session 6
+### Session 6 (current)
 - **Reactor refactor confirmed complete** — `Reactor` correctly delegates all inbound/outbound connection work to `InboundConnectionManager` and `OutboundConnectionManager`; was done in Session 4 but not recorded
 - **`RawBytesProtocolHandler` implemented and all bugs fixed** — intermittent `BurstDelivery` test failure resolved; root cause was ambiguity in tail-advance detection when new data arrives simultaneously with a commit being processed; fix: `EventMessage::create_raw_socket_message` now carries `tail_position` (from `MirroredBuffer::tail()`); app thread uses exact tail comparison instead of the fragile `available < last_available_` heuristic; commit policy changed to only commit when entire window is consumed
 - **`MirroredBuffer`** — added `tail()` accessor
@@ -494,6 +474,33 @@ The receiving node's reactor accepts data via epoll and delivers it zero-copy to
 - **`sample_fix_gateway` tested** with fix8 -- raw bytes path confirmed working end-to-end with real FIX 5.0 SP2 traffic
 - **Coverage analysis** -- 86.1% line, 93.2% function; all uncovered lines in `RawBytesProtocolHandler` are legitimate error paths
 - All 411 tests passing; 1000-iteration stress test completed without failure
+
+### Session 7 (current)
+- **DSL `char` field type implemented** — `char` added as a primitive field type throughout the DSL toolchain:
+  - `parser.py` — `char` added to `_parse_type`; produces `PrimitiveType("char")`; was already a keyword and already accepted as an enum underlying type
+  - `generator_cpp.py` — `char` added to `_primitive_wire_size` (1 byte), `_cpp_primitive_type` (maps to C++ `char`), `_emit_write_primitive` (single byte, cast to `uint8_t`), `_emit_read_primitive` (cast byte to `char`); enum underlying type `char` changed from `int8_t` to `char` in `_cpp_int_type`; `char` added to `wire_helpers` in `_emit_enum_functions`
+  - `generator_pybind11.py` — `char` added to `_cpp_primitive` type mapping
+- **Four pybind11 test failures fixed** — `goto` crosses initialisation for optional `string` fields; `Unknown field: sender_comp_id` (all if-branches were independent); `Unknown field: has_price` (`has_` kwargs never matched); `string` cast via `decltype` produced dangling `string_view`
+- **`fix_equity_orders.dsl` created** — FIX 5.0 SP2 equity order topic registry at `applications/fix_equity_orders.dsl`; see DSL Subsystem section for design rationale
+- **Parser error message improved** — comma used as enum entry separator now gives clear diagnostic; test added to `test_char_enum.py`
+- **Application architecture designed** — sequencer-based Aeron-pattern order flow; see Application Architecture section. Key decisions: gateway sends to both sequencer instances; HA on sequencer only with main-site arbiter; `SequencedMessage` DSL wrapper; ME→gateway is TCP PDU stub for future pub/sub; `cl_ord_id` correlation
+- **Four application stubs written and compiling** — `sample_fix_gateway_seq`, `sequencer`, `matching_engine`, `arbiter` all compile cleanly
+- **CMake DSL generation rule** — `applications/CMakeLists.txt` updated with `add_custom_command` writing to `${CMAKE_CURRENT_BINARY_DIR}/fix_equity_orders.hpp`; all FIX application targets depend on `fix_equity_orders_generated`
+- **Framework APIs confirmed this session** (do not guess at these):
+  - `ServiceRegistry::add(name, primary, secondary)` — always three arguments; use `NetworkEndpointConfiguration{}` as secondary when only one endpoint is needed
+  - `ProtocolType::FrameworkPdu` — not `Pdu`; the only other value is `RawBytes`
+  - No `reactor_->connect()` — outbound connections initiated via `connect_to_service(name)` called from `on_app_ready_event()`
+  - `generate_cpp_from_dsl.py` second argument is an output **file path**, not a directory
+
+### Session 6
+- **Reactor refactor confirmed complete** — `Reactor` correctly delegates all inbound/outbound connection work to `InboundConnectionManager` and `OutboundConnectionManager`
+- **`RawBytesProtocolHandler` bugs fixed** — intermittent `BurstDelivery` test failure resolved; root cause was ambiguity in tail-advance detection; fix: `EventMessage::create_raw_socket_message` now carries `tail_position`; commit policy changed to only commit when entire window consumed
+- **`MirroredBuffer`** — `tail()` accessor added
+- **`EventMessage`** — `tail_position` field added; `create_raw_socket_message` takes `int64_t tail_position` as fourth argument
+- **`InboundConnectionManager` use-after-free fix** — `process_send_pdu_command` and `process_send_raw_command` re-look up connection after `send_prebuilt` returns
+- **Design documentation written** — `raw_socket_design.dox`, `memory_management_design.dox`, `dsl_design.dox`; `mainpage.dox` updated
+- **`sample_fix_gateway` tested** with fix8 — raw bytes path confirmed end-to-end
+- All 411 tests passing
 
 ### Session 5
 - **Logging subsystem rewrite** — `QuillLogger` redesigned with two clean constructors (production: file+syslog; unit test: console+optional callback); `FwLogLevel` enum values flipped so lower=more severe, matching Quill convention; `should_log_to_*` routing functions removed; sink-level filtering used throughout; macros forward args directly to Quill backend thread (no front-end formatting); `PUBSUB_LOG` and `PUBSUB_LOG_STR` are the only two call-site macros
@@ -545,40 +552,82 @@ The receiving node's reactor accepts data via epoll and delivers it zero-copy to
 - `EventType` / `EventMessage` — complete (includes `create_raw_socket_message` with `tail_position`)
 - `ReactorControlCommand` — complete
 - `ReactorConfiguration` — complete
-- DSL code generator — complete, `char` field type added, 61 tests passing
+- DSL code generator — complete, `char` field type added, 133 tests passing
 - Leader-follower DSL messages — defined and generated
-- FIX 5.0 SP2 equity order topic registry (`fix_equity_orders.dsl`) — defined
+- `fix_equity_orders.dsl` — FIX 5.0 SP2 equity order topic registry defined
 - Logging subsystem — complete, rewritten in Session 5
 - `RawBytesProtocolHandler` — complete (Strategy B; owns `MirroredBuffer`; `CommitRawBytes` command implemented)
+- Application stubs — `sample_fix_gateway_seq`, `sequencer`, `matching_engine`, `arbiter` — compiling
 
 ## What Is Not Yet Done (in dependency order)
 
-1. **Pub/sub fanout**
-2. **Logging levels** — everything currently at Info; verbose paths should move to Debug once framework applications are running
-3. **Leader-follower protocol** — state machine, heartbeat timers, arbitration (HA approach under rethink)
+1. **`SequencedMessage` DSL file** — define `sequencer_messages.dsl` with the envelope (sequence_number: i64, payload_type: i16, payload: TBD); decide where it lives and how the payload bytes are carried
+2. **Sequencer stub → real implementation** — decode inbound order PDUs, wrap in `SequencedMessage`, forward to ME (leader only); leader-follower state machine
+3. **Gateway seq stub → real implementation** — parse inbound FIX, encode as `fix_equity_orders` PDU, send to both sequencers; decode inbound ER PDU, look up `cl_ord_id`, serialise FIX ER back to client
+4. **Matching engine stub → real implementation** — unwrap `SequencedMessage`, decode inner PDU, run matching logic, send ER PDU to gateway
+5. **Arbiter stub → real implementation** — decode `ArbitrationReport`, reply with `ArbitrationDecision`
+6. **Leader-follower protocol** — state machine, heartbeat timers, arbitration
+7. **Pub/sub fanout** — replace direct ME→gateway TCP with pub/sub
+8. **Logging levels** — move verbose paths from Info to Debug once applications are running
 
 ## Immediate Next Task
 
-Implement the leader-follower protocol state machine:
-- States: `Unconnected`, `Connecting`, `Connected`, `Arbitrating`, `Leader`, `Follower`
-- Heartbeat timer (periodic) and arbitration timeout timer
-- On `ConnectionEstablished`: send `StatusQuery` PDU; start heartbeat timer
-- On `StatusResponse`: determine role based on `instance_id` comparison (lowest wins)
-- On `ConnectionLost`: transition to `Unconnected`; attempt reconnect
-- DR nodes are pure arbiters — never become `Leader` or `Follower`
-- All state transitions logged at `Info`; all PDUs defined in the leader-follower DSL
+Define `sequencer_messages.dsl` for the `SequencedMessage` envelope. Before writing:
+- Ask the user where it should live (`applications/` alongside `fix_equity_orders.dsl`, or in the library include path like `leader_follower.dsl`)
+- Confirm the payload field design — how are the inner PDU bytes carried? Options: fixed-size byte array, length-prefixed field, or a new DSL type
+
+Then implement the sequencer's PDU forwarding logic in `SequencerThread`.
 
 ---
 
 ## HA Architecture
 
-- Four instances total: two at main site (primary, secondary), two at DR site (primary-DR, secondary-DR)
-- Each instance has a unique integer `instance_id` configured in `ReactorConfiguration`
-- Leadership is deterministic — lowest `instance_id` wins; no voting required
-- DR is a pure arbiter and never becomes leader or follower
-- Main-site nodes arbitrate via DR-site nodes; DR-site nodes arbitrate via main-site nodes
-- Full election, epoch, split-brain protection, and failure handling documented in Section 12 above
+The original framework HA design (four-node DR topology) still applies to any use of the leader-follower protocol. However for the sequencer-based application architecture, a simpler HA model is used:
+
+- HA applies to the **sequencer only** — gateway and matching engine are single-instance
+- Two sequencer instances on the main site: primary (`instance_id` 1) and secondary (`instance_id` 2)
+- A **main-site arbiter** (separate lightweight `arbiter` process) resolves startup ties — DR arbiters are NOT used for this topology
+- Leadership is deterministic: lowest `instance_id` wins
+- The gateway maintains outbound connections to **both** sequencer instances and sends every order PDU to both, so the follower stays in sync and failover is gap-free
 - All endpoints configured via `ReactorConfiguration` and `ServiceRegistry`
+
+---
+
+## Application Architecture — Sequencer-Based Order Flow
+
+Inspired by the Aeron sequencer pattern. The sequencer is the **sole writer** to the matching engine's input stream, imposing total order on all messages.
+
+```
+FIX client
+    | raw FIX bytes (RawBytesProtocolHandler)
+    v
+sample_fix_gateway_seq          (single instance)
+    | NewOrderSingle / OrderCancelRequest PDUs -- sent to BOTH sequencer instances
+    v
+sequencer primary + secondary   (leader-follower HA, main-site arbiter)
+    | SequencedMessage PDU -- leader only forwards to ME
+    v
+matching_engine                 (single instance)
+    | ExecutionReport PDU -- direct TCP (TODO: replace with pub/sub)
+    v
+sample_fix_gateway_seq --> FIX ER --> FIX client (via cl_ord_id map)
+```
+
+**Application directory layout:** all under `applications/`, one dir per executable: `sample_fix_gateway_seq/`, `sequencer/`, `matching_engine/`, `arbiter/`.
+
+**Outbound connection pattern:** `ServiceRegistry::add(name, primary, secondary)` called in the application constructor (always three args; use `NetworkEndpointConfiguration{}` for unused secondary). `connect_to_service(name)` called from `on_app_ready_event()` in the thread class. No `reactor_->connect()` method exists.
+
+**Port allocation (local testing):**
+
+| Port | Usage |
+|---|---|
+| 9879 | FIX client → gateway |
+| 7001 | gateway → sequencer primary |
+| 7002 | gateway → sequencer secondary |
+| 7003 | sequencer peer-to-peer |
+| 7010 | ME → gateway ER |
+| 7020 | sequencer → ME |
+| 7100 | sequencer → arbiter |
 
 ---
 
@@ -596,7 +645,7 @@ Implement the leader-follower protocol state machine:
 
 ## DSL Subsystem — Full API
 
-**DSL types:** `i8`, `char`, `i16`, `i32`, `i64`, `bool`, `datetime_ns`, `string`, `array<T>[N]`, `list<T>`, `optional T`, `enum : base`, named message references.
+**DSL types:** `i8`, `i16`, `i32`, `i64`, `bool`, `datetime_ns`, `string`, `array<T>[N]`, `list<T>`, `optional T`, `enum : base`, named message references.
 
 **Generated API per message:**
 - `encoded_size(msg)` — wire size in bytes
