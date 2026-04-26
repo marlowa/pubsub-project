@@ -475,7 +475,21 @@ The receiving node's reactor accepts data via epoll and delivers it zero-copy to
 - **Coverage analysis** -- 86.1% line, 93.2% function; all uncovered lines in `RawBytesProtocolHandler` are legitimate error paths
 - All 411 tests passing; 1000-iteration stress test completed without failure
 
-### Session 7 (current)
+### Session 8 (current)
+- **One-connection-per-listener restriction removed** — `InboundConnectionManager.cpp` and `InboundListener.hpp` updated to accept multiple concurrent connections on any listener. The old restriction applied to `FrameworkPdu` listeners and was blocking the arbiter from accepting both sequencer instances simultaneously. `current_connection_id`, `has_connection()`, and the rejection block in `on_accept` all removed. `ConnectionID` include removed from `InboundListener.hpp`.
+- **Integration test renamed and updated** — `RawBytesProtocolHandlerTest` renamed to `RawBytesProtocolHandlerIntegrationTest` throughout (old name implied unit test). `OneConnectionRejection` test replaced with `MultipleConnectionsAccepted` which verifies that a `FrameworkPdu` listener now accepts two concurrent connections with both receiving `ConnectionEstablished`.
+- **Topology corrected to full Aeron pattern** — all traffic flows through the sequencer in both directions (confirmed by reasoning about Aeron cluster ingress/egress). The ME never communicates directly with the gateway. Previous incorrect design had ME connecting outbound to gateway; this was corrected:
+  - gateway ──► sequencer (order PDUs, ports 7001/7002) ✓ was correct
+  - sequencer ──► ME (sequenced order PDUs, port 7020) ✓ was correct
+  - ME ──► sequencer ER listener (ER PDUs, ports 7021/7022) ← new
+  - sequencer ──► gateway (ER PDUs forwarded, port 7010) ← was wrong direction
+- **Sequencer, ME, and gateway wiring corrected** — `SequencerConfiguration`, `SequencerConfigurationLoader`, `Sequencer.cpp`, `SequencerThread.cpp/.hpp`, `MatchingEngineConfiguration`, `MatchingEngineConfigurationLoader`, `MatchingEngine.cpp`, `MatchingEngineThread.cpp/.hpp`, `SampleFixGatewaySeq.cpp` all updated. Sequencer gains second inbound listener on `er_listen_port` for ER PDUs from ME; `matching_engine_conn_id_` renamed `gateway_conn_id_`; ME connects to `sequencer_er` not `gateway`.
+- **TOML files updated** — `sequencer.toml` and `sequencer_secondary.toml` gain `er_listen_port` and `[gateway]` sections; `matching_engine.toml` replaces `[gateway]` with `[sequencer_er]`.
+- **`start_fix_seq_system.py`** — Python startup script replacing the broken shell script; uses `argparse`, resolves prefix to absolute path, checks all executables before launching, monitors for unexpected exits, sends `SIGTERM` on Ctrl-C with 5s wait. Processes launched with `cwd=log_dir` so Quill log files land there.
+- **Raw bytes path verified end-to-end** — `sample_fix_gateway_seq` accepts FIX connections on port 9879, receives raw bytes, commits them. Verified via `nc` sending a FIX logon string. All three log lines confirmed: `connection established`, `raw bytes received`, `raw FIX bytes consumed`.
+- **FIX parsing not yet implemented** in `FixGatewaySeqThread` — next step is to copy `FixParser`, `FixSerialiser`, `FixMessage`, `FixSession` from `sample_fix_gateway` into `sample_fix_gateway_seq` and implement the full FIX session and application layer.
+
+### Session 7
 - **DSL `char` field type implemented** — `char` added as a primitive field type throughout the DSL toolchain:
   - `parser.py` — `char` added to `_parse_type`; produces `PrimitiveType("char")`; was already a keyword and already accepted as an enum underlying type
   - `generator_cpp.py` — `char` added to `_primitive_wire_size` (1 byte), `_cpp_primitive_type` (maps to C++ `char`), `_emit_write_primitive` (single byte, cast to `uint8_t`), `_emit_read_primitive` (cast byte to `char`); enum underlying type `char` changed from `int8_t` to `char` in `_cpp_int_type`; `char` added to `wire_helpers` in `_emit_enum_functions`
@@ -557,26 +571,31 @@ The receiving node's reactor accepts data via epoll and delivers it zero-copy to
 - `fix_equity_orders.dsl` — FIX 5.0 SP2 equity order topic registry defined
 - Logging subsystem — complete, rewritten in Session 5
 - `RawBytesProtocolHandler` — complete (Strategy B; owns `MirroredBuffer`; `CommitRawBytes` command implemented)
-- Application stubs — `sample_fix_gateway_seq`, `sequencer`, `matching_engine`, `arbiter` — compiling
+- Application stubs — `sample_fix_gateway_seq`, `sequencer`, `matching_engine`, `arbiter` — compiling with correct Aeron topology wiring
+- `InboundConnectionManager` — multi-connection support; one-connection restriction removed
+- `start_fix_seq_system.py` — Python startup script; all processes start, log, and accept connections correctly
+- Raw bytes path verified — gateway accepts FIX connections, receives and commits bytes end-to-end
 
 ## What Is Not Yet Done (in dependency order)
 
-1. **`SequencedMessage` DSL file** — define `sequencer_messages.dsl` with the envelope (sequence_number: i64, payload_type: i16, payload: TBD); decide where it lives and how the payload bytes are carried
-2. **Sequencer stub → real implementation** — decode inbound order PDUs, wrap in `SequencedMessage`, forward to ME (leader only); leader-follower state machine
-3. **Gateway seq stub → real implementation** — parse inbound FIX, encode as `fix_equity_orders` PDU, send to both sequencers; decode inbound ER PDU, look up `cl_ord_id`, serialise FIX ER back to client
-4. **Matching engine stub → real implementation** — unwrap `SequencedMessage`, decode inner PDU, run matching logic, send ER PDU to gateway
+1. **FIX parsing in `sample_fix_gateway_seq`** — copy `FixParser`, `FixSerialiser`, `FixMessage`, `FixSession` from `sample_fix_gateway` into `sample_fix_gateway_seq`; implement FIX session layer (Logon, Heartbeat, Logout) and application layer (NewOrderSingle → PDU, ER PDU → FIX ER) in `FixGatewaySeqThread`
+2. **`SequencedMessage` DSL file** — define `sequencer_messages.dsl` with the envelope (sequence_number: i64, payload_type: i16, payload: TBD); decide where it lives and how the payload bytes are carried
+3. **Sequencer stub → real implementation** — decode inbound order PDUs, wrap in `SequencedMessage`, forward to ME (leader only); receive ER PDUs from ME, forward to gateway; leader-follower state machine
+4. **Matching engine stub → real implementation** — unwrap `SequencedMessage`, decode inner PDU, run matching logic, send ER PDU back to sequencer
 5. **Arbiter stub → real implementation** — decode `ArbitrationReport`, reply with `ArbitrationDecision`
 6. **Leader-follower protocol** — state machine, heartbeat timers, arbitration
-7. **Pub/sub fanout** — replace direct ME→gateway TCP with pub/sub
-8. **Logging levels** — move verbose paths from Info to Debug once applications are running
+7. **Pub/sub fanout** — future replacement for direct TCP ER path (not imminent)
+8. **Logging levels** — move verbose paths from Info to Debug
 
 ## Immediate Next Task
 
-Define `sequencer_messages.dsl` for the `SequencedMessage` envelope. Before writing:
-- Ask the user where it should live (`applications/` alongside `fix_equity_orders.dsl`, or in the library include path like `leader_follower.dsl`)
-- Confirm the payload field design — how are the inner PDU bytes carried? Options: fixed-size byte array, length-prefixed field, or a new DSL type
+Implement FIX parsing in `sample_fix_gateway_seq`:
 
-Then implement the sequencer's PDU forwarding logic in `SequencerThread`.
+1. Copy `FixParser.hpp/cpp`, `FixSerialiser.hpp/cpp`, `FixMessage.hpp`, `FixSession.hpp` from `applications/sample_fix_gateway/` into `applications/sample_fix_gateway_seq/` and add them to its `CMakeLists.txt`.
+2. Implement `FixGatewaySeqThread` with full FIX session layer (Logon, Heartbeat, TestRequest, Logout) matching the behaviour of `FixGatewayThread` in `sample_fix_gateway`.
+3. On `NewOrderSingle`: build a `fix_equity_orders::NewOrderSingle` PDU and send it to both sequencer connections. Record `cl_ord_id` → `ConnectionID` in `cl_ord_id_to_session_`.
+4. On `OrderCancelRequest`: build a `fix_equity_orders::OrderCancelRequest` PDU and send to both sequencers.
+5. In `on_framework_pdu_message`: decode inbound `ExecutionReport` PDU; look up `cl_ord_id` → session; serialise FIX ER and send back to FIX client.
 
 ---
 
@@ -605,10 +624,12 @@ sample_fix_gateway_seq          (single instance)
     | NewOrderSingle / OrderCancelRequest PDUs -- sent to BOTH sequencer instances
     v
 sequencer primary + secondary   (leader-follower HA, main-site arbiter)
-    | SequencedMessage PDU -- leader only forwards to ME
+    | SequencedMessage PDU -- leader only forwards to ME (port 7020)
     v
 matching_engine                 (single instance)
-    | ExecutionReport PDU -- direct TCP (TODO: replace with pub/sub)
+    | ExecutionReport PDU -- sent back to sequencer ER listener (ports 7021/7022)
+    v
+sequencer (receives ER, forwards to gateway on port 7010)
     v
 sample_fix_gateway_seq --> FIX ER --> FIX client (via cl_ord_id map)
 ```
@@ -622,11 +643,13 @@ sample_fix_gateway_seq --> FIX ER --> FIX client (via cl_ord_id map)
 | Port | Usage |
 |---|---|
 | 9879 | FIX client → gateway |
-| 7001 | gateway → sequencer primary |
-| 7002 | gateway → sequencer secondary |
+| 7001 | gateway → sequencer primary (orders) |
+| 7002 | gateway → sequencer secondary (orders) |
 | 7003 | sequencer peer-to-peer |
-| 7010 | ME → gateway ER |
-| 7020 | sequencer → ME |
+| 7010 | sequencer → gateway (ER forwarding) |
+| 7020 | sequencer → ME (sequenced orders) |
+| 7021 | ME → sequencer primary ER listener |
+| 7022 | ME → sequencer secondary ER listener |
 | 7100 | sequencer → arbiter |
 
 ---

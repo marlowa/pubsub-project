@@ -69,6 +69,22 @@ FixGatewaySeqConfiguration FixGatewaySeqConfigurationLoader::load(const std::str
         config.sequencer_secondary_port = static_cast<uint16_t>(secondary_port);
         config.raw_buffer_capacity      = raw_buffer_capacity;
 
+        std::string applog_level_str;
+        std::string syslog_level_str;
+        toml.get_required_except("logging.applog_level", applog_level_str);
+        toml.get_required_except("logging.syslog_level", syslog_level_str);
+
+        if (!pubsub_itc_fw::FwLogLevel::from_string(applog_level_str, config.applog_level)) {
+            throw pubsub_itc_fw::ConfigurationException(
+                "FixGatewaySeqConfigurationLoader: logging.applog_level '" + applog_level_str
+                + "' is not a recognised log level");
+        }
+        if (!pubsub_itc_fw::FwLogLevel::from_string(syslog_level_str, config.syslog_level)) {
+            throw pubsub_itc_fw::ConfigurationException(
+                "FixGatewaySeqConfigurationLoader: logging.syslog_level '" + syslog_level_str
+                + "' is not a recognised log level");
+        }
+
     } catch (const pubsub_itc_fw::ConfigurationException&) {
         throw;
     }

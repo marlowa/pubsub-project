@@ -27,6 +27,8 @@ install(TARGETS sequencer
         RUNTIME DESTINATION bin
 )
 
-install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/sequencer.toml
+install(FILES
+        ${CMAKE_CURRENT_SOURCE_DIR}/sequencer.toml
+        ${CMAKE_CURRENT_SOURCE_DIR}/sequencer_secondary.toml
         DESTINATION etc/sequencer
 )

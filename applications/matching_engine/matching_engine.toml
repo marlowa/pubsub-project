@@ -2,6 +2,6 @@
 listen_host = "127.0.0.1"
 listen_port = 7020
 
-[gateway]
+[sequencer_er]
 host = "127.0.0.1"
-port = 7010
+port = 7021

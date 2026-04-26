@@ -18,19 +18,11 @@
 
 namespace sequencer {
 
-const std::string Sequencer::log_file_name = "sequencer.log";
-
-Sequencer::Sequencer(const SequencerConfiguration& config)
+Sequencer::Sequencer(const SequencerConfiguration& config,
+                 std::unique_ptr<pubsub_itc_fw::QuillLogger> logger)
     : config_(config)
+    , logger_(std::move(logger))
 {
-    pubsub_itc_fw::QuillLogger::block_signals_before_construction();
-
-    logger_ = std::make_unique<pubsub_itc_fw::QuillLogger>(
-        log_file_name,
-        pubsub_itc_fw::FileOpenMode{pubsub_itc_fw::FileOpenMode::Truncate},
-        pubsub_itc_fw::FwLogLevel::Info,
-        pubsub_itc_fw::FwLogLevel::Info);
-
     reactor_configuration_.connect_timeout                     = std::chrono::seconds{5};
     reactor_configuration_.socket_maximum_inactivity_interval_ = std::chrono::seconds{120};
     reactor_configuration_.inactivity_check_interval_          = std::chrono::milliseconds{500};
@@ -46,6 +38,14 @@ Sequencer::Sequencer(const SequencerConfiguration& config)
         pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::FrameworkPdu},
         0);
 
+    // Inbound PDU listener for ExecutionReport PDUs from the matching engine.
+    // The ME connects outbound to this port; the sequencer forwards ERs to gateways.
+    reactor_->register_inbound_listener(
+        pubsub_itc_fw::NetworkEndpointConfiguration{config_.er_listen_host, config_.er_listen_port},
+        pubsub_itc_fw::ThreadID{1},
+        pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::FrameworkPdu},
+        0);
+
     sequencer_thread_ = pubsub_itc_fw::ApplicationThread::create<SequencerThread>(
         *logger_, *reactor_, config_);
 
@@ -53,9 +53,9 @@ Sequencer::Sequencer(const SequencerConfiguration& config)
 
     // Outbound connections are initiated from SequencerThread::on_app_ready_event()
     // via connect_to_service(). The ServiceRegistry is populated here.
-    service_registry_.add("matching_engine",
+    service_registry_.add("gateway",
         pubsub_itc_fw::NetworkEndpointConfiguration{
-            config_.matching_engine_host, config_.matching_engine_port},
+            config_.gateway_host, config_.gateway_port},
         pubsub_itc_fw::NetworkEndpointConfiguration{});
     service_registry_.add("sequencer_peer",
         pubsub_itc_fw::NetworkEndpointConfiguration{
@@ -67,11 +67,13 @@ Sequencer::Sequencer(const SequencerConfiguration& config)
         pubsub_itc_fw::NetworkEndpointConfiguration{});
 
     PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info,
-               "Sequencer: listening for gateway PDUs on {}:{} instance_id={}",
-               config_.listen_host, config_.listen_port, config_.instance_id);
+               "Sequencer: order listener on {}:{} ER listener on {}:{} instance_id={}",
+               config_.listen_host, config_.listen_port,
+               config_.er_listen_host, config_.er_listen_port,
+               config_.instance_id);
     PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info,
-               "Sequencer: matching engine={}:{} peer={}:{} arbiter={}:{}",
-               config_.matching_engine_host, config_.matching_engine_port,
+               "Sequencer: gateway={}:{} peer={}:{} arbiter={}:{}",
+               config_.gateway_host, config_.gateway_port,
                config_.peer_host, config_.peer_port,
                config_.arbiter_host, config_.arbiter_port);
 }
@@ -91,23 +93,44 @@ int Sequencer::run()
 
 int main(int argc, char* argv[])
 {
-    try {
-        sequencer::SequencerConfiguration config;
-
-        if (argc >= 2) {
-            const std::string config_file = argv[1];
-            std::cout << "Sequencer: loading configuration from " << config_file << "\n";
-            config = sequencer::SequencerConfigurationLoader::load(config_file);
-        } else {
-            std::cout << "Sequencer: no configuration file supplied, using built-in defaults\n";
-        }
-
-        sequencer::Sequencer app{config};
-        return app.run();
-
-    } catch (const pubsub_itc_fw::ConfigurationException& ex) {
-        std::cerr << "Sequencer: configuration error: " << ex.what() << "\n";
+    if (argc != 3) {
+        std::cerr << "Usage: sequencer <logfile> <config.toml>\n";
         return 1;
+    }
+
+    const std::string log_file    = argv[1];
+    const std::string config_file = argv[2];
+
+    const std::string writable_error =
+        pubsub_itc_fw::QuillLogger::ensure_log_file_writable(log_file);
+    if (!writable_error.empty()) {
+        std::cerr << "Sequencer: " << writable_error << "\n";
+        return 1;
+    }
+
+    pubsub_itc_fw::QuillLogger::block_signals_before_construction();
+
+    auto logger = std::make_unique<pubsub_itc_fw::QuillLogger>(
+        log_file,
+        pubsub_itc_fw::FileOpenMode{pubsub_itc_fw::FileOpenMode::Truncate},
+        pubsub_itc_fw::FwLogLevel::Info,
+        pubsub_itc_fw::FwLogLevel::Info);
+
+    sequencer::SequencerConfiguration config;
+    try {
+        config = sequencer::SequencerConfigurationLoader::load(config_file);
+    } catch (const pubsub_itc_fw::ConfigurationException& ex) {
+        PUBSUB_LOG((*logger), pubsub_itc_fw::FwLogLevel::Error,
+                   "Sequencer: configuration error: {}", ex.what());
+        return 1;
+    }
+
+    logger->set_log_level(config.applog_level);
+    logger->set_syslog_level(config.syslog_level);
+
+    try {
+        sequencer::Sequencer app{config, std::move(logger)};
+        return app.run();
     } catch (const std::exception& ex) {
         std::cerr << "Sequencer: fatal exception: " << ex.what() << "\n";
         return 1;

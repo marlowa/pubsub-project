@@ -115,6 +115,22 @@ class QuillLogger {
      */
     static void block_signals_before_construction();
 
+    /**
+     * @brief Ensures the given log file path is writable before constructing
+     *        a QuillLogger.
+     *
+     * Creates any missing parent directories using FileSystemUtils::make_directories,
+     * then attempts to open the file for writing to verify it is accessible.
+     * This must be called before constructing a QuillLogger so that any failure
+     * can be reported to the console -- once the logger is constructed there is
+     * no console fallback.
+     *
+     * @param[in] file_path Path to the log file.
+     * @return An empty string on success, or a human-readable error description
+     *         on failure. The caller should print the error to stderr and exit.
+     */
+    [[nodiscard]] static std::string ensure_log_file_writable(const std::string& file_path);
+
     /// @brief Returns the underlying quill::Logger pointer (used by the macros).
     [[nodiscard]] quill::Logger* quill_logger() const {
         return quill_logger_;
@@ -122,16 +138,37 @@ class QuillLogger {
 
     /**
      * @brief Sets the applog severity threshold at runtime.
-     * @param level [in] New minimum severity for the applog sink.
+     *
+     * Typically called once after the config file has been read to apply the
+     * configured log level. Safe to call from any thread.
+     *
+     * @param[in] level New minimum severity for the applog sink.
      */
     void set_log_level(FwLogLevel level);
 
     /**
+     * @brief Sets the syslog severity threshold at runtime.
+     *
+     * Typically called once after the config file has been read. If the config
+     * does not specify a syslog level, this method should not be called and
+     * the default (Info) remains in effect. Safe to call from any thread.
+     *
+     * @param[in] level New minimum severity for the syslog sink.
+     */
+    void set_syslog_level(FwLogLevel level);
+
+    /**
      * @brief Returns the current applog severity threshold.
-     * @return Current FwLogLevel.
      */
     [[nodiscard]] FwLogLevel log_level() const {
         return applog_level_;
+    }
+
+    /**
+     * @brief Returns the current syslog severity threshold.
+     */
+    [[nodiscard]] FwLogLevel syslog_level() const {
+        return syslog_level_;
     }
 
   private:

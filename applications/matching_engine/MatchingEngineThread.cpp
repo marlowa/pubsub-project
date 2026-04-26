@@ -40,18 +40,18 @@ MatchingEngineThread::MatchingEngineThread(
                         make_allocator_config(),
                         pubsub_itc_fw::ApplicationThreadConfiguration{})
     , config_(config)
-    , gateway_conn_id_{}
+    , sequencer_er_conn_id_{}
 {}
 
 void MatchingEngineThread::on_app_ready_event()
 {
-    connect_to_service("gateway");
+    connect_to_service("sequencer_er");
 }
 
 void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID id)
 {
     // TODO: identify gateway vs sequencer connection via ServiceRegistry
-    // and store gateway_conn_id_ accordingly.
+    // and store sequencer_er_conn_id_ accordingly.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "MatchingEngineThread: connection {} established", id.get_value());
 }
@@ -67,7 +67,7 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
 {
     // TODO: unwrap SequencedMessage envelope, decode inner PDU
     // (NewOrderSingle or OrderCancelRequest), run matching logic,
-    // encode ExecutionReport PDU, and send_pdu to gateway_conn_id_.
+    // encode ExecutionReport PDU, and send_pdu to sequencer_er_conn_id_.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "MatchingEngineThread: sequenced PDU received on connection {} -- stub",
                message.connection_id().get_value());

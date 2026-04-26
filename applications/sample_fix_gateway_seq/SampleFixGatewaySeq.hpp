@@ -22,19 +22,20 @@ namespace sample_fix_gateway_seq {
  *
  *   - One inbound RawBytes listener for FIX client connections.
  *   - Two outbound PDU connections to the primary and secondary sequencer.
- *   - One inbound PDU listener for ExecutionReport PDUs from the matching
- *     engine (stub for future pub/sub fanout).
+ *   - One inbound PDU listener for ExecutionReport PDUs from the sequencer.
  *
- * The gateway sends every order PDU to both sequencer instances so that the
- * follower stays in sync with the leader and failover is gap-free.
+ * The logger is constructed in main() before the config is loaded.
  */
 class SampleFixGatewaySeq {
-  public:
+public:
     /**
      * @brief Constructs the gateway and wires all connections.
      * @param[in] config Gateway configuration.
+     * @param[in] logger Logger. Ownership transferred. Must already have the
+     *                   correct log levels applied from config.
      */
-    explicit SampleFixGatewaySeq(const FixGatewaySeqConfiguration& config);
+    explicit SampleFixGatewaySeq(const FixGatewaySeqConfiguration& config,
+                                  std::unique_ptr<pubsub_itc_fw::QuillLogger> logger);
 
     /**
      * @brief Starts the reactor event loop. Blocks until shutdown.
@@ -42,9 +43,7 @@ class SampleFixGatewaySeq {
      */
     int run();
 
-  private:
-    static const std::string log_file_name;
-
+private:
     FixGatewaySeqConfiguration config_;
     std::unique_ptr<pubsub_itc_fw::QuillLogger> logger_;
     pubsub_itc_fw::ServiceRegistry service_registry_;

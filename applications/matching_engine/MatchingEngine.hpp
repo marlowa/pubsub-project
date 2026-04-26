@@ -20,15 +20,19 @@ namespace matching_engine {
  *
  * Wires together:
  *   - One inbound PDU listener for SequencedMessage PDUs from the sequencer.
- *   - One outbound PDU connection to the gateway for ExecutionReport PDUs.
- *     TODO: replace with pub/sub fanout when implemented.
+ *   - One outbound PDU connection to the sequencer ER listener.
+ *
+ * The logger is constructed in main() before the config is loaded.
  */
 class MatchingEngine {
-  public:
+public:
     /**
      * @param[in] config Matching engine configuration.
+     * @param[in] logger Logger. Ownership transferred. Must already have the
+     *                   correct log levels applied from config.
      */
-    explicit MatchingEngine(const MatchingEngineConfiguration& config);
+    explicit MatchingEngine(const MatchingEngineConfiguration& config,
+                            std::unique_ptr<pubsub_itc_fw::QuillLogger> logger);
 
     /**
      * @brief Starts the reactor event loop. Blocks until shutdown.
@@ -36,9 +40,7 @@ class MatchingEngine {
      */
     int run();
 
-  private:
-    static const std::string log_file_name;
-
+private:
     MatchingEngineConfiguration config_;
     std::unique_ptr<pubsub_itc_fw::QuillLogger> logger_;
     pubsub_itc_fw::ServiceRegistry service_registry_;

@@ -40,6 +40,28 @@ class FwLogLevel {
                                         : "UNKNOWN ";
     }
 
+    /**
+     * @brief Parses a log level from a case-insensitive string.
+     *
+     * Accepted values: "trace", "debug", "info", "notice", "warning",
+     * "error", "critical", "alert".
+     *
+     * @param[in]  str    The string to parse.
+     * @param[out] level  Populated on success.
+     * @return true on success, false if the string is not a recognised level.
+     */
+    static bool from_string(const std::string& str, FwLogLevel& level) {
+        if (str == "trace"    || str == "TRACE")    { level = FwLogLevel{Trace};    return true; }
+        if (str == "debug"    || str == "DEBUG")    { level = FwLogLevel{Debug};    return true; }
+        if (str == "info"     || str == "INFO")     { level = FwLogLevel{Info};     return true; }
+        if (str == "notice"   || str == "NOTICE")   { level = FwLogLevel{Notice};   return true; }
+        if (str == "warning"  || str == "WARNING")  { level = FwLogLevel{Warning};  return true; }
+        if (str == "error"    || str == "ERROR")    { level = FwLogLevel{Error};    return true; }
+        if (str == "critical" || str == "CRITICAL") { level = FwLogLevel{Critical}; return true; }
+        if (str == "alert"    || str == "ALERT")    { level = FwLogLevel{Alert};    return true; }
+        return false;
+    }
+
     bool is_equal(const FwLogLevel& rhs) const {
         return log_level_ == rhs.log_level_;
     }

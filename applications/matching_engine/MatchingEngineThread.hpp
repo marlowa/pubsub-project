@@ -53,7 +53,7 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
 
     // ConnectionID of the outbound gateway ER connection.
     // TODO: replace with pub/sub fanout when implemented.
-    pubsub_itc_fw::ConnectionID gateway_conn_id_;
+    pubsub_itc_fw::ConnectionID sequencer_er_conn_id_;
 };
 
 } // namespace matching_engine

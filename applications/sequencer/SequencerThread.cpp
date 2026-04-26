@@ -40,12 +40,12 @@ SequencerThread::SequencerThread(
                         make_allocator_config(),
                         pubsub_itc_fw::ApplicationThreadConfiguration{})
     , config_(config)
-    , matching_engine_conn_id_{}
+    , gateway_conn_id_{}
 {}
 
 void SequencerThread::on_app_ready_event()
 {
-    connect_to_service("matching_engine");
+    connect_to_service("gateway");
     connect_to_service("sequencer_peer");
     connect_to_service("arbiter");
 }
@@ -70,10 +70,14 @@ void SequencerThread::on_connection_lost(pubsub_itc_fw::ConnectionID id,
 
 void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message)
 {
-    // TODO: decode inbound order PDU (NewOrderSingle or OrderCancelRequest).
-    // If leader: wrap in SequencedMessage with next_sequence_number_++, encode,
-    // and send_pdu to matching_engine_conn_id_.
-    // If follower: discard (already in sync via receipt).
+    // Two PDU types arrive here:
+    //   - Order PDUs (NewOrderSingle, OrderCancelRequest) from gateways on listen_port.
+    //     If leader: wrap in SequencedMessage with next_sequence_number_++, encode,
+    //     and send_pdu to matching_engine inbound (ME connects to er_listen_port).
+    //     If follower: discard (already in sync via receipt).
+    //   - ExecutionReport PDUs from the ME on er_listen_port.
+    //     Forward to the originating gateway via gateway_conn_id_.
+    // TODO: distinguish by connection ID once IDs are tracked per connection type.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "SequencerThread: PDU received on connection {} seq={} -- stub",
                message.connection_id().get_value(), next_sequence_number_);

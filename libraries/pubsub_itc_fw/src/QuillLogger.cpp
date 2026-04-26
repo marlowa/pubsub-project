@@ -4,6 +4,7 @@
 #include <atomic>
 #include <csignal>
 #include <cstdint>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -21,6 +22,7 @@
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/LoggerUtils.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
+#include <pubsub_itc_fw/utils/FileSystemUtils.hpp>
 
 namespace {
 
@@ -88,6 +90,28 @@ void QuillLogger::block_signals_before_construction() {
     ::sigaddset(&mask, SIGTERM);
     ::sigaddset(&mask, SIGINT);
     ::pthread_sigmask(SIG_BLOCK, &mask, nullptr);
+}
+
+std::string QuillLogger::ensure_log_file_writable(const std::string& file_path)
+{
+    // Extract the parent directory from the file path.
+    const std::size_t last_slash = file_path.rfind('/');
+    if (last_slash != std::string::npos && last_slash > 0) {
+        const std::string parent_dir = file_path.substr(0, last_slash);
+        const std::string dir_error = FileSystemUtils::make_directories(parent_dir);
+        if (!dir_error.empty()) {
+            return "QuillLogger::ensure_log_file_writable: " + dir_error;
+        }
+    }
+
+    // Attempt to open the file for writing to verify it is accessible.
+    std::ofstream test_file(file_path, std::ios::app);
+    if (!test_file.is_open()) {
+        return "QuillLogger::ensure_log_file_writable: cannot open '"
+            + file_path + "' for writing";
+    }
+
+    return "";
 }
 
 QuillLogger::~QuillLogger() = default;
@@ -159,6 +183,20 @@ void QuillLogger::set_log_level(FwLogLevel level) {
     }
     if (callback_sink_ != nullptr) {
         callback_sink_->set_log_level_filter(LoggerUtils::to_quill_log_level(level));
+    }
+    if (quill_logger_ != nullptr) {
+        // Recompute the gate as the minimum of applog and syslog thresholds.
+        const quill::LogLevel gate = applog_level_ <= syslog_level_
+            ? LoggerUtils::to_quill_log_level(applog_level_)
+            : LoggerUtils::to_quill_log_level(syslog_level_);
+        quill_logger_->set_log_level(gate);
+    }
+}
+
+void QuillLogger::set_syslog_level(FwLogLevel level) {
+    syslog_level_ = level;
+    if (syslog_sink_ != nullptr) {
+        syslog_sink_->set_log_level_filter(LoggerUtils::to_quill_log_level(level));
     }
     if (quill_logger_ != nullptr) {
         // Recompute the gate as the minimum of applog and syslog thresholds.

@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <string>
 
+#include <pubsub_itc_fw/FwLogLevel.hpp>
+
 namespace arbiter {
 
 /**
@@ -25,6 +27,12 @@ struct ArbiterConfiguration {
 
     /** @brief TCP port on which the arbiter listens. */
     uint16_t listen_port{7100};
+
+    /** @brief Minimum severity written to the application log file. */
+    pubsub_itc_fw::FwLogLevel applog_level{pubsub_itc_fw::FwLogLevel::Info};
+
+    /** @brief Minimum severity written to syslog. */
+    pubsub_itc_fw::FwLogLevel syslog_level{pubsub_itc_fw::FwLogLevel::Info};
 };
 
 } // namespace arbiter

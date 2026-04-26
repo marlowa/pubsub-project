@@ -21,13 +21,19 @@ namespace arbiter {
  * The arbiter has no involvement in the order flow. It listens for inbound
  * PDU connections from sequencer instances and implements the arbiter side
  * of the leader-follower protocol only.
+ *
+ * The logger is constructed in main() before the config is loaded, so that
+ * config errors can be logged rather than only printed to stderr.
  */
 class Arbiter {
-  public:
+public:
     /**
      * @param[in] config Arbiter configuration.
+     * @param[in] logger Logger. Ownership transferred. Must already have the
+     *                   correct log levels applied from config.
      */
-    explicit Arbiter(const ArbiterConfiguration& config);
+    explicit Arbiter(const ArbiterConfiguration& config,
+                     std::unique_ptr<pubsub_itc_fw::QuillLogger> logger);
 
     /**
      * @brief Starts the reactor event loop. Blocks until shutdown.
@@ -35,9 +41,7 @@ class Arbiter {
      */
     int run();
 
-  private:
-    static const std::string log_file_name;
-
+private:
     ArbiterConfiguration config_;
     std::unique_ptr<pubsub_itc_fw::QuillLogger> logger_;
     pubsub_itc_fw::ServiceRegistry service_registry_;

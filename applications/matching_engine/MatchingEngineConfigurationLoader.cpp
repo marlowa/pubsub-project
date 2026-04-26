@@ -21,14 +21,14 @@ MatchingEngineConfiguration MatchingEngineConfigurationLoader::load(const std::s
     MatchingEngineConfiguration config;
 
     try {
-        toml.get_required_except("network.listen_host", config.listen_host);
-        toml.get_required_except("gateway.host",        config.gateway_host);
+        toml.get_required_except("network.listen_host",   config.listen_host);
+        toml.get_required_except("sequencer_er.host",     config.sequencer_er_host);
 
-        int32_t listen_port  = 0;
-        int32_t gateway_port = 0;
+        int32_t listen_port      = 0;
+        int32_t sequencer_er_port = 0;
 
-        toml.get_required_except("network.listen_port", listen_port);
-        toml.get_required_except("gateway.port",        gateway_port);
+        toml.get_required_except("network.listen_port",   listen_port);
+        toml.get_required_except("sequencer_er.port",     sequencer_er_port);
 
         auto validate_port = [&](int32_t port, const std::string& name) {
             if (port < 1 || port > 65535) {
@@ -38,11 +38,27 @@ MatchingEngineConfiguration MatchingEngineConfigurationLoader::load(const std::s
             }
         };
 
-        validate_port(listen_port,  "network.listen_port");
-        validate_port(gateway_port, "gateway.port");
+        validate_port(listen_port,       "network.listen_port");
+        validate_port(sequencer_er_port, "sequencer_er.port");
 
-        config.listen_port  = static_cast<uint16_t>(listen_port);
-        config.gateway_port = static_cast<uint16_t>(gateway_port);
+        config.listen_port       = static_cast<uint16_t>(listen_port);
+        config.sequencer_er_port = static_cast<uint16_t>(sequencer_er_port);
+
+        std::string applog_level_str;
+        std::string syslog_level_str;
+        toml.get_required_except("logging.applog_level", applog_level_str);
+        toml.get_required_except("logging.syslog_level", syslog_level_str);
+
+        if (!pubsub_itc_fw::FwLogLevel::from_string(applog_level_str, config.applog_level)) {
+            throw pubsub_itc_fw::ConfigurationException(
+                "MatchingEngineConfigurationLoader: logging.applog_level '" + applog_level_str
+                + "' is not a recognised log level");
+        }
+        if (!pubsub_itc_fw::FwLogLevel::from_string(syslog_level_str, config.syslog_level)) {
+            throw pubsub_itc_fw::ConfigurationException(
+                "MatchingEngineConfigurationLoader: logging.syslog_level '" + syslog_level_str
+                + "' is not a recognised log level");
+        }
 
     } catch (const pubsub_itc_fw::ConfigurationException&) {
         throw;

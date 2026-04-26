@@ -7,6 +7,8 @@
 #include <cstdint>
 #include <string>
 
+#include <pubsub_itc_fw/FwLogLevel.hpp>
+
 namespace sample_fix_gateway_seq {
 
 /**
@@ -83,6 +85,12 @@ struct FixGatewaySeqConfiguration {
 
     /** @brief Maximum time allowed for a newly connected FIX client to send a Logon. */
     std::chrono::seconds logon_timeout{30};
+
+    /** @brief Minimum severity written to the application log file. */
+    pubsub_itc_fw::FwLogLevel applog_level{pubsub_itc_fw::FwLogLevel::Info};
+
+    /** @brief Minimum severity written to syslog. */
+    pubsub_itc_fw::FwLogLevel syslog_level{pubsub_itc_fw::FwLogLevel::Info};
 };
 
 } // namespace sample_fix_gateway_seq

@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <string>
 
+#include <pubsub_itc_fw/FwLogLevel.hpp>
+
 namespace sequencer {
 
 /**
@@ -14,8 +16,9 @@ namespace sequencer {
  * The sequencer accepts inbound PDU connections from gateways, stamps a
  * monotonically increasing sequence number onto each PDU, wraps it in a
  * SequencedMessage envelope, and forwards it to the matching engine.
- * Only the leader forwards; the follower receives but discards, staying
- * in sync so that failover is gap-free.
+ * The ME sends ExecutionReport PDUs back to the sequencer, which forwards
+ * them to the originating gateway. Only the leader forwards; the follower
+ * receives but discards, staying in sync so that failover is gap-free.
  *
  * HA: primary and secondary instances are managed by the leader-follower
  * protocol. A lightweight main-site arbiter resolves startup ties.
@@ -33,14 +36,24 @@ struct SequencerConfiguration {
     uint16_t listen_port{7001};
 
     // ----------------------------------------------------------------
-    // Outbound -- matching engine
+    // Inbound -- ExecutionReport PDUs from the matching engine
     // ----------------------------------------------------------------
 
-    /** @brief Host address of the matching engine. */
-    std::string matching_engine_host{"127.0.0.1"};
+    /** @brief Host address on which the sequencer listens for ER PDUs from the ME. */
+    std::string er_listen_host{"127.0.0.1"};
 
-    /** @brief TCP port of the matching engine. */
-    uint16_t matching_engine_port{7020};
+    /** @brief TCP port on which the sequencer listens for ER PDUs from the ME. */
+    uint16_t er_listen_port{7021};
+
+    // ----------------------------------------------------------------
+    // Outbound -- gateway ER forwarding
+    // ----------------------------------------------------------------
+
+    /** @brief Host address of the gateway ER inbound listener. */
+    std::string gateway_host{"127.0.0.1"};
+
+    /** @brief TCP port of the gateway ER inbound listener. */
+    uint16_t gateway_port{7010};
 
     // ----------------------------------------------------------------
     // HA -- leader-follower
@@ -60,6 +73,12 @@ struct SequencerConfiguration {
 
     /** @brief TCP port of the main-site arbiter. */
     uint16_t arbiter_port{7100};
+
+    /** @brief Minimum severity written to the application log file. */
+    pubsub_itc_fw::FwLogLevel applog_level{pubsub_itc_fw::FwLogLevel::Info};
+
+    /** @brief Minimum severity written to syslog. */
+    pubsub_itc_fw::FwLogLevel syslog_level{pubsub_itc_fw::FwLogLevel::Info};
 };
 
 } // namespace sequencer

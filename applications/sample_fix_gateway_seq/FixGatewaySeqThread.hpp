@@ -14,27 +14,33 @@
 #include <pubsub_itc_fw/ThreadID.hpp>
 
 #include "FixGatewaySeqConfiguration.hpp"
+#include "FixMessage.hpp"
+#include "FixSerialiser.hpp"
+#include "FixSession.hpp"
 
 namespace sample_fix_gateway_seq {
 
 /**
  * @brief ApplicationThread subclass for the sequencer-backed FIX gateway.
  *
- * Unlike the simple gateway, this thread does not generate ExecutionReports
- * directly. Instead it:
+ * Handles inbound FIX client connections (RawBytesProtocolHandler) and
+ * outbound PDU connections to both sequencer instances.
  *
- *   1. Accepts inbound FIX client connections (RawBytesProtocolHandler).
- *   2. Parses inbound FIX NewOrderSingle and OrderCancelRequest messages.
- *   3. Encodes them as fix_equity_orders PDUs and forwards to both the
- *      primary and secondary sequencer via outbound PDU connections.
- *   4. Receives ExecutionReport PDUs from the matching engine on a separate
- *      inbound PDU connection (stub for future pub/sub fanout).
- *   5. Decodes the ER PDU, looks up the originating FIX session by cl_ord_id,
- *      serialises a FIX ExecutionReport, and sends it to that client.
+ * FIX session layer (per connection):
+ *   Logon (A)        -- cancels logon timeout, responds with Logon
+ *   Heartbeat (0)    -- responds with Heartbeat
+ *   TestRequest (1)  -- responds with Heartbeat carrying TestReqID
+ *   Logout (5)       -- responds with Logout and disconnects
  *
- * Connection IDs for the sequencer and ME connections are set by
- * SampleFixGatewaySeq during construction and stored here for use when
- * forwarding PDUs.
+ * FIX application layer:
+ *   NewOrderSingle (D)     -- encodes as fix_equity_orders PDU, sends to both
+ *                             sequencers, records cl_ord_id -> session mapping
+ *   OrderCancelRequest (F) -- encodes as fix_equity_orders PDU, sends to both
+ *                             sequencers
+ *
+ * ExecutionReport PDUs arriving from the sequencer on the ER inbound listener
+ * are decoded and routed back to the originating FIX client via cl_ord_id.
+ * ERs with no cl_ord_id are logged and dropped.
  *
  * Threading: ThreadID 1.
  */
@@ -61,10 +67,29 @@ class FixGatewaySeqThread : public pubsub_itc_fw::ApplicationThread {
     void on_itc_message(const pubsub_itc_fw::EventMessage& message) override;
 
   private:
+    // FIX session message handlers
+    void handle_logon(FixSession& session, const FixMessage& msg);
+    void handle_heartbeat(FixSession& session, const FixMessage& msg);
+    void handle_test_request(FixSession& session, const FixMessage& msg);
+    void handle_logout(FixSession& session, const FixMessage& msg);
+    void handle_new_order_single(FixSession& session, const FixMessage& msg);
+    void handle_order_cancel_request(FixSession& session, const FixMessage& msg);
+
+    void disconnect_session(FixSession& session, const std::string& reason);
+    void send_fix_to_session(FixSession& session, FixMessage& msg);
+
+    // Forward a raw PDU buffer to both sequencer connections.
+    void forward_to_sequencers(const void* data, uint32_t size);
+
     const FixGatewaySeqConfiguration& config_;
 
+    // Active FIX client sessions keyed by ConnectionID.
+    std::unordered_map<pubsub_itc_fw::ConnectionID, FixSession> sessions_;
+
+    // Stateless serialiser shared across all sessions.
+    FixSerialiser serialiser_;
+
     // ConnectionID of the primary sequencer outbound connection.
-    // Set when on_connection_established fires for the primary sequencer.
     pubsub_itc_fw::ConnectionID sequencer_primary_conn_id_;
 
     // ConnectionID of the secondary sequencer outbound connection.
@@ -74,11 +99,6 @@ class FixGatewaySeqThread : public pubsub_itc_fw::ApplicationThread {
     // Used to route ExecutionReport PDUs back to the correct FIX client.
     // ERs with no cl_ord_id are logged and dropped.
     std::unordered_map<std::string, pubsub_itc_fw::ConnectionID> cl_ord_id_to_session_;
-
-    // Set of active FIX client connection IDs.
-    // Used to distinguish FIX client connections from sequencer/ME connections
-    // in on_connection_established and on_connection_lost.
-    std::unordered_map<pubsub_itc_fw::ConnectionID, bool> fix_client_sessions_;
 };
 
 } // namespace sample_fix_gateway_seq

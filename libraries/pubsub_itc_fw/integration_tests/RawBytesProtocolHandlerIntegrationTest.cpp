@@ -66,11 +66,10 @@
  *     The raw socket connects and then closes without sending data. The listener
  *     must detect recv==0 and deliver ConnectionLost.
  *
- *   OneConnectionRejection
- *     Tests the one-connection-per-listener rule for FrameworkPdu listeners.
- *     RawBytes listeners allow multiple concurrent connections (e.g. a FIX
- *     gateway serving multiple clients). The one-connection rule applies only
- *     to FrameworkPdu listeners, which is what this test uses.
+ *   MultipleConnectionsAccepted
+ *     Verifies that FrameworkPdu listeners now accept multiple concurrent
+ *     connections. The old one-connection-per-listener rule has been removed.
+ *     Both connections receive ConnectionEstablished with no interference.
  *
  *   IdleTimeout
  *     The listener is configured with a very short idle timeout. The raw socket
@@ -412,7 +411,7 @@ private:
 
 // ============================================================
 // Listener thread: tracks connection events only, does not consume bytes.
-// Used by PeerDisconnect, OneConnectionRejection, and IdleTimeout.
+// Used by PeerDisconnect, MultipleConnectionsAccepted, and IdleTimeout.
 // ============================================================
 class PassiveListenerThread : public ApplicationThread {
 public:
@@ -446,7 +445,7 @@ protected:
 // ============================================================
 // Test fixture
 // ============================================================
-class RawBytesProtocolHandlerTest : public ::testing::Test {
+class RawBytesProtocolHandlerIntegrationTest : public ::testing::Test {
 protected:
     void SetUp() override {
         logger_ = std::make_unique<LoggerWithSink>();
@@ -486,7 +485,7 @@ protected:
 // ============================================================
 // Test: happy-path round-trip
 // ============================================================
-TEST_F(RawBytesProtocolHandlerTest, RawByteRoundTrip) {
+TEST_F(RawBytesProtocolHandlerIntegrationTest, RawByteRoundTrip) {
     ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(
         make_reactor_config(), listener_registry, logger_->logger);
@@ -533,7 +532,7 @@ TEST_F(RawBytesProtocolHandlerTest, RawByteRoundTrip) {
 // ============================================================
 // Test: fragmented delivery
 // ============================================================
-TEST_F(RawBytesProtocolHandlerTest, FragmentedDelivery) {
+TEST_F(RawBytesProtocolHandlerIntegrationTest, FragmentedDelivery) {
     ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(
         make_reactor_config(), listener_registry, logger_->logger);
@@ -592,7 +591,7 @@ TEST_F(RawBytesProtocolHandlerTest, FragmentedDelivery) {
 // ============================================================
 // Test: burst delivery
 // ============================================================
-TEST_F(RawBytesProtocolHandlerTest, BurstDelivery) {
+TEST_F(RawBytesProtocolHandlerIntegrationTest, BurstDelivery) {
     const std::vector<std::string> burst_payloads = {
         "MESSAGE_ONE", "MESSAGE_TWO", "MESSAGE_THREE",
         "MESSAGE_FOUR", "MESSAGE_FIVE"
@@ -644,7 +643,7 @@ TEST_F(RawBytesProtocolHandlerTest, BurstDelivery) {
 // ============================================================
 // Test: peer disconnect detected by listener (exercises recv==0 path)
 // ============================================================
-TEST_F(RawBytesProtocolHandlerTest, PeerDisconnect) {
+TEST_F(RawBytesProtocolHandlerIntegrationTest, PeerDisconnect) {
     ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(
         make_reactor_config(), listener_registry, logger_->logger);
@@ -677,17 +676,21 @@ TEST_F(RawBytesProtocolHandlerTest, PeerDisconnect) {
 }
 
 // ============================================================
-// Test: one-connection-per-listener enforcement (FrameworkPdu listener).
+// Test: FrameworkPdu listener accepts multiple concurrent connections.
 //
-// RawBytes listeners allow multiple concurrent connections. The one-connection
-// rule applies only to FrameworkPdu listeners, which is what this test uses.
+// Previously the framework enforced a one-connection-per-listener rule for
+// FrameworkPdu listeners. This has been removed -- all listeners now accept
+// any number of concurrent connections. This test verifies the new behaviour
+// by connecting two clients to a FrameworkPdu listener and confirming that
+// both receive ConnectionEstablished and that the first is not disturbed by
+// the second.
 // ============================================================
-TEST_F(RawBytesProtocolHandlerTest, OneConnectionRejection) {
+TEST_F(RawBytesProtocolHandlerIntegrationTest, MultipleConnectionsAccepted) {
     ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(
         make_reactor_config(), listener_registry, logger_->logger);
 
-    // FrameworkPdu listener -- one-connection rule enforced.
+    // FrameworkPdu listener -- multiple connections now accepted.
     listener_reactor->register_inbound_listener(
         NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
 
@@ -702,26 +705,21 @@ TEST_F(RawBytesProtocolHandlerTest, OneConnectionRejection) {
     ASSERT_NE(first_fd, -1) << "First socket failed to connect";
 
     EXPECT_TRUE(wait_for([&]() {
-        return listener_thread->connection_established.load(std::memory_order_acquire);
+        return listener_thread->connection_established_count.load(std::memory_order_acquire) >= 1;
     })) << "Listener: ConnectionEstablished not received for first connection";
 
     const int second_fd = connect_raw_socket(listen_port);
-    ASSERT_NE(second_fd, -1) << "Second socket failed to connect at TCP level";
+    ASSERT_NE(second_fd, -1) << "Second socket failed to connect";
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-
-    EXPECT_EQ(listener_thread->connection_established_count.load(std::memory_order_acquire), 1)
-        << "Listener received more than one ConnectionEstablished -- rejection failed";
+    EXPECT_TRUE(wait_for([&]() {
+        return listener_thread->connection_established_count.load(std::memory_order_acquire) >= 2;
+    })) << "Listener: second ConnectionEstablished not received -- multiple connections not accepted";
 
     EXPECT_FALSE(listener_thread->connection_lost.load(std::memory_order_acquire))
-        << "First connection was incorrectly lost after second connector arrived";
+        << "A connection was lost unexpectedly while both clients were connected";
 
     ::close(second_fd);
     ::close(first_fd);
-
-    EXPECT_TRUE(wait_for([&]() {
-        return listener_thread->connection_lost.load(std::memory_order_acquire);
-    })) << "Listener: ConnectionLost not received after closing first socket";
 
     shutdown_and_join(*listener_reactor, listener_reactor_thread);
 }
@@ -729,7 +727,7 @@ TEST_F(RawBytesProtocolHandlerTest, OneConnectionRejection) {
 // ============================================================
 // Test: idle timeout teardown
 // ============================================================
-TEST_F(RawBytesProtocolHandlerTest, IdleTimeout) {
+TEST_F(RawBytesProtocolHandlerIntegrationTest, IdleTimeout) {
     ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(
         make_short_idle_reactor_config(), listener_registry, logger_->logger);
@@ -826,7 +824,7 @@ private:
 // ============================================================
 // Test: large reply forces partial send, exercising continue_send().
 // ============================================================
-TEST_F(RawBytesProtocolHandlerTest, LargeReplyContinueSend) {
+TEST_F(RawBytesProtocolHandlerIntegrationTest, LargeReplyContinueSend) {
     ServiceRegistry listener_registry;
 
     // Small send buffer on the listener's accepted socket forces the 512 KB
@@ -888,7 +886,7 @@ TEST_F(RawBytesProtocolHandlerTest, LargeReplyContinueSend) {
 // Test: peer closes while partial send is in flight, exercising
 // deallocate_pending_send() via teardown_connection.
 // ============================================================
-TEST_F(RawBytesProtocolHandlerTest, TeardownWhilePendingSendFreesChunk) {
+TEST_F(RawBytesProtocolHandlerIntegrationTest, TeardownWhilePendingSendFreesChunk) {
     ServiceRegistry listener_registry;
 
     ReactorConfiguration listener_cfg = make_reactor_config();

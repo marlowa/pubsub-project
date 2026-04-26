@@ -28,6 +28,11 @@ namespace sequencer {
  * gateway (staying in sync) but does not forward. On promotion the follower
  * begins forwarding from the next sequence number with no gaps.
  *
+ * The sequencer is the sole chokepoint for all traffic in both directions.
+ * Order PDUs from gateways are sequenced and forwarded to the ME. ER PDUs
+ * from the ME are forwarded back to the originating gateway. This matches
+ * the Aeron cluster ingress/egress pattern exactly.
+ *
  * Leader-follower state machine: TODO -- to be implemented once the protocol
  * state machine is built. The stub behaves as leader unconditionally.
  *
@@ -61,8 +66,8 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // forwarded to the matching engine. Never resets within a process lifetime.
     int64_t next_sequence_number_{1};
 
-    // ConnectionID of the matching engine outbound connection.
-    pubsub_itc_fw::ConnectionID matching_engine_conn_id_;
+    // ConnectionID of the outbound gateway connection for ER forwarding.
+    pubsub_itc_fw::ConnectionID gateway_conn_id_;
 };
 
 } // namespace sequencer

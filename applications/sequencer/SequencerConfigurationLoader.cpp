@@ -22,17 +22,20 @@ SequencerConfiguration SequencerConfigurationLoader::load(const std::string& fil
 
     try {
         toml.get_required_except("network.listen_host",    config.listen_host);
-        toml.get_required_except("matching_engine.host",   config.matching_engine_host);
+        toml.get_required_except("network.er_listen_host", config.er_listen_host);
+        toml.get_required_except("gateway.host",           config.gateway_host);
         toml.get_required_except("ha.peer_host",           config.peer_host);
         toml.get_required_except("ha.arbiter_host",        config.arbiter_host);
 
-        int32_t listen_port = 0;
-        int32_t me_port     = 0;
-        int32_t peer_port   = 0;
-        int32_t arbiter_port = 0;
+        int32_t listen_port    = 0;
+        int32_t er_listen_port = 0;
+        int32_t gateway_port   = 0;
+        int32_t peer_port      = 0;
+        int32_t arbiter_port   = 0;
 
         toml.get_required_except("network.listen_port",    listen_port);
-        toml.get_required_except("matching_engine.port",   me_port);
+        toml.get_required_except("network.er_listen_port", er_listen_port);
+        toml.get_required_except("gateway.port",           gateway_port);
         toml.get_required_except("ha.instance_id",         config.instance_id);
         toml.get_required_except("ha.peer_port",           peer_port);
         toml.get_required_except("ha.arbiter_port",        arbiter_port);
@@ -45,15 +48,33 @@ SequencerConfiguration SequencerConfigurationLoader::load(const std::string& fil
             }
         };
 
-        validate_port(listen_port,   "network.listen_port");
-        validate_port(me_port,       "matching_engine.port");
-        validate_port(peer_port,     "ha.peer_port");
-        validate_port(arbiter_port,  "ha.arbiter_port");
+        validate_port(listen_port,    "network.listen_port");
+        validate_port(er_listen_port, "network.er_listen_port");
+        validate_port(gateway_port,   "gateway.port");
+        validate_port(peer_port,      "ha.peer_port");
+        validate_port(arbiter_port,   "ha.arbiter_port");
 
-        config.listen_port          = static_cast<uint16_t>(listen_port);
-        config.matching_engine_port = static_cast<uint16_t>(me_port);
-        config.peer_port            = static_cast<uint16_t>(peer_port);
-        config.arbiter_port         = static_cast<uint16_t>(arbiter_port);
+        config.listen_port    = static_cast<uint16_t>(listen_port);
+        config.er_listen_port = static_cast<uint16_t>(er_listen_port);
+        config.gateway_port   = static_cast<uint16_t>(gateway_port);
+        config.peer_port      = static_cast<uint16_t>(peer_port);
+        config.arbiter_port   = static_cast<uint16_t>(arbiter_port);
+
+        std::string applog_level_str;
+        std::string syslog_level_str;
+        toml.get_required_except("logging.applog_level", applog_level_str);
+        toml.get_required_except("logging.syslog_level", syslog_level_str);
+
+        if (!pubsub_itc_fw::FwLogLevel::from_string(applog_level_str, config.applog_level)) {
+            throw pubsub_itc_fw::ConfigurationException(
+                "SequencerConfigurationLoader: logging.applog_level '" + applog_level_str
+                + "' is not a recognised log level");
+        }
+        if (!pubsub_itc_fw::FwLogLevel::from_string(syslog_level_str, config.syslog_level)) {
+            throw pubsub_itc_fw::ConfigurationException(
+                "SequencerConfigurationLoader: logging.syslog_level '" + syslog_level_str
+                + "' is not a recognised log level");
+        }
 
     } catch (const pubsub_itc_fw::ConfigurationException&) {
         throw;

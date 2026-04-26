@@ -33,6 +33,22 @@ ArbiterConfiguration ArbiterConfigurationLoader::load(const std::string& file_pa
         }
         config.listen_port = static_cast<uint16_t>(listen_port);
 
+        std::string applog_level_str;
+        std::string syslog_level_str;
+        toml.get_required_except("logging.applog_level", applog_level_str);
+        toml.get_required_except("logging.syslog_level", syslog_level_str);
+
+        if (!pubsub_itc_fw::FwLogLevel::from_string(applog_level_str, config.applog_level)) {
+            throw pubsub_itc_fw::ConfigurationException(
+                "ArbiterConfigurationLoader: logging.applog_level '" + applog_level_str
+                + "' is not a recognised log level");
+        }
+        if (!pubsub_itc_fw::FwLogLevel::from_string(syslog_level_str, config.syslog_level)) {
+            throw pubsub_itc_fw::ConfigurationException(
+                "ArbiterConfigurationLoader: logging.syslog_level '" + syslog_level_str
+                + "' is not a recognised log level");
+        }
+
     } catch (const pubsub_itc_fw::ConfigurationException&) {
         throw;
     }

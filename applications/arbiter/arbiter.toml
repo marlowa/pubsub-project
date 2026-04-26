@@ -1,3 +1,7 @@
 [network]
 listen_host = "127.0.0.1"
 listen_port = 7100
+
+[logging]
+applog_level = "info"
+syslog_level = "info"

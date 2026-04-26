@@ -1,6 +1,8 @@
 add_executable(sample_fix_gateway_seq
         FixGatewaySeqConfigurationLoader.cpp
         FixGatewaySeqThread.cpp
+        FixParser.cpp
+        FixSerialiser.cpp
         SampleFixGatewaySeq.cpp
 )
 
@@ -20,6 +22,10 @@ target_sources(sample_fix_gateway_seq PRIVATE
         FixGatewaySeqConfiguration.hpp
         FixGatewaySeqConfigurationLoader.hpp
         FixGatewaySeqThread.hpp
+        FixMessage.hpp
+        FixParser.hpp
+        FixSerialiser.hpp
+        FixSession.hpp
         SampleFixGatewaySeq.hpp
 )
 

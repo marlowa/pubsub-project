@@ -1,17 +1,15 @@
 [network]
-listen_host    = "127.0.0.1"
-listen_port    = 7001
-er_listen_host = "127.0.0.1"
-er_listen_port = 7021
+listen_host = "127.0.0.1"
+listen_port = 7002
 
-[gateway]
+[matching_engine]
 host = "127.0.0.1"
-port = 7010
+port = 7020
 
 [ha]
-instance_id  = 1
+instance_id  = 2
 peer_host    = "127.0.0.1"
-peer_port    = 7003
+peer_port    = 7001
 arbiter_host = "127.0.0.1"
 arbiter_port = 7100
 

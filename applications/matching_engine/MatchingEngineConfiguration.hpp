@@ -6,14 +6,17 @@
 #include <cstdint>
 #include <string>
 
+#include <pubsub_itc_fw/FwLogLevel.hpp>
+
 namespace matching_engine {
 
 /**
  * @brief Configuration for the matching engine application.
  *
  * The matching engine accepts sequenced order PDUs from the sequencer,
- * matches them, and sends ExecutionReport PDUs back to each gateway via
- * direct TCP PDU connections (stub for future pub/sub fanout).
+ * matches them, and sends ExecutionReport PDUs back to the sequencer's
+ * ER inbound listener. The sequencer then forwards ERs to the gateway.
+ * All traffic flows through the sequencer in both directions.
  */
 struct MatchingEngineConfiguration {
     // ----------------------------------------------------------------
@@ -27,17 +30,23 @@ struct MatchingEngineConfiguration {
     uint16_t listen_port{7020};
 
     // ----------------------------------------------------------------
-    // Outbound -- ExecutionReport PDUs to the gateway
+    // Outbound -- ExecutionReport PDUs back to the sequencer
     //
-    // Direct TCP PDU connection to each gateway.
-    // TODO: replace with pub/sub fanout when implemented.
+    // The ME connects outbound to the sequencer's ER inbound listener.
+    // The sequencer then forwards ERs to the appropriate gateway.
     // ----------------------------------------------------------------
 
-    /** @brief Host address of the gateway to send ExecutionReport PDUs to. */
-    std::string gateway_host{"127.0.0.1"};
+    /** @brief Host address of the sequencer's ER inbound listener. */
+    std::string sequencer_er_host{"127.0.0.1"};
 
-    /** @brief TCP port of the gateway ER listener. */
-    uint16_t gateway_port{7010};
+    /** @brief TCP port of the sequencer's ER inbound listener. */
+    uint16_t sequencer_er_port{7021};
+
+    /** @brief Minimum severity written to the application log file. */
+    pubsub_itc_fw::FwLogLevel applog_level{pubsub_itc_fw::FwLogLevel::Info};
+
+    /** @brief Minimum severity written to syslog. */
+    pubsub_itc_fw::FwLogLevel syslog_level{pubsub_itc_fw::FwLogLevel::Info};
 };
 
 } // namespace matching_engine

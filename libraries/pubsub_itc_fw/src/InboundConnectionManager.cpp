@@ -114,22 +114,6 @@ void InboundConnectionManager::on_accept(InboundListener& listener, ConnectionID
         ? fmt::format("{}:{}", peer_addr->get_ip_address_string(), peer_addr->get_port())
         : "unknown peer";
 
-    // Enforce the one-connection rule for FrameworkPdu listeners only.
-    // RawBytes listeners (e.g. FIX gateways) accept multiple concurrent connections.
-    if (listener.has_connection() &&
-        listener.configuration.protocol_type == ProtocolType::FrameworkPdu) {
-        PUBSUB_LOG(logger_, FwLogLevel::Warning,
-            "InboundConnectionManager::on_accept: listener on port {} already has an established "
-            "connection (connection id {}). Rejecting new connection attempt from {}. "
-            "This indicates a framework misuse by the connecting application -- "
-            "only one peer should connect to a given framework listener port.",
-            listener.configuration.address.port,
-            listener.current_connection_id.get_value(),
-            peer_desc);
-        socket->close();
-        return;
-        }
-
     const int fd = socket->get_file_descriptor();
 
     if (config_.socket_send_buffer_size > 0) {
@@ -182,7 +166,6 @@ void InboundConnectionManager::on_accept(InboundListener& listener, ConnectionID
     InboundConnection* conn_ptr = conn.get();
     connections_[id]       = std::move(conn);
     connections_by_fd_[fd] = conn_ptr;
-    listener.current_connection_id = id;
 
     epoll_event ev{};
     ev.events  = EPOLLIN | EPOLLERR;
@@ -267,16 +250,6 @@ void InboundConnectionManager::teardown_connection(ConnectionID id,
     if (fd != -1) {
         ::epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, fd, nullptr);
         connections_by_fd_.erase(fd);
-    }
-
-    // Clear the listener's current connection so it can accept again.
-    // Only tracked for FrameworkPdu listeners.
-    for (auto& [listen_fd, listener] : inbound_listeners_) {
-        if (listener.current_connection_id == id &&
-            listener.configuration.protocol_type == ProtocolType::FrameworkPdu) {
-            listener.current_connection_id = ConnectionID{};
-            break;
-            }
     }
 
     // Deliver ConnectionLost if requested.
