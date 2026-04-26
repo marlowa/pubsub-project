@@ -6,11 +6,15 @@ Starts the sequencer-based FIX order flow system for testing with fix8.
 
 Startup order:
   1. arbiter               -- must be up before sequencers try to connect
-  2. sequencer (primary)   -- instance_id=1, listens on port 7001
-  3. sequencer (secondary) -- instance_id=2, listens on port 7002
-  4. matching_engine       -- connects outbound to gateway ER listener
-  5. sample_fix_gateway_seq -- connects to both sequencers; listens for
-                               FIX clients on port 9879 and ME ERs on 7010
+  2. sample_fix_gateway_seq -- must be listening on port 7010 before sequencers
+                               start, because sequencers connect outbound to the
+                               gateway's ER inbound listener at startup. This is
+                               counterintuitive (normally services start before
+                               clients) but necessary until connection retry is
+                               implemented in the framework.
+  3. sequencer (primary)   -- instance_id=1, listens on port 7001
+  4. sequencer (secondary) -- instance_id=2, listens on port 7002
+  5. matching_engine       -- connects outbound to sequencer ER listener (7021)
 
 Quill log files land in <prefix>/log/ because each process is started
 with that directory as its working directory. stdout/stderr of each
@@ -124,6 +128,10 @@ def main() -> None:
              bin_dir / "arbiter",
              log_dir / "arbiter.log",
              etc_dir / "arbiter" / "arbiter.toml"),
+            ("sample_fix_gateway_seq",
+             bin_dir / "sample_fix_gateway_seq",
+             log_dir / "sample_fix_gateway_seq.log",
+             etc_dir / "sample_fix_gateway_seq" / "sample_fix_gateway_seq.toml"),
             ("sequencer_primary",
              bin_dir / "sequencer",
              log_dir / "sequencer_primary.log",
@@ -136,10 +144,6 @@ def main() -> None:
              bin_dir / "matching_engine",
              log_dir / "matching_engine.log",
              etc_dir / "matching_engine" / "matching_engine.toml"),
-            ("sample_fix_gateway_seq",
-             bin_dir / "sample_fix_gateway_seq",
-             log_dir / "sample_fix_gateway_seq.log",
-             etc_dir / "sample_fix_gateway_seq" / "sample_fix_gateway_seq.toml"),
         ]
 
         for name, exe, log_file, config in steps:

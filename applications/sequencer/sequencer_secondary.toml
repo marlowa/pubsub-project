@@ -1,10 +1,12 @@
 [network]
-listen_host = "127.0.0.1"
-listen_port = 7002
+listen_host    = "127.0.0.1"
+listen_port    = 7002
+er_listen_host = "127.0.0.1"
+er_listen_port = 7022
 
-[matching_engine]
+[gateway]
 host = "127.0.0.1"
-port = 7020
+port = 7010
 
 [ha]
 instance_id  = 2

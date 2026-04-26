@@ -57,13 +57,27 @@ void FixGatewaySeqThread::on_app_ready_event()
 
 void FixGatewaySeqThread::on_connection_established(pubsub_itc_fw::ConnectionID id)
 {
-    // TODO: use ServiceRegistry to distinguish FIX client connections from
-    // sequencer connections and store sequencer_primary_conn_id_ /
-    // sequencer_secondary_conn_id_ accordingly. For now all connections are
-    // logged and FIX sessions are created for inbound connections only when
-    // raw bytes arrive.
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "FixGatewaySeqThread: connection {} established", id.get_value());
+    if (id.service_name() == "sequencer_primary") {
+        sequencer_primary_conn_id_ = id;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "FixGatewaySeqThread: primary sequencer connection {} established",
+                   id.get_value());
+    } else if (id.service_name() == "sequencer_secondary") {
+        sequencer_secondary_conn_id_ = id;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "FixGatewaySeqThread: secondary sequencer connection {} established",
+                   id.get_value());
+    } else if (id.service_name() == "inbound:7010") {
+        // Inbound FrameworkPdu connection from a sequencer on the ER listener.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "FixGatewaySeqThread: sequencer ER inbound connection {} established",
+                   id.get_value());
+    } else {
+        // Inbound RawBytes connection -- FIX client on port 9879.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "FixGatewaySeqThread: FIX client connection {} established -- active sessions: {}",
+                   id.get_value(), sessions_.size() + 1);
+    }
 }
 
 void FixGatewaySeqThread::on_connection_lost(pubsub_itc_fw::ConnectionID id,
@@ -84,6 +98,10 @@ void FixGatewaySeqThread::on_connection_lost(pubsub_itc_fw::ConnectionID id,
         sequencer_secondary_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                    "FixGatewaySeqThread: secondary sequencer connection {} lost: {}",
+                   id.get_value(), reason);
+    } else if (id.service_name() == "inbound:7010") {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "FixGatewaySeqThread: sequencer ER inbound connection {} lost: {}",
                    id.get_value(), reason);
     } else {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,

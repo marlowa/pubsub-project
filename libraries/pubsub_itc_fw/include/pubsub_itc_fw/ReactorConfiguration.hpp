@@ -107,6 +107,24 @@ struct ReactorConfiguration {
     std::chrono::milliseconds connect_timeout{std::chrono::seconds{5}};
 
     /**
+     * @brief Interval between automatic retries of a failed outbound connect attempt.
+     *
+     * When a non-blocking connect fails (e.g. because the remote process has not
+     * started yet), the reactor schedules a retry after this interval rather than
+     * delivering ConnectionFailed to the application. Retries continue indefinitely
+     * until the connection succeeds.
+     *
+     * This is a temporary workaround for the TCP rendezvous problem -- components
+     * starting at different times need to find each other. The correct long-term
+     * solution is WAL-based brokerless pub/sub, where publishers write to the log
+     * regardless of subscriber presence and there is no connection to establish.
+     * This retry mechanism should be removed when pub/sub replaces direct TCP.
+     *
+     * Default: 2 seconds.
+     */
+    std::chrono::milliseconds connect_retry_interval_{std::chrono::seconds{2}};
+
+    /**
      * @brief Size in bytes of each slab used by the reactor's inbound PDU slab allocator.
      *
      * The inbound allocator receives payload bytes directly from the socket into

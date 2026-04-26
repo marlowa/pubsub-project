@@ -682,6 +682,28 @@ void Reactor::on_housekeeping_tick() {
     check_for_stuck_threads();
     inbound_manager_.check_for_inactive_connections();
     outbound_manager_.check_for_timed_out_connections();
+
+    // Retry outbound connections that failed on a previous attempt.
+    //
+    // This addresses the TCP rendezvous problem: when components start at
+    // different times, an outbound connect() may fail because the remote
+    // process is not yet listening. Rather than delivering ConnectionFailed
+    // to the application and requiring it to implement retry logic itself,
+    // the reactor retries transparently on each housekeeping tick until the
+    // connection succeeds.
+    //
+    // The retry interval is controlled by
+    // ReactorConfiguration::connect_retry_interval_ (default 2s). Each
+    // retry re-issues the original Connect command with a freshly allocated
+    // ConnectionID, going through the full process_connect_command() path.
+    //
+    // This mechanism is a temporary workaround pending WAL-based brokerless
+    // pub/sub. In the pub/sub design, publishers write to the WAL regardless
+    // of subscriber presence and there is no connection to establish, so the
+    // rendezvous problem does not exist. The retry logic here should be
+    // removed when direct TCP connections are replaced by pub/sub topics.
+    outbound_manager_.retry_failed_connections(
+        [this]() { return allocate_connection_id(); });
 }
 
 void Reactor::check_for_exited_threads() {

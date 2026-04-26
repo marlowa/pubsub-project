@@ -475,19 +475,111 @@ The receiving node's reactor accepts data via epoll and delivers it zero-copy to
 - **Coverage analysis** -- 86.1% line, 93.2% function; all uncovered lines in `RawBytesProtocolHandler` are legitimate error paths
 - All 411 tests passing; 1000-iteration stress test completed without failure
 
-### Session 8 (current)
-- **One-connection-per-listener restriction removed** — `InboundConnectionManager.cpp` and `InboundListener.hpp` updated to accept multiple concurrent connections on any listener. The old restriction applied to `FrameworkPdu` listeners and was blocking the arbiter from accepting both sequencer instances simultaneously. `current_connection_id`, `has_connection()`, and the rejection block in `on_accept` all removed. `ConnectionID` include removed from `InboundListener.hpp`.
-- **Integration test renamed and updated** — `RawBytesProtocolHandlerTest` renamed to `RawBytesProtocolHandlerIntegrationTest` throughout (old name implied unit test). `OneConnectionRejection` test replaced with `MultipleConnectionsAccepted` which verifies that a `FrameworkPdu` listener now accepts two concurrent connections with both receiving `ConnectionEstablished`.
-- **Topology corrected to full Aeron pattern** — all traffic flows through the sequencer in both directions (confirmed by reasoning about Aeron cluster ingress/egress). The ME never communicates directly with the gateway. Previous incorrect design had ME connecting outbound to gateway; this was corrected:
-  - gateway ──► sequencer (order PDUs, ports 7001/7002) ✓ was correct
-  - sequencer ──► ME (sequenced order PDUs, port 7020) ✓ was correct
-  - ME ──► sequencer ER listener (ER PDUs, ports 7021/7022) ← new
-  - sequencer ──► gateway (ER PDUs forwarded, port 7010) ← was wrong direction
-- **Sequencer, ME, and gateway wiring corrected** — `SequencerConfiguration`, `SequencerConfigurationLoader`, `Sequencer.cpp`, `SequencerThread.cpp/.hpp`, `MatchingEngineConfiguration`, `MatchingEngineConfigurationLoader`, `MatchingEngine.cpp`, `MatchingEngineThread.cpp/.hpp`, `SampleFixGatewaySeq.cpp` all updated. Sequencer gains second inbound listener on `er_listen_port` for ER PDUs from ME; `matching_engine_conn_id_` renamed `gateway_conn_id_`; ME connects to `sequencer_er` not `gateway`.
-- **TOML files updated** — `sequencer.toml` and `sequencer_secondary.toml` gain `er_listen_port` and `[gateway]` sections; `matching_engine.toml` replaces `[gateway]` with `[sequencer_er]`.
-- **`start_fix_seq_system.py`** — Python startup script replacing the broken shell script; uses `argparse`, resolves prefix to absolute path, checks all executables before launching, monitors for unexpected exits, sends `SIGTERM` on Ctrl-C with 5s wait. Processes launched with `cwd=log_dir` so Quill log files land there.
-- **Raw bytes path verified end-to-end** — `sample_fix_gateway_seq` accepts FIX connections on port 9879, receives raw bytes, commits them. Verified via `nc` sending a FIX logon string. All three log lines confirmed: `connection established`, `raw bytes received`, `raw FIX bytes consumed`.
-- **FIX parsing not yet implemented** in `FixGatewaySeqThread` — next step is to copy `FixParser`, `FixSerialiser`, `FixMessage`, `FixSession` from `sample_fix_gateway` into `sample_fix_gateway_seq` and implement the full FIX session and application layer.
+### Session 11 (current)
+
+**Inbound connection identification via listener port** — `InboundConnectionManager::on_accept` now delivers `ConnectionEstablished` events with `ConnectionID{value, "inbound:<port>"}` so `on_connection_established()` can identify which inbound listener accepted a connection, using the same mechanism as outbound connections. Example: gateway sees `"inbound:9879"` for FIX clients and `"inbound:7010"` for sequencer ER connections.
+
+**`FixGatewaySeqThread` connection identification completed** — `on_connection_established` now correctly identifies all four connection types: `sequencer_primary`, `sequencer_secondary`, `inbound:7010` (sequencer ER), and FIX client (else branch). `on_connection_lost` updated to match.
+
+**`SequencerThread` `on_connection_lost` fixed** — `peer_conn_id_` and `arbiter_conn_id_` added as members. Stored in `on_connection_established`. `on_connection_lost` compares against all three stored IDs rather than relying on `service_name()` which is empty on lost connections.
+
+**Startup order fixed in `start_fix_seq_system.py`** — gateway starts second (after arbiter, before sequencers) so sequencers can connect outbound to the gateway's ER inbound listener on port 7010. Docstring updated to explain this counterintuitive ordering.
+
+**FIX session layer verified end-to-end with fix8** — gateway correctly:
+- Accepts fix8 connection on port 9879
+- Verifies preamble, creates session, starts logon timeout timer
+- Receives Logon, cancels timer, replies with Logon, establishes FIX session
+- Correctly parses 50 NewOrderSingle messages (ClOrdID, Symbol, Side all correct)
+- Sequencer ER inbound connections correctly identified and not confused with FIX clients
+
+**Remaining blocker:** Gateway outbound connections to sequencers fail at startup because gateway starts before sequencers (necessary for ER path). Without connection retry in the framework, `forward_to_sequencers` always discards. **Connection retry is now the most important next framework task.**
+
+### Session 10
+
+**`ConnectionID` extended to carry service name** — `ConnectionID` is now its own class rather than a `WrappedInteger<ConnectionIDTag, int>` typedef. It adds a `service_name_` string member (empty by default) and a `service_name()` accessor. All existing `ConnectionID{}` and `ConnectionID{n}` construction sites are unchanged. `OutboundConnectionManager::on_connect_ready` now delivers `ConnectionEstablished` events with `ConnectionID{value, service_name}` so `on_connection_established()` can identify which outbound service established without any application-level bookkeeping. `constexpr` removed from all `ConnectionID` methods since `std::string` is not a literal type in C++17.
+
+**Connection identification fixed in all three thread classes:**
+- `FixGatewaySeqThread::on_connection_established` — now correctly identifies `sequencer_primary` and `sequencer_secondary` outbound connections and stores their IDs; inbound FIX clients fall through to the else branch
+- `SequencerThread::on_connection_established` — identifies `gateway`, `sequencer_peer`, `arbiter` outbound connections and inbound order/ER connections
+- `MatchingEngineThread::on_connection_established` — identifies `sequencer_er` outbound connection and inbound sequencer order connections
+
+### Session 9
+
+**Logging infrastructure overhaul** — proper startup sequence implemented across all four applications. This was a significant refactor touching the framework, all four config structs/loaders, all four application classes, all four toml files, and the startup script.
+
+**New framework additions:**
+
+- `FileSystemUtils` — new class in `libraries/pubsub_itc_fw/include/pubsub_itc_fw/utils/FileSystemUtils.hpp` with a single static method `make_directories(path)`. Implemented using POSIX `mkdir(2)`/`stat(2)` rather than `std::filesystem::create_directories` because GCC 8.5 on RHEL 8 requires linking a separate `-lstdc++fs` library for `std::filesystem` and has known bugs in that area. `FileSystemUtils.cpp` added to library `CMakeLists.txt`. Note: follows the same static-methods-on-a-class pattern as `StringUtils`, not free functions.
+
+- `FwLogLevel::from_string(str, level)` — static method added to `FwLogLevel.hpp`. Case-insensitive parse of "trace", "debug", "info", "notice", "warning", "error", "critical", "alert". Returns bool; does not throw.
+
+- `QuillLogger::ensure_log_file_writable(path)` — new static method. Calls `FileSystemUtils::make_directories` on the parent directory, then attempts to open the file for writing. Returns empty string on success, error description on failure. Must be called before constructing `QuillLogger` since there is no console fallback once the logger is live.
+
+- `QuillLogger::set_syslog_level(level)` — new method, separate from `set_log_level`. Updates the syslog sink filter and recomputes the gate as `min(applog, syslog)`. Separate from `set_log_level` because the syslog level is always required in config but is set independently.
+
+**Application startup sequence** (all four applications now follow this):
+1. Check `argc == 3`, print usage and exit if wrong: `Usage: <exe> <logfile> <config.toml>`
+2. Call `QuillLogger::ensure_log_file_writable(logfile)` — print to stderr and exit on failure
+3. Call `QuillLogger::block_signals_before_construction()`
+4. Construct `QuillLogger` at `Info`/`Info` — logging is now live
+5. Load config via `ConfigurationLoader::load()` — log error and exit on failure
+6. Call `logger->set_log_level(config.applog_level)` and `logger->set_syslog_level(config.syslog_level)`
+7. Move logger into application class constructor (logger no longer constructed inside the app class)
+
+**Rationale** — this design avoids the mistake made at work where logging is unavailable until after config is read (because the log filename comes from the config). Here the log filename comes from the command line, so logging starts immediately and config errors are recorded in the log rather than only printed to stderr.
+
+**Config changes** — all four application configs gain required `[logging]` section with `applog_level` and `syslog_level` as required fields. No optional config fields — making a field optional hides it from operators.
+
+**FIX parsing implemented in `sample_fix_gateway_seq`** — `FixParser`, `FixSerialiser`, `FixMessage`, `FixSession` copied from `sample_fix_gateway` with namespace changed to `sample_fix_gateway_seq`. Logger threaded through `FixParser` constructor so bad checksums are logged at Debug. Full FIX session layer implemented in `FixGatewaySeqThread`.
+
+**Verified working** — gateway accepts FIX connections on port 9879, preamble check works, FIX parser processes messages with correct checksums, Logon handled and replied to.
+
+### Session 8
+
+**Logging infrastructure overhaul** — proper startup sequence implemented across all four applications. This was a significant refactor touching the framework, all four config structs/loaders, all four application classes, all four toml files, and the startup script.
+
+**New framework additions:**
+
+- `FileSystemUtils` — new class in `libraries/pubsub_itc_fw/include/pubsub_itc_fw/utils/FileSystemUtils.hpp` with a single static method `make_directories(path)`. Implemented using POSIX `mkdir(2)`/`stat(2)` rather than `std::filesystem::create_directories` because GCC 8.5 on RHEL 8 requires linking a separate `-lstdc++fs` library for `std::filesystem` and has known bugs in that area. `FileSystemUtils.cpp` must be added to the library `CMakeLists.txt`. Note: follows the same static-methods-on-a-class pattern as `StringUtils`, not free functions.
+
+- `FwLogLevel::from_string(str, level)` — static method added to `FwLogLevel.hpp`. Case-insensitive parse of "trace", "debug", "info", "notice", "warning", "error", "critical", "alert". Returns bool; does not throw.
+
+- `QuillLogger::ensure_log_file_writable(path)` — new static method. Calls `FileSystemUtils::make_directories` on the parent directory, then attempts to open the file for writing. Returns empty string on success, error description on failure. Must be called before constructing `QuillLogger` since there is no console fallback once the logger is live.
+
+- `QuillLogger::set_syslog_level(level)` — new method, separate from `set_log_level`. Updates the syslog sink filter and recomputes the gate as `min(applog, syslog)`. Separate from `set_log_level` because the syslog level is always required in config but is set independently.
+
+**Application startup sequence** (all four applications now follow this):
+1. Check `argc == 3`, print usage and exit if wrong: `Usage: <exe> <logfile> <config.toml>`
+2. Call `QuillLogger::ensure_log_file_writable(logfile)` — print to stderr and exit on failure
+3. Call `QuillLogger::block_signals_before_construction()`
+4. Construct `QuillLogger` at `Info`/`Info` — logging is now live
+5. Load config via `ConfigurationLoader::load()` — log error and exit on failure
+6. Call `logger->set_log_level(config.applog_level)` and `logger->set_syslog_level(config.syslog_level)`
+7. Move logger into application class constructor (logger no longer constructed inside the app class)
+
+**Rationale** — this design avoids the mistake made at work where logging is unavailable until after config is read (because the log filename comes from the config). Here the log filename comes from the command line, so logging starts immediately and config errors are recorded in the log rather than only printed to stderr.
+
+**Config changes** — all four application configs gain required `[logging]` section:
+```toml
+[logging]
+applog_level = "info"
+syslog_level = "info"
+```
+Both fields are required. There are no optional config fields — making a field optional hides it from operators and makes it unconfigurable in practice.
+
+**FIX parsing implemented in `sample_fix_gateway_seq`** — `FixParser`, `FixSerialiser`, `FixMessage`, `FixSession` copied from `sample_fix_gateway` with namespace changed to `sample_fix_gateway_seq`. `MsgType::OrderCancelRequest` and `Tag::OrigClOrdID` added to `FixMessage.hpp`. Logger threaded through `FixParser` constructor so bad checksums are logged at Debug rather than silently dropped. Full FIX session layer implemented in `FixGatewaySeqThread` (Logon, Heartbeat, TestRequest, Logout, NewOrderSingle, OrderCancelRequest). PDU encoding and ER routing remain TODO.
+
+**`start_fix_seq_system.py` updated** — passes `<logfile> <config.toml>` as the two arguments to each process. Log files now specified explicitly rather than being hardcoded in each application.
+
+**Verified working** — gateway accepts FIX connections on port 9879, preamble check works (invalid preamble disconnects), FIX parser processes messages with correct checksums, Logon is handled and replied to.
+
+### Session 8
+
+- **One-connection-per-listener restriction removed** — `InboundConnectionManager.cpp` and `InboundListener.hpp`
+- **Integration test renamed** — `RawBytesProtocolHandlerTest` → `RawBytesProtocolHandlerIntegrationTest`; `OneConnectionRejection` → `MultipleConnectionsAccepted`
+- **Topology corrected to full Aeron pattern** — all traffic flows through sequencer in both directions
+- **Sequencer, ME, gateway wiring corrected** — ME connects to sequencer ER listener (ports 7021/7022), sequencer connects to gateway ER listener (port 7010)
+- **`start_fix_seq_system.py`** — Python startup script replacing broken shell script
 
 ### Session 7
 - **DSL `char` field type implemented** — `char` added as a primitive field type throughout the DSL toolchain:
@@ -555,47 +647,45 @@ The receiving node's reactor accepts data via epoll and delivers it zero-copy to
 - Socket layer — complete, tested
 - PDU framing (`PduFramer` two-mode, `PduParser` zero-copy) — complete, tested
 - `OutboundConnection` — complete
-- `InboundConnection` — complete (refactored to thin shell + strategy handler)
+- `InboundConnection` — complete
 - `ProtocolHandlerInterface` / `PduProtocolHandler` — complete
 - `MirroredBuffer` — complete, tested
-- `InboundConnectionManager` — complete (ready for integration into Reactor)
-- `OutboundConnectionManager` — complete (ready for integration into Reactor)
+- `InboundConnectionManager` — complete; inbound connections carry listener port in `ConnectionID` service name
+- `OutboundConnectionManager` — complete; outbound connections carry service name in `ConnectionID`
 - `ThreadLookupInterface` — complete
 - Reactor connection management — complete
-- `ServiceRegistry` / `ServiceEndpoints` / `ConnectionID` — complete
-- `EventType` / `EventMessage` — complete (includes `create_raw_socket_message` with `tail_position`)
+- `ServiceRegistry` / `ServiceEndpoints` — complete
+- `ConnectionID` — own class with `service_name()` accessor; both inbound (`"inbound:<port>"`) and outbound (service name) connections identified
+- `EventType` / `EventMessage` — complete
 - `ReactorControlCommand` — complete
 - `ReactorConfiguration` — complete
+- `FileSystemUtils` — complete; `make_directories` via POSIX `mkdir`; in library `CMakeLists.txt`
 - DSL code generator — complete, `char` field type added, 133 tests passing
-- Leader-follower DSL messages — defined and generated
 - `fix_equity_orders.dsl` — FIX 5.0 SP2 equity order topic registry defined
-- Logging subsystem — complete, rewritten in Session 5
-- `RawBytesProtocolHandler` — complete (Strategy B; owns `MirroredBuffer`; `CommitRawBytes` command implemented)
-- Application stubs — `sample_fix_gateway_seq`, `sequencer`, `matching_engine`, `arbiter` — compiling with correct Aeron topology wiring
-- `InboundConnectionManager` — multi-connection support; one-connection restriction removed
-- `start_fix_seq_system.py` — Python startup script; all processes start, log, and accept connections correctly
-- Raw bytes path verified — gateway accepts FIX connections, receives and commits bytes end-to-end
+- Logging subsystem — complete; `FwLogLevel::from_string`, `QuillLogger::ensure_log_file_writable`, `QuillLogger::set_syslog_level` added
+- `RawBytesProtocolHandler` — complete
+- Application stubs — `sample_fix_gateway_seq` (FIX session layer complete, connection identification complete), `sequencer`, `matching_engine`, `arbiter` — all compiling with correct Aeron topology
+- `start_fix_seq_system.py` — working with correct startup order
+- **FIX session verified end-to-end** — Logon, Heartbeat, NewOrderSingle all correctly parsed by gateway with fix8
 
 ## What Is Not Yet Done (in dependency order)
 
-1. **FIX parsing in `sample_fix_gateway_seq`** — copy `FixParser`, `FixSerialiser`, `FixMessage`, `FixSession` from `sample_fix_gateway` into `sample_fix_gateway_seq`; implement FIX session layer (Logon, Heartbeat, Logout) and application layer (NewOrderSingle → PDU, ER PDU → FIX ER) in `FixGatewaySeqThread`
-2. **`SequencedMessage` DSL file** — define `sequencer_messages.dsl` with the envelope (sequence_number: i64, payload_type: i16, payload: TBD); decide where it lives and how the payload bytes are carried
-3. **Sequencer stub → real implementation** — decode inbound order PDUs, wrap in `SequencedMessage`, forward to ME (leader only); receive ER PDUs from ME, forward to gateway; leader-follower state machine
-4. **Matching engine stub → real implementation** — unwrap `SequencedMessage`, decode inner PDU, run matching logic, send ER PDU back to sequencer
-5. **Arbiter stub → real implementation** — decode `ArbitrationReport`, reply with `ArbitrationDecision`
-6. **Leader-follower protocol** — state machine, heartbeat timers, arbitration
-7. **Pub/sub fanout** — future replacement for direct TCP ER path (not imminent)
-8. **Logging levels** — move verbose paths from Info to Debug
+1. **Connection retry in framework** — outbound connections that fail at startup are not retried; gateway cannot connect to sequencers because it starts before them (necessary for ER path). This is the biggest blocker for end-to-end order flow. Needs `OutboundConnectionManager` to schedule retries on a timer after a failed connect.
+2. **PDU encoding in gateway** — `handle_new_order_single` and `handle_order_cancel_request` encode as `fix_equity_orders` PDUs and call `forward_to_sequencers()`; blocked on connection retry so sequencer connections exist
+3. **ER routing in gateway** — `on_framework_pdu_message` decodes `ExecutionReport` PDU and routes back to FIX client via `cl_ord_id` map
+4. **`SequencedMessage` DSL file** — define the envelope; decide where it lives and how payload bytes are carried
+5. **Sequencer stub → real implementation** — decode order PDUs, wrap in `SequencedMessage`, forward to ME (leader only); receive ER PDUs, forward to gateway; leader-follower state machine
+6. **Matching engine stub → real implementation** — unwrap `SequencedMessage`, match, send ER back to sequencer
+7. **Arbiter stub → real implementation** — `ArbitrationReport` → `ArbitrationDecision`
+8. **Leader-follower protocol** — state machine, heartbeat timers, arbitration
+9. **Pub/sub fanout** — future replacement for direct TCP ER path
 
 ## Immediate Next Task
 
-Implement FIX parsing in `sample_fix_gateway_seq`:
+Implement connection retry in `OutboundConnectionManager`. When a connect attempt fails, schedule a retry after a configurable interval (e.g. `ReactorConfiguration::connect_retry_interval_`, defaulting to 1s). The retry should use the same `process_connect_command` path. This unblocks the gateway→sequencer connection and makes the startup order irrelevant for outbound connections.
 
-1. Copy `FixParser.hpp/cpp`, `FixSerialiser.hpp/cpp`, `FixMessage.hpp`, `FixSession.hpp` from `applications/sample_fix_gateway/` into `applications/sample_fix_gateway_seq/` and add them to its `CMakeLists.txt`.
-2. Implement `FixGatewaySeqThread` with full FIX session layer (Logon, Heartbeat, TestRequest, Logout) matching the behaviour of `FixGatewayThread` in `sample_fix_gateway`.
-3. On `NewOrderSingle`: build a `fix_equity_orders::NewOrderSingle` PDU and send it to both sequencer connections. Record `cl_ord_id` → `ConnectionID` in `cl_ord_id_to_session_`.
-4. On `OrderCancelRequest`: build a `fix_equity_orders::OrderCancelRequest` PDU and send to both sequencers.
-5. In `on_framework_pdu_message`: decode inbound `ExecutionReport` PDU; look up `cl_ord_id` → session; serialise FIX ER and send back to FIX client.
+**Design note — the rendezvous problem:**
+This is a cheap workaround for the fundamental rendezvous problem in distributed systems: components start at different times and need to find each other. Simple TCP retry solves it adequately for a single-site development setup but is not the correct long-term solution. When the direct TCP connections between applications are replaced with the brokerless WAL-based pub/sub, the rendezvous problem disappears entirely — publishers write to the WAL regardless of whether any subscribers are present, and subscribers read from whatever position they need when they start. There is no connection to establish. The retry mechanism implemented here is purely a consequence of using TCP point-to-point as a temporary substitute for the WAL and should be removed when pub/sub is introduced.
 
 ---
 
@@ -634,22 +724,23 @@ sequencer (receives ER, forwards to gateway on port 7010)
 sample_fix_gateway_seq --> FIX ER --> FIX client (via cl_ord_id map)
 ```
 
-**Application directory layout:** all under `applications/`, one dir per executable: `sample_fix_gateway_seq/`, `sequencer/`, `matching_engine/`, `arbiter/`.
-
-**Outbound connection pattern:** `ServiceRegistry::add(name, primary, secondary)` called in the application constructor (always three args; use `NetworkEndpointConfiguration{}` for unused secondary). `connect_to_service(name)` called from `on_app_ready_event()` in the thread class. No `reactor_->connect()` method exists.
+**Startup order** (counterintuitive but necessary): gateway must start before sequencers because the sequencer connects outbound to the gateway's ER inbound listener on port 7010. If sequencer starts first it cannot connect and there is currently no retry. Long-term fix is connection retry in the framework.
 
 **Port allocation (local testing):**
 
 | Port | Usage |
 |---|---|
-| 9879 | FIX client → gateway |
-| 7001 | gateway → sequencer primary (orders) |
-| 7002 | gateway → sequencer secondary (orders) |
+| 9879 | FIX client → gateway (RawBytes inbound) |
+| 7001 | gateway → sequencer primary (order PDUs) |
+| 7002 | gateway → sequencer secondary (order PDUs) |
 | 7003 | sequencer peer-to-peer |
-| 7010 | sequencer → gateway (ER forwarding) |
-| 7020 | sequencer → ME (sequenced orders) |
+| 7010 | sequencer → gateway (ER forwarding inbound) |
+| 7020 | sequencer → ME (sequenced order PDUs inbound) |
 | 7021 | ME → sequencer primary ER listener |
 | 7022 | ME → sequencer secondary ER listener |
+| 7100 | sequencer → arbiter |
+| 7010 | ME → gateway ER |
+| 7020 | sequencer → ME |
 | 7100 | sequencer → arbiter |
 
 ---

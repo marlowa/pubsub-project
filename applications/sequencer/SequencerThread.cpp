@@ -41,6 +41,8 @@ SequencerThread::SequencerThread(
                         pubsub_itc_fw::ApplicationThreadConfiguration{})
     , config_(config)
     , gateway_conn_id_{}
+    , peer_conn_id_{}
+    , arbiter_conn_id_{}
 {}
 
 void SequencerThread::on_app_ready_event()
@@ -52,20 +54,44 @@ void SequencerThread::on_app_ready_event()
 
 void SequencerThread::on_connection_established(pubsub_itc_fw::ConnectionID id)
 {
-    // TODO: use ServiceRegistry to identify whether this is the ME connection,
-    // the peer sequencer connection, or the arbiter connection, and update
-    // the leader-follower state machine accordingly.
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "SequencerThread: connection {} established", id.get_value());
+    if (id.service_name() == "gateway") {
+        gateway_conn_id_ = id;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: gateway connection {} established", id.get_value());
+    } else if (id.service_name() == "sequencer_peer") {
+        peer_conn_id_ = id;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: peer sequencer connection {} established", id.get_value());
+    } else if (id.service_name() == "arbiter") {
+        arbiter_conn_id_ = id;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: arbiter connection {} established", id.get_value());
+    } else {
+        // Inbound connection -- either order PDU from gateway or ER from ME.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: inbound connection {} established", id.get_value());
+    }
 }
 
 void SequencerThread::on_connection_lost(pubsub_itc_fw::ConnectionID id,
                                           const std::string& reason)
 {
-    // TODO: trigger leader-follower state machine transition on relevant
-    // connection losses (peer, arbiter).
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "SequencerThread: connection {} lost: {}", id.get_value(), reason);
+    if (id == gateway_conn_id_) {
+        gateway_conn_id_ = pubsub_itc_fw::ConnectionID{};
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "SequencerThread: gateway connection {} lost: {}", id.get_value(), reason);
+    } else if (id == peer_conn_id_) {
+        peer_conn_id_ = pubsub_itc_fw::ConnectionID{};
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "SequencerThread: peer sequencer connection {} lost: {}", id.get_value(), reason);
+    } else if (id == arbiter_conn_id_) {
+        arbiter_conn_id_ = pubsub_itc_fw::ConnectionID{};
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "SequencerThread: arbiter connection {} lost: {}", id.get_value(), reason);
+    } else {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: inbound connection {} lost: {}", id.get_value(), reason);
+    }
 }
 
 void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message)

@@ -50,17 +50,28 @@ void MatchingEngineThread::on_app_ready_event()
 
 void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID id)
 {
-    // TODO: identify gateway vs sequencer connection via ServiceRegistry
-    // and store sequencer_er_conn_id_ accordingly.
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "MatchingEngineThread: connection {} established", id.get_value());
+    if (id.service_name() == "sequencer_er") {
+        sequencer_er_conn_id_ = id;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "MatchingEngineThread: sequencer ER connection {} established", id.get_value());
+    } else {
+        // Inbound connection from sequencer carrying sequenced order PDUs.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "MatchingEngineThread: sequencer order connection {} established", id.get_value());
+    }
 }
 
 void MatchingEngineThread::on_connection_lost(pubsub_itc_fw::ConnectionID id,
                                                const std::string& reason)
 {
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "MatchingEngineThread: connection {} lost: {}", id.get_value(), reason);
+    if (id == sequencer_er_conn_id_) {
+        sequencer_er_conn_id_ = pubsub_itc_fw::ConnectionID{};
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "MatchingEngineThread: sequencer ER connection {} lost: {}", id.get_value(), reason);
+    } else {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "MatchingEngineThread: sequencer order connection {} lost: {}", id.get_value(), reason);
+    }
 }
 
 void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message)

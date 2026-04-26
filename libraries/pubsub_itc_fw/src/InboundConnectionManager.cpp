@@ -183,8 +183,15 @@ void InboundConnectionManager::on_accept(InboundListener& listener, ConnectionID
         "InboundConnectionManager::on_accept: accepted connection {} from {} on port {}",
         id.get_value(), peer_desc, listener.configuration.address.port);
 
+    // Include the listener port in the ConnectionID service name so that
+    // on_connection_established() can identify which inbound listener accepted
+    // this connection without any additional application-level bookkeeping.
+    const ConnectionID id_with_port{
+        id.get_value(),
+        fmt::format("inbound:{}", listener.configuration.address.port)};
+
     target_thread->get_queue().enqueue(
-        EventMessage::create_connection_established_event(id));
+        EventMessage::create_connection_established_event(id_with_port));
 }
 
 void InboundConnectionManager::on_data_ready(InboundConnection& conn)

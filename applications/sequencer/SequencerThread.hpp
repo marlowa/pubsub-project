@@ -68,6 +68,12 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
 
     // ConnectionID of the outbound gateway connection for ER forwarding.
     pubsub_itc_fw::ConnectionID gateway_conn_id_;
+
+    // ConnectionIDs of the outbound peer and arbiter connections.
+    // Stored so that on_connection_lost can identify them correctly --
+    // teardown_connection delivers a plain ConnectionID without service name.
+    pubsub_itc_fw::ConnectionID peer_conn_id_;
+    pubsub_itc_fw::ConnectionID arbiter_conn_id_;
 };
 
 } // namespace sequencer

@@ -1,6 +1,8 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <chrono>
+#include <functional>
 #include <optional>
 #include <vector>
 
@@ -61,14 +63,14 @@ void OutboundConnectionManager::process_connect_command(const ReactorControlComm
 
     auto [addr, addr_error] = InetAddress::create(primary.host, primary.port);
     if (!addr) {
-        PUBSUB_LOG(logger_, FwLogLevel::Error,
-            "OutboundConnectionManager::process_connect_command: failed to resolve {}:{} — {}",
-            primary.host, primary.port, addr_error);
-        auto* thread = thread_lookup_.get_fast_path_thread(command.requesting_thread_id_);
-        if (thread != nullptr) {
-            thread->get_queue().enqueue(
-                EventMessage::create_connection_failed_event(addr_error));
-        }
+        PUBSUB_LOG(logger_, FwLogLevel::Warning,
+            "OutboundConnectionManager::process_connect_command: failed to resolve {}:{} for "
+            "service '{}' -- {}, will retry in {}ms",
+            primary.host, primary.port, service_name, addr_error,
+            config_.connect_retry_interval_.count());
+        pending_retries_[service_name] = PendingRetry(
+            command,
+            std::chrono::steady_clock::now() + config_.connect_retry_interval_);
         return;
     }
 
@@ -76,14 +78,14 @@ void OutboundConnectionManager::process_connect_command(const ReactorControlComm
     auto [connected_immediately, connect_error] = connector->connect(*addr);
 
     if (!connect_error.empty()) {
-        PUBSUB_LOG(logger_, FwLogLevel::Error,
-            "OutboundConnectionManager::process_connect_command: connect() to {}:{} failed — {}",
-            primary.host, primary.port, connect_error);
-        auto* thread = thread_lookup_.get_fast_path_thread(command.requesting_thread_id_);
-        if (thread != nullptr) {
-            thread->get_queue().enqueue(
-                EventMessage::create_connection_failed_event(connect_error));
-        }
+        PUBSUB_LOG(logger_, FwLogLevel::Warning,
+            "OutboundConnectionManager::process_connect_command: connect() to {}:{} for "
+            "service '{}' failed -- {}, will retry in {}ms",
+            primary.host, primary.port, service_name, connect_error,
+            config_.connect_retry_interval_.count());
+        pending_retries_[service_name] = PendingRetry(
+            command,
+            std::chrono::steady_clock::now() + config_.connect_retry_interval_);
         return;
     }
 
@@ -196,11 +198,16 @@ void OutboundConnectionManager::on_connect_ready(OutboundConnection& conn)
             }
 
             teardown_connection(conn.id(), error, false);
-            auto* thread = thread_lookup_.get_fast_path_thread(conn.requesting_thread_id());
-            if (thread != nullptr) {
-                thread->get_queue().enqueue(
-                    EventMessage::create_connection_failed_event(error));
-            }
+            PUBSUB_LOG(logger_, FwLogLevel::Warning,
+                "OutboundConnectionManager::on_connect_ready: service '{}' failed, "
+                "will retry in {}ms",
+                conn.service_name(), config_.connect_retry_interval_.count());
+            ReactorControlCommand retry_cmd{ReactorControlCommand::CommandTag::Connect};
+            retry_cmd.requesting_thread_id_ = conn.requesting_thread_id();
+            retry_cmd.service_name_         = conn.service_name();
+            pending_retries_[conn.service_name()] = PendingRetry(
+                retry_cmd,
+                std::chrono::steady_clock::now() + config_.connect_retry_interval_);
         }
         // else still in progress — wait for next EPOLLOUT
         return;
@@ -236,7 +243,8 @@ void OutboundConnectionManager::on_connect_ready(OutboundConnection& conn)
     auto* thread = thread_lookup_.get_fast_path_thread(conn.requesting_thread_id());
     if (thread != nullptr) {
         thread->get_queue().enqueue(
-            EventMessage::create_connection_established_event(conn.id()));
+            EventMessage::create_connection_established_event(
+                ConnectionID{conn.id().get_value(), conn.service_name()}));
     }
 }
 
@@ -382,6 +390,39 @@ bool OutboundConnectionManager::process_disconnect_command(ConnectionID id)
     }
     teardown_connection(id, "disconnect requested by application thread", true);
     return true;
+}
+
+void OutboundConnectionManager::retry_failed_connections(
+    const std::function<ConnectionID()>& next_id_fn)
+{
+    if (pending_retries_.empty()) {
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+
+    // Collect due retries first to avoid modifying the map while iterating.
+    std::vector<std::string> due;
+    for (const auto& [service_name, retry] : pending_retries_) {
+        if (now >= retry.retry_after) {
+            due.push_back(service_name);
+        }
+    }
+
+    for (const std::string& service_name : due) {
+        auto it = pending_retries_.find(service_name);
+        if (it == pending_retries_.end()) {
+            continue;
+        }
+        ReactorControlCommand cmd = it->second.command;
+        pending_retries_.erase(it);
+
+        PUBSUB_LOG(logger_, FwLogLevel::Info,
+            "OutboundConnectionManager::retry_failed_connections: retrying service '{}'",
+            service_name);
+
+        process_connect_command(cmd, next_id_fn());
+    }
 }
 
 void OutboundConnectionManager::check_for_timed_out_connections()

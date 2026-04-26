@@ -5,3 +5,7 @@ listen_port = 7020
 [sequencer_er]
 host = "127.0.0.1"
 port = 7021
+
+[logging]
+applog_level = "info"
+syslog_level = "info"

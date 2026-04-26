@@ -3,6 +3,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -172,6 +173,16 @@ class OutboundConnectionManager {
     [[nodiscard]] bool process_disconnect_command(ConnectionID id);
 
     /**
+     * @brief Checks all pending connect retries and re-issues any that are due.
+     *
+     * Called by the Reactor alongside check_for_timed_out_connections() on each
+     * housekeeping sweep.
+     *
+     * @param[in] next_id_fn Callable returning the next ConnectionID to allocate.
+     */
+    void retry_failed_connections(const std::function<ConnectionID()>& next_id_fn);
+
+    /**
      * @brief Checks all connecting outbound connections against connect_timeout
      *        and tears down any that have exceeded it, delivering ConnectionFailed.
      */
@@ -214,6 +225,20 @@ class OutboundConnectionManager {
 
     std::unordered_map<ConnectionID, std::unique_ptr<OutboundConnection>> connections_;
     std::unordered_map<int, OutboundConnection*> connections_by_fd_;
+
+    // Pending connect retries. Keyed by service name. Each entry holds the
+    // original Connect command and the time after which the retry should fire.
+    // This is a temporary workaround for the TCP rendezvous problem pending
+    // WAL-based pub/sub. See ReactorConfiguration::connect_retry_interval_.
+    struct PendingRetry {
+        PendingRetry() : command(ReactorControlCommand::CommandTag::Connect) {}
+        PendingRetry(ReactorControlCommand cmd, std::chrono::steady_clock::time_point when)
+            : command(std::move(cmd)), retry_after(when) {}
+
+        ReactorControlCommand command;
+        std::chrono::steady_clock::time_point retry_after;
+    };
+    std::unordered_map<std::string, PendingRetry> pending_retries_;
 
     std::optional<ReactorControlCommand> pending_send_;
 };

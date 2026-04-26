@@ -16,5 +16,5 @@ arbiter_host = "127.0.0.1"
 arbiter_port = 7100
 
 [logging]
-applog_level = "info"
+applog_level = "debug"
 syslog_level = "info"
