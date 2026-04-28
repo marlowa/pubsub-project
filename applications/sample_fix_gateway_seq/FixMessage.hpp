@@ -140,6 +140,7 @@ static constexpr int Side = 54;
 static constexpr int OrderQty = 38;
 static constexpr int Price = 44;
 static constexpr int OrdType = 40;
+static constexpr int TimeInForce = 59;
 static constexpr int CumQty = 14;
 static constexpr int LeavesQty = 151;
 static constexpr int Text = 58;

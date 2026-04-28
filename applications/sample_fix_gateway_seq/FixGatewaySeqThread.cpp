@@ -298,40 +298,93 @@ void FixGatewaySeqThread::handle_logout(FixSession& session, const FixMessage& m
 
 void FixGatewaySeqThread::handle_new_order_single(FixSession& session, const FixMessage& msg)
 {
-    const std::string& cl_ord_id = msg.get(Tag::ClOrdID);
+    const std::string& cl_ord_id  = msg.get(Tag::ClOrdID);
+    const std::string& symbol     = msg.get(Tag::Symbol);
+    const std::string& side_str   = msg.get(Tag::Side);
+    const std::string& ord_type_str = msg.get(Tag::OrdType);
+    const std::string& order_qty  = msg.get(Tag::OrderQty);
+    const std::string& price_str  = msg.get(Tag::Price);
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "FixGatewaySeqThread: connection {} NewOrderSingle ClOrdID={} Symbol={} Side={}",
-               session.conn_id.get_value(), cl_ord_id,
-               msg.get(Tag::Symbol), msg.get(Tag::Side));
+               session.conn_id.get_value(), cl_ord_id, symbol, side_str);
 
-    // Record cl_ord_id -> session for ER routing.
-    if (!cl_ord_id.empty()) {
-        cl_ord_id_to_session_[cl_ord_id] = session.conn_id;
+    // Validate required fields.
+    if (cl_ord_id.empty() || symbol.empty() || side_str.empty()
+        || ord_type_str.empty() || order_qty.empty()) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "FixGatewaySeqThread: connection {} NewOrderSingle missing required fields"
+                   " -- dropping",
+                   session.conn_id.get_value());
+        return;
     }
 
-    // TODO: encode as fix_equity_orders::NewOrderSingle PDU using the
-    // generated fix_equity_orders.hpp header and forward to both sequencers
-    // via forward_to_sequencers(). For now log the stub.
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "FixGatewaySeqThread: connection {} NewOrderSingle PDU encoding -- TODO",
-               session.conn_id.get_value());
+    // Record cl_ord_id -> session for ER routing.
+    cl_ord_id_to_session_[cl_ord_id] = session.conn_id;
+
+    // Build the DSL struct. All string fields use string_view pointing into
+    // the FIX message -- safe because the struct is only live for this call.
+    pubsub_itc_fw_app::NewOrderSingle nos{};
+    nos.cl_ord_id     = cl_ord_id;
+    nos.symbol        = symbol;
+    nos.side          = static_cast<pubsub_itc_fw_app::Side>(side_str[0]);
+    nos.ord_type      = static_cast<pubsub_itc_fw_app::OrdType>(ord_type_str[0]);
+    nos.transact_time = 0; // TODO: parse SendingTime (tag 52) to epoch nanos
+    nos.order_qty     = order_qty;
+
+    if (!price_str.empty()) {
+        nos.has_price = true;
+        nos.price     = price_str;
+    }
+
+    const std::string& tif_str = msg.get(Tag::TimeInForce);
+    if (!tif_str.empty()) {
+        nos.has_time_in_force = true;
+        nos.time_in_force     = static_cast<pubsub_itc_fw_app::TimeInForce>(tif_str[0]);
+    }
+
+    // Forward the encoded PDU to both sequencer instances.
+    // The sequencer will wrap it in a SequencedMessage envelope.
+    forward_pdu_to_sequencers(
+        static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::NewOrderSingle), nos);
 }
 
 void FixGatewaySeqThread::handle_order_cancel_request(FixSession& session,
                                                        const FixMessage& msg)
 {
-    const std::string& cl_ord_id = msg.get(Tag::ClOrdID);
+    const std::string& cl_ord_id      = msg.get(Tag::ClOrdID);
+    const std::string& orig_cl_ord_id = msg.get(Tag::OrigClOrdID);
+    const std::string& symbol         = msg.get(Tag::Symbol);
+    const std::string& side_str       = msg.get(Tag::Side);
+    const std::string& order_qty      = msg.get(Tag::OrderQty);
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "FixGatewaySeqThread: connection {} OrderCancelRequest ClOrdID={} Symbol={}",
-               session.conn_id.get_value(), cl_ord_id, msg.get(Tag::Symbol));
+               "FixGatewaySeqThread: connection {} OrderCancelRequest ClOrdID={} "
+               "OrigClOrdID={} Symbol={}",
+               session.conn_id.get_value(), cl_ord_id, orig_cl_ord_id, symbol);
 
-    // TODO: encode as fix_equity_orders::OrderCancelRequest PDU and forward
-    // to both sequencers via forward_to_sequencers().
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "FixGatewaySeqThread: connection {} OrderCancelRequest PDU encoding -- TODO",
-               session.conn_id.get_value());
+    if (cl_ord_id.empty() || orig_cl_ord_id.empty() || symbol.empty()
+        || side_str.empty() || order_qty.empty()) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "FixGatewaySeqThread: connection {} OrderCancelRequest missing required "
+                   "fields -- dropping",
+                   session.conn_id.get_value());
+        return;
+    }
+
+    // Record cl_ord_id -> session for ER routing of the cancel acknowledgement.
+    cl_ord_id_to_session_[cl_ord_id] = session.conn_id;
+
+    pubsub_itc_fw_app::OrderCancelRequest ocr{};
+    ocr.orig_cl_ord_id = orig_cl_ord_id;
+    ocr.cl_ord_id      = cl_ord_id;
+    ocr.symbol         = symbol;
+    ocr.side           = static_cast<pubsub_itc_fw_app::Side>(side_str[0]);
+    ocr.transact_time  = 0; // TODO: parse SendingTime
+    ocr.order_qty      = order_qty;
+
+    forward_pdu_to_sequencers(
+        static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::OrderCancelRequest), ocr);
 }
 
 // -----------------------------------------------------------------------
@@ -356,21 +409,19 @@ void FixGatewaySeqThread::send_fix_to_session(FixSession& session, FixMessage& m
     send_raw(session.conn_id, wire.data(), static_cast<uint32_t>(wire.size()));
 }
 
-void FixGatewaySeqThread::forward_to_sequencers(const void* data, uint32_t size)
-{
-    if (sequencer_primary_conn_id_.get_value() != 0) {
-        send_raw(sequencer_primary_conn_id_, data, size);
-    } else {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "FixGatewaySeqThread: primary sequencer not connected, PDU not forwarded");
-    }
+// -----------------------------------------------------------------------
+// PDU forwarding
+// -----------------------------------------------------------------------
 
-    if (sequencer_secondary_conn_id_.get_value() != 0) {
-        send_raw(sequencer_secondary_conn_id_, data, size);
-    } else {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "FixGatewaySeqThread: secondary sequencer not connected, PDU not forwarded");
-    }
-}
+// forward_pdu_to_sequencers is a template so it can accept any DSL message
+// struct. It calls send_pdu on both the primary and secondary sequencer
+// connections. send_pdu handles all slab allocation, PduHeader framing, and
+// two-pass encode/write internally.
+//
+// If a sequencer connection is not currently established (e.g. not yet
+// reconnected after a failure), the PDU is dropped for that sequencer and a
+// Warning is logged. The other sequencer still receives the PDU so the leader
+// can continue operating. When connection retry re-establishes the lost
+// connection the follower will resync from the leader's state.
 
 } // namespace sample_fix_gateway_seq

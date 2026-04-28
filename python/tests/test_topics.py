@@ -198,7 +198,7 @@ def test_generator_normal_messages_still_generated():
 
 
 def test_generator_without_topics_flag_emits_plain_enum():
-    """Without --topics, a Topics enum is emitted as a plain C-style enum."""
+    """Without --topics, a Topics enum is emitted as a plain C-style enum class."""
     code = generate(VALID_TOPICS_DSL, topics=False)
-    assert "enum Topics :" in code
+    assert "enum class Topics :" in code
     assert "class Topics {" not in code

@@ -27,8 +27,8 @@ def test_enum_generation():
     """
     code = generate(text)
 
-    # plain enum, not enum class
-    assert "enum Venue : int16_t" in code
+    # enum class, not plain enum
+    assert "enum class Venue : int16_t" in code
 
     # snake_case values
     assert "lse = 1" in code

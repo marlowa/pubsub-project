@@ -186,7 +186,7 @@ def test_generator_char_enum_uses_char():
             Sell = '2'
         }
     """)
-    assert "enum Side : char" in code
+    assert "enum class Side : char" in code
 
 
 def test_generator_char_enum_uses_ascii_values():
@@ -228,7 +228,7 @@ def test_generator_full_fix_side_enum():
             CrossShort      = '9'
         }
     """)
-    assert "enum Side : char" in code
+    assert "enum class Side : char" in code
     assert f"Buy = {ord('1')}" in code
     assert f"Cross = {ord('8')}" in code
     assert f"CrossShort = {ord('9')}" in code

@@ -185,7 +185,7 @@ class CppGenerator:
     # ------------------------------------------------------------------
 
     def _emit_enum(self, enum: EnumDecl, w):
-        w(f"enum {enum.name} : {self._cpp_int_type(enum.underlying_type)} {{")
+        w(f"enum class {enum.name} : {self._cpp_int_type(enum.underlying_type)} {{")
         for index, entry in enumerate(enum.entries):
             comma = "," if index + 1 < len(enum.entries) else ""
             w(f"    {entry.name} = {entry.value}{comma}")

@@ -9,6 +9,8 @@
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/QueueConfiguration.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
+#include <pubsub_itc_fw/PduHeader.hpp>
+#include <pubsub_itc_fw/HighResolutionClock.hpp>
 
 namespace sequencer {
 
@@ -107,6 +109,43 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "SequencerThread: PDU received on connection {} seq={} -- stub",
                message.connection_id().get_value(), next_sequence_number_);
+#if 0
+    // 1. Identify incoming PDU metadata from the EventMessage data (which includes the header).
+    const auto* incoming_hdr = reinterpret_cast<const pubsub_itc_fw::PduHeader*>(message.data());
+    const uint32_t original_payload_len = ntohl(incoming_hdr->byte_count);
+
+    // 2. Calculate sizes for the SequencedMessage envelope.
+    // The envelope body consists of the DSL struct plus the entire original PDU.
+    const uint32_t envelope_body_size = sizeof(pubsub_itc_fw_app::SequencedMessage) +
+                                       sizeof(pubsub_itc_fw::PduHeader) +
+                                       original_payload_len;
+    const size_t total_frame_size = sizeof(pubsub_itc_fw::PduHeader) + envelope_body_size;
+
+    auto [slab_id, chunk] = outbound_allocator().allocate(total_frame_size);
+
+    // 4. Construct the outer PduHeader (Topic: SequencedMessage).
+    auto* out_hdr = reinterpret_cast<pubsub_itc_fw::PduHeader*>(chunk);
+    out_hdr->byte_count = htonl(envelope_body_size);
+    out_hdr->pdu_id     = htons(static_cast<int16_t>(pubsub_itc_fw_app::Topics::SequencedMessage));
+    out_hdr->version    = 1;
+    out_hdr->filler_a   = 0;
+    out_hdr->canary     = htonl(pubsub_itc_fw::pdu_canary_value);
+    out_hdr->filler_b   = 0;
+
+    // 5. Fill the SequencedMessage metadata.
+    auto* seq_msg = reinterpret_cast<pubsub_itc_fw_app::SequencedMessage*>(out_hdr + 1);
+    seq_msg->sequence_number = next_sequence_number_++;
+    seq_msg->timestamp_ns    = pubsub_itc_fw::HighResolutionClock::now().time_since_epoch().count();
+
+    // 6. Perform the opaque copy.
+    // The original PDU (Header + Payload) is copied into the memory following the metadata.
+    std::memcpy(seq_msg + 1, message.data(), sizeof(pubsub_itc_fw::PduHeader) + original_payload_len);
+
+    // 7. Dispatch to the Matching Engine via the framework helper.
+    // Assumes matching_engine_conn_id_ was captured during on_connection_established.
+    enqueue_send_pdu_command(matching_engine_conn_id_, slab_id, chunk, static_cast<uint32_t>(total_frame_size));
+#endif
+
 }
 
 void SequencerThread::on_timer_event([[maybe_unused]] const std::string& name)

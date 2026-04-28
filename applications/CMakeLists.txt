@@ -17,7 +17,7 @@ add_custom_command(
     OUTPUT "${FIX_DSL_GENERATED_HPP}"
     COMMAND python3 "${FIX_DSL_GENERATOR}"
             --topics
-            --namespace APM
+            --namespace pubsub_itc_fw_app
             "${FIX_DSL_SOURCE}"
             "${CMAKE_CURRENT_BINARY_DIR}/fix_equity_orders.hpp"
     DEPENDS "${FIX_DSL_SOURCE}" "${FIX_DSL_GENERATOR}"

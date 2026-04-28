@@ -197,15 +197,21 @@ void OutboundConnectionManager::on_connect_ready(OutboundConnection& conn)
                 return;
             }
 
+            // Save the service name and requesting thread before teardown
+            // destroys conn -- accessing conn after teardown_connection is
+            // use-after-free since teardown erases conn from the connections_ map.
+            const std::string service_name         = conn.service_name();
+            const ThreadID    requesting_thread_id = conn.requesting_thread_id();
+
             teardown_connection(conn.id(), error, false);
             PUBSUB_LOG(logger_, FwLogLevel::Warning,
                 "OutboundConnectionManager::on_connect_ready: service '{}' failed, "
                 "will retry in {}ms",
-                conn.service_name(), config_.connect_retry_interval_.count());
+                service_name, config_.connect_retry_interval_.count());
             ReactorControlCommand retry_cmd{ReactorControlCommand::CommandTag::Connect};
-            retry_cmd.requesting_thread_id_ = conn.requesting_thread_id();
-            retry_cmd.service_name_         = conn.service_name();
-            pending_retries_[conn.service_name()] = PendingRetry(
+            retry_cmd.requesting_thread_id_ = requesting_thread_id;
+            retry_cmd.service_name_         = service_name;
+            pending_retries_[service_name] = PendingRetry(
                 retry_cmd,
                 std::chrono::steady_clock::now() + config_.connect_retry_interval_);
         }
