@@ -297,10 +297,13 @@ TEST(QuillLoggerIsolationTest, LevelChangeOnOneLoggerDoesNotAffectOther) {
 // and emitted as a normal log record rather than going through error_notifier.
 // The error_notifier is only called for queue failures and backend exceptions.
 //
-// Note: compile-time format string checking is not available in C++17 -- see
-// LoggingMacros.hpp for a full explanation. This test verifies the runtime
-// fallback. The mismatch is intentional.
-TEST_F(QuillLoggerTest, FormatMismatchIsReportedAsLogRecord) {
+// Note: compile-time format string checking is tricky to implement in C++17
+// but it has been done. See LoggingMacros.hpp for a full explanation.
+// This test dates back to when it was thought that it could not be done, so
+// the test merely verifies the runtime fallback. The mismatch is intentional.
+// We have to neutralise the test now otherwise we fail to compile.
+TEST_F(QuillLoggerTest, DISABLED_FormatMismatchIsReportedAsLogRecord) {
+#if 0
     // NOLINTNEXTLINE -- deliberate format string mismatch for testing
     PUBSUB_LOG((*logger_), FwLogLevel::Info, "{}:{} intentional mismatch", "only_one_arg");
 
@@ -315,6 +318,7 @@ TEST_F(QuillLoggerTest, FormatMismatchIsReportedAsLogRecord) {
         << "Expected a 'Could not format' error record for format string mismatch";
     EXPECT_TRUE(contains_message("argument not found") || contains_message("intentional mismatch"))
         << "Error record should identify the bad format string";
+#endif
 }
 
 // =============================================================================
