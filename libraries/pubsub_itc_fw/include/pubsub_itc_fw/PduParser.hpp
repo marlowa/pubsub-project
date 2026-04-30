@@ -37,7 +37,9 @@
  *   ApplicationThread provides a release_pdu_payload() helper to make this explicit.
  *
  * On peer disconnect (recv returns 0):
- *   The disconnect callback is invoked so the reactor can clean up.
+ *   receive() returns {false, ""} so the caller can tear down the connection.
+ *   On protocol error (canary mismatch, slab allocation failure, read error)
+ *   receive() returns {false, error_string}.
  *
  * Threading model:
  *   All methods must be called from the reactor thread only.
@@ -48,8 +50,8 @@
  */
 
 #include <cstdint>
-#include <functional>
 #include <string>
+#include <tuple>
 
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/ByteStreamInterface.hpp>
@@ -80,12 +82,11 @@ class PduParser {
      * @param[in] stream             The underlying non-blocking byte stream. Must outlive this object.
      * @param[in] target_thread      The ApplicationThread to which complete PDUs are dispatched.
      * @param[in] slab_allocator     The slab allocator used to allocate payload chunks. Must outlive this object.
-     * @param[in] disconnect_handler Called when the peer closes the connection gracefully.
      * @param[in] connection_id      The ConnectionID of the connection this parser is serving.
      *                               Carried in every FrameworkPdu EventMessage so that
      *                               on_framework_pdu_message() can identify the source connection.
      */
-    PduParser(ByteStreamInterface& stream, ApplicationThread& target_thread, ExpandableSlabAllocator& slab_allocator, std::function<void()> disconnect_handler, ConnectionID connection_id);
+    PduParser(ByteStreamInterface& stream, ApplicationThread& target_thread, ExpandableSlabAllocator& slab_allocator, ConnectionID connection_id);
 
     PduParser(const PduParser&) = delete;
     PduParser& operator=(const PduParser&) = delete;
@@ -111,7 +112,6 @@ class PduParser {
     ByteStreamInterface& stream_;
     ApplicationThread& target_thread_;
     ExpandableSlabAllocator& slab_allocator_;
-    std::function<void()> disconnect_handler_;
     ConnectionID connection_id_;
 
     // Fixed small buffer for the 16-byte frame header only.

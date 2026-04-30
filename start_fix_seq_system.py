@@ -19,6 +19,11 @@ Startup order:
 Quill log files land in <prefix>/log/ because each process is started
 with that directory as its working directory. stdout/stderr of each
 process is captured to <name>.stdout in the same directory.
+
+To test using fix8, use the following command:-
+
+./bin/f8test -c myfix_gateway_client.xml -N GW1
+
 """
 
 import argparse

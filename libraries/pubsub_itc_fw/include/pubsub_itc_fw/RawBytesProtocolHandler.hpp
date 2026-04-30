@@ -4,15 +4,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <cstdint>
-#include <functional>
 #include <memory>
+#include <string>
+#include <tuple>
 
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/MirroredBuffer.hpp>
 #include <pubsub_itc_fw/PduFramer.hpp>
 #include <pubsub_itc_fw/ProtocolHandlerInterface.hpp>
-#include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/TcpSocket.hpp>
 
 namespace pubsub_itc_fw {
@@ -40,12 +40,13 @@ namespace pubsub_itc_fw {
  *   buffer_.advance_tail(N) to release those bytes from the ring.
  *
  *   Buffer-full policy (backpressure contract):
- *   If the buffer is full when on_data_ready() fires, the handler logs an error
- *   and invokes the disconnect handler, closing that connection. This is a
- *   deliberate backpressure policy, not a bug. The reactor thread must never
- *   block waiting for the application to consume data -- doing so would stall
- *   every other connection and timer in the process. Disconnecting the slow or
- *   misbehaving peer is the correct enforcement mechanism.
+ *   If the buffer is full when on_data_ready() fires, the handler returns
+ *   {false, "buffer full ..."} so the manager can log the condition and tear
+ *   down the connection. This is a deliberate backpressure policy, not a bug.
+ *   The reactor thread must never block waiting for the application to consume
+ *   data -- doing so would stall every other connection and timer in the
+ *   process. Disconnecting the slow or misbehaving peer is the correct
+ *   enforcement mechanism.
  *
  *   Implications for callers:
  *   - Size buffer_capacity generously relative to the maximum burst size of
@@ -68,8 +69,8 @@ namespace pubsub_itc_fw {
  *   CommitRawBytes command, so it is also reactor-thread only.
  *
  * Ownership:
- *   Owns the MirroredBuffer and PduFramer. Does not own the TcpSocket,
- *   ApplicationThread, or QuillLogger.
+ *   Owns the MirroredBuffer and PduFramer. Does not own the TcpSocket or
+ *   ApplicationThread.
  */
 class RawBytesProtocolHandler : public ProtocolHandlerInterface {
   public:
@@ -90,12 +91,8 @@ class RawBytesProtocolHandler : public ProtocolHandlerInterface {
      *                               RawSocketCommunication events. Must outlive this object.
      * @param[in] buffer_capacity    Minimum capacity of the MirroredBuffer in bytes.
      *                               Rounded up to the nearest page size internally.
-     * @param[in] disconnect_handler Called when the peer closes the connection,
-     *                               a read error occurs, or the buffer overflows.
-     * @param[in] logger             Logger for diagnostics. Must outlive this object.
      */
-    RawBytesProtocolHandler(ConnectionID connection_id, TcpSocket& socket, ApplicationThread& target_thread, int64_t buffer_capacity,
-                            std::function<void()> disconnect_handler, QuillLogger& logger);
+    RawBytesProtocolHandler(ConnectionID connection_id, TcpSocket& socket, ApplicationThread& target_thread, int64_t buffer_capacity);
 
     /**
      * @brief Services a readable socket event (EPOLLIN).
@@ -104,11 +101,11 @@ class RawBytesProtocolHandler : public ProtocolHandlerInterface {
      * enqueues a RawSocketCommunication EventMessage to the target thread
      * carrying a non-owning view of all currently unprocessed bytes.
      *
-     * On peer disconnect (recv returns 0), read error, or buffer overflow
-     * the disconnect handler is invoked and the method returns without
-     * further access to this object.
+     * @return {true, ""} on a clean read, {false, ""} on graceful peer
+     *         disconnect, or {false, error_string} on read error or buffer
+     *         overflow.
      */
-    void on_data_ready() override;
+    [[nodiscard]] std::tuple<bool, std::string> on_data_ready() override;
 
     /**
      * @brief Advances the ring buffer tail by the given number of bytes.
@@ -132,8 +129,12 @@ class RawBytesProtocolHandler : public ProtocolHandlerInterface {
      * @param[in] slab_id     Slab ID for deallocation when the send completes.
      * @param[in] chunk_ptr   Pointer to the start of the frame. Must not be nullptr.
      * @param[in] total_bytes Total frame size in bytes.
+     *
+     * @return {true, ""} if the send completed or progressed normally; {false,
+     *         error_string} on unrecoverable send failure. The slab chunk is
+     *         released before returning on failure.
      */
-    void send_prebuilt(ExpandableSlabAllocator* allocator, int slab_id, void* chunk_ptr, uint32_t total_bytes) override;
+    [[nodiscard]] std::tuple<bool, std::string> send_prebuilt(ExpandableSlabAllocator* allocator, int slab_id, void* chunk_ptr, uint32_t total_bytes) override;
 
     /**
      * @brief Returns true if a partial outbound send is in progress.
@@ -145,8 +146,12 @@ class RawBytesProtocolHandler : public ProtocolHandlerInterface {
      *
      * Delegates to PduFramer::continue_send(). When the send completes the
      * slab chunk is deallocated and pending-send state is cleared.
+     *
+     * @return {true, ""} on progress or completion; {false, error_string} on
+     *         unrecoverable send failure. The slab chunk is released before
+     *         returning on failure.
      */
-    void continue_send() override;
+    [[nodiscard]] std::tuple<bool, std::string> continue_send() override;
 
     /**
      * @brief Deallocates any in-flight outbound slab chunk.
@@ -162,8 +167,6 @@ class RawBytesProtocolHandler : public ProtocolHandlerInterface {
     ConnectionID connection_id_;
     TcpSocket& socket_;
     ApplicationThread& target_thread_;
-    std::function<void()> disconnect_handler_;
-    QuillLogger& logger_;
 
     MirroredBuffer buffer_;
     std::unique_ptr<PduFramer> framer_;

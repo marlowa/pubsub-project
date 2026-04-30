@@ -51,7 +51,6 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
-#include <functional>
 #include <memory>
 #include <string>
 #include <thread>
@@ -146,17 +145,10 @@ protected:
         ASSERT_NE(socket, nullptr) << "TcpSocket::adopt failed: " << error;
         socket_ = std::move(socket);
 
-        disconnect_called_ = false;
-        auto disconnect_handler = [this]() {
-            disconnect_called_ = true;
-        };
-
         handler_ = std::make_unique<PduProtocolHandler>(
             *socket_,
             *stub_thread_,
             *inbound_allocator_,
-            std::move(disconnect_handler),
-            logger_->logger,
             ConnectionID{});
     }
 
@@ -242,7 +234,6 @@ protected:
     std::unique_ptr<PduProtocolHandler>       handler_;
     int                                       handler_fd_{-1};
     int                                       raw_fd_{-1};
-    bool                                      disconnect_called_{false};
 };
 
 // ============================================================
@@ -253,7 +244,8 @@ TEST_F(PduProtocolHandlerTest, SendPrebuiltCompletesImmediately) {
     constexpr size_t payload_size = 128;
     auto [slab_id, chunk, total_bytes] = make_frame(outbound_allocator(), payload_size);
 
-    handler_->send_prebuilt(&outbound_allocator(), slab_id, chunk, total_bytes);
+    auto [send_ok, send_error] = handler_->send_prebuilt(&outbound_allocator(), slab_id, chunk, total_bytes);
+    ASSERT_TRUE(send_ok) << send_error;
 
     // The send buffer has room for a tiny frame — the send should complete
     // immediately, leaving no pending data and no live chunk.
@@ -284,7 +276,8 @@ TEST_F(PduProtocolHandlerTest, SendPrebuiltProducesPartialSend) {
     constexpr size_t payload_size = 512 * 1024;
     auto [slab_id, chunk, total_bytes] = make_frame(outbound_allocator(), payload_size);
 
-    handler_->send_prebuilt(&outbound_allocator(), slab_id, chunk, total_bytes);
+    auto [send_ok, send_error] = handler_->send_prebuilt(&outbound_allocator(), slab_id, chunk, total_bytes);
+    ASSERT_TRUE(send_ok) << send_error;
 
     // The send buffer should be full; the send must not have completed.
     EXPECT_TRUE(handler_->has_pending_send());
@@ -293,7 +286,8 @@ TEST_F(PduProtocolHandlerTest, SendPrebuiltProducesPartialSend) {
     int iterations = 0;
     while (handler_->has_pending_send()) {
         drain_raw(65536);
-        handler_->continue_send();
+        auto [cont_ok, cont_error] = handler_->continue_send();
+        ASSERT_TRUE(cont_ok) << cont_error;
         ++iterations;
         ASSERT_LT(iterations, 10000) << "continue_send did not complete within expected iterations";
         if (handler_->has_pending_send()) {
@@ -318,13 +312,15 @@ TEST_F(PduProtocolHandlerTest, ContinueSendReleasesChunkOnCompletion) {
     ExpandableSlabAllocator send_allocator(4 * 1024 * 1024);
     auto [slab_id, chunk, total_bytes] = make_frame(send_allocator, payload_size);
 
-    handler_->send_prebuilt(&send_allocator, slab_id, chunk, total_bytes);
+    auto [send_ok, send_error] = handler_->send_prebuilt(&send_allocator, slab_id, chunk, total_bytes);
+    ASSERT_TRUE(send_ok) << send_error;
     ASSERT_TRUE(handler_->has_pending_send());
 
     // Drain and continue until done.
     while (handler_->has_pending_send()) {
         drain_raw(65536);
-        handler_->continue_send();
+        auto [cont_ok, cont_error] = handler_->continue_send();
+        ASSERT_TRUE(cont_ok) << cont_error;
         if (handler_->has_pending_send()) {
             std::this_thread::sleep_for(std::chrono::microseconds(100));
         }
@@ -353,7 +349,8 @@ TEST_F(PduProtocolHandlerTest, DeallocatePendingSendReleasesChunk) {
     ExpandableSlabAllocator send_allocator(4 * 1024 * 1024);
     auto [slab_id, chunk, total_bytes] = make_frame(send_allocator, payload_size);
 
-    handler_->send_prebuilt(&send_allocator, slab_id, chunk, total_bytes);
+    auto [send_ok, send_error] = handler_->send_prebuilt(&send_allocator, slab_id, chunk, total_bytes);
+    ASSERT_TRUE(send_ok) << send_error;
     ASSERT_TRUE(handler_->has_pending_send());
 
     // Simulate connection teardown while the send is still in flight.

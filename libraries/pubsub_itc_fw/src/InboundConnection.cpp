@@ -1,7 +1,11 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <string>
+#include <tuple>
+
 #include <pubsub_itc_fw/InboundConnection.hpp>
+
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 
 namespace pubsub_itc_fw {
@@ -33,10 +37,10 @@ int InboundConnection::get_fd() const
     return socket_ ? socket_->get_file_descriptor() : -1;
 }
 
-void InboundConnection::handle_read()
+std::tuple<bool, std::string> InboundConnection::handle_read()
 {
     last_activity_time_ = std::chrono::steady_clock::now();
-    handler_->on_data_ready();
+    return handler_->on_data_ready();
 }
 
 } // namespace pubsub_itc_fw

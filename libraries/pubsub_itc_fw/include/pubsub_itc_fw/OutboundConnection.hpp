@@ -4,7 +4,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <cstdint>
-#include <functional>
 #include <memory>
 #include <string>
 
@@ -148,11 +147,8 @@ class OutboundConnection {
      * PduParser, and clears the connector.
      *
      * @param[in] socket             The connected TcpSocket. Ownership is transferred.
-     * @param[in] disconnect_handler Called by PduParser when the peer closes the
-     *                               connection gracefully. Typically a lambda that
-     *                               calls Reactor::teardown_connection().
      */
-    void on_connected(std::unique_ptr<TcpSocket> socket, std::function<void()> disconnect_handler);
+    void on_connected(std::unique_ptr<TcpSocket> socket);
 
     /**
      * @brief Returns the file descriptor of the underlying socket.

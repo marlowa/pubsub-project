@@ -220,13 +220,9 @@ void OutboundConnectionManager::on_connect_ready(OutboundConnection& conn)
     }
 
     const int fd = conn.get_fd();
-    const ConnectionID conn_id = conn.id();
 
     auto socket = conn.connector()->get_connected_socket();
-    auto disconnect_handler = [this, conn_id]() {
-        teardown_connection(conn_id, "peer closed connection", true);
-    };
-    conn.on_connected(std::move(socket), std::move(disconnect_handler));
+    conn.on_connected(std::move(socket));
 
     if (config_.socket_send_buffer_size > 0) {
         ::setsockopt(fd, SOL_SOCKET, SO_SNDBUF,

@@ -4,11 +4,10 @@
 #include <string>
 #include <tuple>
 
+#include <pubsub_itc_fw/PduProtocolHandler.hpp>
+
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
-#include <pubsub_itc_fw/FwLogLevel.hpp>
-#include <pubsub_itc_fw/LoggingMacros.hpp>
-#include <pubsub_itc_fw/PduProtocolHandler.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 
 namespace pubsub_itc_fw {
@@ -16,34 +15,24 @@ namespace pubsub_itc_fw {
 PduProtocolHandler::PduProtocolHandler(TcpSocket& socket,
                                        ApplicationThread& target_thread,
                                        ExpandableSlabAllocator& inbound_allocator,
-                                       std::function<void()> disconnect_handler,
-                                       QuillLogger& logger,
                                        ConnectionID connection_id)
-    : disconnect_handler_(disconnect_handler)
-    , logger_(logger)
 {
     framer_ = std::make_unique<PduFramer>(socket);
     parser_ = std::make_unique<PduParser>(socket,
                                           target_thread,
                                           inbound_allocator,
-                                          std::move(disconnect_handler),
                                           connection_id);
 }
 
-void PduProtocolHandler::on_data_ready()
+std::tuple<bool, std::string> PduProtocolHandler::on_data_ready()
 {
-    auto [success, error] = parser_->receive();
-    if (!success && !error.empty()) {
-        PUBSUB_LOG(logger_, FwLogLevel::Info,
-                   "PduProtocolHandler: closing connection due to protocol error: {}", error);
-        disconnect_handler_();
-    }
+    return parser_->receive();
 }
 
-void PduProtocolHandler::send_prebuilt(ExpandableSlabAllocator* allocator,
-                                       int slab_id,
-                                       void* chunk_ptr,
-                                       uint32_t total_bytes)
+std::tuple<bool, std::string> PduProtocolHandler::send_prebuilt(ExpandableSlabAllocator* allocator,
+                                                                int slab_id,
+                                                                void* chunk_ptr,
+                                                                uint32_t total_bytes)
 {
     if (allocator == nullptr) {
         throw PreconditionAssertion(
@@ -63,23 +52,15 @@ void PduProtocolHandler::send_prebuilt(ExpandableSlabAllocator* allocator,
 
     const auto* frame = static_cast<const uint8_t*>(chunk_ptr);
     auto [success, error] = framer_->send_prebuilt(frame, total_bytes);
-    if (!success && !error.empty()) {
-        PUBSUB_LOG(logger_, FwLogLevel::Info,
-                   "PduProtocolHandler: send_prebuilt failed: {}", error);
-        // The send failed unrecoverably. Free the chunk and tear down.
+    if (!success) {
         release_pending_send();
-        disconnect_handler_();
-        return;
+        return {false, error};
     }
 
     if (!framer_->has_pending_data()) {
-        // Send completed immediately — chunk is no longer needed.
         release_pending_send();
     }
-    // If has_pending_data() is true the Reactor will register EPOLLOUT and
-    // call continue_send() when the socket is writable. The chunk remains
-    // live until continue_send() completes or deallocate_pending_send() is
-    // called on teardown.
+    return {true, ""};
 }
 
 bool PduProtocolHandler::has_pending_send() const
@@ -87,21 +68,18 @@ bool PduProtocolHandler::has_pending_send() const
     return framer_->has_pending_data();
 }
 
-void PduProtocolHandler::continue_send()
+std::tuple<bool, std::string> PduProtocolHandler::continue_send()
 {
     auto [success, error] = framer_->continue_send();
-    if (!success && !error.empty()) {
-        PUBSUB_LOG(logger_, FwLogLevel::Info,
-                   "PduProtocolHandler: continue_send failed: {}", error);
+    if (!success) {
         release_pending_send();
-        disconnect_handler_();
-        return;
+        return {false, error};
     }
 
     if (!framer_->has_pending_data()) {
-        // Send now complete — chunk is no longer needed.
         release_pending_send();
     }
+    return {true, ""};
 }
 
 void PduProtocolHandler::deallocate_pending_send()

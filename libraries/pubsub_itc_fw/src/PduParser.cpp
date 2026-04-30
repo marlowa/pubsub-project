@@ -2,13 +2,17 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <arpa/inet.h>
+
 #include <cstring>
+#include <string>
+#include <tuple>
 
 #include <fmt/format.h>
 
+#include <pubsub_itc_fw/PduParser.hpp>
+
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
-#include <pubsub_itc_fw/PduParser.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 
 namespace pubsub_itc_fw {
@@ -16,12 +20,10 @@ namespace pubsub_itc_fw {
 PduParser::PduParser(ByteStreamInterface& stream,
                      ApplicationThread& target_thread,
                      ExpandableSlabAllocator& slab_allocator,
-                     std::function<void()> disconnect_handler,
                      ConnectionID connection_id)
     : stream_(stream)
     , target_thread_(target_thread)
     , slab_allocator_(slab_allocator)
-    , disconnect_handler_(std::move(disconnect_handler))
     , connection_id_(connection_id)
     , header_bytes_{0}
     , header_validated_{false}
@@ -45,9 +47,6 @@ std::tuple<bool, std::string> PduParser::receive()
                     utils::SimpleSpan<uint8_t>(header_buffer_ + header_bytes_, header_space));
 
                 if (bytes_read == 0 && error.empty()) {
-                    if (disconnect_handler_ != nullptr) {
-                        disconnect_handler_();
-                    }
                     return {false, ""};
                 }
 
@@ -119,9 +118,6 @@ std::tuple<bool, std::string> PduParser::receive()
                 slab_allocator_.deallocate(payload_slab_id_, payload_chunk_);
                 payload_chunk_   = nullptr;
                 payload_slab_id_ = -1;
-                if (disconnect_handler_ != nullptr) {
-                    disconnect_handler_();
-                }
                 return {false, ""};
             }
 

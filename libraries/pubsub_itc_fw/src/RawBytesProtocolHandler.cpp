@@ -1,20 +1,22 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-#include <cerrno>
-#include <cstdint>
-#include <tuple>
-
 #include <sys/socket.h>
 #include <unistd.h>
+
+#include <cerrno>
+#include <cstdint>
+#include <string>
+#include <tuple>
+
+#include <fmt/format.h>
+
+#include <pubsub_itc_fw/RawBytesProtocolHandler.hpp>
 
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
-#include <pubsub_itc_fw/FwLogLevel.hpp>
-#include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
-#include <pubsub_itc_fw/RawBytesProtocolHandler.hpp>
 #include <pubsub_itc_fw/StringUtils.hpp>
 #include <pubsub_itc_fw/TcpSocket.hpp>
 
@@ -23,27 +25,20 @@ namespace pubsub_itc_fw {
 RawBytesProtocolHandler::RawBytesProtocolHandler(ConnectionID connection_id,
                                                  TcpSocket& socket,
                                                  ApplicationThread& target_thread,
-                                                 int64_t buffer_capacity,
-                                                 std::function<void()> disconnect_handler,
-                                                 QuillLogger& logger)
+                                                 int64_t buffer_capacity)
     : connection_id_(connection_id)
     , socket_(socket)
     , target_thread_(target_thread)
-    , disconnect_handler_(std::move(disconnect_handler))
-    , logger_(logger)
     , buffer_(buffer_capacity)
     , framer_(std::make_unique<PduFramer>(socket))
 {
 }
 
-void RawBytesProtocolHandler::on_data_ready()
+std::tuple<bool, std::string> RawBytesProtocolHandler::on_data_ready()
 {
     const int64_t space = buffer_.space_remaining();
     if (space == 0) {
-        PUBSUB_LOG_STR(logger_, FwLogLevel::Error,
-            "RawBytesProtocolHandler::on_data_ready: buffer full, application is not consuming fast enough");
-        disconnect_handler_();
-        return;
+        return {false, "RawBytesProtocolHandler::on_data_ready: buffer full, application is not consuming fast enough"};
     }
 
     const ssize_t bytes_read = ::recv(socket_.get_file_descriptor(),
@@ -52,21 +47,15 @@ void RawBytesProtocolHandler::on_data_ready()
                                       MSG_DONTWAIT);
 
     if (bytes_read == 0) {
-        PUBSUB_LOG_STR(logger_, FwLogLevel::Info,
-            "RawBytesProtocolHandler::on_data_ready: peer closed connection");
-        disconnect_handler_();
-        return;
+        return {false, ""};
     }
 
     if (bytes_read == -1) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            return; // spurious wakeup, nothing to read
+            return {true, ""}; // Spurious wakeup, nothing to read.
         }
-        PUBSUB_LOG(logger_, FwLogLevel::Error,
-            "RawBytesProtocolHandler::on_data_ready: recv failed: {}",
-            StringUtils::get_errno_string());
-        disconnect_handler_();
-        return;
+        return {false, fmt::format("RawBytesProtocolHandler::on_data_ready: recv failed: {}",
+                                   StringUtils::get_errno_string())};
     }
 
     buffer_.advance_head(bytes_read);
@@ -76,6 +65,7 @@ void RawBytesProtocolHandler::on_data_ready()
                                                 buffer_.read_ptr(),
                                                 static_cast<int>(buffer_.bytes_available()),
                                                 buffer_.tail()));
+    return {true, ""};
 }
 
 void RawBytesProtocolHandler::commit_bytes(int64_t bytes)
@@ -83,10 +73,10 @@ void RawBytesProtocolHandler::commit_bytes(int64_t bytes)
     buffer_.advance_tail(bytes);
 }
 
-void RawBytesProtocolHandler::send_prebuilt(ExpandableSlabAllocator* allocator,
-                                            int slab_id,
-                                            void* chunk_ptr,
-                                            uint32_t total_bytes)
+std::tuple<bool, std::string> RawBytesProtocolHandler::send_prebuilt(ExpandableSlabAllocator* allocator,
+                                                                     int slab_id,
+                                                                     void* chunk_ptr,
+                                                                     uint32_t total_bytes)
 {
     if (allocator == nullptr) {
         throw PreconditionAssertion(
@@ -106,17 +96,15 @@ void RawBytesProtocolHandler::send_prebuilt(ExpandableSlabAllocator* allocator,
 
     const uint8_t* frame = static_cast<const uint8_t*>(chunk_ptr);
     auto [success, error] = framer_->send_prebuilt(frame, total_bytes);
-    if (!success && !error.empty()) {
-        PUBSUB_LOG(logger_, FwLogLevel::Error,
-            "RawBytesProtocolHandler::send_prebuilt failed: {}", error);
+    if (!success) {
         release_pending_send();
-        disconnect_handler_();
-        return;
+        return {false, error};
     }
 
     if (!framer_->has_pending_data()) {
         release_pending_send();
     }
+    return {true, ""};
 }
 
 bool RawBytesProtocolHandler::has_pending_send() const
@@ -124,20 +112,18 @@ bool RawBytesProtocolHandler::has_pending_send() const
     return framer_->has_pending_data();
 }
 
-void RawBytesProtocolHandler::continue_send()
+std::tuple<bool, std::string> RawBytesProtocolHandler::continue_send()
 {
     auto [success, error] = framer_->continue_send();
-    if (!success && !error.empty()) {
-        PUBSUB_LOG(logger_, FwLogLevel::Error,
-            "RawBytesProtocolHandler::continue_send failed: {}", error);
+    if (!success) {
         release_pending_send();
-        disconnect_handler_();
-        return;
+        return {false, error};
     }
 
     if (!framer_->has_pending_data()) {
         release_pending_send();
     }
+    return {true, ""};
 }
 
 void RawBytesProtocolHandler::deallocate_pending_send()

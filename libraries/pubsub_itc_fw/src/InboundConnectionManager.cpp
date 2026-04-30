@@ -135,25 +135,17 @@ void InboundConnectionManager::on_accept(InboundListener& listener, ConnectionID
         return;
     }
 
-    auto disconnect_handler = [this, id]() {
-        teardown_connection(id, "peer closed connection", true);
-    };
-
     std::unique_ptr<ProtocolHandlerInterface> handler;
     if (listener.configuration.protocol_type == ProtocolType::RawBytes) {
         handler = std::make_unique<RawBytesProtocolHandler>(id,
             *socket,
             *target_thread,
-            listener.configuration.raw_buffer_capacity,
-            std::move(disconnect_handler),
-            logger_);
+            listener.configuration.raw_buffer_capacity);
     } else {
         handler = std::make_unique<PduProtocolHandler>(
             *socket,
             *target_thread,
             inbound_allocator_,
-            std::move(disconnect_handler),
-            logger_,
             id);
     }
 
@@ -190,22 +182,38 @@ void InboundConnectionManager::on_accept(InboundListener& listener, ConnectionID
 
 void InboundConnectionManager::on_data_ready(InboundConnection& conn)
 {
-    conn.handle_read();
-    // Note: handle_read() may invoke the disconnect handler synchronously,
-    // which calls teardown_connection() and destroys conn.
-    // Any access to conn after this point would be a use-after-free error.
+    const ConnectionID id        = conn.id();
+    const std::string  peer_desc = conn.peer_description();
+
+    auto [ok, error] = conn.handle_read();
+    if (!ok) {
+        const std::string reason = error.empty()
+            ? fmt::format("peer '{}' closed connection", peer_desc)
+            : fmt::format("protocol error on connection from '{}': {}", peer_desc, error);
+
+        if (error.empty()) {
+            PUBSUB_LOG(logger_, FwLogLevel::Info,
+                "InboundConnectionManager::on_data_ready: {}", reason);
+        } else {
+            PUBSUB_LOG(logger_, FwLogLevel::Error,
+                "InboundConnectionManager::on_data_ready: {}", reason);
+        }
+
+        teardown_connection(id, reason, true);
+    }
 }
 
 void InboundConnectionManager::on_write_ready(InboundConnection& conn)
 {
     const ConnectionID id = conn.id();
 
-    conn.handler()->continue_send();
-
-    // continue_send() may have invoked the disconnect handler synchronously
-    // on an unrecoverable send error, destroying conn. Check whether the
-    // connection still exists before touching it again.
-    if (connections_.find(id) == connections_.end()) {
+    auto [ok, error] = conn.handler()->continue_send();
+    if (!ok) {
+        const std::string reason = fmt::format(
+            "send error on connection from '{}': {}", conn.peer_description(), error);
+        PUBSUB_LOG(logger_, FwLogLevel::Error,
+            "InboundConnectionManager::on_write_ready: {}", reason);
+        teardown_connection(id, reason, true);
         return;
     }
 
@@ -321,19 +329,19 @@ bool InboundConnectionManager::process_send_pdu_command(const ReactorControlComm
     // The handler takes ownership of the slab bookkeeping from this point.
     // It stores allocator, slab_id, and chunk_ptr internally and will
     // deallocate on completion or teardown.
-    conn.handler()->send_prebuilt(command.allocator_, command.slab_id_,
-                                  command.pdu_chunk_ptr_, total_bytes);
-
-    // send_prebuilt may invoke the disconnect handler synchronously, which
-    // calls teardown_connection and erases the connection from the map.
-    // Re-look up by cid before touching conn again.
-    auto it2 = connections_.find(cid);
-    if (it2 == connections_.end()) {
+    auto [ok, error] = conn.handler()->send_prebuilt(command.allocator_, command.slab_id_,
+                                                     command.pdu_chunk_ptr_, total_bytes);
+    if (!ok) {
+        const std::string reason = fmt::format(
+            "send error on connection from '{}': {}", conn.peer_description(), error);
+        PUBSUB_LOG(logger_, FwLogLevel::Error,
+            "InboundConnectionManager::process_send_pdu_command: {}", reason);
+        teardown_connection(cid, reason, true);
         return true;
     }
 
-    if (it2->second->handler()->has_pending_send()) {
-        const int conn_fd = it2->second->get_fd();
+    if (conn.handler()->has_pending_send()) {
+        const int conn_fd = conn.get_fd();
         epoll_event ev{};
         ev.events  = EPOLLIN | EPOLLOUT | EPOLLERR;
         ev.data.fd = conn_fd;
@@ -359,19 +367,19 @@ bool InboundConnectionManager::process_send_raw_command(const ReactorControlComm
         return true;
     }
 
-    conn.handler()->send_prebuilt(command.allocator_, command.slab_id_,
-                                  command.raw_chunk_ptr_, command.raw_byte_count_);
-
-    // send_prebuilt may invoke the disconnect handler synchronously, which
-    // calls teardown_connection and erases the connection from the map.
-    // Re-look up by cid before touching conn again.
-    auto it2 = connections_.find(cid);
-    if (it2 == connections_.end()) {
+    auto [ok, error] = conn.handler()->send_prebuilt(command.allocator_, command.slab_id_,
+                                                     command.raw_chunk_ptr_, command.raw_byte_count_);
+    if (!ok) {
+        const std::string reason = fmt::format(
+            "send error on connection from '{}': {}", conn.peer_description(), error);
+        PUBSUB_LOG(logger_, FwLogLevel::Error,
+            "InboundConnectionManager::process_send_raw_command: {}", reason);
+        teardown_connection(cid, reason, true);
         return true;
     }
 
-    if (it2->second->handler()->has_pending_send()) {
-        const int conn_fd = it2->second->get_fd();
+    if (conn.handler()->has_pending_send()) {
+        const int conn_fd = conn.get_fd();
         epoll_event ev{};
         ev.events  = EPOLLIN | EPOLLOUT | EPOLLERR;
         ev.data.fd = conn_fd;

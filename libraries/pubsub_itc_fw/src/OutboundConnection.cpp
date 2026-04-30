@@ -1,11 +1,11 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-#include <functional>
 #include <pubsub_itc_fw/OutboundConnection.hpp>
-#include <pubsub_itc_fw/ServiceEndpoints.hpp>
+
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
+#include <pubsub_itc_fw/ServiceEndpoints.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -30,8 +30,7 @@ OutboundConnection::OutboundConnection(ConnectionID id,
     }
 }
 
-void OutboundConnection::on_connected(std::unique_ptr<TcpSocket> socket,
-                                       std::function<void()> disconnect_handler)
+void OutboundConnection::on_connected(std::unique_ptr<TcpSocket> socket)
 {
     if (!socket) {
         throw PreconditionAssertion(
@@ -50,7 +49,6 @@ void OutboundConnection::on_connected(std::unique_ptr<TcpSocket> socket,
         *socket_,
         target_thread_,
         inbound_allocator_,
-        std::move(disconnect_handler),
         id_);
 }
 

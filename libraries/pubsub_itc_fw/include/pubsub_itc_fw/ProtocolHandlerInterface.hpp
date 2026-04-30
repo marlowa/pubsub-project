@@ -4,6 +4,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <cstdint>
+#include <string>
+#include <tuple>
 
 namespace pubsub_itc_fw {
 
@@ -18,17 +20,18 @@ class ExpandableSlabAllocator;
  * idle timeouts, and socket lifecycle) from the protocol-specific framing logic.
  *
  * Each concrete implementation is constructed with all the resources it needs
- * (socket, target thread, allocator, disconnect handler, logger) bound at
- * construction time. The handler owns all protocol-specific state including
- * outbound partial-send bookkeeping, so InboundConnection remains a thin
- * transport shell.
+ * (socket, target thread, allocator, logger) bound at construction time. The
+ * handler owns all protocol-specific state including outbound partial-send
+ * bookkeeping, so InboundConnection remains a thin transport shell.
  *
  * Lifecycle and responsibilities of each implementation:
  *   - Read:       call receive() or equivalent on the bound socket.
  *   - Frame:      identify message boundaries according to the specific protocol.
  *   - Package:    wrap data in EventMessage envelopes.
  *   - Route:      dispatch messages to the target thread via the Vyukov queue.
- *   - Disconnect: invoke the stored disconnect handler on EOF or protocol error.
+ *   - Disconnect: signal failure to the caller via the return value of
+ *                 on_data_ready, send_prebuilt, or continue_send. The owning
+ *                 manager is responsible for tearing the connection down.
  *   - Send:       manage outbound framing and partial-send state.
  *
  * Two concrete implementations exist:
@@ -53,8 +56,14 @@ class ProtocolHandlerInterface {
      * Implementations must drain the socket or read as much as internal
      * buffering allows, performing in-place framing where possible to
      * minimise copies.
+     *
+     * @return A tuple of { success, error_string }.
+     *         success is true if the read completed cleanly (including the case
+     *         where no bytes were available). success is false if the connection
+     *         must be closed; error_string is empty for a graceful peer
+     *         disconnect and contains a description on protocol failure.
      */
-    virtual void on_data_ready() = 0;
+    [[nodiscard]] virtual std::tuple<bool, std::string> on_data_ready() = 0;
 
     /**
      * @brief Initiates a zero-copy send of a pre-built frame.
@@ -72,8 +81,12 @@ class ProtocolHandlerInterface {
      * @param[in] slab_id     Slab ID for deallocation when the send completes.
      * @param[in] chunk_ptr   Pointer to the start of the frame. Must not be nullptr.
      * @param[in] total_bytes Total frame size in bytes.
+     *
+     * @return A tuple of { success, error_string }. success is false on
+     *         unrecoverable send failure; the implementation will have already
+     *         released the slab chunk in that case.
      */
-    virtual void send_prebuilt(ExpandableSlabAllocator* allocator, int slab_id, void* chunk_ptr, uint32_t total_bytes) = 0;
+    [[nodiscard]] virtual std::tuple<bool, std::string> send_prebuilt(ExpandableSlabAllocator* allocator, int slab_id, void* chunk_ptr, uint32_t total_bytes) = 0;
 
     /**
      * @brief Returns true if a partial outbound send is in progress.
@@ -90,8 +103,12 @@ class ProtocolHandlerInterface {
      * is true. The implementation must attempt to write the remaining bytes.
      * When the send completes it must deallocate the slab chunk and clear its
      * internal pending-send state.
+     *
+     * @return A tuple of { success, error_string }. success is false on
+     *         unrecoverable send failure; the implementation will have already
+     *         released the slab chunk in that case.
      */
-    virtual void continue_send() = 0;
+    [[nodiscard]] virtual std::tuple<bool, std::string> continue_send() = 0;
 
     /**
      * @brief Deallocates any in-flight outbound slab chunk.

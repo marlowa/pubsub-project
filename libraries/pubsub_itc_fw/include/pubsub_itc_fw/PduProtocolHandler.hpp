@@ -4,8 +4,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <cstdint>
-#include <functional>
 #include <memory>
+#include <string>
+#include <tuple>
 
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
@@ -13,7 +14,6 @@
 #include <pubsub_itc_fw/PduFramer.hpp>
 #include <pubsub_itc_fw/PduParser.hpp>
 #include <pubsub_itc_fw/ProtocolHandlerInterface.hpp>
-#include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/TcpSocket.hpp>
 
 namespace pubsub_itc_fw {
@@ -28,12 +28,10 @@ namespace pubsub_itc_fw {
  * zero-copy framing layer for connections carrying framework PDUs.
  *
  * Inbound path:
- *   The disconnect handler is stored at construction time and forwarded to
- *   the PduParser. The PduParser invokes it on graceful peer disconnect
- *   (recv returns 0). For protocol errors (canary mismatch, slab allocation
- *   failure, read error), the PduParser returns {false, error_string} without
- *   invoking the handler; on_data_ready() logs the error and invokes the
- *   handler itself so the Reactor tears down the connection in all failure cases.
+ *   The PduParser reads framed PDUs from the socket. Failures (graceful
+ *   disconnect, canary mismatch, slab allocation failure, read error) are
+ *   reported to the caller via the return value of on_data_ready(). The owning
+ *   manager is responsible for tearing the connection down.
  *
  * Outbound path:
  *   This handler owns the partial-send state (allocator pointer, slab ID,
@@ -45,8 +43,8 @@ namespace pubsub_itc_fw {
  *   All methods must be called from the reactor thread only.
  *
  * Ownership:
- *   Does not own the TcpSocket, ApplicationThread, ExpandableSlabAllocator,
- *   or QuillLogger. The caller is responsible for their lifetimes.
+ *   Does not own the TcpSocket, ApplicationThread, or ExpandableSlabAllocator.
+ *   The caller is responsible for their lifetimes.
  *   The PduParser and PduFramer are owned exclusively by this handler.
  */
 class PduProtocolHandler : public ProtocolHandlerInterface {
@@ -64,17 +62,12 @@ class PduProtocolHandler : public ProtocolHandlerInterface {
      *                               dispatched. Must outlive this object.
      * @param[in] inbound_allocator  Slab allocator for inbound PDU payload chunks.
      *                               Must outlive this object.
-     * @param[in] disconnect_handler Called when the peer closes the connection or a
-     *                               protocol error forces closure. Typically a lambda
-     *                               calling Reactor::teardown_inbound_connection().
-     * @param[in] logger             Logger for protocol error diagnostics.
-     *                               Must outlive this object.
      * @param[in] connection_id      The ConnectionID of this connection, carried in
      *                               every FrameworkPdu EventMessage so that
      *                               on_framework_pdu_message() can identify the source.
      */
     PduProtocolHandler(TcpSocket& socket, ApplicationThread& target_thread, ExpandableSlabAllocator& inbound_allocator,
-                       std::function<void()> disconnect_handler, QuillLogger& logger, ConnectionID connection_id);
+                       ConnectionID connection_id);
 
     /**
      * @brief Services a readable socket by draining available PDU frames.
@@ -84,11 +77,11 @@ class PduProtocolHandler : public ProtocolHandlerInterface {
      * allocates slab chunks, and dispatches complete FrameworkPdu EventMessages
      * to the target ApplicationThread.
      *
-     * On graceful peer disconnect the PduParser invokes the disconnect handler
-     * directly. On protocol errors this method logs the error and invokes the
-     * disconnect handler before returning.
+     * @return The tuple returned by PduParser::receive(): {true, ""} on a clean
+     *         read (including no bytes available), {false, ""} on graceful peer
+     *         disconnect, or {false, error_string} on protocol failure.
      */
-    void on_data_ready() override;
+    [[nodiscard]] std::tuple<bool, std::string> on_data_ready() override;
 
     /**
      * @brief Initiates a zero-copy send of a pre-built PDU frame.
@@ -100,8 +93,12 @@ class PduProtocolHandler : public ProtocolHandlerInterface {
      * @param[in] slab_id     Slab ID for deallocation when the send completes.
      * @param[in] chunk_ptr   Pointer to the start of the PDU frame. Must not be nullptr.
      * @param[in] total_bytes Total frame size in bytes.
+     *
+     * @return {true, ""} if the send completed or progressed normally; {false,
+     *         error_string} if the underlying send failed unrecoverably. The
+     *         slab chunk is released before returning on failure.
      */
-    void send_prebuilt(ExpandableSlabAllocator* allocator, int slab_id, void* chunk_ptr, uint32_t total_bytes) override;
+    [[nodiscard]] std::tuple<bool, std::string> send_prebuilt(ExpandableSlabAllocator* allocator, int slab_id, void* chunk_ptr, uint32_t total_bytes) override;
 
     /**
      * @brief Returns true if a partial outbound PDU send is in progress.
@@ -113,8 +110,12 @@ class PduProtocolHandler : public ProtocolHandlerInterface {
      *
      * Delegates to PduFramer::continue_send(). When the send completes the
      * slab chunk is deallocated and internal pending-send state is cleared.
+     *
+     * @return {true, ""} on progress or completion; {false, error_string} on
+     *         unrecoverable send failure. The slab chunk is released before
+     *         returning on failure.
      */
-    void continue_send() override;
+    [[nodiscard]] std::tuple<bool, std::string> continue_send() override;
 
     /**
      * @brief Deallocates any in-flight outbound slab chunk.
@@ -128,8 +129,6 @@ class PduProtocolHandler : public ProtocolHandlerInterface {
 
     std::unique_ptr<PduParser> parser_;
     std::unique_ptr<PduFramer> framer_;
-    std::function<void()> disconnect_handler_;
-    QuillLogger& logger_;
 
     ExpandableSlabAllocator* current_allocator_{nullptr};
     int current_slab_id_{-1};

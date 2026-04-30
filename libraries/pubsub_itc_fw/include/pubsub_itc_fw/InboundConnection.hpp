@@ -6,6 +6,7 @@
 #include <chrono>
 #include <memory>
 #include <string>
+#include <tuple>
 
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/ProtocolHandlerInterface.hpp>
@@ -117,8 +118,13 @@ class InboundConnection {
      * Updates the last activity timestamp and delegates to the protocol
      * handler's on_data_ready(). Must be called by the Reactor when epoll
      * signals EPOLLIN on this connection's file descriptor.
+     *
+     * @return The tuple from the handler's on_data_ready(): {true, ""} on a
+     *         clean read, {false, ""} on graceful peer disconnect, or
+     *         {false, error_string} on protocol failure. The caller is
+     *         responsible for tearing down the connection on failure.
      */
-    void handle_read();
+    [[nodiscard]] std::tuple<bool, std::string> handle_read();
 
     /**
      * @brief Returns the protocol handler for this connection.

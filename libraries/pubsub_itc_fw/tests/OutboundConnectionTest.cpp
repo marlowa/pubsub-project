@@ -417,7 +417,7 @@ TEST_F(OutboundConnectionPreconditionTest, ConstructorRejectsNullConnector) {
 
 TEST_F(OutboundConnectionPreconditionTest, OnConnectedRejectsNullSocket) {
     auto conn = make_connection();
-    EXPECT_THROW(conn->on_connected(nullptr, [](){}), PreconditionAssertion);
+    EXPECT_THROW(conn->on_connected(nullptr), PreconditionAssertion);
 }
 
 TEST_F(OutboundConnectionPreconditionTest, OnConnectedRejectsWhenNotConnecting) {
@@ -428,13 +428,13 @@ TEST_F(OutboundConnectionPreconditionTest, OnConnectedRejectsWhenNotConnecting) 
 
     auto [socket, err1] = TcpSocket::adopt(fds[0]);
     ASSERT_NE(socket, nullptr) << "Failed to adopt socket: " << err1;
-    EXPECT_NO_THROW(conn->on_connected(std::move(socket), [](){}));
+    EXPECT_NO_THROW(conn->on_connected(std::move(socket)));
     EXPECT_TRUE(conn->is_established());
     EXPECT_FALSE(conn->is_connecting());
 
     auto [socket2, err2] = TcpSocket::adopt(fds[1]);
     ASSERT_NE(socket2, nullptr) << "Failed to adopt socket2: " << err2;
-    EXPECT_THROW(conn->on_connected(std::move(socket2), [](){}), PreconditionAssertion);
+    EXPECT_THROW(conn->on_connected(std::move(socket2)), PreconditionAssertion);
 }
 
 TEST_F(OutboundConnectionPreconditionTest, RetryWithSecondaryRejectsNullConnector) {
