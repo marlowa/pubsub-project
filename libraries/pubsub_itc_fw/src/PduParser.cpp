@@ -13,6 +13,8 @@
 
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
+#include <pubsub_itc_fw/FwLogLevel.hpp>
+#include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 
 namespace pubsub_itc_fw {
@@ -20,10 +22,12 @@ namespace pubsub_itc_fw {
 PduParser::PduParser(ByteStreamInterface& stream,
                      ApplicationThread& target_thread,
                      ExpandableSlabAllocator& slab_allocator,
+                     QuillLogger& logger,
                      ConnectionID connection_id)
     : stream_(stream)
     , target_thread_(target_thread)
     , slab_allocator_(slab_allocator)
+    , logger_(logger)
     , connection_id_(connection_id)
     , header_bytes_{0}
     , header_validated_{false}
@@ -72,6 +76,24 @@ std::tuple<bool, std::string> PduParser::receive()
 
             current_payload_size_ = ntohl(hdr->byte_count);
             current_pdu_id_ = static_cast<int16_t>(ntohs(static_cast<uint16_t>(hdr->pdu_id)));
+
+            PUBSUB_LOG(logger_, FwLogLevel::Info,
+                "TRACE PduParser::receive: connection_id={} decoded header: "
+                "canary=0x{:08x} byte_count={} pdu_id={} version={}",
+                connection_id_.get_value(),
+                ntohl(hdr->canary),
+                current_payload_size_,
+                current_pdu_id_,
+                static_cast<int>(hdr->version));
+
+            PUBSUB_LOG(logger_, FwLogLevel::Info,
+                "TRACE PduParser::receive: header bytes: "
+                "{:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} "
+                "{:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
+                header_buffer_[0],  header_buffer_[1],  header_buffer_[2],  header_buffer_[3],
+                header_buffer_[4],  header_buffer_[5],  header_buffer_[6],  header_buffer_[7],
+                header_buffer_[8],  header_buffer_[9],  header_buffer_[10], header_buffer_[11],
+                header_buffer_[12], header_buffer_[13], header_buffer_[14], header_buffer_[15]);
 
             if (current_payload_size_ == 0) {
                 return {false, "PduParser: zero-length payload is not permitted"};
@@ -155,12 +177,11 @@ bool PduParser::has_complete_header() const
 
 void PduParser::dispatch_pdu(int slab_id, void* payload_chunk)
 {
-    const auto* payload    = static_cast<const uint8_t*>(payload_chunk);
-    const int      payload_size = static_cast<int>(current_payload_size_);
+    const auto* payload      = static_cast<const uint8_t*>(payload_chunk);
+    const int   payload_size = static_cast<int>(current_payload_size_);
 
     EventMessage msg = EventMessage::create_framework_pdu_message(
-        payload, payload_size, slab_id, connection_id_);
-
+        payload, payload_size, slab_id, current_pdu_id_, connection_id_);
     target_thread_.get_queue().enqueue(std::move(msg));
 }
 

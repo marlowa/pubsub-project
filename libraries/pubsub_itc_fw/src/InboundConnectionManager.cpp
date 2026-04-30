@@ -141,14 +141,14 @@ void InboundConnectionManager::on_accept(InboundListener& listener, ConnectionID
     std::unique_ptr<ProtocolHandlerInterface> handler;
     if (listener.configuration.protocol_type == ProtocolType::RawBytes) {
         handler = std::make_unique<RawBytesProtocolHandler>(populated_id,
-            *socket,
-            *target_thread,
-            listener.configuration.raw_buffer_capacity);
+                                                            *socket,
+                                                            *target_thread,
+                                                            listener.configuration.raw_buffer_capacity);
     } else {
         handler = std::make_unique<PduProtocolHandler>(
             *socket,
             *target_thread,
-            inbound_allocator_,
+            inbound_allocator_, logger_,
             populated_id);
     }
     auto conn = std::make_unique<InboundConnection>(

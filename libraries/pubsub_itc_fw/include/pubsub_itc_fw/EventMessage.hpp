@@ -166,6 +166,7 @@ class EventMessage {
      * @return EventMessage instance.
      */
     [[nodiscard]] static EventMessage create_raw_socket_message(ConnectionID connection_id, const uint8_t* data, int size, int64_t tail_position);
+
     /**
      * @brief Factory method for framework PDU messages.
      *
@@ -178,9 +179,13 @@ class EventMessage {
      * @param[in] data     Pointer to the slab-allocated PDU payload. Must not be nullptr.
      * @param[in] size     Size of the PDU payload in bytes.
      * @param[in] slab_id  Slab ID from ExpandableSlabAllocator::allocate().
+     * @param[in] pdu_id   The PDU type identifier as decoded from the wire header.
+     *                     Used by the receiving ApplicationThread to dispatch to
+     *                     the correct decode function.
+     * @param[in] connection_id The connection on which the PDU was received.
      * @return EventMessage instance.
      */
-    [[nodiscard]] static EventMessage create_framework_pdu_message(const uint8_t* data, int size, int slab_id, ConnectionID connection_id);
+    [[nodiscard]] static EventMessage create_framework_pdu_message(const uint8_t* data, int size, int slab_id, int16_t pdu_id, ConnectionID connection_id);
 
     /**
      * @brief Factory method for a successful outbound connection event.
@@ -307,4 +312,4 @@ class EventMessage {
     }
 };
 
-} // namespace pubsub_itc_fwpdu
+} // namespaces

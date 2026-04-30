@@ -46,8 +46,6 @@ void OutboundConnectionManager::process_connect_command(const ReactorControlComm
     const std::string& service_name = command.service_name_;
 
     auto [endpoints, lookup_error] = service_registry_.lookup(service_name);
-    PUBSUB_LOG(logger_, FwLogLevel::Info, "APM process_connect_command service name [{}]", service_name);
-
     if (!lookup_error.empty()) {
         PUBSUB_LOG(logger_, FwLogLevel::Error,
             "OutboundConnectionManager::process_connect_command: unknown service '{}'",
@@ -107,7 +105,8 @@ void OutboundConnectionManager::process_connect_command(const ReactorControlComm
         endpoints,
         std::move(connector),
         inbound_allocator_,
-        *target_thread);
+        *target_thread,
+        logger_);
 
     OutboundConnection* conn_ptr = conn.get();
     connections_[id]       = std::move(conn);

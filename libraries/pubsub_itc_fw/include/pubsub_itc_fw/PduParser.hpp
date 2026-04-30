@@ -58,6 +58,7 @@
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
 #include <pubsub_itc_fw/PduHeader.hpp>
+#include <pubsub_itc_fw/QuillLogger.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -82,11 +83,13 @@ class PduParser {
      * @param[in] stream             The underlying non-blocking byte stream. Must outlive this object.
      * @param[in] target_thread      The ApplicationThread to which complete PDUs are dispatched.
      * @param[in] slab_allocator     The slab allocator used to allocate payload chunks. Must outlive this object.
+     * @param[in] logger             Logger used for trace/diagnostic output. Must outlive this object.
      * @param[in] connection_id      The ConnectionID of the connection this parser is serving.
      *                               Carried in every FrameworkPdu EventMessage so that
      *                               on_framework_pdu_message() can identify the source connection.
      */
-    PduParser(ByteStreamInterface& stream, ApplicationThread& target_thread, ExpandableSlabAllocator& slab_allocator, ConnectionID connection_id);
+    PduParser(ByteStreamInterface& stream, ApplicationThread& target_thread, ExpandableSlabAllocator& slab_allocator, QuillLogger& logger,
+              ConnectionID connection_id);
 
     PduParser(const PduParser&) = delete;
     PduParser& operator=(const PduParser&) = delete;
@@ -112,6 +115,7 @@ class PduParser {
     ByteStreamInterface& stream_;
     ApplicationThread& target_thread_;
     ExpandableSlabAllocator& slab_allocator_;
+    QuillLogger& logger_;
     ConnectionID connection_id_;
 
     // Fixed small buffer for the 16-byte frame header only.

@@ -15,12 +15,14 @@ namespace pubsub_itc_fw {
 PduProtocolHandler::PduProtocolHandler(TcpSocket& socket,
                                        ApplicationThread& target_thread,
                                        ExpandableSlabAllocator& inbound_allocator,
+                                       QuillLogger& logger,
                                        ConnectionID connection_id)
 {
     framer_ = std::make_unique<PduFramer>(socket);
     parser_ = std::make_unique<PduParser>(socket,
                                           target_thread,
                                           inbound_allocator,
+                                          logger,
                                           connection_id);
 }
 

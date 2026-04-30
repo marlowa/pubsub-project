@@ -12,6 +12,7 @@
 #include <pubsub_itc_fw/MillisecondClock.hpp>
 #include <pubsub_itc_fw/PduFramer.hpp>
 #include <pubsub_itc_fw/PduParser.hpp>
+#include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/ServiceEndpoints.hpp>
 #include <pubsub_itc_fw/TcpConnector.hpp>
 #include <pubsub_itc_fw/TcpSocket.hpp>
@@ -135,9 +136,13 @@ class OutboundConnection {
      *                                 PDU payloads. Must outlive this object.
      * @param[in] target_thread        The ApplicationThread to which inbound PDUs
      *                                 are dispatched. Must outlive this object.
+     * @param[in] logger               Logger forwarded to the PduParser when the
+     *                                 connection becomes established. Must outlive
+     *                                 this object.
      */
     OutboundConnection(ConnectionID id, ThreadID requesting_thread_id, std::string service_name, ServiceEndpoints endpoints,
-                       std::unique_ptr<TcpConnector> connector, ExpandableSlabAllocator& inbound_allocator, ApplicationThread& target_thread);
+                       std::unique_ptr<TcpConnector> connector, ExpandableSlabAllocator& inbound_allocator, ApplicationThread& target_thread,
+                       QuillLogger& logger);
 
     /**
      * @brief Transitions from connecting phase to established phase.
@@ -385,6 +390,7 @@ class OutboundConnection {
     // --- Allocators and target thread (not owned) ---
     ExpandableSlabAllocator& inbound_allocator_;
     ApplicationThread& target_thread_;
+    QuillLogger& logger_;
 };
 
 } // namespace pubsub_itc_fw

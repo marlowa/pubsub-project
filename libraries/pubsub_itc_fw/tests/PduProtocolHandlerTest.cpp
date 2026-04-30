@@ -149,6 +149,7 @@ protected:
             *socket_,
             *stub_thread_,
             *inbound_allocator_,
+            logger_->logger,
             ConnectionID{});
     }
 

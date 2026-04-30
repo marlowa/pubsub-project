@@ -15,7 +15,8 @@ OutboundConnection::OutboundConnection(ConnectionID id,
                                        ServiceEndpoints endpoints,
                                        std::unique_ptr<TcpConnector> connector,
                                        ExpandableSlabAllocator& inbound_allocator,
-                                       ApplicationThread& target_thread)
+                                       ApplicationThread& target_thread,
+                                       QuillLogger& logger)
     : id_(id)
     , requesting_thread_id_(requesting_thread_id)
     , service_name_(std::move(service_name))
@@ -23,6 +24,7 @@ OutboundConnection::OutboundConnection(ConnectionID id,
     , connector_(std::move(connector))
     , inbound_allocator_(inbound_allocator)
     , target_thread_(target_thread)
+    , logger_(logger)
 {
     if (!connector_) {
         throw PreconditionAssertion(
@@ -49,6 +51,7 @@ void OutboundConnection::on_connected(std::unique_ptr<TcpSocket> socket)
         *socket_,
         target_thread_,
         inbound_allocator_,
+        logger_,
         id_);
 }
 

@@ -14,6 +14,7 @@
 #include <pubsub_itc_fw/PduFramer.hpp>
 #include <pubsub_itc_fw/PduParser.hpp>
 #include <pubsub_itc_fw/ProtocolHandlerInterface.hpp>
+#include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/TcpSocket.hpp>
 
 namespace pubsub_itc_fw {
@@ -62,12 +63,14 @@ class PduProtocolHandler : public ProtocolHandlerInterface {
      *                               dispatched. Must outlive this object.
      * @param[in] inbound_allocator  Slab allocator for inbound PDU payload chunks.
      *                               Must outlive this object.
+     * @param[in] logger             Logger forwarded to the PduParser for trace and
+     *                               diagnostic output. Must outlive this object.
      * @param[in] connection_id      The ConnectionID of this connection, carried in
      *                               every FrameworkPdu EventMessage so that
      *                               on_framework_pdu_message() can identify the source.
      */
     PduProtocolHandler(TcpSocket& socket, ApplicationThread& target_thread, ExpandableSlabAllocator& inbound_allocator,
-                       ConnectionID connection_id);
+                       QuillLogger& logger, ConnectionID connection_id);
 
     /**
      * @brief Services a readable socket by draining available PDU frames.

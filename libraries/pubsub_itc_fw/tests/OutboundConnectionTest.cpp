@@ -393,7 +393,8 @@ protected:
             endpoints,
             std::move(connector),
             *allocator_,
-            *thread_);
+            *thread_,
+            logger_->logger);
     }
 
     std::unique_ptr<LoggerWithSink>          logger_;
@@ -411,7 +412,7 @@ TEST_F(OutboundConnectionPreconditionTest, ConstructorRejectsNullConnector) {
     EXPECT_THROW(
         OutboundConnection(
             ConnectionID{1}, ThreadID{1}, "dummy_service",
-            endpoints, nullptr, *allocator_, *thread_),
+            endpoints, nullptr, *allocator_, *thread_, logger_->logger),
         PreconditionAssertion);
 }
 
