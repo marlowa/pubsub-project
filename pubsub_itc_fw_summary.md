@@ -138,7 +138,7 @@ Represents one reactor-managed outbound TCP connection. Lives in `OutboundConnec
 **Connection flow:**
 1. `Connect` command → `OutboundConnectionManager::process_connect_command()` → `TcpConnector::connect(primary)` → register fd for `EPOLLOUT`
 2. `EPOLLOUT` fires → `on_connect_ready()` → `finish_connect()`:
-   - Success → `on_connected(socket, disconnect_handler)` → create `PduFramer` + `PduParser` → re-register for `EPOLLIN` → deliver `ConnectionEstablished`
+   - Success → `on_connected(socket)` → create `PduFramer` + `PduParser` → re-register for `EPOLLIN` → deliver `ConnectionEstablished`
    - Failure + secondary configured → `retry_with_secondary()` → repeat from step 1 with secondary endpoint
    - Both fail → `teardown_connection()` → deliver `ConnectionFailed`
 3. Connect timeout → `check_for_timed_out_connections()` → `teardown_connection()` → deliver `ConnectionFailed`
@@ -169,14 +169,14 @@ Represents one reactor-managed outbound TCP connection. Lives in `OutboundConnec
 
 | Class | One-liner |
 |---|---|
-| `ProtocolHandlerInterface` | Pure abstract interface: `on_data_ready()`, `send_prebuilt()`, `has_pending_send()`, `continue_send()`, `deallocate_pending_send()`, `commit_bytes()` |
+| `ProtocolHandlerInterface` | Pure abstract interface: `on_data_ready()`, `send_prebuilt()`, `continue_send()` all return `[[nodiscard]] tuple<bool, std::string>`; plus `has_pending_send()`, `deallocate_pending_send()`, `commit_bytes()` |
 | `PduProtocolHandler` | Strategy A: owns `PduParser` + `PduFramer` + pending-send slab state; handles framework-native PDU streams |
 | `RawBytesProtocolHandler` | Strategy B: owns `MirroredBuffer`; delivers raw byte streams to the application thread; see Section 7 for full design |
 
 **`PduProtocolHandler` responsibilities:**
-- Inbound: `PduParser::receive()` reads and dispatches complete PDU frames; disconnect handler invoked on EOF or protocol error
-- Outbound: owns `current_allocator_`, `current_slab_id_`, `current_chunk_ptr_`, `current_total_bytes_`; `release_pending_send()` deallocates on completion or teardown
-- All slab bookkeeping is internal to the handler; the Reactor and `InboundConnectionManager` never touch slab state directly for inbound connections
+- Inbound: `PduParser::receive()` reads and dispatches complete PDU frames; on graceful peer close it returns `(false, "")` to the caller; on protocol error it returns `(false, error_string)`. The owning `InboundConnectionManager`/`OutboundConnectionManager` is responsible for tearing the connection down on `!ok`.
+- Outbound: owns `current_allocator_`, `current_slab_id_`, `current_chunk_ptr_`, `current_total_bytes_`; `release_pending_send()` deallocates on completion or teardown. `send_prebuilt`/`continue_send` return `(false, error_string)` on unrecoverable failure (chunk released before return).
+- All slab bookkeeping is internal to the handler; the Reactor and `InboundConnectionManager` never touch slab state directly for inbound connections.
 
 **`InboundConnectionManager` maps:**
 - `connections_` — `ConnectionID → unique_ptr<InboundConnection>` (owns)
@@ -253,9 +253,9 @@ Correct application thread pattern (as used in `BurstListenerThread`):
 
 Without it, the app uses `available < last_available_` to detect a tail advance. This fails when new data arrives simultaneously: the tail advances (shrinking the window) but new bytes also arrive (growing it), so `available` may increase rather than decrease. The `tail_position()` field makes the detection exact and unambiguous.
 
-**Use-after-free protection in `InboundConnectionManager`**
+**Failure handling in `InboundConnectionManager`**
 
-`send_prebuilt()` may invoke the disconnect handler synchronously (e.g. on `EPIPE`), which calls `teardown_connection()` and destroys the `InboundConnection`. Both `process_send_pdu_command()` and `process_send_raw_command()` therefore re-look up the connection by `ConnectionID` after calling `send_prebuilt()`, before attempting to register `EPOLLOUT`. If the connection was destroyed, the re-lookup returns `end()` and the function returns cleanly.
+`on_data_ready()`, `on_write_ready()`, `process_send_pdu_command()`, and `process_send_raw_command()` each inspect the `tuple<bool, std::string>` returned by the handler call and call `teardown_connection(id, reason, true)` directly on `!ok`. The handler does not destroy the connection synchronously, so no re-lookup of the connection in the map is required after the call returns. (Session 14 removed the previous synchronous-disconnect-handler pattern that had been the source of a use-after-free SIGSEGV at the end of session 13.)
 
 ---
 
@@ -452,7 +452,58 @@ The receiving node's reactor accepts data via epoll and delivers it zero-copy to
 
 ## Session Accomplishments
 
-### Session 13 (current)
+### Session 14 (current)
+
+**Use-after-free in `PduParser` and `PduProtocolHandler` fixed (option 2).** The disconnect_handler hook diagnosed at session 13 was removed entirely. `PduParser`, `PduProtocolHandler`, and `RawBytesProtocolHandler` no longer hold or invoke any disconnect-handler callback; failure now propagates up to the owning manager via the return value of the failure-capable methods. The owning manager is then responsible for tearing down the connection. This matches the framework's broader principle that connection lifecycle is owned by the Reactor and its managers, not by the parsers and handlers.
+
+**Contract change on `ProtocolHandlerInterface`.** The three failure-capable virtuals now return `[[nodiscard]] std::tuple<bool, std::string>` instead of `void`:
+- `on_data_ready()` — `{true, ""}` on a clean read (including no bytes available); `{false, ""}` on graceful peer disconnect; `{false, error_string}` on protocol failure
+- `send_prebuilt(...)` — `{true, ""}` on progress or completion; `{false, error_string}` on unrecoverable send failure (slab chunk released before return)
+- `continue_send()` — same convention as `send_prebuilt`
+
+`has_pending_send`, `deallocate_pending_send`, and `commit_bytes` are unchanged.
+
+**Logger removed from `PduProtocolHandler` and `RawBytesProtocolHandler`.** With the disconnect-handler gone, the handlers no longer log anything; all error strings flow up to the manager which logs them. The `QuillLogger&` constructor parameter and member were dropped from both classes. Manager-side logging covers all failure paths now: graceful peer disconnect logs at `Info`, protocol/send errors log at `Error` or `Warning` per existing conventions.
+
+**`InboundConnection::handle_read()`** now returns `std::tuple<bool, std::string>` rather than void, propagating the handler's return up to the manager.
+
+**`OutboundConnection::on_connected()`** no longer takes a `disconnect_handler` parameter. The `PduParser` it constructs internally is built without one too.
+
+**Manager updates:**
+- `InboundConnectionManager::on_accept` no longer constructs a disconnect_handler lambda; both handler constructors lose the disconnect_handler and logger arguments.
+- `InboundConnectionManager::on_data_ready` inspects the tuple from `handle_read()` and calls `teardown_connection` on `!ok`. Reason string is `"peer 'X' closed connection"` for graceful (logged at `Info`) or `"protocol error on connection from 'X': <error>"` for failure (logged at `Error`).
+- `InboundConnectionManager::on_write_ready`, `process_send_pdu_command`, and `process_send_raw_command` all inspect the tuple from `continue_send`/`send_prebuilt` and tear down on failure. The previous "may invoke disconnect handler synchronously, re-look up by cid" guard pattern is gone — the call no longer mutates the connections map, so the post-call lookup is unnecessary.
+- `OutboundConnectionManager::on_connect_ready` no longer constructs a disconnect_handler lambda; `conn.on_connected(std::move(socket))` takes only the socket. The existing `on_data_ready` and `on_write_ready` paths in the outbound manager already inspected return values and called `teardown_connection`, so they did not need to change.
+
+**Test updates:**
+- `PduFramerParserTest.cpp` — seven `PduParser` constructor calls dropped their fourth (disconnect_handler) argument. Two tests had a `disconnected` bool wired through a capturing lambda; flag and lambda removed. `ParseDetectsPeerDisconnect` now relies on the existing `EXPECT_FALSE(ok) && EXPECT_TRUE(error.empty())` assertion alone, which is exactly the new contract.
+- `PduProtocolHandlerTest.cpp` — `disconnect_called_` member, lambda, and the disconnect_handler/logger arguments to the `PduProtocolHandler` constructor were removed. All six `send_prebuilt` and `continue_send` call sites now consume the `[[nodiscard]]` tuple return and assert `ASSERT_TRUE(ok) << error`.
+- `OutboundConnectionTest.cpp` — three `on_connected` call sites at lines 420, 431, 437 dropped their trailing empty-lambda argument (`OnConnectedRejectsNullSocket` and `OnConnectedRejectsWhenNotConnecting`).
+
+**Files changed (sixteen):**
+- `libraries/pubsub_itc_fw/include/pubsub_itc_fw/ProtocolHandlerInterface.hpp`
+- `libraries/pubsub_itc_fw/include/pubsub_itc_fw/PduParser.hpp`
+- `libraries/pubsub_itc_fw/src/PduParser.cpp`
+- `libraries/pubsub_itc_fw/include/pubsub_itc_fw/PduProtocolHandler.hpp`
+- `libraries/pubsub_itc_fw/src/PduProtocolHandler.cpp`
+- `libraries/pubsub_itc_fw/include/pubsub_itc_fw/RawBytesProtocolHandler.hpp`
+- `libraries/pubsub_itc_fw/src/RawBytesProtocolHandler.cpp`
+- `libraries/pubsub_itc_fw/include/pubsub_itc_fw/InboundConnection.hpp`
+- `libraries/pubsub_itc_fw/src/InboundConnection.cpp`
+- `libraries/pubsub_itc_fw/src/InboundConnectionManager.cpp`
+- `libraries/pubsub_itc_fw/include/pubsub_itc_fw/OutboundConnection.hpp`
+- `libraries/pubsub_itc_fw/src/OutboundConnection.cpp`
+- `libraries/pubsub_itc_fw/src/OutboundConnectionManager.cpp`
+- `libraries/pubsub_itc_fw/tests/PduFramerParserTest.cpp`
+- `libraries/pubsub_itc_fw/tests/PduProtocolHandlerTest.cpp`
+- `libraries/pubsub_itc_fw/tests/OutboundConnectionTest.cpp`
+
+**Build and test status at session end:**
+- Library builds clean.
+- All `pubsub_itc_fw` unit tests pass except `QuillLoggerTest.LogsAlertMessage`, which is failing due to an unrelated user change to the QuillLogger and is not part of this changeset.
+- The applications (gateway, matching engine, sequencer) compile but **have not been retested at runtime yet**. The original session-13 SIGSEGV repro (start system, connect fix8, leave idle for 120 seconds so all four connections idle-timeout simultaneously) is the verification that needs to be run before this can be declared resolved end-to-end.
+
+### Session 13
 
 **Sequencer-primary retry-loop diagnosed and resolved** — at session start the sequencer primary appeared to be looping in startup. Diagnosis from the logs: the framework was operating correctly; the symptom was the perpetual 2.5-second retry of `sequencer_peer` against `127.0.0.1:7003`, a port no application binds. Root cause was asymmetric peer addressing in the two sequencer toml files: primary pointed at `:7003` (unbound) and secondary pointed at primary's order listener `:7001`, which the secondary mistakenly accepted as its peer link. Both addresses were design-incorrect for the leader-follower protocol described in section 12.
 
@@ -567,12 +618,12 @@ TcpSocket EAGAIN/EOF fix, use-after-free fix, InboundConnection infrastructure, 
 - Reactor event loop — complete, tested
 - ApplicationThread — complete, tested; `release_pdu_payload()` added
 - Socket layer — complete, tested
-- PDU framing (`PduFramer` two-mode, `PduParser` zero-copy with `ConnectionID`) — complete, tested. **KNOWN BUG (session 13): use-after-free in disconnect-handler invocation. See "Immediate Next Task".**
-- `OutboundConnection` — complete; passes `id_` to `PduParser`
-- `InboundConnection` — complete
-- `ProtocolHandlerInterface` / `PduProtocolHandler` — complete; accepts `ConnectionID`. **KNOWN BUG (session 13): same use-after-free pattern as `PduParser` in three methods. See "Immediate Next Task".**
+- PDU framing (`PduFramer` two-mode, `PduParser` zero-copy with `ConnectionID`) — complete, tested. `PduParser::receive()` returns `tuple<bool, std::string>` directly to caller; no disconnect-handler callback (session 14).
+- `OutboundConnection` — complete; passes `id_` to `PduParser`; `on_connected` takes only the socket (session 14)
+- `InboundConnection` — complete; `handle_read()` returns `tuple<bool, std::string>` (session 14)
+- `ProtocolHandlerInterface` / `PduProtocolHandler` — complete; accepts `ConnectionID`. `on_data_ready`, `send_prebuilt`, `continue_send` all return `[[nodiscard]] tuple<bool, std::string>`; no disconnect-handler member; no logger member (session 14).
 - `MirroredBuffer` — complete, tested
-- `InboundConnectionManager` — complete; passes `id` to `PduProtocolHandler`; inbound connections carry `"inbound:<port>"` in service name
+- `InboundConnectionManager` — complete; passes `id` to `PduProtocolHandler`; inbound connections carry `"inbound:<port>"` in service name; `on_data_ready`/`on_write_ready`/`process_send_pdu_command`/`process_send_raw_command` inspect handler return values and tear down on failure (session 14)
 - `OutboundConnectionManager` — complete; connection retry implemented; use-after-free on service name fixed
 - `ThreadLookupInterface` — complete
 - Reactor connection management — complete; `retry_failed_connections` called from housekeeping tick
@@ -585,7 +636,7 @@ TcpSocket EAGAIN/EOF fix, use-after-free fix, InboundConnection infrastructure, 
 - DSL code generator — complete; `enum class` fix; `char` type; 133 tests passing
 - `fix_equity_orders.dsl` — FIX 5.0 SP2 equity order topic registry
 - Logging subsystem — complete
-- `RawBytesProtocolHandler` — complete
+- `RawBytesProtocolHandler` — complete; `on_data_ready`/`send_prebuilt`/`continue_send` return `tuple<bool, std::string>`; no disconnect-handler member; no logger member (session 14)
 - `sample_fix_gateway_seq` — FIX session layer complete; PDU encoding to sequencers complete; connection identification complete
 - `sequencer` — `on_framework_pdu_message` implemented: order PDUs decoded and forwarded to ME; ER PDUs decoded and forwarded to gateway. Peer connection deferred (session 13) — `peer_host`/`peer_port` removed from config, `connect_to_service("sequencer_peer")` removed, `peer_conn_id_` removed. Will return when leader-follower protocol is implemented.
 - `matching_engine`, `arbiter` — stubs, compiling
@@ -593,8 +644,8 @@ TcpSocket EAGAIN/EOF fix, use-after-free fix, InboundConnection infrastructure, 
 
 ## What Is Not Yet Done (in dependency order)
 
-1. **Fix the use-after-free in `PduParser` and `PduProtocolHandler`** (session 13 SIGSEGV) — see "Immediate Next Task"
-2. **Investigate fix8 connecting to wrong port** — session 13 logs show fix8 reaching the gateway's ER inbound listener (port 7010) rather than the FIX listener (port 9879), even though `myfix_gateway_client.xml` declares `port="9879"`. Run `f8test -d -c myfix_gateway_client.xml -N GW1` to dump the parsed config and confirm what port fix8 actually has resolved. Deferred until SIGSEGV is fixed because the gateway needs to stay up to test against.
+1. **Runtime retest of gateway, ME, and sequencer** following the session-14 disconnect-handler removal — see "Immediate Next Task". Library and tests build and pass; the applications themselves have not yet been exercised end-to-end.
+2. **Investigate fix8 connecting to wrong port** — session 13 logs show fix8 reaching the gateway's ER inbound listener (port 7010) rather than the FIX listener (port 9879), even though `myfix_gateway_client.xml` declares `port="9879"`. Run `f8test -d -c myfix_gateway_client.xml -N GW1` to dump the parsed config and confirm what port fix8 actually has resolved.
 3. **ER routing in gateway** — `on_framework_pdu_message` decodes `ExecutionReport` PDU and routes back to FIX client via `cl_ord_id` map
 4. **Matching engine stub → real** — decode incoming order PDUs, match, send ER back to sequencer
 5. **Arbiter stub → real** — `ArbitrationReport` → `ArbitrationDecision`
@@ -605,36 +656,18 @@ TcpSocket EAGAIN/EOF fix, use-after-free fix, InboundConnection infrastructure, 
 
 ## Immediate Next Task
 
-Fix the use-after-free in `PduParser` and `PduProtocolHandler` that caused the gateway SIGSEGV at session-13 end.
+**Runtime verification of the session-14 use-after-free fix.** The library and tests build clean and all unit tests pass (excepting the unrelated `QuillLoggerTest.LogsAlertMessage` failure), but the gateway, matching engine, and sequencer applications have not yet been retested end-to-end with the new contract. The original session-13 SIGSEGV repro is the verification that needs to be run:
 
-**The bug:** `PduParser::receive()` invokes its stored `disconnect_handler_` from inside the method when the peer closes gracefully. The handler tears down the connection, which destroys the `OutboundConnection` (or `InboundConnection`), which destroys the `unique_ptr<PduParser>` member, which destroys the parser whose method is currently executing. When `disconnect_handler_()` returns, control returns to a method running on a destroyed `*this` — undefined behaviour, observed as SIGSEGV in production. The bug is also present (three times) in `PduProtocolHandler::on_data_ready`, `send_prebuilt`, and `continue_send`. Stack trace from session 13:
+1. Start the system via `start_fix_seq_system.py`.
+2. Connect fix8 (`f8test -d -c myfix_gateway_client.xml -N GW1`).
+3. Leave the system idle for 120 seconds. Both inbound FIX connections and both outbound sequencer connections will idle-timeout in the same epoll batch — the previously crashing path.
+4. Expected outcome: gateway logs the teardowns at `Info` level (graceful peer close path) and stays alive. The new manager-side log lines to look for are `InboundConnectionManager::on_data_ready: peer 'X' closed connection` and the equivalent `OutboundConnectionManager::on_data_ready` line that already existed.
 
-```
-#0 PduParser::receive() at PduParser.cpp:44
-#1 OutboundConnectionManager::on_data_ready
-#2 Reactor::dispatch_events at Reactor.cpp:957
-```
+If anything misbehaves, the freshest code is the four manager error paths added in session 14 (`InboundConnectionManager::on_data_ready`, `on_write_ready`, `process_send_pdu_command`, `process_send_raw_command`) — those are mechanical translations of the prior synchronous-disconnect-handler pattern but they are the most likely place for a subtle slip.
 
-**Plan: option 2 — remove `disconnect_handler_` from `PduParser` and `PduProtocolHandler` entirely.** Make `receive()` and the various send methods just return their (success, error) status. The caller (the outbound or inbound manager's `on_data_ready` etc.) is responsible for tearing down the connection on failure. This matches the broader design philosophy that the Reactor and its managers own connection lifecycle; having parsers and handlers reach in and destroy connections is an inversion that creates exactly this class of bug. Two other options were considered and rejected:
-
-- *Option 1 (defer teardown via a control command):* less code change but introduces a delay between detection and teardown that complicates state reasoning.
-- *Option 3 (set a flag instead of calling the handler):* the parser/handler still has to communicate the close-needed state up the stack, which is what option 2 already does via the `(false, "")` return value. Strictly less clean than option 2.
-
-**Files that will change for option 2** (estimate; verify before committing):
-- `libraries/pubsub_itc_fw/include/pubsub_itc_fw/PduParser.hpp` — remove `disconnect_handler_` member and the corresponding constructor parameter
-- `libraries/pubsub_itc_fw/src/PduParser.cpp` — remove the two `disconnect_handler_()` call sites and adjust the recv-zero path to return `(false, "")` directly
-- `libraries/pubsub_itc_fw/include/pubsub_itc_fw/PduProtocolHandler.hpp` — remove `disconnect_handler_` member and the corresponding constructor parameter
-- `libraries/pubsub_itc_fw/src/PduProtocolHandler.cpp` — remove the three `disconnect_handler_()` call sites; the methods become straightforward delegates returning success/error
-- `libraries/pubsub_itc_fw/src/OutboundConnection.cpp` — remove `disconnect_handler` parameter from `on_connected` and from the `PduParser` construction call
-- `libraries/pubsub_itc_fw/include/pubsub_itc_fw/OutboundConnection.hpp` — match
-- `libraries/pubsub_itc_fw/src/OutboundConnectionManager.cpp` — `on_data_ready` already calls `teardown_connection` on `(false, ...)` return at line 271 — that becomes the single teardown path. The `on_connect_ready` site that builds the disconnect_handler lambda (lines 226-228) goes away.
-- `libraries/pubsub_itc_fw/src/InboundConnectionManager.cpp` — `on_data_ready` currently delegates to `conn.handle_read()`; needs to be changed to inspect the parser's return value and call `teardown_connection` on failure. The disconnect_handler lambda at lines 138-140 goes away.
-- `libraries/pubsub_itc_fw/src/InboundConnection.cpp` (or .hpp) — `handle_read` needs to return success/error or otherwise communicate the close-needed state up to the inbound manager's `on_data_ready`.
-- Tests — `PduParserTest`, `PduProtocolHandlerTest` and any test using the disconnect_handler hook need updating to check return values rather than handler invocation. Estimate 5-15 lines of test changes per affected file.
-
-**Verification once option 2 lands:** the original repro is to start the system, connect fix8, then leave it idle for 120 seconds. Both inbound FIX connections and both outbound sequencer connections will idle-timeout in the same epoll batch, exercising the previously-crashing path. With the fix in place the gateway should log the teardowns and stay alive.
-
-**After SIGSEGV is fixed:** investigate the fix8 wrong-port issue (item 2 above), then proceed to ER routing (item 3).
+**After runtime verification:**
+1. **Investigate fix8 connecting to wrong port** — session 13 logs show fix8 reaching the gateway's ER inbound listener (port 7010) rather than the FIX listener (port 9879), even though `myfix_gateway_client.xml` declares `port="9879"`. Run `f8test -d -c myfix_gateway_client.xml -N GW1` to dump the parsed config and confirm what port fix8 actually has resolved.
+2. **ER routing in gateway** — `on_framework_pdu_message` decodes `ExecutionReport` PDU and routes back to FIX client via `cl_ord_id` map.
 
 **Design note — the rendezvous problem:**
 The connection retry mechanism is a temporary TCP workaround pending WAL-based brokerless pub/sub. In the pub/sub design, publishers write to the WAL regardless of subscriber presence and there is no connection to establish, so the rendezvous problem disappears. The retry logic should be removed when direct TCP is replaced by pub/sub topics.
