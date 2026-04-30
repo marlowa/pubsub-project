@@ -110,6 +110,9 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
     const pubsub_itc_fw::ConnectionID conn_id = message.connection_id();
     const std::string& svc = conn_id.service_name();
 
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "TRACE on_framework_pdu_message: msg.connection_id value={} service_name=[{}]",
+               conn_id.get_value(), svc);
+
     // Order PDUs arrive from the gateway on port 7001 (primary) or 7002 (secondary).
     // ER PDUs arrive from the ME on port 7021 (primary ER listener) or 7022 (secondary).
     const bool is_order_pdu = (svc == "inbound:7001" || svc == "inbound:7002");

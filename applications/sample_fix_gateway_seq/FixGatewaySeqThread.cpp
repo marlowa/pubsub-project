@@ -12,6 +12,7 @@
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/QueueConfiguration.hpp>
 #include <pubsub_itc_fw/ReactorControlCommand.hpp>
+#include <pubsub_itc_fw/StringUtils.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 
 namespace sample_fix_gateway_seq {
@@ -60,8 +61,8 @@ void FixGatewaySeqThread::on_connection_established(pubsub_itc_fw::ConnectionID 
     if (id.service_name() == "sequencer_primary") {
         sequencer_primary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "FixGatewaySeqThread: primary sequencer connection {} established",
-                   id.get_value());
+                   "FixGatewaySeqThread: primary sequencer connection {} ({}) established",
+                   id.get_value(), id.service_name());
     } else if (id.service_name() == "sequencer_secondary") {
         sequencer_secondary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
@@ -75,8 +76,8 @@ void FixGatewaySeqThread::on_connection_established(pubsub_itc_fw::ConnectionID 
     } else {
         // Inbound RawBytes connection -- FIX client on port 9879.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "FixGatewaySeqThread: FIX client connection {} established -- active sessions: {}",
-                   id.get_value(), sessions_.size() + 1);
+                   "FixGatewaySeqThread: FIX client connection {} ({}) established -- active sessions: {}",
+                   id.get_value(), id.service_name(), sessions_.size() + 1);
     }
 }
 
@@ -121,10 +122,13 @@ void FixGatewaySeqThread::on_raw_socket_message(const pubsub_itc_fw::EventMessag
     }
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
-               "FixGatewaySeqThread: {} raw bytes received on connection {}",
-               available, conn_id.get_value());
+               "FixGatewaySeqThread: {} raw bytes received on connection {} ({})",
+               available, conn_id.get_value(), conn_id.service_name());
+    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, pubsub_itc_fw::StringUtils::hex_dump(data, available));
 
     // Create a session on first data from this connection if not already present.
+    // TODO need to document why we use piecewise_construct here.
+
     auto it = sessions_.find(conn_id);
     if (it == sessions_.end()) {
         sessions_.emplace(
@@ -142,8 +146,8 @@ void FixGatewaySeqThread::on_raw_socket_message(const pubsub_itc_fw::EventMessag
                     handle_logon(session, msg);
                 } else if (!session.session_established) {
                     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                               "FixGatewaySeqThread: connection {} MsgType='{}' before Logon -- disconnecting",
-                               conn_id.get_value(), type);
+                               "FixGatewaySeqThread: connection {} ({}) MsgType='{}' before Logon -- disconnecting",
+                               conn_id.get_value(), conn_id.service_name(), type);
                     disconnect_session(session, "first message was not Logon");
                 } else if (type == MsgType::Heartbeat) {
                     handle_heartbeat(session, msg);
@@ -152,13 +156,14 @@ void FixGatewaySeqThread::on_raw_socket_message(const pubsub_itc_fw::EventMessag
                 } else if (type == MsgType::Logout) {
                     handle_logout(session, msg);
                 } else if (type == MsgType::NewOrderSingle) {
+                    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "about to call handle_new_order_single");
                     handle_new_order_single(session, msg);
                 } else if (type == MsgType::OrderCancelRequest) {
                     handle_order_cancel_request(session, msg);
                 } else {
                     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                               "FixGatewaySeqThread: connection {} ignoring MsgType='{}'",
-                               conn_id.get_value(), type);
+                               "FixGatewaySeqThread: connection {} ({}) ignoring MsgType='{}'",
+                               conn_id.get_value(), conn_id.service_name(), type);
                 }
             }));
 

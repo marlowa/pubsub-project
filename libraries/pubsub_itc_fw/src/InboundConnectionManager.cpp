@@ -100,22 +100,26 @@ bool InboundConnectionManager::initialize_listeners()
 void InboundConnectionManager::on_accept(InboundListener& listener, ConnectionID id)
 {
     auto [socket, peer_addr, error] = listener.acceptor->accept_connection();
-
     if (!socket) {
         if (!error.empty()) {
             PUBSUB_LOG(logger_, FwLogLevel::Error,
-                "InboundConnectionManager::on_accept: accept_connection failed on port {} — {}",
+                "InboundConnectionManager::on_accept: accept_connection failed on port {} -- {}",
                 listener.configuration.address.port, error);
         }
-        return; // EAGAIN — no connection waiting
+        return;
     }
-
     const std::string peer_desc = peer_addr
         ? fmt::format("{}:{}", peer_addr->get_ip_address_string(), peer_addr->get_port())
         : "unknown peer";
 
-    const int fd = socket->get_file_descriptor();
+    // Build the populated ConnectionID once. Every downstream reference to this
+    // connection (handler, InboundConnection, map key, ConnectionEstablished
+    // event, FrameworkPdu events stamped by PduParser) must use this object so
+    // that service_name is consistently visible.
+    const ConnectionID populated_id{id.get_value(),
+        fmt::format("inbound:{}", listener.configuration.address.port)};
 
+    const int fd = socket->get_file_descriptor();
     if (config_.socket_send_buffer_size > 0) {
         ::setsockopt(fd, SOL_SOCKET, SO_SNDBUF,
                      &config_.socket_send_buffer_size, sizeof(config_.socket_send_buffer_size));
@@ -124,11 +128,10 @@ void InboundConnectionManager::on_accept(InboundListener& listener, ConnectionID
         ::setsockopt(fd, SOL_SOCKET, SO_RCVBUF,
                      &config_.socket_receive_buffer_size, sizeof(config_.socket_receive_buffer_size));
     }
-
     auto* target_thread = thread_lookup_.get_fast_path_thread(listener.configuration.target_thread_id);
     if (target_thread == nullptr) {
         PUBSUB_LOG(logger_, FwLogLevel::Error,
-            "InboundConnectionManager::on_accept: target thread {} not found — "
+            "InboundConnectionManager::on_accept: target thread {} not found -- "
             "rejecting connection from {}",
             listener.configuration.target_thread_id.get_value(), peer_desc);
         socket->close();
@@ -137,7 +140,7 @@ void InboundConnectionManager::on_accept(InboundListener& listener, ConnectionID
 
     std::unique_ptr<ProtocolHandlerInterface> handler;
     if (listener.configuration.protocol_type == ProtocolType::RawBytes) {
-        handler = std::make_unique<RawBytesProtocolHandler>(id,
+        handler = std::make_unique<RawBytesProtocolHandler>(populated_id,
             *socket,
             *target_thread,
             listener.configuration.raw_buffer_capacity);
@@ -146,38 +149,32 @@ void InboundConnectionManager::on_accept(InboundListener& listener, ConnectionID
             *socket,
             *target_thread,
             inbound_allocator_,
-            id);
+            populated_id);
     }
-
     auto conn = std::make_unique<InboundConnection>(
-        id,
+        populated_id,
         std::move(socket),
         listener.configuration.target_thread_id,
         std::move(handler),
         peer_desc);
-
     InboundConnection* conn_ptr = conn.get();
-    connections_[id]       = std::move(conn);
-    connections_by_fd_[fd] = conn_ptr;
+    connections_[populated_id] = std::move(conn);
+    connections_by_fd_[fd]     = conn_ptr;
 
     epoll_event ev{};
     ev.events  = EPOLLIN | EPOLLERR;
     ev.data.fd = fd;
     if (::epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, fd, &ev) == -1) {
-        PUBSUB_LOG(logger_, FwLogLevel::Error,
-            "InboundConnectionManager::on_accept: epoll_ctl ADD failed for "
-            "connection from {} — {}",
-            peer_desc, StringUtils::get_errno_string());
-        teardown_connection(id, "epoll_ctl failed", false);
+        PUBSUB_LOG(logger_, FwLogLevel::Error, "InboundConnectionManager::on_accept: epoll_ctl ADD failed for "
+            "connection from {} -- {}", peer_desc, StringUtils::get_errno_string());
+        teardown_connection(populated_id, "epoll_ctl failed", false);
         return;
     }
 
-    PUBSUB_LOG(logger_, FwLogLevel::Info,
-        "InboundConnectionManager::on_accept: accepted connection {} from {} on port {}",
-        id.get_value(), peer_desc, listener.configuration.address.port);
+    PUBSUB_LOG(logger_, FwLogLevel::Info, "InboundConnectionManager::on_accept: accepted connection {} from {} on port {} service [{}]",
+        populated_id.get_value(), peer_desc, listener.configuration.address.port, populated_id.service_name());
 
-    target_thread->get_queue().enqueue(
-        EventMessage::create_connection_established_event(id));
+    target_thread->get_queue().enqueue(EventMessage::create_connection_established_event(populated_id));
 }
 
 void InboundConnectionManager::on_data_ready(InboundConnection& conn)

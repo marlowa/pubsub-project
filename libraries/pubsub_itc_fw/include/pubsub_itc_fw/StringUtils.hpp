@@ -88,6 +88,9 @@ class StringUtils {
     template <typename Clock, typename Duration> static std::string chronoTimepointAsString(const std::chrono::time_point<Clock, Duration>& timepoint) {
         return fmt::format("{}", timepoint);
     }
+
+    // TODO doxygen comments
+    static std::string hex_dump(const void* data, std::size_t len);
 };
 
 } // namespace pubsub_itc_fw

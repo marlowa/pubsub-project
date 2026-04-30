@@ -87,12 +87,14 @@ class FixGatewaySeqThread : public pubsub_itc_fw::ApplicationThread {
     template <typename MsgT>
     void forward_pdu_to_sequencers(int16_t pdu_id, const MsgT& msg) {
         if (sequencer_primary_conn_id_.get_value() != 0) {
+            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "sending pdu to primary sequencer");
             send_pdu(sequencer_primary_conn_id_, pdu_id, msg);
         } else {
             PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                 "FixGatewaySeqThread: primary sequencer not connected, PDU not forwarded");
         }
         if (sequencer_secondary_conn_id_.get_value() != 0) {
+            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "sending pdu to secondary sequencer");
             send_pdu(sequencer_secondary_conn_id_, pdu_id, msg);
         } else {
             PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,

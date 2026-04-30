@@ -358,21 +358,25 @@ void ApplicationThread::process_message(EventMessage& message) {
         }
 
         case EventType::InterthreadCommunication: {
+            PUBSUB_LOG(logger_, FwLogLevel::Info, "Thread {}: Received ITC message", thread_name_);
             on_itc_message(message);
             break;
         }
 
         case EventType::Timer: {
+            PUBSUB_LOG(logger_, FwLogLevel::Info, "Thread {}: Received timer message", thread_name_);
             on_timer_id_event(message.timer_id());
             break;
         }
 
         case EventType::PubSubCommunication: {
+            PUBSUB_LOG(logger_, FwLogLevel::Info, "Thread {}: Received pubsub message", thread_name_);
             on_pubsub_message(message);
             break;
         }
 
         case EventType::RawSocketCommunication: {
+            PUBSUB_LOG(logger_, FwLogLevel::Info, "Thread {}: Received raw socket message", thread_name_);
             on_raw_socket_message(message);
             break;
         }
@@ -383,6 +387,7 @@ void ApplicationThread::process_message(EventMessage& message) {
             // the payload and must not hold any references to it after returning.
             // The framework deallocates the chunk here unconditionally so that
             // subclasses never need to do so -- and cannot forget to.
+            PUBSUB_LOG(logger_, FwLogLevel::Info, "Thread {}: Received PDU message", thread_name_);
             on_framework_pdu_message(message);
             reactor_.inbound_slab_allocator().deallocate(
                 message.slab_id(), const_cast<uint8_t*>(message.payload()));
@@ -390,17 +395,20 @@ void ApplicationThread::process_message(EventMessage& message) {
         }
 
         case EventType::ConnectionEstablished: {
+            PUBSUB_LOG(logger_, FwLogLevel::Info, "Thread {}: Received connection established message", thread_name_);
             active_connection_ids_.insert(message.connection_id());
             on_connection_established(message.connection_id());
             break;
         }
 
         case EventType::ConnectionFailed: {
+            PUBSUB_LOG(logger_, FwLogLevel::Info, "Thread {}: Received connected failed message", thread_name_);
             on_connection_failed(message.reason());
             break;
         }
 
         case EventType::ConnectionLost: {
+            PUBSUB_LOG(logger_, FwLogLevel::Info, "Thread {}: Received connection lost message", thread_name_);
             active_connection_ids_.erase(message.connection_id());
             on_connection_lost(message.connection_id(), message.reason());
             break;
