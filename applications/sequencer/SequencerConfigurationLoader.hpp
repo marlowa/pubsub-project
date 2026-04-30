@@ -24,8 +24,6 @@ namespace sequencer {
  *
  * [ha]
  * instance_id  = 1
- * peer_host    = "127.0.0.1"
- * peer_port    = 7003
  * arbiter_host = "127.0.0.1"
  * arbiter_port = 7100
  * @endcode
@@ -33,7 +31,7 @@ namespace sequencer {
  * All fields are required. Throws ConfigurationException on any error.
  */
 class SequencerConfigurationLoader {
-  public:
+public:
     /**
      * @param[in] file_path Path to the TOML configuration file.
      * @return Populated SequencerConfiguration.

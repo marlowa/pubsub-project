@@ -53,6 +53,7 @@
 
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/ByteStreamInterface.hpp>
+#include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
 #include <pubsub_itc_fw/PduHeader.hpp>
 
@@ -80,8 +81,11 @@ class PduParser {
      * @param[in] target_thread      The ApplicationThread to which complete PDUs are dispatched.
      * @param[in] slab_allocator     The slab allocator used to allocate payload chunks. Must outlive this object.
      * @param[in] disconnect_handler Called when the peer closes the connection gracefully.
+     * @param[in] connection_id      The ConnectionID of the connection this parser is serving.
+     *                               Carried in every FrameworkPdu EventMessage so that
+     *                               on_framework_pdu_message() can identify the source connection.
      */
-    PduParser(ByteStreamInterface& stream, ApplicationThread& target_thread, ExpandableSlabAllocator& slab_allocator, std::function<void()> disconnect_handler);
+    PduParser(ByteStreamInterface& stream, ApplicationThread& target_thread, ExpandableSlabAllocator& slab_allocator, std::function<void()> disconnect_handler, ConnectionID connection_id);
 
     PduParser(const PduParser&) = delete;
     PduParser& operator=(const PduParser&) = delete;
@@ -108,6 +112,7 @@ class PduParser {
     ApplicationThread& target_thread_;
     ExpandableSlabAllocator& slab_allocator_;
     std::function<void()> disconnect_handler_;
+    ConnectionID connection_id_;
 
     // Fixed small buffer for the 16-byte frame header only.
     uint8_t header_buffer_[sizeof(PduHeader)];

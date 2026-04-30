@@ -409,7 +409,7 @@ int TcpSocketImpl::get_file_descriptor() const {
     socklen_t len = sizeof(error);
     // NOLINTNEXTLINE(misc-include-cleaner)
     if (::getsockopt(socketFileDescriptor, SOL_SOCKET, SO_ERROR, &error, &len) == -1) {
-        return {false, fmt::format("Failed to get SO_ERROR for socket {}: {}", socketFileDescriptor, StringUtils::get_errno_string())};
+        return {false, fmt::format("Failed to get SO_ERROR for socket {}: {}", socketFileDescriptor, StringUtils::get_error_string(error))};
     }
 
     if (error == 0) {
@@ -417,7 +417,7 @@ int TcpSocketImpl::get_file_descriptor() const {
     }
 
     // An error occurred during connection
-    return {false, fmt::format("Non-blocking connect failed for socket {}: {}", socketFileDescriptor, StringUtils::get_errno_string())};
+    return {false, fmt::format("Non-blocking connect failed for socket {}: {}", socketFileDescriptor, StringUtils::get_error_string(error))};
 }
 
 // --- TcpSocket Public Methods (forwarding to Pimpl) ---

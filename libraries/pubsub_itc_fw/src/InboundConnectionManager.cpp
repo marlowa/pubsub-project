@@ -153,7 +153,8 @@ void InboundConnectionManager::on_accept(InboundListener& listener, ConnectionID
             *target_thread,
             inbound_allocator_,
             std::move(disconnect_handler),
-            logger_);
+            logger_,
+            id);
     }
 
     auto conn = std::make_unique<InboundConnection>(
@@ -183,15 +184,8 @@ void InboundConnectionManager::on_accept(InboundListener& listener, ConnectionID
         "InboundConnectionManager::on_accept: accepted connection {} from {} on port {}",
         id.get_value(), peer_desc, listener.configuration.address.port);
 
-    // Include the listener port in the ConnectionID service name so that
-    // on_connection_established() can identify which inbound listener accepted
-    // this connection without any additional application-level bookkeeping.
-    const ConnectionID id_with_port{
-        id.get_value(),
-        fmt::format("inbound:{}", listener.configuration.address.port)};
-
     target_thread->get_queue().enqueue(
-        EventMessage::create_connection_established_event(id_with_port));
+        EventMessage::create_connection_established_event(id));
 }
 
 void InboundConnectionManager::on_data_ready(InboundConnection& conn)

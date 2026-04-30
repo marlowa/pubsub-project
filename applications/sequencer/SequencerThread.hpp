@@ -12,6 +12,8 @@
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
 
+#include <fix_equity_orders.hpp>
+
 #include "SequencerConfiguration.hpp"
 
 namespace sequencer {
@@ -69,9 +71,13 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // ConnectionID of the outbound gateway connection for ER forwarding.
     pubsub_itc_fw::ConnectionID gateway_conn_id_;
 
+    // ConnectionID of the inbound ME connection for order PDU forwarding.
+    // The ME connects inbound to the sequencer on port 7020. Stored when
+    // the ME connection is established so on_framework_pdu_message can
+    // forward sequenced order PDUs to it.
+    pubsub_itc_fw::ConnectionID matching_engine_conn_id_;
+
     // ConnectionIDs of the outbound peer and arbiter connections.
-    // Stored so that on_connection_lost can identify them correctly --
-    // teardown_connection delivers a plain ConnectionID without service name.
     pubsub_itc_fw::ConnectionID peer_conn_id_;
     pubsub_itc_fw::ConnectionID arbiter_conn_id_;
 };

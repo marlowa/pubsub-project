@@ -8,6 +8,7 @@
 #include <memory>
 
 #include <pubsub_itc_fw/ApplicationThread.hpp>
+#include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
 #include <pubsub_itc_fw/PduFramer.hpp>
 #include <pubsub_itc_fw/PduParser.hpp>
@@ -68,9 +69,12 @@ class PduProtocolHandler : public ProtocolHandlerInterface {
      *                               calling Reactor::teardown_inbound_connection().
      * @param[in] logger             Logger for protocol error diagnostics.
      *                               Must outlive this object.
+     * @param[in] connection_id      The ConnectionID of this connection, carried in
+     *                               every FrameworkPdu EventMessage so that
+     *                               on_framework_pdu_message() can identify the source.
      */
     PduProtocolHandler(TcpSocket& socket, ApplicationThread& target_thread, ExpandableSlabAllocator& inbound_allocator,
-                       std::function<void()> disconnect_handler, QuillLogger& logger);
+                       std::function<void()> disconnect_handler, QuillLogger& logger, ConnectionID connection_id);
 
     /**
      * @brief Services a readable socket by draining available PDU frames.

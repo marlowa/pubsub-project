@@ -477,4 +477,11 @@ void ApplicationThread::enqueue_send_pdu_command(ConnectionID conn_id, int slab_
     reactor_.enqueue_control_command(cmd);
 }
 
+void ApplicationThread::release_pdu_payload(const EventMessage& message)
+{
+    reactor_.inbound_slab_allocator().deallocate(
+        message.slab_id(),
+        const_cast<uint8_t*>(message.payload()));
+}
+
 } // namespace pubsub_itc_fw

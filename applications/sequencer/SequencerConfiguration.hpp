@@ -62,12 +62,6 @@ struct SequencerConfiguration {
     /** @brief Unique integer identifier for this sequencer instance. Lowest wins. */
     int32_t instance_id{1};
 
-    /** @brief Host address of the peer sequencer instance. */
-    std::string peer_host{"127.0.0.1"};
-
-    /** @brief TCP port of the peer sequencer instance. */
-    uint16_t peer_port{7003};
-
     /** @brief Host address of the main-site arbiter. */
     std::string arbiter_host{"127.0.0.1"};
 

@@ -500,7 +500,7 @@ TEST_F(PduFramerParserTest, SendPrebuiltDoesNotCopyPayload)
 TEST_F(PduFramerParserTest, ParseSingleCompletePdu)
 {
     bool disconnected = false;
-    PduParser parser(stream_, *thread_, slab_allocator_, [&disconnected]() { disconnected = true; });
+    PduParser parser(stream_, *thread_, slab_allocator_, [&disconnected]() { disconnected = true; }, pubsub_itc_fw::ConnectionID{});
 
     const uint8_t payload[] = {0x10, 0x20, 0x30};
     stream_.feed_pdu(100, 1, payload, sizeof(payload));
@@ -524,7 +524,7 @@ TEST_F(PduFramerParserTest, ParseSingleCompletePdu)
 
 TEST_F(PduFramerParserTest, ParseTwoConsecutivePdus)
 {
-    PduParser parser(stream_, *thread_, slab_allocator_, nullptr);
+    PduParser parser(stream_, *thread_, slab_allocator_, nullptr, pubsub_itc_fw::ConnectionID{});
 
     const uint8_t p1[] = {0xAA, 0xBB};
     const uint8_t p2[] = {0xCC, 0xDD, 0xEE};
@@ -548,7 +548,7 @@ TEST_F(PduFramerParserTest, ParseTwoConsecutivePdus)
 
 TEST_F(PduFramerParserTest, ParseWithPartialHeaderDelivery)
 {
-    PduParser parser(stream_, *thread_, slab_allocator_, nullptr);
+    PduParser parser(stream_, *thread_, slab_allocator_, nullptr, pubsub_itc_fw::ConnectionID{});
 
     const uint8_t payload[] = {0x01, 0x02};
     stream_.feed_pdu(100, 1, payload, sizeof(payload));
@@ -565,7 +565,7 @@ TEST_F(PduFramerParserTest, ParseWithPartialHeaderDelivery)
 
 TEST_F(PduFramerParserTest, ParseDetectsCanaryMismatch)
 {
-    PduParser parser(stream_, *thread_, slab_allocator_, nullptr);
+    PduParser parser(stream_, *thread_, slab_allocator_, nullptr, pubsub_itc_fw::ConnectionID{});
 
     // Feed a frame with a corrupt canary.
     PduHeader hdr{};
@@ -593,7 +593,7 @@ TEST_F(PduFramerParserTest, ParseDetectsCanaryMismatch)
 TEST_F(PduFramerParserTest, ParseDetectsPeerDisconnect)
 {
     bool disconnected = false;
-    PduParser parser(stream_, *thread_, slab_allocator_, [&disconnected]() { disconnected = true; });
+    PduParser parser(stream_, *thread_, slab_allocator_, [&disconnected]() { disconnected = true; }, pubsub_itc_fw::ConnectionID{});
 
     stream_.recv_disconnect = true;
 
@@ -606,7 +606,7 @@ TEST_F(PduFramerParserTest, ParseDetectsPeerDisconnect)
 
 TEST_F(PduFramerParserTest, ParseEagainWithNoDataReturnsOk)
 {
-    PduParser parser(stream_, *thread_, slab_allocator_, nullptr);
+    PduParser parser(stream_, *thread_, slab_allocator_, nullptr, pubsub_itc_fw::ConnectionID{});
 
     // No data at all — socket returns EAGAIN immediately.
     stream_.recv_eagain = true;
@@ -642,7 +642,7 @@ TEST_F(PduFramerParserTest, RoundTripFramerToParser)
     }
     parser_stream.recv_eagain = true;
 
-    PduParser parser(parser_stream, *thread_, slab_allocator_, nullptr);
+    PduParser parser(parser_stream, *thread_, slab_allocator_, nullptr, pubsub_itc_fw::ConnectionID{});
     auto [recv_ok, recv_error] = parser.receive();
 
     ASSERT_TRUE(recv_ok);

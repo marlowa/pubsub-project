@@ -180,7 +180,7 @@ class EventMessage {
      * @param[in] slab_id  Slab ID from ExpandableSlabAllocator::allocate().
      * @return EventMessage instance.
      */
-    [[nodiscard]] static EventMessage create_framework_pdu_message(const uint8_t* data, int size, int slab_id);
+    [[nodiscard]] static EventMessage create_framework_pdu_message(const uint8_t* data, int size, int slab_id, ConnectionID connection_id);
 
     /**
      * @brief Factory method for a successful outbound connection event.
@@ -307,4 +307,4 @@ class EventMessage {
     }
 };
 
-} // namespace pubsub_itc_fw
+} // namespace pubsub_itc_fwpdu

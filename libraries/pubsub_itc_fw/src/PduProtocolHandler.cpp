@@ -17,7 +17,8 @@ PduProtocolHandler::PduProtocolHandler(TcpSocket& socket,
                                        ApplicationThread& target_thread,
                                        ExpandableSlabAllocator& inbound_allocator,
                                        std::function<void()> disconnect_handler,
-                                       QuillLogger& logger)
+                                       QuillLogger& logger,
+                                       ConnectionID connection_id)
     : disconnect_handler_(disconnect_handler)
     , logger_(logger)
 {
@@ -25,7 +26,8 @@ PduProtocolHandler::PduProtocolHandler(TcpSocket& socket,
     parser_ = std::make_unique<PduParser>(socket,
                                           target_thread,
                                           inbound_allocator,
-                                          std::move(disconnect_handler));
+                                          std::move(disconnect_handler),
+                                          connection_id);
 }
 
 void PduProtocolHandler::on_data_ready()

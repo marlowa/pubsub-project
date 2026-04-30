@@ -445,6 +445,20 @@ class ApplicationThread {
      * reactor thread, which is safe because ExpandableSlabAllocator::deallocate()
      * is thread-safe.
      */
+    /**
+     * @brief Releases the slab-allocated payload of a FrameworkPdu EventMessage.
+     *
+     * Must be called by on_framework_pdu_message() after the payload has been
+     * processed. Failure to call this leaks the slab chunk.
+     *
+     * This is the canonical way to free an inbound PDU payload. It delegates
+     * to the reactor's inbound slab allocator using the slab_id and payload
+     * pointer carried by the EventMessage.
+     *
+     * @param[in] message The FrameworkPdu EventMessage whose payload is to be freed.
+     */
+    void release_pdu_payload(const EventMessage& message);
+
     ExpandableSlabAllocator& outbound_slab_allocator() {
         return outbound_allocator_;
     }

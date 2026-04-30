@@ -10,8 +10,6 @@ port = 7010
 
 [ha]
 instance_id  = 2
-peer_host    = "127.0.0.1"
-peer_port    = 7001
 arbiter_host = "127.0.0.1"
 arbiter_port = 7100
 

@@ -16,11 +16,13 @@ namespace pubsub_itc_fw {
 PduParser::PduParser(ByteStreamInterface& stream,
                      ApplicationThread& target_thread,
                      ExpandableSlabAllocator& slab_allocator,
-                     std::function<void()> disconnect_handler)
+                     std::function<void()> disconnect_handler,
+                     ConnectionID connection_id)
     : stream_(stream)
     , target_thread_(target_thread)
     , slab_allocator_(slab_allocator)
     , disconnect_handler_(std::move(disconnect_handler))
+    , connection_id_(connection_id)
     , header_bytes_{0}
     , header_validated_{false}
     , current_payload_size_{0}
@@ -161,7 +163,7 @@ void PduParser::dispatch_pdu(int slab_id, void* payload_chunk)
     const int      payload_size = static_cast<int>(current_payload_size_);
 
     EventMessage msg = EventMessage::create_framework_pdu_message(
-        payload, payload_size, slab_id);
+        payload, payload_size, slab_id, connection_id_);
 
     target_thread_.get_queue().enqueue(std::move(msg));
 }

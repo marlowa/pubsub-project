@@ -50,7 +50,8 @@ void OutboundConnection::on_connected(std::unique_ptr<TcpSocket> socket,
         *socket_,
         target_thread_,
         inbound_allocator_,
-        std::move(disconnect_handler));
+        std::move(disconnect_handler),
+        id_);
 }
 
 void OutboundConnection::retry_with_secondary(std::unique_ptr<TcpConnector> connector)

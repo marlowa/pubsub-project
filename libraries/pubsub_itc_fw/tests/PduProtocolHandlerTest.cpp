@@ -156,7 +156,8 @@ protected:
             *stub_thread_,
             *inbound_allocator_,
             std::move(disconnect_handler),
-            logger_->logger);
+            logger_->logger,
+            ConnectionID{});
     }
 
     void TearDown() override {

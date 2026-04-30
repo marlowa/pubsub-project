@@ -34,6 +34,7 @@
 // =============================================================================
 
 namespace pubsub_itc_fw::logging_help {
+
 /***
  * @brief Forces compile-time validation of the format string and its arguments.
  * * This helper is a critical safety mechanism for C++17 environments. While C++20

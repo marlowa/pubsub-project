@@ -24,8 +24,13 @@ namespace pubsub_itc_fw {
  *   connection belongs to without any application-level bookkeeping.
  *
  *   For inbound connections (accepted by a TcpAcceptor), the service name is
- *   always empty. Applications can use service_name().empty() to distinguish
- *   inbound from outbound connections in on_connection_established().
+ *   set to "inbound:<port>" where <port> is the listener port that accepted
+ *   the connection. This allows on_connection_established() to distinguish
+ *   between multiple inbound listeners on the same ApplicationThread (for
+ *   example, an order PDU listener and an execution report PDU listener).
+ *
+ *   Applications can use service_name().rfind("inbound:", 0) == 0 to
+ *   distinguish inbound from outbound connections in on_connection_established().
  *
  * Backward compatibility:
  *   All existing construction sites using ConnectionID{} and ConnectionID{n}
@@ -81,11 +86,17 @@ class ConnectionID {
     }
 
     /**
-     * @brief Returns the service name for outbound connections.
+     * @brief Returns the service name for this connection.
      *
-     * Empty for inbound connections and for ConnectionID values used in
-     * internal reactor bookkeeping. Populated when the reactor delivers a
-     * ConnectionEstablished event for an outbound connection.
+     * For outbound connections, this is the service name passed to
+     * connect_to_service() (for example, "gateway", "arbiter").
+     *
+     * For inbound connections, this is "inbound:<port>" where <port> is
+     * the listener port that accepted the connection.
+     *
+     * Empty only for ConnectionID values used in internal reactor
+     * bookkeeping that are never delivered as part of a
+     * ConnectionEstablished event.
      */
     [[nodiscard]] const std::string& service_name() const {
         return service_name_;
