@@ -51,16 +51,12 @@ SampleFixGatewaySeq::SampleFixGatewaySeq(const FixGatewaySeqConfiguration& confi
 
     reactor_->register_thread(gateway_thread_);
 
-    // Outbound PDU connections to primary and secondary sequencer are initiated
-    // from FixGatewaySeqThread::on_app_ready_event() via connect_to_service().
-    // The ServiceRegistry is populated here so the reactor can resolve the names.
+    // Outbound PDU connection to the primary sequencer is initiated from
+    // FixGatewaySeqThread::on_app_ready_event() via connect_to_service().
+    // The ServiceRegistry is populated here so the reactor can resolve the name.
     service_registry_.add("sequencer_primary",
         pubsub_itc_fw::NetworkEndpointConfiguration{
             config_.sequencer_primary_host, config_.sequencer_primary_port},
-        pubsub_itc_fw::NetworkEndpointConfiguration{});
-    service_registry_.add("sequencer_secondary",
-        pubsub_itc_fw::NetworkEndpointConfiguration{
-            config_.sequencer_secondary_host, config_.sequencer_secondary_port},
         pubsub_itc_fw::NetworkEndpointConfiguration{});
 
     PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info,
@@ -70,9 +66,8 @@ SampleFixGatewaySeq::SampleFixGatewaySeq(const FixGatewaySeqConfiguration& confi
                "SampleFixGatewaySeq: ER listener on {}:{}",
                config_.er_listen_host, config_.er_listen_port);
     PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info,
-               "SampleFixGatewaySeq: sequencer primary={}:{} secondary={}:{}",
-               config_.sequencer_primary_host, config_.sequencer_primary_port,
-               config_.sequencer_secondary_host, config_.sequencer_secondary_port);
+               "SampleFixGatewaySeq: sequencer primary={}:{}",
+               config_.sequencer_primary_host, config_.sequencer_primary_port);
 }
 
 int SampleFixGatewaySeq::run()

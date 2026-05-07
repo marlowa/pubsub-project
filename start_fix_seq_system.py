@@ -13,8 +13,13 @@ Startup order:
                                clients) but necessary until connection retry is
                                implemented in the framework.
   3. sequencer (primary)   -- instance_id=1, listens on port 7001
-  4. sequencer (secondary) -- instance_id=2, listens on port 7002
-  5. matching_engine       -- connects outbound to sequencer ER listener (7021)
+  4. matching_engine       -- connects outbound to sequencer ER listener (7021)
+
+The secondary sequencer is omitted while the matching engine fan-in
+behaviour for two sequencers is undefined. Add it back once the ME has
+a way to demultiplex ERs back to the originating sequencer, or once
+the leader-follower protocol means only one sequencer forwards orders
+at a time.
 
 Quill log files land in <prefix>/log/ because each process is started
 with that directory as its working directory. stdout/stderr of each
@@ -141,10 +146,6 @@ def main() -> None:
              bin_dir / "sequencer",
              log_dir / "sequencer_primary.log",
              etc_dir / "sequencer" / "sequencer.toml"),
-            ("sequencer_secondary",
-             bin_dir / "sequencer",
-             log_dir / "sequencer_secondary.log",
-             etc_dir / "sequencer" / "sequencer_secondary.toml"),
             ("matching_engine",
              bin_dir / "matching_engine",
              log_dir / "matching_engine.log",

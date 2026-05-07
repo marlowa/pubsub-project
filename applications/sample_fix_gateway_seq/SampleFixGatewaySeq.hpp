@@ -21,7 +21,7 @@ namespace sample_fix_gateway_seq {
  * Owns all framework objects and wires them together:
  *
  *   - One inbound RawBytes listener for FIX client connections.
- *   - Two outbound PDU connections to the primary and secondary sequencer.
+ *   - One outbound PDU connection to the primary sequencer.
  *   - One inbound PDU listener for ExecutionReport PDUs from the sequencer.
  *
  * The logger is constructed in main() before the config is loaded.

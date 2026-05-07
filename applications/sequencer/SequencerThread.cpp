@@ -42,13 +42,14 @@ SequencerThread::SequencerThread(
                         pubsub_itc_fw::ApplicationThreadConfiguration{})
     , config_(config)
     , gateway_conn_id_{}
-    , matching_engine_conn_id_{}
+    , me_outbound_order_conn_id_{}
     , arbiter_conn_id_{}
 {}
 
 void SequencerThread::on_app_ready_event()
 {
     connect_to_service("gateway");
+    connect_to_service("matching_engine");
     connect_to_service("arbiter");
     /*
      * The peer-to-peer connection is part of the leader-follower protocol
@@ -66,25 +67,22 @@ void SequencerThread::on_connection_established(pubsub_itc_fw::ConnectionID id)
         gateway_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "SequencerThread: gateway connection {} established", id.get_value());
+    } else if (id.service_name() == "matching_engine") {
+        me_outbound_order_conn_id_ = id;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: matching engine order connection {} established", id.get_value());
     } else if (id.service_name() == "arbiter") {
         arbiter_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "SequencerThread: arbiter connection {} established", id.get_value());
     } else {
-        // Inbound connection -- identify by port.
-        // port 7001 / 7002: gateway connects inbound with order PDUs
-        // port 7021 / 7022: matching engine connects inbound to send ERs back
+        // Inbound connection identified by listener port:
+        //   inbound:7001 / inbound:7002 -- gateway sending order PDUs
+        //   inbound:7021 / inbound:7022 -- matching engine sending ER PDUs
         const std::string& svc = id.service_name();
-        if (svc == "inbound:7021" || svc == "inbound:7022") {
-            matching_engine_conn_id_ = id;
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                       "SequencerThread: matching engine ER connection {} established ({})",
-                       id.get_value(), svc);
-        } else {
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                       "SequencerThread: inbound connection {} established ({})",
-                       id.get_value(), svc);
-        }
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: inbound connection {} established ({})",
+                   id.get_value(), svc);
     }
 }
 
@@ -95,6 +93,10 @@ void SequencerThread::on_connection_lost(pubsub_itc_fw::ConnectionID id,
         gateway_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                    "SequencerThread: gateway connection {} lost: {}", id.get_value(), reason);
+    } else if (id == me_outbound_order_conn_id_) {
+        me_outbound_order_conn_id_ = pubsub_itc_fw::ConnectionID{};
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "SequencerThread: matching engine order connection {} lost: {}", id.get_value(), reason);
     } else if (id == arbiter_conn_id_) {
         arbiter_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
@@ -134,7 +136,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
                    "SequencerThread: order PDU on connection {} pdu_id={} seq={} -- forwarding to ME",
                    message.connection_id().get_value(), message.pdu_id(), seq);
 
-        if (!matching_engine_conn_id_.is_valid()) {
+        if (!me_outbound_order_conn_id_.is_valid()) {
             PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                 "SequencerThread: matching engine not connected -- dropping order PDU");
             release_pdu_payload(message);
@@ -179,7 +181,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             nos.has_time_in_force  = view.has_time_in_force;
             nos.time_in_force      = view.time_in_force;
 
-            send_pdu(matching_engine_conn_id_, pdu_id, nos);
+            send_pdu(me_outbound_order_conn_id_, pdu_id, nos);
 
         } else if (pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::OrderCancelRequest)) {
             auto& arena_buf = decode_arena_buffer();
@@ -209,7 +211,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             ocr.transact_time  = view.transact_time;
             ocr.order_qty      = std::string(view.order_qty);
 
-            send_pdu(matching_engine_conn_id_, pdu_id, ocr);
+            send_pdu(me_outbound_order_conn_id_, pdu_id, ocr);
 
         } else {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,

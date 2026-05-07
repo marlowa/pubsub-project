@@ -24,8 +24,6 @@ namespace sample_fix_gateway_seq {
  * [sequencer]
  * primary_host   = "127.0.0.1"
  * primary_port   = 7001
- * secondary_host = "127.0.0.1"
- * secondary_port = 7002
  *
  * [fix_session]
  * sender_comp_id         = "GATEWAY"

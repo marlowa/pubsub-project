@@ -14,10 +14,11 @@ namespace sample_fix_gateway_seq {
 /**
  * @brief Configuration for the sequencer-backed FIX gateway application.
  *
- * Extends the simple gateway configuration with two sequencer endpoints
- * (primary and secondary) and one inbound ER endpoint from the matching
- * engine. The gateway connects outbound to both sequencer instances so that
- * the follower stays in sync and failover is gap-free.
+ * Extends the simple gateway configuration with one sequencer endpoint
+ * (the primary) and one inbound ER endpoint from the matching engine.
+ *
+ * Until the leader-follower protocol lands, only the primary sequencer is
+ * connected. Reintroducing a follower endpoint is part of that work.
  *
  * All fields have sensible defaults suitable for local development.
  */
@@ -36,11 +37,12 @@ struct FixGatewaySeqConfiguration {
     int64_t raw_buffer_capacity{65536};
 
     // ----------------------------------------------------------------
-    // Sequencer outbound connections
+    // Sequencer outbound connection
     //
-    // The gateway maintains outbound TCP PDU connections to both the primary
-    // and secondary sequencer instances. Every order PDU is sent to both so
-    // the follower stays in sync with the leader at all times.
+    // The gateway maintains an outbound TCP PDU connection to the primary
+    // sequencer instance. The fan-out path to a follower is part of the
+    // leader-follower protocol and not yet implemented; until that lands,
+    // only the primary sequencer is configured here.
     // ----------------------------------------------------------------
 
     /** @brief Host address of the primary sequencer. */
@@ -48,12 +50,6 @@ struct FixGatewaySeqConfiguration {
 
     /** @brief TCP port of the primary sequencer. */
     uint16_t sequencer_primary_port{7001};
-
-    /** @brief Host address of the secondary sequencer. */
-    std::string sequencer_secondary_host{"127.0.0.1"};
-
-    /** @brief TCP port of the secondary sequencer. */
-    uint16_t sequencer_secondary_port{7002};
 
     // ----------------------------------------------------------------
     // Matching engine inbound ER connection

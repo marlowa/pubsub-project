@@ -3,6 +3,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <cstdint>
 #include <string>
 
 #include <pubsub_itc_fw/ApplicationThread.hpp>
@@ -11,6 +12,8 @@
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
 
+#include <fix_equity_orders.hpp>
+
 #include "MatchingEngineConfiguration.hpp"
 
 namespace matching_engine {
@@ -18,12 +21,14 @@ namespace matching_engine {
 /**
  * @brief ApplicationThread subclass implementing the matching engine stub.
  *
- * Receives SequencedMessage PDUs from the sequencer, unwraps the inner
- * order PDU, and sends a placeholder ExecutionReport PDU back to the
- * gateway.
+ * Receives sequenced order PDUs from the sequencer on the inbound listener,
+ * fabricates a fully-filled ExecutionReport, and sends it back to the
+ * sequencer over the outbound `sequencer_er` connection. The sequencer is
+ * responsible for routing the ER on to the originating gateway.
  *
- * The order book and matching logic are TODO. The stub logs each inbound
- * PDU and sends a minimal filled ER so the end-to-end flow can be verified.
+ * The order book and matching logic are TODO. The stub fills every order
+ * at the requested limit price (or a sentinel zero for market orders) so
+ * the end-to-end comms round-trip can be verified.
  *
  * Threading: ThreadID 1.
  */
@@ -49,11 +54,22 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     void on_itc_message(const pubsub_itc_fw::EventMessage& message) override;
 
   private:
+    void handle_new_order_single(const pubsub_itc_fw_app::NewOrderSingleView& view);
+
+    [[nodiscard]] std::string generate_order_id();
+    [[nodiscard]] std::string generate_exec_id();
+
     const MatchingEngineConfiguration& config_;
 
-    // ConnectionID of the outbound gateway ER connection.
+    // ConnectionID of the outbound connection to the sequencer's ER inbound
+    // listener. ExecutionReport PDUs are sent over this connection and the
+    // sequencer routes them on to the gateway.
     // TODO: replace with pub/sub fanout when implemented.
     pubsub_itc_fw::ConnectionID sequencer_er_conn_id_;
+
+    // Monotonic counters for fabricated OrderID and ExecID strings.
+    int64_t order_id_counter_{0};
+    int64_t exec_id_counter_{0};
 };
 
 } // namespace matching_engine

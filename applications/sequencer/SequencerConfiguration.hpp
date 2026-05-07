@@ -56,6 +56,19 @@ struct SequencerConfiguration {
     uint16_t gateway_port{7010};
 
     // ----------------------------------------------------------------
+    // Outbound -- matching engine order forwarding
+    //
+    // The sequencer connects outbound to the ME's order listener and
+    // forwards sequenced order PDUs over that connection.
+    // ----------------------------------------------------------------
+
+    /** @brief Host address of the matching engine order inbound listener. */
+    std::string matching_engine_host{"127.0.0.1"};
+
+    /** @brief TCP port of the matching engine order inbound listener. */
+    uint16_t matching_engine_port{7020};
+
+    // ----------------------------------------------------------------
     // HA -- leader-follower
     // ----------------------------------------------------------------
 

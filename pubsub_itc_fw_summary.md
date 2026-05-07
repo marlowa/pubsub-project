@@ -452,7 +452,71 @@ The receiving node's reactor accepts data via epoll and delivers it zero-copy to
 
 ## Session Accomplishments
 
-### Session 14 (current)
+### Session 15 (current)
+
+**End-to-end ME ER fabrication.** The matching engine no longer logs `-- stub` and stops; it now decodes inbound `NewOrderSingle` PDUs and emits a fully-filled `ExecutionReport` PDU back to the sequencer. The ER populates every field that `SequencerThread` decodes during ER-forwarding (`order_id`, `exec_id`, `exec_type=Trade`, `ord_status=Filled`, `symbol`, `side`, `leaves_qty=0`, `cum_qty=order_qty`, `avg_px=price`, `transact_time` in nanoseconds, plus optional `cl_ord_id`, `order_qty`, `last_qty`, `last_px`, `price`, `ord_type`). No real order book or matching is performed — every order is fabricated as fully filled at its requested limit price. The ME has its own `order_id_counter_` and `exec_id_counter_` producing `ME-ORD-N` and `ME-EXEC-N` strings.
+
+The ME's `handle_new_order_single` keeps fabricated `std::string` locals on the stack and assigns their `string_view`s into the ER struct, so the views are valid for the full duration of the immediately-following `send_pdu` call. This is a safer pattern than the existing `er.foo = std::string(view.foo);` style used in `SequencerThread`'s ER decoder (which assigns a temporary `std::string` to a `string_view`, leaving the view dangling at the end of the assignment statement; works in practice today only because the calling stack frame is not yet overwritten by the time `send_pdu` reads the bytes). The SequencerThread instances of that pattern have not been changed in this session — they should be cleaned up when next convenient.
+
+**Sequencer-to-ME topology corrected.** Until this session the sequencer was using a single TCP connection bidirectionally: the ME's outbound to the sequencer's `inbound:7021` (the ER channel) was being repurposed by the sequencer to push order PDUs back the wrong way down the same socket. The user confirmed this was unintended, and that the proper topology is two unicast pipes — one each way — until pub/sub fanout replaces direct TCP. The fix:
+- `SequencerConfiguration.hpp` gained `matching_engine_host`/`matching_engine_port` members defaulting to `127.0.0.1:7020`.
+- `SequencerConfigurationLoader.cpp` now parses a `[matching_engine] host=... port=...` section.
+- `Sequencer.cpp` registers the `matching_engine` service in the `ServiceRegistry`.
+- `SequencerThread::on_app_ready_event` calls `connect_to_service("matching_engine")` so the sequencer opens its own outbound to the ME's order listener.
+- `SequencerThread`'s previously-misnamed `matching_engine_conn_id_` was renamed to `me_outbound_order_conn_id_` to make the direction explicit. The `on_connection_established` branch that captured `inbound:7021` as "matching engine ER connection" was removed; ER PDUs are still routed correctly by `service_name == "inbound:7021"` matching in `on_framework_pdu_message` without needing the ID cached.
+- `sequencer.toml` gained a `[matching_engine]` section.
+
+**Secondary sequencer expunged from the gateway.** The gateway-side dual-publish was incomplete and was breaking the single-sequencer test setup: the gateway required `[sequencer.secondary_host]`/`[sequencer.secondary_port]` in its toml and would attempt to connect to a secondary that wasn't running, retrying forever. The user chose to remove the secondary references entirely rather than carry broken half-configuration. The dual-publish concept is preserved in code (the function name `forward_pdu_to_sequencers` retained, with a comment explaining the plural will be reasserted when leader-follower lands) but the secondary endpoint, member, connect call, and toml entries are all gone:
+- `sample_fix_gateway_seq.toml` — `secondary_host`/`secondary_port` lines removed from `[sequencer]`.
+- `FixGatewaySeqConfiguration.hpp` — `sequencer_secondary_host`/`sequencer_secondary_port` members removed; class doxygen rephrased.
+- `FixGatewaySeqConfigurationLoader.cpp` — secondary parsing/validation removed.
+- `FixGatewaySeqConfigurationLoader.hpp` — doxygen example updated.
+- `SampleFixGatewaySeq.cpp` — `service_registry_.add("sequencer_secondary", ...)` removed; startup log updated.
+- `SampleFixGatewaySeq.hpp` — class doxygen "two outbound PDU connections" → "one outbound PDU connection".
+- `FixGatewaySeqThread.hpp` — `sequencer_secondary_conn_id_` member removed; `forward_pdu_to_sequencers` template body's secondary branch removed; class doxygen updated.
+- `FixGatewaySeqThread.cpp` — secondary init list entry, `connect_to_service("sequencer_secondary")`, and the corresponding branches in `on_connection_established` and `on_connection_lost` all removed; bottom-of-file comment block rewritten.
+- `start_fix_seq_system.py` — the `sequencer_secondary` launch step removed; docstring updated.
+
+**Fix `EventMessage::create_framework_pdu_message` to plumb `pdu_id` through.** Diagnosed during the runtime debugging that drove much of this session: `EventMessage::pdu_id_` defaulted to `-1` and was never set by the factory, so SequencerThread saw `pdu_id=-1` on every PDU and dropped them with "unknown order PDU id -1". Three-file fix:
+- `EventMessage.hpp` — factory signature gained `int16_t pdu_id` parameter; doxygen updated.
+- `EventMessage.cpp` — implementation now assigns `msg.pdu_id_ = pdu_id`.
+- `PduParser.cpp::dispatch_pdu` — passes `current_pdu_id_` through to the factory.
+
+**`InboundConnectionManager::on_accept` populates ConnectionID once.** Diagnosed in the same debugging pass: two distinct `ConnectionID` objects were in flight per inbound connection — one populated with `inbound:<port>` for the `ConnectionEstablished` event, and a bare one with empty service_name passed to `PduProtocolHandler` and stamped on every `FrameworkPdu` event by `PduParser::connection_id_`. The fix builds a single `populated_id` near the top of `on_accept` and uses it everywhere downstream (handler ctor, `InboundConnection` ctor, `connections_` map key, `teardown_connection` path, success log line, `ConnectionEstablished` event).
+
+**Trace logging in PduParser.** Two `Info`-level traces fire per header decode: one logging the decoded fields (canary, byte_count, pdu_id, version), one dumping the raw 16 header bytes in hex. Required re-adding a `QuillLogger&` member to `PduParser` and re-plumbing it through `PduProtocolHandler` (logger parameter forwarded to PduParser construction) and `OutboundConnection` (logger member, forwarded similarly). Plus updates to `InboundConnectionManager::on_accept` and `OutboundConnectionManager` construction sites, and three test files (`PduFramerParserTest.cpp` — seven constructor calls; `PduProtocolHandlerTest.cpp` — one; `OutboundConnectionTest.cpp` — two).
+
+**Files changed (twenty):**
+- `applications/sequencer/SequencerConfiguration.hpp`
+- `applications/sequencer/SequencerConfigurationLoader.cpp`
+- `applications/sequencer/Sequencer.cpp`
+- `applications/sequencer/SequencerThread.hpp`
+- `applications/sequencer/SequencerThread.cpp`
+- `applications/sequencer/sequencer.toml`
+- `applications/matching_engine/MatchingEngineThread.hpp`
+- `applications/matching_engine/MatchingEngineThread.cpp`
+- `applications/sample_fix_gateway_seq/sample_fix_gateway_seq.toml`
+- `applications/sample_fix_gateway_seq/FixGatewaySeqConfiguration.hpp`
+- `applications/sample_fix_gateway_seq/FixGatewaySeqConfigurationLoader.cpp`
+- `applications/sample_fix_gateway_seq/FixGatewaySeqConfigurationLoader.hpp`
+- `applications/sample_fix_gateway_seq/SampleFixGatewaySeq.cpp`
+- `applications/sample_fix_gateway_seq/SampleFixGatewaySeq.hpp`
+- `applications/sample_fix_gateway_seq/FixGatewaySeqThread.hpp`
+- `applications/sample_fix_gateway_seq/FixGatewaySeqThread.cpp`
+- `scripts/start_fix_seq_system.py`
+- `libraries/pubsub_itc_fw/include/pubsub_itc_fw/EventMessage.hpp`
+- `libraries/pubsub_itc_fw/src/EventMessage.cpp`
+- `libraries/pubsub_itc_fw/src/PduParser.cpp` and the broader plumbing chain noted above
+
+(plus the test files updated for the PduParser logger constructor change).
+
+**Build and runtime status at session end:**
+- All four applications build clean. Library tests pass (the `QuillLoggerTest.LogsAlertMessage` failure noted at session-13 end was fixed by the user during session 14).
+- End-to-end pipeline verified: fix8 → gateway → sequencer (order on `inbound:7001`, `pdu_id=1000`) → ME (order received on connection 2, NewOrderSingle decoded, `ME-ORD-1`/`ME-EXEC-1` fabricated) → sequencer (ER on `inbound:7021`, `pdu_id=1002`, `byte_count=143`) → gateway (ER arrives at ApplicationThread default no-op, currently silently dropped).
+- The round trip stops at the gateway because `FixGatewaySeqThread::on_framework_pdu_message` is not yet implemented (Item 2 in "What Is Not Yet Done"). The sequencer correctly forwards the ER; the gateway receives it and discards via the default handler. Closing this loop is the natural next session.
+- One concern flagged in the session-end ME log: the decoded NOS view shows binary garbage in `ClOrdID`, `Symbol`, `OrderQty` (e.g. `ClOrdID=\x0F\x00\x00\x00`), suggesting the gateway encodes these fields as length-prefixed binary rather than as plain text, or there's a DSL encoder/decoder mismatch. The byte-level comms machinery faithfully round-trips whatever the gateway puts in; the content is wrong. Worth investigating in the next session, likely as part of Item 2.
+
+### Session 14
 
 **Use-after-free in `PduParser` and `PduProtocolHandler` fixed (option 2).** The disconnect_handler hook diagnosed at session 13 was removed entirely. `PduParser`, `PduProtocolHandler`, and `RawBytesProtocolHandler` no longer hold or invoke any disconnect-handler callback; failure now propagates up to the owning manager via the return value of the failure-capable methods. The owning manager is then responsible for tearing down the connection. This matches the framework's broader principle that connection lifecycle is owned by the Reactor and its managers, not by the parsers and handlers.
 
@@ -480,7 +544,7 @@ The receiving node's reactor accepts data via epoll and delivers it zero-copy to
 - `PduProtocolHandlerTest.cpp` — `disconnect_called_` member, lambda, and the disconnect_handler/logger arguments to the `PduProtocolHandler` constructor were removed. All six `send_prebuilt` and `continue_send` call sites now consume the `[[nodiscard]]` tuple return and assert `ASSERT_TRUE(ok) << error`.
 - `OutboundConnectionTest.cpp` — three `on_connected` call sites at lines 420, 431, 437 dropped their trailing empty-lambda argument (`OnConnectedRejectsNullSocket` and `OnConnectedRejectsWhenNotConnecting`).
 
-**Files changed (sixteen):**
+**Files changed (sixteen, in the disconnect_handler removal):**
 - `libraries/pubsub_itc_fw/include/pubsub_itc_fw/ProtocolHandlerInterface.hpp`
 - `libraries/pubsub_itc_fw/include/pubsub_itc_fw/PduParser.hpp`
 - `libraries/pubsub_itc_fw/src/PduParser.cpp`
@@ -498,10 +562,46 @@ The receiving node's reactor accepts data via epoll and delivers it zero-copy to
 - `libraries/pubsub_itc_fw/tests/PduProtocolHandlerTest.cpp`
 - `libraries/pubsub_itc_fw/tests/OutboundConnectionTest.cpp`
 
+**Runtime verification of the disconnect_handler fix.** After the library landed clean and all unit tests passed, the system was started and exercised with fix8. The original session-13 SIGSEGV repro (idle-timeout of all four connections simultaneously) ran without crash; the new manager-side teardown paths fired correctly with `Info`-level logs for graceful peer close and no use-after-free. The session-13 SIGSEGV is resolved end-to-end.
+
+**Two cascading runtime regressions discovered and fixed during verification.** End-to-end testing revealed the order-PDU pipeline from gateway to sequencer was failing in a way that turned out to be two long-latent bugs neither caused by the disconnect_handler removal. They are recorded together because they were diagnosed and fixed in the same debugging session.
+
+**Regression 1: empty inbound `service_name`.** `SequencerThread::on_framework_pdu_message` was logging `PDU on unexpected connection 3 () -- dropping`. The connection-established event for connection 3 also showed empty parentheses for service_name. Diagnosis took two trace points: one logging `id.service_name()` at the top of `InboundConnectionManager::on_accept` (showed empty), one logging `msg.connection_id().service_name()` in `SequencerThread::on_framework_pdu_message` (showed empty). The trace confirmed that two different `ConnectionID` objects were in flight for the same connection: the populated one used for the `ConnectionEstablished` event, and the bare one passed to `PduProtocolHandler` and stored as `PduParser::connection_id_`, which then stamps every `FrameworkPdu` event. The fix was to construct a single `populated_id` near the top of `on_accept` and use that everywhere downstream — the two handler constructors, the `InboundConnection` constructor, the `connections_` map key, the `teardown_connection` call, the success log line, and the `ConnectionEstablished` event. Fix landed in `InboundConnectionManager.cpp`.
+
+**Regression 2: `pdu_id` never propagated through `EventMessage`.** With service_name fixed, SequencerThread reached its order-PDU branch but logged `pdu_id=-1`. PduParser was decoding `pdu_id=1000` correctly from the wire (verified by the hex-dump trace added during this session — see below), but the value was never reaching the `EventMessage`. Root cause: `EventMessage::create_framework_pdu_message` had no `pdu_id` parameter. The `EventMessage::pdu_id_` member existed and defaulted to `-1`, the accessor existed and returned it, but the factory never set it. Three-file fix: added `int16_t pdu_id` to the factory's parameter list and assigned it to `msg.pdu_id_` in the implementation; `PduParser::dispatch_pdu` now passes `current_pdu_id_` through. Fix landed in `EventMessage.hpp`, `EventMessage.cpp`, and `PduParser.cpp`.
+
+Both regressions were latent — the project hadn't previously exercised an inbound PDU with subsequent dispatch logic that examined the `service_name` *and* `pdu_id` fields together. Session 13's `inbound:<port>` work documented but only partially landed the service_name plumbing; nobody had noticed `EventMessage::pdu_id` was always `-1` because no consumer had needed it until SequencerThread.
+
+**Trace logging in PduParser.** A `QuillLogger&` parameter and member were re-added to `PduParser` (and re-plumbed through `PduProtocolHandler` and `OutboundConnection` which both construct PduParsers). Two `Info`-level trace lines fire on every header decode in `PduParser::receive`: one logging the decoded fields (canary, byte_count, pdu_id, version), one dumping the raw 16 header bytes in hex. The traces are left in for now; they are valuable for diagnosing future framing issues. Move to `Debug` or wrap in a compile-time switch when the system runs in earnest. Files touched for this: `PduParser.hpp`/`.cpp` (logger member), `PduProtocolHandler.hpp`/`.cpp` (logger parameter forwarded to PduParser), `OutboundConnection.hpp`/`.cpp` (logger member), `InboundConnectionManager.cpp` and `OutboundConnectionManager.cpp` (pass `logger_` at construction), `PduFramerParserTest.cpp` (seven constructor calls updated), `PduProtocolHandlerTest.cpp` (one constructor call), `OutboundConnectionTest.cpp` (two constructor calls).
+
+**Two short trace lines in `SequencerThread::on_framework_pdu_message` and `InboundConnectionManager::on_accept`** were added during diagnosis and remain in the code. Cosmetic to remove later; harmless for now.
+
+**End-to-end pipeline verified.** Final run shows the complete order flow:
+- fix8 → gateway: raw FIX bytes via `RawBytesProtocolHandler` on port 9879
+- gateway → sequencer (primary and secondary): `NewOrderSingle` PDU encoded, sent on ports 7001/7002
+- sequencer recognises connection by `service_name = "inbound:7001"`, reads `pdu_id=1000`, decodes the `NewOrderSingle` view, re-encodes into the owning struct, forwards to ME via `send_pdu`
+- ME receives the sequenced PDU on its inbound listener (port 7020) and logs `MatchingEngineThread: sequenced PDU received on connection 1 -- stub`
+
+The ME stub does not yet act on the order; that is the next piece of application work.
+
+**Files changed in the verification work (additional five):**
+- `libraries/pubsub_itc_fw/include/pubsub_itc_fw/EventMessage.hpp` (factory signature + namespace-comment typo fix)
+- `libraries/pubsub_itc_fw/src/EventMessage.cpp` (factory implementation)
+- `libraries/pubsub_itc_fw/src/PduParser.cpp` (pass `current_pdu_id_` to factory; trace logs)
+- `libraries/pubsub_itc_fw/include/pubsub_itc_fw/PduParser.hpp` (logger member re-added)
+- `libraries/pubsub_itc_fw/include/pubsub_itc_fw/PduProtocolHandler.hpp` (logger parameter re-added)
+- `libraries/pubsub_itc_fw/src/PduProtocolHandler.cpp` (logger forwarded to PduParser)
+- `libraries/pubsub_itc_fw/include/pubsub_itc_fw/OutboundConnection.hpp` (logger member added)
+- `libraries/pubsub_itc_fw/src/OutboundConnection.cpp` (logger forwarded to PduParser)
+- `libraries/pubsub_itc_fw/src/InboundConnectionManager.cpp` (populated_id, logger argument)
+- `libraries/pubsub_itc_fw/src/OutboundConnectionManager.cpp` (logger argument)
+- `applications/sequencer/SequencerThread.cpp` (trace log)
+
 **Build and test status at session end:**
 - Library builds clean.
-- All `pubsub_itc_fw` unit tests pass except `QuillLoggerTest.LogsAlertMessage`, which is failing due to an unrelated user change to the QuillLogger and is not part of this changeset.
-- The applications (gateway, matching engine, sequencer) compile but **have not been retested at runtime yet**. The original session-13 SIGSEGV repro (start system, connect fix8, leave idle for 120 seconds so all four connections idle-timeout simultaneously) is the verification that needs to be run before this can be declared resolved end-to-end.
+- All `pubsub_itc_fw` unit tests pass. The `QuillLoggerTest.LogsAlertMessage` failure noted earlier in the session was an unrelated regression introduced by separate logger work; the user fixed it during this session.
+- All four applications (gateway, sequencer primary, sequencer secondary, matching engine) start cleanly, accept connections cleanly, and pass an order PDU end to end.
+- The session-13 SIGSEGV repro runs without crash.
 
 ### Session 13
 
@@ -618,18 +718,18 @@ TcpSocket EAGAIN/EOF fix, use-after-free fix, InboundConnection infrastructure, 
 - Reactor event loop — complete, tested
 - ApplicationThread — complete, tested; `release_pdu_payload()` added
 - Socket layer — complete, tested
-- PDU framing (`PduFramer` two-mode, `PduParser` zero-copy with `ConnectionID`) — complete, tested. `PduParser::receive()` returns `tuple<bool, std::string>` directly to caller; no disconnect-handler callback (session 14).
-- `OutboundConnection` — complete; passes `id_` to `PduParser`; `on_connected` takes only the socket (session 14)
+- PDU framing (`PduFramer` two-mode, `PduParser` zero-copy with `ConnectionID`) — complete, tested. `PduParser::receive()` returns `tuple<bool, std::string>` directly to caller; no disconnect-handler callback. Holds a `QuillLogger&` and emits two-line `Info` trace per header decode (decoded fields + raw 16 header bytes); see Session 14 for details. `dispatch_pdu` passes `current_pdu_id_` through to the EventMessage factory so receivers see the correct PDU id (session 14).
+- `OutboundConnection` — complete; passes `id_` to `PduParser`; `on_connected` takes only the socket. Holds a `QuillLogger&` member, forwarded to PduParser at construction (session 14).
 - `InboundConnection` — complete; `handle_read()` returns `tuple<bool, std::string>` (session 14)
-- `ProtocolHandlerInterface` / `PduProtocolHandler` — complete; accepts `ConnectionID`. `on_data_ready`, `send_prebuilt`, `continue_send` all return `[[nodiscard]] tuple<bool, std::string>`; no disconnect-handler member; no logger member (session 14).
+- `ProtocolHandlerInterface` / `PduProtocolHandler` — complete; accepts `ConnectionID`. `on_data_ready`, `send_prebuilt`, `continue_send` all return `[[nodiscard]] tuple<bool, std::string>`; no disconnect-handler member. `PduProtocolHandler` accepts a `QuillLogger&` constructor parameter and forwards it to the `PduParser` it constructs; no logger member of its own (session 14).
 - `MirroredBuffer` — complete, tested
-- `InboundConnectionManager` — complete; passes `id` to `PduProtocolHandler`; inbound connections carry `"inbound:<port>"` in service name; `on_data_ready`/`on_write_ready`/`process_send_pdu_command`/`process_send_raw_command` inspect handler return values and tear down on failure (session 14)
+- `InboundConnectionManager` — complete; constructs a populated `ConnectionID{value, "inbound:<port>"}` once at the top of `on_accept` and propagates it to handler/connection/map/event consistently. `on_data_ready`/`on_write_ready`/`process_send_pdu_command`/`process_send_raw_command` inspect handler return values and tear down on failure (session 14)
 - `OutboundConnectionManager` — complete; connection retry implemented; use-after-free on service name fixed
 - `ThreadLookupInterface` — complete
 - Reactor connection management — complete; `retry_failed_connections` called from housekeeping tick
 - `ServiceRegistry` / `ServiceEndpoints` — complete
 - `ConnectionID` — own class with `service_name()` for both inbound and outbound connections
-- `EventType` / `EventMessage` — complete; `create_framework_pdu_message` carries `ConnectionID`
+- `EventType` / `EventMessage` — complete; `create_framework_pdu_message` carries `ConnectionID` and `pdu_id` (session 14 added the `pdu_id` parameter; the `pdu_id_` member existed but was never being set, leaving every PDU event with the default `-1`)
 - `ReactorControlCommand` — complete
 - `ReactorConfiguration` — complete; `connect_retry_interval_` (2s default, WAL-pending workaround)
 - `FileSystemUtils` — complete
@@ -637,37 +737,31 @@ TcpSocket EAGAIN/EOF fix, use-after-free fix, InboundConnection infrastructure, 
 - `fix_equity_orders.dsl` — FIX 5.0 SP2 equity order topic registry
 - Logging subsystem — complete
 - `RawBytesProtocolHandler` — complete; `on_data_ready`/`send_prebuilt`/`continue_send` return `tuple<bool, std::string>`; no disconnect-handler member; no logger member (session 14)
-- `sample_fix_gateway_seq` — FIX session layer complete; PDU encoding to sequencers complete; connection identification complete
-- `sequencer` — `on_framework_pdu_message` implemented: order PDUs decoded and forwarded to ME; ER PDUs decoded and forwarded to gateway. Peer connection deferred (session 13) — `peer_host`/`peer_port` removed from config, `connect_to_service("sequencer_peer")` removed, `peer_conn_id_` removed. Will return when leader-follower protocol is implemented.
-- `matching_engine`, `arbiter` — stubs, compiling
-- `start_fix_seq_system.py` — working with correct startup order
+- `sample_fix_gateway_seq` — FIX session layer complete; PDU encoding to sequencer complete; connection identification complete. Single sequencer outbound (`sequencer_primary`); secondary endpoint and dual-publish removed in session 15 pending leader-follower protocol. `forward_pdu_to_sequencers` template kept as the single-target publisher (the plural in the name will be reasserted when dual-publish returns). ER inbound from sequencer arrives but is currently dropped by the default no-op `on_framework_pdu_message`; routing back to fix8 via `cl_ord_id` map is the next piece of gateway work.
+- `sequencer` — complete for the order-flow round trip. `on_framework_pdu_message` decodes inbound order PDUs from `inbound:7001` and forwards them to the matching engine via the new outbound `me_outbound_order_conn_id_`; ER PDUs from `inbound:7021` are decoded and forwarded to the gateway via `gateway_conn_id_`. Topology corrected in session 15: `[matching_engine]` section added to config and toml; `Sequencer.cpp` registers the service; `connect_to_service("matching_engine")` opens the dedicated outbound to ME's order listener instead of misusing the inbound ER channel bidirectionally. Peer connection still deferred — `peer_host`/`peer_port` removed in session 13, will return with leader-follower.
+- `matching_engine` — complete for the round-trip stub. `on_framework_pdu_message` decodes inbound `NewOrderSingle` PDUs (session 15) and emits a fully-filled `ExecutionReport` over the existing outbound `sequencer_er_conn_id_`. The ER populates every field that `SequencerThread`'s ER decoder reads. No real order book or matching — every order becomes a single fill at its limit price (or a zero sentinel for market orders). `OrderID` and `ExecID` are generated as `ME-ORD-N` / `ME-EXEC-N`. `OrderCancelRequest` is not yet handled (logs and drops at the `else` branch); cancel handling is a small follow-up.
+- `arbiter` — stub, compiling
+- `start_fix_seq_system.py` — runs primary only (secondary launch removed in session 15 pending leader-follower)
 
 ## What Is Not Yet Done (in dependency order)
 
-1. **Runtime retest of gateway, ME, and sequencer** following the session-14 disconnect-handler removal — see "Immediate Next Task". Library and tests build and pass; the applications themselves have not yet been exercised end-to-end.
-2. **Investigate fix8 connecting to wrong port** — session 13 logs show fix8 reaching the gateway's ER inbound listener (port 7010) rather than the FIX listener (port 9879), even though `myfix_gateway_client.xml` declares `port="9879"`. Run `f8test -d -c myfix_gateway_client.xml -N GW1` to dump the parsed config and confirm what port fix8 actually has resolved.
-3. **ER routing in gateway** — `on_framework_pdu_message` decodes `ExecutionReport` PDU and routes back to FIX client via `cl_ord_id` map
-4. **Matching engine stub → real** — decode incoming order PDUs, match, send ER back to sequencer
+1. **Re-verify fix8 wrong-port issue is gone** — session 13 logs showed fix8 reaching the gateway's ER inbound listener (port 7010) rather than the FIX listener (port 9879). Sessions 14 and 15's runtime verifications did not reproduce this; fix8 connected cleanly to 9879. Worth one explicit check (`f8test -d -c myfix_gateway_client.xml -N GW1`) to confirm before scrubbing it from the list. Almost certainly already resolved.
+2. **ER routing in gateway** — `FixGatewaySeqThread::on_framework_pdu_message` should decode the inbound `ExecutionReport` PDU and route it back to the FIX client via the `cl_ord_id_to_session_` map (already declared but unused). Sequencer-side ER forwarding works; the gateway just needs the decode-and-route. Today the ER hits ApplicationThread's default no-op `on_framework_pdu_message` and is silently dropped (with a slab leak too — the override should also call `release_pdu_payload(message)`).
+3. **Investigate gateway-side NOS encoding** — the ME log at session 15 end shows `ClOrdID=\x0F\x00\x00\x00`, `Symbol=\x0F\x00\x00`, `OrderQty=\x0F\x00\x00\x00\x00\x00`. The 0x0F bytes look like length prefixes, suggesting the gateway encodes string fields as length-prefixed binary while the DSL decoder expects something else (or vice versa). The wire round-trip itself is correct — `byte_count` and PDU IDs match — but the application-layer fields are corrupted somewhere between the gateway's `handle_new_order_single` and the ME's decode call. Investigate before declaring item 2 fully working, since the ER will inherit the corruption and fix8 will see a mangled ClOrdID.
+4. **Matching engine — `OrderCancelRequest` handling** — the ME currently logs and drops cancels at the `else` branch. Mirror the NewOrderSingle path: decode, fabricate a `Canceled` ER, send. Small follow-up.
 5. **Arbiter stub → real** — `ArbitrationReport` → `ArbitrationDecision`
-6. **Leader-follower protocol** — state machine, heartbeat timers, arbitration. When this lands, restore the peer Connect: re-add `peer_host`/`peer_port` to `SequencerConfiguration`, the toml files, and the loader; restore the `service_registry_.add("sequencer_peer", ...)` block in `Sequencer.cpp`; restore the `connect_to_service("sequencer_peer")` call and `peer_conn_id_` in `SequencerThread`. Decide on a real port plan first — the previous `:7003` was unbound and the port table at the bottom of this document needs to specify dedicated peer-protocol listener ports for both sequencers. The simplest scheme is dedicated listeners (e.g. 7003 primary peer, 7004 secondary peer) so the peer-protocol bytes are not conflated with order PDUs.
-7. **Sequencer "behaves as unconditional leader" stub limitation** — `SequencerThread::on_framework_pdu_message` currently has both sequencer instances forwarding to the matching engine. Only the leader should forward. Will be fixed when leader-follower lands.
-8. **`SequencedMessage` wrapper** — currently the sequencer forwards raw PDUs to ME without a sequence number envelope; add this once ME decode path exists
-9. **Pub/sub WAL** — long-term replacement for direct TCP; eliminates the rendezvous problem and the retry workaround
+6. **Leader-follower protocol** — state machine, heartbeat timers, arbitration. When this lands, restore the secondary sequencer config/code (removed in session 15) and the peer Connect (removed in session 13). Decide on a real port plan first — the previous `:7003` was unbound and the port table needs dedicated peer-protocol listener ports. The simplest scheme is dedicated listeners (e.g. 7003 primary peer, 7004 secondary peer) so peer-protocol bytes are not conflated with order PDUs. Once leader-follower lands, the gateway's `forward_pdu_to_sequencers` plural function name becomes accurate again as the dual-publish branch returns.
+7. **Sequencer "behaves as unconditional leader" stub limitation** — `SequencerThread::on_framework_pdu_message` currently always forwards. Only the leader should forward. Will be fixed when leader-follower lands.
+8. **`SequencedMessage` wrapper** — currently the sequencer forwards raw PDUs to ME without a sequence number envelope; add this once stable.
+9. **Dangling `string_view` pattern in `SequencerThread`'s ER decoder** — `er.cl_ord_id = std::string(view.cl_ord_id);` and similar lines assign a temporary `std::string` to a `string_view` field, leaving the view dangling at the semicolon. Works in practice today only because `send_pdu` reads the bytes before the stack frame is overwritten. Replace with named-local `std::string`s that outlive `send_pdu`, matching the pattern used in session 15's `MatchingEngineThread::handle_new_order_single`.
+10. **Trace logs in `PduParser::receive` and elsewhere** — the two-line hex-dump trace and the short `TRACE` lines in `InboundConnectionManager::on_accept` and `SequencerThread::on_framework_pdu_message` are still at `Info` level. Drop to `Debug` or wrap in a compile-time switch when production traffic rates begin.
+11. **Pub/sub WAL** — long-term replacement for direct TCP; eliminates the rendezvous problem and the retry workaround.
 
 ## Immediate Next Task
 
-**Runtime verification of the session-14 use-after-free fix.** The library and tests build clean and all unit tests pass (excepting the unrelated `QuillLoggerTest.LogsAlertMessage` failure), but the gateway, matching engine, and sequencer applications have not yet been retested end-to-end with the new contract. The original session-13 SIGSEGV repro is the verification that needs to be run:
+**Investigate gateway-side NOS encoding** (item 3) before doing item 2. The binary garbage in `ClOrdID`/`Symbol`/`OrderQty` shows up at the ME after the sequencer's clean forwarding. Likely candidates to inspect: `FixGatewaySeqThread::handle_new_order_single` (how it encodes the FIX message into a DSL `NewOrderSingle` struct), the DSL-generated `encode(NewOrderSingle, ...)` function, and the ME-side `decode_NewOrderSingle`. The wire bytes are identical at gateway-encode and ME-decode (same `byte_count=58`, same PduParser hex dump on both sides), so the bug is either an encoder/decoder asymmetry or — more likely — the gateway is putting binary lengths into fields the DSL expects to be plain ASCII. Probably a one-file fix once located.
 
-1. Start the system via `start_fix_seq_system.py`.
-2. Connect fix8 (`f8test -d -c myfix_gateway_client.xml -N GW1`).
-3. Leave the system idle for 120 seconds. Both inbound FIX connections and both outbound sequencer connections will idle-timeout in the same epoll batch — the previously crashing path.
-4. Expected outcome: gateway logs the teardowns at `Info` level (graceful peer close path) and stays alive. The new manager-side log lines to look for are `InboundConnectionManager::on_data_ready: peer 'X' closed connection` and the equivalent `OutboundConnectionManager::on_data_ready` line that already existed.
-
-If anything misbehaves, the freshest code is the four manager error paths added in session 14 (`InboundConnectionManager::on_data_ready`, `on_write_ready`, `process_send_pdu_command`, `process_send_raw_command`) — those are mechanical translations of the prior synchronous-disconnect-handler pattern but they are the most likely place for a subtle slip.
-
-**After runtime verification:**
-1. **Investigate fix8 connecting to wrong port** — session 13 logs show fix8 reaching the gateway's ER inbound listener (port 7010) rather than the FIX listener (port 9879), even though `myfix_gateway_client.xml` declares `port="9879"`. Run `f8test -d -c myfix_gateway_client.xml -N GW1` to dump the parsed config and confirm what port fix8 actually has resolved.
-2. **ER routing in gateway** — `on_framework_pdu_message` decodes `ExecutionReport` PDU and routes back to FIX client via `cl_ord_id` map.
+**Then ER routing in gateway** (item 2). The reverse path (ME → sequencer → gateway → fix8) is just decode-and-route on the gateway side. The `cl_ord_id_to_session_` map is already declared. Once items 3 and 2 are both done, the full round trip — fix8 → ME → fix8 — is verifiable end to end.
 
 **Design note — the rendezvous problem:**
 The connection retry mechanism is a temporary TCP workaround pending WAL-based brokerless pub/sub. In the pub/sub design, publishers write to the WAL regardless of subscriber presence and there is no connection to establish, so the rendezvous problem disappears. The retry logic should be removed when direct TCP is replaced by pub/sub topics.

@@ -71,11 +71,11 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // ConnectionID of the outbound gateway connection for ER forwarding.
     pubsub_itc_fw::ConnectionID gateway_conn_id_;
 
-    // ConnectionID of the inbound ME connection for order PDU forwarding.
-    // The ME connects inbound to the sequencer on port 7020. Stored when
-    // the ME connection is established so on_framework_pdu_message can
-    // forward sequenced order PDUs to it.
-    pubsub_itc_fw::ConnectionID matching_engine_conn_id_;
+    // ConnectionID of the outbound matching-engine order connection.
+    // The sequencer connects outbound to the ME's order listener on
+    // matching_engine_port and forwards sequenced order PDUs over this
+    // connection. Set when the outbound connection is established.
+    pubsub_itc_fw::ConnectionID me_outbound_order_conn_id_;
 
     // ConnectionIDs of the outbound peer and arbiter connections.
     pubsub_itc_fw::ConnectionID peer_conn_id_;

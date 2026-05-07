@@ -57,6 +57,10 @@ Sequencer::Sequencer(const SequencerConfiguration& config,
         pubsub_itc_fw::NetworkEndpointConfiguration{
             config_.gateway_host, config_.gateway_port},
         pubsub_itc_fw::NetworkEndpointConfiguration{});
+    service_registry_.add("matching_engine",
+        pubsub_itc_fw::NetworkEndpointConfiguration{
+            config_.matching_engine_host, config_.matching_engine_port},
+        pubsub_itc_fw::NetworkEndpointConfiguration{});
     service_registry_.add("arbiter",
         pubsub_itc_fw::NetworkEndpointConfiguration{
             config_.arbiter_host, config_.arbiter_port},
@@ -68,8 +72,9 @@ Sequencer::Sequencer(const SequencerConfiguration& config,
                config_.er_listen_host, config_.er_listen_port,
                config_.instance_id);
     PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info,
-               "Sequencer: gateway={}:{} arbiter={}:{} (peer connection deferred -- leader-follower protocol not yet implemented)",
+               "Sequencer: gateway={}:{} matching_engine={}:{} arbiter={}:{} (peer connection deferred -- leader-follower protocol not yet implemented)",
                config_.gateway_host, config_.gateway_port,
+               config_.matching_engine_host, config_.matching_engine_port,
                config_.arbiter_host, config_.arbiter_port);
 }
 
