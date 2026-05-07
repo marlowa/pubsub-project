@@ -169,17 +169,50 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             }
 
             // Re-encode into an owning struct and send to ME.
+            //
+            // The string fields below are std::string_view, not std::string.
+            // We assign view.X directly: those views point into the slab
+            // payload owned by the inbound EventMessage, which is alive until
+            // release_pdu_payload(message) is called below (after send_pdu
+            // returns). Wrapping the assignment in std::string(view.X) would
+            // create a temporary that dies at the semicolon, leaving the
+            // string_view dangling -- visible at runtime as small-string
+            // optimisation bookkeeping bytes leaking into the encoded wire
+            // payload (e.g. cl_ord_id encoded as 0x0F 0x00 0x00 0x00).
+            //
+            // Optional fields: every has_* flag is copied along with its
+            // value so anything the gateway populated reaches the ME.
             pubsub_itc_fw_app::NewOrderSingle nos{};
-            nos.cl_ord_id     = std::string(view.cl_ord_id);
-            nos.symbol        = std::string(view.symbol);
+
+            // Required fields.
+            nos.cl_ord_id     = view.cl_ord_id;
             nos.side          = view.side;
+            nos.symbol        = view.symbol;
             nos.ord_type      = view.ord_type;
             nos.transact_time = view.transact_time;
-            nos.order_qty     = std::string(view.order_qty);
+            nos.order_qty     = view.order_qty;
+
+            // Optional fields.
             nos.has_price          = view.has_price;
-            nos.price              = std::string(view.price);
+            nos.price              = view.price;
+            nos.has_stop_px        = view.has_stop_px;
+            nos.stop_px            = view.stop_px;
             nos.has_time_in_force  = view.has_time_in_force;
             nos.time_in_force      = view.time_in_force;
+            nos.has_account        = view.has_account;
+            nos.account            = view.account;
+            nos.has_ex_destination = view.has_ex_destination;
+            nos.ex_destination     = view.ex_destination;
+            nos.has_exec_inst      = view.has_exec_inst;
+            nos.exec_inst          = view.exec_inst;
+            nos.has_min_qty        = view.has_min_qty;
+            nos.min_qty            = view.min_qty;
+            nos.has_max_floor      = view.has_max_floor;
+            nos.max_floor          = view.max_floor;
+            nos.has_expire_time    = view.has_expire_time;
+            nos.expire_time        = view.expire_time;
+            nos.has_text           = view.has_text;
+            nos.text               = view.text;
 
             send_pdu(me_outbound_order_conn_id_, pdu_id, nos);
 
@@ -204,12 +237,16 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             }
 
             pubsub_itc_fw_app::OrderCancelRequest ocr{};
-            ocr.orig_cl_ord_id = std::string(view.orig_cl_ord_id);
-            ocr.cl_ord_id      = std::string(view.cl_ord_id);
-            ocr.symbol         = std::string(view.symbol);
+            ocr.orig_cl_ord_id = view.orig_cl_ord_id;
+            ocr.cl_ord_id      = view.cl_ord_id;
+            ocr.symbol         = view.symbol;
             ocr.side           = view.side;
             ocr.transact_time  = view.transact_time;
-            ocr.order_qty      = std::string(view.order_qty);
+            ocr.order_qty      = view.order_qty;
+            ocr.has_account    = view.has_account;
+            ocr.account        = view.account;
+            ocr.has_text       = view.has_text;
+            ocr.text           = view.text;
 
             send_pdu(me_outbound_order_conn_id_, pdu_id, ocr);
 
@@ -253,20 +290,72 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             return;
         }
 
+        // Re-encode into an owning struct and forward to the gateway.
+        // String fields are std::string_view assigned directly from the
+        // view; the slab payload backing the view is alive until
+        // release_pdu_payload(message) below.
+        //
+        // The ExecutionReport schema has many optional fields. Each is
+        // gated by a has_* flag; the value field is meaningful only when
+        // the flag is set. The forward-as-is policy is to copy every
+        // has_* flag from view to er, and copy each value unconditionally
+        // (when the flag is false the value is the schema default and the
+        // encoder will not emit the value field).
         pubsub_itc_fw_app::ExecutionReport er{};
-        er.cl_ord_id   = std::string(view.cl_ord_id);
-        er.exec_id     = std::string(view.exec_id);
-        er.exec_type   = view.exec_type;
-        er.ord_status  = view.ord_status;
-        er.symbol      = std::string(view.symbol);
-        er.side        = view.side;
-        er.order_qty   = std::string(view.order_qty);
-        er.last_qty    = std::string(view.last_qty);
-        er.last_px     = std::string(view.last_px);
-        er.leaves_qty  = std::string(view.leaves_qty);
-        er.cum_qty     = std::string(view.cum_qty);
-        er.avg_px      = std::string(view.avg_px);
+
+        // Required fields.
+        er.order_id      = view.order_id;
+        er.exec_id       = view.exec_id;
+        er.exec_type     = view.exec_type;
+        er.ord_status    = view.ord_status;
+        er.symbol        = view.symbol;
+        er.side          = view.side;
+        er.leaves_qty    = view.leaves_qty;
+        er.cum_qty       = view.cum_qty;
+        er.avg_px        = view.avg_px;
         er.transact_time = view.transact_time;
+
+        // Optional fields -- copy has_* flag and value together.
+        er.has_cl_ord_id      = view.has_cl_ord_id;
+        er.cl_ord_id          = view.cl_ord_id;
+        er.has_orig_cl_ord_id = view.has_orig_cl_ord_id;
+        er.orig_cl_ord_id     = view.orig_cl_ord_id;
+        er.has_ord_type       = view.has_ord_type;
+        er.ord_type           = view.ord_type;
+        er.has_price          = view.has_price;
+        er.price              = view.price;
+        er.has_stop_px        = view.has_stop_px;
+        er.stop_px            = view.stop_px;
+        er.has_order_qty      = view.has_order_qty;
+        er.order_qty          = view.order_qty;
+        er.has_time_in_force  = view.has_time_in_force;
+        er.time_in_force      = view.time_in_force;
+        er.has_account        = view.has_account;
+        er.account            = view.account;
+        er.has_ex_destination = view.has_ex_destination;
+        er.ex_destination     = view.ex_destination;
+        er.has_exec_inst      = view.has_exec_inst;
+        er.exec_inst          = view.exec_inst;
+        er.has_last_qty       = view.has_last_qty;
+        er.last_qty           = view.last_qty;
+        er.has_last_px        = view.has_last_px;
+        er.last_px            = view.last_px;
+        er.has_trade_date     = view.has_trade_date;
+        er.trade_date         = view.trade_date;
+        er.has_exec_ref_id    = view.has_exec_ref_id;
+        er.exec_ref_id        = view.exec_ref_id;
+        er.has_ord_rej_reason = view.has_ord_rej_reason;
+        er.ord_rej_reason     = view.ord_rej_reason;
+        er.has_cxl_rej_reason = view.has_cxl_rej_reason;
+        er.cxl_rej_reason     = view.cxl_rej_reason;
+        er.has_text           = view.has_text;
+        er.text               = view.text;
+        er.has_min_qty        = view.has_min_qty;
+        er.min_qty            = view.min_qty;
+        er.has_max_floor      = view.has_max_floor;
+        er.max_floor          = view.max_floor;
+        er.has_expire_time    = view.has_expire_time;
+        er.expire_time        = view.expire_time;
 
         send_pdu(gateway_conn_id_, pdu_id, er);
         release_pdu_payload(message);

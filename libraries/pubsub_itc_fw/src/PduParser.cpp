@@ -177,11 +177,33 @@ bool PduParser::has_complete_header() const
 
 void PduParser::dispatch_pdu(int slab_id, void* payload_chunk)
 {
-    const auto* payload      = static_cast<const uint8_t*>(payload_chunk);
-    const int   payload_size = static_cast<int>(current_payload_size_);
+    const auto* payload    = static_cast<const uint8_t*>(payload_chunk);
+    const int      payload_size = static_cast<int>(current_payload_size_);
+
+    // Hex-dump up to the first 96 bytes of the payload so each hop's
+    // wire content can be compared against what the encoder should
+    // have produced. The header trace above already captured the
+    // PduHeader; this captures what comes after it.
+    {
+        const int dump_limit = (payload_size < 96) ? payload_size : 96;
+        std::string hex_bytes;
+        hex_bytes.reserve(static_cast<std::size_t>(dump_limit) * 3);
+        for (int i = 0; i < dump_limit; ++i) {
+            hex_bytes += fmt::format("{:02x} ", payload[i]);
+        }
+        PUBSUB_LOG(logger_, FwLogLevel::Info,
+            "TRACE PduParser::dispatch_pdu: connection_id={} pdu_id={} "
+            "payload_size={} payload_bytes (first {}): {}",
+            connection_id_.get_value(),
+            current_pdu_id_,
+            payload_size,
+            dump_limit,
+            hex_bytes);
+    }
 
     EventMessage msg = EventMessage::create_framework_pdu_message(
         payload, payload_size, slab_id, current_pdu_id_, connection_id_);
+
     target_thread_.get_queue().enqueue(std::move(msg));
 }
 
