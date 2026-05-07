@@ -8,6 +8,7 @@
 
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
+#include <pubsub_itc_fw/BumpAllocator.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/QueueConfiguration.hpp>
@@ -81,6 +82,19 @@ void FixGatewaySeqThread::on_connection_lost(pubsub_itc_fw::ConnectionID id,
     if (it != sessions_.end()) {
         cancel_timer(it->second.logon_timeout_timer_name());
         sessions_.erase(it);
+
+        // Sweep any cl_ord_id -> session mappings that pointed at this
+        // disconnected session. Without this the map would accumulate stale
+        // entries indefinitely. Each such entry would trigger a "session no
+        // longer present" log line and drop on the next ER for that ClOrdID.
+        for (auto map_it = cl_ord_id_to_session_.begin();
+             map_it != cl_ord_id_to_session_.end(); ) {
+            if (map_it->second == id) {
+                map_it = cl_ord_id_to_session_.erase(map_it);
+            } else {
+                ++map_it;
+            }
+        }
     }
 
     if (id == sequencer_primary_conn_id_) {
@@ -198,13 +212,122 @@ void FixGatewaySeqThread::on_raw_socket_message(const pubsub_itc_fw::EventMessag
 
 void FixGatewaySeqThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message)
 {
-    // ExecutionReport PDU received from the sequencer (forwarded from the ME).
-    // TODO: decode ExecutionReport PDU using fix_equity_orders.hpp.
-    // Look up cl_ord_id in cl_ord_id_to_session_. If absent, log and drop.
-    // Otherwise serialise a FIX ExecutionReport and send_raw to the client.
+    const int16_t pdu_id = static_cast<int16_t>(message.pdu_id());
+
+    if (pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::ExecutionReport)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+            "FixGatewaySeqThread: unsupported PDU id {} on connection {} -- dropping",
+            pdu_id, message.connection_id().get_value());
+        release_pdu_payload(message);
+        return;
+    }
+
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    arena.reset();
+    std::size_t arena_bytes_needed = 0;
+    std::size_t bytes_consumed     = 0;
+    pubsub_itc_fw_app::ExecutionReportView view{};
+
+    if (!pubsub_itc_fw_app::decode(view,
+                                    message.payload(),
+                                    static_cast<std::size_t>(message.payload_size()),
+                                    bytes_consumed,
+                                    arena,
+                                    arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+            "FixGatewaySeqThread: failed to decode ExecutionReport -- dropping");
+        release_pdu_payload(message);
+        return;
+    }
+
+    // ClOrdID is the only routing key. Without it we cannot deliver the ER.
+    if (!view.has_cl_ord_id || view.cl_ord_id.empty()) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+            "FixGatewaySeqThread: ExecutionReport OrderID={} ExecID={} has no ClOrdID -- dropping",
+            view.order_id, view.exec_id);
+        release_pdu_payload(message);
+        return;
+    }
+
+    // The cl_ord_id_to_session_ map keys are std::string. The view's cl_ord_id
+    // is a string_view into the slab; construct a std::string for the lookup
+    // which the unordered_map's heterogeneous-lookup-free find() requires.
+    const std::string cl_ord_id{view.cl_ord_id};
+
+    auto map_it = cl_ord_id_to_session_.find(cl_ord_id);
+    if (map_it == cl_ord_id_to_session_.end()) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+            "FixGatewaySeqThread: ExecutionReport for unknown ClOrdID='{}' -- dropping "
+            "(originating session may have disconnected)",
+            cl_ord_id);
+        release_pdu_payload(message);
+        return;
+    }
+    const pubsub_itc_fw::ConnectionID session_id = map_it->second;
+
+    auto session_it = sessions_.find(session_id);
+    if (session_it == sessions_.end()) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+            "FixGatewaySeqThread: ExecutionReport for ClOrdID='{}' -- "
+            "session connection {} no longer present, dropping ER and clearing map entry",
+            cl_ord_id, session_id.get_value());
+        cl_ord_id_to_session_.erase(map_it);
+        release_pdu_payload(message);
+        return;
+    }
+    FixSession& session = session_it->second;
+
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "FixGatewaySeqThread: ER PDU received on connection {} -- decode TODO",
-               message.connection_id().get_value());
+        "FixGatewaySeqThread: routing ExecutionReport OrderID={} ExecID={} ClOrdID={} "
+        "to FIX client connection {}",
+        view.order_id, view.exec_id, cl_ord_id, session.conn_id.get_value());
+
+    // Build a FIX ExecutionReport. Single-character enum fields convert back
+    // to FIX wire chars via static_cast<char>; numeric strings (qty/px) flow
+    // through unchanged.
+    FixMessage er_msg;
+    er_msg.set(Tag::MsgType,   MsgType::ExecutionReport);
+    er_msg.set(Tag::OrderID,   std::string{view.order_id});
+    er_msg.set(Tag::ExecID,    std::string{view.exec_id});
+    er_msg.set(Tag::ExecType,  std::string(1, static_cast<char>(view.exec_type)));
+    er_msg.set(Tag::OrdStatus, std::string(1, static_cast<char>(view.ord_status)));
+    er_msg.set(Tag::Symbol,    std::string{view.symbol});
+    er_msg.set(Tag::Side,      std::string(1, static_cast<char>(view.side)));
+    er_msg.set(Tag::CumQty,    std::string{view.cum_qty});
+    er_msg.set(Tag::LeavesQty, std::string{view.leaves_qty});
+    er_msg.set(Tag::ClOrdID,   cl_ord_id);
+
+    if (view.has_order_qty) {
+        er_msg.set(Tag::OrderQty, std::string{view.order_qty});
+    }
+    if (view.has_price) {
+        er_msg.set(Tag::Price, std::string{view.price});
+    }
+    if (view.has_ord_type) {
+        er_msg.set(Tag::OrdType, std::string(1, static_cast<char>(view.ord_type)));
+    }
+
+    send_fix_to_session(session, er_msg);
+
+    // Clean up the routing map on terminal status. The original ClOrdID will
+    // not appear on subsequent ERs once the order has reached one of these
+    // states. Non-terminal statuses (PartiallyFilled, PendingCancel, etc.)
+    // leave the entry in place so further fills can be routed.
+    switch (view.ord_status) {
+        case pubsub_itc_fw_app::OrdStatus::Filled:
+        case pubsub_itc_fw_app::OrdStatus::Canceled:
+        case pubsub_itc_fw_app::OrdStatus::Rejected:
+        case pubsub_itc_fw_app::OrdStatus::Expired:
+        case pubsub_itc_fw_app::OrdStatus::DoneForDay:
+        case pubsub_itc_fw_app::OrdStatus::Replaced:
+            cl_ord_id_to_session_.erase(map_it);
+            break;
+        default:
+            break;
+    }
+
+    release_pdu_payload(message);
 }
 
 void FixGatewaySeqThread::on_timer_event(const std::string& name)

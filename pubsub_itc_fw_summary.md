@@ -512,9 +512,52 @@ The ME's `handle_new_order_single` keeps fabricated `std::string` locals on the 
 
 **Build and runtime status at session end:**
 - All four applications build clean. Library tests pass (the `QuillLoggerTest.LogsAlertMessage` failure noted at session-13 end was fixed by the user during session 14).
-- End-to-end pipeline verified: fix8 → gateway → sequencer (order on `inbound:7001`, `pdu_id=1000`) → ME (order received on connection 2, NewOrderSingle decoded, `ME-ORD-1`/`ME-EXEC-1` fabricated) → sequencer (ER on `inbound:7021`, `pdu_id=1002`, `byte_count=143`) → gateway (ER arrives at ApplicationThread default no-op, currently silently dropped).
-- The round trip stops at the gateway because `FixGatewaySeqThread::on_framework_pdu_message` is not yet implemented (Item 2 in "What Is Not Yet Done"). The sequencer correctly forwards the ER; the gateway receives it and discards via the default handler. Closing this loop is the natural next session.
-- One concern flagged in the session-end ME log: the decoded NOS view shows binary garbage in `ClOrdID`, `Symbol`, `OrderQty` (e.g. `ClOrdID=\x0F\x00\x00\x00`), suggesting the gateway encodes these fields as length-prefixed binary rather than as plain text, or there's a DSL encoder/decoder mismatch. The byte-level comms machinery faithfully round-trips whatever the gateway puts in; the content is wrong. Worth investigating in the next session, likely as part of Item 2.
+- End-to-end pipeline verified: fix8 → gateway → sequencer (order on `inbound:7001`, `pdu_id=1000`) → ME (order received on connection 2, NewOrderSingle decoded, `ME-ORD-1`/`ME-EXEC-1` fabricated) → sequencer (ER on `inbound:7021`, `pdu_id=1002`, `byte_count=143`) → gateway → fix8. The fix8 client receives the ExecutionReport reply as expected. **Three sessions converged on this milestone; the comms framework is verified end-to-end with a real FIX client.**
+
+**Session 15 continuation -- payload hex dump trace, dangling-string-view diagnosis and fix.**
+
+A binary-garbage symptom appeared at first verification: the ME log showed `ClOrdID=\x0F\x00\x00\x00`, `Symbol=\x0F\x00\x00`, `OrderQty=\x0F\x00\x00\x00\x00\x00`. Lengths in the decoder were correct (4, 3, 6) but the field contents were SSO-bookkeeping bytes (`0x0F` is the libstdc++ short-string capacity marker). The wire-level forwarding was faithful; the corruption was happening *inside* one of the apps before it sent.
+
+Diagnosis path:
+1. Read the gateway log -- `ClOrdID=ord1` was correctly parsed from the FIX message at the gateway side.
+2. Read the DSL `encode(NewOrderSingle, ...)` source -- length-prefixed-string format, encoder symmetric with decoder. So if both runs of the DSL on the same struct produce identical bytes, encode/decode is sound.
+3. Added a payload hex dump trace to `PduParser::dispatch_pdu` (96 bytes, `Info` level, mirroring the existing header trace). This dumps the wire payload of every PDU at every hop.
+4. Re-ran. The hex dump showed:
+   - gateway → sequencer NOS: clean (`04 00 00 00 6f 72 64 31 ...` -- "ord1" followed by "BHP", "8517.0", "61.17677")
+   - sequencer → ME NOS: corrupted (`04 00 00 00 0f 00 00 00 ...` -- length 4, then four bytes of SSO leakage)
+5. Conclusion: the SequencerThread re-encode block was the bug. It used the `er.cl_ord_id = std::string(view.cl_ord_id);` pattern -- assigning a temporary `std::string` to a `string_view` field. The temporary dies at the semicolon, leaving the view pointing at stack memory that the next round of temporaries overwrites with their own SSO buffers (whose first byte is `0x0F`, the libstdc++ inline-capacity sentinel). Same UB the project summary had flagged as item 9 in "What Is Not Yet Done" -- but it was not "works in practice today"; it was *visible* corruption of every forwarded order PDU.
+
+**Fix:** `view.X` fields point into the slab payload owned by the inbound `EventMessage`, which is alive until `release_pdu_payload(message)` is called *after* `send_pdu` returns. So the right pattern is to assign `view.X` directly to the outbound struct's `string_view` field -- no temporary, no copy, no UB. Three blocks fixed in `SequencerThread.cpp`:
+
+1. NOS re-encode (forwarding gateway → ME order PDUs): direct view-assignment; also added propagation of all NOS optional fields (`has_stop_px`, `has_account`, `has_ex_destination`, `has_exec_inst`, `has_min_qty`, `has_max_floor`, `has_expire_time`, `has_text`) which the previous code dropped.
+2. OCR re-encode: direct view-assignment; added `has_account`/`has_text` propagation.
+3. ER re-encode (forwarding ME → gateway): direct view-assignment; **added `er.order_id = view.order_id;`** which the previous code was missing entirely (a separate latent bug that would have caused fix8 to receive an ER with empty OrderID); added every optional `has_*` flag and value alongside the required fields. The complete-propagation policy is now the rule for re-encode/forward blocks.
+
+Re-run after the fix showed clean wire bytes at every hop. Item 9 in "What Is Not Yet Done" is now resolved; item 3 (the binary-garbage finding from the original Session 15 verification) went away with it.
+
+**Session 15 continuation -- gateway ER routing implementation.**
+
+With the ER bytes now arriving at the gateway intact, `FixGatewaySeqThread::on_framework_pdu_message` -- previously a TODO no-op that silently dropped slabs -- was implemented. Body:
+- Validates `pdu_id == ExecutionReport`; drops with warning + slab release otherwise.
+- Decodes ER via `BumpAllocator` over the inherited `decode_arena_buffer()`.
+- Drops if `view.has_cl_ord_id` is false or empty (no routing key).
+- Looks up `cl_ord_id` (named `std::string` local for safe map lookup) in `cl_ord_id_to_session_`. Drops with warning if absent (originating session may have disconnected).
+- Looks up the `FixSession` by `ConnectionID`. If gone, erases the stale map entry and drops.
+- Builds a FIX `ExecutionReport` populating `OrderID`, `ExecID`, `ExecType`, `OrdStatus`, `Symbol`, `Side`, `CumQty`, `LeavesQty`, `ClOrdID`, plus optionals `OrderQty`, `Price`, `OrdType` when their `has_*` flags are set. Single-character DSL enum fields convert via `static_cast<char>(view.X)` (the enums use FIX char values as their underlying representation).
+- Sends via the existing `send_fix_to_session` helper.
+- On terminal `OrdStatus` (Filled, Canceled, Rejected, Expired, DoneForDay, Replaced), erases the map entry. Non-terminal statuses (PartiallyFilled, PendingCancel, etc.) leave the entry alive for follow-up fills.
+- `release_pdu_payload(message)` on every exit path.
+
+A separate `cl_ord_id_to_session_` cleanup was added to `on_connection_lost`: when a FIX session disconnects, all map entries pointing at its `ConnectionID` are swept. Without this the map would accumulate stale entries indefinitely.
+
+The gateway's `FixSerialiser` already supported every tag the ER routing populates (no serialiser changes needed).
+
+**Files changed in the continuation work (eight, beyond the twenty earlier):**
+- `libraries/pubsub_itc_fw/src/PduParser.cpp` (payload hex dump trace)
+- `applications/sequencer/SequencerThread.cpp` (three re-encode blocks fixed; complete optional-field propagation)
+- `applications/sample_fix_gateway_seq/FixGatewaySeqThread.cpp` (`on_framework_pdu_message` implemented; `on_connection_lost` map sweep added; BumpAllocator include added)
+
+(The summary's earlier "Files changed (twenty)" list at the top of the Session 15 entry covers the topology and ME-ER-fabrication work; the three above are the ones that closed the loop.)
 
 ### Session 14
 
@@ -737,31 +780,34 @@ TcpSocket EAGAIN/EOF fix, use-after-free fix, InboundConnection infrastructure, 
 - `fix_equity_orders.dsl` — FIX 5.0 SP2 equity order topic registry
 - Logging subsystem — complete
 - `RawBytesProtocolHandler` — complete; `on_data_ready`/`send_prebuilt`/`continue_send` return `tuple<bool, std::string>`; no disconnect-handler member; no logger member (session 14)
-- `sample_fix_gateway_seq` — FIX session layer complete; PDU encoding to sequencer complete; connection identification complete. Single sequencer outbound (`sequencer_primary`); secondary endpoint and dual-publish removed in session 15 pending leader-follower protocol. `forward_pdu_to_sequencers` template kept as the single-target publisher (the plural in the name will be reasserted when dual-publish returns). ER inbound from sequencer arrives but is currently dropped by the default no-op `on_framework_pdu_message`; routing back to fix8 via `cl_ord_id` map is the next piece of gateway work.
-- `sequencer` — complete for the order-flow round trip. `on_framework_pdu_message` decodes inbound order PDUs from `inbound:7001` and forwards them to the matching engine via the new outbound `me_outbound_order_conn_id_`; ER PDUs from `inbound:7021` are decoded and forwarded to the gateway via `gateway_conn_id_`. Topology corrected in session 15: `[matching_engine]` section added to config and toml; `Sequencer.cpp` registers the service; `connect_to_service("matching_engine")` opens the dedicated outbound to ME's order listener instead of misusing the inbound ER channel bidirectionally. Peer connection still deferred — `peer_host`/`peer_port` removed in session 13, will return with leader-follower.
+- `sample_fix_gateway_seq` — FIX session layer complete; PDU encoding to sequencer complete; connection identification complete. Single sequencer outbound (`sequencer_primary`); secondary endpoint and dual-publish removed in session 15 pending leader-follower protocol. `forward_pdu_to_sequencers` template kept as the single-target publisher (the plural in the name will be reasserted when dual-publish returns). **ER routing back to fix8 complete**: `on_framework_pdu_message` decodes inbound ExecutionReport PDUs, looks up `cl_ord_id_to_session_` for the originating FIX session, builds a FIX ER and sends via `send_fix_to_session`. Map entries are erased on terminal `OrdStatus` and on FIX session disconnect (sweep in `on_connection_lost`). End-to-end fix8 → ER → fix8 round trip verified at session-15 end.
+- `sequencer` — complete for the order-flow round trip. `on_framework_pdu_message` decodes inbound order PDUs from `inbound:7001` and forwards them to the matching engine via the new outbound `me_outbound_order_conn_id_`; ER PDUs from `inbound:7021` are decoded and forwarded to the gateway via `gateway_conn_id_`. Topology corrected in session 15: `[matching_engine]` section added to config and toml; `Sequencer.cpp` registers the service; `connect_to_service("matching_engine")` opens the dedicated outbound to ME's order listener instead of misusing the inbound ER channel bidirectionally. All re-encode blocks (NOS, OCR, ER) use direct `view.X` assignment to outbound `string_view` fields (the slab payload outlives `send_pdu`); the previous `std::string(view.X)` pattern caused SSO-bookkeeping-byte corruption and was fixed in session 15. All `has_*` optional flags propagated alongside their values for every forwarded PDU type. Peer connection still deferred — `peer_host`/`peer_port` removed in session 13, will return with leader-follower.
 - `matching_engine` — complete for the round-trip stub. `on_framework_pdu_message` decodes inbound `NewOrderSingle` PDUs (session 15) and emits a fully-filled `ExecutionReport` over the existing outbound `sequencer_er_conn_id_`. The ER populates every field that `SequencerThread`'s ER decoder reads. No real order book or matching — every order becomes a single fill at its limit price (or a zero sentinel for market orders). `OrderID` and `ExecID` are generated as `ME-ORD-N` / `ME-EXEC-N`. `OrderCancelRequest` is not yet handled (logs and drops at the `else` branch); cancel handling is a small follow-up.
 - `arbiter` — stub, compiling
 - `start_fix_seq_system.py` — runs primary only (secondary launch removed in session 15 pending leader-follower)
 
 ## What Is Not Yet Done (in dependency order)
 
-1. **Re-verify fix8 wrong-port issue is gone** — session 13 logs showed fix8 reaching the gateway's ER inbound listener (port 7010) rather than the FIX listener (port 9879). Sessions 14 and 15's runtime verifications did not reproduce this; fix8 connected cleanly to 9879. Worth one explicit check (`f8test -d -c myfix_gateway_client.xml -N GW1`) to confirm before scrubbing it from the list. Almost certainly already resolved.
-2. **ER routing in gateway** — `FixGatewaySeqThread::on_framework_pdu_message` should decode the inbound `ExecutionReport` PDU and route it back to the FIX client via the `cl_ord_id_to_session_` map (already declared but unused). Sequencer-side ER forwarding works; the gateway just needs the decode-and-route. Today the ER hits ApplicationThread's default no-op `on_framework_pdu_message` and is silently dropped (with a slab leak too — the override should also call `release_pdu_payload(message)`).
-3. **Investigate gateway-side NOS encoding** — the ME log at session 15 end shows `ClOrdID=\x0F\x00\x00\x00`, `Symbol=\x0F\x00\x00`, `OrderQty=\x0F\x00\x00\x00\x00\x00`. The 0x0F bytes look like length prefixes, suggesting the gateway encodes string fields as length-prefixed binary while the DSL decoder expects something else (or vice versa). The wire round-trip itself is correct — `byte_count` and PDU IDs match — but the application-layer fields are corrupted somewhere between the gateway's `handle_new_order_single` and the ME's decode call. Investigate before declaring item 2 fully working, since the ER will inherit the corruption and fix8 will see a mangled ClOrdID.
-4. **Matching engine — `OrderCancelRequest` handling** — the ME currently logs and drops cancels at the `else` branch. Mirror the NewOrderSingle path: decode, fabricate a `Canceled` ER, send. Small follow-up.
-5. **Arbiter stub → real** — `ArbitrationReport` → `ArbitrationDecision`
-6. **Leader-follower protocol** — state machine, heartbeat timers, arbitration. When this lands, restore the secondary sequencer config/code (removed in session 15) and the peer Connect (removed in session 13). Decide on a real port plan first — the previous `:7003` was unbound and the port table needs dedicated peer-protocol listener ports. The simplest scheme is dedicated listeners (e.g. 7003 primary peer, 7004 secondary peer) so peer-protocol bytes are not conflated with order PDUs. Once leader-follower lands, the gateway's `forward_pdu_to_sequencers` plural function name becomes accurate again as the dual-publish branch returns.
-7. **Sequencer "behaves as unconditional leader" stub limitation** — `SequencerThread::on_framework_pdu_message` currently always forwards. Only the leader should forward. Will be fixed when leader-follower lands.
-8. **`SequencedMessage` wrapper** — currently the sequencer forwards raw PDUs to ME without a sequence number envelope; add this once stable.
-9. **Dangling `string_view` pattern in `SequencerThread`'s ER decoder** — `er.cl_ord_id = std::string(view.cl_ord_id);` and similar lines assign a temporary `std::string` to a `string_view` field, leaving the view dangling at the semicolon. Works in practice today only because `send_pdu` reads the bytes before the stack frame is overwritten. Replace with named-local `std::string`s that outlive `send_pdu`, matching the pattern used in session 15's `MatchingEngineThread::handle_new_order_single`.
-10. **Trace logs in `PduParser::receive` and elsewhere** — the two-line hex-dump trace and the short `TRACE` lines in `InboundConnectionManager::on_accept` and `SequencerThread::on_framework_pdu_message` are still at `Info` level. Drop to `Debug` or wrap in a compile-time switch when production traffic rates begin.
-11. **Pub/sub WAL** — long-term replacement for direct TCP; eliminates the rendezvous problem and the retry workaround.
+1. **Re-verify fix8 wrong-port issue is gone** — session 13 logs showed fix8 reaching the gateway's ER inbound listener (port 7010) rather than the FIX listener (port 9879). Sessions 14 and 15 did not reproduce this; fix8 connected cleanly to 9879 throughout. Worth one explicit check (`f8test -d -c myfix_gateway_client.xml -N GW1`) before retiring the item.
+2. **Matching engine — `OrderCancelRequest` handling** — the ME currently logs and drops cancels at the `else` branch. Mirror the NewOrderSingle path: decode, fabricate a `Canceled` ER, send. Small follow-up; will exercise the same plumbing again with a different message type.
+3. **Arbiter stub → real** — `ArbitrationReport` → `ArbitrationDecision`
+4. **Leader-follower protocol** — state machine, heartbeat timers, arbitration. When this lands, restore the secondary sequencer config/code (removed in session 15) and the peer Connect (removed in session 13). Decide on a real port plan first — the previous `:7003` was unbound and the port table needs dedicated peer-protocol listener ports. The simplest scheme is dedicated listeners (e.g. 7003 primary peer, 7004 secondary peer) so peer-protocol bytes are not conflated with order PDUs. Once leader-follower lands, the gateway's `forward_pdu_to_sequencers` plural function name becomes accurate again as the dual-publish branch returns.
+5. **Sequencer "behaves as unconditional leader" stub limitation** — `SequencerThread::on_framework_pdu_message` currently always forwards. Only the leader should forward. Will be fixed when leader-follower lands.
+6. **`SequencedMessage` wrapper** — currently the sequencer forwards raw PDUs to ME without a sequence-number envelope; add this once stable.
+7. **Trace logs in `PduParser` and elsewhere** — the two `Info`-level lines in `PduParser::receive` (header decode + raw 16 header bytes), the `Info`-level payload hex dump in `PduParser::dispatch_pdu` (added during session 15 to diagnose the binary-garbage bug), and the short `TRACE` lines in `InboundConnectionManager::on_accept` and `SequencerThread::on_framework_pdu_message` are all valuable diagnostic infrastructure but noisy at production rates. Drop to `Debug` or wrap behind a compile-time switch when production traffic begins.
+8. **Pub/sub WAL** — long-term replacement for direct TCP; eliminates the rendezvous problem and the retry workaround.
 
 ## Immediate Next Task
 
-**Investigate gateway-side NOS encoding** (item 3) before doing item 2. The binary garbage in `ClOrdID`/`Symbol`/`OrderQty` shows up at the ME after the sequencer's clean forwarding. Likely candidates to inspect: `FixGatewaySeqThread::handle_new_order_single` (how it encodes the FIX message into a DSL `NewOrderSingle` struct), the DSL-generated `encode(NewOrderSingle, ...)` function, and the ME-side `decode_NewOrderSingle`. The wire bytes are identical at gateway-encode and ME-decode (same `byte_count=58`, same PduParser hex dump on both sides), so the bug is either an encoder/decoder asymmetry or — more likely — the gateway is putting binary lengths into fields the DSL expects to be plain ASCII. Probably a one-file fix once located.
+The session-15 milestone closed the end-to-end fix8 → ER → fix8 round trip. Three sensible next moves, in priority order:
 
-**Then ER routing in gateway** (item 2). The reverse path (ME → sequencer → gateway → fix8) is just decode-and-route on the gateway side. The `cl_ord_id_to_session_` map is already declared. Once items 3 and 2 are both done, the full round trip — fix8 → ME → fix8 — is verifiable end to end.
+**(a) Trace cleanup (item 7).** Mechanical demotion of the `Info` traces to `Debug`. Tidies the operational view now that the diagnostic value of the traces has been spent. Quick.
+
+**(b) Cancel round trip (item 2).** Mirrors the NewOrderSingle path on the ME side. Adds a second proof of the comms framework with a different message type. Small.
+
+**(c) One of the bigger pieces (items 3, 4, 6).** Arbiter implementation, leader-follower protocol, or the SequencedMessage wrapper. Larger; not blocked by anything currently.
+
+(a) and (b) together would be a complete short next session. (c) is its own session at minimum.
 
 **Design note — the rendezvous problem:**
 The connection retry mechanism is a temporary TCP workaround pending WAL-based brokerless pub/sub. In the pub/sub design, publishers write to the WAL regardless of subscriber presence and there is no connection to establish, so the rendezvous problem disappears. The retry logic should be removed when direct TCP is replaced by pub/sub topics.
