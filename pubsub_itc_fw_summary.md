@@ -799,15 +799,16 @@ TcpSocket EAGAIN/EOF fix, use-after-free fix, InboundConnection infrastructure, 
 
 ## Immediate Next Task
 
-The session-15 milestone closed the end-to-end fix8 → ER → fix8 round trip. Three sensible next moves, in priority order:
+A WAL+HA design has been worked through in detail (see "WAL and HA Design" section below) and a nine-slice implementation plan agreed. The next session takes **Slice 1** of that plan:
 
-**(a) Trace cleanup (item 7).** Mechanical demotion of the `Info` traces to `Debug`. Tidies the operational view now that the diagnostic value of the traces has been spent. Quick.
+**Slice 1 -- Add seqNo to `EventMessage` and to the wire format.** Smallest possible change: add an `int64_t seq_no` field to `EventMessage` (peer of the existing `pdu_id`/`connection_id`), update `EventMessage::create_framework_pdu_message` to take it, route the SequencerThread's already-existing `next_sequence_number_` into the field when re-encoding for forwarding, propagate through to the ME and gateway. After this slice the ME and gateway both see the seqNo on every PDU but do nothing with it. Verifies the plumbing without changing any semantics. Likely accompanied by an addition to the `PduHeader` so seqNo is on the wire (currently the header carries `byte_count`, `pdu_id`, `version`, canary; add `seq_no` between `pdu_id` and `version`, with appropriate htonll/ntohll).
 
-**(b) Cancel round trip (item 2).** Mirrors the NewOrderSingle path on the ME side. Adds a second proof of the comms framework with a different message type. Small.
+After Slice 1 lands, continue with Slice 2 (in-memory WAL) and onward per the staging plan in the design section. Each slice is a session or two of work and leaves the system in a working state.
 
-**(c) One of the bigger pieces (items 3, 4, 6).** Arbiter implementation, leader-follower protocol, or the SequencedMessage wrapper. Larger; not blocked by anything currently.
-
-(a) and (b) together would be a complete short next session. (c) is its own session at minimum.
+**Smaller items deferred but still on the list:**
+- Trace log cleanup (item 7 in "What Is Not Yet Done"): demote `Info`-level traces to `Debug`. Mechanical, quick. Worth doing whenever it stops being useful for slice verification.
+- OrderCancelRequest round trip (item 2): mirrors NewOrderSingle path on ME side. Small. Fits in a session corner.
+- fix8 wrong-port re-verification (item 1): one `f8test -d` run.
 
 **Design note — the rendezvous problem:**
 The connection retry mechanism is a temporary TCP workaround pending WAL-based brokerless pub/sub. In the pub/sub design, publishers write to the WAL regardless of subscriber presence and there is no connection to establish, so the rendezvous problem disappears. The retry logic should be removed when direct TCP is replaced by pub/sub topics.
@@ -847,16 +848,264 @@ Both fields are required. There are no optional config fields — making a field
 
 ---
 
-## HA Architecture
+## WAL and HA Design (planned)
 
-The original framework HA design (four-node DR topology) still applies to any use of the leader-follower protocol. However for the sequencer-based application architecture, a simpler HA model is used:
+Designed in conversation, not yet implemented. This section captures the architecture so subsequent sessions can refer back to it. The implementation is staged into nine vertical slices, listed at the end.
 
-- HA applies to the **sequencer only** — gateway and matching engine are single-instance
-- Two sequencer instances on the main site: primary (`instance_id` 1) and secondary (`instance_id` 2)
-- A **main-site arbiter** (separate lightweight `arbiter` process) resolves startup ties — DR arbiters are NOT used for this topology
-- Leadership is deterministic: lowest `instance_id` wins
-- The gateway maintains outbound connections to **both** sequencer instances and sends every order PDU to both, so the follower stays in sync and failover is gap-free
-- All endpoints configured via `ReactorConfiguration` and `ServiceRegistry`
+The design follows the convergent pattern that Aeron Cluster, Kafka, Raft, and database checkpointing all arrive at: **separate the irreversible decision (WAL commit) from its replayable effects (ME state, ERs, FIX out).** The WAL is authoritative; everything downstream is reconstructable from it. Followers observe commits, never infer them. Leadership decides who may append; the WAL decides what already happened. Those two concerns must never leak into each other.
+
+### Authority and roles
+
+- **Sequencer + WAL = authority.** The sequencer assigns seqNo and appends to the WAL. The WAL append (via store-release on the commit offset) is the single irreversible act in the system. Before that store, an order does not exist; after it, the order is permanent and globally visible.
+- **Matching Engine = pure consumer.** The ME has no independent state, no persistence of its own, no FIX-side effects. It receives orders in seqNo order from the leader, mutates a book in memory, emits ERs back. The book is reconstructable by replaying the WAL, so an ME crash means "throw it away and replay from the leader's WAL".
+- **FIX Gateway = edge translator.** Translates FIX wire to/from PDUs. Holds no FixSession→ClOrdID map (that lives in the sequencer's WAL — see below). Routes ERs to whichever FIX session corresponds to the ConnectionID embedded in the ER PDU by the sequencer.
+
+### State location (changed from current)
+
+In session 15's working system, the gateway holds `cl_ord_id_to_session_` mapping. In the WAL design **this map moves to the sequencer**. Reasoning:
+
+- The sequencer is already the single point that observes every order PDU, so adding "stamp the originating ConnectionID into the WAL entry" is a one-field addition rather than a new mechanism.
+- The gateway becomes near-stateless. On a gateway restart, it does not lose ER routing capability, because that information lives in the sequencer's WAL.
+- After failover, the new sequencer leader has the routing map by virtue of WAL replay.
+
+**Subtlety -- ConnectionID is not stable across reconnects.** A fix8 client logging out and back in gets a new ConnectionID. Two options for how the sequencer addresses an ER target:
+
+- (a) Route on `(SenderCompID, TargetCompID)` -- natural FIX-level addressing. The gateway maintains a small per-comp-id table mapping to the current ConnectionID, and the sequencer addresses ERs by comp-id.
+- (b) Route on ConnectionID. Accept that an ER for a session that has reconnected is undeliverable.
+
+(a) is more robust and is the chosen option. The gateway's job is "translate comp-id ↔ ConnectionID for the current FIX session"; the sequencer's WAL holds comp-id-keyed routing.
+
+### WAL format and segmentation
+
+A WAL entry is `[ magic | length | seqNo | payload | checksum ]`. Replay scans from offset 0; on any checksum or bounds failure it stops. Entries past the failure point are treated as "did not happen". Tail corruption is therefore identical in effect to a clean crash before commit of that entry.
+
+The WAL is **segmented** into fixed-size files (e.g. `wal_000001.log`, `wal_000002.log`). Each segment is independently checksummable and archivable. Segmentation simplifies truncation, localises corruption damage, and makes the disk-full scenario predictable.
+
+The WAL is **single-writer**: only the leader sequencer appends. No locks needed; a single thread does all writes.
+
+### Commit semantics
+
+"Commit" has two distinct meanings, both required:
+
+1. **Locally durable (in-memory):** store-release on the commit offset. CPU coherence guarantees that any other reader sees the entry. This is what gates the leader's send to the ME.
+2. **Replicated (cross-machine durable):** the follower has acked the record over its dedicated replication channel. This is what gates the leader's send of an ER to the gateway.
+
+The ER is held back from the gateway until replication has acked, so the gateway never observes an order whose existence is held by only one machine. This gives Raft-style two-machine durability without Raft's full state machine, because there is no quorum (just leader + follower) and no log-replication-via-vote (just point-to-point streaming).
+
+**No `fsync` per commit.** Disk durability is a separate concern from commit. The cost of `fsync` per WAL append is significant (10s of microseconds at minimum, often 100µs+) and is unnecessary because durability comes from replication. `fsync` happens out-of-band: as part of segment rotation, snapshot writes, or a periodic flusher. Disk corruption after an undurable commit is recoverable via the replica.
+
+### Replication channel
+
+The leader streams WAL records to the follower over a dedicated TCP connection -- separate from the order/ER data channels and separate from the arbiter control channel. The follower writes records to its own local WAL (own disk, own machine) and sends per-record acks back. The leader uses the highest acked seqNo to gate ER emission.
+
+Followers do not infer commits from heartbeat or timing; they observe records arriving on the replication channel. The follower's role is strictly passive: it tails, it acks, it does not send to the ME, it does not send to the gateway. Connections from gateway and ME to the follower do exist (so they are pre-warmed for promotion) but carry no data while the follower is passive.
+
+### Gateway↔sequencer reconnection on failover
+
+Both the gateway-to-sequencer connection and the ME-to-sequencer connection drop when the leader fails. The gateway and ME need to reconnect to the new leader. Mechanism:
+
+- Gateway and ME each open TCP connections to **both** sequencer instances at startup, and keep both open. Sends go only to whichever instance is currently leader. The non-leader sequencer rejects send commands at the application layer (returning an error PDU or simply closing the data sub-channel) so the gateway and ME know which is leader without needing an out-of-band discovery mechanism.
+- On leader change, the old leader's connection drops or starts rejecting. The new leader's connection becomes the live one.
+- The gateway buffers outbound order PDUs locally during the cutover window (bounded buffer; FIX-level back-pressure if it fills). The ME, being stateless, simply waits for the new leader to begin sending.
+
+**Per-leg cursors.** The gateway maintains "last sent order seqNo" and "last received ER seqNo" cursors per sequencer instance. On reconnect, the new leader and the gateway exchange cursor positions and replay any gap. The sequencer's WAL holds matching state: "last delivered ER per gateway ConnectionID" or equivalent. This means **the WAL holds two record kinds** -- order/ER events (the data) and delivery cursors (the per-peer progress). Cursors are written periodically rather than per-record, keeping WAL volume reasonable.
+
+Reconnect-and-replay is conceptually similar to FIX's own sequence-number resend mechanism, one layer down.
+
+### Snapshots
+
+Snapshots capture sequencer state only. The ME is never snapshotted -- its book is rebuilt from the WAL on every restart. Snapshot contents are deliberately minimal:
+
+- `lastCommittedSeqNo`
+- FixSession routing tables (comp-id → ConnectionID, ClOrdID → ConnectionID)
+- Per-gateway delivery cursors
+- Anything else the sequencer needs to assign seqNo `S+1` after restart
+
+**Anything that can be recomputed from the WAL is not in the snapshot.**
+
+Snapshotting is non-blocking. The leader briefly gates new seqNo assignment (~tens of microseconds), drains in-flight WAL appends to establish a clean cut at seqNo `S`, captures the snapshot state in memory, releases the gate, and serialises the snapshot file asynchronously. The ME never sees a pause; FIX ingress sees only the brief micro-gate.
+
+**Dual snapshots (rolling).** Two snapshots are kept at all times: `snapshot_A` (older, trusted, used as the truncation anchor) and `snapshot_B` (newer, candidate, validated before promotion). WAL truncation uses the older trusted snapshot, not the newest one just taken. This deliberately retains a safety window of "WAL extending back beyond the trusted snapshot" so that a newer snapshot turning out to be unreadable does not lose history. After validation, `snapshot_B` is promoted to `snapshot_A` and a new candidate is taken.
+
+The invariant: **never delete WAL history unless at least one older verified snapshot can reproduce the same state.** Enforced mechanically, not by policy.
+
+### WAL truncation
+
+After a snapshot at seqNo `S` is durable and validated:
+
+- Delete WAL segments fully behind `S`.
+- Keep any segment containing seqNos `> S`.
+- The follower must have replayed at least `S` (or have its own snapshot ≥ `S`) before the leader truncates. Otherwise truncation could delete history the follower still needs.
+
+### Failure-handling boundaries
+
+Each of the following is a designed-for case, not a "this might happen and we'll see":
+
+| Situation | Correct behaviour |
+|---|---|
+| Leader crash before WAL commit | Order disappears (never existed). Gateway resends or fix8 retries. |
+| Leader crash after WAL commit, before ME send | Follower promotes, replays WAL, sends order to ME, emits ER. |
+| Leader crash after ME send, before ER | Same -- the new leader replays since the ME is a deterministic consumer; FIX will see an ER eventually. |
+| ME crash | ME restarts empty; new leader replays from ME's `lastAppliedSeqNo + 1`. |
+| Gateway crash | Gateway reconnects, exchanges cursors, replays any gap. |
+| WAL disk full | Sequencer immediately gates ingress. No "best effort" continuation. Operator action: rotate, halt cleanly, or fail to replica. |
+| WAL tail corruption | Truncate at last good entry -- treat as crash before commit. |
+| WAL mid-segment corruption | Halt; promote replica with clean prefix. Single-replica recovery requires manual intervention. |
+| Snapshot corrupt during validation | Snapshot discarded; system continues with the previous trusted snapshot. |
+| Snapshot format incompatible after upgrade | Roll back binary; the older snapshot in the dual-snapshot pair still works. |
+
+### Arbiter
+
+The arbiter is **off the critical data path**. It holds a single cell: `(leader_id, epoch, lease_expiry)`. The leader sends heartbeats to the arbiter to renew its lease. The arbiter never participates in order processing.
+
+On leader-failover the follower asks the arbiter "am I the new leader?". The arbiter performs an atomic compare-and-swap: if the old leader's lease has expired and the requester's proposed epoch is greater than the current, it grants and bumps the epoch. On revival, the old leader sees its epoch is stale and steps down.
+
+This is the **fencing token / epoch / leader-epoch** pattern (same family as Raft term, Kafka leader-epoch, Chubby/ZooKeeper epoch). It is dramatically simpler than full Raft because there is no log-replication-by-quorum; the WAL replication is a separate point-to-point channel. The arbiter is just leader-election + fencing, a few hundred lines of code at most.
+
+If the leader is alive and the arbiter is unreachable, the leader continues. If the leader has died and the arbiter is also unreachable, the follower cannot promote -- this is the correct behaviour to avoid split-brain.
+
+The arbiter is built from scratch (not etcd / Consul / ZooKeeper / Raft). Off-the-shelf packages are out of scope.
+
+### Topology diagram
+
+```
+                                  ┌─────────────┐
+                                  │   fix8      │
+                                  │   client    │
+                                  └──────┬──────┘
+                                         │ FIX wire (TCP, port 9879)
+                                         │ orders, ERs, heartbeats
+                                  ┌──────▼──────────────┐
+                                  │   FIX Gateway       │
+                                  │                     │
+                                  │ - parses FIX        │
+                                  │ - encodes PDU       │
+                                  │ - tracks per-leg    │
+                                  │   cursors           │
+                                  │ - reconnects on     │
+                                  │   leader change     │
+                                  │ - small comp-id ↔   │
+                                  │   ConnectionID      │
+                                  │   table only        │
+                                  └──┬───────────────┬──┘
+                                     │               │
+                       order PDUs    │               │  ER PDUs
+                       (one TCP      │               │  (from current leader)
+                       conn each;    │               │
+                       gateway sends │               │
+                       only to       │               │
+                       leader; both  │               │
+                       conns kept    │               │
+                       open)         │               │
+                                     │               │
+                       ┌─────────────┴─────┐ ┌───────┴────────────┐
+                       │                   │ │                    │
+                       ▼                   ▼ ▼                    ▼
+        ┌──────────────────────────┐         ┌──────────────────────────┐
+        │  Sequencer PRIMARY       │         │  Sequencer FOLLOWER      │
+        │  (current leader)        │         │  (passive)               │
+        │                          │         │                          │
+        │  - assigns seqNo         │         │  - tails leader's WAL    │
+        │  - appends to WAL        │         │  - applies records to    │
+        │  - state:                │         │    its own WAL & state   │
+        │    · FixSession→         │         │  - never sends to ME     │
+        │      ConnID map          │         │  - never sends to GW     │
+        │    · ClOrdID→ConnID map  │         │  - heartbeats to arbiter │
+        │    · per-GW cursors      │         │  - on promotion: stops   │
+        │  - heartbeats to arbiter │         │    tailing, replays its  │
+        │  - sends to ME           │         │    own WAL, becomes      │
+        │  - sends ERs to GW       │         │    leader                │
+        │                          │         │                          │
+        │  ┌────────────────────┐  │         │  ┌────────────────────┐  │
+        │  │ WAL on local disk  │  │         │  │ WAL on local disk  │  │
+        │  │ (mmap, segmented)  │  │         │  │ (mmap, segmented)  │  │
+        │  │                    │  │         │  │                    │  │
+        │  │ - order records    │  │         │  │ - mirror of leader │  │
+        │  │ - cursor records   │  │         │  │   (one record      │  │
+        │  │ - snapshot files   │  │         │  │   behind, due to   │  │
+        │  │   (dual, rolling)  │  │         │  │   ack RTT)         │  │
+        │  └────────────────────┘  │         │  │ - own snapshots    │  │
+        │                          │         │  └────────────────────┘  │
+        └────┬──────────────────┬──┘         └──────────────────────────┘
+             │                  ▲                      ▲
+             │ order PDUs       │ ER PDUs              │ WAL replication
+             │ (committed,      │                      │ (TCP, dedicated
+             │  with seqNo)     │                      │ "replication" conn)
+             │                  │                      │ leader pushes,
+             │                  │                      │ follower acks;
+             │                  │                      │ leader does not
+             │                  │                      │ acknowledge to GW
+             │                  │                      │ until follower-acked
+             ▼                  │                      │
+        ┌──────────────────────────┐                   │
+        │  Matching Engine         │                   │
+        │                          │                   │
+        │  - receives orders in    │                   │
+        │    seqNo order from      │                   │
+        │    LEADER only           │                   │
+        │  - mutates book          │◄──────────────────┘
+        │  - emits ERs back to     │  (this is the leader→follower
+        │    leader sequencer      │   WAL replication channel,
+        │  - stateless across      │   not an ME data path)
+        │    crashes (book         │
+        │    rebuilt by replay)    │
+        │                          │
+        └──────────────────────────┘
+
+        ╔══════════════════════════════════════════════════════════════════╗
+        ║                              ARBITER                              ║
+        ║                                                                   ║
+        ║   - holds (leader_id, epoch, lease_expiry) -- one cell            ║
+        ║   - leader sends heartbeats: "I'm still leader, epoch=N"          ║
+        ║   - follower can ask: "current leader? lease state?"              ║
+        ║   - on promotion request: atomic compare-and-swap                 ║
+        ║       if lease_expired and request.proposed_epoch > current:      ║
+        ║         grant; bump epoch; record new leader                      ║
+        ║   - NEVER on the order/ER data path                               ║
+        ║                                                                   ║
+        ╚══════════════════════════════════════════════════════════════════╝
+              ▲                              ▲
+              │ heartbeats / lease renewal   │ heartbeats (less frequent)
+              │ from current leader          │ from passive follower
+              │                              │
+              └──────┬───────────────────────┘
+                     │
+              both sequencers know about the arbiter;
+              only one is leader at any moment
+
+        Channels summary:
+        ─────────────────────────────────────────────────────────────────────
+        FIX              fix8 ↔ Gateway          (TCP, FIX wire)
+        Orders           Gateway → Sequencer     (TCP, PDU; only to leader)
+        ERs              Sequencer → Gateway     (TCP, PDU; only from leader)
+        ME orders        Sequencer → ME          (TCP, PDU; only from leader)
+        ME ERs           ME → Sequencer          (TCP, PDU; only to leader)
+        WAL replication  Leader → Follower       (TCP, dedicated; bidirectional acks)
+        Arbiter control  Sequencers ↔ Arbiter    (TCP; not on data path)
+        ─────────────────────────────────────────────────────────────────────
+```
+
+### Implementation staging (nine slices)
+
+Each slice is shippable -- the system works at the end of each. Each slice is a session or two. The whole programme is roughly a year of part-time work but never leaves the system in a half-built state.
+
+1. **Add seqNo to `EventMessage` and to wire format.** PDU header gains `seq_no` field; `EventMessage` gains a peer to `pdu_id`. ME and gateway see seqNos but do nothing with them yet. Plumbing only. *(Slice 1; Immediate Next Task.)*
+2. **In-memory WAL.** Sequencer maintains an in-memory log of every committed order. Used for nothing yet but the data structure is exercised. Verifies ring-buffer or segmented-vector design works.
+3. **mmap'd WAL on disk, single-host, no fsync.** Crash recovery: replay WAL on startup, rebuild state. No replication yet. Validates the durable-log mechanism.
+4. **Snapshot (single, no rolling).** Snapshot at intervals, truncate WAL behind the snapshot point. Fast restart. Validates the snapshot mechanism in isolation.
+5. **Move FixSession ↔ ClOrdID mapping into sequencer's state.** Gateway becomes the translator described above. Comp-id-keyed routing replaces the gateway's current `cl_ord_id_to_session_` map.
+6. **Single-host failover infrastructure.** Two sequencer processes on the same host. File-based fencing for leader detection. Gateway connects to leader-side. Validates the protocol mechanics (handshakes, cursor exchange, replay) without network complexity.
+7. **Network replication.** Follower on another host. Leader streams WAL records over a dedicated TCP connection. Follower acks; commit = follower-acked. The classic Aeron model, end-to-end.
+8. **Arbiter.** Lease + epoch. Replaces file-based fencing. The leader-election + fencing layer.
+9. **Dual snapshots, snapshot validation, additional polish.** The safety-net layer that turns the system from "works" into "operationally bullet-proof".
+
+---
+
+## HA Architecture (legacy stub -- predates the WAL+HA design above)
+
+The legacy stub described two sequencer instances with the gateway dual-publishing every order PDU to both, so a follower stayed in sync and failover would be gap-free. That stub never fully landed: session 15 removed the secondary sequencer and the dual-publish mechanism because their semantics under the "behaves as unconditional leader" stub were broken (both sequencers would forward to the ME, producing duplicate fills). The full WAL+HA design above replaces this stub. When the design lands, the secondary returns as a passive follower (not a parallel publisher), order PDUs go only to the leader, and the WAL replication channel keeps the follower in sync.
+
+For the framework's *generic* leader-follower DSL protocol (separate from the sequencer-specific design above), the four-node DR topology described in subsystem 12 still applies. The sequencer-specific design uses a simpler topology (two sequencers + one arbiter, single site) because matching-engine workloads have different durability constraints than the framework's generic streaming use case.
 
 ---
 
@@ -864,39 +1113,46 @@ The original framework HA design (four-node DR topology) still applies to any us
 
 Inspired by the Aeron sequencer pattern. The sequencer is the **sole writer** to the matching engine's input stream, imposing total order on all messages.
 
+**Current state (session 15 end -- single sequencer, no HA):**
+
 ```
 FIX client
     | raw FIX bytes (RawBytesProtocolHandler)
     v
 sample_fix_gateway_seq          (single instance)
-    | NewOrderSingle / OrderCancelRequest PDUs -- sent to BOTH sequencer instances
+    | NewOrderSingle / OrderCancelRequest PDUs -- single sequencer (post session 15)
     v
-sequencer primary + secondary   (leader-follower HA, main-site arbiter)
-    | SequencedMessage PDU -- leader only forwards to ME (port 7020)
+sequencer (single instance, "primary" naming preserved)
+    | order PDU forwarded to ME on port 7020 (via me_outbound_order_conn_id_)
     v
 matching_engine                 (single instance)
-    | ExecutionReport PDU -- sent back to sequencer ER listener (ports 7021/7022)
+    | ExecutionReport PDU -- sent back to sequencer ER listener (port 7021)
     v
 sequencer (receives ER, forwards to gateway on port 7010)
     v
-sample_fix_gateway_seq --> FIX ER --> FIX client (via cl_ord_id map)
+sample_fix_gateway_seq --> FIX ER --> FIX client (via cl_ord_id_to_session_)
 ```
 
-**Startup order** (counterintuitive but necessary): gateway must start before sequencers because the sequencer connects outbound to the gateway's ER inbound listener on port 7010. If sequencer starts first it cannot connect and there is currently no retry. Long-term fix is connection retry in the framework.
+**Future state (after WAL+HA slices land):** the second sequencer returns as a passive follower, the gateway connects to both but sends only to the leader, and the WAL replication channel runs alongside the data channels. See "WAL and HA Design" above for the full topology diagram.
 
-**Port allocation (local testing):**
+**Startup order** (counterintuitive but necessary): gateway must start before the sequencer because the sequencer connects outbound to the gateway's ER inbound listener on port 7010. If the sequencer starts first the connect retries (2-second interval, framework-level retry implemented since session 12). Long-term fix is the WAL+HA design's pattern of always-open dual connections from gateway to sequencer pair.
+
+**Port allocation (local testing, session-15 state):**
 
 | Port | Usage |
 |---|---|
 | 9879 | FIX client → gateway (RawBytes inbound) |
-| 7001 | gateway → sequencer primary (order PDUs) |
-| 7002 | gateway → sequencer secondary (order PDUs) |
-| 7003 | (deferred) sequencer peer-to-peer; not in use until leader-follower protocol is implemented |
+| 7001 | gateway → sequencer (order PDUs) |
+| 7002 | (reserved) gateway → sequencer follower (order PDUs); not in use post session 15 |
+| 7003 | (reserved) sequencer peer-to-peer / WAL replication; final port choice TBD with leader-follower |
+| 7004 | (reserved) follower-side equivalent of 7003 if leader and follower listen on different ports |
 | 7010 | sequencer → gateway (ER forwarding inbound) |
 | 7020 | sequencer → ME (sequenced order PDUs inbound) |
-| 7021 | ME → sequencer primary ER listener |
-| 7022 | ME → sequencer secondary ER listener |
+| 7021 | ME → sequencer ER listener |
+| 7022 | (reserved) ME → sequencer-follower ER listener; not in use post session 15 |
 | 7100 | sequencer → arbiter |
+
+The reserved ports are kept in the table so they are not accidentally repurposed before the WAL+HA slices land. When slice 6 (single-host failover) adds the second sequencer, 7002, 7022, and one of 7003/7004 will become live; when slice 7 (network replication) runs, the WAL replication channel will bind a chosen port from the 7003/7004 pair.
 
 ---
 
