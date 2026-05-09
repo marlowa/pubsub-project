@@ -22,9 +22,10 @@ A low-latency, multi-threaded, event-driven application framework using the **re
 
 - Inter-thread communication (ITC) via lock-free MPSC queues
 - Inter-process communication (IPC) via unicast TCP
+- Lock-free thread-safe pool allocators
 - Simulated pub/sub via unicast fanout
 - Timers (timerfd, via epoll)
-- High availability via primary/secondary instance pairs with DR arbitration
+- High availability via primary/secondary instance pairs with arbitration
 - A DSL-based binary serialisation layer replacing protobuf/SBE
 
 Target environment is **low-latency** (sub-100ns encode/decode). Heap allocation is avoided on all hot paths.
@@ -119,8 +120,8 @@ Target environment is **low-latency** (sub-100ns encode/decode). Heap allocation
 - `pending_send_` — each manager owns its own `std::optional<ReactorControlCommand>` for blocked `SendPdu` commands
 - ConnectionID space is shared between inbound and outbound: the Reactor allocates the ID and passes it into both managers as a parameter, avoiding coupling
 
-**Reactor decomposition (in progress — see Immediate Next Task):**
-The Reactor has been partially refactored. `InboundConnectionManager` and `OutboundConnectionManager` have been written and are ready. The Reactor itself still needs to be rewritten to inherit `ThreadLookupInterface`, remove the extracted members, and construct/delegate to the two managers. This is the immediate next task.
+**Reactor decomposition (complete):**
+The Reactor has been refactored. `InboundConnectionManager` and `OutboundConnectionManager` are written and integrated. The Reactor inherits from `ThreadLookupInterface` and delegates to the two managers.
 
 ---
 
@@ -318,25 +319,27 @@ Python code generator producing C++17 headers for zero-copy binary encode/decode
 **generate_cpp_from_dsl.py** — takes input DSL path and output **file path** (not directory) as positional arguments, plus `--namespace` and `--topics` flags.
 
 ---
-
 ### 12. Leader-Follower Protocol (DSL defined, not yet implemented)
 
 #### Overview
 
-This is a bespoke, intentionally simple protocol. There is no need for a full consensus algorithm such as Raft or Paxos. The deployment topology is fixed: exactly two active nodes per site, with a third node (DR arbiter) available to break ties at startup. Leader election is deterministic — the node with the lowest `instance_id` wins. The arbiter never becomes a leader or follower; it only resolves startup ambiguity when both nodes are undecided.
+This is a bespoke, intentionally simple protocol. There is no need for a full consensus algorithm such as Raft or Paxos. The deployment topology is fixed: exactly two participating nodes per site (one configured as primary, one as secondary), with a third node (the arbiter, itself HA) to break ties at startup. Leader election is deterministic — the node with the lowest `instance_id` wins. The arbiter never becomes a leader or follower; it only resolves startup ambiguity when both nodes are undecided.
 
 #### Topology
 
-Four instances in total, each with a unique integer `instance_id` configured in `ReactorConfiguration`:
+Four instances in total, each with a unique integer `instance_id` configured in `ReactorConfiguration`. "Main" refers to the site; the four instances run on four different machines at the main site:
 
 | Instance | Site | Role in election |
 |---|---|---|
 | Node A (primary) | Main | Participant |
 | Node B (secondary) | Main | Participant |
-| Node C (primary-DR) | DR | Arbiter |
-| Node D (secondary-DR) | DR | Arbiter |
+| Node C (primary) | Main | Arbiter |
+| Node D (secondary) | Main | Arbiter |
 
-Main-site nodes use DR-site nodes as arbiters. DR-site nodes use main-site nodes as arbiters. Primary arbiter is tried first; secondary arbiter is the fallback if the primary is unreachable.
+The arbiter has primary and secondary instances to avoid single-machine SPOF for the arbiter itself.
+Note: a previous early design, now rejected, was to use arbiters at the DR site.
+
+For the sequencer-specific HA deployment described in the "WAL and HA Design" section below, a third arbiter pool member is added: a *witness* machine that holds no state but votes in elections of which of the two arbiters is currently active. The witness is deployed in a failure-independent location (different power, different switch, ideally different network segment) so that no single failure can take out an arbiter and the witness simultaneously. The witness is not part of the generic DSL leader-follower protocol described here; it is an addition specific to the arbiter pool's own internal HA. See "Arbiter PSA topology" in the WAL and HA Design section for protocol details.
 
 #### PDU Summary
 
@@ -345,18 +348,19 @@ Main-site nodes use DR-site nodes as arbiters. DR-site nodes use main-site nodes
 | `StatusQuery` | 100 | Identity + epoch announced on TCP connect |
 | `StatusResponse` | 101 | Identity confirmation + peer echo + current role |
 | `Heartbeat` | 102 | Liveness detection + epoch propagation |
-| `ArbitrationReport` | 200 | Sent to DR when arbitration needed |
-| `ArbitrationDecision` | 201 | DR's authoritative tie-break + epoch assignment |
+| `ArbitrationReport` | 200 | Sent when arbitration needed |
+| `ArbitrationDecision` | 201 | authoritative tie-break + epoch assignment |
 
 #### Epoch Semantics
 
 The epoch is a generation counter that exists to detect stale nodes from a previous leadership cycle.
 
 Rules:
+
 1. A node that has never participated in an election starts with epoch 0.
-2. At startup, when DR arbitration is used, the DR arbiter assigns the epoch in `ArbitrationDecision`. Both nodes adopt this value.
-3. When a follower detects leader death and promotes itself to leader (no DR contact), it increments its own epoch by 1. This is the sole mechanism for local epoch advancement.
-4. When a restarting node connects and receives a `StatusResponse`, it compares epochs. If the peer's epoch is higher, the restarting node is stale and adopts the follower role immediately without contacting DR.
+2. At startup, when arbitration is used, the arbiter assigns the epoch in `ArbitrationDecision`. Both nodes adopt this value. Because the arbiter is itself HA (PSA+witness, see "Arbiter PSA topology" in the WAL and HA Design section), the epoch counter is durable across arbiter restarts: the arbiter's primary→secondary replication keeps the most recent epoch state on both full arbiter instances, and on arbiter restart the surviving instance restores from its replicated copy. The arbiter does not lose track of epochs when an arbiter process restarts.
+3. When a follower detects leader death, it does NOT promote itself unilaterally. It contacts the arbiter and requests promotion via `ArbitrationReport`. The arbiter, having confirmed the previous leader's lease has expired, issues an `ArbitrationDecision` granting the requesting node the leader role and assigning the next epoch. The follower adopts the leader role only after receiving this decision. This prevents split-brain in network-partition scenarios where the follower can no longer see the leader but the leader is still alive on the other side of the partition. (An earlier design had the follower promote unilaterally and increment its own epoch by 1; that design was rejected because it permits split-brain when the arbiter is reachable from both partition halves.)
+4. When a restarting node connects and receives a `StatusResponse`, it compares epochs. If the peer's epoch is higher, the restarting node is stale and adopts the follower role immediately without contacting arbiter.
 5. A heartbeat carrying an epoch lower than the receiver's own epoch indicates a stale sender; the receiver logs a warning and ignores the heartbeat.
 
 #### Startup Election Flow
@@ -364,10 +368,10 @@ Rules:
 1. On startup, each node attempts TCP connection to its peer (A→B, B→A).
 2. On connection, both sides immediately send `StatusQuery` (identity + epoch).
 3. On receiving `StatusQuery`, each side replies with `StatusResponse` including its `current_role`.
-4. **If the peer's `StatusResponse` carries `Role::leader`:** the connecting node adopts `Role::follower` immediately. No DR contact needed.
-5. **If the peer's `StatusResponse` carries `Role::unknown`:** both sides are undecided. Both send `ArbitrationReport` to DR (primary-DR first, secondary-DR as fallback).
-6. DR receives both reports and issues `ArbitrationDecision` assigning leader and follower deterministically by lowest `instance_id`, and sets the epoch for this generation.
-7. Both nodes adopt their assigned roles and the DR connection is closed.
+4. **If the peer's `StatusResponse` carries `Role::leader`:** the connecting node adopts `Role::follower` immediately. No arbiter contact needed.
+5. **If the peer's `StatusResponse` carries `Role::unknown`:** both sides are undecided. Both send `ArbitrationReport` to arbiter (primary first, secondary as fallback).
+6. arbiter receives both reports and issues `ArbitrationDecision` assigning leader and follower deterministically by lowest `instance_id`, and sets the epoch for this generation.
+7. Both nodes adopt their assigned roles and the arbiter connection is closed.
 
 #### Post-Election Steady State
 
@@ -378,28 +382,27 @@ Rules:
 
 #### Restart Flow
 
-When a node restarts it connects to the peer and exchanges `StatusQuery`/`StatusResponse`. If the peer's `StatusResponse` carries `Role::leader` and a higher epoch, the restarting node adopts `Role::follower` without contacting DR.
+When a node restarts it connects to the peer and exchanges `StatusQuery`/`StatusResponse`. If the peer's `StatusResponse` carries `Role::leader` and a higher epoch, the restarting node adopts `Role::follower` without contacting arbiter.
 
 #### Leader Death and Follower Promotion
 
 On heartbeat loss:
 1. The surviving node first attempts to reconnect to the peer.
 2. If reconnection succeeds: exchange `StatusQuery`/`StatusResponse`; the epoch resolves roles as normal.
-3. If reconnection fails, the peer is presumed dead:
-   - **Lowest `instance_id` node:** promotes itself to leader and increments its epoch by 1.
-   - **Highest `instance_id` node:** enters a degraded waiting state. Does NOT promote itself.
+3. If reconnection fails, the peer is presumed dead. The surviving node sends `ArbitrationReport` to the arbiter requesting promotion. The arbiter checks whether the previous leader's lease has expired; if so, it issues `ArbitrationDecision` granting leadership and assigning the next epoch. The surviving node adopts the leader role only after receiving the decision.
+4. If the arbiter is unreachable, the surviving node cannot promote. It enters a degraded waiting state and continues retrying the arbiter. The system is unavailable for new orders during this window. This is the correct behaviour: without arbiter confirmation that the previous leader is gone, promoting unilaterally risks split-brain.
 
 #### Split-Brain Protection
 
-**Normal startup with DR reachable:** DR is the sole authority and assigns exactly one leader. Split-brain is impossible.
+**Normal startup with arbiter reachable:** arbiter is the sole authority and assigns exactly one leader. Split-brain is impossible.
 
 **One node already established:** The epoch difference immediately resolves this — the restarting node unconditionally adopts follower role.
 
-**Network partition (both nodes alive, link down):** The lowest `instance_id` node promotes and increments its epoch; the highest `instance_id` node enters degraded waiting state and does not promote.
+**Network partition (both nodes alive, link down):** Neither node can promote itself unilaterally (per rule 3). Whichever node can still reach the arbiter requests promotion; the arbiter grants if the other node's lease has expired. If both nodes can reach the arbiter, the arbiter grants to one and refuses the other. If neither can reach the arbiter, both enter degraded waiting state and the system is unavailable until arbiter contact is restored. Split-brain is not possible because no node ever assumes leader role without an `ArbitrationDecision` (or, on cold start, a deterministic arbiter-mediated tie-break).
 
 #### Open Design Questions
 
-- **Epoch at DR site:** The exact interaction between DR-site epoch management and main-site epoch management has not yet been fully specified.
+- **HA has not considered DR yet, the design at the moment is for main site only.**
 - **Heartbeat interval and loss threshold:** Not yet specified. These will be `ReactorConfiguration` parameters.
 
 ---
@@ -834,7 +837,7 @@ The connection retry mechanism is a temporary TCP workaround pending WAL-based b
 6. Call `logger->set_log_level(config.applog_level)` and `logger->set_syslog_level(config.syslog_level)`
 7. Move logger into application class constructor (logger no longer constructed inside the app class)
 
-**Rationale** — this design avoids the mistake made at work where logging is unavailable until after config is read (because the log filename comes from the config). Here the log filename comes from the command line, so logging starts immediately and config errors are recorded in the log rather than only printed to stderr.
+**Rationale** — this design avoids a common pitfall where logging is unavailable until after config is read (because the log filename comes from the config). Here the log filename comes from the command line, so logging starts immediately and config errors are recorded in the log rather than only printed to stderr.
 
 **Config changes** — all four application configs gain required `[logging]` section:
 ```toml
@@ -850,15 +853,80 @@ Both fields are required. There are no optional config fields — making a field
 
 ## WAL and HA Design (planned)
 
-Designed in conversation, not yet implemented. This section captures the architecture so subsequent sessions can refer back to it. The implementation is staged into nine vertical slices, listed at the end.
+Designed in conversation, not yet implemented. This section captures the architecture so subsequent sessions can refer back to it. The implementation is staged into vertical slices, listed at the end.
 
 The design follows the convergent pattern that Aeron Cluster, Kafka, Raft, and database checkpointing all arrive at: **separate the irreversible decision (WAL commit) from its replayable effects (ME state, ERs, FIX out).** The WAL is authoritative; everything downstream is reconstructable from it. Followers observe commits, never infer them. Leadership decides who may append; the WAL decides what already happened. Those two concerns must never leak into each other.
 
+### Glossary -- terms that must not be confused
+
+The framework uses two pairs of terms with strict, non-overlapping meanings. Confusing them is a recognised source of bugs in HA systems generally; the discipline matters more than the exact words chosen.
+
+- **primary / secondary**: configured identity, set in the toml at deploy time, never changes for the life of an instance. Primary has the lower `instance_id`. Used only for deterministic tiebreaking on cold start when no instance currently holds a valid lease and the arbiter is being asked to assign initial leadership.
+- **leader / follower**: runtime role, determined by the arbiter's lease grant. Either configured primary or configured secondary can be leader at any given moment. Code paths that perform commit / forward / publish actions check the lease state, not the configured identity.
+- **active / standby**: NOT USED. These terms ambiguously refer to either configured identity or runtime role and are a permanent source of confusion when discussing HA. Always use one of the two more specific terms above.
+
+In the happy path, primary is leader and secondary is follower. After a primary failure and successful failover, secondary becomes leader (still configured as secondary). After the original primary recovers and rejoins, it becomes follower (still configured as primary). A graceful failback is an operational choice, not automatic.
+
+### Decision log
+
+What is decided, what is leaning, what is open.
+
+**Decided:**
+
+- Per-component HA, no central broker. Each component pair (sequencer pair, ME pair, etc.) has its own primary-secondary instances, its own state replication, its own arbitrated failover. Components do not share a runtime broker; they share framework-level HA *primitives* (data structures and protocols) but compose them independently.
+- Lease + epoch arbitration. The arbiter holds leadership state; leaders renew via heartbeat; failover requires arbiter consultation, not unilateral promotion. (See "Leader-Follower Protocol" subsystem section above for the DSL-level mechanism.)
+- The arbiter is itself HA, in a Primary+Secondary+Witness (PSA) topology. Two full arbiter instances each hold a copy of the leadership-state map; one third small witness machine holds no state but votes on which of the two arbiters is currently active. The witness machine must be in a failure-independent location relative to the two arbiters: different power supply, different network switch, ideally different network segment. Three votes total means a majority is two; this prevents split-brain in network partitions. Three machines is the structural minimum and stays at three -- adding more witnesses degrades the design rather than improving it (four votes means three needed for majority, so any single failure becomes catastrophic). See "Arbiter PSA topology" section below for the protocol mechanics.
+- WAL is segmented, mmap'd, single-writer. Format: `[ magic | length | seqNo | payload | checksum ]`. Replay scans from offset 0 and stops at first failure. Tail corruption equivalent to a clean crash before commit.
+- No `fsync` per WAL append. Disk durability is out-of-band (segment rotation, snapshot writes, periodic flusher). Cross-machine durability comes from replication, not from disk.
+- Two-tier commit: locally durable (CPU coherence via store-release on commit offset) gates the leader's send to the ME. Replicated (follower has acked over the dedicated replication channel) gates the leader's emission of ERs back to the gateway.
+- Gateway and ME each open TCP connections to **both** sequencer instances at startup, and keep both open. Sends go only to the current leader. Non-leader rejects at the application layer.
+- FixSession ↔ ClOrdID mapping moves from gateway to sequencer's WAL. Routing on `(SenderCompID, TargetCompID)` rather than ConnectionID, so that a fix8 client reconnecting (possibly to a different gateway in the gateway pool) is naturally addressable.
+- ME failover policy is **halt-on-failure** as the operational baseline, with seamless ME failover deferred as a future feature (see "ME failover policy" section below). This matches the published behaviour of LSE Millennium when its mirror process does not take over, and avoids the determinism investment that lockstep replication requires.
+- Integer-only prices and quantities. All price/qty values multiplied by a constant (e.g. 1,000,000) to avoid floating-point determinism hazards. Common practice in matching-engine implementations and a hard rule for this framework.
+- Dual rolling snapshots. Truncation gated by the older trusted snapshot, never the newest one just taken. Validation required before promotion.
+- Halt as the correct response to several specific failure modes (WAL mid-segment corruption, both arbiter halves unreachable during a failover, snapshot validation failure on the only available snapshot). Halt is conservative and unambiguous; it is preferred over clever recovery in scenarios where correctness cannot be proven.
+- Time synchronisation via PTP (IEEE 1588), not NTP. Cross-machine clocks must agree to sub-microsecond accuracy for lease checks, timestamps, and ordering. PTP is operational infrastructure the framework relies on; it is not implemented inside the framework. See "Time synchronisation and clock skew" section below.
+- Local interval measurement uses `CLOCK_MONOTONIC` (already in `HighResolutionClock`). `CLOCK_MONOTONIC_RAW` was considered and rejected: it is unaffected by NTP/PTP slewing, but that is a disadvantage rather than an advantage for interval timers, since intervals can drift from real-world expectations on long-running processes if the underlying TSC is inaccurate.
+- Clock injection. Components that need to read time will take a `MonotonicClock&` or `WallClock&` constructor parameter rather than calling `HighResolutionClock::now()` directly. Concrete motivator: GTD (Good-Til-Date) order support in the matching engine requires replay-deterministic clock reads, which only injection makes possible. Planned as a dedicated session of work; not blocking any HA slice but to land before the ME grows GTD or any other time-dependent logic. See "Clock injection" section below.
+- Two distinct timer mechanisms, kept separate. Local OS `timerfd` for infrastructure timers (idle timeouts, connect retries, lease heartbeats, backstop, FIX logon timeout) -- these are not observable to matching logic, do not need replay determinism, and stay as `timerfd`. Sequencer-mediated timers for ME-domain timer events (GTD expiry, auction expiry, self-trade prevention windows when added) -- these are replay-critical and travel through the WAL alongside orders. See "Timer sourcing" section below.
+
+**Leaning:**
+
+- Per-component HA primitives provided by the framework: a `WAL` data structure, a replication-channel pattern, an arbiter-client API, a fencing-discipline helper. Each component composes these into its own HA strategy. Avoids "every component implements HA differently with different bugs".
+
+**Open:**
+
+- Mechanism for the arbiter's own internal HA. The arbiter holds the leadership state for every component pair and is itself HA via a PSA+witness topology (two full arbiters plus one witness, see Decided above). The two arbiter instances must keep their leadership-state cell in sync; the witness must participate in tiebreaking when network partitions affect the arbiter pair. The intent is to build this from scratch using the same lease+epoch pattern the framework uses elsewhere, with replication between arbiter primary and secondary over a dedicated TCP channel and a small voting protocol involving the witness. Consensus libraries (NuRaft, braft) are explicitly *not* the chosen path -- see "Discussion: consensus libraries vs. lease+epoch" below for the trade-off analysis. The decision is recorded as Open because the PSA+witness lease+epoch approach has not yet been designed in detail; if the design surfaces problems that hand-rolled approaches cannot cleanly solve, the consensus-library path may need to be reconsidered.
+- Sub-second failover target for the sequencer: how aggressively to tune lease and heartbeat intervals. Tighter intervals trade arbiter availability for failover speed. The framework should make this tunable via `ReactorConfiguration` rather than baking in a number.
+- DR site topology. Currently the design is main-site only. DR will require additional design work (a separate site, separate machines, presumably its own arbiter pair, its own sequencer pair, and a cross-site replication strategy). Out of scope until the main-site design is implemented.
+- Multi-instrument scaling. A real exchange runs hundreds to thousands of instruments. Single sequencer for everything, sharded sequencer per instrument group, or sequencer per instrument? Each has different failover and replay implications. Not in the immediate slicing plan.
+
+### Architecture: per-component HA with shared primitives
+
+Every component that participates in HA has a primary instance and a secondary instance, each on its own machine. Within the pair, exactly one instance is leader at any moment (when the arbiter is reachable) and the other is follower. Failover between the pair is mediated by the arbiter via lease+epoch.
+
+The framework provides reusable primitives:
+
+- **WAL data structure**: segmented, mmap'd, single-writer, replayable.
+- **Replication channel**: leader-pushes-follower-acks pattern over a dedicated TCP connection.
+- **Arbiter client API**: `claim_leadership`, `renew_lease`, `query_current_leader`, `release_leadership`.
+- **Fencing-discipline helper**: a check-the-lease-before-acting wrapper that components use on every committed action.
+- **Snapshot mechanism**: dual rolling snapshots with validation.
+
+Each component composes these primitives into its own HA strategy. The state shape that gets replicated differs by component:
+
+- The **sequencer** has the richest state: order log, FIX session map, per-gateway delivery cursors, sequence-number authority. Its WAL holds an event log plus periodic cursor records. This is the most state-rich case and most of the rest of this section discusses it.
+- The **ME** has either no replicated state (halt-on-failure baseline; book is rebuilt by replay from the sequencer's WAL on any restart) or, in the future seamless-failover case, a replicated book derived from processing the sequencer's order stream in parallel.
+- A **gateway pool** consists of multiple gateway instances, each fronting some subset of FIX sessions. This is not primary-secondary HA in the same sense; it is N-way pooled. Gateway machine failure causes affected FIX sessions to reconnect to a different gateway. See "Gateway pool" below.
+- Future components (downstream forwarders, market-data publishers, risk gateways, etc.) follow the sequencer pattern with simpler state -- typically just a position cursor in the sequencer's output stream.
+
+The arbiter is itself a small distributed system: two full arbiter instances (primary + secondary) plus one witness, in a PSA topology. Each full arbiter holds a copy of the leadership-state map; the witness holds no state but votes in elections of which of the two arbiters is the currently-active one. The arbiter does *not* use the framework's WAL+replication primitives because it would be circular (the primitives depend on the arbiter); the arbiter uses its own internal mechanism, intended to be the same lease+epoch pattern the framework uses elsewhere, with replication between arbiter primary and secondary over a dedicated channel. See "Arbiter PSA topology" section below for the protocol mechanics, and "Discussion: consensus libraries vs. lease+epoch" below for why a third-party consensus library was considered and rejected.
+
 ### Authority and roles
 
-- **Sequencer + WAL = authority.** The sequencer assigns seqNo and appends to the WAL. The WAL append (via store-release on the commit offset) is the single irreversible act in the system. Before that store, an order does not exist; after it, the order is permanent and globally visible.
-- **Matching Engine = pure consumer.** The ME has no independent state, no persistence of its own, no FIX-side effects. It receives orders in seqNo order from the leader, mutates a book in memory, emits ERs back. The book is reconstructable by replaying the WAL, so an ME crash means "throw it away and replay from the leader's WAL".
-- **FIX Gateway = edge translator.** Translates FIX wire to/from PDUs. Holds no FixSession→ClOrdID map (that lives in the sequencer's WAL — see below). Routes ERs to whichever FIX session corresponds to the ConnectionID embedded in the ER PDU by the sequencer.
+- **Sequencer + WAL = authority.** The leader sequencer assigns seqNo and appends to the WAL. The WAL append (via store-release on the commit offset) is the single irreversible act in the system. Before that store, an order does not exist; after it, the order is permanent and globally visible to followers and consumers reading the WAL.
+- **Matching Engine = pure consumer.** Under the halt-on-failure baseline, the ME has no independent state, no persistence of its own, no FIX-side effects. It receives orders in seqNo order from the leader sequencer, mutates a book in memory, emits ERs back. The book is reconstructable by replaying the WAL, so an ME crash means "throw it away and replay from the leader's WAL". (Under the future seamless-ME-failover design, both ME instances build the book in parallel and the secondary's outputs are accepted on primary failure. The architectural authority is still the sequencer's WAL.)
+- **FIX Gateway = edge translator.** Translates FIX wire to/from PDUs. Holds no FixSession→ClOrdID map (that lives in the sequencer's WAL). Maintains a small comp-id → ConnectionID table for the FIX sessions currently established on this gateway. Routes ERs by looking up the comp-id pair the sequencer addresses in the ER PDU.
 
 ### State location (changed from current)
 
@@ -868,12 +936,7 @@ In session 15's working system, the gateway holds `cl_ord_id_to_session_` mappin
 - The gateway becomes near-stateless. On a gateway restart, it does not lose ER routing capability, because that information lives in the sequencer's WAL.
 - After failover, the new sequencer leader has the routing map by virtue of WAL replay.
 
-**Subtlety -- ConnectionID is not stable across reconnects.** A fix8 client logging out and back in gets a new ConnectionID. Two options for how the sequencer addresses an ER target:
-
-- (a) Route on `(SenderCompID, TargetCompID)` -- natural FIX-level addressing. The gateway maintains a small per-comp-id table mapping to the current ConnectionID, and the sequencer addresses ERs by comp-id.
-- (b) Route on ConnectionID. Accept that an ER for a session that has reconnected is undeliverable.
-
-(a) is more robust and is the chosen option. The gateway's job is "translate comp-id ↔ ConnectionID for the current FIX session"; the sequencer's WAL holds comp-id-keyed routing.
+**Subtlety -- ConnectionID is not stable across reconnects.** A fix8 client logging out and back in gets a new ConnectionID. The chosen approach is to route on `(SenderCompID, TargetCompID)` -- natural FIX-level addressing. The gateway maintains a small per-comp-id table mapping to the current ConnectionID, and the sequencer addresses ERs by comp-id. The fix8 client reconnecting (possibly to a different gateway in the gateway pool, possibly to the same one with a new socket) is naturally addressable; the new gateway tells the sequencer "I now hold the FIX session for `(CompA, CompB)`" and the sequencer's map updates.
 
 ### WAL format and segmentation
 
@@ -911,6 +974,132 @@ Both the gateway-to-sequencer connection and the ME-to-sequencer connection drop
 **Per-leg cursors.** The gateway maintains "last sent order seqNo" and "last received ER seqNo" cursors per sequencer instance. On reconnect, the new leader and the gateway exchange cursor positions and replay any gap. The sequencer's WAL holds matching state: "last delivered ER per gateway ConnectionID" or equivalent. This means **the WAL holds two record kinds** -- order/ER events (the data) and delivery cursors (the per-peer progress). Cursors are written periodically rather than per-record, keeping WAL volume reasonable.
 
 Reconnect-and-replay is conceptually similar to FIX's own sequence-number resend mechanism, one layer down.
+
+### Gateway pool
+
+Gateway HA differs from sequencer HA. A FIX session is a TCP connection with a counterparty; that connection is intrinsically tied to the gateway machine that holds it. When a gateway dies, the connection is gone and the FIX client must re-establish.
+
+This is not catastrophic, because:
+
+- FIX has built-in resend semantics. The user reconnects with their last received sequence number; the gateway side replays anything missed.
+- A pool of gateway machines shares the FIX session load. Each FIX session is pinned to one gateway, but if that gateway dies, the user reconnects to a different gateway in the pool.
+- The user-visible interruption is the time taken for the FIX client to detect the dead connection and re-establish. Typically seconds, not transparent failover.
+
+So the gateway pool is **N-way pooled redundancy**, not primary/secondary HA. Failure mode is "user reconnects to a different gateway"; not "gateway-secondary becomes leader transparently". The downstream sequencer must be designed for this: when a user's FIX session lands on a different gateway after a gateway failure, the sequencer's `(SenderCompID, TargetCompID)` routing naturally points the next ER to the new gateway, since the new gateway has registered the FIX session with the sequencer on the user's reconnect.
+
+This is why the FixSession ↔ ClOrdID mapping must live in the sequencer rather than the gateway: gateway-pool failures must not lose ER routing.
+
+### Failover speed targets
+
+What "fast" means depends on the component. Targets below are aspirational; the framework should expose tuning parameters via `ReactorConfiguration` rather than hard-coding.
+
+| Component | Failover target | Notes |
+|---|---|---|
+| Sequencer leader → follower | Sub-second; tens of milliseconds aspirational | Drives lease length (~200-500ms) and heartbeat interval (~50-100ms). Tighter intervals trade arbiter availability for failover speed. |
+| ME crash | Halt-on-failure baseline | Cancel all open orders, halt market for the affected partition, restart cleanly. Matches LSE Millennium's published behaviour when its mirror process does not take over. Seamless ME failover (sub-millisecond) is a future feature, not a present requirement. |
+| Gateway machine failure | Seconds (FIX reconnect to another gateway in the pool) | Inherent to the gateway-pool design. FIX-level resend covers any gap. |
+| Arbiter failure | Tolerated for the lease window | If primary arbiter dies and secondary is up, secondary takes over via internal arbiter HA. If both arbiters are unreachable, leader continues operating until lease expiry; system becomes unavailable for new orders thereafter. |
+| WAL disk full | Immediate halt | Sequencer gates ingress instantly. No "best effort" continuation. Operator action required. |
+
+Fast failover for the sequencer requires active health-checking, not just TCP-level dead-peer detection. The gateway and ME must heartbeat to the sequencer at sub-lease-length intervals, and treat heartbeat loss as failure rather than waiting for TCP to notice. This is a per-component cost on every healthy interval, traded for fast detection of failure.
+
+### Time synchronisation and clock skew
+
+Several mechanisms in this design depend on clocks across different machines agreeing closely:
+
+- **Lease expiry checks.** The arbiter grants a lease with an absolute expiry time. The leader checks its own clock against that expiry. Skew between leader and arbiter can produce two failure modes: a leader stepping down too early (skew makes its clock think the lease has expired before the arbiter does), or worse, a leader continuing to act past expiry (skew makes its clock think the lease is still valid after the arbiter has already granted leadership to the secondary). The latter is a split-brain risk.
+- **TransactTime on ERs.** Auditors and downstream consumers expect timestamps from different machines to be in a sensible total order. Skew between the sequencer, the ME, and any timestamping component produces audit anomalies.
+- **Heartbeat liveness detection.** "I haven't heard from you in N milliseconds" means roughly the same thing on both endpoints only if their clocks agree.
+- **WAL entry and snapshot boundary timestamps.** Replay across machines (including cross-site DR replay in the future) needs timestamps to order events meaningfully.
+
+The intended solution is **PTP (Precision Time Protocol, IEEE 1588)**, not NTP. PTP delivers sub-microsecond synchronisation across a properly configured local network, vs NTP's millisecond-to-tens-of-milliseconds best case. With PTP, the lease length needs only a small safety margin above expected maximum skew, and the split-brain risk from skew effectively vanishes for any realistic lease length.
+
+PTP works best with:
+
+- Hardware-timestamped NICs (the timestamp is captured by the NIC at packet ingress/egress, not by software).
+- A grandmaster clock on the local network, typically GPS-disciplined.
+- Boundary or transparent clocks on switches between grandmaster and consumers.
+
+This is operational infrastructure that real exchanges already run as standard. The framework relies on it being present and working, but does not implement PTP itself.
+
+**Framework discipline around clocks:**
+
+- Use `CLOCK_MONOTONIC` for hot-path interval measurement (heartbeat timers, timeout checks). It never goes backwards and is unaffected by wall-clock adjustments such as leap seconds. Its rate is gently slewed by NTP/PTP to track real wall-clock time, which keeps interval expectations accurate even on long-running processes. (`CLOCK_MONOTONIC_RAW` is *not* slewed, but is rarely the right choice -- intervals measured against it can drift from what one would expect of a "second" if the underlying TSC is inaccurate.) The framework's `HighResolutionClock` already uses `CLOCK_MONOTONIC`.
+- Use `CLOCK_REALTIME` (PTP-disciplined) for cross-machine timestamps such as lease expiry, WAL entry timestamps, and TransactTime fields.
+- Lease grants from the arbiter should ideally include both an absolute expiry time *and* a TTL ("expires at T, or after N seconds from when you receive this, whichever comes first"). The leader can use whichever frame is safer locally. Open question whether to implement both.
+
+**Operational monitoring:**
+
+The intent is a Nagios-based health monitor (or equivalent) that checks PTP status on every machine and alerts on:
+
+- PTP offset exceeding a threshold (e.g. 10 microseconds).
+- Loss of PTP synchronisation (the local `ptp4l` or `phc2sys` is not synchronised to a master).
+- PTP master reselection events (a boundary clock has flipped to a different master), which can briefly disturb the local clock.
+- Drift between `CLOCK_REALTIME` and the PTP hardware clock.
+
+This is *monitoring*, not *prevention*. The framework still needs to tolerate skew within a documented bound. If skew exceeds that bound, the alert escalates and operators intervene before the system fails. This is the same operational discipline that exchanges already apply to their existing infrastructure.
+
+**What the framework does NOT do:**
+
+- It does not implement PTP. It assumes PTP is in place.
+- It does not attempt to detect or correct skew at runtime. That is the operating-system and PTP daemon's job.
+- It does not fail over because of clock skew alone. Skew is detected by monitoring; the framework's failure detection is heartbeat-based, and heartbeats are tolerant of small clock differences.
+
+This thinking is embryonic and will be revisited when slice 8 (the arbiter) lands and lease-expiry handling is implemented.
+
+### Clock injection
+
+**Planned.** Components that need to read time will take a clock interface as a constructor parameter rather than calling `HighResolutionClock::now()` directly. Aeron uses this pattern (an `EpochClock` / `NanoClock` interface) and it pays back in several ways:
+
+- **Testability.** Tests inject a mock clock whose `now()` is controllable. The lease-expiry boundary, heartbeat-loss detection, and any other time-sensitive code path can be exercised deterministically without relying on real wall time.
+- **Replay determinism.** Replay uses the timestamps recorded in the WAL, not the current wall time, by injecting a clock that returns the recorded timestamps. The replayed ME sees the same view of time as the original ME.
+- **Lockstep ME operation.** If ME-primary and ME-secondary process the same stream in parallel (the future seamless-failover model), both must see identical timestamps for any operation that touches a clock. Injection lets both read from the same authority rather than each calling its own local clock.
+- **Single point of swap.** Changing the underlying clock implementation later (e.g. switching to a hardware PTP timestamp source) is one class change rather than touching every call site.
+
+**Concrete near-term motivator: Good-Til-Date (GTD) orders.** The matching engine is expected to support GTD: orders that remain on the book until a specified date and then cancel. GTD requires the ME to consult time, and that consulting must be replayable -- which means the clock the ME reads must be injectable, so that replay can substitute a clock returning the WAL-recorded timestamp rather than the current wall-clock time. Without injection, GTD orders cancel at *replay time* rather than at the *original time*, and the rebuilt book diverges from the original.
+
+The framework currently calls `HighResolutionClock::now()` directly in roughly a hundred places (timer arming, idle-connection checks, lifecycle timestamps). The retrofit involves introducing a `MonotonicClock` and `WallClock` interface pair, a `SystemMonotonicClock` / `SystemWallClock` default implementation, and threading clock references through component constructors. This is a dedicated session of work; it does not block any HA slice but should land before the matching engine grows GTD or any other time-dependent logic.
+
+### Timer sourcing
+
+Two distinct timer mechanisms are needed, with different requirements and different implementations.
+
+**Local OS `timerfd` events** -- the existing mechanism, fired in the reactor thread of whichever component owns them -- remain the right and intended choice for **infrastructure timers**. These are timers whose firing is *not* observable to the matching logic and which therefore do not need replay determinism or cross-machine consistency. They have legitimate, ongoing use:
+
+- Idle-connection timeout in `InboundConnectionManager`.
+- Connect-retry backoff in `OutboundConnectionManager`.
+- Backstop timer in the `Reactor`.
+- Lease-heartbeat in arbiter clients (when the arbiter slice lands).
+- Logon timeout in FIX session establishment.
+
+These timers fire when the local kernel decides, with no need for the wider system to know. Replacing them with sequencer-mediated timers would add latency and complexity without any correctness gain. They stay as `timerfd`.
+
+**Sequencer-mediated timers** are needed for **ME-domain timers** -- events whose firing *is* observable to the matching logic and which therefore must be replayable. The timer event itself becomes part of the sequencer's input stream: the sequencer assigns it a seqNo, appends it to the WAL, replicates it, forwards it to the ME alongside orders. The ME sees it as just another ordered event in the stream.
+
+The concrete near-term motivator is **Good-Til-Date (GTD) orders**: an order that remains on the book until a specified date and then cancels. The cancellation event must be replayable -- if it isn't, replay produces a different book state than the original (the order would still be on the replayed book if the replay is mid-stream, or would cancel at the wrong seqNo if local clocks were used during replay). Other examples that will eventually need this pattern:
+
+- Auction expiry events.
+- Self-trade prevention windows where orders within a small time delta cannot match.
+
+For sequencer-mediated timers, the cost is higher latency on the timer fire (the event has to go through the sequencer's WAL, replication, and forward to ME) but the gain is total determinism: timer events are in the WAL alongside orders, in deterministic seqNo order, and replay produces identical book state.
+
+The framework currently has no ME-domain timers. When GTD or any other time-dependent ME logic is added, the implementation will need: a way to register pending timer events with the sequencer, a sorted-by-time data structure in the sequencer holding pending events, and a wake-up mechanism that translates "this pending timer's fire time has arrived" into "inject this event into the order stream at the next available seqNo". The wake-up mechanism itself can be a local `timerfd` inside the sequencer -- the local timerfd fires "wake up and check pending timers", and the sequencer responds by appending one or more timer events to the WAL. The fire of the local timerfd is not observable to anyone outside the sequencer; it is just the mechanism by which the sequencer notices that time has passed.
+
+Out of scope until the ME grows GTD or another time-dependent feature, but the design is recorded here so it is not forgotten when the time comes.
+
+### ME failover policy
+
+The ME failover policy is the most consequential design choice in the HA architecture, because it determines the determinism investment required of the matching-engine logic. Three options exist:
+
+- **(a) Slow seamless failover.** ME-secondary cold-starts, loads state from the sequencer's WAL, replays. Tens of seconds to minutes depending on instrument count and warm-up cost. Rejected: too slow for an exchange.
+- **(b) Fast lockstep failover.** Both ME instances process the sequencer's input stream in parallel using deterministic logic. Both produce identical book state at every instant. Failover is "stop discarding the secondary's outputs and start using them". Sub-millisecond failover possible. Requires deterministic ME logic: no system clocks on the hot path, no random numbers, no FP edge cases, no parallelism that doesn't preserve ordering.
+- **(c) Halt-on-failure.** ME-primary dies, secondary is not used (or doesn't exist), market halts for the affected partition. Operators perform orderly cancel-and-restart. Trading resumes after a recovery window.
+
+**The chosen baseline is (c) halt-on-failure.** This matches the published behaviour of LSE Millennium when its mirror process does not take over. It is conservative, unambiguous, and avoids the determinism investment that lockstep replication requires.
+
+**(b) is documented as a future aspiration.** When the framework is mature and a specific deployment requires seamless ME failover, the determinism work can be undertaken at that point. The integer-only price/qty rule (already adopted) removes one major hazard. Other hazards -- timestamping, hash-iteration order, parallel work scheduling -- would need careful design.
+
+Neither (b) nor (c) is the right answer for all deployments. The framework should make it possible to choose, but the proof-of-concept implementation builds (c).
 
 ### Snapshots
 
@@ -956,136 +1145,279 @@ Each of the following is a designed-for case, not a "this might happen and we'll
 
 ### Arbiter
 
-The arbiter is **off the critical data path**. It holds a single cell: `(leader_id, epoch, lease_expiry)`. The leader sends heartbeats to the arbiter to renew its lease. The arbiter never participates in order processing.
+The arbiter is **off the critical data path**. It holds leadership state for each component pair: `(component_id, leader_instance_id, epoch, lease_expiry)`. Leaders heartbeat to the arbiter to renew their lease. The arbiter never participates in order processing.
 
-On leader-failover the follower asks the arbiter "am I the new leader?". The arbiter performs an atomic compare-and-swap: if the old leader's lease has expired and the requester's proposed epoch is greater than the current, it grants and bumps the epoch. On revival, the old leader sees its epoch is stale and steps down.
+**The arbiter is itself HA.** It is deployed as a PSA+witness three-machine topology (two full arbiter instances and a witness) so that the arbiter can survive a single-machine failure without losing the leadership-state map. See "Arbiter PSA topology" subsection below for the protocol details.
 
-This is the **fencing token / epoch / leader-epoch** pattern (same family as Raft term, Kafka leader-epoch, Chubby/ZooKeeper epoch). It is dramatically simpler than full Raft because there is no log-replication-by-quorum; the WAL replication is a separate point-to-point channel. The arbiter is just leader-election + fencing, a few hundred lines of code at most.
+On leader-failover, the surviving instance of a component pair contacts the arbiter and requests promotion via an `ArbitrationReport`. The arbiter performs an atomic compare-and-swap: if the old leader's lease has expired, it grants the request, bumps the epoch, and records the new leader. The old leader on revival sees its epoch is stale and steps down. (See "Leader-Follower Protocol" subsystem section above for the wire-level protocol.)
 
-If the leader is alive and the arbiter is unreachable, the leader continues. If the leader has died and the arbiter is also unreachable, the follower cannot promote -- this is the correct behaviour to avoid split-brain.
+This is the **fencing token / epoch / leader-epoch** pattern (same family as Raft term, Kafka leader-epoch, Chubby/ZooKeeper epoch).
 
-The arbiter is built from scratch (not etcd / Consul / ZooKeeper / Raft). Off-the-shelf packages are out of scope.
+### Arbiter PSA topology
+
+The arbiter is itself HA, using a Primary-Secondary-Arbiter (PSA, also called Primary-Secondary-Witness) topology with three machines:
+
+- **Arbiter primary** -- a full arbiter instance, holds the leadership-state map for every component pair.
+- **Arbiter secondary** -- a full arbiter instance, holds a replicated copy of the leadership-state map.
+- **Witness** -- a small process that holds no state but participates in elections by voting on which of the two full arbiters is currently the active one.
+
+Three votes total; majority is two; any single failure can be tolerated; split-brain is prevented by majority arithmetic.
+
+This is the same shape MongoDB uses for its replica sets when there are only two data-bearing members. The pattern is well-understood and operationally familiar.
+
+**Failure-independence requirement (critical):**
+
+The witness machine must be in a *failure-independent* network and power location relative to the two arbiter machines. Specifically:
+
+- Different power supply / UPS / power circuit. A single power event must not be able to take down a full arbiter and the witness simultaneously.
+- Different network switch. A single switch failure must not isolate a full arbiter and the witness from each other.
+- Ideally a different network segment / VLAN / rack. A single rack-level event (top-of-rack switch failure, rack power failure) must not affect the witness if it affects an arbiter.
+
+A common Mongo PSA failure mode is the witness sharing infrastructure with one of the data-bearing nodes: when the shared component fails, the cluster effectively becomes 1-of-2 instead of 2-of-3, the surviving arbiter cannot reach a majority, and failover is impossible at the moment it is most needed. This must not happen here. The witness's value depends entirely on it being in a failure-independent location.
+
+**Why exactly three machines, and not four or more:**
+
+PSA is a 3-vote design and stays 3-vote. Adding a second witness would make it 4 votes, requiring 3 for majority, meaning *any* single failure leaves the cluster below majority. This is worse, not better, than the 3-machine configuration. Counterintuitive but mathematically correct: the right way to add redundancy is to upgrade to 5 machines (full Raft cluster of 4 data-bearing + 1 witness, or 5 data-bearing nodes), not to bolt extra members onto a PSA. For this framework's purposes, 3 machines is the chosen design and stays at 3.
+
+**The witness must run the protocol correctly:**
+
+The witness machine is small but it is on the critical path for failover decisions. It must be reliable, well-monitored, on a healthy network, and running the same operational discipline (PTP synchronisation, monitoring alerts, etc.) as the arbiter machines. Treating the witness as second-class hardware is a common Mongo PSA mistake -- the cluster makes the wrong decision at election time because the witness is too slow or unreliable to participate properly.
+
+**External protocol (components contacting the arbiter pool):**
+
+- Components have a configured list of arbiter contact addresses: arbiter primary, arbiter secondary. (The witness is *not* in this list. Components never contact the witness directly.)
+- Components try each address in turn until one responds.
+- The arbiter that accepts the connection either grants the leadership decision (if it is the currently-active arbiter) or replies "I am not the active arbiter; the active arbiter is X" (if it is the passive arbiter, knowing this from the internal protocol below).
+- If the named active arbiter is unreachable (e.g. it has just died), the requester retries the original list, eventually finding the new active arbiter after the internal failover completes.
+
+**Internal protocol (within the arbiter pool):**
+
+- Active arbiter heartbeats to passive arbiter (carrying state replication: the leadership-state map kept in sync) and to witness (liveness only).
+- Passive arbiter heartbeats to witness (liveness only).
+- On active-arbiter heartbeat loss as observed by passive arbiter: passive arbiter does *not* promote unilaterally. It asks the witness "have you also lost the active arbiter?".
+  - If witness confirms ("yes, I have also not heard from active in N seconds"): passive arbiter promotes itself to active, notifies witness of the new state, and begins serving leadership decisions.
+  - If witness disagrees ("I just heard from active recently"): passive arbiter does not promote. The active arbiter is still alive, just unreachable from passive's specific network position. Passive enters a degraded state and continues to retry.
+  - If witness is unreachable from passive's perspective: passive arbiter cannot promote. The system cannot fail over until either witness contact is restored or active arbiter contact is restored. This is the operational limitation noted below.
+
+**Symmetric-partition handling:**
+
+If the two arbiters lose contact with each other but both can reach the witness:
+- Each asks the witness who is currently active.
+- Witness's view is authoritative. Whichever arbiter was active continues; the other stays passive.
+
+If only one arbiter can reach the witness:
+- That arbiter becomes (or remains) active. The other cannot promote without witness contact and stays passive.
+
+If neither arbiter can reach the witness:
+- Neither can promote. The system continues with the previously-active arbiter for the remainder of its lease window, then becomes unavailable for new failover decisions.
+
+**Operational limitation:**
+
+Witness outage during arbiter failover means the system cannot fail over the arbiter pool. The witness is itself a SPOF for the *arbiter-pool failover decision* (not for steady-state operation, where the active arbiter continues to serve leadership decisions to component pairs as normal). A complete answer to this would require redundancy in the witness, but adding witness redundancy degrades the topology mathematically as described above. The accepted operational discipline is: monitor the witness aggressively, repair witness outages quickly, and accept that during a witness outage the arbiter pool itself cannot fail over.
+
+The arbiter slice (slice 8) is where this gets implemented. Earlier slices treat the arbiter as a single-instance external service for testing purposes; the PSA+witness topology only matters once the arbiter itself is real.
+
+**Continuing operation when the arbiter pool is unavailable:**
+
+If the leader of a non-arbiter component is alive and the active arbiter is unreachable, the component leader continues for the lease window (typically tens of seconds; possibly sub-second for tighter tuning). If the entire arbiter pool is unavailable -- both full arbiters and witness all unreachable -- no failover decision can be made and a failure of any component leader during this period leaves the system unavailable until arbiter contact is restored. This is the correct behaviour: no leader can claim leadership without arbiter authorisation, and split-brain is therefore prevented.
+
+### Discussion: consensus libraries vs. lease+epoch
+
+The leader-election problem the arbiter solves is well-studied. Several mature consensus protocols exist (Raft, Multi-Paxos, Viewstamped Replication) and several open-source implementations of these protocols exist in various languages. The framework's chosen approach -- primary/secondary/arbiter with hand-rolled lease+epoch -- deliberately avoids using these. This section names the trade-off honestly.
+
+**Why not use a Raft library:**
+
+- C++ Raft implementations are less mature than their Java or Go counterparts. NuRaft (eBay) and braft (Baidu) are the most credible; both are in production use at their respective companies. NuRaft v3 is approximately a year old at time of writing and contains significant fixes from earlier versions, suggesting the implementation is still evolving in non-trivial ways. Whether this counts as "not yet mature enough" depends on the bar one is setting; for a personal project that aspires to production-grade exchange semantics, the bar is high.
+- A library dependency means inheriting bugs the project did not write. A subtle Raft bug discovered at 3 a.m. in production would require debugging code the project's author did not author, in a protocol the project's author cannot easily reason about from first principles. This is a real operational cost.
+- Implementing Raft from scratch is harder than it looks. The original Raft paper is unusually clear, but the protocol has many corner cases (log compaction, snapshot installation, configuration changes, lost-vote handling under partition) and the canonical TLA+ model has been refined multiple times. A from-scratch implementation by one person, part-time, is a multi-year project on its own and would likely contain bugs that only surface under specific failure modes.
+- The framework only needs leader election for one tiny replicated cell (the arbiter's leadership-state map). Pulling in a full consensus library for one cell is overkill in code-size terms even if it would be sound in correctness terms.
+
+**Why the lease+epoch design is reasonable:**
+
+- The state to replicate is genuinely small: a handful of records (one per component pair). Hand-rolled replication of a small cell over TCP is tractable.
+- The deployment topology is fixed and known in advance (two full arbiter instances plus a witness, all on dedicated hardware at the main site, with the witness in a failure-independent location). Many of Raft's complexities (dynamic membership changes, joint consensus during reconfiguration, log catch-up over wide ranges) do not arise.
+- The lease+epoch pattern itself is well-understood and is used in production by Chubby, ZooKeeper sessions, etcd leases, Kubernetes leader election. The pattern is not an invention; only the specific implementation here is hand-rolled.
+- The framework's overall HA design is per-component, with each component pair having its own arbitration. The arbiter is the leadership-decision service for all of them, but it is not itself on the data path. Performance constraints on the arbiter are mild.
+
+**Limitations of the lease+epoch design (named honestly):**
+
+- **No formal correctness proof.** Raft has a TLA+ model that proves safety. The lease+epoch design as constructed here has no such proof. Subtle bugs are harder to rule out by reasoning alone.
+- **The arbiter pool is a PSA+witness three-machine design, not a multi-node Raft cluster.** A 5-node Raft cluster tolerates two simultaneous node failures and continues. The PSA+witness design tolerates one. For most operational scenarios this is fine, but a correlated failure that affects two of the three machines (e.g. the rack containing both an arbiter and the witness) leaves the system unable to make new leadership decisions. Mitigated by failure-independent placement (different power, different network segment) but not eliminated.
+- **The arbiter pool's leader election protocol is hand-rolled, not Raft.** Raft has a TLA+ model that proves safety. The PSA+witness lease+epoch protocol as constructed here has no such proof. Subtle bugs in the symmetric-partition handling or the witness-vote logic are harder to rule out by reasoning alone.
+- **The arbiter pool is required for new leadership decisions.** If all three arbiter pool members (both full arbiters and the witness) are unreachable, no component pair can fail over until at least the active arbiter or a quorum capable of electing a new active arbiter is restored. This is not a single-point-of-failure (no single machine failure causes it) but it is a service-availability dependency: the design requires the arbiter pool to be running for failover decisions to happen. The lease window mitigates this for healthy component leaders (they continue operating until lease expiry) but not for actually-failed component leaders during arbiter-pool outage. In a Raft-based design with five or more cluster members, two simultaneous member failures are invisible.
+- **Sub-second failover is harder.** A short lease (for fast failover) means the arbiter must respond to heartbeats reliably at sub-lease-length intervals. Operationally this puts the arbiter on a tight SLA. Raft has a similar consideration (election timeout) but handles it with quorum-based voting rather than a single-arbiter dependency.
+- **Hand-rolled means hand-tested.** Every failure mode (clock skew, network partition between arbiters, simultaneous-restart, message reordering, duplicated messages, slow links) must be designed for and tested for explicitly. Raft libraries have these tests baked in from years of operational use.
+
+**The decision the project makes:**
+
+Build the lease+epoch arbiter from scratch, with the limitations above named and accepted as the engineering cost. This is the realistic choice for a personal-project framework where library-dependency risk is judged greater than implementation-from-scratch risk. If the design surfaces problems that hand-rolled lease+epoch cannot cleanly solve, this decision can be revisited at slice 8 -- but the default is hand-rolled.
+
+The decision should be re-examined under two conditions:
+
+1. If the project's aspiration shifts from "personal framework" to "candidate for production exchange use", the maturity calculus changes. A library with thousands of production-hours has fewer unknown unknowns than a hand-rolled implementation by one person, even if the library is younger.
+2. If the lease+epoch design hits a corner case that requires solving a sub-problem of consensus (e.g. needing the arbiter pair to agree on something more complex than a single state cell), the cost-benefit shifts toward the library.
 
 ### Topology diagram
 
+The diagram below shows a single instrument's components. Real exchanges run many instruments; the multi-instrument scaling story is open (see Decision Log).
+
 ```
-                                  ┌─────────────┐
-                                  │   fix8      │
-                                  │   client    │
-                                  └──────┬──────┘
-                                         │ FIX wire (TCP, port 9879)
-                                         │ orders, ERs, heartbeats
-                                  ┌──────▼──────────────┐
-                                  │   FIX Gateway       │
-                                  │                     │
-                                  │ - parses FIX        │
-                                  │ - encodes PDU       │
-                                  │ - tracks per-leg    │
-                                  │   cursors           │
-                                  │ - reconnects on     │
-                                  │   leader change     │
-                                  │ - small comp-id ↔   │
-                                  │   ConnectionID      │
-                                  │   table only        │
-                                  └──┬───────────────┬──┘
-                                     │               │
-                       order PDUs    │               │  ER PDUs
-                       (one TCP      │               │  (from current leader)
-                       conn each;    │               │
-                       gateway sends │               │
-                       only to       │               │
-                       leader; both  │               │
-                       conns kept    │               │
-                       open)         │               │
-                                     │               │
-                       ┌─────────────┴─────┐ ┌───────┴────────────┐
-                       │                   │ │                    │
-                       ▼                   ▼ ▼                    ▼
+                    ┌─────────────┐  ┌─────────────┐  ┌─────────────┐
+                    │   fix8      │  │   fix8      │  │   fix8      │
+                    │  client A   │  │  client B   │  │  client C   │
+                    └──────┬──────┘  └──────┬──────┘  └──────┬──────┘
+                           │                │                │
+                           │ FIX wire (TCP, port 9879)
+                           │ orders, ERs, heartbeats
+                           ▼                ▼                ▼
+                    ┌─────────────────────────────────────────────┐
+                    │             FIX Gateway POOL                 │
+                    │  (N gateways; clients pin to one each)       │
+                    │                                              │
+                    │  - parses FIX, encodes PDU                   │
+                    │  - maintains comp-id ↔ ConnectionID table    │
+                    │    for FIX sessions on this gateway          │
+                    │  - tracks per-leg cursors                    │
+                    │  - reconnects on sequencer leader change     │
+                    │  - on gateway machine failure, affected      │
+                    │    FIX clients reconnect to a different      │
+                    │    gateway (FIX-level resend covers any gap) │
+                    └────┬─────────────────────────────────────┬───┘
+                         │                                     │
+              order PDUs │     ER PDUs                         │
+              (one TCP   │     (from current leader)           │
+              conn each; │                                     │
+              gateway    │                                     │
+              sends only │                                     │
+              to leader; │                                     │
+              both kept  │                                     │
+              open)      │                                     │
+                         ▼                                     ▼
         ┌──────────────────────────┐         ┌──────────────────────────┐
-        │  Sequencer PRIMARY       │         │  Sequencer FOLLOWER      │
-        │  (current leader)        │         │  (passive)               │
+        │  Sequencer: PRIMARY      │         │  Sequencer: SECONDARY    │
+        │  (config'd identity)     │         │  (config'd identity)     │
+        │  currently LEADER        │         │  currently FOLLOWER      │
         │                          │         │                          │
         │  - assigns seqNo         │         │  - tails leader's WAL    │
         │  - appends to WAL        │         │  - applies records to    │
         │  - state:                │         │    its own WAL & state   │
-        │    · FixSession→         │         │  - never sends to ME     │
-        │      ConnID map          │         │  - never sends to GW     │
-        │    · ClOrdID→ConnID map  │         │  - heartbeats to arbiter │
-        │    · per-GW cursors      │         │  - on promotion: stops   │
-        │  - heartbeats to arbiter │         │    tailing, replays its  │
-        │  - sends to ME           │         │    own WAL, becomes      │
-        │  - sends ERs to GW       │         │    leader                │
+        │    · FixSession          │         │  - never sends to ME     │
+        │      routing tables      │         │  - never sends to GW     │
+        │      keyed on            │         │  - heartbeats to arbiter │
+        │      (SenderCompID,      │         │  - on promotion: stops   │
+        │       TargetCompID)      │         │    tailing, replays its  │
+        │    · per-GW cursors      │         │    own WAL, becomes      │
+        │  - heartbeats to arbiter │         │    leader (after arbiter │
+        │  - sends to ME (leader)  │         │    grants ArbDecision)   │
+        │  - sends ERs to GW       │         │                          │
         │                          │         │                          │
         │  ┌────────────────────┐  │         │  ┌────────────────────┐  │
         │  │ WAL on local disk  │  │         │  │ WAL on local disk  │  │
         │  │ (mmap, segmented)  │  │         │  │ (mmap, segmented)  │  │
-        │  │                    │  │         │  │                    │  │
         │  │ - order records    │  │         │  │ - mirror of leader │  │
         │  │ - cursor records   │  │         │  │   (one record      │  │
-        │  │ - snapshot files   │  │         │  │   behind, due to   │  │
-        │  │   (dual, rolling)  │  │         │  │   ack RTT)         │  │
+        │  │ - dual rolling     │  │         │  │   behind, due to   │  │
+        │  │   snapshots        │  │         │  │   ack RTT)         │  │
         │  └────────────────────┘  │         │  │ - own snapshots    │  │
         │                          │         │  └────────────────────┘  │
         └────┬──────────────────┬──┘         └──────────────────────────┘
              │                  ▲                      ▲
              │ order PDUs       │ ER PDUs              │ WAL replication
-             │ (committed,      │                      │ (TCP, dedicated
-             │  with seqNo)     │                      │ "replication" conn)
-             │                  │                      │ leader pushes,
-             │                  │                      │ follower acks;
-             │                  │                      │ leader does not
-             │                  │                      │ acknowledge to GW
-             │                  │                      │ until follower-acked
+             │ (only from       │                      │ (TCP, dedicated;
+             │  leader)         │                      │  leader pushes,
+             │                  │                      │  follower acks;
+             │                  │                      │  ER not sent to
+             │                  │                      │  GW until follower
+             │                  │                      │  has acked the
+             │                  │                      │  underlying order)
              ▼                  │                      │
-        ┌──────────────────────────┐                   │
-        │  Matching Engine         │                   │
-        │                          │                   │
-        │  - receives orders in    │                   │
-        │    seqNo order from      │                   │
-        │    LEADER only           │                   │
-        │  - mutates book          │◄──────────────────┘
-        │  - emits ERs back to     │  (this is the leader→follower
-        │    leader sequencer      │   WAL replication channel,
-        │  - stateless across      │   not an ME data path)
-        │    crashes (book         │
-        │    rebuilt by replay)    │
-        │                          │
-        └──────────────────────────┘
+        ┌──────────────────────────┐  ┌──────────────────────────┐
+        │  ME: PRIMARY             │  │  ME: SECONDARY           │
+        │  (config'd identity)     │  │  (config'd identity)     │
+        │  currently LEADER        │  │  currently FOLLOWER      │
+        │                          │  │                          │
+        │  - receives orders in    │  │  Halt-on-failure model:  │
+        │    seqNo order from      │  │  - cold standby          │
+        │    LEADER sequencer      │  │  - on primary failure,   │
+        │  - mutates book          │  │    market halts; manual  │
+        │  - emits ERs back to     │  │    cancel-and-restart    │
+        │    leader sequencer      │  │                          │
+        │  - stateless across      │  │  Future seamless model:  │
+        │    crashes (book         │  │  - both MEs process the  │
+        │    rebuilt by replay)    │  │    same order stream in  │
+        │                          │  │    parallel; secondary   │
+        │                          │  │    output discarded      │
+        │                          │  │    until promotion       │
+        │                          │  │  - requires deterministic│
+        │                          │  │    ME logic              │
+        └──────────────────────────┘  └──────────────────────────┘
 
         ╔══════════════════════════════════════════════════════════════════╗
-        ║                              ARBITER                              ║
-        ║                                                                   ║
-        ║   - holds (leader_id, epoch, lease_expiry) -- one cell            ║
-        ║   - leader sends heartbeats: "I'm still leader, epoch=N"          ║
-        ║   - follower can ask: "current leader? lease state?"              ║
-        ║   - on promotion request: atomic compare-and-swap                 ║
-        ║       if lease_expired and request.proposed_epoch > current:      ║
-        ║         grant; bump epoch; record new leader                      ║
-        ║   - NEVER on the order/ER data path                               ║
-        ║                                                                   ║
+        ║                  ARBITER POOL (PSA + witness)                    ║
+        ║                                                                  ║
+        ║  ┌────────────────────┐  ┌────────────────────┐  ┌────────────┐  ║
+        ║  │ Arbiter PRIMARY    │  │ Arbiter SECONDARY  │  │  WITNESS   │  ║
+        ║  │ (config'd identity)│  │ (config'd identity)│  │  (no state │  ║
+        ║  │ currently ACTIVE   │  │ currently PASSIVE  │  │   votes in │  ║
+        ║  │                    │  │                    │  │  elections)│  ║
+        ║  │ holds leadership   │  │ replicates from    │  └────────────┘  ║
+        ║  │ state map for all  │  │ active; awaits     │                  ║
+        ║  │ component pairs    │  │ promotion          │                  ║
+        ║  └────────────────────┘  └────────────────────┘                  ║
+        ║                                                                  ║
+        ║  Internal protocol:                                              ║
+        ║   - active heartbeats to passive (state replication) and         ║
+        ║     to witness (liveness)                                        ║
+        ║   - passive heartbeats to witness (liveness)                     ║
+        ║   - on active loss, passive asks witness "do you also see        ║
+        ║     active as gone?"; promotes only if witness confirms          ║
+        ║   - 3 votes total; majority is 2; split-brain prevented          ║
+        ║                                                                  ║
+        ║  External protocol (from components):                            ║
+        ║   - components contact arbiter primary or secondary by config'd  ║
+        ║     list; passive arbiter redirects to active                    ║
+        ║   - components NEVER contact the witness directly                ║
+        ║                                                                  ║
+        ║  Failure-independence requirement (CRITICAL):                    ║
+        ║   - witness must be on different power, different switch,        ║
+        ║     ideally different network segment from both arbiters         ║
+        ║   - otherwise witness provides appearance of redundancy          ║
+        ║     without the reality                                          ║
+        ║                                                                  ║
+        ║   - NEVER on the order/ER data path                              ║
+        ║                                                                  ║
+        ║  Internal HA mechanism: lease+epoch hand-rolled with witness     ║
+        ║  voting. See "Arbiter PSA topology" section for protocol         ║
+        ║  mechanics; "Discussion: consensus libraries vs. lease+epoch"    ║
+        ║  for trade-off analysis.                                         ║
         ╚══════════════════════════════════════════════════════════════════╝
               ▲                              ▲
-              │ heartbeats / lease renewal   │ heartbeats (less frequent)
-              │ from current leader          │ from passive follower
+              │ heartbeats / lease renewal   │ heartbeats from passive
+              │ from each component leader   │ follower instances
               │                              │
-              └──────┬───────────────────────┘
-                     │
-              both sequencers know about the arbiter;
-              only one is leader at any moment
+              └──────────┬───────────────────┘
+                         │
+              every component knows about the arbiter pool's contact list;
+              only one instance per component pair is leader at any moment
 
         Channels summary:
         ─────────────────────────────────────────────────────────────────────
-        FIX              fix8 ↔ Gateway          (TCP, FIX wire)
+        FIX              fix8 ↔ Gateway pool     (TCP, FIX wire)
         Orders           Gateway → Sequencer     (TCP, PDU; only to leader)
         ERs              Sequencer → Gateway     (TCP, PDU; only from leader)
         ME orders        Sequencer → ME          (TCP, PDU; only from leader)
         ME ERs           ME → Sequencer          (TCP, PDU; only to leader)
         WAL replication  Leader → Follower       (TCP, dedicated; bidirectional acks)
-        Arbiter control  Sequencers ↔ Arbiter    (TCP; not on data path)
+                         (per component pair)
+        Arbiter control  Components ↔ Active arbiter (TCP; not on data path)
+        Arbiter HA       Arbiter↔Arbiter, Arbiter↔Witness
+                         (internal lease+epoch + witness vote)
         ─────────────────────────────────────────────────────────────────────
 ```
 
-### Implementation staging (nine slices)
+A representative deployment requires roughly: 2 sequencer machines, 2 ME machines, N gateway machines, 2 arbiter machines, 1 witness machine. The witness must be in a failure-independent location (different power, different switch, ideally different network segment). Real exchanges have additional components (downstream forwarders, market-data publishers, risk gateways, etc.), each typically a primary-secondary pair on dedicated hardware.
+
+### Implementation staging
 
 Each slice is shippable -- the system works at the end of each. Each slice is a session or two. The whole programme is roughly a year of part-time work but never leaves the system in a half-built state.
 
@@ -1094,10 +1426,59 @@ Each slice is shippable -- the system works at the end of each. Each slice is a 
 3. **mmap'd WAL on disk, single-host, no fsync.** Crash recovery: replay WAL on startup, rebuild state. No replication yet. Validates the durable-log mechanism.
 4. **Snapshot (single, no rolling).** Snapshot at intervals, truncate WAL behind the snapshot point. Fast restart. Validates the snapshot mechanism in isolation.
 5. **Move FixSession ↔ ClOrdID mapping into sequencer's state.** Gateway becomes the translator described above. Comp-id-keyed routing replaces the gateway's current `cl_ord_id_to_session_` map.
-6. **Single-host failover infrastructure.** Two sequencer processes on the same host. File-based fencing for leader detection. Gateway connects to leader-side. Validates the protocol mechanics (handshakes, cursor exchange, replay) without network complexity.
-7. **Network replication.** Follower on another host. Leader streams WAL records over a dedicated TCP connection. Follower acks; commit = follower-acked. The classic Aeron model, end-to-end.
-8. **Arbiter.** Lease + epoch. Replaces file-based fencing. The leader-election + fencing layer.
-9. **Dual snapshots, snapshot validation, additional polish.** The safety-net layer that turns the system from "works" into "operationally bullet-proof".
+6. **Single-host failover infrastructure.** Two sequencer processes on the same host. File-based fencing for leader detection (placeholder for arbiter). Gateway connects to leader-side. Validates the protocol mechanics (handshakes, cursor exchange, replay) without network complexity.
+7. **Network replication.** Follower on another host. Leader streams WAL records over a dedicated TCP connection. Follower acks; commit-for-ER-emission = follower-acked.
+8. **Arbiter implementation.** Replaces file-based fencing with the real arbiter (lease+epoch handshake protocol from the Leader-Follower Protocol subsystem section). At this slice, the arbiter's own internal HA is implemented via the PSA+witness topology: two full arbiter instances with hand-rolled lease+epoch replication between them, plus one witness machine in a failure-independent location to break ties. See "Arbiter PSA topology" section.
+9. **Dual snapshots, snapshot validation, polish.** The safety-net layer that turns the system from "works" into "operationally bullet-proof".
+
+Slices 10+ are forward-looking and not yet planned in detail:
+
+- **ME primary-secondary pair** (halt-on-failure baseline). The ME secondary exists, fails over via market-halt-and-restart, no determinism investment.
+- **Gateway pool**. Multiple gateway instances; clients pin to one each; FIX-level reconnect on gateway machine failure.
+- **Seamless ME failover**. Lockstep or near-lockstep replication. Determinism work. Far in the future.
+- **DR site**. A second site with its own arbiter pair, its own component pairs, cross-site replication. Far in the future.
+- **Multi-instrument scaling**. Sharded sequencer, instrument groups, etc. Out of scope until single-instrument is operationally proven.
+
+### Production-readiness gap
+
+The framework aspires to be something that could, in theory at least, serve as a foundation for a real exchange system. This section honestly documents the gap between "works for one fix8 client doing one order" and "could plausibly be a candidate for production exchange use", so that the gap is roadmap rather than blind spot.
+
+**Architecturally addressed in the design above (will be addressed in implementation):**
+
+- Single-writer log discipline.
+- Decision (commit) separated from effects (ME, ER, FIX out).
+- Replayable consumer (ME).
+- WAL = truth.
+- Snapshot-and-replay.
+- Fencing via lease+epoch.
+- Per-component HA with shared primitives.
+- Halt-on-failure as a correctness boundary, not a bug.
+
+**Designed but not yet on the slicing plan:**
+
+- Sub-second sequencer failover with active heartbeating.
+- Tail-latency engineering (P99.9, P99.99). The framework needs measurement infrastructure built in from the start (histograms, jitter sources logged) and discipline against unbounded operations on the hot path.
+- Backpressure semantics under load (WAL writer slower than ingress; ME queue full; follower can't keep up).
+- Hot-restart and rolling upgrades (swap binary while in flight; standby takes over; upgrade standby; fail back; upgrade now-standby).
+- Multi-instrument scaling.
+- Auditable historical replay at arbitrary points (regulators ask "what was the order book at 14:32:17.450?").
+- Crash-injection testing as continuous integration: random SIGKILL at every WAL append boundary, every commit, every replication ack, run for days.
+
+**Not architectural -- operational and organisational requirements:**
+
+- Operational maturity. Years of incident debugging, runbook accumulation, monitoring rules, deployment automation. Cannot be designed; only earned.
+- Regulatory acceptance. Replacing an exchange's order processing infrastructure requires regulator engagement, audit, change-management process measured in years.
+- Disaster recovery testing on a regulator's schedule (quarterly site failovers, annual full-day participant tests).
+- Compatibility with everything else (existing market data, risk, settlement, back-office). Each downstream consumer depends on quirks not documented anywhere.
+
+The realistic path, if the aspiration is real:
+
+1. Build the framework to the quality where it could plausibly be considered. Sound architecture, all slices, careful tail-latency engineering, comprehensive correctness tests, documented failure modes. Several years of part-time work.
+2. Get a venue to take it seriously. Technical merit alone is rarely enough. It requires the alignment of (a) a real pain point that this framework specifically addresses, (b) a sympathetic decision-maker willing to stake reputation on the choice, (c) a graceful migration story that doesn't ask anyone to risk everything at once.
+3. Pilot in a low-stakes environment. Test exchange, one non-critical instrument, parallel-run for months. Prove it. Then maybe migrate one real instrument. Then maybe more.
+4. Maintain it forever. Once in production, it's a commitment: operational ownership, on-call, regulatory compliance evidence, customer support during failovers.
+
+This section exists to keep the aspiration honest and to stop the project drifting into "builds more features" rather than also "becomes more trustworthy in the specific ways that matter for serious use".
 
 ---
 
