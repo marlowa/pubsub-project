@@ -1,0 +1,210 @@
+@startuml pubsub_itc_fw_topology
+' =====================================================================
+' pubsub_itc_fw deployment topology
+' Single-site, single-instrument view of the WAL+HA design.
+' See pubsub_itc_fw_topology.md for the companion explanation.
+' =====================================================================
+
+' Layout direction. PlantUML's auto-layout will still struggle with
+' the number of lines; this just sets the dominant flow.
+left to right direction
+
+' Style overrides for legibility.
+skinparam nodesep 30
+skinparam ranksep 50
+skinparam shadowing false
+skinparam node {
+    BackgroundColor #FAFAFA
+    BorderColor     #555555
+    FontColor       #222222
+}
+skinparam component {
+    BackgroundColor #EEF6FF
+    BorderColor     #336699
+}
+skinparam database {
+    BackgroundColor #FFF6E0
+    BorderColor     #B07A1F
+}
+
+' Edge style legend (also documented in the companion .md):
+'   solid black     -- data-plane connection
+'   dotted blue     -- control-plane connection (arbiter / witness)
+'   each direction is shown as a separate arrow
+
+' =====================================================================
+' FIX clients (external; representative)
+' =====================================================================
+node "fix8-client-1\n(machine)"  as FIX1
+node "fix8-client-2\n(machine)"  as FIX2
+
+' =====================================================================
+' FIX gateway pool (two representative machines; production has N)
+' =====================================================================
+node "gateway-1 (machine)" as GW1_M {
+    component "FIX gateway\n(instance)" as GW1
+}
+node "gateway-2 (machine)" as GW2_M {
+    component "FIX gateway\n(instance)" as GW2
+}
+
+' =====================================================================
+' Sequencer pair (two machines, primary and secondary)
+' =====================================================================
+node "sequencer-primary\n(machine)" as SP_M {
+    component "Sequencer\n(instance, configured PRIMARY)" as SP
+    database  "WAL\n(local disk,\nmmap, segmented)" as SP_WAL
+    SP -- SP_WAL
+}
+node "sequencer-secondary\n(machine)" as SS_M {
+    component "Sequencer\n(instance, configured SECONDARY)" as SS
+    database  "WAL\n(local disk,\nmmap, segmented)" as SS_WAL
+    SS -- SS_WAL
+}
+
+' =====================================================================
+' ME pair (two machines, primary and secondary)
+' =====================================================================
+node "ME-primary\n(machine)" as MP_M {
+    component "Matching Engine\n(instance, configured PRIMARY)" as MP
+    database  "Order book\n(in memory)" as MP_BOOK
+    MP -- MP_BOOK
+}
+node "ME-secondary\n(machine)" as MS_M {
+    component "Matching Engine\n(instance, configured SECONDARY)" as MS
+    database  "Order book\n(replicated,\nin memory)" as MS_BOOK
+    MS -- MS_BOOK
+}
+
+' =====================================================================
+' Arbiter pool (PSA + witness)
+' Three machines, in failure-independent locations.
+' =====================================================================
+node "arbiter-primary (machine)" as AP_M {
+    component "Arbiter\n(instance, configured PRIMARY)" as AP
+    database  "Leadership-state map\n(replicated)" as AP_MAP
+    AP -- AP_MAP
+}
+node "arbiter-secondary (machine)" as AS_M {
+    component "Arbiter\n(instance, configured SECONDARY)" as AS
+    database  "Leadership-state map\n(replicated)" as AS_MAP
+    AS -- AS_MAP
+}
+node "witness\n(machine, failure-independent\npower / switch / segment)" as W_M {
+    component "Witness\n(no state; vote only)" as W
+}
+
+' =====================================================================
+' Data-plane connections (solid black)
+' Each direction shown as a separate arrow, labelled with what flows.
+' =====================================================================
+
+' --- FIX wire: fix8 client <-> gateway (each client pinned to one gateway)
+FIX1 --> GW1 : "FIX orders, logon,\nheartbeats, resends"
+GW1  --> FIX1 : "FIX execution reports,\nlogon ack, heartbeats"
+
+FIX2 --> GW2 : "FIX orders, logon,\nheartbeats, resends"
+GW2  --> FIX2 : "FIX execution reports,\nlogon ack, heartbeats"
+
+' --- Gateway -> Sequencer (orders)
+'     Each gateway holds open TCP connections to BOTH sequencers.
+'     Orders are sent only to the current LEADER; the non-leader
+'     accepts the connection at TCP level but rejects sends at the
+'     application layer.
+GW1 --> SP : "order PDUs\n(only when leader)"
+GW1 --> SS : "order PDUs\n(only when leader)"
+GW2 --> SP : "order PDUs\n(only when leader)"
+GW2 --> SS : "order PDUs\n(only when leader)"
+
+' --- Sequencer -> Gateway (ERs)
+'     ER-routing direction. The summary describes the sequencer
+'     opening the outbound to the gateway's ER inbound listener.
+SP --> GW1 : "ER PDUs\n(from current leader)"
+SP --> GW2 : "ER PDUs\n(from current leader)"
+SS --> GW1 : "ER PDUs\n(from current leader)"
+SS --> GW2 : "ER PDUs\n(from current leader)"
+
+' --- Sequencer -> ME (sequenced orders)
+'     Each sequencer holds open connections to BOTH MEs.
+'     Sequenced orders flow only from the current sequencer leader
+'     to both MEs (so the ME secondary can build the same book).
+SP --> MP : "sequenced order PDUs\n(only when sequencer leader)"
+SP --> MS : "sequenced order PDUs\n(only when sequencer leader)"
+SS --> MP : "sequenced order PDUs\n(only when sequencer leader)"
+SS --> MS : "sequenced order PDUs\n(only when sequencer leader)"
+
+' --- ME -> Sequencer (ERs)
+'     ME leader emits ERs; ME secondary's emissions are discarded
+'     until its own promotion. Either ME emits to whichever sequencer
+'     is currently the sequencer leader.
+MP --> SP : "ER PDUs\n(only when ME leader)"
+MP --> SS : "ER PDUs\n(only when ME leader)"
+MS --> SP : "ER PDUs\n(only when ME leader)"
+MS --> SS : "ER PDUs\n(only when ME leader)"
+
+' --- Sequencer WAL replication (within sequencer pair)
+'     Bidirectional: leader pushes WAL records, follower acks.
+'     Drawn as two separate arrows.
+SP --> SS : "WAL records\n(leader -> follower)"
+SS --> SP : "WAL acks\n(follower -> leader)"
+
+' --- ME book replication (within ME pair)
+'     ME-primary streams book updates to ME-secondary so the
+'     secondary can take over with knowledge of in-flight orders
+'     (book state for cancel-on-failover handling).
+'     Bidirectional: leader pushes updates, follower acks.
+MP --> MS : "book updates\n(leader -> follower)"
+MS --> MP : "book acks\n(follower -> leader)"
+
+' =====================================================================
+' Control-plane connections (dotted blue)
+' Component primaries and secondaries each open TCP to BOTH arbiters.
+' Heartbeats / lease-renewal flow from component to active arbiter.
+' Active arbiter sends grant / refuse / current-leader info back.
+' =====================================================================
+
+' --- Sequencer primary <-> arbiter pair
+SP .[#0066CC]u.> AP : "heartbeat / lease renewal"
+AP .[#0066CC]d.> SP : "lease grant /\nactive-arbiter pointer"
+SP .[#0066CC]u.> AS : "heartbeat / lease renewal"
+AS .[#0066CC]d.> SP : "lease grant /\nactive-arbiter pointer"
+
+' --- Sequencer secondary <-> arbiter pair
+SS .[#0066CC]u.> AP : "heartbeat / lease renewal"
+AP .[#0066CC]d.> SS : "lease grant /\nactive-arbiter pointer"
+SS .[#0066CC]u.> AS : "heartbeat / lease renewal"
+AS .[#0066CC]d.> SS : "lease grant /\nactive-arbiter pointer"
+
+' --- ME primary <-> arbiter pair
+MP .[#0066CC]u.> AP : "heartbeat / lease renewal"
+AP .[#0066CC]d.> MP : "lease grant /\nactive-arbiter pointer"
+MP .[#0066CC]u.> AS : "heartbeat / lease renewal"
+AS .[#0066CC]d.> MP : "lease grant /\nactive-arbiter pointer"
+
+' --- ME secondary <-> arbiter pair
+MS .[#0066CC]u.> AP : "heartbeat / lease renewal"
+AP .[#0066CC]d.> MS : "lease grant /\nactive-arbiter pointer"
+MS .[#0066CC]u.> AS : "heartbeat / lease renewal"
+AS .[#0066CC]d.> MS : "lease grant /\nactive-arbiter pointer"
+
+' --- Arbiter pair: state replication (active -> passive) and acks
+AP .[#0066CC].> AS : "leadership-state map\nreplication"
+AS .[#0066CC].> AP : "replication acks"
+
+' --- Arbiter <-> Witness (each arbiter heartbeats; witness votes when asked)
+AP .[#0066CC].> W : "heartbeat\n(active liveness)"
+W  .[#0066CC].> AP : "vote response\n(when queried)"
+AS .[#0066CC].> W : "heartbeat\n(passive liveness)"
+W  .[#0066CC].> AS : "vote response\n(when queried)"
+
+' =====================================================================
+' Legend
+' =====================================================================
+legend bottom
+|= Line style |= Meaning |
+| solid black arrow | Data-plane TCP connection (FIX wire, order PDUs, ER PDUs, WAL/book replication) |
+| dotted blue arrow | Control-plane TCP connection (component <-> arbiter, arbiter <-> arbiter, arbiter <-> witness) |
+| each direction = one arrow | Bidirectional channels are drawn as two arrows, each labelled with what flows in that direction |
+endlegend
+
+@enduml
