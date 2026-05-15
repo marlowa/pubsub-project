@@ -1,16 +1,21 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-#include "FixGatewaySeqConfigurationLoader.hpp"
-
 #include <string>
+#include <tuple>
+#include <memory>
 
 #include <pubsub_itc_fw/ConfigurationException.hpp>
 #include <pubsub_itc_fw/TomlConfiguration.hpp>
+#include <pubsub_itc_fw/QuillLogger.hpp>
+#include <pubsub_itc_fw/LoggingConfigurationLoader.hpp>
+
+#include "FixGatewaySeqConfigurationLoader.hpp"
 
 namespace sample_fix_gateway_seq {
 
-FixGatewaySeqConfiguration FixGatewaySeqConfigurationLoader::load(const std::string& file_path)
+std::tuple<FixGatewaySeqConfiguration, std::unique_ptr<pubsub_itc_fw::QuillLogger>> FixGatewaySeqConfigurationLoader::load_and_init_logging(const std::string& file_path,
+                                                                                   const std::string& log_file_path)
 {
     pubsub_itc_fw::TomlConfiguration toml;
 
@@ -21,6 +26,20 @@ FixGatewaySeqConfiguration FixGatewaySeqConfigurationLoader::load(const std::str
     }
 
     FixGatewaySeqConfiguration config;
+
+    // Get the logger going early
+    try {
+        config.rolling_logfile_configuration = pubsub_itc_fw::LoggingConfigurationLoader::load(toml);
+    } catch (const pubsub_itc_fw::ConfigurationException&) {
+        throw;
+    }
+
+    auto logger = std::make_unique<pubsub_itc_fw::QuillLogger>(
+        log_file_path,
+        pubsub_itc_fw::FileOpenMode{pubsub_itc_fw::FileOpenMode::Truncate},
+        pubsub_itc_fw::FwLogLevel::Info,
+        pubsub_itc_fw::FwLogLevel::Info,
+        config.rolling_logfile_configuration);
 
     try {
         toml.get_required_except("network.listen_host",         config.listen_host);
@@ -84,7 +103,7 @@ FixGatewaySeqConfiguration FixGatewaySeqConfigurationLoader::load(const std::str
         throw;
     }
 
-    return config;
+    return std::make_tuple(std::move(config), std::move(logger));
 }
 
 } // namespace sample_fix_gateway_seq

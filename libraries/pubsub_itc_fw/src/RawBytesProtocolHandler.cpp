@@ -19,6 +19,7 @@
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/StringUtils.hpp>
 #include <pubsub_itc_fw/TcpSocket.hpp>
+#include <pubsub_itc_fw/utils/SimpleSpan.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -30,7 +31,6 @@ RawBytesProtocolHandler::RawBytesProtocolHandler(ConnectionID connection_id,
     , socket_(socket)
     , target_thread_(target_thread)
     , buffer_(buffer_capacity)
-    , framer_(std::make_unique<PduFramer>(socket))
 {
 }
 
@@ -88,20 +88,33 @@ std::tuple<bool, std::string> RawBytesProtocolHandler::send_prebuilt(ExpandableS
             "RawBytesProtocolHandler::send_prebuilt: chunk_ptr must not be nullptr",
             __FILE__, __LINE__);
     }
+    if (total_bytes == 0) {
+        throw PreconditionAssertion(
+            "RawBytesProtocolHandler::send_prebuilt: total_bytes must be greater than zero",
+            __FILE__, __LINE__);
+    }
+    if (active_frame_ptr_ != nullptr) {
+        throw PreconditionAssertion(
+            "RawBytesProtocolHandler::send_prebuilt: previous send still in flight",
+            __FILE__, __LINE__);
+    }
 
     current_allocator_   = allocator;
     current_slab_id_     = slab_id;
     current_chunk_ptr_   = chunk_ptr;
     current_total_bytes_ = total_bytes;
 
-    const uint8_t* frame = static_cast<const uint8_t*>(chunk_ptr);
-    auto [success, error] = framer_->send_prebuilt(frame, total_bytes);
+    active_frame_ptr_ = static_cast<const uint8_t*>(chunk_ptr);
+    frame_size_       = total_bytes;
+    send_offset_      = 0;
+
+    auto [success, error] = attempt_send_remaining();
     if (!success) {
         release_pending_send();
         return {false, error};
     }
 
-    if (!framer_->has_pending_data()) {
+    if (send_offset_ == frame_size_) {
         release_pending_send();
     }
     return {true, ""};
@@ -109,18 +122,24 @@ std::tuple<bool, std::string> RawBytesProtocolHandler::send_prebuilt(ExpandableS
 
 bool RawBytesProtocolHandler::has_pending_send() const
 {
-    return framer_->has_pending_data();
+    return active_frame_ptr_ != nullptr && send_offset_ < frame_size_;
 }
 
 std::tuple<bool, std::string> RawBytesProtocolHandler::continue_send()
 {
-    auto [success, error] = framer_->continue_send();
+    if (active_frame_ptr_ == nullptr) {
+        // EPOLLOUT can fire spuriously or arrive after the send has already
+        // completed. Treat as a no-op.
+        return {true, ""};
+    }
+
+    auto [success, error] = attempt_send_remaining();
     if (!success) {
         release_pending_send();
         return {false, error};
     }
 
-    if (!framer_->has_pending_data()) {
+    if (send_offset_ == frame_size_) {
         release_pending_send();
     }
     return {true, ""};
@@ -133,6 +152,10 @@ void RawBytesProtocolHandler::deallocate_pending_send()
 
 void RawBytesProtocolHandler::release_pending_send()
 {
+    active_frame_ptr_ = nullptr;
+    frame_size_       = 0;
+    send_offset_      = 0;
+
     if (current_allocator_ != nullptr) {
         current_allocator_->deallocate(current_slab_id_, current_chunk_ptr_);
         current_allocator_   = nullptr;
@@ -140,6 +163,28 @@ void RawBytesProtocolHandler::release_pending_send()
         current_chunk_ptr_   = nullptr;
         current_total_bytes_ = 0;
     }
+}
+
+std::tuple<bool, std::string> RawBytesProtocolHandler::attempt_send_remaining()
+{
+    while (send_offset_ < frame_size_) {
+        const uint32_t remaining = frame_size_ - send_offset_;
+        utils::SimpleSpan<const uint8_t> data(active_frame_ptr_ + send_offset_, remaining);
+
+        auto [result, error] = socket_.send(data);
+
+        if (result == -EAGAIN) {
+            // Socket send buffer full. Caller will register EPOLLOUT and the
+            // reactor will invoke continue_send() when the socket is writable.
+            return {true, ""};
+        }
+        if (result < 0) {
+            return {false, fmt::format("RawBytesProtocolHandler::attempt_send_remaining: send failed: {}", error)};
+        }
+
+        send_offset_ += static_cast<uint32_t>(result);
+    }
+    return {true, ""};
 }
 
 } // namespace pubsub_itc_fw

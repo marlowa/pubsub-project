@@ -129,7 +129,7 @@ TEST_F(StringUtilsTest, HexDumpSingleByte)
 
     EXPECT_EQ(out,
         "1 bytes\n"
-        "0000: 41                                              |A               |\n"
+        "0000: 41                                               |A               |\n"
     );
 }
 

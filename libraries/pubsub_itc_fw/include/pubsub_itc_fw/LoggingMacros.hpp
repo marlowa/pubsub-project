@@ -49,6 +49,7 @@ namespace pubsub_itc_fw::logging_help {
  * * @note This function is wrapped in an 'if (false)' block within the PUBSUB_LOG macro.
  * This ensures the compiler validates the logic during the semantic analysis phase,
  * but the optimiser completely elides the call, resulting in zero runtime overhead.
+ *
  * * @tparam S The unique type representing the format string literal.
  * @tparam Args The types of the arguments to be formatted.
  * @param format_str The format string literal wrapped by FMT_STRING.

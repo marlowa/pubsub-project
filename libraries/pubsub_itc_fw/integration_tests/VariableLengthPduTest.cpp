@@ -101,7 +101,7 @@ protected:
         query.has_limit   = true;
         query.limit       = 10;
 
-        send_pdu(id, PDU_ID_DATA_QUERY, query);
+        send_pdu(id, PDU_ID_DATA_QUERY, 0, query);
         query_sent.store(true, std::memory_order_release);
     }
 
@@ -203,7 +203,7 @@ protected:
             response.results.data = results_data.data();
             response.results.size = results_data.size();
 
-            send_pdu(conn_id, PDU_ID_DATA_RESPONSE, response);
+            send_pdu(conn_id, PDU_ID_DATA_RESPONSE, 0, response);
             response_sent.store(true, std::memory_order_release);
         }
 
@@ -269,7 +269,7 @@ TEST_F(VariableLengthPduTest, DataQueryResponseRoundTrip) {
     ASSERT_TRUE(wait_for([&]() { return listener_reactor->is_initialized(); }))
         << "Listener reactor did not initialise within timeout";
 
-    const uint16_t listen_port = listener_reactor->get_first_inbound_listener_port();
+    const uint16_t listen_port = listener_reactor->get_inbound_listener_port(0);
     ASSERT_NE(listen_port, 0u) << "OS did not assign a valid listening port";
 
     // --- Connector side ---

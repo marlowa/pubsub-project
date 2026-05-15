@@ -23,7 +23,7 @@ A low-latency, multi-threaded, event-driven application framework using the **re
 - Inter-thread communication (ITC) via lock-free MPSC queues
 - Inter-process communication (IPC) via unicast TCP
 - Lock-free thread-safe pool allocators
-- Simulated pub/sub via unicast fanout
+- Broadcast / fanout via WAL followers (currently); a topic-based pubsub primitive may be added later if specific use cases require it (see "Downstream consumers and broadcast streams" in the WAL and HA Design section)
 - Timers (timerfd, via epoll)
 - High availability via primary/secondary instance pairs with arbitration
 - A DSL-based binary serialisation layer replacing protobuf/SBE
@@ -879,9 +879,12 @@ What is decided, what is leaning, what is open.
 - WAL is segmented, mmap'd, single-writer. Format: `[ magic | length | seqNo | payload | checksum ]`. Replay scans from offset 0 and stops at first failure. Tail corruption equivalent to a clean crash before commit.
 - No `fsync` per WAL append. Disk durability is out-of-band (segment rotation, snapshot writes, periodic flusher). Cross-machine durability comes from replication, not from disk.
 - Two-tier commit: locally durable (CPU coherence via store-release on commit offset) gates the leader's send to the ME. Replicated (follower has acked over the dedicated replication channel) gates the leader's emission of ERs back to the gateway.
+- Every cross-component PDU carries the sender's view of the relevant component pair's leader-epoch. Receivers check the epoch before processing: same/expected = accept, lower = sender is stale (discard with warning), higher = receiver might be stale (re-validate with arbiter, do not silently accept or discard). This is fencing applied to every message rather than only to commits, and is the mechanism that detects split-brain at every cross-component interaction. See "Epoch propagation on every PDU" section below.
+- Per-connection isolation in outbound sends. Each TCP connection has its own outbound queue and non-blocking send semantics; a stalled peer cannot block sends to a fast peer. Slow peers that exceed a configured lag threshold are dropped and must reconnect-and-replay. The sequencer-to-follower replication channel is not droppable (it is on the critical path for ER emission); other channels are. See "Per-connection isolation and backpressure" section below.
+- Cold-start mmap warm-up via `madvise(MADV_WILLNEED)` on WAL open. Pre-faults the mmap pages so cold-start MTTR is dominated by disk read time done in parallel with snapshot load, not by lazy faulting during replay. Implementation note for slice 3. See "Cold-start MTTR and mmap warm-up" section below.
 - Gateway and ME each open TCP connections to **both** sequencer instances at startup, and keep both open. Sends go only to the current leader. Non-leader rejects at the application layer.
 - FixSession ↔ ClOrdID mapping moves from gateway to sequencer's WAL. Routing on `(SenderCompID, TargetCompID)` rather than ConnectionID, so that a fix8 client reconnecting (possibly to a different gateway in the gateway pool) is naturally addressable.
-- ME failover policy is **halt-on-failure** as the operational baseline, with seamless ME failover deferred as a future feature (see "ME failover policy" section below). This matches the published behaviour of LSE Millennium when its mirror process does not take over, and avoids the determinism investment that lockstep replication requires.
+- ME failover policy is **cancel-on-failover** as the chosen baseline. ME-secondary maintains a replicated copy of the book; on promotion it reconciles its book against the new sequencer leader's WAL and then issues cancel ERs for all genuinely-outstanding orders. FIX clients receive explicit "Cancelled" messages rather than experiencing a market halt. Halt-on-failure is preserved as a fallback for failure modes that cannot be cleanly reconciled (e.g. WAL corruption, total arbiter unavailability). Seamless lockstep failover (option b) remains a future aspiration. See "ME failover policy" section below for the full rationale and the critical correctness rule about reconciling against the WAL before issuing cancels.
 - Integer-only prices and quantities. All price/qty values multiplied by a constant (e.g. 1,000,000) to avoid floating-point determinism hazards. Common practice in matching-engine implementations and a hard rule for this framework.
 - Dual rolling snapshots. Truncation gated by the older trusted snapshot, never the newest one just taken. Validation required before promotion.
 - Halt as the correct response to several specific failure modes (WAL mid-segment corruption, both arbiter halves unreachable during a failover, snapshot validation failure on the only available snapshot). Halt is conservative and unambiguous; it is preferred over clever recovery in scenarios where correctness cannot be proven.
@@ -889,10 +892,14 @@ What is decided, what is leaning, what is open.
 - Local interval measurement uses `CLOCK_MONOTONIC` (already in `HighResolutionClock`). `CLOCK_MONOTONIC_RAW` was considered and rejected: it is unaffected by NTP/PTP slewing, but that is a disadvantage rather than an advantage for interval timers, since intervals can drift from real-world expectations on long-running processes if the underlying TSC is inaccurate.
 - Clock injection. Components that need to read time will take a `MonotonicClock&` or `WallClock&` constructor parameter rather than calling `HighResolutionClock::now()` directly. Concrete motivator: GTD (Good-Til-Date) order support in the matching engine requires replay-deterministic clock reads, which only injection makes possible. Planned as a dedicated session of work; not blocking any HA slice but to land before the ME grows GTD or any other time-dependent logic. See "Clock injection" section below.
 - Two distinct timer mechanisms, kept separate. Local OS `timerfd` for infrastructure timers (idle timeouts, connect retries, lease heartbeats, backstop, FIX logon timeout) -- these are not observable to matching logic, do not need replay determinism, and stay as `timerfd`. Sequencer-mediated timers for ME-domain timer events (GTD expiry, auction expiry, self-trade prevention windows when added) -- these are replay-critical and travel through the WAL alongside orders. See "Timer sourcing" section below.
+- Statistics via Prometheus, not via a Kafka publishing chain. Hot-path instrumentation is shared-memory atomic counter/gauge/histogram updates (nanosecond cost). A separate Prometheus gatherer process per machine reads the shared memory and exposes scrape or remote-write endpoints. Cumulative counters in shared memory satisfy the regulatory "no statistic ever gets dropped" requirement: the cumulative count is mathematically complete and durable across gatherer restarts; only fine-grained rate detail within a missed scrape window is lost, which is acceptable. See "Statistics and metrics" section below.
+- ME audit log via the existing Quill async logger. The matching engine logs order acceptance, ER emission, and other regulator-relevant events at PTP-disciplined `CLOCK_REALTIME` timestamps. Hot-path cost is sub-100ns per `PUBSUB_LOG` call. The ME audit log is best-effort crash-durable (Quill is async; in-flight records may be lost on a crash), but the WAL is the crash-durable record of order existence -- the ME log is supplementary timing detail. Per-statement synchronous flushing was considered and rejected on latency grounds. See "Statistics and metrics" section below.
+- Downstream consumers of order/trade events (Kafka publisher, future broadcast use cases) follow the **WAL-follower pattern**, not topic-based pubsub. Each consumer opens a connection to the sequencer leader, identifies a position cursor, and receives WAL records from cursor onward. The sequencer's WAL replication channel generalises from "one follower (the secondary sequencer)" to "N followers, each with their own cursor". This reuses the framework's existing replication primitive rather than introducing a new pubsub abstraction. A topic-based pubsub primitive may be added later if multiple downstream broadcast consumers with fanout-and-replay semantics emerge; for the current single named consumer (Kafka publisher) it is over-engineering. See "Downstream consumers and broadcast streams" section below.
 
 **Leaning:**
 
 - Per-component HA primitives provided by the framework: a `WAL` data structure, a replication-channel pattern, an arbiter-client API, a fencing-discipline helper. Each component composes these into its own HA strategy. Avoids "every component implements HA differently with different bugs".
+- Quill backtrace logging configured on each component's logger: when an `Error` or `Critical` log record fires, a buffered ring of recent diagnostic context is also flushed to the sink. Useful for incident debugging via Splunk. Quill v11 supports this directly. To-do for the framework when convenient; not blocking any HA slice. See "Statistics and metrics" section below.
 
 **Open:**
 
@@ -900,6 +907,8 @@ What is decided, what is leaning, what is open.
 - Sub-second failover target for the sequencer: how aggressively to tune lease and heartbeat intervals. Tighter intervals trade arbiter availability for failover speed. The framework should make this tunable via `ReactorConfiguration` rather than baking in a number.
 - DR site topology. Currently the design is main-site only. DR will require additional design work (a separate site, separate machines, presumably its own arbiter pair, its own sequencer pair, and a cross-site replication strategy). Out of scope until the main-site design is implemented.
 - Multi-instrument scaling. A real exchange runs hundreds to thousands of instruments. Single sequencer for everything, sharded sequencer per instrument group, or sequencer per instrument? Each has different failover and replay implications. Not in the immediate slicing plan.
+- Sequencer-to-gateway connection direction. The framework currently has the sequencer initiating the outbound connection to the gateway's ER inbound listener (a session-13 finding documented elsewhere in this summary). This is the unusual direction; conventional FIX architectures have the gateway as a client of the core. The trade-off: as designed, the sequencer's configuration must list every gateway address, and adding a gateway requires updating the sequencer configuration. The reverse direction (gateway connects outbound to the sequencer for both order send and ER receive) makes the core "anonymous" and easier to scale horizontally, but requires the sequencer to route ERs by lookup against currently-connected gateway sessions rather than by initiating connections. For the framework's current single-instrument scale this is an acceptable operational cost; for production multi-gateway deployments it likely needs reversing. Open until a deployment scenario forces the choice.
+- Market data integration mechanism. The work system at present has a market data system that consumes data published by the order placement system. The exact mechanism and the exact data are not yet known to this project; a conversation with the maintainer of that system is pending. Until that information is available, the framework-side mechanism for delivering equivalent data cannot be decided. Possibilities range from "another WAL follower" (analogous to the Kafka publisher) to "a topic-based pubsub primitive" (if multi-subscriber fanout is genuinely needed) to "a bespoke market-data-specific mechanism". Tracked in the "Open Questions and Items to Investigate" section.
 
 ### Architecture: per-component HA with shared primitives
 
@@ -916,7 +925,7 @@ The framework provides reusable primitives:
 Each component composes these primitives into its own HA strategy. The state shape that gets replicated differs by component:
 
 - The **sequencer** has the richest state: order log, FIX session map, per-gateway delivery cursors, sequence-number authority. Its WAL holds an event log plus periodic cursor records. This is the most state-rich case and most of the rest of this section discusses it.
-- The **ME** has either no replicated state (halt-on-failure baseline; book is rebuilt by replay from the sequencer's WAL on any restart) or, in the future seamless-failover case, a replicated book derived from processing the sequencer's order stream in parallel.
+- The **ME** maintains a replicated book between primary and secondary. ME-primary is the active matcher; ME-secondary tails the primary's book updates. On ME-primary failure, ME-secondary reconciles its book against the sequencer's WAL and then issues cancel ERs for outstanding orders (the cancel-on-failover policy). The future seamless-failover case (lockstep) is documented as an aspiration; the cancel-on-failover policy is the chosen baseline.
 - A **gateway pool** consists of multiple gateway instances, each fronting some subset of FIX sessions. This is not primary-secondary HA in the same sense; it is N-way pooled. Gateway machine failure causes affected FIX sessions to reconnect to a different gateway. See "Gateway pool" below.
 - Future components (downstream forwarders, market-data publishers, risk gateways, etc.) follow the sequencer pattern with simpler state -- typically just a position cursor in the sequencer's output stream.
 
@@ -925,7 +934,7 @@ The arbiter is itself a small distributed system: two full arbiter instances (pr
 ### Authority and roles
 
 - **Sequencer + WAL = authority.** The leader sequencer assigns seqNo and appends to the WAL. The WAL append (via store-release on the commit offset) is the single irreversible act in the system. Before that store, an order does not exist; after it, the order is permanent and globally visible to followers and consumers reading the WAL.
-- **Matching Engine = pure consumer.** Under the halt-on-failure baseline, the ME has no independent state, no persistence of its own, no FIX-side effects. It receives orders in seqNo order from the leader sequencer, mutates a book in memory, emits ERs back. The book is reconstructable by replaying the WAL, so an ME crash means "throw it away and replay from the leader's WAL". (Under the future seamless-ME-failover design, both ME instances build the book in parallel and the secondary's outputs are accepted on primary failure. The architectural authority is still the sequencer's WAL.)
+- **Matching Engine = pure consumer with replicated book.** Under the cancel-on-failover baseline, ME-primary receives orders in seqNo order from the leader sequencer, mutates its book in memory, emits ERs back, and pushes book updates to ME-secondary so that ME-secondary maintains a replicated copy of the book. On ME-primary failure, ME-secondary uses its replicated book (after reconciling against the sequencer's WAL) to issue cancel ERs for outstanding orders. The book remains reconstructable by replaying the WAL from any point, which is how the system handles the case where both MEs fail or come up cold; in that situation the surviving instance rebuilds from sequencer-WAL replay. The architectural authority is always the sequencer's WAL. Under the future seamless-ME-failover design (option b in "ME failover policy"), both ME instances build the book in parallel and the secondary's outputs are accepted on primary failure without cancellation.
 - **FIX Gateway = edge translator.** Translates FIX wire to/from PDUs. Holds no FixSession→ClOrdID map (that lives in the sequencer's WAL). Maintains a small comp-id → ConnectionID table for the FIX sessions currently established on this gateway. Routes ERs by looking up the comp-id pair the sequencer addresses in the ER PDU.
 
 ### State location (changed from current)
@@ -956,6 +965,40 @@ The WAL is **single-writer**: only the leader sequencer appends. No locks needed
 The ER is held back from the gateway until replication has acked, so the gateway never observes an order whose existence is held by only one machine. This gives Raft-style two-machine durability without Raft's full state machine, because there is no quorum (just leader + follower) and no log-replication-via-vote (just point-to-point streaming).
 
 **No `fsync` per commit.** Disk durability is a separate concern from commit. The cost of `fsync` per WAL append is significant (10s of microseconds at minimum, often 100µs+) and is unnecessary because durability comes from replication. `fsync` happens out-of-band: as part of segment rotation, snapshot writes, or a periodic flusher. Disk corruption after an undurable commit is recoverable via the replica.
+
+### Epoch propagation on every PDU
+
+Every cross-component PDU carries the sender's view of the relevant component pair's leader-epoch. This is fencing applied to every message, not just to commit decisions. The epoch is part of the wire-level framing and is checked by the receiver before the PDU is processed.
+
+The receiver has three responses available:
+
+- **Same or expected epoch:** accept and process normally.
+- **Lower epoch than receiver knows:** sender is stale. Discard with a warning log entry. The sender's component pair has had a leadership change that the sender has not yet noticed. This is benign in the short term; the sender will detect its staleness on its next heartbeat to the arbiter and step down or refresh.
+- **Higher epoch than receiver expects:** the *receiver* might be stale. Do not silently accept and do not silently discard. Trigger an immediate re-validation with the arbiter to learn the current epoch for that component pair. Hold the PDU until the answer is known. If the receiver's view turns out to be stale, update local state and process the PDU. If the higher-epoch claim turns out to be from a confused or rogue sender, discard.
+
+The case that motivates this discipline is the cancel-on-failover scenario: ME-secondary believes it has been promoted (perhaps due to a transient network partition from the arbiter pair) and emits cancel ERs to the sequencer with what it thinks is the current ME epoch. If the sequencer silently discards (because it knows ME-primary is still leader from the sequencer's view), the cancel ERs are lost without anyone learning that ME-secondary believes it is leader. If the sequencer silently accepts (because the higher epoch is plausible), the cancels reach FIX clients while ME-primary is still actively matching -- a serious split-brain symptom.
+
+Re-validation with the arbiter resolves this correctly: whichever party has the stale view learns it before damage is done.
+
+The cost is one extra small field on every PDU and one re-validation round-trip on the rare case of mismatched epochs. The benefit is split-brain detection at every cross-component interaction, not just at commit.
+
+### Per-connection isolation and backpressure
+
+Each TCP connection from a component to its peers must be **isolated** -- a slow or stalled peer must never block sends to a fast peer. Specifically:
+
+- The sequencer leader sends sequenced order PDUs to both ME-primary and ME-secondary. If ME-secondary stalls (GC pause, page-fault storm, scheduler starvation), its TCP receive window will close and the sequencer's send to ME-secondary will block. This must not block the sequencer's send to ME-primary.
+- The sequencer leader sends ER PDUs to multiple gateways. If one gateway stalls, the others must continue to receive their ERs.
+- The sequencer leader pushes WAL records to the sequencer follower. This connection is special (see below).
+
+The implementation discipline:
+
+- Per-peer outbound queues, not a shared queue per component.
+- Non-blocking send semantics: each connection's send proceeds as far as the peer's window allows and stops without blocking other connections.
+- A "lag-acknowledgement" mechanism: each peer reports its current position; the sender knows how far behind each peer is; a peer that exceeds a configured lag threshold is dropped (TCP reset), forcing it to reconnect-and-replay.
+
+**The sequencer-to-follower replication channel is not droppable.** It is on the critical path for ER emission to gateways, since the sequencer leader does not emit an ER until the follower has acked the underlying order's WAL record. If the follower lags, the leader cannot drop it without violating the two-machine durability rule. Instead, the leader stops emitting ERs (the gateway sees order receipt but no fills until replication catches up). If the follower fails entirely, leadership decisions become single-machine-durable until a new follower is paired in, which is itself an arbiter-mediated event.
+
+**ME-secondary lag handling under cancel-on-failover.** ME-secondary needs a current copy of ME-primary's book, not just the sequencer's order stream, to do cancel-on-failover correctly. So ME-secondary has two inputs: the sequencer's order stream (same as ME-primary receives) and ME-primary's book-update stream. If ME-secondary lags on the book-update stream, the cancel-on-failover policy may fail at promotion time (the secondary's book is stale, and reconciliation against the WAL has more catching-up to do). This is acceptable as long as the lag is bounded -- the reconciliation step handles the catch-up. If the ME-secondary lags egregiously (more than a configured threshold), it is dropped; on restart it cold-starts via WAL replay rather than via lagged replication.
 
 ### Replication channel
 
@@ -996,7 +1039,7 @@ What "fast" means depends on the component. Targets below are aspirational; the 
 | Component | Failover target | Notes |
 |---|---|---|
 | Sequencer leader → follower | Sub-second; tens of milliseconds aspirational | Drives lease length (~200-500ms) and heartbeat interval (~50-100ms). Tighter intervals trade arbiter availability for failover speed. |
-| ME crash | Halt-on-failure baseline | Cancel all open orders, halt market for the affected partition, restart cleanly. Matches LSE Millennium's published behaviour when its mirror process does not take over. Seamless ME failover (sub-millisecond) is a future feature, not a present requirement. |
+| ME crash | Cancel-on-failover baseline; latency = sequencer-failover time + book reconciliation | ME-secondary reconciles its replicated book against the sequencer's WAL, then issues cancel ERs for outstanding orders. Depends on sequencer being up (or having failed over). Seamless ME failover (sub-millisecond, no cancels) is a future feature. Halt-on-failure remains the fallback for failure modes that cannot be cleanly reconciled. |
 | Gateway machine failure | Seconds (FIX reconnect to another gateway in the pool) | Inherent to the gateway-pool design. FIX-level resend covers any gap. |
 | Arbiter failure | Tolerated for the lease window | If primary arbiter dies and secondary is up, secondary takes over via internal arbiter HA. If both arbiters are unreachable, leader continues operating until lease expiry; system becomes unavailable for new orders thereafter. |
 | WAL disk full | Immediate halt | Sequencer gates ingress instantly. No "best effort" continuation. Operator action required. |
@@ -1047,6 +1090,80 @@ This is *monitoring*, not *prevention*. The framework still needs to tolerate sk
 
 This thinking is embryonic and will be revisited when slice 8 (the arbiter) lands and lease-expiry handling is implemented.
 
+### Statistics and metrics
+
+The framework's approach to observability splits into three categories with three different mechanisms. Each addresses a question regulators and operators ask, but the questions are different and the right mechanism is different.
+
+**Aggregate statistics: Prometheus.** "How many orders per second? What's the latency distribution? How many open positions?" These are aggregate questions answered by counters, gauges, and histograms.
+
+The chosen mechanism is Prometheus instrumentation reading from shared memory. The application (e.g. the matching engine on order placement) does an atomic counter increment, gauge update, or histogram observation -- nanosecond-scale operations that don't allocate, don't lock, and don't do I/O. A separate Prometheus gatherer process runs on the same machine, reads the shared-memory counters, and exposes them via standard Prometheus scrape (or pushes via remote-write). Grafana or equivalent draws graphs.
+
+This is intentionally cheaper than the work system's UDP-based stats publication, which is fundamentally unreliable. Cumulative counters in shared memory are durable across gatherer restarts; the regulator's "no statistic ever gets dropped" requirement is satisfied because cumulative counts are mathematically complete -- a missed scrape window can be reconstructed from the cumulative values at scrape time before and after the gap.
+
+The trade-off accepted: fine-grained rate detail within a missed scrape window is not preserved. The cumulative count is. For the regulator's intent (auditing the cumulative count of regulated events), this is sufficient.
+
+Prometheus histograms have a known limitation: observations beyond the configured bucket range fall in the `+Inf` bucket and the exact value is lost. For latency monitoring of P99, P99.9 etc this is fine. For "give me the actual value of every observation above some threshold" it isn't, and that question is answered by the WAL or by the ME audit log, not by Prometheus.
+
+**Per-event timing observability: ME audit log via Quill.** "When exactly did the ME accept order N?" Pcap-based reconstruction at the network layer gets close but doesn't capture the inside-process timing. The right answer is for the ME to log the event itself, with a high-precision timestamp from PTP-disciplined `CLOCK_REALTIME`, at order acceptance time.
+
+The framework already uses Quill for logging. Quill's hot-path cost is sub-100ns per call: structured records go to a lock-free queue and a separate logger thread drains the queue to disk. The ME's order acceptance path can emit an audit log line with no meaningful latency cost.
+
+The framework's `PUBSUB_LOG` macros are the existing entry point. ME audit records go through the same mechanism. A dedicated audit log level (separate from the existing `Info`/`Warning`/`Error` levels) is worth adding when this work lands, so audit records are filtered separately from diagnostic traces and never accidentally suppressed.
+
+**Crash durability: a documented gap.** Quill is async. On a process crash, in-flight log records that have been queued but not yet flushed by the logger thread are lost. For ME audit records this is a real concern -- "the ME crashed mid-trade and we have no record of what it was processing" is a bad audit answer if the audit log is the sole record.
+
+The mitigation is that **the audit log is not the sole record.** The sequencer's WAL records every order before the ME sees it. The ME's audit log adds timing detail to events already durably recorded in the WAL. If the ME crashes with audit records in flight:
+
+- The WAL still has the order. "Did this order exist?" → yes.
+- The ME audit log may be missing the last few microseconds of timing detail. "Exactly when did the ME accept it?" → "the audit log shows acceptance at T, with the caveat that records within the last flush interval may have been lost in the crash."
+
+This is a defensible position. The trade-off (acceptable async latency vs perfect crash durability) is the right one given the WAL covers existence.
+
+The alternative -- synchronous flushing per audit record -- was considered and rejected. Quill v11 does not provide a per-statement-priority flush; the `set_immediate_flush` API is global and would couple all logging to disk-flush latency. A dedicated synchronous logger for audit records was considered but rejected on the same grounds: per-record disk-flush latency on the ME's hot path is unacceptable, and the WAL already covers the audit-existence requirement.
+
+**Future enhancement: Quill backtrace logging.** When an `Error` or `Critical` log record fires, a buffered ring of recent diagnostic context is also flushed to the sink. This is useful for incident debugging via Splunk: support staff see the full picture at the moment something goes wrong, not just the error in isolation. Quill v11 supports this directly. To-do for the framework: configure backtrace logging on each component's logger, so recent operational context is preserved for incident analysis.
+
+**The Kafka stats chain at the work system is intentionally not replicated.** That chain (ME stats → broker → Kafka publisher → external Kafka consumers) addresses the same question Prometheus addresses, less efficiently, with worse reliability semantics, and with more moving infrastructure. Prometheus replaces it cleanly. This is a hard break from the work system's pattern but a beneficial one.
+
+### Downstream consumers and broadcast streams
+
+The framework needs to support delivery of order/trade events to downstream applications outside the framework's order-flow components. The named use case is a Kafka publishing component: a process that consumes order and trade events from the framework and publishes them to an external Kafka cluster. Other potential consumers (market data publishers, surveillance systems, post-trade settlement) are forward-looking and not yet specified.
+
+**The chosen pattern: WAL followers, not pubsub.**
+
+The sequencer's WAL is the durable record of every order and ER. Components that need to consume order/trade events do so by becoming **WAL followers** -- they open a connection to the sequencer leader, request records from a position cursor onward, and receive a stream of WAL records.
+
+This is a generalisation of the existing replication channel. Currently the sequencer has one follower (the secondary sequencer). Generalising to N followers, each with their own position cursor, is an extension rather than a new mechanism. Each follower:
+
+- Opens a TCP connection to the sequencer leader.
+- Identifies itself and its starting position cursor.
+- Receives WAL records in seqNo order from cursor onward.
+- Tracks its position locally; persists it via its own primary/secondary HA replication so failover doesn't lose position.
+
+The Kafka publisher is the first such follower (other than the secondary sequencer itself). It reads the WAL, derives trades from matched orders, and publishes to Kafka via Kafka's idempotent producer protocol. Kafka idempotency handles the brief overlap window during Kafka publisher failover so duplicates do not reach external consumers.
+
+**Why not a generic pubsub primitive.**
+
+A topic-based pubsub primitive (publish to topic, N subscribers receive, framework handles fanout and replay) was considered. For the named requirement -- one Kafka publisher consuming the order/trade stream -- it is over-engineering. The WAL-follower pattern reuses what the framework already has to build for sequencer replication, generalises naturally to additional followers, and adds no new primitive.
+
+A pubsub primitive becomes justified when there are multiple downstream consumers with similar fanout-and-replay semantics that don't fit cleanly as WAL followers. Currently there are not enough such use cases to justify it. If future use cases accumulate (market data dissemination at scale, multiple surveillance subscribers, etc.), a pubsub primitive can be added at that point. For now: WAL followers.
+
+**Snapshot-and-truncate is multi-subscriber-aware.** With multiple WAL followers each at their own position, the sequencer cannot truncate WAL beyond the slowest follower's position. The sequencer tracks each follower's position; the truncation target is the minimum-of-all-follower-positions ∧ snapshot-anchor-position. A persistently-slow follower (e.g. Kafka publisher backed up by Kafka cluster issues) extends WAL retention until it catches up. This is a known cost of the WAL-follower pattern and is acceptable.
+
+**Open: the market data system at work.**
+
+The market data system at work currently consumes data published by the order placement system. The exact mechanism and the exact data are not yet known to this project; a conversation with the developer who maintains the market data system is pending. Until that conversation happens, the appropriate framework-side mechanism for delivering equivalent data to a market data system cannot be decided. Possibilities:
+
+- Market data system becomes another WAL follower (option α extended to a second consumer). Likely sufficient if market data consumes the same per-event stream the Kafka publisher does.
+- Market data system requires topic-based fanout to multiple downstream subscribers (e.g. tens of trading firms each subscribing to specific instrument feeds). In that case a pubsub primitive becomes justified -- not just for market data but as a framework primitive.
+- Market data system has its own bespoke requirements that don't fit either pattern.
+
+The investigation is recorded in the "Open Questions and Items to Investigate" section near the end of this summary.
+
+**On the framework's "pubsub" name.**
+
+The framework's name (`pubsub_itc_fw`) was chosen at a time when topic-based pubsub seemed central to the design. Looking at what the framework actually builds and what its named use cases need, the WAL is the more central abstraction. Components that need to consume broadcast-like streams do so by being WAL followers, not by subscribing to topics on a broker. The "pubsub" framing is more idiomatic for systems like Kafka and the work system's broker; "log + followers" is the framing that fits this design. The name can stay; the architecture is what it is.
+
 ### Clock injection
 
 **Planned.** Components that need to read time will take a clock interface as a constructor parameter rather than calling `HighResolutionClock::now()` directly. Aeron uses this pattern (an `EpochClock` / `NanoClock` interface) and it pays back in several ways:
@@ -1089,17 +1206,43 @@ Out of scope until the ME grows GTD or another time-dependent feature, but the d
 
 ### ME failover policy
 
-The ME failover policy is the most consequential design choice in the HA architecture, because it determines the determinism investment required of the matching-engine logic. Three options exist:
+The ME failover policy is the most consequential design choice in the HA architecture, because it determines what state the ME-secondary maintains and the determinism investment required of the matching-engine logic. Four options exist:
 
 - **(a) Slow seamless failover.** ME-secondary cold-starts, loads state from the sequencer's WAL, replays. Tens of seconds to minutes depending on instrument count and warm-up cost. Rejected: too slow for an exchange.
 - **(b) Fast lockstep failover.** Both ME instances process the sequencer's input stream in parallel using deterministic logic. Both produce identical book state at every instant. Failover is "stop discarding the secondary's outputs and start using them". Sub-millisecond failover possible. Requires deterministic ME logic: no system clocks on the hot path, no random numbers, no FP edge cases, no parallelism that doesn't preserve ordering.
-- **(c) Halt-on-failure.** ME-primary dies, secondary is not used (or doesn't exist), market halts for the affected partition. Operators perform orderly cancel-and-restart. Trading resumes after a recovery window.
+- **(c) Halt-on-failure.** ME-primary dies, secondary is not used (or doesn't exist), market halts for the affected partition. Operators perform orderly cancel-and-restart. Trading resumes after a recovery window. Matches the published behaviour of LSE Millennium when its mirror process does not take over.
+- **(d) Cancel-on-failover.** ME-primary dies, ME-secondary is promoted, and on promotion it uses its replicated book state to issue cancellation messages for all outstanding orders. The gateway delivers FIX `ExecutionReport` messages with `OrdStatus=Canceled` to the affected clients. Trading resumes immediately on the secondary, but all in-flight orders at the moment of failure are explicitly cancelled rather than allowed to silently disappear. This is the policy used by some real exchanges and is the chosen direction for this framework.
 
-**The chosen baseline is (c) halt-on-failure.** This matches the published behaviour of LSE Millennium when its mirror process does not take over. It is conservative, unambiguous, and avoids the determinism investment that lockstep replication requires.
+**The chosen baseline is (d) cancel-on-failover.** It avoids the long downtime of (c) and the determinism investment of (b), while giving FIX clients an unambiguous "your order has been cancelled" outcome rather than the silence of (c) or the seamless-but-determinism-fragile guarantees of (b). The ME-secondary maintains a replicated copy of the book, fed from the ME-primary via a dedicated replication channel (shown in the topology diagram). On promotion, the secondary walks its book and emits cancel ERs for every outstanding order.
 
-**(b) is documented as a future aspiration.** When the framework is mature and a specific deployment requires seamless ME failover, the determinism work can be undertaken at that point. The integer-only price/qty rule (already adopted) removes one major hazard. Other hazards -- timestamping, hash-iteration order, parallel work scheduling -- would need careful design.
+**Critical correctness rule -- reconcile against the WAL before issuing cancels.** A naive implementation of cancel-on-failover has a serious race condition:
 
-Neither (b) nor (c) is the right answer for all deployments. The framework should make it possible to choose, but the proof-of-concept implementation builds (c).
+1. ME-primary matches a trade and emits an ER (e.g. `OrdStatus=Filled`) to the sequencer.
+2. The sequencer commits the ER to its WAL.
+3. The sequencer crashes before forwarding the ER to the gateway. (Or the ME-primary crashes before its book-replication push to the secondary catches up.)
+4. ME-secondary is promoted. Looks at its replicated book; sees the order is still open (the match wasn't reflected in its replicated state in time).
+5. ME-secondary issues a Cancel for that order.
+6. The new sequencer leader, after recovery, sees the original Fill ER in the WAL. But by now the FIX client has already received "Cancelled" for an order that legally executed.
+
+The result is a wrongly-cancelled trade. This is unambiguously worse than a delayed cancel.
+
+The correctness rule is therefore: **on promotion, ME-secondary does not issue cancels until it has reconciled its book against the new sequencer leader's WAL.** The order of operations is:
+
+1. ME-secondary detects ME-primary failure (heartbeat loss).
+2. ME-secondary requests promotion via the arbiter; receives an `ArbitrationDecision` with new epoch.
+3. ME-secondary stops tailing the (presumed-dead or now-failed-over) sequencer's stream.
+4. ME-secondary connects to the new sequencer leader and exchanges position cursors: "my book reflects events up to seqNo M; what does your WAL go to?"
+5. New sequencer leader replays events `M+1..N` from its WAL. ME-secondary applies them to its book.
+6. **Now** the book is consistent with the sequencer's authoritative state. Any order still on the (reconciled) book is genuinely outstanding -- the WAL has no later ER for it.
+7. ME-secondary issues cancel ERs for the genuinely-outstanding orders, via the new sequencer leader, which forwards them to gateways.
+
+This adds latency to the cancel-on-failover path: the cancels cannot fire until the new sequencer leader is up and reconciliation is complete. In return it eliminates the race and guarantees that no legally-executed trade is wrongly cancelled. This trade-off is the right one: a wrongly-cancelled trade is a far worse outcome than a delayed cancel.
+
+**Sequencer failover and ME failover may be ordered.** Note that step 4 above requires the new sequencer leader to be up. If the failure event is "ME-primary died" alone with sequencer pair healthy, the new sequencer leader is the existing sequencer leader, and reconciliation is fast. If the failure event takes out both ME-primary and a sequencer, the ME failover waits for sequencer failover to complete first. The cancel-on-failover latency is bounded by the sum of the two failover times, not by either individually.
+
+**(b) lockstep failover is documented as a future aspiration** beyond cancel-on-failover. When the framework is mature and a specific deployment requires *seamless* ME failover (no cancels, in-flight orders survive the failover), the determinism work for option (b) can be undertaken at that point. The integer-only price/qty rule (already adopted) removes one major hazard. Other hazards -- timestamping, hash-iteration order, parallel work scheduling -- would need careful design. Until then, (d) cancel-on-failover is the right balance of correctness and recovery speed.
+
+**(c) halt-on-failure is preserved as a fallback** for failure modes that go beyond what cancel-on-failover can handle. WAL mid-segment corruption, both halves of the arbiter pool unreachable simultaneously, or any scenario where reconciliation cannot be completed correctly -- all of these escalate to halt-on-failure. The operator deals with the situation manually after a clean halt.
 
 ### Snapshots
 
@@ -1125,6 +1268,27 @@ After a snapshot at seqNo `S` is durable and validated:
 - Delete WAL segments fully behind `S`.
 - Keep any segment containing seqNos `> S`.
 - The follower must have replayed at least `S` (or have its own snapshot ≥ `S`) before the leader truncates. Otherwise truncation could delete history the follower still needs.
+
+### Cold-start MTTR and mmap warm-up
+
+A sequencer that starts cold (process restart, machine reboot, or a previously-down instance rejoining) loads its most recent snapshot, replays the WAL tail, and rebuilds in-memory state. Three components contribute to the recovery time:
+
+- **Snapshot load.** Single-digit milliseconds for a small snapshot, low hundreds of ms for a large one. Bounded.
+- **WAL tail replay.** From the snapshot's seqNo to the current end-of-WAL. With snapshots taken regularly the tail is small (seconds-to-minutes of orders); replay is bounded by the tail size.
+- **mmap page-in.** The WAL is mmap'd. On cold start the OS page cache holds nothing for the file. First reads cause page faults that pull pages from disk. With a 1GB WAL tail this is roughly 1GB / disk-read-rate -- in the order of low single-digit seconds for a fast SSD, longer for slower storage.
+
+The mmap page-in cost is what most people forget. It does not appear in microbenchmarks of WAL replay because microbenchmarks usually run on warm caches. It appears in production cold starts and is the dominant component of recovery time when the WAL tail is non-trivial.
+
+This matters mostly for *cold* starts. In a normal failover the secondary is already running, its mmap'd WAL is paged in (because tailing the leader's WAL records and writing them to its own WAL has caused the relevant pages to be touched), and the recovery time is the time to apply any not-yet-applied records plus the time to switch into leader role. No mmap warm-up cost. This is one of the reasons failover from a warm secondary is faster than cold start.
+
+Two specific recoveries warrant the mmap-warm-up consideration:
+
+1. **A previously-down sequencer being restarted to rejoin as follower.** Cold-start for that instance. Snapshot load + WAL replay + mmap page-in. Latency a function of how long it was down and how much WAL has accumulated.
+2. **Both sequencer instances down at the same time, one being brought up first to elect itself leader.** Same cold-start cost, plus this is the path on the critical recovery from a total outage.
+
+The mitigation is straightforward: pre-fault the mmap pages by issuing `madvise(MADV_WILLNEED)` on the mmap region right after opening it, or by reading the file sequentially in a background thread. The kernel does the I/O while the rest of the startup proceeds. A 1-2 second wall-clock cost becomes a parallel 1-2 seconds of disk I/O that overlaps with snapshot deserialisation and WAL replay setup.
+
+**Implementation note** for slice 3 (mmap'd WAL on disk): include the `madvise(MADV_WILLNEED)` call in the WAL open path, so the page-in cost is paid eagerly rather than lazily during replay. Also worth measuring cold-start MTTR in benchmarks at slice 3 -- the number is likely surprising the first time.
 
 ### Failure-handling boundaries
 
@@ -1336,18 +1500,20 @@ The diagram below shows a single instrument's components. Real exchanges run man
         │  (config'd identity)     │  │  (config'd identity)     │
         │  currently LEADER        │  │  currently FOLLOWER      │
         │                          │  │                          │
-        │  - receives orders in    │  │  Halt-on-failure model:  │
-        │    seqNo order from      │  │  - cold standby          │
-        │    LEADER sequencer      │  │  - on primary failure,   │
-        │  - mutates book          │  │    market halts; manual  │
-        │  - emits ERs back to     │  │    cancel-and-restart    │
-        │    leader sequencer      │  │                          │
-        │  - stateless across      │  │  Future seamless model:  │
-        │    crashes (book         │  │  - both MEs process the  │
-        │    rebuilt by replay)    │  │    same order stream in  │
-        │                          │  │    parallel; secondary   │
-        │                          │  │    output discarded      │
-        │                          │  │    until promotion       │
+        │  - receives orders in    │  │  Cancel-on-failover:     │
+        │    seqNo order from      │  │  - tails book updates    │
+        │    LEADER sequencer      │  │    from primary;         │
+        │  - mutates book          │  │    maintains replicated  │
+        │  - emits ERs back to     │  │    book                  │
+        │    leader sequencer      │  │  - on primary failure,   │
+        │  - pushes book updates   │  │    reconciles against    │
+        │    to secondary          │  │    sequencer WAL, then   │
+        │                          │  │    issues cancel ERs for │
+        │                          │  │    outstanding orders    │
+        │                          │  │                          │
+        │                          │  │  Future seamless model:  │
+        │                          │  │  - lockstep parallel     │
+        │                          │  │    book; no cancels      │
         │                          │  │  - requires deterministic│
         │                          │  │    ME logic              │
         └──────────────────────────┘  └──────────────────────────┘
@@ -1430,11 +1596,14 @@ Each slice is shippable -- the system works at the end of each. Each slice is a 
 7. **Network replication.** Follower on another host. Leader streams WAL records over a dedicated TCP connection. Follower acks; commit-for-ER-emission = follower-acked.
 8. **Arbiter implementation.** Replaces file-based fencing with the real arbiter (lease+epoch handshake protocol from the Leader-Follower Protocol subsystem section). At this slice, the arbiter's own internal HA is implemented via the PSA+witness topology: two full arbiter instances with hand-rolled lease+epoch replication between them, plus one witness machine in a failure-independent location to break ties. See "Arbiter PSA topology" section.
 9. **Dual snapshots, snapshot validation, polish.** The safety-net layer that turns the system from "works" into "operationally bullet-proof".
+10. **WAL multi-subscriber generalisation.** Generalise the sequencer's WAL replication channel from "one follower (the secondary sequencer)" to "N followers, each with their own position cursor". Snapshot-and-truncate becomes follower-position-aware: truncation target is the minimum across all follower positions ∧ the snapshot anchor position. This slice unblocks slice 11 and any future WAL-follower components.
+11. **Kafka publishing component.** A new component that tails the WAL via the multi-subscriber mechanism from slice 10, derives trades from matched orders, and publishes to an external Kafka cluster via Kafka's idempotent producer protocol. Primary/secondary HA pair using the same arbiter+lease+epoch pattern as other components; cursor replication between Kafka publisher's own primary and secondary preserves position across failover. Kafka idempotency handles the brief overlap window during failover so external Kafka consumers see no duplicates.
 
-Slices 10+ are forward-looking and not yet planned in detail:
+Slices 12+ are forward-looking and not yet planned in detail:
 
-- **ME primary-secondary pair** (halt-on-failure baseline). The ME secondary exists, fails over via market-halt-and-restart, no determinism investment.
+- **ME primary-secondary pair** (cancel-on-failover baseline). The ME-secondary maintains a replicated book; on promotion it reconciles against the sequencer's WAL before issuing cancel ERs. Includes the book-replication channel and the reconciliation-on-promotion logic.
 - **Gateway pool**. Multiple gateway instances; clients pin to one each; FIX-level reconnect on gateway machine failure.
+- **Market data integration mechanism.** Deferred pending requirements clarification with the maintainer of the work system's market data system. Possibilities: another WAL follower (analogous to the Kafka publisher); a topic-based pubsub primitive (only if multiple downstream subscribers with fanout-and-replay semantics emerge); a bespoke mechanism specific to market data's needs. See the "Open Questions" section.
 - **Seamless ME failover**. Lockstep or near-lockstep replication. Determinism work. Far in the future.
 - **DR site**. A second site with its own arbiter pair, its own component pairs, cross-site replication. Far in the future.
 - **Multi-instrument scaling**. Sharded sequencer, instrument groups, etc. Out of scope until single-instrument is operationally proven.
@@ -1481,6 +1650,45 @@ The realistic path, if the aspiration is real:
 This section exists to keep the aspiration honest and to stop the project drifting into "builds more features" rather than also "becomes more trustworthy in the specific ways that matter for serious use".
 
 ---
+
+## Open Questions and Items to Investigate
+
+This section tracks specific unresolved questions whose answers will inform future design decisions. It is distinct from the "Open" entries in the WAL+HA Design's Decision Log: those are architectural decisions deferred until a slice forces them. The items here are research items -- things the project author needs to find out about, often by talking to people or reading documentation, before the answer can be committed to code.
+
+Each item names what is unknown, what would change once the answer is known, and roughly when the answer needs to be available.
+
+### Market data integration mechanism
+
+**What is unknown:** Exactly what the market data system at the work site consumes from the order placement system. Specifically: what data fields, at what frequency, with what delivery semantics (per-event, batched, snapshot-plus-deltas), with what subscriber count and how subscribers identify themselves, with what gap/reconnection handling, with what regulatory constraints on the delivery path.
+
+**What changes once known:** The framework-side mechanism for delivering equivalent data. Three candidate shapes:
+- WAL follower: market data system becomes another consumer of the sequencer's WAL, analogous to the Kafka publisher.
+- Topic-based pubsub primitive: justified if the market data side has multiple downstream subscribers with fanout-and-replay semantics that don't fit cleanly as WAL followers.
+- Bespoke mechanism: if the market data system has specific requirements that don't fit either of the above.
+
+**Plan:** A conversation with the maintainer of the market data system at work, who has the deepest understanding of what that system does. Communication may proceed through written follow-ups (email or chat) to allow careful confirmation of technical points.
+
+**When needed:** Before slice 12+ designs market data delivery. Slice 11 (Kafka publisher) is unaffected. Earlier slices are unaffected.
+
+### Long-term retention and archival of audit-relevant artefacts
+
+**What is unknown:** Specific regulatory retention requirements for the WAL, the ME audit log, and the Prometheus shared-memory counter files. Periods are typically multi-year (5-7 years for financial trading records is common) but vary by jurisdiction and venue type. The framework's regulatory environment for any deployment scenario isn't yet defined.
+
+**What changes once known:** Operational tooling for log rotation, archival, offsite copies, tamper-detection, and recovery from archives. None of this is core framework code, but the framework's design must support it (e.g. the WAL's segment file format must be archive-friendly; segments must be self-describing enough to restore from archive without the live system being available).
+
+**Plan:** Investigated when a deployment scenario emerges. For the personal-project phase, this is documented but not actively researched.
+
+**When needed:** Before any production deployment. Not for any current slice.
+
+### Operational monitoring of PTP, leases, and arbiter health
+
+**What is unknown:** Specific Nagios (or equivalent) check definitions for the framework's HA and time-sync state. Sketched in the "Time synchronisation and clock skew" and "Arbiter PSA topology" sections but not yet specified at the level of "here is the check_ptp config that this framework requires".
+
+**What changes once known:** A library of Nagios checks shipped alongside the framework, or pointers to standard-issue checks with framework-specific configuration recipes.
+
+**Plan:** Drafted alongside slice 8 (arbiter implementation) when the lease/epoch state actually exists to monitor.
+
+**When needed:** Before any deployment that goes beyond the personal-project test setup.
 
 ## HA Architecture (legacy stub -- predates the WAL+HA design above)
 

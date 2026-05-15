@@ -19,3 +19,6 @@ logon_timeout = "30s"
 [logging]
 applog_level = "debug"
 syslog_level = "info"
+mode = "none"
+max_file_size = 10240000
+max_backup_files=10

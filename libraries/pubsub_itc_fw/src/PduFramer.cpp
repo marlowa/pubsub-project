@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <arpa/inet.h>
+#include <endian.h>
 #include <cstring>
 
 #include <pubsub_itc_fw/PduFramer.hpp>
@@ -17,7 +18,7 @@ PduFramer::PduFramer(ByteStreamInterface& stream)
 {
 }
 
-std::tuple<bool, std::string> PduFramer::send(int16_t pdu_id, int8_t version,
+std::tuple<bool, std::string> PduFramer::send(int16_t pdu_id, int8_t version, int64_t seq_no,
                                                const uint8_t* payload, uint32_t size)
 {
     if (payload == nullptr) {
@@ -43,6 +44,7 @@ std::tuple<bool, std::string> PduFramer::send(int16_t pdu_id, int8_t version,
     hdr->pdu_id     = htons(static_cast<uint16_t>(pdu_id));
     hdr->version    = version;
     hdr->filler_a   = 0;
+    hdr->seq_no     = static_cast<int64_t>(htobe64(static_cast<uint64_t>(seq_no)));
     hdr->canary     = htonl(pdu_canary_value);
     hdr->filler_b   = 0;
     std::memcpy(frame_buffer_ + sizeof(PduHeader), payload, size);

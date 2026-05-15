@@ -4,11 +4,13 @@
 #include <cerrno>
 #include <cstring>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include <arpa/inet.h>
+#include <endian.h>
 #include <gtest/gtest.h>
 
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
@@ -146,6 +148,7 @@ public:
         hdr.pdu_id     = htons(static_cast<uint16_t>(pdu_id));
         hdr.version    = version;
         hdr.filler_a   = 0;
+        hdr.seq_no     = 0;
         hdr.canary     = htonl(pdu_canary_value);
         hdr.filler_b   = 0;
 
@@ -223,7 +226,7 @@ TEST_F(PduFramerParserTest, SendWritesHeaderAndPayload)
     PduFramer framer(stream_);
 
     const uint8_t payload[] = {0x01, 0x02, 0x03, 0x04};
-    auto [ok, error] = framer.send(100, 1, payload, sizeof(payload));
+    auto [ok, error] = framer.send(100, 1, 0, payload, sizeof(payload));
 
     EXPECT_TRUE(ok);
     EXPECT_TRUE(error.empty());
@@ -237,6 +240,7 @@ TEST_F(PduFramerParserTest, SendWritesHeaderAndPayload)
     EXPECT_EQ(static_cast<int16_t>(ntohs(static_cast<uint16_t>(hdr->pdu_id))), 100);
     EXPECT_EQ(hdr->version, 1);
     EXPECT_EQ(hdr->filler_a, 0u);
+    EXPECT_EQ(static_cast<int64_t>(be64toh(static_cast<uint64_t>(hdr->seq_no))), 0);
     EXPECT_EQ(ntohl(hdr->canary), pdu_canary_value);
     EXPECT_EQ(hdr->filler_b, 0u);
 
@@ -254,7 +258,7 @@ TEST_F(PduFramerParserTest, PartialWriteLeavesPendingData)
     stream_.send_eagain_after = 1;
 
     const uint8_t payload[] = {0xAA, 0xBB};
-    auto [ok, error] = framer.send(101, 1, payload, sizeof(payload));
+    auto [ok, error] = framer.send(101, 1, 0, payload, sizeof(payload));
 
     EXPECT_TRUE(ok);
     EXPECT_TRUE(framer.has_pending_data());
@@ -267,7 +271,7 @@ TEST_F(PduFramerParserTest, ContinueSendCompletesPartialWrite)
     stream_.send_limit = 4;
 
     const uint8_t payload[] = {0xAA, 0xBB};
-    [[maybe_unused]] auto send_result = framer.send(101, 1, payload, sizeof(payload));
+    [[maybe_unused]] auto send_result = framer.send(101, 1, 0, payload, sizeof(payload));
 
     // Remove the per-call limit and drain.
     stream_.send_limit = 0;
@@ -285,7 +289,7 @@ TEST_F(PduFramerParserTest, EagainOnSendLeavesPendingData)
     stream_.send_eagain = true;
 
     const uint8_t payload[] = {0x01};
-    auto [ok, error] = framer.send(102, 1, payload, sizeof(payload));
+    auto [ok, error] = framer.send(102, 1, 0, payload, sizeof(payload));
 
     EXPECT_TRUE(ok);
     EXPECT_TRUE(framer.has_pending_data());
@@ -297,7 +301,7 @@ TEST_F(PduFramerParserTest, SendErrorReturnsFalse)
     stream_.send_error = true;
 
     const uint8_t payload[] = {0x01};
-    auto [ok, error] = framer.send(102, 1, payload, sizeof(payload));
+    auto [ok, error] = framer.send(102, 1, 0, payload, sizeof(payload));
 
     EXPECT_FALSE(ok);
     EXPECT_FALSE(error.empty());
@@ -311,23 +315,23 @@ TEST_F(PduFramerParserTest, SendWhilePendingThrows)
     stream_.send_eagain_after = 1; // Force partial write then block.
 
     const uint8_t payload[] = {0x01};
-    [[maybe_unused]] auto first_send = framer.send(100, 1, payload, sizeof(payload));
+    [[maybe_unused]] auto first_send = framer.send(100, 1, 0, payload, sizeof(payload));
     ASSERT_TRUE(framer.has_pending_data());
 
-    EXPECT_THROW(framer.send(100, 1, payload, sizeof(payload)), PreconditionAssertion);
+    EXPECT_THROW(framer.send(100, 1, 0, payload, sizeof(payload)), PreconditionAssertion);
 }
 
 TEST_F(PduFramerParserTest, SendNullptrPayloadThrows)
 {
     PduFramer framer(stream_);
-    EXPECT_THROW(framer.send(100, 1, nullptr, 4), PreconditionAssertion);
+    EXPECT_THROW(framer.send(100, 1, 0, nullptr, 4), PreconditionAssertion);
 }
 
 TEST_F(PduFramerParserTest, SendZeroSizeThrows)
 {
     PduFramer framer(stream_);
     const uint8_t payload[] = {0x01};
-    EXPECT_THROW(framer.send(100, 1, payload, 0), PreconditionAssertion);
+    EXPECT_THROW(framer.send(100, 1, 0, payload, 0), PreconditionAssertion);
 }
 
 TEST_F(PduFramerParserTest, NoPendingDataInitially)
@@ -351,6 +355,7 @@ static std::vector<uint8_t> make_prebuilt_frame(int16_t pdu_id, int8_t version,
     hdr->pdu_id     = htons(static_cast<uint16_t>(pdu_id));
     hdr->version    = version;
     hdr->filler_a   = 0;
+    hdr->seq_no     = 0;
     hdr->canary     = htonl(pdu_canary_value);
     hdr->filler_b   = 0;
     std::memcpy(frame.data() + sizeof(PduHeader), payload, payload_size);
@@ -498,7 +503,8 @@ TEST_F(PduFramerParserTest, SendPrebuiltDoesNotCopyPayload)
 
 TEST_F(PduFramerParserTest, ParseSingleCompletePdu)
 {
-    PduParser parser(stream_, *thread_, slab_allocator_, logger_with_sink_->logger, pubsub_itc_fw::ConnectionID{});
+    bool disconnected = false;
+    PduParser parser(stream_, *thread_, slab_allocator_, logger_with_sink_->logger, [&disconnected]() { disconnected = true; }, pubsub_itc_fw::ConnectionID{});
 
     const uint8_t payload[] = {0x10, 0x20, 0x30};
     stream_.feed_pdu(100, 1, payload, sizeof(payload));
@@ -508,6 +514,7 @@ TEST_F(PduFramerParserTest, ParseSingleCompletePdu)
 
     EXPECT_TRUE(ok);
     EXPECT_TRUE(error.empty());
+    EXPECT_FALSE(disconnected);
 
     // One FrameworkPdu message should be in the queue.
     auto msg = thread_->get_queue().dequeue();
@@ -521,7 +528,7 @@ TEST_F(PduFramerParserTest, ParseSingleCompletePdu)
 
 TEST_F(PduFramerParserTest, ParseTwoConsecutivePdus)
 {
-    PduParser parser(stream_, *thread_, slab_allocator_, logger_with_sink_->logger, pubsub_itc_fw::ConnectionID{});
+    PduParser parser(stream_, *thread_, slab_allocator_, logger_with_sink_->logger, nullptr, pubsub_itc_fw::ConnectionID{});
 
     const uint8_t p1[] = {0xAA, 0xBB};
     const uint8_t p2[] = {0xCC, 0xDD, 0xEE};
@@ -545,7 +552,7 @@ TEST_F(PduFramerParserTest, ParseTwoConsecutivePdus)
 
 TEST_F(PduFramerParserTest, ParseWithPartialHeaderDelivery)
 {
-    PduParser parser(stream_, *thread_, slab_allocator_, logger_with_sink_->logger, pubsub_itc_fw::ConnectionID{});
+    PduParser parser(stream_, *thread_, slab_allocator_, logger_with_sink_->logger, nullptr, pubsub_itc_fw::ConnectionID{});
 
     const uint8_t payload[] = {0x01, 0x02};
     stream_.feed_pdu(100, 1, payload, sizeof(payload));
@@ -562,7 +569,7 @@ TEST_F(PduFramerParserTest, ParseWithPartialHeaderDelivery)
 
 TEST_F(PduFramerParserTest, ParseDetectsCanaryMismatch)
 {
-    PduParser parser(stream_, *thread_, slab_allocator_, logger_with_sink_->logger, pubsub_itc_fw::ConnectionID{});
+    PduParser parser(stream_, *thread_, slab_allocator_, logger_with_sink_->logger, nullptr, pubsub_itc_fw::ConnectionID{});
 
     // Feed a frame with a corrupt canary.
     PduHeader hdr{};
@@ -571,6 +578,7 @@ TEST_F(PduFramerParserTest, ParseDetectsCanaryMismatch)
     hdr.pdu_id     = htons(100);
     hdr.version    = 1;
     hdr.filler_a   = 0;
+    hdr.seq_no     = 0;
     hdr.canary     = htonl(0xDEADBEEFU); // wrong canary
     hdr.filler_b   = 0;
 
@@ -589,7 +597,8 @@ TEST_F(PduFramerParserTest, ParseDetectsCanaryMismatch)
 
 TEST_F(PduFramerParserTest, ParseDetectsPeerDisconnect)
 {
-    PduParser parser(stream_, *thread_, slab_allocator_, logger_with_sink_->logger, pubsub_itc_fw::ConnectionID{});
+    bool disconnected = false;
+    PduParser parser(stream_, *thread_, slab_allocator_, logger_with_sink_->logger, [&disconnected]() { disconnected = true; }, pubsub_itc_fw::ConnectionID{});
 
     stream_.recv_disconnect = true;
 
@@ -597,11 +606,12 @@ TEST_F(PduFramerParserTest, ParseDetectsPeerDisconnect)
 
     EXPECT_FALSE(ok);
     EXPECT_TRUE(error.empty()); // Graceful disconnect, not an error string.
+    EXPECT_TRUE(disconnected);
 }
 
 TEST_F(PduFramerParserTest, ParseEagainWithNoDataReturnsOk)
 {
-    PduParser parser(stream_, *thread_, slab_allocator_, logger_with_sink_->logger, pubsub_itc_fw::ConnectionID{});
+    PduParser parser(stream_, *thread_, slab_allocator_, logger_with_sink_->logger, nullptr, pubsub_itc_fw::ConnectionID{});
 
     // No data at all — socket returns EAGAIN immediately.
     stream_.recv_eagain = true;
@@ -626,7 +636,7 @@ TEST_F(PduFramerParserTest, RoundTripFramerToParser)
     const uint8_t payload[] = {0x11, 0x22, 0x33, 0x44, 0x55};
     const int16_t pdu_id = 200;
 
-    auto [send_ok, send_error] = framer.send(pdu_id, 1, payload, sizeof(payload));
+    auto [send_ok, send_error] = framer.send(pdu_id, 1, 0, payload, sizeof(payload));
     ASSERT_TRUE(send_ok);
     ASSERT_FALSE(framer.has_pending_data());
 
@@ -637,7 +647,7 @@ TEST_F(PduFramerParserTest, RoundTripFramerToParser)
     }
     parser_stream.recv_eagain = true;
 
-    PduParser parser(parser_stream, *thread_, slab_allocator_, logger_with_sink_->logger, pubsub_itc_fw::ConnectionID{});
+    PduParser parser(parser_stream, *thread_, slab_allocator_, logger_with_sink_->logger, nullptr, pubsub_itc_fw::ConnectionID{});
     auto [recv_ok, recv_error] = parser.receive();
 
     ASSERT_TRUE(recv_ok);

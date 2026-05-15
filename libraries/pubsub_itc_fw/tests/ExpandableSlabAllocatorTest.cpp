@@ -15,8 +15,10 @@
  */
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <future>
 #include <thread>
 #include <tuple>
 #include <vector>
@@ -426,6 +428,104 @@ TEST_F(ExpandableSlabAllocatorTest, StressAllocateDeallocateCycle) {
     // Slab count should not have grown unboundedly — reclamation must have worked.
     // At most we'd expect a handful of slabs, not kCycles worth.
     EXPECT_LT(alloc.slab_count(), 10) << "slab count grew unexpectedly; reclamation may be broken";
+}
+
+/*
+ * Regression test for a hang discovered during the PduBurst integration soak.
+ *
+ * Production scenario: the reactor (one thread) allocates single-chunk PDU
+ * payloads from the inbound slab allocator. The receiver application thread
+ * (a different thread) deallocates each chunk after processing the PDU. With
+ * the application thread keeping up with inbound traffic, each slab transitions
+ * 0 -> 1 -> 0 -> 1 -> 0 ... while it is still the current slab.
+ *
+ * The hang requires a tight cross-thread interleaving: between the reactor's
+ * first try_dequeue (which returns GotItem) and the reactor's follow-up
+ * try_dequeue (which would return Empty and trigger reset_to_empty), the
+ * application thread re-enqueues the same node. Because the queue's tail_
+ * still points at that node from the previous enqueue, the second enqueue's
+ * tail_.exchange(node) returns the node itself, and prev->next.store(node)
+ * creates a self-loop. The reactor's follow-up try_dequeue then returns the
+ * same node forever and the reactor never escapes the drain loop.
+ *
+ * This test runs two threads doing single-chunk allocate/deallocate cycles
+ * for a fixed number of iterations. Without the fix it hangs the reactor
+ * thread inside drain_empty_slab_queue. With it, both threads complete
+ * within the time budget.
+ *
+ * The single-threaded variant of this scenario (one thread allocating and
+ * deallocating in sequence) cannot trigger the bug because the consumer
+ * always calls reset_to_empty between cycles before any re-enqueue can
+ * happen. The bug needs a producer arriving in a specific window during
+ * the consumer's drain.
+ */
+TEST_F(ExpandableSlabAllocatorTest, RepeatedSingleChunkAllocDeallocOfCurrentSlabDoesNotHang) {
+    constexpr int            cycles      = 100'000;
+    constexpr size_t         chunk_size  = 64;
+    constexpr auto           time_budget = std::chrono::seconds(10);
+
+    auto workload = std::async(std::launch::async, [&]() -> bool {
+        ExpandableSlabAllocator alloc{kSmallSlab};
+
+        // Single-slot hand-off between the reactor (allocator) thread and the
+        // deallocator thread. The reactor publishes a fresh allocation; the
+        // deallocator picks it up and frees it. nullptr means "slot empty".
+        std::atomic<void*>     slot{nullptr};
+        std::atomic<int>       slot_slab_id{-1};
+        std::atomic<bool>      stop{false};
+
+        std::thread deallocator([&]() {
+            while (!stop.load(std::memory_order_acquire)) {
+                void* ptr = slot.exchange(nullptr, std::memory_order_acq_rel);
+                if (ptr == nullptr) continue;
+                const int slab_id = slot_slab_id.load(std::memory_order_acquire);
+                alloc.deallocate(slab_id, ptr);
+            }
+            // Drain any final outstanding allocation.
+            void* ptr = slot.exchange(nullptr, std::memory_order_acq_rel);
+            if (ptr != nullptr) {
+                const int slab_id = slot_slab_id.load(std::memory_order_acquire);
+                alloc.deallocate(slab_id, ptr);
+            }
+        });
+
+        for (int i = 0; i < cycles; ++i) {
+            // Wait for the deallocator to clear the previous slot.
+            while (slot.load(std::memory_order_acquire) != nullptr) {
+                std::this_thread::yield();
+            }
+
+            auto [slab_id, ptr] = alloc.allocate(chunk_size);
+            if (ptr == nullptr) {
+                stop.store(true, std::memory_order_release);
+                deallocator.join();
+                return false;
+            }
+
+            slot_slab_id.store(slab_id, std::memory_order_release);
+            slot.store(ptr, std::memory_order_release);
+        }
+
+        // Wait for the deallocator to drain the final slot, then stop it.
+        while (slot.load(std::memory_order_acquire) != nullptr) {
+            std::this_thread::yield();
+        }
+        stop.store(true, std::memory_order_release);
+        deallocator.join();
+        return true;
+    });
+
+    const std::future_status status = workload.wait_for(time_budget);
+
+    ASSERT_EQ(status, std::future_status::ready)
+        << "ExpandableSlabAllocator hung during concurrent single-chunk alloc/dealloc cycles. "
+        << "This is the self-loop bug in EmptySlabQueue: the deallocator thread re-enqueued the "
+        << "current slab's node while the reactor thread was mid-drain, between its first GotItem "
+        << "and its second try_dequeue. The producer's tail_.exchange(node) found tail_ already "
+        << "equal to node, so node->next was set to node itself, and the reactor's next "
+        << "try_dequeue returned the same slab forever.";
+
+    EXPECT_TRUE(workload.get()) << "allocate() returned nullptr unexpectedly during the workload";
 }
 
 } // namespace pubsub_itc_fw::tests

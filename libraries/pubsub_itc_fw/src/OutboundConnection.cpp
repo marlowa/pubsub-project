@@ -47,11 +47,13 @@ void OutboundConnection::on_connected(std::unique_ptr<TcpSocket> socket)
     connector_.reset();
 
     framer_ = std::make_unique<PduFramer>(*socket_);
+    // TODO we must not pass nullptr for the disconnect handler!
     parser_ = std::make_unique<PduParser>(
         *socket_,
         target_thread_,
         inbound_allocator_,
         logger_,
+        nullptr, // TODO this is wrong!
         id_);
 }
 

@@ -19,7 +19,7 @@
 namespace sample_fix_gateway_seq {
 
 SampleFixGatewaySeq::SampleFixGatewaySeq(const FixGatewaySeqConfiguration& config,
-                 std::unique_ptr<pubsub_itc_fw::QuillLogger> logger)
+                                         std::unique_ptr<pubsub_itc_fw::QuillLogger> logger)
     : config_(config)
     , logger_(std::move(logger))
 {
@@ -46,8 +46,7 @@ SampleFixGatewaySeq::SampleFixGatewaySeq(const FixGatewaySeqConfiguration& confi
         pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::FrameworkPdu},
         0);
 
-    gateway_thread_ = pubsub_itc_fw::ApplicationThread::create<FixGatewaySeqThread>(
-        *logger_, *reactor_, config_);
+    gateway_thread_ = pubsub_itc_fw::ApplicationThread::create<FixGatewaySeqThread>(*logger_, *reactor_, config_);
 
     reactor_->register_thread(gateway_thread_);
 
@@ -102,18 +101,15 @@ int main(int argc, char* argv[])
 
     pubsub_itc_fw::QuillLogger::block_signals_before_construction();
 
-    auto logger = std::make_unique<pubsub_itc_fw::QuillLogger>(
-        log_file,
-        pubsub_itc_fw::FileOpenMode{pubsub_itc_fw::FileOpenMode::Truncate},
-        pubsub_itc_fw::FwLogLevel::Info,
-        pubsub_itc_fw::FwLogLevel::Info);
-
     sample_fix_gateway_seq::FixGatewaySeqConfiguration config;
+    std::unique_ptr<pubsub_itc_fw::QuillLogger> logger;
+
     try {
-        config = sample_fix_gateway_seq::FixGatewaySeqConfigurationLoader::load(config_file);
+        auto [loaded_config, initialized_logger] = sample_fix_gateway_seq::FixGatewaySeqConfigurationLoader::load_and_init_logging(config_file, log_file);
+        config = std::move(loaded_config);
+        logger = std::move(initialized_logger);
     } catch (const pubsub_itc_fw::ConfigurationException& ex) {
-        PUBSUB_LOG((*logger), pubsub_itc_fw::FwLogLevel::Error,
-                   "SampleFixGatewaySeq: configuration error: {}", ex.what());
+        std::cerr << fmt::format("SampleFixGatewaySeq: configuration error: {}\n", ex.what());
         return 1;
     }
 

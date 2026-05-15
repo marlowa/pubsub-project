@@ -70,13 +70,17 @@ void MirroredBuffer::advance_head(int64_t bytes) {
         throw PreconditionAssertion("Cannot advance head by negative bytes", __FILE__, __LINE__);
     }
     if (bytes > space_remaining()) {
-        throw PreconditionAssertion("Advance head exceeds available space in mirrored buffer", __FILE__, __LINE__);
+        throw PreconditionAssertion("Advance head exceeds remaining space", __FILE__, __LINE__);
     }
 
-    head_ += bytes;
-    if (head_ >= capacity_) {
-        head_ -= capacity_;
+    int64_t current_head = head_.load(std::memory_order_relaxed);
+    int64_t next_head = current_head + bytes;
+    if (next_head >= capacity_) {
+        next_head -= capacity_;
     }
+
+    // Release ensures all data writes to base_ptr_ happen BEFORE head_ is updated
+    head_.store(next_head, std::memory_order_release);
 }
 
 const uint8_t* MirroredBuffer::read_ptr() const {
@@ -89,17 +93,24 @@ void MirroredBuffer::advance_tail(int64_t bytes) {
         throw PreconditionAssertion("Cannot advance tail by negative bytes", __FILE__, __LINE__);
     }
     if (bytes > bytes_available()) {
-        throw PreconditionAssertion("Advance tail exceeds available data in mirrored buffer", __FILE__, __LINE__);
+        throw PreconditionAssertion("Advance tail exceeds available data", __FILE__, __LINE__);
     }
 
-    tail_ += bytes;
-    if (tail_ >= capacity_) {
-        tail_ -= capacity_;
+    int64_t current_tail = tail_.load(std::memory_order_relaxed);
+    int64_t next_tail = current_tail + bytes;
+    if (next_tail >= capacity_) {
+        next_tail -= capacity_;
     }
+
+    // Release ensures the producer sees the updated tail (freed space)
+    tail_.store(next_tail, std::memory_order_release);
 }
 
 int64_t MirroredBuffer::bytes_available() const {
-    const int64_t diff = head_ - tail_;
+    // Acquire ensures we see the most recent head_ and the data associated with it
+    const int64_t h = head_.load(std::memory_order_acquire);
+    const int64_t t = tail_.load(std::memory_order_relaxed);
+    const int64_t diff = h - t;
     return (diff >= 0) ? diff : (capacity_ + diff);
 }
 

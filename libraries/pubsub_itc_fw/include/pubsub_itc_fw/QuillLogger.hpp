@@ -14,6 +14,7 @@
 
 #include <pubsub_itc_fw/FileOpenMode.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
+#include <pubsub_itc_fw/RollingLogfileConfiguration.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -39,14 +40,15 @@ namespace pubsub_itc_fw {
  * stores it as a member.
  *
  * Format string safety:
- *   In C++17, format string mismatches between the fmt argument and the
- *   variadic argument list are not caught at compile time -- this requires
- *   C++20's consteval. At runtime, Quill's backend catches format errors
- *   inside _populate_formatted_log_message and emits them as a normal log
- *   record containing "[Could not format log statement. ...]". This record
- *   is visible in the applog file and console sink. Note that the
+ *   In C++17, it proved tricky to detect format string mismatches between the fmt argument and the
+ *   variadic argument list at compile time -- initial thoughts were that it required
+ *   C++20's consteval. So validation was added in the backend at runtime.
+ *   At runtime, Quill's backend catches format errors inside _populate_formatted_log_message
+ *   and emits them as a normal log record containing "[Could not format log statement. ...]".
+ *   This record is visible in the applog file and console sink. Note that the
  *   error_notifier in BackendOptions is NOT called for format errors in
  *   Quill 11.0.2 -- it is only used for queue failures and backend exceptions.
+ *   However, a way was found to check the format string at compile time.
  *   See LoggingMacros.hpp for the full explanation and coding rules.
  *
  * Flush behaviour and known limitations:
@@ -93,8 +95,10 @@ class QuillLogger {
      * @param file_mode     [in] Truncate or append.
      * @param applog_level  [in] Minimum severity written to the applog file.
      * @param syslog_level  [in] Minimum severity written to syslog.
+     * @param rollingLogfileConfiguration [in] Configuration parameters for roll on size, time or not at all
      */
-    QuillLogger(const std::string& file_path, FileOpenMode file_mode, FwLogLevel applog_level, FwLogLevel syslog_level);
+    QuillLogger(const std::string& file_path, FileOpenMode file_mode, FwLogLevel applog_level, FwLogLevel syslog_level,
+                const RollingLogfileConfiguration& rollingLogfileConfiguration = {});
 
     /**
      * @brief Unit-test constructor.  Creates a console sink; syslog is suppressed.
@@ -183,6 +187,7 @@ class QuillLogger {
 
     FwLogLevel applog_level_;
     FwLogLevel syslog_level_;
+    RollingLogfileConfiguration m_rollingLogfileConfiguration;
 
     quill::Logger* quill_logger_{nullptr};
 };

@@ -90,6 +90,91 @@ TEST_F(EmptySlabQueueTest, EnqueueNullptrThrows)
     EXPECT_THROW(queue.enqueue(nullptr), PreconditionAssertion);
 }
 
+/*
+ * Documents a self-loop hazard in EmptySlabQueue, deliberately left
+ * unfixed at the queue level.
+ *
+ * The queue assumes each EmptySlabQueueNode is enqueued at most once per
+ * lifetime (or, if reused, that the consumer fully drains the queue and
+ * calls reset_to_empty between re-enqueues). If a producer re-enqueues a
+ * node while the consumer is between dequeue and reset_to_empty, the
+ * producer's tail_.exchange(node) returns the node itself; the
+ * subsequent prev->next.store(node) creates a self-loop, and the next
+ * try_dequeue returns the same slab_id forever.
+ *
+ * Rather than fix the queue (which would slow the hot enqueue path with
+ * a CAS), the callers are constrained so they cannot trigger the hazard:
+ *
+ *   - SlabAllocator::deallocate refuses to enqueue while the slab is the
+ *     current slab. The current slab uses inline self-reclaim instead.
+ *   - ExpandableSlabAllocator::append_new_slab clears is_current_ before
+ *     any potential enqueue, and uses SlabAllocator::try_claim_enqueue
+ *     so that exactly one thread (deallocator or owner) performs the
+ *     one-shot enqueue.
+ *
+ * This test exercises the queue directly to demonstrate that the
+ * underlying hazard still exists. It is SKIPPED because the production
+ * code paths above prevent it from being triggered. If a future change
+ * exposes the queue to repeated enqueues of the same node, this test
+ * should be unskipped and the queue should be hardened.
+ */
+TEST_F(EmptySlabQueueTest, ReEnqueueOfSameNodeDoesNotCauseInfiniteSpin)
+{
+    GTEST_SKIP() << "Documents a queue-level self-loop hazard that is "
+                    "deliberately mitigated by caller constraints rather "
+                    "than by fixing the queue itself. See test comment.";
+
+    EmptySlabQueue queue;
+    EmptySlabQueueNode node;
+    node.slab_id = 7;
+
+    queue.enqueue(&node);
+
+    int slab_id = -1;
+    ASSERT_EQ(queue.try_dequeue(slab_id), DequeueResult::GotItem);
+    ASSERT_EQ(slab_id, 7);
+
+    // Without calling reset_to_empty (which only happens after a try_dequeue
+    // that returned Empty), re-enqueue the same node. This is the workload
+    // pattern that the production caller constraints now prevent.
+    queue.enqueue(&node);
+
+    // After the queue is hardened, the next try_dequeue should either return
+    // the re-enqueued node exactly once and then go to Empty, or return
+    // Empty immediately if the implementation refuses the second enqueue.
+    // In either case, a bounded loop must terminate.
+    constexpr int max_iterations = 16;
+    int got_item_count_after_reenqueue = 0;
+    int same_id_repeats = 0;
+    int last_slab_id = -1;
+
+    for (int i = 0; i < max_iterations; ++i) {
+        int dequeued_slab_id = -1;
+        const DequeueResult result = queue.try_dequeue(dequeued_slab_id);
+
+        if (result == DequeueResult::Empty) {
+            break;
+        }
+        if (result == DequeueResult::Retry) {
+            // No producer is active in this single-threaded test; Retry would
+            // indicate a state machine bug. Fail rather than spin.
+            FAIL() << "try_dequeue returned Retry in a single-threaded scenario";
+        }
+        // GotItem
+        ++got_item_count_after_reenqueue;
+        if (dequeued_slab_id == last_slab_id) {
+            ++same_id_repeats;
+        }
+        last_slab_id = dequeued_slab_id;
+    }
+
+    EXPECT_LE(got_item_count_after_reenqueue, 1)
+        << "Re-enqueue of an already-enqueued node yielded the node more than once: "
+        << got_item_count_after_reenqueue
+        << " GotItem results (same_id_repeats=" << same_id_repeats << "). "
+        << "This is the self-loop hazard.";
+}
+
 // ============================================================
 // SlabAllocator tests
 // ============================================================
@@ -143,6 +228,9 @@ TEST_F(SlabAllocatorTest, EmptySlabQueueNotifiedWhenLastChunkFreed)
 {
     SlabAllocator slab(slab_size, 5, queue_);
     void* ptr = slab.allocate(64);
+    // Under the new design, deallocators only enqueue when the slab is no
+    // longer the current slab. Simulate the owner having switched away.
+    slab.clear_is_current();
     slab.deallocate(ptr);
 
     int slab_id = -1;
@@ -156,6 +244,9 @@ TEST_F(SlabAllocatorTest, QueueNotNotifiedUntilLastChunkFreed)
     SlabAllocator slab(slab_size, 0, queue_);
     void* ptr1 = slab.allocate(64);
     void* ptr2 = slab.allocate(64);
+
+    // Under the new design, only non-current slabs notify the queue.
+    slab.clear_is_current();
 
     slab.deallocate(ptr1);
 
@@ -249,6 +340,9 @@ TEST_F(SlabAllocatorTest, CrossThreadDeallocation)
         ASSERT_NE(ptrs[i], nullptr);
     }
 
+    // Under the new design, only non-current slabs notify the queue.
+    slab.clear_is_current();
+
     std::vector<std::thread> threads;
     threads.reserve(num_threads);
 
@@ -323,7 +417,9 @@ TEST_F(ExpandableSlabAllocatorTest, ReclaimedCurrentSlabIsReset)
 
     allocator.deallocate(slab_id, ptr);
 
-    // Next allocation should drain the queue and reset slab 0, then allocate from it
+    // Under the new design, the next allocate self-reclaims the current
+    // slab (resets its bump pointer because outstanding count is zero)
+    // and then allocates from it again.
     auto [slab_id2, ptr2] = allocator.allocate(64);
     EXPECT_NE(ptr2, nullptr);
     EXPECT_EQ(slab_id2, 0);

@@ -195,6 +195,36 @@ install(CODE "
 ")
 
 # ------------------------------------------------------------
+# DSL code generation
+#
+# Lifted out of applications/CMakeLists.txt so that targets in libraries/
+# (such as the integration tests) can depend on the generated header in
+# addition to the sample applications. Both sets of consumers add a
+# dependency on fix_equity_orders_generated and include FIX_DSL_INCLUDE_DIR.
+# Output lands in ${CMAKE_BINARY_DIR}/generated_dsl -- never in the source tree.
+# ------------------------------------------------------------
+set(FIX_DSL_SOURCE "${CMAKE_SOURCE_DIR}/applications/fix_equity_orders.dsl")
+set(FIX_DSL_INCLUDE_DIR "${CMAKE_BINARY_DIR}/generated_dsl" CACHE INTERNAL "Where fix_equity_orders.hpp lives")
+set(FIX_DSL_GENERATED_HPP "${FIX_DSL_INCLUDE_DIR}/fix_equity_orders.hpp")
+set(FIX_DSL_GENERATOR "${CMAKE_SOURCE_DIR}/python/tools/generate_cpp_from_dsl.py")
+
+add_custom_command(
+    OUTPUT "${FIX_DSL_GENERATED_HPP}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${FIX_DSL_INCLUDE_DIR}"
+    COMMAND ${Python3_EXECUTABLE} "${FIX_DSL_GENERATOR}"
+            --topics
+            --namespace pubsub_itc_fw_app
+            "${FIX_DSL_SOURCE}"
+            "${FIX_DSL_GENERATED_HPP}"
+    DEPENDS "${FIX_DSL_SOURCE}" "${FIX_DSL_GENERATOR}"
+    COMMENT "Generating fix_equity_orders.hpp from fix_equity_orders.dsl"
+    VERBATIM
+)
+add_custom_target(fix_equity_orders_generated
+    DEPENDS "${FIX_DSL_GENERATED_HPP}"
+)
+
+# ------------------------------------------------------------
 # Add the library
 # ------------------------------------------------------------
 add_subdirectory(libraries/pubsub_itc_fw)

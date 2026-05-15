@@ -54,8 +54,7 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     void on_itc_message(const pubsub_itc_fw::EventMessage& message) override;
 
   private:
-    void handle_new_order_single(const pubsub_itc_fw_app::NewOrderSingleView& view);
-
+    void handle_new_order_single(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t seq_no);
     [[nodiscard]] std::string generate_order_id();
     [[nodiscard]] std::string generate_exec_id();
 

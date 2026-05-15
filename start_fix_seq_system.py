@@ -5,30 +5,15 @@ start_fix_seq_system.py
 Starts the sequencer-based FIX order flow system for testing with fix8.
 
 Startup order:
-  1. arbiter               -- must be up before sequencers try to connect
+  1. arbiter                -- must be up before sequencers try to connect
   2. sample_fix_gateway_seq -- must be listening on port 7010 before sequencers
                                start, because sequencers connect outbound to the
-                               gateway's ER inbound listener at startup. This is
-                               counterintuitive (normally services start before
-                               clients) but necessary until connection retry is
-                               implemented in the framework.
-  3. sequencer (primary)   -- instance_id=1, listens on port 7001
-  4. matching_engine       -- connects outbound to sequencer ER listener (7021)
+                               gateway's ER inbound listener at startup.
+  3. sequencer (primary)    -- instance_id=1, listens on port 7001
+  4. matching_engine        -- connects outbound to sequencer ER listener (7021)
 
-The secondary sequencer is omitted while the matching engine fan-in
-behaviour for two sequencers is undefined. Add it back once the ME has
-a way to demultiplex ERs back to the originating sequencer, or once
-the leader-follower protocol means only one sequencer forwards orders
-at a time.
-
-Quill log files land in <prefix>/log/ because each process is started
-with that directory as its working directory. stdout/stderr of each
-process is captured to <name>.stdout in the same directory.
-
-To test using fix8, use the following command:-
-
-./bin/f8test -c myfix_gateway_client.xml -N GW1
-
+Usage with valgrind:
+  ./start_fix_seq_system.py build/installed --valgrind --valgrind_command "vg"
 """
 
 import argparse
@@ -37,6 +22,8 @@ import signal
 import subprocess
 import sys
 import time
+import shlex
+import shutil
 from pathlib import Path
 
 
@@ -49,8 +36,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "prefix",
         metavar="install_prefix",
-        help="Path to the cmake install prefix "
-             "(e.g. build/installed or /opt/pubsub).",
+        help="Path to the cmake install prefix (e.g. build/installed).",
     )
     parser.add_argument(
         "--startup-delay",
@@ -58,6 +44,17 @@ def parse_args() -> argparse.Namespace:
         default=1.0,
         metavar="SECONDS",
         help="Seconds to wait between starting each process (default: 1.0).",
+    )
+    parser.add_argument(
+        "--valgrind",
+        action="store_true",
+        help="Run all processes under a valgrind-style wrapper.",
+    )
+    parser.add_argument(
+        "--valgrind_command",
+        default="vg",
+        metavar="CMD",
+        help="The command to use for valgrind (default: vg).",
     )
     return parser.parse_args()
 
@@ -78,12 +75,21 @@ def check_executables(bin_dir: Path, names: list[str]) -> None:
             sys.exit(f"ERROR: {exe} is not executable")
 
 
-def launch(name: str, exe: Path, log_file: Path, config: Path, log_dir: Path) -> subprocess.Popen:
+def check_wrapper(wrapper_cmd: str) -> None:
+    """Ensure the wrapper (e.g., 'vg' or 'valgrind') exists in PATH."""
+    main_exe = shlex.split(wrapper_cmd)[0]
+    if not shutil.which(main_exe):
+        sys.exit(f"ERROR: Wrapper command '{main_exe}' not found in PATH.")
+
+
+def launch(name: str, cmd: list[str], log_dir: Path) -> subprocess.Popen:
     stdout_path = log_dir / f"{name}.stdout"
     print(f"Starting {name}...")
+    print(f"  Command: {' '.join(cmd)}")
+
     with stdout_path.open("w") as stdout_file:
         proc = subprocess.Popen(
-            [str(exe), str(log_file), str(config)],
+            cmd,
             cwd=str(log_dir),
             stdout=stdout_file,
             stderr=subprocess.STDOUT,
@@ -122,6 +128,8 @@ def main() -> None:
     ]
 
     check_executables(bin_dir, executables)
+    if args.valgrind:
+        check_wrapper(args.valgrind_command)
 
     log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -132,37 +140,42 @@ def main() -> None:
 
     processes: list[tuple[str, subprocess.Popen]] = []
 
-    try:
-        steps = [
-            ("arbiter",
-             bin_dir / "arbiter",
-             log_dir / "arbiter.log",
-             etc_dir / "arbiter" / "arbiter.toml"),
-            ("sample_fix_gateway_seq",
-             bin_dir / "sample_fix_gateway_seq",
-             log_dir / "sample_fix_gateway_seq.log",
-             etc_dir / "sample_fix_gateway_seq" / "sample_fix_gateway_seq.toml"),
-            ("sequencer_primary",
-             bin_dir / "sequencer",
-             log_dir / "sequencer_primary.log",
-             etc_dir / "sequencer" / "sequencer.toml"),
-            ("matching_engine",
-             bin_dir / "matching_engine",
-             log_dir / "matching_engine.log",
-             etc_dir / "matching_engine" / "matching_engine.toml"),
-        ]
+    # Definition of the system components
+    steps_data = [
+        ("arbiter", "arbiter", "arbiter.log",
+         etc_dir / "arbiter" / "arbiter.toml"),
+        ("sample_fix_gateway_seq", "sample_fix_gateway_seq", "sample_fix_gateway_seq.log",
+         etc_dir / "sample_fix_gateway_seq" / "sample_fix_gateway_seq.toml"),
+        ("sequencer_primary", "sequencer", "sequencer_primary.log",
+         etc_dir / "sequencer" / "sequencer.toml"),
+        ("matching_engine", "matching_engine", "matching_engine.log",
+         etc_dir / "matching_engine" / "matching_engine.toml"),
+    ]
 
-        for name, exe, log_file, config in steps:
+    try:
+        for name, bin_name, log_name, config in steps_data:
             if not config.is_file():
                 sys.exit(f"ERROR: config file not found: {config}")
-            proc = launch(name, exe, log_file, config, log_dir)
+
+            # Assemble core application arguments
+            app_args = [str(bin_dir / bin_name), str(log_dir / log_name), str(config)]
+
+            # Use shlex to handle complex wrapper commands safely
+            if args.valgrind:
+                cmd = shlex.split(args.valgrind_command) + app_args
+            else:
+                cmd = app_args
+
+            proc = launch(name, cmd, log_dir)
             processes.append((name, proc))
-            time.sleep(args.startup_delay)
+
+            # Increase delay under instrumentation to allow for slow startup
+            current_delay = args.startup_delay * 5 if args.valgrind else args.startup_delay
+            time.sleep(current_delay)
 
         print(f"\nAll processes started. Logs in {log_dir}/")
         print("Press Ctrl-C to shut everything down.\n")
 
-        # Monitor: exit if any process dies unexpectedly.
         while True:
             time.sleep(1)
             for name, proc in processes:

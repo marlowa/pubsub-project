@@ -8,7 +8,7 @@ add_executable(sample_fix_gateway_seq
 
 target_include_directories(sample_fix_gateway_seq PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
-        ${CMAKE_CURRENT_BINARY_DIR}/..
+        ${FIX_DSL_INCLUDE_DIR}
 )
 
 target_link_libraries(sample_fix_gateway_seq PRIVATE

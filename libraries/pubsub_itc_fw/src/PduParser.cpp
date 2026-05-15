@@ -23,16 +23,19 @@ PduParser::PduParser(ByteStreamInterface& stream,
                      ApplicationThread& target_thread,
                      ExpandableSlabAllocator& slab_allocator,
                      QuillLogger& logger,
+                     std::function<void()> disconnect_handler,
                      ConnectionID connection_id)
     : stream_(stream)
     , target_thread_(target_thread)
     , slab_allocator_(slab_allocator)
     , logger_(logger)
+    , disconnect_handler_(std::move(disconnect_handler))
     , connection_id_(connection_id)
     , header_bytes_{0}
     , header_validated_{false}
     , current_payload_size_{0}
     , current_pdu_id_{0}
+    , current_seq_no_{0}
     , payload_chunk_{nullptr}
     , payload_slab_id_{-1}
     , payload_bytes_received_{0}
@@ -51,6 +54,9 @@ std::tuple<bool, std::string> PduParser::receive()
                     utils::SimpleSpan<uint8_t>(header_buffer_ + header_bytes_, header_space));
 
                 if (bytes_read == 0 && error.empty()) {
+                    if (disconnect_handler_ != nullptr) {
+                        disconnect_handler_();
+                    }
                     return {false, ""};
                 }
 
@@ -76,6 +82,7 @@ std::tuple<bool, std::string> PduParser::receive()
 
             current_payload_size_ = ntohl(hdr->byte_count);
             current_pdu_id_ = static_cast<int16_t>(ntohs(static_cast<uint16_t>(hdr->pdu_id)));
+            current_seq_no_ = static_cast<int64_t>(be64toh(static_cast<uint64_t>(hdr->seq_no)));
 
             PUBSUB_LOG(logger_, FwLogLevel::Info,
                 "TRACE PduParser::receive: connection_id={} decoded header: "
@@ -86,6 +93,7 @@ std::tuple<bool, std::string> PduParser::receive()
                 current_pdu_id_,
                 static_cast<int>(hdr->version));
 
+            // TODO should now dump 24 bytes
             PUBSUB_LOG(logger_, FwLogLevel::Info,
                 "TRACE PduParser::receive: header bytes: "
                 "{:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} "
@@ -115,7 +123,13 @@ std::tuple<bool, std::string> PduParser::receive()
             }
 
             // Allocate a slab chunk to receive the payload directly — zero copy.
+            PUBSUB_LOG(logger_, FwLogLevel::Info,
+                "TRACE PduParser::receive: connection_id={} about to allocate {} bytes from inbound slab allocator",
+                connection_id_.get_value(), current_payload_size_);
             auto [slab_id, chunk] = slab_allocator_.allocate(current_payload_size_);
+            PUBSUB_LOG(logger_, FwLogLevel::Info,
+                "TRACE PduParser::receive: connection_id={} allocate returned slab_id={} chunk={}",
+                connection_id_.get_value(), slab_id, fmt::ptr(chunk));
             if (chunk == nullptr) {
                 return {false, "PduParser: slab allocation failed for incoming PDU payload"};
             }
@@ -140,6 +154,9 @@ std::tuple<bool, std::string> PduParser::receive()
                 slab_allocator_.deallocate(payload_slab_id_, payload_chunk_);
                 payload_chunk_   = nullptr;
                 payload_slab_id_ = -1;
+                if (disconnect_handler_ != nullptr) {
+                    disconnect_handler_();
+                }
                 return {false, ""};
             }
 
@@ -202,7 +219,7 @@ void PduParser::dispatch_pdu(int slab_id, void* payload_chunk)
     }
 
     EventMessage msg = EventMessage::create_framework_pdu_message(
-        payload, payload_size, slab_id, current_pdu_id_, connection_id_);
+        payload, payload_size, slab_id, connection_id_, current_pdu_id_, current_seq_no_);
 
     target_thread_.get_queue().enqueue(std::move(msg));
 }
@@ -213,6 +230,7 @@ void PduParser::reset_header()
     header_validated_     = false;
     current_payload_size_ = 0;
     current_pdu_id_       = 0;
+    current_seq_no_       = 0;
 }
 
 } // namespace pubsub_itc_fw

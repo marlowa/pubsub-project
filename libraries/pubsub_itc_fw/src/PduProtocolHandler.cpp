@@ -19,10 +19,12 @@ PduProtocolHandler::PduProtocolHandler(TcpSocket& socket,
                                        ConnectionID connection_id)
 {
     framer_ = std::make_unique<PduFramer>(socket);
+    // TODO we must not pass nullptr for the disconnect handler!
     parser_ = std::make_unique<PduParser>(socket,
                                           target_thread,
                                           inbound_allocator,
                                           logger,
+                                          nullptr, // TODO this is wrong!
                                           connection_id);
 }
 

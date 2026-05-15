@@ -48,11 +48,13 @@ FixGatewaySeqThread::FixGatewaySeqThread(
     , config_(config)
     , serialiser_(config.sender_comp_id, config.default_target_comp_id)
     , sequencer_primary_conn_id_{}
+    , sequencer_secondary_conn_id_{}
 {}
 
 void FixGatewaySeqThread::on_app_ready_event()
 {
     connect_to_service("sequencer_primary");
+    connect_to_service("sequencer_secondary");
 }
 
 void FixGatewaySeqThread::on_connection_established(pubsub_itc_fw::ConnectionID id)
@@ -62,6 +64,11 @@ void FixGatewaySeqThread::on_connection_established(pubsub_itc_fw::ConnectionID 
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "FixGatewaySeqThread: primary sequencer connection {} ({}) established",
                    id.get_value(), id.service_name());
+    } else if (id.service_name() == "sequencer_secondary") {
+        sequencer_secondary_conn_id_ = id;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "FixGatewaySeqThread: secondary sequencer connection {} established",
+                   id.get_value());
     } else if (id.service_name() == "inbound:7010") {
         // Inbound FrameworkPdu connection from a sequencer on the ER listener.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
@@ -101,6 +108,11 @@ void FixGatewaySeqThread::on_connection_lost(pubsub_itc_fw::ConnectionID id,
         sequencer_primary_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                    "FixGatewaySeqThread: primary sequencer connection {} lost: {}",
+                   id.get_value(), reason);
+    } else if (id == sequencer_secondary_conn_id_) {
+        sequencer_secondary_conn_id_ = pubsub_itc_fw::ConnectionID{};
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "FixGatewaySeqThread: secondary sequencer connection {} lost: {}",
                    id.get_value(), reason);
     } else if (id.service_name() == "inbound:7010") {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
@@ -530,15 +542,14 @@ void FixGatewaySeqThread::send_fix_to_session(FixSession& session, FixMessage& m
 // -----------------------------------------------------------------------
 
 // forward_pdu_to_sequencers is a template so it can accept any DSL message
-// struct. It calls send_pdu on the primary sequencer connection. send_pdu
-// handles all slab allocation, PduHeader framing, and two-pass encode/write
-// internally.
+// struct. It calls send_pdu on both the primary and secondary sequencer
+// connections. send_pdu handles all slab allocation, PduHeader framing, and
+// two-pass encode/write internally.
 //
-// If the sequencer connection is not currently established (e.g. not yet
-// reconnected after a failure), the PDU is dropped and a Warning is logged.
-//
-// The plural form of the function name is intentional: dual-publish to a
-// follower will return when the leader-follower protocol is implemented,
-// and the function will then fan out again. Until then there is one target.
+// If a sequencer connection is not currently established (e.g. not yet
+// reconnected after a failure), the PDU is dropped for that sequencer and a
+// Warning is logged. The other sequencer still receives the PDU so the leader
+// can continue operating. When connection retry re-establishes the lost
+// connection the follower will resync from the leader's state.
 
 } // namespace sample_fix_gateway_seq

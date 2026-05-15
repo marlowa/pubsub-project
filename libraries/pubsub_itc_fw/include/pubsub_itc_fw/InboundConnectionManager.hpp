@@ -223,12 +223,20 @@ class InboundConnectionManager {
     [[nodiscard]] InboundListener* find_listener_by_fd(int fd);
 
     /**
-     * @brief Returns the port number assigned to the first registered listener.
+     * @brief Returns the OS-assigned port number for the inbound listener
+     *        registered at the given zero-based index.
+     *
+     * Listeners are indexed in the order they were registered via
+     * register_inbound_listener(). Index 0 is the first registered listener,
+     * index 1 the second, and so on.
      *
      * TEST SEAM. Valid only after initialize_listeners() has been called.
-     * Returns 0 if no listeners are registered or the port cannot be determined.
+     *
+     * @param[in] index Zero-based registration index.
+     * @return The port number, or 0 if the port cannot be determined.
+     * @throws PreconditionAssertion if index is out of range.
      */
-    [[nodiscard]] uint16_t get_first_listener_port() const;
+    [[nodiscard]] uint16_t get_listener_port(int index) const;
 
   private:
     int epoll_fd_;
@@ -239,6 +247,11 @@ class InboundConnectionManager {
 
     std::vector<InboundListener> inbound_listeners_staging_;
     std::map<int, InboundListener> inbound_listeners_;
+    // listener_fds_in_registration_order_ records each successfully bound
+    // listener's fd in the order register_inbound_listener() was called.
+    // This is needed because inbound_listeners_ is keyed by fd and iterates
+    // in fd order, which is not necessarily the same as registration order.
+    std::vector<int> listener_fds_in_registration_order_;
     std::unordered_map<ConnectionID, std::unique_ptr<InboundConnection>> connections_;
     std::unordered_map<int, InboundConnection*> connections_by_fd_;
 

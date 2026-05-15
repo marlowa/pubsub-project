@@ -214,7 +214,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             nos.has_text           = view.has_text;
             nos.text               = view.text;
 
-            send_pdu(me_outbound_order_conn_id_, pdu_id, nos);
+            send_pdu(me_outbound_order_conn_id_, pdu_id, seq, nos);
 
         } else if (pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::OrderCancelRequest)) {
             auto& arena_buf = decode_arena_buffer();
@@ -248,7 +248,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             ocr.has_text       = view.has_text;
             ocr.text           = view.text;
 
-            send_pdu(me_outbound_order_conn_id_, pdu_id, ocr);
+            send_pdu(me_outbound_order_conn_id_, pdu_id, seq, ocr);
 
         } else {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
@@ -260,8 +260,8 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
     } else if (is_er_pdu) {
         // ExecutionReport from the ME. Forward to the gateway.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "SequencerThread: ER PDU on connection {} -- forwarding to gateway",
-                   message.connection_id().get_value());
+                   "SequencerThread: ER PDU on connection {} pdu_id={} seq={} -- forwarding to gateway",
+                   message.connection_id().get_value(), message.pdu_id(), message.seq_no());
 
         if (!gateway_conn_id_.is_valid()) {
             PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
@@ -357,7 +357,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         er.has_expire_time    = view.has_expire_time;
         er.expire_time        = view.expire_time;
 
-        send_pdu(gateway_conn_id_, pdu_id, er);
+        send_pdu(gateway_conn_id_, pdu_id, message.seq_no(), er);
         release_pdu_payload(message);
 
     } else {

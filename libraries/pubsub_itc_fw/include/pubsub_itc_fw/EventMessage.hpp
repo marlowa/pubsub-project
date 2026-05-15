@@ -61,7 +61,8 @@ class EventMessage {
     Header header_;
     const uint8_t* payload_{nullptr};
     int itc_message_type_{-1};
-    int pdu_id_{-1};
+    int16_t pdu_id_{-1};
+    int64_t seq_no_{0};
     int slab_id_{-1}; ///< Slab ID for FrameworkPdu messages. -1 means not slab-allocated.
 
     /**
@@ -106,10 +107,25 @@ class EventMessage {
      * The ApplicationThread uses this value to select the correct decode function
      * for the incoming PDU payload.
      *
-     * @return The PDU identifier as a signed integer.
+     * @return The PDU identifier as a signed 16-bit integer.
      */
-    [[nodiscard]] int pdu_id() const {
+    [[nodiscard]] int16_t pdu_id() const {
         return pdu_id_;
+    }
+
+    /**
+     * @brief Gets the sequencer-assigned sequence number.
+     *
+     * Meaningful only when the event type is EventType::FrameworkPdu. Carries
+     * the monotonic sequence number stamped by the sequencer when the PDU was
+     * forwarded to downstream consumers. Returns 0 for PDUs that have not yet
+     * been stamped (e.g. inbound order PDUs received by the sequencer itself
+     * from a gateway).
+     *
+     * @return The sequence number as a signed 64-bit integer.
+     */
+    [[nodiscard]] int64_t seq_no() const {
+        return seq_no_;
     }
 
     /**
@@ -176,16 +192,16 @@ class EventMessage {
      * by ExpandableSlabAllocator::allocate() so the receiving thread can free
      * the chunk after processing.
      *
-     * @param[in] data     Pointer to the slab-allocated PDU payload. Must not be nullptr.
-     * @param[in] size     Size of the PDU payload in bytes.
-     * @param[in] slab_id  Slab ID from ExpandableSlabAllocator::allocate().
-     * @param[in] pdu_id   The PDU type identifier as decoded from the wire header.
-     *                     Used by the receiving ApplicationThread to dispatch to
-     *                     the correct decode function.
-     * @param[in] connection_id The connection on which the PDU was received.
+     * @param[in] data           Pointer to the slab-allocated PDU payload. Must not be nullptr.
+     * @param[in] size           Size of the PDU payload in bytes.
+     * @param[in] slab_id        Slab ID from ExpandableSlabAllocator::allocate().
+     * @param[in] connection_id  ConnectionID identifying the source connection.
+     * @param[in] pdu_id         DSL message ID, taken from the inbound PduHeader.
+     * @param[in] seq_no         Sequencer-assigned sequence number from the inbound PduHeader,
+     *                           or 0 if the PDU has not yet been stamped by the sequencer.
      * @return EventMessage instance.
      */
-    [[nodiscard]] static EventMessage create_framework_pdu_message(const uint8_t* data, int size, int slab_id, int16_t pdu_id, ConnectionID connection_id);
+    [[nodiscard]] static EventMessage create_framework_pdu_message(const uint8_t* data, int size, int slab_id, ConnectionID connection_id, int16_t pdu_id, int64_t seq_no);
 
     /**
      * @brief Factory method for a successful outbound connection event.

@@ -12,6 +12,7 @@
 #include <vector>
 
 #include <arpa/inet.h>
+#include <endian.h>
 
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
@@ -507,9 +508,13 @@ class ApplicationThread {
      *
      * @param[in] conn_id  The ConnectionID of the established connection to send on.
      * @param[in] pdu_id   The DSL message ID as defined in the .dsl file.
+     * @param[in] seq_no   The sequencer-assigned sequence number to stamp into the
+     *                     PduHeader. Pass 0 for PDUs not yet stamped by the sequencer
+     *                     (e.g. a gateway emitting an inbound order PDU). The sequencer
+     *                     itself passes its own monotonic counter.
      * @param[in] msg      The DSL message struct to encode and send.
      */
-    template <typename MsgT> void send_pdu(ConnectionID conn_id, int16_t pdu_id, const MsgT& msg) {
+    template <typename MsgT> void send_pdu(ConnectionID conn_id, int16_t pdu_id, int64_t seq_no, const MsgT& msg) {
         // Pass 1: measure payload size. encode() with out_size=0 sets bytes_needed
         // without writing anything. The call cannot fail on the measuring pass
         // (out_size=0 guarantees the buffer-too-small branch is not reached for
@@ -527,6 +532,7 @@ class ApplicationThread {
         hdr->pdu_id = htons(static_cast<uint16_t>(pdu_id));
         hdr->version = 1;
         hdr->filler_a = 0;
+        hdr->seq_no = static_cast<int64_t>(htobe64(static_cast<uint64_t>(seq_no)));
         hdr->canary = htonl(pdu_canary_value);
         hdr->filler_b = 0;
 

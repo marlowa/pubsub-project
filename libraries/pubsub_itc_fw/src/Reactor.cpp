@@ -782,8 +782,8 @@ void Reactor::on_accept(InboundListener& listener) {
     inbound_manager_.on_accept(listener, id);
 }
 
-uint16_t Reactor::get_first_inbound_listener_port() const {
-    return inbound_manager_.get_first_listener_port();
+uint16_t Reactor::get_inbound_listener_port(int index) const {
+    return inbound_manager_.get_listener_port(index);
 }
 
 void Reactor::event_loop() {

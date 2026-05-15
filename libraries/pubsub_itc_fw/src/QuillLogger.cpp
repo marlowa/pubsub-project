@@ -15,16 +15,51 @@
 #include <quill/LogMacros.h>
 #include <quill/sinks/ConsoleSink.h>
 #include <quill/sinks/FileSink.h>
+#include <quill/backend/PatternFormatter.h>
 #include <quill/sinks/Sink.h>
 #include <quill/sinks/SyslogSink.h>
+#include <quill/sinks/RotatingFileSink.h>
 
 #include <pubsub_itc_fw/FileOpenMode.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/LoggerUtils.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
+#include <pubsub_itc_fw/RollingLogfileConfiguration.hpp>
 #include <pubsub_itc_fw/utils/FileSystemUtils.hpp>
 
+/*
+TODO this quill logger area needs serious attention, we need a way to get the thread id of the logger backend thread.
+
+The backend thread consumes too much CPU
+
+By default, the backend thread runs in a tight loop polling the queues for new messages, which can consume CPU cycles even when idle.
+We need something like the below:
+
+void pin_logger_backend() {
+    // Get the kernel thread ID (LWP) from Quill
+    uint32_t tid = quill::Backend::get_thread_id();
+
+    if (tid != 0) {
+        cpu_set_set cpuset;
+        CPU_ZERO(&cpuset);
+
+        // Example: Pin to Core 1, strictly excluding Core 0
+        CPU_SET(1, &cpuset);
+
+        if (sched_setaffinity(static_cast<pid_t>(tid), sizeof(cpu_set_t), &cpuset) == -1) {
+            // Handle error (e.g., log to stderr as the logger might not be ready)
+            perror("sched_setaffinity");
+        }
+    }
+}
+
+since the backend thread MUST be core pinned we should add the core number to the QuillLogger constructor.
+*/
+
 namespace {
+
+constexpr char const* log_pattern = "%(time) [%(process_id)] %(short_source_location:<28) %(log_level:<10) %(logger:<16) %(message)";
+constexpr char const* time_format = "%Y-%m-%d %H:%M:%S.%Qns";
 
 std::once_flag backend_started;
 
@@ -119,15 +154,45 @@ QuillLogger::~QuillLogger() = default;
 QuillLogger::QuillLogger(const std::string& file_path,
                          FileOpenMode file_mode,
                          FwLogLevel applog_level,
-                         FwLogLevel syslog_level)
+                         FwLogLevel syslog_level,
+                         const RollingLogfileConfiguration& rollingLogfileConfiguration)
     : applog_level_{applog_level},
-      syslog_level_{syslog_level} {
+      syslog_level_{syslog_level},
+      m_rollingLogfileConfiguration(rollingLogfileConfiguration) {
     ensure_backend_started();
 
     quill::FileSinkConfig file_config;
     file_config.set_open_mode(file_mode == FileOpenMode(FileOpenMode::Append) ? 'a' : 'w');
-    applog_sink_ = quill::Frontend::create_or_get_sink<quill::FileSink>(
-        file_path, file_config, quill::FileEventNotifier{});
+    if (m_rollingLogfileConfiguration.mode == RollingLogfileConfiguration::Mode::Size) {
+        applog_sink_ = quill::Frontend::create_or_get_sink<quill::RotatingFileSink>(
+            file_path,
+            [file_mode, this]() {
+                quill::RotatingFileSinkConfig cfg;
+                cfg.set_open_mode(file_mode == FileOpenMode(FileOpenMode::Append) ? 'a' : 'w');
+                cfg.set_rotation_max_file_size(m_rollingLogfileConfiguration.max_file_size);
+                cfg.set_max_backup_files(m_rollingLogfileConfiguration.max_backup_files);
+                return cfg;
+            }());
+    }
+    else if (m_rollingLogfileConfiguration.mode == RollingLogfileConfiguration::Mode::Daily) {
+        applog_sink_ = quill::Frontend::create_or_get_sink<quill::RotatingFileSink>(
+            file_path,
+            [file_mode, this]() {
+                quill::RotatingFileSinkConfig cfg;
+                cfg.set_open_mode(file_mode == FileOpenMode(FileOpenMode::Append) ? 'a' : 'w');
+                cfg.set_rotation_time_daily(m_rollingLogfileConfiguration.rotation_time);
+                cfg.set_max_backup_files(m_rollingLogfileConfiguration.max_backup_files);
+                return cfg;
+            }());
+    }
+    else {
+        applog_sink_ = quill::Frontend::create_or_get_sink<quill::FileSink>(file_path, file_config, quill::FileEventNotifier{});
+    }
+
+    quill::PatternFormatterOptions formatter_options;
+    formatter_options.format_pattern = log_pattern;
+    formatter_options.timestamp_pattern = time_format;
+    formatter_options.timestamp_timezone = quill::Timezone::LocalTime;
 
     quill::SyslogSinkConfig syslog_config;
     syslog_config.set_identifier("pubsub_app");
@@ -144,9 +209,7 @@ QuillLogger::QuillLogger(const std::string& file_path,
         ? LoggerUtils::to_quill_log_level(applog_level)
         : LoggerUtils::to_quill_log_level(syslog_level);
 
-    quill_logger_ = quill::Frontend::create_or_get_logger(
-        generate_unique_logger_name("pubsub"),
-        {applog_sink_, syslog_sink_});
+    quill_logger_ = quill::Frontend::create_or_get_logger(generate_unique_logger_name("quillLog"), {applog_sink_, syslog_sink_}, formatter_options);
     quill_logger_->set_log_level(gate);
 }
 

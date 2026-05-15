@@ -92,6 +92,8 @@ bool InboundConnectionManager::initialize_listeners()
                 StringUtils::get_errno_string());
             return false;
         }
+
+        listener_fds_in_registration_order_.push_back(listen_fd);
     }
     inbound_listeners_staging_.clear();
     return true;
@@ -446,12 +448,14 @@ InboundListener* InboundConnectionManager::find_listener_by_fd(int fd)
     return (it != inbound_listeners_.end()) ? &it->second : nullptr;
 }
 
-uint16_t InboundConnectionManager::get_first_listener_port() const
+uint16_t InboundConnectionManager::get_listener_port(int index) const
 {
-    if (inbound_listeners_.empty()) {
-        return 0;
+    if (index < 0 || index >= static_cast<int>(listener_fds_in_registration_order_.size())) {
+        throw PreconditionAssertion(
+            "InboundConnectionManager::get_listener_port: index out of range",
+            __FILE__, __LINE__);
     }
-    const int listen_fd = inbound_listeners_.begin()->first;
+    const int listen_fd = listener_fds_in_registration_order_[static_cast<std::size_t>(index)];
     sockaddr_storage addr{};
     socklen_t len = sizeof(addr);
     if (::getsockname(listen_fd, reinterpret_cast<sockaddr*>(&addr), &len) == -1) {

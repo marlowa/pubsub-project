@@ -60,12 +60,13 @@ EventMessage EventMessage::create_raw_socket_message(ConnectionID connection_id,
     return msg;
 }
 
-EventMessage EventMessage::create_framework_pdu_message(const uint8_t* data, int size, int slab_id, int16_t pdu_id, ConnectionID connection_id)
+EventMessage EventMessage::create_framework_pdu_message(const uint8_t* data, int size, int slab_id, ConnectionID connection_id, int16_t pdu_id, int64_t seq_no)
 {
     EventMessage msg(EventType(EventType::FrameworkPdu), data, size);
     msg.slab_id_              = slab_id;
-    msg.pdu_id_               = pdu_id;
     msg.header_.connection_id = connection_id;
+    msg.pdu_id_               = pdu_id;
+    msg.seq_no_               = seq_no;
     return msg;
 }
 

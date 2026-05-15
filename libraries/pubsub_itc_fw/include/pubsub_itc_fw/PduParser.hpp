@@ -16,7 +16,7 @@
  *
  *   Phase 1 — header:
  *     Bytes are accumulated into a small fixed header_buffer_[sizeof(PduHeader)]
- *     until a complete 16-byte PduHeader has arrived. The canary is validated.
+ *     until a complete 24-byte PduHeader has arrived. The canary is validated.
  *
  *   Phase 2 — payload:
  *     Once the payload size is known from the header, PduParser allocates a slab
@@ -37,9 +37,7 @@
  *   ApplicationThread provides a release_pdu_payload() helper to make this explicit.
  *
  * On peer disconnect (recv returns 0):
- *   receive() returns {false, ""} so the caller can tear down the connection.
- *   On protocol error (canary mismatch, slab allocation failure, read error)
- *   receive() returns {false, error_string}.
+ *   The disconnect callback is invoked so the reactor can clean up.
  *
  * Threading model:
  *   All methods must be called from the reactor thread only.
@@ -50,8 +48,8 @@
  */
 
 #include <cstdint>
+#include <functional>
 #include <string>
-#include <tuple>
 
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/ByteStreamInterface.hpp>
@@ -83,13 +81,14 @@ class PduParser {
      * @param[in] stream             The underlying non-blocking byte stream. Must outlive this object.
      * @param[in] target_thread      The ApplicationThread to which complete PDUs are dispatched.
      * @param[in] slab_allocator     The slab allocator used to allocate payload chunks. Must outlive this object.
-     * @param[in] logger             Logger used for trace/diagnostic output. Must outlive this object.
+     * @param[in] logger             A reference to the logger, used when dumping PDU
+     * @param[in] disconnect_handler Called when the peer closes the connection gracefully.
      * @param[in] connection_id      The ConnectionID of the connection this parser is serving.
      *                               Carried in every FrameworkPdu EventMessage so that
      *                               on_framework_pdu_message() can identify the source connection.
      */
     PduParser(ByteStreamInterface& stream, ApplicationThread& target_thread, ExpandableSlabAllocator& slab_allocator, QuillLogger& logger,
-              ConnectionID connection_id);
+              std::function<void()> disconnect_handler, ConnectionID connection_id);
 
     PduParser(const PduParser&) = delete;
     PduParser& operator=(const PduParser&) = delete;
@@ -116,14 +115,16 @@ class PduParser {
     ApplicationThread& target_thread_;
     ExpandableSlabAllocator& slab_allocator_;
     QuillLogger& logger_;
+    std::function<void()> disconnect_handler_;
     ConnectionID connection_id_;
 
-    // Fixed small buffer for the 16-byte frame header only.
+    // Fixed small buffer for the 24-byte frame header only.
     uint8_t header_buffer_[sizeof(PduHeader)];
     size_t header_bytes_{0};
     bool header_validated_{false};
     uint32_t current_payload_size_{0};
     int16_t current_pdu_id_{0};
+    int64_t current_seq_no_{0};
 
     // Slab chunk allocated for the current in-progress payload.
     // Non-null only while a payload is being received.

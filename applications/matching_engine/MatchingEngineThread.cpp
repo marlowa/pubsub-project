@@ -104,8 +104,8 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
             release_pdu_payload(message);
             return;
         }
-
-        handle_new_order_single(view);
+        // Pass the sequence number from the incoming message
+        handle_new_order_single(view, message.seq_no());
 
     } else {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
@@ -115,7 +115,7 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
     release_pdu_payload(message);
 }
 
-void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewOrderSingleView& view)
+void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number)
 {
     if (!sequencer_er_conn_id_.is_valid()) {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
@@ -152,9 +152,7 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
     const std::string last_px    = price;
     const std::string avg_px     = price;
 
-    const auto now_ns =
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count();
+    const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 
     pubsub_itc_fw_app::ExecutionReport er{};
     er.order_id     = order_id;
@@ -184,7 +182,7 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
     er.ord_type       = view.ord_type;
 
     const int16_t er_pdu_id = static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::ExecutionReport);
-    send_pdu(sequencer_er_conn_id_, er_pdu_id, er);
+    send_pdu(sequencer_er_conn_id_, er_pdu_id, sequence_number, er);
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
         "MatchingEngineThread: sent ExecutionReport OrderID={} ExecID={} ClOrdID={}",

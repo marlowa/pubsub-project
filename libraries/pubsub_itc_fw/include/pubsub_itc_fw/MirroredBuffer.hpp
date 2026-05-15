@@ -4,6 +4,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <cstdint>
+
+#include <atomic>
 #include <string>
 
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
@@ -101,7 +103,7 @@ class MirroredBuffer {
      * @return Current tail position in bytes.
      */
     [[nodiscard]] int64_t tail() const {
-        return tail_;
+        return tail_.load(std::memory_order_acquire);
     }
 
     /**
@@ -130,8 +132,8 @@ class MirroredBuffer {
 
     uint8_t* base_ptr_{nullptr};
     int64_t capacity_{0};
-    int64_t head_{0};
-    int64_t tail_{0};
+    std::atomic<int64_t> head_{0};
+    std::atomic<int64_t> tail_{0};
     int shm_fd_{-1};
 };
 

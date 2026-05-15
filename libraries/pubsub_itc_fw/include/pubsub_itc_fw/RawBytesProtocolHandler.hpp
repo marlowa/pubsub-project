@@ -4,14 +4,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <cstdint>
-#include <memory>
 #include <string>
 #include <tuple>
 
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/MirroredBuffer.hpp>
-#include <pubsub_itc_fw/PduFramer.hpp>
 #include <pubsub_itc_fw/ProtocolHandlerInterface.hpp>
 #include <pubsub_itc_fw/TcpSocket.hpp>
 
@@ -59,9 +57,16 @@ namespace pubsub_itc_fw {
  *     thread. All other connections and threads in the reactor are unaffected.
  *
  * Outbound path:
- *   Identical to PduProtocolHandler: a PduFramer handles partial sends, slab
- *   chunk lifetime, and EPOLLOUT registration. send_prebuilt() accepts any
- *   pre-built frame, whether PDU-framed or raw.
+ *   The handler owns its own raw send loop. send_prebuilt() accepts a
+ *   slab-allocated chunk of arbitrary raw bytes (no framework header is
+ *   prepended) and writes it to the socket. Partial writes are tracked
+ *   internally: if the socket cannot accept all bytes immediately, the
+ *   reactor registers EPOLLOUT and calls continue_send() when the socket
+ *   becomes writable. When the send completes the slab chunk is released.
+ *
+ *   This handler must not delegate to PduFramer. PduFramer is the
+ *   strategy-A framer and produces a PduHeader-prefixed wire format;
+ *   strategy B is by definition header-free.
  *
  * Threading model:
  *   All methods except commit_bytes() must be called from the reactor thread.
@@ -69,8 +74,7 @@ namespace pubsub_itc_fw {
  *   CommitRawBytes command, so it is also reactor-thread only.
  *
  * Ownership:
- *   Owns the MirroredBuffer and PduFramer. Does not own the TcpSocket or
- *   ApplicationThread.
+ *   Owns the MirroredBuffer. Does not own the TcpSocket or ApplicationThread.
  */
 class RawBytesProtocolHandler : public ProtocolHandlerInterface {
   public:
@@ -119,11 +123,12 @@ class RawBytesProtocolHandler : public ProtocolHandlerInterface {
     void commit_bytes(int64_t bytes) override;
 
     /**
-     * @brief Initiates a zero-copy send of a pre-built outbound frame.
+     * @brief Initiates a zero-copy send of an outbound raw byte chunk.
      *
-     * Delegates to PduFramer::send_prebuilt(). Partial-send state is recorded
-     * internally; the Reactor will register EPOLLOUT and call continue_send()
-     * as needed.
+     * Writes the chunk to the socket. If the socket cannot accept all bytes
+     * immediately, the unsent remainder is tracked internally; the Reactor
+     * will register EPOLLOUT and call continue_send() as needed. The chunk
+     * is *not* framed -- no PduHeader is prepended.
      *
      * @param[in] allocator   The slab allocator that owns chunk_ptr. Must not be nullptr.
      * @param[in] slab_id     Slab ID for deallocation when the send completes.
@@ -144,8 +149,9 @@ class RawBytesProtocolHandler : public ProtocolHandlerInterface {
     /**
      * @brief Resumes a partial outbound send on EPOLLOUT.
      *
-     * Delegates to PduFramer::continue_send(). When the send completes the
-     * slab chunk is deallocated and pending-send state is cleared.
+     * Continues writing the unsent remainder of the in-flight chunk. When the
+     * send completes the slab chunk is deallocated and pending-send state is
+     * cleared.
      *
      * @return {true, ""} on progress or completion; {false, error_string} on
      *         unrecoverable send failure. The slab chunk is released before
@@ -162,6 +168,18 @@ class RawBytesProtocolHandler : public ProtocolHandlerInterface {
     void deallocate_pending_send() override;
 
   private:
+    /**
+     * @brief Writes as much of the in-flight chunk as the socket will accept.
+     *
+     * Loops calling TcpSocket::send() until either the chunk is fully written
+     * (send_offset_ reaches frame_size_) or the socket reports EAGAIN. Updates
+     * send_offset_ as bytes are written.
+     *
+     * @return {true, ""} on full or partial progress (including EAGAIN);
+     *         {false, error_string} on unrecoverable send error.
+     */
+    [[nodiscard]] std::tuple<bool, std::string> attempt_send_remaining();
+
     void release_pending_send();
 
     ConnectionID connection_id_;
@@ -169,7 +187,15 @@ class RawBytesProtocolHandler : public ProtocolHandlerInterface {
     ApplicationThread& target_thread_;
 
     MirroredBuffer buffer_;
-    std::unique_ptr<PduFramer> framer_;
+
+    // Outbound send state. While a send is in flight, active_frame_ptr_ points
+    // into the caller's slab chunk (held alive by current_chunk_ptr_), frame_size_
+    // is the total chunk size, and send_offset_ is the number of bytes already
+    // written. When send_offset_ reaches frame_size_ the chunk is deallocated
+    // and these are reset.
+    const uint8_t* active_frame_ptr_{nullptr};
+    uint32_t frame_size_{0};
+    uint32_t send_offset_{0};
 
     ExpandableSlabAllocator* current_allocator_{nullptr};
     int current_slab_id_{-1};

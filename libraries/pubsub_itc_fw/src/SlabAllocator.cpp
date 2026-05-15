@@ -59,7 +59,26 @@ void SlabAllocator::deallocate(void* ptr) {
 
     int old = outstanding_allocations_count_.fetch_sub(1, std::memory_order_acq_rel);
 
-    if (old == 1) {
+    if (old != 1) {
+        return; // Not the last outstanding chunk.
+    }
+
+    // Count has just transitioned to zero. The slab will be reclaimed via
+    // the empty-slab queue only if it is no longer the current slab. The
+    // current slab is held directly by the owner and is reset inline, not
+    // through the queue.
+    //
+    // Reading is_current_ AFTER the fetch_sub establishes the ordering we
+    // need: if the owner clears is_current_ before this load, we will see
+    // false here and proceed to enqueue. If the owner clears is_current_
+    // after this load, the owner's switch-away path will itself check the
+    // count, see zero, and perform the enqueue. The try_claim_enqueue CAS
+    // ensures exactly one of the two paths wins.
+    if (is_current_.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    if (try_claim_enqueue()) {
         queue_node_.next.store(nullptr, std::memory_order_relaxed);
         notify_queue_.enqueue(&queue_node_);
     }
@@ -101,6 +120,25 @@ size_t SlabAllocator::capacity() const {
 
 size_t SlabAllocator::bytes_used() const {
     return bump_;
+}
+
+int SlabAllocator::outstanding_count() const {
+    return outstanding_allocations_count_.load(std::memory_order_acquire);
+}
+
+bool SlabAllocator::is_current() const {
+    return is_current_.load(std::memory_order_acquire);
+}
+
+void SlabAllocator::clear_is_current() {
+    is_current_.store(false, std::memory_order_release);
+}
+
+bool SlabAllocator::try_claim_enqueue() {
+    bool expected = false;
+    return is_enqueued_.compare_exchange_strong(expected, true,
+                                                std::memory_order_acq_rel,
+                                                std::memory_order_relaxed);
 }
 
 EmptySlabQueueNode& SlabAllocator::queue_node() {

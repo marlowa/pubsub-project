@@ -51,6 +51,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <string>
 #include <thread>
@@ -186,6 +187,7 @@ protected:
         header->pdu_id     = htons(static_cast<uint16_t>(42));
         header->version    = 1;
         header->filler_a   = 0;
+        header->seq_no     = 0;
         header->canary     = htonl(pdu_canary_value);
         header->filler_b   = 0;
 
@@ -235,6 +237,7 @@ protected:
     std::unique_ptr<PduProtocolHandler>       handler_;
     int                                       handler_fd_{-1};
     int                                       raw_fd_{-1};
+    bool                                      disconnect_called_{false};
 };
 
 // ============================================================

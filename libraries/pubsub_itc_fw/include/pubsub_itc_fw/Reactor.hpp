@@ -289,12 +289,16 @@ class Reactor : public ThreadLookupInterface {
     }
 
     /**
-     * TEST SEAM: returns the port number that the first registered inbound
-     * listener was assigned by the OS (when registered with port=0).
+     * TEST SEAM: returns the OS-assigned port number for the inbound listener
+     * registered at the given zero-based index. Listeners are indexed in the
+     * order they were registered via register_inbound_listener().
+     *
      * Valid only after the reactor has been initialized (is_initialized() == true).
-     * Returns 0 if no listeners are registered or the port cannot be determined.
+     * Returns 0 if the port cannot be determined.
+     *
+     * @throws PreconditionAssertion if index is out of range.
      */
-    [[nodiscard]] uint16_t get_first_inbound_listener_port() const;
+    [[nodiscard]] uint16_t get_inbound_listener_port(int index) const;
 
     /**
      * @brief Returns the human-readable reason why the reactor shut down.

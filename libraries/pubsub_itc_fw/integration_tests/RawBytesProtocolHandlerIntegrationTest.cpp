@@ -95,6 +95,7 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 #include <atomic>
@@ -195,6 +196,13 @@ static int connect_raw_socket(uint16_t port) {
         ::close(fd);
         return -1;
     }
+    // Apply a receive timeout so a dead listener side can never hang a blocking
+    // ::recv in the test. The timeout is generous (matches the wait_for default)
+    // so it only fires when something has gone wrong.
+    timeval timeout{};
+    timeout.tv_sec  = 5;
+    timeout.tv_usec = 0;
+    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
     return fd;
 }
 
@@ -446,40 +454,81 @@ protected:
 // Test fixture
 // ============================================================
 class RawBytesProtocolHandlerIntegrationTest : public ::testing::Test {
-protected:
+  protected:
     void SetUp() override {
         logger_ = std::make_unique<LoggerWithSink>();
     }
 
     void TearDown() override {
+        current_reactor_ = nullptr;
         logger_.reset();
     }
 
-    static bool wait_for(std::function<bool()> pred, int timeout_ms = 5000) {
-        const auto deadline =
-            std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    /**
+     * @brief Sets the reactor that wait_for() consults for liveness.
+     *
+     * Each test calls this immediately after constructing its reactor so that
+     * wait_for() can abort early if the reactor dies (e.g. due to an unhandled
+     * exception in the event loop). Without this, a failing reactor would leave
+     * every subsequent wait_for() to burn its full timeout, and any blocking
+     * client-side ::recv would hang the test indefinitely.
+     */
+    void set_current_reactor(Reactor& reactor) {
+        current_reactor_ = &reactor;
+    }
+
+    /**
+     * @brief Polls a predicate until it returns true, the reactor dies, or the
+     * timeout expires.
+     *
+     * Returns true only if the predicate became true. Returns false on timeout
+     * or on reactor death. On reactor death, reactor_died_ is set so the caller
+     * can produce a useful failure message including get_shutdown_reason().
+     */
+    bool wait_for(std::function<bool()> pred, int timeout_ms = 5000) {
+        reactor_died_ = false;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
         while (!pred()) {
+            if (current_reactor_ != nullptr && current_reactor_->is_finished()) {
+                reactor_died_ = true;
+                return false;
+            }
             if (std::chrono::steady_clock::now() > deadline) return false;
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
         return true;
     }
 
+    /**
+     * @brief Returns a description of why the most recent wait_for() failed.
+     *
+     * Names the reactor's shutdown reason if the reactor died during the wait,
+     * otherwise reports the wait as a plain timeout. Intended for use as the
+     * trailing message on an EXPECT_TRUE(wait_for(...)) so a regression in any
+     * reactor code path produces an immediately actionable failure.
+     */
+    std::string last_wait_failure_description() const {
+        if (reactor_died_ && current_reactor_ != nullptr) {
+            return "reactor terminated during wait; shutdown reason: " + current_reactor_->get_shutdown_reason();
+        }
+        return "predicate did not become true within timeout";
+    }
+
     uint16_t start_listener_reactor(Reactor& reactor) {
-        EXPECT_TRUE(wait_for([&]() { return reactor.is_initialized(); }))
-            << "Listener reactor did not initialise within timeout";
-        const uint16_t port = reactor.get_first_inbound_listener_port();
+        EXPECT_TRUE(wait_for([&]() { return reactor.is_initialized(); })) << "Listener reactor did not initialise within timeout";
+        const uint16_t port = reactor.get_inbound_listener_port(0);
         EXPECT_NE(port, 0u) << "OS did not assign a valid listening port";
         return port;
     }
 
-    static void shutdown_and_join(Reactor& reactor, std::thread& reactor_thread,
-                                  const std::string& reason = "test complete") {
+    static void shutdown_and_join(Reactor& reactor, std::thread& reactor_thread, const std::string& reason = "test complete") {
         reactor.shutdown(reason);
         if (reactor_thread.joinable()) reactor_thread.join();
     }
 
     std::unique_ptr<LoggerWithSink> logger_;
+    Reactor* current_reactor_{nullptr};
+    bool reactor_died_{false};
 };
 
 // ============================================================
@@ -487,15 +536,13 @@ protected:
 // ============================================================
 TEST_F(RawBytesProtocolHandlerIntegrationTest, RawByteRoundTrip) {
     ServiceRegistry listener_registry;
-    auto listener_reactor = std::make_unique<Reactor>(
-        make_reactor_config(), listener_registry, logger_->logger);
+    auto listener_reactor = std::make_unique<Reactor>(make_reactor_config(), listener_registry, logger_->logger);
+    set_current_reactor(*listener_reactor);
 
-    listener_reactor->register_inbound_listener(
-        NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2},
-        ProtocolType{ProtocolType::RawBytes}, raw_buffer_capacity);
+    listener_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2},
+                                                ProtocolType{ProtocolType::RawBytes}, raw_buffer_capacity);
 
-    auto listener_thread = ApplicationThread::create<RawListenerThread>(
-        logger_->logger, *listener_reactor);
+    auto listener_thread = ApplicationThread::create<RawListenerThread>(logger_->logger, *listener_reactor);
     listener_reactor->register_thread(listener_thread);
 
     std::thread listener_reactor_thread([&]() { listener_reactor->run(); });
@@ -504,17 +551,14 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, RawByteRoundTrip) {
     const int sock_fd = connect_raw_socket(listen_port);
     ASSERT_NE(sock_fd, -1) << "Failed to connect raw socket";
 
-    EXPECT_TRUE(wait_for([&]() {
-        return listener_thread->connection_established.load(std::memory_order_acquire);
-    })) << "Listener: ConnectionEstablished not received";
+    EXPECT_TRUE(wait_for([&]() { return listener_thread->connection_established.load(std::memory_order_acquire); }))
+        << "Listener: ConnectionEstablished not received: " << last_wait_failure_description();
 
     const std::string frame = make_framed(request_payload);
-    ASSERT_TRUE(send_all(sock_fd, frame.data(), frame.size()))
-        << "Failed to send framed request";
+    ASSERT_TRUE(send_all(sock_fd, frame.data(), frame.size())) << "Failed to send framed request";
 
-    EXPECT_TRUE(wait_for([&]() {
-        return listener_thread->reply_sent.load(std::memory_order_acquire);
-    })) << "Listener: reply not sent";
+    EXPECT_TRUE(wait_for([&]() { return listener_thread->reply_sent.load(std::memory_order_acquire); }))
+        << "Listener: reply not sent: " << last_wait_failure_description();
 
     const std::string reply = recv_framed(sock_fd);
     EXPECT_EQ(reply, response_payload);
@@ -522,9 +566,8 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, RawByteRoundTrip) {
 
     ::close(sock_fd);
 
-    EXPECT_TRUE(wait_for([&]() {
-        return listener_thread->connection_lost.load(std::memory_order_acquire);
-    })) << "Listener: ConnectionLost not received after socket close";
+    EXPECT_TRUE(wait_for([&]() { return listener_thread->connection_lost.load(std::memory_order_acquire); }))
+        << "Listener: ConnectionLost not received after socket close: " << last_wait_failure_description();
 
     shutdown_and_join(*listener_reactor, listener_reactor_thread);
 }
@@ -534,15 +577,13 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, RawByteRoundTrip) {
 // ============================================================
 TEST_F(RawBytesProtocolHandlerIntegrationTest, FragmentedDelivery) {
     ServiceRegistry listener_registry;
-    auto listener_reactor = std::make_unique<Reactor>(
-        make_reactor_config(), listener_registry, logger_->logger);
+    auto listener_reactor = std::make_unique<Reactor>(make_reactor_config(), listener_registry, logger_->logger);
+    set_current_reactor(*listener_reactor);
 
-    listener_reactor->register_inbound_listener(
-        NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2},
-        ProtocolType{ProtocolType::RawBytes}, raw_buffer_capacity);
+    listener_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2},
+                                                ProtocolType{ProtocolType::RawBytes}, raw_buffer_capacity);
 
-    auto listener_thread = ApplicationThread::create<RawListenerThread>(
-        logger_->logger, *listener_reactor);
+    auto listener_thread = ApplicationThread::create<RawListenerThread>(logger_->logger, *listener_reactor);
     listener_reactor->register_thread(listener_thread);
 
     std::thread listener_reactor_thread([&]() { listener_reactor->run(); });
@@ -554,26 +595,21 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, FragmentedDelivery) {
     const int one = 1;
     ::setsockopt(sock_fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
 
-    EXPECT_TRUE(wait_for([&]() {
-        return listener_thread->connection_established.load(std::memory_order_acquire);
-    })) << "Listener: ConnectionEstablished not received";
+    EXPECT_TRUE(wait_for([&]() { return listener_thread->connection_established.load(std::memory_order_acquire); }))
+        << "Listener: ConnectionEstablished not received: " << last_wait_failure_description();
 
     const uint32_t length_be = htonl(static_cast<uint32_t>(request_payload.size()));
-    ASSERT_TRUE(send_all(sock_fd, &length_be, sizeof(length_be)))
-        << "Failed to send length prefix";
+    ASSERT_TRUE(send_all(sock_fd, &length_be, sizeof(length_be))) << "Failed to send length prefix";
 
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
 
-    ASSERT_TRUE(send_all(sock_fd, request_payload.data(), request_payload.size()))
-        << "Failed to send payload";
+    ASSERT_TRUE(send_all(sock_fd, request_payload.data(), request_payload.size())) << "Failed to send payload";
 
-    EXPECT_TRUE(wait_for([&]() {
-        return listener_thread->message_received.load(std::memory_order_acquire);
-    })) << "Listener: complete message not received after fragmented send";
+    EXPECT_TRUE(wait_for([&]() { return listener_thread->message_received.load(std::memory_order_acquire); }))
+        << "Listener: complete message not received after fragmented send: " << last_wait_failure_description();
 
-    EXPECT_TRUE(wait_for([&]() {
-        return listener_thread->reply_sent.load(std::memory_order_acquire);
-    })) << "Listener: reply not sent";
+    EXPECT_TRUE(wait_for([&]() { return listener_thread->reply_sent.load(std::memory_order_acquire); }))
+        << "Listener: reply not sent: " << last_wait_failure_description();
 
     const std::string reply = recv_framed(sock_fd);
     EXPECT_EQ(reply, response_payload);
@@ -581,9 +617,8 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, FragmentedDelivery) {
 
     ::close(sock_fd);
 
-    EXPECT_TRUE(wait_for([&]() {
-        return listener_thread->connection_lost.load(std::memory_order_acquire);
-    })) << "Listener: ConnectionLost not received";
+    EXPECT_TRUE(wait_for([&]() { return listener_thread->connection_lost.load(std::memory_order_acquire); }))
+        << "Listener: ConnectionLost not received: " << last_wait_failure_description();
 
     shutdown_and_join(*listener_reactor, listener_reactor_thread);
 }
@@ -592,22 +627,17 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, FragmentedDelivery) {
 // Test: burst delivery
 // ============================================================
 TEST_F(RawBytesProtocolHandlerIntegrationTest, BurstDelivery) {
-    const std::vector<std::string> burst_payloads = {
-        "MESSAGE_ONE", "MESSAGE_TWO", "MESSAGE_THREE",
-        "MESSAGE_FOUR", "MESSAGE_FIVE"
-    };
+    const std::vector<std::string> burst_payloads = {"MESSAGE_ONE", "MESSAGE_TWO", "MESSAGE_THREE", "MESSAGE_FOUR", "MESSAGE_FIVE"};
     const int expected_count = static_cast<int>(burst_payloads.size());
 
     ServiceRegistry listener_registry;
-    auto listener_reactor = std::make_unique<Reactor>(
-        make_reactor_config(), listener_registry, logger_->logger);
+    auto listener_reactor = std::make_unique<Reactor>(make_reactor_config(), listener_registry, logger_->logger);
+    set_current_reactor(*listener_reactor);
 
-    listener_reactor->register_inbound_listener(
-        NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2},
-        ProtocolType{ProtocolType::RawBytes}, raw_buffer_capacity);
+    listener_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2},
+                                                ProtocolType{ProtocolType::RawBytes}, raw_buffer_capacity);
 
-    auto listener_thread = ApplicationThread::create<BurstListenerThread>(
-        logger_->logger, *listener_reactor, expected_count);
+    auto listener_thread = ApplicationThread::create<BurstListenerThread>(logger_->logger, *listener_reactor, expected_count);
     listener_reactor->register_thread(listener_thread);
 
     std::thread listener_reactor_thread([&]() { listener_reactor->run(); });
@@ -616,24 +646,20 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, BurstDelivery) {
     const int sock_fd = connect_raw_socket(listen_port);
     ASSERT_NE(sock_fd, -1) << "Failed to connect raw socket";
 
-    EXPECT_TRUE(wait_for([&]() {
-        return listener_thread->connection_established.load(std::memory_order_acquire);
-    })) << "Listener: ConnectionEstablished not received";
+    EXPECT_TRUE(wait_for([&]() { return listener_thread->connection_established.load(std::memory_order_acquire); }))
+        << "Listener: ConnectionEstablished not received: " << last_wait_failure_description();
 
     for (const auto& payload : burst_payloads) {
         const std::string frame = make_framed(payload);
-        ASSERT_TRUE(send_all(sock_fd, frame.data(), frame.size()))
-            << "Failed to send burst message: " << payload;
+        ASSERT_TRUE(send_all(sock_fd, frame.data(), frame.size())) << "Failed to send burst message: " << payload;
     }
 
-    EXPECT_TRUE(wait_for([&]() {
-        return listener_thread->all_received.load(std::memory_order_acquire);
-    })) << "Listener: did not receive all burst messages within timeout";
+    EXPECT_TRUE(wait_for([&]() { return listener_thread->all_received.load(std::memory_order_acquire); }))
+        << "Listener: did not receive all burst messages within timeout: " << last_wait_failure_description();
 
     ASSERT_EQ(static_cast<int>(listener_thread->received_payloads.size()), expected_count);
     for (int i = 0; i < expected_count; ++i) {
-        EXPECT_EQ(listener_thread->received_payloads[i], burst_payloads[i])
-            << "Mismatch at burst message index " << i;
+        EXPECT_EQ(listener_thread->received_payloads[i], burst_payloads[i]) << "Mismatch at burst message index " << i;
     }
 
     ::close(sock_fd);
@@ -645,15 +671,13 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, BurstDelivery) {
 // ============================================================
 TEST_F(RawBytesProtocolHandlerIntegrationTest, PeerDisconnect) {
     ServiceRegistry listener_registry;
-    auto listener_reactor = std::make_unique<Reactor>(
-        make_reactor_config(), listener_registry, logger_->logger);
+    auto listener_reactor = std::make_unique<Reactor>(make_reactor_config(), listener_registry, logger_->logger);
+    set_current_reactor(*listener_reactor);
 
-    listener_reactor->register_inbound_listener(
-        NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2},
-        ProtocolType{ProtocolType::RawBytes}, raw_buffer_capacity);
+    listener_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2},
+                                                ProtocolType{ProtocolType::RawBytes}, raw_buffer_capacity);
 
-    auto listener_thread = ApplicationThread::create<PassiveListenerThread>(
-        logger_->logger, *listener_reactor);
+    auto listener_thread = ApplicationThread::create<PassiveListenerThread>(logger_->logger, *listener_reactor);
     listener_reactor->register_thread(listener_thread);
 
     std::thread listener_reactor_thread([&]() { listener_reactor->run(); });
@@ -662,15 +686,13 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, PeerDisconnect) {
     const int sock_fd = connect_raw_socket(listen_port);
     ASSERT_NE(sock_fd, -1) << "Failed to connect raw socket";
 
-    EXPECT_TRUE(wait_for([&]() {
-        return listener_thread->connection_established.load(std::memory_order_acquire);
-    })) << "Listener: ConnectionEstablished not received";
+    EXPECT_TRUE(wait_for([&]() { return listener_thread->connection_established.load(std::memory_order_acquire); }))
+        << "Listener: ConnectionEstablished not received: " << last_wait_failure_description();
 
     ::close(sock_fd);
 
-    EXPECT_TRUE(wait_for([&]() {
-        return listener_thread->connection_lost.load(std::memory_order_acquire);
-    })) << "Listener: ConnectionLost not received after peer closed socket";
+    EXPECT_TRUE(wait_for([&]() { return listener_thread->connection_lost.load(std::memory_order_acquire); }))
+        << "Listener: ConnectionLost not received after peer closed socket: " << last_wait_failure_description();
 
     shutdown_and_join(*listener_reactor, listener_reactor_thread);
 }
@@ -687,15 +709,13 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, PeerDisconnect) {
 // ============================================================
 TEST_F(RawBytesProtocolHandlerIntegrationTest, MultipleConnectionsAccepted) {
     ServiceRegistry listener_registry;
-    auto listener_reactor = std::make_unique<Reactor>(
-        make_reactor_config(), listener_registry, logger_->logger);
+    auto listener_reactor = std::make_unique<Reactor>(make_reactor_config(), listener_registry, logger_->logger);
+    set_current_reactor(*listener_reactor);
 
     // FrameworkPdu listener -- multiple connections now accepted.
-    listener_reactor->register_inbound_listener(
-        NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
+    listener_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
 
-    auto listener_thread = ApplicationThread::create<PassiveListenerThread>(
-        logger_->logger, *listener_reactor);
+    auto listener_thread = ApplicationThread::create<PassiveListenerThread>(logger_->logger, *listener_reactor);
     listener_reactor->register_thread(listener_thread);
 
     std::thread listener_reactor_thread([&]() { listener_reactor->run(); });
@@ -704,19 +724,16 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, MultipleConnectionsAccepted) {
     const int first_fd = connect_raw_socket(listen_port);
     ASSERT_NE(first_fd, -1) << "First socket failed to connect";
 
-    EXPECT_TRUE(wait_for([&]() {
-        return listener_thread->connection_established_count.load(std::memory_order_acquire) >= 1;
-    })) << "Listener: ConnectionEstablished not received for first connection";
+    EXPECT_TRUE(wait_for([&]() { return listener_thread->connection_established_count.load(std::memory_order_acquire) >= 1; }))
+        << "Listener: ConnectionEstablished not received for first connection: " << last_wait_failure_description();
 
     const int second_fd = connect_raw_socket(listen_port);
     ASSERT_NE(second_fd, -1) << "Second socket failed to connect";
 
-    EXPECT_TRUE(wait_for([&]() {
-        return listener_thread->connection_established_count.load(std::memory_order_acquire) >= 2;
-    })) << "Listener: second ConnectionEstablished not received -- multiple connections not accepted";
+    EXPECT_TRUE(wait_for([&]() { return listener_thread->connection_established_count.load(std::memory_order_acquire) >= 2; }))
+        << "Listener: second ConnectionEstablished not received -- multiple connections not accepted: " << last_wait_failure_description();
 
-    EXPECT_FALSE(listener_thread->connection_lost.load(std::memory_order_acquire))
-        << "A connection was lost unexpectedly while both clients were connected";
+    EXPECT_FALSE(listener_thread->connection_lost.load(std::memory_order_acquire)) << "A connection was lost unexpectedly while both clients were connected";
 
     ::close(second_fd);
     ::close(first_fd);
@@ -729,15 +746,13 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, MultipleConnectionsAccepted) {
 // ============================================================
 TEST_F(RawBytesProtocolHandlerIntegrationTest, IdleTimeout) {
     ServiceRegistry listener_registry;
-    auto listener_reactor = std::make_unique<Reactor>(
-        make_short_idle_reactor_config(), listener_registry, logger_->logger);
+    auto listener_reactor = std::make_unique<Reactor>(make_short_idle_reactor_config(), listener_registry, logger_->logger);
+    set_current_reactor(*listener_reactor);
 
-    listener_reactor->register_inbound_listener(
-        NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2},
-        ProtocolType{ProtocolType::RawBytes}, raw_buffer_capacity);
+    listener_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2},
+                                                ProtocolType{ProtocolType::RawBytes}, raw_buffer_capacity);
 
-    auto listener_thread = ApplicationThread::create<PassiveListenerThread>(
-        logger_->logger, *listener_reactor);
+    auto listener_thread = ApplicationThread::create<PassiveListenerThread>(logger_->logger, *listener_reactor);
     listener_reactor->register_thread(listener_thread);
 
     std::thread listener_reactor_thread([&]() { listener_reactor->run(); });
@@ -746,13 +761,11 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, IdleTimeout) {
     const int sock_fd = connect_raw_socket(listen_port);
     ASSERT_NE(sock_fd, -1) << "Failed to connect raw socket";
 
-    EXPECT_TRUE(wait_for([&]() {
-        return listener_thread->connection_established.load(std::memory_order_acquire);
-    })) << "Listener: ConnectionEstablished not received";
+    EXPECT_TRUE(wait_for([&]() { return listener_thread->connection_established.load(std::memory_order_acquire); }))
+        << "Listener: ConnectionEstablished not received: " << last_wait_failure_description();
 
-    EXPECT_TRUE(wait_for([&]() {
-        return listener_thread->connection_lost.load(std::memory_order_acquire);
-    }, 2000)) << "Listener: ConnectionLost not received after idle timeout";
+    EXPECT_TRUE(wait_for([&]() { return listener_thread->connection_lost.load(std::memory_order_acquire); }, 2000))
+        << "Listener: ConnectionLost not received after idle timeout: " << last_wait_failure_description();
 
     ::close(sock_fd);
     shutdown_and_join(*listener_reactor, listener_reactor_thread);
@@ -832,15 +845,13 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, LargeReplyContinueSend) {
     ReactorConfiguration listener_cfg = make_reactor_config();
     listener_cfg.socket_send_buffer_size = tiny_rcvbuf_size;
 
-    auto listener_reactor = std::make_unique<Reactor>(
-        listener_cfg, listener_registry, logger_->logger);
+    auto listener_reactor = std::make_unique<Reactor>(listener_cfg, listener_registry, logger_->logger);
+    set_current_reactor(*listener_reactor);
 
-    listener_reactor->register_inbound_listener(
-        NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2},
-        ProtocolType{ProtocolType::RawBytes}, raw_buffer_capacity);
+    listener_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2},
+                                                ProtocolType{ProtocolType::RawBytes}, raw_buffer_capacity);
 
-    auto listener_thread = ApplicationThread::create<LargeReplyListenerThread>(
-        logger_->logger, *listener_reactor);
+    auto listener_thread = ApplicationThread::create<LargeReplyListenerThread>(logger_->logger, *listener_reactor);
     listener_reactor->register_thread(listener_thread);
 
     std::thread listener_reactor_thread([&]() { listener_reactor->run(); });
@@ -849,20 +860,17 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, LargeReplyContinueSend) {
     const int sock_fd = connect_raw_socket(listen_port);
     ASSERT_NE(sock_fd, -1) << "Failed to connect raw socket";
 
-    EXPECT_TRUE(wait_for([&]() {
-        return listener_thread->connection_established.load(std::memory_order_acquire);
-    })) << "Listener: ConnectionEstablished not received";
+    EXPECT_TRUE(wait_for([&]() { return listener_thread->connection_established.load(std::memory_order_acquire); }))
+        << "Listener: ConnectionEstablished not received: " << last_wait_failure_description();
 
     // Send a small trigger message so the listener fires its large reply.
     const std::string trigger = make_framed(request_payload);
-    ASSERT_TRUE(send_all(sock_fd, trigger.data(), trigger.size()))
-        << "Failed to send trigger message";
+    ASSERT_TRUE(send_all(sock_fd, trigger.data(), trigger.size())) << "Failed to send trigger message";
 
-    EXPECT_TRUE(wait_for([&]() {
-        return listener_thread->reply_sent.load(std::memory_order_acquire);
-    })) << "Listener: large reply not sent";
+    EXPECT_TRUE(wait_for([&]() { return listener_thread->reply_sent.load(std::memory_order_acquire); }))
+        << "Listener: large reply not sent: " << last_wait_failure_description();
 
-    // Drain all the reply bytes — this unblocks EPOLLOUT and drives continue_send().
+    // Drain all the reply bytes -- this unblocks EPOLLOUT and drives continue_send().
     std::vector<uint8_t> drain_buf(65536);
     size_t total_received = 0;
     while (total_received < large_reply_payload_size) {
@@ -870,14 +878,12 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, LargeReplyContinueSend) {
         if (n <= 0) break;
         total_received += static_cast<size_t>(n);
     }
-    EXPECT_EQ(total_received, large_reply_payload_size)
-        << "Did not receive the full large reply";
+    EXPECT_EQ(total_received, large_reply_payload_size) << "Did not receive the full large reply";
 
     ::close(sock_fd);
 
-    EXPECT_TRUE(wait_for([&]() {
-        return listener_thread->connection_lost.load(std::memory_order_acquire);
-    })) << "Listener: ConnectionLost not received";
+    EXPECT_TRUE(wait_for([&]() { return listener_thread->connection_lost.load(std::memory_order_acquire); }))
+        << "Listener: ConnectionLost not received: " << last_wait_failure_description();
 
     shutdown_and_join(*listener_reactor, listener_reactor_thread);
 }
@@ -892,15 +898,13 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, TeardownWhilePendingSendFreesChun
     ReactorConfiguration listener_cfg = make_reactor_config();
     listener_cfg.socket_send_buffer_size = tiny_rcvbuf_size;
 
-    auto listener_reactor = std::make_unique<Reactor>(
-        listener_cfg, listener_registry, logger_->logger);
+    auto listener_reactor = std::make_unique<Reactor>(listener_cfg, listener_registry, logger_->logger);
+    set_current_reactor(*listener_reactor);
 
-    listener_reactor->register_inbound_listener(
-        NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2},
-        ProtocolType{ProtocolType::RawBytes}, raw_buffer_capacity);
+    listener_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2},
+                                                ProtocolType{ProtocolType::RawBytes}, raw_buffer_capacity);
 
-    auto listener_thread = ApplicationThread::create<LargeReplyListenerThread>(
-        logger_->logger, *listener_reactor);
+    auto listener_thread = ApplicationThread::create<LargeReplyListenerThread>(logger_->logger, *listener_reactor);
     listener_reactor->register_thread(listener_thread);
 
     std::thread listener_reactor_thread([&]() { listener_reactor->run(); });
@@ -909,28 +913,24 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, TeardownWhilePendingSendFreesChun
     const int sock_fd = connect_raw_socket(listen_port);
     ASSERT_NE(sock_fd, -1) << "Failed to connect raw socket";
 
-    EXPECT_TRUE(wait_for([&]() {
-        return listener_thread->connection_established.load(std::memory_order_acquire);
-    })) << "Listener: ConnectionEstablished not received";
+    EXPECT_TRUE(wait_for([&]() { return listener_thread->connection_established.load(std::memory_order_acquire); }))
+        << "Listener: ConnectionEstablished not received: " << last_wait_failure_description();
 
     // Trigger the large reply.
     const std::string trigger = make_framed(request_payload);
-    ASSERT_TRUE(send_all(sock_fd, trigger.data(), trigger.size()))
-        << "Failed to send trigger message";
+    ASSERT_TRUE(send_all(sock_fd, trigger.data(), trigger.size())) << "Failed to send trigger message";
 
-    EXPECT_TRUE(wait_for([&]() {
-        return listener_thread->reply_sent.load(std::memory_order_acquire);
-    })) << "Listener: large reply not sent";
+    EXPECT_TRUE(wait_for([&]() { return listener_thread->reply_sent.load(std::memory_order_acquire); }))
+        << "Listener: large reply not sent: " << last_wait_failure_description();
 
-    // Close immediately without draining — the listener's partial send is still
+    // Close immediately without draining -- the listener's partial send is still
     // in flight. The reactor detects the peer-closed condition, calls
     // teardown_connection, which calls deallocate_pending_send() to free the
     // in-flight slab chunk (the uncovered function).
     ::close(sock_fd);
 
-    EXPECT_TRUE(wait_for([&]() {
-        return listener_thread->connection_lost.load(std::memory_order_acquire);
-    })) << "Listener: ConnectionLost not received after peer closed";
+    EXPECT_TRUE(wait_for([&]() { return listener_thread->connection_lost.load(std::memory_order_acquire); }))
+        << "Listener: ConnectionLost not received after peer closed: " << last_wait_failure_description();
 
     shutdown_and_join(*listener_reactor, listener_reactor_thread);
 }

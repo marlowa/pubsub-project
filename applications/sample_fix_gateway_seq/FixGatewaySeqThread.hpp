@@ -94,7 +94,8 @@ class FixGatewaySeqThread : public pubsub_itc_fw::ApplicationThread {
     void forward_pdu_to_sequencers(int16_t pdu_id, const MsgT& msg) {
         if (sequencer_primary_conn_id_.get_value() != 0) {
             PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "sending pdu to primary sequencer");
-            send_pdu(sequencer_primary_conn_id_, pdu_id, msg);
+            // TODO not sure about using a sequence number of zero here
+            send_pdu(sequencer_primary_conn_id_, pdu_id, 0, msg);
         } else {
             PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                 "FixGatewaySeqThread: primary sequencer not connected, PDU not forwarded");
@@ -111,6 +112,9 @@ class FixGatewaySeqThread : public pubsub_itc_fw::ApplicationThread {
 
     // ConnectionID of the primary sequencer outbound connection.
     pubsub_itc_fw::ConnectionID sequencer_primary_conn_id_;
+
+    // ConnectionID of the secondary sequencer outbound connection.
+    pubsub_itc_fw::ConnectionID sequencer_secondary_conn_id_;
 
     // cl_ord_id -> ConnectionID of the originating FIX client session.
     // Used to route ExecutionReport PDUs back to the correct FIX client.

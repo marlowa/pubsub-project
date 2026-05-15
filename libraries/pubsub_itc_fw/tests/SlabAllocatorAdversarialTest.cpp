@@ -168,6 +168,9 @@ TEST_F(SlabAllocatorAdversarialTest, OnlyOneNotificationEnqueuedUnderConcurrency
         ASSERT_NE(ptrs[i], nullptr);
     }
 
+    // Under the new design, only non-current slabs notify the queue.
+    slab.clear_is_current();
+
     std::vector<std::thread> threads;
     threads.reserve(num_threads);
 
@@ -210,7 +213,10 @@ TEST_F(SlabAllocatorAdversarialTest, RepeatedResetAndReuse)
 
         slab.deallocate(ptr);
 
-        // Drain the notification.
+        // Drain any notification. Under the new design the slab remains
+        // current throughout (clear_is_current is never called), so deallocate
+        // does not enqueue. The drain is a no-op but kept for the case where
+        // a future test variant clears is_current.
         int slab_id = -1;
         [[maybe_unused]] DequeueResult drain = queue_.try_dequeue(slab_id);
 
@@ -246,6 +252,11 @@ TEST_F(SlabAllocatorAdversarialTest, ConcurrentDeallocationsAcrossMultipleSlabs)
     for (int i = 0; i < num_slabs; ++i) {
         ptrs[i] = slabs[i]->allocate(chunk_size);
         ASSERT_NE(ptrs[i], nullptr);
+    }
+
+    // Under the new design, only non-current slabs notify the queue.
+    for (int i = 0; i < num_slabs; ++i) {
+        slabs[i]->clear_is_current();
     }
 
     // Each thread frees from a different slab.

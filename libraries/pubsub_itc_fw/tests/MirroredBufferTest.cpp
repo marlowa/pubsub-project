@@ -3,8 +3,13 @@
 
 #include <cstdint>
 #include <cstring>
+
+#include <chrono>
 #include <string>
+#include <thread>
 #include <vector>
+
+#include <sched.h>
 
 #include <gtest/gtest.h>
 
@@ -137,6 +142,279 @@ TEST_F(MirroredBufferTest, SupportsLargeAddressSpaceReservations) {
         // If the OS refuses the 10GB mmap, we log but don't fail the logic test
         SUCCEED() << "System-level restriction on 10GB VMA, exception caught as expected.";
     }
+}
+
+TEST_F(MirroredBufferTest, ConcurrentProducerConsumerStress) {
+    MirroredBuffer buffer(test_capacity);
+    std::atomic<bool> running{true};
+    const int64_t total_bytes = 1'000'000;
+    std::atomic<int64_t> consumed_count{0};
+
+    // Producer Thread
+    std::thread producer([&]() {
+        for (int64_t i = 0; i < total_bytes; ++i) {
+            while (buffer.space_remaining() < 1) { std::this_thread::yield(); }
+            *buffer.write_ptr() = static_cast<uint8_t>(i % 256);
+            buffer.advance_head(1);
+        }
+    });
+
+    // Consumer Thread
+    std::thread consumer([&]() {
+        while (consumed_count < total_bytes) {
+            int64_t avail = buffer.bytes_available();
+            if (avail > 0) {
+                buffer.advance_tail(1);
+                consumed_count.fetch_add(1);
+            }
+        }
+    });
+
+    producer.join();
+    consumer.join();
+    EXPECT_EQ(consumed_count, total_bytes);
+}
+
+TEST_F(MirroredBufferTest, ExposeStaleHeadVisibilityRace) {
+    MirroredBuffer buffer(test_capacity);
+    std::atomic<bool> ready_to_read{false};
+    std::atomic<int64_t> payload_size{0};
+    std::atomic<bool> stop{false};
+    std::atomic<bool> failed{false};
+
+    // Producer Thread
+    std::thread producer([&]() {
+        for (int i = 0; i < 1'000'000; ++i) {
+            // 1. Write data
+            const int64_t size = 10;
+            std::memset(buffer.write_ptr(), 0xFF, size);
+
+            // 2. Update head (Non-atomic)
+            buffer.advance_head(size);
+
+            // 3. Signal via side-channel
+            payload_size.store(size, std::memory_order_release);
+            ready_to_read.store(true, std::memory_order_release);
+
+            // Wait for consumer to process
+            while (ready_to_read.load(std::memory_order_acquire)) {
+                if (stop.load()) return;
+            }
+        }
+        stop.store(true);
+    });
+
+    // Consumer Thread
+    std::thread consumer([&]() {
+        try {
+            while (!stop.load()) {
+                if (ready_to_read.load(std::memory_order_acquire)) {
+                    int64_t size = payload_size.load(std::memory_order_acquire);
+                    buffer.advance_tail(size);
+                    ready_to_read.store(false, std::memory_order_release);
+                }
+            }
+        } catch (const PreconditionAssertion& e) {
+            failed.store(true);
+            stop.store(true);
+        }
+    });
+
+    producer.join();
+    consumer.join();
+
+    EXPECT_FALSE(failed.load()) << "Race condition caught: head_ update was not visible despite side-channel signal!";
+}
+
+TEST_F(MirroredBufferTest, TheVandalRaceTest) {
+    MirroredBuffer buffer(test_capacity);
+    std::atomic<bool> stop{false};
+    std::atomic<bool> failed{false};
+    const int64_t iterations = 10'000'000;
+
+    auto pin_to_core = [](int core_id) {
+        cpu_set_t cpuset;
+        CPU_ZERO(&cpuset);
+        CPU_SET(core_id, &cpuset);
+        pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+    };
+
+    std::thread producer([&]() {
+        pin_to_core(1); // Force to Core 1
+        for (int64_t i = 0; i < iterations; ++i) {
+            while (buffer.space_remaining() < 1) {
+                // Use a volatile assembly clobber to force re-reading memory
+                asm volatile("" ::: "memory");
+            }
+            buffer.advance_head(1);
+            if (stop.load()) break;
+        }
+        stop.store(true);
+    });
+
+    std::thread consumer([&]() {
+        pin_to_core(2); // Force to Core 2 (Different physical core)
+        try {
+            while (!stop.load()) {
+                // FORCE THE COMPILER TO RE-READ head_ FROM CACHE
+                asm volatile("" ::: "memory");
+
+                if (buffer.bytes_available() > 0) {
+                    buffer.advance_tail(1);
+                }
+            }
+        } catch (const PreconditionAssertion& e) {
+            failed.store(true);
+            stop.store(true);
+        }
+    });
+
+    producer.join();
+    consumer.join();
+
+    EXPECT_FALSE(failed.load()) << "Reproduced! Tail outpaced Head due to memory visibility lag.";
+}
+
+TEST_F(MirroredBufferTest, VigorouslyAdversarialRace) {
+    const int64_t small_capacity = 4096; // Minimum page size
+    MirroredBuffer buffer(small_capacity);
+    std::atomic<bool> stop{false};
+    std::atomic<bool> failed{false};
+    const int64_t iterations = 20'000'000;
+
+    // 1. CACHE POLLUTER: Runs on any core, constantly dirtying the cache
+    std::thread polluter([&]() {
+        std::vector<int> junk(1024 * 1024, 0); // 4MB of junk
+        while (!stop.load()) {
+            for (auto& v : junk) v++;
+            std::this_thread::yield();
+        }
+    });
+
+    // 2. PRODUCER: Extremely fast 1-byte increments
+    std::thread producer([&]() {
+        for (int64_t i = 0; i < iterations; ++i) {
+            while (buffer.space_remaining() < 1) {
+                std::this_thread::yield();
+            }
+            buffer.advance_head(1);
+
+            // Occasionally sleep to force the consumer to "catch up"
+            // right at the moment the producer is about to write again.
+            if (i % 10000 == 0) {
+                std::this_thread::sleep_for(std::chrono::microseconds(1));
+            }
+        }
+        stop.store(true);
+    });
+
+    // 3. CONSUMER: Validates head visibility
+    std::thread consumer([&]() {
+        try {
+            while (!stop.load()) {
+                // If head_ is NOT atomic, bytes_available() might use a cached
+                // value of head_ that is older than what the producer just set.
+                // However, the PduBurst test failed because head_ appeared
+                // BEHIND the tail (or smaller than expected).
+                int64_t avail = buffer.bytes_available();
+                if (avail > 0) {
+                    // Try to consume everything the buffer says it has.
+                    // This is where the non-atomic check fails.
+                    buffer.advance_tail(avail);
+                }
+            }
+        } catch (const PreconditionAssertion& e) {
+            failed.store(true);
+            stop.store(true);
+        }
+    });
+
+    producer.join();
+    consumer.join();
+    polluter.join();
+
+    EXPECT_FALSE(failed.load()) << "Adversarial test failed: Tail outpaced head!";
+}
+
+/*
+ * We use memory_order_seq_cst for the side_channel_head to establish a
+ * total global ordering for the test verification logic.
+ *
+ * In the MirroredBuffer itself, we use acquire/release semantics for high
+ * performance. However, in this adversarial test, we are using an external
+ * 'side-channel' (side_channel_head) to inform the consumer that data is ready.
+ *
+ * Seq_cst ensures that if the consumer sees the updated side_channel_head,
+ * it is guaranteed to see the producer's prior update to the buffer's
+ * internal head_ index. Without this strict ordering in the test code,
+ * the side-channel could 'outrun' the buffer index due to independent
+ * hardware store-buffer flushing, leading to a false-positive test failure.
+ */
+
+TEST_F(MirroredBufferTest, SideChannelVisibilityFailure) {
+    MirroredBuffer buffer(test_capacity);
+    std::atomic<int64_t> side_channel_head{0};
+    std::atomic<bool> stop{false};
+    std::atomic<bool> failed{false};
+
+    auto pin_to_core = [](int core_id) {
+        cpu_set_t cpuset;
+        CPU_ZERO(&cpuset);
+        CPU_SET(core_id, &cpuset);
+        pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+    };
+
+    std::thread producer([&]() {
+        pin_to_core(1);
+        for (int i = 0; i < 10'000'000; ++i) {
+            while (buffer.space_remaining() < 1) {
+                if (stop.load(std::memory_order_acquire)) {
+                    return;
+                }
+                std::this_thread::yield();
+            }
+
+            buffer.advance_head(1);
+            side_channel_head.fetch_add(1, std::memory_order_seq_cst);
+        }
+        stop.store(true, std::memory_order_release);
+    });
+
+    std::thread consumer([&]() {
+        pin_to_core(2);
+        // Track total bytes processed by this thread to compare against
+        // the monotonically increasing side_channel_head.
+        int64_t total_bytes_consumed = 0;
+
+        try {
+            while (!stop.load()) {
+                int64_t total_produced = side_channel_head.load(std::memory_order_seq_cst);
+
+                if (total_produced > total_bytes_consumed) {
+                    // Calculate how many NEW bytes the side-channel says are ready
+                    int64_t to_consume = total_produced - total_bytes_consumed;
+
+                    // MECHANICAL CHECK:
+                    // advance_tail(to_consume) calls bytes_available().
+                    // bytes_available() loads the buffer's internal head_ with acquire.
+                    // If the internal head_ has not caught up to the side-channel's
+                    // total_produced, this will throw, correctly failing the test.
+                    buffer.advance_tail(to_consume);
+
+                    // Update local progress
+                    total_bytes_consumed += to_consume;
+                }
+            }
+        } catch (const PreconditionAssertion& e) {
+            failed.store(true);
+            stop.store(true);
+        }
+    });
+
+    producer.join();
+    consumer.join();
+
+    EXPECT_FALSE(failed.load()) << "CAUGHT: The Side-Channel informed us of data that head_ doesn't show yet!";
 }
 
 } // namespace pubsub_itc_fw

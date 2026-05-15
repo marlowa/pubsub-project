@@ -150,7 +150,7 @@ protected:
         query.has_limit  = false;
         query.limit      = 0;
 
-        send_pdu(id, PDU_ID_DATA_QUERY, query);
+        send_pdu(id, PDU_ID_DATA_QUERY, 0, query);
         query_sent.store(true, std::memory_order_release);
     }
 
@@ -248,7 +248,7 @@ protected:
             response.results.data = results_data.data();
             response.results.size = results_data.size();
 
-            send_pdu(conn_id, PDU_ID_DATA_RESPONSE, response);
+            send_pdu(conn_id, PDU_ID_DATA_RESPONSE, 0, response);
             response_sent.store(true, std::memory_order_release);
         }
     }
@@ -305,7 +305,7 @@ protected:
         response.results.data = results_data.data();
         response.results.size = results_data.size();
 
-        send_pdu(conn_id, PDU_ID_DATA_RESPONSE, response);
+        send_pdu(conn_id, PDU_ID_DATA_RESPONSE, 0, response);
         response_sent.store(true, std::memory_order_release);
     }
 
@@ -357,7 +357,7 @@ protected:
         query.has_limit  = false;
         query.limit      = 0;
 
-        send_pdu(id, PDU_ID_DATA_QUERY, query);
+        send_pdu(id, PDU_ID_DATA_QUERY, 0, query);
         query_sent.store(true, std::memory_order_release);
     }
 
@@ -499,7 +499,7 @@ TEST_F(PduProtocolHandlerIntegrationTest, LargeQueryNameForcesPartialsend) {
     ASSERT_TRUE(wait_for([&]() { return listener_reactor->is_initialized(); }))
         << "Listener reactor did not initialise within timeout";
 
-    const uint16_t listen_port = listener_reactor->get_first_inbound_listener_port();
+    const uint16_t listen_port = listener_reactor->get_inbound_listener_port(0);
     ASSERT_NE(listen_port, 0u) << "OS did not assign a valid listening port";
 
     ServiceRegistry connector_registry;
@@ -581,7 +581,7 @@ TEST_F(PduProtocolHandlerIntegrationTest, LargeResponseForcesPartialSend) {
     ASSERT_TRUE(wait_for([&]() { return listener_reactor->is_initialized(); }))
         << "Listener reactor did not initialise within timeout";
 
-    const uint16_t listen_port = listener_reactor->get_first_inbound_listener_port();
+    const uint16_t listen_port = listener_reactor->get_inbound_listener_port(0);
     ASSERT_NE(listen_port, 0u) << "OS did not assign a valid listening port";
 
     ServiceRegistry connector_registry;
@@ -656,7 +656,7 @@ TEST_F(PduProtocolHandlerIntegrationTest, LargeQueryNameForcesOutboundWriteReady
     ASSERT_TRUE(wait_for([&]() { return listener_reactor->is_initialized(); }))
         << "Listener reactor did not initialise within timeout";
 
-    const uint16_t listen_port = listener_reactor->get_first_inbound_listener_port();
+    const uint16_t listen_port = listener_reactor->get_inbound_listener_port(0);
     ASSERT_NE(listen_port, 0u) << "OS did not assign a valid listening port";
 
     // The connector's socket gets a small send buffer, forcing its 2 MB write
@@ -780,7 +780,7 @@ TEST_F(PduProtocolHandlerIntegrationTest, ListenerClosesConnection) {
     ASSERT_TRUE(wait_for([&]() { return listener_reactor->is_initialized(); }))
         << "Listener reactor did not initialise within timeout";
 
-    const uint16_t listen_port = listener_reactor->get_first_inbound_listener_port();
+    const uint16_t listen_port = listener_reactor->get_inbound_listener_port(0);
     ASSERT_NE(listen_port, 0u) << "OS did not assign a valid listening port";
 
     ServiceRegistry connector_registry;
@@ -872,14 +872,14 @@ protected:
         first.query_name = std::string_view(first_payload_);
         first.has_limit  = false;
         first.limit      = 0;
-        send_pdu(id, PDU_ID_DATA_QUERY, first);
+        send_pdu(id, PDU_ID_DATA_QUERY, 0, first);
 
         DataQuery second{};
         second.request_id = 2;
         second.query_name = std::string_view(second_payload_);
         second.has_limit  = false;
         second.limit      = 0;
-        send_pdu(id, PDU_ID_DATA_QUERY, second);
+        send_pdu(id, PDU_ID_DATA_QUERY, 0, second);
 
         both_sent.store(true, std::memory_order_release);
     }
@@ -941,7 +941,7 @@ TEST_F(PduProtocolHandlerIntegrationTest, DoubleSendThenTeardown) {
     ASSERT_TRUE(wait_for([&]() { return listener_reactor->is_initialized(); }))
         << "Listener reactor did not initialise within timeout";
 
-    const uint16_t listen_port = listener_reactor->get_first_inbound_listener_port();
+    const uint16_t listen_port = listener_reactor->get_inbound_listener_port(0);
     ASSERT_NE(listen_port, 0u) << "OS did not assign a valid listening port";
 
     // Small send buffer on the connector forces the first PDU to block,

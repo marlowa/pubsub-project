@@ -108,11 +108,14 @@ class PduFramer {
      *
      * @param[in] pdu_id   DSL message ID.
      * @param[in] version  Message version.
+     * @param[in] seq_no   Sequencer-assigned sequence number to stamp into the
+     *                     PduHeader. Pass 0 for PDUs not yet stamped by the
+     *                     sequencer (e.g. leader-follower protocol PDUs).
      * @param[in] payload  Pointer to encoded payload bytes. Must not be nullptr.
      * @param[in] size     Payload size in bytes. Must be > 0 and <= max_payload_size.
      * @return { success, error_string }.
      */
-    [[nodiscard]] std::tuple<bool, std::string> send(int16_t pdu_id, int8_t version, const uint8_t* payload, uint32_t size);
+    [[nodiscard]] std::tuple<bool, std::string> send(int16_t pdu_id, int8_t version, int64_t seq_no, const uint8_t* payload, uint32_t size);
 
     /**
      * @brief Pre-built mode: sends a caller-assembled frame with zero copy.

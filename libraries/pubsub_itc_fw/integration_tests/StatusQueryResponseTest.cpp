@@ -16,7 +16,7 @@
  *   - Payload field values are verified end-to-end.
  *
  * Both reactors run on separate std::threads simultaneously.
- * The OS-assigned port is read back via get_first_inbound_listener_port()
+ * The OS-assigned port is read back via get_inbound_listener_port(0)
  * after the listener reactor has initialized.
  */
 
@@ -103,7 +103,7 @@ class ConnectorThread : public ApplicationThread {
         query.instance_id = 42;
         query.epoch = 7;
 
-        send_pdu(id, PDU_ID_STATUS_QUERY, query);
+        send_pdu(id, PDU_ID_STATUS_QUERY, 0, query);
         query_sent.store(true, std::memory_order_release);
     }
 
@@ -179,7 +179,7 @@ class ListenerThread : public ApplicationThread {
             response.peer_instance_id = received_query.instance_id;
             response.epoch = received_query.epoch;
 
-            send_pdu(conn_id, PDU_ID_STATUS_RESPONSE, response);
+            send_pdu(conn_id, PDU_ID_STATUS_RESPONSE, 0, response);
             response_sent.store(true, std::memory_order_release);
         }
 
@@ -244,7 +244,7 @@ TEST_F(StatusQueryResponseTest, StatusQueryResponseRoundTrip) {
     // the acceptor socket is bound and the OS-assigned port is readable.
     ASSERT_TRUE(wait_for([&]() { return listener_reactor->is_initialized(); })) << "Listener reactor did not initialize within timeout";
 
-    const uint16_t listen_port = listener_reactor->get_first_inbound_listener_port();
+    const uint16_t listen_port = listener_reactor->get_inbound_listener_port(0);
     ASSERT_NE(listen_port, 0u) << "OS did not assign a valid listening port";
 
     // --- Connector side ---

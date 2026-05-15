@@ -6,7 +6,7 @@ add_executable(matching_engine
 
 target_include_directories(matching_engine PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
-        ${CMAKE_CURRENT_BINARY_DIR}/..
+        ${FIX_DSL_INCLUDE_DIR}
 )
 
 target_link_libraries(matching_engine PRIVATE

@@ -8,6 +8,7 @@
 #include <string>
 
 #include <pubsub_itc_fw/FwLogLevel.hpp>
+#include <pubsub_itc_fw/RollingLogfileConfiguration.hpp>
 
 namespace sample_fix_gateway_seq {
 
@@ -87,6 +88,9 @@ struct FixGatewaySeqConfiguration {
 
     /** @brief Minimum severity written to syslog. */
     pubsub_itc_fw::FwLogLevel syslog_level{pubsub_itc_fw::FwLogLevel::Info};
+
+    /** @brief Rolling parameters for the applog */
+    pubsub_itc_fw::RollingLogfileConfiguration rolling_logfile_configuration;
 };
 
 } // namespace sample_fix_gateway_seq
