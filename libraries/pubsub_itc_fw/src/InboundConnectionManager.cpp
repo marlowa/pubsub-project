@@ -184,7 +184,7 @@ void InboundConnectionManager::on_data_ready(InboundConnection& conn)
     const ConnectionID id        = conn.id();
     const std::string  peer_desc = conn.peer_description();
 
-    auto [ok, error] = conn.handle_read();
+    auto [ok, error, pause_reads] = conn.handle_read();
     if (!ok) {
         const std::string reason = error.empty()
             ? fmt::format("peer '{}' closed connection", peer_desc)
@@ -199,6 +199,32 @@ void InboundConnectionManager::on_data_ready(InboundConnection& conn)
         }
 
         teardown_connection(id, reason, true);
+        return;
+    }
+
+    if (pause_reads) {
+        // Read-side backpressure: deregister EPOLLIN on this socket. The
+        // kernel TCP receive window will then close as the kernel buffer
+        // fills, propagating backpressure to the peer. We preserve EPOLLOUT
+        // if a send is currently in flight so writability events still come
+        // through, and always keep EPOLLERR for error detection.
+        const int fd = conn.get_fd();
+        epoll_event ev{};
+        ev.events = EPOLLERR;
+        if (conn.handler()->has_pending_send()) {
+            ev.events |= EPOLLOUT;
+        }
+        ev.data.fd = fd;
+        if (::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, fd, &ev) == -1) {
+            PUBSUB_LOG(logger_, FwLogLevel::Error,
+                "InboundConnectionManager::on_data_ready: epoll_ctl MOD (pause) failed "
+                "for connection from '{}': {}", peer_desc, StringUtils::get_errno_string());
+        } else {
+            PUBSUB_LOG(logger_, FwLogLevel::Info,
+                "InboundConnectionManager::on_data_ready: read backpressure engaged on "
+                "connection {} from '{}' -- EPOLLIN deregistered",
+                id.get_value(), peer_desc);
+        }
     }
 }
 
@@ -219,7 +245,13 @@ void InboundConnectionManager::on_write_ready(InboundConnection& conn)
     if (!conn.handler()->has_pending_send()) {
         const int fd = conn.get_fd();
         epoll_event ev{};
-        ev.events  = EPOLLIN | EPOLLERR;
+        // Re-add EPOLLIN only if reads are not currently paused for
+        // backpressure. The pause state is restored once the buffer drains
+        // below the low-water mark via process_commit_raw_bytes().
+        ev.events = EPOLLERR;
+        if (!conn.handler()->is_reads_paused()) {
+            ev.events |= EPOLLIN;
+        }
         ev.data.fd = fd;
         ::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, fd, &ev);
     }
@@ -342,7 +374,11 @@ bool InboundConnectionManager::process_send_pdu_command(const ReactorControlComm
     if (conn.handler()->has_pending_send()) {
         const int conn_fd = conn.get_fd();
         epoll_event ev{};
-        ev.events  = EPOLLIN | EPOLLOUT | EPOLLERR;
+        // Add EPOLLIN only if reads are not currently paused for backpressure.
+        ev.events = EPOLLOUT | EPOLLERR;
+        if (!conn.handler()->is_reads_paused()) {
+            ev.events |= EPOLLIN;
+        }
         ev.data.fd = conn_fd;
         ::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, conn_fd, &ev);
     }
@@ -380,7 +416,11 @@ bool InboundConnectionManager::process_send_raw_command(const ReactorControlComm
     if (conn.handler()->has_pending_send()) {
         const int conn_fd = conn.get_fd();
         epoll_event ev{};
-        ev.events  = EPOLLIN | EPOLLOUT | EPOLLERR;
+        // Add EPOLLIN only if reads are not currently paused for backpressure.
+        ev.events = EPOLLOUT | EPOLLERR;
+        if (!conn.handler()->is_reads_paused()) {
+            ev.events |= EPOLLIN;
+        }
         ev.data.fd = conn_fd;
         ::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, conn_fd, &ev);
     }
@@ -394,7 +434,31 @@ bool InboundConnectionManager::process_commit_raw_bytes(ConnectionID id, int64_t
     if (it == connections_.end()) {
         return false;
     }
-    it->second->handler()->commit_bytes(bytes_consumed);
+    InboundConnection& conn = *it->second;
+    const bool resume_reads = conn.handler()->commit_bytes(bytes_consumed);
+
+    if (resume_reads) {
+        // Read-side backpressure released: re-register EPOLLIN. Preserve
+        // EPOLLOUT if a send is currently in flight, and always keep EPOLLERR.
+        const int fd = conn.get_fd();
+        epoll_event ev{};
+        ev.events = EPOLLIN | EPOLLERR;
+        if (conn.handler()->has_pending_send()) {
+            ev.events |= EPOLLOUT;
+        }
+        ev.data.fd = fd;
+        if (::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, fd, &ev) == -1) {
+            PUBSUB_LOG(logger_, FwLogLevel::Error,
+                "InboundConnectionManager::process_commit_raw_bytes: epoll_ctl MOD "
+                "(resume) failed for connection {} from '{}': {}",
+                id.get_value(), conn.peer_description(), StringUtils::get_errno_string());
+        } else {
+            PUBSUB_LOG(logger_, FwLogLevel::Info,
+                "InboundConnectionManager::process_commit_raw_bytes: read backpressure "
+                "released on connection {} from '{}' -- EPOLLIN re-registered",
+                id.get_value(), conn.peer_description());
+        }
+    }
     return true;
 }
 

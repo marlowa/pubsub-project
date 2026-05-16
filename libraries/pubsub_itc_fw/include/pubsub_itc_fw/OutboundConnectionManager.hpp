@@ -216,6 +216,24 @@ class OutboundConnectionManager {
     void teardown_connection(ConnectionID id, const std::string& reason, bool deliver_lost_event);
 
   private:
+    /**
+     * @brief Schedules an automatic reconnect attempt for a configured outbound
+     *        service whose connection was just torn down by an internal failure
+     *        (peer close, send error, parse error, connect timeout etc.).
+     *
+     * Callers must invoke this only for teardowns triggered by transport-level
+     * failures, never for teardowns requested by the application via
+     * process_disconnect_command(). Caller is responsible for snapshotting
+     * service_name and requesting_thread_id before calling teardown_connection,
+     * since that erases the OutboundConnection from connections_.
+     *
+     * If an entry for service_name already exists in pending_retries_ (for
+     * example, the initial-connect path failed twice in rapid succession), it
+     * is replaced. The retry interval comes from
+     * ReactorConfiguration::connect_retry_interval_.
+     */
+    void schedule_retry(const std::string& service_name, ThreadID requesting_thread_id);
+
     int epoll_fd_;
     const ReactorConfiguration& config_;
     ExpandableSlabAllocator& inbound_allocator_;

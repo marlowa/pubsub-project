@@ -131,6 +131,68 @@ TEST_F(MirroredBufferTest, HandlesExhaustiveWrapAroundStress) {
     }
 }
 
+/*
+ * Regression test for the wrapping-counter bug discovered when running the
+ * sample_fix_gateway_seq under a multi-T burst from fix8.
+ *
+ * Background: head() and tail() are documented as indices that the consumer
+ * can compare across deliveries "to detect unambiguously whether the tail
+ * advanced". RawBytesProtocolHandler::on_data_ready stamps each
+ * RawSocketCommunication event with buffer.tail() at enqueue time, and the
+ * application thread tracks absolute byte-stream offsets to figure out which
+ * bytes are new in each event (see FixSession.hpp). All of that bookkeeping
+ * assumes head and tail are monotonic across the lifetime of the buffer.
+ *
+ * Under burst load, total bytes flowing through the buffer eventually exceed
+ * its capacity. When that happens, the consumer's tracking diverges from the
+ * buffer's state and parsing silently stops. The buffer keeps filling until
+ * it is nearly full and the connection effectively hangs.
+ *
+ * What this test pins down: after the consumer has drained more than one
+ * capacity's worth of data, tail() must report a value strictly greater than
+ * an earlier sample taken before the boundary, head() the same, and
+ * bytes_available() must remain consistent (head - tail) throughout. Equally
+ * important, advance_tail past the wrap point must not throw, since the
+ * total bytes-in-flight remains within capacity.
+ */
+TEST_F(MirroredBufferTest, HeadAndTailRemainMonotonicAcrossMultipleCapacities) {
+    MirroredBuffer buffer(test_capacity);
+    const int64_t capacity = buffer.capacity();
+    const int64_t chunk_size = 1000;
+    const int64_t total_chunks = (capacity / chunk_size) * 3 + 7;
+
+    int64_t prior_tail = buffer.tail();
+    int64_t total_pushed = 0;
+
+    for (int64_t i = 0; i < total_chunks; ++i) {
+        buffer.advance_head(chunk_size);
+        EXPECT_EQ(buffer.bytes_available(), chunk_size)
+            << "bytes_available should reflect head minus tail, iteration " << i;
+
+        const int64_t current_tail = buffer.tail();
+        EXPECT_GE(current_tail, prior_tail)
+            << "tail must never decrease, iteration " << i
+            << " (prior_tail=" << prior_tail
+            << ", current_tail=" << current_tail << ")";
+
+        buffer.advance_tail(chunk_size);
+        EXPECT_EQ(buffer.bytes_available(), 0)
+            << "buffer should be empty after draining, iteration " << i;
+
+        const int64_t tail_after_drain = buffer.tail();
+        EXPECT_GE(tail_after_drain, current_tail)
+            << "tail must never decrease across advance_tail, iteration " << i
+            << " (current_tail=" << current_tail
+            << ", tail_after_drain=" << tail_after_drain << ")";
+
+        prior_tail = tail_after_drain;
+        total_pushed += chunk_size;
+    }
+
+    EXPECT_EQ(buffer.tail(), total_pushed)
+        << "After draining everything pushed, tail must equal total bytes pushed";
+}
+
 TEST_F(MirroredBufferTest, SupportsLargeAddressSpaceReservations) {
     // Verify 5GB cushion (requires 10GB virtual address space)
     const int64_t five_gb = 5LL * 1024 * 1024 * 1024;

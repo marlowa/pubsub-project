@@ -57,13 +57,18 @@ class ProtocolHandlerInterface {
      * buffering allows, performing in-place framing where possible to
      * minimise copies.
      *
-     * @return A tuple of { success, error_string }.
+     * @return A tuple of { success, error_string, pause_reads }.
      *         success is true if the read completed cleanly (including the case
      *         where no bytes were available). success is false if the connection
      *         must be closed; error_string is empty for a graceful peer
      *         disconnect and contains a description on protocol failure.
+     *         pause_reads is true if, as a result of this read, the handler
+     *         wants the manager to deregister EPOLLIN on this socket as a
+     *         backpressure signal. Only RawBytesProtocolHandler ever sets this;
+     *         PDU handlers always return false. The manager must re-register
+     *         EPOLLIN only when commit_bytes() subsequently returns true.
      */
-    [[nodiscard]] virtual std::tuple<bool, std::string> on_data_ready() = 0;
+    [[nodiscard]] virtual std::tuple<bool, std::string, bool> on_data_ready() = 0;
 
     /**
      * @brief Initiates a zero-copy send of a pre-built frame.
@@ -127,8 +132,26 @@ class ProtocolHandlerInterface {
      * no-op so that PduProtocolHandler does not need to override it.
      *
      * @param[in] bytes Number of bytes the application has finished processing.
+     * @return true if, as a result of this commit, the handler wants the
+     *         manager to re-register EPOLLIN on this socket (i.e. backpressure
+     *         has been released). Only RawBytesProtocolHandler ever returns
+     *         true; PDU handlers always return false.
      */
-    virtual void commit_bytes([[maybe_unused]] int64_t bytes) {}
+    virtual bool commit_bytes([[maybe_unused]] int64_t bytes) { return false; }
+
+    /**
+     * @brief Returns true if the handler is currently asking the manager to
+     *        keep EPOLLIN deregistered for backpressure.
+     *
+     * The manager queries this whenever it constructs an epoll_event for
+     * EPOLL_CTL_MOD on this socket (e.g. when adding or removing EPOLLOUT for
+     * a pending send) so that it does not inadvertently re-enable EPOLLIN
+     * while reads are paused.
+     *
+     * Default implementation returns false. Only RawBytesProtocolHandler
+     * overrides this.
+     */
+    [[nodiscard]] virtual bool is_reads_paused() const { return false; }
 };
 
 } // namespace pubsub_itc_fw

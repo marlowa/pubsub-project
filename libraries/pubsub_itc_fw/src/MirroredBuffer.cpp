@@ -62,7 +62,7 @@ int64_t MirroredBuffer::capacity() const {
 
 uint8_t* MirroredBuffer::write_ptr() {
     // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-    return base_ptr_ + head_;
+    return base_ptr_ + (head_.load(std::memory_order_relaxed) % capacity_);
 }
 
 void MirroredBuffer::advance_head(int64_t bytes) {
@@ -73,19 +73,16 @@ void MirroredBuffer::advance_head(int64_t bytes) {
         throw PreconditionAssertion("Advance head exceeds remaining space", __FILE__, __LINE__);
     }
 
-    int64_t current_head = head_.load(std::memory_order_relaxed);
-    int64_t next_head = current_head + bytes;
-    if (next_head >= capacity_) {
-        next_head -= capacity_;
-    }
-
-    // Release ensures all data writes to base_ptr_ happen BEFORE head_ is updated
-    head_.store(next_head, std::memory_order_release);
+    // head_ is a monotonically increasing absolute byte-stream offset.
+    // The physical address is computed by write_ptr() as base_ptr_ + (head_ % capacity_).
+    // The virtual-memory mirror trick still gives a contiguous view across
+    // the physical wrap. Acquire/release pairs with bytes_available() and tail().
+    head_.fetch_add(bytes, std::memory_order_release);
 }
 
 const uint8_t* MirroredBuffer::read_ptr() const {
     // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-    return base_ptr_ + tail_;
+    return base_ptr_ + (tail_.load(std::memory_order_relaxed) % capacity_);
 }
 
 void MirroredBuffer::advance_tail(int64_t bytes) {
@@ -96,22 +93,20 @@ void MirroredBuffer::advance_tail(int64_t bytes) {
         throw PreconditionAssertion("Advance tail exceeds available data", __FILE__, __LINE__);
     }
 
-    int64_t current_tail = tail_.load(std::memory_order_relaxed);
-    int64_t next_tail = current_tail + bytes;
-    if (next_tail >= capacity_) {
-        next_tail -= capacity_;
-    }
-
-    // Release ensures the producer sees the updated tail (freed space)
-    tail_.store(next_tail, std::memory_order_release);
+    // tail_ is a monotonically increasing absolute byte-stream offset.
+    // The physical address is computed by read_ptr() as base_ptr_ + (tail_ % capacity_).
+    // Release ensures the producer sees the updated tail (freed space).
+    tail_.fetch_add(bytes, std::memory_order_release);
 }
 
 int64_t MirroredBuffer::bytes_available() const {
-    // Acquire ensures we see the most recent head_ and the data associated with it
+    // head_ and tail_ are absolute byte-stream offsets, both monotonically
+    // increasing, so head - tail is always non-negative and is exactly the
+    // number of bytes currently held in the buffer. Acquire on head_ ensures
+    // we see the most recent producer update and the data behind it.
     const int64_t h = head_.load(std::memory_order_acquire);
     const int64_t t = tail_.load(std::memory_order_relaxed);
-    const int64_t diff = h - t;
-    return (diff >= 0) ? diff : (capacity_ + diff);
+    return h - t;
 }
 
 int64_t MirroredBuffer::space_remaining() const {

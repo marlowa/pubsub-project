@@ -39,23 +39,30 @@ namespace pubsub_itc_fw {
  *   buffer_.advance_tail(N) to release those bytes from the ring.
  *
  *   Buffer-full policy (backpressure contract):
- *   If the buffer is full when on_data_ready() fires, the handler returns
- *   {false, "buffer full ..."} so the manager can log the condition and tear
- *   down the connection. This is a deliberate backpressure policy, not a bug.
- *   The reactor thread must never block waiting for the application to consume
- *   data -- doing so would stall every other connection and timer in the
- *   process. Disconnecting the slow or misbehaving peer is the correct
- *   enforcement mechanism.
+ *   When the MirroredBuffer fill level reaches the high-water mark
+ *   (high_water_numerator/water_denominator of capacity) the handler asks the
+ *   manager to deregister EPOLLIN on the socket. The TCP receive window then
+ *   closes naturally as the kernel buffer fills, applying backpressure all the
+ *   way to the peer. When the application has drained the buffer below the
+ *   low-water mark (low_water_numerator/water_denominator of capacity) the
+ *   handler asks the manager to re-register EPOLLIN.
+ *
+ *   The pause/resume signals are carried in the return values of
+ *   on_data_ready() and commit_bytes() respectively. Hysteresis between the
+ *   high-water and low-water marks prevents flapping.
+ *
+ *   If the buffer somehow fills entirely (which should not happen with the
+ *   pause logic in place but is defended against), on_data_ready() returns
+ *   {false, "buffer full ..."} and the manager tears down the connection.
+ *   This is a defensive fallback only.
  *
  *   Implications for callers:
  *   - Size buffer_capacity generously relative to the maximum burst size of
- *     the protocol in use. A well-behaved peer should never come close to
- *     filling the buffer between successive CommitRawBytes calls.
+ *     the protocol in use. The high-water mark is at 75% of capacity, so a
+ *     burst that fits in 75% of capacity will never cause TCP backpressure.
  *   - The application thread must call commit_raw_bytes() promptly after
- *     processing each RawSocketCommunication event to keep the buffer drained.
- *   - A peer that sends faster than the application can consume will be
- *     disconnected. A ConnectionLost event is delivered to the application
- *     thread. All other connections and threads in the reactor are unaffected.
+ *     processing each RawSocketCommunication event so that reads can resume
+ *     after backpressure-induced pauses.
  *
  * Outbound path:
  *   The handler owns its own raw send loop. send_prebuilt() accepts a
@@ -110,11 +117,19 @@ class RawBytesProtocolHandler : public ProtocolHandlerInterface {
      * enqueues a RawSocketCommunication EventMessage to the target thread
      * carrying a non-owning view of all currently unprocessed bytes.
      *
-     * @return {true, ""} on a clean read, {false, ""} on graceful peer
-     *         disconnect, or {false, error_string} on read error or buffer
-     *         overflow.
+     * After the read, the MirroredBuffer fill level is compared against the
+     * high-water mark. If at or above high-water, the pause_reads element of
+     * the returned tuple is set true, asking the manager to deregister EPOLLIN
+     * on this socket. The pause signal is edge-triggered: it is only set on
+     * the false-to-true transition of reads_paused_, never while already
+     * paused.
+     *
+     * @return {true, "", pause} on a clean read where pause is true on the
+     *         transition into the paused state, {false, "", false} on a
+     *         graceful peer disconnect, or {false, error_string, false} on
+     *         read error or (defensively) buffer overflow.
      */
-    [[nodiscard]] std::tuple<bool, std::string> on_data_ready() override;
+    [[nodiscard]] std::tuple<bool, std::string, bool> on_data_ready() override;
 
     /**
      * @brief Advances the ring buffer tail by the given number of bytes.
@@ -123,9 +138,17 @@ class RawBytesProtocolHandler : public ProtocolHandlerInterface {
      * application thread. Releases bytes that the application has finished
      * processing, making space for future reads.
      *
+     * If reads are currently paused and the fill level after the advance is
+     * below the low-water mark, returns true to ask the manager to re-register
+     * EPOLLIN on this socket. The resume signal is edge-triggered: it is only
+     * set on the true-to-false transition of reads_paused_, never while
+     * already resumed.
+     *
      * @param[in] bytes Number of bytes consumed by the application.
+     * @return true if reads should be resumed (EPOLLIN re-registered), false
+     *         otherwise.
      */
-    void commit_bytes(int64_t bytes) override;
+    bool commit_bytes(int64_t bytes) override;
 
     /**
      * @brief Initiates a zero-copy send of an outbound raw byte chunk.
@@ -152,6 +175,15 @@ class RawBytesProtocolHandler : public ProtocolHandlerInterface {
     [[nodiscard]] bool has_pending_send() const override;
 
     /**
+     * @brief Returns true if reads are currently paused for backpressure.
+     *
+     * Used by InboundConnectionManager when modifying this connection's epoll
+     * registration for unrelated reasons (e.g. adding or removing EPOLLOUT
+     * around a send) so it can avoid re-enabling EPOLLIN while paused.
+     */
+    [[nodiscard]] bool is_reads_paused() const override { return reads_paused_; }
+
+    /**
      * @brief Resumes a partial outbound send on EPOLLOUT.
      *
      * Continues writing the unsent remainder of the in-flight chunk. When the
@@ -173,6 +205,18 @@ class RawBytesProtocolHandler : public ProtocolHandlerInterface {
     void deallocate_pending_send() override;
 
   private:
+    // High-water and low-water thresholds for read-side backpressure, as
+    // fractions of MirroredBuffer capacity. When bytes_available reaches
+    // 3/4 of capacity we ask the manager to deregister EPOLLIN; when it
+    // drops to 1/2 of capacity (while paused) we ask the manager to
+    // re-register EPOLLIN. The gap provides hysteresis to prevent flapping.
+    //
+    // Expressed as numerator/denominator so the comparisons can be done in
+    // integer arithmetic: bytes_available * denominator >= capacity * numerator.
+    static constexpr int64_t water_denominator = 4;
+    static constexpr int64_t high_water_numerator = 3;  // 75%
+    static constexpr int64_t low_water_numerator = 2;  // 50%
+
     /**
      * @brief Writes as much of the in-flight chunk as the socket will accept.
      *
@@ -214,6 +258,13 @@ class RawBytesProtocolHandler : public ProtocolHandlerInterface {
     int current_slab_id_{-1};
     void* current_chunk_ptr_{nullptr};
     uint32_t current_total_bytes_{0};
+
+    // True when reads have been paused because the MirroredBuffer crossed the
+    // high-water mark. Used to make pause/resume signals edge-triggered: the
+    // pause signal is emitted only on the false->true transition in
+    // on_data_ready(), the resume signal only on the true->false transition
+    // in commit_bytes().
+    bool reads_paused_{false};
 };
 
 } // namespace pubsub_itc_fw

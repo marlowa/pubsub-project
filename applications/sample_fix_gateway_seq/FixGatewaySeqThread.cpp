@@ -518,6 +518,20 @@ void FixGatewaySeqThread::handle_new_order_single(FixSession& session, const Fix
         return;
     }
 
+    // If the primary sequencer is not currently connected, reject the order
+    // locally with an ExecutionReport rather than silently dropping it. The
+    // client gets a definitive response per order and the FIX session stays
+    // up so subsequent orders can be tried once connectivity is restored.
+    if (sequencer_primary_conn_id_.get_value() == 0) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "FixGatewaySeqThread: connection {} NewOrderSingle ClOrdID={} rejected "
+                   "locally -- primary sequencer not connected",
+                   session.conn_id.get_value(), cl_ord_id);
+        send_reject_execution_report(
+            session, msg, "Sequencer unavailable", /*is_cancel=*/false);
+        return;
+    }
+
     // Record cl_ord_id -> session for ER routing.
     cl_ord_id_to_session_[cl_ord_id] = session.conn_id;
 
@@ -571,6 +585,19 @@ void FixGatewaySeqThread::handle_order_cancel_request(FixSession& session,
         return;
     }
 
+    // If the primary sequencer is not currently connected, reject the cancel
+    // locally with an ExecutionReport rather than silently dropping it. See
+    // handle_new_order_single for the rationale.
+    if (sequencer_primary_conn_id_.get_value() == 0) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "FixGatewaySeqThread: connection {} OrderCancelRequest ClOrdID={} "
+                   "OrigClOrdID={} rejected locally -- primary sequencer not connected",
+                   session.conn_id.get_value(), cl_ord_id, orig_cl_ord_id);
+        send_reject_execution_report(
+            session, msg, "Sequencer unavailable", /*is_cancel=*/true);
+        return;
+    }
+
     // Record cl_ord_id -> session for ER routing of the cancel acknowledgement.
     cl_ord_id_to_session_[cl_ord_id] = session.conn_id;
 
@@ -606,6 +633,65 @@ void FixGatewaySeqThread::send_fix_to_session(FixSession& session, FixMessage& m
 {
     const std::string wire = serialiser_.serialise(msg, session.outbound_seq_num++);
     send_raw(session.conn_id, wire.data(), static_cast<uint32_t>(wire.size()));
+}
+
+void FixGatewaySeqThread::send_reject_execution_report(FixSession& session,
+                                                        const FixMessage& in_msg,
+                                                        const std::string& reason,
+                                                        bool is_cancel)
+{
+    // The matching engine never sees this order, so we synthesise the
+    // gateway-side identifiers from per-session counters. Format mirrors the
+    // ME-generated IDs (ME-ORD-N / ME-EXEC-N) but with a GW- prefix so the
+    // origin is unambiguous in logs and downstream audit trails.
+    const std::string order_id =
+        "GW-ORD-" + std::to_string(session.order_id_counter++);
+    const std::string exec_id  =
+        "GW-EXEC-" + std::to_string(session.exec_id_counter++);
+
+    // Echo identifying fields from the inbound message. Side and OrderQty are
+    // optional from a strict FIX standpoint on a Reject (the ME never priced
+    // it), but echoing what the client sent keeps the round-trip diagnostic
+    // and matches the format of a real ER for the same order.
+    const std::string& cl_ord_id    = in_msg.get(Tag::ClOrdID);
+    const std::string& symbol       = in_msg.get(Tag::Symbol);
+    const std::string& side_str     = in_msg.get(Tag::Side);
+    const std::string& order_qty    = in_msg.get(Tag::OrderQty);
+
+    FixMessage er;
+    er.set(Tag::MsgType,   MsgType::ExecutionReport);
+    er.set(Tag::OrderID,   order_id);
+    er.set(Tag::ExecID,    exec_id);
+    er.set(Tag::ExecType,  std::string(1, '8'));  // 150 = 8 Rejected
+    er.set(Tag::OrdStatus, std::string(1, '8'));  //  39 = 8 Rejected
+    er.set(Tag::ClOrdID,   cl_ord_id);
+    er.set(Tag::Symbol,    symbol);
+    if (!side_str.empty()) {
+        er.set(Tag::Side, side_str);
+    }
+    if (!order_qty.empty()) {
+        er.set(Tag::OrderQty,  order_qty);
+        er.set(Tag::LeavesQty, std::string("0"));
+        er.set(Tag::CumQty,    std::string("0"));
+    }
+    er.set(103, 99);  // 103 = OrdRejReason, 99 = Other
+    er.set(Tag::Text,         reason);
+
+    if (is_cancel) {
+        // Cancel-reject convention: echo OrigClOrdID so the client can
+        // correlate the reject with the original order it tried to cancel.
+        const std::string& orig_cl_ord_id = in_msg.get(Tag::OrigClOrdID);
+        if (!orig_cl_ord_id.empty()) {
+            er.set(Tag::OrigClOrdID, orig_cl_ord_id);
+        }
+    }
+
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+        "FixGatewaySeqThread: connection {} sending reject ExecutionReport "
+        "OrderID={} ExecID={} ClOrdID={} reason='{}'",
+        session.conn_id.get_value(), order_id, exec_id, cl_ord_id, reason);
+
+    send_fix_to_session(session, er);
 }
 
 // -----------------------------------------------------------------------

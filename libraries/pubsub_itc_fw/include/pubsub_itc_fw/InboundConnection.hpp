@@ -119,12 +119,14 @@ class InboundConnection {
      * handler's on_data_ready(). Must be called by the Reactor when epoll
      * signals EPOLLIN on this connection's file descriptor.
      *
-     * @return The tuple from the handler's on_data_ready(): {true, ""} on a
-     *         clean read, {false, ""} on graceful peer disconnect, or
-     *         {false, error_string} on protocol failure. The caller is
-     *         responsible for tearing down the connection on failure.
+     * @return The tuple from the handler's on_data_ready(): {true, "", pause}
+     *         on a clean read where pause indicates whether the handler wants
+     *         EPOLLIN deregistered for backpressure, {false, "", false} on a
+     *         graceful peer disconnect, or {false, error_string, false} on
+     *         protocol failure. The caller is responsible for tearing down
+     *         the connection on failure and for acting on the pause flag.
      */
-    [[nodiscard]] std::tuple<bool, std::string> handle_read();
+    [[nodiscard]] std::tuple<bool, std::string, bool> handle_read();
 
     /**
      * @brief Returns the protocol handler for this connection.

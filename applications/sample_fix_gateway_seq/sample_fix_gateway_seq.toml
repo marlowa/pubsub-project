@@ -1,7 +1,7 @@
 [network]
 listen_host         = "127.0.0.1"
 listen_port         = 9879
-raw_buffer_capacity = 65536
+raw_buffer_capacity = 512000 # for TCP buffering
 er_listen_host      = "127.0.0.1"
 er_listen_port      = 7010
 

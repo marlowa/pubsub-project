@@ -34,11 +34,17 @@ RawBytesProtocolHandler::RawBytesProtocolHandler(ConnectionID connection_id,
 {
 }
 
-std::tuple<bool, std::string> RawBytesProtocolHandler::on_data_ready()
+std::tuple<bool, std::string, bool> RawBytesProtocolHandler::on_data_ready()
 {
     const int64_t space = buffer_->space_remaining();
     if (space == 0) {
-        return {false, "RawBytesProtocolHandler::on_data_ready: buffer full, application is not consuming fast enough"};
+        // Defensive fallback. With the high-water pause logic in place this
+        // path should not be reachable in normal operation; if it does fire,
+        // something went wrong upstream and tearing down the connection is
+        // safer than trying to recover.
+        return {false,
+                "RawBytesProtocolHandler::on_data_ready: buffer full, application is not consuming fast enough",
+                false};
     }
 
     const ssize_t bytes_read = ::recv(socket_.get_file_descriptor(),
@@ -47,15 +53,17 @@ std::tuple<bool, std::string> RawBytesProtocolHandler::on_data_ready()
                                       MSG_DONTWAIT);
 
     if (bytes_read == 0) {
-        return {false, ""};
+        return {false, "", false};
     }
 
     if (bytes_read == -1) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            return {true, ""}; // Spurious wakeup, nothing to read.
+            return {true, "", false}; // Spurious wakeup, nothing to read.
         }
-        return {false, fmt::format("RawBytesProtocolHandler::on_data_ready: recv failed: {}",
-                                   StringUtils::get_errno_string())};
+        return {false,
+                fmt::format("RawBytesProtocolHandler::on_data_ready: recv failed: {}",
+                            StringUtils::get_errno_string()),
+                false};
     }
 
     buffer_->advance_head(bytes_read);
@@ -69,12 +77,42 @@ std::tuple<bool, std::string> RawBytesProtocolHandler::on_data_ready()
                                                 static_cast<int>(buffer_->bytes_available()),
                                                 buffer_->tail(),
                                                 buffer_));
-    return {true, ""};
+
+    // High-water check. Edge-triggered: only emit a pause signal on the
+    // false->true transition so the manager doesn't re-issue epoll_ctl
+    // unnecessarily on every read while already paused.
+    bool emit_pause = false;
+    if (!reads_paused_) {
+        const int64_t fill     = buffer_->bytes_available();
+        const int64_t capacity = buffer_->capacity();
+        if (fill * water_denominator >= capacity * high_water_numerator) {
+            reads_paused_ = true;
+            emit_pause    = true;
+        }
+    }
+
+    return {true, "", emit_pause};
 }
 
-void RawBytesProtocolHandler::commit_bytes(int64_t bytes)
+bool RawBytesProtocolHandler::commit_bytes(int64_t bytes)
 {
     buffer_->advance_tail(bytes);
+
+    // Low-water check. Edge-triggered: only emit a resume signal on the
+    // true->false transition. If reads aren't currently paused there is
+    // nothing to do here, and if the fill is still above the low-water mark
+    // we wait for further commits before resuming.
+    if (!reads_paused_) {
+        return false;
+    }
+
+    const int64_t fill     = buffer_->bytes_available();
+    const int64_t capacity = buffer_->capacity();
+    if (fill * water_denominator <= capacity * low_water_numerator) {
+        reads_paused_ = false;
+        return true;
+    }
+    return false;
 }
 
 std::tuple<bool, std::string> RawBytesProtocolHandler::send_prebuilt(ExpandableSlabAllocator* allocator,

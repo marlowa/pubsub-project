@@ -26,6 +26,18 @@ namespace pubsub_itc_fw {
  * to perform a single read() and the Application to perform in-place parsing
  * without handling split-packet edge cases.
  *
+ * Head/tail are absolute byte-stream offsets:
+ *   head_ and tail_ count the total number of bytes ever produced and ever
+ *   consumed respectively. They are monotonically non-decreasing for the
+ *   lifetime of the buffer. The physical address corresponding to a given
+ *   offset is computed modulo capacity inside write_ptr() and read_ptr();
+ *   the virtual-memory mirror trick handles bytes that physically straddle
+ *   the wrap point. At line-rate gigabit, int64 offsets do not overflow for
+ *   centuries, so practical wrap is not a concern.
+ *
+ *   Consumers of tail() and head() can therefore compare values taken at
+ *   different moments and rely on monotonicity to reason about progress.
+ *
  * Threading Model:
  * - The Reactor thread is the sole Producer (calls write_ptr and advance_head).
  * - The Application thread is the sole Consumer (calls read_ptr and advance_tail).
@@ -93,14 +105,14 @@ class MirroredBuffer {
     void advance_tail(int64_t bytes);
 
     /**
-     * @brief Returns the current tail index.
+     * @brief Returns the current tail position as an absolute byte-stream offset.
      *
      * Used by RawBytesProtocolHandler to stamp each RawSocketCommunication
-     * EventMessage with the tail position at enqueue time. The application
-     * thread compares this against its last seen tail to detect unambiguously
-     * whether the tail advanced between deliveries.
+     * EventMessage with the tail at enqueue time. Because tail is monotonic,
+     * the application thread can compare a stamp against its own running
+     * total of bytes committed and reason about progress unambiguously.
      *
-     * @return Current tail position in bytes.
+     * @return Cumulative count of bytes consumed since the buffer was constructed.
      */
     [[nodiscard]] int64_t tail() const {
         return tail_.load(std::memory_order_acquire);

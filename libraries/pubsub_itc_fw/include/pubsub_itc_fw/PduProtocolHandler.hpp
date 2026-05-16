@@ -80,11 +80,16 @@ class PduProtocolHandler : public ProtocolHandlerInterface {
      * allocates slab chunks, and dispatches complete FrameworkPdu EventMessages
      * to the target ApplicationThread.
      *
-     * @return The tuple returned by PduParser::receive(): {true, ""} on a clean
-     *         read (including no bytes available), {false, ""} on graceful peer
-     *         disconnect, or {false, error_string} on protocol failure.
+     * Strategy A (framework PDUs) has its own backpressure mechanism via slab
+     * allocation, so this handler never asks the manager to pause reads. The
+     * third tuple element is always false.
+     *
+     * @return The tuple returned by PduParser::receive() augmented with a
+     *         hard-coded false: {true, "", false} on a clean read (including
+     *         no bytes available), {false, "", false} on graceful peer
+     *         disconnect, or {false, error_string, false} on protocol failure.
      */
-    [[nodiscard]] std::tuple<bool, std::string> on_data_ready() override;
+    [[nodiscard]] std::tuple<bool, std::string, bool> on_data_ready() override;
 
     /**
      * @brief Initiates a zero-copy send of a pre-built PDU frame.

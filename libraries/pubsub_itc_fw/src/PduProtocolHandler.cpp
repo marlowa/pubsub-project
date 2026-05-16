@@ -28,9 +28,10 @@ PduProtocolHandler::PduProtocolHandler(TcpSocket& socket,
                                           connection_id);
 }
 
-std::tuple<bool, std::string> PduProtocolHandler::on_data_ready()
+std::tuple<bool, std::string, bool> PduProtocolHandler::on_data_ready()
 {
-    return parser_->receive();
+    auto [ok, error] = parser_->receive();
+    return {ok, error, false};
 }
 
 std::tuple<bool, std::string> PduProtocolHandler::send_prebuilt(ExpandableSlabAllocator* allocator,

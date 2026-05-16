@@ -37,7 +37,7 @@ int InboundConnection::get_fd() const
     return socket_ ? socket_->get_file_descriptor() : -1;
 }
 
-std::tuple<bool, std::string> InboundConnection::handle_read()
+std::tuple<bool, std::string, bool> InboundConnection::handle_read()
 {
     last_activity_time_ = std::chrono::steady_clock::now();
     return handler_->on_data_ready();

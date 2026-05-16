@@ -209,12 +209,7 @@ void OutboundConnectionManager::on_connect_ready(OutboundConnection& conn)
                 "OutboundConnectionManager::on_connect_ready: service '{}' failed, "
                 "will retry in {}ms",
                 service_name, config_.connect_retry_interval_.count());
-            ReactorControlCommand retry_cmd{ReactorControlCommand::CommandTag::Connect};
-            retry_cmd.requesting_thread_id_ = requesting_thread_id;
-            retry_cmd.service_name_         = service_name;
-            pending_retries_[service_name] = PendingRetry(
-                retry_cmd,
-                std::chrono::steady_clock::now() + config_.connect_retry_interval_);
+            schedule_retry(service_name, requesting_thread_id);
         }
         // else still in progress — wait for next EPOLLOUT
         return;
@@ -253,8 +248,9 @@ void OutboundConnectionManager::on_connect_ready(OutboundConnection& conn)
 
 void OutboundConnectionManager::on_data_ready(OutboundConnection& conn)
 {
-    const ConnectionID id           = conn.id();
-    const std::string  service_name = conn.service_name();
+    const ConnectionID id                  = conn.id();
+    const std::string  service_name        = conn.service_name();
+    const ThreadID     requesting_thread_id = conn.requesting_thread_id();
 
     auto [ok, error] = conn.parser()->receive();
     if (!ok) {
@@ -266,6 +262,7 @@ void OutboundConnectionManager::on_data_ready(OutboundConnection& conn)
             "OutboundConnectionManager::on_data_ready: {}", reason);
 
         teardown_connection(id, reason, true);
+        schedule_retry(service_name, requesting_thread_id);
     }
 }
 
@@ -273,11 +270,15 @@ void OutboundConnectionManager::on_write_ready(OutboundConnection& conn)
 {
     auto [ok, error] = conn.framer()->continue_send();
     if (!ok) {
+        const std::string service_name        = conn.service_name();
+        const ThreadID    requesting_thread_id = conn.requesting_thread_id();
+        const ConnectionID id                  = conn.id();
         const std::string reason = fmt::format(
-            "send error on service '{}': {}", conn.service_name(), error);
+            "send error on service '{}': {}", service_name, error);
         PUBSUB_LOG(logger_, FwLogLevel::Error,
             "OutboundConnectionManager::on_write_ready: {}", reason);
-        teardown_connection(conn.id(), reason, true);
+        teardown_connection(id, reason, true);
+        schedule_retry(service_name, requesting_thread_id);
         return;
     }
 
@@ -324,11 +325,15 @@ bool OutboundConnectionManager::process_send_pdu_command(const ReactorControlCom
     auto [ok, send_error] = conn.framer()->send_prebuilt(frame_ptr, total_bytes);
 
     if (!ok) {
+        const std::string service_name        = conn.service_name();
+        const ThreadID    requesting_thread_id = conn.requesting_thread_id();
+        const ConnectionID conn_id             = conn.id();
         PUBSUB_LOG(logger_, FwLogLevel::Error,
             "OutboundConnectionManager::process_send_pdu_command: send error to '{}': {}",
-            conn.service_name(), send_error);
+            service_name, send_error);
         command.allocator_->deallocate(command.slab_id_, command.pdu_chunk_ptr_);
-        teardown_connection(conn.id(), send_error, true);
+        teardown_connection(conn_id, send_error, true);
+        schedule_retry(service_name, requesting_thread_id);
         return true;
     }
 
@@ -395,6 +400,21 @@ bool OutboundConnectionManager::process_disconnect_command(ConnectionID id)
     return true;
 }
 
+void OutboundConnectionManager::schedule_retry(const std::string& service_name,
+                                                ThreadID requesting_thread_id)
+{
+    ReactorControlCommand retry_cmd{ReactorControlCommand::CommandTag::Connect};
+    retry_cmd.requesting_thread_id_ = requesting_thread_id;
+    retry_cmd.service_name_         = service_name;
+    pending_retries_[service_name]  = PendingRetry(
+        retry_cmd,
+        std::chrono::steady_clock::now() + config_.connect_retry_interval_);
+
+    PUBSUB_LOG(logger_, FwLogLevel::Info,
+        "OutboundConnectionManager::schedule_retry: service '{}' will be retried in {}ms",
+        service_name, config_.connect_retry_interval_.count());
+}
+
 void OutboundConnectionManager::retry_failed_connections(
     const std::function<ConnectionID()>& next_id_fn)
 {
@@ -449,16 +469,17 @@ void OutboundConnectionManager::check_for_timed_out_connections()
         if (it == connections_.end()) {
             continue;
         }
+        const std::string service_name        = it->second->service_name();
+        const ThreadID    requesting_thread_id = it->second->requesting_thread_id();
         const std::string reason = fmt::format(
             "connect timeout after {}ms for service '{}'",
             std::chrono::duration_cast<std::chrono::milliseconds>(
                 config_.connect_timeout).count(),
-            it->second->service_name());
+            service_name);
 
         PUBSUB_LOG(logger_, FwLogLevel::Warning,
             "OutboundConnectionManager::check_for_timed_out_connections: {}", reason);
 
-        const ThreadID requesting_thread_id = it->second->requesting_thread_id();
         teardown_connection(id, reason, false);
 
         auto* thread = thread_lookup_.get_fast_path_thread(requesting_thread_id);
@@ -466,6 +487,8 @@ void OutboundConnectionManager::check_for_timed_out_connections()
             thread->get_queue().enqueue(
                 EventMessage::create_connection_failed_event(reason));
         }
+
+        schedule_retry(service_name, requesting_thread_id);
     }
 }
 
