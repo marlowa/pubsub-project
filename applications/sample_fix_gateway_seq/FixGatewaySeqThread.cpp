@@ -130,15 +130,26 @@ void FixGatewaySeqThread::on_raw_socket_message(const pubsub_itc_fw::EventMessag
     const pubsub_itc_fw::ConnectionID conn_id = message.connection_id();
     const uint8_t* data    = message.payload();
     const int      available = message.payload_size();
+    const int64_t  event_tail_position = message.tail_position();
 
     if (data == nullptr || available <= 0) {
         return;
     }
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
-               "FixGatewaySeqThread: {} raw bytes received on connection {} ({})",
-               available, conn_id.get_value(), conn_id.service_name());
-    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, pubsub_itc_fw::StringUtils::hex_dump(data, available));
+               "FixGatewaySeqThread: {} raw bytes received on connection {} ({}) at tail {}",
+               available, conn_id.get_value(), conn_id.service_name(), event_tail_position);
+
+    // Hex-dump only the first few hundred bytes. Under burst load, available
+    // can reach the MirroredBuffer's capacity (~64 KB), and a full hex_dump
+    // produces a multi-hundred-KB string that adds nothing useful to the log
+    // and has been observed to crash the gateway under fix8 command "T"
+    // (1000 NOS burst). The truncation is purely a logging-helper concern;
+    // the rest of this function still processes all `available` bytes.
+    constexpr int hex_dump_limit = 256;
+    const int     hex_dump_len   = (available < hex_dump_limit) ? available : hex_dump_limit;
+    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
+                   pubsub_itc_fw::StringUtils::hex_dump(data, hex_dump_len));
 
     // Create a session on first data from this connection if not already present.
     // TODO need to document why we use piecewise_construct here.
@@ -194,7 +205,61 @@ void FixGatewaySeqThread::on_raw_socket_message(const pubsub_itc_fw::EventMessag
 
     FixSession& session = it->second;
 
+    // ----------------------------------------------------------------
+    // Cumulative-bytes contract reconciliation.
+    //
+    // payload_size() is the total unconsumed bytes in the MirroredBuffer
+    // at enqueue time -- it INCLUDES bytes from previous events that we
+    // have already fed to the parser and asked the reactor to commit, if
+    // those commits have not yet landed on the tail.
+    //
+    // The tail can advance partially relative to our in-flight commits:
+    // the reactor processes them one at a time. So a naive "tail changed
+    // since last event" check would treat the new event as entirely fresh,
+    // re-feeding bytes we already fed. The fix is to track absolute byte
+    // offsets independent of the reactor's tail value.
+    //
+    // - absolute_head_seen_     = max event_tail + event_payload_size
+    // - absolute_bytes_committed_ = total bytes ever asked to commit
+    // - new bytes this event    = absolute_head_seen_ - absolute_bytes_committed_
+    // - offset within event window = absolute_bytes_committed_ - event_tail
+    //
+    // See FixSession.hpp for the full rationale.
+    // ----------------------------------------------------------------
+    const int64_t event_absolute_head = event_tail_position + static_cast<int64_t>(available);
+    if (event_absolute_head > session.absolute_head_seen_) {
+        session.absolute_head_seen_ = event_absolute_head;
+    }
+
+    const int64_t new_bytes_len64 = session.absolute_head_seen_ - session.absolute_bytes_committed_;
+    if (new_bytes_len64 <= 0) {
+        // Nothing new in this event; our pending commits will catch up.
+        return;
+    }
+
+    const int64_t window_offset64 = session.absolute_bytes_committed_ - event_tail_position;
+    // window_offset must be within [0, available - new_bytes_len]. Defensive
+    // check guards against arithmetic surprises (e.g. an unexpected wrap or
+    // a bug in absolute_bytes_committed_).
+    if (window_offset64 < 0 || window_offset64 + new_bytes_len64 > static_cast<int64_t>(available)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                   "FixGatewaySeqThread: connection {} cumulative-bytes invariant violation: "
+                   "event_tail={} payload_size={} absolute_head_seen={} absolute_bytes_committed={} "
+                   "-- disconnecting",
+                   conn_id.get_value(), event_tail_position, available,
+                   session.absolute_head_seen_, session.absolute_bytes_committed_);
+        disconnect_session(session, "cumulative-bytes invariant violation");
+        return;
+    }
+
+    const int      new_bytes_len = static_cast<int>(new_bytes_len64);
+    const uint8_t* new_bytes_ptr = data + static_cast<std::ptrdiff_t>(window_offset64);
+
     if (!session.preamble_verified) {
+        // Preamble check operates on the full unconsumed window starting at
+        // `data`. payload_size() is cumulative so `data` still points at
+        // the first unverified byte of the session even after multiple
+        // events; we have not committed anything yet.
         const std::size_t bytes_to_check =
             std::min(static_cast<std::size_t>(available), expected_preamble.size());
 
@@ -203,11 +268,16 @@ void FixGatewaySeqThread::on_raw_socket_message(const pubsub_itc_fw::EventMessag
                        "FixGatewaySeqThread: connection {} invalid FIX preamble -- disconnecting",
                        conn_id.get_value());
             disconnect_session(session, "invalid FIX preamble");
-            commit_raw_bytes(conn_id, static_cast<int64_t>(available));
+            // Commit only the new bytes so the buffer drains correctly.
+            commit_raw_bytes(conn_id, static_cast<int64_t>(new_bytes_len));
+            session.absolute_bytes_committed_ += new_bytes_len;
             return;
         }
 
         if (static_cast<std::size_t>(available) < expected_preamble.size()) {
+            // Not enough bytes yet for a full preamble check; don't commit
+            // anything (the bytes need to remain in the buffer so the next
+            // event sees them too).
             commit_raw_bytes(conn_id, 0);
             return;
         }
@@ -218,8 +288,9 @@ void FixGatewaySeqThread::on_raw_socket_message(const pubsub_itc_fw::EventMessag
                    conn_id.get_value());
     }
 
-    session.parser.feed(data, available);
-    commit_raw_bytes(conn_id, static_cast<int64_t>(available));
+    session.parser.feed(new_bytes_ptr, new_bytes_len);
+    commit_raw_bytes(conn_id, static_cast<int64_t>(new_bytes_len));
+    session.absolute_bytes_committed_ += new_bytes_len;
 }
 
 void FixGatewaySeqThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message)

@@ -106,6 +106,47 @@ struct FixSession {
      */
     int exec_id_counter{1};
 
+    // ----------------------------------------------------------------
+    // Raw-bytes commit bookkeeping
+    // ----------------------------------------------------------------
+    //
+    // Each on_raw_socket_message event carries:
+    //   - payload() and payload_size() -- the bytes currently visible in
+    //     the MirroredBuffer, starting at the tail_position recorded at
+    //     enqueue time. payload_size() is CUMULATIVE: if the reactor reads
+    //     more data before a previous commit_raw_bytes has been processed,
+    //     the next event reports a larger size that INCLUDES the bytes
+    //     already handed to the application.
+    //   - tail_position() -- the MirroredBuffer tail at enqueue time.
+    //
+    // The receiver must consume and commit only the bytes that have not yet
+    // been seen. A naive "compare tail_position to last_seen_tail" approach
+    // is NOT sufficient, because the tail can advance partially (one of our
+    // earlier commits has landed but the next one hasn't) while we have
+    // already fed bytes past the new tail to the parser.
+    //
+    // The correct invariant is in absolute byte-stream offsets:
+    //
+    //   absolute_head_seen_      = max(event_tail_position + event_payload_size)
+    //                              across all events seen
+    //   absolute_bytes_committed_ = sum of all bytes asked to commit
+    //
+    // On each event:
+    //   1. Update absolute_head_seen_ from the event.
+    //   2. The bytes to consume = absolute_head_seen_ - absolute_bytes_committed_.
+    //   3. They live at offset (absolute_bytes_committed_ - event_tail_position)
+    //      within the visible window starting at message.payload().
+    //   4. Feed those bytes to the parser and commit them. Update
+    //      absolute_bytes_committed_.
+    //
+    // For the bursts this gateway sees (single fix8 client, max ~64 KB of
+    // unacknowledged FIX text), these counters do not overflow and the
+    // MirroredBuffer never wraps in the absolute byte-offset sense, so this
+    // simple linear math works. If wrap-around becomes possible in future,
+    // the trackers need a modulo-aware comparison.
+    int64_t absolute_head_seen_{0};
+    int64_t absolute_bytes_committed_{0};
+
     /**
      * @brief Returns the timer name used for this session's logon timeout.
      *

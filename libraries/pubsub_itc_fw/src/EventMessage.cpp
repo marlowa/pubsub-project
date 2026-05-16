@@ -7,6 +7,7 @@
 
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/EventType.hpp>
+#include <pubsub_itc_fw/MirroredBuffer.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/TimerID.hpp>
@@ -52,11 +53,13 @@ EventMessage EventMessage::create_itc_message(ThreadID originating_thread_id,
 EventMessage EventMessage::create_raw_socket_message(ConnectionID connection_id,
                                                       const uint8_t* data,
                                                       int size,
-                                                      int64_t tail_position)
+                                                      int64_t tail_position,
+                                                      std::shared_ptr<MirroredBuffer> buffer_owner)
 {
     EventMessage msg(EventType(EventType::RawSocketCommunication), data, size);
     msg.header_.connection_id  = connection_id;
     msg.header_.tail_position  = tail_position;
+    msg.raw_buffer_owner_      = std::move(buffer_owner);
     return msg;
 }
 

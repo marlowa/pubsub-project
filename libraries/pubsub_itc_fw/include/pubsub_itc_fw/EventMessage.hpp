@@ -3,6 +3,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <memory>
 #include <string>
 
 #include <pubsub_itc_fw/ConnectionID.hpp>
@@ -11,6 +12,8 @@
 #include <pubsub_itc_fw/TimerID.hpp>
 
 namespace pubsub_itc_fw {
+
+class MirroredBuffer;
 
 /** @ingroup messaging_subsystem */
 
@@ -64,6 +67,10 @@ class EventMessage {
     int16_t pdu_id_{-1};
     int64_t seq_no_{0};
     int slab_id_{-1}; ///< Slab ID for FrameworkPdu messages. -1 means not slab-allocated.
+    // Keeps the MirroredBuffer alive for RawSocketCommunication events so that
+    // payload_ remains a valid pointer even if the originating connection's
+    // handler has been destroyed. Empty (nullptr) for every other event type.
+    std::shared_ptr<MirroredBuffer> raw_buffer_owner_;
 
     /**
      * @brief Private constructor to enforce use of static factory methods.
@@ -175,13 +182,28 @@ class EventMessage {
      * deliveries, without relying on the fragile available < last_available_
      * heuristic.
      *
+     * The buffer_owner parameter extends the lifetime of the MirroredBuffer
+     * beyond the lifetime of its owning RawBytesProtocolHandler. Each event
+     * holds a shared_ptr to the buffer it points into; the buffer is only
+     * destroyed once the handler AND every event that references it have all
+     * been destroyed. This prevents a dangling-pointer crash that would
+     * otherwise occur when the reactor tears down a connection (and its
+     * handler/buffer) while events for that connection are still in the
+     * application thread's queue.
+     *
      * @param[in] connection_id  The connection on which the data was received.
      * @param[in] data           Raw pointer to the socket data.
      * @param[in] size           Size of the data in bytes.
      * @param[in] tail_position  MirroredBuffer tail at enqueue time.
+     * @param[in] buffer_owner   Shared owner of the MirroredBuffer that `data`
+     *                           points into. Must not be nullptr.
      * @return EventMessage instance.
      */
-    [[nodiscard]] static EventMessage create_raw_socket_message(ConnectionID connection_id, const uint8_t* data, int size, int64_t tail_position);
+    [[nodiscard]] static EventMessage create_raw_socket_message(ConnectionID connection_id,
+                                                                const uint8_t* data,
+                                                                int size,
+                                                                int64_t tail_position,
+                                                                std::shared_ptr<MirroredBuffer> buffer_owner);
 
     /**
      * @brief Factory method for framework PDU messages.

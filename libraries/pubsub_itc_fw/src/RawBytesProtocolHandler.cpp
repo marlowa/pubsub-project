@@ -30,19 +30,19 @@ RawBytesProtocolHandler::RawBytesProtocolHandler(ConnectionID connection_id,
     : connection_id_(connection_id)
     , socket_(socket)
     , target_thread_(target_thread)
-    , buffer_(buffer_capacity)
+    , buffer_(std::make_shared<MirroredBuffer>(buffer_capacity))
 {
 }
 
 std::tuple<bool, std::string> RawBytesProtocolHandler::on_data_ready()
 {
-    const int64_t space = buffer_.space_remaining();
+    const int64_t space = buffer_->space_remaining();
     if (space == 0) {
         return {false, "RawBytesProtocolHandler::on_data_ready: buffer full, application is not consuming fast enough"};
     }
 
     const ssize_t bytes_read = ::recv(socket_.get_file_descriptor(),
-                                      buffer_.write_ptr(),
+                                      buffer_->write_ptr(),
                                       static_cast<size_t>(space),
                                       MSG_DONTWAIT);
 
@@ -58,19 +58,23 @@ std::tuple<bool, std::string> RawBytesProtocolHandler::on_data_ready()
                                    StringUtils::get_errno_string())};
     }
 
-    buffer_.advance_head(bytes_read);
+    buffer_->advance_head(bytes_read);
 
+    // Pass a shared_ptr copy of the buffer into the event so the buffer
+    // outlives this handler if the connection is torn down while events for
+    // it are still in the application thread's queue.
     target_thread_.get_queue().enqueue(
         EventMessage::create_raw_socket_message(connection_id_,
-                                                buffer_.read_ptr(),
-                                                static_cast<int>(buffer_.bytes_available()),
-                                                buffer_.tail()));
+                                                buffer_->read_ptr(),
+                                                static_cast<int>(buffer_->bytes_available()),
+                                                buffer_->tail(),
+                                                buffer_));
     return {true, ""};
 }
 
 void RawBytesProtocolHandler::commit_bytes(int64_t bytes)
 {
-    buffer_.advance_tail(bytes);
+    buffer_->advance_tail(bytes);
 }
 
 std::tuple<bool, std::string> RawBytesProtocolHandler::send_prebuilt(ExpandableSlabAllocator* allocator,

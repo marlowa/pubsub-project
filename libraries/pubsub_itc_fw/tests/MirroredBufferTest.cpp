@@ -13,6 +13,8 @@
 
 #include <gtest/gtest.h>
 
+#include <pubsub_itc_fw/ConnectionID.hpp>
+#include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/MirroredBuffer.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
@@ -415,6 +417,85 @@ TEST_F(MirroredBufferTest, SideChannelVisibilityFailure) {
     consumer.join();
 
     EXPECT_FALSE(failed.load()) << "CAUGHT: The Side-Channel informed us of data that head_ doesn't show yet!";
+}
+
+/*
+ * Regression test for the dangling-pointer bug discovered when running the
+ * sample_fix_gateway_seq under a 1000-NewOrderSingle burst from fix8.
+ *
+ * Background: RawBytesProtocolHandler enqueues RawSocketCommunication events
+ * to an ApplicationThread queue. Each event carries a pointer into the
+ * handler's owned MirroredBuffer. Under burst load the handler can be
+ * destroyed (buffer-full backpressure -> teardown_connection) BEFORE the
+ * application thread has drained the events for that connection. With the
+ * buffer held as a value member of the handler, its mmap region was
+ * unmapped on handler destruction and the queued events' payload pointers
+ * dangled, producing an ASan SEGV when the application thread later read
+ * from them via string::append in FixParser::feed.
+ *
+ * The fix:
+ *   - RawBytesProtocolHandler now holds std::shared_ptr<MirroredBuffer>.
+ *   - EventMessage::create_raw_socket_message takes a 5th parameter, a
+ *     shared_ptr<MirroredBuffer> that is stored inside the event. Each
+ *     event therefore extends the buffer's lifetime; the buffer is freed
+ *     only when both the handler AND every queued event referencing it
+ *     have been destroyed.
+ *
+ * This test reproduces the lifetime extension at the unit level: we
+ * construct a shared MirroredBuffer, build a RawSocketCommunication
+ * EventMessage from it, drop our own shared_ptr to the buffer, and verify
+ * that the buffer is still alive (because the EventMessage now holds
+ * the sole remaining reference). Reading via event.payload() must remain
+ * safe. Before the fix, this would crash under ASan.
+ *
+ * The test does not exercise threading or the queue. The framework-level
+ * scenario is tested end-to-end by running the sample_fix_gateway_seq
+ * under fix8's T command; this unit test pins down the invariant that
+ * makes that scenario work.
+ */
+TEST_F(MirroredBufferTest, EventMessageHoldsSharedOwnershipOfMirroredBuffer) {
+    auto buffer = std::make_shared<MirroredBuffer>(test_capacity);
+
+    // Write a recognisable marker into the buffer.
+    const std::string marker = "the-marker-must-survive";
+    const auto len = static_cast<int64_t>(marker.size());
+    std::memcpy(buffer->write_ptr(), marker.data(), static_cast<size_t>(len));
+    buffer->advance_head(len);
+
+    ASSERT_EQ(buffer.use_count(), 1L);
+
+    // Build a RawSocketCommunication event that points into the buffer and
+    // shares ownership of it. This is what RawBytesProtocolHandler::on_data_ready
+    // does in production.
+    EventMessage event = EventMessage::create_raw_socket_message(
+        ConnectionID{},
+        buffer->read_ptr(),
+        static_cast<int>(buffer->bytes_available()),
+        buffer->tail(),
+        buffer);
+
+    EXPECT_EQ(buffer.use_count(), 2L)
+        << "EventMessage must hold a second reference to the buffer";
+
+    // Capture the payload pointer for after-drop comparison.
+    const uint8_t* payload_before_drop = event.payload();
+    ASSERT_NE(payload_before_drop, nullptr);
+
+    // Drop the local shared_ptr. If the EventMessage didn't share ownership,
+    // the buffer would be destroyed here, the mmap region unmapped, and the
+    // following memcmp would crash (or read junk under ASan).
+    buffer.reset();
+
+    // The event still holds the sole reference; the buffer must still be
+    // mapped and the marker bytes must still be readable.
+    EXPECT_EQ(std::memcmp(event.payload(), marker.data(), marker.size()), 0)
+        << "Buffer was destroyed too early; the EventMessage's shared_ptr "
+        << "did not keep it alive.";
+    EXPECT_EQ(event.payload(), payload_before_drop)
+        << "Payload pointer must remain stable for the lifetime of the event.";
+
+    // The event going out of scope at the end of the test will release the
+    // last reference, and the buffer will be destroyed cleanly.
 }
 
 } // namespace pubsub_itc_fw

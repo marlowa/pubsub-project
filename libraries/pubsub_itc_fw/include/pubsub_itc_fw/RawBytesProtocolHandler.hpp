@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <tuple>
 
@@ -74,7 +75,11 @@ namespace pubsub_itc_fw {
  *   CommitRawBytes command, so it is also reactor-thread only.
  *
  * Ownership:
- *   Owns the MirroredBuffer. Does not own the TcpSocket or ApplicationThread.
+ *   Holds the MirroredBuffer via shared_ptr so that enqueued
+ *   RawSocketCommunication EventMessages can each share ownership too. This
+ *   prevents the buffer from being unmapped while events that reference it
+ *   are still pending in the application thread's queue. Does not own the
+ *   TcpSocket or ApplicationThread.
  */
 class RawBytesProtocolHandler : public ProtocolHandlerInterface {
   public:
@@ -186,7 +191,15 @@ class RawBytesProtocolHandler : public ProtocolHandlerInterface {
     TcpSocket& socket_;
     ApplicationThread& target_thread_;
 
-    MirroredBuffer buffer_;
+    // The MirroredBuffer is held as a shared_ptr (not a value member) so that
+    // each enqueued RawSocketCommunication EventMessage can also hold a
+    // shared_ptr to it. This extends the buffer's lifetime past the lifetime
+    // of this handler in the case where the reactor tears down the connection
+    // (e.g. buffer-full backpressure) while events for that connection are
+    // still queued for the application thread. Without this, the buffer's
+    // mmap region would be unmapped and the events' payload pointers would
+    // dangle, causing a SEGV when the application thread reads from them.
+    std::shared_ptr<MirroredBuffer> buffer_;
 
     // Outbound send state. While a send is in flight, active_frame_ptr_ points
     // into the caller's slab chunk (held alive by current_chunk_ptr_), frame_size_
