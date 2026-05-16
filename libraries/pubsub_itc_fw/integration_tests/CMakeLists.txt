@@ -10,9 +10,10 @@ message(STATUS "Building integration tests for pubsub_itc_fw")
 add_executable(pubsub_itc_fw_integration_tests
     PduBurstIntegrationTest.cpp
     PduProtocolHandlerIntegrationTest.cpp
+    RawBytesBackPressureIntegrationTest.cpp
+    RawBytesProtocolHandlerIntegrationTest.cpp
     StatusQueryResponseTest.cpp
     VariableLengthPduTest.cpp
-    RawBytesProtocolHandlerIntegrationTest.cpp
 )
 
 add_dependencies(pubsub_itc_fw_integration_tests
