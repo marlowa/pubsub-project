@@ -58,7 +58,7 @@ since the backend thread MUST be core pinned we should add the core number to th
 
 namespace {
 
-constexpr char const* log_pattern = "%(time) [%(process_id)] %(short_source_location:<28) %(log_level:<10) %(logger:<16) %(message)";
+constexpr char const* log_pattern = "%(time) [%(thread_id)] %(thread_name:<24) %(short_source_location:<28) %(log_level:<10) %(logger:<16) %(message)";
 constexpr char const* time_format = "%Y-%m-%d %H:%M:%S.%Qns";
 
 std::once_flag backend_started;
@@ -67,6 +67,14 @@ void ensure_backend_started() {
     std::call_once(backend_started, []() {
         quill::Backend::start(quill::BackendOptions{});
     });
+}
+
+quill::PatternFormatterOptions make_pattern_formatter_options() {
+    quill::PatternFormatterOptions options;
+    options.format_pattern = log_pattern;
+    options.timestamp_pattern = time_format;
+    options.timestamp_timezone = quill::Timezone::LocalTime;
+    return options;
 }
 
 /*
@@ -189,10 +197,7 @@ QuillLogger::QuillLogger(const std::string& file_path,
         applog_sink_ = quill::Frontend::create_or_get_sink<quill::FileSink>(file_path, file_config, quill::FileEventNotifier{});
     }
 
-    quill::PatternFormatterOptions formatter_options;
-    formatter_options.format_pattern = log_pattern;
-    formatter_options.timestamp_pattern = time_format;
-    formatter_options.timestamp_timezone = quill::Timezone::LocalTime;
+    quill::PatternFormatterOptions formatter_options = make_pattern_formatter_options();
 
     quill::SyslogSinkConfig syslog_config;
     syslog_config.set_identifier("pubsub_app");
@@ -234,7 +239,7 @@ QuillLogger::QuillLogger(FwLogLevel applog_level, LogCallback callback)
     }
 
     quill_logger_ = quill::Frontend::create_or_get_logger(
-        generate_unique_logger_name("pubsub_test"), sinks);
+        generate_unique_logger_name("pubsub_test"), sinks, make_pattern_formatter_options());
     quill_logger_->set_log_level(LoggerUtils::to_quill_log_level(applog_level));
     quill_logger_->set_immediate_flush();
 }
