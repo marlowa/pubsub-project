@@ -16,7 +16,6 @@ add_executable(pubsub_itc_fw_tests
     ReactorTest.cpp
     ServiceRegistryTest.cpp
     SlabAllocatorTest.cpp
-    SlabAllocatorAdversarialTest.cpp
     StringUtilsTest.cpp
     TcpAcceptorTest.cpp
     TcpSocketTest.cpp

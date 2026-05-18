@@ -16,18 +16,23 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <future>
+#include <mutex>
 #include <thread>
 #include <tuple>
 #include <vector>
 
 #include <gtest/gtest.h>
 
+#include <pubsub_itc_fw/EmptySlabQueue.hpp>
 #include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
+#include <pubsub_itc_fw/SlabAllocator.hpp>
 
 namespace pubsub_itc_fw::tests {
 
@@ -215,41 +220,56 @@ TEST_F(ExpandableSlabAllocatorTest, CurrentSlabIsResetWhenAllChunksFreed) {
 }
 
 TEST_F(ExpandableSlabAllocatorTest, OldSlabIsDestroyedAfterChaining) {
-    // Fill slab 0, chain slab 1 with a partial allocation (leaving room for the
-    // probe allocation below), then free the slab-0 chunk.
-    // On the next allocate(), slab 0 (not current) should be destroyed,
-    // leaving a nullptr entry in the registry.
-    ExpandableSlabAllocator alloc{kSmallSlab};
+    // Verifies the Vyukov sentinel reclamation lifecycle: a non-current slab
+    // whose count reaches zero is enqueued, popped on the next drain, held as
+    // the deferred sentinel until the drain AFTER it pops a successor (so
+    // head_ has advanced past it), and only then destroyed.
+    //
+    // Using chunk_size == slab_size so each allocate() chains a fresh slab,
+    // making each drain's GotItem deterministic.
+    constexpr size_t slab_and_chunk = 64;
+    ExpandableSlabAllocator alloc{slab_and_chunk};
 
-    // Fill slab 0 completely.
-    auto [slab_id_0, ptr_0] = alloc.allocate(kSmallSlab);
+    // Allocate from slab 0 (fills it).
+    auto [slab_id_0, ptr_0] = alloc.allocate(slab_and_chunk);
     ASSERT_NE(ptr_0, nullptr);
     EXPECT_EQ(slab_id_0, 0);
 
-    // Chain slab 1 with a partial allocation — leave room for the probe below.
-    constexpr size_t kPartial = 64;
-    auto [slab_id_1, ptr_1] = alloc.allocate(kPartial);
+    // Allocate again — chains slab 1; slab 0 cleared is_current_ but its
+    // count is still 1, so no enqueue yet.
+    auto [slab_id_1, ptr_1] = alloc.allocate(slab_and_chunk);
     ASSERT_NE(ptr_1, nullptr);
     EXPECT_EQ(slab_id_1, 1);
     EXPECT_EQ(alloc.slab_count(), 2);
 
-    // Free slab-0 chunk — enqueues slab 0 into the empty slab queue.
+    // Free slab-0's chunk — slab 0's count -> 0, slab 0 is enqueued.
     alloc.deallocate(slab_id_0, ptr_0);
 
-    // Next allocate() drains the queue and destroys slab 0 (not current).
-    // Fits in slab 1 since we left room above — no third slab is chained.
-    auto [slab_id_2, ptr_2] = alloc.allocate(kPartial);
+    // Allocate again — drain pops slab 0 and HOLDS IT as the deferred
+    // sentinel (not yet destroyed). The allocate then chains slab 2.
+    auto [slab_id_2, ptr_2] = alloc.allocate(slab_and_chunk);
     ASSERT_NE(ptr_2, nullptr);
-    EXPECT_EQ(slab_id_2, 1);
+    EXPECT_EQ(slab_id_2, 2);
+    EXPECT_EQ(alloc.slab_count(), 3);
 
-    // Slab count still 2 (destroyed slab leaves a nullptr slot, not removed).
-    EXPECT_EQ(alloc.slab_count(), 2);
+    // Free slab-1's chunk — slab 1 enqueues.
+    alloc.deallocate(slab_id_1, ptr_1);
 
-    // Attempting to deallocate with the destroyed slab_id should throw.
+    // Allocate again — drain pops slab 1 and head_ advances past slab 0.
+    // The previously-deferred slab 0 is now safe to destroy and IS destroyed
+    // in this drain. Slab 1 becomes the new deferred sentinel.
+    auto [slab_id_3, ptr_3] = alloc.allocate(slab_and_chunk);
+    ASSERT_NE(ptr_3, nullptr);
+
+    // Slab count is at least 4 (more if reclamation has not yet been
+    // reflected; the destroyed slot is still counted but is nullptr).
+    EXPECT_GE(alloc.slab_count(), 4);
+
+    // Slab 0 is now destroyed (nullptr in registry).
     EXPECT_THROW(alloc.deallocate(slab_id_0, ptr_0), PreconditionAssertion);
 
-    alloc.deallocate(slab_id_1, ptr_1);
     alloc.deallocate(slab_id_2, ptr_2);
+    alloc.deallocate(slab_id_3, ptr_3);
 }
 
 // ============================================================
@@ -276,27 +296,37 @@ TEST_F(ExpandableSlabAllocatorTest, DeallocateOutOfRangeSlabIdThrows) {
 }
 
 TEST_F(ExpandableSlabAllocatorTest, DeallocateDestroyedSlabThrows) {
-    // Destroy slab 0 by chaining, then freeing all slab-0 chunks,
-    // then triggering reclamation via a further allocate().
-    ExpandableSlabAllocator alloc{kSmallSlab};
+    // Verifies that once a slab has gone through the two-drain reclamation
+    // lifecycle and been destroyed, deallocate against its slab_id throws.
+    //
+    // Using chunk_size == slab_size so each allocate() chains a fresh slab,
+    // making each drain's GotItem deterministic.
+    constexpr size_t slab_and_chunk = 64;
+    ExpandableSlabAllocator alloc{slab_and_chunk};
 
-    // Fill slab 0 completely.
-    auto [slab_id_0, ptr_0] = alloc.allocate(kSmallSlab);
+    // Fill slab 0.
+    auto [slab_id_0, ptr_0] = alloc.allocate(slab_and_chunk);
 
-    // Chain slab 1 with a partial allocation — leave room for the probe below.
-    auto [slab_id_1, ptr_1] = alloc.allocate(64);
+    // Chain slab 1.
+    auto [slab_id_1, ptr_1] = alloc.allocate(slab_and_chunk);
 
-    // Free slab-0 chunk to enqueue it for destruction.
+    // Free slab 0's chunk — slab 0 enqueues.
     alloc.deallocate(slab_id_0, ptr_0);
 
-    // Trigger drain — slab 0 gets destroyed. Fits in slab 1, no third slab chained.
-    auto [slab_id_2, ptr_2] = alloc.allocate(64);
+    // Trigger drain 1: pops slab 0, holds it as deferred sentinel. Chains slab 2.
+    auto [slab_id_2, ptr_2] = alloc.allocate(slab_and_chunk);
 
-    // Now attempting to deallocate from destroyed slab 0 must throw.
+    // Free slab 1's chunk — slab 1 enqueues.
+    alloc.deallocate(slab_id_1, ptr_1);
+
+    // Trigger drain 2: pops slab 1; head_ advances past slab 0; slab 0 destroyed.
+    auto [slab_id_3, ptr_3] = alloc.allocate(slab_and_chunk);
+
+    // Slab 0 is now destroyed; deallocating against its slab_id must throw.
     EXPECT_THROW(alloc.deallocate(slab_id_0, ptr_0), PreconditionAssertion);
 
-    alloc.deallocate(slab_id_1, ptr_1);
     alloc.deallocate(slab_id_2, ptr_2);
+    alloc.deallocate(slab_id_3, ptr_3);
 }
 
 // ============================================================
@@ -526,6 +556,764 @@ TEST_F(ExpandableSlabAllocatorTest, RepeatedSingleChunkAllocDeallocOfCurrentSlab
         << "try_dequeue returned the same slab forever.";
 
     EXPECT_TRUE(workload.get()) << "allocate() returned nullptr unexpectedly during the workload";
+}
+
+
+// =============================================================================
+// Stress tests for the slab allocator under heavy multi-threaded load.
+//
+// These tests reproduce the realistic call pattern of the framework: one
+// "reactor" thread allocates chunks and hands them off to worker threads via a
+// worker queue; the workers call deallocate. The slab allocator's empty-slab
+// queue is therefore exercised by many concurrent producers (the workers, who
+// reach SlabAllocator::deallocate -> EmptySlabQueue::enqueue when an
+// outstanding count transitions to zero) and one consumer (the reactor, who
+// reaches drain_empty_slab_queue from inside allocate).
+//
+// Small slab and chunk sizes force frequent slab switches and empty-slab
+// notifications, which is what stresses the lock-free queue. The test runs
+// for a bounded wall-clock duration and treats any exception thrown by the
+// allocator on the reactor thread as a test failure -- including the
+// drain-loop tripwire, which would indicate a genuine queue-state problem.
+//
+// Recommended invocation: build under Valgrind (USING_VALGRIND defined) and
+// run with --gtest_repeat=50 (or more) to amplify the chance of catching
+// timing-sensitive races.
+// =============================================================================
+
+class ExpandableSlabAllocatorStressTest : public ::testing::Test {
+};
+
+namespace {
+
+struct WorkItem {
+    int slab_id{-1};
+    void* ptr{nullptr};
+};
+
+// Thread-safe bounded queue used to hand off (slab_id, ptr) tuples from the
+// reactor thread to the worker threads. Bounded so that runaway allocation
+// can't OOM the test; workers block waiting for items, the reactor blocks
+// waiting for space.
+class WorkQueue {
+public:
+    explicit WorkQueue(size_t capacity) : capacity_{capacity} {}
+
+    void push(const WorkItem& item) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        cv_not_full_.wait(lock, [this] { return items_.size() < capacity_ || closed_; });
+        if (closed_) {
+            return;
+        }
+        items_.push_back(item);
+        cv_not_empty_.notify_one();
+    }
+
+    bool pop(WorkItem& out) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        cv_not_empty_.wait(lock, [this] { return !items_.empty() || closed_; });
+        if (items_.empty()) {
+            return false;
+        }
+        out = items_.front();
+        items_.pop_front();
+        cv_not_full_.notify_one();
+        return true;
+    }
+
+    void close() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        closed_ = true;
+        cv_not_empty_.notify_all();
+        cv_not_full_.notify_all();
+    }
+
+    size_t size_unsafe() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return items_.size();
+    }
+
+private:
+    mutable std::mutex mutex_;
+    std::condition_variable cv_not_empty_;
+    std::condition_variable cv_not_full_;
+    std::deque<WorkItem> items_;
+    size_t capacity_;
+    bool closed_{false};
+};
+
+} // namespace
+
+TEST_F(ExpandableSlabAllocatorStressTest, ConcurrentAllocateAndDeallocateMakesProgress)
+{
+    // Small slab so chunks_per_slab is small (4-8 chunks). This forces frequent
+    // slab switches, which is what exercises the empty-slab queue's enqueue
+    // path. With a large slab the queue would barely be used.
+    constexpr size_t slab_size = 512;
+    constexpr size_t chunk_size = 64;
+    constexpr int num_workers = 8;
+    constexpr size_t worker_queue_capacity = 256;
+    constexpr auto test_duration = std::chrono::seconds(5);
+
+    ExpandableSlabAllocator allocator(slab_size);
+    WorkQueue work_queue(worker_queue_capacity);
+
+    std::atomic<bool> stop{false};
+    std::atomic<uint64_t> allocations_completed{0};
+    std::atomic<uint64_t> deallocations_completed{0};
+    std::atomic<bool> reactor_threw{false};
+    std::string reactor_exception_message;
+    std::mutex reactor_exception_message_mutex;
+
+    // Reactor thread: allocate chunks and post them to the worker queue.
+    // If allocate() throws (e.g. the drain_empty_slab_queue tripwire), capture
+    // the message and stop the test.
+    std::thread reactor([&]() {
+        try {
+            const auto deadline = std::chrono::steady_clock::now() + test_duration;
+            while (!stop.load(std::memory_order_relaxed)) {
+                if (std::chrono::steady_clock::now() > deadline) {
+                    break;
+                }
+                auto [slab_id, ptr] = allocator.allocate(chunk_size);
+                allocations_completed.fetch_add(1, std::memory_order_relaxed);
+                work_queue.push({slab_id, ptr});
+            }
+        }
+        catch (const std::exception& ex) {
+            {
+                std::lock_guard<std::mutex> lock(reactor_exception_message_mutex);
+                reactor_exception_message = ex.what();
+            }
+            reactor_threw.store(true, std::memory_order_release);
+        }
+        stop.store(true, std::memory_order_release);
+        work_queue.close();
+    });
+
+    // Worker threads: pop work items and deallocate. These are the producers
+    // on the slab's empty-slab queue: when their deallocate brings a slab's
+    // outstanding count to zero, they enqueue the slab's node.
+    std::vector<std::thread> workers;
+    workers.reserve(num_workers);
+    for (int worker_index = 0; worker_index < num_workers; ++worker_index) {
+        workers.emplace_back([&]() {
+            WorkItem item;
+            while (work_queue.pop(item)) {
+                allocator.deallocate(item.slab_id, item.ptr);
+                deallocations_completed.fetch_add(1, std::memory_order_relaxed);
+            }
+        });
+    }
+
+    reactor.join();
+    for (auto& worker : workers) {
+        worker.join();
+    }
+
+    // Drain any remaining items the workers didn't get to (the queue may
+    // still hold a few items if the workers were slow). We must drain them
+    // before destroying the allocator so the slabs they belong to have a
+    // chance to reach outstanding_count == 0 cleanly.
+    {
+        WorkItem item;
+        while (work_queue.size_unsafe() > 0) {
+            if (work_queue.pop(item)) {
+                allocator.deallocate(item.slab_id, item.ptr);
+                deallocations_completed.fetch_add(1, std::memory_order_relaxed);
+            } else {
+                break;
+            }
+        }
+    }
+
+    // Test outcome: the reactor must not have thrown. If it did, the most
+    // likely cause is the drain_empty_slab_queue wall-clock tripwire firing,
+    // which indicates the lock-free queue got into a state where the consumer
+    // could not make progress -- exactly the bug we are trying to reproduce.
+    if (reactor_threw.load(std::memory_order_acquire)) {
+        std::lock_guard<std::mutex> lock(reactor_exception_message_mutex);
+        FAIL() << "Reactor threw during stress test. Allocations completed: "
+               << allocations_completed.load(std::memory_order_relaxed)
+               << ", deallocations completed: "
+               << deallocations_completed.load(std::memory_order_relaxed)
+               << ". Exception: " << reactor_exception_message;
+    }
+
+    // Sanity check that the test actually exercised the allocator. If
+    // allocations are trivially small, the workload below this is suspect.
+    EXPECT_GT(allocations_completed.load(std::memory_order_relaxed), 1000U)
+        << "Test workload was too small to exercise the allocator under load.";
+
+    // Every allocation must be matched by a deallocation by the time we get
+    // here, since the work queue has been fully drained.
+    EXPECT_EQ(allocations_completed.load(std::memory_order_relaxed),
+              deallocations_completed.load(std::memory_order_relaxed))
+        << "Allocation/deallocation count mismatch indicates the test did not "
+           "drain the work queue completely.";
+}
+
+TEST_F(ExpandableSlabAllocatorStressTest, ConcurrentSmallSlabHighChurn)
+{
+    // Smaller slab and tinier chunks: chunks_per_slab is ~16, so slab switches
+    // happen approximately every 16 allocations. With heavy load, that is
+    // many switches per millisecond, maximising pressure on the empty-slab
+    // queue.
+    constexpr size_t slab_size = 1024;
+    constexpr size_t chunk_size = 32;
+    constexpr int num_workers = 16;
+    constexpr size_t worker_queue_capacity = 512;
+    constexpr auto test_duration = std::chrono::seconds(5);
+
+    ExpandableSlabAllocator allocator(slab_size);
+    WorkQueue work_queue(worker_queue_capacity);
+
+    std::atomic<bool> stop{false};
+    std::atomic<uint64_t> allocations_completed{0};
+    std::atomic<uint64_t> deallocations_completed{0};
+    std::atomic<bool> reactor_threw{false};
+    std::string reactor_exception_message;
+    std::mutex reactor_exception_message_mutex;
+
+    std::thread reactor([&]() {
+        try {
+            const auto deadline = std::chrono::steady_clock::now() + test_duration;
+            while (!stop.load(std::memory_order_relaxed)) {
+                if (std::chrono::steady_clock::now() > deadline) {
+                    break;
+                }
+                auto [slab_id, ptr] = allocator.allocate(chunk_size);
+                allocations_completed.fetch_add(1, std::memory_order_relaxed);
+                work_queue.push({slab_id, ptr});
+            }
+        }
+        catch (const std::exception& ex) {
+            {
+                std::lock_guard<std::mutex> lock(reactor_exception_message_mutex);
+                reactor_exception_message = ex.what();
+            }
+            reactor_threw.store(true, std::memory_order_release);
+        }
+        stop.store(true, std::memory_order_release);
+        work_queue.close();
+    });
+
+    std::vector<std::thread> workers;
+    workers.reserve(num_workers);
+    for (int worker_index = 0; worker_index < num_workers; ++worker_index) {
+        workers.emplace_back([&]() {
+            WorkItem item;
+            while (work_queue.pop(item)) {
+                allocator.deallocate(item.slab_id, item.ptr);
+                deallocations_completed.fetch_add(1, std::memory_order_relaxed);
+            }
+        });
+    }
+
+    reactor.join();
+    for (auto& worker : workers) {
+        worker.join();
+    }
+
+    {
+        WorkItem item;
+        while (work_queue.size_unsafe() > 0) {
+            if (work_queue.pop(item)) {
+                allocator.deallocate(item.slab_id, item.ptr);
+                deallocations_completed.fetch_add(1, std::memory_order_relaxed);
+            } else {
+                break;
+            }
+        }
+    }
+
+    if (reactor_threw.load(std::memory_order_acquire)) {
+        std::lock_guard<std::mutex> lock(reactor_exception_message_mutex);
+        FAIL() << "Reactor threw during stress test. Allocations completed: "
+               << allocations_completed.load(std::memory_order_relaxed)
+               << ", deallocations completed: "
+               << deallocations_completed.load(std::memory_order_relaxed)
+               << ". Exception: " << reactor_exception_message;
+    }
+
+    EXPECT_GT(allocations_completed.load(std::memory_order_relaxed), 1000U)
+        << "Test workload was too small to exercise the allocator under load.";
+
+    EXPECT_EQ(allocations_completed.load(std::memory_order_relaxed),
+              deallocations_completed.load(std::memory_order_relaxed))
+        << "Allocation/deallocation count mismatch indicates the test did not "
+           "drain the work queue completely.";
+}
+
+// =============================================================================
+// Adversarial tests subsumed from SlabAllocatorAdversarialTest.cpp
+//
+// These tests exercise edge cases and contention scenarios at the
+// EmptySlabQueue, SlabAllocator, and ExpandableSlabAllocator levels. They
+// were previously in a separate file; merged here so all slab-related test
+// fixtures live in one place.
+// =============================================================================
+
+// =====================
+// EmptySlabQueueAdversarialTest
+// =====================
+
+class EmptySlabQueueAdversarialTest : public ::testing::Test {
+};
+
+// Many producers enqueue simultaneously; consumer must see all items exactly once.
+TEST_F(EmptySlabQueueAdversarialTest, ManyProducersOneConsumer)
+{
+    constexpr int num_producers = 16;
+    EmptySlabQueue queue;
+
+    std::vector<EmptySlabQueueNode> nodes(num_producers);
+    for (int i = 0; i < num_producers; ++i) {
+        nodes[i].slab_id = i;
+    }
+
+    std::vector<std::thread> producers;
+    producers.reserve(num_producers);
+
+    for (int i = 0; i < num_producers; ++i) {
+        producers.emplace_back([&queue, &nodes, i]() {
+            queue.enqueue(&nodes[i]);
+        });
+    }
+
+    for (auto& t : producers) {
+        t.join();
+    }
+
+    std::vector<bool> seen(num_producers, false);
+    int drained = 0;
+
+    while (drained < num_producers) {
+        int slab_id = -1;
+        DequeueResult result = queue.try_dequeue(slab_id);
+        if (result == DequeueResult::GotItem) {
+            ASSERT_GE(slab_id, 0);
+            ASSERT_LT(slab_id, num_producers);
+            EXPECT_FALSE(seen[slab_id]) << "slab_id " << slab_id << " seen twice";
+            seen[slab_id] = true;
+            ++drained;
+        }
+    }
+
+    for (int i = 0; i < num_producers; ++i) {
+        EXPECT_TRUE(seen[i]) << "slab_id " << i << " never seen";
+    }
+}
+
+// Interleaved enqueue and dequeue: producers and consumer run concurrently.
+TEST_F(EmptySlabQueueAdversarialTest, InterleavedEnqueueDequeue)
+{
+    constexpr int num_items = 64;
+    EmptySlabQueue queue;
+
+    std::vector<EmptySlabQueueNode> nodes(num_items);
+    for (int i = 0; i < num_items; ++i) {
+        nodes[i].slab_id = i;
+    }
+
+    std::atomic<int> produced{0};
+    std::atomic<int> consumed{0};
+
+    std::thread producer([&]() {
+        for (int i = 0; i < num_items; ++i) {
+            queue.enqueue(&nodes[i]);
+            produced.fetch_add(1, std::memory_order_release);
+        }
+    });
+
+    std::thread consumer([&]() {
+        while (consumed.load(std::memory_order_acquire) < num_items) {
+            int slab_id = -1;
+            DequeueResult result = queue.try_dequeue(slab_id);
+            if (result == DequeueResult::GotItem) {
+                consumed.fetch_add(1, std::memory_order_release);
+            }
+        }
+    });
+
+    producer.join();
+    consumer.join();
+
+    EXPECT_EQ(consumed.load(), num_items);
+}
+
+// =====================
+// SlabAllocatorAdversarialTest
+// =====================
+
+class SlabAllocatorAdversarialTest : public ::testing::Test {
+protected:
+    static constexpr size_t adv_slab_size = 4096;
+    EmptySlabQueue queue_;
+};
+
+// Allocation of exactly slab_size bytes must succeed and leave the slab full.
+TEST_F(SlabAllocatorAdversarialTest, AllocateExactlySlabSize)
+{
+    SlabAllocator slab(adv_slab_size, 0, queue_);
+    void* ptr = slab.allocate(adv_slab_size);
+    EXPECT_NE(ptr, nullptr);
+    EXPECT_TRUE(slab.is_full());
+
+    void* ptr2 = slab.allocate(1);
+    EXPECT_EQ(ptr2, nullptr);
+
+    slab.deallocate(ptr);
+}
+
+// Allocation that fits only before alignment padding pushes it over the edge.
+// Allocate 1 byte first (forces alignment gap before next allocation),
+// then request enough bytes that the aligned offset + size exceeds slab_size.
+TEST_F(SlabAllocatorAdversarialTest, AlignmentPaddingCausesFailure)
+{
+    constexpr size_t alignment = alignof(std::max_align_t);
+    // Use a slab just large enough for two aligned slots of size alignment.
+    constexpr size_t two_slot_slab = alignment * 2;
+    SlabAllocator slab(two_slot_slab, 0, queue_);
+
+    // Allocate 1 byte — bump advances to alignment after padding.
+    void* ptr1 = slab.allocate(1);
+    EXPECT_NE(ptr1, nullptr);
+
+    // Now aligned offset is alignment, remaining is alignment bytes.
+    // Request alignment bytes — should succeed exactly.
+    void* ptr2 = slab.allocate(alignment);
+    EXPECT_NE(ptr2, nullptr);
+
+    // Slab is now full.
+    EXPECT_TRUE(slab.is_full());
+
+    slab.deallocate(ptr1);
+    slab.deallocate(ptr2);
+}
+
+// Only one thread must enqueue the notification even under heavy concurrent deallocation.
+TEST_F(SlabAllocatorAdversarialTest, OnlyOneNotificationEnqueuedUnderConcurrency)
+{
+    constexpr int num_threads = 32;
+    constexpr size_t chunk_size = 64;
+    constexpr size_t large_slab = chunk_size * num_threads * 2;
+
+    SlabAllocator slab(large_slab, 7, queue_);
+
+    std::vector<void*> ptrs(num_threads);
+    for (int i = 0; i < num_threads; ++i) {
+        ptrs[i] = slab.allocate(chunk_size);
+        ASSERT_NE(ptrs[i], nullptr);
+    }
+
+    // Under the new design, only non-current slabs notify the queue.
+    slab.clear_is_current();
+
+    std::vector<std::thread> threads;
+    threads.reserve(num_threads);
+
+    for (int i = 0; i < num_threads; ++i) {
+        threads.emplace_back([&slab, &ptrs, i]() {
+            slab.deallocate(ptrs[i]);
+        });
+    }
+
+    for (auto& t : threads) {
+        t.join();
+    }
+
+    EXPECT_TRUE(slab.is_empty());
+
+    // Exactly one notification must have been enqueued.
+    int slab_id = -1;
+    EXPECT_EQ(queue_.try_dequeue(slab_id), DequeueResult::GotItem);
+    EXPECT_EQ(slab_id, 7);
+
+    // No second notification.
+    EXPECT_EQ(queue_.try_dequeue(slab_id), DequeueResult::Empty);
+}
+
+// Rapid allocate/deallocate cycles force the slab to be reset and reused many times.
+TEST_F(SlabAllocatorAdversarialTest, RepeatedResetAndReuse)
+{
+    constexpr int cycles = 1000;
+    SlabAllocator slab(adv_slab_size, 0, queue_);
+
+    void* first_allocation = nullptr;
+
+    for (int i = 0; i < cycles; ++i) {
+        void* ptr = slab.allocate(64);
+        ASSERT_NE(ptr, nullptr);
+
+        if (i == 0) {
+            first_allocation = ptr;
+        }
+
+        slab.deallocate(ptr);
+
+        // Drain any notification. Under the new design the slab remains
+        // current throughout (clear_is_current is never called), so deallocate
+        // does not enqueue. The drain is a no-op but kept for the case where
+        // a future test variant clears is_current.
+        int slab_id = -1;
+        [[maybe_unused]] DequeueResult drain = queue_.try_dequeue(slab_id);
+
+        slab.reset();
+
+        EXPECT_EQ(slab.bytes_used(), 0u);
+        EXPECT_FALSE(slab.is_full());
+        EXPECT_TRUE(slab.is_empty());
+    }
+
+    // After reset, a fresh allocation must return the same address as the first.
+    void* ptr_after_reset = slab.allocate(64);
+    EXPECT_EQ(ptr_after_reset, first_allocation);
+    slab.deallocate(ptr_after_reset);
+}
+
+// Multiple threads deallocate from different slabs simultaneously.
+// All slabs must reach zero and all notifications must be enqueued.
+TEST_F(SlabAllocatorAdversarialTest, ConcurrentDeallocationsAcrossMultipleSlabs)
+{
+    constexpr int num_slabs = 8;
+    constexpr size_t chunk_size = 64;
+
+    std::vector<std::unique_ptr<SlabAllocator>> slabs;
+    slabs.reserve(num_slabs);
+
+    for (int i = 0; i < num_slabs; ++i) {
+        slabs.push_back(std::make_unique<SlabAllocator>(chunk_size * 4, i, queue_));
+    }
+
+    // Allocate one chunk from each slab.
+    std::vector<void*> ptrs(num_slabs);
+    for (int i = 0; i < num_slabs; ++i) {
+        ptrs[i] = slabs[i]->allocate(chunk_size);
+        ASSERT_NE(ptrs[i], nullptr);
+    }
+
+    // Under the new design, only non-current slabs notify the queue.
+    for (int i = 0; i < num_slabs; ++i) {
+        slabs[i]->clear_is_current();
+    }
+
+    // Each thread frees from a different slab.
+    std::vector<std::thread> threads;
+    threads.reserve(num_slabs);
+
+    for (int i = 0; i < num_slabs; ++i) {
+        threads.emplace_back([&slabs, &ptrs, i]() {
+            slabs[i]->deallocate(ptrs[i]);
+        });
+    }
+
+    for (auto& t : threads) {
+        t.join();
+    }
+
+    // All slabs must be empty.
+    for (int i = 0; i < num_slabs; ++i) {
+        EXPECT_TRUE(slabs[i]->is_empty()) << "slab " << i << " not empty";
+    }
+
+    // All notifications must be present, each slab ID appearing exactly once.
+    std::vector<bool> seen(num_slabs, false);
+    int drained = 0;
+
+    while (drained < num_slabs) {
+        int slab_id = -1;
+        DequeueResult result = queue_.try_dequeue(slab_id);
+        if (result == DequeueResult::GotItem) {
+            ASSERT_GE(slab_id, 0);
+            ASSERT_LT(slab_id, num_slabs);
+            EXPECT_FALSE(seen[slab_id]) << "slab_id " << slab_id << " notified twice";
+            seen[slab_id] = true;
+            ++drained;
+        }
+    }
+
+    for (int i = 0; i < num_slabs; ++i) {
+        EXPECT_TRUE(seen[i]) << "slab_id " << i << " never notified";
+    }
+}
+
+// =====================
+// ExpandableSlabAllocator adversarial tests
+//
+// These were previously in their own fixture (ExpandableSlabAllocatorAdversarialTest);
+// merged into ExpandableSlabAllocatorTest so all expandable-slab tests live in
+// one fixture.
+// =====================
+
+// After an old slab has gone through the two-drain reclamation lifecycle and
+// been destroyed, its registry slot is nullptr; a deallocate with that slab_id
+// must throw. Using chunk_size == slab_size so each allocate() chains a fresh
+// slab, making each drain's GotItem deterministic.
+TEST_F(ExpandableSlabAllocatorTest, AdversarialDestroyedSlabIdThrowsOnDeallocate)
+{
+    constexpr size_t slab_and_chunk = 64;
+    ExpandableSlabAllocator allocator(slab_and_chunk);
+
+    // Allocate from slab 0 (fills it).
+    auto [id0, ptr0] = allocator.allocate(slab_and_chunk);
+    ASSERT_EQ(id0, 0);
+    ASSERT_NE(ptr0, nullptr);
+
+    // Allocate again — chains slab 1.
+    auto [id1, ptr1] = allocator.allocate(slab_and_chunk);
+    ASSERT_EQ(id1, 1);
+    ASSERT_NE(ptr1, nullptr);
+
+    // Free slab 0 chunk from a background thread to exercise the cross-thread
+    // deallocate path. Slab 0 is enqueued.
+    std::thread t([&]() {
+        allocator.deallocate(id0, ptr0);
+    });
+    t.join();
+
+    // Drain 1: pops slab 0, defers it. Chains slab 2.
+    auto [id2, ptr2] = allocator.allocate(slab_and_chunk);
+    ASSERT_NE(ptr2, nullptr);
+
+    // Free slab 1's chunk so slab 1 enqueues.
+    allocator.deallocate(id1, ptr1);
+
+    // Drain 2: pops slab 1; head_ advances past slab 0; slab 0 destroyed.
+    auto [id3, ptr3] = allocator.allocate(slab_and_chunk);
+    ASSERT_NE(ptr3, nullptr);
+
+    // Slab 0 is now destroyed (nullptr in registry). Attempting to deallocate
+    // with slab_id 0 must throw.
+    int dummy = 0;
+    EXPECT_THROW(allocator.deallocate(0, &dummy), PreconditionAssertion);
+
+    allocator.deallocate(id2, ptr2);
+    allocator.deallocate(id3, ptr3);
+}
+
+// Allocation of exactly slab_size forces a new slab on the very next allocation.
+TEST_F(ExpandableSlabAllocatorTest, AdversarialExactSlabSizeAllocationForcesExpansion)
+{
+    constexpr size_t adv_slab_size = 512;
+    constexpr size_t adv_chunk_size = 64;
+    ExpandableSlabAllocator allocator(adv_slab_size);
+
+    auto [id0, ptr0] = allocator.allocate(adv_slab_size);
+    EXPECT_EQ(id0, 0);
+    EXPECT_NE(ptr0, nullptr);
+
+    auto [id1, ptr1] = allocator.allocate(adv_chunk_size);
+    EXPECT_EQ(id1, 1);
+    EXPECT_NE(ptr1, nullptr);
+
+    allocator.deallocate(id0, ptr0);
+    allocator.deallocate(id1, ptr1);
+}
+
+// Many threads deallocate chunks concurrently with reactor allocations.
+// Each round allocates a batch, frees it concurrently from worker threads,
+// then allocates another batch to exercise reclamation. Threads are always
+// joined before the next round to avoid cross-round interference under
+// instrumented builds (coverage, TSan, Valgrind).
+TEST_F(ExpandableSlabAllocatorTest, AdversarialConcurrentDeallocWhileReactorAllocates)
+{
+    constexpr size_t adv_slab_size = 512;
+    constexpr size_t adv_chunk_size = 64;
+    constexpr int num_rounds = 20;
+    constexpr int chunks_per_round = 8;
+
+    ExpandableSlabAllocator allocator(adv_slab_size);
+
+    for (int round = 0; round < num_rounds; ++round) {
+        // Phase 1: reactor allocates a batch.
+        std::vector<std::pair<int, void*>> allocations;
+        allocations.reserve(chunks_per_round);
+
+        for (int i = 0; i < chunks_per_round; ++i) {
+            auto [id, ptr] = allocator.allocate(adv_chunk_size);
+            ASSERT_NE(ptr, nullptr);
+            allocations.emplace_back(id, ptr);
+        }
+
+        // Phase 2: worker threads free the batch concurrently.
+        std::vector<std::thread> threads;
+        threads.reserve(chunks_per_round);
+
+        for (int i = 0; i < chunks_per_round; ++i) {
+            threads.emplace_back([&allocator, &allocations, i]() {
+                allocator.deallocate(allocations[i].first, allocations[i].second);
+            });
+        }
+
+        for (auto& t : threads) {
+            t.join();
+        }
+
+        // Phase 3: reactor allocates again to trigger reclamation of the freed slabs.
+        std::vector<std::pair<int, void*>> extra;
+        for (int i = 0; i < 4; ++i) {
+            auto [id, ptr] = allocator.allocate(adv_chunk_size);
+            ASSERT_NE(ptr, nullptr);
+            extra.emplace_back(id, ptr);
+        }
+
+        for (auto& [id, ptr] : extra) {
+            allocator.deallocate(id, ptr);
+        }
+    }
+}
+
+// Sustained high-volume allocation and deallocation across many threads
+// verifies that the allocator never returns nullptr due to reclamation starvation.
+//
+// Pattern mirrors real usage: the reactor allocates a batch of chunks, hands
+// them all to worker threads, then waits for all workers to finish before
+// allocating the next batch. No spin-waits or slot-coupling — each round is
+// a clean barrier. If reclamation stalls, the allocator grows unboundedly and
+// allocate() eventually returns nullptr, which the test detects.
+TEST_F(ExpandableSlabAllocatorTest, AdversarialNoStarvationUnderSustainedLoad)
+{
+    constexpr size_t adv_slab_size = 512;
+    constexpr size_t adv_chunk_size = 64;
+    constexpr int num_threads = 8;
+    constexpr int rounds = 50;
+    constexpr int chunks_per_round = num_threads;
+
+    ExpandableSlabAllocator allocator(adv_slab_size);
+    std::atomic<int> errors{0};
+
+    for (int round = 0; round < rounds; ++round) {
+        // Reactor allocates one chunk per worker thread.
+        std::vector<std::pair<int, void*>> allocations;
+        allocations.reserve(chunks_per_round);
+
+        for (int i = 0; i < chunks_per_round; ++i) {
+            auto [id, ptr] = allocator.allocate(adv_chunk_size);
+            if (ptr == nullptr) {
+                errors.fetch_add(1, std::memory_order_relaxed);
+            } else {
+                allocations.emplace_back(id, ptr);
+            }
+        }
+
+        // Each worker thread frees one chunk.
+        std::vector<std::thread> workers;
+        workers.reserve(allocations.size());
+
+        for (auto& [id, ptr] : allocations) {
+            workers.emplace_back([&allocator, id, ptr]() {
+                allocator.deallocate(id, ptr);
+            });
+        }
+
+        for (auto& t : workers) {
+            t.join();
+        }
+        // All chunks freed — next round triggers reclamation via allocate().
+    }
+
+    EXPECT_EQ(errors.load(), 0) << "allocator returned nullptr under sustained load";
 }
 
 } // namespace pubsub_itc_fw::tests

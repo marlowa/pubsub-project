@@ -186,7 +186,7 @@ void ApplicationThread::commit_raw_bytes(ConnectionID conn_id, int64_t bytes_con
             __FILE__, __LINE__);
     }
     ReactorControlCommand command(ReactorControlCommand::CommandTag::CommitRawBytes);
-    command.connection_id_  = conn_id;
+    command.connection_id_ = conn_id;
     command.bytes_consumed_ = bytes_consumed;
     reactor_.enqueue_control_command(command);
 }
@@ -213,10 +213,10 @@ void ApplicationThread::send_raw(ConnectionID conn_id, const void* data, uint32_
     std::memcpy(chunk, data, size);
 
     ReactorControlCommand cmd(ReactorControlCommand::CommandTag::SendRaw);
-    cmd.connection_id_  = conn_id;
-    cmd.allocator_      = &outbound_allocator_;
-    cmd.slab_id_        = slab_id;
-    cmd.raw_chunk_ptr_  = chunk;
+    cmd.connection_id_ = conn_id;
+    cmd.allocator_ = &outbound_allocator_;
+    cmd.slab_id_ = slab_id;
+    cmd.raw_chunk_ptr_ = chunk;
     cmd.raw_byte_count_ = size;
     reactor_.enqueue_control_command(cmd);
 }
@@ -382,15 +382,22 @@ void ApplicationThread::process_message(EventMessage& message) {
         }
 
         case EventType::FrameworkPdu: {
-            // The inbound slab chunk that carries the raw PDU payload is owned by
-            // the reactor's inbound slab allocator. The subclass callback processes
-            // the payload and must not hold any references to it after returning.
-            // The framework deallocates the chunk here unconditionally so that
-            // subclasses never need to do so -- and cannot forget to.
+            // The inbound slab chunk that carries the raw PDU payload is owned
+            // by the reactor's inbound slab allocator. Ownership is passed to
+            // the subclass via on_framework_pdu_message(). The subclass MUST
+            // call release_pdu_payload(message) on every code path before the
+            // event is dispatched out of scope. This is the manual-release
+            // contract.
+            //
+            // The framework deliberately does NOT auto-release here. Auto-
+            // release combined with the subclass's own explicit release would
+            // produce a double-free of the slab chunk, which manifests later
+            // as a "slab has already been destroyed" exception when the slab's
+            // outstanding-allocations counter races into a false zero and the
+            // reactor reclaims the slab while live allocations still reference
+            // it.
             PUBSUB_LOG(logger_, FwLogLevel::Info, "Thread {}: Received PDU message", thread_name_);
             on_framework_pdu_message(message);
-            reactor_.inbound_slab_allocator().deallocate(
-                message.slab_id(), const_cast<uint8_t*>(message.payload()));
             break;
         }
 
@@ -477,10 +484,10 @@ TimerID ApplicationThread::schedule_timer(const std::string& name, std::chrono::
 
 void ApplicationThread::enqueue_send_pdu_command(ConnectionID conn_id, int slab_id, void* chunk, uint32_t payload_bytes) {
     ReactorControlCommand cmd(ReactorControlCommand::CommandTag::SendPdu);
-    cmd.connection_id_  = conn_id;
-    cmd.allocator_      = &outbound_allocator_;
-    cmd.slab_id_        = slab_id;
-    cmd.pdu_chunk_ptr_  = chunk;
+    cmd.connection_id_ = conn_id;
+    cmd.allocator_ = &outbound_allocator_;
+    cmd.slab_id_ = slab_id;
+    cmd.pdu_chunk_ptr_ = chunk;
     cmd.pdu_byte_count_ = payload_bytes;
     reactor_.enqueue_control_command(cmd);
 }

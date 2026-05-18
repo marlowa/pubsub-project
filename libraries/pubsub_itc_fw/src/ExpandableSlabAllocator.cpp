@@ -3,6 +3,7 @@
 
 #include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
 
+#include <chrono>
 #include <stdexcept>
 #include <string>
 #include <tuple>
@@ -108,29 +109,33 @@ void ExpandableSlabAllocator::drain_empty_slab_queue()
 
     // Safety tripwire. The drain loop is bounded by the number of live slabs;
     // exceeding any sane multiple of that is a strong signal of a queue-state
-    // corruption (e.g. a node self-loop). Rather than spin until OOM, fail
-    // fast with a descriptive exception so the reactor terminates cleanly and
-    // the operator can see what went wrong.
+    // corruption. Rather than spin until OOM, fail fast with a descriptive
+    // exception so the reactor terminates cleanly and the operator can see
+    // what went wrong.
     //
-    // The threshold is deliberately generous: legitimate drains terminate in
-    // O(live slabs), so even a pathologically large pool of thousands of
-    // slabs would finish in thousands of iterations, not 100,000.
+    // Note on the threshold: it is in wall-clock time, not iteration count. A
+    // tight retry loop on a modern CPU runs in tens of nanoseconds per
+    // iteration, so a sub-millisecond preemption window can easily cover
+    // hundreds of thousands of iterations. One second is a generous budget
+    // that allows any legitimate preemption to be resolved by the kernel
+    // scheduler.
     int64_t loop_iterations  = 0;
     int64_t retry_count      = 0;
     int64_t got_item_count   = 0;
     int     last_got_slab_id = -1;
     int64_t same_id_repeats  = 0;
-    static constexpr int64_t tripwire_iterations = 100'000;
+    const auto tripwire_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
 
     for (;;) {
         ++loop_iterations;
-        if (loop_iterations > tripwire_iterations) {
+        if (std::chrono::steady_clock::now() > tripwire_deadline) {
             throw PubSubItcException(
                 "ExpandableSlabAllocator::drain_empty_slab_queue: "
-                "tripwire exceeded; queue is not making progress. "
+                "tripwire exceeded; queue is not making progress for over one second. "
                 "Likely a corrupted lock-free queue state (self-loop or stuck producer). "
                 "Diagnostics: got_item=" + std::to_string(got_item_count)
                 + " retry=" + std::to_string(retry_count)
+                + " iterations=" + std::to_string(loop_iterations)
                 + " last_slab_id=" + std::to_string(last_got_slab_id)
                 + " same_id_repeats=" + std::to_string(same_id_repeats)
                 + " live_slabs=" + std::to_string(slabs_.size())
@@ -155,9 +160,42 @@ void ExpandableSlabAllocator::drain_empty_slab_queue()
             ++retry_count;
             continue;
         } else {
-            empty_slab_queue_.reset_to_empty();
+            // Empty. Exit the loop. We deliberately do NOT call
+            // EmptySlabQueue::reset_to_empty(): doing so would race with any
+            // producer that did tail_.exchange(node) since our last drain.
+            // Such a producer holds prev = (what tail_ was before its
+            // exchange) and is about to do prev->next.store(node). If we
+            // overwrite tail_ to point at the queue's dummy_ in between, we
+            // both (a) lose the producer's exchange (their node is now
+            // unreachable from tail_) and (b) silently allow the producer's
+            // later store to land on a node that we may be about to destroy
+            // in the reclamation phase below. The Vyukov pattern handles
+            // this correctly without any reset: the popped node naturally
+            // becomes the new sentinel (head_/tail_ point at it) and stays
+            // alive until the NEXT drain confirms head_ has moved past it.
             break;
         }
+    }
+
+    // Vyukov sentinel reclamation. The most-recently-popped slab in this
+    // drain becomes the queue's new sentinel: head_ ends pointing at its
+    // node, and any producer in mid-enqueue may hold its node as `prev`. We
+    // hold that slab over to the NEXT drain. The slab that was deferred from
+    // the PREVIOUS drain is now safe to destroy: a successful GotItem in
+    // this drain means head_ has advanced past it, which in turn means the
+    // producer that put a successor in front of it has completed its store
+    // (and therefore no producer holds the previously-deferred slab's node
+    // as `prev` any longer).
+    //
+    // If this drain popped nothing (got_item_count == 0), head_ has not
+    // moved; the previously-deferred slab remains deferred.
+    if (!ids_to_reclaim.empty()) {
+        const int new_deferred = ids_to_reclaim.back();
+        ids_to_reclaim.pop_back();
+        if (deferred_reclaim_slab_id_ >= 0) {
+            ids_to_reclaim.push_back(deferred_reclaim_slab_id_);
+        }
+        deferred_reclaim_slab_id_ = new_deferred;
     }
 
     // Under the current design no slab on the queue is the current slab

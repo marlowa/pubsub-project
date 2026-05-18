@@ -39,9 +39,13 @@
  *       on a background thread or timer tick. This guarantees progress under
  *       load and eliminates the GC-starvation failure mode seen in allocators
  *       that use a separate reclamation thread.
- *     - For each slab ID dequeued:
- *         - If the slab is the current slab: reset it (bump pointer to zero).
- *         - If the slab is not the current slab: destroy it (munmap).
+ *     - For each slab ID dequeued: it is destroyed (munmap) after the consumer
+ *       advances head_ past it. To avoid a use-after-free against producers
+ *       still in mid-enqueue, the MOST-RECENTLY popped slab is held over to
+ *       the next drain (Vyukov sentinel pattern); only when a subsequent drain
+ *       has confirmed head_ advanced past it is the held-over slab safe to
+ *       destroy. This guarantees that no producer thread can hold a stale
+ *       pointer to a destroyed slab's queue node as its `prev` value.
  *
  * CORRECTNESS INVARIANT:
  *   A slab can only become empty after the reactor has stopped allocating
@@ -186,6 +190,14 @@ class ExpandableSlabAllocator {
     int current_slab_id_{-1};
     EmptySlabQueue empty_slab_queue_;
     std::vector<std::unique_ptr<SlabAllocator>> slabs_;
+
+    // Vyukov sentinel reclamation: the most-recently-popped slab is kept alive
+    // until the next drain confirms head_ has moved past it. This avoids a
+    // use-after-free if a producer is mid-enqueue with the popped slab's node
+    // as its `prev` pointer when the consumer would otherwise reclaim it.
+    // -1 means no slab is currently deferred (the queue's built-in dummy_
+    // serves as the initial sentinel).
+    int deferred_reclaim_slab_id_{-1};
 };
 
 } // namespace pubsub_itc_fw

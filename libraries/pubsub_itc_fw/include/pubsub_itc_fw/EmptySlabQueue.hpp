@@ -89,19 +89,45 @@ class EmptySlabQueue {
     [[nodiscard]] DequeueResult try_dequeue(int& slab_id);
 
     /**
-     * @brief Resets the queue to the empty state after a full drain.
+     * @brief Returns the current head pointer.
      *
-     * Must only be called by the reactor thread after try_dequeue has
-     * returned Empty. Restores head_ and tail_ to point at dummy_ so
-     * that slab nodes can safely be re-enqueued without forming self-loops.
-     *
-     * Background: after a node is dequeued it becomes the new head_ (dummy).
-     * If tail_ still points to that node when it is re-enqueued, the Vyukov
-     * exchange sets prev == node and node->next = node — a self-loop that
-     * causes try_dequeue to spin forever. Resetting to dummy_ after a full
-     * drain breaks this cycle.
+     * Diagnostic-only accessor for the consumer thread. The returned pointer
+     * is the consumer's view of the head; producers do not read or write it.
+     * Reads of head_ must therefore be from the consumer (reactor) thread.
      */
-    void reset_to_empty();
+    [[nodiscard]] const EmptySlabQueueNode* peek_head() const {
+        return head_;
+    }
+
+    /**
+     * @brief Returns the current value of head_->next.
+     *
+     * Diagnostic-only accessor. Used by drain_empty_slab_queue to inspect why
+     * the queue appears not to be making progress.
+     */
+    [[nodiscard]] const EmptySlabQueueNode* peek_head_next() const {
+        return head_ != nullptr ? head_->next.load(std::memory_order_acquire) : nullptr;
+    }
+
+    /**
+     * @brief Returns the current tail pointer.
+     *
+     * Diagnostic-only accessor. Used by drain_empty_slab_queue to inspect why
+     * the queue appears not to be making progress.
+     */
+    [[nodiscard]] const EmptySlabQueueNode* peek_tail() const {
+        return tail_.load(std::memory_order_acquire);
+    }
+
+    /**
+     * @brief Returns the address of the dummy_ sentinel.
+     *
+     * Diagnostic-only accessor. Useful for tests that want to detect when
+     * head_ or tail_ has been reset back to the dummy sentinel.
+     */
+    [[nodiscard]] const EmptySlabQueueNode* peek_dummy() const {
+        return &dummy_;
+    }
 
   private:
     EmptySlabQueueNode dummy_;

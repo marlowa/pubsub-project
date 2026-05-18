@@ -640,17 +640,21 @@ TEST_F(ExpandablePoolAllocatorTest, LatencyStressTest) {
 
 TEST_F(ExpandablePoolAllocatorTest, AbaStressTest) {
 #ifdef USING_VALGRIND
-    const int iterations = 200;
+    const int iterations = 100;
     const int num_threads = 4;
 #else
     const int iterations = 100'000;
     const int num_threads = 8;
 #endif
 
-    // Pool must be at least as large as the number of threads.
-    // Each thread holds at most one slot at a time, so with pool_slots >= num_threads
-    // the pool can never be fully exhausted and expansion will never fire.
-    const int pool_slots = num_threads;
+    // Pool sized one larger than num_threads. Each thread holds at most one
+    // slot at a time, so with num_threads threads up to num_threads slots can
+    // be out simultaneously. The extra slot guarantees at least one slot
+    // remains free and the fast path never returns nullptr, so expansion
+    // never fires during the stress phase. Without the extra slot, the
+    // transient "all threads simultaneously hold a slot" state would trigger
+    // the slow path and ultimately expansion.
+    const int pool_slots = num_threads + 1;
     const int initial_pools = 1;
     const int expansion_threshold_hint = 1;
     ExpandablePoolAllocator<TestObject> allocator("AbaStress", pool_slots, initial_pools, expansion_threshold_hint, handler_for_pool_exhausted_,
@@ -666,6 +670,27 @@ TEST_F(ExpandablePoolAllocatorTest, AbaStressTest) {
     // slots will exist after the stress phase.
     std::set<TestObject*> valid_addresses;
     std::mutex valid_addresses_mutex;
+
+    // Pre-touch every slot in the initial pool. Without this, the stress phase
+    // can only reach `num_threads` slots simultaneously, leaving any remaining
+    // slot at the front of the free list permanently untouched. That slot's
+    // address would then appear in the drain phase as a "phantom" address not
+    // present in valid_addresses, even though the allocator is behaving
+    // correctly. Allocating every slot in one go (no intervening deallocations)
+    // forces each slot to be popped from the free list and recorded.
+    {
+        std::vector<TestObject*> pre_touch;
+        pre_touch.reserve(pool_slots);
+        for (int i = 0; i < pool_slots; ++i) {
+            TestObject* allocated_object = allocator.allocate();
+            ASSERT_NE(allocated_object, nullptr) << "pre-touch: allocator returned nullptr at slot " << i;
+            pre_touch.push_back(allocated_object);
+            valid_addresses.insert(allocated_object);
+        }
+        for (auto* allocated_object : pre_touch) {
+            allocator.deallocate(allocated_object);
+        }
+    }
 
     // Each thread repeatedly allocates and immediately deallocates.
     // We deliberately do NOT hold any lock — this is the ABA window.

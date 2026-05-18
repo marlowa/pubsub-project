@@ -64,9 +64,24 @@
  * (production, ASAN, Valgrind, TSan) to ensure that core dumps from production
  * builds are diagnosable.
  *
- * LAYOUT (both build paths):
+ * LAYOUT:
  *
- *   [ is_constructed | canary | storage union ]
+ *   Production path:  [ is_constructed | free_next | canary | storage union ]
+ *   Valgrind path:    [ is_constructed | canary | storage union ]
+ *
+ *   The two paths are NOT byte-for-byte identical: the production path uses
+ *   an intrusive Treiber stack and embeds free_next as the second field. The
+ *   Valgrind/TSan path uses a mutex-protected std::vector free list and has
+ *   no free_next field.
+ *
+ *   What both paths share, and what the canary mechanism relies on:
+ *     - is_constructed is the first field of Slot<T>.
+ *     - canary is the field immediately before storage.
+ *     - storage is the last field.
+ *   That is sufficient to make ExpandablePoolAllocator::get_is_constructed_for_object()
+ *   and get_canary_for_object() work in both builds; they compute their
+ *   offsets via offsetof(SlotType, storage), which is build-path-correct in
+ *   each translation.
  *
  * PURPOSE:
  *   A T object that writes one byte before its own start (a one-byte underrun)
@@ -153,16 +168,26 @@ template <typename T> struct SlotStorage {
 /**
  * @brief One slot in the pool.
  *
- * Layout:
+ * Layout (Valgrind/TSan path):
  *   [ is_constructed | canary | storage ]
  *
  * The canary sits between is_constructed and the object storage so that a
  * one-byte underrun from the T object corrupts the canary rather than
  * is_constructed. See the CANARY DESIGN section at the top of this file.
  *
- * Both the Valgrind and production Slot<T> definitions are identical in
- * layout so that ExpandablePoolAllocator::get_is_constructed_for_object()
- * works correctly on both build paths.
+ * Note: the production-path Slot<T> has an additional free_next pointer
+ * between is_constructed and canary (it forms the intrusive free list of the
+ * lock-free Treiber stack). The two layouts are therefore NOT identical.
+ *
+ * What matters for the pointer arithmetic used by
+ * ExpandablePoolAllocator::get_is_constructed_for_object() and
+ * get_canary_for_object() is that, in BOTH paths:
+ *   - is_constructed is the first field of Slot<T>,
+ *   - canary is the field immediately before storage,
+ *   - storage is the last field.
+ * Both helpers compute their offsets via offsetof(SlotType, storage), which is
+ * build-path-correct in each translation, so they do not rely on the two
+ * layouts being byte-for-byte equivalent.
  */
 template <typename T> struct Slot {
     // Must be std::atomic so that allocate() (plain store) and deallocate()
@@ -458,16 +483,26 @@ template <typename T> struct SlotStorage; // forward declaration
 /**
  * @brief One slot in the pool.
  *
- * Layout:
- *   [ is_constructed | canary | storage ]
+ * Layout (production path):
+ *   [ is_constructed | free_next | canary | storage ]
  *
- * The canary sits between is_constructed and the object storage so that a
- * one-byte underrun from the T object corrupts the canary rather than
+ * The canary sits between free_next and the object storage so that a one-byte
+ * underrun from the T object corrupts the canary rather than free_next or
  * is_constructed. See the CANARY DESIGN section at the top of this file.
  *
- * Both the Valgrind and production Slot<T> definitions are identical in
- * layout so that ExpandablePoolAllocator::get_is_constructed_for_object()
- * works correctly on both build paths.
+ * Note: the Valgrind/TSan-path Slot<T> has no free_next field (it uses a
+ * mutex-protected std::vector free list rather than an intrusive Treiber
+ * stack), so the two layouts are NOT identical.
+ *
+ * What matters for the pointer arithmetic used by
+ * ExpandablePoolAllocator::get_is_constructed_for_object() and
+ * get_canary_for_object() is that, in BOTH paths:
+ *   - is_constructed is the first field of Slot<T>,
+ *   - canary is the field immediately before storage,
+ *   - storage is the last field.
+ * Both helpers compute their offsets via offsetof(SlotType, storage), which is
+ * build-path-correct in each translation, so they do not rely on the two
+ * layouts being byte-for-byte equivalent.
  */
 template <typename T> struct Slot {
     // Must be std::atomic so that allocate() (plain store) and deallocate()
