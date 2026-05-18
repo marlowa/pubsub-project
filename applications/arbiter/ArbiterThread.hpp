@@ -37,9 +37,7 @@ class ArbiterThread : public pubsub_itc_fw::ApplicationThread {
      * @param[in] reactor  Owning Reactor. Must outlive this object.
      * @param[in] config   Arbiter configuration.
      */
-    ArbiterThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token,
-                  pubsub_itc_fw::QuillLogger& logger,
-                  pubsub_itc_fw::Reactor& reactor,
+    ArbiterThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger, pubsub_itc_fw::Reactor& reactor,
                   const ArbiterConfiguration& config);
 
   protected:

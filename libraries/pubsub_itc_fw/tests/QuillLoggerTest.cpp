@@ -25,13 +25,9 @@ using namespace pubsub_itc_fw;
  * Debug so all severities are exercised unless a test overrides it.
  */
 class QuillLoggerTest : public ::testing::Test {
-protected:
+  protected:
     QuillLoggerTest() {
-        logger_ = std::make_unique<QuillLogger>(
-            FwLogLevel::Debug,
-            [this](const std::string& record) {
-                records_.push_back(record);
-            });
+        logger_ = std::make_unique<QuillLogger>(FwLogLevel::Debug, [this](const std::string& record) { records_.push_back(record); });
     }
 
     void SetUp() override {
@@ -141,7 +137,7 @@ TEST_F(QuillLoggerTest, FiltersDebugWhenLevelIsInfo) {
     logger_->set_log_level(FwLogLevel::Info);
 
     PUBSUB_LOG_STR(*logger_, FwLogLevel::Debug, "Debug message - should be filtered");
-    PUBSUB_LOG_STR(*logger_, FwLogLevel::Info,  "Info message - should appear");
+    PUBSUB_LOG_STR(*logger_, FwLogLevel::Info, "Info message - should appear");
 
     ASSERT_EQ(records_.size(), 1u);
     EXPECT_TRUE(contains_message("Info message"));
@@ -151,7 +147,7 @@ TEST_F(QuillLoggerTest, FiltersDebugWhenLevelIsInfo) {
 TEST_F(QuillLoggerTest, FiltersInfoWhenLevelIsWarning) {
     logger_->set_log_level(FwLogLevel::Warning);
 
-    PUBSUB_LOG_STR(*logger_, FwLogLevel::Info,    "Info - filtered");
+    PUBSUB_LOG_STR(*logger_, FwLogLevel::Info, "Info - filtered");
     PUBSUB_LOG_STR(*logger_, FwLogLevel::Warning, "Warning - appears");
 
     ASSERT_EQ(records_.size(), 1u);
@@ -162,7 +158,7 @@ TEST_F(QuillLoggerTest, FiltersWarningWhenLevelIsError) {
     logger_->set_log_level(FwLogLevel::Error);
 
     PUBSUB_LOG_STR(*logger_, FwLogLevel::Warning, "Warning - filtered");
-    PUBSUB_LOG_STR(*logger_, FwLogLevel::Error,   "Error - appears");
+    PUBSUB_LOG_STR(*logger_, FwLogLevel::Error, "Error - appears");
 
     ASSERT_EQ(records_.size(), 1u);
     EXPECT_TRUE(contains_message("Error"));
@@ -171,10 +167,10 @@ TEST_F(QuillLoggerTest, FiltersWarningWhenLevelIsError) {
 TEST_F(QuillLoggerTest, LogsAllLevelsWhenSetToDebug) {
     logger_->set_log_level(FwLogLevel::Debug);
 
-    PUBSUB_LOG_STR(*logger_, FwLogLevel::Debug,    "Debug");
-    PUBSUB_LOG_STR(*logger_, FwLogLevel::Info,     "Info");
-    PUBSUB_LOG_STR(*logger_, FwLogLevel::Warning,  "Warning");
-    PUBSUB_LOG_STR(*logger_, FwLogLevel::Error,    "Error");
+    PUBSUB_LOG_STR(*logger_, FwLogLevel::Debug, "Debug");
+    PUBSUB_LOG_STR(*logger_, FwLogLevel::Info, "Info");
+    PUBSUB_LOG_STR(*logger_, FwLogLevel::Warning, "Warning");
+    PUBSUB_LOG_STR(*logger_, FwLogLevel::Error, "Error");
     PUBSUB_LOG_STR(*logger_, FwLogLevel::Critical, "Critical");
 
     EXPECT_EQ(records_.size(), 5u);
@@ -188,8 +184,8 @@ TEST_F(QuillLoggerTest, LogsAllLevelsWhenSetToDebug) {
 TEST_F(QuillLoggerTest, SuppressedMessageProducesNoCallback) {
     logger_->set_log_level(FwLogLevel::Error);
 
-    PUBSUB_LOG_STR(*logger_, FwLogLevel::Debug,   "Debug - suppressed");
-    PUBSUB_LOG_STR(*logger_, FwLogLevel::Info,    "Info - suppressed");
+    PUBSUB_LOG_STR(*logger_, FwLogLevel::Debug, "Debug - suppressed");
+    PUBSUB_LOG_STR(*logger_, FwLogLevel::Info, "Info - suppressed");
     PUBSUB_LOG_STR(*logger_, FwLogLevel::Warning, "Warning - suppressed");
 
     EXPECT_EQ(records_.size(), 0u);
@@ -203,12 +199,12 @@ TEST_F(QuillLoggerTest, ChangesLogLevelDynamically) {
     logger_->set_log_level(FwLogLevel::Info);
 
     PUBSUB_LOG_STR(*logger_, FwLogLevel::Debug, "Debug 1 - filtered");
-    PUBSUB_LOG_STR(*logger_, FwLogLevel::Info,  "Info 1 - appears");
+    PUBSUB_LOG_STR(*logger_, FwLogLevel::Info, "Info 1 - appears");
 
     logger_->set_log_level(FwLogLevel::Debug);
 
     PUBSUB_LOG_STR(*logger_, FwLogLevel::Debug, "Debug 2 - appears");
-    PUBSUB_LOG_STR(*logger_, FwLogLevel::Info,  "Info 2 - appears");
+    PUBSUB_LOG_STR(*logger_, FwLogLevel::Info, "Info 2 - appears");
 
     EXPECT_EQ(records_.size(), 3u);
     EXPECT_TRUE(contains_message("Info 1"));
@@ -271,12 +267,11 @@ TEST(QuillLoggerIsolationTest, TwoLoggersDoNotCrossTalk) {
     EXPECT_TRUE(records1[0].find("Message from logger1") != std::string::npos);
     EXPECT_TRUE(records2[0].find("Message from logger2") != std::string::npos);
 
-    EXPECT_NE(logger1.quill_logger(), logger2.quill_logger())
-        << "Two separate QuillLogger instances must have separate underlying Quill loggers";
+    EXPECT_NE(logger1.quill_logger(), logger2.quill_logger()) << "Two separate QuillLogger instances must have separate underlying Quill loggers";
 }
 
 TEST(QuillLoggerIsolationTest, LevelChangeOnOneLoggerDoesNotAffectOther) {
-    QuillLogger logger1(FwLogLevel::Info,  nullptr);
+    QuillLogger logger1(FwLogLevel::Info, nullptr);
     QuillLogger logger2(FwLogLevel::Debug, nullptr);
 
     logger1.set_log_level(FwLogLevel::Error);

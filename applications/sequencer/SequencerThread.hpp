@@ -48,9 +48,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
      * @param[in] reactor  Owning Reactor. Must outlive this object.
      * @param[in] config   Sequencer configuration.
      */
-    SequencerThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token,
-                    pubsub_itc_fw::QuillLogger& logger,
-                    pubsub_itc_fw::Reactor& reactor,
+    SequencerThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger, pubsub_itc_fw::Reactor& reactor,
                     const SequencerConfiguration& config);
 
   protected:

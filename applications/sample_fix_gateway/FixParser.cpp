@@ -10,15 +10,10 @@ namespace sample_fix_gateway {
 
 static constexpr char SOH = '\x01';
 
-FixParser::FixParser(MessageCallback on_message)
-    : on_message_(std::move(on_message))
-{
-}
+FixParser::FixParser(MessageCallback on_message) : on_message_(std::move(on_message)) {}
 
-void FixParser::feed(const uint8_t* data, int length)
-{
-    buffer_.append(reinterpret_cast<const char*>(data),
-                   static_cast<std::size_t>(length));
+void FixParser::feed(const uint8_t* data, int length) {
+    buffer_.append(reinterpret_cast<const char*>(data), static_cast<std::size_t>(length));
 
     while (try_extract_message()) {
         // keep extracting until we run out of complete messages
@@ -31,14 +26,12 @@ void FixParser::feed(const uint8_t* data, int length)
     }
 }
 
-void FixParser::reset()
-{
+void FixParser::reset() {
     buffer_.clear();
     offset_ = 0;
 }
 
-bool FixParser::try_extract_message()
-{
+bool FixParser::try_extract_message() {
     // A FIX message must start with "8=FIXT.1.1" or "8=FIX.5.0SP2".
     // Find the start of the next message beginning at offset_.
     const std::string begin_tag = "8=";
@@ -67,9 +60,7 @@ bool FixParser::try_extract_message()
         return false; // incomplete
     }
 
-    const std::string body_len_str =
-        buffer_.substr(bl_start + body_len_tag.size(),
-                       soh2 - bl_start - body_len_tag.size());
+    const std::string body_len_str = buffer_.substr(bl_start + body_len_tag.size(), soh2 - bl_start - body_len_tag.size());
     const int body_length = std::stoi(body_len_str);
     if (body_length <= 0) {
         offset_ = start + 1;
@@ -101,9 +92,7 @@ bool FixParser::try_extract_message()
     const std::string raw_msg = buffer_.substr(start, soh3 - start + 1);
 
     // Validate checksum.
-    const std::string checksum_value =
-        buffer_.substr(tag10_start + checksum_tag.size(),
-                       soh3 - tag10_start - checksum_tag.size());
+    const std::string checksum_value = buffer_.substr(tag10_start + checksum_tag.size(), soh3 - tag10_start - checksum_tag.size());
 
     // Checksum covers bytes from start of message up to (not including) "10=".
     const std::string msg_for_checksum = buffer_.substr(start, tag10_start - start);
@@ -123,8 +112,7 @@ bool FixParser::try_extract_message()
     return true;
 }
 
-bool FixParser::parse_fields(const std::string& buf, FixMessage& msg)
-{
+bool FixParser::parse_fields(const std::string& buf, FixMessage& msg) {
     std::size_t pos = 0;
     while (pos < buf.size()) {
         // Find the '=' separating tag from value.
@@ -140,7 +128,7 @@ bool FixParser::parse_fields(const std::string& buf, FixMessage& msg)
         }
 
         const std::string tag_str = buf.substr(pos, eq - pos);
-        const std::string value   = buf.substr(eq + 1, soh - eq - 1);
+        const std::string value = buf.substr(eq + 1, soh - eq - 1);
 
         // Parse tag as integer -- ignore malformed tags.
         try {
@@ -156,9 +144,7 @@ bool FixParser::parse_fields(const std::string& buf, FixMessage& msg)
     return msg.has(Tag::MsgType);
 }
 
-bool FixParser::validate_checksum(const std::string& msg_bytes,
-                                  const std::string& expected)
-{
+bool FixParser::validate_checksum(const std::string& msg_bytes, const std::string& expected) {
     int sum = 0;
     for (const unsigned char c : msg_bytes) {
         sum += c;
@@ -167,8 +153,7 @@ bool FixParser::validate_checksum(const std::string& msg_bytes,
     return computed == expected;
 }
 
-std::string FixParser::format_checksum(int sum)
-{
+std::string FixParser::format_checksum(int sum) {
     char buf[5];
     std::snprintf(buf, sizeof(buf), "%03u", static_cast<unsigned int>(sum) % 256u);
     return {buf};

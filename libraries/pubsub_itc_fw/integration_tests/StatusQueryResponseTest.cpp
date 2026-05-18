@@ -47,8 +47,8 @@
 #include <pubsub_itc_fw/tests_common/LoggerWithSink.hpp>
 #include <pubsub_itc_fw/tests_common/TestConfigurations.hpp>
 
-using pubsub_itc_fw::tests::make_queue_config;
 using pubsub_itc_fw::tests::make_allocator_config;
+using pubsub_itc_fw::tests::make_queue_config;
 
 #include <leader_follower.hpp>
 
@@ -79,8 +79,8 @@ static void enqueue_disconnect(Reactor& reactor, ConnectionID conn_id) {
 class ConnectorThread : public ApplicationThread {
   public:
     ConnectorThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
-        : ApplicationThread(token, logger, reactor, "ConnectorThread", ThreadID{1}, make_queue_config(),
-            make_allocator_config("ConnectorPool"), ApplicationThreadConfiguration{}) {}
+        : ApplicationThread(token, logger, reactor, "ConnectorThread", ThreadID{1}, make_queue_config(), make_allocator_config("ConnectorPool"),
+                            ApplicationThreadConfiguration{}) {}
 
     std::atomic<bool> connection_established{false};
     std::atomic<bool> query_sent{false};
@@ -120,7 +120,7 @@ class ConnectorThread : public ApplicationThread {
         const uint8_t* payload = msg.payload();
         const size_t size = static_cast<size_t>(msg.payload_size());
         BumpAllocator arena(decode_arena_buffer().data(), decode_arena_buffer().capacity());
-        size_t consumed     = 0;
+        size_t consumed = 0;
         size_t arena_needed = 0;
 
         if (decode(received_response, payload, size, consumed, arena, arena_needed)) {
@@ -142,8 +142,8 @@ class ConnectorThread : public ApplicationThread {
 class ListenerThread : public ApplicationThread {
   public:
     ListenerThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
-        : ApplicationThread(token, logger, reactor, "ListenerThread", ThreadID{2},
-            make_queue_config(), make_allocator_config("ListenerPool"), ApplicationThreadConfiguration{}) {}
+        : ApplicationThread(token, logger, reactor, "ListenerThread", ThreadID{2}, make_queue_config(), make_allocator_config("ListenerPool"),
+                            ApplicationThreadConfiguration{}) {}
 
     std::atomic<bool> connection_established{false};
     std::atomic<bool> query_received{false};
@@ -168,7 +168,7 @@ class ListenerThread : public ApplicationThread {
         const uint8_t* payload = msg.payload();
         const size_t size = static_cast<size_t>(msg.payload_size());
         BumpAllocator arena(decode_arena_buffer().data(), decode_arena_buffer().capacity());
-        size_t consumed     = 0;
+        size_t consumed = 0;
         size_t arena_needed = 0;
 
         if (decode(received_query, payload, size, consumed, arena, arena_needed)) {
@@ -182,7 +182,6 @@ class ListenerThread : public ApplicationThread {
             send_pdu(conn_id, PDU_ID_STATUS_RESPONSE, 0, response);
             response_sent.store(true, std::memory_order_release);
         }
-
     }
 
     void on_itc_message([[maybe_unused]] const EventMessage& msg) override {}

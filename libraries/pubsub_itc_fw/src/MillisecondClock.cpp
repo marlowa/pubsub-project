@@ -6,15 +6,14 @@
 #define _GNU_SOURCE
 #endif
 #endif
-#include <ctime>
 #include <cstdint>
+#include <ctime>
 
 #include <pubsub_itc_fw/MillisecondClock.hpp>
 
 namespace pubsub_itc_fw {
 
-MillisecondClock::time_point MillisecondClock::now()
-{
+MillisecondClock::time_point MillisecondClock::now() {
     timespec ts{};
     // NOLINTNEXTLINE(misc-include-cleaner)
     clock_gettime(CLOCK_MONOTONIC_COARSE, &ts);
@@ -24,4 +23,4 @@ MillisecondClock::time_point MillisecondClock::now()
     return time_point{duration{total_ms}};
 }
 
-} // namespaces
+} // namespace pubsub_itc_fw

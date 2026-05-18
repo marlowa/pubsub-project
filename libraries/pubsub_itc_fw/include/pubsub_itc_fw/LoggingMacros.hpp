@@ -55,14 +55,13 @@ namespace pubsub_itc_fw::logging_help {
  * @param format_str The format string literal wrapped by FMT_STRING.
  * @param args The arguments to validate.
  */
-template <typename S, typename... Args>
-void validate_at_compile_time(S format_str, const Args&... args) {
+template <typename S, typename... Args> void validate_at_compile_time(S format_str, const Args&... args) {
     // This instantiation forces the compiler to parse the format string
     // type against the provided argument types.
     (void)fmt::format(format_str, args...);
 }
 
-} // namespaces
+} // namespace pubsub_itc_fw::logging_help
 
 // In clang-tidy analysis mode the macros are neutralised to avoid false
 // positives from the variadic forwarding.
@@ -83,26 +82,26 @@ void validate_at_compile_time(S format_str, const Args&... args) {
 //
 // Usage:
 //   PUBSUB_LOG(logger, FwLogLevel::Info, "connected to {} port {}", host, port);
-#define PUBSUB_LOG(logger_expr, log_level_expr, fmt, ...)                                                                     \
-    do {                                                                                                                        \
-        auto& pubsub_logger = (logger_expr);                                                                                    \
-        const ::pubsub_itc_fw::FwLogLevel pubsub_level = (log_level_expr);                                                      \
-        if (false) {                                                                                                            \
-            ::pubsub_itc_fw::logging_help::validate_at_compile_time(FMT_STRING(fmt), ##__VA_ARGS__);                            \
-        }                                                                                                                       \
-        if (pubsub_level == ::pubsub_itc_fw::FwLogLevel::Alert || pubsub_level == ::pubsub_itc_fw::FwLogLevel::Critical) {      \
-            LOG_CRITICAL(pubsub_logger.quill_logger(), fmt, ##__VA_ARGS__);                                                     \
-        } else if (pubsub_level == ::pubsub_itc_fw::FwLogLevel::Error) {                                                        \
-            LOG_ERROR(pubsub_logger.quill_logger(), fmt, ##__VA_ARGS__);                                                        \
-        } else if (pubsub_level == ::pubsub_itc_fw::FwLogLevel::Warning) {                                                      \
-            LOG_WARNING(pubsub_logger.quill_logger(), fmt, ##__VA_ARGS__);                                                      \
-        } else if (pubsub_level == ::pubsub_itc_fw::FwLogLevel::Notice || pubsub_level == ::pubsub_itc_fw::FwLogLevel::Info) {  \
-            LOG_INFO(pubsub_logger.quill_logger(), fmt, ##__VA_ARGS__);                                                         \
-        } else if (pubsub_level == ::pubsub_itc_fw::FwLogLevel::Debug) {                                                        \
-            LOG_DEBUG(pubsub_logger.quill_logger(), fmt, ##__VA_ARGS__);                                                        \
-        } else {                                                                                                                \
-            LOG_TRACE_L3(pubsub_logger.quill_logger(), fmt, ##__VA_ARGS__);                                                     \
-        }                                                                                                                        \
+#define PUBSUB_LOG(logger_expr, log_level_expr, fmt, ...)                                                                                                      \
+    do {                                                                                                                                                       \
+        auto& pubsub_logger = (logger_expr);                                                                                                                   \
+        const ::pubsub_itc_fw::FwLogLevel pubsub_level = (log_level_expr);                                                                                     \
+        if (false) {                                                                                                                                           \
+            ::pubsub_itc_fw::logging_help::validate_at_compile_time(FMT_STRING(fmt), ##__VA_ARGS__);                                                           \
+        }                                                                                                                                                      \
+        if (pubsub_level == ::pubsub_itc_fw::FwLogLevel::Alert || pubsub_level == ::pubsub_itc_fw::FwLogLevel::Critical) {                                     \
+            LOG_CRITICAL(pubsub_logger.quill_logger(), fmt, ##__VA_ARGS__);                                                                                    \
+        } else if (pubsub_level == ::pubsub_itc_fw::FwLogLevel::Error) {                                                                                       \
+            LOG_ERROR(pubsub_logger.quill_logger(), fmt, ##__VA_ARGS__);                                                                                       \
+        } else if (pubsub_level == ::pubsub_itc_fw::FwLogLevel::Warning) {                                                                                     \
+            LOG_WARNING(pubsub_logger.quill_logger(), fmt, ##__VA_ARGS__);                                                                                     \
+        } else if (pubsub_level == ::pubsub_itc_fw::FwLogLevel::Notice || pubsub_level == ::pubsub_itc_fw::FwLogLevel::Info) {                                 \
+            LOG_INFO(pubsub_logger.quill_logger(), fmt, ##__VA_ARGS__);                                                                                        \
+        } else if (pubsub_level == ::pubsub_itc_fw::FwLogLevel::Debug) {                                                                                       \
+            LOG_DEBUG(pubsub_logger.quill_logger(), fmt, ##__VA_ARGS__);                                                                                       \
+        } else {                                                                                                                                               \
+            LOG_TRACE_L3(pubsub_logger.quill_logger(), fmt, ##__VA_ARGS__);                                                                                    \
+        }                                                                                                                                                      \
     } while (0)
 
 // PUBSUB_LOG_STR — log a single pre-formed string.

@@ -16,7 +16,7 @@ struct RollingLogfileConfiguration {
     // Size-based params
     int64_t max_file_size{50 * 1024 * 1024}; // 50MB default
 
-    int32_t max_backup_files{10};   // Number of rolled files to keep
+    int32_t max_backup_files{10}; // Number of rolled files to keep
 
     // Time-based params
     std::string rotation_time{"00:00"}; // Daily rotation time
@@ -24,4 +24,4 @@ struct RollingLogfileConfiguration {
     // TODO Add ctor that validates the rotation time
 };
 
-} // namespaces
+} // namespace pubsub_itc_fw

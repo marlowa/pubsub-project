@@ -65,10 +65,7 @@ class ConnectionID {
      * @param[in] value        The integer value of the ID.
      * @param[in] service_name The name of the outbound service.
      */
-    ConnectionID(int value, std::string service_name)
-        : value_(value)
-        , service_name_(std::move(service_name))
-    {}
+    ConnectionID(int value, std::string service_name) : value_(value), service_name_(std::move(service_name)) {}
 
     /**
      * @brief Checks if the ID is valid (non-zero).

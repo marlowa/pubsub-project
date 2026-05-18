@@ -29,7 +29,10 @@ add_compile_options(
     -pedantic
     -Wstrict-aliasing=2
     -Werror
+    -Wnon-virtual-dtor
 )
+
+# TODO Note: cannot use -Wshadow yet because of code emitted by DSL code generator.
 
 # ------------------------------------------------------------
 # Valgrind / TSAN / ASAN / Coverage

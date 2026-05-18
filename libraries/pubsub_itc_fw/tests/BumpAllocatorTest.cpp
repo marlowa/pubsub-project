@@ -17,7 +17,7 @@ constexpr std::size_t large_buffer_size = 4096;
 } // namespace
 
 class BumpAllocatorTest : public ::testing::Test {
-protected:
+  protected:
     std::array<uint8_t, small_buffer_size> small_buffer_{};
     std::array<uint8_t, large_buffer_size> large_buffer_{};
 };
@@ -123,9 +123,7 @@ TEST_F(BumpAllocatorTest, AllocateReturnsNullptrWhenRequestExceedsRemainingCapac
 
 TEST_F(BumpAllocatorTest, AllocateThrowsOnZeroElementCount) {
     BumpAllocator allocator(small_buffer_.data(), small_buffer_.size());
-    EXPECT_THROW(
-        [&allocator]() { [[maybe_unused]] int32_t* ptr = allocator.allocate<int32_t>(0); }(),
-        PreconditionAssertion);
+    EXPECT_THROW([&allocator]() { [[maybe_unused]] int32_t* ptr = allocator.allocate<int32_t>(0); }(), PreconditionAssertion);
 }
 
 TEST_F(BumpAllocatorTest, SuccessiveAllocationsDoNotOverlap) {
@@ -134,8 +132,7 @@ TEST_F(BumpAllocatorTest, SuccessiveAllocationsDoNotOverlap) {
     int32_t* second = allocator.allocate<int32_t>(4);
     ASSERT_NE(first, nullptr);
     ASSERT_NE(second, nullptr);
-    EXPECT_GE(reinterpret_cast<uint8_t*>(second),
-              reinterpret_cast<uint8_t*>(first) + sizeof(int32_t) * 4);
+    EXPECT_GE(reinterpret_cast<uint8_t*>(second), reinterpret_cast<uint8_t*>(first) + sizeof(int32_t) * 4);
 }
 
 TEST_F(BumpAllocatorTest, AllocatedMemoryIsWritable) {
@@ -256,4 +253,4 @@ TEST_F(BumpAllocatorTest, UsableAsEncodeArena) {
     EXPECT_EQ(encode_arena.bytes_used(), 0u);
 }
 
-} // namespace pubsub_itc_fw
+} // namespace pubsub_itc_fw::tests

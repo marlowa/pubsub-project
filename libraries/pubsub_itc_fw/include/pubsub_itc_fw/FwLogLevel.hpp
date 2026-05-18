@@ -51,14 +51,38 @@ class FwLogLevel {
      * @return true on success, false if the string is not a recognised level.
      */
     static bool from_string(const std::string& str, FwLogLevel& level) {
-        if (str == "trace"    || str == "TRACE")    { level = FwLogLevel{Trace};    return true; }
-        if (str == "debug"    || str == "DEBUG")    { level = FwLogLevel{Debug};    return true; }
-        if (str == "info"     || str == "INFO")     { level = FwLogLevel{Info};     return true; }
-        if (str == "notice"   || str == "NOTICE")   { level = FwLogLevel{Notice};   return true; }
-        if (str == "warning"  || str == "WARNING")  { level = FwLogLevel{Warning};  return true; }
-        if (str == "error"    || str == "ERROR")    { level = FwLogLevel{Error};    return true; }
-        if (str == "critical" || str == "CRITICAL") { level = FwLogLevel{Critical}; return true; }
-        if (str == "alert"    || str == "ALERT")    { level = FwLogLevel{Alert};    return true; }
+        if (str == "trace" || str == "TRACE") {
+            level = FwLogLevel{Trace};
+            return true;
+        }
+        if (str == "debug" || str == "DEBUG") {
+            level = FwLogLevel{Debug};
+            return true;
+        }
+        if (str == "info" || str == "INFO") {
+            level = FwLogLevel{Info};
+            return true;
+        }
+        if (str == "notice" || str == "NOTICE") {
+            level = FwLogLevel{Notice};
+            return true;
+        }
+        if (str == "warning" || str == "WARNING") {
+            level = FwLogLevel{Warning};
+            return true;
+        }
+        if (str == "error" || str == "ERROR") {
+            level = FwLogLevel{Error};
+            return true;
+        }
+        if (str == "critical" || str == "CRITICAL") {
+            level = FwLogLevel{Critical};
+            return true;
+        }
+        if (str == "alert" || str == "ALERT") {
+            level = FwLogLevel{Alert};
+            return true;
+        }
         return false;
     }
 

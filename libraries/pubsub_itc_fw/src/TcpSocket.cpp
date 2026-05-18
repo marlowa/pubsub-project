@@ -1,30 +1,30 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-#include <fcntl.h>      // For fcntl, O_NONBLOCK
+#include <fcntl.h>       // For fcntl, O_NONBLOCK
 #include <netinet/tcp.h> // For TCP_NODELAY
-#include <sys/socket.h> // For socket(), bind(), listen(), accept(), connect(), shutdown(), setsockopt(), getsockopt(), socklen_t
-#include <unistd.h>     // For close()
+#include <sys/socket.h>  // For socket(), bind(), listen(), accept(), connect(), shutdown(), setsockopt(), getsockopt(), socklen_t
+#include <unistd.h>      // For close()
 
 // C++ headers whose names start with ‘c’
+#include <cerrno>  // For errno
 #include <cstdint> // For int, uint16_t
 #include <cstring> // For strerror, memset
-#include <cerrno>  // For errno
 
 // System C++ headers
-#include <memory>    // For std::unique_ptr, std::make_unique
-#include <string>    // For std::string
-#include <tuple>     // For std::tuple
-#include <utility>   // for std::move
+#include <memory>  // For std::unique_ptr, std::make_unique
+#include <string>  // For std::string
+#include <tuple>   // For std::tuple
+#include <utility> // for std::move
 
 // Third party headers
 #include <fmt/format.h> // For fmt::format
 
 // Project headers
-#include <pubsub_itc_fw/InetAddress.hpp>       // For InetAddress
-#include <pubsub_itc_fw/TcpSocket.hpp>         // Header for this class
+#include <pubsub_itc_fw/InetAddress.hpp>      // For InetAddress
+#include <pubsub_itc_fw/StringUtils.hpp>      // For StringUtils::get_error_string
+#include <pubsub_itc_fw/TcpSocket.hpp>        // Header for this class
 #include <pubsub_itc_fw/utils/SimpleSpan.hpp> // For SimpleSpan
-#include <pubsub_itc_fw/StringUtils.hpp>       // For StringUtils::get_error_string
 
 namespace pubsub_itc_fw {
 
@@ -42,16 +42,14 @@ namespace {
 [[nodiscard]] std::tuple<bool, std::string> set_non_blocking(int socket_fd) {
     const int raw_flags = fcntl(socket_fd, F_GETFL, 0);
     if (raw_flags == -1) {
-        return {false, fmt::format("Failed to get socket flags for fd {}: {}",
-                                   socket_fd, StringUtils::get_errno_string())};
+        return {false, fmt::format("Failed to get socket flags for fd {}: {}", socket_fd, StringUtils::get_errno_string())};
     }
 
     auto flags = static_cast<unsigned>(raw_flags);
     flags |= O_NONBLOCK;
 
     if (fcntl(socket_fd, F_SETFL, static_cast<int>(flags)) == -1) {
-        return {false, fmt::format("Failed to set socket {} to non-blocking mode: {}",
-                                   socket_fd, StringUtils::get_errno_string())};
+        return {false, fmt::format("Failed to set socket {} to non-blocking mode: {}", socket_fd, StringUtils::get_errno_string())};
     }
 
     return {true, ""};
@@ -60,13 +58,12 @@ namespace {
 [[nodiscard]] std::tuple<bool, std::string> set_tcp_no_delay(int socket_fd) {
     int flag = 1;
     if (::setsockopt(socket_fd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag)) == -1) {
-        return {false, fmt::format("Failed to set TCP_NODELAY on socket {}: {}",
-                                   socket_fd, StringUtils::get_errno_string())};
+        return {false, fmt::format("Failed to set TCP_NODELAY on socket {}: {}", socket_fd, StringUtils::get_errno_string())};
     }
     return {true, ""};
 }
 
-} // un-named namespace
+} // namespace
 
 /**
  * @brief Implementation details for `TcpSocket`.
@@ -220,8 +217,7 @@ TcpSocketImpl::TcpSocketImpl(int socket_fd) : socketFileDescriptor(socket_fd) {
         if (errno == EWOULDBLOCK || errno == EAGAIN) {
             return {-EAGAIN, ""}; // Socket send buffer full — caller should wait for EPOLLOUT.
         }
-        return {-errno, fmt::format("Failed to send data on socket {}: {}", socketFileDescriptor,
-                                    StringUtils::get_errno_string())};
+        return {-errno, fmt::format("Failed to send data on socket {}: {}", socketFileDescriptor, StringUtils::get_errno_string())};
     }
 
     return {static_cast<int>(bytes_sent), ""};
@@ -305,11 +301,8 @@ void TcpSocketImpl::close() {
         if (errno == EISCONN) {
             return {true, ""}; // Already connected
         }
-        return {false, fmt::format("Failed to connect socket {} to {}:{}: {}",
-                                   socketFileDescriptor,
-                                   remote_address.get_ip_address_string(),
-                                   remote_address.get_port(),
-                                   StringUtils::get_errno_string())};
+        return {false, fmt::format("Failed to connect socket {} to {}:{}: {}", socketFileDescriptor, remote_address.get_ip_address_string(),
+                                   remote_address.get_port(), StringUtils::get_errno_string())};
     }
 
     return {true, ""}; // Connection established immediately (e.g., to localhost)
@@ -329,11 +322,8 @@ void TcpSocketImpl::close() {
 
     const int result = ::bind(socketFileDescriptor, local_address.get_sockaddr(), local_address.get_sockaddr_size());
     if (result == -1) {
-        return {false, fmt::format("Failed to bind socket {} to {}:{}: {}",
-                                   socketFileDescriptor,
-                                   local_address.get_ip_address_string(),
-                                   local_address.get_port(),
-                                   StringUtils::get_errno_string())};
+        return {false, fmt::format("Failed to bind socket {} to {}:{}: {}", socketFileDescriptor, local_address.get_ip_address_string(),
+                                   local_address.get_port(), StringUtils::get_errno_string())};
     }
 
     return {true, ""};
@@ -426,8 +416,7 @@ int TcpSocketImpl::get_file_descriptor() const {
 TcpSocket::~TcpSocket() = default;
 
 // Private constructor for TcpSocket. Only called by static factory methods.
-TcpSocket::TcpSocket(int socket_fd) : p_impl_(std::make_unique<TcpSocketImpl>(socket_fd)) {
-}
+TcpSocket::TcpSocket(int socket_fd) : p_impl_(std::make_unique<TcpSocketImpl>(socket_fd)) {}
 
 [[nodiscard]] std::tuple<std::unique_ptr<TcpSocket>, std::string> TcpSocket::create(int ip_version) {
     const int socket_fd = ::socket(ip_version, SOCK_STREAM, 0);

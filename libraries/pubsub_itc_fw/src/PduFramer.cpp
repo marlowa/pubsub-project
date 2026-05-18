@@ -2,94 +2,73 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <arpa/inet.h>
-#include <endian.h>
 #include <cstring>
+#include <endian.h>
 
 #include <pubsub_itc_fw/PduFramer.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 
 namespace pubsub_itc_fw {
 
-PduFramer::PduFramer(ByteStreamInterface& stream)
-    : stream_(stream)
-    , active_frame_ptr_{nullptr}
-    , frame_size_{0}
-    , send_offset_{0}
-{
-}
+PduFramer::PduFramer(ByteStreamInterface& stream) : stream_(stream), active_frame_ptr_{nullptr}, frame_size_{0}, send_offset_{0} {}
 
-std::tuple<bool, std::string> PduFramer::send(int16_t pdu_id, int8_t version, int64_t seq_no,
-                                               const uint8_t* payload, uint32_t size)
-{
+std::tuple<bool, std::string> PduFramer::send(int16_t pdu_id, int8_t version, int64_t seq_no, const uint8_t* payload, uint32_t size) {
     if (payload == nullptr) {
-        throw PreconditionAssertion("PduFramer::send: payload must not be nullptr",
-                                    __FILE__, __LINE__);
+        throw PreconditionAssertion("PduFramer::send: payload must not be nullptr", __FILE__, __LINE__);
     }
     if (size == 0) {
-        throw PreconditionAssertion("PduFramer::send: size must be greater than zero",
-                                    __FILE__, __LINE__);
+        throw PreconditionAssertion("PduFramer::send: size must be greater than zero", __FILE__, __LINE__);
     }
     if (has_pending_data()) {
-        throw PreconditionAssertion("PduFramer::send: previous frame not yet fully sent",
-                                    __FILE__, __LINE__);
+        throw PreconditionAssertion("PduFramer::send: previous frame not yet fully sent", __FILE__, __LINE__);
     }
     if (sizeof(PduHeader) + size > frame_buffer_size) {
-        throw PreconditionAssertion("PduFramer::send: payload exceeds max_payload_size",
-                                    __FILE__, __LINE__);
+        throw PreconditionAssertion("PduFramer::send: payload exceeds max_payload_size", __FILE__, __LINE__);
     }
 
     // Build the frame into the internal buffer.
-    auto  hdr = reinterpret_cast<PduHeader*>(frame_buffer_);
+    auto hdr = reinterpret_cast<PduHeader*>(frame_buffer_);
     hdr->byte_count = htonl(size);
-    hdr->pdu_id     = htons(static_cast<uint16_t>(pdu_id));
-    hdr->version    = version;
-    hdr->filler_a   = 0;
-    hdr->seq_no     = static_cast<int64_t>(htobe64(static_cast<uint64_t>(seq_no)));
-    hdr->canary     = htonl(pdu_canary_value);
-    hdr->filler_b   = 0;
+    hdr->pdu_id = htons(static_cast<uint16_t>(pdu_id));
+    hdr->version = version;
+    hdr->filler_a = 0;
+    hdr->seq_no = static_cast<int64_t>(htobe64(static_cast<uint64_t>(seq_no)));
+    hdr->canary = htonl(pdu_canary_value);
+    hdr->filler_b = 0;
     std::memcpy(frame_buffer_ + sizeof(PduHeader), payload, size);
 
     active_frame_ptr_ = frame_buffer_;
-    frame_size_       = sizeof(PduHeader) + size;
-    send_offset_      = 0;
+    frame_size_ = sizeof(PduHeader) + size;
+    send_offset_ = 0;
 
     return continue_send();
 }
 
-std::tuple<bool, std::string> PduFramer::send_prebuilt(const uint8_t* frame,
-                                                        uint32_t total_bytes)
-{
+std::tuple<bool, std::string> PduFramer::send_prebuilt(const uint8_t* frame, uint32_t total_bytes) {
     if (frame == nullptr) {
-        throw PreconditionAssertion("PduFramer::send_prebuilt: frame must not be nullptr",
-                                    __FILE__, __LINE__);
+        throw PreconditionAssertion("PduFramer::send_prebuilt: frame must not be nullptr", __FILE__, __LINE__);
     }
     if (total_bytes <= sizeof(PduHeader)) {
-        throw PreconditionAssertion(
-            "PduFramer::send_prebuilt: total_bytes must be greater than sizeof(PduHeader)",
-            __FILE__, __LINE__);
+        throw PreconditionAssertion("PduFramer::send_prebuilt: total_bytes must be greater than sizeof(PduHeader)", __FILE__, __LINE__);
     }
     if (has_pending_data()) {
-        throw PreconditionAssertion(
-            "PduFramer::send_prebuilt: previous frame not yet fully sent",
-            __FILE__, __LINE__);
+        throw PreconditionAssertion("PduFramer::send_prebuilt: previous frame not yet fully sent", __FILE__, __LINE__);
     }
 
     // Zero-copy: point directly at the caller's slab chunk.
     active_frame_ptr_ = frame;
-    frame_size_       = total_bytes;
-    send_offset_      = 0;
+    frame_size_ = total_bytes;
+    send_offset_ = 0;
 
     return continue_send();
 }
 
-std::tuple<bool, std::string> PduFramer::continue_send()
-{
+std::tuple<bool, std::string> PduFramer::continue_send() {
     while (send_offset_ < frame_size_) {
-        const uint8_t* buf       = active_frame_ptr_ + send_offset_;
-        const size_t   remaining = frame_size_ - send_offset_;
+        const uint8_t* buf = active_frame_ptr_ + send_offset_;
+        const size_t remaining = frame_size_ - send_offset_;
 
-        auto [bytes_sent, error] = stream_.send(
-            utils::SimpleSpan<const uint8_t>(buf, remaining));
+        auto [bytes_sent, error] = stream_.send(utils::SimpleSpan<const uint8_t>(buf, remaining));
 
         if (bytes_sent < 0) {
             if (bytes_sent == -EAGAIN || bytes_sent == -EWOULDBLOCK) {
@@ -98,8 +77,8 @@ std::tuple<bool, std::string> PduFramer::continue_send()
             }
             // Non-recoverable error — reset state.
             active_frame_ptr_ = nullptr;
-            frame_size_        = 0;
-            send_offset_       = 0;
+            frame_size_ = 0;
+            send_offset_ = 0;
             return {false, error};
         }
 
@@ -108,13 +87,12 @@ std::tuple<bool, std::string> PduFramer::continue_send()
 
     // Frame fully sent — reset state.
     active_frame_ptr_ = nullptr;
-    frame_size_        = 0;
-    send_offset_       = 0;
+    frame_size_ = 0;
+    send_offset_ = 0;
     return {true, ""};
 }
 
-bool PduFramer::has_pending_data() const
-{
+bool PduFramer::has_pending_data() const {
     return send_offset_ < frame_size_;
 }
 

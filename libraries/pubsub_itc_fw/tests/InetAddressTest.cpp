@@ -113,13 +113,11 @@ TEST_F(InetAddressTest, CreateFromInvalidHostnameReturnsError) {
 
 TEST_F(InetAddressTest, CreateFromSockaddrIpv4Succeeds) {
     sockaddr_in sa{};
-    sa.sin_family      = AF_INET;
-    sa.sin_port        = htons(7777);
+    sa.sin_family = AF_INET;
+    sa.sin_port = htons(7777);
     sa.sin_addr.s_addr = inet_addr("10.0.0.1");
 
-    auto [addr, error] = InetAddress::create(
-        reinterpret_cast<const sockaddr*>(&sa),
-        static_cast<socklen_t>(sizeof(sa)));
+    auto [addr, error] = InetAddress::create(reinterpret_cast<const sockaddr*>(&sa), static_cast<socklen_t>(sizeof(sa)));
 
     ASSERT_NE(addr, nullptr);
     EXPECT_TRUE(error.empty());
@@ -131,12 +129,10 @@ TEST_F(InetAddressTest, CreateFromSockaddrIpv4Succeeds) {
 TEST_F(InetAddressTest, CreateFromSockaddrIpv6Succeeds) {
     sockaddr_in6 sa{};
     sa.sin6_family = AF_INET6;
-    sa.sin6_port   = htons(4444);
+    sa.sin6_port = htons(4444);
     inet_pton(AF_INET6, "::1", &sa.sin6_addr);
 
-    auto [addr, error] = InetAddress::create(
-        reinterpret_cast<const sockaddr*>(&sa),
-        static_cast<socklen_t>(sizeof(sa)));
+    auto [addr, error] = InetAddress::create(reinterpret_cast<const sockaddr*>(&sa), static_cast<socklen_t>(sizeof(sa)));
 
     ASSERT_NE(addr, nullptr);
     EXPECT_TRUE(error.empty());
@@ -156,17 +152,14 @@ TEST_F(InetAddressTest, CreateFromNullSockaddrReturnsError) {
 
 TEST_F(InetAddressTest, CreateFromZeroLengthSockaddrReturnsError) {
     sockaddr_in sa{};
-    auto [addr, error] = InetAddress::create(
-        reinterpret_cast<const sockaddr*>(&sa), 0);
+    auto [addr, error] = InetAddress::create(reinterpret_cast<const sockaddr*>(&sa), 0);
     EXPECT_EQ(addr, nullptr);
     EXPECT_FALSE(error.empty());
 }
 
 TEST_F(InetAddressTest, CreateFromOversizedSockaddrReturnsError) {
     sockaddr_in sa{};
-    auto [addr, error] = InetAddress::create(
-        reinterpret_cast<const sockaddr*>(&sa),
-        static_cast<socklen_t>(sizeof(sockaddr_storage) + 1));
+    auto [addr, error] = InetAddress::create(reinterpret_cast<const sockaddr*>(&sa), static_cast<socklen_t>(sizeof(sockaddr_storage) + 1));
     EXPECT_EQ(addr, nullptr);
     EXPECT_FALSE(error.empty());
 }

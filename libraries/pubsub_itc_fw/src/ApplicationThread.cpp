@@ -12,9 +12,9 @@
 
 #include <fmt/format.h>
 
+#include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
-#include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/BackoffWithYield.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
@@ -46,9 +46,10 @@ ApplicationThread::~ApplicationThread() {
     //       honest response.
     if (thread_ != nullptr && thread_->joinable()) {
         PUBSUB_LOG(logger_, FwLogLevel::Error,
-            "ApplicationThread {} destroyed while thread is still joinable. "
-            "This indicates finalize_threads_after_shutdown() was not called "
-            "or the thread refused to stop. Terminating.", thread_name_);
+                   "ApplicationThread {} destroyed while thread is still joinable. "
+                   "This indicates finalize_threads_after_shutdown() was not called "
+                   "or the thread refused to stop. Terminating.",
+                   thread_name_);
         std::terminate();
     }
 
@@ -56,8 +57,9 @@ ApplicationThread::~ApplicationThread() {
     // The reactor owns the threads.
 }
 
-ApplicationThread::ApplicationThread(ConstructorToken, QuillLogger& logger, Reactor& reactor, const std::string& thread_name, ThreadID thread_id, const QueueConfiguration& queue_config,
-                                     const AllocatorConfiguration& allocator_config, const ApplicationThreadConfiguration& thread_config)
+ApplicationThread::ApplicationThread(ConstructorToken, QuillLogger& logger, Reactor& reactor, const std::string& thread_name, ThreadID thread_id,
+                                     const QueueConfiguration& queue_config, const AllocatorConfiguration& allocator_config,
+                                     const ApplicationThreadConfiguration& thread_config)
     : logger_(logger)
     , reactor_(reactor)
     , outbound_allocator_(thread_config.outbound_slab_size)
@@ -97,13 +99,13 @@ void ApplicationThread::start() {
     // - extremely fast in normal builds
     // - generous enough under TSAN/Valgrind
     constexpr int max_iterations =
-    #if defined(USING_TSAN)
-        200000;   // TSAN is slow
-    #elif defined(USING_VALGRIND)
-        500000;   // Valgrind is slower
-    #else
-        20000;    // normal builds
-    #endif
+#if defined(USING_TSAN)
+        200000; // TSAN is slow
+#elif defined(USING_VALGRIND)
+        500000; // Valgrind is slower
+#else
+        20000; // normal builds
+#endif
 
     int iterations = 0;
 
@@ -167,8 +169,7 @@ void ApplicationThread::cancel_timer(const std::string& name) {
     name_to_id_.erase(it);
 }
 
-void ApplicationThread::connect_to_service(const std::string& service_name)
-{
+void ApplicationThread::connect_to_service(const std::string& service_name) {
     assert_called_from_owner();
 
     ReactorControlCommand command(ReactorControlCommand::CommandTag::Connect);
@@ -177,13 +178,12 @@ void ApplicationThread::connect_to_service(const std::string& service_name)
     reactor_.enqueue_control_command(command);
 }
 
-void ApplicationThread::commit_raw_bytes(ConnectionID conn_id, int64_t bytes_consumed)
-{
+void ApplicationThread::commit_raw_bytes(ConnectionID conn_id, int64_t bytes_consumed) {
     if (active_connection_ids_.find(conn_id) == active_connection_ids_.end()) {
-        throw PreconditionAssertion(
-            fmt::format("ApplicationThread::commit_raw_bytes: ConnectionID {} "
-                        "does not belong to this thread", conn_id.get_value()),
-            __FILE__, __LINE__);
+        throw PreconditionAssertion(fmt::format("ApplicationThread::commit_raw_bytes: ConnectionID {} "
+                                                "does not belong to this thread",
+                                                conn_id.get_value()),
+                                    __FILE__, __LINE__);
     }
     ReactorControlCommand command(ReactorControlCommand::CommandTag::CommitRawBytes);
     command.connection_id_ = conn_id;
@@ -191,22 +191,19 @@ void ApplicationThread::commit_raw_bytes(ConnectionID conn_id, int64_t bytes_con
     reactor_.enqueue_control_command(command);
 }
 
-void ApplicationThread::send_raw(ConnectionID conn_id, const void* data, uint32_t size)
-{
+void ApplicationThread::send_raw(ConnectionID conn_id, const void* data, uint32_t size) {
     if (active_connection_ids_.find(conn_id) == active_connection_ids_.end()) {
-        throw PreconditionAssertion(
-            fmt::format("ApplicationThread::send_raw: ConnectionID {} "
-                        "does not belong to this thread", conn_id.get_value()),
-            __FILE__, __LINE__);
+        throw PreconditionAssertion(fmt::format("ApplicationThread::send_raw: ConnectionID {} "
+                                                "does not belong to this thread",
+                                                conn_id.get_value()),
+                                    __FILE__, __LINE__);
     }
 
     if (data == nullptr) {
-        throw PreconditionAssertion(
-            "ApplicationThread::send_raw: data must not be nullptr", __FILE__, __LINE__);
+        throw PreconditionAssertion("ApplicationThread::send_raw: data must not be nullptr", __FILE__, __LINE__);
     }
     if (size == 0) {
-        throw PreconditionAssertion(
-            "ApplicationThread::send_raw: size must be greater than zero", __FILE__, __LINE__);
+        throw PreconditionAssertion("ApplicationThread::send_raw: size must be greater than zero", __FILE__, __LINE__);
     }
 
     auto [slab_id, chunk] = outbound_allocator_.allocate(size);
@@ -492,11 +489,8 @@ void ApplicationThread::enqueue_send_pdu_command(ConnectionID conn_id, int slab_
     reactor_.enqueue_control_command(cmd);
 }
 
-void ApplicationThread::release_pdu_payload(const EventMessage& message)
-{
-    reactor_.inbound_slab_allocator().deallocate(
-        message.slab_id(),
-        const_cast<uint8_t*>(message.payload()));
+void ApplicationThread::release_pdu_payload(const EventMessage& message) {
+    reactor_.inbound_slab_allocator().deallocate(message.slab_id(), const_cast<uint8_t*>(message.payload()));
 }
 
 } // namespace pubsub_itc_fw

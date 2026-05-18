@@ -82,28 +82,27 @@ namespace pubsub_itc_fw::tests {
 // Implements all pure virtuals as no-ops. Never started.
 // ============================================================
 class StubApplicationThread : public ApplicationThread {
-public:
+  public:
     StubApplicationThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
-        : ApplicationThread(token, logger, reactor, "StubApplicationThread", ThreadID{1},
-                            make_queue_config(), make_allocator_config(),
+        : ApplicationThread(token, logger, reactor, "StubApplicationThread", ThreadID{1}, make_queue_config(), make_allocator_config(),
                             ApplicationThreadConfiguration{}) {}
 
-protected:
+  protected:
     void on_itc_message([[maybe_unused]] const EventMessage& msg) override {}
 
-private:
+  private:
     static QueueConfiguration make_queue_config() {
         QueueConfiguration cfg{};
-        cfg.low_watermark  = 1;
+        cfg.low_watermark = 1;
         cfg.high_watermark = 64;
         return cfg;
     }
 
     static AllocatorConfiguration make_allocator_config() {
         AllocatorConfiguration cfg{};
-        cfg.pool_name        = "StubPool";
+        cfg.pool_name = "StubPool";
         cfg.objects_per_pool = 16;
-        cfg.initial_pools    = 1;
+        cfg.initial_pools = 1;
         return cfg;
     }
 };
@@ -112,14 +111,13 @@ private:
 // Test fixture
 // ============================================================
 class PduProtocolHandlerTest : public ::testing::Test {
-protected:
+  protected:
     void SetUp() override {
         logger_ = std::make_unique<LoggerWithSink>();
 
         // Construct a Reactor purely to satisfy ApplicationThread's constructor.
         // It is never run.
-        reactor_ = std::make_unique<Reactor>(
-            ReactorConfiguration{}, service_registry_, logger_->logger);
+        reactor_ = std::make_unique<Reactor>(ReactorConfiguration{}, service_registry_, logger_->logger);
 
         stub_thread_ = pubsub_itc_fw::ApplicationThread::create<StubApplicationThread>(logger_->logger, *reactor_);
 
@@ -130,28 +128,21 @@ protected:
         // Create the socketpair. handler_fd_ is set non-blocking by TcpSocket::adopt().
         // raw_fd_ is set non-blocking explicitly below — no fd in this test may block.
         int fds[2];
-        ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0)
-            << "socketpair() failed";
+        ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0) << "socketpair() failed";
         handler_fd_ = fds[0];
-        raw_fd_     = fds[1];
+        raw_fd_ = fds[1];
 
         // Set raw_fd to non-blocking so drain_raw() never blocks when the
         // buffer is temporarily empty between continue_send() calls.
         const int flags = ::fcntl(raw_fd_, F_GETFL, 0);
         ASSERT_NE(flags, -1) << "fcntl F_GETFL failed";
-        ASSERT_NE(::fcntl(raw_fd_, F_SETFL, flags | O_NONBLOCK), -1)
-            << "fcntl F_SETFL O_NONBLOCK failed";
+        ASSERT_NE(::fcntl(raw_fd_, F_SETFL, flags | O_NONBLOCK), -1) << "fcntl F_SETFL O_NONBLOCK failed";
 
         auto [socket, error] = TcpSocket::adopt(handler_fd_);
         ASSERT_NE(socket, nullptr) << "TcpSocket::adopt failed: " << error;
         socket_ = std::move(socket);
 
-        handler_ = std::make_unique<PduProtocolHandler>(
-            *socket_,
-            *stub_thread_,
-            *inbound_allocator_,
-            logger_->logger,
-            ConnectionID{});
+        handler_ = std::make_unique<PduProtocolHandler>(*socket_, *stub_thread_, *inbound_allocator_, logger_->logger, ConnectionID{});
     }
 
     void TearDown() override {
@@ -173,8 +164,8 @@ protected:
     // and prepends a valid PduHeader so the bytes look like a real frame.
     // Returns the slab_id, the chunk pointer, and the total frame size.
     struct PrebuiltFrame {
-        int      slab_id;
-        void*    chunk;
+        int slab_id;
+        void* chunk;
         uint32_t total_bytes;
     };
 
@@ -184,12 +175,12 @@ protected:
 
         auto* header = static_cast<PduHeader*>(chunk);
         header->byte_count = htonl(static_cast<uint32_t>(payload_size));
-        header->pdu_id     = htons(static_cast<uint16_t>(42));
-        header->version    = 1;
-        header->filler_a   = 0;
-        header->seq_no     = 0;
-        header->canary     = htonl(pdu_canary_value);
-        header->filler_b   = 0;
+        header->pdu_id = htons(static_cast<uint16_t>(42));
+        header->version = 1;
+        header->filler_a = 0;
+        header->seq_no = 0;
+        header->canary = htonl(pdu_canary_value);
+        header->filler_b = 0;
 
         // Fill payload with a recognisable pattern.
         auto* payload = static_cast<uint8_t*>(chunk) + sizeof(PduHeader);
@@ -227,17 +218,17 @@ protected:
         return *outbound_allocator_;
     }
 
-    std::unique_ptr<LoggerWithSink>           logger_;
-    ServiceRegistry                           service_registry_;
-    std::unique_ptr<Reactor>                  reactor_;
-    std::shared_ptr<StubApplicationThread>    stub_thread_;
-    std::unique_ptr<ExpandableSlabAllocator>  inbound_allocator_;
-    std::unique_ptr<ExpandableSlabAllocator>  outbound_allocator_;
-    std::unique_ptr<TcpSocket>                socket_;
-    std::unique_ptr<PduProtocolHandler>       handler_;
-    int                                       handler_fd_{-1};
-    int                                       raw_fd_{-1};
-    bool                                      disconnect_called_{false};
+    std::unique_ptr<LoggerWithSink> logger_;
+    ServiceRegistry service_registry_;
+    std::unique_ptr<Reactor> reactor_;
+    std::shared_ptr<StubApplicationThread> stub_thread_;
+    std::unique_ptr<ExpandableSlabAllocator> inbound_allocator_;
+    std::unique_ptr<ExpandableSlabAllocator> outbound_allocator_;
+    std::unique_ptr<TcpSocket> socket_;
+    std::unique_ptr<PduProtocolHandler> handler_;
+    int handler_fd_{-1};
+    int raw_fd_{-1};
+    bool disconnect_called_{false};
 };
 
 // ============================================================
@@ -337,8 +328,7 @@ TEST_F(PduProtocolHandlerTest, ContinueSendReleasesChunkOnCompletion) {
     // only one slab (the original, reset) or at most two.
     auto [slab_id2, chunk2] = send_allocator.allocate(4 * 1024 * 1024);
     EXPECT_NE(chunk2, nullptr);
-    EXPECT_LE(send_allocator.slab_count(), 2)
-        << "Slab count grew unexpectedly; chunk may not have been released";
+    EXPECT_LE(send_allocator.slab_count(), 2) << "Slab count grew unexpectedly; chunk may not have been released";
     send_allocator.deallocate(slab_id2, chunk2);
 
     drain_raw(total_bytes);
@@ -366,8 +356,7 @@ TEST_F(PduProtocolHandlerTest, DeallocatePendingSendReleasesChunk) {
     // that the allocator can reclaim the memory without chaining a new slab.
     auto [slab_id2, chunk2] = send_allocator.allocate(4 * 1024 * 1024);
     EXPECT_NE(chunk2, nullptr);
-    EXPECT_LE(send_allocator.slab_count(), 2)
-        << "Slab count grew unexpectedly; chunk may not have been released";
+    EXPECT_LE(send_allocator.slab_count(), 2) << "Slab count grew unexpectedly; chunk may not have been released";
     send_allocator.deallocate(slab_id2, chunk2);
 
     drain_raw(total_bytes);

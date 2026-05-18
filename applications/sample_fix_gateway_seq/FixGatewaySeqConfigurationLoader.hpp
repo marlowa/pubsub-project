@@ -3,9 +3,9 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <memory>
 #include <string>
 #include <tuple>
-#include <memory>
 
 #include "FixGatewaySeqConfiguration.hpp"
 
@@ -41,7 +41,6 @@ namespace sample_fix_gateway_seq {
  */
 class FixGatewaySeqConfigurationLoader {
   public:
-
     /**
      * @brief Loads and validates configuration from the given TOML file path.
      * note: this includes getting the logger going with any config for rolling on size or time.
@@ -51,7 +50,8 @@ class FixGatewaySeqConfigurationLoader {
      * @return Populated FixGatewaySeqConfiguration and created logger.
      * @throws pubsub_itc_fw::ConfigurationException on any error.
      */
-    static std::tuple<FixGatewaySeqConfiguration, std::unique_ptr<pubsub_itc_fw::QuillLogger>> load_and_init_logging(const std::string& file_path, const std::string& log_file_path);
+    static std::tuple<FixGatewaySeqConfiguration, std::unique_ptr<pubsub_itc_fw::QuillLogger>> load_and_init_logging(const std::string& file_path,
+                                                                                                                     const std::string& log_file_path);
 };
 
 } // namespace sample_fix_gateway_seq

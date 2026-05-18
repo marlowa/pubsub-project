@@ -136,9 +136,7 @@ void SlabAllocator::clear_is_current() {
 
 bool SlabAllocator::try_claim_enqueue() {
     bool expected = false;
-    return is_enqueued_.compare_exchange_strong(expected, true,
-                                                std::memory_order_acq_rel,
-                                                std::memory_order_relaxed);
+    return is_enqueued_.compare_exchange_strong(expected, true, std::memory_order_acq_rel, std::memory_order_relaxed);
 }
 
 EmptySlabQueueNode& SlabAllocator::queue_node() {

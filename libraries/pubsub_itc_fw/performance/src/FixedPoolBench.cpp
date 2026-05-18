@@ -83,10 +83,10 @@ install imagemagick to be able to convert svg files to jpg.
  */
 
 #include <atomic>
-#include <cstddef>
-#include <cstdint>
 #include <cassert>
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <iostream>
 #include <thread>
@@ -135,13 +135,9 @@ struct TestObject {
 // -----------------------------------------------------------------------------
 // Single-producer / single-consumer ring buffer of pointers
 // -----------------------------------------------------------------------------
-template <typename T>
-class SpscRing {
+template <typename T> class SpscRing {
   public:
-    explicit SpscRing(std::size_t capacity)
-        : capacity_(capacity),
-          mask_(capacity - 1),
-          buffer_(capacity) {
+    explicit SpscRing(std::size_t capacity) : capacity_(capacity), mask_(capacity - 1), buffer_(capacity) {
         // Require power-of-two capacity
         assert((capacity_ & mask_) == 0 && "SpscRing capacity must be power of two");
     }
@@ -180,19 +176,15 @@ class SpscRing {
 // -----------------------------------------------------------------------------
 int main() {
     // Tunables: adjust for your machine / perf session
-    const int poolCapacity          = 1024;          // number of slots in pool
-    const std::size_t ringCapacity  = 1024;          // must be power of two
-    const std::size_t iterations    = 50'000'000;     // producer iterations
-    const int producerCpu           = 2;             // adjust as needed
-    const int consumerCpu           = 3;             // adjust as needed
+    const int poolCapacity = 1024;             // number of slots in pool
+    const std::size_t ringCapacity = 1024;     // must be power of two
+    const std::size_t iterations = 50'000'000; // producer iterations
+    const int producerCpu = 2;                 // adjust as needed
+    const int consumerCpu = 3;                 // adjust as needed
     const bool simulateSlowConsumer = true;
-    const int consumerBusyWorkIters = 50;            // small spin to lag consumer
+    const int consumerBusyWorkIters = 50; // small spin to lag consumer
 
-    FixedSizeMemoryPool<TestObject> pool(
-        poolCapacity,
-        UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages),
-        MakeHugePageErrorHandler()
-    );
+    FixedSizeMemoryPool<TestObject> pool(poolCapacity, UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages), MakeHugePageErrorHandler());
 
     SpscRing<TestObject> ring(ringCapacity);
 
@@ -266,8 +258,7 @@ int main() {
 
                 consumed.fetch_add(1, std::memory_order_relaxed);
             } else {
-                if (doneFlag.load(std::memory_order_acquire) &&
-                    consumed.load(std::memory_order_relaxed) >= produced.load(std::memory_order_relaxed)) {
+                if (doneFlag.load(std::memory_order_acquire) && consumed.load(std::memory_order_relaxed) >= produced.load(std::memory_order_relaxed)) {
                     break;
                 }
                 std::this_thread::yield();

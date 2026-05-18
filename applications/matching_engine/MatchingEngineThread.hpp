@@ -40,9 +40,7 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
      * @param[in] reactor  Owning Reactor. Must outlive this object.
      * @param[in] config   Matching engine configuration.
      */
-    MatchingEngineThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token,
-                         pubsub_itc_fw::QuillLogger& logger,
-                         pubsub_itc_fw::Reactor& reactor,
+    MatchingEngineThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger, pubsub_itc_fw::Reactor& reactor,
                          const MatchingEngineConfiguration& config);
 
   protected:

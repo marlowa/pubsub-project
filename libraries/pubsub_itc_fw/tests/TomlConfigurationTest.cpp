@@ -28,7 +28,7 @@
 namespace pubsub_itc_fw::tests {
 
 class TomlConfigurationTest : public ::testing::Test {
-protected:
+  protected:
     TomlConfiguration config;
 };
 
@@ -36,8 +36,7 @@ protected:
 // load_string
 // ============================================================
 
-TEST_F(TomlConfigurationTest, LoadStringValidToml)
-{
+TEST_F(TomlConfigurationTest, LoadStringValidToml) {
     auto [ok, err] = config.load_string(R"(
         [gateway]
         sender_comp_id = "GATEWAY"
@@ -47,23 +46,20 @@ TEST_F(TomlConfigurationTest, LoadStringValidToml)
     EXPECT_TRUE(err.empty());
 }
 
-TEST_F(TomlConfigurationTest, LoadStringInvalidTomlReturnsFalse)
-{
+TEST_F(TomlConfigurationTest, LoadStringInvalidTomlReturnsFalse) {
     auto [ok, err] = config.load_string("this is not valid toml ][[[");
     EXPECT_FALSE(ok);
     EXPECT_FALSE(err.empty());
 }
 
-TEST_F(TomlConfigurationTest, LoadStringInvalidTomlIncludesLineNumber)
-{
+TEST_F(TomlConfigurationTest, LoadStringInvalidTomlIncludesLineNumber) {
     auto [ok, err] = config.load_string("key = \n][[[");
     EXPECT_FALSE(ok);
     // Error message should contain a line number
     EXPECT_NE(err.find("line"), std::string::npos);
 }
 
-TEST_F(TomlConfigurationTest, LoadStringLeavesConfigUnchangedOnFailure)
-{
+TEST_F(TomlConfigurationTest, LoadStringLeavesConfigUnchangedOnFailure) {
     // Load valid config first
     auto [ok1, err1] = config.load_string(R"(name = "original")");
     EXPECT_TRUE(ok1);
@@ -83,8 +79,7 @@ TEST_F(TomlConfigurationTest, LoadStringLeavesConfigUnchangedOnFailure)
 // load_file
 // ============================================================
 
-TEST_F(TomlConfigurationTest, LoadFileNonExistentFileReturnsFalse)
-{
+TEST_F(TomlConfigurationTest, LoadFileNonExistentFileReturnsFalse) {
     auto [ok, err] = config.load_file("/tmp/does_not_exist_12345.toml");
     EXPECT_FALSE(ok);
     EXPECT_FALSE(err.empty());
@@ -94,8 +89,7 @@ TEST_F(TomlConfigurationTest, LoadFileNonExistentFileReturnsFalse)
 // set / get_required: std::string
 // ============================================================
 
-TEST_F(TomlConfigurationTest, SetAndGetString)
-{
+TEST_F(TomlConfigurationTest, SetAndGetString) {
     config.set("name", std::string{"hello"});
     std::string value;
     auto [ok, err] = config.get_required("name", value);
@@ -103,8 +97,7 @@ TEST_F(TomlConfigurationTest, SetAndGetString)
     EXPECT_EQ(value, "hello");
 }
 
-TEST_F(TomlConfigurationTest, GetStringMissingKeyReturnsFalse)
-{
+TEST_F(TomlConfigurationTest, GetStringMissingKeyReturnsFalse) {
     std::string value;
     auto [ok, err] = config.get_required("missing_key", value);
     EXPECT_FALSE(ok);
@@ -112,8 +105,7 @@ TEST_F(TomlConfigurationTest, GetStringMissingKeyReturnsFalse)
     EXPECT_NE(err.find("missing_key"), std::string::npos);
 }
 
-TEST_F(TomlConfigurationTest, GetStringWrongTypeReturnsFalse)
-{
+TEST_F(TomlConfigurationTest, GetStringWrongTypeReturnsFalse) {
     config.set("count", int32_t{42});
     std::string value;
     auto [ok, err] = config.get_required("count", value);
@@ -125,8 +117,7 @@ TEST_F(TomlConfigurationTest, GetStringWrongTypeReturnsFalse)
 // set / get_required: bool
 // ============================================================
 
-TEST_F(TomlConfigurationTest, SetAndGetBoolTrue)
-{
+TEST_F(TomlConfigurationTest, SetAndGetBoolTrue) {
     config.set("flag", true);
     bool value = false;
     auto [ok, err] = config.get_required("flag", value);
@@ -134,8 +125,7 @@ TEST_F(TomlConfigurationTest, SetAndGetBoolTrue)
     EXPECT_TRUE(value);
 }
 
-TEST_F(TomlConfigurationTest, SetAndGetBoolFalse)
-{
+TEST_F(TomlConfigurationTest, SetAndGetBoolFalse) {
     config.set("flag", false);
     bool value = true;
     auto [ok, err] = config.get_required("flag", value);
@@ -143,8 +133,7 @@ TEST_F(TomlConfigurationTest, SetAndGetBoolFalse)
     EXPECT_FALSE(value);
 }
 
-TEST_F(TomlConfigurationTest, GetBoolWrongTypeReturnsFalse)
-{
+TEST_F(TomlConfigurationTest, GetBoolWrongTypeReturnsFalse) {
     config.set("name", std::string{"hello"});
     bool value = false;
     auto [ok, err] = config.get_required("name", value);
@@ -155,8 +144,7 @@ TEST_F(TomlConfigurationTest, GetBoolWrongTypeReturnsFalse)
 // set / get_required: int32_t
 // ============================================================
 
-TEST_F(TomlConfigurationTest, SetAndGetInt32)
-{
+TEST_F(TomlConfigurationTest, SetAndGetInt32) {
     config.set("port", int32_t{9878});
     int32_t value = 0;
     auto [ok, err] = config.get_required("port", value);
@@ -164,8 +152,7 @@ TEST_F(TomlConfigurationTest, SetAndGetInt32)
     EXPECT_EQ(value, 9878);
 }
 
-TEST_F(TomlConfigurationTest, GetInt32OutOfRangeReturnsFalse)
-{
+TEST_F(TomlConfigurationTest, GetInt32OutOfRangeReturnsFalse) {
     // Set a value that is valid int64 but out of int32 range
     config.set("big", int64_t{3'000'000'000LL});
     int32_t value = 0;
@@ -178,8 +165,7 @@ TEST_F(TomlConfigurationTest, GetInt32OutOfRangeReturnsFalse)
 // set / get_required: int64_t
 // ============================================================
 
-TEST_F(TomlConfigurationTest, SetAndGetInt64)
-{
+TEST_F(TomlConfigurationTest, SetAndGetInt64) {
     config.set("big", int64_t{3'000'000'000LL});
     int64_t value = 0;
     auto [ok, err] = config.get_required("big", value);
@@ -191,8 +177,7 @@ TEST_F(TomlConfigurationTest, SetAndGetInt64)
 // set / get_required: double
 // ============================================================
 
-TEST_F(TomlConfigurationTest, SetAndGetDouble)
-{
+TEST_F(TomlConfigurationTest, SetAndGetDouble) {
     config.set("ratio", 3.14);
     double value = 0.0;
     auto [ok, err] = config.get_required("ratio", value);
@@ -204,8 +189,7 @@ TEST_F(TomlConfigurationTest, SetAndGetDouble)
 // Nested key access
 // ============================================================
 
-TEST_F(TomlConfigurationTest, SetAndGetNestedKey)
-{
+TEST_F(TomlConfigurationTest, SetAndGetNestedKey) {
     config.set("gateway.sender_comp_id", std::string{"GATEWAY"});
     config.set("gateway.listen_port", int32_t{9878});
 
@@ -220,8 +204,7 @@ TEST_F(TomlConfigurationTest, SetAndGetNestedKey)
     EXPECT_EQ(port, 9878);
 }
 
-TEST_F(TomlConfigurationTest, LoadStringNestedKey)
-{
+TEST_F(TomlConfigurationTest, LoadStringNestedKey) {
     auto [ok, err] = config.load_string(R"(
         [gateway]
         sender_comp_id = "GATEWAY"
@@ -244,8 +227,7 @@ TEST_F(TomlConfigurationTest, LoadStringNestedKey)
 // Duration: set and get same type
 // ============================================================
 
-TEST_F(TomlConfigurationTest, SetAndGetSeconds)
-{
+TEST_F(TomlConfigurationTest, SetAndGetSeconds) {
     config.set("timeout", std::chrono::seconds{30});
     std::chrono::seconds value{0};
     auto [ok, err] = config.get_required("timeout", value);
@@ -253,8 +235,7 @@ TEST_F(TomlConfigurationTest, SetAndGetSeconds)
     EXPECT_EQ(value, std::chrono::seconds{30});
 }
 
-TEST_F(TomlConfigurationTest, SetAndGetMilliseconds)
-{
+TEST_F(TomlConfigurationTest, SetAndGetMilliseconds) {
     config.set("interval", std::chrono::milliseconds{500});
     std::chrono::milliseconds value{0};
     auto [ok, err] = config.get_required("interval", value);
@@ -262,8 +243,7 @@ TEST_F(TomlConfigurationTest, SetAndGetMilliseconds)
     EXPECT_EQ(value, std::chrono::milliseconds{500});
 }
 
-TEST_F(TomlConfigurationTest, SetAndGetMicroseconds)
-{
+TEST_F(TomlConfigurationTest, SetAndGetMicroseconds) {
     config.set("latency", std::chrono::microseconds{100});
     std::chrono::microseconds value{0};
     auto [ok, err] = config.get_required("latency", value);
@@ -271,8 +251,7 @@ TEST_F(TomlConfigurationTest, SetAndGetMicroseconds)
     EXPECT_EQ(value, std::chrono::microseconds{100});
 }
 
-TEST_F(TomlConfigurationTest, SetAndGetNanoseconds)
-{
+TEST_F(TomlConfigurationTest, SetAndGetNanoseconds) {
     config.set("precision", std::chrono::nanoseconds{500});
     std::chrono::nanoseconds value{0};
     auto [ok, err] = config.get_required("precision", value);
@@ -280,8 +259,7 @@ TEST_F(TomlConfigurationTest, SetAndGetNanoseconds)
     EXPECT_EQ(value, std::chrono::nanoseconds{500});
 }
 
-TEST_F(TomlConfigurationTest, SetAndGetMinutes)
-{
+TEST_F(TomlConfigurationTest, SetAndGetMinutes) {
     config.set("window", std::chrono::minutes{5});
     std::chrono::minutes value{0};
     auto [ok, err] = config.get_required("window", value);
@@ -289,8 +267,7 @@ TEST_F(TomlConfigurationTest, SetAndGetMinutes)
     EXPECT_EQ(value, std::chrono::minutes{5});
 }
 
-TEST_F(TomlConfigurationTest, SetAndGetHours)
-{
+TEST_F(TomlConfigurationTest, SetAndGetHours) {
     config.set("session", std::chrono::hours{8});
     std::chrono::hours value{0};
     auto [ok, err] = config.get_required("session", value);
@@ -302,8 +279,7 @@ TEST_F(TomlConfigurationTest, SetAndGetHours)
 // Duration: lossless conversion (coarse to fine)
 // ============================================================
 
-TEST_F(TomlConfigurationTest, SecondsConvertedToMilliseconds)
-{
+TEST_F(TomlConfigurationTest, SecondsConvertedToMilliseconds) {
     config.set("timeout", std::chrono::seconds{30});
     std::chrono::milliseconds value{0};
     auto [ok, err] = config.get_required("timeout", value);
@@ -311,8 +287,7 @@ TEST_F(TomlConfigurationTest, SecondsConvertedToMilliseconds)
     EXPECT_EQ(value, std::chrono::milliseconds{30'000});
 }
 
-TEST_F(TomlConfigurationTest, SecondsConvertedToMicroseconds)
-{
+TEST_F(TomlConfigurationTest, SecondsConvertedToMicroseconds) {
     config.set("timeout", std::chrono::seconds{1});
     std::chrono::microseconds value{0};
     auto [ok, err] = config.get_required("timeout", value);
@@ -320,8 +295,7 @@ TEST_F(TomlConfigurationTest, SecondsConvertedToMicroseconds)
     EXPECT_EQ(value, std::chrono::microseconds{1'000'000});
 }
 
-TEST_F(TomlConfigurationTest, MillisecondsConvertedToMicroseconds)
-{
+TEST_F(TomlConfigurationTest, MillisecondsConvertedToMicroseconds) {
     config.set("interval", std::chrono::milliseconds{5});
     std::chrono::microseconds value{0};
     auto [ok, err] = config.get_required("interval", value);
@@ -333,8 +307,7 @@ TEST_F(TomlConfigurationTest, MillisecondsConvertedToMicroseconds)
 // Duration: lossless conversion (fine to coarse, exact)
 // ============================================================
 
-TEST_F(TomlConfigurationTest, ExactMillisecondsConvertedToSeconds)
-{
+TEST_F(TomlConfigurationTest, ExactMillisecondsConvertedToSeconds) {
     config.set("timeout", std::chrono::milliseconds{1000});
     std::chrono::seconds value{0};
     auto [ok, err] = config.get_required("timeout", value);
@@ -342,8 +315,7 @@ TEST_F(TomlConfigurationTest, ExactMillisecondsConvertedToSeconds)
     EXPECT_EQ(value, std::chrono::seconds{1});
 }
 
-TEST_F(TomlConfigurationTest, ExactMicrosecondsConvertedToMilliseconds)
-{
+TEST_F(TomlConfigurationTest, ExactMicrosecondsConvertedToMilliseconds) {
     config.set("latency", std::chrono::microseconds{2000});
     std::chrono::milliseconds value{0};
     auto [ok, err] = config.get_required("latency", value);
@@ -355,8 +327,7 @@ TEST_F(TomlConfigurationTest, ExactMicrosecondsConvertedToMilliseconds)
 // Duration: lossy conversion (fine to coarse, not exact)
 // ============================================================
 
-TEST_F(TomlConfigurationTest, LossyMillisecondsToSecondsReturnsFalse)
-{
+TEST_F(TomlConfigurationTest, LossyMillisecondsToSecondsReturnsFalse) {
     config.set("timeout", std::chrono::milliseconds{500});
     std::chrono::seconds value{0};
     auto [ok, err] = config.get_required("timeout", value);
@@ -364,8 +335,7 @@ TEST_F(TomlConfigurationTest, LossyMillisecondsToSecondsReturnsFalse)
     EXPECT_NE(err.find("precision"), std::string::npos);
 }
 
-TEST_F(TomlConfigurationTest, LossyMicrosecondsToMillisecondsReturnsFalse)
-{
+TEST_F(TomlConfigurationTest, LossyMicrosecondsToMillisecondsReturnsFalse) {
     config.set("latency", std::chrono::microseconds{100});
     std::chrono::milliseconds value{0};
     auto [ok, err] = config.get_required("latency", value);
@@ -376,8 +346,7 @@ TEST_F(TomlConfigurationTest, LossyMicrosecondsToMillisecondsReturnsFalse)
 // Duration: load_string with suffix
 // ============================================================
 
-TEST_F(TomlConfigurationTest, LoadStringDurationSeconds)
-{
+TEST_F(TomlConfigurationTest, LoadStringDurationSeconds) {
     auto [ok, err] = config.load_string(R"(logon_timeout = "30s")");
     EXPECT_TRUE(ok);
     std::chrono::seconds value{0};
@@ -386,8 +355,7 @@ TEST_F(TomlConfigurationTest, LoadStringDurationSeconds)
     EXPECT_EQ(value, std::chrono::seconds{30});
 }
 
-TEST_F(TomlConfigurationTest, LoadStringDurationMilliseconds)
-{
+TEST_F(TomlConfigurationTest, LoadStringDurationMilliseconds) {
     auto [ok, err] = config.load_string(R"(interval = "500ms")");
     EXPECT_TRUE(ok);
     std::chrono::milliseconds value{0};
@@ -396,8 +364,7 @@ TEST_F(TomlConfigurationTest, LoadStringDurationMilliseconds)
     EXPECT_EQ(value, std::chrono::milliseconds{500});
 }
 
-TEST_F(TomlConfigurationTest, LoadStringDurationMinutes)
-{
+TEST_F(TomlConfigurationTest, LoadStringDurationMinutes) {
     auto [ok, err] = config.load_string(R"(window = "5m")");
     EXPECT_TRUE(ok);
     std::chrono::minutes value{0};
@@ -406,8 +373,7 @@ TEST_F(TomlConfigurationTest, LoadStringDurationMinutes)
     EXPECT_EQ(value, std::chrono::minutes{5});
 }
 
-TEST_F(TomlConfigurationTest, LoadStringDurationHours)
-{
+TEST_F(TomlConfigurationTest, LoadStringDurationHours) {
     auto [ok, err] = config.load_string(R"(session = "8h")");
     EXPECT_TRUE(ok);
     std::chrono::hours value{0};
@@ -416,8 +382,7 @@ TEST_F(TomlConfigurationTest, LoadStringDurationHours)
     EXPECT_EQ(value, std::chrono::hours{8});
 }
 
-TEST_F(TomlConfigurationTest, LoadStringDurationUnknownSuffixReturnsFalse)
-{
+TEST_F(TomlConfigurationTest, LoadStringDurationUnknownSuffixReturnsFalse) {
     auto [ok, err] = config.load_string(R"(timeout = "30x")");
     EXPECT_TRUE(ok); // parses as valid TOML string
     std::chrono::seconds value{0};
@@ -426,8 +391,7 @@ TEST_F(TomlConfigurationTest, LoadStringDurationUnknownSuffixReturnsFalse)
     EXPECT_NE(err2.find("unknown"), std::string::npos);
 }
 
-TEST_F(TomlConfigurationTest, LoadStringDurationMalformedReturnsFalse)
-{
+TEST_F(TomlConfigurationTest, LoadStringDurationMalformedReturnsFalse) {
     auto [ok, err] = config.load_string(R"(timeout = "abcs")");
     EXPECT_TRUE(ok); // parses as valid TOML string
     std::chrono::seconds value{0};
@@ -439,84 +403,72 @@ TEST_F(TomlConfigurationTest, LoadStringDurationMalformedReturnsFalse)
 // get_required_except: throws ConfigurationException
 // ============================================================
 
-TEST_F(TomlConfigurationTest, GetRequiredExceptThrowsOnMissingKey)
-{
+TEST_F(TomlConfigurationTest, GetRequiredExceptThrowsOnMissingKey) {
     std::string value;
-    EXPECT_THROW(
-        config.get_required_except("missing_key", value),
-        ConfigurationException);
+    EXPECT_THROW(config.get_required_except("missing_key", value), ConfigurationException);
 }
 
-TEST_F(TomlConfigurationTest, GetRequiredExceptThrowsOnWrongType)
-{
+TEST_F(TomlConfigurationTest, GetRequiredExceptThrowsOnWrongType) {
     config.set("count", int32_t{42});
     std::string value;
-    EXPECT_THROW(
-        config.get_required_except("count", value),
-        ConfigurationException);
+    EXPECT_THROW(config.get_required_except("count", value), ConfigurationException);
 }
 
-TEST_F(TomlConfigurationTest, GetRequiredExceptThrowsOnLossyDurationConversion)
-{
+TEST_F(TomlConfigurationTest, GetRequiredExceptThrowsOnLossyDurationConversion) {
     config.set("timeout", std::chrono::milliseconds{500});
     std::chrono::seconds value{0};
-    EXPECT_THROW(
-        config.get_required_except("timeout", value),
-        ConfigurationException);
+    EXPECT_THROW(config.get_required_except("timeout", value), ConfigurationException);
 }
 
-TEST_F(TomlConfigurationTest, GetRequiredExceptSucceedsWhenKeyPresent)
-{
+TEST_F(TomlConfigurationTest, GetRequiredExceptSucceedsWhenKeyPresent) {
     config.set("name", std::string{"GATEWAY"});
     std::string value;
     EXPECT_NO_THROW(config.get_required_except("name", value));
     EXPECT_EQ(value, "GATEWAY");
 }
 
-TEST_F(TomlConfigurationTest, GetRequiredExceptMultipleFetchesInTryBlock)
-{
+TEST_F(TomlConfigurationTest, GetRequiredExceptMultipleFetchesInTryBlock) {
     config.set("gateway.sender_comp_id", std::string{"GATEWAY"});
-    config.set("gateway.listen_port",    int32_t{9878});
-    config.set("gateway.logon_timeout",  std::chrono::seconds{30});
+    config.set("gateway.listen_port", int32_t{9878});
+    config.set("gateway.logon_timeout", std::chrono::seconds{30});
 
     std::string sender;
-    int32_t     port{0};
+    int32_t port{0};
     std::chrono::seconds timeout{0};
 
     EXPECT_NO_THROW({
         try {
             config.get_required_except("gateway.sender_comp_id", sender);
-            config.get_required_except("gateway.listen_port",    port);
-            config.get_required_except("gateway.logon_timeout",  timeout);
+            config.get_required_except("gateway.listen_port", port);
+            config.get_required_except("gateway.logon_timeout", timeout);
         } catch (const ConfigurationException& ex) {
             FAIL() << "Unexpected ConfigurationException: " << ex.what();
         }
     });
 
-    EXPECT_EQ(sender,  "GATEWAY");
-    EXPECT_EQ(port,    9878);
+    EXPECT_EQ(sender, "GATEWAY");
+    EXPECT_EQ(port, 9878);
     EXPECT_EQ(timeout, std::chrono::seconds{30});
 }
 
-TEST_F(TomlConfigurationTest, GetRequiredExceptFirstFailureAbortsTryBlock)
-{
+TEST_F(TomlConfigurationTest, GetRequiredExceptFirstFailureAbortsTryBlock) {
     config.set("gateway.sender_comp_id", std::string{"GATEWAY"});
     // listen_port intentionally missing
 
     std::string sender;
-    int32_t     port{0};
+    int32_t port{0};
 
     bool exception_thrown = false;
     try {
         config.get_required_except("gateway.sender_comp_id", sender);
-        config.get_required_except("gateway.listen_port",    port);
+        config.get_required_except("gateway.listen_port", port);
     } catch (const ConfigurationException&) {
         exception_thrown = true;
     }
 
     EXPECT_TRUE(exception_thrown);
     EXPECT_EQ(sender, "GATEWAY"); // first fetch succeeded
-    EXPECT_EQ(port,   0);         // second fetch never completed
+    EXPECT_EQ(port, 0);           // second fetch never completed
 }
 
 // ============================================================
@@ -526,64 +478,56 @@ TEST_F(TomlConfigurationTest, GetRequiredExceptFirstFailureAbortsTryBlock)
 // solely to ensure each overload's function body is entered.
 // ============================================================
 
-TEST_F(TomlConfigurationTest, GetRequiredExceptBool)
-{
+TEST_F(TomlConfigurationTest, GetRequiredExceptBool) {
     config.set("flag", true);
     bool value = false;
     EXPECT_NO_THROW(config.get_required_except("flag", value));
     EXPECT_TRUE(value);
 }
 
-TEST_F(TomlConfigurationTest, GetRequiredExceptDouble)
-{
+TEST_F(TomlConfigurationTest, GetRequiredExceptDouble) {
     config.set("ratio", 2.71828);
     double value = 0.0;
     EXPECT_NO_THROW(config.get_required_except("ratio", value));
     EXPECT_DOUBLE_EQ(value, 2.71828);
 }
 
-TEST_F(TomlConfigurationTest, GetRequiredExceptInt64)
-{
+TEST_F(TomlConfigurationTest, GetRequiredExceptInt64) {
     config.set("big", int64_t{9'000'000'000LL});
     int64_t value = 0;
     EXPECT_NO_THROW(config.get_required_except("big", value));
     EXPECT_EQ(value, 9'000'000'000LL);
 }
 
-TEST_F(TomlConfigurationTest, GetRequiredExceptNanoseconds)
-{
+TEST_F(TomlConfigurationTest, GetRequiredExceptNanoseconds) {
     config.set("precision", std::chrono::nanoseconds{500});
     std::chrono::nanoseconds value{0};
     EXPECT_NO_THROW(config.get_required_except("precision", value));
     EXPECT_EQ(value, std::chrono::nanoseconds{500});
 }
 
-TEST_F(TomlConfigurationTest, GetRequiredExceptMicroseconds)
-{
+TEST_F(TomlConfigurationTest, GetRequiredExceptMicroseconds) {
     config.set("latency", std::chrono::microseconds{100});
     std::chrono::microseconds value{0};
     EXPECT_NO_THROW(config.get_required_except("latency", value));
     EXPECT_EQ(value, std::chrono::microseconds{100});
 }
 
-TEST_F(TomlConfigurationTest, GetRequiredExceptMilliseconds)
-{
+TEST_F(TomlConfigurationTest, GetRequiredExceptMilliseconds) {
     config.set("interval", std::chrono::milliseconds{250});
     std::chrono::milliseconds value{0};
     EXPECT_NO_THROW(config.get_required_except("interval", value));
     EXPECT_EQ(value, std::chrono::milliseconds{250});
 }
 
-TEST_F(TomlConfigurationTest, GetRequiredExceptMinutes)
-{
+TEST_F(TomlConfigurationTest, GetRequiredExceptMinutes) {
     config.set("window", std::chrono::minutes{15});
     std::chrono::minutes value{0};
     EXPECT_NO_THROW(config.get_required_except("window", value));
     EXPECT_EQ(value, std::chrono::minutes{15});
 }
 
-TEST_F(TomlConfigurationTest, GetRequiredExceptHours)
-{
+TEST_F(TomlConfigurationTest, GetRequiredExceptHours) {
     config.set("session", std::chrono::hours{4});
     std::chrono::hours value{0};
     EXPECT_NO_THROW(config.get_required_except("session", value));

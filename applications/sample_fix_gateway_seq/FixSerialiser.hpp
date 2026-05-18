@@ -81,4 +81,4 @@ class FixSerialiser {
     std::string target_comp_id_;
 };
 
-} // namespace sample_fix_gateway
+} // namespace sample_fix_gateway_seq

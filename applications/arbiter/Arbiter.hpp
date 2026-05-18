@@ -26,14 +26,13 @@ namespace arbiter {
  * config errors can be logged rather than only printed to stderr.
  */
 class Arbiter {
-public:
+  public:
     /**
      * @param[in] config Arbiter configuration.
      * @param[in] logger Logger. Ownership transferred. Must already have the
      *                   correct log levels applied from config.
      */
-    explicit Arbiter(const ArbiterConfiguration& config,
-                     std::unique_ptr<pubsub_itc_fw::QuillLogger> logger);
+    explicit Arbiter(const ArbiterConfiguration& config, std::unique_ptr<pubsub_itc_fw::QuillLogger> logger);
 
     /**
      * @brief Starts the reactor event loop. Blocks until shutdown.
@@ -41,7 +40,7 @@ public:
      */
     int run();
 
-private:
+  private:
     ArbiterConfiguration config_;
     std::unique_ptr<pubsub_itc_fw::QuillLogger> logger_;
     pubsub_itc_fw::ServiceRegistry service_registry_;

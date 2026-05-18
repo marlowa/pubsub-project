@@ -8,14 +8,12 @@
 
 namespace arbiter {
 
-ArbiterConfiguration ArbiterConfigurationLoader::load(const std::string& file_path)
-{
+ArbiterConfiguration ArbiterConfigurationLoader::load(const std::string& file_path) {
     pubsub_itc_fw::TomlConfiguration toml;
 
     auto [ok, err] = toml.load_file(file_path);
     if (!ok) {
-        throw pubsub_itc_fw::ConfigurationException(
-            "ArbiterConfigurationLoader: failed to load '" + file_path + "': " + err);
+        throw pubsub_itc_fw::ConfigurationException("ArbiterConfigurationLoader: failed to load '" + file_path + "': " + err);
     }
 
     ArbiterConfiguration config;
@@ -27,9 +25,8 @@ ArbiterConfiguration ArbiterConfigurationLoader::load(const std::string& file_pa
         toml.get_required_except("network.listen_port", listen_port);
 
         if (listen_port < 1 || listen_port > 65535) {
-            throw pubsub_itc_fw::ConfigurationException(
-                "ArbiterConfigurationLoader: network.listen_port must be in range [1, 65535], got "
-                + std::to_string(listen_port));
+            throw pubsub_itc_fw::ConfigurationException("ArbiterConfigurationLoader: network.listen_port must be in range [1, 65535], got " +
+                                                        std::to_string(listen_port));
         }
         config.listen_port = static_cast<uint16_t>(listen_port);
 
@@ -39,14 +36,12 @@ ArbiterConfiguration ArbiterConfigurationLoader::load(const std::string& file_pa
         toml.get_required_except("logging.syslog_level", syslog_level_str);
 
         if (!pubsub_itc_fw::FwLogLevel::from_string(applog_level_str, config.applog_level)) {
-            throw pubsub_itc_fw::ConfigurationException(
-                "ArbiterConfigurationLoader: logging.applog_level '" + applog_level_str
-                + "' is not a recognised log level");
+            throw pubsub_itc_fw::ConfigurationException("ArbiterConfigurationLoader: logging.applog_level '" + applog_level_str +
+                                                        "' is not a recognised log level");
         }
         if (!pubsub_itc_fw::FwLogLevel::from_string(syslog_level_str, config.syslog_level)) {
-            throw pubsub_itc_fw::ConfigurationException(
-                "ArbiterConfigurationLoader: logging.syslog_level '" + syslog_level_str
-                + "' is not a recognised log level");
+            throw pubsub_itc_fw::ConfigurationException("ArbiterConfigurationLoader: logging.syslog_level '" + syslog_level_str +
+                                                        "' is not a recognised log level");
         }
 
     } catch (const pubsub_itc_fw::ConfigurationException&) {

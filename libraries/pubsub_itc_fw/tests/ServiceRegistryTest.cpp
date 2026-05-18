@@ -9,25 +9,22 @@
 namespace pubsub_itc_fw::tests {
 
 class ServiceRegistryTest : public ::testing::Test {
-protected:
+  protected:
     ServiceRegistry registry_;
 };
 
-TEST_F(ServiceRegistryTest, EmptyOnConstruction)
-{
+TEST_F(ServiceRegistryTest, EmptyOnConstruction) {
     EXPECT_TRUE(registry_.empty());
     EXPECT_EQ(registry_.size(), 0);
 }
 
-TEST_F(ServiceRegistryTest, AddSingleServiceWithPrimaryOnly)
-{
+TEST_F(ServiceRegistryTest, AddSingleServiceWithPrimaryOnly) {
     registry_.add("joe", {"192.168.1.10", 5001}, {});
     EXPECT_EQ(registry_.size(), 1);
     EXPECT_FALSE(registry_.empty());
 }
 
-TEST_F(ServiceRegistryTest, LookupKnownServiceReturnsPrimaryEndpoint)
-{
+TEST_F(ServiceRegistryTest, LookupKnownServiceReturnsPrimaryEndpoint) {
     registry_.add("joe", {"192.168.1.10", 5001}, {});
 
     auto [endpoints, error] = registry_.lookup("joe");
@@ -37,8 +34,7 @@ TEST_F(ServiceRegistryTest, LookupKnownServiceReturnsPrimaryEndpoint)
     EXPECT_EQ(endpoints.primary.port, 5001);
 }
 
-TEST_F(ServiceRegistryTest, LookupKnownServiceReturnsSecondaryEndpoint)
-{
+TEST_F(ServiceRegistryTest, LookupKnownServiceReturnsSecondaryEndpoint) {
     registry_.add("joe", {"192.168.1.10", 5001}, {"192.168.1.11", 5001});
 
     auto [endpoints, error] = registry_.lookup("joe");
@@ -48,24 +44,21 @@ TEST_F(ServiceRegistryTest, LookupKnownServiceReturnsSecondaryEndpoint)
     EXPECT_EQ(endpoints.secondary.port, 5001);
 }
 
-TEST_F(ServiceRegistryTest, LookupUnknownServiceReturnsError)
-{
+TEST_F(ServiceRegistryTest, LookupUnknownServiceReturnsError) {
     auto [endpoints, error] = registry_.lookup("unknown");
 
     EXPECT_FALSE(error.empty());
 }
 
-TEST_F(ServiceRegistryTest, LookupUnknownServiceReturnsDefaultEndpoints)
-{
+TEST_F(ServiceRegistryTest, LookupUnknownServiceReturnsDefaultEndpoints) {
     auto [endpoints, error] = registry_.lookup("unknown");
 
     EXPECT_EQ(endpoints.primary.port, 0);
     EXPECT_EQ(endpoints.secondary.port, 0);
 }
 
-TEST_F(ServiceRegistryTest, AddMultipleServicesAllLookupCorrectly)
-{
-    registry_.add("joe",  {"192.168.1.10", 5001}, {"192.168.1.11", 5001});
+TEST_F(ServiceRegistryTest, AddMultipleServicesAllLookupCorrectly) {
+    registry_.add("joe", {"192.168.1.10", 5001}, {"192.168.1.11", 5001});
     registry_.add("mary", {"192.168.1.10", 5002}, {"192.168.1.11", 5002});
     registry_.add("fred", {"192.168.1.10", 5003}, {"192.168.1.11", 5003});
 
@@ -84,19 +77,16 @@ TEST_F(ServiceRegistryTest, AddMultipleServicesAllLookupCorrectly)
     EXPECT_EQ(fred_endpoints.primary.port, 5003);
 }
 
-TEST_F(ServiceRegistryTest, AddDuplicateNameThrows)
-{
+TEST_F(ServiceRegistryTest, AddDuplicateNameThrows) {
     registry_.add("joe", {"192.168.1.10", 5001}, {});
     EXPECT_THROW(registry_.add("joe", {"192.168.1.10", 5002}, {}), PreconditionAssertion);
 }
 
-TEST_F(ServiceRegistryTest, AddEmptyNameThrows)
-{
+TEST_F(ServiceRegistryTest, AddEmptyNameThrows) {
     EXPECT_THROW(registry_.add("", {"192.168.1.10", 5001}, {}), PreconditionAssertion);
 }
 
-TEST_F(ServiceRegistryTest, ServiceWithNoSecondaryHasZeroPortOnSecondary)
-{
+TEST_F(ServiceRegistryTest, ServiceWithNoSecondaryHasZeroPortOnSecondary) {
     registry_.add("joe", {"192.168.1.10", 5001}, {});
 
     auto [endpoints, error] = registry_.lookup("joe");
@@ -105,8 +95,7 @@ TEST_F(ServiceRegistryTest, ServiceWithNoSecondaryHasZeroPortOnSecondary)
     EXPECT_EQ(endpoints.secondary.port, 0);
 }
 
-TEST_F(ServiceRegistryTest, LookupIsCaseSensitive)
-{
+TEST_F(ServiceRegistryTest, LookupIsCaseSensitive) {
     registry_.add("joe", {"192.168.1.10", 5001}, {});
 
     auto [endpoints, error] = registry_.lookup("Joe");
@@ -114,8 +103,7 @@ TEST_F(ServiceRegistryTest, LookupIsCaseSensitive)
     EXPECT_FALSE(error.empty());
 }
 
-TEST_F(ServiceRegistryTest, AddDuplicateAfterThrowDoesNotCorruptRegistry)
-{
+TEST_F(ServiceRegistryTest, AddDuplicateAfterThrowDoesNotCorruptRegistry) {
     registry_.add("joe", {"192.168.1.10", 5001}, {});
 
     EXPECT_THROW(registry_.add("joe", {"10.0.0.1", 9999}, {}), PreconditionAssertion);
@@ -127,8 +115,7 @@ TEST_F(ServiceRegistryTest, AddDuplicateAfterThrowDoesNotCorruptRegistry)
     EXPECT_EQ(endpoints.primary.port, 5001);
 }
 
-TEST_F(ServiceRegistryTest, IPv6AddressRoundTrips)
-{
+TEST_F(ServiceRegistryTest, IPv6AddressRoundTrips) {
     registry_.add("joe", {"::1", 5001}, {"fe80::1", 5001});
 
     auto [endpoints, error] = registry_.lookup("joe");
@@ -138,8 +125,7 @@ TEST_F(ServiceRegistryTest, IPv6AddressRoundTrips)
     EXPECT_EQ(endpoints.secondary.host, "fe80::1");
 }
 
-TEST_F(ServiceRegistryTest, HostnameRoundTrips)
-{
+TEST_F(ServiceRegistryTest, HostnameRoundTrips) {
     registry_.add("joe", {"primary.example.com", 5001}, {"secondary.example.com", 5001});
 
     auto [endpoints, error] = registry_.lookup("joe");
@@ -149,4 +135,4 @@ TEST_F(ServiceRegistryTest, HostnameRoundTrips)
     EXPECT_EQ(endpoints.secondary.host, "secondary.example.com");
 }
 
-} // namespace pubsub_itc_fw
+} // namespace pubsub_itc_fw::tests

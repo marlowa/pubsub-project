@@ -181,7 +181,9 @@ class RawBytesProtocolHandler : public ProtocolHandlerInterface {
      * registration for unrelated reasons (e.g. adding or removing EPOLLOUT
      * around a send) so it can avoid re-enabling EPOLLIN while paused.
      */
-    [[nodiscard]] bool is_reads_paused() const override { return reads_paused_; }
+    [[nodiscard]] bool is_reads_paused() const override {
+        return reads_paused_;
+    }
 
     /**
      * @brief Resumes a partial outbound send on EPOLLOUT.
@@ -214,7 +216,7 @@ class RawBytesProtocolHandler : public ProtocolHandlerInterface {
     // Expressed as numerator/denominator so the comparisons can be done in
     // integer arithmetic: bytes_available * denominator >= capacity * numerator.
     static constexpr int64_t water_denominator = 4;
-    static constexpr int64_t high_water_numerator = 3;  // 75%
+    static constexpr int64_t high_water_numerator = 3; // 75%
     static constexpr int64_t low_water_numerator = 2;  // 50%
 
     /**

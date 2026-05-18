@@ -21,12 +21,12 @@ namespace pubsub_itc_fw {
 // Duration suffix constants
 // ============================================================
 
-static constexpr std::string_view suffix_ns  = "ns";
-static constexpr std::string_view suffix_us  = "us";
-static constexpr std::string_view suffix_ms  = "ms";
-static constexpr std::string_view suffix_s   = "s";
-static constexpr std::string_view suffix_m   = "m";
-static constexpr std::string_view suffix_h   = "h";
+static constexpr std::string_view suffix_ns = "ns";
+static constexpr std::string_view suffix_us = "us";
+static constexpr std::string_view suffix_ms = "ms";
+static constexpr std::string_view suffix_s = "s";
+static constexpr std::string_view suffix_m = "m";
+static constexpr std::string_view suffix_h = "h";
 
 // ============================================================
 // Pimpl
@@ -101,10 +101,7 @@ struct TomlConfiguration::Impl {
      * Parses a duration string like "30s", "500ms", "1m" into a count and
      * suffix. Returns false if the string is malformed.
      */
-    static bool parse_duration_string(std::string_view str,
-                                      int64_t& count,
-                                      std::string_view& suffix)
-    {
+    static bool parse_duration_string(std::string_view str, int64_t& count, std::string_view& suffix) {
         // Find where the numeric part ends.
         std::size_t i = 0;
         if (i < str.size() && str[i] == '-') {
@@ -121,9 +118,7 @@ struct TomlConfiguration::Impl {
         }
 
         const auto num_str = str.substr(0, num_end);
-        const auto result = std::from_chars(num_str.data(),
-                                            num_str.data() + num_str.size(),
-                                            count);
+        const auto result = std::from_chars(num_str.data(), num_str.data() + num_str.size(), count);
         if (result.ec != std::errc{}) {
             return false;
         }
@@ -136,10 +131,7 @@ struct TomlConfiguration::Impl {
      * Converts a duration string to nanoseconds. Returns false with an
      * error message if the string is malformed or the suffix is unknown.
      */
-    static bool duration_string_to_ns(std::string_view str,
-                                      int64_t& ns_out,
-                                      std::string& error)
-    {
+    static bool duration_string_to_ns(std::string_view str, int64_t& ns_out, std::string& error) {
         int64_t count = 0;
         std::string_view suffix;
         if (!parse_duration_string(str, count, suffix)) {
@@ -161,7 +153,8 @@ struct TomlConfiguration::Impl {
             ns_out = count * 3'600'000'000'000LL;
         } else {
             error = fmt::format("'{}' has unknown duration suffix '{}' "
-                                "(expected ns, us, ms, s, m, or h)", str, suffix);
+                                "(expected ns, us, ms, s, m, or h)",
+                                str, suffix);
             return false;
         }
         return true;
@@ -171,12 +164,7 @@ struct TomlConfiguration::Impl {
      * Converts nanoseconds to a target duration, checking for lossless
      * conversion. Returns false with an error message if lossy.
      */
-    template <typename Duration>
-    static bool ns_to_duration(int64_t ns,
-                                std::string_view original_str,
-                                Duration& out,
-                                std::string& error)
-    {
+    template <typename Duration> static bool ns_to_duration(int64_t ns, std::string_view original_str, Duration& out, std::string& error) {
         using namespace std::chrono;
         const auto target_ns = duration_cast<nanoseconds>(Duration{1}).count();
 
@@ -213,9 +201,7 @@ struct TomlConfiguration::Impl {
      * Looks up a string value at key and returns it in duration_str.
      * Returns {false, error} if the key is missing or not a string.
      */
-    std::tuple<bool, std::string> get_duration_string(
-        std::string_view key, std::string& duration_str) const
-    {
+    std::tuple<bool, std::string> get_duration_string(std::string_view key, std::string& duration_str) const {
         const auto* node = find_node(key);
         if (!node) {
             return {false, fmt::format("required key '{}' not found in configuration", key)};
@@ -223,7 +209,8 @@ struct TomlConfiguration::Impl {
         const auto* v = node->as_string();
         if (!v) {
             return {false, fmt::format("key '{}' has wrong type "
-                                       "(expected duration string e.g. \"30s\")", key)};
+                                       "(expected duration string e.g. \"30s\")",
+                                       key)};
         }
         duration_str = v->get();
         return {true, ""};
@@ -234,13 +221,9 @@ struct TomlConfiguration::Impl {
 // TomlConfiguration
 // ============================================================
 
-TomlConfiguration::TomlConfiguration()
-    : impl_(new Impl{})
-{
-}
+TomlConfiguration::TomlConfiguration() : impl_(new Impl{}) {}
 
-TomlConfiguration::~TomlConfiguration()
-{
+TomlConfiguration::~TomlConfiguration() {
     delete impl_;
 }
 
@@ -248,33 +231,26 @@ TomlConfiguration::~TomlConfiguration()
 // Population
 // ----------------------------------------------------------------
 
-std::tuple<bool, std::string> TomlConfiguration::load_file(std::string_view path)
-{
+std::tuple<bool, std::string> TomlConfiguration::load_file(std::string_view path) {
     try {
         auto result = toml::parse_file(path);
         impl_->table = std::move(result);
         return {true, ""};
     } catch (const toml::parse_error& ex) {
         const auto& src = ex.source();
-        std::string error = fmt::format("{}:{}: {}",
-            src.path ? src.path->c_str() : std::string(path),
-            src.begin.line,
-            ex.description());
+        std::string error = fmt::format("{}:{}: {}", src.path ? src.path->c_str() : std::string(path), src.begin.line, ex.description());
         return {false, error};
     }
 }
 
-std::tuple<bool, std::string> TomlConfiguration::load_string(std::string_view toml_content)
-{
+std::tuple<bool, std::string> TomlConfiguration::load_string(std::string_view toml_content) {
     try {
         auto result = toml::parse(toml_content);
         impl_->table = std::move(result);
         return {true, ""};
     } catch (const toml::parse_error& ex) {
         const auto& src = ex.source();
-        std::string error = fmt::format("line {}: {}",
-            src.begin.line,
-            ex.description());
+        std::string error = fmt::format("line {}: {}", src.begin.line, ex.description());
         return {false, error};
     }
 }
@@ -283,97 +259,80 @@ std::tuple<bool, std::string> TomlConfiguration::load_string(std::string_view to
 // set() overloads
 // ----------------------------------------------------------------
 
-void TomlConfiguration::set(std::string_view key, const std::string& value)
-{
+void TomlConfiguration::set(std::string_view key, const std::string& value) {
     auto [parent, leaf] = impl_->navigate_to_parent(key);
     if (parent) {
         parent->insert_or_assign(leaf, value);
     }
 }
 
-void TomlConfiguration::set(std::string_view key, bool value)
-{
+void TomlConfiguration::set(std::string_view key, bool value) {
     auto [parent, leaf] = impl_->navigate_to_parent(key);
     if (parent) {
         parent->insert_or_assign(leaf, value);
     }
 }
 
-void TomlConfiguration::set(std::string_view key, int32_t value)
-{
+void TomlConfiguration::set(std::string_view key, int32_t value) {
     auto [parent, leaf] = impl_->navigate_to_parent(key);
     if (parent) {
         parent->insert_or_assign(leaf, static_cast<int64_t>(value));
     }
 }
 
-void TomlConfiguration::set(std::string_view key, int64_t value)
-{
+void TomlConfiguration::set(std::string_view key, int64_t value) {
     auto [parent, leaf] = impl_->navigate_to_parent(key);
     if (parent) {
         parent->insert_or_assign(leaf, value);
     }
 }
 
-void TomlConfiguration::set(std::string_view key, double value)
-{
+void TomlConfiguration::set(std::string_view key, double value) {
     auto [parent, leaf] = impl_->navigate_to_parent(key);
     if (parent) {
         parent->insert_or_assign(leaf, value);
     }
 }
 
-void TomlConfiguration::set(std::string_view key, std::chrono::nanoseconds value)
-{
+void TomlConfiguration::set(std::string_view key, std::chrono::nanoseconds value) {
     auto [parent, leaf] = impl_->navigate_to_parent(key);
     if (parent) {
-        parent->insert_or_assign(leaf,
-            Impl::format_duration(value.count(), suffix_ns));
+        parent->insert_or_assign(leaf, Impl::format_duration(value.count(), suffix_ns));
     }
 }
 
-void TomlConfiguration::set(std::string_view key, std::chrono::microseconds value)
-{
+void TomlConfiguration::set(std::string_view key, std::chrono::microseconds value) {
     auto [parent, leaf] = impl_->navigate_to_parent(key);
     if (parent) {
-        parent->insert_or_assign(leaf,
-            Impl::format_duration(value.count(), suffix_us));
+        parent->insert_or_assign(leaf, Impl::format_duration(value.count(), suffix_us));
     }
 }
 
-void TomlConfiguration::set(std::string_view key, std::chrono::milliseconds value)
-{
+void TomlConfiguration::set(std::string_view key, std::chrono::milliseconds value) {
     auto [parent, leaf] = impl_->navigate_to_parent(key);
     if (parent) {
-        parent->insert_or_assign(leaf,
-            Impl::format_duration(value.count(), suffix_ms));
+        parent->insert_or_assign(leaf, Impl::format_duration(value.count(), suffix_ms));
     }
 }
 
-void TomlConfiguration::set(std::string_view key, std::chrono::seconds value)
-{
+void TomlConfiguration::set(std::string_view key, std::chrono::seconds value) {
     auto [parent, leaf] = impl_->navigate_to_parent(key);
     if (parent) {
-        parent->insert_or_assign(leaf,
-            Impl::format_duration(value.count(), suffix_s));
+        parent->insert_or_assign(leaf, Impl::format_duration(value.count(), suffix_s));
     }
 }
 
-void TomlConfiguration::set(std::string_view key, std::chrono::minutes value)
-{
+void TomlConfiguration::set(std::string_view key, std::chrono::minutes value) {
     auto [parent, leaf] = impl_->navigate_to_parent(key);
     if (parent) {
-        parent->insert_or_assign(leaf,
-            Impl::format_duration(value.count(), suffix_m));
+        parent->insert_or_assign(leaf, Impl::format_duration(value.count(), suffix_m));
     }
 }
 
-void TomlConfiguration::set(std::string_view key, std::chrono::hours value)
-{
+void TomlConfiguration::set(std::string_view key, std::chrono::hours value) {
     auto [parent, leaf] = impl_->navigate_to_parent(key);
     if (parent) {
-        parent->insert_or_assign(leaf,
-            Impl::format_duration(value.count(), suffix_h));
+        parent->insert_or_assign(leaf, Impl::format_duration(value.count(), suffix_h));
     }
 }
 
@@ -383,13 +342,11 @@ void TomlConfiguration::set(std::string_view key, std::chrono::hours value)
 
 namespace {
 
-std::string not_found_error(std::string_view key)
-{
+std::string not_found_error(std::string_view key) {
     return fmt::format("required key '{}' not found in configuration", key);
 }
 
-std::string wrong_type_error(std::string_view key, std::string_view expected_type)
-{
+std::string wrong_type_error(std::string_view key, std::string_view expected_type) {
     return fmt::format("key '{}' has wrong type (expected {})", key, expected_type);
 }
 
@@ -399,9 +356,7 @@ std::string wrong_type_error(std::string_view key, std::string_view expected_typ
 // get_required() overloads
 // ----------------------------------------------------------------
 
-std::tuple<bool, std::string> TomlConfiguration::get_required(
-    std::string_view key, std::string& value) const
-{
+std::tuple<bool, std::string> TomlConfiguration::get_required(std::string_view key, std::string& value) const {
     const auto* node = impl_->find_node(key);
     if (!node) {
         return {false, not_found_error(key)};
@@ -414,9 +369,7 @@ std::tuple<bool, std::string> TomlConfiguration::get_required(
     return {true, ""};
 }
 
-std::tuple<bool, std::string> TomlConfiguration::get_required(
-    std::string_view key, bool& value) const
-{
+std::tuple<bool, std::string> TomlConfiguration::get_required(std::string_view key, bool& value) const {
     const auto* node = impl_->find_node(key);
     if (!node) {
         return {false, not_found_error(key)};
@@ -429,9 +382,7 @@ std::tuple<bool, std::string> TomlConfiguration::get_required(
     return {true, ""};
 }
 
-std::tuple<bool, std::string> TomlConfiguration::get_required(
-    std::string_view key, int32_t& value) const
-{
+std::tuple<bool, std::string> TomlConfiguration::get_required(std::string_view key, int32_t& value) const {
     const auto* node = impl_->find_node(key);
     if (!node) {
         return {false, not_found_error(key)};
@@ -442,16 +393,13 @@ std::tuple<bool, std::string> TomlConfiguration::get_required(
     }
     const int64_t raw = v->get();
     if (raw < INT32_MIN || raw > INT32_MAX) {
-        return {false, fmt::format("key '{}': value {} is out of range for int32_t",
-                                   key, raw)};
+        return {false, fmt::format("key '{}': value {} is out of range for int32_t", key, raw)};
     }
     value = static_cast<int32_t>(raw);
     return {true, ""};
 }
 
-std::tuple<bool, std::string> TomlConfiguration::get_required(
-    std::string_view key, int64_t& value) const
-{
+std::tuple<bool, std::string> TomlConfiguration::get_required(std::string_view key, int64_t& value) const {
     const auto* node = impl_->find_node(key);
     if (!node) {
         return {false, not_found_error(key)};
@@ -464,9 +412,7 @@ std::tuple<bool, std::string> TomlConfiguration::get_required(
     return {true, ""};
 }
 
-std::tuple<bool, std::string> TomlConfiguration::get_required(
-    std::string_view key, double& value) const
-{
+std::tuple<bool, std::string> TomlConfiguration::get_required(std::string_view key, double& value) const {
     const auto* node = impl_->find_node(key);
     if (!node) {
         return {false, not_found_error(key)};
@@ -481,12 +427,11 @@ std::tuple<bool, std::string> TomlConfiguration::get_required(
 
 // Duration get_required helper -- shared logic now lives in Impl::get_duration_string
 
-std::tuple<bool, std::string> TomlConfiguration::get_required(
-    std::string_view key, std::chrono::nanoseconds& value) const
-{
+std::tuple<bool, std::string> TomlConfiguration::get_required(std::string_view key, std::chrono::nanoseconds& value) const {
     std::string str;
     auto [ok, err] = impl_->get_duration_string(key, str);
-    if (!ok) return {false, err};
+    if (!ok)
+        return {false, err};
 
     int64_t ns = 0;
     if (!Impl::duration_string_to_ns(str, ns, err)) {
@@ -496,154 +441,139 @@ std::tuple<bool, std::string> TomlConfiguration::get_required(
     return {true, ""};
 }
 
-std::tuple<bool, std::string> TomlConfiguration::get_required(
-    std::string_view key, std::chrono::microseconds& value) const
-{
+std::tuple<bool, std::string> TomlConfiguration::get_required(std::string_view key, std::chrono::microseconds& value) const {
     std::string str;
     auto [ok, err] = impl_->get_duration_string(key, str);
-    if (!ok) return {false, err};
+    if (!ok)
+        return {false, err};
 
     int64_t ns = 0;
     if (!Impl::duration_string_to_ns(str, ns, err)) {
         return {false, fmt::format("key '{}': {}", key, err)};
     }
-    return Impl::ns_to_duration(ns, str, value, err)
-        ? std::make_tuple(true, std::string{})
-        : std::make_tuple(false, fmt::format("key '{}': {}", key, err));
+    return Impl::ns_to_duration(ns, str, value, err) ? std::make_tuple(true, std::string{}) : std::make_tuple(false, fmt::format("key '{}': {}", key, err));
 }
 
-std::tuple<bool, std::string> TomlConfiguration::get_required(
-    std::string_view key, std::chrono::milliseconds& value) const
-{
+std::tuple<bool, std::string> TomlConfiguration::get_required(std::string_view key, std::chrono::milliseconds& value) const {
     std::string str;
     auto [ok, err] = impl_->get_duration_string(key, str);
-    if (!ok) return {false, err};
+    if (!ok)
+        return {false, err};
 
     int64_t ns = 0;
     if (!Impl::duration_string_to_ns(str, ns, err)) {
         return {false, fmt::format("key '{}': {}", key, err)};
     }
-    return Impl::ns_to_duration(ns, str, value, err)
-        ? std::make_tuple(true, std::string{})
-        : std::make_tuple(false, fmt::format("key '{}': {}", key, err));
+    return Impl::ns_to_duration(ns, str, value, err) ? std::make_tuple(true, std::string{}) : std::make_tuple(false, fmt::format("key '{}': {}", key, err));
 }
 
-std::tuple<bool, std::string> TomlConfiguration::get_required(
-    std::string_view key, std::chrono::seconds& value) const
-{
+std::tuple<bool, std::string> TomlConfiguration::get_required(std::string_view key, std::chrono::seconds& value) const {
     std::string str;
     auto [ok, err] = impl_->get_duration_string(key, str);
-    if (!ok) return {false, err};
+    if (!ok)
+        return {false, err};
 
     int64_t ns = 0;
     if (!Impl::duration_string_to_ns(str, ns, err)) {
         return {false, fmt::format("key '{}': {}", key, err)};
     }
-    return Impl::ns_to_duration(ns, str, value, err)
-        ? std::make_tuple(true, std::string{})
-        : std::make_tuple(false, fmt::format("key '{}': {}", key, err));
+    return Impl::ns_to_duration(ns, str, value, err) ? std::make_tuple(true, std::string{}) : std::make_tuple(false, fmt::format("key '{}': {}", key, err));
 }
 
-std::tuple<bool, std::string> TomlConfiguration::get_required(
-    std::string_view key, std::chrono::minutes& value) const
-{
+std::tuple<bool, std::string> TomlConfiguration::get_required(std::string_view key, std::chrono::minutes& value) const {
     std::string str;
     auto [ok, err] = impl_->get_duration_string(key, str);
-    if (!ok) return {false, err};
+    if (!ok)
+        return {false, err};
 
     int64_t ns = 0;
     if (!Impl::duration_string_to_ns(str, ns, err)) {
         return {false, fmt::format("key '{}': {}", key, err)};
     }
-    return Impl::ns_to_duration(ns, str, value, err)
-        ? std::make_tuple(true, std::string{})
-        : std::make_tuple(false, fmt::format("key '{}': {}", key, err));
+    return Impl::ns_to_duration(ns, str, value, err) ? std::make_tuple(true, std::string{}) : std::make_tuple(false, fmt::format("key '{}': {}", key, err));
 }
 
-std::tuple<bool, std::string> TomlConfiguration::get_required(
-    std::string_view key, std::chrono::hours& value) const
-{
+std::tuple<bool, std::string> TomlConfiguration::get_required(std::string_view key, std::chrono::hours& value) const {
     std::string str;
     auto [ok, err] = impl_->get_duration_string(key, str);
-    if (!ok) return {false, err};
+    if (!ok)
+        return {false, err};
 
     int64_t ns = 0;
     if (!Impl::duration_string_to_ns(str, ns, err)) {
         return {false, fmt::format("key '{}': {}", key, err)};
     }
-    return Impl::ns_to_duration(ns, str, value, err)
-        ? std::make_tuple(true, std::string{})
-        : std::make_tuple(false, fmt::format("key '{}': {}", key, err));
+    return Impl::ns_to_duration(ns, str, value, err) ? std::make_tuple(true, std::string{}) : std::make_tuple(false, fmt::format("key '{}': {}", key, err));
 }
 
 // ----------------------------------------------------------------
 // get_required_except() overloads -- delegate to get_required()
 // ----------------------------------------------------------------
 
-void TomlConfiguration::get_required_except(std::string_view key, std::string& value) const
-{
+void TomlConfiguration::get_required_except(std::string_view key, std::string& value) const {
     auto [ok, err] = get_required(key, value);
-    if (!ok) throw ConfigurationException(err);
+    if (!ok)
+        throw ConfigurationException(err);
 }
 
-void TomlConfiguration::get_required_except(std::string_view key, bool& value) const
-{
+void TomlConfiguration::get_required_except(std::string_view key, bool& value) const {
     auto [ok, err] = get_required(key, value);
-    if (!ok) throw ConfigurationException(err);
+    if (!ok)
+        throw ConfigurationException(err);
 }
 
-void TomlConfiguration::get_required_except(std::string_view key, int32_t& value) const
-{
+void TomlConfiguration::get_required_except(std::string_view key, int32_t& value) const {
     auto [ok, err] = get_required(key, value);
-    if (!ok) throw ConfigurationException(err);
+    if (!ok)
+        throw ConfigurationException(err);
 }
 
-void TomlConfiguration::get_required_except(std::string_view key, int64_t& value) const
-{
+void TomlConfiguration::get_required_except(std::string_view key, int64_t& value) const {
     auto [ok, err] = get_required(key, value);
-    if (!ok) throw ConfigurationException(err);
+    if (!ok)
+        throw ConfigurationException(err);
 }
 
-void TomlConfiguration::get_required_except(std::string_view key, double& value) const
-{
+void TomlConfiguration::get_required_except(std::string_view key, double& value) const {
     auto [ok, err] = get_required(key, value);
-    if (!ok) throw ConfigurationException(err);
+    if (!ok)
+        throw ConfigurationException(err);
 }
 
-void TomlConfiguration::get_required_except(std::string_view key, std::chrono::nanoseconds& value) const
-{
+void TomlConfiguration::get_required_except(std::string_view key, std::chrono::nanoseconds& value) const {
     auto [ok, err] = get_required(key, value);
-    if (!ok) throw ConfigurationException(err);
+    if (!ok)
+        throw ConfigurationException(err);
 }
 
-void TomlConfiguration::get_required_except(std::string_view key, std::chrono::microseconds& value) const
-{
+void TomlConfiguration::get_required_except(std::string_view key, std::chrono::microseconds& value) const {
     auto [ok, err] = get_required(key, value);
-    if (!ok) throw ConfigurationException(err);
+    if (!ok)
+        throw ConfigurationException(err);
 }
 
-void TomlConfiguration::get_required_except(std::string_view key, std::chrono::milliseconds& value) const
-{
+void TomlConfiguration::get_required_except(std::string_view key, std::chrono::milliseconds& value) const {
     auto [ok, err] = get_required(key, value);
-    if (!ok) throw ConfigurationException(err);
+    if (!ok)
+        throw ConfigurationException(err);
 }
 
-void TomlConfiguration::get_required_except(std::string_view key, std::chrono::seconds& value) const
-{
+void TomlConfiguration::get_required_except(std::string_view key, std::chrono::seconds& value) const {
     auto [ok, err] = get_required(key, value);
-    if (!ok) throw ConfigurationException(err);
+    if (!ok)
+        throw ConfigurationException(err);
 }
 
-void TomlConfiguration::get_required_except(std::string_view key, std::chrono::minutes& value) const
-{
+void TomlConfiguration::get_required_except(std::string_view key, std::chrono::minutes& value) const {
     auto [ok, err] = get_required(key, value);
-    if (!ok) throw ConfigurationException(err);
+    if (!ok)
+        throw ConfigurationException(err);
 }
 
-void TomlConfiguration::get_required_except(std::string_view key, std::chrono::hours& value) const
-{
+void TomlConfiguration::get_required_except(std::string_view key, std::chrono::hours& value) const {
     auto [ok, err] = get_required(key, value);
-    if (!ok) throw ConfigurationException(err);
+    if (!ok)
+        throw ConfigurationException(err);
 }
 
 } // namespace pubsub_itc_fw

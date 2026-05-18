@@ -9,13 +9,8 @@
 
 namespace pubsub_itc_fw {
 
-OutboundConnection::OutboundConnection(ConnectionID id,
-                                       ThreadID requesting_thread_id,
-                                       std::string service_name,
-                                       ServiceEndpoints endpoints,
-                                       std::unique_ptr<TcpConnector> connector,
-                                       ExpandableSlabAllocator& inbound_allocator,
-                                       ApplicationThread& target_thread,
+OutboundConnection::OutboundConnection(ConnectionID id, ThreadID requesting_thread_id, std::string service_name, ServiceEndpoints endpoints,
+                                       std::unique_ptr<TcpConnector> connector, ExpandableSlabAllocator& inbound_allocator, ApplicationThread& target_thread,
                                        QuillLogger& logger)
     : id_(id)
     , requesting_thread_id_(requesting_thread_id)
@@ -24,51 +19,39 @@ OutboundConnection::OutboundConnection(ConnectionID id,
     , connector_(std::move(connector))
     , inbound_allocator_(inbound_allocator)
     , target_thread_(target_thread)
-    , logger_(logger)
-{
+    , logger_(logger) {
     if (!connector_) {
-        throw PreconditionAssertion(
-            "OutboundConnection: connector must not be null", __FILE__, __LINE__);
+        throw PreconditionAssertion("OutboundConnection: connector must not be null", __FILE__, __LINE__);
     }
 }
 
-void OutboundConnection::on_connected(std::unique_ptr<TcpSocket> socket)
-{
+void OutboundConnection::on_connected(std::unique_ptr<TcpSocket> socket) {
     if (!socket) {
-        throw PreconditionAssertion(
-            "OutboundConnection::on_connected: socket must not be null", __FILE__, __LINE__);
+        throw PreconditionAssertion("OutboundConnection::on_connected: socket must not be null", __FILE__, __LINE__);
     }
     if (!is_connecting()) {
-        throw PreconditionAssertion(
-            "OutboundConnection::on_connected: must be in connecting phase", __FILE__, __LINE__);
+        throw PreconditionAssertion("OutboundConnection::on_connected: must be in connecting phase", __FILE__, __LINE__);
     }
 
-    socket_    = std::move(socket);
+    socket_ = std::move(socket);
     connector_.reset();
 
     framer_ = std::make_unique<PduFramer>(*socket_);
     // TODO we must not pass nullptr for the disconnect handler!
-    parser_ = std::make_unique<PduParser>(
-        *socket_,
-        target_thread_,
-        inbound_allocator_,
-        logger_,
-        nullptr, // TODO this is wrong!
-        id_);
+    parser_ = std::make_unique<PduParser>(*socket_, target_thread_, inbound_allocator_, logger_,
+                                          nullptr, // TODO this is wrong!
+                                          id_);
 }
 
-void OutboundConnection::retry_with_secondary(std::unique_ptr<TcpConnector> connector)
-{
+void OutboundConnection::retry_with_secondary(std::unique_ptr<TcpConnector> connector) {
     if (!connector) {
-        throw PreconditionAssertion(
-            "OutboundConnection::retry_with_secondary: connector must not be null", __FILE__, __LINE__);
+        throw PreconditionAssertion("OutboundConnection::retry_with_secondary: connector must not be null", __FILE__, __LINE__);
     }
     trying_secondary_ = true;
     connector_ = std::move(connector);
 }
 
-int OutboundConnection::get_fd() const
-{
+int OutboundConnection::get_fd() const {
     if (connector_) {
         return connector_->get_fd();
     }
@@ -78,27 +61,23 @@ int OutboundConnection::get_fd() const
     return -1;
 }
 
-void OutboundConnection::set_pending_send(ExpandableSlabAllocator* allocator, int slab_id, void* chunk_ptr, uint32_t total_bytes)
-{
+void OutboundConnection::set_pending_send(ExpandableSlabAllocator* allocator, int slab_id, void* chunk_ptr, uint32_t total_bytes) {
     if (allocator == nullptr) {
-        throw PreconditionAssertion(
-            "OutboundConnection::set_pending_send: allocator must not be null", __FILE__, __LINE__);
+        throw PreconditionAssertion("OutboundConnection::set_pending_send: allocator must not be null", __FILE__, __LINE__);
     }
     if (chunk_ptr == nullptr) {
-        throw PreconditionAssertion(
-            "OutboundConnection::set_pending_send: chunk_ptr must not be null", __FILE__, __LINE__);
+        throw PreconditionAssertion("OutboundConnection::set_pending_send: chunk_ptr must not be null", __FILE__, __LINE__);
     }
-    current_allocator_   = allocator;
-    current_slab_id_     = slab_id;
-    current_chunk_ptr_   = chunk_ptr;
+    current_allocator_ = allocator;
+    current_slab_id_ = slab_id;
+    current_chunk_ptr_ = chunk_ptr;
     current_total_bytes_ = total_bytes;
 }
 
-void OutboundConnection::clear_pending_send()
-{
-    current_allocator_   = nullptr;
-    current_slab_id_     = -1;
-    current_chunk_ptr_   = nullptr;
+void OutboundConnection::clear_pending_send() {
+    current_allocator_ = nullptr;
+    current_slab_id_ = -1;
+    current_chunk_ptr_ = nullptr;
     current_total_bytes_ = 0;
 }
 

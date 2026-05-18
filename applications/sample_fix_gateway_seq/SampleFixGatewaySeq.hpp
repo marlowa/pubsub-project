@@ -27,15 +27,14 @@ namespace sample_fix_gateway_seq {
  * The logger is constructed in main() before the config is loaded.
  */
 class SampleFixGatewaySeq {
-public:
+  public:
     /**
      * @brief Constructs the gateway and wires all connections.
      * @param[in] config Gateway configuration.
      * @param[in] logger Logger. Ownership transferred. Must already have the
      *                   correct log levels applied from config.
      */
-    explicit SampleFixGatewaySeq(const FixGatewaySeqConfiguration& config,
-                                  std::unique_ptr<pubsub_itc_fw::QuillLogger> logger);
+    explicit SampleFixGatewaySeq(const FixGatewaySeqConfiguration& config, std::unique_ptr<pubsub_itc_fw::QuillLogger> logger);
 
     /**
      * @brief Starts the reactor event loop. Blocks until shutdown.
@@ -43,7 +42,7 @@ public:
      */
     int run();
 
-private:
+  private:
     FixGatewaySeqConfiguration config_;
     std::unique_ptr<pubsub_itc_fw::QuillLogger> logger_;
     pubsub_itc_fw::ServiceRegistry service_registry_;

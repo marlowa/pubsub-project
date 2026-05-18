@@ -18,33 +18,23 @@
 
 namespace sample_fix_gateway_seq {
 
-SampleFixGatewaySeq::SampleFixGatewaySeq(const FixGatewaySeqConfiguration& config,
-                                         std::unique_ptr<pubsub_itc_fw::QuillLogger> logger)
-    : config_(config)
-    , logger_(std::move(logger))
-{
-    reactor_configuration_.connect_timeout                     = std::chrono::seconds{5};
+SampleFixGatewaySeq::SampleFixGatewaySeq(const FixGatewaySeqConfiguration& config, std::unique_ptr<pubsub_itc_fw::QuillLogger> logger)
+    : config_(config), logger_(std::move(logger)) {
+    reactor_configuration_.connect_timeout = std::chrono::seconds{5};
     reactor_configuration_.socket_maximum_inactivity_interval_ = std::chrono::seconds{120};
-    reactor_configuration_.inactivity_check_interval_          = std::chrono::milliseconds{500};
-    reactor_configuration_.shutdown_timeout_                    = std::chrono::seconds{2};
+    reactor_configuration_.inactivity_check_interval_ = std::chrono::milliseconds{500};
+    reactor_configuration_.shutdown_timeout_ = std::chrono::seconds{2};
 
-    reactor_ = std::make_unique<pubsub_itc_fw::Reactor>(
-        reactor_configuration_, service_registry_, *logger_);
+    reactor_ = std::make_unique<pubsub_itc_fw::Reactor>(reactor_configuration_, service_registry_, *logger_);
 
     // Inbound RawBytes listener for FIX client connections.
-    reactor_->register_inbound_listener(
-        pubsub_itc_fw::NetworkEndpointConfiguration{config_.listen_host, config_.listen_port},
-        pubsub_itc_fw::ThreadID{1},
-        pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::RawBytes},
-        config_.raw_buffer_capacity);
+    reactor_->register_inbound_listener(pubsub_itc_fw::NetworkEndpointConfiguration{config_.listen_host, config_.listen_port}, pubsub_itc_fw::ThreadID{1},
+                                        pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::RawBytes}, config_.raw_buffer_capacity);
 
     // Inbound PDU listener for ExecutionReport PDUs from the matching engine.
     // TODO: replace with pub/sub fanout when implemented.
-    reactor_->register_inbound_listener(
-        pubsub_itc_fw::NetworkEndpointConfiguration{config_.er_listen_host, config_.er_listen_port},
-        pubsub_itc_fw::ThreadID{1},
-        pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::FrameworkPdu},
-        0);
+    reactor_->register_inbound_listener(pubsub_itc_fw::NetworkEndpointConfiguration{config_.er_listen_host, config_.er_listen_port}, pubsub_itc_fw::ThreadID{1},
+                                        pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::FrameworkPdu}, 0);
 
     gateway_thread_ = pubsub_itc_fw::ApplicationThread::create<FixGatewaySeqThread>(*logger_, *reactor_, config_);
 
@@ -53,26 +43,17 @@ SampleFixGatewaySeq::SampleFixGatewaySeq(const FixGatewaySeqConfiguration& confi
     // Outbound PDU connection to the primary sequencer is initiated from
     // FixGatewaySeqThread::on_app_ready_event() via connect_to_service().
     // The ServiceRegistry is populated here so the reactor can resolve the name.
-    service_registry_.add("sequencer_primary",
-        pubsub_itc_fw::NetworkEndpointConfiguration{
-            config_.sequencer_primary_host, config_.sequencer_primary_port},
-        pubsub_itc_fw::NetworkEndpointConfiguration{});
+    service_registry_.add("sequencer_primary", pubsub_itc_fw::NetworkEndpointConfiguration{config_.sequencer_primary_host, config_.sequencer_primary_port},
+                          pubsub_itc_fw::NetworkEndpointConfiguration{});
 
-    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info,
-               "SampleFixGatewaySeq: FIX listener on {}:{}",
-               config_.listen_host, config_.listen_port);
-    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info,
-               "SampleFixGatewaySeq: ER listener on {}:{}",
-               config_.er_listen_host, config_.er_listen_port);
-    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info,
-               "SampleFixGatewaySeq: sequencer primary={}:{}",
-               config_.sequencer_primary_host, config_.sequencer_primary_port);
+    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "SampleFixGatewaySeq: FIX listener on {}:{}", config_.listen_host, config_.listen_port);
+    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "SampleFixGatewaySeq: ER listener on {}:{}", config_.er_listen_host, config_.er_listen_port);
+    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "SampleFixGatewaySeq: sequencer primary={}:{}", config_.sequencer_primary_host,
+               config_.sequencer_primary_port);
 }
 
-int SampleFixGatewaySeq::run()
-{
-    PUBSUB_LOG_STR((*logger_), pubsub_itc_fw::FwLogLevel::Info,
-                   "SampleFixGatewaySeq: starting reactor");
+int SampleFixGatewaySeq::run() {
+    PUBSUB_LOG_STR((*logger_), pubsub_itc_fw::FwLogLevel::Info, "SampleFixGatewaySeq: starting reactor");
     return reactor_->run();
 }
 
@@ -82,18 +63,16 @@ int SampleFixGatewaySeq::run()
 // main
 // ============================================================
 
-int main(int argc, char* argv[])
-{
+int main(int argc, char* argv[]) {
     if (argc != 3) {
         std::cerr << "Usage: sample_fix_gateway_seq <logfile> <config.toml>\n";
         return 1;
     }
 
-    const std::string log_file    = argv[1];
+    const std::string log_file = argv[1];
     const std::string config_file = argv[2];
 
-    const std::string writable_error =
-        pubsub_itc_fw::QuillLogger::ensure_log_file_writable(log_file);
+    const std::string writable_error = pubsub_itc_fw::QuillLogger::ensure_log_file_writable(log_file);
     if (!writable_error.empty()) {
         std::cerr << "SampleFixGatewaySeq: " << writable_error << "\n";
         return 1;

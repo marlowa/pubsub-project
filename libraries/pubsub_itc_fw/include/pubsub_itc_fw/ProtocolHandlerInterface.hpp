@@ -91,7 +91,8 @@ class ProtocolHandlerInterface {
      *         unrecoverable send failure; the implementation will have already
      *         released the slab chunk in that case.
      */
-    [[nodiscard]] virtual std::tuple<bool, std::string> send_prebuilt(ExpandableSlabAllocator* allocator, int slab_id, void* chunk_ptr, uint32_t total_bytes) = 0;
+    [[nodiscard]] virtual std::tuple<bool, std::string> send_prebuilt(ExpandableSlabAllocator* allocator, int slab_id, void* chunk_ptr,
+                                                                      uint32_t total_bytes) = 0;
 
     /**
      * @brief Returns true if a partial outbound send is in progress.
@@ -137,7 +138,9 @@ class ProtocolHandlerInterface {
      *         has been released). Only RawBytesProtocolHandler ever returns
      *         true; PDU handlers always return false.
      */
-    virtual bool commit_bytes([[maybe_unused]] int64_t bytes) { return false; }
+    virtual bool commit_bytes([[maybe_unused]] int64_t bytes) {
+        return false;
+    }
 
     /**
      * @brief Returns true if the handler is currently asking the manager to
@@ -151,7 +154,9 @@ class ProtocolHandlerInterface {
      * Default implementation returns false. Only RawBytesProtocolHandler
      * overrides this.
      */
-    [[nodiscard]] virtual bool is_reads_paused() const { return false; }
+    [[nodiscard]] virtual bool is_reads_paused() const {
+        return false;
+    }
 };
 
 } // namespace pubsub_itc_fw

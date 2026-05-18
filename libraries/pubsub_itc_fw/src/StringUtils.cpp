@@ -65,13 +65,12 @@ std::string StringUtils::leafname(const std::string& filename) {
     return filename;
 }
 
-#include <cstdint>
 #include <cstddef>
-#include <string>
+#include <cstdint>
 #include <cstdio>
+#include <string>
 
-std::string StringUtils::hex_dump(const void* data, std::size_t len)
-{
+std::string StringUtils::hex_dump(const void* data, std::size_t len) {
     const auto* bytes = static_cast<const uint8_t*>(data);
 
     constexpr std::size_t bytes_per_line = 16;
@@ -83,8 +82,7 @@ std::string StringUtils::hex_dump(const void* data, std::size_t len)
     out += std::to_string(len);
     out += " bytes\n";
 
-    for (std::size_t i = 0; i < len; i += bytes_per_line)
-    {
+    for (std::size_t i = 0; i < len; i += bytes_per_line) {
         char buf[32];
 
         // Offset
@@ -92,15 +90,11 @@ std::string StringUtils::hex_dump(const void* data, std::size_t len)
         out += buf;
 
         // Hex column
-        for (std::size_t j = 0; j < bytes_per_line; ++j)
-        {
-            if (i + j < len)
-            {
+        for (std::size_t j = 0; j < bytes_per_line; ++j) {
+            if (i + j < len) {
                 std::snprintf(buf, sizeof(buf), "%02X ", bytes[i + j]);
                 out += buf;
-            }
-            else
-            {
+            } else {
                 out += "   ";
             }
         }
@@ -108,22 +102,15 @@ std::string StringUtils::hex_dump(const void* data, std::size_t len)
         out += " |";
 
         // ASCII column (strict)
-        for (std::size_t j = 0; j < bytes_per_line; ++j)
-        {
-            if (i + j < len)
-            {
+        for (std::size_t j = 0; j < bytes_per_line; ++j) {
+            if (i + j < len) {
                 uint8_t c = bytes[i + j];
-                if (c >= 32 && c <= 126)
-                {
+                if (c >= 32 && c <= 126) {
                     out += static_cast<char>(c);
-                }
-                else
-                {
+                } else {
                     out += '.';
                 }
-            }
-            else
-            {
+            } else {
                 out += ' ';
             }
         }

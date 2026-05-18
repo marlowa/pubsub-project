@@ -28,14 +28,13 @@ namespace sequencer {
  * The logger is constructed in main() before the config is loaded.
  */
 class Sequencer {
-public:
+  public:
     /**
      * @param[in] config Sequencer configuration.
      * @param[in] logger Logger. Ownership transferred. Must already have the
      *                   correct log levels applied from config.
      */
-    explicit Sequencer(const SequencerConfiguration& config,
-                       std::unique_ptr<pubsub_itc_fw::QuillLogger> logger);
+    explicit Sequencer(const SequencerConfiguration& config, std::unique_ptr<pubsub_itc_fw::QuillLogger> logger);
 
     /**
      * @brief Starts the reactor event loop. Blocks until shutdown.
@@ -43,7 +42,7 @@ public:
      */
     int run();
 
-private:
+  private:
     SequencerConfiguration config_;
     std::unique_ptr<pubsub_itc_fw::QuillLogger> logger_;
     pubsub_itc_fw::ServiceRegistry service_registry_;

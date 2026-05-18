@@ -11,9 +11,7 @@ using namespace pubsub_itc_fw;
 // ------------------------------------------------------------
 // Timing helper
 // ------------------------------------------------------------
-template<typename F>
-long long measure_avg_ns(F&& fn, int iterations, long long& min_ns, long long& max_ns)
-{
+template <typename F> long long measure_avg_ns(F&& fn, int iterations, long long& min_ns, long long& max_ns) {
     for (int i = 0; i < 100; ++i)
         fn();
 
@@ -38,9 +36,7 @@ long long measure_avg_ns(F&& fn, int iterations, long long& min_ns, long long& m
 // ------------------------------------------------------------
 // Benchmark runner for a single encode/decode pair
 // ------------------------------------------------------------
-template<typename OwningMsg, typename ViewMsg>
-void benchmark_message(const char* name, OwningMsg& msg, int iterations)
-{
+template <typename OwningMsg, typename ViewMsg> void benchmark_message(const char* name, OwningMsg& msg, int iterations) {
     uint8_t buffer[65536];
     std::size_t written = 0;
     std::size_t consumed = 0;
@@ -53,16 +49,16 @@ void benchmark_message(const char* name, OwningMsg& msg, int iterations)
     long long min_enc, max_enc;
     long long min_dec, max_dec;
 
-    auto avg_enc = measure_avg_ns([&] {
-        static_cast<void>(encode(msg, buffer, sizeof(buffer), written, bytes_needed));
-    }, iterations, min_enc, max_enc);
+    auto avg_enc = measure_avg_ns([&] { static_cast<void>(encode(msg, buffer, sizeof(buffer), written, bytes_needed)); }, iterations, min_enc, max_enc);
 
-    auto avg_dec = measure_avg_ns([&] {
-        decode_arena.reset();
-        decoded = ViewMsg{};
-        std::size_t arena_bytes_needed = 0;
-        static_cast<void>(decode(decoded, buffer, written, consumed, decode_arena, arena_bytes_needed));
-    }, iterations, min_dec, max_dec);
+    auto avg_dec = measure_avg_ns(
+        [&] {
+            decode_arena.reset();
+            decoded = ViewMsg{};
+            std::size_t arena_bytes_needed = 0;
+            static_cast<void>(decode(decoded, buffer, written, consumed, decode_arena, arena_bytes_needed));
+        },
+        iterations, min_dec, max_dec);
 
     std::cout << "------------------------------------------------------------\n";
     std::cout << name << " (" << iterations << " iterations)\n";
@@ -73,8 +69,7 @@ void benchmark_message(const char* name, OwningMsg& msg, int iterations)
 // ------------------------------------------------------------
 // Main
 // ------------------------------------------------------------
-int main()
-{
+int main() {
     constexpr int iterations = 2000;
 
     // ------------------------------------------------------------
@@ -91,10 +86,7 @@ int main()
     // ------------------------------------------------------------
     MediumMessage medium{};
 
-    static std::string_view tags[] = {
-        "alpha", "beta", "gamma", "delta", "epsilon",
-        "zeta", "eta", "theta", "iota", "kappa"
-    };
+    static std::string_view tags[] = {"alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota", "kappa"};
 
     medium.tags.data = tags;
     medium.tags.size = 10;
@@ -111,11 +103,7 @@ int main()
     static std::string_view group2[] = {"d", "e", "f", "g"};
     static std::string_view group3[] = {"h"};
 
-    static ListView<std::string_view> groups[] = {
-        { group1, 3 },
-        { group2, 4 },
-        { group3, 1 }
-    };
+    static ListView<std::string_view> groups[] = {{group1, 3}, {group2, 4}, {group3, 1}};
 
     large.groups.data = groups;
     large.groups.size = 3;

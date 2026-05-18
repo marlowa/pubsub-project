@@ -4,8 +4,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <arpa/inet.h>
-#include <endian.h>
 #include <cstdint>
+#include <endian.h>
 
 namespace pubsub_itc_fw {
 

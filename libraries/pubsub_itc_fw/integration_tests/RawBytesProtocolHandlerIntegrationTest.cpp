@@ -134,11 +134,11 @@ namespace pubsub_itc_fw::tests {
 // Test protocol constants
 // ============================================================
 
-static const std::string request_payload  = "HELLO_RAW_SERVER";
+static const std::string request_payload = "HELLO_RAW_SERVER";
 static const std::string response_payload = "HELLO_RAW_CLIENT";
 
-static constexpr int64_t     raw_buffer_capacity = 65536;
-static constexpr std::size_t length_prefix_size  = sizeof(uint32_t);
+static constexpr int64_t raw_buffer_capacity = 65536;
+static constexpr std::size_t length_prefix_size = sizeof(uint32_t);
 
 // ============================================================
 // Raw POSIX socket helpers
@@ -157,8 +157,9 @@ static bool send_all(int sock_fd, const void* buf, std::size_t size) {
     std::size_t remaining = size;
     while (remaining > 0) {
         const ssize_t sent = ::send(sock_fd, ptr, remaining, 0);
-        if (sent <= 0) return false;
-        ptr       += sent;
+        if (sent <= 0)
+            return false;
+        ptr += sent;
         remaining -= static_cast<std::size_t>(sent);
     }
     return true;
@@ -169,8 +170,9 @@ static bool recv_all(int sock_fd, void* buf, std::size_t size) {
     std::size_t remaining = size;
     while (remaining > 0) {
         const ssize_t received = ::recv(sock_fd, ptr, remaining, 0);
-        if (received <= 0) return false;
-        ptr       += received;
+        if (received <= 0)
+            return false;
+        ptr += received;
         remaining -= static_cast<std::size_t>(received);
     }
     return true;
@@ -178,19 +180,22 @@ static bool recv_all(int sock_fd, void* buf, std::size_t size) {
 
 static std::string recv_framed(int sock_fd) {
     uint32_t length_be = 0;
-    if (!recv_all(sock_fd, &length_be, sizeof(length_be))) return {};
+    if (!recv_all(sock_fd, &length_be, sizeof(length_be)))
+        return {};
     const uint32_t payload_length = ntohl(length_be);
     std::string payload(payload_length, '\0');
-    if (!recv_all(sock_fd, payload.data(), payload_length)) return {};
+    if (!recv_all(sock_fd, payload.data(), payload_length))
+        return {};
     return payload;
 }
 
 static int connect_raw_socket(uint16_t port) {
     const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (fd == -1) return -1;
+    if (fd == -1)
+        return -1;
     sockaddr_in addr{};
-    addr.sin_family      = AF_INET;
-    addr.sin_port        = htons(port);
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
     addr.sin_addr.s_addr = inet_addr("127.0.0.1");
     if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
         ::close(fd);
@@ -200,7 +205,7 @@ static int connect_raw_socket(uint16_t port) {
     // ::recv in the test. The timeout is generous (matches the wait_for default)
     // so it only fires when something has gone wrong.
     timeval timeout{};
-    timeout.tv_sec  = 5;
+    timeout.tv_sec = 5;
     timeout.tv_usec = 0;
     ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
     return fd;
@@ -210,35 +215,34 @@ static int connect_raw_socket(uint16_t port) {
 // Test protocol decode helpers
 // ============================================================
 
-static std::string try_decode_framed(const uint8_t* data, int available,
-                                     int64_t& bytes_consumed) {
+static std::string try_decode_framed(const uint8_t* data, int available, int64_t& bytes_consumed) {
     bytes_consumed = 0;
-    if (available < static_cast<int>(length_prefix_size)) return {};
+    if (available < static_cast<int>(length_prefix_size))
+        return {};
     uint32_t length_be = 0;
     std::memcpy(&length_be, data, length_prefix_size);
     const uint32_t payload_length = ntohl(length_be);
     const int64_t total = static_cast<int64_t>(length_prefix_size + payload_length);
-    if (available < static_cast<int>(total)) return {};
-    std::string payload(reinterpret_cast<const char*>(data + length_prefix_size),
-                        payload_length);
+    if (available < static_cast<int>(total))
+        return {};
+    std::string payload(reinterpret_cast<const char*>(data + length_prefix_size), payload_length);
     bytes_consumed = total;
     return payload;
 }
 
-static int decode_all_framed(const uint8_t* data, int available,
-                              std::vector<std::string>& results,
-                              int64_t& total_consumed) {
-    int count          = 0;
-    total_consumed     = 0;
-    int remaining      = available;
+static int decode_all_framed(const uint8_t* data, int available, std::vector<std::string>& results, int64_t& total_consumed) {
+    int count = 0;
+    total_consumed = 0;
+    int remaining = available;
     const uint8_t* ptr = data;
     while (remaining > 0) {
         int64_t consumed = 0;
         std::string payload = try_decode_framed(ptr, remaining, consumed);
-        if (consumed == 0) break;
+        if (consumed == 0)
+            break;
         results.push_back(std::move(payload));
-        ptr            += consumed;
-        remaining      -= static_cast<int>(consumed);
+        ptr += consumed;
+        remaining -= static_cast<int>(consumed);
         total_consumed += consumed;
         ++count;
     }
@@ -252,16 +256,16 @@ static int decode_all_framed(const uint8_t* data, int available,
 static ReactorConfiguration make_reactor_config() {
     ReactorConfiguration cfg{};
     cfg.inactivity_check_interval_ = std::chrono::milliseconds(100);
-    cfg.init_phase_timeout_        = std::chrono::milliseconds(5000);
-    cfg.shutdown_timeout_          = std::chrono::milliseconds(1000);
-    cfg.connect_timeout            = std::chrono::milliseconds(2000);
+    cfg.init_phase_timeout_ = std::chrono::milliseconds(5000);
+    cfg.shutdown_timeout_ = std::chrono::milliseconds(1000);
+    cfg.connect_timeout = std::chrono::milliseconds(2000);
     return cfg;
 }
 
 static ReactorConfiguration make_short_idle_reactor_config() {
     ReactorConfiguration cfg = make_reactor_config();
     cfg.socket_maximum_inactivity_interval_ = std::chrono::milliseconds(300);
-    cfg.inactivity_check_interval_          = std::chrono::milliseconds(50);
+    cfg.inactivity_check_interval_ = std::chrono::milliseconds(50);
     return cfg;
 }
 
@@ -270,22 +274,21 @@ static ReactorConfiguration make_short_idle_reactor_config() {
 // Used by RawByteRoundTrip and FragmentedDelivery.
 // ============================================================
 class RawListenerThread : public ApplicationThread {
-public:
+  public:
     RawListenerThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
-        : ApplicationThread(token, logger, reactor, "RawListenerThread", ThreadID{2},
-                            make_queue_config(), make_allocator_config("RawListenerPool"),
+        : ApplicationThread(token, logger, reactor, "RawListenerThread", ThreadID{2}, make_queue_config(), make_allocator_config("RawListenerPool"),
                             ApplicationThreadConfiguration{}) {}
 
     std::atomic<bool> connection_established{false};
     std::atomic<bool> message_received{false};
     std::atomic<bool> reply_sent{false};
     std::atomic<bool> connection_lost{false};
-    std::atomic<int>  callback_count{0};
+    std::atomic<int> callback_count{0};
 
     std::string received_payload;
     ConnectionID conn_id{};
 
-protected:
+  protected:
     void on_connection_established(ConnectionID id) override {
         conn_id = id;
         connection_established.store(true, std::memory_order_release);
@@ -302,7 +305,8 @@ protected:
         const uint8_t* data = message.payload();
         const int available = message.payload_size();
 
-        if (data == nullptr || available <= 0) return;
+        if (data == nullptr || available <= 0)
+            return;
 
         // If available shrank, the reactor processed our commit and the tail
         // advanced -- reset decode tracking.
@@ -312,12 +316,13 @@ protected:
         last_available_ = available;
 
         const int unprocessed = available - bytes_decoded_;
-        if (unprocessed <= 0) return;
+        if (unprocessed <= 0)
+            return;
 
         int64_t bytes_consumed = 0;
-        std::string payload = try_decode_framed(
-            data + bytes_decoded_, unprocessed, bytes_consumed);
-        if (bytes_consumed == 0) return; // incomplete -- wait for more data
+        std::string payload = try_decode_framed(data + bytes_decoded_, unprocessed, bytes_consumed);
+        if (bytes_consumed == 0)
+            return; // incomplete -- wait for more data
 
         received_payload = payload;
         message_received.store(true, std::memory_order_release);
@@ -332,7 +337,7 @@ protected:
 
     void on_itc_message([[maybe_unused]] const EventMessage& msg) override {}
 
-private:
+  private:
     int bytes_decoded_{0};
     int last_available_{0};
 };
@@ -342,10 +347,9 @@ private:
 // Used by BurstDelivery.
 // ============================================================
 class BurstListenerThread : public ApplicationThread {
-public:
+  public:
     BurstListenerThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, int expected_count)
-        : ApplicationThread(token, logger, reactor, "BurstListenerThread", ThreadID{2},
-                            make_queue_config(), make_allocator_config("BurstListenerPool"),
+        : ApplicationThread(token, logger, reactor, "BurstListenerThread", ThreadID{2}, make_queue_config(), make_allocator_config("BurstListenerPool"),
                             ApplicationThreadConfiguration{})
         , expected_count_(expected_count) {}
 
@@ -356,7 +360,7 @@ public:
     std::vector<std::string> received_payloads;
     ConnectionID conn_id{};
 
-protected:
+  protected:
     void on_connection_established(ConnectionID id) override {
         conn_id = id;
         connection_established.store(true, std::memory_order_release);
@@ -368,26 +372,27 @@ protected:
     }
 
     void on_raw_socket_message(const EventMessage& message) override {
-        const uint8_t* data      = message.payload();
-        const int      available = message.payload_size();
-        const int64_t  tail      = message.tail_position();
+        const uint8_t* data = message.payload();
+        const int available = message.payload_size();
+        const int64_t tail = message.tail_position();
 
-        if (data == nullptr || available <= 0) return;
+        if (data == nullptr || available <= 0)
+            return;
 
         // Exact tail-advance detection: if the tail moved since the last
         // delivery, start decoding from the beginning of the new window.
         if (tail != last_tail_) {
-            bytes_decoded_  = 0;
+            bytes_decoded_ = 0;
             last_committed_ = 0;
-            last_tail_      = tail;
+            last_tail_ = tail;
         }
 
         const int unprocessed = available - bytes_decoded_;
-        if (unprocessed <= 0) return;
+        if (unprocessed <= 0)
+            return;
 
         int64_t total_consumed = 0;
-        decode_all_framed(data + bytes_decoded_, unprocessed,
-                          received_payloads, total_consumed);
+        decode_all_framed(data + bytes_decoded_, unprocessed, received_payloads, total_consumed);
 
         if (total_consumed > 0) {
             bytes_decoded_ += static_cast<int>(total_consumed);
@@ -410,10 +415,10 @@ protected:
 
     void on_itc_message([[maybe_unused]] const EventMessage& msg) override {}
 
-private:
-    int     expected_count_;
-    int     bytes_decoded_{0};
-    int     last_committed_{0};
+  private:
+    int expected_count_;
+    int bytes_decoded_{0};
+    int last_committed_{0};
     int64_t last_tail_{-1};
 };
 
@@ -422,19 +427,18 @@ private:
 // Used by PeerDisconnect, MultipleConnectionsAccepted, and IdleTimeout.
 // ============================================================
 class PassiveListenerThread : public ApplicationThread {
-public:
+  public:
     PassiveListenerThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
-        : ApplicationThread(token, logger, reactor, "PassiveListenerThread", ThreadID{2},
-                            make_queue_config(), make_allocator_config("PassiveListenerPool"),
+        : ApplicationThread(token, logger, reactor, "PassiveListenerThread", ThreadID{2}, make_queue_config(), make_allocator_config("PassiveListenerPool"),
                             ApplicationThreadConfiguration{}) {}
 
     std::atomic<bool> connection_established{false};
     std::atomic<bool> connection_lost{false};
-    std::atomic<int>  connection_established_count{0};
+    std::atomic<int> connection_established_count{0};
 
     ConnectionID conn_id{};
 
-protected:
+  protected:
     void on_connection_established(ConnectionID id) override {
         conn_id = id;
         connection_established_count.fetch_add(1, std::memory_order_relaxed);
@@ -493,7 +497,8 @@ class RawBytesProtocolHandlerIntegrationTest : public ::testing::Test {
                 reactor_died_ = true;
                 return false;
             }
-            if (std::chrono::steady_clock::now() > deadline) return false;
+            if (std::chrono::steady_clock::now() > deadline)
+                return false;
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
         return true;
@@ -523,7 +528,8 @@ class RawBytesProtocolHandlerIntegrationTest : public ::testing::Test {
 
     static void shutdown_and_join(Reactor& reactor, std::thread& reactor_thread, const std::string& reason = "test complete") {
         reactor.shutdown(reason);
-        if (reactor_thread.joinable()) reactor_thread.join();
+        if (reactor_thread.joinable())
+            reactor_thread.join();
     }
 
     std::unique_ptr<LoggerWithSink> logger_;
@@ -539,8 +545,8 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, RawByteRoundTrip) {
     auto listener_reactor = std::make_unique<Reactor>(make_reactor_config(), listener_registry, logger_->logger);
     set_current_reactor(*listener_reactor);
 
-    listener_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2},
-                                                ProtocolType{ProtocolType::RawBytes}, raw_buffer_capacity);
+    listener_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2}, ProtocolType{ProtocolType::RawBytes},
+                                                raw_buffer_capacity);
 
     auto listener_thread = ApplicationThread::create<RawListenerThread>(logger_->logger, *listener_reactor);
     listener_reactor->register_thread(listener_thread);
@@ -580,8 +586,8 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, FragmentedDelivery) {
     auto listener_reactor = std::make_unique<Reactor>(make_reactor_config(), listener_registry, logger_->logger);
     set_current_reactor(*listener_reactor);
 
-    listener_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2},
-                                                ProtocolType{ProtocolType::RawBytes}, raw_buffer_capacity);
+    listener_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2}, ProtocolType{ProtocolType::RawBytes},
+                                                raw_buffer_capacity);
 
     auto listener_thread = ApplicationThread::create<RawListenerThread>(logger_->logger, *listener_reactor);
     listener_reactor->register_thread(listener_thread);
@@ -634,8 +640,8 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, BurstDelivery) {
     auto listener_reactor = std::make_unique<Reactor>(make_reactor_config(), listener_registry, logger_->logger);
     set_current_reactor(*listener_reactor);
 
-    listener_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2},
-                                                ProtocolType{ProtocolType::RawBytes}, raw_buffer_capacity);
+    listener_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2}, ProtocolType{ProtocolType::RawBytes},
+                                                raw_buffer_capacity);
 
     auto listener_thread = ApplicationThread::create<BurstListenerThread>(logger_->logger, *listener_reactor, expected_count);
     listener_reactor->register_thread(listener_thread);
@@ -674,8 +680,8 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, PeerDisconnect) {
     auto listener_reactor = std::make_unique<Reactor>(make_reactor_config(), listener_registry, logger_->logger);
     set_current_reactor(*listener_reactor);
 
-    listener_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2},
-                                                ProtocolType{ProtocolType::RawBytes}, raw_buffer_capacity);
+    listener_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2}, ProtocolType{ProtocolType::RawBytes},
+                                                raw_buffer_capacity);
 
     auto listener_thread = ApplicationThread::create<PassiveListenerThread>(logger_->logger, *listener_reactor);
     listener_reactor->register_thread(listener_thread);
@@ -749,8 +755,8 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, IdleTimeout) {
     auto listener_reactor = std::make_unique<Reactor>(make_short_idle_reactor_config(), listener_registry, logger_->logger);
     set_current_reactor(*listener_reactor);
 
-    listener_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2},
-                                                ProtocolType{ProtocolType::RawBytes}, raw_buffer_capacity);
+    listener_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2}, ProtocolType{ProtocolType::RawBytes},
+                                                raw_buffer_capacity);
 
     auto listener_thread = ApplicationThread::create<PassiveListenerThread>(logger_->logger, *listener_reactor);
     listener_reactor->register_thread(listener_thread);
@@ -778,31 +784,29 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, IdleTimeout) {
 // ============================================================
 
 static constexpr size_t large_reply_payload_size = 512 * 1024;
-static constexpr int    tiny_rcvbuf_size         = 4096;
+static constexpr int tiny_rcvbuf_size = 4096;
 
 class LargeReplyListenerThread : public ApplicationThread {
-public:
+  public:
     LargeReplyListenerThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
-        : ApplicationThread(token, logger, reactor, "LargeReplyListenerThread", ThreadID{2},
-                            make_queue_config(), make_allocator_config("LargeReplyListenerPool"),
-                            make_thread_config()) {}
+        : ApplicationThread(token, logger, reactor, "LargeReplyListenerThread", ThreadID{2}, make_queue_config(),
+                            make_allocator_config("LargeReplyListenerPool"), make_thread_config()) {}
 
-private:
+  private:
     static ApplicationThreadConfiguration make_thread_config() {
         ApplicationThreadConfiguration cfg{};
         cfg.outbound_slab_size = 2 * 1024 * 1024;
         return cfg;
     }
 
-public:
-
+  public:
     std::atomic<bool> connection_established{false};
     std::atomic<bool> reply_sent{false};
     std::atomic<bool> connection_lost{false};
 
     ConnectionID conn_id{};
 
-protected:
+  protected:
     void on_connection_established(ConnectionID id) override {
         conn_id = id;
         connection_established.store(true, std::memory_order_release);
@@ -817,20 +821,20 @@ protected:
         // Commit the incoming bytes immediately so the buffer stays clear.
         commit_raw_bytes(conn_id, message.payload_size());
 
-        if (reply_sent.load(std::memory_order_acquire)) return;
+        if (reply_sent.load(std::memory_order_acquire))
+            return;
 
         // Send a 512 KB reply — large enough to overflow a 4096-byte SO_RCVBUF
         // and force framer_->has_pending_data() to be true, exercising
         // continue_send() on EPOLLOUT and deallocate_pending_send() on teardown.
         large_reply_.assign(large_reply_payload_size, 'Z');
-        send_raw(conn_id, large_reply_.data(),
-                 static_cast<uint32_t>(large_reply_.size()));
+        send_raw(conn_id, large_reply_.data(), static_cast<uint32_t>(large_reply_.size()));
         reply_sent.store(true, std::memory_order_release);
     }
 
     void on_itc_message([[maybe_unused]] const EventMessage& msg) override {}
 
-private:
+  private:
     std::string large_reply_;
 };
 
@@ -848,8 +852,8 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, LargeReplyContinueSend) {
     auto listener_reactor = std::make_unique<Reactor>(listener_cfg, listener_registry, logger_->logger);
     set_current_reactor(*listener_reactor);
 
-    listener_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2},
-                                                ProtocolType{ProtocolType::RawBytes}, raw_buffer_capacity);
+    listener_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2}, ProtocolType{ProtocolType::RawBytes},
+                                                raw_buffer_capacity);
 
     auto listener_thread = ApplicationThread::create<LargeReplyListenerThread>(logger_->logger, *listener_reactor);
     listener_reactor->register_thread(listener_thread);
@@ -875,7 +879,8 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, LargeReplyContinueSend) {
     size_t total_received = 0;
     while (total_received < large_reply_payload_size) {
         const ssize_t n = ::recv(sock_fd, drain_buf.data(), drain_buf.size(), 0);
-        if (n <= 0) break;
+        if (n <= 0)
+            break;
         total_received += static_cast<size_t>(n);
     }
     EXPECT_EQ(total_received, large_reply_payload_size) << "Did not receive the full large reply";
@@ -901,8 +906,8 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, TeardownWhilePendingSendFreesChun
     auto listener_reactor = std::make_unique<Reactor>(listener_cfg, listener_registry, logger_->logger);
     set_current_reactor(*listener_reactor);
 
-    listener_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2},
-                                                ProtocolType{ProtocolType::RawBytes}, raw_buffer_capacity);
+    listener_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2}, ProtocolType{ProtocolType::RawBytes},
+                                                raw_buffer_capacity);
 
     auto listener_thread = ApplicationThread::create<LargeReplyListenerThread>(logger_->logger, *listener_reactor);
     listener_reactor->register_thread(listener_thread);

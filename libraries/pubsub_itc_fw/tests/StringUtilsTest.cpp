@@ -88,8 +88,7 @@ TEST_F(StringUtilsTest, Leafname) {
     EXPECT_EQ(StringUtils::leafname(""), "");
 }
 
-TEST_F(StringUtilsTest, StartsWithAllOverloadsExplicit)
-{
+TEST_F(StringUtilsTest, StartsWithAllOverloadsExplicit) {
     // std::string overload
     EXPECT_TRUE(StringUtils::starts_with(std::string("hello world"), std::string("hello")));
     EXPECT_FALSE(StringUtils::starts_with(std::string("hello world"), std::string("world")));
@@ -107,67 +106,54 @@ TEST_F(StringUtilsTest, StartsWithAllOverloadsExplicit)
     EXPECT_FALSE(StringUtils::starts_with("hello world", cprefix_bad));
 
     // Edge cases
-    EXPECT_TRUE(StringUtils::starts_with("hello world", ""));          // empty prefix
+    EXPECT_TRUE(StringUtils::starts_with("hello world", "")); // empty prefix
     EXPECT_TRUE(StringUtils::starts_with("hello world", std::string_view("")));
 
-    EXPECT_FALSE(StringUtils::starts_with("", "hello"));               // empty string
-    EXPECT_TRUE(StringUtils::starts_with("", ""));                     // both empty
+    EXPECT_FALSE(StringUtils::starts_with("", "hello")); // empty string
+    EXPECT_TRUE(StringUtils::starts_with("", ""));       // both empty
 }
 
 // Test the `hex_dump` function
-TEST_F(StringUtilsTest, HexDumpEmpty)
-{
+TEST_F(StringUtilsTest, HexDumpEmpty) {
     const std::string out = StringUtils::hex_dump(nullptr, 0);
     EXPECT_EQ(out, "0 bytes\n");
 }
 
-TEST_F(StringUtilsTest, HexDumpSingleByte)
-{
+TEST_F(StringUtilsTest, HexDumpSingleByte) {
     const uint8_t data[] = {0x41}; // 'A'
 
     const std::string out = StringUtils::hex_dump(data, 1);
 
-    EXPECT_EQ(out,
-        "1 bytes\n"
-        "0000: 41                                               |A               |\n"
-    );
+    EXPECT_EQ(out, "1 bytes\n"
+                   "0000: 41                                               |A               |\n");
 }
 
-TEST_F(StringUtilsTest, HexDumpExactLine)
-{
+TEST_F(StringUtilsTest, HexDumpExactLine) {
     uint8_t data[16];
-    for (int i = 0; i < 16; ++i)
-    {
+    for (int i = 0; i < 16; ++i) {
         data[i] = static_cast<uint8_t>(32 + i); // printable ASCII
     }
 
     const std::string out = StringUtils::hex_dump(data, 16);
 
-    EXPECT_EQ(out,
-        "16 bytes\n"
-        "0000: 20 21 22 23 24 25 26 27 28 29 2A 2B 2C 2D 2E 2F  | !\"#$%&'()*+,-./|\n"
-    );
+    EXPECT_EQ(out, "16 bytes\n"
+                   "0000: 20 21 22 23 24 25 26 27 28 29 2A 2B 2C 2D 2E 2F  | !\"#$%&'()*+,-./|\n");
 }
 
-TEST_F(StringUtilsTest, HexDumpMultiLine)
-{
+TEST_F(StringUtilsTest, HexDumpMultiLine) {
     uint8_t data[20];
-    for (int i = 0; i < 20; ++i)
-    {
+    for (int i = 0; i < 20; ++i) {
         data[i] = static_cast<uint8_t>(i);
     }
 
     const std::string out = StringUtils::hex_dump(data, 20);
 
-    EXPECT_EQ(out,
-        "20 bytes\n"
-        "0000: 00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F  |................|\n"
-        "0010: 10 11 12 13                                      |....            |\n"
-    );
+    EXPECT_EQ(out, "20 bytes\n"
+                   "0000: 00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F  |................|\n"
+                   "0010: 10 11 12 13                                      |....            |\n");
 }
 
-TEST_F(StringUtilsTest, HexDumpNonPrintableBecomesDot)
-{
+TEST_F(StringUtilsTest, HexDumpNonPrintableBecomesDot) {
     const uint8_t data[] = {0x00, 0x01, 0x1F, 0x7F, 0x80, 0xFF};
 
     const std::string out = StringUtils::hex_dump(data, sizeof(data));
@@ -176,8 +162,7 @@ TEST_F(StringUtilsTest, HexDumpNonPrintableBecomesDot)
     EXPECT_NE(out.find("|......"), std::string::npos);
 }
 
-TEST_F(StringUtilsTest, HexDumpPrintableBoundaries)
-{
+TEST_F(StringUtilsTest, HexDumpPrintableBoundaries) {
     const uint8_t data[] = {31, 32, 126, 127};
 
     const std::string out = StringUtils::hex_dump(data, sizeof(data));
@@ -186,30 +171,25 @@ TEST_F(StringUtilsTest, HexDumpPrintableBoundaries)
     EXPECT_NE(out.find("|. ~."), std::string::npos);
 }
 
-TEST_F(StringUtilsTest, HexDumpNoControlCharacters)
-{
+TEST_F(StringUtilsTest, HexDumpNoControlCharacters) {
     uint8_t data[256];
-    for (int i = 0; i < 256; ++i)
-    {
+    for (int i = 0; i < 256; ++i) {
         data[i] = static_cast<uint8_t>(i);
     }
 
     const std::string out = StringUtils::hex_dump(data, sizeof(data));
 
-    for (char c : out)
-    {
-        if (c == '\n') continue;
+    for (char c : out) {
+        if (c == '\n')
+            continue;
 
-        EXPECT_GE(static_cast<unsigned char>(c), 32)
-            << "Found control character: " << static_cast<int>(c);
+        EXPECT_GE(static_cast<unsigned char>(c), 32) << "Found control character: " << static_cast<int>(c);
 
-        EXPECT_LE(static_cast<unsigned char>(c), 126)
-            << "Found non-ASCII printable: " << static_cast<int>(c);
+        EXPECT_LE(static_cast<unsigned char>(c), 126) << "Found non-ASCII printable: " << static_cast<int>(c);
     }
 }
 
-TEST_F(StringUtilsTest, HexDumpAlignment)
-{
+TEST_F(StringUtilsTest, HexDumpAlignment) {
     uint8_t data[32] = {0};
 
     const std::string out = StringUtils::hex_dump(data, sizeof(data));
@@ -219,8 +199,7 @@ TEST_F(StringUtilsTest, HexDumpAlignment)
 
     std::getline(iss, line); // header
 
-    while (std::getline(iss, line))
-    {
+    while (std::getline(iss, line)) {
         const auto pos = line.find(" |");
         ASSERT_NE(pos, std::string::npos);
 
@@ -229,8 +208,7 @@ TEST_F(StringUtilsTest, HexDumpAlignment)
     }
 }
 
-TEST_F(StringUtilsTest, HexDumpLargeBufferSanity)
-{
+TEST_F(StringUtilsTest, HexDumpLargeBufferSanity) {
     std::vector<uint8_t> data(1024, 0xAA);
 
     const std::string out = StringUtils::hex_dump(data.data(), data.size());
@@ -239,4 +217,4 @@ TEST_F(StringUtilsTest, HexDumpLargeBufferSanity)
     EXPECT_GT(out.size(), 1024u);
 }
 
-} // namespace pubsub_itc_fw
+} // namespace pubsub_itc_fw::tests

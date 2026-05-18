@@ -12,18 +12,15 @@
 
 namespace pubsub_itc_fw::tests {
 
-class EmptySlabQueueTest : public ::testing::Test {
-};
+class EmptySlabQueueTest : public ::testing::Test {};
 
-TEST_F(EmptySlabQueueTest, DequeueOnEmptyQueueReturnsEmpty)
-{
+TEST_F(EmptySlabQueueTest, DequeueOnEmptyQueueReturnsEmpty) {
     EmptySlabQueue queue;
     int slab_id = -1;
     EXPECT_EQ(queue.try_dequeue(slab_id), DequeueResult::Empty);
 }
 
-TEST_F(EmptySlabQueueTest, EnqueueThenDequeueReturnsItem)
-{
+TEST_F(EmptySlabQueueTest, EnqueueThenDequeueReturnsItem) {
     EmptySlabQueue queue;
     EmptySlabQueueNode node;
     node.slab_id = 42;
@@ -35,8 +32,7 @@ TEST_F(EmptySlabQueueTest, EnqueueThenDequeueReturnsItem)
     EXPECT_EQ(slab_id, 42);
 }
 
-TEST_F(EmptySlabQueueTest, DequeueAfterDrainReturnsEmpty)
-{
+TEST_F(EmptySlabQueueTest, DequeueAfterDrainReturnsEmpty) {
     EmptySlabQueue queue;
     EmptySlabQueueNode node;
     node.slab_id = 7;
@@ -50,8 +46,7 @@ TEST_F(EmptySlabQueueTest, DequeueAfterDrainReturnsEmpty)
     EXPECT_EQ(result, DequeueResult::Empty);
 }
 
-TEST_F(EmptySlabQueueTest, MultipleEnqueueDequeueInOrder)
-{
+TEST_F(EmptySlabQueueTest, MultipleEnqueueDequeueInOrder) {
     EmptySlabQueue queue;
     EmptySlabQueueNode node0;
     EmptySlabQueueNode node1;
@@ -78,8 +73,7 @@ TEST_F(EmptySlabQueueTest, MultipleEnqueueDequeueInOrder)
     EXPECT_EQ(queue.try_dequeue(slab_id), DequeueResult::Empty);
 }
 
-TEST_F(EmptySlabQueueTest, EnqueueNullptrThrows)
-{
+TEST_F(EmptySlabQueueTest, EnqueueNullptrThrows) {
     EmptySlabQueue queue;
     EXPECT_THROW(queue.enqueue(nullptr), PreconditionAssertion);
 }
@@ -110,8 +104,7 @@ TEST_F(EmptySlabQueueTest, EnqueueNullptrThrows)
  * repeated enqueues of the same node, this test should be unskipped and the
  * queue should be hardened.
  */
-TEST_F(EmptySlabQueueTest, ReEnqueueOfSameNodeDoesNotCauseInfiniteSpin)
-{
+TEST_F(EmptySlabQueueTest, ReEnqueueOfSameNodeDoesNotCauseInfiniteSpin) {
     GTEST_SKIP() << "Documents a queue-level self-loop hazard that is "
                     "deliberately mitigated by caller constraints rather "
                     "than by fixing the queue itself. See test comment.";
@@ -159,16 +152,12 @@ TEST_F(EmptySlabQueueTest, ReEnqueueOfSameNodeDoesNotCauseInfiniteSpin)
         last_slab_id = dequeued_slab_id;
     }
 
-    EXPECT_LE(got_item_count_after_reenqueue, 1)
-        << "Re-enqueue of an already-enqueued node yielded the node more than once: "
-        << got_item_count_after_reenqueue
-        << " GotItem results (same_id_repeats=" << same_id_repeats << "). "
-        << "This is the self-loop hazard.";
+    EXPECT_LE(got_item_count_after_reenqueue, 1) << "Re-enqueue of an already-enqueued node yielded the node more than once: " << got_item_count_after_reenqueue
+                                                 << " GotItem results (same_id_repeats=" << same_id_repeats << "). " << "This is the self-loop hazard.";
 }
 
 // Many producers enqueue simultaneously; consumer must see all items exactly once.
-TEST_F(EmptySlabQueueTest, ManyProducersOneConsumer)
-{
+TEST_F(EmptySlabQueueTest, ManyProducersOneConsumer) {
     constexpr int num_producers = 16;
     EmptySlabQueue queue;
 
@@ -181,9 +170,7 @@ TEST_F(EmptySlabQueueTest, ManyProducersOneConsumer)
     producers.reserve(num_producers);
 
     for (int i = 0; i < num_producers; ++i) {
-        producers.emplace_back([&queue, &nodes, i]() {
-            queue.enqueue(&nodes[i]);
-        });
+        producers.emplace_back([&queue, &nodes, i]() { queue.enqueue(&nodes[i]); });
     }
 
     for (auto& t : producers) {
@@ -211,8 +198,7 @@ TEST_F(EmptySlabQueueTest, ManyProducersOneConsumer)
 }
 
 // Interleaved enqueue and dequeue: producers and consumer run concurrently.
-TEST_F(EmptySlabQueueTest, InterleavedEnqueueDequeue)
-{
+TEST_F(EmptySlabQueueTest, InterleavedEnqueueDequeue) {
     constexpr int num_items = 64;
     EmptySlabQueue queue;
 

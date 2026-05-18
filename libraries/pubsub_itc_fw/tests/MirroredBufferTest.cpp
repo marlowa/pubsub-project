@@ -24,7 +24,7 @@ namespace pubsub_itc_fw {
 namespace {
 
 class MirroredBufferTest : public ::testing::Test {
-protected:
+  protected:
     const int64_t test_capacity = 65536; // 64KB (multiple of most page sizes)
 };
 
@@ -166,31 +166,24 @@ TEST_F(MirroredBufferTest, HeadAndTailRemainMonotonicAcrossMultipleCapacities) {
 
     for (int64_t i = 0; i < total_chunks; ++i) {
         buffer.advance_head(chunk_size);
-        EXPECT_EQ(buffer.bytes_available(), chunk_size)
-            << "bytes_available should reflect head minus tail, iteration " << i;
+        EXPECT_EQ(buffer.bytes_available(), chunk_size) << "bytes_available should reflect head minus tail, iteration " << i;
 
         const int64_t current_tail = buffer.tail();
-        EXPECT_GE(current_tail, prior_tail)
-            << "tail must never decrease, iteration " << i
-            << " (prior_tail=" << prior_tail
-            << ", current_tail=" << current_tail << ")";
+        EXPECT_GE(current_tail, prior_tail) << "tail must never decrease, iteration " << i << " (prior_tail=" << prior_tail << ", current_tail=" << current_tail
+                                            << ")";
 
         buffer.advance_tail(chunk_size);
-        EXPECT_EQ(buffer.bytes_available(), 0)
-            << "buffer should be empty after draining, iteration " << i;
+        EXPECT_EQ(buffer.bytes_available(), 0) << "buffer should be empty after draining, iteration " << i;
 
         const int64_t tail_after_drain = buffer.tail();
-        EXPECT_GE(tail_after_drain, current_tail)
-            << "tail must never decrease across advance_tail, iteration " << i
-            << " (current_tail=" << current_tail
-            << ", tail_after_drain=" << tail_after_drain << ")";
+        EXPECT_GE(tail_after_drain, current_tail) << "tail must never decrease across advance_tail, iteration " << i << " (current_tail=" << current_tail
+                                                  << ", tail_after_drain=" << tail_after_drain << ")";
 
         prior_tail = tail_after_drain;
         total_pushed += chunk_size;
     }
 
-    EXPECT_EQ(buffer.tail(), total_pushed)
-        << "After draining everything pushed, tail must equal total bytes pushed";
+    EXPECT_EQ(buffer.tail(), total_pushed) << "After draining everything pushed, tail must equal total bytes pushed";
 }
 
 TEST_F(MirroredBufferTest, SupportsLargeAddressSpaceReservations) {
@@ -217,7 +210,9 @@ TEST_F(MirroredBufferTest, ConcurrentProducerConsumerStress) {
     // Producer Thread
     std::thread producer([&]() {
         for (int64_t i = 0; i < total_bytes; ++i) {
-            while (buffer.space_remaining() < 1) { std::this_thread::yield(); }
+            while (buffer.space_remaining() < 1) {
+                std::this_thread::yield();
+            }
             *buffer.write_ptr() = static_cast<uint8_t>(i % 256);
             buffer.advance_head(1);
         }
@@ -262,7 +257,8 @@ TEST_F(MirroredBufferTest, ExposeStaleHeadVisibilityRace) {
 
             // Wait for consumer to process
             while (ready_to_read.load(std::memory_order_acquire)) {
-                if (stop.load()) return;
+                if (stop.load())
+                    return;
             }
         }
         stop.store(true);
@@ -311,7 +307,8 @@ TEST_F(MirroredBufferTest, TheVandalRaceTest) {
                 asm volatile("" ::: "memory");
             }
             buffer.advance_head(1);
-            if (stop.load()) break;
+            if (stop.load())
+                break;
         }
         stop.store(true);
     });
@@ -350,7 +347,8 @@ TEST_F(MirroredBufferTest, VigorouslyAdversarialRace) {
     std::thread polluter([&]() {
         std::vector<int> junk(1024 * 1024, 0); // 4MB of junk
         while (!stop.load()) {
-            for (auto& v : junk) v++;
+            for (auto& v : junk)
+                v++;
             std::this_thread::yield();
         }
     });
@@ -529,15 +527,10 @@ TEST_F(MirroredBufferTest, EventMessageHoldsSharedOwnershipOfMirroredBuffer) {
     // Build a RawSocketCommunication event that points into the buffer and
     // shares ownership of it. This is what RawBytesProtocolHandler::on_data_ready
     // does in production.
-    EventMessage event = EventMessage::create_raw_socket_message(
-        ConnectionID{},
-        buffer->read_ptr(),
-        static_cast<int>(buffer->bytes_available()),
-        buffer->tail(),
-        buffer);
+    EventMessage event =
+        EventMessage::create_raw_socket_message(ConnectionID{}, buffer->read_ptr(), static_cast<int>(buffer->bytes_available()), buffer->tail(), buffer);
 
-    EXPECT_EQ(buffer.use_count(), 2L)
-        << "EventMessage must hold a second reference to the buffer";
+    EXPECT_EQ(buffer.use_count(), 2L) << "EventMessage must hold a second reference to the buffer";
 
     // Capture the payload pointer for after-drop comparison.
     const uint8_t* payload_before_drop = event.payload();
@@ -551,10 +544,8 @@ TEST_F(MirroredBufferTest, EventMessageHoldsSharedOwnershipOfMirroredBuffer) {
     // The event still holds the sole reference; the buffer must still be
     // mapped and the marker bytes must still be readable.
     EXPECT_EQ(std::memcmp(event.payload(), marker.data(), marker.size()), 0)
-        << "Buffer was destroyed too early; the EventMessage's shared_ptr "
-        << "did not keep it alive.";
-    EXPECT_EQ(event.payload(), payload_before_drop)
-        << "Payload pointer must remain stable for the lifetime of the event.";
+        << "Buffer was destroyed too early; the EventMessage's shared_ptr " << "did not keep it alive.";
+    EXPECT_EQ(event.payload(), payload_before_drop) << "Payload pointer must remain stable for the lifetime of the event.";
 
     // The event going out of scope at the end of the test will release the
     // last reference, and the buffer will be destroyed cleanly.

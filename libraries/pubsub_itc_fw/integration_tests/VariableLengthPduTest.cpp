@@ -28,10 +28,10 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <gtest/gtest.h>
 #include <memory>
 #include <string>
 #include <thread>
-#include <gtest/gtest.h>
 
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThread.hpp>
@@ -57,7 +57,7 @@ namespace pubsub_itc_fw::tests {
 // ============================================================
 // PDU IDs matching the variable-length test protocol DSL
 // ============================================================
-static constexpr int16_t PDU_ID_DATA_QUERY    = 300;
+static constexpr int16_t PDU_ID_DATA_QUERY = 300;
 static constexpr int16_t PDU_ID_DATA_RESPONSE = 301;
 
 // ============================================================
@@ -71,10 +71,9 @@ static constexpr int16_t PDU_ID_DATA_RESPONSE = 301;
 // Disconnects cleanly.
 // ============================================================
 class ConnectorThread : public ApplicationThread {
-public:
+  public:
     ConnectorThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
-        : ApplicationThread(token, logger, reactor, "ConnectorThread", ThreadID{1},
-                            make_queue_config(), make_allocator_config("ConnectorPool"),
+        : ApplicationThread(token, logger, reactor, "ConnectorThread", ThreadID{1}, make_queue_config(), make_allocator_config("ConnectorPool"),
                             ApplicationThreadConfiguration{}) {}
 
     std::atomic<bool> connection_established{false};
@@ -86,7 +85,7 @@ public:
     std::vector<std::string> received_results;
     ConnectionID conn_id{};
 
-protected:
+  protected:
     void on_initial_event() override {
         connect_to_service("listener");
     }
@@ -96,10 +95,10 @@ protected:
         connection_established.store(true, std::memory_order_release);
 
         DataQuery query{};
-        query.request_id  = 42;
-        query.query_name  = std::string_view("find_everything");
-        query.has_limit   = true;
-        query.limit       = 10;
+        query.request_id = 42;
+        query.query_name = std::string_view("find_everything");
+        query.has_limit = true;
+        query.limit = 10;
 
         send_pdu(id, PDU_ID_DATA_QUERY, 0, query);
         query_sent.store(true, std::memory_order_release);
@@ -116,10 +115,10 @@ protected:
 
     void on_framework_pdu_message(const EventMessage& msg) override {
         const uint8_t* payload = msg.payload();
-        const size_t   size    = static_cast<size_t>(msg.payload_size());
+        const size_t size = static_cast<size_t>(msg.payload_size());
 
         BumpAllocator arena(decode_arena_buffer().data(), decode_arena_buffer().capacity());
-        size_t consumed     = 0;
+        size_t consumed = 0;
         size_t arena_needed = 0;
         if (decode(received_response, payload, size, consumed, arena, arena_needed)) {
             // Copy the list<string> results out of the arena into owned strings.
@@ -146,10 +145,9 @@ protected:
 // a list of result strings.
 // ============================================================
 class ListenerThread : public ApplicationThread {
-public:
+  public:
     ListenerThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
-        : ApplicationThread(token, logger, reactor, "ListenerThread", ThreadID{2},
-                            make_queue_config(), make_allocator_config("ListenerPool"),
+        : ApplicationThread(token, logger, reactor, "ListenerThread", ThreadID{2}, make_queue_config(), make_allocator_config("ListenerPool"),
                             ApplicationThreadConfiguration{}) {}
 
     std::atomic<bool> connection_established{false};
@@ -158,12 +156,12 @@ public:
     std::atomic<bool> connection_lost{false};
 
     DataQueryView received_query{};
-    std::string   received_query_name;
-    bool          received_has_limit{false};
-    int32_t       received_limit{0};
-    ConnectionID  conn_id{};
+    std::string received_query_name;
+    bool received_has_limit{false};
+    int32_t received_limit{0};
+    ConnectionID conn_id{};
 
-protected:
+  protected:
     void on_connection_established(ConnectionID id) override {
         conn_id = id;
         connection_established.store(true, std::memory_order_release);
@@ -176,16 +174,16 @@ protected:
 
     void on_framework_pdu_message(const EventMessage& msg) override {
         const uint8_t* payload = msg.payload();
-        const size_t   size    = static_cast<size_t>(msg.payload_size());
+        const size_t size = static_cast<size_t>(msg.payload_size());
 
         BumpAllocator arena(decode_arena_buffer().data(), decode_arena_buffer().capacity());
-        size_t consumed     = 0;
+        size_t consumed = 0;
         size_t arena_needed = 0;
         if (decode(received_query, payload, size, consumed, arena, arena_needed)) {
             // Copy string fields out of the arena into owned storage.
-            received_query_name  = std::string(received_query.query_name);
-            received_has_limit   = received_query.has_limit;
-            received_limit       = received_query.limit;
+            received_query_name = std::string(received_query.query_name);
+            received_has_limit = received_query.has_limit;
+            received_limit = received_query.limit;
             query_received.store(true, std::memory_order_release);
 
             // Build a response with three result strings.
@@ -193,12 +191,10 @@ protected:
             // local array of string_views backed by string literals, which
             // are valid for the lifetime of this call. The encoder reads
             // them before returning.
-            std::array<std::string_view, 3> results_data = {
-                "alpha", "beta", "gamma"
-            };
+            std::array<std::string_view, 3> results_data = {"alpha", "beta", "gamma"};
 
             DataResponse response{};
-            response.request_id  = received_query.request_id;
+            response.request_id = received_query.request_id;
             response.status_code = 0;
             response.results.data = results_data.data();
             response.results.size = results_data.size();
@@ -206,7 +202,6 @@ protected:
             send_pdu(conn_id, PDU_ID_DATA_RESPONSE, 0, response);
             response_sent.store(true, std::memory_order_release);
         }
-
     }
 
     void on_itc_message([[maybe_unused]] const EventMessage& msg) override {}
@@ -216,7 +211,7 @@ protected:
 // Test fixture
 // ============================================================
 class VariableLengthPduTest : public ::testing::Test {
-protected:
+  protected:
     void SetUp() override {
         logger_ = std::make_unique<LoggerWithSink>();
     }
@@ -226,8 +221,7 @@ protected:
     }
 
     static bool wait_for(std::function<bool()> pred, int timeout_ms = 5000) {
-        const auto deadline =
-            std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
         while (!pred()) {
             if (std::chrono::steady_clock::now() > deadline) {
                 return false;
@@ -240,9 +234,9 @@ protected:
     static ReactorConfiguration make_reactor_config() {
         ReactorConfiguration cfg{};
         cfg.inactivity_check_interval_ = std::chrono::milliseconds(100);
-        cfg.init_phase_timeout_        = std::chrono::milliseconds(5000);
-        cfg.shutdown_timeout_          = std::chrono::milliseconds(1000);
-        cfg.connect_timeout            = std::chrono::milliseconds(2000);
+        cfg.init_phase_timeout_ = std::chrono::milliseconds(5000);
+        cfg.shutdown_timeout_ = std::chrono::milliseconds(1000);
+        cfg.connect_timeout = std::chrono::milliseconds(2000);
         return cfg;
     }
 
@@ -255,71 +249,52 @@ protected:
 TEST_F(VariableLengthPduTest, DataQueryResponseRoundTrip) {
     // --- Listener side ---
     ServiceRegistry listener_registry;
-    auto listener_reactor = std::make_unique<Reactor>(
-        make_reactor_config(), listener_registry, logger_->logger);
+    auto listener_reactor = std::make_unique<Reactor>(make_reactor_config(), listener_registry, logger_->logger);
 
-    listener_reactor->register_inbound_listener(
-        NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
+    listener_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
 
     auto listener_thread = ApplicationThread::create<ListenerThread>(logger_->logger, *listener_reactor);
     listener_reactor->register_thread(listener_thread);
 
     std::thread listener_reactor_thread([&]() { listener_reactor->run(); });
 
-    ASSERT_TRUE(wait_for([&]() { return listener_reactor->is_initialized(); }))
-        << "Listener reactor did not initialise within timeout";
+    ASSERT_TRUE(wait_for([&]() { return listener_reactor->is_initialized(); })) << "Listener reactor did not initialise within timeout";
 
     const uint16_t listen_port = listener_reactor->get_inbound_listener_port(0);
     ASSERT_NE(listen_port, 0u) << "OS did not assign a valid listening port";
 
     // --- Connector side ---
     ServiceRegistry connector_registry;
-    connector_registry.add("listener",
-        NetworkEndpointConfiguration{"127.0.0.1", listen_port},
-        NetworkEndpointConfiguration{});
+    connector_registry.add("listener", NetworkEndpointConfiguration{"127.0.0.1", listen_port}, NetworkEndpointConfiguration{});
 
-    auto connector_reactor = std::make_unique<Reactor>(
-        make_reactor_config(), connector_registry, logger_->logger);
+    auto connector_reactor = std::make_unique<Reactor>(make_reactor_config(), connector_registry, logger_->logger);
 
-    auto connector_thread = ApplicationThread::create<ConnectorThread>(
-        logger_->logger, *connector_reactor);
+    auto connector_thread = ApplicationThread::create<ConnectorThread>(logger_->logger, *connector_reactor);
     connector_reactor->register_thread(connector_thread);
 
     std::thread connector_reactor_thread([&]() { connector_reactor->run(); });
 
     // --- Wait for each step of the exchange ---
 
-    EXPECT_TRUE(wait_for([&]() {
-        return connector_thread->connection_established.load(std::memory_order_acquire);
-    })) << "Connector: ConnectionEstablished not received";
+    EXPECT_TRUE(wait_for([&]() { return connector_thread->connection_established.load(std::memory_order_acquire); }))
+        << "Connector: ConnectionEstablished not received";
 
-    EXPECT_TRUE(wait_for([&]() {
-        return listener_thread->connection_established.load(std::memory_order_acquire);
-    })) << "Listener: ConnectionEstablished not received";
+    EXPECT_TRUE(wait_for([&]() { return listener_thread->connection_established.load(std::memory_order_acquire); }))
+        << "Listener: ConnectionEstablished not received";
 
-    EXPECT_TRUE(wait_for([&]() {
-        return connector_thread->query_sent.load(std::memory_order_acquire);
-    })) << "Connector: DataQuery not sent";
+    EXPECT_TRUE(wait_for([&]() { return connector_thread->query_sent.load(std::memory_order_acquire); })) << "Connector: DataQuery not sent";
 
-    EXPECT_TRUE(wait_for([&]() {
-        return listener_thread->query_received.load(std::memory_order_acquire);
-    })) << "Listener: DataQuery not received";
+    EXPECT_TRUE(wait_for([&]() { return listener_thread->query_received.load(std::memory_order_acquire); })) << "Listener: DataQuery not received";
 
-    EXPECT_TRUE(wait_for([&]() {
-        return listener_thread->response_sent.load(std::memory_order_acquire);
-    })) << "Listener: DataResponse not sent";
+    EXPECT_TRUE(wait_for([&]() { return listener_thread->response_sent.load(std::memory_order_acquire); })) << "Listener: DataResponse not sent";
 
-    EXPECT_TRUE(wait_for([&]() {
-        return connector_thread->response_received.load(std::memory_order_acquire);
-    })) << "Connector: DataResponse not received";
+    EXPECT_TRUE(wait_for([&]() { return connector_thread->response_received.load(std::memory_order_acquire); })) << "Connector: DataResponse not received";
 
-    EXPECT_TRUE(wait_for([&]() {
-        return connector_thread->connection_lost.load(std::memory_order_acquire);
-    })) << "Connector: ConnectionLost not received after disconnect";
+    EXPECT_TRUE(wait_for([&]() { return connector_thread->connection_lost.load(std::memory_order_acquire); }))
+        << "Connector: ConnectionLost not received after disconnect";
 
-    EXPECT_TRUE(wait_for([&]() {
-        return listener_thread->connection_lost.load(std::memory_order_acquire);
-    })) << "Listener: ConnectionLost not received after peer disconnect";
+    EXPECT_TRUE(wait_for([&]() { return listener_thread->connection_lost.load(std::memory_order_acquire); }))
+        << "Listener: ConnectionLost not received after peer disconnect";
 
     // --- Verify DataQuery fields on the listener ---
     EXPECT_EQ(listener_thread->received_query.request_id, 42);

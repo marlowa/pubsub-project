@@ -5,11 +5,11 @@
 #include <atomic>
 #include <chrono>
 #include <functional>
+#include <random>
 #include <set>
 #include <thread>
-#include <vector>
-#include <random>
 #include <type_traits> // for std::aligned_storage_t
+#include <vector>
 
 #include <cstddef>
 #include <cstdint>
@@ -30,8 +30,12 @@ struct TestObject {
     static std::atomic<int> s_ctor;
     static std::atomic<int> s_dtor;
 
-    TestObject() { s_ctor.fetch_add(1, std::memory_order_relaxed); }
-    ~TestObject() { s_dtor.fetch_add(1, std::memory_order_relaxed); }
+    TestObject() {
+        s_ctor.fetch_add(1, std::memory_order_relaxed);
+    }
+    ~TestObject() {
+        s_dtor.fetch_add(1, std::memory_order_relaxed);
+    }
 
     static void reset() {
         s_ctor.store(0, std::memory_order_relaxed);
@@ -43,7 +47,7 @@ std::atomic<int> TestObject::s_ctor{0};
 std::atomic<int> TestObject::s_dtor{0};
 
 class FixedSizeMemoryPoolTest : public ::testing::Test {
-protected:
+  protected:
     void SetUp() override {
         TestObject::reset();
         huge_pages_error_calls_ = 0;
@@ -52,9 +56,7 @@ protected:
     std::atomic<int> huge_pages_error_calls_{0};
 
     std::function<void(void*, std::size_t)> huge_page_handler() {
-        return [this](void*, std::size_t) {
-            huge_pages_error_calls_.fetch_add(1, std::memory_order_relaxed);
-        };
+        return [this](void*, std::size_t) { huge_pages_error_calls_.fetch_add(1, std::memory_order_relaxed); };
     }
 };
 
@@ -64,11 +66,7 @@ protected:
 
 TEST_F(FixedSizeMemoryPoolTest, BasicAllocateDeallocate) {
     const int capacity = 16;
-    FixedSizeMemoryPool<TestObject> pool(
-        capacity,
-        UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages),
-        huge_page_handler()
-    );
+    FixedSizeMemoryPool<TestObject> pool(capacity, UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages), huge_page_handler());
 
     std::vector<TestObject*> ptrs;
     ptrs.reserve(capacity);
@@ -101,11 +99,7 @@ TEST_F(FixedSizeMemoryPoolTest, BasicAllocateDeallocate) {
 
 TEST_F(FixedSizeMemoryPoolTest, RandomisedReuse) {
     const int capacity = 32;
-    FixedSizeMemoryPool<TestObject> pool(
-        capacity,
-        UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages),
-        huge_page_handler()
-    );
+    FixedSizeMemoryPool<TestObject> pool(capacity, UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages), huge_page_handler());
 
     std::vector<TestObject*> first_round;
     first_round.reserve(capacity);
@@ -147,11 +141,7 @@ TEST_F(FixedSizeMemoryPoolTest, RandomisedReuse) {
 
 TEST_F(FixedSizeMemoryPoolTest, ContainsCorrectness) {
     const int capacity = 8;
-    FixedSizeMemoryPool<TestObject> pool(
-        capacity,
-        UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages),
-        huge_page_handler()
-    );
+    FixedSizeMemoryPool<TestObject> pool(capacity, UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages), huge_page_handler());
 
     std::vector<TestObject*> ptrs;
     ptrs.reserve(capacity);
@@ -190,11 +180,7 @@ TEST_F(FixedSizeMemoryPoolTest, ContainsCorrectness) {
 
 TEST_F(FixedSizeMemoryPoolTest, SlotLayoutRoundTrip) {
     const int capacity = 4;
-    FixedSizeMemoryPool<TestObject> pool(
-        capacity,
-        UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages),
-        huge_page_handler()
-    );
+    FixedSizeMemoryPool<TestObject> pool(capacity, UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages), huge_page_handler());
 
     std::vector<TestObject*> ptrs;
     for (int i = 0; i < capacity; ++i) {
@@ -224,11 +210,7 @@ TEST_F(FixedSizeMemoryPoolTest, SlotLayoutRoundTrip) {
 TEST_F(FixedSizeMemoryPoolTest, DestructorDestroysLeakedObjects) {
     const int capacity = 10;
     {
-        FixedSizeMemoryPool<TestObject> pool(
-            capacity,
-            UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages),
-            huge_page_handler()
-        );
+        FixedSizeMemoryPool<TestObject> pool(capacity, UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages), huge_page_handler());
 
         for (int i = 0; i < capacity; ++i) {
             void* raw = pool.allocate();
@@ -243,8 +225,7 @@ TEST_F(FixedSizeMemoryPoolTest, DestructorDestroysLeakedObjects) {
             using SlotType = Slot<TestObject>;
             auto* storage_ptr = reinterpret_cast<std::aligned_storage_t<sizeof(TestObject), alignof(TestObject)>*>(p);
             // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-            auto* slot = reinterpret_cast<SlotType*>(reinterpret_cast<char*>(storage_ptr) - offsetof(SlotType, storage)
-            );
+            auto* slot = reinterpret_cast<SlotType*>(reinterpret_cast<char*>(storage_ptr) - offsetof(SlotType, storage));
             slot->is_constructed.store(1, std::memory_order_relaxed);
         }
 
@@ -283,19 +264,15 @@ TEST_F(FixedSizeMemoryPoolTest, DestructorDestroysLeakedObjects) {
 
 TEST_F(FixedSizeMemoryPoolTest, DirectAbaStress) {
 #ifdef USING_VALGRIND
-    const int iterations  = 200;
+    const int iterations = 200;
     const int num_threads = 4;
 #else
-    const int iterations  = 100'000;
+    const int iterations = 100'000;
     const int num_threads = 8;
 #endif
 
     const int capacity = num_threads;
-    FixedSizeMemoryPool<TestObject> pool(
-        capacity,
-        UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages),
-        huge_page_handler()
-    );
+    FixedSizeMemoryPool<TestObject> pool(capacity, UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages), huge_page_handler());
 
     // Threads hammer allocate()/deallocate() concurrently.
     std::vector<std::thread> threads;
@@ -346,11 +323,7 @@ TEST_F(FixedSizeMemoryPoolTest, DirectAbaStress) {
 TEST_F(FixedSizeMemoryPoolTest, HugePagesHandlerIsCallable) {
     const int capacity = 4;
 
-    FixedSizeMemoryPool<TestObject> pool(
-        capacity,
-        UseHugePagesFlag(UseHugePagesFlag::DoUseHugePages),
-        huge_page_handler()
-    );
+    FixedSizeMemoryPool<TestObject> pool(capacity, UseHugePagesFlag(UseHugePagesFlag::DoUseHugePages), huge_page_handler());
 
     // We can't force the OS to fail huge pages, but we can at least assert
     // that the pool is usable and the handler counter is >= 0.
@@ -369,26 +342,22 @@ TEST_F(FixedSizeMemoryPoolTest, HugePagesHandlerIsCallable) {
 
 TEST_F(FixedSizeMemoryPoolTest, DirectAbaStressWithMidDrain) {
 #ifdef USING_VALGRIND
-    const int iterations     = 200;
-    const int num_threads    = 4;
+    const int iterations = 200;
+    const int num_threads = 4;
     const int num_mid_drains = 4;
 #else
-    const int iterations     = 100'000;
-    const int num_threads    = 8;
+    const int iterations = 100'000;
+    const int num_threads = 8;
     const int num_mid_drains = 16;
 #endif
 
     // Capacity == num_threads to maximise contention at the boundary.
     const int capacity = num_threads;
-    FixedSizeMemoryPool<TestObject> pool(
-        capacity,
-        UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages),
-        huge_page_handler()
-    );
+    FixedSizeMemoryPool<TestObject> pool(capacity, UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages), huge_page_handler());
 
     std::atomic<bool> start_gate{false};
     std::atomic<bool> stop{false};
-    std::atomic<int>  ready_count{0};
+    std::atomic<int> ready_count{0};
 
     // Worker threads: pure Treiber-stack pressure (allocate/deallocate).
     std::vector<std::thread> workers;
@@ -445,9 +414,7 @@ TEST_F(FixedSizeMemoryPoolTest, DirectAbaStressWithMidDrain) {
         // no duplicates in the sample.
         if (!drained.empty()) {
             const std::set<TestObject*> drained_set(drained.begin(), drained.end());
-            EXPECT_EQ(drained_set.size(), drained.size())
-                << "mid‑drain corruption: duplicate pointer detected in round "
-                << drain_round;
+            EXPECT_EQ(drained_set.size(), drained.size()) << "mid‑drain corruption: duplicate pointer detected in round " << drain_round;
         }
 
         // Return drained objects to the pool so workers can continue.
@@ -469,18 +436,14 @@ TEST_F(FixedSizeMemoryPoolTest, DirectAbaStressWithMidDrain) {
 
     for (int i = 0; i < capacity; ++i) {
         TestObject* obj = pool.allocate();
-        ASSERT_NE(obj, nullptr)
-            << "final drain corruption: nullptr at index " << i
-            << " (expected " << capacity << " slots)";
+        ASSERT_NE(obj, nullptr) << "final drain corruption: nullptr at index " << i << " (expected " << capacity << " slots)";
         final_drained.push_back(obj);
     }
 
-    EXPECT_EQ(pool.allocate(), nullptr)
-        << "final drain corruption: allocator returned more than capacity slots";
+    EXPECT_EQ(pool.allocate(), nullptr) << "final drain corruption: allocator returned more than capacity slots";
 
     const std::set<TestObject*> final_set(final_drained.begin(), final_drained.end());
-    EXPECT_EQ(final_set.size(), final_drained.size())
-        << "final drain corruption: duplicate pointer detected";
+    EXPECT_EQ(final_set.size(), final_drained.size()) << "final drain corruption: duplicate pointer detected";
 
     for (auto* obj : final_drained) {
         pool.deallocate(obj);

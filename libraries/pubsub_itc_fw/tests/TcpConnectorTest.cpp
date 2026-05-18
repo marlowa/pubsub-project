@@ -42,8 +42,8 @@ static std::pair<int, uint16_t> make_listener() {
     ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
 
     sockaddr_in addr{};
-    addr.sin_family      = AF_INET;
-    addr.sin_port        = 0;
+    addr.sin_family = AF_INET;
+    addr.sin_port = 0;
     addr.sin_addr.s_addr = inet_addr("127.0.0.1");
 
     if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
@@ -138,16 +138,14 @@ TEST_F(TcpConnectorTest, ConnectToListeningSocketSucceeds) {
         std::thread accept_thread([listen_fd]() {
             sockaddr_in peer{};
             socklen_t len = sizeof(peer);
-            const int client_fd = ::accept(listen_fd,
-                reinterpret_cast<sockaddr*>(&peer), &len);
+            const int client_fd = ::accept(listen_fd, reinterpret_cast<sockaddr*>(&peer), &len);
             if (client_fd != -1) {
                 ::close(client_fd);
             }
         });
 
         // Poll finish_connect() until it succeeds or times out.
-        const auto deadline =
-            std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
         bool done = false;
         while (std::chrono::steady_clock::now() < deadline) {
             auto [finished, finish_error] = connector.finish_connect();

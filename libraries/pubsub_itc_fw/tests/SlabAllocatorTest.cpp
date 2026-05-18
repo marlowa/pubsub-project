@@ -17,20 +17,18 @@
 namespace pubsub_itc_fw::tests {
 
 class SlabAllocatorTest : public ::testing::Test {
-protected:
+  protected:
     static constexpr size_t slab_size = 4096;
     EmptySlabQueue queue_;
 };
 
-TEST_F(SlabAllocatorTest, BasicAllocation)
-{
+TEST_F(SlabAllocatorTest, BasicAllocation) {
     SlabAllocator slab(slab_size, 0, queue_);
     void* ptr = slab.allocate(64);
     EXPECT_NE(ptr, nullptr);
 }
 
-TEST_F(SlabAllocatorTest, AllocationFailsWhenFull)
-{
+TEST_F(SlabAllocatorTest, AllocationFailsWhenFull) {
     SlabAllocator slab(64, 0, queue_);
     void* ptr = slab.allocate(64);
     EXPECT_NE(ptr, nullptr);
@@ -38,22 +36,19 @@ TEST_F(SlabAllocatorTest, AllocationFailsWhenFull)
     EXPECT_EQ(ptr2, nullptr);
 }
 
-TEST_F(SlabAllocatorTest, ContainsReturnsTrueForAllocatedPtr)
-{
+TEST_F(SlabAllocatorTest, ContainsReturnsTrueForAllocatedPtr) {
     SlabAllocator slab(slab_size, 0, queue_);
     void* ptr = slab.allocate(64);
     EXPECT_TRUE(slab.contains(ptr));
 }
 
-TEST_F(SlabAllocatorTest, ContainsReturnsFalseForForeignPtr)
-{
+TEST_F(SlabAllocatorTest, ContainsReturnsFalseForForeignPtr) {
     SlabAllocator slab(slab_size, 0, queue_);
     int local = 0;
     EXPECT_FALSE(slab.contains(&local));
 }
 
-TEST_F(SlabAllocatorTest, IsEmptyAfterDeallocatingSingleChunk)
-{
+TEST_F(SlabAllocatorTest, IsEmptyAfterDeallocatingSingleChunk) {
     SlabAllocator slab(slab_size, 0, queue_);
     void* ptr = slab.allocate(64);
     EXPECT_FALSE(slab.is_empty());
@@ -61,8 +56,7 @@ TEST_F(SlabAllocatorTest, IsEmptyAfterDeallocatingSingleChunk)
     EXPECT_TRUE(slab.is_empty());
 }
 
-TEST_F(SlabAllocatorTest, EmptySlabQueueNotifiedWhenLastChunkFreed)
-{
+TEST_F(SlabAllocatorTest, EmptySlabQueueNotifiedWhenLastChunkFreed) {
     SlabAllocator slab(slab_size, 5, queue_);
     void* ptr = slab.allocate(64);
     // Under the new design, deallocators only enqueue when the slab is no
@@ -76,8 +70,7 @@ TEST_F(SlabAllocatorTest, EmptySlabQueueNotifiedWhenLastChunkFreed)
     EXPECT_EQ(slab_id, 5);
 }
 
-TEST_F(SlabAllocatorTest, QueueNotNotifiedUntilLastChunkFreed)
-{
+TEST_F(SlabAllocatorTest, QueueNotNotifiedUntilLastChunkFreed) {
     SlabAllocator slab(slab_size, 0, queue_);
     void* ptr1 = slab.allocate(64);
     void* ptr2 = slab.allocate(64);
@@ -96,8 +89,7 @@ TEST_F(SlabAllocatorTest, QueueNotNotifiedUntilLastChunkFreed)
     EXPECT_EQ(slab_id, 0);
 }
 
-TEST_F(SlabAllocatorTest, ResetAllowsReuse)
-{
+TEST_F(SlabAllocatorTest, ResetAllowsReuse) {
     SlabAllocator slab(slab_size, 0, queue_);
     void* ptr = slab.allocate(64);
     slab.deallocate(ptr);
@@ -114,42 +106,34 @@ TEST_F(SlabAllocatorTest, ResetAllowsReuse)
     EXPECT_NE(ptr2, nullptr);
 }
 
-TEST_F(SlabAllocatorTest, AllocateZeroSizeThrows)
-{
+TEST_F(SlabAllocatorTest, AllocateZeroSizeThrows) {
     SlabAllocator slab(slab_size, 0, queue_);
-    EXPECT_THROW(
-        { [[maybe_unused]] void* p = slab.allocate(0); },
-        PreconditionAssertion);
+    EXPECT_THROW({ [[maybe_unused]] void* p = slab.allocate(0); }, PreconditionAssertion);
 }
 
-TEST_F(SlabAllocatorTest, DeallocateNullptrThrows)
-{
+TEST_F(SlabAllocatorTest, DeallocateNullptrThrows) {
     SlabAllocator slab(slab_size, 0, queue_);
     EXPECT_THROW(slab.deallocate(nullptr), PreconditionAssertion);
 }
 
-TEST_F(SlabAllocatorTest, SlabIdIsCorrect)
-{
+TEST_F(SlabAllocatorTest, SlabIdIsCorrect) {
     SlabAllocator slab(slab_size, 99, queue_);
     EXPECT_EQ(slab.slab_id(), 99);
 }
 
-TEST_F(SlabAllocatorTest, CapacityMatchesSlabSize)
-{
+TEST_F(SlabAllocatorTest, CapacityMatchesSlabSize) {
     SlabAllocator slab(slab_size, 0, queue_);
     EXPECT_EQ(slab.capacity(), slab_size);
 }
 
-TEST_F(SlabAllocatorTest, QueueNodeReturnsNode)
-{
+TEST_F(SlabAllocatorTest, QueueNodeReturnsNode) {
     SlabAllocator slab(slab_size, 7, queue_);
     EmptySlabQueueNode& node = slab.queue_node();
     // The node's slab_id is set during construction.
     EXPECT_EQ(node.slab_id, 7);
 }
 
-TEST_F(SlabAllocatorTest, AllocationsAreAligned)
-{
+TEST_F(SlabAllocatorTest, AllocationsAreAligned) {
     SlabAllocator slab(slab_size, 0, queue_);
     constexpr size_t alignment = alignof(std::max_align_t);
 
@@ -161,8 +145,7 @@ TEST_F(SlabAllocatorTest, AllocationsAreAligned)
 }
 
 // Cross-thread deallocation: multiple threads free chunks from the same slab.
-TEST_F(SlabAllocatorTest, CrossThreadDeallocation)
-{
+TEST_F(SlabAllocatorTest, CrossThreadDeallocation) {
     constexpr int num_threads = 8;
     constexpr int chunks_per_thread = 16;
     constexpr size_t chunk_size = 64;
@@ -207,8 +190,7 @@ TEST_F(SlabAllocatorTest, CrossThreadDeallocation)
 // =====================
 
 // Allocation of exactly slab_size bytes must succeed and leave the slab full.
-TEST_F(SlabAllocatorTest, AllocateExactlySlabSize)
-{
+TEST_F(SlabAllocatorTest, AllocateExactlySlabSize) {
     SlabAllocator slab(slab_size, 0, queue_);
     void* ptr = slab.allocate(slab_size);
     EXPECT_NE(ptr, nullptr);
@@ -223,8 +205,7 @@ TEST_F(SlabAllocatorTest, AllocateExactlySlabSize)
 // Allocation that fits only before alignment padding pushes it over the edge.
 // Allocate 1 byte first (forces alignment gap before next allocation),
 // then request enough bytes that the aligned offset + size exceeds slab_size.
-TEST_F(SlabAllocatorTest, AlignmentPaddingCausesFailure)
-{
+TEST_F(SlabAllocatorTest, AlignmentPaddingCausesFailure) {
     constexpr size_t alignment = alignof(std::max_align_t);
     // Use a slab just large enough for two aligned slots of size alignment.
     constexpr size_t two_slot_slab = alignment * 2;
@@ -247,8 +228,7 @@ TEST_F(SlabAllocatorTest, AlignmentPaddingCausesFailure)
 }
 
 // Only one thread must enqueue the notification even under heavy concurrent deallocation.
-TEST_F(SlabAllocatorTest, OnlyOneNotificationEnqueuedUnderConcurrency)
-{
+TEST_F(SlabAllocatorTest, OnlyOneNotificationEnqueuedUnderConcurrency) {
     constexpr int num_threads = 32;
     constexpr size_t chunk_size = 64;
     constexpr size_t large_slab = chunk_size * num_threads * 2;
@@ -268,9 +248,7 @@ TEST_F(SlabAllocatorTest, OnlyOneNotificationEnqueuedUnderConcurrency)
     threads.reserve(num_threads);
 
     for (int i = 0; i < num_threads; ++i) {
-        threads.emplace_back([&slab, &ptrs, i]() {
-            slab.deallocate(ptrs[i]);
-        });
+        threads.emplace_back([&slab, &ptrs, i]() { slab.deallocate(ptrs[i]); });
     }
 
     for (auto& t : threads) {
@@ -289,8 +267,7 @@ TEST_F(SlabAllocatorTest, OnlyOneNotificationEnqueuedUnderConcurrency)
 }
 
 // Rapid allocate/deallocate cycles force the slab to be reset and reused many times.
-TEST_F(SlabAllocatorTest, RepeatedResetAndReuse)
-{
+TEST_F(SlabAllocatorTest, RepeatedResetAndReuse) {
     constexpr int cycles = 1000;
     SlabAllocator slab(slab_size, 0, queue_);
 
@@ -328,8 +305,7 @@ TEST_F(SlabAllocatorTest, RepeatedResetAndReuse)
 
 // Multiple threads deallocate from different slabs simultaneously.
 // All slabs must reach zero and all notifications must be enqueued.
-TEST_F(SlabAllocatorTest, ConcurrentDeallocationsAcrossMultipleSlabs)
-{
+TEST_F(SlabAllocatorTest, ConcurrentDeallocationsAcrossMultipleSlabs) {
     constexpr int num_slabs = 8;
     constexpr size_t chunk_size = 64;
 
@@ -357,9 +333,7 @@ TEST_F(SlabAllocatorTest, ConcurrentDeallocationsAcrossMultipleSlabs)
     threads.reserve(num_slabs);
 
     for (int i = 0; i < num_slabs; ++i) {
-        threads.emplace_back([&slabs, &ptrs, i]() {
-            slabs[i]->deallocate(ptrs[i]);
-        });
+        threads.emplace_back([&slabs, &ptrs, i]() { slabs[i]->deallocate(ptrs[i]); });
     }
 
     for (auto& t : threads) {

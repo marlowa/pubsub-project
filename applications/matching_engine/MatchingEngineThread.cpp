@@ -15,74 +15,55 @@
 
 namespace matching_engine {
 
-static pubsub_itc_fw::QueueConfiguration make_queue_config()
-{
+static pubsub_itc_fw::QueueConfiguration make_queue_config() {
     pubsub_itc_fw::QueueConfiguration cfg{};
-    cfg.low_watermark  = 1;
+    cfg.low_watermark = 1;
     cfg.high_watermark = 64;
     return cfg;
 }
 
-static pubsub_itc_fw::AllocatorConfiguration make_allocator_config()
-{
+static pubsub_itc_fw::AllocatorConfiguration make_allocator_config() {
     pubsub_itc_fw::AllocatorConfiguration cfg{};
-    cfg.pool_name        = "MatchingEnginePool";
+    cfg.pool_name = "MatchingEnginePool";
     cfg.objects_per_pool = 64;
-    cfg.initial_pools    = 1;
+    cfg.initial_pools = 1;
     return cfg;
 }
 
-MatchingEngineThread::MatchingEngineThread(
-    pubsub_itc_fw::ApplicationThread::ConstructorToken token,
-    pubsub_itc_fw::QuillLogger& logger,
-    pubsub_itc_fw::Reactor& reactor,
-    const MatchingEngineConfiguration& config)
-    : ApplicationThread(token, logger, reactor, "MatchingEngineThread",
-                        pubsub_itc_fw::ThreadID{1},
-                        make_queue_config(),
-                        make_allocator_config(),
+MatchingEngineThread::MatchingEngineThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger,
+                                           pubsub_itc_fw::Reactor& reactor, const MatchingEngineConfiguration& config)
+    : ApplicationThread(token, logger, reactor, "MatchingEngineThread", pubsub_itc_fw::ThreadID{1}, make_queue_config(), make_allocator_config(),
                         pubsub_itc_fw::ApplicationThreadConfiguration{})
     , config_(config)
-    , sequencer_er_conn_id_{}
-{}
+    , sequencer_er_conn_id_{} {}
 
-void MatchingEngineThread::on_app_ready_event()
-{
+void MatchingEngineThread::on_app_ready_event() {
     connect_to_service("sequencer_er");
 }
 
-void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID id)
-{
+void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID id) {
     if (id.service_name() == "sequencer_er") {
         sequencer_er_conn_id_ = id;
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "MatchingEngineThread: sequencer ER connection {} established", id.get_value());
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: sequencer ER connection {} established", id.get_value());
     } else {
         // Inbound connection from sequencer carrying sequenced order PDUs.
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "MatchingEngineThread: sequencer order connection {} established", id.get_value());
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: sequencer order connection {} established", id.get_value());
     }
 }
 
-void MatchingEngineThread::on_connection_lost(pubsub_itc_fw::ConnectionID id,
-                                               const std::string& reason)
-{
+void MatchingEngineThread::on_connection_lost(pubsub_itc_fw::ConnectionID id, const std::string& reason) {
     if (id == sequencer_er_conn_id_) {
         sequencer_er_conn_id_ = pubsub_itc_fw::ConnectionID{};
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "MatchingEngineThread: sequencer ER connection {} lost: {}", id.get_value(), reason);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: sequencer ER connection {} lost: {}", id.get_value(), reason);
     } else {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "MatchingEngineThread: sequencer order connection {} lost: {}", id.get_value(), reason);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: sequencer order connection {} lost: {}", id.get_value(), reason);
     }
 }
 
-void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message)
-{
+void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message) {
     const int16_t pdu_id = static_cast<int16_t>(message.pdu_id());
 
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "MatchingEngineThread: sequenced PDU received on connection {} pdu_id={}",
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: sequenced PDU received on connection {} pdu_id={}",
                message.connection_id().get_value(), pdu_id);
 
     if (pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::NewOrderSingle)) {
@@ -90,17 +71,11 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
         pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
         arena.reset();
         std::size_t arena_bytes_needed = 0;
-        std::size_t bytes_consumed     = 0;
+        std::size_t bytes_consumed = 0;
         pubsub_itc_fw_app::NewOrderSingleView view{};
 
-        if (!pubsub_itc_fw_app::decode(view,
-                                        message.payload(),
-                                        static_cast<std::size_t>(message.payload_size()),
-                                        bytes_consumed,
-                                        arena,
-                                        arena_bytes_needed)) {
-            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                "MatchingEngineThread: failed to decode NewOrderSingle -- dropping");
+        if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<std::size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode NewOrderSingle -- dropping");
             release_pdu_payload(message);
             return;
         }
@@ -108,24 +83,20 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
         handle_new_order_single(view, message.seq_no());
 
     } else {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-            "MatchingEngineThread: unsupported sequenced PDU id {} -- dropping", pdu_id);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: unsupported sequenced PDU id {} -- dropping", pdu_id);
     }
 
     release_pdu_payload(message);
 }
 
-void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number)
-{
+void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number) {
     if (!sequencer_er_conn_id_.is_valid()) {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-            "MatchingEngineThread: sequencer ER connection not established -- dropping ER");
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: sequencer ER connection not established -- dropping ER");
         return;
     }
 
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-        "MatchingEngineThread: NewOrderSingle ClOrdID={} Symbol={} Side={} OrderQty={}",
-        view.cl_ord_id, view.symbol, static_cast<char>(view.side), view.order_qty);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: NewOrderSingle ClOrdID={} Symbol={} Side={} OrderQty={}", view.cl_ord_id,
+               view.symbol, static_cast<char>(view.side), view.order_qty);
 
     /*
      * Fabricate a filled ExecutionReport. There is no real order book here --
@@ -137,72 +108,67 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
      * outlive the send_pdu() call below because ExecutionReport's fields are
      * std::string_view and only borrow into these buffers.
      */
-    const std::string order_id   = generate_order_id();
-    const std::string exec_id    = generate_exec_id();
-    const std::string cl_ord_id  = std::string(view.cl_ord_id);
-    const std::string symbol     = std::string(view.symbol);
-    const std::string order_qty  = std::string(view.order_qty);
-    const std::string price      = view.has_price ? std::string(view.price) : std::string("0.00");
+    const std::string order_id = generate_order_id();
+    const std::string exec_id = generate_exec_id();
+    const std::string cl_ord_id = std::string(view.cl_ord_id);
+    const std::string symbol = std::string(view.symbol);
+    const std::string order_qty = std::string(view.order_qty);
+    const std::string price = view.has_price ? std::string(view.price) : std::string("0.00");
 
     // CumQty == OrderQty (fully filled) and LeavesQty == 0.
     // LastQty is the size of this fill, here equal to OrderQty.
-    const std::string cum_qty    = order_qty;
+    const std::string cum_qty = order_qty;
     const std::string leaves_qty = "0";
-    const std::string last_qty   = order_qty;
-    const std::string last_px    = price;
-    const std::string avg_px     = price;
+    const std::string last_qty = order_qty;
+    const std::string last_px = price;
+    const std::string avg_px = price;
 
     const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 
     pubsub_itc_fw_app::ExecutionReport er{};
-    er.order_id     = order_id;
-    er.exec_id      = exec_id;
-    er.exec_type    = pubsub_itc_fw_app::ExecType::Trade;
-    er.ord_status   = pubsub_itc_fw_app::OrdStatus::Filled;
-    er.symbol       = symbol;
-    er.side         = view.side;
-    er.leaves_qty   = leaves_qty;
-    er.cum_qty      = cum_qty;
-    er.avg_px       = avg_px;
+    er.order_id = order_id;
+    er.exec_id = exec_id;
+    er.exec_type = pubsub_itc_fw_app::ExecType::Trade;
+    er.ord_status = pubsub_itc_fw_app::OrdStatus::Filled;
+    er.symbol = symbol;
+    er.side = view.side;
+    er.leaves_qty = leaves_qty;
+    er.cum_qty = cum_qty;
+    er.avg_px = avg_px;
     er.transact_time = now_ns;
 
-    er.has_cl_ord_id  = true;
-    er.cl_ord_id      = cl_ord_id;
-    er.has_order_qty  = true;
-    er.order_qty      = order_qty;
-    er.has_last_qty   = true;
-    er.last_qty       = last_qty;
-    er.has_last_px    = true;
-    er.last_px        = last_px;
+    er.has_cl_ord_id = true;
+    er.cl_ord_id = cl_ord_id;
+    er.has_order_qty = true;
+    er.order_qty = order_qty;
+    er.has_last_qty = true;
+    er.last_qty = last_qty;
+    er.has_last_px = true;
+    er.last_px = last_px;
     if (view.has_price) {
         er.has_price = true;
-        er.price     = price;
+        er.price = price;
     }
-    er.has_ord_type   = true;
-    er.ord_type       = view.ord_type;
+    er.has_ord_type = true;
+    er.ord_type = view.ord_type;
 
     const int16_t er_pdu_id = static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::ExecutionReport);
     send_pdu(sequencer_er_conn_id_, er_pdu_id, sequence_number, er);
 
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-        "MatchingEngineThread: sent ExecutionReport OrderID={} ExecID={} ClOrdID={}",
-        order_id, exec_id, cl_ord_id);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: sent ExecutionReport OrderID={} ExecID={} ClOrdID={}", order_id, exec_id,
+               cl_ord_id);
 }
 
-std::string MatchingEngineThread::generate_order_id()
-{
+std::string MatchingEngineThread::generate_order_id() {
     return "ME-ORD-" + std::to_string(++order_id_counter_);
 }
 
-std::string MatchingEngineThread::generate_exec_id()
-{
+std::string MatchingEngineThread::generate_exec_id() {
     return "ME-EXEC-" + std::to_string(++exec_id_counter_);
 }
 
 void MatchingEngineThread::on_timer_event([[maybe_unused]] const std::string& name) {}
 
-void MatchingEngineThread::on_itc_message(
-    [[maybe_unused]] const pubsub_itc_fw::EventMessage& message)
-{}
+void MatchingEngineThread::on_itc_message([[maybe_unused]] const pubsub_itc_fw::EventMessage& message) {}
 
 } // namespace matching_engine

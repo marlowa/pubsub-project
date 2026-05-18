@@ -69,8 +69,8 @@ class PduProtocolHandler : public ProtocolHandlerInterface {
      *                               every FrameworkPdu EventMessage so that
      *                               on_framework_pdu_message() can identify the source.
      */
-    PduProtocolHandler(TcpSocket& socket, ApplicationThread& target_thread, ExpandableSlabAllocator& inbound_allocator,
-                       QuillLogger& logger, ConnectionID connection_id);
+    PduProtocolHandler(TcpSocket& socket, ApplicationThread& target_thread, ExpandableSlabAllocator& inbound_allocator, QuillLogger& logger,
+                       ConnectionID connection_id);
 
     /**
      * @brief Services a readable socket by draining available PDU frames.

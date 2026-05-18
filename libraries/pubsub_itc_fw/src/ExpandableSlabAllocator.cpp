@@ -58,9 +58,8 @@ std::tuple<int, void*> ExpandableSlabAllocator::allocate(size_t size) {
     }
 
     if (ptr == nullptr) {
-        throw PubSubItcException(
-            "ExpandableSlabAllocator::allocate: allocation failed after chaining a new slab — "
-            "this should not happen; mmap may have failed during slab construction");
+        throw PubSubItcException("ExpandableSlabAllocator::allocate: allocation failed after chaining a new slab — "
+                                 "this should not happen; mmap may have failed during slab construction");
     }
 
     return {current_slab_id_, ptr};
@@ -92,8 +91,7 @@ size_t ExpandableSlabAllocator::slab_size() const {
     return slab_size_;
 }
 
-void ExpandableSlabAllocator::drain_empty_slab_queue()
-{
+void ExpandableSlabAllocator::drain_empty_slab_queue() {
     // Collect all slab IDs from the queue before processing any of them.
     // The Vyukov MPSC queue threads pointers through the embedded node inside
     // each SlabAllocator. Destroying a slab while still traversing the queue
@@ -119,27 +117,24 @@ void ExpandableSlabAllocator::drain_empty_slab_queue()
     // hundreds of thousands of iterations. One second is a generous budget
     // that allows any legitimate preemption to be resolved by the kernel
     // scheduler.
-    int64_t loop_iterations  = 0;
-    int64_t retry_count      = 0;
-    int64_t got_item_count   = 0;
-    int     last_got_slab_id = -1;
-    int64_t same_id_repeats  = 0;
+    int64_t loop_iterations = 0;
+    int64_t retry_count = 0;
+    int64_t got_item_count = 0;
+    int last_got_slab_id = -1;
+    int64_t same_id_repeats = 0;
     const auto tripwire_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
 
     for (;;) {
         ++loop_iterations;
         if (std::chrono::steady_clock::now() > tripwire_deadline) {
-            throw PubSubItcException(
-                "ExpandableSlabAllocator::drain_empty_slab_queue: "
-                "tripwire exceeded; queue is not making progress for over one second. "
-                "Likely a corrupted lock-free queue state (self-loop or stuck producer). "
-                "Diagnostics: got_item=" + std::to_string(got_item_count)
-                + " retry=" + std::to_string(retry_count)
-                + " iterations=" + std::to_string(loop_iterations)
-                + " last_slab_id=" + std::to_string(last_got_slab_id)
-                + " same_id_repeats=" + std::to_string(same_id_repeats)
-                + " live_slabs=" + std::to_string(slabs_.size())
-                + " ids_to_reclaim.size=" + std::to_string(ids_to_reclaim.size()));
+            throw PubSubItcException("ExpandableSlabAllocator::drain_empty_slab_queue: "
+                                     "tripwire exceeded; queue is not making progress for over one second. "
+                                     "Likely a corrupted lock-free queue state (self-loop or stuck producer). "
+                                     "Diagnostics: got_item=" +
+                                     std::to_string(got_item_count) + " retry=" + std::to_string(retry_count) +
+                                     " iterations=" + std::to_string(loop_iterations) + " last_slab_id=" + std::to_string(last_got_slab_id) +
+                                     " same_id_repeats=" + std::to_string(same_id_repeats) + " live_slabs=" + std::to_string(slabs_.size()) +
+                                     " ids_to_reclaim.size=" + std::to_string(ids_to_reclaim.size()));
         }
 
         int slab_id = -1;
@@ -151,7 +146,7 @@ void ExpandableSlabAllocator::drain_empty_slab_queue()
                 ++same_id_repeats;
             } else {
                 last_got_slab_id = slab_id;
-                same_id_repeats  = 0;
+                same_id_repeats = 0;
             }
             if (slab_id >= 0 && slab_id < static_cast<int>(slabs_.size())) {
                 ids_to_reclaim.push_back(slab_id);
@@ -204,11 +199,10 @@ void ExpandableSlabAllocator::drain_empty_slab_queue()
     // therefore destroyed, not reset.
     for (int slab_id : ids_to_reclaim) {
         if (slab_id == current_slab_id_) {
-            throw PubSubItcException(
-                "ExpandableSlabAllocator::drain_empty_slab_queue: "
-                "current slab appeared in the empty-slab queue. "
-                "This is a design invariant violation: the current slab must "
-                "never be enqueued because it is self-reclaimed inline.");
+            throw PubSubItcException("ExpandableSlabAllocator::drain_empty_slab_queue: "
+                                     "current slab appeared in the empty-slab queue. "
+                                     "This is a design invariant violation: the current slab must "
+                                     "never be enqueued because it is self-reclaimed inline.");
         }
         slabs_[slab_id].reset();
     }

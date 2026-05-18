@@ -199,10 +199,7 @@ class EventMessage {
      *                           points into. Must not be nullptr.
      * @return EventMessage instance.
      */
-    [[nodiscard]] static EventMessage create_raw_socket_message(ConnectionID connection_id,
-                                                                const uint8_t* data,
-                                                                int size,
-                                                                int64_t tail_position,
+    [[nodiscard]] static EventMessage create_raw_socket_message(ConnectionID connection_id, const uint8_t* data, int size, int64_t tail_position,
                                                                 std::shared_ptr<MirroredBuffer> buffer_owner);
 
     /**
@@ -223,7 +220,8 @@ class EventMessage {
      *                           or 0 if the PDU has not yet been stamped by the sequencer.
      * @return EventMessage instance.
      */
-    [[nodiscard]] static EventMessage create_framework_pdu_message(const uint8_t* data, int size, int slab_id, ConnectionID connection_id, int16_t pdu_id, int64_t seq_no);
+    [[nodiscard]] static EventMessage create_framework_pdu_message(const uint8_t* data, int size, int slab_id, ConnectionID connection_id, int16_t pdu_id,
+                                                                   int64_t seq_no);
 
     /**
      * @brief Factory method for a successful outbound connection event.
@@ -350,4 +348,4 @@ class EventMessage {
     }
 };
 
-} // namespaces
+} // namespace pubsub_itc_fw

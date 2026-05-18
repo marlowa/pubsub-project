@@ -12,61 +12,43 @@
 
 namespace arbiter {
 
-static pubsub_itc_fw::QueueConfiguration make_queue_config()
-{
+static pubsub_itc_fw::QueueConfiguration make_queue_config() {
     pubsub_itc_fw::QueueConfiguration cfg{};
-    cfg.low_watermark  = 1;
+    cfg.low_watermark = 1;
     cfg.high_watermark = 64;
     return cfg;
 }
 
-static pubsub_itc_fw::AllocatorConfiguration make_allocator_config()
-{
+static pubsub_itc_fw::AllocatorConfiguration make_allocator_config() {
     pubsub_itc_fw::AllocatorConfiguration cfg{};
-    cfg.pool_name        = "ArbiterPool";
+    cfg.pool_name = "ArbiterPool";
     cfg.objects_per_pool = 16;
-    cfg.initial_pools    = 1;
+    cfg.initial_pools = 1;
     return cfg;
 }
 
-ArbiterThread::ArbiterThread(
-    pubsub_itc_fw::ApplicationThread::ConstructorToken token,
-    pubsub_itc_fw::QuillLogger& logger,
-    pubsub_itc_fw::Reactor& reactor,
-    const ArbiterConfiguration& config)
-    : ApplicationThread(token, logger, reactor, "ArbiterThread",
-                        pubsub_itc_fw::ThreadID{1},
-                        make_queue_config(),
-                        make_allocator_config(),
+ArbiterThread::ArbiterThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger, pubsub_itc_fw::Reactor& reactor,
+                             const ArbiterConfiguration& config)
+    : ApplicationThread(token, logger, reactor, "ArbiterThread", pubsub_itc_fw::ThreadID{1}, make_queue_config(), make_allocator_config(),
                         pubsub_itc_fw::ApplicationThreadConfiguration{})
-    , config_(config)
-{}
+    , config_(config) {}
 
-void ArbiterThread::on_connection_established(pubsub_itc_fw::ConnectionID id)
-{
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "ArbiterThread: sequencer connection {} established", id.get_value());
+void ArbiterThread::on_connection_established(pubsub_itc_fw::ConnectionID id) {
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: sequencer connection {} established", id.get_value());
 }
 
-void ArbiterThread::on_connection_lost(pubsub_itc_fw::ConnectionID id,
-                                        const std::string& reason)
-{
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "ArbiterThread: sequencer connection {} lost: {}", id.get_value(), reason);
+void ArbiterThread::on_connection_lost(pubsub_itc_fw::ConnectionID id, const std::string& reason) {
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: sequencer connection {} lost: {}", id.get_value(), reason);
 }
 
-void ArbiterThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message)
-{
+void ArbiterThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message) {
     // TODO: decode ArbitrationReport PDU and reply with ArbitrationDecision.
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "ArbiterThread: ArbitrationReport PDU received on connection {} -- stub",
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: ArbitrationReport PDU received on connection {} -- stub",
                message.connection_id().get_value());
 }
 
 void ArbiterThread::on_timer_event([[maybe_unused]] const std::string& name) {}
 
-void ArbiterThread::on_itc_message(
-    [[maybe_unused]] const pubsub_itc_fw::EventMessage& message)
-{}
+void ArbiterThread::on_itc_message([[maybe_unused]] const pubsub_itc_fw::EventMessage& message) {}
 
 } // namespace arbiter

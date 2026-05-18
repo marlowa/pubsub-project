@@ -16,9 +16,9 @@
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
 #include <pubsub_itc_fw/ByteStreamInterface.hpp>
-#include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/EventType.hpp>
+#include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
 #include <pubsub_itc_fw/InetAddress.hpp>
 #include <pubsub_itc_fw/PduFramer.hpp>
 #include <pubsub_itc_fw/PduHeader.hpp>
@@ -43,7 +43,7 @@ namespace pubsub_itc_fw {
  * were "sent". It supports partial writes and simulated EAGAIN on both paths.
  */
 class StubStream : public ByteStreamInterface {
-public:
+  public:
     // --- send side ---
 
     // Bytes written by PduFramer end up here.
@@ -79,9 +79,7 @@ public:
 
     // ByteStreamInterface implementation
 
-    [[nodiscard]] std::tuple<int, std::string> send(
-        utils::SimpleSpan<const uint8_t> data) override
-    {
+    [[nodiscard]] std::tuple<int, std::string> send(utils::SimpleSpan<const uint8_t> data) override {
         if (send_error) {
             send_error = false;
             return {-ECONNRESET, "simulated send error"};
@@ -106,9 +104,7 @@ public:
         return {static_cast<int>(to_send), ""};
     }
 
-    [[nodiscard]] std::tuple<int, std::string> receive(
-        utils::SimpleSpan<uint8_t> buffer) override
-    {
+    [[nodiscard]] std::tuple<int, std::string> receive(utils::SimpleSpan<uint8_t> buffer) override {
         if (recv_disconnect) {
             recv_disconnect = false;
             return {0, ""};
@@ -133,24 +129,20 @@ public:
 
     void close() override {}
 
-    [[nodiscard]] std::tuple<std::unique_ptr<InetAddress>, std::string>
-    get_peer_address() const override
-    {
+    [[nodiscard]] std::tuple<std::unique_ptr<InetAddress>, std::string> get_peer_address() const override {
         return {nullptr, "stub"};
     }
 
     // Helper: feed a complete framed PDU into receive_bytes.
-    void feed_pdu(int16_t pdu_id, int8_t version,
-                  const uint8_t* payload, uint32_t payload_size)
-    {
+    void feed_pdu(int16_t pdu_id, int8_t version, const uint8_t* payload, uint32_t payload_size) {
         PduHeader hdr{};
         hdr.byte_count = htonl(payload_size);
-        hdr.pdu_id     = htons(static_cast<uint16_t>(pdu_id));
-        hdr.version    = version;
-        hdr.filler_a   = 0;
-        hdr.seq_no     = 0;
-        hdr.canary     = htonl(pdu_canary_value);
-        hdr.filler_b   = 0;
+        hdr.pdu_id = htons(static_cast<uint16_t>(pdu_id));
+        hdr.version = version;
+        hdr.filler_a = 0;
+        hdr.seq_no = 0;
+        hdr.canary = htonl(pdu_canary_value);
+        hdr.filler_b = 0;
 
         const auto* hdr_bytes = reinterpret_cast<const uint8_t*>(&hdr);
         for (size_t i = 0; i < sizeof(PduHeader); ++i) {
@@ -167,29 +159,27 @@ public:
 // ============================================================
 
 class StubApplicationThread : public ApplicationThread {
-public:
+  public:
     StubApplicationThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
-        : ApplicationThread(token, logger, reactor, "StubThread", ThreadID{1},
-                            make_queue_config(), make_allocator_config(), ApplicationThreadConfiguration{})
-    {}
+        : ApplicationThread(token, logger, reactor, "StubThread", ThreadID{1}, make_queue_config(), make_allocator_config(), ApplicationThreadConfiguration{}) {
+    }
 
     void on_itc_message([[maybe_unused]] const EventMessage& msg) override {}
 
     static QueueConfiguration make_queue_config() {
         QueueConfiguration cfg{};
-        cfg.low_watermark  = 1;
+        cfg.low_watermark = 1;
         cfg.high_watermark = 64;
         return cfg;
     }
 
     static AllocatorConfiguration make_allocator_config() {
         AllocatorConfiguration cfg{};
-        cfg.pool_name         = "StubPool";
-        cfg.objects_per_pool  = 64;
-        cfg.initial_pools     = 1;
+        cfg.pool_name = "StubPool";
+        cfg.objects_per_pool = 64;
+        cfg.initial_pools = 1;
         cfg.expansion_threshold_hint = 0;
-        cfg.use_huge_pages_flag =
-            UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages);
+        cfg.use_huge_pages_flag = UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages);
         return cfg;
     }
 };
@@ -199,12 +189,11 @@ public:
 // ============================================================
 
 class PduFramerParserTest : public ::testing::Test {
-protected:
+  protected:
     void SetUp() override {
         logger_with_sink_ = std::make_unique<LoggerWithSink>();
 
-        reactor_ = std::make_unique<Reactor>(
-            ReactorConfiguration{}, service_registry_, logger_with_sink_->logger);
+        reactor_ = std::make_unique<Reactor>(ReactorConfiguration{}, service_registry_, logger_with_sink_->logger);
 
         thread_ = ApplicationThread::create<StubApplicationThread>(logger_with_sink_->logger, *reactor_);
     }
@@ -221,8 +210,7 @@ protected:
 // PduFramer tests
 // ============================================================
 
-TEST_F(PduFramerParserTest, SendWritesHeaderAndPayload)
-{
+TEST_F(PduFramerParserTest, SendWritesHeaderAndPayload) {
     PduFramer framer(stream_);
 
     const uint8_t payload[] = {0x01, 0x02, 0x03, 0x04};
@@ -249,8 +237,7 @@ TEST_F(PduFramerParserTest, SendWritesHeaderAndPayload)
     EXPECT_EQ(std::memcmp(sent_payload, payload, sizeof(payload)), 0);
 }
 
-TEST_F(PduFramerParserTest, PartialWriteLeavesPendingData)
-{
+TEST_F(PduFramerParserTest, PartialWriteLeavesPendingData) {
     PduFramer framer(stream_);
 
     // Send 4 bytes on first call, then EAGAIN — simulates kernel buffer filling up.
@@ -265,8 +252,7 @@ TEST_F(PduFramerParserTest, PartialWriteLeavesPendingData)
     EXPECT_EQ(stream_.sent_bytes.size(), 4u);
 }
 
-TEST_F(PduFramerParserTest, ContinueSendCompletesPartialWrite)
-{
+TEST_F(PduFramerParserTest, ContinueSendCompletesPartialWrite) {
     PduFramer framer(stream_);
     stream_.send_limit = 4;
 
@@ -283,8 +269,7 @@ TEST_F(PduFramerParserTest, ContinueSendCompletesPartialWrite)
     EXPECT_EQ(stream_.sent_bytes.size(), sizeof(PduHeader) + sizeof(payload));
 }
 
-TEST_F(PduFramerParserTest, EagainOnSendLeavesPendingData)
-{
+TEST_F(PduFramerParserTest, EagainOnSendLeavesPendingData) {
     PduFramer framer(stream_);
     stream_.send_eagain = true;
 
@@ -295,8 +280,7 @@ TEST_F(PduFramerParserTest, EagainOnSendLeavesPendingData)
     EXPECT_TRUE(framer.has_pending_data());
 }
 
-TEST_F(PduFramerParserTest, SendErrorReturnsFalse)
-{
+TEST_F(PduFramerParserTest, SendErrorReturnsFalse) {
     PduFramer framer(stream_);
     stream_.send_error = true;
 
@@ -308,8 +292,7 @@ TEST_F(PduFramerParserTest, SendErrorReturnsFalse)
     EXPECT_FALSE(framer.has_pending_data());
 }
 
-TEST_F(PduFramerParserTest, SendWhilePendingThrows)
-{
+TEST_F(PduFramerParserTest, SendWhilePendingThrows) {
     PduFramer framer(stream_);
     stream_.send_limit = 1;
     stream_.send_eagain_after = 1; // Force partial write then block.
@@ -321,21 +304,18 @@ TEST_F(PduFramerParserTest, SendWhilePendingThrows)
     EXPECT_THROW(framer.send(100, 1, 0, payload, sizeof(payload)), PreconditionAssertion);
 }
 
-TEST_F(PduFramerParserTest, SendNullptrPayloadThrows)
-{
+TEST_F(PduFramerParserTest, SendNullptrPayloadThrows) {
     PduFramer framer(stream_);
     EXPECT_THROW(framer.send(100, 1, 0, nullptr, 4), PreconditionAssertion);
 }
 
-TEST_F(PduFramerParserTest, SendZeroSizeThrows)
-{
+TEST_F(PduFramerParserTest, SendZeroSizeThrows) {
     PduFramer framer(stream_);
     const uint8_t payload[] = {0x01};
     EXPECT_THROW(framer.send(100, 1, 0, payload, 0), PreconditionAssertion);
 }
 
-TEST_F(PduFramerParserTest, NoPendingDataInitially)
-{
+TEST_F(PduFramerParserTest, NoPendingDataInitially) {
     PduFramer framer(stream_);
     EXPECT_FALSE(framer.has_pending_data());
 }
@@ -346,24 +326,21 @@ TEST_F(PduFramerParserTest, NoPendingDataInitially)
 
 // Helper: build a complete frame (PduHeader + payload) into a buffer,
 // exactly as an application thread would before enqueuing a SendPdu command.
-static std::vector<uint8_t> make_prebuilt_frame(int16_t pdu_id, int8_t version,
-                                                 const uint8_t* payload, uint32_t payload_size)
-{
+static std::vector<uint8_t> make_prebuilt_frame(int16_t pdu_id, int8_t version, const uint8_t* payload, uint32_t payload_size) {
     std::vector<uint8_t> frame(sizeof(PduHeader) + payload_size);
     PduHeader* hdr = reinterpret_cast<PduHeader*>(frame.data());
     hdr->byte_count = htonl(payload_size);
-    hdr->pdu_id     = htons(static_cast<uint16_t>(pdu_id));
-    hdr->version    = version;
-    hdr->filler_a   = 0;
-    hdr->seq_no     = 0;
-    hdr->canary     = htonl(pdu_canary_value);
-    hdr->filler_b   = 0;
+    hdr->pdu_id = htons(static_cast<uint16_t>(pdu_id));
+    hdr->version = version;
+    hdr->filler_a = 0;
+    hdr->seq_no = 0;
+    hdr->canary = htonl(pdu_canary_value);
+    hdr->filler_b = 0;
     std::memcpy(frame.data() + sizeof(PduHeader), payload, payload_size);
     return frame;
 }
 
-TEST_F(PduFramerParserTest, SendPrebuiltTransmitsCompleteFrame)
-{
+TEST_F(PduFramerParserTest, SendPrebuiltTransmitsCompleteFrame) {
     PduFramer framer(stream_);
 
     const uint8_t payload[] = {0x11, 0x22, 0x33, 0x44};
@@ -380,8 +357,7 @@ TEST_F(PduFramerParserTest, SendPrebuiltTransmitsCompleteFrame)
     EXPECT_EQ(std::memcmp(stream_.sent_bytes.data(), frame.data(), frame.size()), 0);
 }
 
-TEST_F(PduFramerParserTest, SendPrebuiltNoPendingDataWhenFullySent)
-{
+TEST_F(PduFramerParserTest, SendPrebuiltNoPendingDataWhenFullySent) {
     PduFramer framer(stream_);
 
     const uint8_t payload[] = {0xAA};
@@ -393,8 +369,7 @@ TEST_F(PduFramerParserTest, SendPrebuiltNoPendingDataWhenFullySent)
     EXPECT_FALSE(framer.has_pending_data());
 }
 
-TEST_F(PduFramerParserTest, SendPrebuiltPartialWriteLeavesPendingData)
-{
+TEST_F(PduFramerParserTest, SendPrebuiltPartialWriteLeavesPendingData) {
     PduFramer framer(stream_);
     stream_.send_limit = 4;
     stream_.send_eagain_after = 1;
@@ -409,8 +384,7 @@ TEST_F(PduFramerParserTest, SendPrebuiltPartialWriteLeavesPendingData)
     EXPECT_EQ(stream_.sent_bytes.size(), 4u);
 }
 
-TEST_F(PduFramerParserTest, SendPrebuiltContinueSendCompletesPartialWrite)
-{
+TEST_F(PduFramerParserTest, SendPrebuiltContinueSendCompletesPartialWrite) {
     PduFramer framer(stream_);
     stream_.send_limit = 4;
     stream_.send_eagain_after = 1;
@@ -431,8 +405,7 @@ TEST_F(PduFramerParserTest, SendPrebuiltContinueSendCompletesPartialWrite)
     EXPECT_EQ(stream_.sent_bytes.size(), frame.size());
 }
 
-TEST_F(PduFramerParserTest, SendPrebuiltWhilePendingThrows)
-{
+TEST_F(PduFramerParserTest, SendPrebuiltWhilePendingThrows) {
     PduFramer framer(stream_);
     stream_.send_limit = 1;
     stream_.send_eagain_after = 1;
@@ -446,22 +419,19 @@ TEST_F(PduFramerParserTest, SendPrebuiltWhilePendingThrows)
     EXPECT_THROW(framer.send_prebuilt(frame.data(), static_cast<uint32_t>(frame.size())), PreconditionAssertion);
 }
 
-TEST_F(PduFramerParserTest, SendPrebuiltNullptrThrows)
-{
+TEST_F(PduFramerParserTest, SendPrebuiltNullptrThrows) {
     PduFramer framer(stream_);
     EXPECT_THROW(framer.send_prebuilt(nullptr, 32), PreconditionAssertion);
 }
 
-TEST_F(PduFramerParserTest, SendPrebuiltTooSmallThrows)
-{
+TEST_F(PduFramerParserTest, SendPrebuiltTooSmallThrows) {
     PduFramer framer(stream_);
     const uint8_t buf[4] = {};
     // total_bytes must be > sizeof(PduHeader) — passing exactly sizeof(PduHeader) is invalid.
     EXPECT_THROW(framer.send_prebuilt(buf, static_cast<uint32_t>(sizeof(PduHeader))), PreconditionAssertion);
 }
 
-TEST_F(PduFramerParserTest, SendPrebuiltErrorReturnsFalse)
-{
+TEST_F(PduFramerParserTest, SendPrebuiltErrorReturnsFalse) {
     PduFramer framer(stream_);
     stream_.send_error = true;
 
@@ -475,8 +445,7 @@ TEST_F(PduFramerParserTest, SendPrebuiltErrorReturnsFalse)
     EXPECT_FALSE(framer.has_pending_data());
 }
 
-TEST_F(PduFramerParserTest, SendPrebuiltDoesNotCopyPayload)
-{
+TEST_F(PduFramerParserTest, SendPrebuiltDoesNotCopyPayload) {
     // Verifies zero-copy: the bytes sent must be identical to the original frame
     // buffer without any intermediate copy or header rewriting.
     PduFramer framer(stream_);
@@ -501,8 +470,7 @@ TEST_F(PduFramerParserTest, SendPrebuiltDoesNotCopyPayload)
 // PduParser tests
 // ============================================================
 
-TEST_F(PduFramerParserTest, ParseSingleCompletePdu)
-{
+TEST_F(PduFramerParserTest, ParseSingleCompletePdu) {
     bool disconnected = false;
     PduParser parser(stream_, *thread_, slab_allocator_, logger_with_sink_->logger, [&disconnected]() { disconnected = true; }, pubsub_itc_fw::ConnectionID{});
 
@@ -526,8 +494,7 @@ TEST_F(PduFramerParserTest, ParseSingleCompletePdu)
     slab_allocator_.deallocate(msg->slab_id(), const_cast<uint8_t*>(msg->payload()));
 }
 
-TEST_F(PduFramerParserTest, ParseTwoConsecutivePdus)
-{
+TEST_F(PduFramerParserTest, ParseTwoConsecutivePdus) {
     PduParser parser(stream_, *thread_, slab_allocator_, logger_with_sink_->logger, nullptr, pubsub_itc_fw::ConnectionID{});
 
     const uint8_t p1[] = {0xAA, 0xBB};
@@ -550,8 +517,7 @@ TEST_F(PduFramerParserTest, ParseTwoConsecutivePdus)
     slab_allocator_.deallocate(msg2->slab_id(), const_cast<uint8_t*>(msg2->payload()));
 }
 
-TEST_F(PduFramerParserTest, ParseWithPartialHeaderDelivery)
-{
+TEST_F(PduFramerParserTest, ParseWithPartialHeaderDelivery) {
     PduParser parser(stream_, *thread_, slab_allocator_, logger_with_sink_->logger, nullptr, pubsub_itc_fw::ConnectionID{});
 
     const uint8_t payload[] = {0x01, 0x02};
@@ -567,20 +533,19 @@ TEST_F(PduFramerParserTest, ParseWithPartialHeaderDelivery)
     // May or may not have dispatched depending on timing — just verify no crash.
 }
 
-TEST_F(PduFramerParserTest, ParseDetectsCanaryMismatch)
-{
+TEST_F(PduFramerParserTest, ParseDetectsCanaryMismatch) {
     PduParser parser(stream_, *thread_, slab_allocator_, logger_with_sink_->logger, nullptr, pubsub_itc_fw::ConnectionID{});
 
     // Feed a frame with a corrupt canary.
     PduHeader hdr{};
     const uint8_t payload[] = {0x01};
     hdr.byte_count = htonl(sizeof(payload));
-    hdr.pdu_id     = htons(100);
-    hdr.version    = 1;
-    hdr.filler_a   = 0;
-    hdr.seq_no     = 0;
-    hdr.canary     = htonl(0xDEADBEEFU); // wrong canary
-    hdr.filler_b   = 0;
+    hdr.pdu_id = htons(100);
+    hdr.version = 1;
+    hdr.filler_a = 0;
+    hdr.seq_no = 0;
+    hdr.canary = htonl(0xDEADBEEFU); // wrong canary
+    hdr.filler_b = 0;
 
     const auto* hdr_bytes = reinterpret_cast<const uint8_t*>(&hdr);
     for (size_t i = 0; i < sizeof(PduHeader); ++i) {
@@ -595,8 +560,7 @@ TEST_F(PduFramerParserTest, ParseDetectsCanaryMismatch)
     EXPECT_TRUE(thread_->get_queue().empty());
 }
 
-TEST_F(PduFramerParserTest, ParseDetectsPeerDisconnect)
-{
+TEST_F(PduFramerParserTest, ParseDetectsPeerDisconnect) {
     bool disconnected = false;
     PduParser parser(stream_, *thread_, slab_allocator_, logger_with_sink_->logger, [&disconnected]() { disconnected = true; }, pubsub_itc_fw::ConnectionID{});
 
@@ -609,8 +573,7 @@ TEST_F(PduFramerParserTest, ParseDetectsPeerDisconnect)
     EXPECT_TRUE(disconnected);
 }
 
-TEST_F(PduFramerParserTest, ParseEagainWithNoDataReturnsOk)
-{
+TEST_F(PduFramerParserTest, ParseEagainWithNoDataReturnsOk) {
     PduParser parser(stream_, *thread_, slab_allocator_, logger_with_sink_->logger, nullptr, pubsub_itc_fw::ConnectionID{});
 
     // No data at all — socket returns EAGAIN immediately.
@@ -627,8 +590,7 @@ TEST_F(PduFramerParserTest, ParseEagainWithNoDataReturnsOk)
 // Round-trip: framer → parser
 // ============================================================
 
-TEST_F(PduFramerParserTest, RoundTripFramerToParser)
-{
+TEST_F(PduFramerParserTest, RoundTripFramerToParser) {
     // Wire the framer's output directly into the parser's input.
     StubStream wire;
     PduFramer framer(wire);

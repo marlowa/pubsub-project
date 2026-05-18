@@ -16,15 +16,15 @@
 #include <chrono>
 #include <utility>
 
-#include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
-#include <pubsub_itc_fw/Reactor.hpp>
-#include <pubsub_itc_fw/Timer.hpp>
-#include <pubsub_itc_fw/TimerType.hpp>
-#include <pubsub_itc_fw/TimerHandler.hpp>
-#include <pubsub_itc_fw/ThreadLifecycleState.hpp>
-#include <pubsub_itc_fw/ThreadID.hpp>
+#include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
+#include <pubsub_itc_fw/Reactor.hpp>
+#include <pubsub_itc_fw/ThreadID.hpp>
+#include <pubsub_itc_fw/ThreadLifecycleState.hpp>
+#include <pubsub_itc_fw/Timer.hpp>
+#include <pubsub_itc_fw/TimerHandler.hpp>
+#include <pubsub_itc_fw/TimerType.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -103,8 +103,7 @@ bool TimerHandler::handle_event(uint32_t events) {
 
     if (!reactor_.is_running()) {
         PUBSUB_LOG(reactor_.get_logger(), FwLogLevel::Info,
-                   "TimerHandler::handle_event: reactor is no longer running; dropping {} pending expirations for timer '{}'",
-                   expirations, timer_.get_name());
+                   "TimerHandler::handle_event: reactor is no longer running; dropping {} pending expirations for timer '{}'", expirations, timer_.get_name());
         return true;
     }
 

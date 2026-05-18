@@ -14,8 +14,7 @@
 
 namespace pubsub_itc_fw {
 
-std::string FileSystemUtils::make_directories(const std::string& path)
-{
+std::string FileSystemUtils::make_directories(const std::string& path) {
     if (path.empty()) {
         return "";
     }
@@ -36,8 +35,7 @@ std::string FileSystemUtils::make_directories(const std::string& path)
 
             if (::mkdir(current.c_str(), 0755) != 0) {
                 if (errno != EEXIST) {
-                    return "FileSystemUtils::make_directories: failed to create '"
-                        + current + "': " + StringUtils::get_error_string(errno);
+                    return "FileSystemUtils::make_directories: failed to create '" + current + "': " + StringUtils::get_error_string(errno);
                 }
             }
 

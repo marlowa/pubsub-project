@@ -104,9 +104,9 @@ namespace pubsub_itc_fw::tests {
 // Test constants
 // ============================================================
 
-static constexpr int      burst_size           = 100;
-static constexpr int64_t  raw_buffer_capacity  = 65536;
-static const std::string  receiver_service     = "receiver";
+static constexpr int burst_size = 100;
+static constexpr int64_t raw_buffer_capacity = 65536;
+static const std::string receiver_service = "receiver";
 static constexpr uint16_t any_os_assigned_port = 0;
 
 // ============================================================
@@ -116,9 +116,9 @@ static constexpr uint16_t any_os_assigned_port = 0;
 static ReactorConfiguration make_reactor_config() {
     ReactorConfiguration cfg{};
     cfg.inactivity_check_interval_ = std::chrono::milliseconds(100);
-    cfg.init_phase_timeout_        = std::chrono::milliseconds(5000);
-    cfg.shutdown_timeout_          = std::chrono::milliseconds(1000);
-    cfg.connect_timeout            = std::chrono::milliseconds(2000);
+    cfg.init_phase_timeout_ = std::chrono::milliseconds(5000);
+    cfg.shutdown_timeout_ = std::chrono::milliseconds(1000);
+    cfg.connect_timeout = std::chrono::milliseconds(2000);
     return cfg;
 }
 
@@ -134,8 +134,7 @@ static ReactorConfiguration make_reactor_config() {
 class SenderThread : public ApplicationThread {
   public:
     SenderThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, int count)
-        : ApplicationThread(token, logger, reactor, "SenderThread", ThreadID{1},
-                            make_queue_config(), make_allocator_config("SenderPool"),
+        : ApplicationThread(token, logger, reactor, "SenderThread", ThreadID{1}, make_queue_config(), make_allocator_config("SenderPool"),
                             ApplicationThreadConfiguration{})
         , count_(count) {
         sent_payloads_.reserve(static_cast<std::size_t>(count));
@@ -183,30 +182,30 @@ class SenderThread : public ApplicationThread {
             const std::string& cl_ord_id = cl_ord_id_storage_.back();
 
             pubsub_itc_fw_app::ExecutionReport er{};
-            er.order_id     = order_id_storage_;
-            er.exec_id      = exec_id_storage_;
-            er.exec_type    = pubsub_itc_fw_app::ExecType::Trade;
-            er.ord_status   = pubsub_itc_fw_app::OrdStatus::Filled;
-            er.symbol       = symbol_storage_;
-            er.side         = pubsub_itc_fw_app::Side::Buy;
-            er.leaves_qty   = zero_storage_;
-            er.cum_qty      = qty_storage_;
-            er.avg_px       = price_storage_;
+            er.order_id = order_id_storage_;
+            er.exec_id = exec_id_storage_;
+            er.exec_type = pubsub_itc_fw_app::ExecType::Trade;
+            er.ord_status = pubsub_itc_fw_app::OrdStatus::Filled;
+            er.symbol = symbol_storage_;
+            er.side = pubsub_itc_fw_app::Side::Buy;
+            er.leaves_qty = zero_storage_;
+            er.cum_qty = qty_storage_;
+            er.avg_px = price_storage_;
             er.transact_time = 0;
             er.has_cl_ord_id = true;
-            er.cl_ord_id     = cl_ord_id;
+            er.cl_ord_id = cl_ord_id;
             er.has_order_qty = true;
-            er.order_qty     = qty_storage_;
-            er.has_last_qty  = true;
-            er.last_qty      = qty_storage_;
-            er.has_last_px   = true;
-            er.last_px       = price_storage_;
+            er.order_qty = qty_storage_;
+            er.has_last_qty = true;
+            er.last_qty = qty_storage_;
+            er.has_last_px = true;
+            er.last_px = price_storage_;
 
             // Capture the encoded payload bytes (without the PduHeader) into
             // sent_payloads_ before send_pdu() runs. This is what the receiver
             // will be compared against.
             std::size_t bytes_written = 0;
-            std::size_t bytes_needed  = 0;
+            std::size_t bytes_needed = 0;
             (void)pubsub_itc_fw_app::encode(er, nullptr, 0, bytes_written, bytes_needed);
             std::vector<uint8_t> encoded(bytes_needed);
             if (!pubsub_itc_fw_app::encode(er, encoded.data(), encoded.size(), bytes_written, bytes_needed)) {
@@ -223,17 +222,17 @@ class SenderThread : public ApplicationThread {
         burst_sent.store(true, std::memory_order_release);
     }
 
-    int          count_;
+    int count_;
     ConnectionID conn_id_{};
 
     // Long-lived backing storage for std::string_view fields that do not vary
     // across PDUs. The cl_ord_id varies per PDU and is stored separately above.
-    const std::string order_id_storage_  = "ME-ORD-1";
-    const std::string exec_id_storage_   = "ME-EXEC-1";
-    const std::string symbol_storage_    = "BHP";
-    const std::string zero_storage_      = "0";
-    const std::string qty_storage_       = "100.0";
-    const std::string price_storage_     = "42.0";
+    const std::string order_id_storage_ = "ME-ORD-1";
+    const std::string exec_id_storage_ = "ME-EXEC-1";
+    const std::string symbol_storage_ = "BHP";
+    const std::string zero_storage_ = "0";
+    const std::string qty_storage_ = "100.0";
+    const std::string price_storage_ = "42.0";
     std::vector<std::string> cl_ord_id_storage_;
 };
 
@@ -248,18 +247,17 @@ class SenderThread : public ApplicationThread {
 class ReceiverThread : public ApplicationThread {
   public:
     ReceiverThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
-        : ApplicationThread(token, logger, reactor, "ReceiverThread", ThreadID{2},
-                            make_queue_config(), make_allocator_config("ReceiverPool"),
+        : ApplicationThread(token, logger, reactor, "ReceiverThread", ThreadID{2}, make_queue_config(), make_allocator_config("ReceiverPool"),
                             ApplicationThreadConfiguration{}) {}
 
     std::atomic<int> received_count{0};
     std::atomic<int> raw_bytes_received{0};
 
     struct CapturedPdu {
-        int64_t              seq_no{0};
+        int64_t seq_no{0};
         std::vector<uint8_t> payload;
-        std::string          decoded_cl_ord_id;
-        bool                 decode_ok{false};
+        std::string decoded_cl_ord_id;
+        bool decode_ok{false};
     };
 
     // Filled in callback order. Reading this vector after burst completion is
@@ -271,8 +269,8 @@ class ReceiverThread : public ApplicationThread {
         CapturedPdu cap{};
         cap.seq_no = message.seq_no();
 
-        const auto* payload_ptr  = message.payload();
-        const auto  payload_size = static_cast<std::size_t>(message.payload_size());
+        const auto* payload_ptr = message.payload();
+        const auto payload_size = static_cast<std::size_t>(message.payload_size());
 
         cap.payload.assign(payload_ptr, payload_ptr + payload_size);
 
@@ -280,7 +278,7 @@ class ReceiverThread : public ApplicationThread {
         auto& arena_buf = decode_arena_buffer();
         pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
         arena.reset();
-        std::size_t bytes_consumed     = 0;
+        std::size_t bytes_consumed = 0;
         std::size_t arena_bytes_needed = 0;
         pubsub_itc_fw_app::ExecutionReportView view{};
         cap.decode_ok = pubsub_itc_fw_app::decode(view, payload_ptr, payload_size, bytes_consumed, arena, arena_bytes_needed);
@@ -320,8 +318,8 @@ class ReceiverThread : public ApplicationThread {
      * in that test.
      */
     void on_raw_socket_message(const EventMessage& message) override {
-        const int64_t event_tail        = message.tail_position();
-        const int64_t event_bytes       = static_cast<int64_t>(message.payload_size());
+        const int64_t event_tail = message.tail_position();
+        const int64_t event_bytes = static_cast<int64_t>(message.payload_size());
         const int64_t absolute_head_now = event_tail + event_bytes;
 
         if (absolute_head_now > absolute_head_seen_) {
@@ -364,32 +362,33 @@ class FrameworkPduBurstIntegrationTest : public ::testing::Test {
     }
 
     void TearDown() override {
-        sender_reactor_   = nullptr;
+        sender_reactor_ = nullptr;
         receiver_reactor_ = nullptr;
         logger_.reset();
     }
 
     void set_watched_reactors(Reactor& sender, Reactor& receiver) {
-        sender_reactor_   = &sender;
+        sender_reactor_ = &sender;
         receiver_reactor_ = &receiver;
     }
 
     bool wait_for(std::function<bool()> pred, int timeout_ms = 5000) {
-        reactor_died_     = false;
+        reactor_died_ = false;
         died_reactor_name_.clear();
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
         while (!pred()) {
             if (sender_reactor_ != nullptr && sender_reactor_->is_finished()) {
-                reactor_died_      = true;
+                reactor_died_ = true;
                 died_reactor_name_ = "sender";
                 return false;
             }
             if (receiver_reactor_ != nullptr && receiver_reactor_->is_finished()) {
-                reactor_died_      = true;
+                reactor_died_ = true;
                 died_reactor_name_ = "receiver";
                 return false;
             }
-            if (std::chrono::steady_clock::now() > deadline) return false;
+            if (std::chrono::steady_clock::now() > deadline)
+                return false;
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
         return true;
@@ -406,7 +405,8 @@ class FrameworkPduBurstIntegrationTest : public ::testing::Test {
 
     static void shutdown_and_join(Reactor& reactor, std::thread& reactor_thread, const std::string& reason = "test complete") {
         reactor.shutdown(reason);
-        if (reactor_thread.joinable()) reactor_thread.join();
+        if (reactor_thread.joinable())
+            reactor_thread.join();
     }
 
     std::unique_ptr<LoggerWithSink> logger_;
@@ -434,15 +434,13 @@ TEST_F(FrameworkPduBurstIntegrationTest, ExecutionReportBurstSurvivesEndToEnd) {
 
     // Wait for the receiver reactor to come up so we can read its assigned port
     // before any sender attempts to connect.
-    ASSERT_TRUE(wait_for([&]() { return receiver_reactor->is_initialized(); }))
-        << "Receiver reactor did not initialise within timeout";
+    ASSERT_TRUE(wait_for([&]() { return receiver_reactor->is_initialized(); })) << "Receiver reactor did not initialise within timeout";
     const uint16_t receiver_port = receiver_reactor->get_inbound_listener_port(0);
     ASSERT_NE(receiver_port, 0u) << "OS did not assign a valid listening port";
 
     // ----- Sender -----
     ServiceRegistry sender_registry;
-    sender_registry.add(receiver_service, NetworkEndpointConfiguration{"127.0.0.1", receiver_port},
-                        NetworkEndpointConfiguration{});
+    sender_registry.add(receiver_service, NetworkEndpointConfiguration{"127.0.0.1", receiver_port}, NetworkEndpointConfiguration{});
 
     auto sender_reactor = std::make_unique<Reactor>(make_reactor_config(), sender_registry, logger_->logger);
 
@@ -459,17 +457,14 @@ TEST_F(FrameworkPduBurstIntegrationTest, ExecutionReportBurstSurvivesEndToEnd) {
 
     EXPECT_TRUE(wait_for([&]() { return sender_thread->connection_established.load(std::memory_order_acquire); }))
         << "Sender: outbound connection to receiver not established: " << last_wait_failure_description();
-    EXPECT_FALSE(sender_thread->connection_failed.load(std::memory_order_acquire))
-        << "Sender: connect_to_service reported failure";
+    EXPECT_FALSE(sender_thread->connection_failed.load(std::memory_order_acquire)) << "Sender: connect_to_service reported failure";
 
     EXPECT_TRUE(wait_for([&]() { return sender_thread->burst_sent.load(std::memory_order_acquire); }))
         << "Sender: burst of " << burst_size << " send_pdu calls did not complete: " << last_wait_failure_description();
 
-    EXPECT_TRUE(wait_for([&]() { return receiver_thread->received_count.load(std::memory_order_acquire) >= burst_size; },
-                          10000))
-        << "Receiver: did not receive all " << burst_size << " PDUs (got "
-        << receiver_thread->received_count.load(std::memory_order_acquire) << "): "
-        << last_wait_failure_description();
+    EXPECT_TRUE(wait_for([&]() { return receiver_thread->received_count.load(std::memory_order_acquire) >= burst_size; }, 10000))
+        << "Receiver: did not receive all " << burst_size << " PDUs (got " << receiver_thread->received_count.load(std::memory_order_acquire)
+        << "): " << last_wait_failure_description();
 
     // Stop both reactors before reading captured_ so the receiver thread is no
     // longer mutating it.
@@ -478,28 +473,22 @@ TEST_F(FrameworkPduBurstIntegrationTest, ExecutionReportBurstSurvivesEndToEnd) {
 
     // ----- Assertions -----
 
-    ASSERT_EQ(static_cast<int>(receiver_thread->captured_.size()), burst_size)
-        << "Receiver captured PDU count does not match burst size";
-    ASSERT_EQ(static_cast<int>(sender_thread->sent_payloads_.size()), burst_size)
-        << "Sender recorded payload count does not match burst size";
+    ASSERT_EQ(static_cast<int>(receiver_thread->captured_.size()), burst_size) << "Receiver captured PDU count does not match burst size";
+    ASSERT_EQ(static_cast<int>(sender_thread->sent_payloads_.size()), burst_size) << "Sender recorded payload count does not match burst size";
 
     for (int i = 0; i < burst_size; ++i) {
-        const auto& cap            = receiver_thread->captured_[static_cast<std::size_t>(i)];
-        const auto& sent_payload   = sender_thread->sent_payloads_[static_cast<std::size_t>(i)];
+        const auto& cap = receiver_thread->captured_[static_cast<std::size_t>(i)];
+        const auto& sent_payload = sender_thread->sent_payloads_[static_cast<std::size_t>(i)];
         const std::string expected = "ord" + std::to_string(i + 1);
 
-        EXPECT_EQ(cap.seq_no, static_cast<int64_t>(i + 1))
-            << "PDU at index " << i << ": seq_no mismatch (got " << cap.seq_no << ")";
+        EXPECT_EQ(cap.seq_no, static_cast<int64_t>(i + 1)) << "PDU at index " << i << ": seq_no mismatch (got " << cap.seq_no << ")";
 
-        EXPECT_TRUE(cap.decode_ok)
-            << "PDU at index " << i << " (expected cl_ord_id=" << expected << "): failed to decode";
+        EXPECT_TRUE(cap.decode_ok) << "PDU at index " << i << " (expected cl_ord_id=" << expected << "): failed to decode";
 
-        EXPECT_EQ(cap.decoded_cl_ord_id, expected)
-            << "PDU at index " << i << ": decoded cl_ord_id mismatch";
+        EXPECT_EQ(cap.decoded_cl_ord_id, expected) << "PDU at index " << i << ": decoded cl_ord_id mismatch";
 
         ASSERT_EQ(cap.payload.size(), sent_payload.size())
-            << "PDU at index " << i << ": payload byte count mismatch (sender wrote "
-            << sent_payload.size() << ", receiver got " << cap.payload.size() << ")";
+            << "PDU at index " << i << ": payload byte count mismatch (sender wrote " << sent_payload.size() << ", receiver got " << cap.payload.size() << ")";
 
         const bool bytes_equal = std::memcmp(cap.payload.data(), sent_payload.data(), sent_payload.size()) == 0;
         EXPECT_TRUE(bytes_equal) << "PDU at index " << i << ": payload bytes differ from what sender produced";
@@ -521,17 +510,18 @@ namespace {
 
 int connect_raw_socket(uint16_t port) {
     const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (fd == -1) return -1;
+    if (fd == -1)
+        return -1;
     sockaddr_in addr{};
-    addr.sin_family      = AF_INET;
-    addr.sin_port        = htons(port);
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
     addr.sin_addr.s_addr = inet_addr("127.0.0.1");
     if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
         ::close(fd);
         return -1;
     }
     timeval timeout{};
-    timeout.tv_sec  = 5;
+    timeout.tv_sec = 5;
     timeout.tv_usec = 0;
     ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
     return fd;
@@ -539,11 +529,12 @@ int connect_raw_socket(uint16_t port) {
 
 bool send_all(int fd, const void* data, size_t size) {
     const auto* ptr = static_cast<const uint8_t*>(data);
-    size_t      remaining = size;
+    size_t remaining = size;
     while (remaining > 0) {
         const ssize_t n = ::send(fd, ptr, remaining, MSG_NOSIGNAL);
-        if (n <= 0) return false;
-        ptr       += n;
+        if (n <= 0)
+            return false;
+        ptr += n;
         remaining -= static_cast<size_t>(n);
     }
     return true;
@@ -570,8 +561,7 @@ TEST_F(FrameworkPduBurstIntegrationTest, ExecutionReportBurstUnderConcurrentRawP
 
     std::thread receiver_reactor_thread([&]() { receiver_reactor->run(); });
 
-    ASSERT_TRUE(wait_for([&]() { return receiver_reactor->is_initialized(); }))
-        << "Receiver reactor did not initialise within timeout";
+    ASSERT_TRUE(wait_for([&]() { return receiver_reactor->is_initialized(); })) << "Receiver reactor did not initialise within timeout";
 
     // The framework-PDU listener was registered first, so it occupies the
     // first inbound listener slot; the raw listener is the second.
@@ -582,7 +572,7 @@ TEST_F(FrameworkPduBurstIntegrationTest, ExecutionReportBurstUnderConcurrentRawP
 
     // ----- Raw client thread: pump bytes until told to stop -----
     std::atomic<bool> stop_raw_client{false};
-    std::atomic<int>  raw_bytes_sent{0};
+    std::atomic<int> raw_bytes_sent{0};
     std::atomic<bool> raw_client_connected{false};
     std::atomic<bool> raw_client_failed{false};
 
@@ -599,11 +589,13 @@ TEST_F(FrameworkPduBurstIntegrationTest, ExecutionReportBurstUnderConcurrentRawP
         // small so the receiver gets called many times while the framework-
         // PDU burst is in progress.
         const std::string payload = "FIX-RAW-FILLER";
-        const uint32_t    len_be  = htonl(static_cast<uint32_t>(payload.size()));
+        const uint32_t len_be = htonl(static_cast<uint32_t>(payload.size()));
 
         while (!stop_raw_client.load(std::memory_order_acquire)) {
-            if (!send_all(sock, &len_be, sizeof(len_be))) break;
-            if (!send_all(sock, payload.data(), payload.size())) break;
+            if (!send_all(sock, &len_be, sizeof(len_be)))
+                break;
+            if (!send_all(sock, payload.data(), payload.size()))
+                break;
             raw_bytes_sent.fetch_add(static_cast<int>(sizeof(len_be) + payload.size()), std::memory_order_acq_rel);
             // Small sleep so we don't dominate the CPU; the goal is sustained
             // concurrent activity, not throughput maximisation.
@@ -618,11 +610,10 @@ TEST_F(FrameworkPduBurstIntegrationTest, ExecutionReportBurstUnderConcurrentRawP
 
     // ----- Sender: outbound to receiver's framework-PDU listener -----
     ServiceRegistry sender_registry;
-    sender_registry.add(receiver_service, NetworkEndpointConfiguration{"127.0.0.1", pdu_port},
-                        NetworkEndpointConfiguration{});
+    sender_registry.add(receiver_service, NetworkEndpointConfiguration{"127.0.0.1", pdu_port}, NetworkEndpointConfiguration{});
 
     auto sender_reactor = std::make_unique<Reactor>(make_reactor_config(), sender_registry, logger_->logger);
-    auto sender_thread  = ApplicationThread::create<SenderThread>(logger_->logger, *sender_reactor, burst_size);
+    auto sender_thread = ApplicationThread::create<SenderThread>(logger_->logger, *sender_reactor, burst_size);
     sender_reactor->register_thread(sender_thread);
 
     std::thread sender_reactor_thread([&]() { sender_reactor->run(); });
@@ -634,49 +625,41 @@ TEST_F(FrameworkPduBurstIntegrationTest, ExecutionReportBurstUnderConcurrentRawP
 
     EXPECT_TRUE(wait_for([&]() { return sender_thread->connection_established.load(std::memory_order_acquire); }))
         << "Sender: outbound connection to receiver not established: " << last_wait_failure_description();
-    EXPECT_FALSE(sender_thread->connection_failed.load(std::memory_order_acquire))
-        << "Sender: connect_to_service reported failure";
+    EXPECT_FALSE(sender_thread->connection_failed.load(std::memory_order_acquire)) << "Sender: connect_to_service reported failure";
 
     EXPECT_TRUE(wait_for([&]() { return sender_thread->burst_sent.load(std::memory_order_acquire); }))
         << "Sender: burst of " << burst_size << " send_pdu calls did not complete: " << last_wait_failure_description();
 
-    EXPECT_TRUE(wait_for([&]() { return receiver_thread->received_count.load(std::memory_order_acquire) >= burst_size; },
-                          10000))
-        << "Receiver: did not receive all " << burst_size << " PDUs (got "
-        << receiver_thread->received_count.load(std::memory_order_acquire) << "): "
-        << last_wait_failure_description();
+    EXPECT_TRUE(wait_for([&]() { return receiver_thread->received_count.load(std::memory_order_acquire) >= burst_size; }, 10000))
+        << "Receiver: did not receive all " << burst_size << " PDUs (got " << receiver_thread->received_count.load(std::memory_order_acquire)
+        << "): " << last_wait_failure_description();
 
     // ----- Stop raw client, then shut down both reactors -----
     stop_raw_client.store(true, std::memory_order_release);
-    if (raw_client_thread.joinable()) raw_client_thread.join();
+    if (raw_client_thread.joinable())
+        raw_client_thread.join();
 
     shutdown_and_join(*sender_reactor, sender_reactor_thread);
     shutdown_and_join(*receiver_reactor, receiver_reactor_thread);
 
     // ----- Assertions: framework-PDU correctness, same as test 1 -----
 
-    ASSERT_EQ(static_cast<int>(receiver_thread->captured_.size()), burst_size)
-        << "Receiver captured PDU count does not match burst size";
-    ASSERT_EQ(static_cast<int>(sender_thread->sent_payloads_.size()), burst_size)
-        << "Sender recorded payload count does not match burst size";
+    ASSERT_EQ(static_cast<int>(receiver_thread->captured_.size()), burst_size) << "Receiver captured PDU count does not match burst size";
+    ASSERT_EQ(static_cast<int>(sender_thread->sent_payloads_.size()), burst_size) << "Sender recorded payload count does not match burst size";
 
     for (int i = 0; i < burst_size; ++i) {
-        const auto& cap            = receiver_thread->captured_[static_cast<std::size_t>(i)];
-        const auto& sent_payload   = sender_thread->sent_payloads_[static_cast<std::size_t>(i)];
+        const auto& cap = receiver_thread->captured_[static_cast<std::size_t>(i)];
+        const auto& sent_payload = sender_thread->sent_payloads_[static_cast<std::size_t>(i)];
         const std::string expected = "ord" + std::to_string(i + 1);
 
-        EXPECT_EQ(cap.seq_no, static_cast<int64_t>(i + 1))
-            << "PDU at index " << i << ": seq_no mismatch (got " << cap.seq_no << ")";
+        EXPECT_EQ(cap.seq_no, static_cast<int64_t>(i + 1)) << "PDU at index " << i << ": seq_no mismatch (got " << cap.seq_no << ")";
 
-        EXPECT_TRUE(cap.decode_ok)
-            << "PDU at index " << i << " (expected cl_ord_id=" << expected << "): failed to decode";
+        EXPECT_TRUE(cap.decode_ok) << "PDU at index " << i << " (expected cl_ord_id=" << expected << "): failed to decode";
 
-        EXPECT_EQ(cap.decoded_cl_ord_id, expected)
-            << "PDU at index " << i << ": decoded cl_ord_id mismatch";
+        EXPECT_EQ(cap.decoded_cl_ord_id, expected) << "PDU at index " << i << ": decoded cl_ord_id mismatch";
 
         ASSERT_EQ(cap.payload.size(), sent_payload.size())
-            << "PDU at index " << i << ": payload byte count mismatch (sender wrote "
-            << sent_payload.size() << ", receiver got " << cap.payload.size() << ")";
+            << "PDU at index " << i << ": payload byte count mismatch (sender wrote " << sent_payload.size() << ", receiver got " << cap.payload.size() << ")";
 
         const bool bytes_equal = std::memcmp(cap.payload.data(), sent_payload.data(), sent_payload.size()) == 0;
         EXPECT_TRUE(bytes_equal) << "PDU at index " << i << ": payload bytes differ from what sender produced";
@@ -686,8 +669,7 @@ TEST_F(FrameworkPduBurstIntegrationTest, ExecutionReportBurstUnderConcurrentRawP
 
     EXPECT_GT(receiver_thread->raw_bytes_received.load(std::memory_order_acquire), 0)
         << "Receiver never saw any raw bytes -- concurrent pressure condition not exercised";
-    EXPECT_GT(raw_bytes_sent.load(std::memory_order_acquire), 0)
-        << "Raw client never sent any bytes -- concurrent pressure condition not exercised";
+    EXPECT_GT(raw_bytes_sent.load(std::memory_order_acquire), 0) << "Raw client never sent any bytes -- concurrent pressure condition not exercised";
 }
 
 } // namespace pubsub_itc_fw::tests

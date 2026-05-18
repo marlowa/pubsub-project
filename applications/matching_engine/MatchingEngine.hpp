@@ -25,14 +25,13 @@ namespace matching_engine {
  * The logger is constructed in main() before the config is loaded.
  */
 class MatchingEngine {
-public:
+  public:
     /**
      * @param[in] config Matching engine configuration.
      * @param[in] logger Logger. Ownership transferred. Must already have the
      *                   correct log levels applied from config.
      */
-    explicit MatchingEngine(const MatchingEngineConfiguration& config,
-                            std::unique_ptr<pubsub_itc_fw::QuillLogger> logger);
+    explicit MatchingEngine(const MatchingEngineConfiguration& config, std::unique_ptr<pubsub_itc_fw::QuillLogger> logger);
 
     /**
      * @brief Starts the reactor event loop. Blocks until shutdown.
@@ -40,7 +39,7 @@ public:
      */
     int run();
 
-private:
+  private:
     MatchingEngineConfiguration config_;
     std::unique_ptr<pubsub_itc_fw::QuillLogger> logger_;
     pubsub_itc_fw::ServiceRegistry service_registry_;

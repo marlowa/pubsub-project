@@ -1146,7 +1146,8 @@ TEST_F(ExpandablePoolAllocatorTest, MisalignedPointerRejectedByContains) {
 
     // A pointer one byte past a valid object — within the pool's memory
     // region but not aligned to a slot boundary.
-    auto* misaligned_ptr = reinterpret_cast<TestObject*>(reinterpret_cast<std::byte*>(valid_object) + 1); // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+    auto* misaligned_ptr =
+        reinterpret_cast<TestObject*>(reinterpret_cast<std::byte*>(valid_object) + 1); // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic)
 
     // Before fix: contains() returns true — bounds check only.
     // After fix:  contains() returns false — alignment check added.
@@ -1372,9 +1373,7 @@ TEST_F(ExpandablePoolAllocatorTest, CrossPoolAbaInterleaving) {
         // Structural checks on drained slice: no duplicates.
         std::unordered_set<TestObject*> seen;
         for (auto* obj : drained) {
-            EXPECT_TRUE(seen.insert(obj).second)
-                << "allocator free-list corruption: duplicate pointer "
-                << obj << " in mid-drain round " << round;
+            EXPECT_TRUE(seen.insert(obj).second) << "allocator free-list corruption: duplicate pointer " << obj << " in mid-drain round " << round;
         }
 
         for (auto* obj : drained) {
@@ -1396,9 +1395,7 @@ TEST_F(ExpandablePoolAllocatorTest, CrossPoolAbaInterleaving) {
 
     for (int i = 0; i < total_capacity; ++i) {
         TestObject* obj = allocator.allocate();
-        ASSERT_NE(obj, nullptr)
-            << "allocator free-list corruption: nullptr during final drain at index "
-            << i << " of " << total_capacity;
+        ASSERT_NE(obj, nullptr) << "allocator free-list corruption: nullptr during final drain at index " << i << " of " << total_capacity;
         drained.push_back(obj);
     }
 
@@ -1417,8 +1414,7 @@ TEST_F(ExpandablePoolAllocatorTest, CrossPoolAbaInterleaving) {
     // ExpandablePoolAllocator::deallocate().
     std::unordered_set<TestObject*> final_seen;
     for (auto* obj : drained) {
-        EXPECT_TRUE(final_seen.insert(obj).second)
-            << "allocator free-list corruption: duplicate pointer in final drain";
+        EXPECT_TRUE(final_seen.insert(obj).second) << "allocator free-list corruption: duplicate pointer in final drain";
     }
 
     for (auto* obj : drained) {
@@ -2099,7 +2095,7 @@ TEST_F(ExpandablePoolAllocatorTest, CanaryCorruptionDeallocateCallsHandler) {
     // The canary occupies the 8 bytes before the object in the Slot layout:
     //   [ is_constructed | canary | storage ]
     // A one-byte underrun lands in the canary, not in is_constructed.
-    *reinterpret_cast<std::byte*>(obj) = std::byte{0xAB}; // NOLINT — intentional OOB
+    *reinterpret_cast<std::byte*>(obj) = std::byte{0xAB};    // NOLINT — intentional OOB
     reinterpret_cast<std::byte*>(obj)[-1] = std::byte{0xAB}; // NOLINT — intentional OOB
 
     allocator.deallocate(obj);
@@ -2145,9 +2141,9 @@ TEST_F(ExpandablePoolAllocatorTest, CanaryCorruptionDestructorCallsHandlerAndSki
     {
         auto allocator = make_allocator("CanaryCorruptionDestructorCallsHandlerAndSkipsDestructor", 16);
 
-        TestObject* obj_clean   = allocator.allocate();
+        TestObject* obj_clean = allocator.allocate();
         TestObject* obj_corrupt = allocator.allocate();
-        ASSERT_NE(obj_clean,   nullptr);
+        ASSERT_NE(obj_clean, nullptr);
         ASSERT_NE(obj_corrupt, nullptr);
         EXPECT_EQ(TestObject::s_constructor_count.load(), 2);
 

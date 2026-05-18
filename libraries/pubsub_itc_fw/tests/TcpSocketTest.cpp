@@ -88,18 +88,21 @@ namespace pubsub_itc_fw::tests {
  */
 static std::pair<int, uint16_t> make_ipv4_listener() {
     const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (fd == -1) return {-1, 0};
+    if (fd == -1)
+        return {-1, 0};
     const int one = 1;
     ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
     sockaddr_in addr{};
-    addr.sin_family      = AF_INET;
-    addr.sin_port        = 0;
+    addr.sin_family = AF_INET;
+    addr.sin_port = 0;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-        ::close(fd); return {-1, 0};
+        ::close(fd);
+        return {-1, 0};
     }
     if (::listen(fd, 4) != 0) {
-        ::close(fd); return {-1, 0};
+        ::close(fd);
+        return {-1, 0};
     }
     sockaddr_in bound{};
     socklen_t len = sizeof(bound);
@@ -114,20 +117,23 @@ static std::pair<int, uint16_t> make_ipv4_listener() {
  */
 static std::pair<int, uint16_t> make_ipv6_listener() {
     const int fd = ::socket(AF_INET6, SOCK_STREAM, 0);
-    if (fd == -1) return {-1, 0};
+    if (fd == -1)
+        return {-1, 0};
     const int one = 1;
     ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
     // Restrict to IPv6 only so we get a pure IPv6 address back.
     ::setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &one, sizeof(one));
     sockaddr_in6 addr{};
     addr.sin6_family = AF_INET6;
-    addr.sin6_port   = 0;
-    addr.sin6_addr   = in6addr_loopback;
+    addr.sin6_port = 0;
+    addr.sin6_addr = in6addr_loopback;
     if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-        ::close(fd); return {-1, 0};
+        ::close(fd);
+        return {-1, 0};
     }
     if (::listen(fd, 4) != 0) {
-        ::close(fd); return {-1, 0};
+        ::close(fd);
+        return {-1, 0};
     }
     sockaddr_in6 bound{};
     socklen_t len = sizeof(bound);
@@ -139,7 +145,7 @@ static std::pair<int, uint16_t> make_ipv6_listener() {
 // Test fixture
 // ============================================================
 class TcpSocketTest : public ::testing::Test {
-protected:
+  protected:
     void SetUp() override {}
     void TearDown() override {}
 };
@@ -428,8 +434,7 @@ TEST_F(TcpSocketTest, ConnectImmediateLoopback) {
     // If it failed with an error message, that is a test environment issue.
     if (!connected) {
         // EINPROGRESS is expected -- not an error
-        EXPECT_TRUE(connect_err.empty())
-            << "connect() failed unexpectedly: " << connect_err;
+        EXPECT_TRUE(connect_err.empty()) << "connect() failed unexpectedly: " << connect_err;
     }
 
     sockaddr_in peer{};

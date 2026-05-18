@@ -9,9 +9,9 @@
  */
 
 #include <chrono>
+#include <stdexcept>
 #include <thread>
 #include <utility>
-#include <stdexcept>
 
 #include <gtest/gtest.h>
 
@@ -26,9 +26,7 @@ class ThreadWithJoinTimeoutTest : public ::testing::Test {};
 TEST_F(ThreadWithJoinTimeoutTest, JoinCompletesWithinTimeout) {
     ThreadWithJoinTimeout t;
 
-    t.start([] {
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    });
+    t.start([] { std::this_thread::sleep_for(std::chrono::milliseconds(50)); });
 
     const bool joined = t.join_with_timeout(std::chrono::milliseconds(200));
     EXPECT_TRUE(joined);
@@ -39,9 +37,7 @@ TEST_F(ThreadWithJoinTimeoutTest, JoinCompletesWithinTimeout) {
 TEST_F(ThreadWithJoinTimeoutTest, JoinTimesOut) {
     ThreadWithJoinTimeout t;
 
-    t.start([] {
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    });
+    t.start([] { std::this_thread::sleep_for(std::chrono::milliseconds(200)); });
 
     const bool joined = t.join_with_timeout(std::chrono::milliseconds(100));
     EXPECT_FALSE(joined);
@@ -73,9 +69,7 @@ TEST_F(ThreadWithJoinTimeoutTest, DestructorSafeAfterTimeout) {
     {
         ThreadWithJoinTimeout t;
 
-        t.start([] {
-            std::this_thread::sleep_for(std::chrono::seconds(3));
-        });
+        t.start([] { std::this_thread::sleep_for(std::chrono::seconds(3)); });
 
         const bool joined = t.join_with_timeout(std::chrono::milliseconds(100));
         EXPECT_FALSE(joined);
@@ -89,9 +83,7 @@ TEST_F(ThreadWithJoinTimeoutTest, DestructorSafeAfterTimeout) {
 TEST_F(ThreadWithJoinTimeoutTest, NormalJoin) {
     ThreadWithJoinTimeout t;
 
-    t.start([] {
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    });
+    t.start([] { std::this_thread::sleep_for(std::chrono::milliseconds(50)); });
 
     EXPECT_TRUE(t.joinable());
     t.join();
@@ -102,14 +94,9 @@ TEST_F(ThreadWithJoinTimeoutTest, NormalJoin) {
 TEST_F(ThreadWithJoinTimeoutTest, StartTwiceThrows) {
     ThreadWithJoinTimeout t;
 
-    t.start([] {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    });
+    t.start([] { std::this_thread::sleep_for(std::chrono::milliseconds(10)); });
 
-    EXPECT_THROW(
-        t.start([] {}),
-        std::runtime_error
-    );
+    EXPECT_THROW(t.start([] {}), std::runtime_error);
 
     t.join();
 }
@@ -118,9 +105,7 @@ TEST_F(ThreadWithJoinTimeoutTest, StartTwiceThrows) {
 TEST_F(ThreadWithJoinTimeoutTest, MoveConstructorTransfersOwnership) {
     ThreadWithJoinTimeout t1;
 
-    t1.start([] {
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    });
+    t1.start([] { std::this_thread::sleep_for(std::chrono::milliseconds(50)); });
 
     EXPECT_TRUE(t1.joinable());
 
@@ -138,9 +123,7 @@ TEST_F(ThreadWithJoinTimeoutTest, MoveAssignmentTransfersOwnership) {
     ThreadWithJoinTimeout t1;
     ThreadWithJoinTimeout t2;
 
-    t1.start([] {
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    });
+    t1.start([] { std::this_thread::sleep_for(std::chrono::milliseconds(50)); });
 
     EXPECT_TRUE(t1.joinable());
     EXPECT_FALSE(t2.joinable());
@@ -154,4 +137,4 @@ TEST_F(ThreadWithJoinTimeoutTest, MoveAssignmentTransfersOwnership) {
     t2.join();
 }
 
-} // namespace pubsub_itc_fw
+} // namespace pubsub_itc_fw::tests

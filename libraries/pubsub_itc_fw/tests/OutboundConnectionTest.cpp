@@ -136,8 +136,8 @@ static std::pair<int, uint16_t> make_listener() {
     ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
 
     sockaddr_in addr{};
-    addr.sin_family      = AF_INET;
-    addr.sin_port        = 0;
+    addr.sin_family = AF_INET;
+    addr.sin_port = 0;
     addr.sin_addr.s_addr = inet_addr("127.0.0.1");
 
     if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
@@ -159,11 +159,9 @@ static std::pair<int, uint16_t> make_listener() {
 // Application thread that tracks connection outcomes
 // ============================================================
 class OutboundTestThread : public ApplicationThread {
-public:
-    OutboundTestThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor,
-                       const std::string& service_name)
-        : ApplicationThread(token, logger, reactor, "OutboundTestThread", ThreadID{1},
-                            make_queue_config(), make_allocator_config("OutboundTestPool"),
+  public:
+    OutboundTestThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, const std::string& service_name)
+        : ApplicationThread(token, logger, reactor, "OutboundTestThread", ThreadID{1}, make_queue_config(), make_allocator_config("OutboundTestPool"),
                             ApplicationThreadConfiguration{})
         , service_name_(service_name) {}
 
@@ -174,7 +172,7 @@ public:
     std::string failure_reason;
     ConnectionID conn_id{};
 
-protected:
+  protected:
     void on_initial_event() override {
         connect_to_service(service_name_);
     }
@@ -197,7 +195,7 @@ protected:
 
     void on_itc_message([[maybe_unused]] const EventMessage& msg) override {}
 
-private:
+  private:
     std::string service_name_;
 };
 
@@ -205,7 +203,7 @@ private:
 // Integration test fixture
 // ============================================================
 class OutboundConnectionTest : public ::testing::Test {
-protected:
+  protected:
     void SetUp() override {
         logger_ = std::make_unique<LoggerWithSink>();
     }
@@ -215,8 +213,7 @@ protected:
     }
 
     static bool wait_for(std::function<bool()> pred, int timeout_ms = 5000) {
-        const auto deadline =
-            std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
         while (!pred()) {
             if (std::chrono::steady_clock::now() > deadline) {
                 return false;
@@ -226,8 +223,7 @@ protected:
         return true;
     }
 
-    static void shutdown_and_join(Reactor& reactor, std::thread& t,
-                                  const std::string& reason = "test complete") {
+    static void shutdown_and_join(Reactor& reactor, std::thread& t, const std::string& reason = "test complete") {
         reactor.shutdown(reason);
         if (t.joinable()) {
             t.join();
@@ -243,25 +239,22 @@ protected:
 TEST_F(OutboundConnectionTest, ConnectTimeout) {
     ReactorConfiguration cfg{};
     cfg.inactivity_check_interval_ = std::chrono::milliseconds(50);
-    cfg.init_phase_timeout_        = std::chrono::milliseconds(5000);
-    cfg.shutdown_timeout_          = std::chrono::milliseconds(1000);
-    cfg.connect_timeout            = std::chrono::milliseconds(300);
+    cfg.init_phase_timeout_ = std::chrono::milliseconds(5000);
+    cfg.shutdown_timeout_ = std::chrono::milliseconds(1000);
+    cfg.connect_timeout = std::chrono::milliseconds(300);
 
     ServiceRegistry registry;
-    registry.add("slow_service",
-        NetworkEndpointConfiguration{"192.0.2.1", 9999}, // TEST-NET -- non-routable
-        NetworkEndpointConfiguration{});
+    registry.add("slow_service", NetworkEndpointConfiguration{"192.0.2.1", 9999}, // TEST-NET -- non-routable
+                 NetworkEndpointConfiguration{});
 
     auto reactor = std::make_unique<Reactor>(cfg, registry, logger_->logger);
-    auto thread  = ApplicationThread::create<OutboundTestThread>(
-        logger_->logger, *reactor, "slow_service");
+    auto thread = ApplicationThread::create<OutboundTestThread>(logger_->logger, *reactor, "slow_service");
     reactor->register_thread(thread);
 
     std::thread reactor_thread([&]() { reactor->run(); });
 
-    EXPECT_TRUE(wait_for([&]() {
-        return thread->connection_failed.load(std::memory_order_acquire);
-    }, 3000)) << "ConnectionFailed not delivered after connect timeout";
+    EXPECT_TRUE(wait_for([&]() { return thread->connection_failed.load(std::memory_order_acquire); }, 3000))
+        << "ConnectionFailed not delivered after connect timeout";
 
     EXPECT_FALSE(thread->connection_established.load(std::memory_order_acquire));
     EXPECT_FALSE(thread->failure_reason.empty());
@@ -283,8 +276,8 @@ TEST_F(OutboundConnectionTest, SecondaryEndpointRetry) {
         const int one = 1;
         ::setsockopt(tmp_fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
         sockaddr_in tmp_addr{};
-        tmp_addr.sin_family      = AF_INET;
-        tmp_addr.sin_port        = 0;
+        tmp_addr.sin_family = AF_INET;
+        tmp_addr.sin_port = 0;
         tmp_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
         ::bind(tmp_fd, reinterpret_cast<sockaddr*>(&tmp_addr), sizeof(tmp_addr));
         sockaddr_in bound{};
@@ -297,30 +290,25 @@ TEST_F(OutboundConnectionTest, SecondaryEndpointRetry) {
 
     ReactorConfiguration cfg{};
     cfg.inactivity_check_interval_ = std::chrono::milliseconds(100);
-    cfg.init_phase_timeout_        = std::chrono::milliseconds(5000);
-    cfg.shutdown_timeout_          = std::chrono::milliseconds(1000);
-    cfg.connect_timeout            = std::chrono::milliseconds(2000);
+    cfg.init_phase_timeout_ = std::chrono::milliseconds(5000);
+    cfg.shutdown_timeout_ = std::chrono::milliseconds(1000);
+    cfg.connect_timeout = std::chrono::milliseconds(2000);
 
     ServiceRegistry registry;
-    registry.add("my_service",
-        NetworkEndpointConfiguration{"127.0.0.1", refused_port},
-        NetworkEndpointConfiguration{"127.0.0.1", listen_port});
+    registry.add("my_service", NetworkEndpointConfiguration{"127.0.0.1", refused_port}, NetworkEndpointConfiguration{"127.0.0.1", listen_port});
 
     auto reactor = std::make_unique<Reactor>(cfg, registry, logger_->logger);
-    auto thread  = ApplicationThread::create<OutboundTestThread>(
-        logger_->logger, *reactor, "my_service");
+    auto thread = ApplicationThread::create<OutboundTestThread>(logger_->logger, *reactor, "my_service");
     reactor->register_thread(thread);
 
     std::thread reactor_thread([&]() { reactor->run(); });
 
     EXPECT_TRUE(wait_for([&]() {
-        return thread->connection_established.load(std::memory_order_acquire)
-            || thread->connection_failed.load(std::memory_order_acquire);
+        return thread->connection_established.load(std::memory_order_acquire) || thread->connection_failed.load(std::memory_order_acquire);
     })) << "Neither ConnectionEstablished nor ConnectionFailed received";
 
     EXPECT_TRUE(thread->connection_established.load(std::memory_order_acquire))
-        << "Expected ConnectionEstablished via secondary endpoint, got failure: "
-        << thread->failure_reason;
+        << "Expected ConnectionEstablished via secondary endpoint, got failure: " << thread->failure_reason;
 
     ::close(listen_fd);
     shutdown_and_join(*reactor, reactor_thread);
@@ -332,22 +320,19 @@ TEST_F(OutboundConnectionTest, SecondaryEndpointRetry) {
 TEST_F(OutboundConnectionTest, UnknownServiceFails) {
     ReactorConfiguration cfg{};
     cfg.inactivity_check_interval_ = std::chrono::milliseconds(100);
-    cfg.init_phase_timeout_        = std::chrono::milliseconds(5000);
-    cfg.shutdown_timeout_          = std::chrono::milliseconds(1000);
-    cfg.connect_timeout            = std::chrono::milliseconds(2000);
+    cfg.init_phase_timeout_ = std::chrono::milliseconds(5000);
+    cfg.shutdown_timeout_ = std::chrono::milliseconds(1000);
+    cfg.connect_timeout = std::chrono::milliseconds(2000);
 
     ServiceRegistry registry;
 
     auto reactor = std::make_unique<Reactor>(cfg, registry, logger_->logger);
-    auto thread  = ApplicationThread::create<OutboundTestThread>(
-        logger_->logger, *reactor, "no_such_service");
+    auto thread = ApplicationThread::create<OutboundTestThread>(logger_->logger, *reactor, "no_such_service");
     reactor->register_thread(thread);
 
     std::thread reactor_thread([&]() { reactor->run(); });
 
-    EXPECT_TRUE(wait_for([&]() {
-        return thread->connection_failed.load(std::memory_order_acquire);
-    })) << "ConnectionFailed not delivered for unknown service";
+    EXPECT_TRUE(wait_for([&]() { return thread->connection_failed.load(std::memory_order_acquire); })) << "ConnectionFailed not delivered for unknown service";
 
     EXPECT_FALSE(thread->connection_established.load(std::memory_order_acquire));
     EXPECT_FALSE(thread->failure_reason.empty());
@@ -359,17 +344,16 @@ TEST_F(OutboundConnectionTest, UnknownServiceFails) {
 // Unit test fixture: OutboundConnection preconditions and state.
 // ============================================================
 class OutboundConnectionPreconditionTest : public ::testing::Test {
-protected:
+  protected:
     void SetUp() override {
         logger_ = std::make_unique<LoggerWithSink>();
 
         ReactorConfiguration cfg{};
         cfg.inactivity_check_interval_ = std::chrono::milliseconds(100);
-        cfg.shutdown_timeout_          = std::chrono::milliseconds(1000);
+        cfg.shutdown_timeout_ = std::chrono::milliseconds(1000);
 
         reactor_ = std::make_unique<Reactor>(cfg, registry_, logger_->logger);
-        thread_  = ApplicationThread::create<OutboundTestThread>(
-            logger_->logger, *reactor_, "dummy_service");
+        thread_ = ApplicationThread::create<OutboundTestThread>(logger_->logger, *reactor_, "dummy_service");
         allocator_ = std::make_unique<ExpandableSlabAllocator>(65536);
     }
 
@@ -382,38 +366,22 @@ protected:
 
     std::unique_ptr<OutboundConnection> make_connection() {
         auto connector = std::make_unique<TcpConnector>();
-        ServiceEndpoints endpoints{
-            NetworkEndpointConfiguration{"127.0.0.1", 9999},
-            NetworkEndpointConfiguration{}
-        };
-        return std::make_unique<OutboundConnection>(
-            ConnectionID{1},
-            ThreadID{1},
-            "dummy_service",
-            endpoints,
-            std::move(connector),
-            *allocator_,
-            *thread_,
-            logger_->logger);
+        ServiceEndpoints endpoints{NetworkEndpointConfiguration{"127.0.0.1", 9999}, NetworkEndpointConfiguration{}};
+        return std::make_unique<OutboundConnection>(ConnectionID{1}, ThreadID{1}, "dummy_service", endpoints, std::move(connector), *allocator_, *thread_,
+                                                    logger_->logger);
     }
 
-    std::unique_ptr<LoggerWithSink>          logger_;
-    ServiceRegistry                          registry_;
-    std::unique_ptr<Reactor>                 reactor_;
-    std::shared_ptr<OutboundTestThread>      thread_;
+    std::unique_ptr<LoggerWithSink> logger_;
+    ServiceRegistry registry_;
+    std::unique_ptr<Reactor> reactor_;
+    std::shared_ptr<OutboundTestThread> thread_;
     std::unique_ptr<ExpandableSlabAllocator> allocator_;
 };
 
 TEST_F(OutboundConnectionPreconditionTest, ConstructorRejectsNullConnector) {
-    ServiceEndpoints endpoints{
-        NetworkEndpointConfiguration{"127.0.0.1", 9999},
-        NetworkEndpointConfiguration{}
-    };
-    EXPECT_THROW(
-        OutboundConnection(
-            ConnectionID{1}, ThreadID{1}, "dummy_service",
-            endpoints, nullptr, *allocator_, *thread_, logger_->logger),
-        PreconditionAssertion);
+    ServiceEndpoints endpoints{NetworkEndpointConfiguration{"127.0.0.1", 9999}, NetworkEndpointConfiguration{}};
+    EXPECT_THROW(OutboundConnection(ConnectionID{1}, ThreadID{1}, "dummy_service", endpoints, nullptr, *allocator_, *thread_, logger_->logger),
+                 PreconditionAssertion);
 }
 
 TEST_F(OutboundConnectionPreconditionTest, OnConnectedRejectsNullSocket) {
@@ -469,16 +437,12 @@ TEST_F(OutboundConnectionPreconditionTest, SetAndClearPendingSend) {
 TEST_F(OutboundConnectionPreconditionTest, SetPendingSendRejectsNullAllocator) {
     auto conn = make_connection();
     char dummy_chunk[64]{};
-    EXPECT_THROW(
-        conn->set_pending_send(nullptr, 0, dummy_chunk, sizeof(dummy_chunk)),
-        PreconditionAssertion);
+    EXPECT_THROW(conn->set_pending_send(nullptr, 0, dummy_chunk, sizeof(dummy_chunk)), PreconditionAssertion);
 }
 
 TEST_F(OutboundConnectionPreconditionTest, SetPendingSendRejectsNullChunkPtr) {
     auto conn = make_connection();
-    EXPECT_THROW(
-        conn->set_pending_send(allocator_.get(), 0, nullptr, 64),
-        PreconditionAssertion);
+    EXPECT_THROW(conn->set_pending_send(allocator_.get(), 0, nullptr, 64), PreconditionAssertion);
 }
 
 // ============================================================
@@ -492,29 +456,29 @@ TEST_F(OutboundConnectionPreconditionTest, SetPendingSendRejectsNullChunkPtr) {
 // to established phase under full test control.
 // ============================================================
 class OutboundConnectionManagerTest : public ::testing::Test {
-protected:
+  protected:
     void SetUp() override {
         logger_ = std::make_unique<LoggerWithSink>();
 
         ReactorConfiguration cfg{};
         cfg.inactivity_check_interval_ = std::chrono::milliseconds(100);
-        cfg.shutdown_timeout_          = std::chrono::milliseconds(1000);
-        cfg.connect_timeout            = std::chrono::milliseconds(2000);
+        cfg.shutdown_timeout_ = std::chrono::milliseconds(1000);
+        cfg.connect_timeout = std::chrono::milliseconds(2000);
 
         reactor_ = std::make_unique<Reactor>(cfg, registry_, logger_->logger);
 
         // Register stub thread. fast_path_threads_ is not populated since we
         // never call run() — but deliver_lost_event=false means teardown_connection
         // never calls get_fast_path_thread, so this is safe.
-        stub_thread_ = ApplicationThread::create<OutboundTestThread>(
-            logger_->logger, *reactor_, "test_service");
+        stub_thread_ = ApplicationThread::create<OutboundTestThread>(logger_->logger, *reactor_, "test_service");
         reactor_->register_thread(stub_thread_);
 
         outbound_allocator_ = std::make_unique<ExpandableSlabAllocator>(4 * 1024 * 1024);
     }
 
     void TearDown() override {
-        if (accept_thread_.joinable()) accept_thread_.join();
+        if (accept_thread_.joinable())
+            accept_thread_.join();
         outbound_allocator_.reset();
         stub_thread_.reset();
         reactor_.reset();
@@ -525,7 +489,8 @@ protected:
     // Returns the listen port. The accepted peer fd is stored in peer_fd_.
     uint16_t start_listener_and_accept() {
         auto [listen_fd, port] = make_listener();
-        if (listen_fd == -1) return 0;
+        if (listen_fd == -1)
+            return 0;
 
         accept_thread_ = std::thread([this, listen_fd]() {
             sockaddr_in peer{};
@@ -542,13 +507,11 @@ protected:
     // established OutboundConnection in the manager. Returns a pointer to
     // the connection (owned by the manager), or nullptr on failure.
     OutboundConnection* establish(uint16_t port, ConnectionID id) {
-        registry_.add("test_service",
-            NetworkEndpointConfiguration{"127.0.0.1", port},
-            NetworkEndpointConfiguration{});
+        registry_.add("test_service", NetworkEndpointConfiguration{"127.0.0.1", port}, NetworkEndpointConfiguration{});
 
         ReactorControlCommand cmd(ReactorControlCommand::CommandTag::Connect);
         cmd.requesting_thread_id_ = ThreadID{1};
-        cmd.service_name_         = "test_service";
+        cmd.service_name_ = "test_service";
 
         OutboundConnectionManager& mgr = reactor_->outbound_manager();
         mgr.process_connect_command(cmd, id);
@@ -557,7 +520,8 @@ protected:
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
         OutboundConnection* conn = mgr.find_by_id(id);
-        if (conn == nullptr || !conn->is_connecting()) return nullptr;
+        if (conn == nullptr || !conn->is_connecting())
+            return nullptr;
 
         mgr.on_connect_ready(*conn);
 
@@ -569,8 +533,8 @@ protected:
 
     // Build a pre-assembled PDU frame in the outbound allocator.
     struct Frame {
-        int      slab_id;
-        void*    chunk;
+        int slab_id;
+        void* chunk;
         uint32_t total_bytes;
     };
 
@@ -579,23 +543,23 @@ protected:
         auto [slab_id, chunk] = outbound_allocator_->allocate(total);
         auto* hdr = static_cast<PduHeader*>(chunk);
         hdr->byte_count = htonl(static_cast<uint32_t>(payload_size));
-        hdr->pdu_id     = htons(static_cast<uint16_t>(42));
-        hdr->version    = 1;
-        hdr->filler_a   = 0;
-        hdr->canary     = htonl(pdu_canary_value);
-        hdr->filler_b   = 0;
+        hdr->pdu_id = htons(static_cast<uint16_t>(42));
+        hdr->version = 1;
+        hdr->filler_a = 0;
+        hdr->canary = htonl(pdu_canary_value);
+        hdr->filler_b = 0;
         std::memset(static_cast<uint8_t*>(chunk) + sizeof(PduHeader), 0xAB, payload_size);
         return {slab_id, chunk, total};
     }
 
-    std::unique_ptr<LoggerWithSink>          logger_;
-    ServiceRegistry                          registry_;
-    std::unique_ptr<Reactor>                 reactor_;
-    std::shared_ptr<OutboundTestThread>      stub_thread_;
+    std::unique_ptr<LoggerWithSink> logger_;
+    ServiceRegistry registry_;
+    std::unique_ptr<Reactor> reactor_;
+    std::shared_ptr<OutboundTestThread> stub_thread_;
     std::unique_ptr<ExpandableSlabAllocator> outbound_allocator_;
-    std::thread                              accept_thread_;
-    std::atomic<bool>                        accepted_{false};
-    int                                      peer_fd_{-1};
+    std::thread accept_thread_;
+    std::atomic<bool> accepted_{false};
+    int peer_fd_{-1};
 };
 
 // ============================================================
@@ -610,8 +574,12 @@ TEST_F(OutboundConnectionManagerTest, TeardownWithPendingSendFreesChunk) {
     const ConnectionID conn_id{42};
     OutboundConnection* conn = establish(port, conn_id);
 
-    if (accept_thread_.joinable()) accept_thread_.join();
-    if (peer_fd_ != -1) { ::close(peer_fd_); peer_fd_ = -1; }
+    if (accept_thread_.joinable())
+        accept_thread_.join();
+    if (peer_fd_ != -1) {
+        ::close(peer_fd_);
+        peer_fd_ = -1;
+    }
 
     ASSERT_NE(conn, nullptr) << "Failed to establish outbound connection";
     ASSERT_TRUE(conn->is_established());
@@ -635,8 +603,7 @@ TEST_F(OutboundConnectionManagerTest, TeardownWithPendingSendFreesChunk) {
     // count must not have grown beyond what it was before teardown.
     auto [slab_id2, chunk2] = outbound_allocator_->allocate(128);
     EXPECT_NE(chunk2, nullptr);
-    EXPECT_LE(outbound_allocator_->slab_count(), slabs_before)
-        << "Slab count grew after teardown — chunk was not freed by teardown_connection";
+    EXPECT_LE(outbound_allocator_->slab_count(), slabs_before) << "Slab count grew after teardown — chunk was not freed by teardown_connection";
     outbound_allocator_->deallocate(slab_id2, chunk2);
 }
 
@@ -662,7 +629,8 @@ TEST_F(OutboundConnectionManagerTest, DrainPendingSendDispatchesStashedCommand) 
     const ConnectionID conn_id{43};
     OutboundConnection* conn = establish(port, conn_id);
 
-    if (accept_thread_.joinable()) accept_thread_.join();
+    if (accept_thread_.joinable())
+        accept_thread_.join();
 
     ASSERT_NE(conn, nullptr) << "Failed to establish outbound connection";
     ASSERT_TRUE(conn->is_established());
@@ -678,17 +646,19 @@ TEST_F(OutboundConnectionManagerTest, DrainPendingSendDispatchesStashedCommand) 
     OutboundConnectionManager& mgr = reactor_->outbound_manager();
 
     ReactorControlCommand cmd1(ReactorControlCommand::CommandTag::SendPdu);
-    cmd1.connection_id_  = conn_id;
-    cmd1.allocator_      = outbound_allocator_.get();
-    cmd1.slab_id_        = slab_id1;
-    cmd1.pdu_chunk_ptr_  = chunk1;
+    cmd1.connection_id_ = conn_id;
+    cmd1.allocator_ = outbound_allocator_.get();
+    cmd1.slab_id_ = slab_id1;
+    cmd1.pdu_chunk_ptr_ = chunk1;
     cmd1.pdu_byte_count_ = static_cast<uint32_t>(large_payload);
-    ASSERT_TRUE(mgr.process_send_pdu_command(cmd1))
-        << "process_send_pdu_command rejected cmd1 — connection not found in manager";
+    ASSERT_TRUE(mgr.process_send_pdu_command(cmd1)) << "process_send_pdu_command rejected cmd1 — connection not found in manager";
 
     if (!conn->has_pending_send()) {
         // Kernel absorbed the full frame — can't test drain_pending_send here.
-        if (peer_fd_ != -1) { ::close(peer_fd_); peer_fd_ = -1; }
+        if (peer_fd_ != -1) {
+            ::close(peer_fd_);
+            peer_fd_ = -1;
+        }
         mgr.teardown_connection(conn_id, "cleanup", false);
         GTEST_SKIP() << "Kernel send buffer absorbed the full frame — skipping";
     }
@@ -699,13 +669,12 @@ TEST_F(OutboundConnectionManagerTest, DrainPendingSendDispatchesStashedCommand) 
     auto [slab_id2, chunk2, total2] = make_frame(128);
 
     ReactorControlCommand cmd2(ReactorControlCommand::CommandTag::SendPdu);
-    cmd2.connection_id_  = conn_id;
-    cmd2.allocator_      = outbound_allocator_.get();
-    cmd2.slab_id_        = slab_id2;
-    cmd2.pdu_chunk_ptr_  = chunk2;
+    cmd2.connection_id_ = conn_id;
+    cmd2.allocator_ = outbound_allocator_.get();
+    cmd2.slab_id_ = slab_id2;
+    cmd2.pdu_chunk_ptr_ = chunk2;
     cmd2.pdu_byte_count_ = 128;
-    ASSERT_TRUE(mgr.process_send_pdu_command(cmd2))
-        << "process_send_pdu_command rejected cmd2 — connection not found in manager";
+    ASSERT_TRUE(mgr.process_send_pdu_command(cmd2)) << "process_send_pdu_command rejected cmd2 — connection not found in manager";
 
     // Drain the peer socket and drive on_write_ready until the first send
     // completes.
@@ -720,8 +689,7 @@ TEST_F(OutboundConnectionManagerTest, DrainPendingSendDispatchesStashedCommand) 
         }
     }
 
-    ASSERT_FALSE(conn->has_pending_send())
-        << "First send did not complete after draining peer";
+    ASSERT_FALSE(conn->has_pending_send()) << "First send did not complete after draining peer";
 
     // drain_pending_send must now process the stashed second command,
     // covering the drain_pending_send body (lines 364-375).
@@ -729,7 +697,10 @@ TEST_F(OutboundConnectionManagerTest, DrainPendingSendDispatchesStashedCommand) 
     EXPECT_TRUE(drained);
 
     // Clean up.
-    if (peer_fd_ != -1) { ::close(peer_fd_); peer_fd_ = -1; }
+    if (peer_fd_ != -1) {
+        ::close(peer_fd_);
+        peer_fd_ = -1;
+    }
     mgr.teardown_connection(conn_id, "test complete", false);
 }
 

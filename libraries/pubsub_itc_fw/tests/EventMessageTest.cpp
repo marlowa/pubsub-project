@@ -16,7 +16,7 @@ using namespace pubsub_itc_fw;
 namespace {
 
 class EventMessageTest : public ::testing::Test {
-public:
+  public:
     EventMessageTest() = default;
     ~EventMessageTest() override = default;
 };
@@ -26,8 +26,7 @@ public:
 // -----------------------------------------------------------------------------
 // TEST 1: Reactor event creation
 // -----------------------------------------------------------------------------
-TEST_F(EventMessageTest, ReactorEventCreation)
-{
+TEST_F(EventMessageTest, ReactorEventCreation) {
     const EventMessage m = EventMessage::create_reactor_event(EventType(EventType::Initial));
 
     EXPECT_EQ(m.type().as_tag(), EventType::Initial);
@@ -41,8 +40,7 @@ TEST_F(EventMessageTest, ReactorEventCreation)
 // -----------------------------------------------------------------------------
 // TEST 2: ITC message creation with payload
 // -----------------------------------------------------------------------------
-TEST_F(EventMessageTest, ItcMessageWithPayload)
-{
+TEST_F(EventMessageTest, ItcMessageWithPayload) {
     const ThreadID origin(42);
     const uint8_t payload[4] = {10, 20, 30, 40};
 
@@ -63,8 +61,7 @@ TEST_F(EventMessageTest, ItcMessageWithPayload)
 // -----------------------------------------------------------------------------
 // TEST 3: ITC message with zero-length payload
 // -----------------------------------------------------------------------------
-TEST_F(EventMessageTest, ItcMessageZeroLengthPayload)
-{
+TEST_F(EventMessageTest, ItcMessageZeroLengthPayload) {
     const ThreadID origin(7);
 
     const EventMessage msg = EventMessage::create_itc_message(origin, nullptr, 0);
@@ -79,8 +76,7 @@ TEST_F(EventMessageTest, ItcMessageZeroLengthPayload)
 // -----------------------------------------------------------------------------
 // TEST 4: Timer event creation
 // -----------------------------------------------------------------------------
-TEST_F(EventMessageTest, TimerEventCreation)
-{
+TEST_F(EventMessageTest, TimerEventCreation) {
     const TimerID tid(12345);
 
     const EventMessage msg = EventMessage::create_timer_event(tid);
@@ -95,8 +91,7 @@ TEST_F(EventMessageTest, TimerEventCreation)
 // -----------------------------------------------------------------------------
 // TEST 5: Termination event creation + reason()
 // -----------------------------------------------------------------------------
-TEST_F(EventMessageTest, TerminationEventReason)
-{
+TEST_F(EventMessageTest, TerminationEventReason) {
     const EventMessage msg = EventMessage::create_termination_event("catastrophic failure");
 
     EXPECT_EQ(msg.type().as_tag(), EventType::Termination);
@@ -110,8 +105,7 @@ TEST_F(EventMessageTest, TerminationEventReason)
 // -----------------------------------------------------------------------------
 // TEST 6: Move semantics
 // -----------------------------------------------------------------------------
-TEST_F(EventMessageTest, MoveSemantics)
-{
+TEST_F(EventMessageTest, MoveSemantics) {
     const ThreadID origin(11);
     const uint8_t payload[2] = {9, 8};
 
@@ -130,8 +124,7 @@ TEST_F(EventMessageTest, MoveSemantics)
 // -----------------------------------------------------------------------------
 // TEST 8: EventType stringification
 // -----------------------------------------------------------------------------
-TEST_F(EventMessageTest, EventTypeToString)
-{
+TEST_F(EventMessageTest, EventTypeToString) {
     EXPECT_EQ(EventType(EventType::Initial).as_string(), "Initial");
     EXPECT_EQ(EventType(EventType::AppReady).as_string(), "AppReady");
     EXPECT_EQ(EventType(EventType::Timer).as_string(), "Timer");

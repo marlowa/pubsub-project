@@ -1,19 +1,19 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-#include <pthread.h>
 #include <numa.h>
+#include <pthread.h>
 #include <sched.h>
 
-#include <cstdint>
 #include <cstddef>
+#include <cstdint>
 
 #include <algorithm>
 #include <atomic>
+#include <functional>
 #include <iostream>
 #include <thread>
 #include <utility>
-#include <functional>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -23,8 +23,9 @@
 
 #ifdef CLANG_TIDY
 struct ClangTidyGtestSkipSink {
-    template <typename T>
-    ClangTidyGtestSkipSink& operator<<([[maybe_unused]] const T& rhs) { return *this; }
+    template <typename T> ClangTidyGtestSkipSink& operator<<([[maybe_unused]] const T& rhs) {
+        return *this;
+    }
 };
 // NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
 #define GTEST_SKIP(...) ClangTidyGtestSkipSink()
@@ -34,7 +35,7 @@ namespace pubsub_itc_fw::tests {
 
 // Helper class for NUMA-aware thread pinning
 class NumaTopology {
-public:
+  public:
     NumaTopology() {
         if (numa_available() < 0) {
             available_ = false;
@@ -64,8 +65,12 @@ public:
         }
     }
 
-    [[nodiscard]] bool is_available() const { return available_; }
-    [[nodiscard]] int num_nodes() const { return num_nodes_; }
+    [[nodiscard]] bool is_available() const {
+        return available_;
+    }
+    [[nodiscard]] int num_nodes() const {
+        return num_nodes_;
+    }
 
     // Get CPUs for a specific NUMA node
     [[nodiscard]] const std::vector<int>& get_cpus_for_node(int node) const {
@@ -91,7 +96,7 @@ public:
         return pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset) == 0;
     }
 
-private:
+  private:
     bool available_{false};
     int num_nodes_{0};
     std::vector<std::vector<int>> cpus_per_node_;
@@ -99,7 +104,7 @@ private:
 
 // Enhanced test fixture with NUMA support
 class NumaAwarePoolAllocatorTest : public ::testing::Test {
-protected:
+  protected:
     void SetUp() override {
         TestObject::reset_counts();
         pool_exhausted_callback_count_ = 0;
@@ -113,8 +118,12 @@ protected:
         static std::atomic<int> s_constructor_count;
         static std::atomic<int> s_destructor_count;
 
-        TestObject() { s_constructor_count++; }
-        ~TestObject() { s_destructor_count++; }
+        TestObject() {
+            s_constructor_count++;
+        }
+        ~TestObject() {
+            s_destructor_count++;
+        }
 
         static void reset_counts() {
             s_constructor_count = 0;
@@ -126,14 +135,11 @@ protected:
     std::atomic<int> invalid_free_callback_count_{0};
     std::atomic<int> huge_pages_error_callback_count_{0};
 
-    std::function<void(void*, int)> handler_for_pool_exhausted_ =
-        [this](void*, int) { this->pool_exhausted_callback_count_++; };
+    std::function<void(void*, int)> handler_for_pool_exhausted_ = [this](void*, int) { this->pool_exhausted_callback_count_++; };
 
-    std::function<void(void*, void*)> handler_for_invalid_free_ =
-        [this](void*, void*) { this->invalid_free_callback_count_++; };
+    std::function<void(void*, void*)> handler_for_invalid_free_ = [this](void*, void*) { this->invalid_free_callback_count_++; };
 
-    std::function<void(void*)> handler_for_huge_pages_error_ =
-        [this](void*) { this->huge_pages_error_callback_count_++; };
+    std::function<void(void*)> handler_for_huge_pages_error_ = [this](void*) { this->huge_pages_error_callback_count_++; };
 };
 
 // Static member initialization
@@ -163,14 +169,13 @@ TEST_F(NumaAwarePoolAllocatorTest, NumaPinnedThunderingHerd) {
               << "  Available CPUs on node: " << cpus.size() << "\n"
               << "  Using threads: " << num_threads << "\n";
 
-    const int objects_per_pool = 1;  // Maximum stress - one object per pool
+    const int objects_per_pool = 1; // Maximum stress - one object per pool
     const int initial_pools = 1;
     const int max_pools = num_threads + 10;
 
-    ExpandablePoolAllocator<TestObject> allocator(
-        "NumaPinnedTest", objects_per_pool, initial_pools, max_pools,
-        handler_for_pool_exhausted_, handler_for_invalid_free_, handler_for_huge_pages_error_,
-        UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
+    ExpandablePoolAllocator<TestObject> allocator("NumaPinnedTest", objects_per_pool, initial_pools, max_pools, handler_for_pool_exhausted_,
+                                                  handler_for_invalid_free_, handler_for_huge_pages_error_,
+                                                  UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
 
     std::atomic<bool> start_gate{false};
     std::vector<TestObject*> results(num_threads, nullptr);
@@ -208,10 +213,8 @@ TEST_F(NumaAwarePoolAllocatorTest, NumaPinnedThunderingHerd) {
         }
     }
 
-    EXPECT_EQ(success_count, num_threads)
-        << "Expected all " << num_threads << " threads to successfully allocate";
-    EXPECT_EQ(pool_exhausted_callback_count_.load(), num_threads - initial_pools)
-        << "Expected " << (num_threads - initial_pools) << " pool expansions";
+    EXPECT_EQ(success_count, num_threads) << "Expected all " << num_threads << " threads to successfully allocate";
+    EXPECT_EQ(pool_exhausted_callback_count_.load(), num_threads - initial_pools) << "Expected " << (num_threads - initial_pools) << " pool expansions";
 }
 
 TEST_F(NumaAwarePoolAllocatorTest, NumaPinnedContentionStress) {
@@ -238,10 +241,9 @@ TEST_F(NumaAwarePoolAllocatorTest, NumaPinnedContentionStress) {
     const int max_pools = 5;
     const int allocations_per_thread = 200;
 
-    ExpandablePoolAllocator<TestObject> allocator(
-        "ContentionStress", objects_per_pool, initial_pools, max_pools,
-        handler_for_pool_exhausted_, handler_for_invalid_free_, handler_for_huge_pages_error_,
-        UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
+    ExpandablePoolAllocator<TestObject> allocator("ContentionStress", objects_per_pool, initial_pools, max_pools, handler_for_pool_exhausted_,
+                                                  handler_for_invalid_free_, handler_for_huge_pages_error_,
+                                                  UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages));
 
     std::atomic<int> allocation_failures{0};
 
@@ -280,8 +282,7 @@ TEST_F(NumaAwarePoolAllocatorTest, NumaPinnedContentionStress) {
     EXPECT_EQ(stats.number_of_allocated_objects_, 0) << "Memory leak detected";
 
     // Some allocation failures are expected if we hit max_pools limit
-    std::cout << "  Allocation failures: " << allocation_failures.load()
-              << " (expected if pool limit reached)\n";
+    std::cout << "  Allocation failures: " << allocation_failures.load() << " (expected if pool limit reached)\n";
 }
 
 } // namespace pubsub_itc_fw::tests

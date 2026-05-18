@@ -65,18 +65,18 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
-#include <thread>
-#include <vector>
 #include <chrono>
 #include <random>
+#include <thread>
+#include <vector>
 
 #include <pthread.h>
 #include <sched.h>
 
+#include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/BackoffWithYield.hpp>
 #include <pubsub_itc_fw/LockFreeMessageQueue.hpp>
 #include <pubsub_itc_fw/QueueConfiguration.hpp>
-#include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/UseHugePagesFlag.hpp>
 #include <pubsub_itc_fw/tests_common/LatencyRecorder.hpp>
 
@@ -226,10 +226,8 @@ TEST(LockFreeMessageQueueTest, WatermarkHandlersFireOnce) {
     queue_config.low_watermark = 2;
     queue_config.high_watermark = 5;
     queue_config.for_client_use = nullptr;
-    queue_config.gone_below_low_watermark_handler =
-        [&](void*) { low_calls.fetch_add(1); };
-    queue_config.gone_above_high_watermark_handler =
-        [&](void*) { high_calls.fetch_add(1); };
+    queue_config.gone_below_low_watermark_handler = [&](void*) { low_calls.fetch_add(1); };
+    queue_config.gone_above_high_watermark_handler = [&](void*) { high_calls.fetch_add(1); };
 
     const AllocatorConfiguration allocator_config = make_default_allocator_config();
 
@@ -294,7 +292,7 @@ TEST(LockFreeMessageQueueTest, DestructorDrainsQueue) {
     queue->enqueue(TestMessage{2});
     queue->enqueue(TestMessage{3});
 
-    delete queue;  // Should drain safely
+    delete queue; // Should drain safely
 
     SUCCEED();
 }
@@ -429,8 +427,8 @@ TEST(LockFreeMessageQueueTest, SoakTestMillionsOfMessages) {
     LockFreeMessageQueue<TestMessage> queue(queue_config, allocator_config);
 
 #ifdef USING_VALGRIND
-    constexpr int producers = 2;            // Reduced threads
-    constexpr int per_producer = 10'000;    // 20k total is plenty for a Valgrind check
+    constexpr int producers = 2;         // Reduced threads
+    constexpr int per_producer = 10'000; // 20k total is plenty for a Valgrind check
 #else
     constexpr int producers = 4;
     constexpr int per_producer = 2'500'000; // 2.5M each → 10M total
@@ -610,10 +608,8 @@ TEST(LockFreeMessageQueueTest, WatermarkStormTest) {
     queue_config.low_watermark = 10;
     queue_config.high_watermark = 20;
     queue_config.for_client_use = nullptr;
-    queue_config.gone_below_low_watermark_handler =
-        [&](void*) { low_calls.fetch_add(1, std::memory_order_relaxed); };
-    queue_config.gone_above_high_watermark_handler =
-        [&](void*) { high_calls.fetch_add(1, std::memory_order_relaxed); };
+    queue_config.gone_below_low_watermark_handler = [&](void*) { low_calls.fetch_add(1, std::memory_order_relaxed); };
+    queue_config.gone_above_high_watermark_handler = [&](void*) { high_calls.fetch_add(1, std::memory_order_relaxed); };
 
     const AllocatorConfiguration allocator_config = make_default_allocator_config();
 
@@ -730,10 +726,8 @@ TEST(LockFreeMessageQueueTest, LowWatermarkStormTest) {
     queue_config.low_watermark = 10;
     queue_config.high_watermark = 20;
     queue_config.for_client_use = nullptr;
-    queue_config.gone_below_low_watermark_handler =
-        [&](void*) { low_calls.fetch_add(1, std::memory_order_relaxed); };
-    queue_config.gone_above_high_watermark_handler =
-        [&](void*) { high_calls.fetch_add(1, std::memory_order_relaxed); };
+    queue_config.gone_below_low_watermark_handler = [&](void*) { low_calls.fetch_add(1, std::memory_order_relaxed); };
+    queue_config.gone_above_high_watermark_handler = [&](void*) { high_calls.fetch_add(1, std::memory_order_relaxed); };
 
     const AllocatorConfiguration allocator_config = make_default_allocator_config();
 
@@ -821,8 +815,7 @@ TEST(LockFreeMessageQueueTest, ThroughputBenchmark) {
         t.join();
     }
 
-    auto duration_ms =
-        std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+    auto duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 
     double msgs_per_sec = (total * 1000.0) / duration_ms;
 
@@ -881,7 +874,7 @@ TEST(LockFreeMessageQueueTest, MixedRateJitterSoakTest) {
                 producer_backoff.pause();
             }
 
-            for (int i = 0; i < iterations; ) {
+            for (int i = 0; i < iterations;) {
 
                 const int burst = burst_dist(rng);
                 for (int b = 0; b < burst && i < iterations; ++b, ++i) {
@@ -964,13 +957,13 @@ TEST(LockFreeMessageQueueTest, MemoryPressureBurstTest) {
     LockFreeMessageQueue<TestMessage> queue(queue_config, allocator_config);
 
 #ifdef USING_VALGRIND
-    constexpr int producers = 2;       // Reduced for Valgrind
-    constexpr int bursts = 100;        // Reduced from 3000
-    constexpr int burst_size = 20;     // Reduced from 50
+    constexpr int producers = 2;   // Reduced for Valgrind
+    constexpr int bursts = 100;    // Reduced from 3000
+    constexpr int burst_size = 20; // Reduced from 50
 #else
     constexpr int producers = 4;
     constexpr int bursts = 3000;
-    constexpr int burst_size = 50;   // small bursts → high allocation churn
+    constexpr int burst_size = 50; // small bursts → high allocation churn
 #endif
     constexpr int total = producers * bursts * burst_size;
 
@@ -1062,12 +1055,12 @@ TEST(LockFreeMessageQueueTest, QueueDepthHistogramTest) {
 
     LockFreeMessageQueue<TestMessage> queue(queue_config, allocator_config);
 
-    constexpr int total_messages  = 100'000;
-    constexpr int burst_size      = 50;
+    constexpr int total_messages = 100'000;
+    constexpr int burst_size = 50;
     constexpr int max_depth_limit = 1024; // pool has 1024 slots
 
-    std::atomic<int>  produced{0};
-    std::atomic<int>  consumed{0};
+    std::atomic<int> produced{0};
+    std::atomic<int> consumed{0};
     std::atomic<bool> production_done{false};
 
     pubsub_itc_fw::tests::LatencyRecorder depth_histogram;
@@ -1098,10 +1091,8 @@ TEST(LockFreeMessageQueueTest, QueueDepthHistogramTest) {
     // Sampler: periodically reads the current depth and records it.
     // Runs until production is complete and the queue is drained.
     std::thread sampler([&] {
-        while (!production_done.load(std::memory_order_acquire) ||
-               consumed.load(std::memory_order_acquire) < total_messages) {
-            const int depth = produced.load(std::memory_order_acquire)
-                            - consumed.load(std::memory_order_acquire);
+        while (!production_done.load(std::memory_order_acquire) || consumed.load(std::memory_order_acquire) < total_messages) {
+            const int depth = produced.load(std::memory_order_acquire) - consumed.load(std::memory_order_acquire);
             if (depth >= 0) {
                 // Record depth as a value in nanosecond units so the
                 // existing LatencyRecorder bucket infrastructure applies.
@@ -1249,7 +1240,7 @@ TEST(LockFreeMessageQueueTest, ShouldSufferFromPriorityInversion) {
 
     // Install stall callback for first enqueue
     queue.test_stall_callback_ = [&]() {
-         // Only the first producer to get here should stall
+        // Only the first producer to get here should stall
         bool expected = false;
         if (!producer_a_claimed.compare_exchange_strong(expected, true)) {
             // Someone already claimed; do NOT stall this producer
@@ -1264,9 +1255,7 @@ TEST(LockFreeMessageQueueTest, ShouldSufferFromPriorityInversion) {
         queue.test_stall_callback_ = nullptr; // Only stall once
     };
     // Producer A: Will stall mid-push
-    std::thread producer_a([&]() {
-        queue.enqueue(TestMessage{42});
-    });
+    std::thread producer_a([&]() { queue.enqueue(TestMessage{42}); });
 
     // Wait for Producer A to claim head but not link
     BackoffWithYield wait_backoff;
@@ -1298,7 +1287,5 @@ TEST(LockFreeMessageQueueTest, ShouldSufferFromPriorityInversion) {
     EXPECT_EQ(msg2->value, 84);
 
     EXPECT_FALSE(queue.dequeue().has_value());
-
-
 }
 #endif

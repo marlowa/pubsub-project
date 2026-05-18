@@ -250,8 +250,7 @@ class OutboundConnectionManager {
     // WAL-based pub/sub. See ReactorConfiguration::connect_retry_interval_.
     struct PendingRetry {
         PendingRetry() : command(ReactorControlCommand::CommandTag::Connect) {}
-        PendingRetry(ReactorControlCommand cmd, std::chrono::steady_clock::time_point when)
-            : command(std::move(cmd)), retry_after(when) {}
+        PendingRetry(ReactorControlCommand cmd, std::chrono::steady_clock::time_point when) : command(std::move(cmd)), retry_after(when) {}
 
         ReactorControlCommand command;
         std::chrono::steady_clock::time_point retry_after;

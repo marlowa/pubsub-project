@@ -8,7 +8,7 @@
 namespace pubsub_itc_fw {
 
 class LoggingConfigurationLoader {
-public:
+  public:
     static RollingLogfileConfiguration load(const TomlConfiguration& toml) {
         RollingLogfileConfiguration config;
         std::string mode_str;
@@ -20,15 +20,12 @@ public:
             config.mode = RollingLogfileConfiguration::Mode::Size;
             toml.get_required_except("logging.max_file_size", config.max_file_size);
             toml.get_required_except("logging.max_backup_files", config.max_backup_files);
-        }
-        else if (mode_str == "daily") {
+        } else if (mode_str == "daily") {
             config.mode = RollingLogfileConfiguration::Mode::Daily;
             toml.get_required_except("logging.rotation_time", config.rotation_time);
-        }
-        else if (mode_str == "none") {
+        } else if (mode_str == "none") {
             config.mode = RollingLogfileConfiguration::Mode::None;
-        }
-        else {
+        } else {
             throw ConfigurationException("logging.mode must be 'size', 'daily', or 'none'");
         }
 

@@ -31,7 +31,7 @@ namespace sequencer {
  * All fields are required. Throws ConfigurationException on any error.
  */
 class SequencerConfigurationLoader {
-public:
+  public:
     /**
      * @param[in] file_path Path to the TOML configuration file.
      * @return Populated SequencerConfiguration.

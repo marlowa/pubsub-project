@@ -154,8 +154,8 @@ int connect_nonblocking_socket(uint16_t port) {
         return -1;
     }
     sockaddr_in addr{};
-    addr.sin_family      = AF_INET;
-    addr.sin_port        = htons(port);
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
     addr.sin_addr.s_addr = inet_addr("127.0.0.1");
     if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
         ::close(fd);
@@ -205,11 +205,10 @@ ssize_t try_send_chunk(int sock_fd, const void* data, std::size_t size) {
 // tests assert that this never fires unexpectedly -- backpressure must
 // throttle the peer, not disconnect it.
 class BackpressureListenerThread : public ApplicationThread {
-public:
+  public:
     BackpressureListenerThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
-        : ApplicationThread(token, logger, reactor, "BackpressureListenerThread", ThreadID{2},
-                            make_queue_config(), make_allocator_config("BackpressureListenerPool"),
-                            ApplicationThreadConfiguration{}) {}
+        : ApplicationThread(token, logger, reactor, "BackpressureListenerThread", ThreadID{2}, make_queue_config(),
+                            make_allocator_config("BackpressureListenerPool"), ApplicationThreadConfiguration{}) {}
 
     std::atomic<bool> connection_established{false};
     std::atomic<bool> connection_lost{false};
@@ -220,7 +219,7 @@ public:
 
     ConnectionID conn_id{};
 
-protected:
+  protected:
     void on_connection_established(ConnectionID id) override {
         conn_id = id;
         connection_established.store(true, std::memory_order_release);
@@ -242,9 +241,7 @@ protected:
         // buffer counters are monotonic, max() captures the largest value.
         const int64_t absolute_head = tail + available;
         int64_t previous = total_bytes_seen.load(std::memory_order_relaxed);
-        while (absolute_head > previous
-               && !total_bytes_seen.compare_exchange_weak(previous, absolute_head,
-                                                          std::memory_order_relaxed)) {
+        while (absolute_head > previous && !total_bytes_seen.compare_exchange_weak(previous, absolute_head, std::memory_order_relaxed)) {
             // retry
         }
 
@@ -278,9 +275,9 @@ protected:
 ReactorConfiguration make_backpressure_reactor_config() {
     ReactorConfiguration cfg{};
     cfg.inactivity_check_interval_ = std::chrono::milliseconds(100);
-    cfg.init_phase_timeout_        = std::chrono::milliseconds(5000);
-    cfg.shutdown_timeout_          = std::chrono::milliseconds(1000);
-    cfg.connect_timeout            = std::chrono::milliseconds(2000);
+    cfg.init_phase_timeout_ = std::chrono::milliseconds(5000);
+    cfg.shutdown_timeout_ = std::chrono::milliseconds(1000);
+    cfg.connect_timeout = std::chrono::milliseconds(2000);
     return cfg;
 }
 
@@ -357,8 +354,7 @@ class RawBytesBackpressureIntegrationTest : public ::testing::Test {
      */
     class ReactorGuard {
       public:
-        ReactorGuard(Reactor& reactor, std::thread& reactor_thread)
-            : reactor_(&reactor), reactor_thread_(&reactor_thread) {}
+        ReactorGuard(Reactor& reactor, std::thread& reactor_thread) : reactor_(&reactor), reactor_thread_(&reactor_thread) {}
 
         ReactorGuard(const ReactorGuard&) = delete;
         ReactorGuard& operator=(const ReactorGuard&) = delete;
@@ -394,12 +390,10 @@ class RawBytesBackpressureIntegrationTest : public ::testing::Test {
 // indicate that backpressure did not engage at all.
 TEST_F(RawBytesBackpressureIntegrationTest, BackpressureEngagesWhenApplicationIsSlow) {
     ServiceRegistry listener_registry;
-    auto listener_reactor = std::make_unique<Reactor>(make_backpressure_reactor_config(),
-                                                      listener_registry, logger_->logger);
+    auto listener_reactor = std::make_unique<Reactor>(make_backpressure_reactor_config(), listener_registry, logger_->logger);
     set_current_reactor(*listener_reactor);
 
-    listener_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2},
-                                                ProtocolType{ProtocolType::RawBytes},
+    listener_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2}, ProtocolType{ProtocolType::RawBytes},
                                                 backpressure_buffer_capacity);
 
     auto listener_thread = ApplicationThread::create<BackpressureListenerThread>(logger_->logger, *listener_reactor);
@@ -441,15 +435,12 @@ TEST_F(RawBytesBackpressureIntegrationTest, BackpressureEngagesWhenApplicationIs
         FAIL() << "Unexpected send() error: " << std::strerror(errno);
     }
 
-    EXPECT_TRUE(saw_eagain)
-        << "Peer never observed EAGAIN; backpressure did not engage. "
-        << "Sent " << bytes_sent_total << " bytes in " << chunks_sent
-        << " chunks before giving up.";
+    EXPECT_TRUE(saw_eagain) << "Peer never observed EAGAIN; backpressure did not engage. " << "Sent " << bytes_sent_total << " bytes in " << chunks_sent
+                            << " chunks before giving up.";
 
     // The listener must not have torn the connection down. The whole point of
     // backpressure is that the connection stays alive while the peer waits.
-    EXPECT_FALSE(listener_thread->connection_lost.load(std::memory_order_acquire))
-        << "Listener tore the connection down instead of applying backpressure.";
+    EXPECT_FALSE(listener_thread->connection_lost.load(std::memory_order_acquire)) << "Listener tore the connection down instead of applying backpressure.";
 
     // Let the listener drain its backlog quickly so the connection_lost event
     // at end-of-test is reached promptly. Without this the listener spends
@@ -474,12 +465,10 @@ TEST_F(RawBytesBackpressureIntegrationTest, BackpressureEngagesWhenApplicationIs
 // bytes must be eventually delivered.
 TEST_F(RawBytesBackpressureIntegrationTest, BackpressureReleasesAfterCommitsDrainBuffer) {
     ServiceRegistry listener_registry;
-    auto listener_reactor = std::make_unique<Reactor>(make_backpressure_reactor_config(),
-                                                      listener_registry, logger_->logger);
+    auto listener_reactor = std::make_unique<Reactor>(make_backpressure_reactor_config(), listener_registry, logger_->logger);
     set_current_reactor(*listener_reactor);
 
-    listener_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2},
-                                                ProtocolType{ProtocolType::RawBytes},
+    listener_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2}, ProtocolType{ProtocolType::RawBytes},
                                                 backpressure_buffer_capacity);
 
     auto listener_thread = ApplicationThread::create<BackpressureListenerThread>(logger_->logger, *listener_reactor);
@@ -540,18 +529,13 @@ TEST_F(RawBytesBackpressureIntegrationTest, BackpressureReleasesAfterCommitsDrai
     // manager should re-register EPOLLIN, and the listener should see more
     // bytes. We check by waiting for total_bytes_seen to advance, since that
     // is the most direct evidence that the reactor resumed reading.
-    EXPECT_TRUE(wait_for([&]() {
-        return listener_thread->total_bytes_seen.load(std::memory_order_acquire)
-               > bytes_seen_before_drain;
-    }, resume_timeout_ms))
+    EXPECT_TRUE(wait_for([&]() { return listener_thread->total_bytes_seen.load(std::memory_order_acquire) > bytes_seen_before_drain; }, resume_timeout_ms))
         << "Listener never saw more bytes after drain was enabled; backpressure release "
-        << "did not happen. bytes_seen_before_drain=" << bytes_seen_before_drain
-        << "; " << last_wait_failure_description();
+        << "did not happen. bytes_seen_before_drain=" << bytes_seen_before_drain << "; " << last_wait_failure_description();
 
     // Confirm by sending more and looking for at least one successful send.
     bool sent_after_resume = false;
-    const auto post_resume_deadline = std::chrono::steady_clock::now()
-        + std::chrono::milliseconds(resume_timeout_ms);
+    const auto post_resume_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(resume_timeout_ms);
     while (std::chrono::steady_clock::now() < post_resume_deadline) {
         const ssize_t n = try_send_chunk(sock_fd, chunk.data(), chunk.size());
         if (n > 0) {
@@ -565,11 +549,9 @@ TEST_F(RawBytesBackpressureIntegrationTest, BackpressureReleasesAfterCommitsDrai
         }
         FAIL() << "Unexpected send() error during resume: " << std::strerror(errno);
     }
-    EXPECT_TRUE(sent_after_resume)
-        << "Peer never observed send() succeeding again after drain was enabled.";
+    EXPECT_TRUE(sent_after_resume) << "Peer never observed send() succeeding again after drain was enabled.";
 
-    EXPECT_FALSE(listener_thread->connection_lost.load(std::memory_order_acquire))
-        << "Listener tore the connection down during backpressure cycle.";
+    EXPECT_FALSE(listener_thread->connection_lost.load(std::memory_order_acquire)) << "Listener tore the connection down during backpressure cycle.";
 
     ::close(sock_fd);
     EXPECT_TRUE(wait_for([&]() { return listener_thread->connection_lost.load(std::memory_order_acquire); }))
@@ -591,12 +573,10 @@ TEST_F(RawBytesBackpressureIntegrationTest, BackpressureReleasesAfterCommitsDrai
 // must remain alive.
 TEST_F(RawBytesBackpressureIntegrationTest, SustainedThroughputThroughManyBackpressureCycles) {
     ServiceRegistry listener_registry;
-    auto listener_reactor = std::make_unique<Reactor>(make_backpressure_reactor_config(),
-                                                      listener_registry, logger_->logger);
+    auto listener_reactor = std::make_unique<Reactor>(make_backpressure_reactor_config(), listener_registry, logger_->logger);
     set_current_reactor(*listener_reactor);
 
-    listener_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2},
-                                                ProtocolType{ProtocolType::RawBytes},
+    listener_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2}, ProtocolType{ProtocolType::RawBytes},
                                                 backpressure_buffer_capacity);
 
     auto listener_thread = ApplicationThread::create<BackpressureListenerThread>(logger_->logger, *listener_reactor);
@@ -640,7 +620,9 @@ TEST_F(RawBytesBackpressureIntegrationTest, SustainedThroughputThroughManyBackpr
                 }
             }
         }
-        void release() { toggler_thread = nullptr; }
+        void release() {
+            toggler_thread = nullptr;
+        }
     } toggler_guard{&stop_toggler, &toggler};
 
     // Push a known total. With cycles in the low-hundreds-of-ms range and
@@ -667,8 +649,7 @@ TEST_F(RawBytesBackpressureIntegrationTest, SustainedThroughputThroughManyBackpr
         }
         FAIL() << "Unexpected send() error: " << std::strerror(errno);
     }
-    EXPECT_EQ(chunks_sent, total_chunks_to_send)
-        << "Peer did not finish sending within the deadline; backpressure may not be releasing.";
+    EXPECT_EQ(chunks_sent, total_chunks_to_send) << "Peer did not finish sending within the deadline; backpressure may not be releasing.";
 
     stop_toggler.store(true, std::memory_order_release);
     toggler.join();
@@ -677,16 +658,11 @@ TEST_F(RawBytesBackpressureIntegrationTest, SustainedThroughputThroughManyBackpr
     // Final drain to make sure the listener sees the last bytes.
     listener_thread->drain_enabled.store(true, std::memory_order_release);
 
-    EXPECT_TRUE(wait_for([&]() {
-        return listener_thread->total_bytes_seen.load(std::memory_order_relaxed) >= bytes_sent_total;
-    }, 5000))
-        << "Listener did not see all sent bytes: total_bytes_seen="
-        << listener_thread->total_bytes_seen.load(std::memory_order_relaxed)
-        << " bytes_sent_total=" << bytes_sent_total
-        << "; " << last_wait_failure_description();
+    EXPECT_TRUE(wait_for([&]() { return listener_thread->total_bytes_seen.load(std::memory_order_relaxed) >= bytes_sent_total; }, 5000))
+        << "Listener did not see all sent bytes: total_bytes_seen=" << listener_thread->total_bytes_seen.load(std::memory_order_relaxed)
+        << " bytes_sent_total=" << bytes_sent_total << "; " << last_wait_failure_description();
 
-    EXPECT_FALSE(listener_thread->connection_lost.load(std::memory_order_acquire))
-        << "Listener tore the connection down during sustained backpressure cycles.";
+    EXPECT_FALSE(listener_thread->connection_lost.load(std::memory_order_acquire)) << "Listener tore the connection down during sustained backpressure cycles.";
 
     ::close(sock_fd);
     EXPECT_TRUE(wait_for([&]() { return listener_thread->connection_lost.load(std::memory_order_acquire); }))

@@ -35,12 +35,8 @@ struct FixSession {
      * @param[in] logger   Logger instance. Must outlive this object.
      * @param[in] callback Called by the parser for each complete FIX message.
      */
-    FixSession(pubsub_itc_fw::ConnectionID id,
-               pubsub_itc_fw::QuillLogger& logger,
-               FixParser::MessageCallback callback)
-        : conn_id(id)
-        , parser(logger, std::move(callback))
-    {}
+    FixSession(pubsub_itc_fw::ConnectionID id, pubsub_itc_fw::QuillLogger& logger, FixParser::MessageCallback callback)
+        : conn_id(id), parser(logger, std::move(callback)) {}
 
     // Not copyable -- FixParser holds a std::string buffer and std::function.
     FixSession(const FixSession&) = delete;

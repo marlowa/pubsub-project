@@ -12,38 +12,28 @@
 #include <fmt/format.h>
 
 #include <pubsub_itc_fw/InetAddress.hpp>
+#include <pubsub_itc_fw/StringUtils.hpp>
 #include <pubsub_itc_fw/TcpConnector.hpp>
 #include <pubsub_itc_fw/TcpSocket.hpp>
-#include <pubsub_itc_fw/StringUtils.hpp>
 
 namespace pubsub_itc_fw {
 
 // This enum is too low level to bother wrapping in a class and providing string conversion for.
-enum class ConnectState : uint8_t {
-    uninitialised,
-    idle,
-    connecting,
-    connected
-};
+enum class ConnectState : uint8_t { uninitialised, idle, connecting, connected };
 
 class TcpConnectorImpl {
-public:
+  public:
     ~TcpConnectorImpl() {
         cancel();
     }
 
-    TcpConnectorImpl()
-        : state_(ConnectState::idle),
-          remote_address_(nullptr),
-          tcp_socket_(nullptr) {}
+    TcpConnectorImpl() : state_(ConnectState::idle), remote_address_(nullptr), tcp_socket_(nullptr) {}
 
     TcpConnectorImpl(const TcpConnectorImpl&) = delete;
     TcpConnectorImpl& operator=(const TcpConnectorImpl&) = delete;
 
     TcpConnectorImpl(TcpConnectorImpl&& other)
-        : state_(other.state_),
-          remote_address_(std::move(other.remote_address_)),
-          tcp_socket_(std::move(other.tcp_socket_)) {
+        : state_(other.state_), remote_address_(std::move(other.remote_address_)), tcp_socket_(std::move(other.tcp_socket_)) {
         other.state_ = ConnectState::idle;
     }
 
@@ -73,10 +63,8 @@ public:
 
         auto [connected_immediately, connect_error] = tcp_socket_->connect(*remote_address_);
         if (!connect_error.empty()) {
-            const std::string message = fmt::format("Failed to initiate connection to {}:{}: {}",
-                                                    remote_address_->get_ip_address_string(),
-                                                    remote_address_->get_port(),
-                                                    connect_error);
+            const std::string message =
+                fmt::format("Failed to initiate connection to {}:{}: {}", remote_address_->get_ip_address_string(), remote_address_->get_port(), connect_error);
             cancel();
             return {false, message};
         }
@@ -92,10 +80,8 @@ public:
 
         auto [connected, finish_error] = tcp_socket_->finish_connect();
         if (!finish_error.empty()) {
-            const std::string message = fmt::format("Connection to {}:{} failed: {}",
-                                                    remote_address_ ? remote_address_->get_ip_address_string() : "",
-                                                    remote_address_ ? remote_address_->get_port() : 0,
-                                                    finish_error);
+            const std::string message = fmt::format("Connection to {}:{} failed: {}", remote_address_ ? remote_address_->get_ip_address_string() : "",
+                                                    remote_address_ ? remote_address_->get_port() : 0, finish_error);
             cancel();
             return {false, message};
         }
@@ -134,7 +120,7 @@ public:
         return tcp_socket_ ? tcp_socket_->get_file_descriptor() : -1;
     }
 
-private:
+  private:
     ConnectState state_{ConnectState::uninitialised};
     std::unique_ptr<InetAddress> remote_address_;
     std::unique_ptr<TcpSocket> tcp_socket_;
@@ -142,8 +128,7 @@ private:
 
 // --- TcpConnector public methods ---
 
-TcpConnector::TcpConnector()
-    : p_impl_(std::make_unique<TcpConnectorImpl>()) {}
+TcpConnector::TcpConnector() : p_impl_(std::make_unique<TcpConnectorImpl>()) {}
 
 TcpConnector::~TcpConnector() = default;
 

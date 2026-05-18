@@ -16,4 +16,3 @@ template class ExpandablePoolAllocator<CoverageDummy>;
 template class FixedSizeMemoryPool<CoverageDummy>;
 
 } // namespace pubsub_itc_fw
-

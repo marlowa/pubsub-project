@@ -7,21 +7,21 @@
 #include <sys/socket.h> // For sockaddr, sockaddr_storage, AF_INET, AF_INET6, socklen_t
 #include <unistd.h>     // For close
 
+#include <cerrno>  // For errno
 #include <cstdint> // For uint8_t, uint16_t
 #include <cstring> // For memset
-#include <cerrno>  // For errno
 
 #include <algorithm> // For std::min
-#include <memory>    // For std::unique_ptr, std::make_unique
-#include <string>    // For std::string
-#include <tuple>     // For std::tuple
-#include <utility>   // for std::move
 #include <array>
+#include <memory>  // For std::unique_ptr, std::make_unique
+#include <string>  // For std::string
+#include <tuple>   // For std::tuple
+#include <utility> // for std::move
 
 #include <fmt/format.h> // For fmt::format for error messages
 
-#include <pubsub_itc_fw/IpAddressInterface.hpp>
 #include <pubsub_itc_fw/InetAddress.hpp>
+#include <pubsub_itc_fw/IpAddressInterface.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -46,7 +46,7 @@ InetAddress::InetAddress(const struct sockaddr* sockaddr_ptr, socklen_t sockaddr
 }
 
 [[nodiscard]] std::tuple<std::unique_ptr<InetAddress>, std::string> InetAddress::create(const std::string& ip_address_str, uint16_t port) {
-    struct addrinfo hints{};
+    struct addrinfo hints {};
     struct addrinfo* result = nullptr; // Pointer to store the linked list of results
 
     // Clear hints structure
@@ -71,8 +71,7 @@ InetAddress::InetAddress(const struct sockaddr* sockaddr_ptr, socklen_t sockaddr
     const int status = getaddrinfo(ip_address_str.empty() ? nullptr : ip_address_str.c_str(), port_str.c_str(), &hints, &result);
 
     if (status != 0) {
-        const std::string error_message = fmt::format("Failed to resolve address {}:{}. Error: {}",
-                                                      ip_address_str, port, gai_strerror(status));
+        const std::string error_message = fmt::format("Failed to resolve address {}:{}. Error: {}", ip_address_str, port, gai_strerror(status));
         return {nullptr, error_message};
     }
 
