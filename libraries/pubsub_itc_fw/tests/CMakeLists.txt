@@ -3,6 +3,7 @@
 add_executable(pubsub_itc_fw_tests
     ApplicationThreadTest.cpp
     BumpAllocatorTest.cpp
+    EmptySlabQueueTest.cpp
     EventMessageTest.cpp
     ExpandablePoolAllocatorTest.cpp
     ExpandableSlabAllocatorTest.cpp

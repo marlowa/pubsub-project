@@ -2,182 +2,19 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
 #include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
 
-#include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
-#include <pubsub_itc_fw/SlabAllocator.hpp>
 #include <pubsub_itc_fw/EmptySlabQueue.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
+#include <pubsub_itc_fw/SlabAllocator.hpp>
 
 namespace pubsub_itc_fw::tests {
-
-// ============================================================
-// EmptySlabQueue tests
-// ============================================================
-
-class EmptySlabQueueTest : public ::testing::Test {
-};
-
-TEST_F(EmptySlabQueueTest, DequeueOnEmptyQueueReturnsEmpty)
-{
-    EmptySlabQueue queue;
-    int slab_id = -1;
-    EXPECT_EQ(queue.try_dequeue(slab_id), DequeueResult::Empty);
-}
-
-TEST_F(EmptySlabQueueTest, EnqueueThenDequeueReturnsItem)
-{
-    EmptySlabQueue queue;
-    EmptySlabQueueNode node;
-    node.slab_id = 42;
-
-    queue.enqueue(&node);
-
-    int slab_id = -1;
-    EXPECT_EQ(queue.try_dequeue(slab_id), DequeueResult::GotItem);
-    EXPECT_EQ(slab_id, 42);
-}
-
-TEST_F(EmptySlabQueueTest, DequeueAfterDrainReturnsEmpty)
-{
-    EmptySlabQueue queue;
-    EmptySlabQueueNode node;
-    node.slab_id = 7;
-
-    queue.enqueue(&node);
-
-    int slab_id = -1;
-    [[maybe_unused]] DequeueResult first = queue.try_dequeue(slab_id);
-
-    DequeueResult result = queue.try_dequeue(slab_id);
-    EXPECT_EQ(result, DequeueResult::Empty);
-}
-
-TEST_F(EmptySlabQueueTest, MultipleEnqueueDequeueInOrder)
-{
-    EmptySlabQueue queue;
-    EmptySlabQueueNode node0;
-    EmptySlabQueueNode node1;
-    EmptySlabQueueNode node2;
-    node0.slab_id = 0;
-    node1.slab_id = 1;
-    node2.slab_id = 2;
-
-    queue.enqueue(&node0);
-    queue.enqueue(&node1);
-    queue.enqueue(&node2);
-
-    int slab_id = -1;
-
-    EXPECT_EQ(queue.try_dequeue(slab_id), DequeueResult::GotItem);
-    EXPECT_EQ(slab_id, 0);
-
-    EXPECT_EQ(queue.try_dequeue(slab_id), DequeueResult::GotItem);
-    EXPECT_EQ(slab_id, 1);
-
-    EXPECT_EQ(queue.try_dequeue(slab_id), DequeueResult::GotItem);
-    EXPECT_EQ(slab_id, 2);
-
-    EXPECT_EQ(queue.try_dequeue(slab_id), DequeueResult::Empty);
-}
-
-TEST_F(EmptySlabQueueTest, EnqueueNullptrThrows)
-{
-    EmptySlabQueue queue;
-    EXPECT_THROW(queue.enqueue(nullptr), PreconditionAssertion);
-}
-
-/*
- * Documents a self-loop hazard in EmptySlabQueue, deliberately left
- * unfixed at the queue level.
- *
- * The queue assumes each EmptySlabQueueNode is enqueued at most once per
- * lifetime (or, if reused, that the consumer fully drains the queue and
- * calls reset_to_empty between re-enqueues). If a producer re-enqueues a
- * node while the consumer is between dequeue and reset_to_empty, the
- * producer's tail_.exchange(node) returns the node itself; the
- * subsequent prev->next.store(node) creates a self-loop, and the next
- * try_dequeue returns the same slab_id forever.
- *
- * Rather than fix the queue (which would slow the hot enqueue path with
- * a CAS), the callers are constrained so they cannot trigger the hazard:
- *
- *   - SlabAllocator::deallocate refuses to enqueue while the slab is the
- *     current slab. The current slab uses inline self-reclaim instead.
- *   - ExpandableSlabAllocator::append_new_slab clears is_current_ before
- *     any potential enqueue, and uses SlabAllocator::try_claim_enqueue
- *     so that exactly one thread (deallocator or owner) performs the
- *     one-shot enqueue.
- *
- * This test exercises the queue directly to demonstrate that the
- * underlying hazard still exists. It is SKIPPED because the production
- * code paths above prevent it from being triggered. If a future change
- * exposes the queue to repeated enqueues of the same node, this test
- * should be unskipped and the queue should be hardened.
- */
-TEST_F(EmptySlabQueueTest, ReEnqueueOfSameNodeDoesNotCauseInfiniteSpin)
-{
-    GTEST_SKIP() << "Documents a queue-level self-loop hazard that is "
-                    "deliberately mitigated by caller constraints rather "
-                    "than by fixing the queue itself. See test comment.";
-
-    EmptySlabQueue queue;
-    EmptySlabQueueNode node;
-    node.slab_id = 7;
-
-    queue.enqueue(&node);
-
-    int slab_id = -1;
-    ASSERT_EQ(queue.try_dequeue(slab_id), DequeueResult::GotItem);
-    ASSERT_EQ(slab_id, 7);
-
-    // Without calling reset_to_empty (which only happens after a try_dequeue
-    // that returned Empty), re-enqueue the same node. This is the workload
-    // pattern that the production caller constraints now prevent.
-    queue.enqueue(&node);
-
-    // After the queue is hardened, the next try_dequeue should either return
-    // the re-enqueued node exactly once and then go to Empty, or return
-    // Empty immediately if the implementation refuses the second enqueue.
-    // In either case, a bounded loop must terminate.
-    constexpr int max_iterations = 16;
-    int got_item_count_after_reenqueue = 0;
-    int same_id_repeats = 0;
-    int last_slab_id = -1;
-
-    for (int i = 0; i < max_iterations; ++i) {
-        int dequeued_slab_id = -1;
-        const DequeueResult result = queue.try_dequeue(dequeued_slab_id);
-
-        if (result == DequeueResult::Empty) {
-            break;
-        }
-        if (result == DequeueResult::Retry) {
-            // No producer is active in this single-threaded test; Retry would
-            // indicate a state machine bug. Fail rather than spin.
-            FAIL() << "try_dequeue returned Retry in a single-threaded scenario";
-        }
-        // GotItem
-        ++got_item_count_after_reenqueue;
-        if (dequeued_slab_id == last_slab_id) {
-            ++same_id_repeats;
-        }
-        last_slab_id = dequeued_slab_id;
-    }
-
-    EXPECT_LE(got_item_count_after_reenqueue, 1)
-        << "Re-enqueue of an already-enqueued node yielded the node more than once: "
-        << got_item_count_after_reenqueue
-        << " GotItem results (same_id_repeats=" << same_id_repeats << "). "
-        << "This is the self-loop hazard.";
-}
-
-// ============================================================
-// SlabAllocator tests
-// ============================================================
 
 class SlabAllocatorTest : public ::testing::Test {
 protected:
@@ -365,174 +202,194 @@ TEST_F(SlabAllocatorTest, CrossThreadDeallocation)
     EXPECT_EQ(slab_id, 0);
 }
 
-// ============================================================
-// ExpandableSlabAllocator tests
-// ============================================================
+// =====================
+// Ex-adversarial tests (previously in SlabAllocatorAdversarialTest fixture).
+// =====================
 
-class ExpandableSlabAllocatorTest : public ::testing::Test {
-protected:
-    static constexpr size_t slab_size = 4096;
-};
-
-TEST_F(ExpandableSlabAllocatorTest, BasicAllocation)
+// Allocation of exactly slab_size bytes must succeed and leave the slab full.
+TEST_F(SlabAllocatorTest, AllocateExactlySlabSize)
 {
-    ExpandableSlabAllocator allocator(slab_size);
-    auto [slab_id, ptr] = allocator.allocate(64);
+    SlabAllocator slab(slab_size, 0, queue_);
+    void* ptr = slab.allocate(slab_size);
     EXPECT_NE(ptr, nullptr);
-    EXPECT_EQ(slab_id, 0);
+    EXPECT_TRUE(slab.is_full());
+
+    void* ptr2 = slab.allocate(1);
+    EXPECT_EQ(ptr2, nullptr);
+
+    slab.deallocate(ptr);
 }
 
-TEST_F(ExpandableSlabAllocatorTest, AllocationAndDeallocation)
+// Allocation that fits only before alignment padding pushes it over the edge.
+// Allocate 1 byte first (forces alignment gap before next allocation),
+// then request enough bytes that the aligned offset + size exceeds slab_size.
+TEST_F(SlabAllocatorTest, AlignmentPaddingCausesFailure)
 {
-    ExpandableSlabAllocator allocator(slab_size);
-    auto [slab_id, ptr] = allocator.allocate(64);
-    EXPECT_NE(ptr, nullptr);
-    allocator.deallocate(slab_id, ptr);
-}
+    constexpr size_t alignment = alignof(std::max_align_t);
+    // Use a slab just large enough for two aligned slots of size alignment.
+    constexpr size_t two_slot_slab = alignment * 2;
+    SlabAllocator slab(two_slot_slab, 0, queue_);
 
-TEST_F(ExpandableSlabAllocatorTest, SlabExpansionOnFull)
-{
-    ExpandableSlabAllocator allocator(128);
-
-    // Fill the first slab
-    auto [id1, ptr1] = allocator.allocate(128);
+    // Allocate 1 byte — bump advances to alignment after padding.
+    void* ptr1 = slab.allocate(1);
     EXPECT_NE(ptr1, nullptr);
-    EXPECT_EQ(id1, 0);
 
-    // This should trigger expansion
-    auto [id2, ptr2] = allocator.allocate(64);
-    EXPECT_NE(ptr2, nullptr);
-    EXPECT_EQ(id2, 1);
-
-    allocator.deallocate(id1, ptr1);
-    allocator.deallocate(id2, ptr2);
-}
-
-TEST_F(ExpandableSlabAllocatorTest, ReclaimedCurrentSlabIsReset)
-{
-    ExpandableSlabAllocator allocator(slab_size);
-
-    auto [slab_id, ptr] = allocator.allocate(64);
-    EXPECT_EQ(slab_id, 0);
-
-    allocator.deallocate(slab_id, ptr);
-
-    // Under the new design, the next allocate self-reclaims the current
-    // slab (resets its bump pointer because outstanding count is zero)
-    // and then allocates from it again.
-    auto [slab_id2, ptr2] = allocator.allocate(64);
-    EXPECT_NE(ptr2, nullptr);
-    EXPECT_EQ(slab_id2, 0);
-
-    allocator.deallocate(slab_id2, ptr2);
-}
-
-TEST_F(ExpandableSlabAllocatorTest, OldEmptySlabIsDestroyed)
-{
-    ExpandableSlabAllocator allocator(128);
-
-    auto [id0, ptr0] = allocator.allocate(128);
-    EXPECT_EQ(id0, 0);
-
-    // Force expansion to slab 1
-    auto [id1, ptr1] = allocator.allocate(64);
-    EXPECT_EQ(id1, 1);
-    EXPECT_EQ(allocator.slab_count(), 2);
-
-    // Free the only chunk in slab 0 — notification enqueued
-    allocator.deallocate(id0, ptr0);
-
-    // Next allocation drains queue: slab 0 is not current (slab 1 is), so destroy it
-    auto [id2, ptr2] = allocator.allocate(64);
+    // Now aligned offset is alignment, remaining is alignment bytes.
+    // Request alignment bytes — should succeed exactly.
+    void* ptr2 = slab.allocate(alignment);
     EXPECT_NE(ptr2, nullptr);
 
-    allocator.deallocate(id1, ptr1);
-    allocator.deallocate(id2, ptr2);
+    // Slab is now full.
+    EXPECT_TRUE(slab.is_full());
+
+    slab.deallocate(ptr1);
+    slab.deallocate(ptr2);
 }
 
-TEST_F(ExpandableSlabAllocatorTest, SizeExceedsSlabSizeThrows)
+// Only one thread must enqueue the notification even under heavy concurrent deallocation.
+TEST_F(SlabAllocatorTest, OnlyOneNotificationEnqueuedUnderConcurrency)
 {
-    ExpandableSlabAllocator allocator(slab_size);
-    EXPECT_THROW(allocator.allocate(slab_size + 1), PreconditionAssertion);
-}
-
-TEST_F(ExpandableSlabAllocatorTest, AllocateZeroSizeThrows)
-{
-    ExpandableSlabAllocator allocator(slab_size);
-    EXPECT_THROW(allocator.allocate(0), PreconditionAssertion);
-}
-
-TEST_F(ExpandableSlabAllocatorTest, DeallocateNullptrThrows)
-{
-    ExpandableSlabAllocator allocator(slab_size);
-    EXPECT_THROW(allocator.deallocate(0, nullptr), PreconditionAssertion);
-}
-
-TEST_F(ExpandableSlabAllocatorTest, DeallocateInvalidSlabIdThrows)
-{
-    ExpandableSlabAllocator allocator(slab_size);
-    int dummy = 0;
-    EXPECT_THROW(allocator.deallocate(999, &dummy), PreconditionAssertion);
-}
-
-TEST_F(ExpandableSlabAllocatorTest, SlabSizeAccessor)
-{
-    ExpandableSlabAllocator allocator(slab_size);
-    EXPECT_EQ(allocator.slab_size(), slab_size);
-}
-
-TEST_F(ExpandableSlabAllocatorTest, MultipleAllocationsFromSameSlab)
-{
-    ExpandableSlabAllocator allocator(slab_size);
-    constexpr int count = 8;
-    std::vector<std::pair<int, void*>> allocations;
-    allocations.reserve(count);
-
-    for (int i = 0; i < count; ++i) {
-        auto [slab_id, ptr] = allocator.allocate(64);
-        EXPECT_NE(ptr, nullptr);
-        EXPECT_EQ(slab_id, 0);
-        allocations.emplace_back(slab_id, ptr);
-    }
-
-    for (auto& [slab_id, ptr] : allocations) {
-        allocator.deallocate(slab_id, ptr);
-    }
-}
-
-TEST_F(ExpandableSlabAllocatorTest, CrossThreadDeallocationsWithExpansion)
-{
-    constexpr size_t small_slab = 512;
+    constexpr int num_threads = 32;
     constexpr size_t chunk_size = 64;
-    constexpr int num_threads = 4;
-    constexpr int chunks_per_thread = 4;
+    constexpr size_t large_slab = chunk_size * num_threads * 2;
 
-    ExpandableSlabAllocator allocator(small_slab);
+    SlabAllocator slab(large_slab, 7, queue_);
 
-    std::vector<std::pair<int, void*>> allocations;
-    allocations.reserve(num_threads * chunks_per_thread);
-
-    for (int i = 0; i < num_threads * chunks_per_thread; ++i) {
-        auto [slab_id, ptr] = allocator.allocate(chunk_size);
-        ASSERT_NE(ptr, nullptr);
-        allocations.emplace_back(slab_id, ptr);
+    std::vector<void*> ptrs(num_threads);
+    for (int i = 0; i < num_threads; ++i) {
+        ptrs[i] = slab.allocate(chunk_size);
+        ASSERT_NE(ptrs[i], nullptr);
     }
+
+    // Under the new design, only non-current slabs notify the queue.
+    slab.clear_is_current();
 
     std::vector<std::thread> threads;
     threads.reserve(num_threads);
 
-    for (int t = 0; t < num_threads; ++t) {
-        threads.emplace_back([&allocator, &allocations, t]() {
-            for (int i = 0; i < chunks_per_thread; ++i) {
-                auto& [slab_id, ptr] = allocations[t * chunks_per_thread + i];
-                allocator.deallocate(slab_id, ptr);
-            }
+    for (int i = 0; i < num_threads; ++i) {
+        threads.emplace_back([&slab, &ptrs, i]() {
+            slab.deallocate(ptrs[i]);
         });
     }
 
-    for (auto& thread : threads) {
-        thread.join();
+    for (auto& t : threads) {
+        t.join();
+    }
+
+    EXPECT_TRUE(slab.is_empty());
+
+    // Exactly one notification must have been enqueued.
+    int slab_id = -1;
+    EXPECT_EQ(queue_.try_dequeue(slab_id), DequeueResult::GotItem);
+    EXPECT_EQ(slab_id, 7);
+
+    // No second notification.
+    EXPECT_EQ(queue_.try_dequeue(slab_id), DequeueResult::Empty);
+}
+
+// Rapid allocate/deallocate cycles force the slab to be reset and reused many times.
+TEST_F(SlabAllocatorTest, RepeatedResetAndReuse)
+{
+    constexpr int cycles = 1000;
+    SlabAllocator slab(slab_size, 0, queue_);
+
+    void* first_allocation = nullptr;
+
+    for (int i = 0; i < cycles; ++i) {
+        void* ptr = slab.allocate(64);
+        ASSERT_NE(ptr, nullptr);
+
+        if (i == 0) {
+            first_allocation = ptr;
+        }
+
+        slab.deallocate(ptr);
+
+        // Drain any notification. Under the new design the slab remains
+        // current throughout (clear_is_current is never called), so deallocate
+        // does not enqueue. The drain is a no-op but kept for the case where
+        // a future test variant clears is_current.
+        int slab_id = -1;
+        [[maybe_unused]] DequeueResult drain = queue_.try_dequeue(slab_id);
+
+        slab.reset();
+
+        EXPECT_EQ(slab.bytes_used(), 0u);
+        EXPECT_FALSE(slab.is_full());
+        EXPECT_TRUE(slab.is_empty());
+    }
+
+    // After reset, a fresh allocation must return the same address as the first.
+    void* ptr_after_reset = slab.allocate(64);
+    EXPECT_EQ(ptr_after_reset, first_allocation);
+    slab.deallocate(ptr_after_reset);
+}
+
+// Multiple threads deallocate from different slabs simultaneously.
+// All slabs must reach zero and all notifications must be enqueued.
+TEST_F(SlabAllocatorTest, ConcurrentDeallocationsAcrossMultipleSlabs)
+{
+    constexpr int num_slabs = 8;
+    constexpr size_t chunk_size = 64;
+
+    std::vector<std::unique_ptr<SlabAllocator>> slabs;
+    slabs.reserve(num_slabs);
+
+    for (int i = 0; i < num_slabs; ++i) {
+        slabs.push_back(std::make_unique<SlabAllocator>(chunk_size * 4, i, queue_));
+    }
+
+    // Allocate one chunk from each slab.
+    std::vector<void*> ptrs(num_slabs);
+    for (int i = 0; i < num_slabs; ++i) {
+        ptrs[i] = slabs[i]->allocate(chunk_size);
+        ASSERT_NE(ptrs[i], nullptr);
+    }
+
+    // Under the new design, only non-current slabs notify the queue.
+    for (int i = 0; i < num_slabs; ++i) {
+        slabs[i]->clear_is_current();
+    }
+
+    // Each thread frees from a different slab.
+    std::vector<std::thread> threads;
+    threads.reserve(num_slabs);
+
+    for (int i = 0; i < num_slabs; ++i) {
+        threads.emplace_back([&slabs, &ptrs, i]() {
+            slabs[i]->deallocate(ptrs[i]);
+        });
+    }
+
+    for (auto& t : threads) {
+        t.join();
+    }
+
+    // All slabs must be empty.
+    for (int i = 0; i < num_slabs; ++i) {
+        EXPECT_TRUE(slabs[i]->is_empty()) << "slab " << i << " not empty";
+    }
+
+    // All notifications must be present, each slab ID appearing exactly once.
+    std::vector<bool> seen(num_slabs, false);
+    int drained = 0;
+
+    while (drained < num_slabs) {
+        int slab_id = -1;
+        DequeueResult result = queue_.try_dequeue(slab_id);
+        if (result == DequeueResult::GotItem) {
+            ASSERT_GE(slab_id, 0);
+            ASSERT_LT(slab_id, num_slabs);
+            EXPECT_FALSE(seen[slab_id]) << "slab_id " << slab_id << " notified twice";
+            seen[slab_id] = true;
+            ++drained;
+        }
+    }
+
+    for (int i = 0; i < num_slabs; ++i) {
+        EXPECT_TRUE(seen[i]) << "slab_id " << i << " never notified";
     }
 }
 
-} // namespace pubsub_itc_fw
+} // namespace pubsub_itc_fw::tests
