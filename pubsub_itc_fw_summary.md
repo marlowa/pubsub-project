@@ -53,8 +53,8 @@ Target environment is **low-latency** (sub-100ns encode/decode). Heap allocation
 | `ExpandablePoolAllocator<T>` | Chains `FixedSizeMemoryPool<T>` instances; lock-free fast path, mutex on expansion; pools never removed |
 | `BumpAllocator` | Non-owning bump allocator; snprintf contract — always advances `bytes_used()`; `nullptr`+0 = measuring mode; not thread-safe |
 | `SlabAllocator` | Single `mmap`-backed slab; bump allocation (reactor thread only); atomic outstanding count; notifies reactor on last-chunk free |
-| `ExpandableSlabAllocator` | Chains `SlabAllocator` instances; demand-driven reclamation (no GC thread); returns `std::tuple<int, void*>` for structured bindings |
-| `EmptySlabQueue` | Intrusive Vyukov MPSC queue of slab IDs; one node embedded per slab |
+| `ExpandableSlabAllocator` | Chains `SlabAllocator` instances; demand-driven reclamation (no GC thread); Vyukov sentinel deferred-reclamation (`deferred_reclaim_slab_id_`) so popped slabs are destroyed one drain after they are popped, safe against producers still mid-enqueue; wall-clock drain tripwire; returns `std::tuple<int, void*>` for structured bindings |
+| `EmptySlabQueue` | Intrusive Vyukov MPSC queue of slab IDs; one node embedded per slab. Consumer never resets head_/tail_ — Vyukov sentinel pattern relies on the most-recently-popped slab staying alive as the queue's sentinel (deferred-reclaim by one drain cycle, managed by `ExpandableSlabAllocator`). Four `peek_*` const accessors for diagnostics. |
 
 **`Slot<T>` layout (production path):**
 ```
@@ -65,6 +65,8 @@ Target environment is **low-latency** (sub-100ns encode/decode). Heap allocation
 **Bug history:** Two bugs fixed in `FixedSizeMemoryPool`: (1) unsafe free-list traversal in `get_number_of_available_objects` — fixed with atomic counters; (2) data race on `next` pointer inside union — fixed by moving to `std::atomic<Slot<T>*> free_next` outside the union. Both produced ~1-in-100 failure rate under stress. Likely present in the closed-source production allocator as well.
 
 **Bug fixed in `ExpandableSlabAllocator`:** `drain_empty_slab_queue()` was destroying a `SlabAllocator` (via `unique_ptr::reset()`) while still traversing the Vyukov queue whose nodes are embedded inside that slab. Fixed by collecting all slab IDs into a `std::vector` first, then processing them after the queue traversal completes. The vector allocation is on a cold path and not a hot-path concern. Detected by ASan on `ExpandableSlabAllocatorTest.OldSlabIsDestroyedAfterChaining`.
+
+**Bug fixed in `EmptySlabQueue` / `ExpandableSlabAllocator` (session 16):** `EmptySlabQueue::reset_to_empty()` did three non-atomic stores (`dummy_.next = nullptr; head_ = &dummy_; tail_.store(&dummy_)`). The `tail_.store(&dummy_)` would occasionally clobber a concurrent producer's `tail_.exchange(node)`, leaving the queue in a wedged state where `head_->next` pointed at a "ghost-enqueued" slab but `tail_` was reset to the dummy. The wedge could persist indefinitely. Reproducer test fired the bug in 1.1 seconds. Fixed by removing `reset_to_empty` entirely and adopting the classical Vyukov sentinel pattern: the most-recently-popped slab stays alive as the queue's sentinel until the next drain confirms head_ has advanced past it (via a `deferred_reclaim_slab_id_` member on `ExpandableSlabAllocator`). Producers never need a reset because they only touch `tail_` and `prev->next`. The fix also switched the drain-loop tripwire from iteration-count (100,000) to wall-clock (one second) — iteration-count was meaningless at nanosecond per-iteration speeds. Diagnosed in production under heavy fix8 T-burst load on the integrated gateway/sequencer; integrated load test now runs without the tripwire firing.
 
 ---
 
@@ -455,7 +457,62 @@ The receiving node's reactor accepts data via epoll and delivers it zero-copy to
 
 ## Session Accomplishments
 
-### Session 15 (current)
+### Session 16 (current)
+
+**Slab-queue race condition in `EmptySlabQueue` / `ExpandableSlabAllocator` diagnosed and fixed.** Under heavy fix8 T-burst load on the integrated gateway/sequencer, the reactor would wedge in `ExpandableSlabAllocator::drain_empty_slab_queue` with the tripwire firing after ~1 second. Diagnostic output showed a state that looked structurally impossible: `head_ = &slab_N's_queue_node` (a real slab), `tail_ = &dummy_`, `head_->next = nullptr` — persistent across millions of retry iterations. The consumer was stuck because `head_->next` would never become non-null (no producer can ever set `slab_N's_next` once `tail_` no longer points at `&slab_N's_node`).
+
+**Diagnostic infrastructure added then removed.** Four `peek_*` diagnostic accessors on `EmptySlabQueue` (`peek_head`, `peek_head_next`, `peek_tail`, `peek_dummy`) were added to let the drain function and tests inspect the queue's state without mutating it. The accessors were retained in the final fix; the `fprintf` blocks inside `drain_empty_slab_queue` were used to capture the smoking-gun trace then removed. The trace showed the failing drain's ENTRY line read `head=&dummy_, head->next=&slab_9_node, tail=&dummy_` — proving a producer's `prev->next.store(node)` had set `dummy_.next` but the producer's `tail_.exchange(node)` had been clobbered back to `&dummy_`. Only `reset_to_empty` writes `&dummy_` to `tail_`, so the consumer's `reset_to_empty` must have interleaved with the producer's enqueue.
+
+**Root cause.** `EmptySlabQueue::reset_to_empty()` did three non-atomic stores: `dummy_.next.store(nullptr); head_ = &dummy_; tail_.store(&dummy_)`. Between the consumer's Empty observation in `try_dequeue` and the `tail_.store(&dummy_)` inside `reset_to_empty`, a producer could complete its own `tail_.exchange(node)`. The consumer's subsequent store clobbered the producer's exchange. The producer's later `prev->next.store(node)` then wrote `dummy_.next = node` (because `prev` was `&dummy_` at the producer's exchange time), but `tail_` was back at `&dummy_`. Result: a "ghost-enqueued" slab visible via `head_->next` but unreachable from `tail_`. Over time, multiple such race-clobbered enqueues accumulated; when the consumer finally GotItem'd one, the resulting state was the wedged head=slab/tail=dummy pattern. The `is_enqueued_` one-shot CAS meant the ghost-enqueued slabs could never be re-enqueued either.
+
+**Fix: classical Vyukov sentinel pattern with one-drain-deferred reclamation.**
+- `EmptySlabQueue::reset_to_empty()` removed entirely — the function and its declaration. The classical Vyukov pattern doesn't need it.
+- `ExpandableSlabAllocator` gained a `deferred_reclaim_slab_id_{-1}` member. The most-recently-popped slab in any drain stays alive as the queue's sentinel; head_ and tail_ point at it after the drain. On the NEXT drain, when a successful GotItem confirms head_ has advanced past the deferred slab, the deferred slab is finally destroyed and the new last-popped becomes the next deferred. This relies on the invariant that for head_ to advance past a node N, the producer who put N's successor in front of head_ must have completed its store (since head_->next.load returned non-null), and that producer is the *only* producer that ever held N's_node as `prev` (the Vyukov MPSC exchange guarantees this).
+- The drain-loop tripwire was switched from iteration-count (100,000 — meaningless at modern CPU speeds; iteration time was nanoseconds, so the budget was microseconds) to wall-clock (one second) which is a true safety net for the now-much-rarer case of a genuinely stuck producer.
+
+**Why this fix is correct (not just a workaround).** Producers never need `reset_to_empty` — they thread their nodes onto `tail_` and never read or write `head_`. The only reason `reset_to_empty` was there was to prevent head_/tail_ from pointing at memory that's about to be destroyed during reclamation. The Vyukov sentinel pattern handles that naturally by keeping the most-recently-popped node alive. The author of the original code worried about a self-loop hazard (same node enqueued twice while head_ still pointed at it), but that hazard is already prevented by the `is_enqueued_` one-shot CAS in `SlabAllocator::try_claim_enqueue` — a slab's node can only be enqueued once per slab lifetime, and after destruction a new slab gets a fresh node.
+
+**Reproducer test written.** `ExpandableSlabAllocatorStressTest` (initially a separate fixture, later subsumed into `ExpandableSlabAllocatorTest`) was added: one reactor thread allocates and posts to a bounded blocking work queue; N worker threads pop and deallocate. Small slab and chunk sizes force frequent slab switches and empty-slab notifications, maximising pressure on the lock-free queue. Two test cases (`ConcurrentAllocateAndDeallocateMakesProgress` at slab/chunk 512/64 with 8 workers; `ConcurrentSmallSlabHighChurn` at 1024/32 with 16 workers); each runs for 5 wall-clock seconds and treats any allocator exception as a test failure. The test reproduced the bug in 1.1 seconds on the first run, providing a tight feedback loop for the fix.
+
+**Three pre-existing tests broken by the new two-drain destruction lifecycle, all rewritten.** The fix means a slab destroyed by the queue is destroyed in the drain AFTER the one that popped it. Tests that previously asserted "deallocate against the popped slab's ID throws PreconditionAssertion" needed an additional allocate-deallocate cycle to push the slab through both drain phases. Affected tests: `ExpandableSlabAllocatorTest.OldSlabIsDestroyedAfterChaining`, `ExpandableSlabAllocatorTest.DeallocateDestroyedSlabThrows`, and the merged-in `DestroyedSlabIdThrowsOnDeallocateCrossThread` (formerly `ExpandableSlabAllocatorAdversarialTest.DestroyedSlabIdThrowsOnDeallocate`). All three now use `chunk_size == slab_size` so each `allocate()` chains a fresh slab deterministically, and walk through two drain cycles before asserting destruction.
+
+**Tangential bug found and fixed in `ExpandablePoolAllocatorTest.AbaStressTest`.** Under Valgrind, the test was reporting "free-list corruption: unknown pointer 0x...". Initial theory (pool expansion firing because `pool_slots == num_threads` left no headroom) was partially right but the deeper bug was test-design: with `pool_slots = num_threads`, even after bumping by one to `num_threads + 1`, only `num_threads` slots are ever reachable by the workers (LIFO pop_back from a 5-slot pool with 4 threads holding at most one each leaves slot 0 perpetually untouched at the front of the vector). The drain phase still produced all 5 slots, one of which had never been recorded in `valid_addresses`, giving a phantom-address failure. Fix: pre-touch every slot at test setup (allocate all `pool_slots` in one go before stress so every slot's address is recorded), plus the `pool_slots = num_threads + 1` adjustment to ensure expansion never fires. Diagnosed by adding a one-line stderr print of `number_of_pools`, `total_capacity`, `valid_addresses.size`, and `behaviour_statistics.expansion_events` immediately before the assertion loop, which showed `expansion_events=0` and `valid_addresses.size=4` for a 5-slot pool — confirming the address-coverage gap rather than the expansion race. Test now passes under Valgrind with 500 repeats × 50,000 iterations (~hundred million allocate/deallocate pairs).
+
+**Test file reorganisation.** The user requested two structural rules: (1) one fixture per class under test, (2) one fixture per file. The previous layout was:
+- `SlabAllocatorTest.cpp` contained three fixtures: `EmptySlabQueueTest`, `SlabAllocatorTest`, `ExpandableSlabAllocatorTest`.
+- `SlabAllocatorAdversarialTest.cpp` contained three more: `EmptySlabQueueAdversarialTest`, `SlabAllocatorAdversarialTest`, `ExpandableSlabAllocatorAdversarialTest`.
+- `ExpandableSlabAllocatorTest.cpp` contained `ExpandableSlabAllocatorTest` (a second copy, with different tests) and `ExpandableSlabAllocatorStressTest`.
+
+After reorganisation:
+- `EmptySlabQueueTest.cpp` — one fixture, 8 tests (6 original + 2 ex-adversarial).
+- `SlabAllocatorTest.cpp` — one fixture, 20 tests (15 original + 5 ex-adversarial).
+- `ExpandableSlabAllocatorTest.cpp` — one fixture, 37 tests (12 from the old `SlabAllocatorTest.cpp` + 21 from the previous `ExpandableSlabAllocatorTest.cpp` + 2 ex-stress + 4 ex-adversarial; one duplicate `DeallocateNullptrThrows` vs `DeallocateNullPtrThrows` dropped).
+- `SlabAllocatorAdversarialTest.cpp` deleted entirely.
+
+The colliding test names `AdversarialDestroyedSlabIdThrowsOnDeallocate` and `DeallocateDestroyedSlabThrows` were disambiguated by renaming the cross-thread variant to `DestroyedSlabIdThrowsOnDeallocateCrossThread`. All other ex-adversarial tests had the `Adversarial` prefix simply dropped; no other name collisions.
+
+**Documentation correction in `FixedSizeMemoryPool.hpp`.** The `Slot<T>` docblocks (two of them: production and Valgrind paths) and the top-of-file CANARY DESIGN section claimed "Both the Valgrind and production Slot<T> definitions are identical in layout". They are NOT — the production path has `free_next` between `is_constructed` and `canary`; the Valgrind path doesn't (it uses a mutex-protected `std::vector` free list). The pointer arithmetic in `get_is_constructed_for_object` and `get_canary_for_object` works in each build path independently via `offsetof(SlotType, storage)` — it doesn't depend on the two layouts being byte-for-byte equivalent. Updated all three comments to describe the actual invariants: `is_constructed` is first, `canary` is immediately before `storage`, `storage` is last.
+
+**Verification.** All ~65 tests across the three reorganised files pass. The integrated gateway/sequencer/ME runs without the drain tripwire firing under sustained fix8 T-burst load. The user explicitly confirmed: "I also tried to make the gateway fall over with a heavy load via fix8 using loads of T commands. It all stayed up."
+
+**Files changed:**
+- `libraries/pubsub_itc_fw/include/pubsub_itc_fw/EmptySlabQueue.hpp` — `reset_to_empty` removed; four `peek_*` diagnostic accessors added.
+- `libraries/pubsub_itc_fw/src/EmptySlabQueue.cpp` — `reset_to_empty` implementation removed.
+- `libraries/pubsub_itc_fw/include/pubsub_itc_fw/ExpandableSlabAllocator.hpp` — `deferred_reclaim_slab_id_` member added; class-level docs updated.
+- `libraries/pubsub_itc_fw/src/ExpandableSlabAllocator.cpp` — `reset_to_empty` call removed from drain loop; Vyukov sentinel deferred-reclamation logic added; iteration-count tripwire switched to wall-clock; `#include <chrono>` added.
+- `libraries/pubsub_itc_fw/include/pubsub_itc_fw/FixedSizeMemoryPool.hpp` — three comment-only edits correcting the misleading "identical layout" claims about `Slot<T>`.
+- `libraries/pubsub_itc_fw/tests/ExpandablePoolAllocatorTest.cpp` — `pool_slots = num_threads + 1` and pre-touch loop in `AbaStressTest`.
+- `libraries/pubsub_itc_fw/tests/EmptySlabQueueTest.cpp` — new file containing the `EmptySlabQueueTest` fixture only.
+- `libraries/pubsub_itc_fw/tests/SlabAllocatorTest.cpp` — replaced wholesale; now contains only the `SlabAllocatorTest` fixture.
+- `libraries/pubsub_itc_fw/tests/ExpandableSlabAllocatorTest.cpp` — replaced wholesale; now contains the merged single `ExpandableSlabAllocatorTest` fixture with stress tests subsumed.
+- `libraries/pubsub_itc_fw/tests/SlabAllocatorAdversarialTest.cpp` — deleted.
+
+**Smaller deferred items noted during the session (none blocking):**
+- `k`-prefix constants (`kSmallSlab`, `kLargeSlab`, `kPartial`) in the `ExpandableSlabAllocatorTest` fixture violate the project rule that constants are snake_case. Left alone in this session to avoid scope creep; mechanical search-and-replace when next convenient.
+- The skipped `EmptySlabQueueTest.ReEnqueueOfSameNodeDoesNotCauseInfiniteSpin` test's comment was updated to remove the now-stale reference to `reset_to_empty` (which was supposed to mitigate the hazard but never did — the `is_enqueued_` one-shot CAS does).
+- A few existing tests in the new `ExpandableSlabAllocatorTest.cpp` are functional near-duplicates (e.g. `OldSlabIsDestroyedAfterChaining` vs `OldEmptySlabIsDestroyed`; `DeallocateInvalidSlabIdThrows` vs `DeallocateOutOfRangeSlabIdThrows`). All kept per the user's "option (a)" choice — test coverage is cheap; names disambiguated where they collided.
+
+### Session 15
 
 **End-to-end ME ER fabrication.** The matching engine no longer logs `-- stub` and stops; it now decodes inbound `NewOrderSingle` PDUs and emits a fully-filled `ExecutionReport` PDU back to the sequencer. The ER populates every field that `SequencerThread` decodes during ER-forwarding (`order_id`, `exec_id`, `exec_type=Trade`, `ord_status=Filled`, `symbol`, `side`, `leaves_qty=0`, `cum_qty=order_qty`, `avg_px=price`, `transact_time` in nanoseconds, plus optional `cl_ord_id`, `order_qty`, `last_qty`, `last_px`, `price`, `ord_type`). No real order book or matching is performed — every order is fabricated as fully filled at its requested limit price. The ME has its own `order_id_counter_` and `exec_id_counter_` producing `ME-ORD-N` and `ME-EXEC-N` strings.
 
@@ -759,7 +816,7 @@ TcpSocket EAGAIN/EOF fix, use-after-free fix, InboundConnection infrastructure, 
 
 ## What Is Done
 
-- Allocator subsystem — complete, tested, all races fixed
+- Allocator subsystem — complete, tested, all races fixed. Session 16 fixed a previously-undiagnosed race in `EmptySlabQueue::reset_to_empty` that wedged the slab allocator under heavy fix8 T-burst load; replaced with Vyukov sentinel pattern. Test files reorganised to one-fixture-per-file (`EmptySlabQueueTest.cpp`, `SlabAllocatorTest.cpp`, `ExpandableSlabAllocatorTest.cpp`); ~65 tests across the three files; integrated gateway/sequencer/ME runs cleanly under sustained load.
 - Lock-free MPSC queue — complete, tested
 - Reactor event loop — complete, tested
 - ApplicationThread — complete, tested; `release_pdu_payload()` added
@@ -812,6 +869,11 @@ After Slice 1 lands, continue with Slice 2 (in-memory WAL) and onward per the st
 - Trace log cleanup (item 7 in "What Is Not Yet Done"): demote `Info`-level traces to `Debug`. Mechanical, quick. Worth doing whenever it stops being useful for slice verification.
 - OrderCancelRequest round trip (item 2): mirrors NewOrderSingle path on ME side. Small. Fits in a session corner.
 - fix8 wrong-port re-verification (item 1): one `f8test -d` run.
+- `k`-prefix constants in `ExpandableSlabAllocatorTest`'s fixture (`kSmallSlab`, `kLargeSlab`) — violates the project rule that constants are snake_case. Mechanical search-and-replace.
+- Quill thread-name population — call `quill::Frontend::set_thread_name()` at thread spawn sites (Reactor, ApplicationThread, etc) so the `thread_name` column in the log format actually shows something.
+- Quill backend CPU usage tuning — the existing TODO about pinning the backend thread and tuning `BackendOptions::sleep_duration`.
+- Sequencer ER inbound 120s idle-timeout killing healthy quiet connections.
+- Hex-dump debug logging on hot path (Session 15 item 7) needs a compile-time flag gate before production.
 
 **Design note — the rendezvous problem:**
 The connection retry mechanism is a temporary TCP workaround pending WAL-based brokerless pub/sub. In the pub/sub design, publishers write to the WAL regardless of subscriber presence and there is no connection to establish, so the rendezvous problem disappears. The retry logic should be removed when direct TCP is replaced by pub/sub topics.
