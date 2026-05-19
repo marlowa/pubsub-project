@@ -44,7 +44,9 @@ FixGatewaySeqThread::FixGatewaySeqThread(pubsub_itc_fw::ApplicationThread::Const
 
 void FixGatewaySeqThread::on_app_ready_event() {
     connect_to_service("sequencer_primary");
-    connect_to_service("sequencer_secondary");
+    if (config_.ha_enabled) {
+        connect_to_service("sequencer_secondary");
+    }
 }
 
 void FixGatewaySeqThread::on_connection_established(pubsub_itc_fw::ConnectionID id) {
@@ -70,18 +72,6 @@ void FixGatewaySeqThread::on_connection_lost(pubsub_itc_fw::ConnectionID id, con
     if (it != sessions_.end()) {
         cancel_timer(it->second.logon_timeout_timer_name());
         sessions_.erase(it);
-
-        // Sweep any cl_ord_id -> session mappings that pointed at this
-        // disconnected session. Without this the map would accumulate stale
-        // entries indefinitely. Each such entry would trigger a "session no
-        // longer present" log line and drop on the next ER for that ClOrdID.
-        for (auto map_it = cl_ord_id_to_session_.begin(); map_it != cl_ord_id_to_session_.end();) {
-            if (map_it->second == id) {
-                map_it = cl_ord_id_to_session_.erase(map_it);
-            } else {
-                ++map_it;
-            }
-        }
     }
 
     if (id == sequencer_primary_conn_id_) {
@@ -278,46 +268,32 @@ void FixGatewaySeqThread::on_framework_pdu_message(const pubsub_itc_fw::EventMes
         return;
     }
 
-    // ClOrdID is the only routing key. Without it, we cannot deliver the ER.
-    if (!view.has_cl_ord_id || view.cl_ord_id.empty()) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "FixGatewaySeqThread: ExecutionReport OrderID={} ExecID={} has no ClOrdID -- dropping",
+    // routing_comp_id is stamped by the sequencer from its cl_ord_id→comp_id map.
+    // Route to the FIX session whose client_comp_id matches.
+    if (!view.has_routing_comp_id || view.routing_comp_id.empty()) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "FixGatewaySeqThread: ExecutionReport OrderID={} ExecID={} has no routing_comp_id -- dropping",
                    view.order_id, view.exec_id);
         release_pdu_payload(message);
         return;
     }
+    const std::string routing_comp_id{view.routing_comp_id};
 
-    // The cl_ord_id_to_session_ map keys are std::string. The view's cl_ord_id
-    // is a string_view into the slab; construct a std::string for the lookup
-    // which the unordered_map's heterogeneous-lookup-free find() requires.
-    const std::string cl_ord_id{view.cl_ord_id};
-
-    auto map_it = cl_ord_id_to_session_.find(cl_ord_id);
-    if (map_it == cl_ord_id_to_session_.end()) {
+    FixSession* session_ptr = find_session_by_comp_id(routing_comp_id);
+    if (!session_ptr) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "FixGatewaySeqThread: ExecutionReport for unknown ClOrdID='{}' -- dropping "
-                   "(originating session may have disconnected)",
-                   cl_ord_id);
+                   "FixGatewaySeqThread: ExecutionReport routing_comp_id='{}' -- "
+                   "no matching FIX session (client may have disconnected) -- dropping",
+                   routing_comp_id);
         release_pdu_payload(message);
         return;
     }
-    const pubsub_itc_fw::ConnectionID session_id = map_it->second;
-
-    auto session_it = sessions_.find(session_id);
-    if (session_it == sessions_.end()) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "FixGatewaySeqThread: ExecutionReport for ClOrdID='{}' -- "
-                   "session connection {} no longer present, dropping ER and clearing map entry",
-                   cl_ord_id, session_id.get_value());
-        cl_ord_id_to_session_.erase(map_it);
-        release_pdu_payload(message);
-        return;
-    }
-    FixSession& session = session_it->second;
+    FixSession& session = *session_ptr;
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "FixGatewaySeqThread: routing ExecutionReport OrderID={} ExecID={} ClOrdID={} "
-               "to FIX client connection {}",
-               view.order_id, view.exec_id, cl_ord_id, session.conn_id.get_value());
+               "FixGatewaySeqThread: routing ExecutionReport OrderID={} ExecID={} "
+               "routing_comp_id={} to FIX client connection {}",
+               view.order_id, view.exec_id, routing_comp_id, session.conn_id.get_value());
 
     // Build a FIX ExecutionReport. Single-character enum fields convert back
     // to FIX wire chars via static_cast<char>; numeric strings (qty/px) flow
@@ -332,7 +308,9 @@ void FixGatewaySeqThread::on_framework_pdu_message(const pubsub_itc_fw::EventMes
     er_msg.set(Tag::Side, std::string(1, static_cast<char>(view.side)));
     er_msg.set(Tag::CumQty, std::string{view.cum_qty});
     er_msg.set(Tag::LeavesQty, std::string{view.leaves_qty});
-    er_msg.set(Tag::ClOrdID, cl_ord_id);
+    if (view.has_cl_ord_id) {
+        er_msg.set(Tag::ClOrdID, std::string{view.cl_ord_id});
+    }
 
     if (view.has_order_qty) {
         er_msg.set(Tag::OrderQty, std::string{view.order_qty});
@@ -345,24 +323,6 @@ void FixGatewaySeqThread::on_framework_pdu_message(const pubsub_itc_fw::EventMes
     }
 
     send_fix_to_session(session, er_msg);
-
-    // Clean up the routing map on terminal status. The original ClOrdID will
-    // not appear on subsequent ERs once the order has reached one of these
-    // states. Non-terminal statuses (PartiallyFilled, PendingCancel, etc.)
-    // leave the entry in place so further fills can be routed.
-    switch (view.ord_status) {
-        case pubsub_itc_fw_app::OrdStatus::Filled:
-        case pubsub_itc_fw_app::OrdStatus::Canceled:
-        case pubsub_itc_fw_app::OrdStatus::Rejected:
-        case pubsub_itc_fw_app::OrdStatus::Expired:
-        case pubsub_itc_fw_app::OrdStatus::DoneForDay:
-        case pubsub_itc_fw_app::OrdStatus::Replaced:
-            cl_ord_id_to_session_.erase(map_it);
-            break;
-        default:
-            break;
-    }
-
     release_pdu_payload(message);
 }
 
@@ -465,9 +425,6 @@ void FixGatewaySeqThread::handle_new_order_single(FixSession& session, const Fix
         return;
     }
 
-    // Record cl_ord_id -> session for ER routing.
-    cl_ord_id_to_session_[cl_ord_id] = session.conn_id;
-
     // Build the DSL struct. All string fields use string_view pointing into
     // the FIX message -- safe because the struct is only live for this call.
     pubsub_itc_fw_app::NewOrderSingle nos{};
@@ -487,6 +444,13 @@ void FixGatewaySeqThread::handle_new_order_single(FixSession& session, const Fix
     if (!tif_str.empty()) {
         nos.has_time_in_force = true;
         nos.time_in_force = static_cast<pubsub_itc_fw_app::TimeInForce>(tif_str[0]);
+    }
+
+    // Stamp SenderCompID so the sequencer can maintain its cl_ord_id→comp_id
+    // routing map and embed routing_comp_id in forwarded ERs.
+    if (!session.client_comp_id.empty()) {
+        nos.has_sender_comp_id = true;
+        nos.sender_comp_id = session.client_comp_id;
     }
 
     // Forward the encoded PDU to both sequencer instances.
@@ -526,9 +490,6 @@ void FixGatewaySeqThread::handle_order_cancel_request(FixSession& session, const
         return;
     }
 
-    // Record cl_ord_id -> session for ER routing of the cancel acknowledgement.
-    cl_ord_id_to_session_[cl_ord_id] = session.conn_id;
-
     pubsub_itc_fw_app::OrderCancelRequest ocr{};
     ocr.orig_cl_ord_id = orig_cl_ord_id;
     ocr.cl_ord_id = cl_ord_id;
@@ -536,6 +497,12 @@ void FixGatewaySeqThread::handle_order_cancel_request(FixSession& session, const
     ocr.side = static_cast<pubsub_itc_fw_app::Side>(side_str[0]);
     ocr.transact_time = 0; // TODO: parse SendingTime
     ocr.order_qty = order_qty;
+
+    // Stamp SenderCompID for sequencer routing map.
+    if (!session.client_comp_id.empty()) {
+        ocr.has_sender_comp_id = true;
+        ocr.sender_comp_id = session.client_comp_id;
+    }
 
     forward_pdu_to_sequencers(static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::OrderCancelRequest), ocr);
 }
@@ -624,5 +591,15 @@ void FixGatewaySeqThread::send_reject_execution_report(FixSession& session, cons
 // Warning is logged. The other sequencer still receives the PDU so the leader
 // can continue operating. When connection retry re-establishes the lost
 // connection the follower will resync from the leader's state.
+
+FixSession* FixGatewaySeqThread::find_session_by_comp_id(const std::string& comp_id)
+{
+    for (auto& [conn_id, session] : sessions_) {
+        if (session.client_comp_id == comp_id) {
+            return &session;
+        }
+    }
+    return nullptr;
+}
 
 } // namespace sample_fix_gateway_seq

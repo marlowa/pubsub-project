@@ -59,9 +59,14 @@ class CppGenerator:
         w("")
         self._emit_endian_macros(w)
         w("")
+        # Guard shared helpers so they compile cleanly when multiple generated
+        # headers are included in the same translation unit.
+        w(f"#ifndef PUBSUB_ITC_FW_APP_DSL_SHARED_HELPERS_DEFINED")
+        w(f"#define PUBSUB_ITC_FW_APP_DSL_SHARED_HELPERS_DEFINED")
         self._emit_endian_helpers(w)
         w("")
         self._emit_list_view(w)
+        w(f"#endif // PUBSUB_ITC_FW_APP_DSL_SHARED_HELPERS_DEFINED")
         w("")
 
         for decl in ast.declarations:

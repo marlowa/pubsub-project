@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
@@ -13,8 +14,10 @@
 #include <pubsub_itc_fw/Reactor.hpp>
 
 #include <fix_equity_orders.hpp>
+#include <leader_follower.hpp>
 
 #include "SequencerConfiguration.hpp"
+#include "SequencerWal.hpp"
 
 namespace sequencer {
 
@@ -52,6 +55,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
                     const SequencerConfiguration& config);
 
   protected:
+    void on_initial_event() override;
     void on_app_ready_event() override;
     void on_connection_established(pubsub_itc_fw::ConnectionID id) override;
     void on_connection_lost(pubsub_itc_fw::ConnectionID id, const std::string& reason) override;
@@ -77,7 +81,35 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
 
     // ConnectionIDs of the outbound peer and arbiter connections.
     pubsub_itc_fw::ConnectionID peer_conn_id_;
+    pubsub_itc_fw::ConnectionID peer_inbound_conn_id_;   // inbound: peer connected to us
     pubsub_itc_fw::ConnectionID arbiter_conn_id_;
+
+    // mmap'd on-disk write-ahead log (Slice 3). Opened in on_initial_event()
+    // before the sequencer begins accepting connections.
+    SequencerWal wal_;
+
+    // Leader-follower state machine (slice 6).
+    pubsub_itc_fw_app::Role role_{pubsub_itc_fw_app::Role::unknown};
+    int32_t epoch_{0};
+
+    // Leader-follower helpers.
+    pubsub_itc_fw::ConnectionID peer_active_conn() const noexcept;
+    void adopt_role(pubsub_itc_fw_app::Role new_role);
+    void elect_role(int64_t peer_instance_id, int32_t peer_epoch, pubsub_itc_fw_app::Role peer_current_role);
+    void send_status_query(pubsub_itc_fw::ConnectionID conn_id);
+    void send_status_response(pubsub_itc_fw::ConnectionID conn_id);
+    void send_peer_heartbeat();
+    void write_fence_file();
+    void handle_peer_status_query(pubsub_itc_fw::ConnectionID conn_id, const pubsub_itc_fw::EventMessage& message);
+    void handle_peer_status_response(const pubsub_itc_fw::EventMessage& message);
+    void handle_peer_heartbeat(const pubsub_itc_fw::EventMessage& message);
+    void handle_peer_pdu(pubsub_itc_fw::ConnectionID conn_id, const pubsub_itc_fw::EventMessage& message);
+
+    // cl_ord_id → SenderCompID of the originating FIX client (Slice 5).
+    // Populated on each NOS/OCR received; rebuilt from WAL replay on startup.
+    // Used to stamp routing_comp_id on forwarded ERs so the gateway can route
+    // without maintaining its own cl_ord_id→session map.
+    std::unordered_map<std::string, std::string> cl_ord_id_to_comp_id_;
 };
 
 } // namespace sequencer

@@ -119,11 +119,18 @@ class FixGatewaySeqThread : public pubsub_itc_fw::ApplicationThread {
     // until then there is only one target.
     template <typename MsgT> void forward_pdu_to_sequencers(int16_t pdu_id, const MsgT& msg) {
         if (sequencer_primary_conn_id_.get_value() != 0) {
-            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "sending pdu to primary sequencer");
-            // TODO not sure about using a sequence number of zero here
             send_pdu(sequencer_primary_conn_id_, pdu_id, 0, msg);
         } else {
-            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "FixGatewaySeqThread: primary sequencer not connected, PDU not forwarded");
+            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                           "FixGatewaySeqThread: primary sequencer not connected -- PDU not forwarded to primary");
+        }
+        if (config_.ha_enabled) {
+            if (sequencer_secondary_conn_id_.get_value() != 0) {
+                send_pdu(sequencer_secondary_conn_id_, pdu_id, 0, msg);
+            } else {
+                PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                               "FixGatewaySeqThread: secondary sequencer not connected -- PDU not forwarded to secondary");
+            }
         }
     }
 
@@ -141,10 +148,11 @@ class FixGatewaySeqThread : public pubsub_itc_fw::ApplicationThread {
     // ConnectionID of the secondary sequencer outbound connection.
     pubsub_itc_fw::ConnectionID sequencer_secondary_conn_id_;
 
-    // cl_ord_id -> ConnectionID of the originating FIX client session.
-    // Used to route ExecutionReport PDUs back to the correct FIX client.
-    // ERs with no cl_ord_id are logged and dropped.
-    std::unordered_map<std::string, pubsub_itc_fw::ConnectionID> cl_ord_id_to_session_;
+    // routing_comp_id → ConnectionID lookup: find the FIX session whose
+    // client_comp_id matches the routing_comp_id stamped by the sequencer.
+    // Linear scan over sessions_ (small set; typically 1-10 sessions).
+    // Returns nullptr if no matching session is found.
+    FixSession* find_session_by_comp_id(const std::string& comp_id);
 };
 
 } // namespace sample_fix_gateway_seq

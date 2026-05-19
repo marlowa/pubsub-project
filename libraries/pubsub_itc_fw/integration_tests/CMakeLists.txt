@@ -19,6 +19,7 @@ add_executable(pubsub_itc_fw_integration_tests
 add_dependencies(pubsub_itc_fw_integration_tests
     pubsub_itc_fw_dsl
     fix_equity_orders_generated
+    leader_follower_generated
 )
 
 target_link_libraries(pubsub_itc_fw_integration_tests PRIVATE

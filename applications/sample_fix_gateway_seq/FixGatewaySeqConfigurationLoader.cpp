@@ -43,6 +43,9 @@ FixGatewaySeqConfigurationLoader::load_and_init_logging(const std::string& file_
         toml.get_required_except("fix_session.default_target_comp_id", config.default_target_comp_id);
         toml.get_required_except("timeouts.logon_timeout", config.logon_timeout);
 
+        // ha_enabled is optional; default false means single-sequencer mode.
+        std::ignore = toml.get_required("sequencer.ha_enabled", config.ha_enabled);
+
         toml.get_required_except("sequencer.primary_host", config.sequencer_primary_host);
 
         int32_t listen_port = 0;
@@ -75,6 +78,14 @@ FixGatewaySeqConfigurationLoader::load_and_init_logging(const std::string& file_
         config.er_listen_port = static_cast<uint16_t>(er_listen_port);
         config.sequencer_primary_port = static_cast<uint16_t>(primary_port);
         config.raw_buffer_capacity = raw_buffer_capacity;
+
+        if (config.ha_enabled) {
+            toml.get_required_except("sequencer.secondary_host", config.sequencer_secondary_host);
+            int32_t secondary_port = 0;
+            toml.get_required_except("sequencer.secondary_port", secondary_port);
+            validate_port(secondary_port, "sequencer.secondary_port");
+            config.sequencer_secondary_port = static_cast<uint16_t>(secondary_port);
+        }
 
         std::string applog_level_str;
         std::string syslog_level_str;

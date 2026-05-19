@@ -54,6 +54,12 @@ using pubsub_itc_fw::tests::make_queue_config;
 
 namespace pubsub_itc_fw {
 
+using pubsub_itc_fw_app::decode;
+using pubsub_itc_fw_app::StatusQuery;
+using pubsub_itc_fw_app::StatusQueryView;
+using pubsub_itc_fw_app::StatusResponse;
+using pubsub_itc_fw_app::StatusResponseView;
+
 // ============================================================
 // PDU IDs matching the leader-follower protocol DSL
 // ============================================================

@@ -1,6 +1,7 @@
 add_executable(sequencer
         SequencerConfigurationLoader.cpp
         SequencerThread.cpp
+        SequencerWal.cpp
         Sequencer.cpp
 )
 
@@ -13,13 +14,14 @@ target_link_libraries(sequencer PRIVATE
         pubsub_itc_fw
 )
 
-add_dependencies(sequencer fix_equity_orders_generated)
+add_dependencies(sequencer fix_equity_orders_generated leader_follower_generated)
 
 # Header files listed explicitly so CLion indexes them correctly.
 target_sources(sequencer PRIVATE
         SequencerConfiguration.hpp
         SequencerConfigurationLoader.hpp
         SequencerThread.hpp
+        SequencerWal.hpp
         Sequencer.hpp
 )
 

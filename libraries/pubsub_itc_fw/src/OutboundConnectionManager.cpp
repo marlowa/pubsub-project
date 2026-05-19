@@ -51,7 +51,7 @@ void OutboundConnectionManager::process_connect_command(const ReactorControlComm
 
     auto [addr, addr_error] = InetAddress::create(primary.host, primary.port);
     if (!addr) {
-        PUBSUB_LOG(logger_, FwLogLevel::Warning,
+        PUBSUB_LOG(logger_, FwLogLevel::Info,
                    "OutboundConnectionManager::process_connect_command: failed to resolve {}:{} for "
                    "service '{}' -- {}, will retry in {}ms",
                    primary.host, primary.port, service_name, addr_error, config_.connect_retry_interval_.count());
@@ -63,7 +63,7 @@ void OutboundConnectionManager::process_connect_command(const ReactorControlComm
     auto [connected_immediately, connect_error] = connector->connect(*addr);
 
     if (!connect_error.empty()) {
-        PUBSUB_LOG(logger_, FwLogLevel::Warning,
+        PUBSUB_LOG(logger_, FwLogLevel::Info,
                    "OutboundConnectionManager::process_connect_command: connect() to {}:{} for "
                    "service '{}' failed -- {}, will retry in {}ms",
                    primary.host, primary.port, service_name, connect_error, config_.connect_retry_interval_.count());
@@ -173,7 +173,7 @@ void OutboundConnectionManager::on_connect_ready(OutboundConnection& conn) {
             const ThreadID requesting_thread_id = conn.requesting_thread_id();
 
             teardown_connection(conn.id(), error, false);
-            PUBSUB_LOG(logger_, FwLogLevel::Warning,
+            PUBSUB_LOG(logger_, FwLogLevel::Info,
                        "OutboundConnectionManager::on_connect_ready: service '{}' failed, "
                        "will retry in {}ms",
                        service_name, config_.connect_retry_interval_.count());

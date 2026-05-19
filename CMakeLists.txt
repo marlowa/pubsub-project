@@ -227,6 +227,25 @@ add_custom_target(fix_equity_orders_generated
     DEPENDS "${FIX_DSL_GENERATED_HPP}"
 )
 
+# Leader-follower protocol PDU header (no --topics: uses plain integer IDs 100-201).
+set(LF_DSL_SOURCE "${CMAKE_SOURCE_DIR}/libraries/pubsub_itc_fw/include/pubsub_itc_fw/leader_follower.dsl")
+set(LF_DSL_GENERATED_HPP "${FIX_DSL_INCLUDE_DIR}/leader_follower.hpp")
+
+add_custom_command(
+    OUTPUT "${LF_DSL_GENERATED_HPP}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${FIX_DSL_INCLUDE_DIR}"
+    COMMAND ${Python3_EXECUTABLE} "${FIX_DSL_GENERATOR}"
+            --namespace pubsub_itc_fw_app
+            "${LF_DSL_SOURCE}"
+            "${LF_DSL_GENERATED_HPP}"
+    DEPENDS "${LF_DSL_SOURCE}" "${FIX_DSL_GENERATOR}"
+    COMMENT "Generating leader_follower.hpp from leader_follower.dsl"
+    VERBATIM
+)
+add_custom_target(leader_follower_generated
+    DEPENDS "${LF_DSL_GENERATED_HPP}"
+)
+
 # ------------------------------------------------------------
 # Add the library
 # ------------------------------------------------------------

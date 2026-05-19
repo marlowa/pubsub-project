@@ -46,11 +46,24 @@ struct FixGatewaySeqConfiguration {
     // only the primary sequencer is configured here.
     // ----------------------------------------------------------------
 
+    /**
+     * @brief Enable HA dual-publish to a secondary sequencer. When false (default),
+     * only the primary sequencer is connected. When true, the gateway also connects
+     * to and dual-publishes every order PDU to the secondary sequencer.
+     */
+    bool ha_enabled{false};
+
     /** @brief Host address of the primary sequencer. */
     std::string sequencer_primary_host{"127.0.0.1"};
 
     /** @brief TCP port of the primary sequencer. */
     uint16_t sequencer_primary_port{7001};
+
+    /** @brief Host address of the secondary (follower) sequencer. Only used when ha_enabled=true. */
+    std::string sequencer_secondary_host{"127.0.0.1"};
+
+    /** @brief TCP port of the secondary (follower) sequencer. Only used when ha_enabled=true. */
+    uint16_t sequencer_secondary_port{7002};
 
     // ----------------------------------------------------------------
     // Matching engine inbound ER connection

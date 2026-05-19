@@ -267,6 +267,7 @@ message NewOrderSingle (id=Topics.NewOrderSingle)
     optional string max_floor
     optional datetime_ns expire_time
     optional string text
+    optional string sender_comp_id
 end
 
 # ---------------------------------------------------------------------------
@@ -289,6 +290,7 @@ message OrderCancelRequest (id=Topics.OrderCancelRequest)
     string order_qty
     optional string account
     optional string text
+    optional string sender_comp_id
 end
 
 # ---------------------------------------------------------------------------
@@ -353,4 +355,5 @@ message ExecutionReport (id=Topics.ExecutionReport)
     optional string min_qty
     optional string max_floor
     optional datetime_ns expire_time
+    optional string routing_comp_id
 end

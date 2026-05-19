@@ -17,6 +17,20 @@ instance_id  = 1
 arbiter_host = "127.0.0.1"
 arbiter_port = 7100
 
+[peer]
+listen_host                = "127.0.0.1"
+listen_port                = 7003
+host                       = "127.0.0.1"
+port                       = 7004
+heartbeat_interval_seconds = 5
+heartbeat_timeout_seconds  = 15
+fence_file_path            = "/tmp/sequencer_primary_fence"
+
+[wal]
+directory                 = "/tmp/sequencer_wal"
+segment_size              = 4194304
+snapshot_interval_seconds = 30
+
 [logging]
 applog_level = "debug"
 syslog_level = "info"

@@ -3,6 +3,11 @@
 
 #include "SequencerThread.hpp"
 
+#include <cerrno>
+#include <cstdio>
+#include <cstring>
+#include <unistd.h>
+
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
 #include <pubsub_itc_fw/BumpAllocator.hpp>
@@ -35,37 +40,110 @@ SequencerThread::SequencerThread(pubsub_itc_fw::ApplicationThread::ConstructorTo
     , config_(config)
     , gateway_conn_id_{}
     , me_outbound_order_conn_id_{}
+    , peer_conn_id_{}
+    , peer_inbound_conn_id_{}
     , arbiter_conn_id_{} {}
+
+void SequencerThread::on_initial_event() {
+    // Rebuild cl_ord_id→comp_id from WAL replay so ER routing survives restart.
+    auto rebuild_routing_map = [this]([[maybe_unused]] int64_t seq_no, int16_t pdu_id,
+                                      const uint8_t* payload, std::size_t payload_size) {
+        const auto nos_id = static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::NewOrderSingle);
+        const auto ocr_id = static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::OrderCancelRequest);
+        if (pdu_id != nos_id && pdu_id != ocr_id) return;
+
+        auto& arena_buf = decode_arena_buffer();
+        pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+        arena.reset();
+        std::size_t arena_bytes_needed = 0;
+        std::size_t bytes_consumed     = 0;
+
+        if (pdu_id == nos_id) {
+            pubsub_itc_fw_app::NewOrderSingleView view{};
+            if (pubsub_itc_fw_app::decode(view, payload, payload_size, bytes_consumed, arena, arena_bytes_needed)) {
+                if (view.has_sender_comp_id && !view.sender_comp_id.empty()) {
+                    cl_ord_id_to_comp_id_[std::string{view.cl_ord_id}] = std::string{view.sender_comp_id};
+                }
+            }
+        } else {
+            pubsub_itc_fw_app::OrderCancelRequestView view{};
+            if (pubsub_itc_fw_app::decode(view, payload, payload_size, bytes_consumed, arena, arena_bytes_needed)) {
+                if (view.has_sender_comp_id && !view.sender_comp_id.empty()) {
+                    cl_ord_id_to_comp_id_[std::string{view.cl_ord_id}] = std::string{view.sender_comp_id};
+                }
+            }
+        }
+    };
+
+    const int64_t recovered_seq = wal_.open(config_.wal_directory, config_.wal_segment_size,
+                                            std::move(rebuild_routing_map));
+    if (recovered_seq > 0) {
+        next_sequence_number_ = recovered_seq + 1;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: WAL open complete: recovered seq_no={}, record_count={}, "
+                   "next_sequence_number={}, routing_map_size={}",
+                   recovered_seq, wal_.record_count(), next_sequence_number_, cl_ord_id_to_comp_id_.size());
+    } else {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                       "SequencerThread: WAL is fresh (no prior records), starting from seq_no=1");
+    }
+
+    start_recurring_timer("wal_snapshot", std::chrono::seconds(config_.snapshot_interval_seconds));
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "SequencerThread: WAL snapshot timer started (interval={}s)",
+               config_.snapshot_interval_seconds);
+
+    if (!config_.ha_enabled) {
+        // Single-node mode: start as leader immediately, no election needed.
+        ++epoch_;
+        adopt_role(pubsub_itc_fw_app::Role::leader);
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                       "SequencerThread: ha_enabled=false -- starting as leader immediately");
+    } else {
+        // HA mode: arm startup election window. If no peer contact within this
+        // window, self-promote. Shorter than heartbeat_timeout_seconds so that
+        // single-node HA deployments (peer down) also recover quickly.
+        start_one_off_timer("peer_heartbeat_timeout", std::chrono::seconds(config_.startup_election_timeout_seconds));
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: ha_enabled=true -- startup election timeout armed ({}s)",
+                   config_.startup_election_timeout_seconds);
+    }
+}
 
 void SequencerThread::on_app_ready_event() {
     connect_to_service("gateway");
     connect_to_service("matching_engine");
-    connect_to_service("arbiter");
-    /*
-     * The peer-to-peer connection is part of the leader-follower protocol
-     * (StatusQuery / StatusResponse / Heartbeat). The protocol is defined
-     * in DSL but not yet implemented, so issuing a Connect for the peer
-     * here just produces a perpetual retry loop against a port that no
-     * sequencer instance currently binds. Re-enable this when the
-     * leader-follower protocol implementation lands.
-     */
+    if (config_.ha_enabled) {
+        connect_to_service("arbiter");
+        connect_to_service("peer");
+    }
 }
 
 void SequencerThread::on_connection_established(pubsub_itc_fw::ConnectionID id) {
-    if (id.service_name() == "gateway") {
+    const std::string& svc = id.service_name();
+    const std::string peer_inbound_svc = "inbound:" + std::to_string(config_.peer_listen_port);
+
+    if (svc == "gateway") {
         gateway_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: gateway connection {} established", id.get_value());
-    } else if (id.service_name() == "matching_engine") {
+    } else if (svc == "matching_engine") {
         me_outbound_order_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: matching engine order connection {} established", id.get_value());
-    } else if (id.service_name() == "arbiter") {
+    } else if (svc == "arbiter") {
         arbiter_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: arbiter connection {} established", id.get_value());
+    } else if (svc == "peer") {
+        peer_conn_id_ = id;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: outbound peer connection {} established -- sending StatusQuery", id.get_value());
+        send_status_query(id);
+    } else if (svc == peer_inbound_svc) {
+        peer_inbound_conn_id_ = id;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: inbound peer connection {} established -- sending StatusQuery", id.get_value());
+        send_status_query(id);
     } else {
         // Inbound connection identified by listener port:
         //   inbound:7001 / inbound:7002 -- gateway sending order PDUs
         //   inbound:7021 / inbound:7022 -- matching engine sending ER PDUs
-        const std::string& svc = id.service_name();
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: inbound connection {} established ({})", id.get_value(), svc);
     }
 }
@@ -80,6 +158,12 @@ void SequencerThread::on_connection_lost(pubsub_itc_fw::ConnectionID id, const s
     } else if (id == arbiter_conn_id_) {
         arbiter_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: arbiter connection {} lost: {}", id.get_value(), reason);
+    } else if (id == peer_conn_id_) {
+        peer_conn_id_ = pubsub_itc_fw::ConnectionID{};
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: outbound peer connection {} lost: {}", id.get_value(), reason);
+    } else if (id == peer_inbound_conn_id_) {
+        peer_inbound_conn_id_ = pubsub_itc_fw::ConnectionID{};
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: inbound peer connection {} lost: {}", id.get_value(), reason);
     } else {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: inbound connection {} lost: {}", id.get_value(), reason);
     }
@@ -91,6 +175,15 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "TRACE on_framework_pdu_message: msg.connection_id value={} service_name=[{}]",
                conn_id.get_value(), svc);
+
+    // Peer PDUs arrive on the outbound peer connection or from the inbound peer listener.
+    const bool is_peer_pdu = (conn_id == peer_conn_id_) || (conn_id == peer_inbound_conn_id_);
+
+    if (is_peer_pdu) {
+        handle_peer_pdu(conn_id, message);
+        release_pdu_payload(message);
+        return;
+    }
 
     // Order PDUs arrive from the gateway on port 7001 (primary) or 7002 (secondary).
     // ER PDUs arrive from the ME on port 7021 (primary ER listener) or 7022 (secondary).
@@ -109,8 +202,23 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         // wrapper will be added once the ME decode path is implemented.
         const int64_t seq = next_sequence_number_++;
 
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: order PDU on connection {} pdu_id={} seq={} -- forwarding to ME",
-                   message.connection_id().get_value(), message.pdu_id(), seq);
+        // WAL commit: append before forwarding -- the append is the
+        // irreversible act. The ME send happens only after this returns.
+        wal_.append(seq,
+                    static_cast<int16_t>(message.pdu_id()),
+                    message.payload(),
+                    message.payload_size());
+
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: order PDU on connection {} pdu_id={} seq={} -- WAL append ok (wal_size={}) role={}",
+                   message.connection_id().get_value(), message.pdu_id(), seq, wal_.record_count(),
+                   pubsub_itc_fw_app::to_string(role_));
+
+        if (role_ != pubsub_itc_fw_app::Role::leader) {
+            // Follower: keep WAL and routing map in sync, but don't forward to ME.
+            release_pdu_payload(message);
+            return;
+        }
 
         if (!me_outbound_order_conn_id_.is_valid()) {
             PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: matching engine not connected -- dropping order PDU");
@@ -183,6 +291,13 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             nos.expire_time = view.expire_time;
             nos.has_text = view.has_text;
             nos.text = view.text;
+            nos.has_sender_comp_id = view.has_sender_comp_id;
+            nos.sender_comp_id = view.sender_comp_id;
+
+            // Record cl_ord_id → sender_comp_id for ER routing back to the gateway.
+            if (view.has_sender_comp_id && !view.sender_comp_id.empty()) {
+                cl_ord_id_to_comp_id_[std::string{view.cl_ord_id}] = std::string{view.sender_comp_id};
+            }
 
             send_pdu(me_outbound_order_conn_id_, pdu_id, seq, nos);
 
@@ -212,6 +327,13 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             ocr.account = view.account;
             ocr.has_text = view.has_text;
             ocr.text = view.text;
+            ocr.has_sender_comp_id = view.has_sender_comp_id;
+            ocr.sender_comp_id = view.sender_comp_id;
+
+            // Record cl_ord_id → sender_comp_id for cancel-ER routing.
+            if (view.has_sender_comp_id && !view.sender_comp_id.empty()) {
+                cl_ord_id_to_comp_id_[std::string{view.cl_ord_id}] = std::string{view.sender_comp_id};
+            }
 
             send_pdu(me_outbound_order_conn_id_, pdu_id, seq, ocr);
 
@@ -222,7 +344,15 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         release_pdu_payload(message);
 
     } else if (is_er_pdu) {
-        // ExecutionReport from the ME. Forward to the gateway.
+        // ExecutionReport from the ME. Leader forwards to gateway; follower drops.
+        if (role_ != pubsub_itc_fw_app::Role::leader) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
+                       "SequencerThread: ER PDU on connection {} -- follower, discarding",
+                       message.connection_id().get_value());
+            release_pdu_payload(message);
+            return;
+        }
+
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: ER PDU on connection {} pdu_id={} seq={} -- forwarding to gateway",
                    message.connection_id().get_value(), message.pdu_id(), message.seq_no());
 
@@ -313,6 +443,35 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         er.has_expire_time = view.has_expire_time;
         er.expire_time = view.expire_time;
 
+        // Stamp routing_comp_id so the gateway can route by comp_id without
+        // maintaining its own cl_ord_id→session map.
+        if (view.has_cl_ord_id && !view.cl_ord_id.empty()) {
+            const std::string cl_ord_id{view.cl_ord_id};
+            auto it = cl_ord_id_to_comp_id_.find(cl_ord_id);
+            if (it != cl_ord_id_to_comp_id_.end()) {
+                er.has_routing_comp_id = true;
+                er.routing_comp_id = it->second;
+
+                // Clean up the map entry on terminal ER status.
+                switch (view.ord_status) {
+                    case pubsub_itc_fw_app::OrdStatus::Filled:
+                    case pubsub_itc_fw_app::OrdStatus::Canceled:
+                    case pubsub_itc_fw_app::OrdStatus::Rejected:
+                    case pubsub_itc_fw_app::OrdStatus::Expired:
+                    case pubsub_itc_fw_app::OrdStatus::DoneForDay:
+                    case pubsub_itc_fw_app::OrdStatus::Replaced:
+                        cl_ord_id_to_comp_id_.erase(it);
+                        break;
+                    default:
+                        break;
+                }
+            } else {
+                PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                           "SequencerThread: ER ClOrdID='{}' not in routing map -- forwarding without routing_comp_id",
+                           cl_ord_id);
+            }
+        }
+
         send_pdu(gateway_conn_id_, pdu_id, message.seq_no(), er);
         release_pdu_payload(message);
 
@@ -324,10 +483,299 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
     }
 }
 
-void SequencerThread::on_timer_event([[maybe_unused]] const std::string& name) {
-    // TODO: handle leader-follower heartbeat timer.
+void SequencerThread::on_timer_event(const std::string& name) {
+    if (name == "wal_snapshot") {
+        try {
+            wal_.take_snapshot();
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                       "SequencerThread: WAL snapshot taken: last_seq_no={}, record_count={}",
+                       wal_.last_seq_no(), wal_.record_count());
+        } catch (const std::exception& ex) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                       "SequencerThread: WAL snapshot failed: {}", ex.what());
+        }
+        return;
+    }
+
+    if (name == "peer_heartbeat") {
+        send_peer_heartbeat();
+        return;
+    }
+
+    if (name == "peer_heartbeat_timeout") {
+        // No heartbeat received within the timeout window. Promote unconditionally:
+        // if both nodes start simultaneously and the peer is unreachable, the node
+        // that fires first becomes leader and the other will adopt follower via
+        // StatusResponse when it eventually connects.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "SequencerThread: peer heartbeat timeout -- current role={} -- promoting to leader",
+                   pubsub_itc_fw_app::to_string(role_));
+        if (role_ != pubsub_itc_fw_app::Role::leader) {
+            ++epoch_;
+            adopt_role(pubsub_itc_fw_app::Role::leader);
+        }
+        return;
+    }
 }
 
 void SequencerThread::on_itc_message([[maybe_unused]] const pubsub_itc_fw::EventMessage& message) {}
+
+// ---------------------------------------------------------------------------
+// Leader-follower state machine helpers
+// ---------------------------------------------------------------------------
+
+// PDU IDs for the leader-follower protocol (plain integers, not Topics enum).
+static constexpr int16_t kPduStatusQuery        = 100;
+static constexpr int16_t kPduStatusResponse     = 101;
+static constexpr int16_t kPduHeartbeat          = 102;
+static constexpr int16_t kPduArbitrationDecision = 201;
+
+pubsub_itc_fw::ConnectionID SequencerThread::peer_active_conn() const noexcept
+{
+    if (peer_conn_id_.is_valid()) return peer_conn_id_;
+    return peer_inbound_conn_id_;
+}
+
+void SequencerThread::adopt_role(pubsub_itc_fw_app::Role new_role)
+{
+    if (new_role == role_) return;
+
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "SequencerThread: role transition {} -> {} (epoch={})",
+               pubsub_itc_fw_app::to_string(role_),
+               pubsub_itc_fw_app::to_string(new_role),
+               epoch_);
+
+    role_ = new_role;
+
+    if (new_role == pubsub_itc_fw_app::Role::leader) {
+        write_fence_file();
+        cancel_timer("peer_heartbeat_timeout");
+        start_recurring_timer("peer_heartbeat", std::chrono::seconds(config_.heartbeat_interval_seconds));
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: now LEADER -- heartbeat timer started ({}s interval)",
+                   config_.heartbeat_interval_seconds);
+    } else if (new_role == pubsub_itc_fw_app::Role::follower) {
+        start_recurring_timer("peer_heartbeat", std::chrono::seconds(config_.heartbeat_interval_seconds));
+        // Arm (or re-arm) the heartbeat timeout.
+        cancel_timer("peer_heartbeat_timeout");
+        start_one_off_timer("peer_heartbeat_timeout", std::chrono::seconds(config_.heartbeat_timeout_seconds));
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: now FOLLOWER -- heartbeat timer started, timeout armed ({}s)",
+                   config_.heartbeat_timeout_seconds);
+    }
+}
+
+void SequencerThread::elect_role(int64_t peer_instance_id, int32_t peer_epoch,
+                                  pubsub_itc_fw_app::Role peer_current_role)
+{
+    if (role_ == pubsub_itc_fw_app::Role::leader || role_ == pubsub_itc_fw_app::Role::follower) {
+        // Already elected: just update epoch knowledge if the peer is ahead.
+        if (peer_epoch > epoch_) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "SequencerThread: peer epoch {} > my epoch {} -- unexpected (already elected as {})",
+                       peer_epoch, epoch_, pubsub_itc_fw_app::to_string(role_));
+        }
+        return;
+    }
+
+    // Stale check: if the peer has a higher epoch it was leader in a previous
+    // generation and we are a restarting stale node.
+    if (peer_epoch > epoch_) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: peer epoch {} > my epoch {} -- adopting follower (peer is newer generation)",
+                   peer_epoch, epoch_);
+        epoch_ = peer_epoch;
+        adopt_role(pubsub_itc_fw_app::Role::follower);
+        return;
+    }
+
+    // If the peer already elected itself as leader, adopt follower.
+    if (peer_current_role == pubsub_itc_fw_app::Role::leader) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: peer (instance_id={}) is already leader -- adopting follower",
+                   peer_instance_id);
+        adopt_role(pubsub_itc_fw_app::Role::follower);
+        return;
+    }
+
+    // Both unknown: lowest instance_id wins.
+    if (static_cast<int64_t>(config_.instance_id) < peer_instance_id) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: my instance_id={} < peer instance_id={} -- adopting leader",
+                   config_.instance_id, peer_instance_id);
+        adopt_role(pubsub_itc_fw_app::Role::leader);
+    } else {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: my instance_id={} >= peer instance_id={} -- adopting follower",
+                   config_.instance_id, peer_instance_id);
+        adopt_role(pubsub_itc_fw_app::Role::follower);
+    }
+}
+
+void SequencerThread::send_status_query(pubsub_itc_fw::ConnectionID conn_id)
+{
+    pubsub_itc_fw_app::StatusQuery sq{};
+    sq.instance_id = static_cast<int64_t>(config_.instance_id);
+    sq.epoch       = epoch_;
+    send_pdu(conn_id, kPduStatusQuery, 0, sq);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "SequencerThread: StatusQuery sent on connection {} (instance_id={} epoch={})",
+               conn_id.get_value(), sq.instance_id, sq.epoch);
+}
+
+void SequencerThread::send_status_response(pubsub_itc_fw::ConnectionID conn_id)
+{
+    pubsub_itc_fw_app::StatusResponse sr{};
+    sr.self_instance_id = static_cast<int64_t>(config_.instance_id);
+    sr.peer_instance_id = 0; // we don't know the peer's ID here; it's in the query
+    sr.epoch            = epoch_;
+    sr.current_role     = role_;
+    send_pdu(conn_id, kPduStatusResponse, 0, sr);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "SequencerThread: StatusResponse sent on connection {} (role={} epoch={})",
+               conn_id.get_value(), pubsub_itc_fw_app::to_string(role_), epoch_);
+}
+
+void SequencerThread::send_peer_heartbeat()
+{
+    const pubsub_itc_fw::ConnectionID target = peer_active_conn();
+    if (!target.is_valid()) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
+                       "SequencerThread: heartbeat timer fired but no peer connection -- skipping");
+        return;
+    }
+    pubsub_itc_fw_app::Heartbeat hb{};
+    hb.instance_id = static_cast<int64_t>(config_.instance_id);
+    hb.epoch       = epoch_;
+    send_pdu(target, kPduHeartbeat, 0, hb);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
+               "SequencerThread: Heartbeat sent to peer (epoch={})", epoch_);
+}
+
+void SequencerThread::write_fence_file()
+{
+    const std::string& path = config_.fence_file_path;
+    const std::string content = std::to_string(config_.instance_id) + "\n";
+    FILE* f = std::fopen(path.c_str(), "w");
+    if (!f) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "SequencerThread: failed to write fence file '{}': {}",
+                   path, std::strerror(errno));
+        return;
+    }
+    std::fputs(content.c_str(), f);
+    std::fclose(f);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "SequencerThread: fence file written: {}", path);
+}
+
+void SequencerThread::handle_peer_status_query(pubsub_itc_fw::ConnectionID conn_id,
+                                                const pubsub_itc_fw::EventMessage& message)
+{
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    arena.reset();
+    std::size_t arena_bytes_needed = 0;
+    std::size_t bytes_consumed     = 0;
+    pubsub_itc_fw_app::StatusQueryView sq{};
+
+    if (!pubsub_itc_fw_app::decode(sq, message.payload(), static_cast<std::size_t>(message.payload_size()),
+                                    bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "SequencerThread: failed to decode StatusQuery -- dropping");
+        return;
+    }
+
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "SequencerThread: StatusQuery received from peer (instance_id={} epoch={})",
+               sq.instance_id, sq.epoch);
+
+    // Reply immediately so the peer can run election logic on our response.
+    send_status_response(conn_id);
+
+    // Run our own election based on the peer's identity.
+    elect_role(sq.instance_id, sq.epoch, pubsub_itc_fw_app::Role::unknown);
+}
+
+void SequencerThread::handle_peer_status_response(const pubsub_itc_fw::EventMessage& message)
+{
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    arena.reset();
+    std::size_t arena_bytes_needed = 0;
+    std::size_t bytes_consumed     = 0;
+    pubsub_itc_fw_app::StatusResponseView sr{};
+
+    if (!pubsub_itc_fw_app::decode(sr, message.payload(), static_cast<std::size_t>(message.payload_size()),
+                                    bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "SequencerThread: failed to decode StatusResponse -- dropping");
+        return;
+    }
+
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "SequencerThread: StatusResponse received from peer (self_id={} epoch={} role={})",
+               sr.self_instance_id, sr.epoch, pubsub_itc_fw_app::to_string(sr.current_role));
+
+    elect_role(sr.self_instance_id, sr.epoch, sr.current_role);
+}
+
+void SequencerThread::handle_peer_heartbeat(const pubsub_itc_fw::EventMessage& message)
+{
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    arena.reset();
+    std::size_t arena_bytes_needed = 0;
+    std::size_t bytes_consumed     = 0;
+    pubsub_itc_fw_app::HeartbeatView hb{};
+
+    if (!pubsub_itc_fw_app::decode(hb, message.payload(), static_cast<std::size_t>(message.payload_size()),
+                                    bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "SequencerThread: failed to decode Heartbeat -- dropping");
+        return;
+    }
+
+    if (hb.epoch < epoch_) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "SequencerThread: Heartbeat from stale peer (peer epoch={} < my epoch={}) -- ignoring",
+                   hb.epoch, epoch_);
+        return;
+    }
+
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
+               "SequencerThread: Heartbeat received from peer (instance_id={} epoch={})",
+               hb.instance_id, hb.epoch);
+
+    // Reset the heartbeat timeout whenever we receive a valid heartbeat.
+    if (role_ == pubsub_itc_fw_app::Role::follower) {
+        cancel_timer("peer_heartbeat_timeout");
+        start_one_off_timer("peer_heartbeat_timeout", std::chrono::seconds(config_.heartbeat_timeout_seconds));
+    }
+}
+
+void SequencerThread::handle_peer_pdu(pubsub_itc_fw::ConnectionID conn_id,
+                                       const pubsub_itc_fw::EventMessage& message)
+{
+    const int16_t pdu_id = static_cast<int16_t>(message.pdu_id());
+
+    if (pdu_id == kPduStatusQuery) {
+        handle_peer_status_query(conn_id, message);
+    } else if (pdu_id == kPduStatusResponse) {
+        handle_peer_status_response(message);
+    } else if (pdu_id == kPduHeartbeat) {
+        handle_peer_heartbeat(message);
+    } else if (pdu_id == kPduArbitrationDecision) {
+        // Arbiter forwarded its decision over the peer channel (not expected
+        // in the single-host topology, but handle gracefully).
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: ArbitrationDecision received (pdu_id={}) -- not yet handled",
+                   pdu_id);
+    } else {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "SequencerThread: unknown peer PDU id {} -- dropping", pdu_id);
+    }
+}
 
 } // namespace sequencer

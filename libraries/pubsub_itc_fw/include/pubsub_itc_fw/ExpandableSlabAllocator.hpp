@@ -76,9 +76,9 @@
  * explicit at every call site.
  */
 
+#include <atomic>
 #include <cstddef>
-#include <memory>
-#include <vector>
+#include <tuple>
 
 #include <pubsub_itc_fw/EmptySlabQueue.hpp>
 #include <pubsub_itc_fw/SlabAllocator.hpp>
@@ -183,20 +183,56 @@ class ExpandableSlabAllocator {
     [[nodiscard]] size_t slab_size() const;
 
   private:
+    // =======================================================================
+    // Segmented slab registry
+    //
+    // Slab IDs are assigned monotonically starting from 0. The registry is a
+    // two-level structure: a fixed-size directory of atomic page pointers, each
+    // pointing to a heap-allocated page of atomic SlabAllocator pointers.
+    //
+    // WHY NOT std::vector<unique_ptr<SlabAllocator>>?
+    // std::vector::push_back() can trigger internal reallocation (freeing the
+    // old backing array) while worker threads concurrently read element pointers
+    // from it via deallocate(). That is an unsynchronised access to freed memory.
+    //
+    // With the segmented design:
+    //   - The directory (pages_[]) is a fixed-size in-object array: it never
+    //     moves or is freed for the lifetime of the allocator.
+    //   - Each Page is heap-allocated once and never freed until the destructor
+    //     runs. Workers load the page pointer with acquire, then load the slab
+    //     pointer with acquire — both are stable once written.
+    //   - The reactor writes page pointers and slab pointers with release so
+    //     workers see a consistent view.
+    // =======================================================================
+
+    // 256 slots per page (kPageBits=8 → PAGE_SIZE=256).
+    // 1024 pages max → 262,144 distinct slab IDs before capacity exhaustion.
+    static constexpr int kPageBits = 8;
+    static constexpr int kPageSize = 1 << kPageBits;
+    static constexpr int kMaxPages = 1024;
+
+    struct Page {
+        std::atomic<SlabAllocator*> slots[kPageSize];
+        Page() noexcept {
+            for (auto& s : slots) {
+                s.store(nullptr, std::memory_order_relaxed);
+            }
+        }
+    };
+
     void drain_empty_slab_queue();
     SlabAllocator* append_new_slab();
+    SlabAllocator* load_slab_reactor(int slab_id) const noexcept; // reactor thread only
 
     size_t slab_size_;
     int current_slab_id_{-1};
     EmptySlabQueue empty_slab_queue_;
-    std::vector<std::unique_ptr<SlabAllocator>> slabs_;
+    int slab_slot_count_{0};          // total slab IDs ever issued (monotonically increasing)
+    std::atomic<Page*> pages_[kMaxPages]; // directory; initialised to nullptr in constructor
 
     // Vyukov sentinel reclamation: the most-recently-popped slab is kept alive
-    // until the next drain confirms head_ has moved past it. This avoids a
-    // use-after-free if a producer is mid-enqueue with the popped slab's node
-    // as its `prev` pointer when the consumer would otherwise reclaim it.
-    // -1 means no slab is currently deferred (the queue's built-in dummy_
-    // serves as the initial sentinel).
+    // until the next drain confirms head_ has moved past it.
+    // -1 means no slab is currently deferred.
     int deferred_reclaim_slab_id_{-1};
 };
 
