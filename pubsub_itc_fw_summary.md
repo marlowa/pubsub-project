@@ -457,7 +457,66 @@ The receiving node's reactor accepts data via epoll and delivers it zero-copy to
 
 ## Session Accomplishments
 
-### Session 16 (current)
+### Session 17 (current)
+
+**`ExpandableSlabAllocator` SIGSEGV fix — segmented atomic array.** `ConcurrentSmallSlabHighChurn` was crashing with SIGSEGV under ASan / TSan. Root cause: `std::vector<std::unique_ptr<SlabAllocator>>::push_back()` in `append_new_slab()` triggers reallocation — allocates a new backing array, moves elements, frees the old — while worker threads concurrently read raw pointers out of the old array via `deallocate()`. Freed-memory access; undefined behaviour.
+
+Fix: replaced the vector with a two-level segmented atomic array.
+- `std::atomic<Page*> pages_[kMaxPages]` (1024 directory slots, in-object, never moves or reallocates).
+- Each `Page` is heap-allocated once and holds `std::atomic<SlabAllocator*> slots[kPageSize]` (256 slots). Pages are never freed during the allocator's lifetime.
+- Slab id N maps to `pages_[N >> 8]->slots[N & 0xFF]`. Page 0 allocated in constructor; further pages allocated on demand in `append_new_slab`.
+- Workers in `deallocate()` load page ptr with `acquire`, slot ptr with `acquire`. Reactor's `release` stores in `append_new_slab` guarantee visibility.
+- `drain_empty_slab_queue` and `load_slab_reactor` use `relaxed` loads (reactor-thread only).
+
+The `ConcurrentSmallSlabHighChurn` test runs for `test_duration = std::chrono::seconds(5)` by design — 5-second runtime is intentional.
+
+Files changed: `ExpandableSlabAllocator.hpp`, `ExpandableSlabAllocator.cpp`.
+
+**Slices 1–5 of the WAL+HA plan implemented (spanning earlier sessions, documented here).**
+
+- **Slice 1 — seqNo on wire and in `EventMessage`.** `PduHeader` gains an `int64_t seq_no` field; `EventMessage::create_framework_pdu_message` takes `seq_no`; `SequencerThread` routes `next_sequence_number_` into the field when re-encoding for forwarding. ME and gateway see seqNos.
+- **Slice 2 — In-memory WAL.** Sequencer maintains an in-memory log (`SequencerWal`) of every committed order.
+- **Slice 3 — mmap'd WAL on disk, segmented, no fsync.** `SequencerWal` writes to `wal_NNNNNN.log` segments. On restart, WAL is replayed from segment 0 (or from snapshot anchor) to rebuild sequencer state. `WalEntryHeader`: `magic(4) | payload_size(4) | seq_no(8) | pdu_id(2) | filler_a(2) | filler_b(4)`. Each entry ends with CRC32. Corrupt/truncated entry stops replay; entries beyond are treated as "did not happen".
+- **Slice 4 — Snapshot (single, no rolling).** `SequencerWal::take_snapshot()` writes `snapshot.bin` atomically (write to `.tmp`, rename). `SnapshotHeader`: `magic | version | last_seq_no | record_count | wal_segment | wal_offset`. On open, valid snapshot causes WAL replay to start from the snapshot anchor, bounding restart time to post-snapshot WAL size.
+- **Slice 5 — `cl_ord_id → SenderCompID` routing map in sequencer.** Sequencer stamps `routing_comp_id` (the originating FIX client's `SenderCompID`) onto every forwarded ER PDU. Gateway looks up comp-id → current ConnectionID in its small comp-id table and routes the FIX ER accordingly. WAL replay rebuilds the routing map on restart. Gateway's `cl_ord_id_to_session_` map now lives in the sequencer.
+
+**Slice 6 — Leader-follower HA state machine.** Implemented in `SequencerThread`:
+- `Role` enum: `unknown`, `leader`, `follower`.
+- `adopt_role(role)`: transitions into the assigned role; logs the change. Only the leader forwards order PDUs to ME (`if (role_ != Role::leader) { release_pdu_payload(message); return; }`).
+- Startup election via `StatusQuery`/`StatusResponse` on peer connect.
+- `peer_heartbeat_timeout` timer: fires if peer does not complete election within the startup window; node self-promotes to leader.
+- Epoch tracking: `epoch_` incremented on self-promotion; propagated in `StatusQuery`, `StatusResponse`, `Heartbeat`.
+- Fence file written when becoming leader (single-host split-brain protection).
+- New `SequencerConfiguration` fields: `ha_enabled{false}`, `startup_election_timeout_seconds{3}`, `heartbeat_timeout_seconds{15}`.
+
+**Slice 6 regression fix — `ha_enabled` flag for single-node mode.** After Slice 6 landed, the sequencer started in `Role::unknown` and silently dropped every inbound order PDU until the election completed. With no secondary running, only the `peer_heartbeat_timeout` path fires — originally 15 seconds. Any NOS within that window received no reply.
+
+Fix: `ha_enabled` flag (default false) added to both sequencer and gateway configs. When false:
+- Sequencer `on_initial_event`: immediately `adopt_role(leader)` (epoch 1). No election timer. No arbiter/peer connects.
+- Gateway `on_app_ready_event`: skips `connect_to_service("sequencer_secondary")`.
+- Gateway `forward_pdu_to_sequencers`: secondary branch guarded by `config_.ha_enabled`.
+- Gateway config loader: secondary host/port only parsed when `ha_enabled=true`.
+- `SampleFixGatewaySeq.cpp`: secondary service-registry entry only added when `ha_enabled=true`.
+
+Also: three connection-retry/failure log lines in `OutboundConnectionManager.cpp` demoted from `Warning` to `Info`.
+
+Files changed (Slice 6 + regression fix):
+- `applications/sequencer/SequencerConfiguration.hpp`
+- `applications/sequencer/SequencerConfigurationLoader.cpp` (added `#include <tuple>` for `std::ignore`)
+- `applications/sequencer/SequencerThread.cpp`
+- `applications/sequencer/SequencerThread.hpp`
+- `applications/sample_fix_gateway_seq/FixGatewaySeqConfiguration.hpp`
+- `applications/sample_fix_gateway_seq/FixGatewaySeqConfigurationLoader.cpp`
+- `applications/sample_fix_gateway_seq/FixGatewaySeqThread.hpp`
+- `applications/sample_fix_gateway_seq/FixGatewaySeqThread.cpp`
+- `applications/sample_fix_gateway_seq/SampleFixGatewaySeq.cpp`
+- `libraries/pubsub_itc_fw/src/OutboundConnectionManager.cpp`
+
+**Build and test status at session end:** all unit tests pass including `ConcurrentSmallSlabHighChurn`. End-to-end verified: fix8 NOS → gateway → sequencer (immediately leader with `ha_enabled=false`) → ME → sequencer → gateway → fix8 ER. No silent drops.
+
+---
+
+### Session 16
 
 **Slab-queue race condition in `EmptySlabQueue` / `ExpandableSlabAllocator` diagnosed and fixed.** Under heavy fix8 T-burst load on the integrated gateway/sequencer, the reactor would wedge in `ExpandableSlabAllocator::drain_empty_slab_queue` with the tripwire firing after ~1 second. Diagnostic output showed a state that looked structurally impossible: `head_ = &slab_N's_queue_node` (a real slab), `tail_ = &dummy_`, `head_->next = nullptr` — persistent across millions of retry iterations. The consumer was stuck because `head_->next` would never become non-null (no producer can ever set `slab_N's_next` once `tail_` no longer points at `&slab_N's_node`).
 
@@ -816,7 +875,7 @@ TcpSocket EAGAIN/EOF fix, use-after-free fix, InboundConnection infrastructure, 
 
 ## What Is Done
 
-- Allocator subsystem — complete, tested, all races fixed. Session 16 fixed a previously-undiagnosed race in `EmptySlabQueue::reset_to_empty` that wedged the slab allocator under heavy fix8 T-burst load; replaced with Vyukov sentinel pattern. Test files reorganised to one-fixture-per-file (`EmptySlabQueueTest.cpp`, `SlabAllocatorTest.cpp`, `ExpandableSlabAllocatorTest.cpp`); ~65 tests across the three files; integrated gateway/sequencer/ME runs cleanly under sustained load.
+- Allocator subsystem — complete, tested, all races fixed. Session 16 fixed the `EmptySlabQueue::reset_to_empty` Vyukov-sentinel race (Vyukov deferred-reclaim with `deferred_reclaim_slab_id_`; test files reorganised one-fixture-per-file; ~65 tests). Session 17 fixed a second, independent race in `ExpandableSlabAllocator`: `std::vector::push_back()` reallocation freed the backing array while workers read raw pointers from it; replaced with a two-level segmented atomic array (`pages_[1024]` directory of heap-allocated `Page` structs, each with 256 `atomic<SlabAllocator*>` slots; pages never move; workers load with `acquire`, reactor stores with `release`).
 - Lock-free MPSC queue — complete, tested
 - Reactor event loop — complete, tested
 - ApplicationThread — complete, tested; `release_pdu_payload()` added
@@ -840,8 +899,8 @@ TcpSocket EAGAIN/EOF fix, use-after-free fix, InboundConnection infrastructure, 
 - `fix_equity_orders.dsl` — FIX 5.0 SP2 equity order topic registry
 - Logging subsystem — complete
 - `RawBytesProtocolHandler` — complete; `on_data_ready`/`send_prebuilt`/`continue_send` return `tuple<bool, std::string>`; no disconnect-handler member; no logger member (session 14)
-- `sample_fix_gateway_seq` — FIX session layer complete; PDU encoding to sequencer complete; connection identification complete. Single sequencer outbound (`sequencer_primary`); secondary endpoint and dual-publish removed in session 15 pending leader-follower protocol. `forward_pdu_to_sequencers` template kept as the single-target publisher (the plural in the name will be reasserted when dual-publish returns). **ER routing back to fix8 complete**: `on_framework_pdu_message` decodes inbound ExecutionReport PDUs, looks up `cl_ord_id_to_session_` for the originating FIX session, builds a FIX ER and sends via `send_fix_to_session`. Map entries are erased on terminal `OrdStatus` and on FIX session disconnect (sweep in `on_connection_lost`). End-to-end fix8 → ER → fix8 round trip verified at session-15 end.
-- `sequencer` — complete for the order-flow round trip. `on_framework_pdu_message` decodes inbound order PDUs from `inbound:7001` and forwards them to the matching engine via the new outbound `me_outbound_order_conn_id_`; ER PDUs from `inbound:7021` are decoded and forwarded to the gateway via `gateway_conn_id_`. Topology corrected in session 15: `[matching_engine]` section added to config and toml; `Sequencer.cpp` registers the service; `connect_to_service("matching_engine")` opens the dedicated outbound to ME's order listener instead of misusing the inbound ER channel bidirectionally. All re-encode blocks (NOS, OCR, ER) use direct `view.X` assignment to outbound `string_view` fields (the slab payload outlives `send_pdu`); the previous `std::string(view.X)` pattern caused SSO-bookkeeping-byte corruption and was fixed in session 15. All `has_*` optional flags propagated alongside their values for every forwarded PDU type. Peer connection still deferred — `peer_host`/`peer_port` removed in session 13, will return with leader-follower.
+- `sample_fix_gateway_seq` — FIX session layer complete; PDU encoding to sequencer complete; ER routing back to fix8 complete. Session 17 adds `ha_enabled` flag (default false): when false, secondary sequencer connect is skipped, `forward_pdu_to_sequencers` sends only to primary, and secondary host/port are not required in the toml. When `ha_enabled=true`, dual-publish to primary and secondary is restored. `forward_pdu_to_sequencers` name kept plural — the dual-publish branch returns when leader-follower is fully live.
+- `sequencer` — Slices 1–6 complete. PDU forwarding (NOS, OCR, ER), topology, re-encode fixes all from session 15. WAL (`SequencerWal`: mmap'd segments, snapshot, CRC32, replay on restart), seqNo on wire, `routing_comp_id` stamping, and leader-follower state machine (`Role::unknown/leader/follower`, `adopt_role`, `peer_heartbeat_timeout`, epoch, fence file) from sessions covered by the session-17 entry. `ha_enabled=false` (default): sequencer immediately adopts `Role::leader` in `on_initial_event` and skips arbiter/peer connects. Only the leader forwards order PDUs to ME.
 - `matching_engine` — complete for the round-trip stub. `on_framework_pdu_message` decodes inbound `NewOrderSingle` PDUs (session 15) and emits a fully-filled `ExecutionReport` over the existing outbound `sequencer_er_conn_id_`. The ER populates every field that `SequencerThread`'s ER decoder reads. No real order book or matching — every order becomes a single fill at its limit price (or a zero sentinel for market orders). `OrderID` and `ExecID` are generated as `ME-ORD-N` / `ME-EXEC-N`. `OrderCancelRequest` is not yet handled (logs and drops at the `else` branch); cancel handling is a small follow-up.
 - `arbiter` — stub, compiling
 - `start_fix_seq_system.py` — runs primary only (secondary launch removed in session 15 pending leader-follower)
@@ -851,29 +910,31 @@ TcpSocket EAGAIN/EOF fix, use-after-free fix, InboundConnection infrastructure, 
 1. **Re-verify fix8 wrong-port issue is gone** — session 13 logs showed fix8 reaching the gateway's ER inbound listener (port 7010) rather than the FIX listener (port 9879). Sessions 14 and 15 did not reproduce this; fix8 connected cleanly to 9879 throughout. Worth one explicit check (`f8test -d -c myfix_gateway_client.xml -N GW1`) before retiring the item.
 2. **Matching engine — `OrderCancelRequest` handling** — the ME currently logs and drops cancels at the `else` branch. Mirror the NewOrderSingle path: decode, fabricate a `Canceled` ER, send. Small follow-up; will exercise the same plumbing again with a different message type.
 3. **Arbiter stub → real** — `ArbitrationReport` → `ArbitrationDecision`
-4. **Leader-follower protocol** — state machine, heartbeat timers, arbitration. When this lands, restore the secondary sequencer config/code (removed in session 15) and the peer Connect (removed in session 13). Decide on a real port plan first — the previous `:7003` was unbound and the port table needs dedicated peer-protocol listener ports. The simplest scheme is dedicated listeners (e.g. 7003 primary peer, 7004 secondary peer) so peer-protocol bytes are not conflated with order PDUs. Once leader-follower lands, the gateway's `forward_pdu_to_sequencers` plural function name becomes accurate again as the dual-publish branch returns.
-5. **Sequencer "behaves as unconditional leader" stub limitation** — `SequencerThread::on_framework_pdu_message` currently always forwards. Only the leader should forward. Will be fixed when leader-follower lands.
-6. **`SequencedMessage` wrapper** — currently the sequencer forwards raw PDUs to ME without a sequence-number envelope; add this once stable.
-7. **Trace logs in `PduParser` and elsewhere** — the two `Info`-level lines in `PduParser::receive` (header decode + raw 16 header bytes), the `Info`-level payload hex dump in `PduParser::dispatch_pdu` (added during session 15 to diagnose the binary-garbage bug), and the short `TRACE` lines in `InboundConnectionManager::on_accept` and `SequencerThread::on_framework_pdu_message` are all valuable diagnostic infrastructure but noisy at production rates. Drop to `Debug` or wrap behind a compile-time switch when production traffic begins.
-8. **Pub/sub WAL** — long-term replacement for direct TCP; eliminates the rendezvous problem and the retry workaround.
+4. **Leader-follower — Slice 7 (network WAL replication)** — the state machine is done (Slice 6, session 17). What remains: follower on another host, leader streams WAL records over a dedicated TCP connection, follower acks, commit-for-ER-emission = follower-acked. When Slice 7 lands, restore the secondary sequencer config/code (set `ha_enabled=true` in both tomls) and the peer Connect (removed in session 13). Port plan needed: 7003 primary peer listener, 7004 secondary peer listener. After Slice 7 the gateway's `forward_pdu_to_sequencers` dual-publish branch is live again.
+5. **`SequencedMessage` wrapper** — currently the sequencer forwards raw PDUs to ME without a sequence-number envelope; add this once stable.
+6. **Trace logs in `PduParser` and elsewhere** — the two `Info`-level lines in `PduParser::receive` (header decode + raw 16 header bytes), the `Info`-level payload hex dump in `PduParser::dispatch_pdu`, and the short `TRACE` lines in `InboundConnectionManager::on_accept` and `SequencerThread::on_framework_pdu_message` are valuable for diagnosis but noisy at production rates. Drop to `Debug` or wrap behind a compile-time switch when production traffic begins.
+7. **Pub/sub WAL** — long-term replacement for direct TCP; eliminates the rendezvous problem and the retry workaround.
 
 ## Immediate Next Task
 
-A WAL+HA design has been worked through in detail (see "WAL and HA Design" section below) and a nine-slice implementation plan agreed. The next session takes **Slice 1** of that plan:
+A WAL+HA design has been worked through in detail (see "WAL and HA Design" section below) and an eleven-slice implementation plan agreed. **Slices 1–6 are complete** (see session-17 entry). The next session takes **Slice 7**:
 
-**Slice 1 -- Add seqNo to `EventMessage` and to the wire format.** Smallest possible change: add an `int64_t seq_no` field to `EventMessage` (peer of the existing `pdu_id`/`connection_id`), update `EventMessage::create_framework_pdu_message` to take it, route the SequencerThread's already-existing `next_sequence_number_` into the field when re-encoding for forwarding, propagate through to the ME and gateway. After this slice the ME and gateway both see the seqNo on every PDU but do nothing with it. Verifies the plumbing without changing any semantics. Likely accompanied by an addition to the `PduHeader` so seqNo is on the wire (currently the header carries `byte_count`, `pdu_id`, `version`, canary; add `seq_no` between `pdu_id` and `version`, with appropriate htonll/ntohll).
+**Slice 7 — Network WAL replication.** Follower on a second host. Leader streams WAL records over a dedicated TCP connection (replication channel, separate from the order/ER data channels). Follower writes each record to its own WAL and acks. Leader gates ER emission on follower ack — the ER is not sent to the gateway until the follower has durably recorded the order.
 
-After Slice 1 lands, continue with Slice 2 (in-memory WAL) and onward per the staging plan in the design section. Each slice is a session or two of work and leaves the system in a working state.
+Before Slice 7 starts:
+- Decide port plan for peer-to-peer replication channel (7003 primary listener, 7004 secondary listener suggested).
+- Set `ha_enabled=true` in both sequencer and gateway tomls for the HA test setup; the secondary service-registry entries and dual-publish code are already present, just guarded.
+- The peer `Connect` (removed in session 13) returns as the replication channel connect.
 
 **Smaller items deferred but still on the list:**
-- Trace log cleanup (item 7 in "What Is Not Yet Done"): demote `Info`-level traces to `Debug`. Mechanical, quick. Worth doing whenever it stops being useful for slice verification.
+- Trace log cleanup (item 6 in "What Is Not Yet Done"): demote `Info`-level traces to `Debug`. Mechanical, quick.
 - OrderCancelRequest round trip (item 2): mirrors NewOrderSingle path on ME side. Small. Fits in a session corner.
 - fix8 wrong-port re-verification (item 1): one `f8test -d` run.
 - `k`-prefix constants in `ExpandableSlabAllocatorTest`'s fixture (`kSmallSlab`, `kLargeSlab`) — violates the project rule that constants are snake_case. Mechanical search-and-replace.
-- Quill thread-name population — call `quill::Frontend::set_thread_name()` at thread spawn sites (Reactor, ApplicationThread, etc) so the `thread_name` column in the log format actually shows something.
-- Quill backend CPU usage tuning — the existing TODO about pinning the backend thread and tuning `BackendOptions::sleep_duration`.
+- Quill thread-name population — call `quill::Frontend::set_thread_name()` at thread spawn sites so the `thread_name` log column shows something.
+- Quill backend CPU tuning — pin the backend thread and tune `BackendOptions::sleep_duration`.
 - Sequencer ER inbound 120s idle-timeout killing healthy quiet connections.
-- Hex-dump debug logging on hot path (Session 15 item 7) needs a compile-time flag gate before production.
+- Hex-dump debug logging on hot path needs a compile-time flag gate before production.
 
 **Design note — the rendezvous problem:**
 The connection retry mechanism is a temporary TCP workaround pending WAL-based brokerless pub/sub. In the pub/sub design, publishers write to the WAL regardless of subscriber presence and there is no connection to establish, so the rendezvous problem disappears. The retry logic should be removed when direct TCP is replaced by pub/sub topics.
@@ -1649,13 +1710,13 @@ A representative deployment requires roughly: 2 sequencer machines, 2 ME machine
 
 Each slice is shippable -- the system works at the end of each. Each slice is a session or two. The whole programme is roughly a year of part-time work but never leaves the system in a half-built state.
 
-1. **Add seqNo to `EventMessage` and to wire format.** PDU header gains `seq_no` field; `EventMessage` gains a peer to `pdu_id`. ME and gateway see seqNos but do nothing with them yet. Plumbing only. *(Slice 1; Immediate Next Task.)*
-2. **In-memory WAL.** Sequencer maintains an in-memory log of every committed order. Used for nothing yet but the data structure is exercised. Verifies ring-buffer or segmented-vector design works.
-3. **mmap'd WAL on disk, single-host, no fsync.** Crash recovery: replay WAL on startup, rebuild state. No replication yet. Validates the durable-log mechanism.
-4. **Snapshot (single, no rolling).** Snapshot at intervals, truncate WAL behind the snapshot point. Fast restart. Validates the snapshot mechanism in isolation.
-5. **Move FixSession ↔ ClOrdID mapping into sequencer's state.** Gateway becomes the translator described above. Comp-id-keyed routing replaces the gateway's current `cl_ord_id_to_session_` map.
-6. **Single-host failover infrastructure.** Two sequencer processes on the same host. File-based fencing for leader detection (placeholder for arbiter). Gateway connects to leader-side. Validates the protocol mechanics (handshakes, cursor exchange, replay) without network complexity.
-7. **Network replication.** Follower on another host. Leader streams WAL records over a dedicated TCP connection. Follower acks; commit-for-ER-emission = follower-acked.
+1. ~~**Add seqNo to `EventMessage` and to wire format.**~~ ✓ Done (session 17).
+2. ~~**In-memory WAL.**~~ ✓ Done (session 17).
+3. ~~**mmap'd WAL on disk, single-host, no fsync.**~~ ✓ Done (session 17). `SequencerWal`: mmap'd segments, CRC32 per entry, WAL replay on startup.
+4. ~~**Snapshot (single, no rolling).**~~ ✓ Done (session 17). `SequencerWal::take_snapshot()` writes atomically; WAL replay starts from snapshot anchor on restart.
+5. ~~**Move FixSession ↔ ClOrdID mapping into sequencer's state.**~~ ✓ Done (session 17). `routing_comp_id` stamping on forwarded ERs; WAL replay rebuilds routing map.
+6. ~~**Single-host failover infrastructure.**~~ ✓ Done (session 17). Leader-follower state machine (StatusQuery/StatusResponse, heartbeat, Role enum, fence file, epoch). `ha_enabled=false` (default) makes sequencer start immediately as leader in single-node mode.
+7. **Network replication.** ← **Next task.** Follower on another host. Leader streams WAL records over a dedicated TCP connection. Follower acks; commit-for-ER-emission = follower-acked.
 8. **Arbiter implementation.** Replaces file-based fencing with the real arbiter (lease+epoch handshake protocol from the Leader-Follower Protocol subsystem section). At this slice, the arbiter's own internal HA is implemented via the PSA+witness topology: two full arbiter instances with hand-rolled lease+epoch replication between them, plus one witness machine in a failure-independent location to break ties. See "Arbiter PSA topology" section.
 9. **Dual snapshots, snapshot validation, polish.** The safety-net layer that turns the system from "works" into "operationally bullet-proof".
 10. **WAL multi-subscriber generalisation.** Generalise the sequencer's WAL replication channel from "one follower (the secondary sequencer)" to "N followers, each with their own position cursor". Snapshot-and-truncate becomes follower-position-aware: truncation target is the minimum across all follower positions ∧ the snapshot anchor position. This slice unblocks slice 11 and any future WAL-follower components.
