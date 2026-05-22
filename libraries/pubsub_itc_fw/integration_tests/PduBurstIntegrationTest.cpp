@@ -137,8 +137,8 @@ class SenderThread : public ApplicationThread {
         : ApplicationThread(token, logger, reactor, "SenderThread", ThreadID{1}, make_queue_config(), make_allocator_config("SenderPool"),
                             ApplicationThreadConfiguration{})
         , count_(count) {
-        sent_payloads_.reserve(static_cast<std::size_t>(count));
-        cl_ord_id_storage_.reserve(static_cast<std::size_t>(count));
+        sent_payloads_.reserve(static_cast<size_t>(count));
+        cl_ord_id_storage_.reserve(static_cast<size_t>(count));
     }
 
     std::atomic<bool> connection_established{false};
@@ -204,8 +204,8 @@ class SenderThread : public ApplicationThread {
             // Capture the encoded payload bytes (without the PduHeader) into
             // sent_payloads_ before send_pdu() runs. This is what the receiver
             // will be compared against.
-            std::size_t bytes_written = 0;
-            std::size_t bytes_needed = 0;
+            size_t bytes_written = 0;
+            size_t bytes_needed = 0;
             (void)pubsub_itc_fw_app::encode(er, nullptr, 0, bytes_written, bytes_needed);
             std::vector<uint8_t> encoded(bytes_needed);
             if (!pubsub_itc_fw_app::encode(er, encoded.data(), encoded.size(), bytes_written, bytes_needed)) {
@@ -270,7 +270,7 @@ class ReceiverThread : public ApplicationThread {
         cap.seq_no = message.seq_no();
 
         const auto* payload_ptr = message.payload();
-        const auto payload_size = static_cast<std::size_t>(message.payload_size());
+        const auto payload_size = static_cast<size_t>(message.payload_size());
 
         cap.payload.assign(payload_ptr, payload_ptr + payload_size);
 
@@ -278,8 +278,8 @@ class ReceiverThread : public ApplicationThread {
         auto& arena_buf = decode_arena_buffer();
         pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
         arena.reset();
-        std::size_t bytes_consumed = 0;
-        std::size_t arena_bytes_needed = 0;
+        size_t bytes_consumed = 0;
+        size_t arena_bytes_needed = 0;
         pubsub_itc_fw_app::ExecutionReportView view{};
         cap.decode_ok = pubsub_itc_fw_app::decode(view, payload_ptr, payload_size, bytes_consumed, arena, arena_bytes_needed);
         if (cap.decode_ok && view.has_cl_ord_id) {
@@ -477,8 +477,8 @@ TEST_F(FrameworkPduBurstIntegrationTest, ExecutionReportBurstSurvivesEndToEnd) {
     ASSERT_EQ(static_cast<int>(sender_thread->sent_payloads_.size()), burst_size) << "Sender recorded payload count does not match burst size";
 
     for (int i = 0; i < burst_size; ++i) {
-        const auto& cap = receiver_thread->captured_[static_cast<std::size_t>(i)];
-        const auto& sent_payload = sender_thread->sent_payloads_[static_cast<std::size_t>(i)];
+        const auto& cap = receiver_thread->captured_[static_cast<size_t>(i)];
+        const auto& sent_payload = sender_thread->sent_payloads_[static_cast<size_t>(i)];
         const std::string expected = "ord" + std::to_string(i + 1);
 
         EXPECT_EQ(cap.seq_no, static_cast<int64_t>(i + 1)) << "PDU at index " << i << ": seq_no mismatch (got " << cap.seq_no << ")";
@@ -648,8 +648,8 @@ TEST_F(FrameworkPduBurstIntegrationTest, ExecutionReportBurstUnderConcurrentRawP
     ASSERT_EQ(static_cast<int>(sender_thread->sent_payloads_.size()), burst_size) << "Sender recorded payload count does not match burst size";
 
     for (int i = 0; i < burst_size; ++i) {
-        const auto& cap = receiver_thread->captured_[static_cast<std::size_t>(i)];
-        const auto& sent_payload = sender_thread->sent_payloads_[static_cast<std::size_t>(i)];
+        const auto& cap = receiver_thread->captured_[static_cast<size_t>(i)];
+        const auto& sent_payload = sender_thread->sent_payloads_[static_cast<size_t>(i)];
         const std::string expected = "ord" + std::to_string(i + 1);
 
         EXPECT_EQ(cap.seq_no, static_cast<int64_t>(i + 1)) << "PDU at index " << i << ": seq_no mismatch (got " << cap.seq_no << ")";

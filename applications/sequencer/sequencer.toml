@@ -13,6 +13,7 @@ host = "127.0.0.1"
 port = 7020
 
 [ha]
+ha_enabled   = true
 instance_id  = 1
 arbiter_host = "127.0.0.1"
 arbiter_port = 7100

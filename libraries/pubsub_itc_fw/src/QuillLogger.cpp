@@ -127,7 +127,7 @@ void QuillLogger::block_signals_before_construction() {
 
 std::string QuillLogger::ensure_log_file_writable(const std::string& file_path) {
     // Extract the parent directory from the file path.
-    const std::size_t last_slash = file_path.rfind('/');
+    const size_t last_slash = file_path.rfind('/');
     if (last_slash != std::string::npos && last_slash > 0) {
         const std::string parent_dir = file_path.substr(0, last_slash);
         const std::string dir_error = FileSystemUtils::make_directories(parent_dir);

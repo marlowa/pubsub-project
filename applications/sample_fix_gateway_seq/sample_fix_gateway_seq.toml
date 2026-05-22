@@ -6,6 +6,7 @@ er_listen_host      = "127.0.0.1"
 er_listen_port      = 7010
 
 [sequencer]
+ha_enabled      = true
 primary_host    = "127.0.0.1"
 primary_port    = 7001
 secondary_host  = "127.0.0.1"

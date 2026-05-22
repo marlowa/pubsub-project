@@ -126,3 +126,4 @@ refrain from making a class non-movable just because you think it is advisable o
 when writing unit tests please do not add comments numbering the tests. That is fragile.
 It creates extra work to keep the comments accurate when tests are prepended or inserted in the middle.
 dont use switch statements on integers, should be for enums only.
+do not say std::size_t, say size_t instead. Qualifying that particular typedef is just too much aggro.

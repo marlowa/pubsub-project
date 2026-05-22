@@ -138,7 +138,7 @@ static const std::string request_payload = "HELLO_RAW_SERVER";
 static const std::string response_payload = "HELLO_RAW_CLIENT";
 
 static constexpr int64_t raw_buffer_capacity = 65536;
-static constexpr std::size_t length_prefix_size = sizeof(uint32_t);
+static constexpr size_t length_prefix_size = sizeof(uint32_t);
 
 // ============================================================
 // Raw POSIX socket helpers
@@ -152,28 +152,28 @@ static std::string make_framed(const std::string& payload) {
     return frame;
 }
 
-static bool send_all(int sock_fd, const void* buf, std::size_t size) {
+static bool send_all(int sock_fd, const void* buf, size_t size) {
     const auto* ptr = static_cast<const char*>(buf);
-    std::size_t remaining = size;
+    size_t remaining = size;
     while (remaining > 0) {
         const ssize_t sent = ::send(sock_fd, ptr, remaining, 0);
         if (sent <= 0)
             return false;
         ptr += sent;
-        remaining -= static_cast<std::size_t>(sent);
+        remaining -= static_cast<size_t>(sent);
     }
     return true;
 }
 
-static bool recv_all(int sock_fd, void* buf, std::size_t size) {
+static bool recv_all(int sock_fd, void* buf, size_t size) {
     auto* ptr = static_cast<char*>(buf);
-    std::size_t remaining = size;
+    size_t remaining = size;
     while (remaining > 0) {
         const ssize_t received = ::recv(sock_fd, ptr, remaining, 0);
         if (received <= 0)
             return false;
         ptr += received;
-        remaining -= static_cast<std::size_t>(received);
+        remaining -= static_cast<size_t>(received);
     }
     return true;
 }

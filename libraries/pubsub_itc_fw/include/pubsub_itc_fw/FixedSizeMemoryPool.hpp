@@ -223,9 +223,9 @@ template <typename T> class FixedSizeMemoryPool {
     using SlotType = Slot<T>;
 
     FixedSizeMemoryPool(int objects_per_pool, UseHugePagesFlag use_huge_pages_flag,
-                        [[maybe_unused]] std::function<void(void*, std::size_t)> handler_for_huge_pages_error)
+                        [[maybe_unused]] std::function<void(void*, size_t)> handler_for_huge_pages_error)
         : objects_per_pool_(objects_per_pool), use_huge_pages_flag_(use_huge_pages_flag) {
-        total_pool_size_ = static_cast<std::size_t>(objects_per_pool_) * sizeof(SlotType);
+        total_pool_size_ = static_cast<size_t>(objects_per_pool_) * sizeof(SlotType);
 
         pool_memory_ = mmap(nullptr, total_pool_size_, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         if (pool_memory_ == MAP_FAILED)
@@ -321,7 +321,7 @@ template <typename T> class FixedSizeMemoryPool {
 
     [[nodiscard]] bool uses_huge_pages() const;
 
-    [[nodiscard]] std::size_t get_huge_page_size() const;
+    [[nodiscard]] size_t get_huge_page_size() const;
 
     uint64_t get_allocation_count() const {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -363,7 +363,7 @@ template <typename T> class FixedSizeMemoryPool {
   private:
     int objects_per_pool_;
     UseHugePagesFlag use_huge_pages_flag_;
-    std::size_t total_pool_size_{0};
+    size_t total_pool_size_{0};
     void* pool_memory_{MAP_FAILED};
     SlotType* slots_{nullptr};
 
@@ -619,7 +619,7 @@ template <typename T> class FixedSizeMemoryPool {
      *       If huge pages are requested but unavailable, the pool falls back
      *       to standard pages and invokes the error handler.
      */
-    FixedSizeMemoryPool(int objects_per_pool, UseHugePagesFlag use_huge_pages_flag, std::function<void(void*, std::size_t)> handler_for_huge_pages_error);
+    FixedSizeMemoryPool(int objects_per_pool, UseHugePagesFlag use_huge_pages_flag, std::function<void(void*, size_t)> handler_for_huge_pages_error);
 
     FixedSizeMemoryPool(const FixedSizeMemoryPool&) = delete;
     FixedSizeMemoryPool& operator=(const FixedSizeMemoryPool&) = delete;
@@ -709,7 +709,7 @@ template <typename T> class FixedSizeMemoryPool {
      *
      * @return Huge page size in bytes (2MB), or 0 if not using huge pages.
      */
-    [[nodiscard]] std::size_t get_huge_page_size() const;
+    [[nodiscard]] size_t get_huge_page_size() const;
 
     /**
      * @brief Sets the next pool in a linked chain (for ExpandablePoolAllocator).
@@ -889,7 +889,7 @@ template <typename T> class FixedSizeMemoryPool {
 
     int objects_per_pool_;
     UseHugePagesFlag use_huge_pages_flag_;
-    std::size_t total_pool_size_{0U};
+    size_t total_pool_size_{0U};
     void* pool_memory_{MAP_FAILED};
     SlotType* slots_{nullptr};
 
@@ -902,7 +902,7 @@ template <typename T> class FixedSizeMemoryPool {
 
 template <typename T>
 FixedSizeMemoryPool<T>::FixedSizeMemoryPool(int objects_per_pool, UseHugePagesFlag use_huge_pages_flag,
-                                            std::function<void(void*, std::size_t)> handler_for_huge_pages_error)
+                                            std::function<void(void*, size_t)> handler_for_huge_pages_error)
     : objects_per_pool_(objects_per_pool), use_huge_pages_flag_(use_huge_pages_flag) {
 #ifndef __GCC_HAVE_SYNC_COMPARE_AND_SWAP_16
 #ifndef CLANG_TIDY
@@ -912,7 +912,7 @@ FixedSizeMemoryPool<T>::FixedSizeMemoryPool(int objects_per_pool, UseHugePagesFl
     static_assert(alignof(HeadPtr) == 16, "HeadPtr must be 16-byte aligned.");
 
     // Calculate memory requirements: pool stores an array of SlotType.
-    total_pool_size_ = static_cast<std::size_t>(objects_per_pool_) * sizeof(SlotType);
+    total_pool_size_ = static_cast<size_t>(objects_per_pool_) * sizeof(SlotType);
 
     // Attempt allocation with requested page type.
     int flags = MAP_PRIVATE | MAP_ANONYMOUS;
@@ -1102,7 +1102,7 @@ template <typename T> bool FixedSizeMemoryPool<T>::contains(const T* ptr) const 
         return false;
     }
 
-    const auto offset = static_cast<std::size_t>(byte_ptr - start);
+    const auto offset = static_cast<size_t>(byte_ptr - start);
     const auto storage_offset = offsetof(SlotType, storage);
 
     if (offset < storage_offset) {
@@ -1116,9 +1116,9 @@ template <typename T> inline bool FixedSizeMemoryPool<T>::uses_huge_pages() cons
     return use_huge_pages_flag_ == UseHugePagesFlag::DoUseHugePages;
 }
 
-template <typename T> inline std::size_t FixedSizeMemoryPool<T>::get_huge_page_size() const {
+template <typename T> inline size_t FixedSizeMemoryPool<T>::get_huge_page_size() const {
     if (uses_huge_pages()) {
-        return static_cast<std::size_t>(2048U) * 1024U;
+        return static_cast<size_t>(2048U) * 1024U;
     }
     return 0U;
 }

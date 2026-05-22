@@ -519,11 +519,11 @@ class ApplicationThread {
         // without writing anything. The call cannot fail on the measuring pass
         // (out_size=0 guarantees the buffer-too-small branch is not reached for
         // variable-length messages), but we check anyway for safety.
-        std::size_t bytes_written = 0;
-        std::size_t bytes_needed = 0;
+        size_t bytes_written = 0;
+        size_t bytes_needed = 0;
         [[maybe_unused]] bool ok = encode(msg, nullptr, 0, bytes_written, bytes_needed);
 
-        const std::size_t frame_size = sizeof(PduHeader) + bytes_needed;
+        const size_t frame_size = sizeof(PduHeader) + bytes_needed;
         auto [slab_id, chunk] = outbound_allocator_.allocate(frame_size);
 
         // Write PduHeader in network byte order.

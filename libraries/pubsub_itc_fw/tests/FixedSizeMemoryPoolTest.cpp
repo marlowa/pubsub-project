@@ -55,8 +55,8 @@ class FixedSizeMemoryPoolTest : public ::testing::Test {
 
     std::atomic<int> huge_pages_error_calls_{0};
 
-    std::function<void(void*, std::size_t)> huge_page_handler() {
-        return [this](void*, std::size_t) { huge_pages_error_calls_.fetch_add(1, std::memory_order_relaxed); };
+    std::function<void(void*, size_t)> huge_page_handler() {
+        return [this](void*, size_t) { huge_pages_error_calls_.fetch_add(1, std::memory_order_relaxed); };
     }
 };
 

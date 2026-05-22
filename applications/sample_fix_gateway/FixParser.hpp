@@ -106,7 +106,7 @@ class FixParser {
 
     MessageCallback on_message_;
     std::string buffer_;
-    std::size_t offset_{0};
+    size_t offset_{0};
 };
 
 } // namespace sample_fix_gateway

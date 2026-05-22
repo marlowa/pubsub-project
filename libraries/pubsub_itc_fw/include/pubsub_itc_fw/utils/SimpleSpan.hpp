@@ -27,7 +27,7 @@ template <typename T> class SimpleSpan {
     // Type aliases (following std::span conventions)
     using element_type = T;
     using value_type = std::remove_cv_t<T>;
-    using size_type = std::size_t;
+    using size_type = size_t;
     using difference_type = std::ptrdiff_t;
     using pointer = T*;
     using const_pointer = const T*;

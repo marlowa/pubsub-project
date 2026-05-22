@@ -22,7 +22,7 @@ std::string FileSystemUtils::make_directories(const std::string& path) {
     std::string current;
     current.reserve(path.size());
 
-    for (std::size_t i = 0; i <= path.size(); ++i) {
+    for (size_t i = 0; i <= path.size(); ++i) {
         const char ch = (i < path.size()) ? path[i] : '\0';
 
         if (ch == '/' || ch == '\0') {

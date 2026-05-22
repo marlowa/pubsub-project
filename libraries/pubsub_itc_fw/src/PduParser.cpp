@@ -184,7 +184,7 @@ void PduParser::dispatch_pdu(int slab_id, void* payload_chunk) {
     {
         const int dump_limit = (payload_size < 96) ? payload_size : 96;
         std::string hex_bytes;
-        hex_bytes.reserve(static_cast<std::size_t>(dump_limit) * 3);
+        hex_bytes.reserve(static_cast<size_t>(dump_limit) * 3);
         for (int i = 0; i < dump_limit; ++i) {
             hex_bytes += fmt::format("{:02x} ", payload[i]);
         }

@@ -103,7 +103,7 @@ SequencerConfiguration SequencerConfigurationLoader::load(const std::string& fil
         if (segment_size_bytes <= 0) {
             throw pubsub_itc_fw::ConfigurationException("SequencerConfigurationLoader: wal.segment_size must be positive");
         }
-        config.wal_segment_size = static_cast<std::size_t>(segment_size_bytes);
+        config.wal_segment_size = static_cast<size_t>(segment_size_bytes);
 
         int32_t snapshot_interval_seconds = 0;
         toml.get_required_except("wal.snapshot_interval_seconds", snapshot_interval_seconds);

@@ -32,7 +32,7 @@
  *     // Pass 1: measure
  *     BumpAllocator measuring_arena(nullptr, 0);
  *     encode(message, wire_buffer, measuring_arena);
- *     std::size_t needed = measuring_arena.bytes_used();
+ *     size_t needed = measuring_arena.bytes_used();
  *
  *     // Pass 2: allocate real storage and retry
  *     auto [slab_id, ptr] = slab_allocator.allocate(needed);
@@ -110,7 +110,7 @@ class BumpAllocator {
      * @param[in] capacity Size of the backing buffer in bytes, or zero for
      *                     measuring mode.
      */
-    BumpAllocator(uint8_t* storage, std::size_t capacity) : storage_(storage), capacity_(capacity), bytes_used_(0) {}
+    BumpAllocator(uint8_t* storage, size_t capacity) : storage_(storage), capacity_(capacity), bytes_used_(0) {}
 
     ~BumpAllocator() = default;
 
@@ -138,14 +138,14 @@ class BumpAllocator {
      * @return Pointer to aligned storage for element_count T objects,
      *         or nullptr if storage is nullptr or capacity is exhausted.
      */
-    template <typename T> [[nodiscard]] T* allocate(std::size_t element_count) {
+    template <typename T> [[nodiscard]] T* allocate(size_t element_count) {
         if (element_count == 0) {
             throw PreconditionAssertion("BumpAllocator::allocate: element_count must be greater than zero", __FILE__, __LINE__);
         }
 
-        constexpr std::size_t alignment = alignof(T);
-        std::size_t aligned_offset = (bytes_used_ + alignment - 1) & ~(alignment - 1);
-        std::size_t required_bytes = aligned_offset + sizeof(T) * element_count;
+        constexpr size_t alignment = alignof(T);
+        size_t aligned_offset = (bytes_used_ + alignment - 1) & ~(alignment - 1);
+        size_t required_bytes = aligned_offset + sizeof(T) * element_count;
 
         bytes_used_ = required_bytes;
 
@@ -176,7 +176,7 @@ class BumpAllocator {
      *
      * @return Bytes used or required since the last reset().
      */
-    [[nodiscard]] std::size_t bytes_used() const {
+    [[nodiscard]] size_t bytes_used() const {
         return bytes_used_;
     }
 
@@ -187,7 +187,7 @@ class BumpAllocator {
      *
      * @return Total capacity of the backing buffer.
      */
-    [[nodiscard]] std::size_t bytes_capacity() const {
+    [[nodiscard]] size_t bytes_capacity() const {
         return capacity_;
     }
 
@@ -198,7 +198,7 @@ class BumpAllocator {
      *
      * @return Remaining capacity in bytes.
      */
-    [[nodiscard]] std::size_t bytes_remaining() const {
+    [[nodiscard]] size_t bytes_remaining() const {
         if (bytes_used_ >= capacity_) {
             return 0;
         }
@@ -218,8 +218,8 @@ class BumpAllocator {
 
   private:
     uint8_t* storage_;
-    std::size_t capacity_;
-    std::size_t bytes_used_;
+    size_t capacity_;
+    size_t bytes_used_;
 };
 
 } // namespace pubsub_itc_fw

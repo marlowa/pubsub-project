@@ -463,6 +463,17 @@ void OutboundConnectionManager::teardown_connection(ConnectionID id, const std::
     if (fd != -1) {
         ::epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, fd, nullptr);
         connections_by_fd_.erase(fd);
+    } else {
+        // finish_connect() called cancel() before teardown, closing the fd and
+        // making get_fd() return -1. Epoll auto-removed the closed fd, but the
+        // connections_by_fd_ entry still points to this (about-to-be-freed)
+        // connection. Scan to remove it before the memory is freed.
+        for (auto it2 = connections_by_fd_.begin(); it2 != connections_by_fd_.end(); ++it2) {
+            if (it2->second == &conn) {
+                connections_by_fd_.erase(it2);
+                break;
+            }
+        }
     }
 
     // Deliver ConnectionLost if requested and the connection was established.

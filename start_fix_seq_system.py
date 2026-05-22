@@ -5,12 +5,14 @@ start_fix_seq_system.py
 Starts the sequencer-based FIX order flow system for testing with fix8.
 
 Startup order:
-  1. arbiter                -- must be up before sequencers try to connect
-  2. sample_fix_gateway_seq -- must be listening on port 7010 before sequencers
+  1. arbiter (primary)      -- must be up before sequencers try to connect (port 7100)
+  2. arbiter (secondary)    -- second arbiter instance (port 7101)
+  3. sample_fix_gateway_seq -- must be listening on port 7010 before sequencers
                                start, because sequencers connect outbound to the
                                gateway's ER inbound listener at startup.
-  3. sequencer (primary)    -- instance_id=1, listens on port 7001
-  4. matching_engine        -- connects outbound to sequencer ER listener (7021)
+  4. sequencer (primary)    -- instance_id=1, listens on port 7001
+  5. sequencer (secondary)  -- instance_id=2, listens on port 7002
+  6. matching_engine        -- connects outbound to sequencer ER listener (7021)
 
 Usage with valgrind:
   ./start_fix_seq_system.py build/installed --valgrind --valgrind_command "vg"
@@ -142,14 +144,18 @@ def main() -> None:
 
     # Definition of the system components
     steps_data = [
-        ("arbiter", "arbiter", "arbiter.log",
-         etc_dir / "arbiter" / "arbiter.toml"),
+        ("arbiter_primary",        "arbiter",                "arbiter_primary.log",
+         etc_dir / "arbiter"               / "arbiter.toml"),
+        ("arbiter_secondary",      "arbiter",                "arbiter_secondary.log",
+         etc_dir / "arbiter"               / "arbiter_secondary.toml"),
         ("sample_fix_gateway_seq", "sample_fix_gateway_seq", "sample_fix_gateway_seq.log",
          etc_dir / "sample_fix_gateway_seq" / "sample_fix_gateway_seq.toml"),
-        ("sequencer_primary", "sequencer", "sequencer_primary.log",
-         etc_dir / "sequencer" / "sequencer.toml"),
-        ("matching_engine", "matching_engine", "matching_engine.log",
-         etc_dir / "matching_engine" / "matching_engine.toml"),
+        ("sequencer_primary",      "sequencer",              "sequencer_primary.log",
+         etc_dir / "sequencer"             / "sequencer.toml"),
+        ("sequencer_secondary",    "sequencer",              "sequencer_secondary.log",
+         etc_dir / "sequencer"             / "sequencer_secondary.toml"),
+        ("matching_engine",        "matching_engine",        "matching_engine.log",
+         etc_dir / "matching_engine"       / "matching_engine.toml"),
     ]
 
     try:

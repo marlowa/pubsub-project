@@ -90,7 +90,7 @@ class StringUtils {
     }
 
     // TODO doxygen comments
-    static std::string hex_dump(const void* data, std::size_t len);
+    static std::string hex_dump(const void* data, size_t len);
 };
 
 } // namespace pubsub_itc_fw

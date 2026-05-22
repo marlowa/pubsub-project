@@ -110,7 +110,7 @@ class FixParser {
     MessageCallback on_message_;
     pubsub_itc_fw::QuillLogger& logger_;
     std::string buffer_;
-    std::size_t offset_{0};
+    size_t offset_{0};
 };
 
 } // namespace sample_fix_gateway_seq

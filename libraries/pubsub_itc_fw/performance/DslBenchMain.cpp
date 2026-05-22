@@ -38,9 +38,9 @@ template <typename F> long long measure_avg_ns(F&& fn, int iterations, long long
 // ------------------------------------------------------------
 template <typename OwningMsg, typename ViewMsg> void benchmark_message(const char* name, OwningMsg& msg, int iterations) {
     uint8_t buffer[65536];
-    std::size_t written = 0;
-    std::size_t consumed = 0;
-    std::size_t bytes_needed = 0;
+    size_t written = 0;
+    size_t consumed = 0;
+    size_t bytes_needed = 0;
     ViewMsg decoded{};
 
     alignas(64) std::array<uint8_t, 4096> decode_arena_storage{};
@@ -55,7 +55,7 @@ template <typename OwningMsg, typename ViewMsg> void benchmark_message(const cha
         [&] {
             decode_arena.reset();
             decoded = ViewMsg{};
-            std::size_t arena_bytes_needed = 0;
+            size_t arena_bytes_needed = 0;
             static_cast<void>(decode(decoded, buffer, written, consumed, decode_arena, arena_bytes_needed));
         },
         iterations, min_dec, max_dec);

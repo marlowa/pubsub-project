@@ -70,11 +70,11 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
         auto& arena_buf = decode_arena_buffer();
         pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
         arena.reset();
-        std::size_t arena_bytes_needed = 0;
-        std::size_t bytes_consumed = 0;
+        size_t arena_bytes_needed = 0;
+        size_t bytes_consumed = 0;
         pubsub_itc_fw_app::NewOrderSingleView view{};
 
-        if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<std::size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
             PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode NewOrderSingle -- dropping");
             release_pdu_payload(message);
             return;

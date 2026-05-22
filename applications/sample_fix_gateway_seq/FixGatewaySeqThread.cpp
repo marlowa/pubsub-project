@@ -216,7 +216,7 @@ void FixGatewaySeqThread::on_raw_socket_message(const pubsub_itc_fw::EventMessag
         // `data`. payload_size() is cumulative so `data` still points at
         // the first unverified byte of the session even after multiple
         // events; we have not committed anything yet.
-        const std::size_t bytes_to_check = std::min(static_cast<std::size_t>(available), expected_preamble.size());
+        const size_t bytes_to_check = std::min(static_cast<size_t>(available), expected_preamble.size());
 
         if (std::memcmp(data, expected_preamble.data(), bytes_to_check) != 0) {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "FixGatewaySeqThread: connection {} invalid FIX preamble -- disconnecting",
@@ -228,7 +228,7 @@ void FixGatewaySeqThread::on_raw_socket_message(const pubsub_itc_fw::EventMessag
             return;
         }
 
-        if (static_cast<std::size_t>(available) < expected_preamble.size()) {
+        if (static_cast<size_t>(available) < expected_preamble.size()) {
             // Not enough bytes yet for a full preamble check; don't commit
             // anything (the bytes need to remain in the buffer so the next
             // event sees them too).
@@ -258,11 +258,11 @@ void FixGatewaySeqThread::on_framework_pdu_message(const pubsub_itc_fw::EventMes
     auto& arena_buf = decode_arena_buffer();
     pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
     arena.reset();
-    std::size_t arena_bytes_needed = 0;
-    std::size_t bytes_consumed = 0;
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
     pubsub_itc_fw_app::ExecutionReportView view{};
 
-    if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<std::size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+    if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "FixGatewaySeqThread: failed to decode ExecutionReport -- dropping");
         release_pdu_payload(message);
         return;

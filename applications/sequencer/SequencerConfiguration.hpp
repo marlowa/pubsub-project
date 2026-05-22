@@ -146,7 +146,7 @@ struct SequencerConfiguration {
     std::string wal_directory{"/tmp/sequencer_wal"};
 
     /** @brief Pre-allocation size of each WAL segment file in bytes. */
-    std::size_t wal_segment_size{4 * 1024 * 1024};
+    size_t wal_segment_size{4 * 1024 * 1024};
 
     /** @brief How often the WAL snapshot is taken, in seconds. */
     int32_t snapshot_interval_seconds{30};

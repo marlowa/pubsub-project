@@ -117,7 +117,7 @@ void FixGatewayThread::on_raw_socket_message(const pubsub_itc_fw::EventMessage& 
         // We reject immediately on any mismatch so that non-FIX clients
         // (e.g. telnet, port scanners) are disconnected without waiting for
         // a full preamble's worth of bytes to accumulate.
-        const std::size_t bytes_to_check = std::min(static_cast<std::size_t>(available), expected_preamble.size());
+        const size_t bytes_to_check = std::min(static_cast<size_t>(available), expected_preamble.size());
 
         if (std::memcmp(data, expected_preamble.data(), bytes_to_check) != 0) {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "FixGatewayThread: connection {} invalid FIX preamble -- disconnecting",
@@ -127,7 +127,7 @@ void FixGatewayThread::on_raw_socket_message(const pubsub_itc_fw::EventMessage& 
             return;
         }
 
-        if (static_cast<std::size_t>(available) < expected_preamble.size()) {
+        if (static_cast<size_t>(available) < expected_preamble.size()) {
             // Matches so far but incomplete -- wait for more bytes.
             // The logon timeout handles the case where no more bytes arrive.
             commit_raw_bytes(conn_id, 0);

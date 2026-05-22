@@ -124,7 +124,7 @@ constexpr int64_t backpressure_buffer_capacity = 16 * 1024;
 
 // Bytes per peer send() iteration. Small relative to buffer capacity so the
 // tests can observe the buffer crossing the thresholds at well-defined points.
-constexpr std::size_t chunk_size = 1024;
+constexpr size_t chunk_size = 1024;
 
 // Cap on the number of chunks the peer will attempt to push before declaring
 // failure. Generous so a slow CI runner does not produce a false negative,
@@ -186,7 +186,7 @@ int connect_nonblocking_socket(uint16_t port) {
 // Attempts a single non-blocking send. Returns the number of bytes sent
 // (which may be less than size on short write), or -1 with errno == EAGAIN
 // when the kernel send buffer is full, or -1 on a real send error.
-ssize_t try_send_chunk(int sock_fd, const void* data, std::size_t size) {
+ssize_t try_send_chunk(int sock_fd, const void* data, size_t size) {
     return ::send(sock_fd, data, size, MSG_NOSIGNAL);
 }
 

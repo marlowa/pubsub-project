@@ -13,7 +13,7 @@ static constexpr char SOH = '\x01';
 FixParser::FixParser(MessageCallback on_message) : on_message_(std::move(on_message)) {}
 
 void FixParser::feed(const uint8_t* data, int length) {
-    buffer_.append(reinterpret_cast<const char*>(data), static_cast<std::size_t>(length));
+    buffer_.append(reinterpret_cast<const char*>(data), static_cast<size_t>(length));
 
     while (try_extract_message()) {
         // keep extracting until we run out of complete messages
@@ -35,27 +35,27 @@ bool FixParser::try_extract_message() {
     // A FIX message must start with "8=FIXT.1.1" or "8=FIX.5.0SP2".
     // Find the start of the next message beginning at offset_.
     const std::string begin_tag = "8=";
-    const std::size_t start = buffer_.find(begin_tag, offset_);
+    const size_t start = buffer_.find(begin_tag, offset_);
     if (start == std::string::npos) {
         return false;
     }
 
     // Find tag 9 (BodyLength) -- it must be the second field.
     // Format: "8=...<SOH>9=<digits><SOH>"
-    const std::size_t soh1 = buffer_.find(SOH, start);
+    const size_t soh1 = buffer_.find(SOH, start);
     if (soh1 == std::string::npos) {
         return false; // incomplete
     }
 
     const std::string body_len_tag = "9=";
-    const std::size_t bl_start = soh1 + 1;
+    const size_t bl_start = soh1 + 1;
     if (buffer_.compare(bl_start, body_len_tag.size(), body_len_tag) != 0) {
         // Malformed -- skip past the start tag and try again.
         offset_ = start + 1;
         return true;
     }
 
-    const std::size_t soh2 = buffer_.find(SOH, bl_start);
+    const size_t soh2 = buffer_.find(SOH, bl_start);
     if (soh2 == std::string::npos) {
         return false; // incomplete
     }
@@ -70,7 +70,7 @@ bool FixParser::try_extract_message() {
     // BodyLength counts from the byte after the tag 9 SOH delimiter to the
     // byte before the tag 10 SOH delimiter (inclusive).
     // So the tag 10 field starts at soh2 + 1 + body_length.
-    const std::size_t tag10_start = soh2 + 1 + static_cast<std::size_t>(body_length);
+    const size_t tag10_start = soh2 + 1 + static_cast<size_t>(body_length);
 
     const std::string checksum_tag = "10=";
     if (buffer_.size() < tag10_start + checksum_tag.size()) {
@@ -83,7 +83,7 @@ bool FixParser::try_extract_message() {
         return true;
     }
 
-    const std::size_t soh3 = buffer_.find(SOH, tag10_start);
+    const size_t soh3 = buffer_.find(SOH, tag10_start);
     if (soh3 == std::string::npos) {
         return false; // incomplete
     }
@@ -113,16 +113,16 @@ bool FixParser::try_extract_message() {
 }
 
 bool FixParser::parse_fields(const std::string& buf, FixMessage& msg) {
-    std::size_t pos = 0;
+    size_t pos = 0;
     while (pos < buf.size()) {
         // Find the '=' separating tag from value.
-        const std::size_t eq = buf.find('=', pos);
+        const size_t eq = buf.find('=', pos);
         if (eq == std::string::npos) {
             break;
         }
 
         // Find the SOH terminating the value.
-        const std::size_t soh = buf.find(SOH, eq + 1);
+        const size_t soh = buf.find(SOH, eq + 1);
         if (soh == std::string::npos) {
             break;
         }

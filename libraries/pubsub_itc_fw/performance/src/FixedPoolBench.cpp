@@ -113,8 +113,8 @@ bool PinToCpu(int cpu) {
 // -----------------------------------------------------------------------------
 // Optional huge-page error handler (no-op for this bench)
 // -----------------------------------------------------------------------------
-std::function<void(void*, std::size_t)> MakeHugePageErrorHandler() {
-    return [](void*, std::size_t) {
+std::function<void(void*, size_t)> MakeHugePageErrorHandler() {
+    return [](void*, size_t) {
         // Intentionally no-op: we just want the production path,
         // and we don't care about logging here.
     };
@@ -137,7 +137,7 @@ struct TestObject {
 // -----------------------------------------------------------------------------
 template <typename T> class SpscRing {
   public:
-    explicit SpscRing(std::size_t capacity) : capacity_(capacity), mask_(capacity - 1), buffer_(capacity) {
+    explicit SpscRing(size_t capacity) : capacity_(capacity), mask_(capacity - 1), buffer_(capacity) {
         // Require power-of-two capacity
         assert((capacity_ & mask_) == 0 && "SpscRing capacity must be power of two");
     }
@@ -164,11 +164,11 @@ template <typename T> class SpscRing {
     }
 
   private:
-    std::size_t capacity_{0};
-    std::size_t mask_{0};
+    size_t capacity_{0};
+    size_t mask_{0};
     std::vector<T*> buffer_;
-    std::atomic<std::size_t> head_{0};
-    std::atomic<std::size_t> tail_{0};
+    std::atomic<size_t> head_{0};
+    std::atomic<size_t> tail_{0};
 };
 
 // -----------------------------------------------------------------------------
@@ -177,8 +177,8 @@ template <typename T> class SpscRing {
 int main() {
     // Tunables: adjust for your machine / perf session
     const int poolCapacity = 1024;             // number of slots in pool
-    const std::size_t ringCapacity = 1024;     // must be power of two
-    const std::size_t iterations = 50'000'000; // producer iterations
+    const size_t ringCapacity = 1024;     // must be power of two
+    const size_t iterations = 50'000'000; // producer iterations
     const int producerCpu = 2;                 // adjust as needed
     const int consumerCpu = 3;                 // adjust as needed
     const bool simulateSlowConsumer = true;
@@ -190,8 +190,8 @@ int main() {
 
     std::atomic<bool> startFlag{false};
     std::atomic<bool> doneFlag{false};
-    std::atomic<std::size_t> produced{0};
-    std::atomic<std::size_t> consumed{0};
+    std::atomic<size_t> produced{0};
+    std::atomic<size_t> consumed{0};
 
     // Optional: CAS failure counter (for manual inspection)
     // If you want to wire this into the pool, you can add a hook there.
@@ -206,7 +206,7 @@ int main() {
             std::this_thread::yield();
         }
 
-        for (std::size_t i = 0; i < iterations; ++i) {
+        for (size_t i = 0; i < iterations; ++i) {
             // Allocate from pool (raw memory)
             TestObject* obj = nullptr;
             while ((obj = pool.allocate()) == nullptr) {

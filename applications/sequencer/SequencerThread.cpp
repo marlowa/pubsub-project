@@ -47,7 +47,7 @@ SequencerThread::SequencerThread(pubsub_itc_fw::ApplicationThread::ConstructorTo
 void SequencerThread::on_initial_event() {
     // Rebuild cl_ord_id→comp_id from WAL replay so ER routing survives restart.
     auto rebuild_routing_map = [this]([[maybe_unused]] int64_t seq_no, int16_t pdu_id,
-                                      const uint8_t* payload, std::size_t payload_size) {
+                                      const uint8_t* payload, size_t payload_size) {
         const auto nos_id = static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::NewOrderSingle);
         const auto ocr_id = static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::OrderCancelRequest);
         if (pdu_id != nos_id && pdu_id != ocr_id) return;
@@ -55,8 +55,8 @@ void SequencerThread::on_initial_event() {
         auto& arena_buf = decode_arena_buffer();
         pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
         arena.reset();
-        std::size_t arena_bytes_needed = 0;
-        std::size_t bytes_consumed     = 0;
+        size_t arena_bytes_needed = 0;
+        size_t bytes_consumed     = 0;
 
         if (pdu_id == nos_id) {
             pubsub_itc_fw_app::NewOrderSingleView view{};
@@ -235,11 +235,11 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             auto& arena_buf = decode_arena_buffer();
             pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
             arena.reset();
-            std::size_t arena_bytes_needed = 0;
-            std::size_t bytes_consumed = 0;
+            size_t arena_bytes_needed = 0;
+            size_t bytes_consumed = 0;
             pubsub_itc_fw_app::NewOrderSingleView view{};
 
-            if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<std::size_t>(message.payload_size()), bytes_consumed, arena,
+            if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena,
                                            arena_bytes_needed)) {
                 PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode NewOrderSingle -- dropping");
                 release_pdu_payload(message);
@@ -305,11 +305,11 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             auto& arena_buf = decode_arena_buffer();
             pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
             arena.reset();
-            std::size_t arena_bytes_needed = 0;
-            std::size_t bytes_consumed = 0;
+            size_t arena_bytes_needed = 0;
+            size_t bytes_consumed = 0;
             pubsub_itc_fw_app::OrderCancelRequestView view{};
 
-            if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<std::size_t>(message.payload_size()), bytes_consumed, arena,
+            if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena,
                                            arena_bytes_needed)) {
                 PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode OrderCancelRequest -- dropping");
                 release_pdu_payload(message);
@@ -366,11 +366,11 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         auto& arena_buf = decode_arena_buffer();
         pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
         arena.reset();
-        std::size_t arena_bytes_needed = 0;
-        std::size_t bytes_consumed = 0;
+        size_t arena_bytes_needed = 0;
+        size_t bytes_consumed = 0;
         pubsub_itc_fw_app::ExecutionReportView view{};
 
-        if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<std::size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
             PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode ExecutionReport -- dropping");
             release_pdu_payload(message);
             return;
@@ -445,6 +445,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
 
         // Stamp routing_comp_id so the gateway can route by comp_id without
         // maintaining its own cl_ord_id→session map.
+        std::string erase_routing_key;
         if (view.has_cl_ord_id && !view.cl_ord_id.empty()) {
             const std::string cl_ord_id{view.cl_ord_id};
             auto it = cl_ord_id_to_comp_id_.find(cl_ord_id);
@@ -452,7 +453,6 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
                 er.has_routing_comp_id = true;
                 er.routing_comp_id = it->second;
 
-                // Clean up the map entry on terminal ER status.
                 switch (view.ord_status) {
                     case pubsub_itc_fw_app::OrdStatus::Filled:
                     case pubsub_itc_fw_app::OrdStatus::Canceled:
@@ -460,7 +460,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
                     case pubsub_itc_fw_app::OrdStatus::Expired:
                     case pubsub_itc_fw_app::OrdStatus::DoneForDay:
                     case pubsub_itc_fw_app::OrdStatus::Replaced:
-                        cl_ord_id_to_comp_id_.erase(it);
+                        erase_routing_key = cl_ord_id;
                         break;
                     default:
                         break;
@@ -472,8 +472,14 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             }
         }
 
+        // send_pdu encodes er, which holds string_views into cl_ord_id_to_comp_id_
+        // entries. Erase only AFTER encoding is complete to avoid dangling views.
         send_pdu(gateway_conn_id_, pdu_id, message.seq_no(), er);
         release_pdu_payload(message);
+
+        if (!erase_routing_key.empty()) {
+            cl_ord_id_to_comp_id_.erase(erase_routing_key);
+        }
 
     } else {
         // Unknown source -- log and discard.
@@ -676,11 +682,11 @@ void SequencerThread::handle_peer_status_query(pubsub_itc_fw::ConnectionID conn_
     auto& arena_buf = decode_arena_buffer();
     pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
     arena.reset();
-    std::size_t arena_bytes_needed = 0;
-    std::size_t bytes_consumed     = 0;
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed     = 0;
     pubsub_itc_fw_app::StatusQueryView sq{};
 
-    if (!pubsub_itc_fw_app::decode(sq, message.payload(), static_cast<std::size_t>(message.payload_size()),
+    if (!pubsub_itc_fw_app::decode(sq, message.payload(), static_cast<size_t>(message.payload_size()),
                                     bytes_consumed, arena, arena_bytes_needed)) {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                        "SequencerThread: failed to decode StatusQuery -- dropping");
@@ -703,11 +709,11 @@ void SequencerThread::handle_peer_status_response(const pubsub_itc_fw::EventMess
     auto& arena_buf = decode_arena_buffer();
     pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
     arena.reset();
-    std::size_t arena_bytes_needed = 0;
-    std::size_t bytes_consumed     = 0;
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed     = 0;
     pubsub_itc_fw_app::StatusResponseView sr{};
 
-    if (!pubsub_itc_fw_app::decode(sr, message.payload(), static_cast<std::size_t>(message.payload_size()),
+    if (!pubsub_itc_fw_app::decode(sr, message.payload(), static_cast<size_t>(message.payload_size()),
                                     bytes_consumed, arena, arena_bytes_needed)) {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                        "SequencerThread: failed to decode StatusResponse -- dropping");
@@ -726,11 +732,11 @@ void SequencerThread::handle_peer_heartbeat(const pubsub_itc_fw::EventMessage& m
     auto& arena_buf = decode_arena_buffer();
     pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
     arena.reset();
-    std::size_t arena_bytes_needed = 0;
-    std::size_t bytes_consumed     = 0;
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed     = 0;
     pubsub_itc_fw_app::HeartbeatView hb{};
 
-    if (!pubsub_itc_fw_app::decode(hb, message.payload(), static_cast<std::size_t>(message.payload_size()),
+    if (!pubsub_itc_fw_app::decode(hb, message.payload(), static_cast<size_t>(message.payload_size()),
                                     bytes_consumed, arena, arena_bytes_needed)) {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                        "SequencerThread: failed to decode Heartbeat -- dropping");

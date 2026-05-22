@@ -65,6 +65,9 @@ set(PUBSUB_ITC_FW_SRC
         src/InboundConnectionManager.cpp
         src/OutboundConnectionManager.cpp
         src/RawBytesProtocolHandler.cpp
+        src/Crc32.cpp
+        src/WalWriter.cpp
+        src/WalReader.cpp
 )
 
 # ------------------------------------------------------------

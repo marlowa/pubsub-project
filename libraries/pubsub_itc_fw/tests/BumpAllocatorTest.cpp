@@ -11,8 +11,8 @@ namespace pubsub_itc_fw::tests {
 
 namespace {
 
-constexpr std::size_t small_buffer_size = 256;
-constexpr std::size_t large_buffer_size = 4096;
+constexpr size_t small_buffer_size = 256;
+constexpr size_t large_buffer_size = 4096;
 
 } // namespace
 
@@ -58,7 +58,7 @@ TEST_F(BumpAllocatorTest, TwoPassPatternMeasureThenAllocate) {
     BumpAllocator measuring_arena(nullptr, 0);
     [[maybe_unused]] int32_t* m1 = measuring_arena.allocate<int32_t>(4);
     [[maybe_unused]] int64_t* m2 = measuring_arena.allocate<int64_t>(2);
-    std::size_t needed = measuring_arena.bytes_used();
+    size_t needed = measuring_arena.bytes_used();
     EXPECT_GT(needed, 0u);
 
     // Pass 2: allocate a real buffer of exactly that size and retry.
@@ -76,7 +76,7 @@ TEST_F(BumpAllocatorTest, ExhaustedBufferReturnsNullptrButStillTracksBytesUsed) 
     // bytes_used() still reflects the bytes that would have been needed.
     BumpAllocator arena(small_buffer_.data(), small_buffer_.size());
     [[maybe_unused]] uint8_t* fill = arena.allocate<uint8_t>(small_buffer_size);
-    std::size_t used_before = arena.bytes_used();
+    size_t used_before = arena.bytes_used();
     int32_t* ptr = arena.allocate<int32_t>(1);
     EXPECT_EQ(ptr, nullptr);
     EXPECT_GT(arena.bytes_used(), used_before);
@@ -188,7 +188,7 @@ TEST_F(BumpAllocatorTest, AlignmentIsCorrectForStringViewAfterInt8) {
 
 TEST_F(BumpAllocatorTest, BytesRemainingDecreasesAfterAllocation) {
     BumpAllocator allocator(small_buffer_.data(), small_buffer_.size());
-    std::size_t before = allocator.bytes_remaining();
+    size_t before = allocator.bytes_remaining();
     [[maybe_unused]] int32_t* ptr = allocator.allocate<int32_t>(1);
     EXPECT_LT(allocator.bytes_remaining(), before);
 }

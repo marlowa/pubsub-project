@@ -522,7 +522,7 @@ template <typename T> void ExpandablePoolAllocator<T>::deallocate(T* obj) {
 }
 
 template <typename T> FixedSizeMemoryPool<T>* ExpandablePoolAllocator<T>::add_pool_to_chain() {
-    auto new_pool = std::make_unique<FixedSizeMemoryPool<T>>(objects_per_pool_, use_huge_pages_flag_, [this](void* addr, std::size_t) {
+    auto new_pool = std::make_unique<FixedSizeMemoryPool<T>>(objects_per_pool_, use_huge_pages_flag_, [this](void* addr, size_t) {
         if (handler_for_huge_pages_error_ != nullptr) {
             handler_for_huge_pages_error_(addr);
         }

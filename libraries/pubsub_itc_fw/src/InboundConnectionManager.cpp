@@ -450,7 +450,7 @@ uint16_t InboundConnectionManager::get_listener_port(int index) const {
     if (index < 0 || index >= static_cast<int>(listener_fds_in_registration_order_.size())) {
         throw PreconditionAssertion("InboundConnectionManager::get_listener_port: index out of range", __FILE__, __LINE__);
     }
-    const int listen_fd = listener_fds_in_registration_order_[static_cast<std::size_t>(index)];
+    const int listen_fd = listener_fds_in_registration_order_[static_cast<size_t>(index)];
     sockaddr_storage addr{};
     socklen_t len = sizeof(addr);
     if (::getsockname(listen_fd, reinterpret_cast<sockaddr*>(&addr), &len) == -1) {

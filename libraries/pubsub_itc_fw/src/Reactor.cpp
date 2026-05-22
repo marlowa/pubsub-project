@@ -869,6 +869,9 @@ void Reactor::dispatch_events(int nfds, epoll_event* events) {
                     // finish_connect() to read the error and attempt the secondary
                     // endpoint if one is configured.
                     outbound_manager_.on_connect_ready(*conn);
+                    if (outbound_manager_.find_by_fd(fd) == nullptr) {
+                        continue;
+                    }
                 } else if (conn->is_established()) {
                     if ((ev & EPOLLOUT) && conn->has_pending_send()) {
                         outbound_manager_.on_write_ready(*conn);

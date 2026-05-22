@@ -1139,7 +1139,7 @@ TEST_F(ExpandablePoolAllocatorTest, ConcurrentInvalidFreeCallbackRace) {
 TEST_F(ExpandablePoolAllocatorTest, MisalignedPointerRejectedByContains) {
     // We need direct access to FixedSizeMemoryPool to test contains().
     // Create one directly rather than through ExpandablePoolAllocator.
-    pubsub_itc_fw::FixedSizeMemoryPool<TestObject> pool(4, UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages), [](void*, std::size_t) {});
+    pubsub_itc_fw::FixedSizeMemoryPool<TestObject> pool(4, UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages), [](void*, size_t) {});
 
     TestObject* valid_object = pool.allocate();
     ASSERT_NE(valid_object, nullptr);

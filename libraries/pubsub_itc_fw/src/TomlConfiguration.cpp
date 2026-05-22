@@ -45,9 +45,9 @@ struct TomlConfiguration::Impl {
      */
     static std::vector<std::string> split_key(std::string_view key) {
         std::vector<std::string> parts;
-        std::size_t start = 0;
+        size_t start = 0;
         while (start < key.size()) {
-            const std::size_t dot = key.find('.', start);
+            const size_t dot = key.find('.', start);
             if (dot == std::string_view::npos) {
                 parts.emplace_back(key.substr(start));
                 break;
@@ -70,7 +70,7 @@ struct TomlConfiguration::Impl {
         }
 
         toml::table* current = &table;
-        for (std::size_t i = 0; i + 1 < parts.size(); ++i) {
+        for (size_t i = 0; i + 1 < parts.size(); ++i) {
             const auto& part = parts[i];
             auto* node = current->get(part);
             if (node == nullptr) {
@@ -103,12 +103,12 @@ struct TomlConfiguration::Impl {
      */
     static bool parse_duration_string(std::string_view str, int64_t& count, std::string_view& suffix) {
         // Find where the numeric part ends.
-        std::size_t i = 0;
+        size_t i = 0;
         if (i < str.size() && str[i] == '-') {
             ++i;
         }
-        const std::size_t num_start = (str.size() > 0 && str[0] == '-') ? 1 : 0;
-        std::size_t num_end = num_start;
+        const size_t num_start = (str.size() > 0 && str[0] == '-') ? 1 : 0;
+        size_t num_end = num_start;
         while (num_end < str.size() && std::isdigit(static_cast<unsigned char>(str[num_end]))) {
             ++num_end;
         }
