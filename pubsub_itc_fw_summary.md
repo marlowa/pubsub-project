@@ -457,7 +457,55 @@ The receiving node's reactor accepts data via epoll and delivers it zero-copy to
 
 ## Session Accomplishments
 
-### Session 17 (current)
+### Session 18 (current)
+
+**Unit and integration test coverage improvements — PduParser, OutboundConnectionManager, and coverage tooling fix.**
+
+**New unit tests: `PduParserTest.cpp`** — 6 tests covering PduParser error paths not exercised by the existing `PduFramerParserTest.cpp`:
+- `ZeroLengthPayloadReturnsError` — `byte_count = 0` in header rejected before allocation.
+- `OversizedPayloadReturnsError` — `byte_count > slab_size()` rejected before allocation.
+- `DisconnectDuringPayloadCallsHandlerAndReturnsFalse` — valid header then peer disconnect calls the disconnect handler and returns `{false, ""}` (empty error = graceful close).
+- `ReadErrorDuringPayloadReturnsFalse` — valid header then `ECONNRESET` returns `{false, non-empty}`.
+- `EagainDuringPayloadResumesOnNextCall` — EAGAIN on first call returns `{true,""}` with no PDU dispatched; payload arrives on second call and PDU is dispatched correctly.
+- `ReadErrorDuringHeaderReturnsError` — `ECONNRESET` with no bytes queued returns `{false, non-empty}`.
+
+A `PduParserTestStream` stub with priority ordering (buffered bytes → disconnect → error → EAGAIN) was written to enable injecting errors at the payload phase after delivering the header. Added to `libraries/pubsub_itc_fw/tests/CMakeLists.txt`.
+
+**New unit tests: `OutboundConnectionTest.cpp`** — 7 additional tests on the `OutboundConnectionManagerTest` fixture covering previously-uncovered paths:
+- `RetryFailedConnectionsNoOpWhenEmpty` — calling `retry_failed_connections` with no pending retries is a no-op.
+- `ProcessSendRawCommandReturnsFalse` — outbound connections reject SendRaw commands.
+- `ProcessCommitRawBytesReturnsFalseForUnknownId` / `ReturnsTrueForKnownId` — commit path.
+- `FindByIdReturnsNullForUnknownId` — unknown ConnectionID lookup.
+- `ProcessDisconnectCommandTeardownsConnection` — teardown + second call returns false.
+- `OnDataReadyParseErrorTeardownsConnection` — bad canary triggers teardown via `on_data_ready`.
+
+**New integration test: `OutboundConnectionRetryIntegrationTest.cpp`** — end-to-end proof that `retry_failed_connections` re-issues `process_connect_command` after a connect timeout. A `RetryCountingThread` accumulates `connection_failed` events without shutting down; the test verifies `failed_count >= 2` (initial timeout + at least one retry). Uses `192.0.2.1:9999` (TEST-NET, non-routable) with a 50 ms `connect_timeout` and 1 ms `connect_retry_interval`. Added to `libraries/pubsub_itc_fw/integration_tests/CMakeLists.txt`.
+
+Note: unit tests and integration tests go in separate directories (`tests/` and `integration_tests/` respectively). The retry test requires a live reactor event loop and belongs in `integration_tests/`.
+
+**Coverage tooling fix — `--erase-functions FMT_COMPILE_STRING` in `build.py`.** The `lcov --omit-lines` option only removes *line* coverage entries (DA records); it does not touch *function* entries (FN/FNDA records). The `FMT_STRING(fmt)` macro used inside `PUBSUB_LOG` for compile-time format validation expands to an immediately-invoked lambda containing a `struct FMT_COMPILE_STRING`. GCC emits these as real callable functions in the object file, and gcov records them as uncovered functions (they live inside `if (false)` blocks). They inflate the function-coverage denominator significantly.
+
+Fix: added `--erase-functions FMT_COMPILE_STRING` to the `lcov --remove` step in `build.py`. This removes all FN/FNDA records whose mangled name contains `FMT_COMPILE_STRING`, eliminating 253 phantom entries project-wide.
+
+Results after fix:
+
+| Class | Before | After |
+|---|---|---|
+| `TimerHandler` | 4/13 (30.8%) | 4/4 (100%) |
+| `InboundConnectionManager` | 16/35 (45.7%) | 16/16 (100%) |
+| `OutboundConnectionManager` | 16/35 (45.7%) | 16/16 (100%) |
+| `PduParser` | 5/10 (50%) | 5/5 (100%) |
+| **Overall** | **~74%** | **93.2% (894/959)** |
+
+`--omit-lines` is retained in the filter step as it still removes phantom line coverage entries from the `if (false)` validate blocks.
+
+Files changed: `libraries/pubsub_itc_fw/tests/CMakeLists.txt`, `libraries/pubsub_itc_fw/tests/PduParserTest.cpp` (new), `libraries/pubsub_itc_fw/tests/OutboundConnectionTest.cpp`, `libraries/pubsub_itc_fw/integration_tests/CMakeLists.txt`, `libraries/pubsub_itc_fw/integration_tests/OutboundConnectionRetryIntegrationTest.cpp` (new), `build.py`.
+
+**Build and test status at session end:** 485 unit tests pass (1 pre-existing skip), 21 integration tests pass. Coverage report: 93.2% function coverage, 86.9% line coverage.
+
+---
+
+### Session 17
 
 **`ExpandableSlabAllocator` SIGSEGV fix — segmented atomic array.** `ConcurrentSmallSlabHighChurn` was crashing with SIGSEGV under ASan / TSan. Root cause: `std::vector<std::unique_ptr<SlabAllocator>>::push_back()` in `append_new_slab()` triggers reallocation — allocates a new backing array, moves elements, frees the old — while worker threads concurrently read raw pointers out of the old array via `deallocate()`. Freed-memory access; undefined behaviour.
 
