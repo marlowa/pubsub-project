@@ -37,10 +37,10 @@ void OutboundConnection::on_connected(std::unique_ptr<TcpSocket> socket) {
     connector_.reset();
 
     framer_ = std::make_unique<PduFramer>(*socket_);
-    // TODO we must not pass nullptr for the disconnect handler!
+    // nullptr is safe: OutboundConnectionManager::on_data_ready checks the receive() return value
+    // to detect disconnects and drives teardown via that path.
     parser_ = std::make_unique<PduParser>(*socket_, target_thread_, inbound_allocator_, logger_,
-                                          nullptr, // TODO this is wrong!
-                                          id_);
+                                          nullptr, id_);
 }
 
 void OutboundConnection::retry_with_secondary(std::unique_ptr<TcpConnector> connector) {

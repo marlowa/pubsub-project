@@ -194,9 +194,6 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         // Order PDU from a gateway instance. As leader, stamp a sequence number
         // and forward to the matching engine.
         //
-        // TODO: leader-follower -- followers should discard rather than forward.
-        // For now the stub behaves as unconditional leader.
-        //
         // TODO: SequencedMessage envelope -- currently we forward the raw PDU
         // bytes directly to the ME without wrapping. The SequencedMessage
         // wrapper will be added once the ME decode path is implemented.

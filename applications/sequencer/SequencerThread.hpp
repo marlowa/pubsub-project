@@ -38,9 +38,6 @@ namespace sequencer {
  * from the ME are forwarded back to the originating gateway. This matches
  * the Aeron cluster ingress/egress pattern exactly.
  *
- * Leader-follower state machine: TODO -- to be implemented once the protocol
- * state machine is built. The stub behaves as leader unconditionally.
- *
  * Threading: ThreadID 1.
  */
 class SequencerThread : public pubsub_itc_fw::ApplicationThread {

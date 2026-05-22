@@ -818,7 +818,8 @@ TEST_F(OutboundConnectionManagerTest, OnDataReadyParseErrorTeardownsConnection) 
     bad_hdr.pdu_id = htons(static_cast<uint16_t>(99));
     bad_hdr.canary = htonl(0xDEADBEEFu); // wrong canary
     bad_hdr.filler_b = 0;
-    ::write(peer_fd_, reinterpret_cast<const char*>(&bad_hdr), sizeof(bad_hdr));
+    const ssize_t written = ::write(peer_fd_, reinterpret_cast<const char*>(&bad_hdr), sizeof(bad_hdr));
+    ASSERT_EQ(written, static_cast<ssize_t>(sizeof(bad_hdr)));
     ::close(peer_fd_);
     peer_fd_ = -1;
 

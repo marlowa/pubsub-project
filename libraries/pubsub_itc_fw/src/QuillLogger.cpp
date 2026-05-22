@@ -28,33 +28,38 @@
 #include <pubsub_itc_fw/utils/FileSystemUtils.hpp>
 
 /*
-TODO this quill logger area needs serious attention, we need a way to get the thread id of the logger backend thread.
-
-The backend thread consumes too much CPU
-
-By default, the backend thread runs in a tight loop polling the queues for new messages, which can consume CPU cycles even when idle.
-We need something like the below:
-
-void pin_logger_backend() {
-    // Get the kernel thread ID (LWP) from Quill
-    uint32_t tid = quill::Backend::get_thread_id();
-
-    if (tid != 0) {
-        cpu_set_set cpuset;
-        CPU_ZERO(&cpuset);
-
-        // Example: Pin to Core 1, strictly excluding Core 0
-        CPU_SET(1, &cpuset);
-
-        if (sched_setaffinity(static_cast<pid_t>(tid), sizeof(cpu_set_t), &cpuset) == -1) {
-            // Handle error (e.g., log to stderr as the logger might not be ready)
-            perror("sched_setaffinity");
-        }
-    }
-}
-
-since the backend thread MUST be core pinned we should add the core number to the QuillLogger constructor.
-*/
+ * TODO: CPU pinning of the Quill backend thread.
+ *
+ * The Quill backend thread should be pinned to a dedicated CPU core to prevent
+ * the OS scheduler from migrating it onto cores reserved for latency-sensitive
+ * threads (the Reactor event loop and ApplicationThreads).
+ *
+ * Design decision: the Reactor owns all thread pinning, including the Quill
+ * backend.  QuillLogger starts the backend as early as possible (on first
+ * construction, before the Reactor exists) so that the application can log
+ * during config loading and startup.  The Reactor then pins the already-running
+ * backend thread from within Reactor::run(), before the event loop starts.
+ *
+ * Mechanism:
+ *   1. sched_getaffinity(0, ...) discovers the cores the process is allowed to
+ *      use (respects taskset, container CPU limits, isolcpus).
+ *   2. quill::Backend::get_thread_id() returns the backend's kernel LWP.
+ *   3. sched_setaffinity(tid, ...) pins it.
+ *
+ * Core assignment strategy: the Quill backend gets the last core in the
+ * allowed set.  Latency-sensitive threads are assigned from the front.  If
+ * only one core is available, pinning is skipped.
+ *
+ * The TID-zero race: get_thread_id() can return 0 before the backend thread
+ * has published its LWP.  In practice this window is microseconds; by the time
+ * Reactor::run() is entered the backend has long since started.  The Reactor
+ * should attempt pinning once, log a warning to stderr if the TID is zero or
+ * sched_setaffinity fails, and continue -- pinning failure is not fatal.
+ *
+ * Future extension: the same Reactor::run() pinning pass should also pin the
+ * Reactor's own event-loop thread and each registered ApplicationThread to
+ * successive cores from the front of the allowed set.
+ */
 
 namespace {
 

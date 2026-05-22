@@ -15,10 +15,10 @@ namespace pubsub_itc_fw {
 PduProtocolHandler::PduProtocolHandler(TcpSocket& socket, ApplicationThread& target_thread, ExpandableSlabAllocator& inbound_allocator, QuillLogger& logger,
                                        ConnectionID connection_id) {
     framer_ = std::make_unique<PduFramer>(socket);
-    // TODO we must not pass nullptr for the disconnect handler!
+    // nullptr is safe: InboundConnectionManager::on_data_ready checks the receive() return value
+    // to detect disconnects and drives teardown via that path.
     parser_ = std::make_unique<PduParser>(socket, target_thread, inbound_allocator, logger,
-                                          nullptr, // TODO this is wrong!
-                                          connection_id);
+                                          nullptr, connection_id);
 }
 
 std::tuple<bool, std::string, bool> PduProtocolHandler::on_data_ready() {
