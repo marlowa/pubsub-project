@@ -4,7 +4,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <chrono>
-#include <ctime>
 
 /*
 HighResolutionClock
@@ -34,14 +33,14 @@ performed by timerfd, which uses kernel hrtimers and is unaffected by VDSO
 behaviour.
 */
 
+namespace pubsub_itc_fw {
+
 class HighResolutionClock {
   public:
     using duration = std::chrono::nanoseconds;
     using time_point = std::chrono::time_point<HighResolutionClock, duration>;
 
-    static time_point now() {
-        struct timespec ts;
-        ::clock_gettime(CLOCK_MONOTONIC, &ts);
-        return time_point(duration(ts.tv_sec * 1'000'000'000LL + ts.tv_nsec));
-    }
+    static time_point now();
 };
+
+} // namespace pubsub_itc_fw

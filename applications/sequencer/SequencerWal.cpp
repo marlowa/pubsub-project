@@ -7,7 +7,6 @@
 #include <cinttypes>
 #include <cstdio>
 #include <cstring>
-#include <stdexcept>
 #include <vector>
 
 #include <fcntl.h>
@@ -15,9 +14,12 @@
 #include <unistd.h>
 
 #include <pubsub_itc_fw/Crc32.hpp>
+#include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/WalReader.hpp>
 
 namespace sequencer {
+
+using pubsub_itc_fw::PubSubItcException;
 
 // ---------------------------------------------------------------------------
 // Path helpers
@@ -91,7 +93,7 @@ bool SequencerWal::load_snapshot(pubsub_itc_fw::WalPosition& out_pos)
     const int fd = ::open(path.c_str(), O_RDONLY);
     if (fd < 0) {
         if (errno == ENOENT) return false;
-        throw std::runtime_error("SequencerWal: load_snapshot open(" + path + "): " + std::strerror(errno));
+        throw PubSubItcException("SequencerWal: load_snapshot open(" + path + "): " + std::strerror(errno));
     }
 
     SnapshotHeader hdr{};
@@ -137,18 +139,18 @@ void SequencerWal::take_snapshot()
 
     const int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) {
-        throw std::runtime_error("SequencerWal: take_snapshot open(" + tmp + "): " + std::strerror(errno));
+        throw PubSubItcException("SequencerWal: take_snapshot open(" + tmp + "): " + std::strerror(errno));
     }
 
     const ssize_t written = ::write(fd, &hdr, sizeof(hdr));
     ::close(fd);
 
     if (written != static_cast<ssize_t>(sizeof(hdr))) {
-        throw std::runtime_error("SequencerWal: take_snapshot write to " + tmp + " incomplete");
+        throw PubSubItcException("SequencerWal: take_snapshot write to " + tmp + " incomplete");
     }
 
     if (::rename(tmp.c_str(), final.c_str()) != 0) {
-        throw std::runtime_error("SequencerWal: take_snapshot rename(" + tmp + " -> " + final + "): " + std::strerror(errno));
+        throw PubSubItcException("SequencerWal: take_snapshot rename(" + tmp + " -> " + final + "): " + std::strerror(errno));
     }
 
     delete_segments_before(pos.segment);

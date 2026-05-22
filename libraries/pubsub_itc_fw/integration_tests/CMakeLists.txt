@@ -8,6 +8,7 @@ endif()
 message(STATUS "Building integration tests for pubsub_itc_fw")
 
 add_executable(pubsub_itc_fw_integration_tests
+    OutboundConnectionRetryIntegrationTest.cpp
     PduBurstIntegrationTest.cpp
     PduProtocolHandlerIntegrationTest.cpp
     RawBytesBackPressureIntegrationTest.cpp
@@ -41,6 +42,7 @@ gtest_discover_tests(pubsub_itc_fw_integration_tests
     PROPERTIES DEPENDS pubsub_itc_fw_tests
 )
 
+message(STATUS "  Added integration test: OutboundConnectionRetryIntegrationTest")
 message(STATUS "  Added integration test: PduBurstIntegrationTest")
 message(STATUS "  Added integration test: StatusQueryResponseTest")
 message(STATUS "  Added integration test: VariableLengthPduTest")

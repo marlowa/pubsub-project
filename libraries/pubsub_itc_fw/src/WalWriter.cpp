@@ -6,7 +6,6 @@
 #include <cerrno>
 #include <cinttypes>
 #include <cstring>
-#include <stdexcept>
 
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -14,6 +13,8 @@
 #include <unistd.h>
 
 #include <pubsub_itc_fw/Crc32.hpp>
+#include <pubsub_itc_fw/PreconditionAssertion.hpp>
+#include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/utils/FileSystemUtils.hpp>
 
 namespace pubsub_itc_fw {
@@ -60,7 +61,7 @@ std::string WalWriter::segment_path(uint64_t seg_num) const
 void WalWriter::open(const std::string& directory, size_t segment_size, WalPosition start)
 {
     if (segment_size < min_entry_bytes * 2) {
-        throw std::runtime_error("WalWriter: segment_size too small");
+        throw PreconditionAssertion("WalWriter: segment_size too small", __FILE__, __LINE__);
     }
 
     directory_    = directory;
@@ -68,7 +69,7 @@ void WalWriter::open(const std::string& directory, size_t segment_size, WalPosit
 
     const std::string mkdir_err = FileSystemUtils::make_directories(directory_);
     if (!mkdir_err.empty()) {
-        throw std::runtime_error("WalWriter: " + mkdir_err);
+        throw PubSubItcException("WalWriter: " + mkdir_err);
     }
 
     current_segment_ = start.segment;
@@ -93,23 +94,23 @@ void WalWriter::open_segment(uint64_t seg_num)
         if (::ftruncate(fd_, static_cast<off_t>(segment_size_)) != 0) {
             ::close(fd_);
             fd_ = -1;
-            throw std::runtime_error("WalWriter: ftruncate(" + path + "): " + std::strerror(errno));
+            throw PubSubItcException("WalWriter: ftruncate(" + path + "): " + std::strerror(errno));
         }
     } else if (errno == EEXIST) {
         // Resuming after replay: open without truncating.
         fd_ = ::open(path.c_str(), O_RDWR, 0644);
         if (fd_ < 0) {
-            throw std::runtime_error("WalWriter: open(" + path + "): " + std::strerror(errno));
+            throw PubSubItcException("WalWriter: open(" + path + "): " + std::strerror(errno));
         }
     } else {
-        throw std::runtime_error("WalWriter: open(" + path + "): " + std::strerror(errno));
+        throw PubSubItcException("WalWriter: open(" + path + "): " + std::strerror(errno));
     }
 
     void* ptr = ::mmap(nullptr, segment_size_, PROT_READ | PROT_WRITE, MAP_SHARED, fd_, 0);
     if (ptr == MAP_FAILED) {
         ::close(fd_);
         fd_ = -1;
-        throw std::runtime_error("WalWriter: mmap(" + path + "): " + std::strerror(errno));
+        throw PubSubItcException("WalWriter: mmap(" + path + "): " + std::strerror(errno));
     }
 
     mmap_ptr_        = static_cast<uint8_t*>(ptr);
@@ -139,7 +140,7 @@ void WalWriter::close_segment() noexcept
 void WalWriter::ensure_capacity(size_t bytes_needed)
 {
     if (bytes_needed > segment_size_) {
-        throw std::runtime_error("WalWriter: single entry exceeds segment_size");
+        throw PreconditionAssertion("WalWriter: single entry exceeds segment_size", __FILE__, __LINE__);
     }
     if (write_offset_ + bytes_needed > segment_size_) {
         open_segment(current_segment_ + 1);

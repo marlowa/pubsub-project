@@ -45,6 +45,7 @@ set(PUBSUB_ITC_FW_SRC
         src/EmptySlabQueue.cpp
         src/EventMessage.cpp
         src/ExpandableSlabAllocator.cpp
+        src/HighResolutionClock.cpp
         src/MillisecondClock.cpp
         src/InboundConnection.cpp
         src/OutboundConnection.cpp

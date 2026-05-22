@@ -43,8 +43,7 @@ FixGatewaySeqConfigurationLoader::load_and_init_logging(const std::string& file_
         toml.get_required_except("fix_session.default_target_comp_id", config.default_target_comp_id);
         toml.get_required_except("timeouts.logon_timeout", config.logon_timeout);
 
-        // ha_enabled is optional; default false means single-sequencer mode.
-        std::ignore = toml.get_required("sequencer.ha_enabled", config.ha_enabled);
+        toml.get_required_except("sequencer.ha_enabled", config.ha_enabled);
 
         toml.get_required_except("sequencer.primary_host", config.sequencer_primary_host);
 

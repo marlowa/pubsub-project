@@ -127,3 +127,4 @@ when writing unit tests please do not add comments numbering the tests. That is 
 It creates extra work to keep the comments accurate when tests are prepended or inserted in the middle.
 dont use switch statements on integers, should be for enums only.
 do not say std::size_t, say size_t instead. Qualifying that particular typedef is just too much aggro.
+when writing code that invokes a function with the attribute nodiscard, do not use trickery to still disregard the return value.

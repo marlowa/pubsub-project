@@ -8,9 +8,10 @@
 #include <iostream>
 #include <mutex>
 #include <sstream>
-#include <stdexcept>
 #include <string>
 #include <vector>
+
+#include <pubsub_itc_fw/PubSubItcException.hpp>
 
 #include <quill/core/LogLevel.h>
 #include <quill/sinks/Sink.h>
@@ -127,7 +128,7 @@ class TestSink : public quill::Sink {
     LogRecord last_record() const {
         std::lock_guard<std::mutex> lock(mutex_);
         if (records_.empty()) {
-            throw std::runtime_error("No log records captured");
+            throw PubSubItcException("No log records captured");
         }
         return records_.back();
     }

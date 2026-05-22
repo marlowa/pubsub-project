@@ -3,22 +3,23 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/StringUtils.hpp>
 
-namespce pubsub_itc_fw {
+namespace pubsub_itc_fw {
 
     class FileLock {
       public:
         explicit FileLock(const std::string& path) : file_path_(path) {
             fd_ = ::open(file_path_.c_str(), O_CREAT | O_RDWR, 0644);
             if (fd_ < 0) {
-            throw std::runtime_error(
-                "Failed to open lock file '" + file_path_ + "': " + StringUtils::get_errno_string();
+                throw PubSubItcException(
+                    "Failed to open lock file '" + file_path_ + "': " + StringUtils::get_errno_string());
             }
 
             if (flock(fd_, LOCK_EX) != 0) {
                 ::close(fd_);
-                throw std::runtime_error("Failed to acquire lock on '" + file_path_ + "': " + StringUtils::get_errno_string());
+                throw PubSubItcException("Failed to acquire lock on '" + file_path_ + "': " + StringUtils::get_errno_string());
             }
         }
 
@@ -56,4 +57,4 @@ namespce pubsub_itc_fw {
         std::string file_path_;
     };
 
-} // namespaces
+} // namespace pubsub_itc_fw

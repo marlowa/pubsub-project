@@ -43,8 +43,11 @@ def generate_coverage_report(build_dir, source_dir):
         "*/integration_tests/*",
         "*/build/libraries/pubsub_itc_fw/dsl/*",
         "*/build/libraries/pubsub_itc_fw/pubsub_itc_fw/*",
+        "*/build/generated_dsl/*",
         "--output-file", str(filtered_info),
-        "--ignore-errors", "mismatch,unused"
+        "--ignore-errors", "mismatch,unused",
+        "--omit-lines", "PUBSUB_LOG|^\\s+\"[^\"]*\"",
+        "--erase-functions", "FMT_COMPILE_STRING"
     ], description="Filtering coverage data")
 
     # 3. Generate HTML

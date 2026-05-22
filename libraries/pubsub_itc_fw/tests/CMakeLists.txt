@@ -3,15 +3,21 @@
 add_executable(pubsub_itc_fw_tests
     ApplicationThreadTest.cpp
     BumpAllocatorTest.cpp
+    Crc32Test.cpp
     EmptySlabQueueTest.cpp
     EventMessageTest.cpp
     ExpandablePoolAllocatorTest.cpp
     ExpandableSlabAllocatorTest.cpp
     FixedSizeMemoryPoolTest.cpp
-    NumaAwarePoolAllocatorTest.cpp
+    HighResolutionClockTest.cpp
+    InetAddressTest.cpp
     LockFreeMessageQueueTest.cpp
     MillisecondClockTest.cpp
+    MirroredBufferTest.cpp
+    NumaAwarePoolAllocatorTest.cpp
+    OutboundConnectionTest.cpp
     PduFramerParserTest.cpp
+    PduParserTest.cpp
     PduProtocolHandlerTest.cpp
     QuillLoggerTest.cpp
     ReactorTest.cpp
@@ -19,13 +25,12 @@ add_executable(pubsub_itc_fw_tests
     SlabAllocatorTest.cpp
     StringUtilsTest.cpp
     TcpAcceptorTest.cpp
+    TcpConnectorTest.cpp
     TcpSocketTest.cpp
     ThreadWithJoinTimeoutTest.cpp
+    TimerTest.cpp
     TomlConfigurationTest.cpp
-    MirroredBufferTest.cpp
-    InetAddressTest.cpp
-    TcpConnectorTest.cpp
-    OutboundConnectionTest.cpp
+    WalTest.cpp
 )
 
 target_link_libraries(pubsub_itc_fw_tests PRIVATE

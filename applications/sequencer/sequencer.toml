@@ -24,8 +24,9 @@ listen_port                = 7003
 host                       = "127.0.0.1"
 port                       = 7004
 heartbeat_interval_seconds = 5
-heartbeat_timeout_seconds  = 15
-fence_file_path            = "/tmp/sequencer_primary_fence"
+heartbeat_timeout_seconds = 15
+startup_election_timeout_seconds = 20
+fence_file_path = "/tmp/sequencer_primary_fence"
 
 [wal]
 directory                 = "/tmp/sequencer_wal"

@@ -25,8 +25,7 @@ SequencerConfiguration SequencerConfigurationLoader::load(const std::string& fil
         toml.get_required_except("network.er_listen_host", config.er_listen_host);
         toml.get_required_except("gateway.host", config.gateway_host);
         toml.get_required_except("matching_engine.host", config.matching_engine_host);
-        // ha_enabled is optional; default false means single-node mode.
-        std::ignore = toml.get_required("ha.ha_enabled", config.ha_enabled);
+        toml.get_required_except("ha.ha_enabled", config.ha_enabled);
 
         int32_t listen_port = 0;
         int32_t er_listen_port = 0;
@@ -76,7 +75,7 @@ SequencerConfiguration SequencerConfigurationLoader::load(const std::string& fil
             toml.get_required_except("peer.port", peer_port);
             toml.get_required_except("peer.heartbeat_interval_seconds", heartbeat_interval_seconds);
             toml.get_required_except("peer.heartbeat_timeout_seconds", heartbeat_timeout_seconds);
-            std::ignore = toml.get_required("peer.startup_election_timeout_seconds", startup_election_timeout_seconds);
+            toml.get_required_except("peer.startup_election_timeout_seconds", startup_election_timeout_seconds);
 
             validate_port(peer_listen_port, "peer.listen_port");
             validate_port(peer_port, "peer.port");

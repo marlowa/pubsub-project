@@ -7,7 +7,6 @@
 #include <cerrno>
 #include <cinttypes>
 #include <cstring>
-#include <stdexcept>
 #include <vector>
 
 #include <dirent.h>
@@ -17,6 +16,7 @@
 #include <unistd.h>
 
 #include <pubsub_itc_fw/Crc32.hpp>
+#include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/WalWriter.hpp>
 
 namespace pubsub_itc_fw {
@@ -49,13 +49,13 @@ size_t WalReader::replay_segment(const std::string& path, size_t start_offset,
 {
     const int fd = ::open(path.c_str(), O_RDONLY);
     if (fd < 0) {
-        throw std::runtime_error("WalReader: open(" + path + "): " + std::strerror(errno));
+        throw PubSubItcException("WalReader: open(" + path + "): " + std::strerror(errno));
     }
 
     struct stat st{};
     if (::fstat(fd, &st) != 0) {
         ::close(fd);
-        throw std::runtime_error("WalReader: fstat(" + path + "): " + std::strerror(errno));
+        throw PubSubItcException("WalReader: fstat(" + path + "): " + std::strerror(errno));
     }
     const size_t file_size = static_cast<size_t>(st.st_size);
 
@@ -67,7 +67,7 @@ size_t WalReader::replay_segment(const std::string& path, size_t start_offset,
     void* ptr = ::mmap(nullptr, file_size, PROT_READ, MAP_SHARED, fd, 0);
     ::close(fd);
     if (ptr == MAP_FAILED) {
-        throw std::runtime_error("WalReader: mmap(" + path + "): " + std::strerror(errno));
+        throw PubSubItcException("WalReader: mmap(" + path + "): " + std::strerror(errno));
     }
 
     ::madvise(ptr, file_size, MADV_WILLNEED);
@@ -130,7 +130,7 @@ WalPosition WalReader::replay(const std::string& directory, WalPosition from,
                 // Directory doesn't exist yet — nothing to replay.
                 return from;
             }
-            throw std::runtime_error("WalReader: opendir(" + directory + "): " + std::strerror(errno));
+            throw PubSubItcException("WalReader: opendir(" + directory + "): " + std::strerror(errno));
         }
         struct dirent* de;
         while ((de = ::readdir(dp)) != nullptr) {

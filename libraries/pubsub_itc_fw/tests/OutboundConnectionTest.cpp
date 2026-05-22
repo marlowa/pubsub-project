@@ -704,4 +704,132 @@ TEST_F(OutboundConnectionManagerTest, DrainPendingSendDispatchesStashedCommand) 
     mgr.teardown_connection(conn_id, "test complete", false);
 }
 
+// ============================================================
+// OutboundConnectionManager: additional coverage tests
+//
+// RetryFailedConnectionsNoOpWhenEmpty
+//   retry_failed_connections() with no pending retries is a no-op.
+//
+// ProcessSendRawCommandReturnsFalse
+//   OutboundConnectionManager always returns false for SendRaw commands.
+//
+// ProcessCommitRawBytesReturnsTrueForKnownId
+//   process_commit_raw_bytes returns true when the ConnectionID belongs to a
+//   known outbound connection (outbound connections are always PDU-based, so
+//   commit is a no-op, but the return value lets the Reactor skip its warning).
+//
+// ProcessCommitRawBytesReturnsFalseForUnknownId
+//   Returns false when the ConnectionID is not found.
+//
+// ProcessDisconnectCommandTeardownsConnection
+//   process_disconnect_command tears down an established connection and
+//   returns true. The connection is absent from find_by_id afterwards.
+//
+// FindByIdReturnsNullForUnknownId
+//   find_by_id with a ConnectionID not in the manager returns nullptr.
+//
+// OnDataReadyParseErrorTeardownsConnection
+//   When the peer sends a frame with a bad canary, on_data_ready detects
+//   the parse error and tears down the connection. find_by_id returns nullptr
+//   after the call.
+// ============================================================
+
+TEST_F(OutboundConnectionManagerTest, RetryFailedConnectionsNoOpWhenEmpty) {
+    int calls = 0;
+    reactor_->outbound_manager().retry_failed_connections([&calls]() -> ConnectionID {
+        ++calls;
+        return ConnectionID{100};
+    });
+    EXPECT_EQ(calls, 0);
+}
+
+TEST_F(OutboundConnectionManagerTest, ProcessSendRawCommandReturnsFalse) {
+    ReactorControlCommand cmd(ReactorControlCommand::CommandTag::SendRaw);
+    cmd.connection_id_ = ConnectionID{99};
+    EXPECT_FALSE(reactor_->outbound_manager().process_send_raw_command(cmd));
+}
+
+TEST_F(OutboundConnectionManagerTest, ProcessCommitRawBytesReturnsFalseForUnknownId) {
+    EXPECT_FALSE(reactor_->outbound_manager().process_commit_raw_bytes(ConnectionID{9999}, 0));
+}
+
+TEST_F(OutboundConnectionManagerTest, ProcessCommitRawBytesReturnsTrueForKnownId) {
+    const uint16_t port = start_listener_and_accept();
+    ASSERT_NE(port, 0u);
+
+    const ConnectionID conn_id{55};
+    OutboundConnection* conn = establish(port, conn_id);
+
+    if (accept_thread_.joinable())
+        accept_thread_.join();
+    if (peer_fd_ != -1) {
+        ::close(peer_fd_);
+        peer_fd_ = -1;
+    }
+
+    ASSERT_NE(conn, nullptr);
+    EXPECT_TRUE(reactor_->outbound_manager().process_commit_raw_bytes(conn_id, 0));
+
+    reactor_->outbound_manager().teardown_connection(conn_id, "cleanup", false);
+}
+
+TEST_F(OutboundConnectionManagerTest, FindByIdReturnsNullForUnknownId) {
+    EXPECT_EQ(reactor_->outbound_manager().find_by_id(ConnectionID{8888}), nullptr);
+}
+
+TEST_F(OutboundConnectionManagerTest, ProcessDisconnectCommandTeardownsConnection) {
+    const uint16_t port = start_listener_and_accept();
+    ASSERT_NE(port, 0u);
+
+    const ConnectionID conn_id{60};
+    OutboundConnection* conn = establish(port, conn_id);
+
+    if (accept_thread_.joinable())
+        accept_thread_.join();
+    if (peer_fd_ != -1) {
+        ::close(peer_fd_);
+        peer_fd_ = -1;
+    }
+
+    ASSERT_NE(conn, nullptr);
+
+    OutboundConnectionManager& mgr = reactor_->outbound_manager();
+    EXPECT_TRUE(mgr.process_disconnect_command(conn_id));
+    EXPECT_EQ(mgr.find_by_id(conn_id), nullptr);
+    EXPECT_FALSE(mgr.process_disconnect_command(conn_id)); // already gone
+}
+
+TEST_F(OutboundConnectionManagerTest, OnDataReadyParseErrorTeardownsConnection) {
+    const uint16_t port = start_listener_and_accept();
+    ASSERT_NE(port, 0u);
+
+    const ConnectionID conn_id{65};
+    OutboundConnection* conn = establish(port, conn_id);
+
+    if (accept_thread_.joinable())
+        accept_thread_.join();
+    ASSERT_NE(conn, nullptr);
+    ASSERT_NE(peer_fd_, -1);
+
+    // Write a frame header with a bad canary from the server side.
+    // PduParser detects the mismatch after reading the complete 24-byte header.
+    PduHeader bad_hdr{};
+    bad_hdr.byte_count = htonl(4);
+    bad_hdr.pdu_id = htons(static_cast<uint16_t>(99));
+    bad_hdr.canary = htonl(0xDEADBEEFu); // wrong canary
+    bad_hdr.filler_b = 0;
+    ::write(peer_fd_, reinterpret_cast<const char*>(&bad_hdr), sizeof(bad_hdr));
+    ::close(peer_fd_);
+    peer_fd_ = -1;
+
+    // Give the kernel time to deliver the bytes on the loopback interface.
+    std::this_thread::sleep_for(std::chrono::milliseconds{1});
+
+    OutboundConnectionManager& mgr = reactor_->outbound_manager();
+    mgr.on_data_ready(*conn);
+
+    // Canary mismatch → parser returns {false, error} → teardown_connection called.
+    EXPECT_EQ(mgr.find_by_id(conn_id), nullptr);
+}
+
 } // namespace pubsub_itc_fw::tests
