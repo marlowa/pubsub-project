@@ -121,7 +121,7 @@ class SequencerWal {
     std::string snapshot_path() const;
     std::string segment_path_for_delete(uint64_t seg_num) const;
     bool load_snapshot(pubsub_itc_fw::WalPosition& out_pos);
-    void delete_segments_before(uint64_t seg_num) noexcept;
+    void delete_segments_before(uint64_t seg_num)const noexcept;
 
     std::string directory_;
     size_t segment_size_{0};

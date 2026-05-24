@@ -6,7 +6,6 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
-#include <unistd.h>
 
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
@@ -48,8 +47,8 @@ void SequencerThread::on_initial_event() {
     // Rebuild cl_ord_id→comp_id from WAL replay so ER routing survives restart.
     auto rebuild_routing_map = [this]([[maybe_unused]] int64_t seq_no, int16_t pdu_id,
                                       const uint8_t* payload, size_t payload_size) {
-        const auto nos_id = static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::NewOrderSingle);
-        const auto ocr_id = static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::OrderCancelRequest);
+        constexpr auto nos_id = static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::NewOrderSingle);
+        constexpr auto ocr_id = static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::OrderCancelRequest);
         if (pdu_id != nos_id && pdu_id != ocr_id) return;
 
         auto& arena_buf = decode_arena_buffer();
@@ -616,7 +615,7 @@ void SequencerThread::elect_role(int64_t peer_instance_id, int32_t peer_epoch,
     }
 }
 
-void SequencerThread::send_status_query(pubsub_itc_fw::ConnectionID conn_id)
+void SequencerThread::send_status_query(const pubsub_itc_fw::ConnectionID &conn_id)
 {
     pubsub_itc_fw_app::StatusQuery sq{};
     sq.instance_id = static_cast<int64_t>(config_.instance_id);
@@ -627,7 +626,7 @@ void SequencerThread::send_status_query(pubsub_itc_fw::ConnectionID conn_id)
                conn_id.get_value(), sq.instance_id, sq.epoch);
 }
 
-void SequencerThread::send_status_response(pubsub_itc_fw::ConnectionID conn_id)
+void SequencerThread::send_status_response(const pubsub_itc_fw::ConnectionID &conn_id)
 {
     pubsub_itc_fw_app::StatusResponse sr{};
     sr.self_instance_id = static_cast<int64_t>(config_.instance_id);
@@ -656,7 +655,7 @@ void SequencerThread::send_peer_heartbeat()
                "SequencerThread: Heartbeat sent to peer (epoch={})", epoch_);
 }
 
-void SequencerThread::write_fence_file()
+void SequencerThread::write_fence_file()const
 {
     const std::string& path = config_.fence_file_path;
     const std::string content = std::to_string(config_.instance_id) + "\n";
@@ -673,7 +672,7 @@ void SequencerThread::write_fence_file()
                "SequencerThread: fence file written: {}", path);
 }
 
-void SequencerThread::handle_peer_status_query(pubsub_itc_fw::ConnectionID conn_id,
+void SequencerThread::handle_peer_status_query(const pubsub_itc_fw::ConnectionID &conn_id,
                                                 const pubsub_itc_fw::EventMessage& message)
 {
     auto& arena_buf = decode_arena_buffer();
@@ -758,7 +757,7 @@ void SequencerThread::handle_peer_heartbeat(const pubsub_itc_fw::EventMessage& m
     }
 }
 
-void SequencerThread::handle_peer_pdu(pubsub_itc_fw::ConnectionID conn_id,
+void SequencerThread::handle_peer_pdu(const pubsub_itc_fw::ConnectionID &conn_id,
                                        const pubsub_itc_fw::EventMessage& message)
 {
     const int16_t pdu_id = static_cast<int16_t>(message.pdu_id());

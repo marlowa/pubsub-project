@@ -80,7 +80,7 @@ TEST_F(TomlConfigurationTest, LoadStringLeavesConfigUnchangedOnFailure) {
 // ============================================================
 
 TEST_F(TomlConfigurationTest, LoadFileNonExistentFileReturnsFalse) {
-    auto [ok, err] = config.load_file("/tmp/does_not_exist_12345.toml");
+    auto [ok, err] = config.load_file("/dev/shm/does_not_exist_12345.toml");
     EXPECT_FALSE(ok);
     EXPECT_FALSE(err.empty());
 }

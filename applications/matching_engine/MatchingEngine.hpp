@@ -31,7 +31,7 @@ class MatchingEngine {
      * @param[in] logger Logger. Ownership transferred. Must already have the
      *                   correct log levels applied from config.
      */
-    explicit MatchingEngine(const MatchingEngineConfiguration& config, std::unique_ptr<pubsub_itc_fw::QuillLogger> logger);
+    explicit MatchingEngine(MatchingEngineConfiguration config, std::unique_ptr<pubsub_itc_fw::QuillLogger> logger);
 
     /**
      * @brief Starts the reactor event loop. Blocks until shutdown.

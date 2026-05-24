@@ -190,7 +190,7 @@ void SequencerWal::append(int64_t seq_no, int16_t pdu_id, const uint8_t* payload
 // delete_segments_before()
 // ---------------------------------------------------------------------------
 
-void SequencerWal::delete_segments_before(uint64_t seg_num) noexcept
+void SequencerWal::delete_segments_before(uint64_t seg_num)const noexcept
 {
     for (uint64_t i = 0; i < seg_num; ++i) {
         ::unlink(segment_path_for_delete(i).c_str());

@@ -5,6 +5,7 @@
 
 #include <memory>
 
+#include <pubsub_itc_fw/ApplicationThread.hpp> // IWYU pragma: keep
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
 #include <pubsub_itc_fw/ReactorConfiguration.hpp>
@@ -34,13 +35,13 @@ class Sequencer {
      * @param[in] logger Logger. Ownership transferred. Must already have the
      *                   correct log levels applied from config.
      */
-    explicit Sequencer(const SequencerConfiguration& config, std::unique_ptr<pubsub_itc_fw::QuillLogger> logger);
+    explicit Sequencer(SequencerConfiguration  config, std::unique_ptr<pubsub_itc_fw::QuillLogger> logger);
 
     /**
      * @brief Starts the reactor event loop. Blocks until shutdown.
      * @return 0 on normal shutdown, non-zero on error.
      */
-    int run();
+    int run()const;
 
   private:
     SequencerConfiguration config_;

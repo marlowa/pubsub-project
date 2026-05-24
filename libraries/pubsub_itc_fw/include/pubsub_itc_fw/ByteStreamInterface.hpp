@@ -4,7 +4,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // C++ headers whose names start with ‘c’
-#include <cstdint> // For uint8_t
+#include <cstdint> // IWYU pragma: keep
 
 // System C++ headers
 #include <memory> // For std::unique_ptr (for get_peer_address)

@@ -124,6 +124,14 @@ void ApplicationThread::start() {
     return thread_->join_with_timeout(timeout);
 }
 
+pthread_t ApplicationThread::get_pthread_id() const {
+    return thread_->get_pthread_id();
+}
+
+void ApplicationThread::register_extra_thread(pthread_t id, std::string name) {
+    extra_threads_.push_back({id, std::move(name)});
+}
+
 void ApplicationThread::pause() {
     is_paused_.store(true, std::memory_order_relaxed);
 }

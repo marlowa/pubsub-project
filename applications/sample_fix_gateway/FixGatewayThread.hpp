@@ -10,8 +10,6 @@
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
-#include <pubsub_itc_fw/Reactor.hpp>
-#include <pubsub_itc_fw/ThreadID.hpp>
 
 #include "FixGatewayConfiguration.hpp"
 #include "FixMessage.hpp"
@@ -80,9 +78,9 @@ class FixGatewayThread : public pubsub_itc_fw::ApplicationThread {
     void handle_new_order_single(FixSession& session, const FixMessage& msg);
 
     // Disconnect a session cleanly -- cancels its timer and tears down the connection.
-    void disconnect_session(FixSession& session, const std::string& reason);
+    void disconnect_session(const FixSession&session, const std::string& reason);
 
-    void send_fix_to_session(FixSession& session, FixMessage& msg);
+    void send_fix_to_session(FixSession& session, const FixMessage&msg);
 
     static std::string generate_order_id(FixSession& session);
     static std::string generate_exec_id(FixSession& session);

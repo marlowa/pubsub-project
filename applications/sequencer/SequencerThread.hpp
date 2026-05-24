@@ -3,7 +3,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-#include <cstdint>
+#include <cstdint> // IWYU pragma: keep
 #include <string>
 #include <unordered_map>
 
@@ -93,14 +93,14 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     pubsub_itc_fw::ConnectionID peer_active_conn() const noexcept;
     void adopt_role(pubsub_itc_fw_app::Role new_role);
     void elect_role(int64_t peer_instance_id, int32_t peer_epoch, pubsub_itc_fw_app::Role peer_current_role);
-    void send_status_query(pubsub_itc_fw::ConnectionID conn_id);
-    void send_status_response(pubsub_itc_fw::ConnectionID conn_id);
+    void send_status_query(const pubsub_itc_fw::ConnectionID &conn_id);
+    void send_status_response(const pubsub_itc_fw::ConnectionID &conn_id);
     void send_peer_heartbeat();
-    void write_fence_file();
-    void handle_peer_status_query(pubsub_itc_fw::ConnectionID conn_id, const pubsub_itc_fw::EventMessage& message);
+    void write_fence_file()const;
+    void handle_peer_status_query(const pubsub_itc_fw::ConnectionID &conn_id, const pubsub_itc_fw::EventMessage& message);
     void handle_peer_status_response(const pubsub_itc_fw::EventMessage& message);
     void handle_peer_heartbeat(const pubsub_itc_fw::EventMessage& message);
-    void handle_peer_pdu(pubsub_itc_fw::ConnectionID conn_id, const pubsub_itc_fw::EventMessage& message);
+    void handle_peer_pdu(const pubsub_itc_fw::ConnectionID &conn_id, const pubsub_itc_fw::EventMessage& message);
 
     // cl_ord_id → SenderCompID of the originating FIX client (Slice 5).
     // Populated on each NOS/OCR received; rebuilt from WAL replay on startup.

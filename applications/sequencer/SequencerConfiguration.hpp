@@ -3,7 +3,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-#include <cstdint>
+#include <cstdint> // IWYU pragma: keep
 #include <string>
 
 #include <pubsub_itc_fw/FwLogLevel.hpp>
@@ -136,14 +136,14 @@ struct SequencerConfiguration {
     int32_t heartbeat_timeout_seconds{15};
 
     /** @brief Path to the file written when this node promotes itself to leader. */
-    std::string fence_file_path{"/tmp/sequencer_fence"};
+    std::string fence_file_path{"/dev/shm/sequencer_fence"};
 
     // ----------------------------------------------------------------
     // WAL -- mmap'd on-disk write-ahead log
     // ----------------------------------------------------------------
 
     /** @brief Directory in which WAL segment files are created. */
-    std::string wal_directory{"/tmp/sequencer_wal"};
+    std::string wal_directory{"/var/tmp/pubsub/sequencer_wal"};
 
     /** @brief Pre-allocation size of each WAL segment file in bytes. */
     size_t wal_segment_size{4 * 1024 * 1024};
@@ -156,6 +156,23 @@ struct SequencerConfiguration {
 
     /** @brief Minimum severity written to syslog. */
     pubsub_itc_fw::FwLogLevel syslog_level{pubsub_itc_fw::FwLogLevel::Info};
+
+    // ----------------------------------------------------------------
+    // Reactor
+    // ----------------------------------------------------------------
+
+    /** @brief Enable CPU core pinning for registered application threads.
+     *  Mandatory: must be set explicitly in the TOML configuration file. */
+    bool cpu_pinning_enabled;
+
+    /** @brief Exclude CPU 0 from pinning candidates (for machines without isolated cores).
+     *  Mandatory: must be set explicitly in the TOML configuration file. */
+    bool cpu_pinning_dev_mode;
+
+    /** @brief Path to the flock file used to serialise cross-process CPU registry access.
+     *  Prefer /dev/shm/ so the file is cleared on reboot.
+     *  Mandatory: must be set explicitly in the TOML configuration file. */
+    std::string cpu_registry_lock_file;
 };
 
 } // namespace sequencer

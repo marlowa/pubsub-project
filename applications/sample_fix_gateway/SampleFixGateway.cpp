@@ -15,12 +15,13 @@
 #include <pubsub_itc_fw/ProtocolType.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
+#include <utility>
 
 namespace sample_fix_gateway {
 
 const std::string SampleFixGateway::log_file_name = "sample_fix_gateway.log";
 
-SampleFixGateway::SampleFixGateway(const FixGatewayConfiguration& config) : config_(config) {
+SampleFixGateway::SampleFixGateway(FixGatewayConfiguration  config) : config_(std::move(config)) {
     // Block SIGINT and SIGTERM before spawning any threads -- including the
     // quill backend thread. The Reactor consumes these signals via signalfd.
     pubsub_itc_fw::QuillLogger::block_signals_before_construction();
@@ -33,6 +34,9 @@ SampleFixGateway::SampleFixGateway(const FixGatewayConfiguration& config) : conf
     reactor_configuration_.socket_maximum_inactivity_interval_ = std::chrono::seconds{120};
     reactor_configuration_.inactivity_check_interval_ = std::chrono::milliseconds{500};
     reactor_configuration_.shutdown_timeout_ = std::chrono::seconds{2};
+    reactor_configuration_.cpu_pinning_enabled = config_.cpu_pinning_enabled;
+    reactor_configuration_.cpu_pinning_dev_mode = config_.cpu_pinning_dev_mode;
+    reactor_configuration_.cpu_registry_lock_file = config_.cpu_registry_lock_file;
 
     reactor_ = std::make_unique<pubsub_itc_fw::Reactor>(reactor_configuration_, service_registry_, *logger_);
 
@@ -49,7 +53,7 @@ SampleFixGateway::SampleFixGateway(const FixGatewayConfiguration& config) : conf
     PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "SampleFixGateway: logon timeout={}s", config_.logon_timeout.count());
 }
 
-int SampleFixGateway::run() {
+int SampleFixGateway::run()const {
     PUBSUB_LOG_STR((*logger_), pubsub_itc_fw::FwLogLevel::Info, "SampleFixGateway: starting reactor");
 
     return reactor_->run();

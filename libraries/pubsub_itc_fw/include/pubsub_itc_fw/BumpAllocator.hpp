@@ -74,7 +74,7 @@
  *   A BumpAllocator must never be shared across threads.
  */
 
-#include <cstddef>
+#include <cstdint> // IWYU pragma: keep
 
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 

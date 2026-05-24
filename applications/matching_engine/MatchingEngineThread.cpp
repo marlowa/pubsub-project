@@ -61,7 +61,7 @@ void MatchingEngineThread::on_connection_lost(pubsub_itc_fw::ConnectionID id, co
 }
 
 void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message) {
-    const int16_t pdu_id = static_cast<int16_t>(message.pdu_id());
+    const auto pdu_id = static_cast<int16_t>(message.pdu_id());
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: sequenced PDU received on connection {} pdu_id={}",
                message.connection_id().get_value(), pdu_id);
@@ -117,11 +117,11 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
 
     // CumQty == OrderQty (fully filled) and LeavesQty == 0.
     // LastQty is the size of this fill, here equal to OrderQty.
-    const std::string cum_qty = order_qty;
+    const std::string& cum_qty = order_qty;
     const std::string leaves_qty = "0";
-    const std::string last_qty = order_qty;
-    const std::string last_px = price;
-    const std::string avg_px = price;
+    const std::string& last_qty = order_qty;
+    const std::string& last_px = price;
+    const std::string& avg_px = price;
 
     const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 
@@ -152,7 +152,7 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
     er.has_ord_type = true;
     er.ord_type = view.ord_type;
 
-    const int16_t er_pdu_id = static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::ExecutionReport);
+    constexpr auto er_pdu_id = static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::ExecutionReport);
     send_pdu(sequencer_er_conn_id_, er_pdu_id, sequence_number, er);
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: sent ExecutionReport OrderID={} ExecID={} ClOrdID={}", order_id, exec_id,

@@ -123,6 +123,28 @@ class Reactor;
  */
 class ApplicationThread {
   public:
+    /**
+     * @brief Descriptor for a thread that a subclass wants the Reactor to pin.
+     *
+     * Subclasses call register_extra_thread() from their constructor to
+     * enrol threads they manage themselves (not ApplicationThread event-loop
+     * threads).  The Reactor reads this collection during pin_registered_threads()
+     * and claims one additional CPU core per entry, pinning each thread using
+     * the same cross-process registry as all other threads.
+     *
+     * @note The thread must already be running and the pthread_t valid at the
+     * time register_extra_thread() is called.  Because the Reactor pins threads
+     * immediately after all ApplicationThreads reach the is_running() state,
+     * registration must happen in the subclass constructor (or an override of
+     * start()) — never in response to the Initial or AppReady events.  If a
+     * subclass needs to start extra threads later than that, a deferred pinning
+     * mechanism would be required (not yet designed; document the need first).
+     */
+    struct ExtraThread {
+        pthread_t thread_id;
+        std::string name;
+    };
+
     // The Passkey: Constructor is public, but only we can build the 'key'
     class ConstructorToken {
         friend class ApplicationThread;
@@ -168,6 +190,26 @@ class ApplicationThread {
     [[nodiscard]] bool join_with_timeout(std::chrono::milliseconds timeout);
 
     /**
+     * @brief Returns the underlying pthread handle.
+     *
+     * Valid only after start() has been called. Used by the Reactor to pin
+     * threads to CPU cores via pthread_setaffinity_np().
+     *
+     * @throws PubSubItcException if the thread has not been started.
+     */
+    [[nodiscard]] pthread_t get_pthread_id() const;
+
+    /**
+     * @brief Returns the collection of extra threads registered by this subclass.
+     *
+     * Called by the Reactor during pin_registered_threads() to determine how
+     * many additional cores to claim and which threads to pin.
+     */
+    [[nodiscard]] const std::vector<ExtraThread>& get_extra_threads() const {
+        return extra_threads_;
+    }
+
+    /**
      * Returns the ID of the thread. This is chosen by the application developer
      * and enforced to be unique by the Reactor.
      *
@@ -202,7 +244,7 @@ class ApplicationThread {
      * @brief Returns a reference to the thread's message queue.
      * @return LockFreeMessageQueue<EventMessage>& The message queue.
      */
-    LockFreeMessageQueue<EventMessage>& get_queue() {
+    LockFreeMessageQueue<EventMessage>& get_queue()const {
         return *message_queue_;
     }
 
@@ -428,9 +470,22 @@ class ApplicationThread {
      * (e.g. Connect, SendPdu, Disconnect) and access slab allocators
      * from within their callback implementations.
      */
-    Reactor& get_reactor() {
+    Reactor& get_reactor()const {
         return reactor_;
     }
+
+    /**
+     * @brief Registers an extra thread for CPU pinning by the Reactor.
+     *
+     * Call this from the subclass constructor for each thread the subclass
+     * starts and wants the Reactor to pin.  The thread must already be
+     * running when this is called.  See ExtraThread for the timing constraint.
+     *
+     * @param id    pthread handle of the already-running thread to pin.
+     * @param name  Human-readable label, e.g. "rdkafka-consumer-0".
+     *              Appears verbatim in the pinning log messages.
+     */
+    void register_extra_thread(pthread_t id, std::string name);
 
     /**
      * @brief Returns a reference to this thread's outbound PDU slab allocator.
@@ -527,7 +582,7 @@ class ApplicationThread {
         auto [slab_id, chunk] = outbound_allocator_.allocate(frame_size);
 
         // Write PduHeader in network byte order.
-        auto* hdr = reinterpret_cast<PduHeader*>(chunk);
+        auto* hdr = static_cast<PduHeader*>(chunk);
         hdr->byte_count = htonl(static_cast<uint32_t>(bytes_needed));
         hdr->pdu_id = htons(static_cast<uint16_t>(pdu_id));
         hdr->version = 1;
@@ -648,6 +703,9 @@ class ApplicationThread {
 
     std::unordered_map<std::string, TimerID> name_to_id_;
     std::unordered_map<TimerID, std::string> id_to_name_;
+
+    /// Extra threads registered by the subclass for Reactor CPU pinning.
+    std::vector<ExtraThread> extra_threads_;
 
     /** Set of ConnectionIDs currently active on this thread.
      * Maintained by process_message() on ConnectionEstablished/ConnectionLost.

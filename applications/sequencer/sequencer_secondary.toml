@@ -26,13 +26,18 @@ port                       = 7003
 heartbeat_interval_seconds = 5
 heartbeat_timeout_seconds = 15
 startup_election_timeout_seconds = 20
-fence_file_path = "/tmp/sequencer_secondary_fence"
+fence_file_path = "/dev/shm/sequencer_secondary_fence"
 
 [wal]
-directory                 = "/tmp/sequencer_secondary_wal"
+directory                 = "/var/tmp/pubsub/sequencer_secondary_wal"
 segment_size              = 4194304
 snapshot_interval_seconds = 30
 
 [logging]
 applog_level = "info"
 syslog_level = "info"
+
+[reactor]
+cpu_pinning_enabled = true
+cpu_pinning_dev_mode = true
+cpu_registry_lock_file = "/dev/shm/pubsub_cpu_registry.lock"

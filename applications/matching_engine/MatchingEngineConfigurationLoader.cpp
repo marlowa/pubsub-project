@@ -55,6 +55,10 @@ MatchingEngineConfiguration MatchingEngineConfigurationLoader::load(const std::s
                                                         "' is not a recognised log level");
         }
 
+        toml.get_required_except("reactor.cpu_pinning_enabled", config.cpu_pinning_enabled);
+        toml.get_required_except("reactor.cpu_pinning_dev_mode", config.cpu_pinning_dev_mode);
+        toml.get_required_except("reactor.cpu_registry_lock_file", config.cpu_registry_lock_file);
+
     } catch (const pubsub_itc_fw::ConfigurationException&) {
         throw;
     }

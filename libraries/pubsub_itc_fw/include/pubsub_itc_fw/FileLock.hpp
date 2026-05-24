@@ -3,6 +3,9 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <fcntl.h>
+#include <sys/file.h>
+
 #include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/StringUtils.hpp>
 
@@ -17,7 +20,7 @@ namespace pubsub_itc_fw {
                     "Failed to open lock file '" + file_path_ + "': " + StringUtils::get_errno_string());
             }
 
-            if (flock(fd_, LOCK_EX) != 0) {
+            if (::flock(fd_, LOCK_EX) != 0) {
                 ::close(fd_);
                 throw PubSubItcException("Failed to acquire lock on '" + file_path_ + "': " + StringUtils::get_errno_string());
             }
@@ -47,7 +50,7 @@ namespace pubsub_itc_fw {
       private:
         void release() {
             if (fd_ >= 0) {
-                flock(fd_, LOCK_UN);
+                ::flock(fd_, LOCK_UN);
                 ::close(fd_);
                 fd_ = -1;
             }

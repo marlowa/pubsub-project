@@ -45,7 +45,7 @@ WalReader::EntryCallback capture(std::vector<Captured>& out) {
 class WalTest : public ::testing::Test {
   protected:
     void SetUp() override {
-        std::string tmpl = "/tmp/wal_test_XXXXXX";
+        std::string tmpl = "/dev/shm/wal_test_XXXXXX";
         ASSERT_NE(::mkdtemp(tmpl.data()), nullptr);
         dir_ = tmpl;
     }
@@ -126,7 +126,7 @@ TEST_F(WalTest, OversizedPayloadThrows) {
 
 TEST_F(WalTest, ReplayMissingDirectoryReturnsFrom) {
     const WalPosition from{0, 0};
-    const WalPosition end = WalReader::replay("/tmp/wal_no_such_dir_xyz_abc", from, nullptr);
+    const WalPosition end = WalReader::replay("/dev/shm/wal_no_such_dir_xyz_abc", from, nullptr);
     EXPECT_EQ(end.segment, from.segment);
     EXPECT_EQ(end.offset, from.offset);
 }

@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <string>
 
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/QueueConfiguration.hpp>
@@ -32,6 +33,19 @@ struct ReactorConfiguration {
         command_queue_configuration_.high_watermark = 64;
         command_allocator_configuration_.objects_per_pool = 64;
         command_allocator_configuration_.initial_pools = 1;
+
+        // Safe defaults for the CPU pinning fields.
+        //
+        // In production these are always overridden by the TOML loader via
+        // get_required_except(), which enforces that every application
+        // explicitly sets them.  The constructor initialises them to a
+        // benign state so that code paths that construct ReactorConfiguration
+        // directly (unit tests, benchmarks) do not trigger undefined behaviour
+        // from uninitialised booleans.
+        cpu_pinning_enabled  = false;
+        cpu_pinning_dev_mode = false;
+        // cpu_registry_lock_file is std::string — default-constructed to "".
+        // Reactor::pin_registered_threads() skips pinning when it is empty.
     }
 
     /**
@@ -173,6 +187,54 @@ struct ReactorConfiguration {
      * The defaults set in the constructor are appropriate for normal operation.
      */
     AllocatorConfiguration command_allocator_configuration_;
+
+    // -------------------------------------------------------------------------
+    // CPU pinning
+    // -------------------------------------------------------------------------
+
+    /**
+     * @brief Enable automatic CPU affinity pinning of registered ApplicationThreads.
+     *
+     * When true, the Reactor pins each registered ApplicationThread to a
+     * dedicated CPU core immediately after all threads have reached the
+     * Started state. Pinning uses the CpuRegistry for cross-process coordination
+     * so that cooperating processes on the same machine do not collide.
+     *
+     * Mandatory: must be explicitly set from the application's TOML configuration.
+     */
+    bool cpu_pinning_enabled;
+
+    /**
+     * @brief Exclude CPU 0 from the set of pinning candidates.
+     *
+     * CPU 0 is typically used by the OS for interrupt handling and housekeeping.
+     * Set to true on development machines where isolation is not configured;
+     * set to false on production machines with properly isolated cores.
+     *
+     * Mandatory: must be explicitly set from the application's TOML configuration.
+     */
+    bool cpu_pinning_dev_mode;
+
+    /**
+     * @brief Path to the shared registry file used for cross-process coordination.
+     *
+     * All cooperating processes on the same machine must use the same path.
+     * /dev/shm/ (tmpfs) is preferred: the file is cleared on reboot, ensuring
+     * stale entries from previous runs are never inherited.
+     *
+     * Default: /dev/shm/pubsub_cpu_registry
+     */
+    std::string cpu_registry_shm_path{"/dev/shm/pubsub_cpu_registry"};
+
+    /**
+     * @brief Path to the flock file used to serialise registry access.
+     *
+     * All cooperating processes on the same machine must use the same path.
+     * Prefer /dev/shm/ (tmpfs) so the file is cleared on reboot.
+     *
+     * Mandatory: must be explicitly set from the application's TOML configuration.
+     */
+    std::string cpu_registry_lock_file;
 };
 
 } // namespace pubsub_itc_fw

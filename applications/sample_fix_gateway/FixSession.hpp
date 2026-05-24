@@ -6,6 +6,7 @@
 #include <string>
 
 #include <pubsub_itc_fw/ConnectionID.hpp>
+#include <utility>
 
 #include "FixParser.hpp"
 
@@ -33,7 +34,7 @@ struct FixSession {
      * @param[in] id       The ConnectionID assigned by the reactor.
      * @param[in] callback Called by the parser for each complete FIX message.
      */
-    FixSession(pubsub_itc_fw::ConnectionID id, FixParser::MessageCallback callback) : conn_id(id), parser(std::move(callback)) {}
+    FixSession(pubsub_itc_fw::ConnectionID id, FixParser::MessageCallback callback) : conn_id(std::move(id)), parser(std::move(callback)) {}
 
     // Not copyable -- FixParser holds a std::string buffer and std::function.
     FixSession(const FixSession&) = delete;

@@ -5,3 +5,8 @@ listen_port = 7101
 [logging]
 applog_level = "info"
 syslog_level = "info"
+
+[reactor]
+cpu_pinning_enabled = true
+cpu_pinning_dev_mode = true
+cpu_registry_lock_file = "/dev/shm/pubsub_cpu_registry.lock"

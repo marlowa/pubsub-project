@@ -11,6 +11,7 @@
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/QueueConfiguration.hpp>
+#include <pubsub_itc_fw/Reactor.hpp>
 #include <pubsub_itc_fw/ReactorControlCommand.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 
@@ -237,7 +238,7 @@ void FixGatewayThread::handle_new_order_single(FixSession& session, const FixMes
                session.conn_id.get_value(), order_id, exec_id);
 }
 
-void FixGatewayThread::disconnect_session(FixSession& session, const std::string& reason) {
+void FixGatewayThread::disconnect_session(const FixSession& session, const std::string& reason) {
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixGatewayThread: disconnecting connection {}: {}", session.conn_id.get_value(), reason);
 
     pubsub_itc_fw::ReactorControlCommand cmd(pubsub_itc_fw::ReactorControlCommand::CommandTag::Disconnect);
@@ -245,7 +246,7 @@ void FixGatewayThread::disconnect_session(FixSession& session, const std::string
     get_reactor().enqueue_control_command(cmd);
 }
 
-void FixGatewayThread::send_fix_to_session(FixSession& session, FixMessage& msg) {
+void FixGatewayThread::send_fix_to_session(FixSession& session, const FixMessage& msg) {
     const std::string wire = serialiser_.serialise(msg, session.outbound_seq_num++);
     send_raw(session.conn_id, wire.data(), static_cast<uint32_t>(wire.size()));
 }

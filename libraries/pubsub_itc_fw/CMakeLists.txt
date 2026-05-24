@@ -41,6 +41,7 @@ add_custom_target(pubsub_itc_fw_dsl
 # ------------------------------------------------------------
 set(PUBSUB_ITC_FW_SRC
         src/ApplicationThread.cpp
+        src/CpuRegistry.cpp
         src/InetAddress.cpp
         src/EmptySlabQueue.cpp
         src/EventMessage.cpp

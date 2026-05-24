@@ -132,7 +132,7 @@ class ConnectionID {
 namespace std {
 
 template <> struct hash<pubsub_itc_fw::ConnectionID> {
-    [[nodiscard]] size_t operator()(const pubsub_itc_fw::ConnectionID& id) const {
+    [[nodiscard]] size_t operator()(const pubsub_itc_fw::ConnectionID& id) const noexcept {
         return std::hash<int>()(id.get_value());
     }
 };

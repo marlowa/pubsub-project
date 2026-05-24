@@ -104,6 +104,23 @@ struct FixGatewaySeqConfiguration {
 
     /** @brief Rolling parameters for the applog */
     pubsub_itc_fw::RollingLogfileConfiguration rolling_logfile_configuration;
+
+    // ----------------------------------------------------------------
+    // Reactor
+    // ----------------------------------------------------------------
+
+    /** @brief Enable CPU core pinning for registered application threads.
+     *  Mandatory: must be set explicitly in the TOML configuration file. */
+    bool cpu_pinning_enabled;
+
+    /** @brief Exclude CPU 0 from pinning candidates (for machines without isolated cores).
+     *  Mandatory: must be set explicitly in the TOML configuration file. */
+    bool cpu_pinning_dev_mode;
+
+    /** @brief Path to the flock file used to serialise cross-process CPU registry access.
+     *  Prefer /dev/shm/ so the file is cleared on reboot.
+     *  Mandatory: must be set explicitly in the TOML configuration file. */
+    std::string cpu_registry_lock_file;
 };
 
 } // namespace sample_fix_gateway_seq

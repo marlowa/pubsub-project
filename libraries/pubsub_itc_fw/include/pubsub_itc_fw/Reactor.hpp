@@ -42,6 +42,9 @@
 
 namespace pubsub_itc_fw {
 
+// Forward declaration — full definition in CpuRegistry.hpp, included only by Reactor.cpp.
+class CpuRegistry;
+
 /** @ingroup reactor_subsystem */
 
 /**
@@ -321,6 +324,18 @@ class Reactor : public ThreadLookupInterface {
     void process_control_commands();
 
     /**
+     * @brief Pin all registered ApplicationThreads to dedicated CPU cores.
+     *
+     * Called from initialize_threads() after all threads have reached the
+     * Started state. Uses CpuRegistry for cross-process coordination so that
+     * cooperating processes on the same machine do not collide on cores.
+     * Failures are logged as warnings and do not abort startup.
+     *
+     * Only called when ReactorConfiguration::cpu_pinning_enabled is true.
+     */
+    void pin_registered_threads();
+
+    /**
      * @brief Allocates the next ConnectionID from the shared monotonic counter.
      *
      * Called by on_accept() and process_connect_command() before delegating to
@@ -460,6 +475,13 @@ class Reactor : public ThreadLookupInterface {
      * this manager's constructor runs.
      */
     OutboundConnectionManager outbound_manager_;
+
+    /**
+     * Owns the cross-process CPU registry handle for the lifetime of the Reactor.
+     * Populated by pin_registered_threads() when cpu_pinning_enabled is true.
+     * Destructor releases this process's registry entries on shutdown.
+     */
+    std::unique_ptr<CpuRegistry> cpu_registry_;
 };
 
 } // namespace pubsub_itc_fw
