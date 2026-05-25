@@ -1,7 +1,11 @@
 [network]
 listen_host         = "127.0.0.1"
 listen_port         = 9879
-raw_buffer_capacity = 512000 # for TCP buffering
+raw_buffer_capacity = 4194304 # for TCP buffering; 4 MiB per FIX session.
+                              # At ~175 bytes/NOS, 4 MiB holds ~24,000 messages at the high-water
+                              # mark (75%), far more than any single session's burst (10,000 max).
+                              # This prevents TCP flow-control backpressure being applied to fix8,
+                              # which loses one order per session when its send is blocked for >100ms.
 er_listen_host      = "127.0.0.1"
 er_listen_port      = 7010
 

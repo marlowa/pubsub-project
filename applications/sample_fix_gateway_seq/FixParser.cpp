@@ -52,8 +52,24 @@ bool FixParser::try_extract_message() {
 
     const std::string body_len_tag = "9=";
     const size_t bl_start = soh1 + 1;
+    if (buffer_.size() < bl_start + body_len_tag.size()) {
+        return false; // incomplete -- begin-string field received but body-length tag not yet
+    }
     if (buffer_.compare(bl_start, body_len_tag.size(), body_len_tag) != 0) {
-        // Malformed -- skip past the start tag and try again.
+        // The bytes immediately after the begin-string SOH do not start with "9=".
+        // This is a false-positive "8=" hit: the two-byte sequence "8=" appeared
+        // inside a field *value* of a previous (or the current) message, and the
+        // SOH that terminated that value happens to land exactly 10 bytes after the
+        // spurious "8=" (making it look like a valid begin-string SOH).  Skip past
+        // this false start and resync.
+        //
+        // Note: a partial message whose TCP segment ends right after the
+        // begin-string SOH is handled by the buffer-size check above, which
+        // returns false (incomplete) before reaching here.
+        PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
+                   "FixParser: malformed FIX message (tag 9 not second field) at buffer offset {} -- "
+                   "skipping {} bytes and resyncing",
+                   start, bl_start - start);
         offset_ = start + 1;
         return true;
     }
@@ -66,6 +82,10 @@ bool FixParser::try_extract_message() {
     const std::string body_len_str = buffer_.substr(bl_start + body_len_tag.size(), soh2 - bl_start - body_len_tag.size());
     const int body_length = std::stoi(body_len_str);
     if (body_length <= 0) {
+        PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
+                   "FixParser: malformed FIX message (non-positive BodyLength {}) at buffer offset {} -- "
+                   "skipping and resyncing",
+                   body_length, start);
         offset_ = start + 1;
         return true; // malformed, skip
     }
@@ -81,7 +101,15 @@ bool FixParser::try_extract_message() {
     }
 
     if (buffer_.compare(tag10_start, checksum_tag.size(), checksum_tag) != 0) {
-        // BodyLength pointed somewhere wrong -- skip and resync.
+        // BodyLength pointed somewhere wrong -- the partial/corrupt bytes are
+        // from a message truncated mid-stream (e.g. by TCP backpressure causing
+        // the peer to retransmit from the wrong offset).
+        PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
+                   "FixParser: BodyLength ({}) points to wrong location (expected '10=' at offset {}, "
+                   "found '{}') -- discarding {} bytes and resyncing",
+                   body_length, tag10_start,
+                   buffer_.substr(tag10_start, std::min(static_cast<size_t>(4), buffer_.size() - tag10_start)),
+                   bl_start - start);
         offset_ = start + 1;
         return true;
     }
@@ -105,8 +133,9 @@ bool FixParser::try_extract_message() {
             sum += c;
         }
         const std::string computed = format_checksum(sum % 256);
-        PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Debug, "FixParser: bad checksum -- computed {} received {} -- message discarded", computed,
-                   checksum_value);
+        PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
+                   "FixParser: bad checksum (computed {} received {}) -- discarding message of {} bytes",
+                   computed, checksum_value, soh3 + 1 - start);
         offset_ = soh3 + 1;
         return true;
     }
