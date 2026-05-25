@@ -181,7 +181,11 @@ void PduParser::dispatch_pdu(int slab_id, void* payload_chunk) {
     // wire content can be compared against what the encoder should
     // have produced. The header trace above already captured the
     // PduHeader; this captures what comes after it.
-    {
+    //
+    // The string is assembled only when Debug logging is actually enabled;
+    // should_log_statement() is a cheap inline check on the Quill log level
+    // so this guard costs nothing on Info/Warning-level production runs.
+    if (logger_.quill_logger()->should_log_statement(quill::LogLevel::Debug)) {
         const int dump_limit = (payload_size < 96) ? payload_size : 96;
         std::string hex_bytes;
         hex_bytes.reserve(static_cast<size_t>(dump_limit) * 3);
