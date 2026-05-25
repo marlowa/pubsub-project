@@ -136,6 +136,10 @@ void SequencerThread::on_connection_established(pubsub_itc_fw::ConnectionID id) 
     } else if (svc == "arbiter") {
         arbiter_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: arbiter connection {} established", id.get_value());
+        // Send heartbeats to the arbiter so its inbound inactivity timeout does
+        // not fire while the sequencer is under heavy load processing orders.
+        // Interval is short relative to the arbiter's socket_maximum_inactivity_interval_.
+        start_recurring_timer("arbiter_heartbeat", std::chrono::seconds{30});
     } else if (svc == "peer") {
         peer_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: outbound peer connection {} established -- sending StatusQuery", id.get_value());
@@ -161,6 +165,7 @@ void SequencerThread::on_connection_lost(pubsub_itc_fw::ConnectionID id, const s
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: matching engine order connection {} lost: {}", id.get_value(), reason);
     } else if (id == arbiter_conn_id_) {
         arbiter_conn_id_ = pubsub_itc_fw::ConnectionID{};
+        cancel_timer("arbiter_heartbeat");
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: arbiter connection {} lost: {}", id.get_value(), reason);
     } else if (id == peer_conn_id_) {
         peer_conn_id_ = pubsub_itc_fw::ConnectionID{};
@@ -177,7 +182,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
     const pubsub_itc_fw::ConnectionID conn_id = message.connection_id();
     const std::string& svc = conn_id.service_name();
 
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "TRACE on_framework_pdu_message: msg.connection_id value={} service_name=[{}]",
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "TRACE on_framework_pdu_message: msg.connection_id value={} service_name=[{}]",
                conn_id.get_value(), svc);
 
     // Peer PDUs arrive on the outbound peer connection or from the inbound peer listener.
@@ -513,6 +518,11 @@ void SequencerThread::on_timer_event(const std::string& name) {
         return;
     }
 
+    if (name == "arbiter_heartbeat") {
+        send_arbiter_heartbeat();
+        return;
+    }
+
     if (name == "peer_heartbeat_timeout") {
         // No heartbeat received within the timeout window. Promote unconditionally:
         // if both nodes start simultaneously and the peer is unreachable, the node
@@ -662,6 +672,20 @@ void SequencerThread::send_peer_heartbeat()
     send_pdu(target, kPduHeartbeat, 0, hb);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
                "SequencerThread: Heartbeat sent to peer (epoch={})", epoch_);
+}
+
+void SequencerThread::send_arbiter_heartbeat()
+{
+    if (!arbiter_conn_id_.is_valid()) {
+        return;
+    }
+    pubsub_itc_fw_app::Heartbeat hb{};
+    hb.instance_id = static_cast<int64_t>(config_.instance_id);
+    hb.epoch       = epoch_;
+    send_pdu(arbiter_conn_id_, kPduHeartbeat, 0, hb);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
+               "SequencerThread: arbiter heartbeat sent (instance_id={} epoch={})",
+               hb.instance_id, hb.epoch);
 }
 
 void SequencerThread::write_fence_file()const

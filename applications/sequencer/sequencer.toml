@@ -43,12 +43,14 @@ cpu_pinning_dev_mode = true
 cpu_registry_lock_file = "/dev/shm/pubsub_cpu_registry.lock"
 
 [event_queue_pool]
-# Sized for observed peak concurrent usage: ~80,640 objects (50 clients, burst=10).
-objects_per_slab = 4096
-initial_slabs    = 20
+# Single pre-allocated pool sized for observed peak (50 clients, burst=10).
+# 20 slabs × 4096 = 81,920 objects; never exhausted.
+objects_per_slab = 81920
+initial_slabs    = 1
 
 [command_queue_pool]
-# Sized for observed peak concurrent usage: ~495,616 objects (50 clients, burst=10).
-objects_per_slab = 4096
-initial_slabs    = 130
+# Single pre-allocated pool sized for observed peak (50 clients, burst=10).
+# 130 slabs × 4096 = 532,480 objects; never exhausted.
+objects_per_slab = 532480
+initial_slabs    = 1
 

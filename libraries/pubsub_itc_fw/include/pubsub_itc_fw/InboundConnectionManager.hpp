@@ -203,6 +203,16 @@ class InboundConnectionManager {
     [[nodiscard]] bool drain_pending_send();
 
     /**
+     * @brief Returns true if a command is currently stashed in pending_send_
+     *        waiting for TCP write space to free up.
+     *
+     * Used by the Reactor to stop draining the command queue when backpressure
+     * has set in, preventing commands from overwriting one another in the
+     * single pending_send_ slot.
+     */
+    [[nodiscard]] bool is_send_blocked() const noexcept { return pending_send_.has_value(); }
+
+    /**
      * @brief Attempts to tear down an inbound connection by application request.
      *
      * @param[in] id The ConnectionID to disconnect.

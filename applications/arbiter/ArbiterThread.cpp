@@ -46,9 +46,14 @@ void ArbiterThread::on_connection_lost(pubsub_itc_fw::ConnectionID id, const std
 }
 
 void ArbiterThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message) {
-    // TODO: decode ArbitrationReport PDU and reply with ArbitrationDecision.
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: ArbitrationReport PDU received on connection {} -- stub",
-               message.connection_id().get_value());
+    // Currently the only PDU the sequencer sends here is a periodic Heartbeat
+    // (pdu_id=102) to keep the inbound inactivity timeout from firing under
+    // heavy order load.  Receiving any data resets the timer; no reply needed.
+    // TODO: decode ArbitrationReport PDU (pdu_id=200) and reply with ArbitrationDecision.
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
+               "ArbiterThread: PDU pdu_id={} received on connection {} -- heartbeat acknowledged",
+               message.pdu_id(), message.connection_id().get_value());
+    release_pdu_payload(message);
 }
 
 void ArbiterThread::on_timer_event([[maybe_unused]] const std::string& name) {}

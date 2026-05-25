@@ -906,6 +906,15 @@ void Reactor::process_control_commands() {
                         command.allocator_->deallocate(command.slab_id_, command.pdu_chunk_ptr_);
                     }
                 }
+                // If the command was stashed due to TCP backpressure, stop draining
+                // the command queue. The remaining commands stay in the queue and
+                // will be processed when EPOLLOUT fires (via process_control_commands
+                // called from dispatch_events after on_write_ready succeeds).
+                // Without this guard every subsequent SendPdu would overwrite the
+                // single pending_send_ slot, silently dropping all but the last PDU.
+                if (outbound_manager_.is_send_blocked() || inbound_manager_.is_send_blocked()) {
+                    return;
+                }
                 break;
             }
 
@@ -992,6 +1001,12 @@ void Reactor::dispatch_events(int nfds, epoll_event* events) {
                         if (outbound_manager_.find_by_fd(fd) == nullptr) {
                             continue;
                         }
+                        // TCP write space has opened up. Resume draining any commands
+                        // still queued by the application thread. Without this call the
+                        // reactor would sit idle waiting for the next wake_fd wakeup
+                        // (which never comes if the app thread has already enqueued all
+                        // its SendPdu commands and is now waiting for replies).
+                        process_control_commands();
                     }
                     if (ev & EPOLLIN) {
                         outbound_manager_.on_data_ready(*conn);
@@ -1023,6 +1038,8 @@ void Reactor::dispatch_events(int nfds, epoll_event* events) {
                         if (inbound_manager_.find_by_fd(fd) == nullptr) {
                             continue;
                         }
+                        // TCP write space opened; resume draining the command queue.
+                        process_control_commands();
                     }
                     if (ev & EPOLLIN) {
                         inbound_manager_.on_data_ready(*conn);
