@@ -2001,3 +2001,128 @@ encode(msg, wire_buf, real);
 | `MisbehavingThreads` | Test helpers that simulate stuck/crashed threads |
 | `LatencyRecorder` | Nanosecond-bucket histogram recorder; thread-safe; dump to file |
 | `UnitTestLogger` | Logger configured for unit tests |
+
+---
+
+## Gateway Performance Analysis
+
+Run identifier: **20260525_220617**.  
+Profiling flags: `perf record --call-graph dwarf -F 999`.  
+Kernel tuning: `/proc/sys/kernel/kptr_restrict = 0`, `/proc/sys/kernel/perf_event_paranoid = -1`.  
+Binary: `sample_fix_gateway_seq` (RelWithDebInfo, full DWARF).  
+Workload: fix8 sending 100,000 NewOrderSingles + OrderCancelRequests over loopback (127.0.0.1).
+
+> **Why dwarf instead of fp?**  
+> With `--call-graph fp` the call chain was lost whenever a sample landed inside a syscall or a kernel function that did not preserve the frame pointer register. This caused 53 % of gateway samples to appear as `[unknown] [k] 0xffffffff…` (genuine kernel addresses hidden by the default `kptr_restrict=1`). Switching to `--call-graph dwarf` records the full register state at sample time and unwinds both userspace and kernel stacks offline using DWARF unwind tables. Setting `kptr_restrict=0` then resolved the kernel symbol names. Data file size grew from ~550 KB to ~12 MB reflecting the richer per-sample data.
+
+### Category breakdown — gateway reactor thread (`sample_fix_gate`)
+
+| Category | % of samples | Notes |
+|---|---|---|
+| Kernel TCP / net stack (`kernel.kallsyms`) | 39.24 % | Normal for TCP I/O — send/recv, SKB management, scheduler |
+| **Netfilter** (`nf_tables` / `nf_conntrack` / `nf_nat`) | **13.04 %** | **Surprise: loopback traffic goes through the full nftables chain** |
+| Framework (`libpubsub_itc_fw`) | 8.80 % | Dominated by `ReactorControlCommand` slab operations |
+| Application binary (`sample_fix_gateway_seq`) | 8.14 % | FIX parsing, serialisation, hashtable, PDU send |
+| libc | 7.82 % | Heap allocation (3.34 %), timestamp (0.86 %), memchr/memmove |
+| libstdc++ | 1.84 % | |
+| vdso | 0.68 % | `gettimeofday` fast-path |
+
+### Netfilter — the most important finding
+
+13 % of all gateway CPU is consumed by nftables/conntrack/NAT processing **loopback packets** (source and destination 127.0.0.1). This is not obvious: nftables hooks fire on every packet regardless of interface, including `lo`. The fix8 test client connects over the loopback interface, so every NOS and ER traverses the full netfilter chain.
+
+Top netfilter symbols:
+
+| Symbol | % |
+|---|---|
+| `nft_do_chain` | 4.56 % |
+| `nft_counter_eval` | 2.82 % |
+| `nft_immediate_eval` | 1.39 % |
+| `expr_call_ops_eval` | 0.94 % |
+| `nf_nat_*` (combined) | 0.60 % |
+| `nft_meta_get_eval` | 0.38 % |
+| `__nf_conntrack_find_get` | 0.33 % |
+| `nf_conntrack_tcp_packet` | 0.39 % |
+
+**Remediation**: flush nftables rules (`nft flush ruleset`) or disable conntrack for loopback before benchmark runs. This recovers the full 13 % at zero code cost.
+
+### Application binary symbols
+
+| Symbol | % | Interpretation |
+|---|---|---|
+| `parse_fields` | 1.04 % | FIX tag/value scanning (string_view, no copies) |
+| `from_chars<int>` | 1.03 % | Integer tag parsing inside `parse_fields` |
+| `FixSerialiser::append_field` | 0.77 % | Outbound ER field serialisation |
+| `validate_checksum` | 0.75 % | Checksum verification on inbound messages |
+| `on_framework_pdu_message` | 0.69 % | ER dispatch from sequencer |
+| `handle_new_order_single` | 0.67 % | NOS handler including ER routing setup |
+| `unordered_map::operator[]` | 0.55 % | ClOrdID → session routing hashtable |
+| `try_extract_message` | 0.48 % | Message boundary detection in parser |
+| `send_pdu<NewOrderSingle>` | 0.33 % | PDU encoding to sequencer |
+| `_Hashtable::find` | 0.28 % | Hashtable probe (ER routing) |
+
+The inbound path (parse_fields + from_chars + validate_checksum + try_extract_message = **3.30 %**) and the outbound ER path (append_field + unordered_map + _Hashtable = **1.38 %**) are the two addressable clusters within application code.
+
+### Framework symbols — ReactorControlCommand queue
+
+| Symbol | % | Notes |
+|---|---|---|
+| `pop_slot_from_free_list` | 3.34 % | Slab allocator freelist pop per NOS |
+| `run_internal` | 0.95 % | Reactor main loop |
+| `deallocate` | 0.73 % | Slab return after command processed |
+| `dequeue` | 0.66 % | Lock-free queue dequeue |
+| `allocate` | 0.32 % | Slab allocation for outbound PDU |
+| `enqueue` | 0.29 % | Lock-free queue enqueue |
+| **Total** | **~5.34 %** | Structural cost of app-thread → reactor crossing |
+
+Every NOS crossing the app-thread → reactor boundary allocates and frees a `ReactorControlCommand` slot. This is structural: eliminating it would require batching PDUs or merging the app thread with the reactor thread.
+
+### libc symbols
+
+| Category | Symbols | % |
+|---|---|---|
+| Heap allocation | `cfree` 1.05 % + `_int_malloc` 1.04 % + `_int_free` 0.92 % + `malloc` 0.33 % | **3.34 %** |
+| Timestamp formatting | `__strftime_internal` 0.50 % + `__tz_convert` 0.23 % + `__offtime` 0.13 % | **0.86 %** |
+| Memory operations | `__memchr_avx2` 0.78 % + `__memmove_avx_unaligned_erms` 0.55 % | **1.33 %** |
+
+The heap cost (3.34 %) is driven by the outbound `FixMessage` — `unordered_map<int, string>` inside `FixSerialiser` allocates on every ER sent. Replacing it with a flat fixed-size structure would eliminate this.  
+The timestamp cost (0.86 %) comes from `FixSerialiser::current_utc_timestamp()` being called once per ER; caching it at second resolution would reduce this to near zero.
+
+### Quill backend thread (`Quill_Backend`)
+
+The logger backend thread is a separate profiling process. Top symbols:
+
+| Symbol | % |
+|---|---|
+| `fmtquill::write` | 4.68 % |
+| `fmtquill::write` (lambda) | 1.86 % |
+| `vformat_to` | 1.29 % |
+| `copy_noinline` | 0.97 % |
+| `_populate_transit_event` | 0.97 % |
+| `sanitize_non_printable_chars` | 0.71 % |
+
+GW-NOS-RECV and GW-ER-SENT are logged at `Info` level, generating approximately 1 M Quill queue writes per 100 K order run. Dropping these to `Debug` level would eliminate almost all Quill backend activity during benchmarks.
+
+### Kernel TCP symbols (selected)
+
+| Symbol | % | Notes |
+|---|---|---|
+| `native_queued_spin_lock_slowpath` | 1.99 % | Lock contention in network stack |
+| `__memcpy` | 1.18 % | SKB data copy |
+| `__tcp_transmit_skb` | 1.17 % | TCP transmit path |
+| `_copy_to_iter` | 1.00 % | Scatter-gather copy to userspace |
+| `entry_SYSRETQ_unsafe_stack` | 0.99 % | syscall return overhead |
+| `net_rx_action` | 0.87 % | Receive softirq processing |
+| `tcp_rcv_established` | 0.84 % | TCP fast-path receive |
+| `tcp_sendmsg_locked` | 0.69 % | TCP send path |
+
+These are normal for a TCP-over-loopback workload and cannot be reduced without switching to a shared-memory transport (e.g. Unix domain sockets or a custom ring buffer between processes).
+
+### Priority list for further optimisation
+
+1. **Flush nftables rules before benchmarking** — recovers 13 % at zero code cost.  
+2. **Reduce GW-NOS-RECV / GW-ER-SENT to Debug level** — eliminates ~1 M Quill writes and reduces Quill backend load substantially.  
+3. **Replace `FixMessage` (outbound ER path) with a flat fixed-size structure** — eliminates 3.34 % heap allocation from libc.  
+4. **Cache `FixSerialiser::current_utc_timestamp()` at second resolution** — eliminates 0.86 % strftime cost.  
+5. **Batch `ReactorControlCommand` allocations** — reduces 5.34 % framework overhead; requires API change.  
+6. **Switch to Unix domain sockets for intra-host connections** — bypasses kernel TCP entirely (39 % of samples); largest possible gain but highest effort.
