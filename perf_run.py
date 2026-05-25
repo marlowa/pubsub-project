@@ -42,7 +42,10 @@ SETTLE_TIME     = 3.0    # seconds after last app before attaching perf
 FIX8_LOGON_WAIT = 3.0    # seconds for fix8 to establish the FIX session
 ORDER_TIMEOUT   = 30.0   # seconds to wait for ord1000 in the ME log
 POST_ORDER_WAIT = 2.0    # seconds after last order before SIGTERM
-CALLGRAPH       = "fp"    # fp works now that -fno-omit-frame-pointer is in CMakeLists.txt
+CALLGRAPH       = "dwarf" # dwarf unwinds across the user/kernel boundary; resolves the
+                          # otherwise-anonymous kernel stacks that dominate the gateway profile.
+                          # fp would suffice for pure-userspace profiling but loses the call
+                          # chain whenever a sample lands inside a syscall (epoll, recv, send).
 FREQ            = 99      # perf sample frequency (Hz)
 SHUTDOWN_TIMEOUT = 5.0   # seconds to wait for each app to exit after SIGTERM
 
