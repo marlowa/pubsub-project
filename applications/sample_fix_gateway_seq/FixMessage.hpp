@@ -3,6 +3,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <array>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -53,6 +54,17 @@ class FixMessage {
      */
     void set(int tag, const std::string& value) {
         fields_[tag] = value;
+    }
+
+    /**
+     * @brief Sets a field by tag number and string_view value (copies into the map).
+     *
+     * Provided so outbound FixMessage instances can be populated directly from
+     * ParsedFixMessage::get() return values without an explicit conversion to
+     * std::string at each call site.
+     */
+    void set(int tag, std::string_view value) {
+        fields_[tag] = std::string(value);
     }
 
     /**
@@ -145,6 +157,71 @@ static constexpr int CumQty = 14;
 static constexpr int LeavesQty = 151;
 static constexpr int Text = 58;
 } // namespace Tag
+
+/**
+ * @brief View-based representation of one complete inbound FIX message.
+ *
+ * All string_view values point directly into the MirroredBuffer that holds the
+ * raw TCP bytes for this connection. They are valid only for the duration of
+ * the FixParser message callback. The object must not be copied or moved out
+ * of the callback scope.
+ *
+ * Field values are stored in a flat array rather than a hash map. Linear scan
+ * over the (small) number of fields in a typical FIX message is faster than
+ * any hash-based lookup at this cardinality, and allocates nothing.
+ *
+ * Field count: any real FIX message has far fewer than 64 tag-value pairs.
+ * Fields beyond that limit are silently ignored; this never occurs for the
+ * message types handled by this gateway.
+ */
+struct ParsedFixMessage {
+    struct Field {
+        int             tag;
+        std::string_view value;
+    };
+
+    static constexpr int maximum_field_count = 64;
+
+    std::array<Field, maximum_field_count> fields{};
+    int field_count{0};
+
+    void set(int tag, std::string_view value) {
+        if (field_count < maximum_field_count) {
+            fields[static_cast<size_t>(field_count++)] = {tag, value};
+        }
+    }
+
+    [[nodiscard]] std::string_view get(int tag) const {
+        for (int i = 0; i < field_count; ++i) {
+            if (fields[static_cast<size_t>(i)].tag == tag) return fields[static_cast<size_t>(i)].value;
+        }
+        return {};
+    }
+
+    [[nodiscard]] bool has(int tag) const {
+        for (int i = 0; i < field_count; ++i) {
+            if (fields[static_cast<size_t>(i)].tag == tag) return true;
+        }
+        return false;
+    }
+
+    [[nodiscard]] std::string_view msg_type() const {
+        return get(Tag::MsgType);
+    }
+
+    [[nodiscard]] int size() const {
+        return field_count;
+    }
+
+    // Non-copyable, non-movable: string_views are only valid during the
+    // on_message_ callback. Deleting these operations prevents the object from
+    // escaping the callback's stack frame.
+    ParsedFixMessage()                                         = default;
+    ParsedFixMessage(const ParsedFixMessage&)                  = delete;
+    ParsedFixMessage& operator=(const ParsedFixMessage&)       = delete;
+    ParsedFixMessage(ParsedFixMessage&&)                       = delete;
+    ParsedFixMessage& operator=(ParsedFixMessage&&)            = delete;
+};
 
 /**
  * @brief The expected byte sequence at the start of every inbound FIX 5.0SP2

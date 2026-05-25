@@ -38,7 +38,7 @@ struct FixSession {
     FixSession(pubsub_itc_fw::ConnectionID id, pubsub_itc_fw::QuillLogger& logger, FixParser::MessageCallback callback)
         : conn_id(id), parser(logger, std::move(callback)) {}
 
-    // Not copyable -- FixParser holds a std::string buffer and std::function.
+    // Not copyable -- FixParser holds a std::function (non-copyable).
     FixSession(const FixSession&) = delete;
     FixSession& operator=(const FixSession&) = delete;
 
@@ -53,7 +53,13 @@ struct FixSession {
     pubsub_itc_fw::ConnectionID conn_id;
 
     // ----------------------------------------------------------------
-    // Parser -- one per connection since the FIX byte stream is stateful
+    // Parser -- one per connection.
+    //
+    // The parser itself is stateless (no internal accumulation buffer).
+    // Partial-message bytes are preserved in the connection's MirroredBuffer by
+    // committing only fully consumed bytes after each call to feed(). A separate
+    // parser per connection is still required because each connection has its own
+    // MirroredBuffer and its own in-flight partial message state.
     // ----------------------------------------------------------------
 
     FixParser parser;

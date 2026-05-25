@@ -3,8 +3,10 @@
 
 #include "FixGatewaySeqThread.hpp"
 
+#include <charconv>
 #include <cstring>
 #include <string>
+#include <string_view>
 
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
@@ -122,13 +124,13 @@ void FixGatewaySeqThread::on_raw_socket_message(const pubsub_itc_fw::EventMessag
     auto it = sessions_.find(conn_id);
     if (it == sessions_.end()) {
         sessions_.emplace(std::piecewise_construct, std::forward_as_tuple(conn_id),
-                          std::forward_as_tuple(conn_id, get_logger(), [this, conn_id](const FixMessage& msg) {
+                          std::forward_as_tuple(conn_id, get_logger(), [this, conn_id](const ParsedFixMessage& msg) {
                               auto sit = sessions_.find(conn_id);
                               if (sit == sessions_.end()) {
                                   return;
                               }
                               FixSession& session = sit->second;
-                              const std::string& type = msg.msg_type();
+                              const std::string_view type = msg.msg_type();
 
                               if (type == MsgType::Logon) {
                                   handle_logon(session, msg);
@@ -243,9 +245,15 @@ void FixGatewaySeqThread::on_raw_socket_message(const pubsub_itc_fw::EventMessag
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixGatewaySeqThread: connection {} FIX preamble verified", conn_id.get_value());
     }
 
-    session.parser.feed(new_bytes_ptr, new_bytes_len);
-    commit_raw_bytes(conn_id, static_cast<int64_t>(new_bytes_len));
-    session.absolute_bytes_committed_ += new_bytes_len;
+    // feed() returns the number of bytes fully consumed by complete FIX messages.
+    // Partial-message bytes at the end of the window are not consumed; the
+    // MirroredBuffer retains them by advancing its read pointer only by the
+    // consumed count. On the next event the window will begin at those partial
+    // bytes, followed by whatever new TCP data arrived, and the parser picks up
+    // exactly where it left off.
+    const size_t consumed = session.parser.feed(new_bytes_ptr, static_cast<size_t>(new_bytes_len));
+    commit_raw_bytes(conn_id, static_cast<int64_t>(consumed));
+    session.absolute_bytes_committed_ += static_cast<int64_t>(consumed);
 }
 
 void FixGatewaySeqThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message) {
@@ -346,8 +354,10 @@ void FixGatewaySeqThread::on_itc_message([[maybe_unused]] const pubsub_itc_fw::E
 // FIX session handlers
 // -----------------------------------------------------------------------
 
-void FixGatewaySeqThread::handle_logon(FixSession& session, const FixMessage& msg) {
+void FixGatewaySeqThread::handle_logon(FixSession& session, const ParsedFixMessage& msg) {
     cancel_timer(session.logon_timeout_timer_name());
+    // client_comp_id is stored as std::string for use beyond this callback;
+    // the implicit conversion from string_view copies the bytes here.
     session.client_comp_id = msg.get(Tag::SenderCompID);
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixGatewaySeqThread: connection {} Logon from SenderCompID='{}'", session.conn_id.get_value(),
@@ -357,8 +367,14 @@ void FixGatewaySeqThread::handle_logon(FixSession& session, const FixMessage& ms
     reply.set(Tag::MsgType, MsgType::Logon);
     reply.set(Tag::EncryptMethod, 0);
 
-    const std::string& hbi = msg.get(Tag::HeartBtInt);
-    reply.set(Tag::HeartBtInt, hbi.empty() ? 30 : std::stoi(hbi));
+    const std::string_view heartbeat_interval_text = msg.get(Tag::HeartBtInt);
+    int heartbeat_interval = 30;
+    if (!heartbeat_interval_text.empty()) {
+        std::from_chars(heartbeat_interval_text.data(),
+                        heartbeat_interval_text.data() + heartbeat_interval_text.size(),
+                        heartbeat_interval);
+    }
+    reply.set(Tag::HeartBtInt, heartbeat_interval);
 
     send_fix_to_session(session, reply);
     session.session_established = true;
@@ -366,7 +382,7 @@ void FixGatewaySeqThread::handle_logon(FixSession& session, const FixMessage& ms
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixGatewaySeqThread: connection {} FIX session established", session.conn_id.get_value());
 }
 
-void FixGatewaySeqThread::handle_heartbeat(FixSession& session, [[maybe_unused]] const FixMessage& msg) {
+void FixGatewaySeqThread::handle_heartbeat(FixSession& session, [[maybe_unused]] const ParsedFixMessage& msg) {
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "FixGatewaySeqThread: connection {} Heartbeat", session.conn_id.get_value());
 
     FixMessage reply;
@@ -374,16 +390,16 @@ void FixGatewaySeqThread::handle_heartbeat(FixSession& session, [[maybe_unused]]
     send_fix_to_session(session, reply);
 }
 
-void FixGatewaySeqThread::handle_test_request(FixSession& session, const FixMessage& msg) {
+void FixGatewaySeqThread::handle_test_request(FixSession& session, const ParsedFixMessage& msg) {
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixGatewaySeqThread: connection {} TestRequest", session.conn_id.get_value());
 
     FixMessage reply;
     reply.set(Tag::MsgType, MsgType::Heartbeat);
-    reply.set(112, msg.get(112)); // TestReqID
+    reply.set(112, msg.get(112)); // TestReqID -- set(int, string_view) copies into the reply
     send_fix_to_session(session, reply);
 }
 
-void FixGatewaySeqThread::handle_logout(FixSession& session, const FixMessage& msg) {
+void FixGatewaySeqThread::handle_logout(FixSession& session, const ParsedFixMessage& msg) {
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixGatewaySeqThread: connection {} Logout: {}", session.conn_id.get_value(), msg.get(Tag::Text));
 
     FixMessage reply;
@@ -393,13 +409,13 @@ void FixGatewaySeqThread::handle_logout(FixSession& session, const FixMessage& m
     disconnect_session(session, "client sent Logout");
 }
 
-void FixGatewaySeqThread::handle_new_order_single(FixSession& session, const FixMessage& msg) {
-    const std::string& cl_ord_id = msg.get(Tag::ClOrdID);
-    const std::string& symbol = msg.get(Tag::Symbol);
-    const std::string& side_str = msg.get(Tag::Side);
-    const std::string& ord_type_str = msg.get(Tag::OrdType);
-    const std::string& order_qty = msg.get(Tag::OrderQty);
-    const std::string& price_str = msg.get(Tag::Price);
+void FixGatewaySeqThread::handle_new_order_single(FixSession& session, const ParsedFixMessage& msg) {
+    const std::string_view cl_ord_id   = msg.get(Tag::ClOrdID);
+    const std::string_view symbol      = msg.get(Tag::Symbol);
+    const std::string_view side_str    = msg.get(Tag::Side);
+    const std::string_view ord_type_str = msg.get(Tag::OrdType);
+    const std::string_view order_qty   = msg.get(Tag::OrderQty);
+    const std::string_view price_str   = msg.get(Tag::Price);
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "GW-NOS-RECV connection={} ClOrdID={} Symbol={} Side={}",
                session.conn_id.get_value(), cl_ord_id, symbol, side_str);
@@ -441,7 +457,7 @@ void FixGatewaySeqThread::handle_new_order_single(FixSession& session, const Fix
         nos.price = price_str;
     }
 
-    const std::string& tif_str = msg.get(Tag::TimeInForce);
+    const std::string_view tif_str = msg.get(Tag::TimeInForce);
     if (!tif_str.empty()) {
         nos.has_time_in_force = true;
         nos.time_in_force = static_cast<pubsub_itc_fw_app::TimeInForce>(tif_str[0]);
@@ -465,12 +481,12 @@ void FixGatewaySeqThread::handle_new_order_single(FixSession& session, const Fix
     forward_pdu_to_sequencers(static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::NewOrderSingle), nos);
 }
 
-void FixGatewaySeqThread::handle_order_cancel_request(FixSession& session, const FixMessage& msg) {
-    const std::string& cl_ord_id = msg.get(Tag::ClOrdID);
-    const std::string& orig_cl_ord_id = msg.get(Tag::OrigClOrdID);
-    const std::string& symbol = msg.get(Tag::Symbol);
-    const std::string& side_str = msg.get(Tag::Side);
-    const std::string& order_qty = msg.get(Tag::OrderQty);
+void FixGatewaySeqThread::handle_order_cancel_request(FixSession& session, const ParsedFixMessage& msg) {
+    const std::string_view cl_ord_id      = msg.get(Tag::ClOrdID);
+    const std::string_view orig_cl_ord_id = msg.get(Tag::OrigClOrdID);
+    const std::string_view symbol         = msg.get(Tag::Symbol);
+    const std::string_view side_str       = msg.get(Tag::Side);
+    const std::string_view order_qty      = msg.get(Tag::OrderQty);
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "FixGatewaySeqThread: connection {} OrderCancelRequest ClOrdID={} "
@@ -535,7 +551,7 @@ void FixGatewaySeqThread::send_fix_to_session(FixSession& session, const FixMess
     send_raw(session.conn_id, wire.data(), static_cast<uint32_t>(wire.size()));
 }
 
-void FixGatewaySeqThread::send_reject_execution_report(FixSession& session, const FixMessage& in_msg, const std::string& reason, bool is_cancel) {
+void FixGatewaySeqThread::send_reject_execution_report(FixSession& session, const ParsedFixMessage& inbound, const std::string& reason, bool is_cancel) {
     // The matching engine never sees this order, so we synthesise the
     // gateway-side identifiers from per-session counters. Format mirrors the
     // ME-generated IDs (ME-ORD-N / ME-EXEC-N) but with a GW- prefix so the
@@ -547,10 +563,12 @@ void FixGatewaySeqThread::send_reject_execution_report(FixSession& session, cons
     // optional from a strict FIX standpoint on a Reject (the ME never priced
     // it), but echoing what the client sent keeps the round-trip diagnostic
     // and matches the format of a real ER for the same order.
-    const std::string& cl_ord_id = in_msg.get(Tag::ClOrdID);
-    const std::string& symbol = in_msg.get(Tag::Symbol);
-    const std::string& side_str = in_msg.get(Tag::Side);
-    const std::string& order_qty = in_msg.get(Tag::OrderQty);
+    // The string_views are valid for the duration of this call; er.set() copies
+    // each value into the outbound FixMessage map.
+    const std::string_view cl_ord_id = inbound.get(Tag::ClOrdID);
+    const std::string_view symbol    = inbound.get(Tag::Symbol);
+    const std::string_view side_str  = inbound.get(Tag::Side);
+    const std::string_view order_qty = inbound.get(Tag::OrderQty);
 
     FixMessage er;
     er.set(Tag::MsgType, MsgType::ExecutionReport);
@@ -574,7 +592,7 @@ void FixGatewaySeqThread::send_reject_execution_report(FixSession& session, cons
     if (is_cancel) {
         // Cancel-reject convention: echo OrigClOrdID so the client can
         // correlate the reject with the original order it tried to cancel.
-        const std::string& orig_cl_ord_id = in_msg.get(Tag::OrigClOrdID);
+        const std::string_view orig_cl_ord_id = inbound.get(Tag::OrigClOrdID);
         if (!orig_cl_ord_id.empty()) {
             er.set(Tag::OrigClOrdID, orig_cl_ord_id);
         }

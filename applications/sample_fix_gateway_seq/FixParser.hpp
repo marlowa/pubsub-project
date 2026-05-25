@@ -5,7 +5,7 @@
 
 #include <cstdint>
 #include <functional>
-#include <string>
+#include <string_view>
 
 #include <pubsub_itc_fw/QuillLogger.hpp>
 
@@ -14,11 +14,28 @@
 namespace sample_fix_gateway_seq {
 
 /**
- * @brief Minimal stateful FIX 5.0SP2 / FIXT 1.1 stream parser.
+ * @brief Stateless FIX 5.0SP2 / FIXT 1.1 stream parser.
  *
- * FixParser sits between the raw byte stream delivered by RawBytesProtocolHandler
- * and the application logic in FixGatewayThread. It accumulates raw bytes,
- * extracts complete FIX messages, and invokes a callback for each one.
+ * FixParser is given a contiguous window of bytes on each call to feed() and
+ * extracts every complete FIX message it finds. Partial messages at the end of
+ * the window are not consumed: feed() returns the count of fully consumed bytes
+ * so the caller can retain the partial bytes in the MirroredBuffer by
+ * committing only that count.
+ *
+ * The parser has no internal accumulation buffer. Partial-message bytes are
+ * preserved automatically because the MirroredBuffer's read pointer advances
+ * only by the consumed count. On the next call to feed() the window begins at
+ * those same partial bytes, now followed by newly arrived TCP data, and the
+ * parser continues as if there had been no interruption. The virtual-memory
+ * double-mapping of MirroredBuffer guarantees that the window is always
+ * contiguous in virtual address space even if the ring wraps.
+ *
+ * ParsedFixMessage lifetime:
+ *   The ParsedFixMessage passed to the callback holds string_views into the
+ *   MirroredBuffer memory. Those views are valid only for the duration of the
+ *   callback. The callback must not store any string_view (or the
+ *   ParsedFixMessage itself) beyond its own scope. ParsedFixMessage is
+ *   non-copyable and non-movable to enforce this statically.
  *
  * FIX framing:
  *   Each FIX message begins with tag 8 (BeginString) and ends with tag 10
@@ -35,82 +52,80 @@ namespace sample_fix_gateway_seq {
  * Checksum validation:
  *   The checksum is the sum of all byte values from tag 8 up to and including
  *   the SOH after the last application field, modulo 256, formatted as a
- *   zero-padded three-digit string. This parser validates the checksum and
- *   discards messages with an invalid checksum, logging at Debug level.
- *
- * Statefulness:
- *   The parser maintains an internal accumulation buffer. Incomplete messages
- *   are retained across calls to feed(). This handles TCP fragmentation
- *   transparently.
- *
- * Usage:
- *   FixParser parser(logger, [](const FixMessage& msg) {
- *       // handle complete message
- *   });
- *   parser.feed(data, length);  // call from on_raw_socket_message()
+ *   zero-padded three-digit string. Messages with an invalid checksum are
+ *   discarded with a Warning log.
  */
 class FixParser {
   public:
-    using MessageCallback = std::function<void(const FixMessage&)>;
+    using MessageCallback = std::function<void(const ParsedFixMessage&)>;
 
     /**
      * @brief Constructs a FixParser with the given logger and message callback.
      *
      * @param[in] logger     Logger instance. Must outlive this object.
      * @param[in] on_message Called once for each complete, valid FIX message
-     *                       extracted from the byte stream.
+     *                       found in the window passed to feed().
      */
     FixParser(pubsub_itc_fw::QuillLogger& logger, MessageCallback on_message);
 
     /**
-     * @brief Feeds raw bytes from the socket into the parser.
+     * @brief Parses FIX messages from a contiguous byte window.
      *
-     * May result in zero, one, or multiple calls to the message callback
-     * depending on how many complete messages are present in the accumulated
-     * buffer.
+     * The window is typically the readable region of a MirroredBuffer starting
+     * at its current read pointer. It covers any partial message bytes left
+     * over from the previous call (still in the ring because they were not
+     * committed) followed by newly arrived TCP data.
      *
-     * @param[in] data   Pointer to the raw bytes. Must not be nullptr.
-     * @param[in] length Number of bytes available at data.
+     * Returns the number of bytes fully consumed, i.e. the total length of all
+     * complete FIX messages found and dispatched. The caller must advance the
+     * MirroredBuffer read pointer by exactly this count. Bytes beyond the
+     * returned count belong to an incomplete message and must stay in the ring.
+     *
+     * @param[in] data      Start of the readable window. Must not be nullptr.
+     * @param[in] available Total bytes in the window.
+     * @return              Number of bytes consumed (0 if no complete message found).
      */
-    void feed(const uint8_t* data, int length);
+    [[nodiscard]] size_t feed(const uint8_t* data, size_t available);
 
     /**
-     * @brief Resets the parser state, discarding any partially accumulated data.
+     * @brief No-op: the parser holds no internal state between calls.
      *
-     * Should be called when the connection is re-established after a disconnect.
+     * Provided for API symmetry with connection lifecycle callers that may
+     * want to signal a stream reset. Partial bytes left in the MirroredBuffer
+     * are discarded by the caller advancing the ring fully on disconnect,
+     * independently of this function.
      */
     void reset();
 
   private:
     /*
-     * Attempts to extract one complete FIX message from buffer_ starting at
-     * offset_. Returns true and advances offset_ if a complete message was
-     * found and dispatched. Returns false if more data is needed.
+     * Attempts to extract one complete FIX message from window starting at
+     * parse_cursor. If found: invokes on_message_, advances parse_cursor past
+     * the message, returns true. If the window contains no complete message:
+     * returns false, parse_cursor is unchanged (points to start of partial data).
      */
-    bool try_extract_message();
+    bool try_extract_message(std::string_view window, size_t& parse_cursor);
 
     /*
-     * Parses all tag=value fields from the raw FIX bytes in buf into msg.
-     * Returns true on success.
+     * Parses all tag=value fields from raw_message (a string_view into the
+     * MirroredBuffer window) into msg. Field values are string_views into the
+     * same window -- zero copy. Returns true if tag 35 (MsgType) is present.
      */
-    static bool parse_fields(const std::string& buf, FixMessage& msg);
+    static bool parse_fields(std::string_view raw_message, ParsedFixMessage& msg);
 
     /*
-     * Validates the FIX checksum. msg_bytes is the raw bytes of the message
-     * up to but not including the tag 10 field. expected is the value in
-     * the Checksum field.
+     * Returns true if the FIX checksum computed over message_bytes (bytes from
+     * tag 8 up to but not including the "10=" field) matches expected_checksum.
      */
-    static bool validate_checksum(const std::string& msg_bytes, const std::string& expected);
+    static bool validate_checksum(std::string_view message_bytes, std::string_view expected_checksum);
 
     /*
      * Formats a three-digit zero-padded checksum string from a byte sum.
      */
     static std::string format_checksum(int sum);
 
-    MessageCallback on_message_;
-    pubsub_itc_fw::QuillLogger& logger_;
-    std::string buffer_;
-    size_t offset_{0};
+    MessageCallback                on_message_;
+    pubsub_itc_fw::QuillLogger&    logger_;
 };
 
 } // namespace sample_fix_gateway_seq

@@ -3,198 +3,208 @@
 
 #include "FixParser.hpp"
 
+#include <charconv>
 #include <cstdio>
 #include <string>
+#include <string_view>
 
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 
 namespace sample_fix_gateway_seq {
 
-static constexpr char SOH = '\x01';
+static constexpr char field_delimiter = '\x01'; // FIX SOH
 
 FixParser::FixParser(pubsub_itc_fw::QuillLogger& logger, MessageCallback on_message) : on_message_(std::move(on_message)), logger_(logger) {}
 
-void FixParser::feed(const uint8_t* data, int length) {
-    buffer_.append(reinterpret_cast<const char*>(data), static_cast<size_t>(length));
+size_t FixParser::feed(const uint8_t* data, size_t available) {
+    // Wrap the MirroredBuffer window in a string_view. The double-mapping
+    // of MirroredBuffer guarantees this region is contiguous in virtual address
+    // space even if the ring's physical storage wraps around.
+    const std::string_view window(reinterpret_cast<const char*>(data), available);
 
-    while (try_extract_message()) {
-        // keep extracting until we run out of complete messages
+    // parse_cursor tracks how many bytes of window have been fully consumed by
+    // complete messages. After the loop it equals the number of bytes the caller
+    // must advance the MirroredBuffer read pointer by.
+    size_t parse_cursor = 0;
+
+    while (try_extract_message(window, parse_cursor)) {
+        // keep extracting until no further complete message is found
     }
 
-    // Discard consumed bytes to keep the buffer from growing unboundedly.
-    if (offset_ > 0) {
-        buffer_.erase(0, offset_);
-        offset_ = 0;
-    }
+    return parse_cursor;
 }
 
 void FixParser::reset() {
-    buffer_.clear();
-    offset_ = 0;
+    // Nothing to reset: the parser has no internal accumulation buffer.
+    // Partial bytes in the MirroredBuffer are discarded when the caller
+    // advances the ring's read pointer fully on connection close.
 }
 
-bool FixParser::try_extract_message() {
-    // A FIX message must start with "8=FIXT.1.1" or "8=FIX.5.0SP2".
-    // Find the start of the next message beginning at offset_.
-    const std::string begin_tag = "8=";
-    const size_t start = buffer_.find(begin_tag, offset_);
-    if (start == std::string::npos) {
+bool FixParser::try_extract_message(std::string_view window, size_t& parse_cursor) {
+    // A FIX message must start with "8=".
+    const size_t start = window.find("8=", parse_cursor);
+    if (start == std::string_view::npos) {
         return false;
     }
 
-    // Find tag 9 (BodyLength) -- it must be the second field.
-    // Format: "8=...<SOH>9=<digits><SOH>"
-    const size_t soh1 = buffer_.find(SOH, start);
-    if (soh1 == std::string::npos) {
-        return false; // incomplete
+    // Find the SOH that terminates the BeginString field (tag 8).
+    const size_t soh1 = window.find(field_delimiter, start);
+    if (soh1 == std::string_view::npos) {
+        return false; // incomplete -- BeginString field not yet fully received
     }
 
-    const std::string body_len_tag = "9=";
-    const size_t bl_start = soh1 + 1;
-    if (buffer_.size() < bl_start + body_len_tag.size()) {
-        return false; // incomplete -- begin-string field received but body-length tag not yet
+    // The field immediately after BeginString must be BodyLength (tag 9).
+    const std::string_view body_length_tag = "9=";
+    const size_t body_length_tag_start = soh1 + 1;
+    if (window.size() < body_length_tag_start + body_length_tag.size()) {
+        return false; // incomplete -- not enough bytes to check for "9="
     }
-    if (buffer_.compare(bl_start, body_len_tag.size(), body_len_tag) != 0) {
-        // The bytes immediately after the begin-string SOH do not start with "9=".
-        // This is a false-positive "8=" hit: the two-byte sequence "8=" appeared
-        // inside a field *value* of a previous (or the current) message, and the
-        // SOH that terminated that value happens to land exactly 10 bytes after the
-        // spurious "8=" (making it look like a valid begin-string SOH).  Skip past
-        // this false start and resync.
+    if (window.compare(body_length_tag_start, body_length_tag.size(), body_length_tag) != 0) {
+        // The bytes immediately after the BeginString SOH do not start with
+        // "9=". This is a false-positive "8=" hit: the two-byte sequence "8="
+        // appeared inside a field value of a previous or current message.
         //
-        // Note: a partial message whose TCP segment ends right after the
-        // begin-string SOH is handled by the buffer-size check above, which
+        // Note: a partial message whose TCP segment ends exactly after the
+        // BeginString SOH is handled by the buffer-size check above, which
         // returns false (incomplete) before reaching here.
         PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
-                   "FixParser: malformed FIX message (tag 9 not second field) at buffer offset {} -- "
+                   "FixParser: malformed FIX message (tag 9 not second field) at window offset {} -- "
                    "skipping {} bytes and resyncing",
-                   start, bl_start - start);
-        offset_ = start + 1;
+                   start, body_length_tag_start - start);
+        parse_cursor = start + 1;
         return true;
     }
 
-    const size_t soh2 = buffer_.find(SOH, bl_start);
-    if (soh2 == std::string::npos) {
+    // Find the SOH that terminates the BodyLength field.
+    const size_t soh2 = window.find(field_delimiter, body_length_tag_start);
+    if (soh2 == std::string_view::npos) {
         return false; // incomplete
     }
 
-    const std::string body_len_str = buffer_.substr(bl_start + body_len_tag.size(), soh2 - bl_start - body_len_tag.size());
-    const int body_length = std::stoi(body_len_str);
-    if (body_length <= 0) {
+    // Parse the BodyLength value.
+    const std::string_view body_length_text =
+        window.substr(body_length_tag_start + body_length_tag.size(),
+                      soh2 - body_length_tag_start - body_length_tag.size());
+
+    int body_length = 0;
+    const auto [parse_end, parse_error] =
+        std::from_chars(body_length_text.data(), body_length_text.data() + body_length_text.size(), body_length);
+
+    if (parse_error != std::errc{} || body_length <= 0) {
         PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
-                   "FixParser: malformed FIX message (non-positive BodyLength {}) at buffer offset {} -- "
-                   "skipping and resyncing",
-                   body_length, start);
-        offset_ = start + 1;
-        return true; // malformed, skip
+                   "FixParser: malformed FIX message (non-positive or unparseable BodyLength) "
+                   "at window offset {} -- skipping and resyncing",
+                   start);
+        parse_cursor = start + 1;
+        return true;
     }
 
-    // BodyLength counts from the byte after the tag 9 SOH delimiter to the
-    // byte before the tag 10 SOH delimiter (inclusive).
-    // So the tag 10 field starts at soh2 + 1 + body_length.
+    // BodyLength counts from the byte immediately after the tag 9 SOH to the
+    // byte immediately before the tag 10 SOH (inclusive). So the tag 10 field
+    // starts at soh2 + 1 + body_length.
+    const std::string_view checksum_tag = "10=";
     const size_t tag10_start = soh2 + 1 + static_cast<size_t>(body_length);
 
-    const std::string checksum_tag = "10=";
-    if (buffer_.size() < tag10_start + checksum_tag.size()) {
-        return false; // incomplete
+    if (window.size() < tag10_start + checksum_tag.size()) {
+        return false; // incomplete -- tag 10 not yet received
     }
 
-    if (buffer_.compare(tag10_start, checksum_tag.size(), checksum_tag) != 0) {
-        // BodyLength pointed somewhere wrong -- the partial/corrupt bytes are
-        // from a message truncated mid-stream (e.g. by TCP backpressure causing
-        // the peer to retransmit from the wrong offset).
+    if (window.compare(tag10_start, checksum_tag.size(), checksum_tag) != 0) {
+        // BodyLength pointed somewhere wrong -- the data is corrupt or from a
+        // truncated message (e.g. TCP retransmit from the wrong offset).
         PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
-                   "FixParser: BodyLength ({}) points to wrong location (expected '10=' at offset {}, "
-                   "found '{}') -- discarding {} bytes and resyncing",
+                   "FixParser: BodyLength ({}) points to wrong location "
+                   "(expected '10=' at window offset {}, found '{}') -- "
+                   "discarding {} bytes and resyncing",
                    body_length, tag10_start,
-                   buffer_.substr(tag10_start, std::min(static_cast<size_t>(4), buffer_.size() - tag10_start)),
-                   bl_start - start);
-        offset_ = start + 1;
+                   window.substr(tag10_start, std::min(static_cast<size_t>(4), window.size() - tag10_start)),
+                   body_length_tag_start - start);
+        parse_cursor = start + 1;
         return true;
     }
 
-    const size_t soh3 = buffer_.find(SOH, tag10_start);
-    if (soh3 == std::string::npos) {
-        return false; // incomplete
+    // Find the SOH that terminates the Checksum field (tag 10).
+    const size_t soh3 = window.find(field_delimiter, tag10_start);
+    if (soh3 == std::string_view::npos) {
+        return false; // incomplete -- checksum field not yet fully received
     }
 
-    // We now have a complete raw message from start to soh3 (inclusive).
-    const std::string raw_msg = buffer_.substr(start, soh3 - start + 1);
+    // We now have a complete raw message: window[start .. soh3] inclusive.
+    const std::string_view message_bytes = window.substr(start, tag10_start - start);
+    const std::string_view received_checksum =
+        window.substr(tag10_start + checksum_tag.size(), soh3 - tag10_start - checksum_tag.size());
 
-    // Validate checksum.
-    const std::string checksum_value = buffer_.substr(tag10_start + checksum_tag.size(), soh3 - tag10_start - checksum_tag.size());
-
-    // Checksum covers bytes from start of message up to (not including) "10=".
-    const std::string msg_for_checksum = buffer_.substr(start, tag10_start - start);
-    if (!validate_checksum(msg_for_checksum, checksum_value)) {
+    if (!validate_checksum(message_bytes, received_checksum)) {
         int sum = 0;
-        for (const unsigned char c : msg_for_checksum) {
-            sum += c;
+        for (const unsigned char byte : message_bytes) {
+            sum += byte;
         }
         const std::string computed = format_checksum(sum % 256);
         PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
                    "FixParser: bad checksum (computed {} received {}) -- discarding message of {} bytes",
-                   computed, checksum_value, soh3 + 1 - start);
-        offset_ = soh3 + 1;
+                   computed, received_checksum, soh3 + 1 - start);
+        parse_cursor = soh3 + 1;
         return true;
     }
 
-    // Parse fields and dispatch.
-    FixMessage msg;
-    if (parse_fields(raw_msg, msg)) {
+    // Parse field tag-value pairs. All string_views in msg point into the
+    // MirroredBuffer window and remain valid for the duration of on_message_.
+    const std::string_view raw_message = window.substr(start, soh3 - start + 1);
+    ParsedFixMessage msg;
+    if (parse_fields(raw_message, msg)) {
         on_message_(msg);
     }
 
-    offset_ = soh3 + 1;
+    parse_cursor = soh3 + 1;
     return true;
 }
 
-bool FixParser::parse_fields(const std::string& buf, FixMessage& msg) {
-    size_t pos = 0;
-    while (pos < buf.size()) {
+bool FixParser::parse_fields(std::string_view raw_message, ParsedFixMessage& msg) {
+    size_t position = 0;
+    while (position < raw_message.size()) {
         // Find the '=' separating tag from value.
-        const size_t eq = buf.find('=', pos);
-        if (eq == std::string::npos) {
+        const size_t equals_sign = raw_message.find('=', position);
+        if (equals_sign == std::string_view::npos) {
             break;
         }
 
         // Find the SOH terminating the value.
-        const size_t soh = buf.find(SOH, eq + 1);
-        if (soh == std::string::npos) {
+        const size_t soh = raw_message.find(field_delimiter, equals_sign + 1);
+        if (soh == std::string_view::npos) {
             break;
         }
 
-        const std::string tag_str = buf.substr(pos, eq - pos);
-        const std::string value = buf.substr(eq + 1, soh - eq - 1);
+        const std::string_view tag_text = raw_message.substr(position, equals_sign - position);
+        const std::string_view value    = raw_message.substr(equals_sign + 1, soh - equals_sign - 1);
 
-        // Parse tag as integer -- ignore malformed tags.
-        try {
-            const int tag = std::stoi(tag_str);
+        // Parse tag as integer via from_chars -- no locale, no exception, no allocation.
+        int tag = 0;
+        const auto [end_ptr, error_code] =
+            std::from_chars(tag_text.data(), tag_text.data() + tag_text.size(), tag);
+        if (error_code == std::errc{}) {
             msg.set(tag, value);
-        } catch (...) {
-            // malformed tag -- skip
         }
+        // Malformed tag -- skip and continue parsing remaining fields.
 
-        pos = soh + 1;
+        position = soh + 1;
     }
 
     return msg.has(Tag::MsgType);
 }
 
-bool FixParser::validate_checksum(const std::string& msg_bytes, const std::string& expected) {
+bool FixParser::validate_checksum(std::string_view message_bytes, std::string_view expected_checksum) {
     int sum = 0;
-    for (const unsigned char c : msg_bytes) {
-        sum += c;
+    for (const unsigned char byte : message_bytes) {
+        sum += byte;
     }
-    const std::string computed = format_checksum(sum % 256);
-    return computed == expected;
+    return format_checksum(sum % 256) == expected_checksum;
 }
 
 std::string FixParser::format_checksum(int sum) {
-    char buf[5];
-    std::snprintf(buf, sizeof(buf), "%03u", static_cast<unsigned int>(sum) % 256u);
-    return {buf};
+    char buffer[5];
+    std::snprintf(buffer, sizeof(buffer), "%03u", static_cast<unsigned int>(sum) % 256u);
+    return {buffer};
 }
 
 } // namespace sample_fix_gateway_seq
