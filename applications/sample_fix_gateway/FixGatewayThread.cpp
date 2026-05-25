@@ -24,17 +24,21 @@ static pubsub_itc_fw::QueueConfiguration make_queue_config() {
     return cfg;
 }
 
-static pubsub_itc_fw::AllocatorConfiguration make_allocator_config() {
+static pubsub_itc_fw::AllocatorConfiguration make_allocator_config(const FixGatewayConfiguration& config, pubsub_itc_fw::QuillLogger& logger) {
     pubsub_itc_fw::AllocatorConfiguration cfg{};
     cfg.pool_name = "FixGatewayPool";
-    cfg.objects_per_pool = 64;
-    cfg.initial_pools = 1;
+    cfg.objects_per_pool = config.event_queue_pool_objects_per_slab;
+    cfg.initial_pools = config.event_queue_pool_initial_slabs;
+    cfg.handler_for_pool_exhausted = [&logger](void* /*ctx*/, int objects_per_pool) {
+        PUBSUB_LOG(logger, pubsub_itc_fw::FwLogLevel::Warning,
+                   "FixGatewayPool exhausted: chaining new pool slab ({} objects)", objects_per_pool);
+    };
     return cfg;
 }
 
 FixGatewayThread::FixGatewayThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger,
                                    pubsub_itc_fw::Reactor& reactor, const FixGatewayConfiguration& config)
-    : ApplicationThread(token, logger, reactor, "FixGatewayThread", pubsub_itc_fw::ThreadID{1}, make_queue_config(), make_allocator_config(),
+    : ApplicationThread(token, logger, reactor, "FixGatewayThread", pubsub_itc_fw::ThreadID{1}, make_queue_config(), make_allocator_config(config, logger),
                         pubsub_itc_fw::ApplicationThreadConfiguration{})
     , config_(config)
     , serialiser_(config.sender_comp_id, config.default_target_comp_id) {}

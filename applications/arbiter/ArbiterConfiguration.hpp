@@ -50,6 +50,28 @@ struct ArbiterConfiguration {
      *  Prefer /dev/shm/ so the file is cleared on reboot.
      *  Mandatory: must be set explicitly in the TOML configuration file. */
     std::string cpu_registry_lock_file;
+
+    // ----------------------------------------------------------------
+    // Event queue pool  (ApplicationThread inbound EventMessage queue)
+    // ----------------------------------------------------------------
+
+    /** @brief Number of objects in each fixed-size memory pool slab.
+     *  Increase if event-queue pool-exhaustion warnings appear in the log. */
+    int32_t event_queue_pool_objects_per_slab{16};
+
+    /** @brief Number of event queue pool slabs pre-allocated at startup. */
+    int32_t event_queue_pool_initial_slabs{1};
+
+    // ----------------------------------------------------------------
+    // Command queue pool  (Reactor ReactorControlCommand outbound queue)
+    // ----------------------------------------------------------------
+
+    /** @brief Number of objects in each fixed-size memory pool slab.
+     *  Increase if command-queue pool-exhaustion warnings appear in the log. */
+    int32_t command_queue_pool_objects_per_slab{16};
+
+    /** @brief Number of command queue pool slabs pre-allocated at startup. */
+    int32_t command_queue_pool_initial_slabs{1};
 };
 
 } // namespace arbiter

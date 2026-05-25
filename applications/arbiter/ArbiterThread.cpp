@@ -19,17 +19,21 @@ static pubsub_itc_fw::QueueConfiguration make_queue_config() {
     return cfg;
 }
 
-static pubsub_itc_fw::AllocatorConfiguration make_allocator_config() {
+static pubsub_itc_fw::AllocatorConfiguration make_allocator_config(const ArbiterConfiguration& config, pubsub_itc_fw::QuillLogger& logger) {
     pubsub_itc_fw::AllocatorConfiguration cfg{};
     cfg.pool_name = "ArbiterPool";
-    cfg.objects_per_pool = 16;
-    cfg.initial_pools = 1;
+    cfg.objects_per_pool = config.event_queue_pool_objects_per_slab;
+    cfg.initial_pools = config.event_queue_pool_initial_slabs;
+    cfg.handler_for_pool_exhausted = [&logger](void* /*ctx*/, int objects_per_pool) {
+        PUBSUB_LOG(logger, pubsub_itc_fw::FwLogLevel::Warning,
+                   "ArbiterPool exhausted: chaining new pool slab ({} objects)", objects_per_pool);
+    };
     return cfg;
 }
 
 ArbiterThread::ArbiterThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger, pubsub_itc_fw::Reactor& reactor,
                              const ArbiterConfiguration& config)
-    : ApplicationThread(token, logger, reactor, "ArbiterThread", pubsub_itc_fw::ThreadID{1}, make_queue_config(), make_allocator_config(),
+    : ApplicationThread(token, logger, reactor, "ArbiterThread", pubsub_itc_fw::ThreadID{1}, make_queue_config(), make_allocator_config(config, logger),
                         pubsub_itc_fw::ApplicationThreadConfiguration{})
     , config_(config) {}
 

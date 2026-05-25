@@ -25,17 +25,21 @@ static pubsub_itc_fw::QueueConfiguration make_queue_config() {
     return cfg;
 }
 
-static pubsub_itc_fw::AllocatorConfiguration make_allocator_config() {
+static pubsub_itc_fw::AllocatorConfiguration make_allocator_config(const FixGatewaySeqConfiguration& config, pubsub_itc_fw::QuillLogger& logger) {
     pubsub_itc_fw::AllocatorConfiguration cfg{};
     cfg.pool_name = "FixGatewaySeqPool";
-    cfg.objects_per_pool = 64;
-    cfg.initial_pools = 1;
+    cfg.objects_per_pool = config.event_queue_pool_objects_per_slab;
+    cfg.initial_pools = config.event_queue_pool_initial_slabs;
+    cfg.handler_for_pool_exhausted = [&logger](void* /*ctx*/, int objects_per_pool) {
+        PUBSUB_LOG(logger, pubsub_itc_fw::FwLogLevel::Warning,
+                   "FixGatewaySeqPool exhausted: chaining new pool slab ({} objects)", objects_per_pool);
+    };
     return cfg;
 }
 
 FixGatewaySeqThread::FixGatewaySeqThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger,
                                          pubsub_itc_fw::Reactor& reactor, const FixGatewaySeqConfiguration& config)
-    : ApplicationThread(token, logger, reactor, "FixGatewaySeqThread", pubsub_itc_fw::ThreadID{1}, make_queue_config(), make_allocator_config(),
+    : ApplicationThread(token, logger, reactor, "FixGatewaySeqThread", pubsub_itc_fw::ThreadID{1}, make_queue_config(), make_allocator_config(config, logger),
                         pubsub_itc_fw::ApplicationThreadConfiguration{})
     , config_(config)
     , serialiser_(config.sender_comp_id, config.default_target_comp_id)
@@ -140,7 +144,6 @@ void FixGatewaySeqThread::on_raw_socket_message(const pubsub_itc_fw::EventMessag
                               } else if (type == MsgType::Logout) {
                                   handle_logout(session, msg);
                               } else if (type == MsgType::NewOrderSingle) {
-                                  PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "about to call handle_new_order_single");
                                   handle_new_order_single(session, msg);
                               } else if (type == MsgType::OrderCancelRequest) {
                                   handle_order_cancel_request(session, msg);
@@ -268,32 +271,30 @@ void FixGatewaySeqThread::on_framework_pdu_message(const pubsub_itc_fw::EventMes
         return;
     }
 
-    // routing_comp_id is stamped by the sequencer from its cl_ord_id→comp_id map.
-    // Route to the FIX session whose client_comp_id matches.
-    if (!view.has_routing_comp_id || view.routing_comp_id.empty()) {
+    // Route to the exact FIX session identified by gateway_session_conn_id, which
+    // the gateway stamped on the original NOS and the sequencer echoes back here.
+    if (!view.has_gateway_session_conn_id) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "FixGatewaySeqThread: ExecutionReport OrderID={} ExecID={} has no routing_comp_id -- dropping",
+                   "FixGatewaySeqThread: ExecutionReport OrderID={} ExecID={} has no gateway_session_conn_id -- dropping",
                    view.order_id, view.exec_id);
         release_pdu_payload(message);
         return;
     }
-    const std::string routing_comp_id{view.routing_comp_id};
 
-    FixSession* session_ptr = find_session_by_comp_id(routing_comp_id);
+    FixSession* session_ptr = find_session_by_conn_id(view.gateway_session_conn_id);
     if (!session_ptr) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "FixGatewaySeqThread: ExecutionReport routing_comp_id='{}' -- "
+                   "FixGatewaySeqThread: ExecutionReport gateway_session_conn_id={} -- "
                    "no matching FIX session (client may have disconnected) -- dropping",
-                   routing_comp_id);
+                   view.gateway_session_conn_id);
         release_pdu_payload(message);
         return;
     }
     FixSession& session = *session_ptr;
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "FixGatewaySeqThread: routing ExecutionReport OrderID={} ExecID={} "
-               "routing_comp_id={} to FIX client connection {}",
-               view.order_id, view.exec_id, routing_comp_id, session.conn_id.get_value());
+               "GW-ER-SENT connection={} OrderID={} ExecID={} gateway_session_conn_id={}",
+               session.conn_id.get_value(), view.order_id, view.exec_id, view.gateway_session_conn_id);
 
     // Build a FIX ExecutionReport. Single-character enum fields convert back
     // to FIX wire chars via static_cast<char>; numeric strings (qty/px) flow
@@ -400,7 +401,7 @@ void FixGatewaySeqThread::handle_new_order_single(FixSession& session, const Fix
     const std::string& order_qty = msg.get(Tag::OrderQty);
     const std::string& price_str = msg.get(Tag::Price);
 
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixGatewaySeqThread: connection {} NewOrderSingle ClOrdID={} Symbol={} Side={}",
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "GW-NOS-RECV connection={} ClOrdID={} Symbol={} Side={}",
                session.conn_id.get_value(), cl_ord_id, symbol, side_str);
 
     // Validate required fields.
@@ -446,12 +447,18 @@ void FixGatewaySeqThread::handle_new_order_single(FixSession& session, const Fix
         nos.time_in_force = static_cast<pubsub_itc_fw_app::TimeInForce>(tif_str[0]);
     }
 
-    // Stamp SenderCompID so the sequencer can maintain its cl_ord_id→comp_id
-    // routing map and embed routing_comp_id in forwarded ERs.
+    // Retain SenderCompID for audit/logging in the sequencer WAL.
     if (!session.client_comp_id.empty()) {
         nos.has_sender_comp_id = true;
         nos.sender_comp_id = session.client_comp_id;
     }
+
+    // Stamp the internal connection ID so the sequencer can route the ER back
+    // to this exact FIX session.  This is unique per TCP connection and avoids
+    // the ClOrdID collision problem that arises when multiple sessions share a
+    // SenderCompID or reuse the same ClOrdID sequence.
+    nos.has_gateway_session_conn_id = true;
+    nos.gateway_session_conn_id = session.conn_id.get_value();
 
     // Forward the encoded PDU to both sequencer instances.
     // The sequencer will wrap it in a SequencedMessage envelope.
@@ -498,11 +505,15 @@ void FixGatewaySeqThread::handle_order_cancel_request(FixSession& session, const
     ocr.transact_time = 0; // TODO: parse SendingTime
     ocr.order_qty = order_qty;
 
-    // Stamp SenderCompID for sequencer routing map.
+    // Retain SenderCompID for audit/logging.
     if (!session.client_comp_id.empty()) {
         ocr.has_sender_comp_id = true;
         ocr.sender_comp_id = session.client_comp_id;
     }
+
+    // Stamp the internal connection ID for cancel-ER routing (same mechanism as NOS).
+    ocr.has_gateway_session_conn_id = true;
+    ocr.gateway_session_conn_id = session.conn_id.get_value();
 
     forward_pdu_to_sequencers(static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::OrderCancelRequest), ocr);
 }
@@ -591,6 +602,13 @@ void FixGatewaySeqThread::send_reject_execution_report(FixSession& session, cons
 // Warning is logged. The other sequencer still receives the PDU so the leader
 // can continue operating. When connection retry re-establishes the lost
 // connection the follower will resync from the leader's state.
+
+FixSession* FixGatewaySeqThread::find_session_by_conn_id(int32_t gateway_session_conn_id)
+{
+    auto it = sessions_.find(pubsub_itc_fw::ConnectionID{gateway_session_conn_id});
+    if (it == sessions_.end()) return nullptr;
+    return &it->second;
+}
 
 FixSession* FixGatewaySeqThread::find_session_by_comp_id(const std::string& comp_id)
 {

@@ -22,17 +22,21 @@ static pubsub_itc_fw::QueueConfiguration make_queue_config() {
     return cfg;
 }
 
-static pubsub_itc_fw::AllocatorConfiguration make_allocator_config() {
+static pubsub_itc_fw::AllocatorConfiguration make_allocator_config(const MatchingEngineConfiguration& config, pubsub_itc_fw::QuillLogger& logger) {
     pubsub_itc_fw::AllocatorConfiguration cfg{};
     cfg.pool_name = "MatchingEnginePool";
-    cfg.objects_per_pool = 64;
-    cfg.initial_pools = 1;
+    cfg.objects_per_pool = config.event_queue_pool_objects_per_slab;
+    cfg.initial_pools = config.event_queue_pool_initial_slabs;
+    cfg.handler_for_pool_exhausted = [&logger](void* /*ctx*/, int objects_per_pool) {
+        PUBSUB_LOG(logger, pubsub_itc_fw::FwLogLevel::Warning,
+                   "MatchingEnginePool exhausted: chaining new pool slab ({} objects)", objects_per_pool);
+    };
     return cfg;
 }
 
 MatchingEngineThread::MatchingEngineThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger,
                                            pubsub_itc_fw::Reactor& reactor, const MatchingEngineConfiguration& config)
-    : ApplicationThread(token, logger, reactor, "MatchingEngineThread", pubsub_itc_fw::ThreadID{1}, make_queue_config(), make_allocator_config(),
+    : ApplicationThread(token, logger, reactor, "MatchingEngineThread", pubsub_itc_fw::ThreadID{1}, make_queue_config(), make_allocator_config(config, logger),
                         pubsub_itc_fw::ApplicationThreadConfiguration{})
     , config_(config)
     , sequencer_er_conn_id_{} {}

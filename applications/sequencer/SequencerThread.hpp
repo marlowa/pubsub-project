@@ -102,11 +102,14 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void handle_peer_heartbeat(const pubsub_itc_fw::EventMessage& message);
     void handle_peer_pdu(const pubsub_itc_fw::ConnectionID &conn_id, const pubsub_itc_fw::EventMessage& message);
 
-    // cl_ord_id → SenderCompID of the originating FIX client (Slice 5).
-    // Populated on each NOS/OCR received; rebuilt from WAL replay on startup.
-    // Used to stamp routing_comp_id on forwarded ERs so the gateway can route
-    // without maintaining its own cl_ord_id→session map.
-    std::unordered_map<std::string, std::string> cl_ord_id_to_comp_id_;
+    // seq_no → gateway_session_conn_id of the originating FIX session.
+    // Keyed by the sequence number assigned to each NOS/OCR (globally unique,
+    // unlike ClOrdID which is only unique per FIX session).  Populated on each
+    // sequenced NOS/OCR; rebuilt from WAL replay on startup.  Used to stamp
+    // gateway_session_conn_id on forwarded ERs so the gateway can route each
+    // ER directly to the exact FIX session that placed the order, even when
+    // multiple sessions share the same SenderCompID or reuse ClOrdIDs.
+    std::unordered_map<int64_t, int32_t> seq_no_to_session_conn_id_;
 };
 
 } // namespace sequencer

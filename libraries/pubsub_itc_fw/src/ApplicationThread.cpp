@@ -363,25 +363,25 @@ void ApplicationThread::process_message(EventMessage& message) {
         }
 
         case EventType::InterthreadCommunication: {
-            PUBSUB_LOG(logger_, FwLogLevel::Info, "Thread {}: Received ITC message", thread_name_);
+            PUBSUB_LOG(logger_, FwLogLevel::Debug, "Thread {}: Received ITC message", thread_name_);
             on_itc_message(message);
             break;
         }
 
         case EventType::Timer: {
-            PUBSUB_LOG(logger_, FwLogLevel::Info, "Thread {}: Received timer message", thread_name_);
+            PUBSUB_LOG(logger_, FwLogLevel::Debug, "Thread {}: Received timer message", thread_name_);
             on_timer_id_event(message.timer_id());
             break;
         }
 
         case EventType::PubSubCommunication: {
-            PUBSUB_LOG(logger_, FwLogLevel::Info, "Thread {}: Received pubsub message", thread_name_);
+            PUBSUB_LOG(logger_, FwLogLevel::Debug, "Thread {}: Received pubsub message", thread_name_);
             on_pubsub_message(message);
             break;
         }
 
         case EventType::RawSocketCommunication: {
-            PUBSUB_LOG(logger_, FwLogLevel::Info, "Thread {}: Received raw socket message", thread_name_);
+            PUBSUB_LOG(logger_, FwLogLevel::Debug, "Thread {}: Received raw socket message", thread_name_);
             on_raw_socket_message(message);
             break;
         }
@@ -401,7 +401,7 @@ void ApplicationThread::process_message(EventMessage& message) {
             // outstanding-allocations counter races into a false zero and the
             // reactor reclaims the slab while live allocations still reference
             // it.
-            PUBSUB_LOG(logger_, FwLogLevel::Info, "Thread {}: Received PDU message", thread_name_);
+            PUBSUB_LOG(logger_, FwLogLevel::Debug, "Thread {}: Received PDU message", thread_name_);
             on_framework_pdu_message(message);
             break;
         }
@@ -442,7 +442,10 @@ void ApplicationThread::on_timer_id_event(TimerID id) {
         return;
     }
 
-    const std::string& name = it->second;
+    // Copy the name before invoking the callback.  The callback may call
+    // start_one_off_timer() or cancel_timer() with this name, both of which
+    // mutate id_to_name_ and would invalidate a reference into it.
+    const std::string name = it->second;
 
     // Call the user-overridable handler.
     on_timer_event(name);

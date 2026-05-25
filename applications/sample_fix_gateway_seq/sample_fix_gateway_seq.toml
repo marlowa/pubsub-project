@@ -20,8 +20,8 @@ default_target_comp_id = "CLIENT"
 logon_timeout = "30s"
 
 [logging]
-applog_level = "debug"
-syslog_level = "info"
+applog_level = "info"
+syslog_level = "critical"
 mode = "none"
 max_file_size = 10240000
 max_backup_files=10
@@ -29,3 +29,14 @@ max_backup_files=10
 cpu_pinning_enabled = true
 cpu_pinning_dev_mode = true
 cpu_registry_lock_file = "/dev/shm/pubsub_cpu_registry.lock"
+
+[event_queue_pool]
+# Sized for observed peak concurrent usage: ~5,120 objects (50 clients, burst=10).
+objects_per_slab = 1024
+initial_slabs    = 5
+
+[command_queue_pool]
+# Sized for observed peak concurrent usage: ~63,488 objects (50 clients, burst=10).
+objects_per_slab = 1024
+initial_slabs    = 62
+

@@ -870,7 +870,7 @@ void Reactor::process_control_commands() {
 
         const ReactorControlCommand& command = maybe_command.value();
 
-        PUBSUB_LOG(logger_, FwLogLevel::Info, "Reactor process_control_commands picked up command {}", command.as_string());
+        PUBSUB_LOG(logger_, FwLogLevel::Debug, "Reactor process_control_commands picked up command {}", command.as_string());
 
         switch (command.as_tag()) {
             case ReactorControlCommand::AddTimer:

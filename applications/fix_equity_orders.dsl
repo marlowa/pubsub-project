@@ -268,6 +268,7 @@ message NewOrderSingle (id=Topics.NewOrderSingle)
     optional datetime_ns expire_time
     optional string text
     optional string sender_comp_id
+    optional i32 gateway_session_conn_id  # internal conn_id of the originating FIX session; used for ER routing
 end
 
 # ---------------------------------------------------------------------------
@@ -291,6 +292,7 @@ message OrderCancelRequest (id=Topics.OrderCancelRequest)
     optional string account
     optional string text
     optional string sender_comp_id
+    optional i32 gateway_session_conn_id  # internal conn_id of the originating FIX session; used for ER routing
 end
 
 # ---------------------------------------------------------------------------
@@ -355,5 +357,5 @@ message ExecutionReport (id=Topics.ExecutionReport)
     optional string min_qty
     optional string max_floor
     optional datetime_ns expire_time
-    optional string routing_comp_id
+    optional i32 gateway_session_conn_id  # echoed from NOS; gateway routes ER to the exact originating FIX session
 end

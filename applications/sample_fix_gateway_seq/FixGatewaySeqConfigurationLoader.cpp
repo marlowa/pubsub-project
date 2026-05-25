@@ -104,6 +104,28 @@ FixGatewaySeqConfigurationLoader::load_and_init_logging(const std::string& file_
         toml.get_required_except("reactor.cpu_pinning_dev_mode", config.cpu_pinning_dev_mode);
         toml.get_required_except("reactor.cpu_registry_lock_file", config.cpu_registry_lock_file);
 
+        toml.get_required_except("event_queue_pool.objects_per_slab", config.event_queue_pool_objects_per_slab);
+        toml.get_required_except("event_queue_pool.initial_slabs", config.event_queue_pool_initial_slabs);
+        if (config.event_queue_pool_objects_per_slab < 1) {
+            throw pubsub_itc_fw::ConfigurationException("FixGatewaySeqConfigurationLoader: event_queue_pool.objects_per_slab must be >= 1, got " +
+                                                        std::to_string(config.event_queue_pool_objects_per_slab));
+        }
+        if (config.event_queue_pool_initial_slabs < 1) {
+            throw pubsub_itc_fw::ConfigurationException("FixGatewaySeqConfigurationLoader: event_queue_pool.initial_slabs must be >= 1, got " +
+                                                        std::to_string(config.event_queue_pool_initial_slabs));
+        }
+
+        toml.get_required_except("command_queue_pool.objects_per_slab", config.command_queue_pool_objects_per_slab);
+        toml.get_required_except("command_queue_pool.initial_slabs", config.command_queue_pool_initial_slabs);
+        if (config.command_queue_pool_objects_per_slab < 1) {
+            throw pubsub_itc_fw::ConfigurationException("FixGatewaySeqConfigurationLoader: command_queue_pool.objects_per_slab must be >= 1, got " +
+                                                        std::to_string(config.command_queue_pool_objects_per_slab));
+        }
+        if (config.command_queue_pool_initial_slabs < 1) {
+            throw pubsub_itc_fw::ConfigurationException("FixGatewaySeqConfigurationLoader: command_queue_pool.initial_slabs must be >= 1, got " +
+                                                        std::to_string(config.command_queue_pool_initial_slabs));
+        }
+
     } catch (const pubsub_itc_fw::ConfigurationException&) {
         throw;
     }

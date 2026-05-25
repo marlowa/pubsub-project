@@ -76,13 +76,13 @@ std::tuple<bool, std::string> PduParser::receive() {
             current_pdu_id_ = static_cast<int16_t>(ntohs(static_cast<uint16_t>(hdr->pdu_id)));
             current_seq_no_ = static_cast<int64_t>(be64toh(static_cast<uint64_t>(hdr->seq_no)));
 
-            PUBSUB_LOG(logger_, FwLogLevel::Info,
+            PUBSUB_LOG(logger_, FwLogLevel::Debug,
                        "TRACE PduParser::receive: connection_id={} decoded header: "
                        "canary=0x{:08x} byte_count={} pdu_id={} version={}",
                        connection_id_.get_value(), ntohl(hdr->canary), current_payload_size_, current_pdu_id_, static_cast<int>(hdr->version));
 
             // TODO should now dump 24 bytes
-            PUBSUB_LOG(logger_, FwLogLevel::Info,
+            PUBSUB_LOG(logger_, FwLogLevel::Debug,
                        "TRACE PduParser::receive: header bytes: "
                        "{:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} "
                        "{:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
@@ -109,10 +109,10 @@ std::tuple<bool, std::string> PduParser::receive() {
             }
 
             // Allocate a slab chunk to receive the payload directly — zero copy.
-            PUBSUB_LOG(logger_, FwLogLevel::Info, "TRACE PduParser::receive: connection_id={} about to allocate {} bytes from inbound slab allocator",
+            PUBSUB_LOG(logger_, FwLogLevel::Debug, "TRACE PduParser::receive: connection_id={} about to allocate {} bytes from inbound slab allocator",
                        connection_id_.get_value(), current_payload_size_);
             auto [slab_id, chunk] = slab_allocator_.allocate(current_payload_size_);
-            PUBSUB_LOG(logger_, FwLogLevel::Info, "TRACE PduParser::receive: connection_id={} allocate returned slab_id={} chunk={}",
+            PUBSUB_LOG(logger_, FwLogLevel::Debug, "TRACE PduParser::receive: connection_id={} allocate returned slab_id={} chunk={}",
                        connection_id_.get_value(), slab_id, fmt::ptr(chunk));
             if (chunk == nullptr) {
                 return {false, "PduParser: slab allocation failed for incoming PDU payload"};
@@ -188,7 +188,7 @@ void PduParser::dispatch_pdu(int slab_id, void* payload_chunk) {
         for (int i = 0; i < dump_limit; ++i) {
             hex_bytes += fmt::format("{:02x} ", payload[i]);
         }
-        PUBSUB_LOG(logger_, FwLogLevel::Info,
+        PUBSUB_LOG(logger_, FwLogLevel::Debug,
                    "TRACE PduParser::dispatch_pdu: connection_id={} pdu_id={} "
                    "payload_size={} payload_bytes (first {}): {}",
                    connection_id_.get_value(), current_pdu_id_, payload_size, dump_limit, hex_bytes);

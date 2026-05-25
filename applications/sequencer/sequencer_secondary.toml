@@ -34,10 +34,21 @@ segment_size              = 4194304
 snapshot_interval_seconds = 30
 
 [logging]
-applog_level = "info"
-syslog_level = "info"
+applog_level = "warning"
+syslog_level = "critical"
 
 [reactor]
 cpu_pinning_enabled = true
 cpu_pinning_dev_mode = true
 cpu_registry_lock_file = "/dev/shm/pubsub_cpu_registry.lock"
+
+[event_queue_pool]
+# Sized for observed peak concurrent usage: ~80,640 objects (50 clients, burst=10).
+objects_per_slab = 4096
+initial_slabs    = 20
+
+[command_queue_pool]
+# Sized for observed peak concurrent usage: ~495,616 objects (50 clients, burst=10).
+objects_per_slab = 4096
+initial_slabs    = 130
+

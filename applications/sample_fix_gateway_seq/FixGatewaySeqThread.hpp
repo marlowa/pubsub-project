@@ -148,8 +148,13 @@ class FixGatewaySeqThread : public pubsub_itc_fw::ApplicationThread {
     // ConnectionID of the secondary sequencer outbound connection.
     pubsub_itc_fw::ConnectionID sequencer_secondary_conn_id_;
 
-    // routing_comp_id → ConnectionID lookup: find the FIX session whose
-    // client_comp_id matches the routing_comp_id stamped by the sequencer.
+    // gateway_session_conn_id → FixSession lookup: O(1) direct map lookup by
+    // the internal connection ID stamped by the gateway on each NOS and echoed
+    // back by the sequencer on each forwarded ER.  Returns nullptr if the
+    // session has since disconnected.
+    FixSession* find_session_by_conn_id(int32_t gateway_session_conn_id);
+
+    // Legacy comp_id lookup retained for diagnostics; no longer used for ER routing.
     // Linear scan over sessions_ (small set; typically 1-10 sessions).
     // Returns nullptr if no matching session is found.
     FixSession* find_session_by_comp_id(const std::string& comp_id);

@@ -59,7 +59,9 @@ endif()
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     add_compile_options(-g -O0)
 else()
-    add_compile_options(-g -O2)
+    # -fno-omit-frame-pointer preserves frame pointers for perf/flamegraph
+    # profiling without measurable impact on throughput at O2.
+    add_compile_options(-g -O2 -fno-omit-frame-pointer)
 endif()
 
 if(ENABLE_COVERAGE)

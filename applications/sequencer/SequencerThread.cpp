@@ -24,17 +24,21 @@ static pubsub_itc_fw::QueueConfiguration make_queue_config() {
     return cfg;
 }
 
-static pubsub_itc_fw::AllocatorConfiguration make_allocator_config() {
+static pubsub_itc_fw::AllocatorConfiguration make_allocator_config(const SequencerConfiguration& config, pubsub_itc_fw::QuillLogger& logger) {
     pubsub_itc_fw::AllocatorConfiguration cfg{};
     cfg.pool_name = "SequencerPool";
-    cfg.objects_per_pool = 64;
-    cfg.initial_pools = 1;
+    cfg.objects_per_pool = config.event_queue_pool_objects_per_slab;
+    cfg.initial_pools = config.event_queue_pool_initial_slabs;
+    cfg.handler_for_pool_exhausted = [&logger](void* /*ctx*/, int objects_per_pool) {
+        PUBSUB_LOG(logger, pubsub_itc_fw::FwLogLevel::Warning,
+                   "SequencerPool exhausted: chaining new pool slab ({} objects)", objects_per_pool);
+    };
     return cfg;
 }
 
 SequencerThread::SequencerThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger, pubsub_itc_fw::Reactor& reactor,
                                  const SequencerConfiguration& config)
-    : ApplicationThread(token, logger, reactor, "SequencerThread", pubsub_itc_fw::ThreadID{1}, make_queue_config(), make_allocator_config(),
+    : ApplicationThread(token, logger, reactor, "SequencerThread", pubsub_itc_fw::ThreadID{1}, make_queue_config(), make_allocator_config(config, logger),
                         pubsub_itc_fw::ApplicationThreadConfiguration{})
     , config_(config)
     , gateway_conn_id_{}
@@ -44,8 +48,9 @@ SequencerThread::SequencerThread(pubsub_itc_fw::ApplicationThread::ConstructorTo
     , arbiter_conn_id_{} {}
 
 void SequencerThread::on_initial_event() {
-    // Rebuild cl_ord_id→comp_id from WAL replay so ER routing survives restart.
-    auto rebuild_routing_map = [this]([[maybe_unused]] int64_t seq_no, int16_t pdu_id,
+    // Rebuild seq_no→gateway_session_conn_id from WAL replay so ER routing
+    // survives a sequencer restart.
+    auto rebuild_routing_map = [this](int64_t seq_no, int16_t pdu_id,
                                       const uint8_t* payload, size_t payload_size) {
         constexpr auto nos_id = static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::NewOrderSingle);
         constexpr auto ocr_id = static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::OrderCancelRequest);
@@ -60,15 +65,15 @@ void SequencerThread::on_initial_event() {
         if (pdu_id == nos_id) {
             pubsub_itc_fw_app::NewOrderSingleView view{};
             if (pubsub_itc_fw_app::decode(view, payload, payload_size, bytes_consumed, arena, arena_bytes_needed)) {
-                if (view.has_sender_comp_id && !view.sender_comp_id.empty()) {
-                    cl_ord_id_to_comp_id_[std::string{view.cl_ord_id}] = std::string{view.sender_comp_id};
+                if (view.has_gateway_session_conn_id) {
+                    seq_no_to_session_conn_id_[seq_no] = view.gateway_session_conn_id;
                 }
             }
         } else {
             pubsub_itc_fw_app::OrderCancelRequestView view{};
             if (pubsub_itc_fw_app::decode(view, payload, payload_size, bytes_consumed, arena, arena_bytes_needed)) {
-                if (view.has_sender_comp_id && !view.sender_comp_id.empty()) {
-                    cl_ord_id_to_comp_id_[std::string{view.cl_ord_id}] = std::string{view.sender_comp_id};
+                if (view.has_gateway_session_conn_id) {
+                    seq_no_to_session_conn_id_[seq_no] = view.gateway_session_conn_id;
                 }
             }
         }
@@ -81,7 +86,7 @@ void SequencerThread::on_initial_event() {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "SequencerThread: WAL open complete: recovered seq_no={}, record_count={}, "
                    "next_sequence_number={}, routing_map_size={}",
-                   recovered_seq, wal_.record_count(), next_sequence_number_, cl_ord_id_to_comp_id_.size());
+                   recovered_seq, wal_.record_count(), next_sequence_number_, seq_no_to_session_conn_id_.size());
     } else {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                        "SequencerThread: WAL is fresh (no prior records), starting from seq_no=1");
@@ -290,9 +295,11 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             nos.has_sender_comp_id = view.has_sender_comp_id;
             nos.sender_comp_id = view.sender_comp_id;
 
-            // Record cl_ord_id → sender_comp_id for ER routing back to the gateway.
-            if (view.has_sender_comp_id && !view.sender_comp_id.empty()) {
-                cl_ord_id_to_comp_id_[std::string{view.cl_ord_id}] = std::string{view.sender_comp_id};
+            // Record seq_no → gateway_session_conn_id for ER routing back to the
+            // exact FIX session.  seq_no is globally unique; gateway_session_conn_id
+            // identifies the specific connection within the gateway.
+            if (view.has_gateway_session_conn_id) {
+                seq_no_to_session_conn_id_[seq] = view.gateway_session_conn_id;
             }
 
             send_pdu(me_outbound_order_conn_id_, pdu_id, seq, nos);
@@ -326,9 +333,9 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             ocr.has_sender_comp_id = view.has_sender_comp_id;
             ocr.sender_comp_id = view.sender_comp_id;
 
-            // Record cl_ord_id → sender_comp_id for cancel-ER routing.
-            if (view.has_sender_comp_id && !view.sender_comp_id.empty()) {
-                cl_ord_id_to_comp_id_[std::string{view.cl_ord_id}] = std::string{view.sender_comp_id};
+            // Record seq_no → gateway_session_conn_id for cancel-ER routing.
+            if (view.has_gateway_session_conn_id) {
+                seq_no_to_session_conn_id_[seq] = view.gateway_session_conn_id;
             }
 
             send_pdu(me_outbound_order_conn_id_, pdu_id, seq, ocr);
@@ -439,15 +446,19 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         er.has_expire_time = view.has_expire_time;
         er.expire_time = view.expire_time;
 
-        // Stamp routing_comp_id so the gateway can route by comp_id without
-        // maintaining its own cl_ord_id→session map.
-        std::string erase_routing_key;
-        if (view.has_cl_ord_id && !view.cl_ord_id.empty()) {
-            const std::string cl_ord_id{view.cl_ord_id};
-            auto it = cl_ord_id_to_comp_id_.find(cl_ord_id);
-            if (it != cl_ord_id_to_comp_id_.end()) {
-                er.has_routing_comp_id = true;
-                er.routing_comp_id = it->second;
+        // Look up the originating FIX session by the ER's seq_no.  The ME echoes
+        // the NOS's seq_no back in the ER transport envelope, so message.seq_no()
+        // here is the same value that was stored in seq_no_to_session_conn_id_
+        // when the NOS was forwarded.  seq_no is globally unique, eliminating the
+        // ClOrdID-collision problem that occurred when multiple FIX sessions
+        // submitted orders with identical ClOrdID sequences.
+        const int64_t er_seq_no = message.seq_no();
+        bool erase_routing_entry = false;
+        {
+            auto it = seq_no_to_session_conn_id_.find(er_seq_no);
+            if (it != seq_no_to_session_conn_id_.end()) {
+                er.has_gateway_session_conn_id = true;
+                er.gateway_session_conn_id = it->second;
 
                 switch (view.ord_status) {
                     case pubsub_itc_fw_app::OrdStatus::Filled:
@@ -456,25 +467,23 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
                     case pubsub_itc_fw_app::OrdStatus::Expired:
                     case pubsub_itc_fw_app::OrdStatus::DoneForDay:
                     case pubsub_itc_fw_app::OrdStatus::Replaced:
-                        erase_routing_key = cl_ord_id;
+                        erase_routing_entry = true;
                         break;
                     default:
                         break;
                 }
             } else {
                 PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                           "SequencerThread: ER ClOrdID='{}' not in routing map -- forwarding without routing_comp_id",
-                           cl_ord_id);
+                           "SequencerThread: ER seq_no={} not in routing map -- forwarding without gateway_session_conn_id",
+                           er_seq_no);
             }
         }
 
-        // send_pdu encodes er, which holds string_views into cl_ord_id_to_comp_id_
-        // entries. Erase only AFTER encoding is complete to avoid dangling views.
-        send_pdu(gateway_conn_id_, pdu_id, message.seq_no(), er);
+        send_pdu(gateway_conn_id_, pdu_id, er_seq_no, er);
         release_pdu_payload(message);
 
-        if (!erase_routing_key.empty()) {
-            cl_ord_id_to_comp_id_.erase(erase_routing_key);
+        if (erase_routing_entry) {
+            seq_no_to_session_conn_id_.erase(er_seq_no);
         }
 
     } else {

@@ -29,6 +29,13 @@ MatchingEngine::MatchingEngine(MatchingEngineConfiguration  config, std::unique_
     reactor_configuration_.cpu_pinning_enabled = config_.cpu_pinning_enabled;
     reactor_configuration_.cpu_pinning_dev_mode = config_.cpu_pinning_dev_mode;
     reactor_configuration_.cpu_registry_lock_file = config_.cpu_registry_lock_file;
+    reactor_configuration_.command_allocator_configuration_.pool_name = "MatchingEngineCommandPool";
+    reactor_configuration_.command_allocator_configuration_.objects_per_pool = config_.command_queue_pool_objects_per_slab;
+    reactor_configuration_.command_allocator_configuration_.initial_pools = config_.command_queue_pool_initial_slabs;
+    reactor_configuration_.command_allocator_configuration_.handler_for_pool_exhausted = [this](void* /*ctx*/, int objects_per_pool) {
+        PUBSUB_LOG(*logger_, pubsub_itc_fw::FwLogLevel::Warning,
+                   "MatchingEngineCommandPool exhausted: chaining new pool slab ({} objects)", objects_per_pool);
+    };
 
     reactor_ = std::make_unique<pubsub_itc_fw::Reactor>(reactor_configuration_, service_registry_, *logger_);
 

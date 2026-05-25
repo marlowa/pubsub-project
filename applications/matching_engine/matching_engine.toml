@@ -8,9 +8,20 @@ port = 7021
 
 [logging]
 applog_level = "info"
-syslog_level = "info"
+syslog_level = "critical"
 
 [reactor]
-cpu_pinning_enabled = false
+cpu_pinning_enabled = true
 cpu_pinning_dev_mode = true
 cpu_registry_lock_file = "/dev/shm/pubsub_cpu_registry.lock"
+
+[event_queue_pool]
+# Sized for observed peak concurrent usage: ~10,240 objects (50 clients, burst=10).
+objects_per_slab = 1024
+initial_slabs    = 10
+
+[command_queue_pool]
+# Sized for observed peak concurrent usage: ~221,184 objects (50 clients, burst=10).
+objects_per_slab = 1024
+initial_slabs    = 216
+
