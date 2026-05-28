@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "Sequencer.hpp"
-#include "SequencerThread.hpp"
 #include "SequencerConfigurationLoader.hpp"
+#include "SequencerThread.hpp"
 
 #include <chrono>
 #include <iostream>
@@ -20,7 +20,8 @@
 
 namespace sequencer {
 
-Sequencer::Sequencer(SequencerConfiguration  config, std::unique_ptr<pubsub_itc_fw::QuillLogger> logger) : config_(std::move(config)), logger_(std::move(logger)) {
+Sequencer::Sequencer(SequencerConfiguration config, std::unique_ptr<pubsub_itc_fw::QuillLogger> logger)
+    : config_(std::move(config)), logger_(std::move(logger)) {
     reactor_configuration_.connect_timeout = std::chrono::seconds{5};
     reactor_configuration_.socket_maximum_inactivity_interval_ = std::chrono::seconds{600};
     reactor_configuration_.inactivity_check_interval_ = std::chrono::milliseconds{500};
@@ -32,8 +33,7 @@ Sequencer::Sequencer(SequencerConfiguration  config, std::unique_ptr<pubsub_itc_
     reactor_configuration_.command_allocator_configuration_.objects_per_pool = config_.command_queue_pool_objects_per_slab;
     reactor_configuration_.command_allocator_configuration_.initial_pools = config_.command_queue_pool_initial_slabs;
     reactor_configuration_.command_allocator_configuration_.handler_for_pool_exhausted = [this](void* /*ctx*/, int objects_per_pool) {
-        PUBSUB_LOG(*logger_, pubsub_itc_fw::FwLogLevel::Warning,
-                   "SequencerCommandPool exhausted: chaining new pool slab ({} objects)", objects_per_pool);
+        PUBSUB_LOG(*logger_, pubsub_itc_fw::FwLogLevel::Warning, "SequencerCommandPool exhausted: chaining new pool slab ({} objects)", objects_per_pool);
     };
 
     reactor_ = std::make_unique<pubsub_itc_fw::Reactor>(reactor_configuration_, service_registry_, *logger_);
@@ -49,8 +49,8 @@ Sequencer::Sequencer(SequencerConfiguration  config, std::unique_ptr<pubsub_itc_
 
     // Inbound PDU listener for peer-to-peer leader-follower protocol PDUs.
     // The peer sequencer connects to this port; primary uses 7003, secondary 7004.
-    reactor_->register_inbound_listener(pubsub_itc_fw::NetworkEndpointConfiguration{config_.peer_listen_host, config_.peer_listen_port}, pubsub_itc_fw::ThreadID{1},
-                                        pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::FrameworkPdu}, 0);
+    reactor_->register_inbound_listener(pubsub_itc_fw::NetworkEndpointConfiguration{config_.peer_listen_host, config_.peer_listen_port},
+                                        pubsub_itc_fw::ThreadID{1}, pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::FrameworkPdu}, 0);
 
     sequencer_thread_ = pubsub_itc_fw::ApplicationThread::create<SequencerThread>(*logger_, *reactor_, config_);
 
@@ -69,14 +69,12 @@ Sequencer::Sequencer(SequencerConfiguration  config, std::unique_ptr<pubsub_itc_
 
     PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "Sequencer: order listener on {}:{} ER listener on {}:{} instance_id={}", config_.listen_host,
                config_.listen_port, config_.er_listen_host, config_.er_listen_port, config_.instance_id);
-    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info,
-               "Sequencer: gateway={}:{} matching_engine={}:{} arbiter={}:{} peer_listen={}:{} peer={}:{}",
-               config_.gateway_host, config_.gateway_port, config_.matching_engine_host, config_.matching_engine_port,
-               config_.arbiter_host, config_.arbiter_port,
-               config_.peer_listen_host, config_.peer_listen_port, config_.peer_host, config_.peer_port);
+    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "Sequencer: gateway={}:{} matching_engine={}:{} arbiter={}:{} peer_listen={}:{} peer={}:{}",
+               config_.gateway_host, config_.gateway_port, config_.matching_engine_host, config_.matching_engine_port, config_.arbiter_host,
+               config_.arbiter_port, config_.peer_listen_host, config_.peer_listen_port, config_.peer_host, config_.peer_port);
 }
 
-int Sequencer::run()const {
+int Sequencer::run() const {
     PUBSUB_LOG_STR((*logger_), pubsub_itc_fw::FwLogLevel::Info, "Sequencer: starting reactor");
     return reactor_->run();
 }

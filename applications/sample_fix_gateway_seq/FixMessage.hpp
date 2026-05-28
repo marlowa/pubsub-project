@@ -176,7 +176,7 @@ static constexpr int Text = 58;
  */
 struct ParsedFixMessage {
     struct Field {
-        int             tag;
+        int tag;
         std::string_view value;
     };
 
@@ -193,14 +193,16 @@ struct ParsedFixMessage {
 
     [[nodiscard]] std::string_view get(int tag) const {
         for (int i = 0; i < field_count; ++i) {
-            if (fields[static_cast<size_t>(i)].tag == tag) return fields[static_cast<size_t>(i)].value;
+            if (fields[static_cast<size_t>(i)].tag == tag)
+                return fields[static_cast<size_t>(i)].value;
         }
         return {};
     }
 
     [[nodiscard]] bool has(int tag) const {
         for (int i = 0; i < field_count; ++i) {
-            if (fields[static_cast<size_t>(i)].tag == tag) return true;
+            if (fields[static_cast<size_t>(i)].tag == tag)
+                return true;
         }
         return false;
     }

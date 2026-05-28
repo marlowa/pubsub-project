@@ -36,8 +36,7 @@ pubsub_itc_fw::AllocatorConfiguration make_allocator_config(const FixGatewaySeqC
     allocator_configuration.objects_per_pool = config.event_queue_pool_objects_per_slab;
     allocator_configuration.initial_pools = config.event_queue_pool_initial_slabs;
     allocator_configuration.handler_for_pool_exhausted = [&logger](void* /*context*/, int objects_per_pool) {
-        PUBSUB_LOG(logger, pubsub_itc_fw::FwLogLevel::Warning,
-                   "FixGatewaySeqPool exhausted: chaining new pool slab ({} objects)", objects_per_pool);
+        PUBSUB_LOG(logger, pubsub_itc_fw::FwLogLevel::Warning, "FixGatewaySeqPool exhausted: chaining new pool slab ({} objects)", objects_per_pool);
     };
     return allocator_configuration;
 }
@@ -288,8 +287,7 @@ void FixGatewaySeqThread::on_framework_pdu_message(const pubsub_itc_fw::EventMes
     // the gateway stamped on the original NOS and the sequencer echoes back here.
     if (!view.has_gateway_session_conn_id) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "FixGatewaySeqThread: ExecutionReport OrderID={} ExecID={} has no gateway_session_conn_id -- dropping",
-                   view.order_id, view.exec_id);
+                   "FixGatewaySeqThread: ExecutionReport OrderID={} ExecID={} has no gateway_session_conn_id -- dropping", view.order_id, view.exec_id);
         release_pdu_payload(message);
         return;
     }
@@ -305,17 +303,15 @@ void FixGatewaySeqThread::on_framework_pdu_message(const pubsub_itc_fw::EventMes
     }
     FixSession& session = *session_ptr;
 
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "GW-ER-SENT connection={} OrderID={} ExecID={} gateway_session_conn_id={}",
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "GW-ER-SENT connection={} OrderID={} ExecID={} gateway_session_conn_id={}",
                session.conn_id.get_value(), view.order_id, view.exec_id, view.gateway_session_conn_id);
 
     // Encode the FIX ExecutionReport directly into a stack buffer.
     // No heap allocation: all string_view fields from view are memcpy'd
     // straight into the wire bytes; enum fields are cast to single chars.
     char wire_buffer[execution_report_buffer_size];
-    const size_t wire_length = encode_execution_report(
-        view, config_.sender_comp_id, session.client_comp_id,
-        session.outbound_seq_num++, wire_buffer, sizeof(wire_buffer));
+    const size_t wire_length =
+        encode_execution_report(view, config_.sender_comp_id, session.client_comp_id, session.outbound_seq_num++, wire_buffer, sizeof(wire_buffer));
     send_raw(session.conn_id, wire_buffer, static_cast<uint32_t>(wire_length));
     release_pdu_payload(message);
 }
@@ -355,9 +351,7 @@ void FixGatewaySeqThread::handle_logon(FixSession& session, const ParsedFixMessa
     const std::string_view heartbeat_interval_text = msg.get(Tag::HeartBtInt);
     int heartbeat_interval = 30;
     if (!heartbeat_interval_text.empty()) {
-        std::from_chars(heartbeat_interval_text.data(),
-                        heartbeat_interval_text.data() + heartbeat_interval_text.size(),
-                        heartbeat_interval);
+        std::from_chars(heartbeat_interval_text.data(), heartbeat_interval_text.data() + heartbeat_interval_text.size(), heartbeat_interval);
     }
     reply.set(Tag::HeartBtInt, heartbeat_interval);
 
@@ -402,8 +396,8 @@ void FixGatewaySeqThread::handle_new_order_single(FixSession& session, const Par
     const std::string_view order_qty = msg.get(Tag::OrderQty);
     const std::string_view price_str = msg.get(Tag::Price);
 
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "GW-NOS-RECV connection={} ClOrdID={} Symbol={} Side={}",
-               session.conn_id.get_value(), cl_ord_id, symbol, side_str);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "GW-NOS-RECV connection={} ClOrdID={} Symbol={} Side={}", session.conn_id.get_value(), cl_ord_id,
+               symbol, side_str);
 
     // Validate required fields.
     if (cl_ord_id.empty() || symbol.empty() || side_str.empty() || ord_type_str.empty() || order_qty.empty()) {
@@ -606,15 +600,14 @@ void FixGatewaySeqThread::send_reject_execution_report(FixSession& session, cons
 // can continue operating. When connection retry re-establishes the lost
 // connection the follower will resync from the leader's state.
 
-FixSession* FixGatewaySeqThread::find_session_by_conn_id(int32_t gateway_session_conn_id)
-{
+FixSession* FixGatewaySeqThread::find_session_by_conn_id(int32_t gateway_session_conn_id) {
     auto it = sessions_.find(pubsub_itc_fw::ConnectionID{gateway_session_conn_id});
-    if (it == sessions_.end()) return nullptr;
+    if (it == sessions_.end())
+        return nullptr;
     return &it->second;
 }
 
-FixSession* FixGatewaySeqThread::find_session_by_comp_id(const std::string& comp_id)
-{
+FixSession* FixGatewaySeqThread::find_session_by_comp_id(const std::string& comp_id) {
     for (auto& [conn_id, session] : sessions_) {
         if (session.client_comp_id == comp_id) {
             return &session;

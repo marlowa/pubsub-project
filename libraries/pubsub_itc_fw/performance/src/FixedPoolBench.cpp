@@ -176,11 +176,11 @@ template <typename T> class SpscRing {
 // -----------------------------------------------------------------------------
 int main() {
     // Tunables: adjust for your machine / perf session
-    const int poolCapacity = 1024;             // number of slots in pool
+    const int poolCapacity = 1024;        // number of slots in pool
     const size_t ringCapacity = 1024;     // must be power of two
     const size_t iterations = 50'000'000; // producer iterations
-    const int producerCpu = 2;                 // adjust as needed
-    const int consumerCpu = 3;                 // adjust as needed
+    const int producerCpu = 2;            // adjust as needed
+    const int consumerCpu = 3;            // adjust as needed
     const bool simulateSlowConsumer = true;
     const int consumerBusyWorkIters = 50; // small spin to lag consumer
 

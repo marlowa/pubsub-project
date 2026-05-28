@@ -208,8 +208,7 @@ class SenderThread : public ApplicationThread {
             size_t bytes_needed = 0;
             const bool measure_ok = pubsub_itc_fw_app::encode(er, nullptr, 0, bytes_written, bytes_needed);
             if (bytes_needed == 0) {
-                ADD_FAILURE() << "encode measuring pass gave zero bytes_needed for ER " << i
-                              << " (encode returned " << measure_ok << ")";
+                ADD_FAILURE() << "encode measuring pass gave zero bytes_needed for ER " << i << " (encode returned " << measure_ok << ")";
                 return;
             }
             std::vector<uint8_t> encoded(bytes_needed);

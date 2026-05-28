@@ -42,7 +42,7 @@ struct ReactorConfiguration {
         // benign state so that code paths that construct ReactorConfiguration
         // directly (unit tests, benchmarks) do not trigger undefined behaviour
         // from uninitialised booleans.
-        cpu_pinning_enabled  = false;
+        cpu_pinning_enabled = false;
         cpu_pinning_dev_mode = false;
         // cpu_registry_lock_file is std::string — default-constructed to "".
         // Reactor::pin_registered_threads() skips pinning when it is empty.

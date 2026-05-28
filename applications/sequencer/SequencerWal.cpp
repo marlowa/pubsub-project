@@ -25,13 +25,11 @@ using pubsub_itc_fw::PubSubItcException;
 // Path helpers
 // ---------------------------------------------------------------------------
 
-std::string SequencerWal::snapshot_path() const
-{
+std::string SequencerWal::snapshot_path() const {
     return directory_ + "/snapshot.bin";
 }
 
-std::string SequencerWal::segment_path_for_delete(uint64_t seg_num) const
-{
+std::string SequencerWal::segment_path_for_delete(uint64_t seg_num) const {
     char buf[32];
     std::snprintf(buf, sizeof(buf), "/wal_%06" PRIu64 ".log", seg_num);
     return directory_ + buf;
@@ -41,9 +39,7 @@ std::string SequencerWal::segment_path_for_delete(uint64_t seg_num) const
 // open()
 // ---------------------------------------------------------------------------
 
-int64_t SequencerWal::open(const std::string& directory, size_t segment_size,
-                            ReplayCallback replay_cb)
-{
+int64_t SequencerWal::open(const std::string& directory, size_t segment_size, ReplayCallback replay_cb) {
     directory_ = directory;
     segment_size_ = segment_size;
 
@@ -55,7 +51,8 @@ int64_t SequencerWal::open(const std::string& directory, size_t segment_size,
     pubsub_itc_fw::WalReader::EntryCallback fw_cb;
     if (replay_cb) {
         fw_cb = [this, &replay_cb](int64_t record_id, const void* payload, size_t size) {
-            if (size < sizeof(int16_t)) return; // malformed — skip
+            if (size < sizeof(int16_t))
+                return; // malformed — skip
 
             int16_t pdu_id{};
             std::memcpy(&pdu_id, payload, sizeof(int16_t));
@@ -86,13 +83,13 @@ int64_t SequencerWal::open(const std::string& directory, size_t segment_size,
 // load_snapshot()
 // ---------------------------------------------------------------------------
 
-bool SequencerWal::load_snapshot(pubsub_itc_fw::WalPosition& out_pos)
-{
+bool SequencerWal::load_snapshot(pubsub_itc_fw::WalPosition& out_pos) {
     const std::string path = snapshot_path();
 
     const int fd = ::open(path.c_str(), O_RDONLY);
     if (fd < 0) {
-        if (errno == ENOENT) return false;
+        if (errno == ENOENT)
+            return false;
         throw PubSubItcException("SequencerWal: load_snapshot open(" + path + "): " + std::strerror(errno));
     }
 
@@ -100,12 +97,15 @@ bool SequencerWal::load_snapshot(pubsub_itc_fw::WalPosition& out_pos)
     const ssize_t n = ::read(fd, &hdr, sizeof(hdr));
     ::close(fd);
 
-    if (n != static_cast<ssize_t>(sizeof(hdr))) return false;
-    if (hdr.magic != snapshot_magic || hdr.version != snapshot_version) return false;
+    if (n != static_cast<ssize_t>(sizeof(hdr)))
+        return false;
+    if (hdr.magic != snapshot_magic || hdr.version != snapshot_version)
+        return false;
 
     pubsub_itc_fw::Crc32 crc;
     crc.feed(&hdr, snapshot_checksum_offset);
-    if (crc.finalize() != hdr.checksum) return false;
+    if (crc.finalize() != hdr.checksum)
+        return false;
 
     last_seq_no_ = hdr.last_seq_no;
     record_count_ = static_cast<size_t>(hdr.record_count);
@@ -117,8 +117,7 @@ bool SequencerWal::load_snapshot(pubsub_itc_fw::WalPosition& out_pos)
 // take_snapshot()
 // ---------------------------------------------------------------------------
 
-void SequencerWal::take_snapshot()
-{
+void SequencerWal::take_snapshot() {
     const pubsub_itc_fw::WalPosition pos = writer_.current_position();
 
     SnapshotHeader hdr{};
@@ -160,8 +159,7 @@ void SequencerWal::take_snapshot()
 // append()
 // ---------------------------------------------------------------------------
 
-void SequencerWal::append(int64_t seq_no, int16_t pdu_id, const uint8_t* payload, int size)
-{
+void SequencerWal::append(int64_t seq_no, int16_t pdu_id, const uint8_t* payload, int size) {
     // Sequencer payload = pdu_id(2) | PDU bytes.
     // Use a stack buffer for typical sizes to avoid heap allocation on the hot path.
     constexpr int stack_buffer_size = 512;
@@ -190,8 +188,7 @@ void SequencerWal::append(int64_t seq_no, int16_t pdu_id, const uint8_t* payload
 // delete_segments_before()
 // ---------------------------------------------------------------------------
 
-void SequencerWal::delete_segments_before(uint64_t seg_num) const
-{
+void SequencerWal::delete_segments_before(uint64_t seg_num) const {
     for (uint64_t i = 0; i < seg_num; ++i) {
         ::unlink(segment_path_for_delete(i).c_str());
     }

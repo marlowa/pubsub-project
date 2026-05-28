@@ -21,7 +21,7 @@ namespace sample_fix_gateway {
 
 const std::string SampleFixGateway::log_file_name = "sample_fix_gateway.log";
 
-SampleFixGateway::SampleFixGateway(FixGatewayConfiguration  config) : config_(std::move(config)) {
+SampleFixGateway::SampleFixGateway(FixGatewayConfiguration config) : config_(std::move(config)) {
     // Block SIGINT and SIGTERM before spawning any threads -- including the
     // quill backend thread. The Reactor consumes these signals via signalfd.
     pubsub_itc_fw::QuillLogger::block_signals_before_construction();
@@ -41,8 +41,7 @@ SampleFixGateway::SampleFixGateway(FixGatewayConfiguration  config) : config_(st
     reactor_configuration_.command_allocator_configuration_.objects_per_pool = config_.command_queue_pool_objects_per_slab;
     reactor_configuration_.command_allocator_configuration_.initial_pools = config_.command_queue_pool_initial_slabs;
     reactor_configuration_.command_allocator_configuration_.handler_for_pool_exhausted = [this](void* /*ctx*/, int objects_per_pool) {
-        PUBSUB_LOG(*logger_, pubsub_itc_fw::FwLogLevel::Warning,
-                   "FixGatewayCommandPool exhausted: chaining new pool slab ({} objects)", objects_per_pool);
+        PUBSUB_LOG(*logger_, pubsub_itc_fw::FwLogLevel::Warning, "FixGatewayCommandPool exhausted: chaining new pool slab ({} objects)", objects_per_pool);
     };
 
     reactor_ = std::make_unique<pubsub_itc_fw::Reactor>(reactor_configuration_, service_registry_, *logger_);
@@ -60,7 +59,7 @@ SampleFixGateway::SampleFixGateway(FixGatewayConfiguration  config) : config_(st
     PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "SampleFixGateway: logon timeout={}s", config_.logon_timeout.count());
 }
 
-int SampleFixGateway::run()const {
+int SampleFixGateway::run() const {
     PUBSUB_LOG_STR((*logger_), pubsub_itc_fw::FwLogLevel::Info, "SampleFixGateway: starting reactor");
 
     return reactor_->run();

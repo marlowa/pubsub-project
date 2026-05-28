@@ -78,9 +78,9 @@ class FixGatewayThread : public pubsub_itc_fw::ApplicationThread {
     void handle_new_order_single(FixSession& session, const FixMessage& msg);
 
     // Disconnect a session cleanly -- cancels its timer and tears down the connection.
-    void disconnect_session(const FixSession&session, const std::string& reason);
+    void disconnect_session(const FixSession& session, const std::string& reason);
 
-    void send_fix_to_session(FixSession& session, const FixMessage&msg);
+    void send_fix_to_session(FixSession& session, const FixMessage& msg);
 
     static std::string generate_order_id(FixSession& session);
     static std::string generate_exec_id(FixSession& session);

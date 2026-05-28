@@ -122,8 +122,7 @@ inline AvailableCpuVector get_available_cpu_ids(bool is_dev_mode, const SharedCo
     }
 
     // Sort so we traverse Node 0, Node 1, ... in order.
-    std::sort(node_dirs.begin(), node_dirs.end(),
-              [](const auto& a, const auto& b) { return a.filename().string() < b.filename().string(); });
+    std::sort(node_dirs.begin(), node_dirs.end(), [](const auto& a, const auto& b) { return a.filename().string() < b.filename().string(); });
 
     for (const auto& node_dir : node_dirs) {
         const auto cpulist_path = node_dir / "cpulist";

@@ -45,6 +45,5 @@ TEST(HighResolutionClockTest, ManySequentialCallsAreMonotonic) {
 }
 
 TEST(HighResolutionClockTest, DurationTypeIsNanoseconds) {
-    static_assert(std::is_same_v<HighResolutionClock::duration, std::chrono::nanoseconds>,
-                  "HighResolutionClock::duration must be nanoseconds");
+    static_assert(std::is_same_v<HighResolutionClock::duration, std::chrono::nanoseconds>, "HighResolutionClock::duration must be nanoseconds");
 }

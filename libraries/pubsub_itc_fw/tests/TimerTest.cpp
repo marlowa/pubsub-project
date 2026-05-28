@@ -40,7 +40,7 @@ constexpr int wait_milliseconds = 3000;
 // ---------------------------------------------------------------------------
 
 class TimerTest : public ::testing::Test {
-protected:
+  protected:
     void SetUp() override {
         logger_ = std::make_unique<LoggerWithSink>();
         ReactorConfiguration cfg;
@@ -68,8 +68,10 @@ protected:
     bool wait_for(std::function<bool()> pred, int timeout_ms = wait_milliseconds) {
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
         while (!pred()) {
-            if (reactor_->is_finished()) return false;
-            if (std::chrono::steady_clock::now() > deadline) return false;
+            if (reactor_->is_finished())
+                return false;
+            if (std::chrono::steady_clock::now() > deadline)
+                return false;
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
         return true;
@@ -86,17 +88,16 @@ protected:
 // ---------------------------------------------------------------------------
 
 class OneOffTimerThread : public ApplicationThread {
-public:
+  public:
     OneOffTimerThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
-        : ApplicationThread(token, logger, reactor, "OneOffTimerThread", ThreadID{1},
-                            make_queue_config(), make_allocator_config("OneOffPool"),
+        : ApplicationThread(token, logger, reactor, "OneOffTimerThread", ThreadID{1}, make_queue_config(), make_allocator_config("OneOffPool"),
                             ApplicationThreadConfiguration{}) {}
 
     std::atomic<int> fire_count{0};
     mutable std::mutex names_mutex;
     std::vector<std::string> fired_names;
 
-protected:
+  protected:
     void on_app_ready_event() override {
         start_one_off_timer("one-off", interval);
     }
@@ -115,12 +116,10 @@ TEST_F(TimerTest, OneOffTimerFiresExactlyOnce) {
     reactor_->register_thread(t);
     start_reactor();
 
-    ASSERT_TRUE(wait_for([&] { return t->fire_count.load(std::memory_order_acquire) >= 1; }))
-        << "One-off timer never fired";
+    ASSERT_TRUE(wait_for([&] { return t->fire_count.load(std::memory_order_acquire) >= 1; })) << "One-off timer never fired";
 
     std::this_thread::sleep_for(interval * 3);
-    EXPECT_EQ(t->fire_count.load(std::memory_order_acquire), 1)
-        << "One-off timer fired more than once";
+    EXPECT_EQ(t->fire_count.load(std::memory_order_acquire), 1) << "One-off timer fired more than once";
 }
 
 TEST_F(TimerTest, OneOffTimerDeliversCorrectNameToCallback) {
@@ -128,8 +127,7 @@ TEST_F(TimerTest, OneOffTimerDeliversCorrectNameToCallback) {
     reactor_->register_thread(t);
     start_reactor();
 
-    ASSERT_TRUE(wait_for([&] { return t->fire_count.load(std::memory_order_acquire) >= 1; }))
-        << "One-off timer never fired";
+    ASSERT_TRUE(wait_for([&] { return t->fire_count.load(std::memory_order_acquire) >= 1; })) << "One-off timer never fired";
 
     reactor_->shutdown("test complete");
     reactor_thread_.join();
@@ -144,16 +142,15 @@ TEST_F(TimerTest, OneOffTimerDeliversCorrectNameToCallback) {
 // ---------------------------------------------------------------------------
 
 class RecurringTimerThread : public ApplicationThread {
-public:
+  public:
     RecurringTimerThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
-        : ApplicationThread(token, logger, reactor, "RecurringTimerThread", ThreadID{1},
-                            make_queue_config(), make_allocator_config("RecurringPool"),
+        : ApplicationThread(token, logger, reactor, "RecurringTimerThread", ThreadID{1}, make_queue_config(), make_allocator_config("RecurringPool"),
                             ApplicationThreadConfiguration{}) {}
 
     static constexpr int cancel_after = 4;
     std::atomic<int> fire_count{0};
 
-protected:
+  protected:
     void on_app_ready_event() override {
         start_recurring_timer("heartbeat", interval);
     }
@@ -190,8 +187,7 @@ TEST_F(TimerTest, RecurringTimerStopsFiringAfterCancel) {
     const int stable_count = t->fire_count.load(std::memory_order_acquire);
 
     std::this_thread::sleep_for(interval * 3);
-    EXPECT_EQ(t->fire_count.load(std::memory_order_acquire), stable_count)
-        << "Recurring timer continued to fire after cancel";
+    EXPECT_EQ(t->fire_count.load(std::memory_order_acquire), stable_count) << "Recurring timer continued to fire after cancel";
 }
 
 // ---------------------------------------------------------------------------
@@ -199,16 +195,15 @@ TEST_F(TimerTest, RecurringTimerStopsFiringAfterCancel) {
 // ---------------------------------------------------------------------------
 
 class CancelBeforeExpiryThread : public ApplicationThread {
-public:
+  public:
     CancelBeforeExpiryThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
-        : ApplicationThread(token, logger, reactor, "CancelBeforeExpiryThread", ThreadID{1},
-                            make_queue_config(), make_allocator_config("CancelPool"),
+        : ApplicationThread(token, logger, reactor, "CancelBeforeExpiryThread", ThreadID{1}, make_queue_config(), make_allocator_config("CancelPool"),
                             ApplicationThreadConfiguration{}) {}
 
     std::atomic<bool> ready{false};
     std::atomic<int> fire_count{0};
 
-protected:
+  protected:
     void on_app_ready_event() override {
         start_one_off_timer("cancel-me", long_interval);
         cancel_timer("cancel-me");
@@ -227,12 +222,10 @@ TEST_F(TimerTest, CancelledOneOffTimerNeverFires) {
     reactor_->register_thread(t);
     start_reactor();
 
-    ASSERT_TRUE(wait_for([&] { return t->ready.load(std::memory_order_acquire); }))
-        << "Thread did not reach on_app_ready_event";
+    ASSERT_TRUE(wait_for([&] { return t->ready.load(std::memory_order_acquire); })) << "Thread did not reach on_app_ready_event";
 
     std::this_thread::sleep_for(long_interval + interval);
-    EXPECT_EQ(t->fire_count.load(std::memory_order_acquire), 0)
-        << "Cancelled timer fired";
+    EXPECT_EQ(t->fire_count.load(std::memory_order_acquire), 0) << "Cancelled timer fired";
 }
 
 // ---------------------------------------------------------------------------
@@ -240,16 +233,15 @@ TEST_F(TimerTest, CancelledOneOffTimerNeverFires) {
 // ---------------------------------------------------------------------------
 
 class TwoTimersThread : public ApplicationThread {
-public:
+  public:
     TwoTimersThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
-        : ApplicationThread(token, logger, reactor, "TwoTimersThread", ThreadID{1},
-                            make_queue_config(), make_allocator_config("TwoTimersPool"),
+        : ApplicationThread(token, logger, reactor, "TwoTimersThread", ThreadID{1}, make_queue_config(), make_allocator_config("TwoTimersPool"),
                             ApplicationThreadConfiguration{}) {}
 
     std::atomic<int> alpha_count{0};
     std::atomic<int> beta_count{0};
 
-protected:
+  protected:
     void on_app_ready_event() override {
         start_one_off_timer("alpha", interval);
         start_one_off_timer("beta", interval * 2);
@@ -271,10 +263,8 @@ TEST_F(TimerTest, TwoIndependentTimersEachFireOnce) {
     reactor_->register_thread(t);
     start_reactor();
 
-    ASSERT_TRUE(wait_for([&] { return t->alpha_count.load(std::memory_order_acquire) >= 1; }))
-        << "Timer 'alpha' never fired";
-    ASSERT_TRUE(wait_for([&] { return t->beta_count.load(std::memory_order_acquire) >= 1; }))
-        << "Timer 'beta' never fired";
+    ASSERT_TRUE(wait_for([&] { return t->alpha_count.load(std::memory_order_acquire) >= 1; })) << "Timer 'alpha' never fired";
+    ASSERT_TRUE(wait_for([&] { return t->beta_count.load(std::memory_order_acquire) >= 1; })) << "Timer 'beta' never fired";
 
     std::this_thread::sleep_for(interval * 3);
     EXPECT_EQ(t->alpha_count.load(std::memory_order_acquire), 1) << "'alpha' fired more than once";
@@ -286,15 +276,14 @@ TEST_F(TimerTest, TwoIndependentTimersEachFireOnce) {
 // ---------------------------------------------------------------------------
 
 class RescheduleTimerThread : public ApplicationThread {
-public:
+  public:
     RescheduleTimerThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
-        : ApplicationThread(token, logger, reactor, "RescheduleTimerThread", ThreadID{1},
-                            make_queue_config(), make_allocator_config("ReschedulePool"),
+        : ApplicationThread(token, logger, reactor, "RescheduleTimerThread", ThreadID{1}, make_queue_config(), make_allocator_config("ReschedulePool"),
                             ApplicationThreadConfiguration{}) {}
 
     std::atomic<int> fire_count{0};
 
-protected:
+  protected:
     void on_app_ready_event() override {
         start_one_off_timer("rescheduled", interval);
     }
@@ -315,8 +304,7 @@ TEST_F(TimerTest, RescheduledTimerFiresTwice) {
     reactor_->register_thread(t);
     start_reactor();
 
-    ASSERT_TRUE(wait_for([&] { return t->fire_count.load(std::memory_order_acquire) >= 2; }))
-        << "Timer did not fire twice after rescheduling";
+    ASSERT_TRUE(wait_for([&] { return t->fire_count.load(std::memory_order_acquire) >= 2; })) << "Timer did not fire twice after rescheduling";
 }
 
 } // namespace pubsub_itc_fw::tests

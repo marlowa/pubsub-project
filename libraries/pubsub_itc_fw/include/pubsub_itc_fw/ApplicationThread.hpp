@@ -244,7 +244,7 @@ class ApplicationThread {
      * @brief Returns a reference to the thread's message queue.
      * @return LockFreeMessageQueue<EventMessage>& The message queue.
      */
-    LockFreeMessageQueue<EventMessage>& get_queue()const {
+    LockFreeMessageQueue<EventMessage>& get_queue() const {
         return *message_queue_;
     }
 
@@ -470,7 +470,7 @@ class ApplicationThread {
      * (e.g. Connect, SendPdu, Disconnect) and access slab allocators
      * from within their callback implementations.
      */
-    Reactor& get_reactor()const {
+    Reactor& get_reactor() const {
         return reactor_;
     }
 

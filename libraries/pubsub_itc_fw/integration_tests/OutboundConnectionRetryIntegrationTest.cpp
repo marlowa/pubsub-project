@@ -54,7 +54,9 @@ class RetryCountingThread : public ApplicationThread {
     std::atomic<int> failed_count{0};
 
   protected:
-    void on_initial_event() override { connect_to_service(service_name_); }
+    void on_initial_event() override {
+        connect_to_service(service_name_);
+    }
     void on_connection_established(ConnectionID) override {}
     void on_connection_failed(const std::string&) override {
         failed_count.fetch_add(1, std::memory_order_release);
@@ -98,8 +100,7 @@ TEST(OutboundConnectionRetryIntegrationTest, RetryFailedConnectionsReissuesConne
         std::this_thread::sleep_for(std::chrono::milliseconds{1});
     }
 
-    EXPECT_GE(thread->failed_count.load(std::memory_order_acquire), 2)
-        << "Expected ≥2 connection_failed events (initial timeout + retry)";
+    EXPECT_GE(thread->failed_count.load(std::memory_order_acquire), 2) << "Expected ≥2 connection_failed events (initial timeout + retry)";
 
     reactor->shutdown("test complete");
     if (reactor_thread.joinable()) {

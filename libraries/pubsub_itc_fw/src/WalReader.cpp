@@ -10,9 +10,9 @@
 #include <vector>
 
 #include <dirent.h>
+#include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
-#include <fcntl.h>
 #include <unistd.h>
 
 #include <pubsub_itc_fw/Crc32.hpp>
@@ -26,13 +26,12 @@ namespace {
 struct WalEntryHeader {
     uint32_t magic;
     uint32_t payload_size;
-    int64_t  record_id;
+    int64_t record_id;
     uint64_t filler;
 };
 static_assert(sizeof(WalEntryHeader) == 24, "WalEntryHeader must be 24 bytes");
 
-std::string segment_path(const std::string& directory, uint64_t seg_num)
-{
+std::string segment_path(const std::string& directory, uint64_t seg_num) {
     char buf[32];
     std::snprintf(buf, sizeof(buf), "/wal_%06" PRIu64 ".log", seg_num);
     return directory + buf;
@@ -44,15 +43,13 @@ std::string segment_path(const std::string& directory, uint64_t seg_num)
 // replay_segment() — scan one segment file; returns bytes consumed
 // ---------------------------------------------------------------------------
 
-size_t WalReader::replay_segment(const std::string& path, size_t start_offset,
-                                      const EntryCallback& cb)
-{
+size_t WalReader::replay_segment(const std::string& path, size_t start_offset, const EntryCallback& cb) {
     const int fd = ::open(path.c_str(), O_RDONLY);
     if (fd < 0) {
         throw PubSubItcException("WalReader: open(" + path + "): " + std::strerror(errno));
     }
 
-    struct stat st{};
+    struct stat st {};
     if (::fstat(fd, &st) != 0) {
         ::close(fd);
         throw PubSubItcException("WalReader: fstat(" + path + "): " + std::strerror(errno));
@@ -101,9 +98,7 @@ size_t WalReader::replay_segment(const std::string& path, size_t start_offset,
         }
 
         if (cb) {
-            cb(hdr.record_id,
-               base + offset + sizeof(WalEntryHeader),
-               static_cast<size_t>(hdr.payload_size));
+            cb(hdr.record_id, base + offset + sizeof(WalEntryHeader), static_cast<size_t>(hdr.payload_size));
         }
 
         offset += entry_size;
@@ -118,9 +113,7 @@ size_t WalReader::replay_segment(const std::string& path, size_t start_offset,
 // replay() — discover segments, replay from anchor, return end position
 // ---------------------------------------------------------------------------
 
-WalPosition WalReader::replay(const std::string& directory, WalPosition from,
-                              const EntryCallback& cb)
-{
+WalPosition WalReader::replay(const std::string& directory, WalPosition from, const EntryCallback& cb) {
     // Discover segment files in the directory.
     std::vector<uint64_t> seg_nums;
     {
@@ -146,7 +139,8 @@ WalPosition WalReader::replay(const std::string& directory, WalPosition from,
     WalPosition end = from;
 
     for (uint64_t seg : seg_nums) {
-        if (seg < from.segment) continue; // fully covered by snapshot
+        if (seg < from.segment)
+            continue; // fully covered by snapshot
 
         const size_t start = (seg == from.segment) ? static_cast<size_t>(from.offset) : 0;
         const std::string path = segment_path(directory, seg);

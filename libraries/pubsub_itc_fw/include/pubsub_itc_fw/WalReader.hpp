@@ -54,14 +54,12 @@ class WalReader {
      *         to WalWriter::open() to resume writing without gaps or overwrites.
      * @throws std::runtime_error on I/O failure opening or mapping a segment.
      */
-    [[nodiscard]] static WalPosition replay(const std::string& directory, WalPosition from,
-                                            const EntryCallback& cb);
+    [[nodiscard]] static WalPosition replay(const std::string& directory, WalPosition from, const EntryCallback& cb);
 
   private:
     // Scan one segment file starting at start_offset.
     // Returns the byte offset at which the scan stopped.
-    static size_t replay_segment(const std::string& path, size_t start_offset,
-                                      const EntryCallback& cb);
+    static size_t replay_segment(const std::string& path, size_t start_offset, const EntryCallback& cb);
 };
 
 } // namespace pubsub_itc_fw

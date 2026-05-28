@@ -272,7 +272,9 @@ SlabAllocator* ExpandableSlabAllocator::append_new_slab() {
 
     if (slab_slot_count_ >= max_pages * page_size) {
         throw PubSubItcException("ExpandableSlabAllocator::append_new_slab: slab slot capacity exhausted "
-                                 "(max " + std::to_string(max_pages * page_size) + " slab IDs). "
+                                 "(max " +
+                                 std::to_string(max_pages * page_size) +
+                                 " slab IDs). "
                                  "This indicates an extraordinary number of slab rotations; "
                                  "check for runaway allocation or insufficient slab reclamation.");
     }

@@ -27,8 +27,7 @@ pubsub_itc_fw::AllocatorConfiguration make_allocator_config(const ArbiterConfigu
     allocator_configuration.objects_per_pool = config.event_queue_pool_objects_per_slab;
     allocator_configuration.initial_pools = config.event_queue_pool_initial_slabs;
     allocator_configuration.handler_for_pool_exhausted = [&logger](void* /*context*/, int objects_per_pool) {
-        PUBSUB_LOG(logger, pubsub_itc_fw::FwLogLevel::Warning,
-                   "ArbiterPool exhausted: chaining new pool slab ({} objects)", objects_per_pool);
+        PUBSUB_LOG(logger, pubsub_itc_fw::FwLogLevel::Warning, "ArbiterPool exhausted: chaining new pool slab ({} objects)", objects_per_pool);
     };
     return allocator_configuration;
 }
@@ -54,8 +53,7 @@ void ArbiterThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& 
     // (pdu_id=102) to keep the inbound inactivity timeout from firing under
     // heavy order load.  Receiving any data resets the timer; no reply needed.
     // TODO: decode ArbitrationReport PDU (pdu_id=200) and reply with ArbitrationDecision.
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
-               "ArbiterThread: PDU pdu_id={} received on connection {} -- heartbeat acknowledged",
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "ArbiterThread: PDU pdu_id={} received on connection {} -- heartbeat acknowledged",
                message.pdu_id(), message.connection_id().get_value());
     release_pdu_payload(message);
 }

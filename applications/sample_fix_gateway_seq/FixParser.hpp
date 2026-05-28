@@ -124,8 +124,8 @@ class FixParser {
      */
     static std::string format_checksum(int sum);
 
-    MessageCallback                on_message_;
-    pubsub_itc_fw::QuillLogger&    logger_;
+    MessageCallback on_message_;
+    pubsub_itc_fw::QuillLogger& logger_;
 };
 
 } // namespace sample_fix_gateway_seq

@@ -23,8 +23,8 @@
 #include <pubsub_itc_fw/FileOpenMode.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/LoggerUtils.hpp>
-#include <pubsub_itc_fw/QuillLoggerFrontendOptions.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
+#include <pubsub_itc_fw/QuillLoggerFrontendOptions.hpp>
 #include <pubsub_itc_fw/RollingLogfileConfiguration.hpp>
 #include <pubsub_itc_fw/utils/FileSystemUtils.hpp>
 

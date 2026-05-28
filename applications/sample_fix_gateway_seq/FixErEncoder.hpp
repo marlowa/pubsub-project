@@ -33,11 +33,7 @@ static constexpr size_t execution_report_buffer_size = 512;
  * @param[in]  output_buffer_size   Size of output_buffer in bytes.
  * @return Number of bytes written, or 0 on overflow.
  */
-[[nodiscard]] size_t encode_execution_report(const pubsub_itc_fw_app::ExecutionReportView& view,
-                                              std::string_view sender_comp_id,
-                                              std::string_view target_comp_id,
-                                              int              seq_num,
-                                              char*            output_buffer,
-                                              size_t           output_buffer_size);
+[[nodiscard]] size_t encode_execution_report(const pubsub_itc_fw_app::ExecutionReportView& view, std::string_view sender_comp_id,
+                                             std::string_view target_comp_id, int seq_num, char* output_buffer, size_t output_buffer_size);
 
 } // namespace sample_fix_gateway_seq

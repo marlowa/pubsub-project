@@ -27,7 +27,7 @@ namespace sequencer {
 struct SnapshotHeader {
     uint32_t magic;        ///< Must equal SequencerWal::snapshot_magic.
     uint32_t version;      ///< Must equal SequencerWal::snapshot_version.
-    int64_t  last_seq_no;  ///< Highest seq_no committed when snapshot was taken.
+    int64_t last_seq_no;   ///< Highest seq_no committed when snapshot was taken.
     uint64_t record_count; ///< Total records committed when snapshot was taken.
     uint64_t wal_segment;  ///< WalWriter::current_position().segment at snapshot time.
     uint64_t wal_offset;   ///< WalWriter::current_position().offset at snapshot time.
@@ -63,8 +63,7 @@ class SequencerWal {
      * @param payload      Pointer to the raw PDU payload bytes (valid only during this call).
      * @param payload_size Number of PDU payload bytes (excludes the 2-byte pdu_id prefix).
      */
-    using ReplayCallback = std::function<void(int64_t seq_no, int16_t pdu_id,
-                                              const uint8_t* payload, size_t payload_size)>;
+    using ReplayCallback = std::function<void(int64_t seq_no, int16_t pdu_id, const uint8_t* payload, size_t payload_size)>;
 
     SequencerWal() = default;
     ~SequencerWal() = default;
@@ -85,8 +84,7 @@ class SequencerWal {
      * @return Highest seq_no found during replay, or 0 if the WAL was empty.
      * @throws std::runtime_error on I/O failure.
      */
-    int64_t open(const std::string& directory, size_t segment_size,
-                 ReplayCallback replay_cb = nullptr);
+    int64_t open(const std::string& directory, size_t segment_size, ReplayCallback replay_cb = nullptr);
 
     /**
      * @brief Appends one order record to the WAL.
@@ -111,9 +109,15 @@ class SequencerWal {
      */
     void take_snapshot();
 
-    [[nodiscard]] size_t record_count() const { return record_count_; }
-    [[nodiscard]] int64_t last_seq_no() const { return last_seq_no_; }
-    [[nodiscard]] bool is_open() const { return writer_.is_open(); }
+    [[nodiscard]] size_t record_count() const {
+        return record_count_;
+    }
+    [[nodiscard]] int64_t last_seq_no() const {
+        return last_seq_no_;
+    }
+    [[nodiscard]] bool is_open() const {
+        return writer_.is_open();
+    }
 
   private:
     static constexpr size_t snapshot_checksum_offset = 40;
@@ -121,7 +125,7 @@ class SequencerWal {
     std::string snapshot_path() const;
     std::string segment_path_for_delete(uint64_t seg_num) const;
     bool load_snapshot(pubsub_itc_fw::WalPosition& out_pos);
-    void delete_segments_before(uint64_t seg_num)const;
+    void delete_segments_before(uint64_t seg_num) const;
 
     std::string directory_;
     size_t segment_size_{0};

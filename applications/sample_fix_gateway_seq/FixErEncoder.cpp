@@ -23,49 +23,74 @@ static constexpr size_t timestamp_length = 17; // YYYYMMDD-HH:MM:SS
 struct FixWireWriter {
     char* cursor;
     char* limit;
-    bool  valid{true};
+    bool valid{true};
 
     void write_sv(std::string_view sv) {
         const size_t n = sv.size();
-        if (cursor + n > limit) { valid = false; return; }
+        if (cursor + n > limit) {
+            valid = false;
+            return;
+        }
         std::memcpy(cursor, sv.data(), n);
         cursor += n;
     }
 
     void write_char(char c) {
-        if (cursor >= limit) { valid = false; return; }
+        if (cursor >= limit) {
+            valid = false;
+            return;
+        }
         *cursor++ = c;
     }
 
     void write_int(int v) {
         auto [end, ec] = std::to_chars(cursor, limit, v);
-        if (ec != std::errc{}) { valid = false; return; }
+        if (ec != std::errc{}) {
+            valid = false;
+            return;
+        }
         cursor = end;
     }
 
     void field(int tag, std::string_view value) {
-        write_int(tag); write_char('='); write_sv(value); write_char(fix_delimiter);
+        write_int(tag);
+        write_char('=');
+        write_sv(value);
+        write_char(fix_delimiter);
     }
 
     void field_char(int tag, char c) {
-        write_int(tag); write_char('='); write_char(c); write_char(fix_delimiter);
+        write_int(tag);
+        write_char('=');
+        write_char(c);
+        write_char(fix_delimiter);
     }
 
     void field_int(int tag, int value) {
-        write_int(tag); write_char('='); write_int(value); write_char(fix_delimiter);
+        write_int(tag);
+        write_char('=');
+        write_int(value);
+        write_char(fix_delimiter);
     }
 };
 
 // ── Field-size helpers (arithmetic only, no writing) ─────────────────────────
 
 size_t count_digits(int v) {
-    if (v < 10)       return 1;
-    if (v < 100)      return 2;
-    if (v < 1000)     return 3;
-    if (v < 10000)    return 4;
-    if (v < 100000)   return 5;
-    if (v < 1000000)  return 6;
-    if (v < 10000000) return 7;
+    if (v < 10)
+        return 1;
+    if (v < 100)
+        return 2;
+    if (v < 1000)
+        return 3;
+    if (v < 10000)
+        return 4;
+    if (v < 100000)
+        return 5;
+    if (v < 1000000)
+        return 6;
+    if (v < 10000000)
+        return 7;
     return 8;
 }
 
@@ -99,7 +124,7 @@ uint8_t compute_checksum(const char* buf, size_t length) {
 void fill_utc_timestamp(char* out) {
     const auto now = std::chrono::system_clock::now();
     const std::time_t t = std::chrono::system_clock::to_time_t(now);
-    struct tm utc{};
+    struct tm utc {};
     gmtime_r(&t, &utc);
     std::strftime(out, timestamp_length + 1, "%Y%m%d-%H:%M:%S", &utc);
 }
@@ -108,13 +133,8 @@ void fill_utc_timestamp(char* out) {
 
 // ── Public encoder ────────────────────────────────────────────────────────────
 
-size_t encode_execution_report(const pubsub_itc_fw_app::ExecutionReportView& view,
-                                std::string_view sender_comp_id,
-                                std::string_view target_comp_id,
-                                int              seq_num,
-                                char*            output_buffer,
-                                size_t           output_buffer_size)
-{
+size_t encode_execution_report(const pubsub_itc_fw_app::ExecutionReportView& view, std::string_view sender_comp_id, std::string_view target_comp_id,
+                               int seq_num, char* output_buffer, size_t output_buffer_size) {
     // Single-char wire representations of enum fields.
     const char exec_type_char = static_cast<char>(view.exec_type);
     const char ord_status_char = static_cast<char>(view.ord_status);
@@ -129,25 +149,24 @@ size_t encode_execution_report(const pubsub_itc_fw_app::ExecutionReportView& vie
 
     // Pre-compute body length so it can be written before the body itself.
     // Body = everything from MsgType (tag 35) up to but not including Checksum (tag 10).
-    size_t body_length =
-        field_size(Tag::MsgType,      er_msg_type)       +
-        field_size(Tag::SenderCompID, sender_comp_id)    +
-        field_size(Tag::TargetCompID, target_comp_id)    +
-        field_size_int(Tag::MsgSeqNum, seq_num)          +
-        field_size(Tag::SendingTime,  timestamp)         +
-        field_size(Tag::OrderID,      view.order_id)     +
-        field_size(Tag::ExecID,       view.exec_id)      +
-        field_size_char(Tag::ExecType)                   +
-        field_size_char(Tag::OrdStatus)                  +
-        field_size(Tag::Symbol,       view.symbol)       +
-        field_size_char(Tag::Side)                       +
-        field_size(Tag::CumQty,       view.cum_qty)      +
-        field_size(Tag::LeavesQty,    view.leaves_qty);
+    size_t body_length = field_size(Tag::MsgType, er_msg_type) + field_size(Tag::SenderCompID, sender_comp_id) + field_size(Tag::TargetCompID, target_comp_id) +
+                         field_size_int(Tag::MsgSeqNum, seq_num) + field_size(Tag::SendingTime, timestamp) + field_size(Tag::OrderID, view.order_id) +
+                         field_size(Tag::ExecID, view.exec_id) + field_size_char(Tag::ExecType) + field_size_char(Tag::OrdStatus) +
+                         field_size(Tag::Symbol, view.symbol) + field_size_char(Tag::Side) + field_size(Tag::CumQty, view.cum_qty) +
+                         field_size(Tag::LeavesQty, view.leaves_qty);
 
-    if (view.has_cl_ord_id)  { body_length += field_size(Tag::ClOrdID,  view.cl_ord_id); }
-    if (view.has_order_qty)  { body_length += field_size(Tag::OrderQty, view.order_qty); }
-    if (view.has_price)      { body_length += field_size(Tag::Price,    view.price); }
-    if (view.has_ord_type)   { body_length += field_size_char(Tag::OrdType); }
+    if (view.has_cl_ord_id) {
+        body_length += field_size(Tag::ClOrdID, view.cl_ord_id);
+    }
+    if (view.has_order_qty) {
+        body_length += field_size(Tag::OrderQty, view.order_qty);
+    }
+    if (view.has_price) {
+        body_length += field_size(Tag::Price, view.price);
+    }
+    if (view.has_ord_type) {
+        body_length += field_size_char(Tag::OrdType);
+    }
 
     // Write the complete FIX message in a single pass.
     FixWireWriter writer{output_buffer, output_buffer + output_buffer_size};
@@ -158,25 +177,33 @@ size_t encode_execution_report(const pubsub_itc_fw_app::ExecutionReportView& vie
     [[maybe_unused]] const char* body_start = writer.cursor;
 
     // Header fields (body begins here).
-    writer.field(Tag::MsgType,      er_msg_type);
+    writer.field(Tag::MsgType, er_msg_type);
     writer.field(Tag::SenderCompID, sender_comp_id);
     writer.field(Tag::TargetCompID, target_comp_id);
     writer.field_int(Tag::MsgSeqNum, seq_num);
-    writer.field(Tag::SendingTime,  timestamp);
+    writer.field(Tag::SendingTime, timestamp);
 
     // App fields in the same order as FixSerialiser.
-    if (view.has_cl_ord_id)  { writer.field(Tag::ClOrdID,  view.cl_ord_id); }
-    writer.field(Tag::OrderID,     view.order_id);
-    writer.field(Tag::ExecID,      view.exec_id);
-    writer.field_char(Tag::ExecType,  exec_type_char);
+    if (view.has_cl_ord_id) {
+        writer.field(Tag::ClOrdID, view.cl_ord_id);
+    }
+    writer.field(Tag::OrderID, view.order_id);
+    writer.field(Tag::ExecID, view.exec_id);
+    writer.field_char(Tag::ExecType, exec_type_char);
     writer.field_char(Tag::OrdStatus, ord_status_char);
-    writer.field(Tag::Symbol,      view.symbol);
-    writer.field_char(Tag::Side,   side_char);
-    if (view.has_order_qty)  { writer.field(Tag::OrderQty, view.order_qty); }
-    if (view.has_price)      { writer.field(Tag::Price,    view.price); }
-    if (view.has_ord_type)   { writer.field_char(Tag::OrdType, static_cast<char>(view.ord_type)); }
-    writer.field(Tag::CumQty,      view.cum_qty);
-    writer.field(Tag::LeavesQty,   view.leaves_qty);
+    writer.field(Tag::Symbol, view.symbol);
+    writer.field_char(Tag::Side, side_char);
+    if (view.has_order_qty) {
+        writer.field(Tag::OrderQty, view.order_qty);
+    }
+    if (view.has_price) {
+        writer.field(Tag::Price, view.price);
+    }
+    if (view.has_ord_type) {
+        writer.field_char(Tag::OrdType, static_cast<char>(view.ord_type));
+    }
+    writer.field(Tag::CumQty, view.cum_qty);
+    writer.field(Tag::LeavesQty, view.leaves_qty);
 
     assert(static_cast<size_t>(writer.cursor - body_start) == body_length);
 

@@ -50,7 +50,9 @@ class WalTest : public ::testing::Test {
         dir_ = tmpl;
     }
 
-    void TearDown() override { std::filesystem::remove_all(dir_); }
+    void TearDown() override {
+        std::filesystem::remove_all(dir_);
+    }
 
     std::string dir_;
 };

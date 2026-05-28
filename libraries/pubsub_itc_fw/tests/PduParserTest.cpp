@@ -109,8 +109,8 @@ class PduParserTestStream : public ByteStreamInterface {
 class PduParserTestThread : public ApplicationThread {
   public:
     PduParserTestThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
-        : ApplicationThread(token, logger, reactor, "PduParserTestThread", ThreadID{3},
-                            make_queue_config(), make_allocator_config(), ApplicationThreadConfiguration{}) {}
+        : ApplicationThread(token, logger, reactor, "PduParserTestThread", ThreadID{3}, make_queue_config(), make_allocator_config(),
+                            ApplicationThreadConfiguration{}) {}
 
     void on_itc_message([[maybe_unused]] const EventMessage& msg) override {}
 

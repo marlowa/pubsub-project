@@ -86,12 +86,10 @@ bool FixParser::try_extract_message(std::string_view window, size_t& parse_curso
 
     // Parse the BodyLength value.
     const std::string_view body_length_text =
-        window.substr(body_length_tag_start + body_length_tag.size(),
-                      body_length_end - body_length_tag_start - body_length_tag.size());
+        window.substr(body_length_tag_start + body_length_tag.size(), body_length_end - body_length_tag_start - body_length_tag.size());
 
     int body_length = 0;
-    const auto [parse_end, parse_error] =
-        std::from_chars(body_length_text.data(), body_length_text.data() + body_length_text.size(), body_length);
+    const auto [parse_end, parse_error] = std::from_chars(body_length_text.data(), body_length_text.data() + body_length_text.size(), body_length);
 
     if (parse_error != std::errc{} || body_length <= 0) {
         PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
@@ -119,8 +117,7 @@ bool FixParser::try_extract_message(std::string_view window, size_t& parse_curso
                    "FixParser: BodyLength ({}) points to wrong location "
                    "(expected '10=' at window offset {}, found '{}') -- "
                    "discarding {} bytes and resyncing",
-                   body_length, tag10_start,
-                   window.substr(tag10_start, std::min(static_cast<size_t>(4), window.size() - tag10_start)),
+                   body_length, tag10_start, window.substr(tag10_start, std::min(static_cast<size_t>(4), window.size() - tag10_start)),
                    body_length_tag_start - start);
         parse_cursor = start + 1;
         return true;
@@ -134,8 +131,7 @@ bool FixParser::try_extract_message(std::string_view window, size_t& parse_curso
 
     // We now have a complete raw message: window[start .. checksum_end] inclusive.
     const std::string_view message_bytes = window.substr(start, tag10_start - start);
-    const std::string_view received_checksum =
-        window.substr(tag10_start + checksum_tag.size(), checksum_end - tag10_start - checksum_tag.size());
+    const std::string_view received_checksum = window.substr(tag10_start + checksum_tag.size(), checksum_end - tag10_start - checksum_tag.size());
 
     if (!validate_checksum(message_bytes, received_checksum)) {
         int sum = 0;
@@ -143,9 +139,8 @@ bool FixParser::try_extract_message(std::string_view window, size_t& parse_curso
             sum += byte;
         }
         const std::string computed = format_checksum(sum % 256);
-        PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
-                   "FixParser: bad checksum (computed {} received {}) -- discarding message of {} bytes",
-                   computed, received_checksum, checksum_end + 1 - start);
+        PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning, "FixParser: bad checksum (computed {} received {}) -- discarding message of {} bytes", computed,
+                   received_checksum, checksum_end + 1 - start);
         parse_cursor = checksum_end + 1;
         return true;
     }
@@ -182,8 +177,7 @@ bool FixParser::parse_fields(std::string_view raw_message, ParsedFixMessage& msg
 
         // Parse tag as integer via from_chars -- no locale, no exception, no allocation.
         int tag = 0;
-        const auto [end_ptr, error_code] =
-            std::from_chars(tag_text.data(), tag_text.data() + tag_text.size(), tag);
+        const auto [end_ptr, error_code] = std::from_chars(tag_text.data(), tag_text.data() + tag_text.size(), tag);
         if (error_code == std::errc{}) {
             msg.set(tag, value);
         }

@@ -227,7 +227,7 @@ class ExpandableSlabAllocator {
     size_t slab_size_;
     int current_slab_id_{-1};
     EmptySlabQueue empty_slab_queue_;
-    int slab_slot_count_{0};          // total slab IDs ever issued (monotonically increasing)
+    int slab_slot_count_{0};              // total slab IDs ever issued (monotonically increasing)
     std::atomic<Page*> pages_[max_pages]; // directory; initialised to nullptr in constructor
 
     // Vyukov sentinel reclamation: the most-recently-popped slab is kept alive

@@ -17,8 +17,7 @@ PduProtocolHandler::PduProtocolHandler(TcpSocket& socket, ApplicationThread& tar
     framer_ = std::make_unique<PduFramer>(socket);
     // nullptr is safe: InboundConnectionManager::on_data_ready checks the receive() return value
     // to detect disconnects and drives teardown via that path.
-    parser_ = std::make_unique<PduParser>(socket, target_thread, inbound_allocator, logger,
-                                          nullptr, connection_id);
+    parser_ = std::make_unique<PduParser>(socket, target_thread, inbound_allocator, logger, nullptr, connection_id);
 }
 
 std::tuple<bool, std::string, bool> PduProtocolHandler::on_data_ready() {

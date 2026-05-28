@@ -50,7 +50,7 @@ class WalWriter {
     WalWriter() = default;
     ~WalWriter();
 
-    WalWriter(const WalWriter&)            = delete;
+    WalWriter(const WalWriter&) = delete;
     WalWriter& operator=(const WalWriter&) = delete;
 
     /**
@@ -85,9 +85,13 @@ class WalWriter {
      * Applications store this in their snapshot so that WalReader::replay()
      * can start from the anchor rather than from segment 0 on the next open.
      */
-    [[nodiscard]] WalPosition current_position() const { return {current_segment_, write_offset_}; }
+    [[nodiscard]] WalPosition current_position() const {
+        return {current_segment_, write_offset_};
+    }
 
-    [[nodiscard]] bool is_open() const { return mmap_ptr_ != nullptr; }
+    [[nodiscard]] bool is_open() const {
+        return mmap_ptr_ != nullptr;
+    }
 
   private:
     // Minimum space for any entry (header + 1 byte payload + CRC32).
@@ -100,11 +104,11 @@ class WalWriter {
 
     std::string directory_;
     size_t segment_size_{0};
-    uint64_t    current_segment_{0};
+    uint64_t current_segment_{0};
     size_t write_offset_{0};
 
     uint8_t* mmap_ptr_{nullptr};
-    int      fd_{-1};
+    int fd_{-1};
 };
 
 } // namespace pubsub_itc_fw

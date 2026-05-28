@@ -42,7 +42,7 @@ class SampleFixGateway {
      * @param[in] config Gateway configuration. The configuration is copied
      *                   and owned by this object.
      */
-    explicit SampleFixGateway(FixGatewayConfiguration  config);
+    explicit SampleFixGateway(FixGatewayConfiguration config);
 
     /**
      * @brief Starts the reactor event loop.
@@ -52,7 +52,7 @@ class SampleFixGateway {
      *
      * @return 0 on normal shutdown, non-zero on error.
      */
-    int run()const;
+    int run() const;
 
   private:
     static const std::string log_file_name;

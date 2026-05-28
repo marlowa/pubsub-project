@@ -31,8 +31,7 @@ SampleFixGatewaySeq::SampleFixGatewaySeq(const FixGatewaySeqConfiguration& confi
     reactor_configuration_.command_allocator_configuration_.objects_per_pool = config_.command_queue_pool_objects_per_slab;
     reactor_configuration_.command_allocator_configuration_.initial_pools = config_.command_queue_pool_initial_slabs;
     reactor_configuration_.command_allocator_configuration_.handler_for_pool_exhausted = [this](void* /*ctx*/, int objects_per_pool) {
-        PUBSUB_LOG(*logger_, pubsub_itc_fw::FwLogLevel::Warning,
-                   "FixGatewaySeqCommandPool exhausted: chaining new pool slab ({} objects)", objects_per_pool);
+        PUBSUB_LOG(*logger_, pubsub_itc_fw::FwLogLevel::Warning, "FixGatewaySeqCommandPool exhausted: chaining new pool slab ({} objects)", objects_per_pool);
     };
 
     reactor_ = std::make_unique<pubsub_itc_fw::Reactor>(reactor_configuration_, service_registry_, *logger_);
@@ -56,21 +55,19 @@ SampleFixGatewaySeq::SampleFixGatewaySeq(const FixGatewaySeqConfiguration& confi
     service_registry_.add("sequencer_primary", pubsub_itc_fw::NetworkEndpointConfiguration{config_.sequencer_primary_host, config_.sequencer_primary_port},
                           pubsub_itc_fw::NetworkEndpointConfiguration{});
     if (config_.ha_enabled) {
-        service_registry_.add("sequencer_secondary", pubsub_itc_fw::NetworkEndpointConfiguration{config_.sequencer_secondary_host, config_.sequencer_secondary_port},
+        service_registry_.add("sequencer_secondary",
+                              pubsub_itc_fw::NetworkEndpointConfiguration{config_.sequencer_secondary_host, config_.sequencer_secondary_port},
                               pubsub_itc_fw::NetworkEndpointConfiguration{});
     }
 
     PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "SampleFixGatewaySeq: FIX listener on {}:{}", config_.listen_host, config_.listen_port);
     PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "SampleFixGatewaySeq: ER listener on {}:{}", config_.er_listen_host, config_.er_listen_port);
     if (config_.ha_enabled) {
-        PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info,
-                   "SampleFixGatewaySeq: sequencer primary={}:{} secondary={}:{} (HA enabled)",
-                   config_.sequencer_primary_host, config_.sequencer_primary_port,
-                   config_.sequencer_secondary_host, config_.sequencer_secondary_port);
+        PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "SampleFixGatewaySeq: sequencer primary={}:{} secondary={}:{} (HA enabled)",
+                   config_.sequencer_primary_host, config_.sequencer_primary_port, config_.sequencer_secondary_host, config_.sequencer_secondary_port);
     } else {
-        PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info,
-                   "SampleFixGatewaySeq: sequencer primary={}:{} (HA disabled)",
-                   config_.sequencer_primary_host, config_.sequencer_primary_port);
+        PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "SampleFixGatewaySeq: sequencer primary={}:{} (HA disabled)", config_.sequencer_primary_host,
+                   config_.sequencer_primary_port);
     }
 }
 

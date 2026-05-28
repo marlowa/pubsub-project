@@ -35,13 +35,13 @@ class Sequencer {
      * @param[in] logger Logger. Ownership transferred. Must already have the
      *                   correct log levels applied from config.
      */
-    explicit Sequencer(SequencerConfiguration  config, std::unique_ptr<pubsub_itc_fw::QuillLogger> logger);
+    explicit Sequencer(SequencerConfiguration config, std::unique_ptr<pubsub_itc_fw::QuillLogger> logger);
 
     /**
      * @brief Starts the reactor event loop. Blocks until shutdown.
      * @return 0 on normal shutdown, non-zero on error.
      */
-    int run()const;
+    int run() const;
 
   private:
     SequencerConfiguration config_;
