@@ -23,6 +23,7 @@
 #include <pubsub_itc_fw/FileOpenMode.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/LoggerUtils.hpp>
+#include <pubsub_itc_fw/QuillLoggerFrontendOptions.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/RollingLogfileConfiguration.hpp>
 #include <pubsub_itc_fw/utils/FileSystemUtils.hpp>
@@ -62,6 +63,11 @@
  */
 
 namespace {
+
+// Type alias so all create_or_get_sink / create_or_get_logger calls below use
+// QuillLoggerFrontendOptions (32 MiB initial SPSC queue) rather than Quill's default
+// FrontendOptions (128 KiB). See QuillLoggerFrontendOptions.hpp for the rationale.
+using PubsubFrontend = quill::FrontendImpl<pubsub_itc_fw::QuillLoggerFrontendOptions>;
 
 constexpr char const* log_pattern = "%(time) [%(thread_id)] %(thread_name:<24) %(short_source_location:<28) %(log_level:<10) %(logger:<16) %(message)";
 constexpr char const* time_format = "%Y-%m-%d %H:%M:%S.%Qns";
@@ -160,7 +166,7 @@ QuillLogger::QuillLogger(const std::string& file_path, FileOpenMode file_mode, F
     quill::FileSinkConfig file_config;
     file_config.set_open_mode(file_mode == FileOpenMode(FileOpenMode::Append) ? 'a' : 'w');
     if (m_rollingLogfileConfiguration.mode == RollingLogfileConfiguration::Mode::Size) {
-        applog_sink_ = quill::Frontend::create_or_get_sink<quill::RotatingFileSink>(file_path, [file_mode, this]() {
+        applog_sink_ = PubsubFrontend::create_or_get_sink<quill::RotatingFileSink>(file_path, [file_mode, this]() {
             quill::RotatingFileSinkConfig cfg;
             cfg.set_open_mode(file_mode == FileOpenMode(FileOpenMode::Append) ? 'a' : 'w');
             cfg.set_rotation_max_file_size(m_rollingLogfileConfiguration.max_file_size);
@@ -168,7 +174,7 @@ QuillLogger::QuillLogger(const std::string& file_path, FileOpenMode file_mode, F
             return cfg;
         }());
     } else if (m_rollingLogfileConfiguration.mode == RollingLogfileConfiguration::Mode::Daily) {
-        applog_sink_ = quill::Frontend::create_or_get_sink<quill::RotatingFileSink>(file_path, [file_mode, this]() {
+        applog_sink_ = PubsubFrontend::create_or_get_sink<quill::RotatingFileSink>(file_path, [file_mode, this]() {
             quill::RotatingFileSinkConfig cfg;
             cfg.set_open_mode(file_mode == FileOpenMode(FileOpenMode::Append) ? 'a' : 'w');
             cfg.set_rotation_time_daily(m_rollingLogfileConfiguration.rotation_time);
@@ -176,7 +182,7 @@ QuillLogger::QuillLogger(const std::string& file_path, FileOpenMode file_mode, F
             return cfg;
         }());
     } else {
-        applog_sink_ = quill::Frontend::create_or_get_sink<quill::FileSink>(file_path, file_config, quill::FileEventNotifier{});
+        applog_sink_ = PubsubFrontend::create_or_get_sink<quill::FileSink>(file_path, file_config, quill::FileEventNotifier{});
     }
 
     quill::PatternFormatterOptions formatter_options = make_pattern_formatter_options();
@@ -186,33 +192,33 @@ QuillLogger::QuillLogger(const std::string& file_path, FileOpenMode file_mode, F
     syslog_config.set_facility(LOG_USER);
     syslog_config.set_options(LOG_PID);
     syslog_config.set_format_message(false);
-    syslog_sink_ = quill::Frontend::create_or_get_sink<quill::SyslogSink>(generate_unique_sink_name("syslog"), syslog_config);
+    syslog_sink_ = PubsubFrontend::create_or_get_sink<quill::SyslogSink>(generate_unique_sink_name("syslog"), syslog_config);
 
     applog_sink_->set_log_level_filter(LoggerUtils::to_quill_log_level(applog_level));
     syslog_sink_->set_log_level_filter(LoggerUtils::to_quill_log_level(syslog_level));
 
     const quill::LogLevel gate = applog_level <= syslog_level ? LoggerUtils::to_quill_log_level(applog_level) : LoggerUtils::to_quill_log_level(syslog_level);
 
-    quill_logger_ = quill::Frontend::create_or_get_logger(generate_unique_logger_name("quillLog"), {applog_sink_, syslog_sink_}, formatter_options);
+    quill_logger_ = PubsubFrontend::create_or_get_logger(generate_unique_logger_name("quillLog"), {applog_sink_, syslog_sink_}, formatter_options);
     quill_logger_->set_log_level(gate);
 }
 
 QuillLogger::QuillLogger(FwLogLevel applog_level, LogCallback callback) : applog_level_{applog_level}, syslog_level_{applog_level} {
     ensure_backend_started();
 
-    applog_sink_ = quill::Frontend::create_or_get_sink<quill::ConsoleSink>(generate_unique_sink_name("console"));
+    applog_sink_ = PubsubFrontend::create_or_get_sink<quill::ConsoleSink>(generate_unique_sink_name("console"));
     applog_sink_->set_log_level_filter(LoggerUtils::to_quill_log_level(applog_level));
 
     std::vector<std::shared_ptr<quill::Sink>> sinks{applog_sink_};
 
     if (callback != nullptr) {
-        auto cb_sink = quill::Frontend::create_or_get_sink<CallbackSink>(generate_unique_sink_name("callback"), std::move(callback));
+        auto cb_sink = PubsubFrontend::create_or_get_sink<CallbackSink>(generate_unique_sink_name("callback"), std::move(callback));
         cb_sink->set_log_level_filter(LoggerUtils::to_quill_log_level(applog_level));
         callback_sink_ = cb_sink;
         sinks.push_back(std::move(cb_sink));
     }
 
-    quill_logger_ = quill::Frontend::create_or_get_logger(generate_unique_logger_name("pubsub_test"), sinks, make_pattern_formatter_options());
+    quill_logger_ = PubsubFrontend::create_or_get_logger(generate_unique_logger_name("pubsub_test"), sinks, make_pattern_formatter_options());
     quill_logger_->set_log_level(LoggerUtils::to_quill_log_level(applog_level));
     quill_logger_->set_immediate_flush();
 }

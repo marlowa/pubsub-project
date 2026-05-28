@@ -14,6 +14,7 @@
 
 #include <pubsub_itc_fw/FileOpenMode.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
+#include <pubsub_itc_fw/QuillLoggerFrontendOptions.hpp>
 #include <pubsub_itc_fw/RollingLogfileConfiguration.hpp>
 
 namespace pubsub_itc_fw {
@@ -135,8 +136,8 @@ class QuillLogger {
      */
     [[nodiscard]] static std::string ensure_log_file_writable(const std::string& file_path);
 
-    /// @brief Returns the underlying quill::Logger pointer (used by the macros).
-    [[nodiscard]] quill::Logger* quill_logger() const {
+    /// @brief Returns the underlying logger pointer (used by the macros).
+    [[nodiscard]] quill::LoggerImpl<QuillLoggerFrontendOptions>* quill_logger() const {
         return quill_logger_;
     }
 
@@ -189,7 +190,7 @@ class QuillLogger {
     FwLogLevel syslog_level_;
     RollingLogfileConfiguration m_rollingLogfileConfiguration;
 
-    quill::Logger* quill_logger_{nullptr};
+    quill::LoggerImpl<QuillLoggerFrontendOptions>* quill_logger_{nullptr};
 };
 
 } // namespace pubsub_itc_fw
