@@ -21,24 +21,28 @@
 
 namespace sample_fix_gateway_seq {
 
-static pubsub_itc_fw::QueueConfiguration make_queue_config() {
-    pubsub_itc_fw::QueueConfiguration cfg{};
-    cfg.low_watermark = 1;
-    cfg.high_watermark = 64;
-    return cfg;
+namespace {
+
+pubsub_itc_fw::QueueConfiguration make_queue_config() {
+    pubsub_itc_fw::QueueConfiguration queue_configuration{};
+    queue_configuration.low_watermark = 1;
+    queue_configuration.high_watermark = 64;
+    return queue_configuration;
 }
 
-static pubsub_itc_fw::AllocatorConfiguration make_allocator_config(const FixGatewaySeqConfiguration& config, pubsub_itc_fw::QuillLogger& logger) {
-    pubsub_itc_fw::AllocatorConfiguration cfg{};
-    cfg.pool_name = "FixGatewaySeqPool";
-    cfg.objects_per_pool = config.event_queue_pool_objects_per_slab;
-    cfg.initial_pools = config.event_queue_pool_initial_slabs;
-    cfg.handler_for_pool_exhausted = [&logger](void* /*ctx*/, int objects_per_pool) {
+pubsub_itc_fw::AllocatorConfiguration make_allocator_config(const FixGatewaySeqConfiguration& config, pubsub_itc_fw::QuillLogger& logger) {
+    pubsub_itc_fw::AllocatorConfiguration allocator_configuration{};
+    allocator_configuration.pool_name = "FixGatewaySeqPool";
+    allocator_configuration.objects_per_pool = config.event_queue_pool_objects_per_slab;
+    allocator_configuration.initial_pools = config.event_queue_pool_initial_slabs;
+    allocator_configuration.handler_for_pool_exhausted = [&logger](void* /*context*/, int objects_per_pool) {
         PUBSUB_LOG(logger, pubsub_itc_fw::FwLogLevel::Warning,
                    "FixGatewaySeqPool exhausted: chaining new pool slab ({} objects)", objects_per_pool);
     };
-    return cfg;
+    return allocator_configuration;
 }
+
+} // namespace
 
 FixGatewaySeqThread::FixGatewaySeqThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger,
                                          pubsub_itc_fw::Reactor& reactor, const FixGatewaySeqConfiguration& config)
@@ -391,12 +395,12 @@ void FixGatewaySeqThread::handle_logout(FixSession& session, const ParsedFixMess
 }
 
 void FixGatewaySeqThread::handle_new_order_single(FixSession& session, const ParsedFixMessage& msg) {
-    const std::string_view cl_ord_id   = msg.get(Tag::ClOrdID);
-    const std::string_view symbol      = msg.get(Tag::Symbol);
-    const std::string_view side_str    = msg.get(Tag::Side);
+    const std::string_view cl_ord_id = msg.get(Tag::ClOrdID);
+    const std::string_view symbol = msg.get(Tag::Symbol);
+    const std::string_view side_str = msg.get(Tag::Side);
     const std::string_view ord_type_str = msg.get(Tag::OrdType);
-    const std::string_view order_qty   = msg.get(Tag::OrderQty);
-    const std::string_view price_str   = msg.get(Tag::Price);
+    const std::string_view order_qty = msg.get(Tag::OrderQty);
+    const std::string_view price_str = msg.get(Tag::Price);
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "GW-NOS-RECV connection={} ClOrdID={} Symbol={} Side={}",
                session.conn_id.get_value(), cl_ord_id, symbol, side_str);
@@ -463,11 +467,11 @@ void FixGatewaySeqThread::handle_new_order_single(FixSession& session, const Par
 }
 
 void FixGatewaySeqThread::handle_order_cancel_request(FixSession& session, const ParsedFixMessage& msg) {
-    const std::string_view cl_ord_id      = msg.get(Tag::ClOrdID);
+    const std::string_view cl_ord_id = msg.get(Tag::ClOrdID);
     const std::string_view orig_cl_ord_id = msg.get(Tag::OrigClOrdID);
-    const std::string_view symbol         = msg.get(Tag::Symbol);
-    const std::string_view side_str       = msg.get(Tag::Side);
-    const std::string_view order_qty      = msg.get(Tag::OrderQty);
+    const std::string_view symbol = msg.get(Tag::Symbol);
+    const std::string_view side_str = msg.get(Tag::Side);
+    const std::string_view order_qty = msg.get(Tag::OrderQty);
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "FixGatewaySeqThread: connection {} OrderCancelRequest ClOrdID={} "
@@ -547,8 +551,8 @@ void FixGatewaySeqThread::send_reject_execution_report(FixSession& session, cons
     // The string_views are valid for the duration of this call; er.set() copies
     // each value into the outbound FixMessage map.
     const std::string_view cl_ord_id = inbound.get(Tag::ClOrdID);
-    const std::string_view symbol    = inbound.get(Tag::Symbol);
-    const std::string_view side_str  = inbound.get(Tag::Side);
+    const std::string_view symbol = inbound.get(Tag::Symbol);
+    const std::string_view side_str = inbound.get(Tag::Side);
     const std::string_view order_qty = inbound.get(Tag::OrderQty);
 
     FixMessage er;

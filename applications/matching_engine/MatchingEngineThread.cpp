@@ -15,24 +15,28 @@
 
 namespace matching_engine {
 
-static pubsub_itc_fw::QueueConfiguration make_queue_config() {
-    pubsub_itc_fw::QueueConfiguration cfg{};
-    cfg.low_watermark = 1;
-    cfg.high_watermark = 64;
-    return cfg;
+namespace {
+
+pubsub_itc_fw::QueueConfiguration make_queue_config() {
+    pubsub_itc_fw::QueueConfiguration queue_configuration{};
+    queue_configuration.low_watermark = 1;
+    queue_configuration.high_watermark = 64;
+    return queue_configuration;
 }
 
-static pubsub_itc_fw::AllocatorConfiguration make_allocator_config(const MatchingEngineConfiguration& config, pubsub_itc_fw::QuillLogger& logger) {
-    pubsub_itc_fw::AllocatorConfiguration cfg{};
-    cfg.pool_name = "MatchingEnginePool";
-    cfg.objects_per_pool = config.event_queue_pool_objects_per_slab;
-    cfg.initial_pools = config.event_queue_pool_initial_slabs;
-    cfg.handler_for_pool_exhausted = [&logger](void* /*ctx*/, int objects_per_pool) {
+pubsub_itc_fw::AllocatorConfiguration make_allocator_config(const MatchingEngineConfiguration& config, pubsub_itc_fw::QuillLogger& logger) {
+    pubsub_itc_fw::AllocatorConfiguration allocator_configuration{};
+    allocator_configuration.pool_name = "MatchingEnginePool";
+    allocator_configuration.objects_per_pool = config.event_queue_pool_objects_per_slab;
+    allocator_configuration.initial_pools = config.event_queue_pool_initial_slabs;
+    allocator_configuration.handler_for_pool_exhausted = [&logger](void* /*context*/, int objects_per_pool) {
         PUBSUB_LOG(logger, pubsub_itc_fw::FwLogLevel::Warning,
                    "MatchingEnginePool exhausted: chaining new pool slab ({} objects)", objects_per_pool);
     };
-    return cfg;
+    return allocator_configuration;
 }
+
+} // namespace
 
 MatchingEngineThread::MatchingEngineThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger,
                                            pubsub_itc_fw::Reactor& reactor, const MatchingEngineConfiguration& config)

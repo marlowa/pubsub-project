@@ -61,16 +61,16 @@ class FixSerialiser {
 
   private:
     /*
-     * Appends a single tag=value<SOH> field to buf.
+     * Appends a single tag=value<SOH> field to output.
      */
-    static void append_field(std::string& buf, int tag, const std::string& value);
-    static void append_field(std::string& buf, int tag, int value);
+    static void append_field(std::string& output, int tag, const std::string& value);
+    static void append_field(std::string& output, int tag, int value);
 
     /*
-     * Computes the FIX checksum of buf -- sum of all bytes modulo 256,
+     * Computes the FIX checksum of input -- sum of all bytes modulo 256,
      * formatted as a zero-padded three-digit string.
      */
-    static std::string compute_checksum(const std::string& buf);
+    static std::string compute_checksum(const std::string& input);
 
     /*
      * Returns the current UTC time formatted as YYYYMMDD-HH:MM:SS.

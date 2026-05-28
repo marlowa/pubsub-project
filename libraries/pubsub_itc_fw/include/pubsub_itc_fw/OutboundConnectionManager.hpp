@@ -172,7 +172,7 @@ class OutboundConnectionManager {
      * has set in, preventing commands from overwriting one another in the
      * single pending_send_ slot.
      */
-    [[nodiscard]] bool is_send_blocked() const noexcept { return pending_send_.has_value(); }
+    [[nodiscard]] bool is_send_blocked() const { return pending_send_.has_value(); }
 
     /**
      * @brief Attempts to tear down an outbound connection by application request.

@@ -216,11 +216,11 @@ struct ParsedFixMessage {
     // Non-copyable, non-movable: string_views are only valid during the
     // on_message_ callback. Deleting these operations prevents the object from
     // escaping the callback's stack frame.
-    ParsedFixMessage()                                         = default;
-    ParsedFixMessage(const ParsedFixMessage&)                  = delete;
-    ParsedFixMessage& operator=(const ParsedFixMessage&)       = delete;
-    ParsedFixMessage(ParsedFixMessage&&)                       = delete;
-    ParsedFixMessage& operator=(ParsedFixMessage&&)            = delete;
+    ParsedFixMessage() = default;
+    ParsedFixMessage(const ParsedFixMessage&) = delete;
+    ParsedFixMessage& operator=(const ParsedFixMessage&) = delete;
+    ParsedFixMessage(ParsedFixMessage&&) = delete;
+    ParsedFixMessage& operator=(ParsedFixMessage&&) = delete;
 };
 
 /**

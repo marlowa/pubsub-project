@@ -90,7 +90,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     int32_t epoch_{0};
 
     // Leader-follower helpers.
-    pubsub_itc_fw::ConnectionID peer_active_conn() const noexcept;
+    pubsub_itc_fw::ConnectionID peer_active_conn() const;
     void adopt_role(pubsub_itc_fw_app::Role new_role);
     void elect_role(int64_t peer_instance_id, int32_t peer_epoch, pubsub_itc_fw_app::Role peer_current_role);
     void send_status_query(const pubsub_itc_fw::ConnectionID &conn_id);

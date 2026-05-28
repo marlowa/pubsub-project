@@ -17,24 +17,28 @@
 
 namespace sequencer {
 
-static pubsub_itc_fw::QueueConfiguration make_queue_config() {
-    pubsub_itc_fw::QueueConfiguration cfg{};
-    cfg.low_watermark = 1;
-    cfg.high_watermark = 64;
-    return cfg;
+namespace {
+
+pubsub_itc_fw::QueueConfiguration make_queue_config() {
+    pubsub_itc_fw::QueueConfiguration queue_configuration{};
+    queue_configuration.low_watermark = 1;
+    queue_configuration.high_watermark = 64;
+    return queue_configuration;
 }
 
-static pubsub_itc_fw::AllocatorConfiguration make_allocator_config(const SequencerConfiguration& config, pubsub_itc_fw::QuillLogger& logger) {
-    pubsub_itc_fw::AllocatorConfiguration cfg{};
-    cfg.pool_name = "SequencerPool";
-    cfg.objects_per_pool = config.event_queue_pool_objects_per_slab;
-    cfg.initial_pools = config.event_queue_pool_initial_slabs;
-    cfg.handler_for_pool_exhausted = [&logger](void* /*ctx*/, int objects_per_pool) {
+pubsub_itc_fw::AllocatorConfiguration make_allocator_config(const SequencerConfiguration& config, pubsub_itc_fw::QuillLogger& logger) {
+    pubsub_itc_fw::AllocatorConfiguration allocator_configuration{};
+    allocator_configuration.pool_name = "SequencerPool";
+    allocator_configuration.objects_per_pool = config.event_queue_pool_objects_per_slab;
+    allocator_configuration.initial_pools = config.event_queue_pool_initial_slabs;
+    allocator_configuration.handler_for_pool_exhausted = [&logger](void* /*context*/, int objects_per_pool) {
         PUBSUB_LOG(logger, pubsub_itc_fw::FwLogLevel::Warning,
                    "SequencerPool exhausted: chaining new pool slab ({} objects)", objects_per_pool);
     };
-    return cfg;
+    return allocator_configuration;
 }
+
+} // namespace
 
 SequencerThread::SequencerThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger, pubsub_itc_fw::Reactor& reactor,
                                  const SequencerConfiguration& config)
@@ -523,12 +527,12 @@ void SequencerThread::on_itc_message([[maybe_unused]] const pubsub_itc_fw::Event
 // ---------------------------------------------------------------------------
 
 // PDU IDs for the leader-follower protocol (plain integers, not Topics enum).
-static constexpr int16_t kPduStatusQuery        = 100;
-static constexpr int16_t kPduStatusResponse     = 101;
-static constexpr int16_t kPduHeartbeat          = 102;
-static constexpr int16_t kPduArbitrationDecision = 201;
+static constexpr int16_t pdu_status_query = 100;
+static constexpr int16_t pdu_status_response = 101;
+static constexpr int16_t pdu_heartbeat = 102;
+static constexpr int16_t pdu_arbitration_decision = 201;
 
-pubsub_itc_fw::ConnectionID SequencerThread::peer_active_conn() const noexcept
+pubsub_itc_fw::ConnectionID SequencerThread::peer_active_conn() const
 {
     if (peer_conn_id_.is_valid()) return peer_conn_id_;
     return peer_inbound_conn_id_;
@@ -615,8 +619,8 @@ void SequencerThread::send_status_query(const pubsub_itc_fw::ConnectionID &conn_
 {
     pubsub_itc_fw_app::StatusQuery sq{};
     sq.instance_id = static_cast<int64_t>(config_.instance_id);
-    sq.epoch       = epoch_;
-    send_pdu(conn_id, kPduStatusQuery, 0, sq);
+    sq.epoch = epoch_;
+    send_pdu(conn_id, pdu_status_query, 0, sq);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "SequencerThread: StatusQuery sent on connection {} (instance_id={} epoch={})",
                conn_id.get_value(), sq.instance_id, sq.epoch);
@@ -627,9 +631,9 @@ void SequencerThread::send_status_response(const pubsub_itc_fw::ConnectionID &co
     pubsub_itc_fw_app::StatusResponse sr{};
     sr.self_instance_id = static_cast<int64_t>(config_.instance_id);
     sr.peer_instance_id = 0; // we don't know the peer's ID here; it's in the query
-    sr.epoch            = epoch_;
-    sr.current_role     = role_;
-    send_pdu(conn_id, kPduStatusResponse, 0, sr);
+    sr.epoch = epoch_;
+    sr.current_role = role_;
+    send_pdu(conn_id, pdu_status_response, 0, sr);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "SequencerThread: StatusResponse sent on connection {} (role={} epoch={})",
                conn_id.get_value(), pubsub_itc_fw_app::to_string(role_), epoch_);
@@ -645,8 +649,8 @@ void SequencerThread::send_peer_heartbeat()
     }
     pubsub_itc_fw_app::Heartbeat hb{};
     hb.instance_id = static_cast<int64_t>(config_.instance_id);
-    hb.epoch       = epoch_;
-    send_pdu(target, kPduHeartbeat, 0, hb);
+    hb.epoch = epoch_;
+    send_pdu(target, pdu_heartbeat, 0, hb);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
                "SequencerThread: Heartbeat sent to peer (epoch={})", epoch_);
 }
@@ -658,8 +662,8 @@ void SequencerThread::send_arbiter_heartbeat()
     }
     pubsub_itc_fw_app::Heartbeat hb{};
     hb.instance_id = static_cast<int64_t>(config_.instance_id);
-    hb.epoch       = epoch_;
-    send_pdu(arbiter_conn_id_, kPduHeartbeat, 0, hb);
+    hb.epoch = epoch_;
+    send_pdu(arbiter_conn_id_, pdu_heartbeat, 0, hb);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
                "SequencerThread: arbiter heartbeat sent (instance_id={} epoch={})",
                hb.instance_id, hb.epoch);
@@ -772,13 +776,13 @@ void SequencerThread::handle_peer_pdu(const pubsub_itc_fw::ConnectionID &conn_id
 {
     const int16_t pdu_id = static_cast<int16_t>(message.pdu_id());
 
-    if (pdu_id == kPduStatusQuery) {
+    if (pdu_id == pdu_status_query) {
         handle_peer_status_query(conn_id, message);
-    } else if (pdu_id == kPduStatusResponse) {
+    } else if (pdu_id == pdu_status_response) {
         handle_peer_status_response(message);
-    } else if (pdu_id == kPduHeartbeat) {
+    } else if (pdu_id == pdu_heartbeat) {
         handle_peer_heartbeat(message);
-    } else if (pdu_id == kPduArbitrationDecision) {
+    } else if (pdu_id == pdu_arbitration_decision) {
         // Arbiter forwarded its decision over the peer channel (not expected
         // in the single-host topology, but handle gracefully).
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,

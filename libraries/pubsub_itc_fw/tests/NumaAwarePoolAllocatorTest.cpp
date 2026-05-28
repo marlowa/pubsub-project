@@ -115,19 +115,19 @@ class NumaAwarePoolAllocatorTest : public ::testing::Test {
     struct TestObject {
         int id_ = 0;
         std::byte padding_[128];
-        static std::atomic<int> s_constructor_count;
-        static std::atomic<int> s_destructor_count;
+        static std::atomic<int> constructor_count_;
+        static std::atomic<int> destructor_count_;
 
         TestObject() {
-            s_constructor_count++;
+            constructor_count_++;
         }
         ~TestObject() {
-            s_destructor_count++;
+            destructor_count_++;
         }
 
         static void reset_counts() {
-            s_constructor_count = 0;
-            s_destructor_count = 0;
+            constructor_count_ = 0;
+            destructor_count_ = 0;
         }
     };
 
@@ -143,8 +143,8 @@ class NumaAwarePoolAllocatorTest : public ::testing::Test {
 };
 
 // Static member initialization
-std::atomic<int> NumaAwarePoolAllocatorTest::TestObject::s_constructor_count(0);
-std::atomic<int> NumaAwarePoolAllocatorTest::TestObject::s_destructor_count(0);
+std::atomic<int> NumaAwarePoolAllocatorTest::TestObject::constructor_count_(0);
+std::atomic<int> NumaAwarePoolAllocatorTest::TestObject::destructor_count_(0);
 
 TEST_F(NumaAwarePoolAllocatorTest, NumaPinnedThunderingHerd) {
     const NumaTopology topo;

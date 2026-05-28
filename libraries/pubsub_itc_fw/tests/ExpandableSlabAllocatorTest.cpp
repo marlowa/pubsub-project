@@ -43,10 +43,10 @@ namespace pubsub_itc_fw::tests {
 class ExpandableSlabAllocatorTest : public ::testing::Test {
   protected:
     // A convenient small slab size for tests that want to force chaining.
-    static constexpr size_t kSmallSlab = 256;
+    static constexpr size_t small_slab = 256;
 
     // A larger slab for tests that just want to allocate without chaining.
-    static constexpr size_t kLargeSlab = 65536;
+    static constexpr size_t large_slab = 65536;
 };
 
 // ============================================================
@@ -58,9 +58,9 @@ TEST_F(ExpandableSlabAllocatorTest, ConstructionZeroSizeThrows) {
 }
 
 TEST_F(ExpandableSlabAllocatorTest, ConstructionCreatesOneSlab) {
-    ExpandableSlabAllocator alloc{kLargeSlab};
+    ExpandableSlabAllocator alloc{large_slab};
     EXPECT_EQ(alloc.slab_count(), 1);
-    EXPECT_EQ(alloc.slab_size(), kLargeSlab);
+    EXPECT_EQ(alloc.slab_size(), large_slab);
 }
 
 // ============================================================
@@ -68,7 +68,7 @@ TEST_F(ExpandableSlabAllocatorTest, ConstructionCreatesOneSlab) {
 // ============================================================
 
 TEST_F(ExpandableSlabAllocatorTest, AllocateReturnsNonNullPointer) {
-    ExpandableSlabAllocator alloc{kLargeSlab};
+    ExpandableSlabAllocator alloc{large_slab};
     auto [slab_id, ptr] = alloc.allocate(64);
     EXPECT_NE(ptr, nullptr);
     EXPECT_GE(slab_id, 0);
@@ -76,24 +76,24 @@ TEST_F(ExpandableSlabAllocatorTest, AllocateReturnsNonNullPointer) {
 }
 
 TEST_F(ExpandableSlabAllocatorTest, ExpandableSlabAllocateZeroSizeThrows) {
-    ExpandableSlabAllocator alloc{kLargeSlab};
+    ExpandableSlabAllocator alloc{large_slab};
     EXPECT_THROW(alloc.allocate(0), PreconditionAssertion);
 }
 
 TEST_F(ExpandableSlabAllocatorTest, AllocateExceedingSlabSizeThrows) {
-    ExpandableSlabAllocator alloc{kSmallSlab};
-    EXPECT_THROW(alloc.allocate(kSmallSlab + 1), PreconditionAssertion);
+    ExpandableSlabAllocator alloc{small_slab};
+    EXPECT_THROW(alloc.allocate(small_slab + 1), PreconditionAssertion);
 }
 
 TEST_F(ExpandableSlabAllocatorTest, AllocateExactSlabSizeSucceeds) {
-    ExpandableSlabAllocator alloc{kSmallSlab};
-    auto [slab_id, ptr] = alloc.allocate(kSmallSlab);
+    ExpandableSlabAllocator alloc{small_slab};
+    auto [slab_id, ptr] = alloc.allocate(small_slab);
     EXPECT_NE(ptr, nullptr);
     alloc.deallocate(slab_id, ptr);
 }
 
 TEST_F(ExpandableSlabAllocatorTest, MultipleAllocationsReturnDistinctPointers) {
-    ExpandableSlabAllocator alloc{kLargeSlab};
+    ExpandableSlabAllocator alloc{large_slab};
 
     std::vector<std::pair<int, void*>> allocations;
     for (int i = 0; i < 16; ++i) {
@@ -115,7 +115,7 @@ TEST_F(ExpandableSlabAllocatorTest, MultipleAllocationsReturnDistinctPointers) {
 }
 
 TEST_F(ExpandableSlabAllocatorTest, AllocatedMemoryIsWritable) {
-    ExpandableSlabAllocator alloc{kLargeSlab};
+    ExpandableSlabAllocator alloc{large_slab};
     auto [slab_id, ptr] = alloc.allocate(128);
     ASSERT_NE(ptr, nullptr);
 
@@ -136,18 +136,18 @@ TEST_F(ExpandableSlabAllocatorTest, AllocatedMemoryIsWritable) {
 // ============================================================
 
 TEST_F(ExpandableSlabAllocatorTest, SlabChainsWhenCurrentIsFull) {
-    // Each allocation is kSmallSlab bytes, so the first allocation fills
+    // Each allocation is small_slab bytes, so the first allocation fills
     // the slab entirely and the second must chain a new one.
-    ExpandableSlabAllocator alloc{kSmallSlab};
+    ExpandableSlabAllocator alloc{small_slab};
 
     EXPECT_EQ(alloc.slab_count(), 1);
 
-    auto [slab_id_0, ptr_0] = alloc.allocate(kSmallSlab);
+    auto [slab_id_0, ptr_0] = alloc.allocate(small_slab);
     EXPECT_NE(ptr_0, nullptr);
     EXPECT_EQ(alloc.slab_count(), 1);
 
     // This allocation cannot fit in slab 0 — a new slab must be chained.
-    auto [slab_id_1, ptr_1] = alloc.allocate(kSmallSlab);
+    auto [slab_id_1, ptr_1] = alloc.allocate(small_slab);
     EXPECT_NE(ptr_1, nullptr);
     EXPECT_EQ(alloc.slab_count(), 2);
     EXPECT_NE(slab_id_0, slab_id_1);
@@ -157,13 +157,13 @@ TEST_F(ExpandableSlabAllocatorTest, SlabChainsWhenCurrentIsFull) {
 }
 
 TEST_F(ExpandableSlabAllocatorTest, SlabCountMonotonicallyIncreasesUnderLoad) {
-    ExpandableSlabAllocator alloc{kSmallSlab};
+    ExpandableSlabAllocator alloc{small_slab};
 
     // Force many slab chains by filling each slab completely.
     // Keep all allocations live so no reclamation occurs.
     std::vector<std::pair<int, void*>> allocations;
     for (int i = 0; i < 8; ++i) {
-        auto [slab_id, ptr] = alloc.allocate(kSmallSlab);
+        auto [slab_id, ptr] = alloc.allocate(small_slab);
         ASSERT_NE(ptr, nullptr);
         allocations.emplace_back(slab_id, ptr);
     }
@@ -183,17 +183,17 @@ TEST_F(ExpandableSlabAllocatorTest, CurrentSlabIsResetWhenAllChunksFreed) {
     // Fill slab 0 completely, then free all chunks.
     // On the next allocate(), drain_empty_slab_queue() should reset slab 0
     // (it is still the current slab at that point since no chaining occurred).
-    ExpandableSlabAllocator alloc{kSmallSlab};
+    ExpandableSlabAllocator alloc{small_slab};
 
     std::vector<std::pair<int, void*>> allocations;
 
     // Fill with small chunks until the slab is exhausted and a new one chains.
-    // We use a chunk size that divides evenly into kSmallSlab.
-    constexpr size_t kChunk = 64;
-    const int chunks_per_slab = static_cast<int>(kSmallSlab / kChunk);
+    // We use a chunk size that divides evenly into small_slab.
+    constexpr size_t chunk_size = 64;
+    const int chunks_per_slab = static_cast<int>(small_slab / chunk_size);
 
     for (int i = 0; i < chunks_per_slab; ++i) {
-        auto [slab_id, ptr] = alloc.allocate(kChunk);
+        auto [slab_id, ptr] = alloc.allocate(chunk_size);
         ASSERT_NE(ptr, nullptr);
         allocations.emplace_back(slab_id, ptr);
     }
@@ -210,7 +210,7 @@ TEST_F(ExpandableSlabAllocatorTest, CurrentSlabIsResetWhenAllChunksFreed) {
 
     // The next allocate() triggers drain_empty_slab_queue(), which resets slab 0.
     // Since slab 0 is still the current slab, it should be reused (not destroyed).
-    auto [slab_id_new, ptr_new] = alloc.allocate(kChunk);
+    auto [slab_id_new, ptr_new] = alloc.allocate(chunk_size);
     EXPECT_NE(ptr_new, nullptr);
     EXPECT_EQ(slab_id_new, 0);        // reused, not a new slab
     EXPECT_EQ(alloc.slab_count(), 1); // no extra slab created
@@ -276,19 +276,19 @@ TEST_F(ExpandableSlabAllocatorTest, OldSlabIsDestroyedAfterChaining) {
 // ============================================================
 
 TEST_F(ExpandableSlabAllocatorTest, DeallocateNullPtrThrows) {
-    ExpandableSlabAllocator alloc{kLargeSlab};
+    ExpandableSlabAllocator alloc{large_slab};
     EXPECT_THROW(alloc.deallocate(0, nullptr), PreconditionAssertion);
 }
 
 TEST_F(ExpandableSlabAllocatorTest, DeallocateNegativeSlabIdThrows) {
-    ExpandableSlabAllocator alloc{kLargeSlab};
+    ExpandableSlabAllocator alloc{large_slab};
     auto [slab_id, ptr] = alloc.allocate(64);
     EXPECT_THROW(alloc.deallocate(-1, ptr), PreconditionAssertion);
     alloc.deallocate(slab_id, ptr);
 }
 
 TEST_F(ExpandableSlabAllocatorTest, DeallocateOutOfRangeSlabIdThrows) {
-    ExpandableSlabAllocator alloc{kLargeSlab};
+    ExpandableSlabAllocator alloc{large_slab};
     auto [slab_id, ptr] = alloc.allocate(64);
     EXPECT_THROW(alloc.deallocate(999, ptr), PreconditionAssertion);
     alloc.deallocate(slab_id, ptr);
@@ -336,28 +336,28 @@ TEST_F(ExpandableSlabAllocatorTest, ConcurrentDeallocationsAreSafe) {
     // Allocate a large number of chunks from the reactor thread (this thread),
     // then deallocate them concurrently from multiple threads. Verify that
     // the allocator remains structurally sound afterwards.
-    ExpandableSlabAllocator alloc{kLargeSlab};
+    ExpandableSlabAllocator alloc{large_slab};
 
-    constexpr int kChunkSize = 64;
-    constexpr int kNumChunks = 128;
+    constexpr int chunk_sizeSize = 64;
+    constexpr int chunk_count = 128;
 
     std::vector<std::pair<int, void*>> allocations;
-    allocations.reserve(kNumChunks);
+    allocations.reserve(chunk_count);
 
-    for (int i = 0; i < kNumChunks; ++i) {
-        auto [slab_id, ptr] = alloc.allocate(kChunkSize);
+    for (int i = 0; i < chunk_count; ++i) {
+        auto [slab_id, ptr] = alloc.allocate(chunk_sizeSize);
         ASSERT_NE(ptr, nullptr);
         allocations.emplace_back(slab_id, ptr);
     }
 
     // Divide chunks across threads and deallocate concurrently.
-    constexpr int kNumThreads = 4;
-    const int chunks_per_thread = kNumChunks / kNumThreads;
+    constexpr int thread_count = 4;
+    const int chunks_per_thread = chunk_count / thread_count;
 
     std::vector<std::thread> threads;
-    threads.reserve(kNumThreads);
+    threads.reserve(thread_count);
 
-    for (int t = 0; t < kNumThreads; ++t) {
+    for (int t = 0; t < thread_count; ++t) {
         int start = t * chunks_per_thread;
         int end = start + chunks_per_thread;
         threads.emplace_back([&alloc, &allocations, start, end]() {
@@ -372,7 +372,7 @@ TEST_F(ExpandableSlabAllocatorTest, ConcurrentDeallocationsAreSafe) {
     }
 
     // After all deallocations, trigger reclamation and verify we can still allocate.
-    auto [slab_id_after, ptr_after] = alloc.allocate(kChunkSize);
+    auto [slab_id_after, ptr_after] = alloc.allocate(chunk_sizeSize);
     EXPECT_NE(ptr_after, nullptr);
     alloc.deallocate(slab_id_after, ptr_after);
 }
@@ -385,23 +385,23 @@ TEST_F(ExpandableSlabAllocatorTest, ConcurrentDeallocationsFromManySlabs) {
     // the allocator is structurally intact — reclamation is triggered
     // sequentially so the Vyukov MPSC queue is never in a multi-producer
     // mid-enqueue state when drain_empty_slab_queue() runs.
-    ExpandableSlabAllocator alloc{kSmallSlab};
+    ExpandableSlabAllocator alloc{small_slab};
 
-    constexpr int kNumSlabs = 4;
+    constexpr int slab_count = 4;
     std::vector<std::pair<int, void*>> allocations;
-    allocations.reserve(kNumSlabs);
+    allocations.reserve(slab_count);
 
-    for (int i = 0; i < kNumSlabs; ++i) {
-        auto [slab_id, ptr] = alloc.allocate(kSmallSlab);
+    for (int i = 0; i < slab_count; ++i) {
+        auto [slab_id, ptr] = alloc.allocate(small_slab);
         ASSERT_NE(ptr, nullptr);
         allocations.emplace_back(slab_id, ptr);
     }
 
-    EXPECT_EQ(alloc.slab_count(), kNumSlabs);
+    EXPECT_EQ(alloc.slab_count(), slab_count);
 
     // Deallocate all chunks from separate threads simultaneously.
     std::vector<std::thread> threads;
-    threads.reserve(kNumSlabs);
+    threads.reserve(slab_count);
 
     for (auto [slab_id, ptr] : allocations) {
         threads.emplace_back([&alloc, slab_id, ptr]() { alloc.deallocate(slab_id, ptr); });
@@ -426,18 +426,18 @@ TEST_F(ExpandableSlabAllocatorTest, ConcurrentDeallocationsFromManySlabs) {
 TEST_F(ExpandableSlabAllocatorTest, StressAllocateDeallocateCycle) {
     // Repeatedly fill and drain the allocator to verify reclamation and
     // reuse work correctly over many cycles.
-    ExpandableSlabAllocator alloc{kSmallSlab};
+    ExpandableSlabAllocator alloc{small_slab};
 
-    constexpr int kCycles = 100;
-    constexpr size_t kChunk = 64;
-    const int chunks_per_slab = static_cast<int>(kSmallSlab / kChunk);
+    constexpr int cycle_count = 100;
+    constexpr size_t chunk_size = 64;
+    const int chunks_per_slab = static_cast<int>(small_slab / chunk_size);
 
-    for (int cycle = 0; cycle < kCycles; ++cycle) {
+    for (int cycle = 0; cycle < cycle_count; ++cycle) {
         std::vector<std::pair<int, void*>> allocations;
         allocations.reserve(chunks_per_slab);
 
         for (int i = 0; i < chunks_per_slab; ++i) {
-            auto [slab_id, ptr] = alloc.allocate(kChunk);
+            auto [slab_id, ptr] = alloc.allocate(chunk_size);
             ASSERT_NE(ptr, nullptr) << "cycle " << cycle << " allocation " << i << " failed";
             allocations.emplace_back(slab_id, ptr);
         }
@@ -447,13 +447,13 @@ TEST_F(ExpandableSlabAllocatorTest, StressAllocateDeallocateCycle) {
         }
 
         // Trigger reclamation.
-        auto [slab_id_probe, ptr_probe] = alloc.allocate(kChunk);
+        auto [slab_id_probe, ptr_probe] = alloc.allocate(chunk_size);
         ASSERT_NE(ptr_probe, nullptr) << "probe allocation failed at cycle " << cycle;
         alloc.deallocate(slab_id_probe, ptr_probe);
     }
 
     // Slab count should not have grown unboundedly — reclamation must have worked.
-    // At most we'd expect a handful of slabs, not kCycles worth.
+    // At most we'd expect a handful of slabs, not cycle_count worth.
     EXPECT_LT(alloc.slab_count(), 10) << "slab count grew unexpectedly; reclamation may be broken";
 }
 
@@ -492,7 +492,7 @@ TEST_F(ExpandableSlabAllocatorTest, RepeatedSingleChunkAllocDeallocOfCurrentSlab
     constexpr auto time_budget = std::chrono::seconds(10);
 
     auto workload = std::async(std::launch::async, [&]() -> bool {
-        ExpandableSlabAllocator alloc{kSmallSlab};
+        ExpandableSlabAllocator alloc{small_slab};
 
         // Single-slot hand-off between the reactor (allocator) thread and the
         // deallocator thread. The reactor publishes a fresh allocation; the
@@ -990,19 +990,19 @@ TEST_F(ExpandableSlabAllocatorTest, NoStarvationUnderSustainedLoad) {
 // ExpandableSlabAllocatorTest section.
 //
 // References to that file's fixture constant `slab_size = 4096` have been
-// replaced with kLargeSlab (= 65536) from this fixture; both are simply
+// replaced with large_slab (= 65536) from this fixture; both are simply
 // "generic large slab" sizes and the tests do not depend on the exact value.
 // =============================================================================
 
 TEST_F(ExpandableSlabAllocatorTest, BasicAllocation) {
-    ExpandableSlabAllocator allocator(kLargeSlab);
+    ExpandableSlabAllocator allocator(large_slab);
     auto [slab_id, ptr] = allocator.allocate(64);
     EXPECT_NE(ptr, nullptr);
     EXPECT_EQ(slab_id, 0);
 }
 
 TEST_F(ExpandableSlabAllocatorTest, AllocationAndDeallocation) {
-    ExpandableSlabAllocator allocator(kLargeSlab);
+    ExpandableSlabAllocator allocator(large_slab);
     auto [slab_id, ptr] = allocator.allocate(64);
     EXPECT_NE(ptr, nullptr);
     allocator.deallocate(slab_id, ptr);
@@ -1026,7 +1026,7 @@ TEST_F(ExpandableSlabAllocatorTest, SlabExpansionOnFull) {
 }
 
 TEST_F(ExpandableSlabAllocatorTest, ReclaimedCurrentSlabIsReset) {
-    ExpandableSlabAllocator allocator(kLargeSlab);
+    ExpandableSlabAllocator allocator(large_slab);
 
     auto [slab_id, ptr] = allocator.allocate(64);
     EXPECT_EQ(slab_id, 0);
@@ -1069,28 +1069,28 @@ TEST_F(ExpandableSlabAllocatorTest, OldEmptySlabIsDestroyed) {
 }
 
 TEST_F(ExpandableSlabAllocatorTest, SizeExceedsSlabSizeThrows) {
-    ExpandableSlabAllocator allocator(kLargeSlab);
-    EXPECT_THROW(allocator.allocate(kLargeSlab + 1), PreconditionAssertion);
+    ExpandableSlabAllocator allocator(large_slab);
+    EXPECT_THROW(allocator.allocate(large_slab + 1), PreconditionAssertion);
 }
 
 TEST_F(ExpandableSlabAllocatorTest, AllocateZeroSizeThrows) {
-    ExpandableSlabAllocator allocator(kLargeSlab);
+    ExpandableSlabAllocator allocator(large_slab);
     EXPECT_THROW(allocator.allocate(0), PreconditionAssertion);
 }
 
 TEST_F(ExpandableSlabAllocatorTest, DeallocateInvalidSlabIdThrows) {
-    ExpandableSlabAllocator allocator(kLargeSlab);
+    ExpandableSlabAllocator allocator(large_slab);
     int dummy = 0;
     EXPECT_THROW(allocator.deallocate(999, &dummy), PreconditionAssertion);
 }
 
 TEST_F(ExpandableSlabAllocatorTest, SlabSizeAccessor) {
-    ExpandableSlabAllocator allocator(kLargeSlab);
-    EXPECT_EQ(allocator.slab_size(), kLargeSlab);
+    ExpandableSlabAllocator allocator(large_slab);
+    EXPECT_EQ(allocator.slab_size(), large_slab);
 }
 
 TEST_F(ExpandableSlabAllocatorTest, MultipleAllocationsFromSameSlab) {
-    ExpandableSlabAllocator allocator(kLargeSlab);
+    ExpandableSlabAllocator allocator(large_slab);
     constexpr int count = 8;
     std::vector<std::pair<int, void*>> allocations;
     allocations.reserve(count);

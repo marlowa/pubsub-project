@@ -85,9 +85,9 @@ class WalWriter {
      * Applications store this in their snapshot so that WalReader::replay()
      * can start from the anchor rather than from segment 0 on the next open.
      */
-    [[nodiscard]] WalPosition current_position() const noexcept { return {current_segment_, write_offset_}; }
+    [[nodiscard]] WalPosition current_position() const { return {current_segment_, write_offset_}; }
 
-    [[nodiscard]] bool is_open() const noexcept { return mmap_ptr_ != nullptr; }
+    [[nodiscard]] bool is_open() const { return mmap_ptr_ != nullptr; }
 
   private:
     // Minimum space for any entry (header + 1 byte payload + CRC32).
@@ -95,7 +95,7 @@ class WalWriter {
 
     std::string segment_path(uint64_t seg_num) const;
     void open_segment(uint64_t seg_num);
-    void close_segment() noexcept;
+    void close_segment();
     void ensure_capacity(size_t bytes_needed);
 
     std::string directory_;

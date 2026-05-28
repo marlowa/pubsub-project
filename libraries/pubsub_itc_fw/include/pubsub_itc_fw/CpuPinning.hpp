@@ -78,7 +78,7 @@ inline std::vector<CpuId> parse_cpu_list(const std::string& input) {
             cpus.emplace_back(std::stoi(token));
         } else {
             const int start = std::stoi(token.substr(0, dash_pos));
-            const int end   = std::stoi(token.substr(dash_pos + 1));
+            const int end = std::stoi(token.substr(dash_pos + 1));
             for (int i = start; i <= end; ++i) {
                 cpus.emplace_back(i);
             }

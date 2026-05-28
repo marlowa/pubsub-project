@@ -116,14 +116,14 @@ size_t encode_execution_report(const pubsub_itc_fw_app::ExecutionReportView& vie
                                 size_t           output_buffer_size)
 {
     // Single-char wire representations of enum fields.
-    const char exec_type_char  = static_cast<char>(view.exec_type);
+    const char exec_type_char = static_cast<char>(view.exec_type);
     const char ord_status_char = static_cast<char>(view.ord_status);
-    const char side_char       = static_cast<char>(view.side);
+    const char side_char = static_cast<char>(view.side);
 
     // Stack-allocated timestamp — no heap allocation.
-    char timestamp_buf[timestamp_length + 1];
-    fill_utc_timestamp(timestamp_buf);
-    const std::string_view timestamp{timestamp_buf, timestamp_length};
+    char timestamp_buffer[timestamp_length + 1];
+    fill_utc_timestamp(timestamp_buffer);
+    const std::string_view timestamp{timestamp_buffer, timestamp_length};
 
     static constexpr std::string_view er_msg_type = "8";
 

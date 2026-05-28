@@ -62,8 +62,7 @@ CpuRegistry::~CpuRegistry() {
     close_mapping();
 }
 
-CpuRegistry::CpuRegistry(CpuRegistry&& other) noexcept
-    : shm_path_(std::move(other.shm_path_))
+CpuRegistry::CpuRegistry(CpuRegistry&& other)    : shm_path_(std::move(other.shm_path_))
     , lock_file_path_(std::move(other.lock_file_path_))
     , my_pid_(other.my_pid_)
     , layout_(other.layout_)
@@ -73,17 +72,17 @@ CpuRegistry::CpuRegistry(CpuRegistry&& other) noexcept
     other.shm_fd_ = -1;
 }
 
-CpuRegistry& CpuRegistry::operator=(CpuRegistry&& other) noexcept {
+CpuRegistry& CpuRegistry::operator=(CpuRegistry&& other) {
     if (this != &other) {
         release_cpus();
         close_mapping();
-        shm_path_       = std::move(other.shm_path_);
+        shm_path_ = std::move(other.shm_path_);
         lock_file_path_ = std::move(other.lock_file_path_);
-        my_pid_         = other.my_pid_;
-        layout_         = other.layout_;
-        shm_fd_         = other.shm_fd_;
-        other.layout_   = nullptr;
-        other.shm_fd_   = -1;
+        my_pid_ = other.my_pid_;
+        layout_ = other.layout_;
+        shm_fd_ = other.shm_fd_;
+        other.layout_ = nullptr;
+        other.shm_fd_ = -1;
     }
     return *this;
 }
@@ -109,10 +108,10 @@ AvailableCpuVector CpuRegistry::claim_cpus(size_t count, bool is_dev_mode) {
             // Registry full — should not happen on a well-configured system.
             break;
         }
-        auto& entry        = layout_->entries[layout_->active_entry_count];
-        entry.core_id      = cpu.get_value();
+        auto& entry = layout_->entries[layout_->active_entry_count];
+        entry.core_id = cpu.get_value();
         entry.numa_node_id = -1;
-        entry.process_id   = my_pid_;
+        entry.process_id = my_pid_;
         entry.thread_tag   = 0;
         entry.timestamp_ns = 0;
         ++layout_->active_entry_count;
@@ -138,7 +137,7 @@ void CpuRegistry::release_cpus() {
     layout_->active_entry_count = write_idx;
 }
 
-void CpuRegistry::close_mapping() noexcept {
+void CpuRegistry::close_mapping() {
     if (layout_ != nullptr) {
         ::munmap(layout_, sizeof(SharedCoreRegistryLayout));
         layout_ = nullptr;

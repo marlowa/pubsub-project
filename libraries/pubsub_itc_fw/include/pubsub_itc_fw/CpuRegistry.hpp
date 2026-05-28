@@ -52,8 +52,8 @@ class CpuRegistry {
     CpuRegistry(const CpuRegistry&) = delete;
     CpuRegistry& operator=(const CpuRegistry&) = delete;
 
-    CpuRegistry(CpuRegistry&&) noexcept;
-    CpuRegistry& operator=(CpuRegistry&&) noexcept;
+    CpuRegistry(CpuRegistry&&);
+    CpuRegistry& operator=(CpuRegistry&&);
 
     /**
      * @brief Atomically discover and claim up to `count` free CPU cores.
@@ -78,7 +78,7 @@ class CpuRegistry {
     void release_cpus();
 
   private:
-    void close_mapping() noexcept;
+    void close_mapping();
 
     std::string shm_path_;
     std::string lock_file_path_;

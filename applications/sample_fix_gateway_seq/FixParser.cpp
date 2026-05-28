@@ -13,7 +13,9 @@
 
 namespace sample_fix_gateway_seq {
 
-static constexpr char field_delimiter = '\x01'; // FIX SOH
+namespace {
+constexpr char field_delimiter = '\x01'; // FIX SOH
+} // namespace
 
 FixParser::FixParser(pubsub_itc_fw::QuillLogger& logger, MessageCallback on_message) : on_message_(std::move(on_message)), logger_(logger) {}
 
@@ -49,14 +51,14 @@ bool FixParser::try_extract_message(std::string_view window, size_t& parse_curso
     }
 
     // Find the SOH that terminates the BeginString field (tag 8).
-    const size_t soh1 = window.find(field_delimiter, start);
-    if (soh1 == std::string_view::npos) {
+    const size_t begin_string_end = window.find(field_delimiter, start);
+    if (begin_string_end == std::string_view::npos) {
         return false; // incomplete -- BeginString field not yet fully received
     }
 
     // The field immediately after BeginString must be BodyLength (tag 9).
     const std::string_view body_length_tag = "9=";
-    const size_t body_length_tag_start = soh1 + 1;
+    const size_t body_length_tag_start = begin_string_end + 1;
     if (window.size() < body_length_tag_start + body_length_tag.size()) {
         return false; // incomplete -- not enough bytes to check for "9="
     }
@@ -77,15 +79,15 @@ bool FixParser::try_extract_message(std::string_view window, size_t& parse_curso
     }
 
     // Find the SOH that terminates the BodyLength field.
-    const size_t soh2 = window.find(field_delimiter, body_length_tag_start);
-    if (soh2 == std::string_view::npos) {
+    const size_t body_length_end = window.find(field_delimiter, body_length_tag_start);
+    if (body_length_end == std::string_view::npos) {
         return false; // incomplete
     }
 
     // Parse the BodyLength value.
     const std::string_view body_length_text =
         window.substr(body_length_tag_start + body_length_tag.size(),
-                      soh2 - body_length_tag_start - body_length_tag.size());
+                      body_length_end - body_length_tag_start - body_length_tag.size());
 
     int body_length = 0;
     const auto [parse_end, parse_error] =
@@ -102,9 +104,9 @@ bool FixParser::try_extract_message(std::string_view window, size_t& parse_curso
 
     // BodyLength counts from the byte immediately after the tag 9 SOH to the
     // byte immediately before the tag 10 SOH (inclusive). So the tag 10 field
-    // starts at soh2 + 1 + body_length.
+    // starts at body_length_end + 1 + body_length.
     const std::string_view checksum_tag = "10=";
-    const size_t tag10_start = soh2 + 1 + static_cast<size_t>(body_length);
+    const size_t tag10_start = body_length_end + 1 + static_cast<size_t>(body_length);
 
     if (window.size() < tag10_start + checksum_tag.size()) {
         return false; // incomplete -- tag 10 not yet received
@@ -125,15 +127,15 @@ bool FixParser::try_extract_message(std::string_view window, size_t& parse_curso
     }
 
     // Find the SOH that terminates the Checksum field (tag 10).
-    const size_t soh3 = window.find(field_delimiter, tag10_start);
-    if (soh3 == std::string_view::npos) {
+    const size_t checksum_end = window.find(field_delimiter, tag10_start);
+    if (checksum_end == std::string_view::npos) {
         return false; // incomplete -- checksum field not yet fully received
     }
 
-    // We now have a complete raw message: window[start .. soh3] inclusive.
+    // We now have a complete raw message: window[start .. checksum_end] inclusive.
     const std::string_view message_bytes = window.substr(start, tag10_start - start);
     const std::string_view received_checksum =
-        window.substr(tag10_start + checksum_tag.size(), soh3 - tag10_start - checksum_tag.size());
+        window.substr(tag10_start + checksum_tag.size(), checksum_end - tag10_start - checksum_tag.size());
 
     if (!validate_checksum(message_bytes, received_checksum)) {
         int sum = 0;
@@ -143,20 +145,20 @@ bool FixParser::try_extract_message(std::string_view window, size_t& parse_curso
         const std::string computed = format_checksum(sum % 256);
         PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
                    "FixParser: bad checksum (computed {} received {}) -- discarding message of {} bytes",
-                   computed, received_checksum, soh3 + 1 - start);
-        parse_cursor = soh3 + 1;
+                   computed, received_checksum, checksum_end + 1 - start);
+        parse_cursor = checksum_end + 1;
         return true;
     }
 
     // Parse field tag-value pairs. All string_views in msg point into the
     // MirroredBuffer window and remain valid for the duration of on_message_.
-    const std::string_view raw_message = window.substr(start, soh3 - start + 1);
+    const std::string_view raw_message = window.substr(start, checksum_end - start + 1);
     ParsedFixMessage msg;
     if (parse_fields(raw_message, msg)) {
         on_message_(msg);
     }
 
-    parse_cursor = soh3 + 1;
+    parse_cursor = checksum_end + 1;
     return true;
 }
 
@@ -169,14 +171,14 @@ bool FixParser::parse_fields(std::string_view raw_message, ParsedFixMessage& msg
             break;
         }
 
-        // Find the SOH terminating the value.
-        const size_t soh = raw_message.find(field_delimiter, equals_sign + 1);
-        if (soh == std::string_view::npos) {
+        // Find the field delimiter terminating the value.
+        const size_t field_end = raw_message.find(field_delimiter, equals_sign + 1);
+        if (field_end == std::string_view::npos) {
             break;
         }
 
         const std::string_view tag_text = raw_message.substr(position, equals_sign - position);
-        const std::string_view value    = raw_message.substr(equals_sign + 1, soh - equals_sign - 1);
+        const std::string_view value = raw_message.substr(equals_sign + 1, field_end - equals_sign - 1);
 
         // Parse tag as integer via from_chars -- no locale, no exception, no allocation.
         int tag = 0;
@@ -187,7 +189,7 @@ bool FixParser::parse_fields(std::string_view raw_message, ParsedFixMessage& msg
         }
         // Malformed tag -- skip and continue parsing remaining fields.
 
-        position = soh + 1;
+        position = field_end + 1;
     }
 
     return msg.has(Tag::MsgType);

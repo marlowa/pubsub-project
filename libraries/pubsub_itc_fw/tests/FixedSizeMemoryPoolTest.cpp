@@ -27,24 +27,24 @@ struct TestObject {
     int id_{0};
     std::byte padding_[128];
 
-    static std::atomic<int> s_ctor;
-    static std::atomic<int> s_dtor;
+    static std::atomic<int> ctor_count_;
+    static std::atomic<int> dtor_count_;
 
     TestObject() {
-        s_ctor.fetch_add(1, std::memory_order_relaxed);
+        ctor_count_.fetch_add(1, std::memory_order_relaxed);
     }
     ~TestObject() {
-        s_dtor.fetch_add(1, std::memory_order_relaxed);
+        dtor_count_.fetch_add(1, std::memory_order_relaxed);
     }
 
     static void reset() {
-        s_ctor.store(0, std::memory_order_relaxed);
-        s_dtor.store(0, std::memory_order_relaxed);
+        ctor_count_.store(0, std::memory_order_relaxed);
+        dtor_count_.store(0, std::memory_order_relaxed);
     }
 };
 
-std::atomic<int> TestObject::s_ctor{0};
-std::atomic<int> TestObject::s_dtor{0};
+std::atomic<int> TestObject::ctor_count_{0};
+std::atomic<int> TestObject::dtor_count_{0};
 
 class FixedSizeMemoryPoolTest : public ::testing::Test {
   protected:
@@ -229,11 +229,11 @@ TEST_F(FixedSizeMemoryPoolTest, DestructorDestroysLeakedObjects) {
             slot->is_constructed.store(1, std::memory_order_relaxed);
         }
 
-        EXPECT_EQ(TestObject::s_ctor.load(), capacity);
-        EXPECT_EQ(TestObject::s_dtor.load(), 0);
+        EXPECT_EQ(TestObject::ctor_count_.load(), capacity);
+        EXPECT_EQ(TestObject::dtor_count_.load(), 0);
     }
 
-    EXPECT_EQ(TestObject::s_dtor.load(), TestObject::s_ctor.load());
+    EXPECT_EQ(TestObject::dtor_count_.load(), TestObject::ctor_count_.load());
 }
 
 /**

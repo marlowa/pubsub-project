@@ -40,17 +40,16 @@ class TestSink : public quill::Sink {
     TestSink() = default;
 
     static std::string format_timestamp_iso8601(uint64_t ns_since_epoch) {
-        using namespace std::chrono;
-        auto tp = time_point<system_clock, nanoseconds>(nanoseconds{ns_since_epoch});
-        auto secs = time_point_cast<seconds>(tp);
-        auto ns = duration_cast<nanoseconds>(tp - secs).count();
-        std::time_t tt = system_clock::to_time_t(secs);
+        auto tp = std::chrono::time_point<std::chrono::system_clock, std::chrono::nanoseconds>(std::chrono::nanoseconds{ns_since_epoch});
+        auto secs = std::chrono::time_point_cast<std::chrono::seconds>(tp);
+        auto nanosecond_part = std::chrono::duration_cast<std::chrono::nanoseconds>(tp - secs).count();
+        std::time_t tt = std::chrono::system_clock::to_time_t(secs);
         std::tm tm{};
         gmtime_r(&tt, &tm);
-        char buf[64];
-        std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", &tm);
+        char timestamp_buffer[64];
+        std::strftime(timestamp_buffer, sizeof(timestamp_buffer), "%Y-%m-%dT%H:%M:%S", &tm);
         std::ostringstream oss;
-        oss << buf << "." << std::setw(9) << std::setfill('0') << ns << "Z";
+        oss << timestamp_buffer << "." << std::setw(9) << std::setfill('0') << nanosecond_part << "Z";
         return oss.str();
     }
 

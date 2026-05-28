@@ -21,12 +21,12 @@ namespace pubsub_itc_fw::tests {
 namespace {
 
 // Large segment used for most tests (no rollover).
-constexpr size_t kSegSize = 4096;
+constexpr size_t segment_size = 4096;
 
 // Small segment for rollover tests.
 // Each entry with a 4-byte payload is 24 (header) + 4 (payload) + 4 (CRC) = 32 bytes.
-// With kSmallSeg=128, exactly 4 entries fit per segment before the next roll.
-constexpr size_t kSmallSeg = 128;
+// With small_segment_size=128, exactly 4 entries fit per segment before the next roll.
+constexpr size_t small_segment_size = 128;
 
 struct Captured {
     int64_t id;
@@ -66,20 +66,20 @@ TEST_F(WalTest, NotOpenByDefault) {
 
 TEST_F(WalTest, IsOpenAfterOpen) {
     WalWriter w;
-    w.open(dir_, kSegSize, {0, 0});
+    w.open(dir_, segment_size, {0, 0});
     EXPECT_TRUE(w.is_open());
 }
 
 TEST_F(WalTest, OpenCreatesSegmentZeroFile) {
     WalWriter w;
-    w.open(dir_, kSegSize, {0, 0});
+    w.open(dir_, segment_size, {0, 0});
     EXPECT_TRUE(std::filesystem::exists(dir_ + "/wal_000000.log"));
 }
 
 TEST_F(WalTest, OpenSegmentFileHasCorrectSize) {
     WalWriter w;
-    w.open(dir_, kSegSize, {0, 0});
-    EXPECT_EQ(std::filesystem::file_size(dir_ + "/wal_000000.log"), kSegSize);
+    w.open(dir_, segment_size, {0, 0});
+    EXPECT_EQ(std::filesystem::file_size(dir_ + "/wal_000000.log"), segment_size);
 }
 
 TEST_F(WalTest, SegmentSizeTooSmallThrows) {
@@ -89,7 +89,7 @@ TEST_F(WalTest, SegmentSizeTooSmallThrows) {
 
 TEST_F(WalTest, CurrentPositionZeroAfterFreshOpen) {
     WalWriter w;
-    w.open(dir_, kSegSize, {0, 0});
+    w.open(dir_, segment_size, {0, 0});
     const WalPosition pos = w.current_position();
     EXPECT_EQ(pos.segment, 0u);
     EXPECT_EQ(pos.offset, 0u);
@@ -97,7 +97,7 @@ TEST_F(WalTest, CurrentPositionZeroAfterFreshOpen) {
 
 TEST_F(WalTest, AppendAdvancesOffset) {
     WalWriter w;
-    w.open(dir_, kSegSize, {0, 0});
+    w.open(dir_, segment_size, {0, 0});
     const uint32_t payload = 0xDEADBEEFu;
     w.append(1, &payload, sizeof(payload));
     EXPECT_GT(w.current_position().offset, 0u);
@@ -105,7 +105,7 @@ TEST_F(WalTest, AppendAdvancesOffset) {
 
 TEST_F(WalTest, TwoAppendsAdvanceOffsetFurther) {
     WalWriter w;
-    w.open(dir_, kSegSize, {0, 0});
+    w.open(dir_, segment_size, {0, 0});
     const uint32_t payload = 1u;
     w.append(1, &payload, sizeof(payload));
     const size_t after_one = w.current_position().offset;
@@ -115,8 +115,8 @@ TEST_F(WalTest, TwoAppendsAdvanceOffsetFurther) {
 
 TEST_F(WalTest, OversizedPayloadThrows) {
     WalWriter w;
-    w.open(dir_, kSegSize, {0, 0});
-    std::vector<uint8_t> big(kSegSize + 1, 0xFFu);
+    w.open(dir_, segment_size, {0, 0});
+    std::vector<uint8_t> big(segment_size + 1, 0xFFu);
     EXPECT_THROW(w.append(1, big.data(), big.size()), pubsub_itc_fw::PreconditionAssertion);
 }
 
@@ -140,7 +140,7 @@ TEST_F(WalTest, ReplayEmptyDirectoryReturnsFrom) {
 
 TEST_F(WalTest, ReplayNullCallbackDoesNotCrash) {
     WalWriter w;
-    w.open(dir_, kSegSize, {0, 0});
+    w.open(dir_, segment_size, {0, 0});
     const uint32_t payload = 42u;
     w.append(1, &payload, sizeof(payload));
     WalPosition end{};
@@ -156,7 +156,7 @@ TEST_F(WalTest, SingleRecordRoundTrip) {
     const uint32_t val = 0xCAFEBABEu;
     {
         WalWriter w;
-        w.open(dir_, kSegSize, {0, 0});
+        w.open(dir_, segment_size, {0, 0});
         w.append(99, &val, sizeof(val));
     }
     std::vector<Captured> entries;
@@ -172,7 +172,7 @@ TEST_F(WalTest, MultipleRecordsReplayedInOrder) {
     constexpr int N = 10;
     {
         WalWriter w;
-        w.open(dir_, kSegSize, {0, 0});
+        w.open(dir_, segment_size, {0, 0});
         for (int i = 0; i < N; ++i) {
             const uint32_t v = static_cast<uint32_t>(i * 100);
             w.append(static_cast<int64_t>(i), &v, sizeof(v));
@@ -200,7 +200,7 @@ TEST_F(WalTest, VariablePayloadSizesRoundTrip) {
     };
     {
         WalWriter w;
-        w.open(dir_, kSegSize, {0, 0});
+        w.open(dir_, segment_size, {0, 0});
         for (int i = 0; i < static_cast<int>(payloads.size()); ++i) {
             w.append(static_cast<int64_t>(i), payloads[i].data(), payloads[i].size());
         }
@@ -216,7 +216,7 @@ TEST_F(WalTest, VariablePayloadSizesRoundTrip) {
 
 TEST_F(WalTest, ReplayReturnsEndPositionMatchingWriter) {
     WalWriter w;
-    w.open(dir_, kSegSize, {0, 0});
+    w.open(dir_, segment_size, {0, 0});
     const uint32_t payload = 1u;
     w.append(1, &payload, sizeof(payload));
     w.append(2, &payload, sizeof(payload));
@@ -232,7 +232,7 @@ TEST_F(WalTest, ResumeWritingFromReplayPosition) {
     // write records 4-5. Full replay from {0,0} should yield all 5.
     {
         WalWriter w;
-        w.open(dir_, kSegSize, {0, 0});
+        w.open(dir_, segment_size, {0, 0});
         for (int i = 1; i <= 3; ++i) {
             const uint32_t v = static_cast<uint32_t>(i);
             w.append(i, &v, sizeof(v));
@@ -241,7 +241,7 @@ TEST_F(WalTest, ResumeWritingFromReplayPosition) {
     const WalPosition mid = WalReader::replay(dir_, {0, 0}, nullptr);
     {
         WalWriter w;
-        w.open(dir_, kSegSize, mid);
+        w.open(dir_, segment_size, mid);
         for (int i = 4; i <= 5; ++i) {
             const uint32_t v = static_cast<uint32_t>(i);
             w.append(i, &v, sizeof(v));
@@ -261,10 +261,10 @@ TEST_F(WalTest, ResumeWritingFromReplayPosition) {
 // ---------------------------------------------------------------------------
 
 TEST_F(WalTest, SegmentRolloverCreatesSecondFile) {
-    // kSmallSeg=128 holds exactly 4 entries of 32 bytes each.
+    // small_segment_size=128 holds exactly 4 entries of 32 bytes each.
     // Writing a 5th entry forces creation of wal_000001.log.
     WalWriter w;
-    w.open(dir_, kSmallSeg, {0, 0});
+    w.open(dir_, small_segment_size, {0, 0});
     const uint32_t v = 0u;
     for (int i = 0; i < 5; ++i) {
         w.append(i, &v, sizeof(v));
@@ -277,7 +277,7 @@ TEST_F(WalTest, SegmentRolloverAllRecordsReplayed) {
     constexpr int N = 6;
     {
         WalWriter w;
-        w.open(dir_, kSmallSeg, {0, 0});
+        w.open(dir_, small_segment_size, {0, 0});
         for (int i = 1; i <= N; ++i) {
             const uint32_t v = static_cast<uint32_t>(i);
             w.append(i, &v, sizeof(v));
@@ -294,7 +294,7 @@ TEST_F(WalTest, SegmentRolloverAllRecordsReplayed) {
 
 TEST_F(WalTest, SegmentRolloverWriterPositionIsOnSecondSegment) {
     WalWriter w;
-    w.open(dir_, kSmallSeg, {0, 0});
+    w.open(dir_, small_segment_size, {0, 0});
     const uint32_t v = 0u;
     for (int i = 0; i < 5; ++i) {
         w.append(i, &v, sizeof(v));
@@ -311,7 +311,7 @@ TEST_F(WalTest, ReplayFromAnchorSkipsEarlierRecords) {
     WalPosition anchor{};
     {
         WalWriter w;
-        w.open(dir_, kSegSize, {0, 0});
+        w.open(dir_, segment_size, {0, 0});
         for (int i = 1; i <= 5; ++i) {
             const uint32_t v = static_cast<uint32_t>(i);
             w.append(i, &v, sizeof(v));
@@ -330,7 +330,7 @@ TEST_F(WalTest, ReplayFromAnchorSkipsEarlierRecords) {
 
 TEST_F(WalTest, ReplayFromEndPositionYieldsNoEntries) {
     WalWriter w;
-    w.open(dir_, kSegSize, {0, 0});
+    w.open(dir_, segment_size, {0, 0});
     const uint32_t v = 1u;
     w.append(1, &v, sizeof(v));
     const WalPosition end = w.current_position();
@@ -352,7 +352,7 @@ TEST_F(WalTest, CrcCorruptionStopsReplay) {
     WalPosition pos_after_first{};
     {
         WalWriter w;
-        w.open(dir_, kSegSize, {0, 0});
+        w.open(dir_, segment_size, {0, 0});
         const uint32_t v1 = 0xAAAAAAAAu;
         w.append(1, &v1, sizeof(v1));
         pos_after_first = w.current_position();
@@ -385,7 +385,7 @@ TEST_F(WalTest, CrcCorruptionStopsReplay) {
 TEST_F(WalTest, ReplayIsDeterministic) {
     {
         WalWriter w;
-        w.open(dir_, kSegSize, {0, 0});
+        w.open(dir_, segment_size, {0, 0});
         for (int i = 1; i <= 5; ++i) {
             const uint32_t v = static_cast<uint32_t>(i);
             w.append(i, &v, sizeof(v));

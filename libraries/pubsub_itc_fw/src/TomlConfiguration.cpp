@@ -21,12 +21,14 @@ namespace pubsub_itc_fw {
 // Duration suffix constants
 // ============================================================
 
-static constexpr std::string_view suffix_ns = "ns";
-static constexpr std::string_view suffix_us = "us";
-static constexpr std::string_view suffix_ms = "ms";
-static constexpr std::string_view suffix_s = "s";
-static constexpr std::string_view suffix_m = "m";
-static constexpr std::string_view suffix_h = "h";
+namespace {
+constexpr std::string_view suffix_ns = "ns";
+constexpr std::string_view suffix_us = "us";
+constexpr std::string_view suffix_ms = "ms";
+constexpr std::string_view suffix_s = "s";
+constexpr std::string_view suffix_m = "m";
+constexpr std::string_view suffix_h = "h";
+} // namespace
 
 // ============================================================
 // Pimpl
@@ -165,12 +167,11 @@ struct TomlConfiguration::Impl {
      * conversion. Returns false with an error message if lossy.
      */
     template <typename Duration> static bool ns_to_duration(int64_t ns, std::string_view original_str, Duration& out, std::string& error) {
-        using namespace std::chrono;
-        const auto target_ns = duration_cast<nanoseconds>(Duration{1}).count();
+        const auto target_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(Duration{1}).count();
 
         if (target_ns <= 1) {
             // Target is nanoseconds or finer -- always lossless.
-            out = duration_cast<Duration>(nanoseconds{ns});
+            out = std::chrono::duration_cast<Duration>(std::chrono::nanoseconds{ns});
             return true;
         }
 

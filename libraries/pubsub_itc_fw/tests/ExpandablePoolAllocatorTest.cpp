@@ -63,27 +63,27 @@ struct TestObject {
     std::byte padding_[128]; // Ensure sufficient size for intrusive linking
 
     // Static counters to track allocations and deallocations across all instances
-    static std::atomic<int> s_constructor_count;
-    static std::atomic<int> s_destructor_count;
+    static std::atomic<int> constructor_count_;
+    static std::atomic<int> destructor_count_;
 
     TestObject() {
-        s_constructor_count++;
+        constructor_count_++;
     }
 
     ~TestObject() {
-        s_destructor_count++;
+        destructor_count_++;
     }
 
     // Reset static counters before each test case
     static void reset_counts() {
-        s_constructor_count = 0;
-        s_destructor_count = 0;
+        constructor_count_ = 0;
+        destructor_count_ = 0;
     }
 };
 
 // Initialize static members
-std::atomic<int> TestObject::s_constructor_count(0);
-std::atomic<int> TestObject::s_destructor_count(0);
+std::atomic<int> TestObject::constructor_count_(0);
+std::atomic<int> TestObject::destructor_count_(0);
 
 class ExpandablePoolAllocatorTest : public ::testing::Test {
   protected:
@@ -138,13 +138,13 @@ TEST_F(ExpandablePoolAllocatorTest, BasicAllocationAndDeallocation) {
         allocated_objects.push_back(obj);
     }
 
-    EXPECT_EQ(TestObject::s_constructor_count.load(), objects_per_pool);
+    EXPECT_EQ(TestObject::constructor_count_.load(), objects_per_pool);
 
     for (TestObject* obj : allocated_objects) {
         allocator.deallocate(obj);
     }
 
-    EXPECT_EQ(TestObject::s_destructor_count.load(), objects_per_pool);
+    EXPECT_EQ(TestObject::destructor_count_.load(), objects_per_pool);
 }
 
 TEST_F(ExpandablePoolAllocatorTest, PoolExpansionOnExhaustion) {
@@ -162,13 +162,13 @@ TEST_F(ExpandablePoolAllocatorTest, PoolExpansionOnExhaustion) {
     }
 
     EXPECT_EQ(pool_exhausted_callback_count_.load(), 1);
-    EXPECT_EQ(TestObject::s_constructor_count.load(), objects_per_pool + 1);
+    EXPECT_EQ(TestObject::constructor_count_.load(), objects_per_pool + 1);
 
     for (TestObject* obj : allocated_objects) {
         allocator.deallocate(obj);
     }
 
-    EXPECT_EQ(TestObject::s_destructor_count.load(), objects_per_pool + 1);
+    EXPECT_EQ(TestObject::destructor_count_.load(), objects_per_pool + 1);
 }
 
 TEST_F(ExpandablePoolAllocatorTest, MaxChainLengthEnforcement) {
@@ -259,7 +259,7 @@ TEST_F(ExpandablePoolAllocatorTest, ConcurrentAllocationAndDeallocation) {
     const int successful_allocations = thread_safe_counter.load();
 
     EXPECT_EQ(successful_allocations, total_expected_allocations);
-    EXPECT_EQ(TestObject::s_constructor_count.load(), total_expected_allocations);
+    EXPECT_EQ(TestObject::constructor_count_.load(), total_expected_allocations);
 
     // Note: We do not care that on some embedded Linux targets `std::random_device` is deterministic, this is just a test after all.
     std::shuffle(thread_safe_allocated_objects_ptr_list.begin(), thread_safe_allocated_objects_ptr_list.end(),
@@ -271,7 +271,7 @@ TEST_F(ExpandablePoolAllocatorTest, ConcurrentAllocationAndDeallocation) {
         }
     }
 
-    EXPECT_EQ(TestObject::s_destructor_count.load(), total_expected_allocations);
+    EXPECT_EQ(TestObject::destructor_count_.load(), total_expected_allocations);
 }
 
 TEST_F(ExpandablePoolAllocatorTest, InvalidDeallocation) {
@@ -412,7 +412,7 @@ TEST_F(ExpandablePoolAllocatorTest, ProducerConsumerStressTest) {
     }
 
     EXPECT_EQ(total_consumed.load(), num_producers * items_per_producer);
-    EXPECT_EQ(TestObject::s_destructor_count.load(), total_consumed.load());
+    EXPECT_EQ(TestObject::destructor_count_.load(), total_consumed.load());
 }
 
 TEST_F(ExpandablePoolAllocatorTest, CacheLineContentionStress) {
@@ -498,11 +498,11 @@ TEST_F(ExpandablePoolAllocatorTest, DestructorReleasesAllObjects) {
             ASSERT_NE(obj, nullptr);
         }
 
-        EXPECT_EQ(TestObject::s_constructor_count.load(), objects_per_pool);
-        EXPECT_EQ(TestObject::s_destructor_count.load(), 0);
+        EXPECT_EQ(TestObject::constructor_count_.load(), objects_per_pool);
+        EXPECT_EQ(TestObject::destructor_count_.load(), 0);
     }
 
-    EXPECT_EQ(TestObject::s_destructor_count.load(), TestObject::s_constructor_count.load());
+    EXPECT_EQ(TestObject::destructor_count_.load(), TestObject::constructor_count_.load());
 }
 
 TEST_F(ExpandablePoolAllocatorTest, DeterministicThunderingHerdOrdering) {
@@ -2038,8 +2038,8 @@ TEST_F(ExpandablePoolAllocatorTest, OobScribbleBeforeObjectFragilityProbe) {
     // This simulates the production bug pattern: user writes slightly before
     // the object, into whatever header/metadata the allocator might keep there.
     auto* raw = reinterpret_cast<std::byte*>(obj);
-    constexpr int kBytesBefore = 8;
-    for (int i = 1; i <= kBytesBefore; ++i) {
+    constexpr int bytes_before = 8;
+    for (int i = 1; i <= bytes_before; ++i) {
         raw[-i] = std::byte{0x5A}; // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic) UB by design: fragility probe
     }
 
@@ -2117,7 +2117,7 @@ TEST_F(ExpandablePoolAllocatorTest, CanaryCorruptionDeallocateDoesNotDestruct) {
 
     TestObject* obj = allocator.allocate();
     ASSERT_NE(obj, nullptr);
-    EXPECT_EQ(TestObject::s_constructor_count.load(), 1);
+    EXPECT_EQ(TestObject::constructor_count_.load(), 1);
 
     reinterpret_cast<std::byte*>(obj)[-1] = std::byte{0xAB}; // NOLINT — intentional OOB
 
@@ -2125,7 +2125,7 @@ TEST_F(ExpandablePoolAllocatorTest, CanaryCorruptionDeallocateDoesNotDestruct) {
 
     // ~TestObject must not have been called — doing so on a potentially
     // corrupt object risks a secondary crash that would obscure the real failure.
-    EXPECT_EQ(TestObject::s_destructor_count.load(), 0);
+    EXPECT_EQ(TestObject::destructor_count_.load(), 0);
 }
 
 TEST_F(ExpandablePoolAllocatorTest, CanaryCorruptionDestructorCallsHandlerAndSkipsDestructor) {
@@ -2145,7 +2145,7 @@ TEST_F(ExpandablePoolAllocatorTest, CanaryCorruptionDestructorCallsHandlerAndSki
         TestObject* obj_corrupt = allocator.allocate();
         ASSERT_NE(obj_clean, nullptr);
         ASSERT_NE(obj_corrupt, nullptr);
-        EXPECT_EQ(TestObject::s_constructor_count.load(), 2);
+        EXPECT_EQ(TestObject::constructor_count_.load(), 2);
 
         // Corrupt the canary on one object and leave both unreturned —
         // they become caller-leaked objects discovered by the allocator destructor.
@@ -2158,7 +2158,7 @@ TEST_F(ExpandablePoolAllocatorTest, CanaryCorruptionDestructorCallsHandlerAndSki
     EXPECT_EQ(invalid_free_callback_count_.load(), 1);
 
     // ~TestObject must have been called for the clean object only.
-    EXPECT_EQ(TestObject::s_destructor_count.load(), 1);
+    EXPECT_EQ(TestObject::destructor_count_.load(), 1);
 }
 
 } // namespace pubsub_itc_fw::tests

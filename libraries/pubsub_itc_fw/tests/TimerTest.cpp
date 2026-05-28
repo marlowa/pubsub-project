@@ -29,9 +29,9 @@ namespace pubsub_itc_fw::tests {
 
 namespace {
 
-constexpr auto kInterval = std::chrono::milliseconds(100);
-constexpr auto kLongInterval = std::chrono::milliseconds(500);
-constexpr int kWaitMs = 3000;
+constexpr auto interval = std::chrono::milliseconds(100);
+constexpr auto long_interval = std::chrono::milliseconds(500);
+constexpr int wait_milliseconds = 3000;
 
 } // namespace
 
@@ -65,7 +65,7 @@ protected:
         reactor_thread_ = std::thread([this] { reactor_->run(); });
     }
 
-    bool wait_for(std::function<bool()> pred, int timeout_ms = kWaitMs) {
+    bool wait_for(std::function<bool()> pred, int timeout_ms = wait_milliseconds) {
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
         while (!pred()) {
             if (reactor_->is_finished()) return false;
@@ -98,7 +98,7 @@ public:
 
 protected:
     void on_app_ready_event() override {
-        start_one_off_timer("one-off", kInterval);
+        start_one_off_timer("one-off", interval);
     }
 
     void on_timer_event(const std::string& name) override {
@@ -118,7 +118,7 @@ TEST_F(TimerTest, OneOffTimerFiresExactlyOnce) {
     ASSERT_TRUE(wait_for([&] { return t->fire_count.load(std::memory_order_acquire) >= 1; }))
         << "One-off timer never fired";
 
-    std::this_thread::sleep_for(kInterval * 3);
+    std::this_thread::sleep_for(interval * 3);
     EXPECT_EQ(t->fire_count.load(std::memory_order_acquire), 1)
         << "One-off timer fired more than once";
 }
@@ -140,7 +140,7 @@ TEST_F(TimerTest, OneOffTimerDeliversCorrectNameToCallback) {
 }
 
 // ---------------------------------------------------------------------------
-// RecurringTimerThread — starts a recurring timer; self-cancels at kCancelAfter
+// RecurringTimerThread — starts a recurring timer; self-cancels at cancel_after
 // ---------------------------------------------------------------------------
 
 class RecurringTimerThread : public ApplicationThread {
@@ -150,17 +150,17 @@ public:
                             make_queue_config(), make_allocator_config("RecurringPool"),
                             ApplicationThreadConfiguration{}) {}
 
-    static constexpr int kCancelAfter = 4;
+    static constexpr int cancel_after = 4;
     std::atomic<int> fire_count{0};
 
 protected:
     void on_app_ready_event() override {
-        start_recurring_timer("heartbeat", kInterval);
+        start_recurring_timer("heartbeat", interval);
     }
 
     void on_timer_event(const std::string& name) override {
         const int n = fire_count.fetch_add(1, std::memory_order_acq_rel) + 1;
-        if (n >= kCancelAfter) {
+        if (n >= cancel_after) {
             cancel_timer(name);
         }
     }
@@ -173,8 +173,8 @@ TEST_F(TimerTest, RecurringTimerFiresMultipleTimes) {
     reactor_->register_thread(t);
     start_reactor();
 
-    ASSERT_TRUE(wait_for([&] { return t->fire_count.load(std::memory_order_acquire) >= RecurringTimerThread::kCancelAfter; }))
-        << "Recurring timer did not fire " << RecurringTimerThread::kCancelAfter << " times";
+    ASSERT_TRUE(wait_for([&] { return t->fire_count.load(std::memory_order_acquire) >= RecurringTimerThread::cancel_after; }))
+        << "Recurring timer did not fire " << RecurringTimerThread::cancel_after << " times";
 }
 
 TEST_F(TimerTest, RecurringTimerStopsFiringAfterCancel) {
@@ -182,14 +182,14 @@ TEST_F(TimerTest, RecurringTimerStopsFiringAfterCancel) {
     reactor_->register_thread(t);
     start_reactor();
 
-    ASSERT_TRUE(wait_for([&] { return t->fire_count.load(std::memory_order_acquire) >= RecurringTimerThread::kCancelAfter; }))
+    ASSERT_TRUE(wait_for([&] { return t->fire_count.load(std::memory_order_acquire) >= RecurringTimerThread::cancel_after; }))
         << "Recurring timer did not reach cancel threshold";
 
     // Allow time for the cancel command to be processed by the reactor.
-    std::this_thread::sleep_for(kInterval * 2);
+    std::this_thread::sleep_for(interval * 2);
     const int stable_count = t->fire_count.load(std::memory_order_acquire);
 
-    std::this_thread::sleep_for(kInterval * 3);
+    std::this_thread::sleep_for(interval * 3);
     EXPECT_EQ(t->fire_count.load(std::memory_order_acquire), stable_count)
         << "Recurring timer continued to fire after cancel";
 }
@@ -210,7 +210,7 @@ public:
 
 protected:
     void on_app_ready_event() override {
-        start_one_off_timer("cancel-me", kLongInterval);
+        start_one_off_timer("cancel-me", long_interval);
         cancel_timer("cancel-me");
         ready.store(true, std::memory_order_release);
     }
@@ -230,7 +230,7 @@ TEST_F(TimerTest, CancelledOneOffTimerNeverFires) {
     ASSERT_TRUE(wait_for([&] { return t->ready.load(std::memory_order_acquire); }))
         << "Thread did not reach on_app_ready_event";
 
-    std::this_thread::sleep_for(kLongInterval + kInterval);
+    std::this_thread::sleep_for(long_interval + interval);
     EXPECT_EQ(t->fire_count.load(std::memory_order_acquire), 0)
         << "Cancelled timer fired";
 }
@@ -251,8 +251,8 @@ public:
 
 protected:
     void on_app_ready_event() override {
-        start_one_off_timer("alpha", kInterval);
-        start_one_off_timer("beta", kInterval * 2);
+        start_one_off_timer("alpha", interval);
+        start_one_off_timer("beta", interval * 2);
     }
 
     void on_timer_event(const std::string& name) override {
@@ -276,7 +276,7 @@ TEST_F(TimerTest, TwoIndependentTimersEachFireOnce) {
     ASSERT_TRUE(wait_for([&] { return t->beta_count.load(std::memory_order_acquire) >= 1; }))
         << "Timer 'beta' never fired";
 
-    std::this_thread::sleep_for(kInterval * 3);
+    std::this_thread::sleep_for(interval * 3);
     EXPECT_EQ(t->alpha_count.load(std::memory_order_acquire), 1) << "'alpha' fired more than once";
     EXPECT_EQ(t->beta_count.load(std::memory_order_acquire), 1) << "'beta' fired more than once";
 }
@@ -296,14 +296,14 @@ public:
 
 protected:
     void on_app_ready_event() override {
-        start_one_off_timer("rescheduled", kInterval);
+        start_one_off_timer("rescheduled", interval);
     }
 
     void on_timer_event(const std::string& name) override {
         const int n = fire_count.fetch_add(1, std::memory_order_acq_rel) + 1;
         if (n == 1) {
             // On the first fire reschedule the same-named timer.
-            start_one_off_timer(name, kInterval);
+            start_one_off_timer(name, interval);
         }
     }
 

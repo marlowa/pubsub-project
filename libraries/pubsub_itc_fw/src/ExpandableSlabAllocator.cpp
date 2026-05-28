@@ -27,7 +27,7 @@ ExpandableSlabAllocator::ExpandableSlabAllocator(size_t slab_size) : slab_size_{
 }
 
 ExpandableSlabAllocator::~ExpandableSlabAllocator() {
-    for (int p = 0; p < kMaxPages; ++p) {
+    for (int p = 0; p < max_pages; ++p) {
         Page* page = pages_[p].load(std::memory_order_relaxed);
         if (page == nullptr) {
             break; // pages are allocated sequentially; first null means no more pages
@@ -39,9 +39,9 @@ ExpandableSlabAllocator::~ExpandableSlabAllocator() {
     }
 }
 
-SlabAllocator* ExpandableSlabAllocator::load_slab_reactor(int slab_id) const noexcept {
-    const int page_idx = slab_id >> kPageBits;
-    const int slot_idx = slab_id & (kPageSize - 1);
+SlabAllocator* ExpandableSlabAllocator::load_slab_reactor(int slab_id) const {
+    const int page_idx = slab_id >> page_bits;
+    const int slot_idx = slab_id & (page_size - 1);
     Page* page = pages_[page_idx].load(std::memory_order_relaxed);
     return page->slots[slot_idx].load(std::memory_order_relaxed);
 }
@@ -93,12 +93,12 @@ void ExpandableSlabAllocator::deallocate(int slab_id, void* ptr) {
         throw PreconditionAssertion("ExpandableSlabAllocator::deallocate: ptr must not be nullptr", __FILE__, __LINE__);
     }
 
-    if (slab_id < 0 || slab_id >= kMaxPages * kPageSize) {
+    if (slab_id < 0 || slab_id >= max_pages * page_size) {
         throw PreconditionAssertion("ExpandableSlabAllocator::deallocate: slab_id out of range", __FILE__, __LINE__);
     }
 
-    const int page_idx = slab_id >> kPageBits;
-    const int slot_idx = slab_id & (kPageSize - 1);
+    const int page_idx = slab_id >> page_bits;
+    const int slot_idx = slab_id & (page_size - 1);
 
     // Acquire page pointer published by the reactor with release.
     Page* page = pages_[page_idx].load(std::memory_order_acquire);
@@ -237,8 +237,8 @@ void ExpandableSlabAllocator::drain_empty_slab_queue() {
                                      "This is a design invariant violation: the current slab must "
                                      "never be enqueued because it is self-reclaimed inline.");
         }
-        const int page_idx = id >> kPageBits;
-        const int slot_idx = id & (kPageSize - 1);
+        const int page_idx = id >> page_bits;
+        const int slot_idx = id & (page_size - 1);
         Page* page = pages_[page_idx].load(std::memory_order_relaxed);
         SlabAllocator* slab = page->slots[slot_idx].load(std::memory_order_relaxed);
         // Release-store so workers that load with acquire see nullptr for this slot.
@@ -270,16 +270,16 @@ SlabAllocator* ExpandableSlabAllocator::append_new_slab() {
         }
     }
 
-    if (slab_slot_count_ >= kMaxPages * kPageSize) {
+    if (slab_slot_count_ >= max_pages * page_size) {
         throw PubSubItcException("ExpandableSlabAllocator::append_new_slab: slab slot capacity exhausted "
-                                 "(max " + std::to_string(kMaxPages * kPageSize) + " slab IDs). "
+                                 "(max " + std::to_string(max_pages * page_size) + " slab IDs). "
                                  "This indicates an extraordinary number of slab rotations; "
                                  "check for runaway allocation or insufficient slab reclamation.");
     }
 
     const int new_id = slab_slot_count_++;
-    const int page_idx = new_id >> kPageBits;
-    const int slot_idx = new_id & (kPageSize - 1);
+    const int page_idx = new_id >> page_bits;
+    const int slot_idx = new_id & (page_size - 1);
 
     // Allocate the page if this is the first slot in it.
     if (pages_[page_idx].load(std::memory_order_relaxed) == nullptr) {

@@ -52,7 +52,7 @@ static_assert(sizeof(SnapshotHeader) == 48, "SnapshotHeader must be 48 bytes");
  */
 class SequencerWal {
   public:
-    static constexpr uint32_t snapshot_magic   = 0xC0DEBA5EU;
+    static constexpr uint32_t snapshot_magic = 0xC0DEBA5EU;
     static constexpr uint32_t snapshot_version = 1;
 
     /**
@@ -69,7 +69,7 @@ class SequencerWal {
     SequencerWal() = default;
     ~SequencerWal() = default;
 
-    SequencerWal(const SequencerWal&)            = delete;
+    SequencerWal(const SequencerWal&) = delete;
     SequencerWal& operator=(const SequencerWal&) = delete;
 
     /**
@@ -111,9 +111,9 @@ class SequencerWal {
      */
     void take_snapshot();
 
-    [[nodiscard]] size_t record_count() const noexcept { return record_count_; }
-    [[nodiscard]] int64_t     last_seq_no()  const noexcept { return last_seq_no_; }
-    [[nodiscard]] bool        is_open()      const noexcept { return writer_.is_open(); }
+    [[nodiscard]] size_t record_count() const { return record_count_; }
+    [[nodiscard]] int64_t last_seq_no() const { return last_seq_no_; }
+    [[nodiscard]] bool is_open() const { return writer_.is_open(); }
 
   private:
     static constexpr size_t snapshot_checksum_offset = 40;
@@ -121,7 +121,7 @@ class SequencerWal {
     std::string snapshot_path() const;
     std::string segment_path_for_delete(uint64_t seg_num) const;
     bool load_snapshot(pubsub_itc_fw::WalPosition& out_pos);
-    void delete_segments_before(uint64_t seg_num)const noexcept;
+    void delete_segments_before(uint64_t seg_num)const;
 
     std::string directory_;
     size_t segment_size_{0};
@@ -129,7 +129,7 @@ class SequencerWal {
     pubsub_itc_fw::WalWriter writer_;
 
     size_t record_count_{0};
-    int64_t     last_seq_no_{0};
+    int64_t last_seq_no_{0};
 };
 
 } // namespace sequencer

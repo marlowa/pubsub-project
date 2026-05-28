@@ -87,10 +87,10 @@ class FixParser {
     bool try_extract_message();
 
     /*
-     * Parses all tag=value fields from the raw FIX bytes in buf into msg.
+     * Parses all tag=value fields from the raw FIX bytes in raw_message into msg.
      * Returns true on success.
      */
-    static bool parse_fields(const std::string& buf, FixMessage& msg);
+    static bool parse_fields(const std::string& raw_message, FixMessage& msg);
 
     /*
      * Validates the FIX checksum. msg_bytes is the raw bytes of the message

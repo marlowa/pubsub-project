@@ -64,7 +64,7 @@ void WalWriter::open(const std::string& directory, size_t segment_size, WalPosit
         throw PreconditionAssertion("WalWriter: segment_size too small", __FILE__, __LINE__);
     }
 
-    directory_    = directory;
+    directory_ = directory;
     segment_size_ = segment_size;
 
     const std::string mkdir_err = FileSystemUtils::make_directories(directory_);
@@ -73,7 +73,7 @@ void WalWriter::open(const std::string& directory, size_t segment_size, WalPosit
     }
 
     current_segment_ = start.segment;
-    write_offset_    = start.offset;
+    write_offset_ = start.offset;
 
     open_segment(current_segment_);
 }
@@ -113,7 +113,7 @@ void WalWriter::open_segment(uint64_t seg_num)
         throw PubSubItcException("WalWriter: mmap(" + path + "): " + std::strerror(errno));
     }
 
-    mmap_ptr_        = static_cast<uint8_t*>(ptr);
+    mmap_ptr_ = static_cast<uint8_t*>(ptr);
     current_segment_ = seg_num;
 }
 
@@ -121,7 +121,7 @@ void WalWriter::open_segment(uint64_t seg_num)
 // close_segment()
 // ---------------------------------------------------------------------------
 
-void WalWriter::close_segment() noexcept
+void WalWriter::close_segment()
 {
     if (mmap_ptr_ != nullptr) {
         ::munmap(mmap_ptr_, segment_size_);
@@ -158,10 +158,10 @@ void WalWriter::append(int64_t record_id, const void* payload, size_t size)
     ensure_capacity(total);
 
     WalEntryHeader hdr{};
-    hdr.magic        = entry_magic;
+    hdr.magic = entry_magic;
     hdr.payload_size = static_cast<uint32_t>(size);
-    hdr.record_id    = record_id;
-    hdr.filler       = 0;
+    hdr.record_id = record_id;
+    hdr.filler = 0;
 
     uint8_t* dest = mmap_ptr_ + write_offset_;
 

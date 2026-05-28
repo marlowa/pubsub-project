@@ -44,7 +44,7 @@ std::string SequencerWal::segment_path_for_delete(uint64_t seg_num) const
 int64_t SequencerWal::open(const std::string& directory, size_t segment_size,
                             ReplayCallback replay_cb)
 {
-    directory_    = directory;
+    directory_ = directory;
     segment_size_ = segment_size;
 
     // Load snapshot (if present) to get the WAL anchor and pre-populate counters.
@@ -60,8 +60,8 @@ int64_t SequencerWal::open(const std::string& directory, size_t segment_size,
             int16_t pdu_id{};
             std::memcpy(&pdu_id, payload, sizeof(int16_t));
 
-            const auto* pdu_payload      = static_cast<const uint8_t*>(payload) + sizeof(int16_t);
-            const size_t pdu_size   = size - sizeof(int16_t);
+            const auto* pdu_payload = static_cast<const uint8_t*>(payload) + sizeof(int16_t);
+            const size_t pdu_size = size - sizeof(int16_t);
 
             ++record_count_;
             last_seq_no_ = record_id;
@@ -107,9 +107,9 @@ bool SequencerWal::load_snapshot(pubsub_itc_fw::WalPosition& out_pos)
     crc.feed(&hdr, snapshot_checksum_offset);
     if (crc.finalize() != hdr.checksum) return false;
 
-    last_seq_no_  = hdr.last_seq_no;
+    last_seq_no_ = hdr.last_seq_no;
     record_count_ = static_cast<size_t>(hdr.record_count);
-    out_pos       = {hdr.wal_segment, hdr.wal_offset};
+    out_pos = {hdr.wal_segment, hdr.wal_offset};
     return true;
 }
 
@@ -122,19 +122,19 @@ void SequencerWal::take_snapshot()
     const pubsub_itc_fw::WalPosition pos = writer_.current_position();
 
     SnapshotHeader hdr{};
-    hdr.magic        = snapshot_magic;
-    hdr.version      = snapshot_version;
-    hdr.last_seq_no  = last_seq_no_;
+    hdr.magic = snapshot_magic;
+    hdr.version = snapshot_version;
+    hdr.last_seq_no = last_seq_no_;
     hdr.record_count = static_cast<uint64_t>(record_count_);
-    hdr.wal_segment  = pos.segment;
-    hdr.wal_offset   = pos.offset;
-    hdr.filler       = 0;
+    hdr.wal_segment = pos.segment;
+    hdr.wal_offset = pos.offset;
+    hdr.filler = 0;
 
     pubsub_itc_fw::Crc32 crc;
     crc.feed(&hdr, snapshot_checksum_offset);
     hdr.checksum = crc.finalize();
 
-    const std::string tmp   = snapshot_path() + ".tmp";
+    const std::string tmp = snapshot_path() + ".tmp";
     const std::string final = snapshot_path();
 
     const int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
@@ -164,23 +164,23 @@ void SequencerWal::append(int64_t seq_no, int16_t pdu_id, const uint8_t* payload
 {
     // Sequencer payload = pdu_id(2) | PDU bytes.
     // Use a stack buffer for typical sizes to avoid heap allocation on the hot path.
-    constexpr int kStackSize = 512;
-    uint8_t       stack_buf[kStackSize];
-    std::vector<uint8_t> heap_buf;
+    constexpr int stack_buffer_size = 512;
+    uint8_t stack_buffer[stack_buffer_size];
+    std::vector<uint8_t> heap_buffer;
 
     const size_t total = sizeof(int16_t) + static_cast<size_t>(size);
-    uint8_t* buf;
-    if (total <= kStackSize) {
-        buf = stack_buf;
+    uint8_t* payload_buffer;
+    if (total <= stack_buffer_size) {
+        payload_buffer = stack_buffer;
     } else {
-        heap_buf.resize(total);
-        buf = heap_buf.data();
+        heap_buffer.resize(total);
+        payload_buffer = heap_buffer.data();
     }
 
-    std::memcpy(buf, &pdu_id, sizeof(int16_t));
-    std::memcpy(buf + sizeof(int16_t), payload, static_cast<size_t>(size));
+    std::memcpy(payload_buffer, &pdu_id, sizeof(int16_t));
+    std::memcpy(payload_buffer + sizeof(int16_t), payload, static_cast<size_t>(size));
 
-    writer_.append(seq_no, buf, total);
+    writer_.append(seq_no, payload_buffer, total);
 
     last_seq_no_ = seq_no;
     ++record_count_;
@@ -190,7 +190,7 @@ void SequencerWal::append(int64_t seq_no, int16_t pdu_id, const uint8_t* payload
 // delete_segments_before()
 // ---------------------------------------------------------------------------
 
-void SequencerWal::delete_segments_before(uint64_t seg_num)const noexcept
+void SequencerWal::delete_segments_before(uint64_t seg_num) const
 {
     for (uint64_t i = 0; i < seg_num; ++i) {
         ::unlink(segment_path_for_delete(i).c_str());

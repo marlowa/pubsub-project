@@ -205,15 +205,15 @@ class ExpandableSlabAllocator {
     //     workers see a consistent view.
     // =======================================================================
 
-    // 256 slots per page (kPageBits=8 → PAGE_SIZE=256).
+    // 256 slots per page (page_bits=8 → page_size=256).
     // 1024 pages max → 262,144 distinct slab IDs before capacity exhaustion.
-    static constexpr int kPageBits = 8;
-    static constexpr int kPageSize = 1 << kPageBits;
-    static constexpr int kMaxPages = 1024;
+    static constexpr int page_bits = 8;
+    static constexpr int page_size = 1 << page_bits;
+    static constexpr int max_pages = 1024;
 
     struct Page {
-        std::atomic<SlabAllocator*> slots[kPageSize];
-        Page() noexcept {
+        std::atomic<SlabAllocator*> slots[page_size];
+        Page() {
             for (auto& s : slots) {
                 s.store(nullptr, std::memory_order_relaxed);
             }
@@ -222,13 +222,13 @@ class ExpandableSlabAllocator {
 
     void drain_empty_slab_queue();
     SlabAllocator* append_new_slab();
-    SlabAllocator* load_slab_reactor(int slab_id) const noexcept; // reactor thread only
+    SlabAllocator* load_slab_reactor(int slab_id) const; // reactor thread only
 
     size_t slab_size_;
     int current_slab_id_{-1};
     EmptySlabQueue empty_slab_queue_;
     int slab_slot_count_{0};          // total slab IDs ever issued (monotonically increasing)
-    std::atomic<Page*> pages_[kMaxPages]; // directory; initialised to nullptr in constructor
+    std::atomic<Page*> pages_[max_pages]; // directory; initialised to nullptr in constructor
 
     // Vyukov sentinel reclamation: the most-recently-popped slab is kept alive
     // until the next drain confirms head_ has moved past it.

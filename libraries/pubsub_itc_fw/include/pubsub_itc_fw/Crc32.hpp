@@ -29,13 +29,13 @@ class Crc32 {
     Crc32() = default;
 
     /** Feed more bytes into the running checksum. */
-    void feed(const void* data, size_t len) noexcept;
+    void feed(const void* data, size_t length);
 
     /** Return the final checksum and reset state to initial. */
-    [[nodiscard]] uint32_t finalize() noexcept;
+    [[nodiscard]] uint32_t finalize();
 
     /** Convenience: compute CRC32 of a single contiguous buffer. */
-    [[nodiscard]] static uint32_t compute(const void* data, size_t len) noexcept;
+    [[nodiscard]] static uint32_t compute(const void* data, size_t length);
 
   private:
     uint32_t state_{0xFFFFFFFFu};

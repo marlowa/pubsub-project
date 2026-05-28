@@ -72,8 +72,8 @@ size_t WalReader::replay_segment(const std::string& path, size_t start_offset,
 
     ::madvise(ptr, file_size, MADV_WILLNEED);
 
-    const auto* base           = static_cast<const uint8_t*>(ptr);
-    size_t offset         = start_offset;
+    const auto* base = static_cast<const uint8_t*>(ptr);
+    size_t offset = start_offset;
     size_t bytes_consumed = start_offset;
 
     while (offset + sizeof(WalEntryHeader) <= file_size) {
@@ -149,11 +149,11 @@ WalPosition WalReader::replay(const std::string& directory, WalPosition from,
         if (seg < from.segment) continue; // fully covered by snapshot
 
         const size_t start = (seg == from.segment) ? static_cast<size_t>(from.offset) : 0;
-        const std::string path  = segment_path(directory, seg);
+        const std::string path = segment_path(directory, seg);
         const size_t consumed = replay_segment(path, start, cb);
 
         end.segment = seg;
-        end.offset  = consumed;
+        end.offset = consumed;
     }
 
     return end;

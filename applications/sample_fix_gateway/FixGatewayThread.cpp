@@ -17,24 +17,28 @@
 
 namespace sample_fix_gateway {
 
-static pubsub_itc_fw::QueueConfiguration make_queue_config() {
-    pubsub_itc_fw::QueueConfiguration cfg{};
-    cfg.low_watermark = 1;
-    cfg.high_watermark = 64;
-    return cfg;
+namespace {
+
+pubsub_itc_fw::QueueConfiguration make_queue_config() {
+    pubsub_itc_fw::QueueConfiguration queue_configuration{};
+    queue_configuration.low_watermark = 1;
+    queue_configuration.high_watermark = 64;
+    return queue_configuration;
 }
 
-static pubsub_itc_fw::AllocatorConfiguration make_allocator_config(const FixGatewayConfiguration& config, pubsub_itc_fw::QuillLogger& logger) {
-    pubsub_itc_fw::AllocatorConfiguration cfg{};
-    cfg.pool_name = "FixGatewayPool";
-    cfg.objects_per_pool = config.event_queue_pool_objects_per_slab;
-    cfg.initial_pools = config.event_queue_pool_initial_slabs;
-    cfg.handler_for_pool_exhausted = [&logger](void* /*ctx*/, int objects_per_pool) {
+pubsub_itc_fw::AllocatorConfiguration make_allocator_config(const FixGatewayConfiguration& config, pubsub_itc_fw::QuillLogger& logger) {
+    pubsub_itc_fw::AllocatorConfiguration allocator_configuration{};
+    allocator_configuration.pool_name = "FixGatewayPool";
+    allocator_configuration.objects_per_pool = config.event_queue_pool_objects_per_slab;
+    allocator_configuration.initial_pools = config.event_queue_pool_initial_slabs;
+    allocator_configuration.handler_for_pool_exhausted = [&logger](void* /*context*/, int objects_per_pool) {
         PUBSUB_LOG(logger, pubsub_itc_fw::FwLogLevel::Warning,
                    "FixGatewayPool exhausted: chaining new pool slab ({} objects)", objects_per_pool);
     };
-    return cfg;
+    return allocator_configuration;
 }
+
+} // namespace
 
 FixGatewayThread::FixGatewayThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger,
                                    pubsub_itc_fw::Reactor& reactor, const FixGatewayConfiguration& config)
