@@ -40,7 +40,7 @@ from pathlib import Path
 STARTUP_DELAY   = 1.0    # seconds between app launches
 SETTLE_TIME     = 3.0    # seconds after last app before attaching perf
 FIX8_LOGON_WAIT = 3.0    # seconds for fix8 to establish the FIX session
-ORDER_TIMEOUT   = 30.0   # seconds to wait for ord1000 in the ME log
+ORDER_TIMEOUT   = 120.0  # seconds to wait for ord1000 in the ME log
 POST_ORDER_WAIT = 2.0    # seconds after last order before SIGTERM
 CALLGRAPH       = "dwarf" # dwarf unwinds across the user/kernel boundary; resolves the
                           # otherwise-anonymous kernel stacks that dominate the gateway profile.
@@ -122,47 +122,79 @@ def wait_for_order_completion(me_log: Path, total_orders: int, timeout: float) -
     False on timeout.  The pattern uses a negative look-ahead so that
     ME-ORD-1000 does not match ME-ORD-10000.
 
-    Also implements an idle-detection bail-out: if the highest ME-ORD-N seen
-    in the log does not advance for IDLE_TIMEOUT seconds the pipeline has
-    stalled, and we report the shortfall and return False rather than waiting
-    for the full `timeout`.  This prevents indefinite hangs when some orders
-    are silently lost before reaching the matching engine.
-    """
-    IDLE_TIMEOUT = 10.0   # seconds of no ME progress before declaring stall
+    Only new bytes appended since the last iteration are read, so memory
+    usage stays flat regardless of how large the log file grows.
 
-    target = f"ME-ORD-{total_orders}"
-    pattern = re.compile(re.escape(target) + r"(?!\d)")
-    # Capture the highest order number seen so far (for idle detection).
+    The idle bail-out is computed dynamically from the observed throughput:
+    once at least MIN_CALIBRATION_SECS have elapsed since the first ME-ORD
+    entry appeared, the bail-out is set to 2× the estimated time remaining
+    at the current rate.  A generous fixed timeout is used until then.
+    """
+    # INITIAL_IDLE_TIMEOUT: patience before any throughput rate is known.
+    # Scale with the overall timeout so large runs aren't cut short early.
+    INITIAL_IDLE_TIMEOUT = max(30.0, timeout * 0.10)
+    MIN_CALIBRATION_SECS = 2.0    # minimum elapsed time before trusting the rate
+    MIN_IDLE_TIMEOUT     = 5.0    # floor: never declare stall faster than this
+
+    target          = f"ME-ORD-{total_orders}"
+    pattern         = re.compile(re.escape(target) + r"(?!\d)")
     any_ord_pattern = re.compile(r"ME-ORD-(\d+)")
 
-    deadline    = time.monotonic() + timeout
-    last_seen   = 0        # highest ME-ORD-N observed
-    last_change = time.monotonic()
+    deadline        = time.monotonic() + timeout
+    last_seen       = 0
+    last_change     = time.monotonic()
+    rate_start_t    = None   # when the first ME-ORD entry was observed
+    # rate_start_n stays 0: rate is measured as "orders since monitoring started",
+    # not "orders since the first chunk".  If the first chunk already contains
+    # many orders, setting rate_start_n=highest makes rate=0 and calibration
+    # never fires.
+    rate_start_n    = 0
+    idle_timeout    = INITIAL_IDLE_TIMEOUT
+    rate_calibrated = False
+    file_pos        = 0      # byte offset of the next unread byte in the log
 
-    log(f"Waiting for {target} in {me_log.name} (timeout {timeout:.0f}s, "
-        f"idle bail-out {IDLE_TIMEOUT:.0f}s) ...")
+    log(f"Waiting for {target} in {me_log.name} (timeout {timeout:.0f}s) ...")
 
     while time.monotonic() < deadline:
         if me_log.is_file():
             with open(me_log, "r", errors="replace") as fh:
-                content = fh.read()
+                fh.seek(file_pos)
+                chunk = fh.read()
+                file_pos = fh.tell()
 
-            if pattern.search(content):
+            if pattern.search(chunk):
                 return True
 
-            # Find the highest ME-ORD-N logged so far for idle detection.
-            matches = any_ord_pattern.findall(content)
+            matches = any_ord_pattern.findall(chunk)
             if matches:
                 highest = max(int(m) for m in matches)
+                now     = time.monotonic()
+
                 if highest > last_seen:
                     last_seen   = highest
-                    last_change = time.monotonic()
-                elif last_seen > 0 and (time.monotonic() - last_change) >= IDLE_TIMEOUT:
-                    log(f"  STALL DETECTED: ME-ORD progress stopped at {last_seen} "
-                        f"(expected {total_orders}, missing "
-                        f"{total_orders - last_seen} orders) — pipeline may have "
-                        f"lost orders silently. Proceeding with shutdown.")
-                    return False
+                    last_change = now
+                    if rate_start_t is None:
+                        rate_start_t = now
+
+                # Recompute idle_timeout from observed throughput.
+                if rate_start_t is not None:
+                    elapsed = time.monotonic() - rate_start_t
+                    if elapsed >= MIN_CALIBRATION_SECS:
+                        rate = (last_seen - rate_start_n) / elapsed
+                        if rate > 0:
+                            remaining    = total_orders - last_seen
+                            idle_timeout = max((remaining / rate) * 2, MIN_IDLE_TIMEOUT)
+                            if not rate_calibrated:
+                                rate_calibrated = True
+                                log(f"  throughput ~{rate:,.0f} orders/s → "
+                                    f"dynamic idle bail-out {idle_timeout:.0f}s")
+
+            if last_seen > 0 and (time.monotonic() - last_change) >= idle_timeout:
+                log(f"  STALL DETECTED: ME-ORD progress stopped at {last_seen} "
+                    f"(expected {total_orders}, missing "
+                    f"{total_orders - last_seen} orders) — pipeline may have "
+                    f"lost orders silently. Proceeding with shutdown.")
+                return False
 
         time.sleep(0.1)
 

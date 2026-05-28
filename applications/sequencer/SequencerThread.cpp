@@ -48,45 +48,22 @@ SequencerThread::SequencerThread(pubsub_itc_fw::ApplicationThread::ConstructorTo
     , arbiter_conn_id_{} {}
 
 void SequencerThread::on_initial_event() {
-    // Rebuild seq_no→gateway_session_conn_id from WAL replay so ER routing
-    // survives a sequencer restart.
-    auto rebuild_routing_map = [this](int64_t seq_no, int16_t pdu_id,
-                                      const uint8_t* payload, size_t payload_size) {
-        constexpr auto nos_id = static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::NewOrderSingle);
-        constexpr auto ocr_id = static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::OrderCancelRequest);
-        if (pdu_id != nos_id && pdu_id != ocr_id) return;
-
-        auto& arena_buf = decode_arena_buffer();
-        pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
-        arena.reset();
-        size_t arena_bytes_needed = 0;
-        size_t bytes_consumed     = 0;
-
-        if (pdu_id == nos_id) {
-            pubsub_itc_fw_app::NewOrderSingleView view{};
-            if (pubsub_itc_fw_app::decode(view, payload, payload_size, bytes_consumed, arena, arena_bytes_needed)) {
-                if (view.has_gateway_session_conn_id) {
-                    seq_no_to_session_conn_id_[seq_no] = view.gateway_session_conn_id;
-                }
-            }
-        } else {
-            pubsub_itc_fw_app::OrderCancelRequestView view{};
-            if (pubsub_itc_fw_app::decode(view, payload, payload_size, bytes_consumed, arena, arena_bytes_needed)) {
-                if (view.has_gateway_session_conn_id) {
-                    seq_no_to_session_conn_id_[seq_no] = view.gateway_session_conn_id;
-                }
-            }
-        }
-    };
-
+    // WAL replay is used only to recover next_sequence_number_. The routing
+    // map is intentionally not rebuilt: by the time the sequencer restarts,
+    // the ME has almost certainly already sent ERs for any in-flight orders
+    // from the previous run, and those ERs will not be re-sent. Populating
+    // the routing map from WAL replay would leave entries that are never
+    // erased, causing unbounded heap growth under high throughput.
+    // ERs for unroutable seq_nos are handled gracefully by the "not in
+    // routing map" fallback in on_framework_pdu_message().
     const int64_t recovered_seq = wal_.open(config_.wal_directory, config_.wal_segment_size,
-                                            std::move(rebuild_routing_map));
+                                            nullptr);
     if (recovered_seq > 0) {
         next_sequence_number_ = recovered_seq + 1;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "SequencerThread: WAL open complete: recovered seq_no={}, record_count={}, "
-                   "next_sequence_number={}, routing_map_size={}",
-                   recovered_seq, wal_.record_count(), next_sequence_number_, seq_no_to_session_conn_id_.size());
+                   "next_sequence_number={}",
+                   recovered_seq, wal_.record_count(), next_sequence_number_);
     } else {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                        "SequencerThread: WAL is fresh (no prior records), starting from seq_no=1");
