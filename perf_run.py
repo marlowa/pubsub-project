@@ -42,11 +42,16 @@ SETTLE_TIME     = 3.0    # seconds after last app before attaching perf
 FIX8_LOGON_WAIT = 3.0    # seconds for fix8 to establish the FIX session
 ORDER_TIMEOUT   = 120.0  # seconds to wait for ord1000 in the ME log
 POST_ORDER_WAIT = 2.0    # seconds after last order before SIGTERM
-CALLGRAPH       = "dwarf" # dwarf unwinds across the user/kernel boundary; resolves the
-                          # otherwise-anonymous kernel stacks that dominate the gateway profile.
-                          # fp would suffice for pure-userspace profiling but loses the call
-                          # chain whenever a sample lands inside a syscall (epoll, recv, send).
-FREQ            = 99      # perf sample frequency (Hz)
+CALLGRAPH        = "dwarf" # dwarf unwinds across the user/kernel boundary; resolves the
+                           # otherwise-anonymous kernel stacks that dominate the gateway profile.
+                           # fp would suffice for pure-userspace profiling but loses the call
+                           # chain whenever a sample lands inside a syscall (epoll, recv, send).
+DWARF_STACK_SIZE = 4096    # bytes per sample; default 8192 — halving saves significant RAM
+PERF_MMAP_SIZE   = "16M"   # per-CPU ring-buffer cap passed to -m; prevents OOM under load
+FREQ             = 99      # perf sample frequency (Hz)
+# Processes to profile; set to None to profile all launched processes.
+# Profiling both arbiters and both sequencers with DWARF is expensive and rarely useful.
+PERF_TARGETS     = {"sample_fix_gateway_seq", "matching_engine"}
 SHUTDOWN_TIMEOUT = 5.0   # seconds to wait for each app to exit after SIGTERM
 
 FIX8_DIR  = Path("/home/marlowa/mystuff/fix8_install")
@@ -104,10 +109,11 @@ def launch_app(name: str, bin_name: str, config: Path,
 def attach_perf(name: str, pid: int, perf_dir: Path) -> subprocess.Popen:
     data_file  = perf_dir / f"{name}.perf.data"
     stderr_file = perf_dir / f"{name}.perf.stderr"
+    call_graph_arg = f"{CALLGRAPH},{DWARF_STACK_SIZE}" if CALLGRAPH == "dwarf" else CALLGRAPH
     with open(stderr_file, "w") as stderr_fh:
         proc = subprocess.Popen(
             ["perf", "record", "-p", str(pid), "-o", str(data_file),
-             "--call-graph", CALLGRAPH, "-F", str(FREQ)],
+             "--call-graph", call_graph_arg, "-F", str(FREQ), "-m", PERF_MMAP_SIZE],
             stdout=subprocess.DEVNULL,
             stderr=stderr_fh,
         )
@@ -405,7 +411,10 @@ def main() -> None:
     log("=== perf_run ===")
     log(f"  install prefix : {prefix}")
     log(f"  perf output    : {perf_dir}")
-    log(f"  call-graph     : {CALLGRAPH}  (freq={FREQ} Hz)")
+    cg_desc = f"{CALLGRAPH},{DWARF_STACK_SIZE}" if CALLGRAPH == "dwarf" else CALLGRAPH
+    targets_desc = ", ".join(sorted(PERF_TARGETS)) if PERF_TARGETS is not None else "all"
+    log(f"  call-graph     : {cg_desc}  (freq={FREQ} Hz, mmap={PERF_MMAP_SIZE})")
+    log(f"  perf targets   : {targets_desc}")
     log(f"  clients        : {args.clients}")
     log(f"  burst          : {args.burst}  ({args.clients * args.burst * 1000} orders total)")
 
@@ -443,11 +452,12 @@ def main() -> None:
                 die(f"{name} (PID {proc.pid}) died during startup "
                     f"(exit code {proc.returncode})")
 
-        # Attach perf to every running application
+        # Attach perf to targeted processes
         log("=== Attaching perf to all processes ===")
         for name, proc in app_procs:
-            perf_proc = attach_perf(name, proc.pid, perf_dir)
-            perf_procs.append((name, perf_proc))
+            if PERF_TARGETS is None or name in PERF_TARGETS:
+                perf_proc = attach_perf(name, proc.pid, perf_dir)
+                perf_procs.append((name, perf_proc))
         time.sleep(1)  # give perf a moment to start recording
 
         # Fire fix8 session(s)

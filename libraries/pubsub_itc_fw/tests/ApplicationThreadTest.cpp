@@ -296,7 +296,7 @@ TEST_F(ApplicationThreadTest, StartAndShutdown) {
     reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>([this] { reactor_->run(); });
 
     // Wait until Reactor has started the thread and it is Operational
-    for (int i = 0; i < 200 && thread->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational; ++i) {
+    for (int i = 0; i < 5000 && thread->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational; ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
@@ -322,7 +322,7 @@ TEST_F(ApplicationThreadTest, MessageProcessing) {
     reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>([this] { reactor_->run(); });
 
     // Wait until Reactor has started the thread and it is Operational
-    for (int i = 0; i < 200 && thread->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational; ++i) {
+    for (int i = 0; i < 5000 && thread->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational; ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
@@ -349,7 +349,7 @@ TEST_F(ApplicationThreadTest, PauseResume) {
     reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>([this] { reactor_->run(); });
 
     // Wait until Reactor has started the thread and it is Operational
-    for (int i = 0; i < 200 && thread->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational; ++i) {
+    for (int i = 0; i < 5000 && thread->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational; ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 

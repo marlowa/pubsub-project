@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "FixGatewaySeqThread.hpp"
+#include "FixErEncoder.hpp"
 
 #include <charconv>
 #include <cstring>
@@ -304,34 +305,14 @@ void FixGatewaySeqThread::on_framework_pdu_message(const pubsub_itc_fw::EventMes
                "GW-ER-SENT connection={} OrderID={} ExecID={} gateway_session_conn_id={}",
                session.conn_id.get_value(), view.order_id, view.exec_id, view.gateway_session_conn_id);
 
-    // Build a FIX ExecutionReport. Single-character enum fields convert back
-    // to FIX wire chars via static_cast<char>; numeric strings (qty/px) flow
-    // through unchanged.
-    FixMessage er_msg;
-    er_msg.set(Tag::MsgType, MsgType::ExecutionReport);
-    er_msg.set(Tag::OrderID, std::string{view.order_id});
-    er_msg.set(Tag::ExecID, std::string{view.exec_id});
-    er_msg.set(Tag::ExecType, std::string(1, static_cast<char>(view.exec_type)));
-    er_msg.set(Tag::OrdStatus, std::string(1, static_cast<char>(view.ord_status)));
-    er_msg.set(Tag::Symbol, std::string{view.symbol});
-    er_msg.set(Tag::Side, std::string(1, static_cast<char>(view.side)));
-    er_msg.set(Tag::CumQty, std::string{view.cum_qty});
-    er_msg.set(Tag::LeavesQty, std::string{view.leaves_qty});
-    if (view.has_cl_ord_id) {
-        er_msg.set(Tag::ClOrdID, std::string{view.cl_ord_id});
-    }
-
-    if (view.has_order_qty) {
-        er_msg.set(Tag::OrderQty, std::string{view.order_qty});
-    }
-    if (view.has_price) {
-        er_msg.set(Tag::Price, std::string{view.price});
-    }
-    if (view.has_ord_type) {
-        er_msg.set(Tag::OrdType, std::string(1, static_cast<char>(view.ord_type)));
-    }
-
-    send_fix_to_session(session, er_msg);
+    // Encode the FIX ExecutionReport directly into a stack buffer.
+    // No heap allocation: all string_view fields from view are memcpy'd
+    // straight into the wire bytes; enum fields are cast to single chars.
+    char wire_buffer[execution_report_buffer_size];
+    const size_t wire_length = encode_execution_report(
+        view, config_.sender_comp_id, session.client_comp_id,
+        session.outbound_seq_num++, wire_buffer, sizeof(wire_buffer));
+    send_raw(session.conn_id, wire_buffer, static_cast<uint32_t>(wire_length));
     release_pdu_payload(message);
 }
 
