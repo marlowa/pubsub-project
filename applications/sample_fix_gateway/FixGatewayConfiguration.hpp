@@ -16,7 +16,7 @@ namespace sample_fix_gateway {
  * file before passing it to SampleFixGateway.
  *
  * This struct is intentionally independent of the framework's ReactorConfiguration
- * and HAConfiguration -- it contains only application-level settings.
+ * -- it contains only application-level settings.
  */
 struct FixGatewayConfiguration {
     // ----------------------------------------------------------------

@@ -50,7 +50,8 @@ DWARF_STACK_SIZE = 4096    # bytes per sample; default 8192 — halving saves si
 PERF_MMAP_SIZE   = "16M"   # per-CPU ring-buffer cap passed to -m; prevents OOM under load
 FREQ             = 99      # perf sample frequency (Hz)
 # Processes to profile; set to None to profile all launched processes.
-# Profiling both arbiters and both sequencers with DWARF is expensive and rarely useful.
+# Profiling arbiters, the witness, and both sequencers with DWARF is expensive
+# and rarely useful; the hot path is gateway and ME.
 PERF_TARGETS     = {"sample_fix_gateway_seq", "matching_engine"}
 SHUTDOWN_TIMEOUT = 5.0   # seconds to wait for each app to exit after SIGTERM
 
@@ -83,7 +84,7 @@ def preflight(prefix: Path) -> None:
     if subprocess.call(["which", "perf"],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) != 0:
         die("'perf' not found in PATH")
-    for name in ("arbiter", "sequencer", "matching_engine", "sample_fix_gateway_seq"):
+    for name in ("witness", "arbiter", "sequencer", "matching_engine", "sample_fix_gateway_seq"):
         exe = prefix / "bin" / name
         if not exe.is_file() or not os.access(exe, os.X_OK):
             die(f"binary not found or not executable: {exe}")
@@ -419,7 +420,9 @@ def main() -> None:
     log(f"  burst          : {args.burst}  ({args.clients * args.burst * 1000} orders total)")
 
     # -- launch applications in dependency order (mirrors start_fix_seq_system.py)
+    # witness first: arbiters connect outbound to it at startup.
     steps = [
+        ("witness",                "witness",                etc_dir / "witness"               / "witness.toml"),
         ("arbiter_primary",        "arbiter",                etc_dir / "arbiter"               / "arbiter.toml"),
         ("arbiter_secondary",      "arbiter",                etc_dir / "arbiter"               / "arbiter_secondary.toml"),
         ("sample_fix_gateway_seq", "sample_fix_gateway_seq", etc_dir / "sample_fix_gateway_seq" / "sample_fix_gateway_seq.toml"),

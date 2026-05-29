@@ -1,4 +1,4 @@
-# pubsub_itc_fw — Project Summary for AI Session Handover
+# pubsub_itc_fw — Project Summary
 
 ## Quick Facts
 
@@ -23,7 +23,9 @@ A low-latency, multi-threaded, event-driven application framework using the **re
 - Inter-thread communication (ITC) via lock-free MPSC queues
 - Inter-process communication (IPC) via unicast TCP
 - Lock-free thread-safe pool allocators
-- Broadcast / fanout via WAL followers (currently); a topic-based pubsub primitive may be added later if specific use cases require it (see "Downstream consumers and broadcast streams" in the WAL and HA Design section)
+- Broadcast / fanout via WAL followers;
+a topic-based pubsub primitive may be added later if specific use cases require it
+(see "Downstream consumers and broadcast streams" in the WAL and HA Design section)
 - Timers (timerfd, via epoll)
 - High availability via primary/secondary instance pairs with arbitration
 - A DSL-based binary serialisation layer replacing protobuf/SBE
@@ -56,13 +58,13 @@ Target environment is **low-latency** (sub-100ns encode/decode). Heap allocation
 | `ExpandableSlabAllocator` | Chains `SlabAllocator` instances; demand-driven reclamation (no GC thread); Vyukov sentinel deferred-reclamation (`deferred_reclaim_slab_id_`) so popped slabs are destroyed one drain after they are popped, safe against producers still mid-enqueue; wall-clock drain tripwire; returns `std::tuple<int, void*>` for structured bindings |
 | `EmptySlabQueue` | Intrusive Vyukov MPSC queue of slab IDs; one node embedded per slab. Consumer never resets head_/tail_ — Vyukov sentinel pattern relies on the most-recently-popped slab staying alive as the queue's sentinel (deferred-reclaim by one drain cycle, managed by `ExpandableSlabAllocator`). Four `peek_*` const accessors for diagnostics. |
 
-**`Slot<T>` layout (production path):**
+**`Slot<T>` layout (production path, not valgrind):**
 ```
 [ is_constructed (atomic) ][ free_next (atomic) ][ canary (u64) ][ storage (alignas T) ]
 ```
 `free_next` before `canary` — canary remains adjacent to storage for underrun detection.
 
-**Bug history:** Two bugs fixed in `FixedSizeMemoryPool`: (1) unsafe free-list traversal in `get_number_of_available_objects` — fixed with atomic counters; (2) data race on `next` pointer inside union — fixed by moving to `std::atomic<Slot<T>*> free_next` outside the union. Both produced ~1-in-100 failure rate under stress. Likely present in the closed-source production allocator as well.
+**Bug history:** Two bugs fixed in `FixedSizeMemoryPool`: (1) unsafe free-list traversal in `get_number_of_available_objects` — fixed with atomic counters; (2) data race on `next` pointer inside union — fixed by moving to `std::atomic<Slot<T>*> free_next` outside the union. Both produced ~1-in-100 failure rate under stress.
 
 **Bug fixed in `ExpandableSlabAllocator`:** `drain_empty_slab_queue()` was destroying a `SlabAllocator` (via `unique_ptr::reset()`) while still traversing the Vyukov queue whose nodes are embedded inside that slab. Fixed by collecting all slab IDs into a `std::vector` first, then processing them after the queue traversal completes. The vector allocation is on a cold path and not a hot-path concern. Detected by ASan on `ExpandableSlabAllocatorTest.OldSlabIsDestroyedAfterChaining`.
 
@@ -122,11 +124,6 @@ Target environment is **low-latency** (sub-100ns encode/decode). Heap allocation
 - `pending_send_` — each manager owns its own `std::optional<ReactorControlCommand>` for blocked `SendPdu` commands
 - ConnectionID space is shared between inbound and outbound: the Reactor allocates the ID and passes it into both managers as a parameter, avoiding coupling
 
-**Reactor decomposition (complete):**
-The Reactor has been refactored. `InboundConnectionManager` and `OutboundConnectionManager` are written and integrated. The Reactor inherits from `ThreadLookupInterface` and delegates to the two managers.
-
----
-
 ### 5. OutboundConnection
 
 Represents one reactor-managed outbound TCP connection. Lives in `OutboundConnectionManager::connections_` map.
@@ -166,8 +163,6 @@ Represents one reactor-managed outbound TCP connection. Lives in `OutboundConnec
 - `last_activity_time_` — for idle timeout enforcement
 - `target_thread_id_` — for `ConnectionLost` delivery
 
-`InboundConnection` no longer owns `PduParser`, `PduFramer`, or any slab bookkeeping — all of that lives in the handler.
-
 **Protocol handler strategy:**
 
 | Class | One-liner |
@@ -192,7 +187,7 @@ Represents one reactor-managed outbound TCP connection. Lives in `OutboundConnec
 
 ### 7. Raw Socket Communication Design
 
-This section documents how raw byte streams (alien protocols such as ASCII FIX, NMEA, or any custom binary protocol) are handled end-to-end. This is the most complex path in the framework because unlike PDU connections, the application thread is responsible for its own message framing.
+This section documents how raw byte streams (alien protocols such as ASCII FIX, or any custom binary protocol) are handled end-to-end. This is the most complex path in the framework because unlike PDU connections, the application thread is responsible for its own message framing.
 
 **Overview**
 
@@ -210,8 +205,6 @@ A stream-oriented ring buffer using virtual memory mirroring.
 | Tail | Advanced by the reactor thread only, in response to `CommitRawBytes` |
 | Exposed to app | `read_ptr()` — pointer to first unprocessed byte; `bytes_available()` — count of unprocessed bytes; `tail()` — current tail position |
 | Backpressure | If `space_remaining() == 0` when `on_data_ready()` fires, the connection is disconnected. A rogue or slow peer that fills the buffer is disconnected; all other connections are unaffected. |
-
-Unit tests: `MirroredBufferTest` — including `VerifiesVirtualMemoryMirroringContinuity` and `HandlesExhaustiveWrapAroundStress` (1000 iterations).
 
 **`RawBytesProtocolHandler`**
 
@@ -245,7 +238,7 @@ Outbound path: identical to `PduProtocolHandler` — `PduFramer` handles partial
 
 The application thread subclass must implement `on_raw_socket_message()`. Each call receives ALL currently unprocessed bytes from the tail — not just the newly arrived bytes. The tail only advances when the reactor processes a `CommitRawBytes` command. Between two calls, if the tail has not yet advanced, `payload()` points to the same start address and `payload_size()` may be larger.
 
-Correct application thread pattern (as used in `BurstListenerThread`):
+The application thread pattern (as used in `BurstListenerThread`) employs the following:
 - Track `bytes_decoded_` (bytes decoded since the last tail advance) and `last_tail_` (tail position from the last delivery).
 - On each call, compare `message.tail_position()` against `last_tail_`. If different, the tail advanced — reset `bytes_decoded_` to 0.
 - Decode from `data + bytes_decoded_` for `available - bytes_decoded_` bytes.
@@ -457,7 +450,25 @@ The receiving node's reactor accepts data via epoll and delivers it zero-copy to
 
 ## Session Accomplishments
 
-### Session 18 (current)
+### Session 19 (current)
+
+**Quill SPSC queue initial capacity raised to 32 MiB (`PubsubFrontendOptions`).** Under high-throughput runs the default 128 KiB Quill SPSC queue was doubling seven times (reaching 32 MiB) before stabilising, printing an INFO reallocation message on each doubling. A new `PubsubFrontendOptions` struct (`libraries/pubsub_itc_fw/include/pubsub_itc_fw/PubsubFrontendOptions.hpp`) sets `initial_queue_capacity = 32 MiB` to match the observed worst case and eliminates all reallocation. Queue type remains `UnboundedBlocking` so producers block rather than drop if the queue ever exceeds the 2 GiB cap. Physical memory is only touched as the queue fills — the 32 MiB is virtual address space reserved up-front. A companion `QuillLoggerFrontendOptions.hpp` wires the options into the logger type. Files: `PubsubFrontendOptions.hpp` (new), `QuillLoggerFrontendOptions.hpp` (new), `QuillLogger.hpp`, `QuillLogger.cpp`.
+
+**SequencerThread WAL routing map removed from replay.** WAL replay on restart was rebuilding the `seq_no → gateway_session_conn_id` routing map. This was incorrect: after a restart the ME has already sent ERs for any in-flight orders from the previous run and those ERs will not be re-sent. Keeping stale entries caused unbounded heap growth under high throughput. Fix: the WAL `open()` replay callback is now `nullptr`; replay only recovers `next_sequence_number_`. ER PDUs whose seq_no is not in the routing map are handled gracefully by the existing "not in routing map" fallback. The log message on successful WAL recovery was simplified accordingly. File: `applications/sequencer/SequencerThread.cpp`.
+
+**`FixErEncoder` — zero-allocation outbound ER encoder.** The outbound Execution Report path had been using `FixSerialiser`, which builds an `unordered_map<int, string>` inside a `FixMessage` and allocates on every ER sent. Profiling identified this as 3.34% of gateway CPU (heap allocation in libc). Replaced with a new `FixErEncoder` class (`FixErEncoder.cpp`, `FixErEncoder.hpp`) that writes directly to a caller-supplied fixed-size buffer via a `FixWireWriter` cursor/limit helper. No heap allocation on the hot path. `FixGatewaySeqThread` now calls `FixErEncoder::encode()` directly instead of constructing a `FixMessage`. Files: `FixErEncoder.cpp` (new), `FixErEncoder.hpp` (new), `FixGatewaySeqThread.cpp`.
+
+**`ApplicationThreadTest.MessageProcessing` flakiness fix.** The test used a 200 ms startup wait before sending messages. On a loaded CI system this was too tight — the application thread had not yet reached its event loop. Increased to 5000 ms. File: `libraries/pubsub_itc_fw/tests/ApplicationThreadTest.cpp`.
+
+**Performance test infrastructure.** Added `monitor_memory.py` (memory monitor for multi-process test runs) and `perf_run.sh` (shell driver for `perf record` runs). Various fixes to `perf_run.py`: call-graph mode switched from `fp` to `dwarf` (frame-pointer unwinding lost kernel frames), SIGKILL issued immediately on successful test completion.
+
+**Burst=50 end-to-end test.** 50 fix8 clients × burst=50 × 1000 orders = **2,500,000 orders** processed end-to-end with no drops. `matching_engine.log` contained exactly 5,000,000 entries (NOS + ER per order). Pool-exhaustion warnings in the log are benign — they indicate slab chaining working correctly, not allocation failures. Initial "Connection refused" and end-of-run "gateway connection lost" messages are expected startup/shutdown races.
+
+**Build and test status at session end:** all unit tests pass, all integration tests pass. Burst=50 test clean.
+
+---
+
+### Session 18
 
 **Unit and integration test coverage improvements — PduParser, OutboundConnectionManager, and coverage tooling fix.**
 
@@ -1024,6 +1035,8 @@ Both fields are required. There are no optional config fields — making a field
 
 ## WAL and HA Design (planned)
 
+> **Topology diagram:** `pubsub_itc_fw_topology.puml` (rendered via PlantUML) is the authoritative single-site, single-instrument deployment diagram for everything described in this section. Its companion explanation is `pubsub_itc_fw_topology.md`.
+
 Designed in conversation, not yet implemented. This section captures the architecture so subsequent sessions can refer back to it. The implementation is staged into vertical slices, listed at the end.
 
 The design follows the convergent pattern that Aeron Cluster, Kafka, Raft, and database checkpointing all arrive at: **separate the irreversible decision (WAL commit) from its replayable effects (ME state, ERs, FIX out).** The WAL is authoritative; everything downstream is reconstructable from it. Followers observe commits, never infer them. Leadership decides who may append; the WAL decides what already happened. Those two concerns must never leak into each other.
@@ -1490,6 +1503,8 @@ This is the **fencing token / epoch / leader-epoch** pattern (same family as Raf
 
 ### Arbiter PSA topology
 
+> **Topology diagram:** `pubsub_itc_fw_topology.puml` (rendered via PlantUML) shows the complete deployment topology for the single-site, single-instrument case: FIX clients, gateway pool, sequencer pair, ME pair, arbiter pair, and witness. Its companion explanation is `pubsub_itc_fw_topology.md`. This section describes the arbiter pool portion of that diagram.
+
 The arbiter is itself HA, using a Primary-Secondary-Arbiter (PSA, also called Primary-Secondary-Witness) topology with three machines:
 
 - **Arbiter primary** -- a full arbiter instance, holds the leadership-state map for every component pair.
@@ -1865,7 +1880,65 @@ Each item names what is unknown, what would change once the answer is known, and
 
 The legacy stub described two sequencer instances with the gateway dual-publishing every order PDU to both, so a follower stayed in sync and failover would be gap-free. That stub never fully landed: session 15 removed the secondary sequencer and the dual-publish mechanism because their semantics under the "behaves as unconditional leader" stub were broken (both sequencers would forward to the ME, producing duplicate fills). The full WAL+HA design above replaces this stub. When the design lands, the secondary returns as a passive follower (not a parallel publisher), order PDUs go only to the leader, and the WAL replication channel keeps the follower in sync.
 
-For the framework's *generic* leader-follower DSL protocol (separate from the sequencer-specific design above), the four-node DR topology described in subsystem 12 still applies. The sequencer-specific design uses a simpler topology (two sequencers + one arbiter, single site) because matching-engine workloads have different durability constraints than the framework's generic streaming use case.
+For the framework's *generic* leader-follower DSL protocol (separate from the sequencer-specific design above),
+the five-node topology described in subsystem 12 still applies.
+The sequencer-specific design uses a simpler topology (two sequencers + one arbiter, single site)
+because matching-engine workloads have different durability constraints than the framework's generic streaming use case.
+
+---
+
+## Running and Testing the System
+
+### Scripts
+
+Two Python scripts live in the project root.
+
+**`start_fix_seq_system.py`** — starts the full system for interactive testing.
+
+```
+./start_fix_seq_system.py build/installed
+./start_fix_seq_system.py build/installed --startup-delay 2.0
+./start_fix_seq_system.py build/installed --valgrind --valgrind_command "valgrind"
+```
+
+Starts 7 processes in dependency order: witness → arbiter-primary → arbiter-secondary → sample_fix_gateway_seq → sequencer-primary → sequencer-secondary → matching_engine. Monitors for unexpected exits. Ctrl-C sends SIGTERM to all processes.
+
+**`perf_run.py`** — starts the full system, attaches `perf record` to gateway and ME, fires fix8 NOS orders, waits for completion, SIGTERMs everything, then produces per-process perf reports and flamegraph SVGs.
+
+```
+./perf_run.py                              # 1 client, 1 burst (1 000 orders)
+./perf_run.py --burst=5                    # 1 client, 5 000 orders
+./perf_run.py --clients=3 --burst=4        # 3 clients × 4 bursts = 12 000 orders
+./perf_run.py build/installed --burst=2    # explicit install prefix
+```
+
+Output goes to `build/installed/perf/<YYYYMMDD_HHMMSS>/`. Requires `perf` in PATH and the FlameGraph scripts at `/home/marlowa/mystuff/FlameGraph`.
+
+### Manual fix8 testing
+
+fix8 is installed at `/home/marlowa/mystuff/fix8_install`. The test binary and config must be run from that directory:
+
+```
+cd /home/marlowa/mystuff/fix8_install
+./bin/f8test -c myfix_gateway_client.xml -N GW1
+```
+
+`-N GW1` selects the session name from the XML config. Once the FIX Logon is established, interactive commands at the prompt:
+
+| Command | Effect |
+|---|---|
+| `T` | Send 1 000 NewOrderSingle messages |
+| `T` repeated | Each `T` sends another 1 000; type it N times for N × 1 000 orders |
+| `d` | Toggle debug output |
+| `q` | Quit (sends FIX Logout) |
+
+Add `-d` on the command line for verbose debug output from startup:
+
+```
+./bin/f8test -d -c myfix_gateway_client.xml -N GW1
+```
+
+The gateway listens for FIX connections on port 9879. The matching engine log at `build/installed/log/matching_engine.log` contains `ME-ORD-N` entries that confirm each order was processed.
 
 ---
 
@@ -2006,13 +2079,13 @@ encode(msg, wire_buf, real);
 
 ## Gateway Performance Analysis
 
-Run identifier: **20260525_220617**.  
-Profiling flags: `perf record --call-graph dwarf -F 999`.  
-Kernel tuning: `/proc/sys/kernel/kptr_restrict = 0`, `/proc/sys/kernel/perf_event_paranoid = -1`.  
-Binary: `sample_fix_gateway_seq` (RelWithDebInfo, full DWARF).  
+Run identifier: **20260525_220617**.
+Profiling flags: `perf record --call-graph dwarf -F 999`.
+Kernel tuning: `/proc/sys/kernel/kptr_restrict = 0`, `/proc/sys/kernel/perf_event_paranoid = -1`.
+Binary: `sample_fix_gateway_seq` (RelWithDebInfo, full DWARF).
 Workload: fix8 sending 100,000 NewOrderSingles + OrderCancelRequests over loopback (127.0.0.1).
 
-> **Why dwarf instead of fp?**  
+> **Why dwarf instead of fp?**
 > With `--call-graph fp` the call chain was lost whenever a sample landed inside a syscall or a kernel function that did not preserve the frame pointer register. This caused 53 % of gateway samples to appear as `[unknown] [k] 0xffffffff…` (genuine kernel addresses hidden by the default `kptr_restrict=1`). Switching to `--call-graph dwarf` records the full register state at sample time and unwinds both userspace and kernel stacks offline using DWARF unwind tables. Setting `kptr_restrict=0` then resolved the kernel symbol names. Data file size grew from ~550 KB to ~12 MB reflecting the richer per-sample data.
 
 ### Category breakdown — gateway reactor thread (`sample_fix_gate`)
@@ -2085,7 +2158,7 @@ Every NOS crossing the app-thread → reactor boundary allocates and frees a `Re
 | Timestamp formatting | `__strftime_internal` 0.50 % + `__tz_convert` 0.23 % + `__offtime` 0.13 % | **0.86 %** |
 | Memory operations | `__memchr_avx2` 0.78 % + `__memmove_avx_unaligned_erms` 0.55 % | **1.33 %** |
 
-The heap cost (3.34 %) is driven by the outbound `FixMessage` — `unordered_map<int, string>` inside `FixSerialiser` allocates on every ER sent. Replacing it with a flat fixed-size structure would eliminate this.  
+The heap cost (3.34 %) is driven by the outbound `FixMessage` — `unordered_map<int, string>` inside `FixSerialiser` allocates on every ER sent. Replacing it with a flat fixed-size structure would eliminate this.
 The timestamp cost (0.86 %) comes from `FixSerialiser::current_utc_timestamp()` being called once per ER; caching it at second resolution would reduce this to near zero.
 
 ### Quill backend thread (`Quill_Backend`)
@@ -2120,9 +2193,9 @@ These are normal for a TCP-over-loopback workload and cannot be reduced without 
 
 ### Priority list for further optimisation
 
-1. **Flush nftables rules before benchmarking** — recovers 13 % at zero code cost.  
-2. **Reduce GW-NOS-RECV / GW-ER-SENT to Debug level** — eliminates ~1 M Quill writes and reduces Quill backend load substantially.  
-3. **Replace `FixMessage` (outbound ER path) with a flat fixed-size structure** — eliminates 3.34 % heap allocation from libc.  
-4. **Cache `FixSerialiser::current_utc_timestamp()` at second resolution** — eliminates 0.86 % strftime cost.  
-5. **Batch `ReactorControlCommand` allocations** — reduces 5.34 % framework overhead; requires API change.  
+1. **Flush nftables rules before benchmarking** — recovers 13 % at zero code cost.
+2. **Reduce GW-NOS-RECV / GW-ER-SENT to Debug level** — eliminates ~1 M Quill writes and reduces Quill backend load substantially.
+3. **Replace `FixMessage` (outbound ER path) with a flat fixed-size structure** — eliminates 3.34 % heap allocation from libc.
+4. **Cache `FixSerialiser::current_utc_timestamp()` at second resolution** — eliminates 0.86 % strftime cost.
+5. **Batch `ReactorControlCommand` allocations** — reduces 5.34 % framework overhead; requires API change.
 6. **Switch to Unix domain sockets for intra-host connections** — bypasses kernel TCP entirely (39 % of samples); largest possible gain but highest effort.

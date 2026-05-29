@@ -20,9 +20,12 @@ namespace sequencer {
  * them to the originating gateway. Only the leader forwards; the follower
  * receives but discards, staying in sync so that failover is gap-free.
  *
- * HA: primary and secondary instances are managed by the leader-follower
- * protocol. A lightweight main-site arbiter resolves startup ties.
- * DR arbiters are not used for this topology.
+ * HA: primary and secondary instances are managed by the arbiter pool
+ * (arbiter-primary, arbiter-secondary, witness). Each sequencer connects
+ * to both arbiter instances. The arbiter makes authoritative leadership
+ * decisions; the witness resolves ties within the arbiter pair itself.
+ *
+ * See pubsub_itc_fw_topology.puml for the authoritative topology.
  */
 struct SequencerConfiguration {
     // ----------------------------------------------------------------
@@ -69,17 +72,30 @@ struct SequencerConfiguration {
     uint16_t matching_engine_port{7020};
 
     // ----------------------------------------------------------------
-    // HA -- leader-follower
+    // HA -- leader-follower via arbiter pool
     // ----------------------------------------------------------------
 
     /** @brief Unique integer identifier for this sequencer instance. Lowest wins. */
     int32_t instance_id{1};
 
-    /** @brief Host address of the main-site arbiter. */
-    std::string arbiter_host{"127.0.0.1"};
+    /** @brief Host address of the primary arbiter's component listener. */
+    std::string arbiter_primary_host{"127.0.0.1"};
 
-    /** @brief TCP port of the main-site arbiter. */
-    uint16_t arbiter_port{7100};
+    /** @brief TCP port of the primary arbiter's component listener. */
+    uint16_t arbiter_primary_port{7200};
+
+    /** @brief Host address of the secondary arbiter's component listener. */
+    std::string arbiter_secondary_host{"127.0.0.1"};
+
+    /** @brief TCP port of the secondary arbiter's component listener. */
+    uint16_t arbiter_secondary_port{7201};
+
+    /**
+     * @brief How long to wait for an ArbitrationDecision from the active arbiter
+     * before self-promoting using the local instance-id rule (degraded mode).
+     * Only applies when ha_enabled=true.
+     */
+    int32_t arbitration_timeout_seconds{3};
 
     // ----------------------------------------------------------------
     // HA mode -- when false, the sequencer starts as leader immediately

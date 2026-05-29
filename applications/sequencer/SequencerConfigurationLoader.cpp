@@ -56,11 +56,24 @@ SequencerConfiguration SequencerConfigurationLoader::load(const std::string& fil
         config.matching_engine_port = static_cast<uint16_t>(matching_engine_port);
 
         if (config.ha_enabled) {
-            toml.get_required_except("ha.arbiter_host", config.arbiter_host);
-            int32_t arbiter_port = 0;
-            toml.get_required_except("ha.arbiter_port", arbiter_port);
-            validate_port(arbiter_port, "ha.arbiter_port");
-            config.arbiter_port = static_cast<uint16_t>(arbiter_port);
+            toml.get_required_except("ha.arbiter_primary_host", config.arbiter_primary_host);
+            int32_t arbiter_primary_port = 0;
+            toml.get_required_except("ha.arbiter_primary_port", arbiter_primary_port);
+            validate_port(arbiter_primary_port, "ha.arbiter_primary_port");
+            config.arbiter_primary_port = static_cast<uint16_t>(arbiter_primary_port);
+
+            toml.get_required_except("ha.arbiter_secondary_host", config.arbiter_secondary_host);
+            int32_t arbiter_secondary_port = 0;
+            toml.get_required_except("ha.arbiter_secondary_port", arbiter_secondary_port);
+            validate_port(arbiter_secondary_port, "ha.arbiter_secondary_port");
+            config.arbiter_secondary_port = static_cast<uint16_t>(arbiter_secondary_port);
+
+            int32_t arbitration_timeout_seconds = 0;
+            toml.get_required_except("ha.arbitration_timeout_seconds", arbitration_timeout_seconds);
+            if (arbitration_timeout_seconds <= 0) {
+                throw pubsub_itc_fw::ConfigurationException("SequencerConfigurationLoader: ha.arbitration_timeout_seconds must be positive");
+            }
+            config.arbitration_timeout_seconds = arbitration_timeout_seconds;
 
             toml.get_required_except("peer.listen_host", config.peer_listen_host);
             toml.get_required_except("peer.host", config.peer_host);

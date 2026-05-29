@@ -79,7 +79,12 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // ConnectionIDs of the outbound peer and arbiter connections.
     pubsub_itc_fw::ConnectionID peer_conn_id_;
     pubsub_itc_fw::ConnectionID peer_inbound_conn_id_; // inbound: peer connected to us
-    pubsub_itc_fw::ConnectionID arbiter_conn_id_;
+    pubsub_itc_fw::ConnectionID arbiter_primary_conn_id_;
+    pubsub_itc_fw::ConnectionID arbiter_secondary_conn_id_;
+
+    // instance_id of the peer sequencer, learned from StatusQuery/StatusResponse.
+    // Used to populate ArbitrationReport.peer_instance_id.
+    int64_t peer_instance_id_{0};
 
     // mmap'd on-disk write-ahead log (Slice 3). Opened in on_initial_event()
     // before the sequencer begins accepting connections.
@@ -97,11 +102,13 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void send_status_response(const pubsub_itc_fw::ConnectionID& conn_id);
     void send_peer_heartbeat();
     void send_arbiter_heartbeat();
+    void send_arbitration_report();
     void write_fence_file() const;
     void handle_peer_status_query(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     void handle_peer_status_response(const pubsub_itc_fw::EventMessage& message);
     void handle_peer_heartbeat(const pubsub_itc_fw::EventMessage& message);
     void handle_peer_pdu(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
+    void handle_arbitration_decision(const pubsub_itc_fw::EventMessage& message);
 
     // seq_no → gateway_session_conn_id of the originating FIX session.
     // Keyed by the sequence number assigned to each NOS/OCR (globally unique,

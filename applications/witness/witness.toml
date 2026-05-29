@@ -1,0 +1,20 @@
+[network]
+listen_host = "127.0.0.1"
+listen_port = 7100
+
+[logging]
+applog_level = "info"
+syslog_level = "critical"
+
+[reactor]
+cpu_pinning_enabled = true
+cpu_pinning_dev_mode = true
+cpu_registry_lock_file = "/dev/shm/pubsub_cpu_registry.lock"
+
+[event_queue_pool]
+objects_per_slab = 16
+initial_slabs    = 1
+
+[command_queue_pool]
+objects_per_slab = 16
+initial_slabs    = 1

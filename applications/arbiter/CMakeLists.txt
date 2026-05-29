@@ -6,11 +6,14 @@ add_executable(arbiter
 
 target_include_directories(arbiter PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
+        ${FIX_DSL_INCLUDE_DIR}
 )
 
 target_link_libraries(arbiter PRIVATE
         pubsub_itc_fw
 )
+
+add_dependencies(arbiter leader_follower_generated)
 
 # Header files listed explicitly so CLion indexes them correctly.
 target_sources(arbiter PRIVATE

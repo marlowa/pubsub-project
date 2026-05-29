@@ -13,10 +13,13 @@ host = "127.0.0.1"
 port = 7020
 
 [ha]
-ha_enabled   = true
-instance_id  = 1
-arbiter_host = "127.0.0.1"
-arbiter_port = 7100
+ha_enabled                  = true
+instance_id                 = 1
+arbiter_primary_host        = "127.0.0.1"
+arbiter_primary_port        = 7200
+arbiter_secondary_host      = "127.0.0.1"
+arbiter_secondary_port      = 7201
+arbitration_timeout_seconds = 3
 
 [peer]
 listen_host                = "127.0.0.1"

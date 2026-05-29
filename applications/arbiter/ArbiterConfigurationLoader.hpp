@@ -10,22 +10,12 @@
 namespace arbiter {
 
 /**
- * @brief Loads an ArbiterConfiguration from a TOML file.
- *
- * Expected TOML structure:
- * @code
- * [network]
- * listen_host = "127.0.0.1"
- * listen_port = 7100
- * @endcode
- *
- * All fields are required. Throws ConfigurationException on any error.
+ * @brief Loads ArbiterConfiguration from a TOML file.
  */
 class ArbiterConfigurationLoader {
   public:
     /**
-     * @param[in] file_path Path to the TOML configuration file.
-     * @return Populated ArbiterConfiguration.
+     * @brief Load configuration from the given TOML file path.
      * @throws pubsub_itc_fw::ConfigurationException on any error.
      */
     static ArbiterConfiguration load(const std::string& file_path);

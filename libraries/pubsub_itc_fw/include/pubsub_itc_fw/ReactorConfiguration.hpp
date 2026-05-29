@@ -22,9 +22,9 @@ namespace pubsub_itc_fw {
  * the epoll event loop, thread and socket inactivity timeouts, the command
  * queue and its allocator, TCP connect timeout, and inbound PDU slab sizing.
  *
- * HA topology (primary/secondary addresses, heartbeat intervals, arbitration
- * timeouts, instance IDs) is held separately in HAConfiguration. The Reactor
- * has no knowledge of HA concerns.
+ * HA topology (primary/secondary addresses, heartbeat intervals, instance IDs)
+ * is held separately by each application. The Reactor has no knowledge of HA
+ * concerns.
  */
 struct ReactorConfiguration {
     ReactorConfiguration() {

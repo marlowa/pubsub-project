@@ -1,13 +1,13 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-#include "Arbiter.hpp"
-#include "ArbiterConfiguration.hpp"
-#include "ArbiterConfigurationLoader.hpp"
-#include "ArbiterThread.hpp"
+#include "Witness.hpp"
+#include "WitnessConfiguration.hpp"
+#include "WitnessConfigurationLoader.hpp"
 
 #include <chrono>
 #include <iostream>
+#include <memory>
 
 #include <pubsub_itc_fw/ConfigurationException.hpp>
 #include <pubsub_itc_fw/FileOpenMode.hpp>
@@ -17,12 +17,10 @@
 #include <pubsub_itc_fw/ProtocolType.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
-#include <utility>
 
-namespace arbiter {
+namespace witness {
 
-Arbiter::Arbiter(const ArbiterConfiguration& config, std::unique_ptr<pubsub_itc_fw::QuillLogger> logger)
-    : config_(config), logger_(std::move(logger)) {
+Witness::Witness(const WitnessConfiguration& config, std::unique_ptr<pubsub_itc_fw::QuillLogger> logger) : config_(config), logger_(std::move(logger)) {
     reactor_configuration_.connect_timeout = std::chrono::seconds{5};
     reactor_configuration_.socket_maximum_inactivity_interval_ = std::chrono::seconds{600};
     reactor_configuration_.inactivity_check_interval_ = std::chrono::milliseconds{500};
@@ -30,45 +28,31 @@ Arbiter::Arbiter(const ArbiterConfiguration& config, std::unique_ptr<pubsub_itc_
     reactor_configuration_.cpu_pinning_enabled = config_.cpu_pinning_enabled;
     reactor_configuration_.cpu_pinning_dev_mode = config_.cpu_pinning_dev_mode;
     reactor_configuration_.cpu_registry_lock_file = config_.cpu_registry_lock_file;
-    reactor_configuration_.command_allocator_configuration_.pool_name = "ArbiterCommandPool";
+    reactor_configuration_.command_allocator_configuration_.pool_name = "WitnessCommandPool";
     reactor_configuration_.command_allocator_configuration_.objects_per_pool = config_.command_queue_pool_objects_per_slab;
     reactor_configuration_.command_allocator_configuration_.initial_pools = config_.command_queue_pool_initial_slabs;
-    reactor_configuration_.command_allocator_configuration_.handler_for_pool_exhausted = [this](void* /*ctx*/, int objects_per_pool) {
-        PUBSUB_LOG(*logger_, pubsub_itc_fw::FwLogLevel::Warning, "ArbiterCommandPool exhausted: chaining new pool slab ({} objects)", objects_per_pool);
+    reactor_configuration_.command_allocator_configuration_.handler_for_pool_exhausted = [this](void* /*context*/, int objects_per_pool) {
+        PUBSUB_LOG(*logger_, pubsub_itc_fw::FwLogLevel::Warning, "WitnessCommandPool exhausted: chaining new pool slab ({} objects)", objects_per_pool);
     };
 
     reactor_ = std::make_unique<pubsub_itc_fw::Reactor>(reactor_configuration_, service_registry_, *logger_);
 
-    // Inbound listener for components (sequencer pair, ME pair).
     reactor_->register_inbound_listener(pubsub_itc_fw::NetworkEndpointConfiguration{config_.listen_host, config_.listen_port}, pubsub_itc_fw::ThreadID{1},
                                         pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::FrameworkPdu}, 0);
 
-    // Inbound listener for peer arbiter PDUs.
-    reactor_->register_inbound_listener(pubsub_itc_fw::NetworkEndpointConfiguration{config_.peer_listen_host, config_.peer_listen_port},
-                                        pubsub_itc_fw::ThreadID{1}, pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::FrameworkPdu}, 0);
+    witness_thread_ = pubsub_itc_fw::ApplicationThread::create<WitnessThread>(*logger_, *reactor_, config_);
 
-    arbiter_thread_ = pubsub_itc_fw::ApplicationThread::create<ArbiterThread>(*logger_, *reactor_, config_);
-    reactor_->register_thread(arbiter_thread_);
+    reactor_->register_thread(witness_thread_);
 
-    // Outbound connections: peer arbiter and witness.
-    service_registry_.add("peer", pubsub_itc_fw::NetworkEndpointConfiguration{config_.peer_host, config_.peer_port},
-                          pubsub_itc_fw::NetworkEndpointConfiguration{});
-    service_registry_.add("witness", pubsub_itc_fw::NetworkEndpointConfiguration{config_.witness_host, config_.witness_port},
-                          pubsub_itc_fw::NetworkEndpointConfiguration{});
-
-    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info,
-               "Arbiter: component listener on {}:{} peer listener on {}:{} instance_id={}", config_.listen_host, config_.listen_port,
-               config_.peer_listen_host, config_.peer_listen_port, config_.instance_id);
-    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "Arbiter: peer={}:{} witness={}:{}", config_.peer_host, config_.peer_port, config_.witness_host,
-               config_.witness_port);
+    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "Witness: listening for arbiter connections on {}:{}", config_.listen_host, config_.listen_port);
 }
 
-int Arbiter::run() const {
-    PUBSUB_LOG_STR((*logger_), pubsub_itc_fw::FwLogLevel::Info, "Arbiter: starting reactor");
+int Witness::run() {
+    PUBSUB_LOG_STR((*logger_), pubsub_itc_fw::FwLogLevel::Info, "Witness: starting reactor");
     return reactor_->run();
 }
 
-} // namespace arbiter
+} // namespace witness
 
 // ============================================================
 // main
@@ -76,7 +60,7 @@ int Arbiter::run() const {
 
 int main(int argc, char* argv[]) {
     if (argc != 3) {
-        std::cerr << "Usage: arbiter <logfile> <config.toml>\n";
+        std::cerr << "Usage: witness <logfile> <config.toml>\n";
         return 1;
     }
 
@@ -85,7 +69,7 @@ int main(int argc, char* argv[]) {
 
     const std::string writable_error = pubsub_itc_fw::QuillLogger::ensure_log_file_writable(log_file);
     if (!writable_error.empty()) {
-        std::cerr << "Arbiter: " << writable_error << "\n";
+        std::cerr << "Witness: " << writable_error << "\n";
         return 1;
     }
 
@@ -94,11 +78,11 @@ int main(int argc, char* argv[]) {
     auto logger = std::make_unique<pubsub_itc_fw::QuillLogger>(log_file, pubsub_itc_fw::FileOpenMode{pubsub_itc_fw::FileOpenMode::Truncate},
                                                                pubsub_itc_fw::FwLogLevel::Info, pubsub_itc_fw::FwLogLevel::Info);
 
-    arbiter::ArbiterConfiguration config;
+    witness::WitnessConfiguration config;
     try {
-        config = arbiter::ArbiterConfigurationLoader::load(config_file);
+        config = witness::WitnessConfigurationLoader::load(config_file);
     } catch (const pubsub_itc_fw::ConfigurationException& ex) {
-        PUBSUB_LOG((*logger), pubsub_itc_fw::FwLogLevel::Error, "Arbiter: configuration error: {}", ex.what());
+        PUBSUB_LOG((*logger), pubsub_itc_fw::FwLogLevel::Error, "Witness: configuration error: {}", ex.what());
         return 1;
     }
 
@@ -106,13 +90,13 @@ int main(int argc, char* argv[]) {
     logger->set_syslog_level(config.syslog_level);
 
     try {
-        arbiter::Arbiter app{config, std::move(logger)};
+        witness::Witness app{config, std::move(logger)};
         return app.run();
     } catch (const std::exception& ex) {
-        std::cerr << "Arbiter: fatal exception: " << ex.what() << "\n";
+        std::cerr << "Witness: fatal exception: " << ex.what() << "\n";
         return 1;
     } catch (...) {
-        std::cerr << "Arbiter: unknown fatal exception\n";
+        std::cerr << "Witness: unknown fatal exception\n";
         return 1;
     }
 }

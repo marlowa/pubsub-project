@@ -62,16 +62,20 @@ Sequencer::Sequencer(SequencerConfiguration config, std::unique_ptr<pubsub_itc_f
                           pubsub_itc_fw::NetworkEndpointConfiguration{});
     service_registry_.add("matching_engine", pubsub_itc_fw::NetworkEndpointConfiguration{config_.matching_engine_host, config_.matching_engine_port},
                           pubsub_itc_fw::NetworkEndpointConfiguration{});
-    service_registry_.add("arbiter", pubsub_itc_fw::NetworkEndpointConfiguration{config_.arbiter_host, config_.arbiter_port},
+    service_registry_.add("arbiter_primary", pubsub_itc_fw::NetworkEndpointConfiguration{config_.arbiter_primary_host, config_.arbiter_primary_port},
+                          pubsub_itc_fw::NetworkEndpointConfiguration{});
+    service_registry_.add("arbiter_secondary", pubsub_itc_fw::NetworkEndpointConfiguration{config_.arbiter_secondary_host, config_.arbiter_secondary_port},
                           pubsub_itc_fw::NetworkEndpointConfiguration{});
     service_registry_.add("peer", pubsub_itc_fw::NetworkEndpointConfiguration{config_.peer_host, config_.peer_port},
                           pubsub_itc_fw::NetworkEndpointConfiguration{});
 
     PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "Sequencer: order listener on {}:{} ER listener on {}:{} instance_id={}", config_.listen_host,
                config_.listen_port, config_.er_listen_host, config_.er_listen_port, config_.instance_id);
-    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "Sequencer: gateway={}:{} matching_engine={}:{} arbiter={}:{} peer_listen={}:{} peer={}:{}",
-               config_.gateway_host, config_.gateway_port, config_.matching_engine_host, config_.matching_engine_port, config_.arbiter_host,
-               config_.arbiter_port, config_.peer_listen_host, config_.peer_listen_port, config_.peer_host, config_.peer_port);
+    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info,
+               "Sequencer: gateway={}:{} matching_engine={}:{} arbiter_primary={}:{} arbiter_secondary={}:{} peer_listen={}:{} peer={}:{}",
+               config_.gateway_host, config_.gateway_port, config_.matching_engine_host, config_.matching_engine_port, config_.arbiter_primary_host,
+               config_.arbiter_primary_port, config_.arbiter_secondary_host, config_.arbiter_secondary_port, config_.peer_listen_host,
+               config_.peer_listen_port, config_.peer_host, config_.peer_port);
 }
 
 int Sequencer::run() const {

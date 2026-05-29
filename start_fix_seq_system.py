@@ -5,14 +5,17 @@ start_fix_seq_system.py
 Starts the sequencer-based FIX order flow system for testing with fix8.
 
 Startup order:
-  1. arbiter (primary)      -- must be up before sequencers try to connect (port 7100)
-  2. arbiter (secondary)    -- second arbiter instance (port 7101)
-  3. sample_fix_gateway_seq -- must be listening on port 7010 before sequencers
+  1. witness                -- arbiter tie-breaker; arbiters connect outbound to
+                               it (port 7100).  Must be up before the arbiters.
+  2. arbiter (primary)      -- component listener port 7200, peer listener 7203.
+                               Must be up before sequencers try to connect.
+  3. arbiter (secondary)    -- component listener port 7201, peer listener 7204.
+  4. sample_fix_gateway_seq -- must be listening on port 7010 before sequencers
                                start, because sequencers connect outbound to the
                                gateway's ER inbound listener at startup.
-  4. sequencer (primary)    -- instance_id=1, listens on port 7001
-  5. sequencer (secondary)  -- instance_id=2, listens on port 7002
-  6. matching_engine        -- connects outbound to sequencer ER listener (7021)
+  5. sequencer (primary)    -- instance_id=1, listens on port 7001
+  6. sequencer (secondary)  -- instance_id=2, listens on port 7002
+  7. matching_engine        -- connects outbound to sequencer ER listener (7021)
 
 Usage with valgrind:
   ./start_fix_seq_system.py build/installed --valgrind --valgrind_command "vg"
@@ -123,6 +126,7 @@ def main() -> None:
     log_dir = prefix / "log"
 
     executables = [
+        "witness",
         "arbiter",
         "sequencer",
         "matching_engine",
@@ -142,8 +146,12 @@ def main() -> None:
 
     processes: list[tuple[str, subprocess.Popen]] = []
 
-    # Definition of the system components
+    # Definition of the system components, in startup order.
+    # The witness must be first: arbiters connect outbound to it at startup.
+    # The arbiters must be before the sequencers: sequencers connect to both arbiters.
     steps_data = [
+        ("witness",                "witness",                "witness.log",
+         etc_dir / "witness"               / "witness.toml"),
         ("arbiter_primary",        "arbiter",                "arbiter_primary.log",
          etc_dir / "arbiter"               / "arbiter.toml"),
         ("arbiter_secondary",      "arbiter",                "arbiter_secondary.log",

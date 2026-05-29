@@ -48,7 +48,8 @@ SequencerThread::SequencerThread(pubsub_itc_fw::ApplicationThread::ConstructorTo
     , me_outbound_order_conn_id_{}
     , peer_conn_id_{}
     , peer_inbound_conn_id_{}
-    , arbiter_conn_id_{} {}
+    , arbiter_primary_conn_id_{}
+    , arbiter_secondary_conn_id_{} {}
 
 void SequencerThread::on_initial_event() {
     // WAL replay is used only to recover next_sequence_number_. The routing
@@ -92,7 +93,8 @@ void SequencerThread::on_app_ready_event() {
     connect_to_service("gateway");
     connect_to_service("matching_engine");
     if (config_.ha_enabled) {
-        connect_to_service("arbiter");
+        connect_to_service("arbiter_primary");
+        connect_to_service("arbiter_secondary");
         connect_to_service("peer");
     }
 }
@@ -107,13 +109,20 @@ void SequencerThread::on_connection_established(pubsub_itc_fw::ConnectionID id) 
     } else if (svc == "matching_engine") {
         me_outbound_order_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: matching engine order connection {} established", id.get_value());
-    } else if (svc == "arbiter") {
-        arbiter_conn_id_ = id;
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: arbiter connection {} established", id.get_value());
-        // Send heartbeats to the arbiter so its inbound inactivity timeout does
-        // not fire while the sequencer is under heavy load processing orders.
-        // Interval is short relative to the arbiter's socket_maximum_inactivity_interval_.
-        start_recurring_timer("arbiter_heartbeat", std::chrono::seconds{30});
+    } else if (svc == "arbiter_primary") {
+        const bool first_arbiter = !arbiter_primary_conn_id_.is_valid() && !arbiter_secondary_conn_id_.is_valid();
+        arbiter_primary_conn_id_ = id;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: arbiter-primary connection {} established", id.get_value());
+        if (first_arbiter) {
+            start_recurring_timer("arbiter_heartbeat", std::chrono::seconds{30});
+        }
+    } else if (svc == "arbiter_secondary") {
+        const bool first_arbiter = !arbiter_primary_conn_id_.is_valid() && !arbiter_secondary_conn_id_.is_valid();
+        arbiter_secondary_conn_id_ = id;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: arbiter-secondary connection {} established", id.get_value());
+        if (first_arbiter) {
+            start_recurring_timer("arbiter_heartbeat", std::chrono::seconds{30});
+        }
     } else if (svc == "peer") {
         peer_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: outbound peer connection {} established -- sending StatusQuery",
@@ -139,10 +148,18 @@ void SequencerThread::on_connection_lost(pubsub_itc_fw::ConnectionID id, const s
     } else if (id == me_outbound_order_conn_id_) {
         me_outbound_order_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: matching engine order connection {} lost: {}", id.get_value(), reason);
-    } else if (id == arbiter_conn_id_) {
-        arbiter_conn_id_ = pubsub_itc_fw::ConnectionID{};
-        cancel_timer("arbiter_heartbeat");
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: arbiter connection {} lost: {}", id.get_value(), reason);
+    } else if (id == arbiter_primary_conn_id_) {
+        arbiter_primary_conn_id_ = pubsub_itc_fw::ConnectionID{};
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: arbiter-primary connection {} lost: {}", id.get_value(), reason);
+        if (!arbiter_primary_conn_id_.is_valid() && !arbiter_secondary_conn_id_.is_valid()) {
+            cancel_timer("arbiter_heartbeat");
+        }
+    } else if (id == arbiter_secondary_conn_id_) {
+        arbiter_secondary_conn_id_ = pubsub_itc_fw::ConnectionID{};
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: arbiter-secondary connection {} lost: {}", id.get_value(), reason);
+        if (!arbiter_primary_conn_id_.is_valid() && !arbiter_secondary_conn_id_.is_valid()) {
+            cancel_timer("arbiter_heartbeat");
+        }
     } else if (id == peer_conn_id_) {
         peer_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: outbound peer connection {} lost: {}", id.get_value(), reason);
@@ -166,6 +183,13 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
 
     if (is_peer_pdu) {
         handle_peer_pdu(conn_id, message);
+        release_pdu_payload(message);
+        return;
+    }
+
+    // Arbiter PDUs: only ArbitrationDecision (pdu_id=201) is expected from either arbiter.
+    if (conn_id == arbiter_primary_conn_id_ || conn_id == arbiter_secondary_conn_id_) {
+        handle_arbitration_decision(message);
         release_pdu_payload(message);
         return;
     }
@@ -490,13 +514,33 @@ void SequencerThread::on_timer_event(const std::string& name) {
     }
 
     if (name == "peer_heartbeat_timeout") {
-        // No heartbeat received within the timeout window. Promote unconditionally:
-        // if both nodes start simultaneously and the peer is unreachable, the node
-        // that fires first becomes leader and the other will adopt follower via
-        // StatusResponse when it eventually connects.
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: peer heartbeat timeout -- current role={} -- promoting to leader",
-                   pubsub_itc_fw_app::to_string(role_));
+        if (role_ == pubsub_itc_fw_app::Role::leader) {
+            return; // already leader, nothing to do
+        }
+
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: peer heartbeat timeout (role={})", pubsub_itc_fw_app::to_string(role_));
+
+        if (arbiter_primary_conn_id_.is_valid() || arbiter_secondary_conn_id_.is_valid()) {
+            // Ask the active arbiter to break the tie.  Arm a fallback timer so we
+            // self-promote if no arbiter responds in time.
+            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: requesting arbitration from arbiter pool");
+            send_arbitration_report();
+            start_one_off_timer("arbitration_timeout", std::chrono::seconds(config_.arbitration_timeout_seconds));
+        } else {
+            // No arbiter connected — degrade to local instance-id rule.
+            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                           "SequencerThread: no arbiter connected -- self-promoting using instance-id rule (degraded)");
+            ++epoch_;
+            adopt_role(pubsub_itc_fw_app::Role::leader);
+        }
+        return;
+    }
+
+    if (name == "arbitration_timeout") {
+        // Witness did not reply in time. Fall back to local instance-id rule.
         if (role_ != pubsub_itc_fw_app::Role::leader) {
+            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                           "SequencerThread: arbitration timeout -- arbiter unreachable, self-promoting using instance-id rule (degraded)");
             ++epoch_;
             adopt_role(pubsub_itc_fw_app::Role::leader);
         }
@@ -514,6 +558,7 @@ void SequencerThread::on_itc_message([[maybe_unused]] const pubsub_itc_fw::Event
 static constexpr int16_t pdu_status_query = 100;
 static constexpr int16_t pdu_status_response = 101;
 static constexpr int16_t pdu_heartbeat = 102;
+static constexpr int16_t pdu_arbitration_report = 200;
 static constexpr int16_t pdu_arbitration_decision = 201;
 
 pubsub_itc_fw::ConnectionID SequencerThread::peer_active_conn() const {
@@ -621,14 +666,64 @@ void SequencerThread::send_peer_heartbeat() {
 }
 
 void SequencerThread::send_arbiter_heartbeat() {
-    if (!arbiter_conn_id_.is_valid()) {
-        return;
-    }
     pubsub_itc_fw_app::Heartbeat hb{};
     hb.instance_id = static_cast<int64_t>(config_.instance_id);
     hb.epoch = epoch_;
-    send_pdu(arbiter_conn_id_, pdu_heartbeat, 0, hb);
+    if (arbiter_primary_conn_id_.is_valid()) {
+        send_pdu(arbiter_primary_conn_id_, pdu_heartbeat, 0, hb);
+    }
+    if (arbiter_secondary_conn_id_.is_valid()) {
+        send_pdu(arbiter_secondary_conn_id_, pdu_heartbeat, 0, hb);
+    }
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: arbiter heartbeat sent (instance_id={} epoch={})", hb.instance_id, hb.epoch);
+}
+
+void SequencerThread::send_arbitration_report() {
+    pubsub_itc_fw_app::ArbitrationReport report{};
+    report.self_instance_id = static_cast<int64_t>(config_.instance_id);
+    report.peer_instance_id = peer_instance_id_;
+    report.epoch = epoch_;
+    report.proposed_role = pubsub_itc_fw_app::Role::leader;
+    if (arbiter_primary_conn_id_.is_valid()) {
+        send_pdu(arbiter_primary_conn_id_, pdu_arbitration_report, 0, report);
+    }
+    if (arbiter_secondary_conn_id_.is_valid()) {
+        send_pdu(arbiter_secondary_conn_id_, pdu_arbitration_report, 0, report);
+    }
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "SequencerThread: ArbitrationReport sent to arbiter pool (self_instance_id={} peer_instance_id={} epoch={})", report.self_instance_id,
+               report.peer_instance_id, report.epoch);
+}
+
+void SequencerThread::handle_arbitration_decision(const pubsub_itc_fw::EventMessage& message) {
+    cancel_timer("arbitration_timeout");
+
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    arena.reset();
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw_app::ArbitrationDecisionView decision{};
+
+    if (!pubsub_itc_fw_app::decode(decision, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode ArbitrationDecision -- dropping");
+        return;
+    }
+
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "SequencerThread: ArbitrationDecision received (leader={} follower={} epoch={})", decision.leader_instance_id, decision.follower_instance_id,
+               decision.epoch);
+
+    epoch_ = decision.epoch;
+
+    if (decision.leader_instance_id == static_cast<int64_t>(config_.instance_id)) {
+        adopt_role(pubsub_itc_fw_app::Role::leader);
+    } else if (decision.follower_instance_id == static_cast<int64_t>(config_.instance_id)) {
+        adopt_role(pubsub_itc_fw_app::Role::follower);
+    } else {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "SequencerThread: ArbitrationDecision does not mention this instance (instance_id={}) -- ignoring", config_.instance_id);
+    }
 }
 
 void SequencerThread::write_fence_file() const {
@@ -660,6 +755,8 @@ void SequencerThread::handle_peer_status_query(const pubsub_itc_fw::ConnectionID
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: StatusQuery received from peer (instance_id={} epoch={})", sq.instance_id,
                sq.epoch);
 
+    peer_instance_id_ = sq.instance_id;
+
     // Reply immediately so the peer can run election logic on our response.
     send_status_response(conn_id);
 
@@ -682,6 +779,8 @@ void SequencerThread::handle_peer_status_response(const pubsub_itc_fw::EventMess
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: StatusResponse received from peer (self_id={} epoch={} role={})",
                sr.self_instance_id, sr.epoch, pubsub_itc_fw_app::to_string(sr.current_role));
+
+    peer_instance_id_ = sr.self_instance_id;
 
     elect_role(sr.self_instance_id, sr.epoch, sr.current_role);
 }
@@ -725,9 +824,9 @@ void SequencerThread::handle_peer_pdu(const pubsub_itc_fw::ConnectionID& conn_id
     } else if (pdu_id == pdu_heartbeat) {
         handle_peer_heartbeat(message);
     } else if (pdu_id == pdu_arbitration_decision) {
-        // Arbiter forwarded its decision over the peer channel (not expected
-        // in the single-host topology, but handle gracefully).
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: ArbitrationDecision received (pdu_id={}) -- not yet handled", pdu_id);
+        // Should not arrive on the peer channel — decisions come from the arbiter.
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "SequencerThread: ArbitrationDecision received on peer channel (unexpected) -- dropping");
     } else {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: unknown peer PDU id {} -- dropping", pdu_id);
     }
