@@ -37,7 +37,7 @@ segment_size              = 4194304
 snapshot_interval_seconds = 30
 
 [logging]
-applog_level = "warning"
+applog_level = "info"
 syslog_level = "critical"
 
 [reactor]

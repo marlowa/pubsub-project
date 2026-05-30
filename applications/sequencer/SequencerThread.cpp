@@ -203,9 +203,8 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         // Order PDU from a gateway instance. As leader, stamp a sequence number
         // and forward to the matching engine.
         //
-        // TODO: SequencedMessage envelope -- currently we forward the raw PDU
-        // bytes directly to the ME without wrapping. The SequencedMessage
-        // wrapper will be added once the ME decode path is implemented.
+        // seq_no is carried in the PDU transport header (third arg to send_pdu).
+        // The ME reads it via message.seq_no() and echoes it on the ER reply.
         const int64_t seq = next_sequence_number_++;
 
         // WAL commit: append before forwarding -- the append is the
@@ -647,9 +646,10 @@ void SequencerThread::send_status_response(const pubsub_itc_fw::ConnectionID& co
     sr.peer_instance_id = 0; // we don't know the peer's ID here; it's in the query
     sr.epoch = epoch_;
     sr.current_role = role_;
+    sr.next_sequence_number = next_sequence_number_;
     send_pdu(conn_id, pdu_status_response, 0, sr);
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: StatusResponse sent on connection {} (role={} epoch={})", conn_id.get_value(),
-               pubsub_itc_fw_app::to_string(role_), epoch_);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: StatusResponse sent on connection {} (role={} epoch={} next_seq={})",
+               conn_id.get_value(), pubsub_itc_fw_app::to_string(role_), epoch_, next_sequence_number_);
 }
 
 void SequencerThread::send_peer_heartbeat() {
@@ -777,12 +777,23 @@ void SequencerThread::handle_peer_status_response(const pubsub_itc_fw::EventMess
         return;
     }
 
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: StatusResponse received from peer (self_id={} epoch={} role={})",
-               sr.self_instance_id, sr.epoch, pubsub_itc_fw_app::to_string(sr.current_role));
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: StatusResponse received from peer (self_id={} epoch={} role={} next_seq={})",
+               sr.self_instance_id, sr.epoch, pubsub_itc_fw_app::to_string(sr.current_role), sr.next_sequence_number);
 
     peer_instance_id_ = sr.self_instance_id;
 
     elect_role(sr.self_instance_id, sr.epoch, sr.current_role);
+
+    // Sync next_sequence_number_ if the peer is ahead. This covers WAL recovery:
+    // a restarting node reads its WAL and gets next_sequence_number_=N, but the
+    // peer (leader) may have advanced to M > N while this node was down. Without
+    // this sync the restarted follower would stamp wrong seq numbers and corrupt
+    // the sequence when it is later promoted to leader.
+    if (sr.next_sequence_number > next_sequence_number_) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: advancing next_sequence_number_ from {} to {} (peer is ahead)", next_sequence_number_, sr.next_sequence_number);
+        next_sequence_number_ = sr.next_sequence_number;
+    }
 }
 
 void SequencerThread::handle_peer_heartbeat(const pubsub_itc_fw::EventMessage& message) {

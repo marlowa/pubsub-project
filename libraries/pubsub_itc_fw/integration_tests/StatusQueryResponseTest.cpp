@@ -184,6 +184,7 @@ class ListenerThread : public ApplicationThread {
             response.self_instance_id = 99;
             response.peer_instance_id = received_query.instance_id;
             response.epoch = received_query.epoch;
+            response.next_sequence_number = 1001;
 
             send_pdu(conn_id, PDU_ID_STATUS_RESPONSE, 0, response);
             response_sent.store(true, std::memory_order_release);
@@ -292,6 +293,7 @@ TEST_F(StatusQueryResponseTest, StatusQueryResponseRoundTrip) {
     EXPECT_EQ(connector_thread->received_response.self_instance_id, 99);
     EXPECT_EQ(connector_thread->received_response.peer_instance_id, 42);
     EXPECT_EQ(connector_thread->received_response.epoch, 7);
+    EXPECT_EQ(connector_thread->received_response.next_sequence_number, 1001);
 
     // --- Shutdown both reactors ---
     listener_reactor->shutdown("test complete");

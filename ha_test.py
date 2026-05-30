@@ -167,6 +167,14 @@ _SEQ_ROLE  = "SequencerThread: role transition"
 _ARB_ROLE  = "ArbiterThread: role transition"
 _TO_LEADER = "-> leader"
 
+# Readiness markers for a sequencer restarting as follower.
+_SEQ_FOLLOWER_MARKERS = (
+    "SequencerThread: role transition",
+    "-> follower",
+)
+_SEQ_FOLLOWER_TIMEOUT = 15.0   # seconds
+SETTLE_AFTER_RESTART  = 2.0    # seconds after a sequencer restart before proceeding
+
 # Readiness marker for a restarted matching engine.
 #
 # We wait for the sequencer's inbound ORDER connection to the ME to be
@@ -195,11 +203,17 @@ class KillStep(NamedTuple):
                         None when secondary_log_name is None.
     settle_secs:        how long to wait after the kill (or after failover is
                         confirmed) before proceeding to the next step.
+    failover_to:        override the derived name used in log messages for the
+                        process that takes over.  None uses the default
+                        proc_name.replace("_primary", "_secondary") derivation.
+                        Required when killing a _secondary and the _primary
+                        takes over (e.g. WAL recovery scenario).
     """
     proc_name: str
     secondary_log_name: str | None
     role_prefix: str | None
     settle_secs: float
+    failover_to: str | None = None
 
 
 class RestartStep(NamedTuple):
@@ -224,13 +238,27 @@ class RestartStep(NamedTuple):
     settle_secs: float
 
 
+class InterimOrdersStep(NamedTuple):
+    """
+    Send a batch of orders mid-Phase-4 and wait for ME confirmation.
+
+    Used in WAL-recovery scenarios where orders must flow through an
+    intermediate leader before the original primary is restarted.
+    count_batches * 1000 orders are sent and confirmed before proceeding.
+    """
+    count_batches: int
+
+
 class Scenario(NamedTuple):
     number: int
     short_name: str
     description: str
     expected_outcome: str
-    steps: list           # list[KillStep]
-    restart_steps: list = []  # list[RestartStep]
+    steps: list              # list[KillStep] — used when extra_steps is empty
+    restart_steps: list = [] # list[RestartStep] — used when extra_steps is empty
+    extra_steps: list = []   # list[KillStep|RestartStep|InterimOrdersStep]
+                             # When non-empty, replaces steps+restart_steps in
+                             # Phase 4 and suppresses orders_during sending.
 
 
 # ── helpers shared by scenario definitions ────────────────────────────────────
@@ -658,6 +686,68 @@ _SCENARIOS: list[Scenario] = [
         ],
         restart_steps=[_me_restart_step()],
     ),
+
+    # 14 — WAL recovery: primary sequencer restarts as follower then re-elected
+    #
+    # This scenario validates the write-ahead log:
+    #
+    #   a. sequencer_primary is leader; processes 1000 baseline orders
+    #      (WAL records seq 1–1000).
+    #   b. sequencer_primary is killed; sequencer_secondary is elected leader
+    #      at epoch 1.
+    #   c. 1000 interim orders are processed by the secondary (seq 1001–2000).
+    #   d. sequencer_primary is restarted; it reads the WAL to recover
+    #      next_sequence_number_=1001, then the peer protocol must communicate
+    #      the secondary's current sequence number (2001) so the primary can
+    #      sync and rejoin as follower at the correct position.
+    #   e. sequencer_secondary is killed; sequencer_primary is elected leader.
+    #   f. 1000 recovery orders → target ME-ORD-3000.
+    #
+    # If WAL recovery + peer sequence-number sync work correctly the primary
+    # resumes from seq 2001 and the ME log shows seq 1–1000, 1001–2000, 2001–3000
+    # — monotonically increasing, no resets.  If the primary fails to sync and
+    # resets to seq 1001, the ME log shows the range 1001–2000 a second time;
+    # the seq monotonicity check catches the reset and the test fails.
+    # (ME-ORD-3000 is reached in both cases because ME-ORD is the ME's own
+    # counter, independent of sequencer seq numbers — checking ME-ORD alone is
+    # insufficient to validate WAL+sync correctness.)
+    Scenario(
+        number=14,
+        short_name="wal_recovery",
+        description="WAL recovery: primary sequencer restarts as follower then re-elected leader",
+        expected_outcome=(
+            "sequencer_primary restarts, reads WAL, syncs sequence number from "
+            "peer and rejoins as follower; after secondary dies primary is "
+            "re-elected and continues from the correct sequence number — "
+            "no ME-ORD gap or reset"
+        ),
+        steps=[],
+        restart_steps=[],
+        extra_steps=[
+            KillStep(
+                proc_name="sequencer_primary",
+                secondary_log_name="sequencer_secondary.log",
+                role_prefix=_SEQ_ROLE,
+                settle_secs=SETTLE_AFTER_FAILOVER,
+            ),
+            InterimOrdersStep(count_batches=1),
+            RestartStep(
+                proc_name="sequencer_primary",
+                ready_log_name="sequencer_primary.log",
+                ready_markers=_SEQ_FOLLOWER_MARKERS,
+                ready_timeout=_SEQ_FOLLOWER_TIMEOUT,
+                resets_me_counter=False,
+                settle_secs=SETTLE_AFTER_RESTART,
+            ),
+            KillStep(
+                proc_name="sequencer_secondary",
+                secondary_log_name="sequencer_primary.log",
+                role_prefix=_SEQ_ROLE,
+                settle_secs=SETTLE_AFTER_FAILOVER,
+                failover_to="sequencer_primary",
+            ),
+        ],
+    ),
 ]
 
 _SCENARIO_MAP: dict[int, Scenario] = {s.number: s for s in _SCENARIOS}
@@ -769,6 +859,36 @@ def find_last_me_ord(me_log: Path, from_byte: int = 0) -> int:
     return last_ord
 
 
+def check_me_seq_monotonic(me_log: Path) -> tuple[bool, list[tuple[int, int, int]]]:
+    """
+    Scan the ME log for 'NewOrderSingle seq=N' lines and verify seq numbers are
+    monotonically increasing (gaps are permitted; resets are not).
+
+    Returns (ok, violations) where violations is a list of
+    (position, previous_seq, bad_seq) for each non-monotonic step.
+
+    A reset means a seq number arrived that is <= the previous one, which
+    indicates that a sequencer was promoted to leader but had not synced its
+    next_sequence_number_ from the peer (WAL recovery bug).
+    """
+    pattern = re.compile(r"NewOrderSingle seq=(\d+)")
+    seq_numbers: list[int] = []
+    try:
+        with open(me_log, "r", errors="replace") as fh:
+            for line in fh:
+                m = pattern.search(line)
+                if m:
+                    seq_numbers.append(int(m.group(1)))
+    except FileNotFoundError:
+        return True, []
+    violations = [
+        (i, seq_numbers[i - 1], seq_numbers[i])
+        for i in range(1, len(seq_numbers))
+        if seq_numbers[i] <= seq_numbers[i - 1]
+    ]
+    return len(violations) == 0, violations
+
+
 def launch_app(name: str, bin_name: str, config: Path,
                bin_dir: Path, log_dir: Path) -> subprocess.Popen:
     if not config.is_file():
@@ -864,7 +984,11 @@ def do_kill_step(
         return False, step.proc_name, 0.0
 
     # Failover expected: poll the secondary log for the leader role transition.
-    secondary_name = step.proc_name.replace("_primary", "_secondary")
+    secondary_name = (
+        step.failover_to
+        if step.failover_to
+        else step.proc_name.replace("_primary", "_secondary")
+    )
     secondary_log  = log_dir / step.secondary_log_name
 
     log(
@@ -988,12 +1112,17 @@ def run_scenario(scenario: Scenario, args) -> bool:
         stale.unlink(missing_ok=True)
 
     # ── header ────────────────────────────────────────────────────────────────
-    kill_seq_parts = [
-        s.proc_name + (" [failover expected]" if s.secondary_log_name else "")
-        for s in scenario.steps
-    ]
-    kill_seq_parts += [f"RESTART:{rs.proc_name}" for rs in scenario.restart_steps]
-    kill_seq = " → ".join(kill_seq_parts) if kill_seq_parts else "(none)"
+    def _step_label(s) -> str:
+        if isinstance(s, KillStep):
+            return s.proc_name + (" [failover expected]" if s.secondary_log_name else "")
+        if isinstance(s, RestartStep):
+            return f"RESTART:{s.proc_name}"
+        if isinstance(s, InterimOrdersStep):
+            return f"({s.count_batches * 1000} interim orders)"
+        return str(s)
+
+    effective_steps = scenario.extra_steps or (list(scenario.steps) + list(scenario.restart_steps))
+    kill_seq = " → ".join(_step_label(s) for s in effective_steps) if effective_steps else "(none)"
 
     log("=" * 60)
     log(f"  ha_test  —  Scenario {scenario.number}: {scenario.description}")
@@ -1027,14 +1156,17 @@ def run_scenario(scenario: Scenario, args) -> bool:
          etc_dir / "matching_engine"        / "matching_engine.toml"),
     ]
 
-    app_procs:      list[tuple[str, subprocess.Popen]] = []
-    proc_by_name:   dict[str, subprocess.Popen]        = {}
-    f8proc:         subprocess.Popen | None             = None
-    result_pass     = False
-    kill_results:   list[tuple[bool, str, float]]      = []
-    restart_results: list[tuple[str, float]]           = []
-    before_total    = 0
-    after_total     = 0
+    app_procs:       list[tuple[str, subprocess.Popen]] = []
+    proc_by_name:    dict[str, subprocess.Popen]        = {}
+    f8proc:          subprocess.Popen | None             = None
+    result_pass      = False
+    kill_results:    list[tuple[bool, str, float]]      = []
+    restart_results: list[tuple[str, float]]            = []
+    phase4_results:  list                               = []
+    before_total     = 0
+    after_total      = 0
+    running_me_total = 0
+    running_me_pos   = 0
 
     try:
         # ── Phase 1: start all processes ──────────────────────────────────────
@@ -1098,12 +1230,14 @@ def run_scenario(scenario: Scenario, args) -> bool:
         if not found:
             die("baseline orders did not complete — system is not healthy")
         log(f"  {before_total} baseline orders confirmed ({elapsed:.1f}s)")
+        running_me_total = before_total
+        running_me_pos   = me_pos
 
         # Send extra T commands WITHOUT waiting — these orders will be in flight
         # during Phase 4 so the kill happens while the system is under load.
-        # Some may be lost during failover; Phase 5 adjusts the target
-        # dynamically based on the actual ME count at that point.
-        if args.orders_during > 0:
+        # Suppressed for extra_steps scenarios (e.g. WAL recovery) where
+        # precise control of order counts between steps is required.
+        if args.orders_during > 0 and not scenario.extra_steps:
             log(
                 f"  Sending {args.orders_during * 1000} in-flight orders "
                 f"(will span Phase 4 kill) ..."
@@ -1115,18 +1249,42 @@ def run_scenario(scenario: Scenario, args) -> bool:
 
         # ── Phase 4: execute kill / restart scenario ──────────────────────────
         # f8proc stays alive so the FIX session remains established.
+        # extra_steps (when present) replaces steps+restart_steps and may
+        # include InterimOrdersStep entries that send orders mid-phase.
         log(f"=== Phase 4: {scenario.description} ===")
-        for step in scenario.steps:
-            failover_occurred, label, elapsed = do_kill_step(
-                step, proc_by_name, log_dir, args.failover_timeout,
-            )
-            kill_results.append((failover_occurred, label, elapsed))
-
-        for step in scenario.restart_steps:
-            elapsed = do_restart_step(
-                step, proc_by_name, app_procs, launch_table, bin_dir, log_dir,
-            )
-            restart_results.append((step.proc_name, elapsed))
+        for step in effective_steps:
+            if isinstance(step, KillStep):
+                failover_occurred, label, elapsed = do_kill_step(
+                    step, proc_by_name, log_dir, args.failover_timeout,
+                )
+                kill_results.append((failover_occurred, label, elapsed))
+                phase4_results.append(("kill", failover_occurred, label, elapsed))
+            elif isinstance(step, RestartStep):
+                elapsed = do_restart_step(
+                    step, proc_by_name, app_procs, launch_table, bin_dir, log_dir,
+                )
+                restart_results.append((step.proc_name, elapsed))
+                phase4_results.append(("restart", step.proc_name, elapsed))
+            elif isinstance(step, InterimOrdersStep):
+                count = step.count_batches * 1000
+                running_me_total += count
+                log(f"  Sending {count} interim orders ...")
+                for _ in range(step.count_batches):
+                    f8proc.stdin.write(b"T\n")
+                f8proc.stdin.flush()
+                log(f"  Waiting for ME-ORD-{running_me_total} ...")
+                found, elapsed, running_me_pos = wait_for_me_ord(
+                    me_log, running_me_total,
+                    timeout=args.recovery_timeout,
+                    from_byte=running_me_pos,
+                )
+                if not found:
+                    die(
+                        f"interim orders did not appear within "
+                        f"{args.recovery_timeout:.0f}s"
+                    )
+                log(f"  {count} interim orders confirmed ({elapsed:.1f}s)")
+                phase4_results.append(("interim", count))
         log("")
 
         # ── Phase 5: recovery orders ──────────────────────────────────────────
@@ -1139,21 +1297,24 @@ def run_scenario(scenario: Scenario, args) -> bool:
         #                  (or lost) during Phase 4; scan from me_pos to find
         #                  the actual current ME-ORD count, then add after_total.
         #   otherwise    → simple cumulative: before_total + after_total.
-        me_restarted = any(rs.resets_me_counter for rs in scenario.restart_steps)
+        me_restarted = any(
+            isinstance(s, RestartStep) and s.resets_me_counter
+            for s in effective_steps
+        )
         after_total  = args.orders_after * 1000
         if me_restarted:
             after_target = after_total
             me_log_from  = 0
-        elif args.orders_during > 0:
+        elif args.orders_during > 0 or scenario.extra_steps:
             # If all during-orders were discarded by the follower (correct HA
-            # behaviour), find_last_me_ord returns 0.  Fall back to before_total
-            # so the target stays ahead of me_pos.
-            current_me_ord = find_last_me_ord(me_log, from_byte=me_pos) or before_total
+            # behaviour), find_last_me_ord returns 0.  Fall back to
+            # running_me_total so the target stays ahead of running_me_pos.
+            current_me_ord = find_last_me_ord(me_log, from_byte=running_me_pos) or running_me_total
             after_target   = current_me_ord + after_total
-            me_log_from    = me_pos
+            me_log_from    = running_me_pos
         else:
-            after_target = before_total + after_total
-            me_log_from  = me_pos
+            after_target = running_me_total + after_total
+            me_log_from  = running_me_pos
 
         log(
             f"=== Phase 5: {after_total} recovery orders "
@@ -1176,6 +1337,16 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 f"recovery orders did not appear within {args.recovery_timeout:.0f}s"
             )
         log(f"  {after_total} recovery orders confirmed ({elapsed:.1f}s)")
+        ok, violations = check_me_seq_monotonic(me_log)
+        if not ok:
+            for idx, prev_seq, bad_seq in violations[:3]:
+                log(f"  seq non-monotonic at position {idx}: {prev_seq} -> {bad_seq}")
+            die(
+                f"ME log seq numbers not monotonically increasing "
+                f"({len(violations)} violation(s)) — "
+                "WAL recovery or peer seq-number sync failure suspected"
+            )
+        log("  seq monotonicity check: OK")
         result_pass = True
         log("")
 
@@ -1194,13 +1365,28 @@ def run_scenario(scenario: Scenario, args) -> bool:
     if result_pass:
         log("  RESULT  : PASS")
         log(f"  scenario: {scenario.number} — {scenario.description}")
-        for failover_occurred, label, elapsed in kill_results:
-            if failover_occurred:
-                log(f"  failover: {label} elected leader in {elapsed:.1f}s")
-            else:
-                log(f"  killed  : {label} — no disruption")
-        for proc_name, elapsed in restart_results:
-            log(f"  restart : {proc_name} ready in {elapsed:.1f}s")
+        if scenario.extra_steps:
+            for entry in phase4_results:
+                if entry[0] == "kill":
+                    _, failover_occurred, label, elapsed = entry
+                    if failover_occurred:
+                        log(f"  failover: {label} elected leader in {elapsed:.1f}s")
+                    else:
+                        log(f"  killed  : {label} — no disruption")
+                elif entry[0] == "restart":
+                    _, proc_name, elapsed = entry
+                    log(f"  restart : {proc_name} ready in {elapsed:.1f}s")
+                elif entry[0] == "interim":
+                    _, count = entry
+                    log(f"  interim : {count} orders confirmed")
+        else:
+            for failover_occurred, label, elapsed in kill_results:
+                if failover_occurred:
+                    log(f"  failover: {label} elected leader in {elapsed:.1f}s")
+                else:
+                    log(f"  killed  : {label} — no disruption")
+            for proc_name, elapsed in restart_results:
+                log(f"  restart : {proc_name} ready in {elapsed:.1f}s")
         log(f"  baseline: {before_total} orders — OK")
         log(f"  recovery: {after_total} orders — OK")
     else:

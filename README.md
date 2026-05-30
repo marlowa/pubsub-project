@@ -8,7 +8,7 @@ A low-latency, multi-threaded, event-driven application framework for C++17, bui
 - **Inter-process communication (IPC)** via unicast TCP with zero-copy PDU paths
 - **Pub/sub messaging** via unicast fanout
 - **Timers** via `timerfd` and `epoll`
-- **High availability** via primary/secondary instance pairs with DR arbitration and automatic leader election
+- **High availability** via primary/secondary instance pairs with external arbiter pool and automatic leader election
 - **Binary serialisation DSL** — a Python code generator producing C++17 encode/decode headers; sub-100ns round-trip on typical messages
 
 ## Design Principles
@@ -21,9 +21,9 @@ A low-latency, multi-threaded, event-driven application framework for C++17, bui
 
 ## High Availability
 
-The framework provides a built-in leader-follower protocol for deploying resilient application pairs. Four instances are deployed in total: two at the main site (primary and secondary) and two at a DR site. Each site elects a leader and follower deterministically — the node with the lowest configured `instance_id` wins.
+The framework provides a built-in leader-follower protocol for deploying resilient application pairs. Two application instances are deployed — primary and secondary — and leader election is deterministic: the node with the lowest configured `instance_id` wins.
 
-A DR node acts as arbiter at startup to prevent split-brain when both nodes are undecided. Once elected, the peer-to-peer connection is maintained with heartbeats. If the leader fails, the follower promotes itself and increments the epoch, ensuring that any restarting node can immediately recognise it is stale and rejoin as follower without requiring further arbitration.
+A separate pool of up to three dedicated arbiter processes (arbiter_primary, arbiter_secondary, witness) provides external arbitration to prevent split-brain when both nodes are undecided. Once elected, the peer-to-peer connection between the two application nodes is maintained with heartbeats. If the leader fails, the follower promotes itself and increments the epoch, ensuring that any restarting node can immediately recognise it is stale and rejoin as follower without requiring further arbitration.
 
 The protocol is intentionally simple — there is no need for a full consensus algorithm such as Raft or Paxos given the fixed two-node-plus-arbiter topology.
 

@@ -103,10 +103,11 @@ end
 #    - If current_role is Role::unknown, both sides proceed to arbitration
 # ------------------------------------------------------------
 message StatusResponse (id=101, version=1)
-    i64 self_instance_id   # identity of responder
-    i64 peer_instance_id   # identity responder believes it is talking to
-    i32 epoch              # responder's current epoch
-    Role current_role      # responder's current role; unknown if not yet elected
+    i64 self_instance_id       # identity of responder
+    i64 peer_instance_id       # identity responder believes it is talking to
+    i32 epoch                  # responder's current epoch
+    Role current_role          # responder's current role; unknown if not yet elected
+    i64 next_sequence_number   # responder's current next_sequence_number_; restarting follower uses this to sync its counter after WAL recovery
 end
 
 # ------------------------------------------------------------

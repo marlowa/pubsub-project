@@ -110,8 +110,8 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
         return;
     }
 
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: NewOrderSingle ClOrdID={} Symbol={} Side={} OrderQty={}", view.cl_ord_id,
-               view.symbol, static_cast<char>(view.side), view.order_qty);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: NewOrderSingle seq={} ClOrdID={} Symbol={} Side={} OrderQty={}", sequence_number,
+               view.cl_ord_id, view.symbol, static_cast<char>(view.side), view.order_qty);
 
     /*
      * Fabricate a filled ExecutionReport. There is no real order book here --
