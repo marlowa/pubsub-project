@@ -310,7 +310,7 @@ class EventMessage {
      * Valid for ConnectionEstablished and ConnectionLost events.
      * @return The ConnectionID.
      */
-    [[nodiscard]] ConnectionID connection_id() const;
+    [[nodiscard]] const ConnectionID& connection_id() const;
 
     /**
      * @brief Gets the slab ID for FrameworkPdu messages.

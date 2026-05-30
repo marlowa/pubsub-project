@@ -124,7 +124,7 @@ void ArbiterThread::on_connection_lost(pubsub_itc_fw::ConnectionID id, const std
 }
 
 void ArbiterThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message) {
-    const pubsub_itc_fw::ConnectionID conn_id = message.connection_id();
+    const pubsub_itc_fw::ConnectionID& conn_id = message.connection_id();
 
     const bool is_peer_pdu = (conn_id == peer_conn_id_) || (conn_id == peer_inbound_conn_id_);
     if (is_peer_pdu) {

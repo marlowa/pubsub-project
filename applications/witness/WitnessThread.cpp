@@ -68,7 +68,7 @@ void WitnessThread::on_connection_lost(pubsub_itc_fw::ConnectionID id, const std
 }
 
 void WitnessThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message) {
-    const pubsub_itc_fw::ConnectionID conn_id = message.connection_id();
+    const pubsub_itc_fw::ConnectionID& conn_id = message.connection_id();
     const int16_t pdu_id = static_cast<int16_t>(message.pdu_id());
 
     if (pdu_id == pdu_arbiter_heartbeat) {

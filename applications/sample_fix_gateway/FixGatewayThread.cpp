@@ -100,7 +100,7 @@ void FixGatewayThread::on_connection_lost(pubsub_itc_fw::ConnectionID id, const 
 }
 
 void FixGatewayThread::on_raw_socket_message(const pubsub_itc_fw::EventMessage& message) {
-    const pubsub_itc_fw::ConnectionID conn_id = message.connection_id();
+    const pubsub_itc_fw::ConnectionID& conn_id = message.connection_id();
     const uint8_t* data = message.payload();
     const int available = message.payload_size();
 

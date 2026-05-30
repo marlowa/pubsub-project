@@ -102,7 +102,7 @@ ThreadID EventMessage::originating_thread_id() const {
     return header_.originating_thread_id;
 }
 
-ConnectionID EventMessage::connection_id() const {
+const ConnectionID& EventMessage::connection_id() const {
     return header_.connection_id;
 }
 

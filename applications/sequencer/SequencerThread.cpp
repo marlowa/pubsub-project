@@ -174,7 +174,7 @@ void SequencerThread::on_connection_lost(pubsub_itc_fw::ConnectionID id, const s
 }
 
 void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message) {
-    const pubsub_itc_fw::ConnectionID conn_id = message.connection_id();
+    const pubsub_itc_fw::ConnectionID& conn_id = message.connection_id();
     const std::string& svc = conn_id.service_name();
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "TRACE on_framework_pdu_message: msg.connection_id value={} service_name=[{}]",
