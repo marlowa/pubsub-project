@@ -44,6 +44,8 @@ SequencerThread::SequencerThread(pubsub_itc_fw::ApplicationThread::ConstructorTo
     : ApplicationThread(token, logger, reactor, "SequencerThread", pubsub_itc_fw::ThreadID{1}, make_queue_config(), make_allocator_config(config, logger),
                         pubsub_itc_fw::ApplicationThreadConfiguration{})
     , config_(config)
+    , order_inbound_svc_("inbound:" + std::to_string(config.listen_port))
+    , er_inbound_svc_("inbound:" + std::to_string(config.er_listen_port))
     , gateway_conn_id_{}
     , me_outbound_order_conn_id_{}
     , peer_conn_id_{}
@@ -194,10 +196,8 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         return;
     }
 
-    // Order PDUs arrive from the gateway on port 7001 (primary) or 7002 (secondary).
-    // ER PDUs arrive from the ME on port 7021 (primary ER listener) or 7022 (secondary).
-    const bool is_order_pdu = (svc == "inbound:7001" || svc == "inbound:7002");
-    const bool is_er_pdu = (svc == "inbound:7021" || svc == "inbound:7022");
+    const bool is_order_pdu = (svc == order_inbound_svc_);
+    const bool is_er_pdu    = (svc == er_inbound_svc_);
 
     if (is_order_pdu) {
         // Order PDU from a gateway instance. As leader, stamp a sequence number

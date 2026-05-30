@@ -139,6 +139,9 @@ class FixGatewaySeqThread : public pubsub_itc_fw::ApplicationThread {
 
     const FixGatewaySeqConfiguration& config_;
 
+    // Precomputed inbound service name for the sequencer ER listener port.
+    const std::string er_inbound_svc_;
+
     // Active FIX client sessions keyed by ConnectionID.
     std::unordered_map<pubsub_itc_fw::ConnectionID, FixSession> sessions_;
 

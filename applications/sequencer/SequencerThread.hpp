@@ -63,6 +63,12 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
   private:
     const SequencerConfiguration& config_;
 
+    // Precomputed inbound service name strings derived from config ports.
+    // Used in on_framework_pdu_message to classify inbound PDUs without
+    // constructing strings on every call.
+    const std::string order_inbound_svc_;
+    const std::string er_inbound_svc_;
+
     // Monotonically increasing sequence number. Incremented for every PDU
     // forwarded to the matching engine. Never resets within a process lifetime.
     int64_t next_sequence_number_{1};

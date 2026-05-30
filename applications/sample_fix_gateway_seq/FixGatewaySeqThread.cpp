@@ -48,6 +48,7 @@ FixGatewaySeqThread::FixGatewaySeqThread(pubsub_itc_fw::ApplicationThread::Const
     : ApplicationThread(token, logger, reactor, "FixGatewaySeqThread", pubsub_itc_fw::ThreadID{1}, make_queue_config(), make_allocator_config(config, logger),
                         pubsub_itc_fw::ApplicationThreadConfiguration{})
     , config_(config)
+    , er_inbound_svc_("inbound:" + std::to_string(config.er_listen_port))
     , serialiser_(config.sender_comp_id, config.default_target_comp_id)
     , sequencer_primary_conn_id_{}
     , sequencer_secondary_conn_id_{} {}
@@ -67,7 +68,7 @@ void FixGatewaySeqThread::on_connection_established(pubsub_itc_fw::ConnectionID 
     } else if (id.service_name() == "sequencer_secondary") {
         sequencer_secondary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixGatewaySeqThread: secondary sequencer connection {} established", id.get_value());
-    } else if (id.service_name() == "inbound:7010") {
+    } else if (id.service_name() == er_inbound_svc_) {
         // Inbound FrameworkPdu connection from a sequencer on the ER listener.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixGatewaySeqThread: sequencer ER inbound connection {} established", id.get_value());
     } else {
@@ -90,7 +91,7 @@ void FixGatewaySeqThread::on_connection_lost(pubsub_itc_fw::ConnectionID id, con
     } else if (id == sequencer_secondary_conn_id_) {
         sequencer_secondary_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "FixGatewaySeqThread: secondary sequencer connection {} lost: {}", id.get_value(), reason);
-    } else if (id.service_name() == "inbound:7010") {
+    } else if (id.service_name() == er_inbound_svc_) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "FixGatewaySeqThread: sequencer ER inbound connection {} lost: {}", id.get_value(),
                    reason);
     } else {
