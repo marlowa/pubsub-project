@@ -42,16 +42,21 @@ MatchingEngineThread::MatchingEngineThread(pubsub_itc_fw::ApplicationThread::Con
     : ApplicationThread(token, logger, reactor, "MatchingEngineThread", pubsub_itc_fw::ThreadID{1}, make_queue_config(), make_allocator_config(config, logger),
                         pubsub_itc_fw::ApplicationThreadConfiguration{})
     , config_(config)
-    , sequencer_er_conn_id_{} {}
+    , sequencer_er_conn_id_{}
+    , sequencer_er_secondary_conn_id_{} {}
 
 void MatchingEngineThread::on_app_ready_event() {
     connect_to_service("sequencer_er");
+    connect_to_service("sequencer_er_secondary");
 }
 
 void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID id) {
     if (id.service_name() == "sequencer_er") {
         sequencer_er_conn_id_ = id;
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: sequencer ER connection {} established", id.get_value());
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: primary sequencer ER connection {} established", id.get_value());
+    } else if (id.service_name() == "sequencer_er_secondary") {
+        sequencer_er_secondary_conn_id_ = id;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: secondary sequencer ER connection {} established", id.get_value());
     } else {
         // Inbound connection from sequencer carrying sequenced order PDUs.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: sequencer order connection {} established", id.get_value());
@@ -61,7 +66,10 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
 void MatchingEngineThread::on_connection_lost(pubsub_itc_fw::ConnectionID id, const std::string& reason) {
     if (id == sequencer_er_conn_id_) {
         sequencer_er_conn_id_ = pubsub_itc_fw::ConnectionID{};
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: sequencer ER connection {} lost: {}", id.get_value(), reason);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: primary sequencer ER connection {} lost: {}", id.get_value(), reason);
+    } else if (id == sequencer_er_secondary_conn_id_) {
+        sequencer_er_secondary_conn_id_ = pubsub_itc_fw::ConnectionID{};
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: secondary sequencer ER connection {} lost: {}", id.get_value(), reason);
     } else {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: sequencer order connection {} lost: {}", id.get_value(), reason);
     }
@@ -97,8 +105,8 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
 }
 
 void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number) {
-    if (!sequencer_er_conn_id_.is_valid()) {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: sequencer ER connection not established -- dropping ER");
+    if (!sequencer_er_conn_id_.is_valid() && !sequencer_er_secondary_conn_id_.is_valid()) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: no sequencer ER connections established -- dropping ER");
         return;
     }
 
@@ -160,7 +168,12 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
     er.ord_type = view.ord_type;
 
     constexpr auto er_pdu_id = static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::ExecutionReport);
-    send_pdu(sequencer_er_conn_id_, er_pdu_id, sequence_number, er);
+    if (sequencer_er_conn_id_.is_valid()) {
+        send_pdu(sequencer_er_conn_id_, er_pdu_id, sequence_number, er);
+    }
+    if (sequencer_er_secondary_conn_id_.is_valid()) {
+        send_pdu(sequencer_er_secondary_conn_id_, er_pdu_id, sequence_number, er);
+    }
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: sent ExecutionReport OrderID={} ExecID={} ClOrdID={}", order_id, exec_id,
                cl_ord_id);

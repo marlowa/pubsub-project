@@ -21,12 +21,15 @@ MatchingEngineConfiguration MatchingEngineConfigurationLoader::load(const std::s
     try {
         toml.get_required_except("network.listen_host", config.listen_host);
         toml.get_required_except("sequencer_er.host", config.sequencer_er_host);
+        toml.get_required_except("sequencer_er_secondary.host", config.sequencer_er_secondary_host);
 
         int32_t listen_port = 0;
         int32_t sequencer_er_port = 0;
+        int32_t sequencer_er_secondary_port = 0;
 
         toml.get_required_except("network.listen_port", listen_port);
         toml.get_required_except("sequencer_er.port", sequencer_er_port);
+        toml.get_required_except("sequencer_er_secondary.port", sequencer_er_secondary_port);
 
         auto validate_port = [&](int32_t port, const std::string& name) {
             if (port < 1 || port > 65535) {
@@ -37,9 +40,11 @@ MatchingEngineConfiguration MatchingEngineConfigurationLoader::load(const std::s
 
         validate_port(listen_port, "network.listen_port");
         validate_port(sequencer_er_port, "sequencer_er.port");
+        validate_port(sequencer_er_secondary_port, "sequencer_er_secondary.port");
 
         config.listen_port = static_cast<uint16_t>(listen_port);
         config.sequencer_er_port = static_cast<uint16_t>(sequencer_er_port);
+        config.sequencer_er_secondary_port = static_cast<uint16_t>(sequencer_er_secondary_port);
 
         std::string applog_level_str;
         std::string syslog_level_str;

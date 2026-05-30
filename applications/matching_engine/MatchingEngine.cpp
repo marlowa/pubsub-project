@@ -46,14 +46,18 @@ MatchingEngine::MatchingEngine(MatchingEngineConfiguration config, std::unique_p
 
     reactor_->register_thread(matching_engine_thread_);
 
-    // Outbound PDU connection to the sequencer's ER inbound listener.
-    // The sequencer forwards ERs to the appropriate gateway.
+    // Outbound PDU connections to both sequencer ER inbound listeners.
+    // ERs are sent to both; the leader routes them to the gateway, the follower discards.
     service_registry_.add("sequencer_er", pubsub_itc_fw::NetworkEndpointConfiguration{config_.sequencer_er_host, config_.sequencer_er_port},
+                          pubsub_itc_fw::NetworkEndpointConfiguration{});
+    service_registry_.add("sequencer_er_secondary", pubsub_itc_fw::NetworkEndpointConfiguration{config_.sequencer_er_secondary_host, config_.sequencer_er_secondary_port},
                           pubsub_itc_fw::NetworkEndpointConfiguration{});
 
     PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngine: listening for sequenced PDUs on {}:{}", config_.listen_host, config_.listen_port);
-    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngine: ER connection to sequencer at {}:{}", config_.sequencer_er_host,
+    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngine: primary ER connection to sequencer at {}:{}", config_.sequencer_er_host,
                config_.sequencer_er_port);
+    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngine: secondary ER connection to sequencer at {}:{}", config_.sequencer_er_secondary_host,
+               config_.sequencer_er_secondary_port);
 }
 
 int MatchingEngine::run() {

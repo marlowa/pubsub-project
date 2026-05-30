@@ -408,14 +408,15 @@ void FixGatewaySeqThread::handle_new_order_single(FixSession& session, const Par
         return;
     }
 
-    // If the primary sequencer is not currently connected, reject the order
-    // locally with an ExecutionReport rather than silently dropping it. The
-    // client gets a definitive response per order and the FIX session stays
-    // up so subsequent orders can be tried once connectivity is restored.
-    if (sequencer_primary_conn_id_.get_value() == 0) {
+    // If no sequencer is connected, reject the order locally with an ExecutionReport
+    // rather than silently dropping it. The client gets a definitive response per
+    // order and the FIX session stays up so subsequent orders can be tried once
+    // connectivity is restored. During failover the secondary takes over as leader,
+    // so orders are forwarded as long as either sequencer connection is alive.
+    if (!sequencer_primary_conn_id_.is_valid() && !sequencer_secondary_conn_id_.is_valid()) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                    "FixGatewaySeqThread: connection {} NewOrderSingle ClOrdID={} rejected "
-                   "locally -- primary sequencer not connected",
+                   "locally -- no sequencer connected",
                    session.conn_id.get_value(), cl_ord_id);
         send_reject_execution_report(session, msg, "Sequencer unavailable", /*is_cancel=*/false);
         return;
@@ -480,13 +481,12 @@ void FixGatewaySeqThread::handle_order_cancel_request(FixSession& session, const
         return;
     }
 
-    // If the primary sequencer is not currently connected, reject the cancel
-    // locally with an ExecutionReport rather than silently dropping it. See
+    // If no sequencer is connected, reject the cancel locally. See
     // handle_new_order_single for the rationale.
-    if (sequencer_primary_conn_id_.get_value() == 0) {
+    if (!sequencer_primary_conn_id_.is_valid() && !sequencer_secondary_conn_id_.is_valid()) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                    "FixGatewaySeqThread: connection {} OrderCancelRequest ClOrdID={} "
-                   "OrigClOrdID={} rejected locally -- primary sequencer not connected",
+                   "OrigClOrdID={} rejected locally -- no sequencer connected",
                    session.conn_id.get_value(), cl_ord_id, orig_cl_ord_id);
         send_reject_execution_report(session, msg, "Sequencer unavailable", /*is_cancel=*/true);
         return;

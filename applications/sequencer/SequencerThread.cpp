@@ -571,7 +571,7 @@ void SequencerThread::adopt_role(pubsub_itc_fw_app::Role new_role) {
     if (new_role == role_)
         return;
 
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: role transition {} -> {} (epoch={})", pubsub_itc_fw_app::to_string(role_),
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: role transition {} -> {} (epoch={})", pubsub_itc_fw_app::to_string(role_),
                pubsub_itc_fw_app::to_string(new_role), epoch_);
 
     role_ = new_role;

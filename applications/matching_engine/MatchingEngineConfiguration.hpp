@@ -36,11 +36,17 @@ struct MatchingEngineConfiguration {
     // The sequencer then forwards ERs to the appropriate gateway.
     // ----------------------------------------------------------------
 
-    /** @brief Host address of the sequencer's ER inbound listener. */
+    /** @brief Host address of the primary sequencer's ER inbound listener. */
     std::string sequencer_er_host{"127.0.0.1"};
 
-    /** @brief TCP port of the sequencer's ER inbound listener. */
+    /** @brief TCP port of the primary sequencer's ER inbound listener. */
     uint16_t sequencer_er_port{7021};
+
+    /** @brief Host address of the secondary sequencer's ER inbound listener. */
+    std::string sequencer_er_secondary_host{"127.0.0.1"};
+
+    /** @brief TCP port of the secondary sequencer's ER inbound listener. */
+    uint16_t sequencer_er_secondary_port{7022};
 
     /** @brief Minimum severity written to the application log file. */
     pubsub_itc_fw::FwLogLevel applog_level{pubsub_itc_fw::FwLogLevel::Info};

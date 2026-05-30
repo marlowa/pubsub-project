@@ -58,11 +58,11 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
 
     const MatchingEngineConfiguration& config_;
 
-    // ConnectionID of the outbound connection to the sequencer's ER inbound
-    // listener. ExecutionReport PDUs are sent over this connection and the
-    // sequencer routes them on to the gateway.
-    // TODO: replace with pub/sub fanout when implemented.
+    // ConnectionIDs of the outbound connections to the sequencer ER inbound listeners.
+    // ERs are sent to all valid connections. The leader routes them to the gateway;
+    // the follower discards. This ensures ERs reach whichever sequencer is currently leader.
     pubsub_itc_fw::ConnectionID sequencer_er_conn_id_;
+    pubsub_itc_fw::ConnectionID sequencer_er_secondary_conn_id_;
 
     // Monotonic counters for fabricated OrderID and ExecID strings.
     int64_t order_id_counter_{0};

@@ -6,6 +6,10 @@ listen_port = 7020
 host = "127.0.0.1"
 port = 7021
 
+[sequencer_er_secondary]
+host = "127.0.0.1"
+port = 7022
+
 [logging]
 applog_level = "info"
 syslog_level = "critical"
