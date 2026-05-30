@@ -11,8 +11,8 @@ listen_port                      = 7204
 host                             = "127.0.0.1"
 port                             = 7203
 fence_file_path                  = "/dev/shm/arbiter_secondary_fence"
-heartbeat_interval_seconds       = 5
-heartbeat_timeout_seconds        = 15
+heartbeat_interval_seconds       = 2
+heartbeat_timeout_seconds        = 6
 startup_election_timeout_seconds = 20
 
 [witness]

@@ -169,8 +169,8 @@ void ArbiterThread::on_timer_event(const std::string& name) {
     }
 
     if (name == "peer_heartbeat_timeout") {
-        if (role_ == pubsub_itc_fw_app::Role::leader || role_ == pubsub_itc_fw_app::Role::follower) {
-            return;
+        if (role_ == pubsub_itc_fw_app::Role::leader) {
+            return; // already active, nothing to do
         }
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "ArbiterThread: peer heartbeat timeout (role={})", pubsub_itc_fw_app::to_string(role_));
 

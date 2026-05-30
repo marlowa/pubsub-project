@@ -26,8 +26,8 @@ listen_host                = "127.0.0.1"
 listen_port                = 7003
 host                       = "127.0.0.1"
 port                       = 7004
-heartbeat_interval_seconds = 5
-heartbeat_timeout_seconds = 15
+heartbeat_interval_seconds = 2
+heartbeat_timeout_seconds = 6
 startup_election_timeout_seconds = 20
 fence_file_path = "/dev/shm/sequencer_primary_fence"
 
