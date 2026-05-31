@@ -9,6 +9,7 @@ from typing import List
 
 from .ast import (
     ArrayType,
+    BytesType,
     DslFile,
     EnumDecl,
     Field,
@@ -61,12 +62,14 @@ class CppGenerator:
         w("")
         # Guard shared helpers so they compile cleanly when multiple generated
         # headers are included in the same translation unit.
-        w(f"#ifndef PUBSUB_ITC_FW_APP_DSL_SHARED_HELPERS_DEFINED")
-        w(f"#define PUBSUB_ITC_FW_APP_DSL_SHARED_HELPERS_DEFINED")
+        w("#ifndef PUBSUB_ITC_FW_APP_DSL_SHARED_HELPERS_DEFINED")
+        w("#define PUBSUB_ITC_FW_APP_DSL_SHARED_HELPERS_DEFINED")
         self._emit_endian_helpers(w)
         w("")
         self._emit_list_view(w)
-        w(f"#endif // PUBSUB_ITC_FW_APP_DSL_SHARED_HELPERS_DEFINED")
+        w("")
+        self._emit_bytes_view(w)
+        w("#endif // PUBSUB_ITC_FW_APP_DSL_SHARED_HELPERS_DEFINED")
         w("")
 
         for decl in ast.declarations:
@@ -183,6 +186,12 @@ class CppGenerator:
         w("")
         w("    bool empty()        const { return size == 0; }")
         w("    std::size_t length() const { return size; }")
+        w("};")
+
+    def _emit_bytes_view(self, w):
+        w("struct BytesView {")
+        w("    const uint8_t* data = nullptr;")
+        w("    std::size_t size = 0;")
         w("};")
 
     # ------------------------------------------------------------------
@@ -394,6 +403,8 @@ class CppGenerator:
             return self._cpp_primitive_type(type_node.name)
         if isinstance(type_node, StringType):
             return "std::string_view"
+        if isinstance(type_node, BytesType):
+            return "BytesView"
         if isinstance(type_node, ArrayType):
             element_type = self._cpp_type_owning(type_node.element_type)
             return f"std::array<{element_type}, {type_node.length}>"
@@ -404,7 +415,7 @@ class CppGenerator:
             return type_node.name
         raise RuntimeError(f"Unsupported type in owning struct: {type_node}")
 
-    def _cpp_type_view(self, type_node, enum_names=None) -> str:
+    def _cpp_type_view(self, type_node, enum_names=None) -> str:  # pylint: disable=too-many-return-statements
         """Return the C++ type used in the view (decode-side) struct.
 
         Enum types are fixed-size values with no separate View variant —
@@ -414,6 +425,8 @@ class CppGenerator:
             return self._cpp_primitive_type(type_node.name)
         if isinstance(type_node, StringType):
             return "std::string_view"
+        if isinstance(type_node, BytesType):
+            return "BytesView"
         if isinstance(type_node, ArrayType):
             element_type = self._cpp_type_view(type_node.element_type, enum_names)
             return f"std::array<{element_type}, {type_node.length}>"
@@ -571,6 +584,8 @@ class CppGenerator:
             w(f"    {prefix}total_bytes += sizeof({self._cpp_primitive_type(type_node.name)});")
         elif isinstance(type_node, StringType):
             w(f"    {prefix}total_bytes += sizeof(std::uint32_t) + message.{name}.size();")
+        elif isinstance(type_node, BytesType):
+            w(f"    {prefix}total_bytes += sizeof(std::uint32_t) + message.{name}.size;")
         elif isinstance(type_node, ArrayType):
             element_cpp = self._cpp_primitive_type(type_node.element_type.name)
             w(f"    {prefix}total_bytes += sizeof({element_cpp}) * {type_node.length};")
@@ -597,6 +612,10 @@ class CppGenerator:
         elif isinstance(element_type, StringType):
             w(f"{indent}for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
             w(f"{inner_indent}total_bytes += sizeof(std::uint32_t) + {expr}.data[{loop_var}].size();")
+            w(f"{indent}}}")
+        elif isinstance(element_type, BytesType):
+            w(f"{indent}for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
+            w(f"{inner_indent}total_bytes += sizeof(std::uint32_t) + {expr}.data[{loop_var}].size;")
             w(f"{indent}}}")
         elif isinstance(element_type, ReferenceType):
             w(f"{indent}for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
@@ -635,7 +654,7 @@ class CppGenerator:
         w("    return true;")
         w("}")
 
-    def _emit_encode_field(self, field: Field, w):
+    def _emit_encode_field(self, field: Field, w):  # pylint: disable=too-many-statements
         type_node = field.type
         name = field.name
 
@@ -665,6 +684,18 @@ class CppGenerator:
             w(f"        std::memcpy(write_cursor, message.{name}.data(), message.{name}.size());")
             w(f"        write_cursor += message.{name}.size();")
             w(f"        bytes_remaining -= message.{name}.size();")
+            w("    }")
+        elif isinstance(type_node, BytesType):
+            w("    {")
+            w("        if (bytes_remaining < sizeof(std::uint32_t)) return false;")
+            w(f"        std::uint32_t bytes_length_{name} = static_cast<std::uint32_t>(message.{name}.size);")
+            w(f"        write_uint32_le(write_cursor, bytes_length_{name});")
+            w("        write_cursor += sizeof(std::uint32_t);")
+            w("        bytes_remaining -= sizeof(std::uint32_t);")
+            w(f"        if (bytes_remaining < message.{name}.size) return false;")
+            w(f"        std::memcpy(write_cursor, message.{name}.data, message.{name}.size);")
+            w(f"        write_cursor += message.{name}.size;")
+            w(f"        bytes_remaining -= message.{name}.size;")
             w("    }")
         elif isinstance(type_node, ArrayType):
             self._emit_encode_array(type_node, name, w)
@@ -701,7 +732,7 @@ class CppGenerator:
             w(f"        bytes_remaining -= {width};")
             w("    }")
 
-    def _emit_encode_list(self, list_type: ListType, expr: str, suffix: str, w, indent: str, loop_var: str = "i"):  # pylint: disable=too-many-arguments
+    def _emit_encode_list(self, list_type: ListType, expr: str, suffix: str, w, indent: str, loop_var: str = "i"):  # pylint: disable=too-many-arguments,too-many-statements
         next_var = chr(ord(loop_var) + 1) if loop_var < "z" else loop_var + "_"
         inner_indent = indent + "    "
         w(f"{indent}if (bytes_remaining < sizeof(std::uint32_t)) return false;")
@@ -727,6 +758,17 @@ class CppGenerator:
             w(f"{inner_indent}std::memcpy(write_cursor, {expr}.data[{loop_var}].data(), {expr}.data[{loop_var}].size());")
             w(f"{inner_indent}write_cursor += {expr}.data[{loop_var}].size();")
             w(f"{inner_indent}bytes_remaining -= {expr}.data[{loop_var}].size();")
+            w(f"{indent}}}")
+        elif isinstance(element_type, BytesType):
+            w(f"{indent}for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
+            w(f"{inner_indent}if (bytes_remaining < sizeof(std::uint32_t) + {expr}.data[{loop_var}].size) return false;")
+            w(f"{inner_indent}std::uint32_t bytes_length_{suffix}_{loop_var} = static_cast<std::uint32_t>({expr}.data[{loop_var}].size);")
+            w(f"{inner_indent}write_uint32_le(write_cursor, bytes_length_{suffix}_{loop_var});")
+            w(f"{inner_indent}write_cursor += sizeof(std::uint32_t);")
+            w(f"{inner_indent}bytes_remaining -= sizeof(std::uint32_t);")
+            w(f"{inner_indent}std::memcpy(write_cursor, {expr}.data[{loop_var}].data, {expr}.data[{loop_var}].size);")
+            w(f"{inner_indent}write_cursor += {expr}.data[{loop_var}].size;")
+            w(f"{inner_indent}bytes_remaining -= {expr}.data[{loop_var}].size;")
             w(f"{indent}}}")
         elif isinstance(element_type, ReferenceType):
             w(f"{indent}for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
@@ -784,7 +826,7 @@ class CppGenerator:
             w("    return true;")
         w("}")
 
-    def _emit_decode_field(self, field: Field, w):
+    def _emit_decode_field(self, field: Field, w):  # pylint: disable=too-many-statements
         type_node = field.type
         fname = field.name
 
@@ -813,6 +855,17 @@ class CppGenerator:
             w("        bytes_remaining -= sizeof(std::uint32_t);")
             w(f"        if (bytes_remaining < static_cast<std::size_t>(len_{fname})) return false;")
             w(f"        out.{fname} = std::string_view(reinterpret_cast<const char*>(read_cursor), len_{fname});")
+            w(f"        read_cursor += len_{fname};")
+            w(f"        bytes_remaining -= static_cast<std::size_t>(len_{fname});")
+            w("    }")
+        elif isinstance(type_node, BytesType):
+            w("    {")
+            w("        if (bytes_remaining < sizeof(std::uint32_t)) return false;")
+            w(f"        std::uint32_t len_{fname} = read_uint32_le(read_cursor);")
+            w("        read_cursor += sizeof(std::uint32_t);")
+            w("        bytes_remaining -= sizeof(std::uint32_t);")
+            w(f"        if (bytes_remaining < static_cast<std::size_t>(len_{fname})) return false;")
+            w(f"        out.{fname} = BytesView{{read_cursor, static_cast<std::size_t>(len_{fname})}};")
             w(f"        read_cursor += len_{fname};")
             w(f"        bytes_remaining -= static_cast<std::size_t>(len_{fname});")
             w("    }")
@@ -900,6 +953,28 @@ class CppGenerator:
             w(f"{inner_indent}        bytes_remaining -= static_cast<std::size_t>(str_len_{suffix}_{loop_var});")
             w(f"{inner_indent}    }}")
             w(f"{inner_indent}}}")
+        elif isinstance(element_type, BytesType):
+            w(f"{inner_indent}{{")
+            w(f"{inner_indent}    std::size_t arena_aligned_offset = (arena_bytes_needed + alignof(BytesView) - 1) & ~(alignof(BytesView) - 1);")
+            w(f"{inner_indent}    arena_bytes_needed = arena_aligned_offset + sizeof(BytesView) * {expr}.size;")
+            w(f"{inner_indent}}}")
+            w(f"{inner_indent}{expr}.data = nullptr;")
+            w(f"{inner_indent}if ({expr}.size > 0) {{")
+            w(f"{inner_indent}    {expr}.data = decode_arena.allocate<BytesView>({expr}.size);")
+            w(f"{inner_indent}    if ({expr}.data == nullptr) arena_exhausted = true;")
+            w(f"{inner_indent}    for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
+            w(f"{inner_indent}        if (bytes_remaining < sizeof(std::uint32_t)) return false;")
+            w(f"{inner_indent}        std::uint32_t bytes_len_{suffix}_{loop_var} = read_uint32_le(read_cursor);")
+            w(f"{inner_indent}        read_cursor += sizeof(std::uint32_t);")
+            w(f"{inner_indent}        bytes_remaining -= sizeof(std::uint32_t);")
+            w(f"{inner_indent}        if (bytes_remaining < static_cast<std::size_t>(bytes_len_{suffix}_{loop_var})) return false;")
+            w(f"{inner_indent}        if (!arena_exhausted) {{")
+            w(f"{inner_indent}            {expr}.data[{loop_var}] = BytesView{{read_cursor, static_cast<std::size_t>(bytes_len_{suffix}_{loop_var})}};")
+            w(f"{inner_indent}        }}")
+            w(f"{inner_indent}        read_cursor += bytes_len_{suffix}_{loop_var};")
+            w(f"{inner_indent}        bytes_remaining -= static_cast<std::size_t>(bytes_len_{suffix}_{loop_var});")
+            w(f"{inner_indent}    }}")
+            w(f"{inner_indent}}}")
         elif isinstance(element_type, ReferenceType):
             view_type = f"{element_type.name}View"
             w(f"{inner_indent}{{")
@@ -977,6 +1052,16 @@ class CppGenerator:
             w("        read_cursor += str_len;")
             w("        bytes_remaining -= static_cast<std::size_t>(str_len);")
             w("    }")
+        elif isinstance(type_node, BytesType):
+            w("    if (bytes_remaining < sizeof(std::uint32_t)) return false;")
+            w("    {")
+            w("        std::uint32_t bytes_len = read_uint32_le(read_cursor);")
+            w("        read_cursor += sizeof(std::uint32_t);")
+            w("        bytes_remaining -= sizeof(std::uint32_t);")
+            w("        if (bytes_remaining < static_cast<std::size_t>(bytes_len)) return false;")
+            w("        read_cursor += bytes_len;")
+            w("        bytes_remaining -= static_cast<std::size_t>(bytes_len);")
+            w("    }")
         elif isinstance(type_node, ArrayType):
             total = f"{type_node.length} * {self._primitive_wire_size(type_node.element_type.name)}"
             w(f"    if (bytes_remaining < {total}) return false;")
@@ -1016,6 +1101,16 @@ class CppGenerator:
             w(f"{inner_indent}    if (bytes_remaining < static_cast<std::size_t>(str_len)) return false;")
             w(f"{inner_indent}    read_cursor += str_len;")
             w(f"{inner_indent}    bytes_remaining -= static_cast<std::size_t>(str_len);")
+            w(f"{inner_indent}}}")
+        elif isinstance(element_type, BytesType):
+            w(f"{inner_indent}for (std::size_t {loop_var} = 0; {loop_var} < skip_count; ++{loop_var}) {{")
+            w(f"{inner_indent}    if (bytes_remaining < sizeof(std::uint32_t)) return false;")
+            w(f"{inner_indent}    std::uint32_t bytes_len = read_uint32_le(read_cursor);")
+            w(f"{inner_indent}    read_cursor += sizeof(std::uint32_t);")
+            w(f"{inner_indent}    bytes_remaining -= sizeof(std::uint32_t);")
+            w(f"{inner_indent}    if (bytes_remaining < static_cast<std::size_t>(bytes_len)) return false;")
+            w(f"{inner_indent}    read_cursor += bytes_len;")
+            w(f"{inner_indent}    bytes_remaining -= static_cast<std::size_t>(bytes_len);")
             w(f"{inner_indent}}}")
         elif isinstance(element_type, ReferenceType):
             w(f"{inner_indent}for (std::size_t {loop_var} = 0; {loop_var} < skip_count; ++{loop_var}) {{")
@@ -1075,6 +1170,8 @@ class CppGenerator:
                 w(f"{indent}{total_var} += sizeof({element_cpp}) * max_elements_per_list;")
             elif isinstance(element_type, StringType):
                 w(f"{indent}{total_var} += sizeof(std::string_view) * max_elements_per_list;")
+            elif isinstance(element_type, BytesType):
+                w(f"{indent}{total_var} += sizeof(BytesView) * max_elements_per_list;")
             elif isinstance(element_type, ReferenceType):
                 w(f"{indent}{total_var} += sizeof({element_type.name}View) * max_elements_per_list;")
                 w(f"{indent}{total_var} += max_elements_per_list * max_decode_arena_bytes_{element_type.name}(max_elements_per_list);")
@@ -1103,6 +1200,8 @@ class CppGenerator:
                 w(f"{indent}{total_var} += sizeof({element_cpp}) * max_elements_per_list;")
             elif isinstance(element_type, StringType):
                 w(f"{indent}{total_var} += sizeof(std::string_view) * max_elements_per_list;")
+            elif isinstance(element_type, BytesType):
+                w(f"{indent}{total_var} += sizeof(BytesView) * max_elements_per_list;")
             elif isinstance(element_type, ReferenceType):
                 w(f"{indent}{total_var} += sizeof({element_type.name}) * max_elements_per_list;")
                 w(f"{indent}{total_var} += max_elements_per_list * max_encode_arena_bytes_{element_type.name}(max_elements_per_list);")

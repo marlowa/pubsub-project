@@ -8,6 +8,7 @@ from typing import List, Set, Tuple
 
 from .ast import (
     ArrayType,
+    BytesType,
     DslFile,
     Field,
     ListType,
@@ -124,6 +125,8 @@ class Pybind11Generator:
             return self._cpp_primitive(type_node)
         if isinstance(type_node, StringType):
             return "std::string_view"
+        if isinstance(type_node, BytesType):
+            return "ns::BytesView"
         if isinstance(type_node, ReferenceType):
             return f"ns::{type_node.name}"
         if isinstance(type_node, ListType):
@@ -140,6 +143,8 @@ class Pybind11Generator:
             return self._cpp_primitive(type_node)
         if isinstance(type_node, StringType):
             return "std::string_view"
+        if isinstance(type_node, BytesType):
+            return "ns::BytesView"
         if isinstance(type_node, ReferenceType):
             return f"ns::{type_node.name}View"
         if isinstance(type_node, ListType):
@@ -170,6 +175,9 @@ class Pybind11Generator:
             elif isinstance(elem, StringType):
                 for depth_level in range(1, depth + 1):
                     acc.add(("std::string_view", depth_level))
+            elif isinstance(elem, BytesType):
+                for depth_level in range(1, depth + 1):
+                    acc.add(("ns::BytesView", depth_level))
             elif isinstance(elem, ReferenceType):
                 for depth_level in range(1, depth + 1):
                     acc.add((f"ns::{elem.name}View", depth_level))
@@ -200,13 +208,27 @@ class Pybind11Generator:
         w(f'        .def_readwrite("data", &{instance_type}::data)')
         w(f'        .def_readwrite("size", &{instance_type}::size)')
         w(f'        .def("__len__", []({instance_type} const& v) {{ return v.size; }})')
-        w(f'        .def("__getitem__", []({instance_type} const& v, std::size_t i) {{')
-        w('            if (i >= v.size) throw py::index_error();')
-        w('            return v.data[i];')
-        w('        })')
-        w(f'        .def("__iter__", []({instance_type} const& v) {{')
-        w('            return py::make_iterator(v.begin(), v.end());')
-        w('        }, py::keep_alive<0, 1>());')
+        if cpp_type == "ns::BytesView" and depth == 1:
+            # BytesView has no registered Python type; convert each element to bytes.
+            w(f'        .def("__getitem__", []({instance_type} const& v, std::size_t i) -> py::bytes {{')
+            w('            if (i >= v.size) throw py::index_error();')
+            w('            return py::bytes(reinterpret_cast<const char*>(v.data[i].data), v.data[i].size);')
+            w('        })')
+            w(f'        .def("__iter__", []({instance_type} const& v) {{')
+            w('            py::list result;')
+            w('            for (std::size_t i = 0; i < v.size; ++i) {')
+            w('                result.append(py::bytes(reinterpret_cast<const char*>(v.data[i].data), v.data[i].size));')
+            w('            }')
+            w('            return result.attr("__iter__")();')
+            w('        });')
+        else:
+            w(f'        .def("__getitem__", []({instance_type} const& v, std::size_t i) {{')
+            w('            if (i >= v.size) throw py::index_error();')
+            w('            return v.data[i];')
+            w('        })')
+            w(f'        .def("__iter__", []({instance_type} const& v) {{')
+            w('            return py::make_iterator(v.begin(), v.end());')
+            w('        }, py::keep_alive<0, 1>());')
         w('')
 
     # ------------------------------------------------------------------
@@ -239,7 +261,20 @@ class Pybind11Generator:
         w('        }))')
 
         for field in msg.fields:
-            w(f'        .def_readwrite("{field.name}", &ns::{name}::{field.name})')
+            if isinstance(field.type, BytesType):
+                w(f'        .def_property("{field.name}",')
+                w(f'            [](const ns::{name}& m) -> py::bytes {{')
+                w(f'                return py::bytes(reinterpret_cast<const char*>(m.{field.name}.data), m.{field.name}.size);')
+                w('            },')
+                w(f'            [](ns::{name}& m, py::bytes val) {{')
+                w(f'                static thread_local std::string bytes_str_{field.name};')
+                w(f'                bytes_str_{field.name} = val.cast<std::string>();')
+                w(f'                m.{field.name} = ns::BytesView{{'
+                  f'reinterpret_cast<const uint8_t*>(bytes_str_{field.name}.data()), '
+                  f'bytes_str_{field.name}.size()}};')
+                w('            })')
+            else:
+                w(f'        .def_readwrite("{field.name}", &ns::{name}::{field.name})')
             if field.optional:
                 w(f'        .def_readwrite("has_{field.name}", &ns::{name}::has_{field.name})')
 
@@ -255,7 +290,12 @@ class Pybind11Generator:
         view_name = f"{name}View"
         w(f'    py::class_<ns::{view_name}>(m, "{view_name}", py::module_local())')
         for field in msg.fields:
-            w(f'        .def_readwrite("{field.name}", &ns::{view_name}::{field.name})')
+            if isinstance(field.type, BytesType):
+                w(f'        .def_property_readonly("{field.name}", [](const ns::{view_name}& v) -> py::bytes {{')
+                w(f'            return py::bytes(reinterpret_cast<const char*>(v.{field.name}.data), v.{field.name}.size);')
+                w('        })')
+            else:
+                w(f'        .def_readwrite("{field.name}", &ns::{view_name}::{field.name})')
             if field.optional:
                 w(f'        .def_readwrite("has_{field.name}", &ns::{view_name}::has_{field.name})')
         w('        ;')
@@ -294,6 +334,10 @@ class Pybind11Generator:
             w(f'                    static thread_local std::string str_{name};')
             w(f'                    str_{name} = item.second.cast<std::string>();')
             w(f'                    obj.{name} = std::string_view(str_{name});')
+        elif isinstance(field.type, BytesType):
+            w(f'                    static thread_local std::string bytes_str_{name};')
+            w(f'                    bytes_str_{name} = item.second.cast<std::string>();')
+            w(f'                    obj.{name} = ns::BytesView{{reinterpret_cast<const uint8_t*>(bytes_str_{name}.data()), bytes_str_{name}.size()}};')
         else:
             w(f'                    obj.{name} = item.second.cast<decltype(obj.{name})>();')
         w('                }')
@@ -329,6 +373,13 @@ class Pybind11Generator:
                 indent=indent + "        ",
                 prefix=f"{prefix or '0'}_{index_name}",
             )
+        elif isinstance(elem, BytesType):
+            w(f'{indent}        {{')
+            w(f'{indent}            std::string tmp_{index_name} = {list_name}[{index_name}].cast<std::string>();')
+            w(f'{indent}            auto* bytes_data_{index_name} = new uint8_t[tmp_{index_name}.size()];')
+            w(f'{indent}            std::memcpy(bytes_data_{index_name}, tmp_{index_name}.data(), tmp_{index_name}.size());')
+            w(f'{indent}            {buf_name}[{index_name}] = ns::BytesView{{bytes_data_{index_name}, tmp_{index_name}.size()}};')
+            w(f'{indent}        }}')
         else:
             w(f'{indent}        {buf_name}[{index_name}] = {list_name}[{index_name}].cast<{elem_cpp}>();')
 

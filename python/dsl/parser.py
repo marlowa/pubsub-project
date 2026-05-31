@@ -15,6 +15,7 @@ from .ast import (
     Field,
     PrimitiveType,
     StringType,
+    BytesType,
     ListType,
     ArrayType,
     ReferenceType,
@@ -256,6 +257,10 @@ class Parser:  # pylint: disable=too-few-public-methods
         elif tok.kind == "KEYWORD" and tok.value == "string":
             self.current = self.lexer.next_token()
             base = StringType()
+
+        elif tok.kind == "KEYWORD" and tok.value == "bytes":
+            self.current = self.lexer.next_token()
+            base = BytesType()
 
         elif tok.kind == "KEYWORD" and tok.value == "list":
             self.current = self.lexer.next_token()

@@ -27,6 +27,7 @@ class Lexer:  # pylint: disable=too-few-public-methods
         "optional",
         "list",
         "string",
+        "bytes",
         "char",
         "i8",
         "i16",

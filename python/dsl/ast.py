@@ -89,6 +89,11 @@ class StringType(Type):
 
 
 @dataclass
+class BytesType(Type):
+    """A variable-length raw byte sequence."""
+
+
+@dataclass
 class ListType(Type):
     """A variable-length list of elements of a given type."""
 

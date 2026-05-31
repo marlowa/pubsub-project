@@ -12,6 +12,7 @@ from .ast import (
     Field,
     PrimitiveType,
     StringType,
+    BytesType,
     ListType,
     ArrayType,
     ReferenceType,
@@ -144,6 +145,9 @@ class Validator:  # pylint: disable=too-few-public-methods
             return
 
         if isinstance(type_node, StringType):
+            return
+
+        if isinstance(type_node, BytesType):
             return
 
         if isinstance(type_node, ListType):
