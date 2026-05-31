@@ -5,9 +5,12 @@
 
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/RollingLogfileConfiguration.hpp>
+
+#include <scram_crypto/ScramCrypto.hpp>
 
 namespace authentication_service {
 
@@ -79,6 +82,16 @@ struct AuthenticationServiceConfiguration {
 
     /** @brief Number of command queue pool slabs pre-allocated at startup. */
     int32_t command_queue_pool_initial_slabs{1};
+
+    // ----------------------------------------------------------------
+    // Credentials
+    // ----------------------------------------------------------------
+
+    /** @brief Path to the TOML file containing per-comp_id SCRAM-SHA-256 credentials. */
+    std::string credentials_file;
+
+    /** @brief Per-comp_id SCRAM credentials populated from credentials_file at startup. */
+    std::unordered_map<std::string, scram_crypto::ScramCredential> credentials;
 };
 
 } // namespace authentication_service

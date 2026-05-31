@@ -15,7 +15,7 @@
 #include <pubsub_itc_fw/Reactor.hpp>
 
 #include <AuthenticationServiceConfiguration.hpp>
-#include <ScramCrypto.hpp>
+#include <scram_crypto/ScramCrypto.hpp>
 
 namespace authentication_service {
 
@@ -26,9 +26,8 @@ namespace authentication_service {
  * four-message SCRAM-SHA-256 exchanges (AuthenticationRequest -> AuthenticationChallenge ->
  * AuthenticationProof -> AuthenticationResult), one per gateway logon attempt.
  *
- * For the stub implementation every comp_id maps to the same pre-derived credential
- * (password "stubpassword"). Replace the credential lookup with a real account store
- * before production use.
+ * Credentials are loaded from the file named by config.credentials_file at startup.
+ * An AuthenticationRequest from an unknown comp_id is answered with UnknownUser.
  *
  * PDU IDs (from authentication.dsl):
  *   500 AuthenticationRequest   -- received from gateway
@@ -75,7 +74,6 @@ class AuthenticationThread : public pubsub_itc_fw::ApplicationThread {
                                       const pubsub_itc_fw::EventMessage& msg);
 
     const AuthenticationServiceConfiguration& config_;
-    scram_crypto::ScramCredential stub_credential_;
     std::unordered_map<pubsub_itc_fw::ConnectionID, ExchangeState> exchanges_;
 };
 

@@ -75,6 +75,25 @@ namespace pubsub_itc_fw {
  *   [gateway]
  *   sender_comp_id = "GATEWAY"
  *
+ * Array-of-tables (TOML [[section]] syntax):
+ *
+ *   [[credential]]
+ *   comp_id = "GATEWAY_ALPHA"
+ *   iterations = 4096
+ *
+ *   [[credential]]
+ *   comp_id = "GATEWAY_BETA"
+ *   iterations = 4096
+ *
+ * Use array_size() to get the number of entries, then iterate using indexed
+ * paths with get_required() or get_required_except():
+ *
+ *   for (std::size_t i = 0; i < config.array_size("credential"); ++i) {
+ *       std::string comp_id;
+ *       config.get_required_except(
+ *           fmt::format("credential[{}].comp_id", i), comp_id);
+ *   }
+ *
  * Key lookup is case-sensitive, consistent with the TOML specification.
  *
  * The toml++ library is an implementation detail and is not exposed in this
@@ -137,6 +156,26 @@ class TomlConfiguration {
     void set(std::string_view key, std::chrono::seconds value);
     void set(std::string_view key, std::chrono::minutes value);
     void set(std::string_view key, std::chrono::hours value);
+
+    // ----------------------------------------------------------------
+    // Array-of-tables
+    // ----------------------------------------------------------------
+
+    /**
+     * @brief Returns the number of entries in a TOML array-of-tables.
+     *
+     * Returns 0 if the key does not exist, is not an array, or the array
+     * is empty. Use this to iterate over [[section]] blocks:
+     *
+     *   for (std::size_t i = 0; i < config.array_size("credential"); ++i) {
+     *       config.get_required_except(
+     *           fmt::format("credential[{}].comp_id", i), comp_id);
+     *   }
+     *
+     * @param[in] key Top-level key naming the array (e.g. "credential").
+     * @return Number of tables in the array, or 0.
+     */
+    [[nodiscard]] std::size_t array_size(std::string_view key) const;
 
     // ----------------------------------------------------------------
     // Error-returning accessors

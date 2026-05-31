@@ -569,7 +569,27 @@ The receiving node's reactor accepts data via epoll and delivers it zero-copy to
 
 ## Session Accomplishments
 
-### Session 20 (current)
+### Session 21 (current)
+
+**Java DSL code generator — Java backend added.**
+
+The DSL front end (lexer, parser, validator, AST) is language-agnostic and shared. Three new files add Java as a second code-generation target alongside C++:
+
+- `python/dsl/generator_java.py` — `JavaGenerator(class_name, package_name)` dataclass. Emits a single public final outer class that acts as a namespace container for one public enum per DSL enum and one `public static final` inner class per DSL message. Wire format is little-endian throughout, matching the C++ generator; `ByteBuffer.order(ByteOrder.LITTLE_ENDIAN)` is applied at the start of every encode and decode call.
+
+  Each message inner class contains: public fields with zero/empty defaults; `public static int encodedSize(MsgType msg)`; `public static int encode(MsgType msg, ByteBuffer buf)` (returns bytes written, or -1 if buffer too small — checked via a single `encodedSize` pre-flight); `public static MsgType decode(ByteBuffer buf)` (saves position, delegates to `_decodeFields`, resets position and returns null on `BufferUnderflowException`); `static MsgType _decodeFields(ByteBuffer buf)` (package-private, throws on underflow — called by nested-message decode paths so exceptions propagate to the outermost `decode()` catch without corrupting the position).
+
+  Type mappings: DSL `char` → Java `byte` (not Java `char` which is 2-byte UTF-16); `i8`→`byte`, `i16`→`short`, `i32`→`int`, `i64`→`long`, `bool`→`boolean`, `datetime_ns`→`long`, `string`→`String`, `bytes`→`byte[]`. Lists map to Java arrays (`T[]`); nested lists give `T[][]` etc. with correct `new T[n][]` allocation syntax. Enums carry a `public final int value` field (or `long` for i64-backed enums), a `fromValue(v)` factory, and `wireSize()` returning the underlying type's byte count.
+
+- `python/tools/generate_java_from_dsl.py` — thin wrapper script mirroring `generate_cpp_from_dsl.py`. Takes positional `input.dsl` and `output.java` arguments (class name inferred from the output file stem) plus `--package com.example.app` for an optional package declaration.
+
+- `python/tests/test_generator_java.py` — 47 tests covering: outer class and package wrapping, all primitive type mappings, `char`→`byte` (not Java char), enums (entries, value, fromValue, wireSize, i64 long type), optional fields with `has_X` pattern, string/bytes fields, list and array fields, nested messages, nested lists, encode capacity check, `BufferUnderflowException` handling, `ByteOrder.LITTLE_ENDIAN`, and the `_decodeFields` / `decode` method split.
+
+Build: `make all` passes pylint 10.00/10, 203/203 tests.
+
+---
+
+### Session 20
 
 **SCRAM-SHA-256 authentication service — full end-to-end implementation.**
 
@@ -1127,7 +1147,7 @@ TcpSocket EAGAIN/EOF fix, use-after-free fix, InboundConnection infrastructure, 
 - `ReactorControlCommand` — complete
 - `ReactorConfiguration` — complete; `connect_retry_interval_` (2s default, WAL-pending workaround)
 - `FileSystemUtils` — complete
-- DSL code generator — complete; `enum class` fix; `char` type; 133 tests passing
+- DSL code generator — complete; C++ and Java backends; `enum class` fix; `char` type; 203 tests passing. Java backend: `JavaGenerator(class_name, package_name)`, `generate_java_from_dsl.py` wrapper with `--package` option; 47 Java-specific tests.
 - `fix_equity_orders.dsl` — FIX 5.0 SP2 equity order topic registry
 - Logging subsystem — complete
 - `RawBytesProtocolHandler` — complete; `on_data_ready`/`send_prebuilt`/`continue_send` return `tuple<bool, std::string>`; no disconnect-handler member; no logger member (session 14)

@@ -28,7 +28,7 @@
 #include <fix_equity_orders.hpp>
 
 // Shared SCRAM-SHA-256 crypto primitives.
-#include <ScramCrypto.hpp>
+#include <scram_crypto/ScramCrypto.hpp>
 
 namespace sample_fix_gateway_seq {
 

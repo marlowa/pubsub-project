@@ -1,7 +1,7 @@
 add_library(scram_crypto STATIC ScramCrypto.cpp)
 
 target_include_directories(scram_crypto PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/..
 )
 
 # ScramCrypto.hpp exposes no OpenSSL types, so consumers do not need the

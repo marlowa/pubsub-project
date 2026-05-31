@@ -20,6 +20,7 @@
 #include <string>
 #include <tuple>
 
+#include <fmt/format.h>
 #include <gtest/gtest.h>
 
 #include <pubsub_itc_fw/ConfigurationException.hpp>
@@ -532,6 +533,152 @@ TEST_F(TomlConfigurationTest, GetRequiredExceptHours) {
     std::chrono::hours value{0};
     EXPECT_NO_THROW(config.get_required_except("session", value));
     EXPECT_EQ(value, std::chrono::hours{4});
+}
+
+// ============================================================
+// array_size and array-of-tables iteration
+// ============================================================
+
+TEST_F(TomlConfigurationTest, ArraySizeMissingKeyReturnsZero) {
+    EXPECT_EQ(config.array_size("credential"), std::size_t{0});
+}
+
+TEST_F(TomlConfigurationTest, ArraySizeNonArrayKeyReturnsZero) {
+    config.set("credential", std::string{"not_an_array"});
+    EXPECT_EQ(config.array_size("credential"), std::size_t{0});
+}
+
+TEST_F(TomlConfigurationTest, ArraySizeOneEntry) {
+    auto [ok, err] = config.load_string(R"(
+        [[credential]]
+        comp_id = "GATEWAY_ALPHA"
+        iterations = 4096
+    )");
+    EXPECT_TRUE(ok) << err;
+    EXPECT_EQ(config.array_size("credential"), std::size_t{1});
+}
+
+TEST_F(TomlConfigurationTest, ArraySizeTwoEntries) {
+    auto [ok, err] = config.load_string(R"(
+        [[credential]]
+        comp_id = "GATEWAY_ALPHA"
+        iterations = 4096
+
+        [[credential]]
+        comp_id = "GATEWAY_BETA"
+        iterations = 8192
+    )");
+    EXPECT_TRUE(ok) << err;
+    EXPECT_EQ(config.array_size("credential"), std::size_t{2});
+}
+
+TEST_F(TomlConfigurationTest, ArrayOfTablesFieldAccess) {
+    auto [ok, err] = config.load_string(R"(
+        [[credential]]
+        comp_id = "GATEWAY_ALPHA"
+        iterations = 4096
+
+        [[credential]]
+        comp_id = "GATEWAY_BETA"
+        iterations = 8192
+    )");
+    EXPECT_TRUE(ok) << err;
+
+    std::string comp_id_0;
+    int32_t iterations_0 = 0;
+    auto [ok0a, err0a] = config.get_required("credential[0].comp_id", comp_id_0);
+    auto [ok0b, err0b] = config.get_required("credential[0].iterations", iterations_0);
+    EXPECT_TRUE(ok0a) << err0a;
+    EXPECT_TRUE(ok0b) << err0b;
+    EXPECT_EQ(comp_id_0, "GATEWAY_ALPHA");
+    EXPECT_EQ(iterations_0, 4096);
+
+    std::string comp_id_1;
+    int32_t iterations_1 = 0;
+    auto [ok1a, err1a] = config.get_required("credential[1].comp_id", comp_id_1);
+    auto [ok1b, err1b] = config.get_required("credential[1].iterations", iterations_1);
+    EXPECT_TRUE(ok1a) << err1a;
+    EXPECT_TRUE(ok1b) << err1b;
+    EXPECT_EQ(comp_id_1, "GATEWAY_BETA");
+    EXPECT_EQ(iterations_1, 8192);
+}
+
+TEST_F(TomlConfigurationTest, ArrayOfTablesIndexOutOfBoundsReturnsFalse) {
+    auto [ok, err] = config.load_string(R"(
+        [[credential]]
+        comp_id = "GATEWAY_ALPHA"
+    )");
+    EXPECT_TRUE(ok) << err;
+
+    std::string value;
+    auto [ok2, err2] = config.get_required("credential[1].comp_id", value);
+    EXPECT_FALSE(ok2);
+    EXPECT_FALSE(err2.empty());
+}
+
+TEST_F(TomlConfigurationTest, ArrayOfTablesGetRequiredExceptIteration) {
+    auto [ok, err] = config.load_string(R"(
+        [[credential]]
+        comp_id    = "GATEWAY_ALPHA"
+        iterations = 4096
+        locked     = false
+
+        [[credential]]
+        comp_id    = "GATEWAY_BETA"
+        iterations = 4096
+        locked     = true
+    )");
+    EXPECT_TRUE(ok) << err;
+
+    const std::size_t count = config.array_size("credential");
+    ASSERT_EQ(count, std::size_t{2});
+
+    struct Entry { std::string comp_id; int32_t iterations{}; bool locked{}; };
+    std::vector<Entry> entries;
+
+    for (std::size_t i = 0; i < count; ++i) {
+        Entry entry;
+        EXPECT_NO_THROW({
+            config.get_required_except(
+                fmt::format("credential[{}].comp_id", i), entry.comp_id);
+            config.get_required_except(
+                fmt::format("credential[{}].iterations", i), entry.iterations);
+            config.get_required_except(
+                fmt::format("credential[{}].locked", i), entry.locked);
+        });
+        entries.push_back(entry);
+    }
+
+    ASSERT_EQ(entries.size(), std::size_t{2});
+    EXPECT_EQ(entries[0].comp_id, "GATEWAY_ALPHA");
+    EXPECT_EQ(entries[0].iterations, 4096);
+    EXPECT_FALSE(entries[0].locked);
+    EXPECT_EQ(entries[1].comp_id, "GATEWAY_BETA");
+    EXPECT_EQ(entries[1].iterations, 4096);
+    EXPECT_TRUE(entries[1].locked);
+}
+
+TEST_F(TomlConfigurationTest, ArrayOfTablesBoolAndStringFields) {
+    auto [ok, err] = config.load_string(R"(
+        [[credential]]
+        comp_id               = "ALPHA"
+        locked                = false
+        force_password_change = true
+    )");
+    EXPECT_TRUE(ok) << err;
+
+    std::string comp_id;
+    bool locked = true;
+    bool force_pw = false;
+    auto [ok1, err1] = config.get_required("credential[0].comp_id", comp_id);
+    auto [ok2, err2] = config.get_required("credential[0].locked", locked);
+    auto [ok3, err3] = config.get_required("credential[0].force_password_change", force_pw);
+    EXPECT_TRUE(ok1) << err1;
+    EXPECT_TRUE(ok2) << err2;
+    EXPECT_TRUE(ok3) << err3;
+    EXPECT_EQ(comp_id, "ALPHA");
+    EXPECT_FALSE(locked);
+    EXPECT_TRUE(force_pw);
 }
 
 } // namespace pubsub_itc_fw::tests

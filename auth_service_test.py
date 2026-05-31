@@ -78,7 +78,7 @@ AUTHENTICATION_OUTCOME_GRANTED = 0
 STUB_PASSWORD = "stubpassword"
 
 # Substrings expected in the service log to confirm key events.
-_SERVICE_READY_MARKER   = "AuthenticationService: TLS listener on"
+_SERVICE_READY_MARKER   = "AuthenticationService: PDU listener on"
 _SERVICE_GRANTED_MARKER = "AuthenticationThread: AuthenticationResult Granted"
 
 
@@ -257,8 +257,41 @@ def _find_free_port() -> int:
         return sock.getsockname()[1]
 
 
+_STUB_STORED_KEY = "e0eaf13bf630627621a7f47e378fb8c62c5b4bb709d42767d0193dc537f34be2"
+_STUB_SERVER_KEY = "c016b7864891fe5bad757b60de234df09dde5a4be4deb015e158ca1aae9bec7d"
+_STUB_SALT       = "0102030405060708090a0b0c0d0e0f10"
+_STUB_ITERATIONS = 4096
+
+_TEST_COMP_IDS = [
+    "TEST_GATEWAY",
+    "GATEWAY_ALPHA",
+    "GATEWAY_BETA",
+    "CLIENT_ONE",
+    "CLIENT_TWO",
+    "CLIENT_THREE",
+]
+
+
+def _credential_block(comp_id: str) -> str:
+    return (
+        f'[[credential]]\n'
+        f'comp_id    = "{comp_id}"\n'
+        f'stored_key = "{_STUB_STORED_KEY}"\n'
+        f'server_key = "{_STUB_SERVER_KEY}"\n'
+        f'salt       = "{_STUB_SALT}"\n'
+        f'iterations = {_STUB_ITERATIONS}\n'
+    )
+
+
 def _write_test_toml(path: Path, listen_port: int) -> None:
+    credentials_path = path.parent / "credentials.toml"
+    credentials_path.write_text(
+        "".join(_credential_block(c) + "\n" for c in _TEST_COMP_IDS)
+    )
+
     path.write_text(
+        f'credentials_file = "{credentials_path}"\n'
+        f'\n'
         f'[network]\n'
         f'listen_host = "127.0.0.1"\n'
         f'listen_port = {listen_port}\n'

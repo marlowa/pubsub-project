@@ -1,9 +1,13 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <tuple>
+#include <vector>
+
+#include <fmt/format.h>
 
 #include <pubsub_itc_fw/ConfigurationException.hpp>
 #include <pubsub_itc_fw/FileOpenMode.hpp>
@@ -12,9 +16,85 @@
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/TomlConfiguration.hpp>
 
+#include <scram_crypto/ScramCrypto.hpp>
+
 #include "AuthenticationServiceConfigurationLoader.hpp"
 
 namespace authentication_service {
+
+namespace {
+
+std::vector<uint8_t> hex_decode(std::string_view hex, std::string_view field_name) {
+    if (hex.size() % 2 != 0) {
+        throw pubsub_itc_fw::ConfigurationException(
+            fmt::format("credentials: {} has odd-length hex string ({})", field_name, hex.size()));
+    }
+    std::vector<uint8_t> result;
+    result.reserve(hex.size() / 2);
+    for (size_t i = 0; i < hex.size(); i += 2) {
+        auto nybble = [&](char c) -> uint8_t {
+            if (c >= '0' && c <= '9') return static_cast<uint8_t>(c - '0');
+            if (c >= 'a' && c <= 'f') return static_cast<uint8_t>(c - 'a' + 10);
+            if (c >= 'A' && c <= 'F') return static_cast<uint8_t>(c - 'A' + 10);
+            throw pubsub_itc_fw::ConfigurationException(
+                fmt::format("credentials: {} contains invalid hex character '{}'", field_name, c));
+        };
+        result.push_back(static_cast<uint8_t>((nybble(hex[i]) << 4) | nybble(hex[i + 1])));
+    }
+    return result;
+}
+
+void load_credentials(const std::string& credentials_file,
+                      std::unordered_map<std::string, scram_crypto::ScramCredential>& credentials) {
+    pubsub_itc_fw::TomlConfiguration cred_toml;
+    auto [ok, err] = cred_toml.load_file(credentials_file);
+    if (!ok) {
+        throw pubsub_itc_fw::ConfigurationException(
+            "AuthenticationServiceConfigurationLoader: failed to load credentials file '" +
+            credentials_file + "': " + err);
+    }
+
+    const std::size_t count = cred_toml.array_size("credential");
+    for (std::size_t i = 0; i < count; ++i) {
+        std::string comp_id;
+        std::string stored_key_hex;
+        std::string server_key_hex;
+        std::string salt_hex;
+        int32_t iterations = 0;
+
+        cred_toml.get_required_except(fmt::format("credential[{}].comp_id",     i), comp_id);
+        cred_toml.get_required_except(fmt::format("credential[{}].stored_key",  i), stored_key_hex);
+        cred_toml.get_required_except(fmt::format("credential[{}].server_key",  i), server_key_hex);
+        cred_toml.get_required_except(fmt::format("credential[{}].salt",        i), salt_hex);
+        cred_toml.get_required_except(fmt::format("credential[{}].iterations",  i), iterations);
+
+        scram_crypto::ScramCredential cred;
+        cred.stored_key = hex_decode(stored_key_hex, fmt::format("credential[{}].stored_key", i));
+        cred.server_key = hex_decode(server_key_hex, fmt::format("credential[{}].server_key", i));
+        cred.salt       = hex_decode(salt_hex,       fmt::format("credential[{}].salt", i));
+        cred.iterations = iterations;
+
+        if (cred.stored_key.size() != 32) {
+            throw pubsub_itc_fw::ConfigurationException(
+                fmt::format("credentials: credential[{}].stored_key must be 64 hex chars (32 bytes), got {} chars",
+                            i, stored_key_hex.size()));
+        }
+        if (cred.server_key.size() != 32) {
+            throw pubsub_itc_fw::ConfigurationException(
+                fmt::format("credentials: credential[{}].server_key must be 64 hex chars (32 bytes), got {} chars",
+                            i, server_key_hex.size()));
+        }
+        if (cred.salt.size() != 16) {
+            throw pubsub_itc_fw::ConfigurationException(
+                fmt::format("credentials: credential[{}].salt must be 32 hex chars (16 bytes), got {} chars",
+                            i, salt_hex.size()));
+        }
+
+        credentials[comp_id] = std::move(cred);
+    }
+}
+
+} // namespace
 
 std::tuple<AuthenticationServiceConfiguration, std::unique_ptr<pubsub_itc_fw::QuillLogger>>
 AuthenticationServiceConfigurationLoader::load_and_init_logging(const std::string& file_path, const std::string& log_file_path) {
@@ -87,9 +167,20 @@ AuthenticationServiceConfigurationLoader::load_and_init_logging(const std::strin
                                                         std::to_string(config.command_queue_pool_initial_slabs));
         }
 
+        toml.get_required_except("credentials_file", config.credentials_file);
+
+        // Resolve relative credentials_file path relative to the service config file's directory.
+        const std::filesystem::path cred_path{config.credentials_file};
+        if (cred_path.is_relative()) {
+            config.credentials_file =
+                (std::filesystem::path{file_path}.parent_path() / cred_path).string();
+        }
+
     } catch (const pubsub_itc_fw::ConfigurationException&) {
         throw;
     }
+
+    load_credentials(config.credentials_file, config.credentials);
 
     return std::make_tuple(std::move(config), std::move(logger));
 }

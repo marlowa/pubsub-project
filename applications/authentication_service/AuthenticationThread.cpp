@@ -16,7 +16,7 @@
 #include <pubsub_itc_fw/QueueConfiguration.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 
-#include <ScramCrypto.hpp>
+#include <scram_crypto/ScramCrypto.hpp>
 #include <authentication.hpp>
 
 namespace authentication_service {
@@ -27,18 +27,6 @@ static constexpr int16_t pdu_id_authentication_request   = 500;
 static constexpr int16_t pdu_id_authentication_challenge = 501;
 static constexpr int16_t pdu_id_authentication_proof     = 502;
 static constexpr int16_t pdu_id_authentication_result    = 503;
-
-// Stub salt and iteration count.  In production these are stored per account.
-// NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays)
-static const uint8_t stub_salt[] = {
-    0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-    0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10
-};
-static constexpr int32_t stub_iterations = 4096;
-
-// Stub password used to derive the stub credential at startup.
-// Replace with a real per-account credential store in production.
-static constexpr std::string_view stub_password = "stubpassword";
 
 pubsub_itc_fw::QueueConfiguration make_queue_config() {
     pubsub_itc_fw::QueueConfiguration queue_configuration{};
@@ -69,8 +57,7 @@ AuthenticationThread::AuthenticationThread(pubsub_itc_fw::ApplicationThread::Con
     : ApplicationThread(token, logger, reactor, "AuthenticationThread", pubsub_itc_fw::ThreadID{1},
                         make_queue_config(), make_allocator_config(config, logger),
                         pubsub_itc_fw::ApplicationThreadConfiguration{})
-    , config_(config)
-    , stub_credential_(scram_crypto::make_scram_credential(stub_password, stub_salt, sizeof(stub_salt), stub_iterations)) {}
+    , config_(config) {}
 
 void AuthenticationThread::on_connection_established(pubsub_itc_fw::ConnectionID id) {
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
@@ -137,17 +124,30 @@ void AuthenticationThread::handle_authentication_request(pubsub_itc_fw::Connecti
     }
     server_nonce.insert(server_nonce.end(), random_suffix, random_suffix + sizeof(random_suffix));
 
-    // Stub credential lookup: all comp_ids map to the same pre-derived credential.
-    // Replace with a real per-account lookup in production.
+    auto cred_it = config_.credentials.find(comp_id);
+    if (cred_it == config_.credentials.end()) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "AuthenticationThread: unknown comp_id={} conn_id={} request_id={} -- UnknownUser",
+                   comp_id, conn_id.get_value(), view.request_id);
+        pubsub_itc_fw_app::AuthenticationResult result{};
+        result.request_id       = view.request_id;
+        result.outcome          = pubsub_itc_fw_app::AuthenticationOutcome::UnknownUser;
+        result.server_signature = pubsub_itc_fw_app::BytesView{nullptr, 0};
+        result.force_password_change = false;
+        send_pdu(conn_id, pdu_id_authentication_result, 0, result);
+        return;
+    }
+
+    const scram_crypto::ScramCredential& cred = cred_it->second;
     ExchangeState& state = exchanges_[conn_id];
-    state.request_id  = view.request_id;
-    state.comp_id     = comp_id;
+    state.request_id   = view.request_id;
+    state.comp_id      = comp_id;
     state.client_nonce = client_nonce;
     state.server_nonce = server_nonce;
-    state.salt        = stub_credential_.salt;
-    state.iterations  = stub_credential_.iterations;
-    state.stored_key  = stub_credential_.stored_key;
-    state.server_key  = stub_credential_.server_key;
+    state.salt         = cred.salt;
+    state.iterations   = cred.iterations;
+    state.stored_key   = cred.stored_key;
+    state.server_key   = cred.server_key;
 
     pubsub_itc_fw_app::AuthenticationChallenge challenge{};
     challenge.request_id  = view.request_id;
