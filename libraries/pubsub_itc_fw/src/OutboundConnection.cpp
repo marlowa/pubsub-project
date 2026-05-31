@@ -6,6 +6,8 @@
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/ServiceEndpoints.hpp>
+#include <pubsub_itc_fw/TlsContext.hpp>
+#include <pubsub_itc_fw/TlsRawBytesProtocolHandler.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -23,6 +25,14 @@ OutboundConnection::OutboundConnection(ConnectionID id, ThreadID requesting_thre
     if (!connector_) {
         throw PreconditionAssertion("OutboundConnection: connector must not be null", __FILE__, __LINE__);
     }
+    if (endpoints_.tls.has_value()) {
+        const TlsClientConfiguration& tls_config = *endpoints_.tls;
+        auto [ctx, ctx_error] = TlsContext::create_client(tls_config.ca_path, tls_config.certificate_path, tls_config.private_key_path);
+        if (!ctx) {
+            throw PreconditionAssertion("OutboundConnection: TlsContext::create_client failed: " + ctx_error, __FILE__, __LINE__);
+        }
+        tls_context_ = std::move(ctx);
+    }
 }
 
 void OutboundConnection::on_connected(std::unique_ptr<TcpSocket> socket) {
@@ -36,10 +46,18 @@ void OutboundConnection::on_connected(std::unique_ptr<TcpSocket> socket) {
     socket_ = std::move(socket);
     connector_.reset();
 
-    framer_ = std::make_unique<PduFramer>(*socket_);
-    // nullptr is safe: OutboundConnectionManager::on_data_ready checks the receive() return value
-    // to detect disconnects and drives teardown via that path.
-    parser_ = std::make_unique<PduParser>(*socket_, target_thread_, inbound_allocator_, logger_, nullptr, id_);
+    if (tls_context_) {
+        const int64_t buffer_capacity = endpoints_.tls->raw_buffer_capacity;
+        protocol_handler_ = std::make_unique<TlsRawBytesProtocolHandler>(
+            id_, *socket_, target_thread_, buffer_capacity, *tls_context_, /*is_server=*/false);
+        // data_exchange_ready_ stays false until the TLS handshake completes.
+    } else {
+        framer_ = std::make_unique<PduFramer>(*socket_);
+        // nullptr is safe: OutboundConnectionManager::on_data_ready checks the receive() return
+        // value to detect disconnects and drives teardown via that path.
+        parser_ = std::make_unique<PduParser>(*socket_, target_thread_, inbound_allocator_, logger_, nullptr, id_);
+        data_exchange_ready_ = true;
+    }
 }
 
 void OutboundConnection::retry_with_secondary(std::unique_ptr<TcpConnector> connector) {

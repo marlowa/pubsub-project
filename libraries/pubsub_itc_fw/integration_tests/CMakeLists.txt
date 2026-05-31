@@ -14,6 +14,7 @@ add_executable(pubsub_itc_fw_integration_tests
     RawBytesBackPressureIntegrationTest.cpp
     RawBytesProtocolHandlerIntegrationTest.cpp
     StatusQueryResponseTest.cpp
+    TlsOutboundIntegrationTest.cpp
     TlsProtocolHandlerIntegrationTest.cpp
     VariableLengthPduTest.cpp
 )
@@ -48,6 +49,7 @@ message(STATUS "  Added integration test: PduBurstIntegrationTest")
 message(STATUS "  Added integration test: StatusQueryResponseTest")
 message(STATUS "  Added integration test: VariableLengthPduTest")
 message(STATUS "  Added integration test: RawBytesProtocolHandlerIntegrationTest")
+message(STATUS "  Added integration test: TlsOutboundIntegrationTest")
 message(STATUS "  Added integration test: TlsProtocolHandlerIntegrationTest")
 
 # Install integration test executable -> bin

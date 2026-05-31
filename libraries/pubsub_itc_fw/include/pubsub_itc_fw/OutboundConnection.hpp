@@ -12,11 +12,13 @@
 #include <pubsub_itc_fw/MillisecondClock.hpp>
 #include <pubsub_itc_fw/PduFramer.hpp>
 #include <pubsub_itc_fw/PduParser.hpp>
+#include <pubsub_itc_fw/ProtocolHandlerInterface.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/ServiceEndpoints.hpp>
 #include <pubsub_itc_fw/TcpConnector.hpp>
 #include <pubsub_itc_fw/TcpSocket.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
+#include <pubsub_itc_fw/TlsContext.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -270,24 +272,54 @@ class OutboundConnection {
     }
 
     /**
-     * @brief Returns true if the connection is fully established.
+     * @brief Returns true if the connection is application-visible established.
      *
-     * Established phase: `finish_connect()` has succeeded and the socket,
-     * framer, and parser are all active.
+     * For PDU connections this becomes true as soon as finish_connect() succeeds.
+     * For TLS connections this becomes true only once the TLS handshake completes
+     * and ConnectionEstablished has been delivered to the requesting thread.
      */
     [[nodiscard]] bool is_established() const {
-        return socket_ != nullptr;
+        return data_exchange_ready_;
     }
 
     /**
-     * @brief Returns true if a PDU send is partially complete.
+     * @brief Returns true if this is a TLS-protected connection.
+     */
+    [[nodiscard]] bool is_tls() const {
+        return endpoints_.tls.has_value();
+    }
+
+    /**
+     * @brief Marks this connection as application-visible established.
      *
-     * When true, the reactor has registered `EPOLLOUT` on this socket and
-     * will call `framer()->continue_send()` when it becomes writable.
-     * No further `SendPdu` commands for this connection should be dequeued
-     * from the command queue until this clears.
+     * Called by OutboundConnectionManager once the TLS handshake completes
+     * (after which ConnectionEstablished is delivered). For PDU connections
+     * this is called inside on_connected().
+     */
+    void mark_as_established() {
+        data_exchange_ready_ = true;
+    }
+
+    /**
+     * @brief Returns the protocol handler for TLS connections.
+     *
+     * Returns nullptr for PDU connections. Valid from on_connected() onwards.
+     */
+    [[nodiscard]] ProtocolHandlerInterface* protocol_handler() const {
+        return protocol_handler_.get();
+    }
+
+    /**
+     * @brief Returns true if a send is partially complete.
+     *
+     * For PDU connections, true when a slab chunk is in flight waiting for
+     * EPOLLOUT. For TLS connections, true when pending ciphertext bytes remain
+     * in TlsState::pending_outbound.
      */
     [[nodiscard]] bool has_pending_send() const {
+        if (protocol_handler_) {
+            return protocol_handler_->has_pending_send();
+        }
         return current_chunk_ptr_ != nullptr;
     }
 
@@ -371,12 +403,24 @@ class OutboundConnection {
     MillisecondClock::time_point connect_started_at_{MillisecondClock::now()};
     std::unique_ptr<TcpConnector> connector_;
 
-    // --- Phase 2: established ---
+    // --- Phase 2: TCP connected ---
     std::unique_ptr<TcpSocket> socket_;
+
+    // --- Phase 2a: PDU path (framer_ / parser_ non-null only when !is_tls()) ---
     std::unique_ptr<PduFramer> framer_;
     std::unique_ptr<PduParser> parser_;
 
-    // --- Partial send state ---
+    // --- Phase 2b: TLS path (non-null only when is_tls()) ---
+    // tls_context_ is created in the constructor from endpoints_.tls when present.
+    // protocol_handler_ is created in on_connected() once the TCP socket is ready.
+    std::unique_ptr<TlsContext> tls_context_;
+    std::unique_ptr<ProtocolHandlerInterface> protocol_handler_;
+
+    // True once the application-visible connection is established:
+    // immediately after on_connected() for PDU, after TLS handshake completes for TLS.
+    bool data_exchange_ready_{false};
+
+    // --- Partial send state (PDU only) ---
     // current_allocator_ is the ApplicationThread-owned outbound slab allocator
     // that allocated current_chunk_ptr_. Stored here so the reactor can call
     // current_allocator_->deallocate() on send completion without needing to

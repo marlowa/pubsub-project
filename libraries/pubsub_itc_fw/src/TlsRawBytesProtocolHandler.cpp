@@ -272,6 +272,10 @@ void TlsRawBytesProtocolHandler::deallocate_pending_send() {
     tls_state_.clear_pending_outbound();
 }
 
+std::tuple<bool, std::string> TlsRawBytesProtocolHandler::start_outbound_handshake() {
+    return drive_handshake();
+}
+
 bool TlsRawBytesProtocolHandler::commit_bytes(int64_t bytes) {
     plaintext_buffer_->advance_tail(bytes);
 

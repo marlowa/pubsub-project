@@ -366,7 +366,7 @@ class OutboundConnectionPreconditionTest : public ::testing::Test {
 
     std::unique_ptr<OutboundConnection> make_connection() {
         auto connector = std::make_unique<TcpConnector>();
-        ServiceEndpoints endpoints{NetworkEndpointConfiguration{"127.0.0.1", 9999}, NetworkEndpointConfiguration{}};
+        ServiceEndpoints endpoints{NetworkEndpointConfiguration{"127.0.0.1", 9999}, NetworkEndpointConfiguration{}, std::nullopt};
         return std::make_unique<OutboundConnection>(ConnectionID{1}, ThreadID{1}, "dummy_service", endpoints, std::move(connector), *allocator_, *thread_,
                                                     logger_->logger);
     }
@@ -379,7 +379,7 @@ class OutboundConnectionPreconditionTest : public ::testing::Test {
 };
 
 TEST_F(OutboundConnectionPreconditionTest, ConstructorRejectsNullConnector) {
-    ServiceEndpoints endpoints{NetworkEndpointConfiguration{"127.0.0.1", 9999}, NetworkEndpointConfiguration{}};
+    ServiceEndpoints endpoints{NetworkEndpointConfiguration{"127.0.0.1", 9999}, NetworkEndpointConfiguration{}, std::nullopt};
     EXPECT_THROW(OutboundConnection(ConnectionID{1}, ThreadID{1}, "dummy_service", endpoints, nullptr, *allocator_, *thread_, logger_->logger),
                  PreconditionAssertion);
 }

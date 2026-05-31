@@ -136,6 +136,26 @@ public:
         return reads_paused_;
     }
 
+    /**
+     * @brief Returns true once the TLS handshake has completed.
+     */
+    [[nodiscard]] bool is_handshake_complete() const override {
+        return tls_state_.handshake_phase == TlsState::HandshakePhase::Complete;
+    }
+
+    /**
+     * @brief Drives the first client-side handshake step, generating and sending
+     *        the ClientHello record.
+     *
+     * Must be called once immediately after the TCP connection is established,
+     * before any data arrives from the server. Subsequent steps are driven by
+     * on_data_ready() as server responses arrive.
+     *
+     * @return {true, ""} on success (including partial send held in pending_outbound);
+     *         {false, error} on hard failure.
+     */
+    [[nodiscard]] std::tuple<bool, std::string> start_outbound_handshake() override;
+
 private:
     /**
      * @brief Drains the write BIO and attempts a non-blocking send to the socket.

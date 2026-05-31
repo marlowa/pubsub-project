@@ -78,7 +78,35 @@ class ServiceRegistry {
         if (entries_.count(name) != 0) {
             throw PreconditionAssertion("ServiceRegistry::add: duplicate service name: " + name, __FILE__, __LINE__);
         }
-        entries_.emplace(name, ServiceEndpoints{std::move(primary), std::move(secondary)});
+        entries_.emplace(name, ServiceEndpoints{std::move(primary), std::move(secondary), std::nullopt});
+    }
+
+    /**
+     * @brief Registers a named TLS service with its primary and optional secondary endpoints.
+     *
+     * Identical to add() but attaches TLS configuration so that every outbound connection
+     * to this service performs a TLS handshake before delivering ConnectionEstablished.
+     *
+     * Must be called before any threads are started.
+     *
+     * @param[in] name      Logical service name. Must be unique.
+     * @param[in] primary   Primary endpoint.
+     * @param[in] secondary Secondary endpoint. Set port to 0 if not required.
+     * @param[in] tls       TLS configuration (CA path, optional client cert/key, buffer capacity).
+     * @throws PreconditionAssertion if name is empty or has already been registered.
+     */
+    void add_tls(const std::string& name, NetworkEndpointConfiguration primary, NetworkEndpointConfiguration secondary, TlsClientConfiguration tls) {
+        if (name.empty()) {
+            throw PreconditionAssertion("ServiceRegistry::add_tls: service name must not be empty", __FILE__, __LINE__);
+        }
+        if (entries_.count(name) != 0) {
+            throw PreconditionAssertion("ServiceRegistry::add_tls: duplicate service name: " + name, __FILE__, __LINE__);
+        }
+        ServiceEndpoints endpoints;
+        endpoints.primary = std::move(primary);
+        endpoints.secondary = std::move(secondary);
+        endpoints.tls = std::move(tls);
+        entries_.emplace(name, std::move(endpoints));
     }
 
     /**

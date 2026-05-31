@@ -157,6 +157,34 @@ class ProtocolHandlerInterface {
     [[nodiscard]] virtual bool is_reads_paused() const {
         return false;
     }
+
+    /**
+     * @brief Returns true once the protocol-level handshake is complete.
+     *
+     * For plain-TCP handlers (PduProtocolHandler, RawBytesProtocolHandler) this
+     * always returns true because there is no handshake phase. The TLS handler
+     * overrides this to return false while SSL_do_handshake() is still running.
+     *
+     * OutboundConnectionManager uses this to decide when to deliver
+     * ConnectionEstablished to the requesting ApplicationThread.
+     */
+    [[nodiscard]] virtual bool is_handshake_complete() const {
+        return true;
+    }
+
+    /**
+     * @brief Initiates the outbound (client-side) handshake.
+     *
+     * Called once by OutboundConnectionManager immediately after the TCP
+     * connection is established, before any data has arrived from the peer.
+     * For TLS this generates and (partially) sends the ClientHello. For plain-TCP
+     * handlers the default no-op implementation is used.
+     *
+     * @return {true, ""} on success (including partial send); {false, error} on failure.
+     */
+    [[nodiscard]] virtual std::tuple<bool, std::string> start_outbound_handshake() {
+        return {true, ""};
+    }
 };
 
 } // namespace pubsub_itc_fw

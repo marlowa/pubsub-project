@@ -989,6 +989,23 @@ void Reactor::dispatch_events(int nfds, epoll_event* events) {
                     if (outbound_manager_.find_by_fd(fd) == nullptr) {
                         continue;
                     }
+                } else if (!conn->is_connecting() && !conn->is_established()) {
+                    // TLS handshake in progress: TCP connect succeeded but the TLS
+                    // handshake has not yet completed. Drive the handshake via
+                    // on_data_ready (which calls protocol_handler->on_data_ready) for
+                    // incoming server records, and via on_write_ready for any pending
+                    // outbound ciphertext. EPOLLERR is routed through on_data_ready
+                    // so that recv() returns the socket error and on_data_ready tears
+                    // down the connection via the normal TLS error path.
+                    if ((ev & EPOLLOUT) && conn->has_pending_send()) {
+                        outbound_manager_.on_write_ready(*conn);
+                        if (outbound_manager_.find_by_fd(fd) == nullptr) {
+                            continue;
+                        }
+                    }
+                    if (ev & (EPOLLIN | EPOLLERR)) {
+                        outbound_manager_.on_data_ready(*conn);
+                    }
                 } else if (conn->is_established()) {
                     if ((ev & EPOLLOUT) && conn->has_pending_send()) {
                         outbound_manager_.on_write_ready(*conn);

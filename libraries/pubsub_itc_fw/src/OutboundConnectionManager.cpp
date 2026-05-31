@@ -195,17 +195,46 @@ void OutboundConnectionManager::on_connect_ready(OutboundConnection& conn) {
         ::setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &config_.socket_receive_buffer_size, sizeof(config_.socket_receive_buffer_size));
     }
 
-    epoll_event ev{};
-    ev.events = EPOLLIN | EPOLLERR;
-    ev.data.fd = fd;
-    ::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, fd, &ev);
+    if (conn.is_tls()) {
+        auto [ok, handshake_error] = conn.protocol_handler()->start_outbound_handshake();
+        if (!ok) {
+            const std::string service_name = conn.service_name();
+            const ThreadID requesting_thread_id = conn.requesting_thread_id();
+            const ConnectionID conn_id = conn.id();
+            PUBSUB_LOG(logger_, FwLogLevel::Error,
+                       "OutboundConnectionManager::on_connect_ready: TLS handshake initiation failed for service '{}': {}",
+                       service_name, handshake_error);
+            teardown_connection(conn_id, handshake_error, false);
+            schedule_retry(service_name, requesting_thread_id);
+            return;
+        }
 
-    PUBSUB_LOG(logger_, FwLogLevel::Info, "OutboundConnectionManager::on_connect_ready: connection {} to service '{}' established", conn.id().get_value(),
-               conn.service_name());
+        uint32_t epoll_events = EPOLLIN | EPOLLERR;
+        if (conn.protocol_handler()->has_pending_send()) {
+            epoll_events |= EPOLLOUT;
+        }
+        epoll_event ev{};
+        ev.events = epoll_events;
+        ev.data.fd = fd;
+        ::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, fd, &ev);
 
-    auto* thread = thread_lookup_.get_fast_path_thread(conn.requesting_thread_id());
-    if (thread != nullptr) {
-        thread->get_queue().enqueue(EventMessage::create_connection_established_event(ConnectionID{conn.id().get_value(), conn.service_name()}));
+        PUBSUB_LOG(logger_, FwLogLevel::Info,
+                   "OutboundConnectionManager::on_connect_ready: TLS handshake initiated for service '{}'",
+                   conn.service_name());
+        // ConnectionEstablished is delivered from on_data_ready() once the handshake completes.
+    } else {
+        epoll_event ev{};
+        ev.events = EPOLLIN | EPOLLERR;
+        ev.data.fd = fd;
+        ::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, fd, &ev);
+
+        PUBSUB_LOG(logger_, FwLogLevel::Info, "OutboundConnectionManager::on_connect_ready: connection {} to service '{}' established", conn.id().get_value(),
+                   conn.service_name());
+
+        auto* thread = thread_lookup_.get_fast_path_thread(conn.requesting_thread_id());
+        if (thread != nullptr) {
+            thread->get_queue().enqueue(EventMessage::create_connection_established_event(ConnectionID{conn.id().get_value(), conn.service_name()}));
+        }
     }
 }
 
@@ -214,6 +243,48 @@ void OutboundConnectionManager::on_data_ready(OutboundConnection& conn) {
     const std::string service_name = conn.service_name();
     const ThreadID requesting_thread_id = conn.requesting_thread_id();
 
+    if (conn.is_tls()) {
+        const bool was_established = conn.is_established();
+
+        auto [ok, error, pause_reads] = conn.protocol_handler()->on_data_ready();
+        if (!ok) {
+            const std::string reason = error.empty() ? fmt::format("peer closed TLS connection on service '{}'", service_name)
+                                                     : fmt::format("TLS error on service '{}': {}", service_name, error);
+            PUBSUB_LOG(logger_, FwLogLevel::Warning, "OutboundConnectionManager::on_data_ready: {}", reason);
+            teardown_connection(id, reason, was_established);
+            schedule_retry(service_name, requesting_thread_id);
+            return;
+        }
+
+        if (!was_established && conn.protocol_handler()->is_handshake_complete()) {
+            conn.mark_as_established();
+            PUBSUB_LOG(logger_, FwLogLevel::Info,
+                       "OutboundConnectionManager::on_data_ready: TLS handshake complete, connection {} to service '{}' established",
+                       id.get_value(), service_name);
+            auto* thread = thread_lookup_.get_fast_path_thread(conn.requesting_thread_id());
+            if (thread != nullptr) {
+                thread->get_queue().enqueue(EventMessage::create_connection_established_event(ConnectionID{id.get_value(), service_name}));
+            }
+        }
+
+        const bool needs_epoll_mod = pause_reads || conn.protocol_handler()->has_pending_send();
+        if (needs_epoll_mod) {
+            const int conn_fd = conn.get_fd();
+            epoll_event ev{};
+            ev.events = EPOLLERR;
+            if (!pause_reads) {
+                ev.events |= EPOLLIN;
+            }
+            if (conn.protocol_handler()->has_pending_send()) {
+                ev.events |= EPOLLOUT;
+            }
+            ev.data.fd = conn_fd;
+            ::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, conn_fd, &ev);
+        }
+        return;
+    }
+
+    // PDU path
     auto [ok, error] = conn.parser()->receive();
     if (!ok) {
         const std::string reason = error.empty() ? fmt::format("peer closed connection on service '{}'", service_name)
@@ -227,6 +298,34 @@ void OutboundConnectionManager::on_data_ready(OutboundConnection& conn) {
 }
 
 void OutboundConnectionManager::on_write_ready(OutboundConnection& conn) {
+    if (conn.is_tls()) {
+        auto [ok, error] = conn.protocol_handler()->continue_send();
+        if (!ok) {
+            const std::string service_name = conn.service_name();
+            const ThreadID requesting_thread_id = conn.requesting_thread_id();
+            const ConnectionID id = conn.id();
+            const bool was_established = conn.is_established();
+            const std::string reason = fmt::format("TLS send error on service '{}': {}", service_name, error);
+            PUBSUB_LOG(logger_, FwLogLevel::Error, "OutboundConnectionManager::on_write_ready: {}", reason);
+            teardown_connection(id, reason, was_established);
+            schedule_retry(service_name, requesting_thread_id);
+            return;
+        }
+
+        if (!conn.protocol_handler()->has_pending_send()) {
+            const int fd = conn.get_fd();
+            epoll_event ev{};
+            ev.events = EPOLLERR;
+            if (!conn.protocol_handler()->is_reads_paused()) {
+                ev.events |= EPOLLIN;
+            }
+            ev.data.fd = fd;
+            ::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, fd, &ev);
+        }
+        return;
+    }
+
+    // PDU path
     auto [ok, error] = conn.framer()->continue_send();
     if (!ok) {
         const std::string service_name = conn.service_name();
@@ -305,20 +404,83 @@ bool OutboundConnectionManager::process_send_pdu_command(const ReactorControlCom
 }
 
 bool OutboundConnectionManager::process_send_raw_command(const ReactorControlCommand& command) {
-    // OutboundConnection does not support raw-bytes connections in the current
-    // implementation. Return false so the Reactor tries the inbound manager.
-    [[maybe_unused]] const ConnectionID cid = command.connection_id_;
-    return false;
+    const ConnectionID cid = command.connection_id_;
+
+    auto it = connections_.find(cid);
+    if (it == connections_.end()) {
+        return false;
+    }
+
+    OutboundConnection& conn = *it->second;
+    if (!conn.is_tls()) {
+        // Plain-TCP outbound connections use PDU framing, not raw bytes.
+        return false;
+    }
+
+    if (!conn.is_established()) {
+        // TLS handshake still in progress — stash until established.
+        pending_send_ = command;
+        return true;
+    }
+
+    if (conn.protocol_handler()->has_pending_send()) {
+        pending_send_ = command;
+        return true;
+    }
+
+    auto [ok, send_error] = conn.protocol_handler()->send_prebuilt(command.allocator_, command.slab_id_, command.raw_chunk_ptr_, command.raw_byte_count_);
+    if (!ok) {
+        // send_prebuilt() already deallocated the slab chunk for TLS.
+        const std::string service_name = conn.service_name();
+        const ThreadID requesting_thread_id = conn.requesting_thread_id();
+        const ConnectionID conn_id = conn.id();
+        PUBSUB_LOG(logger_, FwLogLevel::Error,
+                   "OutboundConnectionManager::process_send_raw_command: TLS send error on service '{}': {}",
+                   service_name, send_error);
+        teardown_connection(conn_id, send_error, true);
+        schedule_retry(service_name, requesting_thread_id);
+        return true;
+    }
+
+    if (conn.protocol_handler()->has_pending_send()) {
+        const int conn_fd = conn.get_fd();
+        epoll_event ev{};
+        ev.events = EPOLLERR;
+        if (!conn.protocol_handler()->is_reads_paused()) {
+            ev.events |= EPOLLIN;
+        }
+        ev.events |= EPOLLOUT;
+        ev.data.fd = conn_fd;
+        ::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, conn_fd, &ev);
+    }
+
+    return true;
 }
 
 bool OutboundConnectionManager::process_commit_raw_bytes(ConnectionID id, int64_t bytes_consumed) {
-    // OutboundConnection does not use the ProtocolHandlerInterface strategy —
-    // it owns its parser and framer directly and is always PDU-based. A
-    // CommitRawBytes command targeting an outbound connection ID is therefore
-    // a no-op. Return true if we own the ID so the Reactor does not log a
-    // spurious warning.
-    [[maybe_unused]] int64_t ignored = bytes_consumed;
-    return connections_.count(id) != 0;
+    auto it = connections_.find(id);
+    if (it == connections_.end()) {
+        return false;
+    }
+
+    OutboundConnection& conn = *it->second;
+    if (!conn.is_tls() || conn.protocol_handler() == nullptr) {
+        // PDU connections have no MirroredBuffer; this is a no-op but we own the ID.
+        return true;
+    }
+
+    const bool resume_reads = conn.protocol_handler()->commit_bytes(bytes_consumed);
+    if (resume_reads) {
+        const int conn_fd = conn.get_fd();
+        epoll_event ev{};
+        ev.events = EPOLLIN | EPOLLERR;
+        if (conn.protocol_handler()->has_pending_send()) {
+            ev.events |= EPOLLOUT;
+        }
+        ev.data.fd = conn_fd;
+        ::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, conn_fd, &ev);
+    }
+    return true;
 }
 
 bool OutboundConnectionManager::drain_pending_send() {
@@ -329,14 +491,20 @@ bool OutboundConnectionManager::drain_pending_send() {
     const ReactorControlCommand command = *pending_send_;
     pending_send_.reset();
 
-    const bool processed = process_send_pdu_command(command);
-    if (!processed) {
-        // Connection vanished while the command was stashed — deallocate.
-        command.allocator_->deallocate(command.slab_id_, command.pdu_chunk_ptr_);
-        return true;
+    if (command.as_tag() == ReactorControlCommand::SendRaw) {
+        const bool processed = process_send_raw_command(command);
+        if (!processed) {
+            // Connection vanished while the command was stashed — deallocate.
+            command.allocator_->deallocate(command.slab_id_, command.raw_chunk_ptr_);
+        }
+    } else {
+        const bool processed = process_send_pdu_command(command);
+        if (!processed) {
+            command.allocator_->deallocate(command.slab_id_, command.pdu_chunk_ptr_);
+        }
     }
 
-    // If still blocked, process_send_pdu_command will have re-stashed it.
+    // If still blocked, the processing method will have re-stashed the command.
     return !pending_send_.has_value();
 }
 
@@ -446,15 +614,25 @@ void OutboundConnectionManager::teardown_connection(ConnectionID id, const std::
     PUBSUB_LOG(logger_, FwLogLevel::Info, "OutboundConnectionManager::teardown_connection: connection {} service '{}': {}", id.get_value(), conn.service_name(),
                reason);
 
-    // Free any in-flight outbound slab chunk.
+    // Free any in-flight outbound data.
     if (conn.has_pending_send()) {
-        conn.current_allocator()->deallocate(conn.current_slab_id(), conn.current_chunk_ptr());
-        conn.clear_pending_send();
+        if (conn.is_tls()) {
+            // TLS: the slab was freed in send_prebuilt(); only the ciphertext buffer needs clearing.
+            conn.protocol_handler()->deallocate_pending_send();
+        } else {
+            conn.current_allocator()->deallocate(conn.current_slab_id(), conn.current_chunk_ptr());
+            conn.clear_pending_send();
+        }
     }
 
     // Clear pending_send_ if it refers to this connection.
     if (pending_send_.has_value() && pending_send_->connection_id_ == id) {
-        pending_send_->allocator_->deallocate(pending_send_->slab_id_, pending_send_->pdu_chunk_ptr_);
+        // The slab in the stashed command has not yet been passed to send_prebuilt
+        // for either PDU or TLS sends, so it must be deallocated here.
+        void* chunk_ptr = (pending_send_->as_tag() == ReactorControlCommand::SendRaw)
+                              ? pending_send_->raw_chunk_ptr_
+                              : pending_send_->pdu_chunk_ptr_;
+        pending_send_->allocator_->deallocate(pending_send_->slab_id_, chunk_ptr);
         pending_send_.reset();
     }
 
