@@ -7,6 +7,7 @@
 
 #include <pubsub_itc_fw/InboundListenerConfiguration.hpp>
 #include <pubsub_itc_fw/TcpAcceptor.hpp>
+#include <pubsub_itc_fw/TlsContext.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -67,6 +68,15 @@ struct InboundListener {
      * Created during reactor initialisation. Null before initialisation.
      */
     std::unique_ptr<TcpAcceptor> acceptor;
+
+    /**
+     * @brief The TlsContext shared by all connections accepted on this listener.
+     *
+     * Non-null only when configuration.protocol_type == TlsRawBytes.
+     * Created during reactor initialisation by loading the certificate files
+     * specified in configuration.tls. Null for non-TLS listeners.
+     */
+    std::unique_ptr<TlsContext> tls_context;
 };
 
 } // namespace pubsub_itc_fw

@@ -4,10 +4,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <cstdint>
+#include <optional>
 
 #include <pubsub_itc_fw/NetworkEndpointConfiguration.hpp>
 #include <pubsub_itc_fw/ProtocolType.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
+#include <pubsub_itc_fw/TlsListenerConfiguration.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -44,14 +46,24 @@ struct InboundListenerConfiguration {
     ProtocolType protocol_type{ProtocolType::FrameworkPdu};
 
     /**
-     * @brief Minimum capacity of the MirroredBuffer in bytes for RawBytes listeners.
+     * @brief Minimum capacity of the MirroredBuffer in bytes for RawBytes and
+     *        TlsRawBytes listeners.
      *
-     * Ignored for FrameworkPdu listeners. For RawBytes listeners this is passed
-     * directly to the RawBytesProtocolHandler constructor and rounded up to the
+     * Ignored for FrameworkPdu listeners. For RawBytes and TlsRawBytes listeners
+     * this is passed to the protocol handler constructor and rounded up to the
      * nearest page size internally. Must be greater than zero when
-     * protocol_type == RawBytes.
+     * protocol_type == RawBytes or TlsRawBytes.
      */
     int64_t raw_buffer_capacity{0};
+
+    /**
+     * @brief TLS configuration for TlsRawBytes listeners.
+     *
+     * Must be set when protocol_type == TlsRawBytes. Ignored for other protocol
+     * types. The Reactor reads this during initialisation to construct a TlsContext
+     * that is shared by all connections accepted on this listener.
+     */
+    std::optional<TlsListenerConfiguration> tls;
 };
 
 } // namespace pubsub_itc_fw

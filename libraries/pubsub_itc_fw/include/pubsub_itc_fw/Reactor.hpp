@@ -39,6 +39,7 @@
 #include <pubsub_itc_fw/ThreadLifecycleState.hpp>
 #include <pubsub_itc_fw/ThreadLookupInterface.hpp>
 #include <pubsub_itc_fw/TimerID.hpp>
+#include <pubsub_itc_fw/TlsListenerConfiguration.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -171,6 +172,25 @@ class Reactor : public ThreadLookupInterface {
      */
     void register_inbound_listener(NetworkEndpointConfiguration address, ThreadID target_thread_id,
                                    ProtocolType protocol_type = ProtocolType{ProtocolType::FrameworkPdu}, int64_t raw_buffer_capacity = 0);
+
+    /**
+     * @brief Registers a TLS-protected inbound listener.
+     *
+     * Convenience wrapper over register_inbound_listener for
+     * ProtocolType::TlsRawBytes listeners. The TlsListenerConfiguration
+     * carries the certificate and key paths that the Reactor loads during
+     * initialisation to build a shared TlsContext for accepted connections.
+     *
+     * Must be called before run().
+     *
+     * @param[in] address             The address and port to listen on.
+     * @param[in] target_thread_id    The ThreadID to receive connection events.
+     * @param[in] raw_buffer_capacity Minimum MirroredBuffer size in bytes.
+     * @param[in] tls_config          Certificate and key paths.
+     * @throws PreconditionAssertion if called after run().
+     */
+    void register_inbound_tls_listener(NetworkEndpointConfiguration address, ThreadID target_thread_id,
+                                       int64_t raw_buffer_capacity, TlsListenerConfiguration tls_config);
 
     /**
      * @brief Returns the name of a thread given its ID.

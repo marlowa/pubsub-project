@@ -25,6 +25,8 @@
 #include <pubsub_itc_fw/RawBytesProtocolHandler.hpp>
 #include <pubsub_itc_fw/StringUtils.hpp>
 #include <pubsub_itc_fw/TcpAcceptor.hpp>
+#include <pubsub_itc_fw/TlsListenerConfiguration.hpp>
+#include <pubsub_itc_fw/TlsRawBytesProtocolHandler.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -42,6 +44,17 @@ void InboundConnectionManager::register_inbound_listener(NetworkEndpointConfigur
     inbound_listeners_staging_.push_back(std::move(listener));
 }
 
+void InboundConnectionManager::register_inbound_tls_listener(NetworkEndpointConfiguration address, ThreadID target_thread_id,
+                                                              int64_t raw_buffer_capacity, TlsListenerConfiguration tls_config) {
+    InboundListener listener;
+    listener.configuration.address = std::move(address);
+    listener.configuration.target_thread_id = target_thread_id;
+    listener.configuration.protocol_type = ProtocolType{ProtocolType::TlsRawBytes};
+    listener.configuration.raw_buffer_capacity = raw_buffer_capacity;
+    listener.configuration.tls = std::move(tls_config);
+    inbound_listeners_staging_.push_back(std::move(listener));
+}
+
 bool InboundConnectionManager::initialize_listeners() {
     for (auto& listener : inbound_listeners_staging_) {
         auto [addr, addr_error] = InetAddress::create(listener.configuration.address.host, listener.configuration.address.port);
@@ -56,6 +69,25 @@ bool InboundConnectionManager::initialize_listeners() {
             PUBSUB_LOG(logger_, FwLogLevel::Error, "InboundConnectionManager::initialize_listeners: failed to create acceptor on {}:{} — {}",
                        listener.configuration.address.host, listener.configuration.address.port, accept_error);
             return false;
+        }
+
+        if (listener.configuration.protocol_type == ProtocolType::TlsRawBytes) {
+            if (!listener.configuration.tls.has_value()) {
+                PUBSUB_LOG(logger_, FwLogLevel::Error,
+                           "InboundConnectionManager::initialize_listeners: TlsRawBytes listener on {}:{} has no TLS configuration",
+                           listener.configuration.address.host, listener.configuration.address.port);
+                return false;
+            }
+            const TlsListenerConfiguration& tls_config = listener.configuration.tls.value();
+            auto [tls_context, tls_error] = TlsContext::create_server(tls_config.certificate_path, tls_config.private_key_path,
+                                                                       tls_config.ca_path, tls_config.require_client_certificate);
+            if (tls_context == nullptr) {
+                PUBSUB_LOG(logger_, FwLogLevel::Error,
+                           "InboundConnectionManager::initialize_listeners: failed to create TlsContext for {}:{} -- {}",
+                           listener.configuration.address.host, listener.configuration.address.port, tls_error);
+                return false;
+            }
+            listener.tls_context = std::move(tls_context);
         }
 
         const int listen_fd = acceptor->get_listening_file_descriptor();
@@ -118,6 +150,10 @@ void InboundConnectionManager::on_accept(InboundListener& listener, ConnectionID
     std::unique_ptr<ProtocolHandlerInterface> handler;
     if (listener.configuration.protocol_type == ProtocolType::RawBytes) {
         handler = std::make_unique<RawBytesProtocolHandler>(populated_id, *socket, *target_thread, listener.configuration.raw_buffer_capacity);
+    } else if (listener.configuration.protocol_type == ProtocolType::TlsRawBytes) {
+        handler = std::make_unique<TlsRawBytesProtocolHandler>(populated_id, *socket, *target_thread,
+                                                               listener.configuration.raw_buffer_capacity,
+                                                               *listener.tls_context, /*is_server=*/true);
     } else {
         handler = std::make_unique<PduProtocolHandler>(*socket, *target_thread, inbound_allocator_, logger_, populated_id);
     }

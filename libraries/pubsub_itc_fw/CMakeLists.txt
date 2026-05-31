@@ -70,6 +70,9 @@ set(PUBSUB_ITC_FW_SRC
         src/Crc32.cpp
         src/WalWriter.cpp
         src/WalReader.cpp
+        src/TlsContext.cpp
+        src/TlsState.cpp
+        src/TlsRawBytesProtocolHandler.cpp
 )
 
 # ------------------------------------------------------------
@@ -106,6 +109,8 @@ target_link_libraries(pubsub_itc_fw PUBLIC
         quill::quill
         argparse::argparse
         atomic
+        ssl
+        crypto
 )
 
 # ------------------------------------------------------------

@@ -21,10 +21,14 @@ namespace pubsub_itc_fw {
  *   RawBytes — the Reactor treats the connection as an opaque pipe. Bytes are
  *   read directly into a MirroredBuffer to provide the application with a
  *   contiguous view of the stream. No framework-level parsing is performed.
+ *
+ *   TlsRawBytes — as RawBytes but the byte stream is protected by TLS. The
+ *   TLS handshake is performed non-blockingly by TlsRawBytesProtocolHandler
+ *   before any plaintext is delivered to the application.
  */
 class ProtocolType {
   public:
-    enum ProtocolTypeTag { FrameworkPdu = 0, RawBytes = 1 };
+    enum ProtocolTypeTag { FrameworkPdu = 0, RawBytes = 1, TlsRawBytes = 2 };
 
     /**
      * @brief Initialises the protocol type with a specific handling mode.

@@ -44,6 +44,7 @@
 #include <pubsub_itc_fw/StringUtils.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 #include <pubsub_itc_fw/Timer.hpp>
+#include <pubsub_itc_fw/TlsListenerConfiguration.hpp>
 #include <pubsub_itc_fw/TimerHandler.hpp>
 #include <pubsub_itc_fw/TimerType.hpp>
 
@@ -198,6 +199,14 @@ void Reactor::register_inbound_listener(NetworkEndpointConfiguration address, Th
         throw PreconditionAssertion("Reactor::register_inbound_listener: must be called before run()", __FILE__, __LINE__);
     }
     inbound_manager_.register_inbound_listener(std::move(address), target_thread_id, protocol_type, raw_buffer_capacity);
+}
+
+void Reactor::register_inbound_tls_listener(NetworkEndpointConfiguration address, ThreadID target_thread_id,
+                                             int64_t raw_buffer_capacity, TlsListenerConfiguration tls_config) {
+    if (is_running()) {
+        throw PreconditionAssertion("Reactor::register_inbound_tls_listener: must be called before run()", __FILE__, __LINE__);
+    }
+    inbound_manager_.register_inbound_tls_listener(std::move(address), target_thread_id, raw_buffer_capacity, std::move(tls_config));
 }
 
 int Reactor::run() {

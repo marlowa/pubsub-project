@@ -93,6 +93,21 @@ class InboundConnectionManager {
                                    ProtocolType protocol_type = ProtocolType{ProtocolType::FrameworkPdu}, int64_t raw_buffer_capacity = 0);
 
     /**
+     * @brief Stages a TLS inbound listener for initialisation.
+     *
+     * Equivalent to register_inbound_listener with ProtocolType::TlsRawBytes, but
+     * also carries the TlsListenerConfiguration needed to load certificates during
+     * initialize_listeners(). Must be called before initialize_listeners().
+     *
+     * @param[in] address             The address and port to listen on.
+     * @param[in] target_thread_id    The ThreadID to receive connection events.
+     * @param[in] raw_buffer_capacity Minimum MirroredBuffer capacity in bytes.
+     * @param[in] tls_config          Certificate and key paths for the TLS context.
+     */
+    void register_inbound_tls_listener(NetworkEndpointConfiguration address, ThreadID target_thread_id,
+                                       int64_t raw_buffer_capacity, TlsListenerConfiguration tls_config);
+
+    /**
      * @brief Binds, listens, and registers all staged listeners with epoll.
      *
      * Called once during Reactor initialisation. Populates inbound_listeners_
