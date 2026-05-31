@@ -2,9 +2,10 @@
 """
 auth_service_test.py — Integration tests for the authentication service.
 
-Starts the authentication_service binary with a temporary TLS configuration,
-connects as a PDU client over TLS, executes SCRAM-SHA-256 exchange scenarios,
-and verifies the outcomes.  Reports PASS/FAIL and observed details.
+Starts the authentication_service binary with a temporary configuration,
+connects as a PDU client (plain TCP) and as a TLS admin client, executes
+SCRAM-SHA-256 exchange scenarios and credential management scenarios, and
+verifies the outcomes.  Reports PASS/FAIL and observed details.
 
 Run from the project root:
     ./auth_service_test.py [install_prefix] [options]
@@ -12,26 +13,28 @@ Run from the project root:
 Scenarios
 ---------
   1  single_exchange
-       One TLS connection. One full AuthenticationRequest → AuthenticationChallenge
-       → AuthenticationProof → AuthenticationResult(Granted) exchange.
-       Verifies: request_id is echoed correctly; server_nonce starts with
-       client_nonce; salt is non-empty; iterations is positive; outcome is
-       Granted; force_password_change is False; service log confirms.
+       One connection. One full SCRAM exchange (Granted).
 
   2  sequential_exchanges_same_connection
-       One TLS connection. Two sequential exchanges with distinct request_ids
-       and distinct comp_ids. Verifies: each exchange gets its own correctly-
-       correlated response; the second exchange succeeds after the first has
-       completed; both exchanges appear in the service log.
+       One connection. Two sequential exchanges with distinct request_ids
+       and comp_ids; both complete with Granted.
 
   3  multiple_clients
-       Three independent TLS connections (sequential) each performing one full
-       exchange. Verifies: the service handles multiple connection/teardown
-       cycles; all three exchanges complete with Granted; all appear in the
-       service log.
+       Three independent connections each with one full exchange (Granted).
+
+  4  set_credential_update
+       TLS admin channel: update the password for an existing comp_id, then
+       authenticate using the new password on the PDU channel (Granted).
+
+  5  set_credential_new_comp_id
+       TLS admin channel: create a credential for a brand-new comp_id that is
+       not in the initial credentials.toml, then authenticate with it (Granted).
 
 Options:
     install_prefix      Path to cmake install prefix (default: build/installed)
+    --tls               Start the service with the TLS admin listener.  Required
+                        for scenarios 4 and 5.  Without this flag only scenarios
+                        1-3 (plain PDU SCRAM) are available.
     --scenario N|all    Scenario to run, or 'all' (default: all)
     --ready-timeout S   Max seconds for service startup (default: 5)
     --reply-timeout S   Max seconds to wait for each PDU reply (default: 5)
@@ -42,6 +45,7 @@ import hashlib
 import hmac as hmac_module
 import os
 import socket
+import ssl
 import struct
 import subprocess
 import sys
@@ -71,15 +75,22 @@ PDU_ID_AUTHENTICATION_CHALLENGE = 501
 PDU_ID_AUTHENTICATION_PROOF     = 502
 PDU_ID_AUTHENTICATION_RESULT    = 503
 
-AUTHENTICATION_OUTCOME_GRANTED = 0
+PDU_ID_SET_CREDENTIAL_REQUEST = 510
+PDU_ID_SET_CREDENTIAL_RESULT  = 511
+
+AUTHENTICATION_OUTCOME_GRANTED  = 0
+SET_CREDENTIAL_OUTCOME_SUCCESS  = 0
 
 # Stub password shared between the service and this test client.
 # Must match stub_password in AuthenticationThread.cpp.
 STUB_PASSWORD = "stubpassword"
 
 # Substrings expected in the service log to confirm key events.
-_SERVICE_READY_MARKER   = "AuthenticationService: PDU listener on"
-_SERVICE_GRANTED_MARKER = "AuthenticationThread: AuthenticationResult Granted"
+_SERVICE_READY_MARKER_PDU      = "AuthenticationService: PDU listener on"
+_SERVICE_READY_MARKER_TLS      = "AuthenticationService: TLS admin listener on"
+_SERVICE_GRANTED_MARKER        = "AuthenticationThread: AuthenticationResult Granted"
+_SERVICE_SET_CRED_OK_MARKER    = "AuthenticationThread: SetCredentialRequest"
+_SERVICE_SET_CRED_SUCCESS_MARKER = "-- Success"
 
 
 # ── SCRAM-SHA-256 client-side computation ─────────────────────────────────────
@@ -180,6 +191,13 @@ def _encode_authentication_proof(request_id: int, client_proof: bytes) -> bytes:
 
 
 @dataclass
+class SetCredentialResult:
+    request_id: int
+    comp_id: str
+    outcome: int
+
+
+@dataclass
 class AuthenticationChallenge:
     request_id:   int
     server_nonce: bytes
@@ -249,6 +267,56 @@ def _connect_tcp(host: str, port: int) -> socket.socket:
     return sock
 
 
+def _connect_tls(host: str, port: int) -> ssl.SSLSocket:
+    """Connect to the TLS admin listener, skipping server certificate verification."""
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    raw.connect((host, port))
+    return ctx.wrap_socket(raw, server_hostname=host)
+
+
+# ── admin channel encode/decode ───────────────────────────────────────────────
+
+def _encode_set_credential_request(request_id: int, comp_id: str,
+                                    password: str, iterations: int) -> bytes:
+    return (
+        _encode_i64(request_id) +
+        _encode_string(comp_id) +
+        _encode_string(password) +
+        _encode_i32(iterations)
+    )
+
+
+def _decode_set_credential_result(payload: bytes) -> SetCredentialResult:
+    offset = 0
+    request_id, offset = _decode_i64(payload, offset)
+    comp_id, offset = _decode_string(payload, offset)
+    outcome, offset = _decode_i32(payload, offset)
+    return SetCredentialResult(request_id=request_id, comp_id=comp_id, outcome=outcome)
+
+
+def _do_set_credential(
+    connection: ssl.SSLSocket,
+    request_id: int,
+    comp_id: str,
+    password: str,
+    iterations: int,
+    reply_timeout: float,
+) -> SetCredentialResult:
+    """Send SetCredentialRequest over the TLS admin channel and return the result."""
+    _send_pdu(connection, PDU_ID_SET_CREDENTIAL_REQUEST,
+              _encode_set_credential_request(request_id, comp_id, password, iterations))
+    pdu_id, payload = _recv_pdu(connection, reply_timeout)
+    if pdu_id != PDU_ID_SET_CREDENTIAL_RESULT:
+        die(f"expected PDU {PDU_ID_SET_CREDENTIAL_RESULT} (SetCredentialResult), got {pdu_id}")
+    result = _decode_set_credential_result(payload)
+    if result.request_id != request_id:
+        die(f"SetCredentialResult request_id mismatch: expected {request_id}, got {result.request_id}")
+    return result
+
+
 # ── service helpers ────────────────────────────────────────────────────────────
 
 def _find_free_port() -> int:
@@ -283,11 +351,41 @@ def _credential_block(comp_id: str) -> str:
     )
 
 
-def _write_test_toml(path: Path, listen_port: int) -> None:
+def _generate_test_tls_cert(directory: Path) -> tuple[Path, Path]:
+    """Generate a self-signed TLS cert/key pair in directory. Returns (cert_path, key_path)."""
+    cert_path = directory / "test_admin.crt"
+    key_path  = directory / "test_admin.key"
+    subprocess.run(
+        ["openssl", "req", "-x509", "-newkey", "rsa:2048",
+         "-keyout", str(key_path), "-out", str(cert_path),
+         "-days", "1", "-nodes", "-subj", "/CN=localhost/O=auth-test"],
+        check=True, capture_output=True,
+    )
+    return cert_path, key_path
+
+
+def _write_test_toml(path: Path, listen_port: int,
+                     admin_port: int = 0,
+                     cert_path: Path = None, key_path: Path = None,
+                     tls_mode: bool = False) -> None:
     credentials_path = path.parent / "credentials.toml"
     credentials_path.write_text(
         "".join(_credential_block(c) + "\n" for c in _TEST_COMP_IDS)
     )
+
+    admin_section = ""
+    if tls_mode:
+        admin_cert = str(cert_path) if cert_path else ""
+        admin_key  = str(key_path)  if key_path  else ""
+        admin_section = (
+            f'[admin]\n'
+            f'listen_port                    = {admin_port}\n'
+            f'tls_certificate_path           = "{admin_cert}"\n'
+            f'tls_private_key_path           = "{admin_key}"\n'
+            f'tls_ca_path                    = ""\n'
+            f'tls_require_client_certificate = false\n'
+            f'\n'
+        )
 
     path.write_text(
         f'credentials_file = "{credentials_path}"\n'
@@ -296,6 +394,7 @@ def _write_test_toml(path: Path, listen_port: int) -> None:
         f'listen_host = "127.0.0.1"\n'
         f'listen_port = {listen_port}\n'
         f'\n'
+        + admin_section +
         f'[logging]\n'
         f'applog_level     = "debug"\n'
         f'syslog_level     = "critical"\n'
@@ -332,9 +431,9 @@ def _launch_service(binary_path: Path, log_path: Path,
     return process
 
 
-def _wait_for_service_ready(log_path: Path, timeout: float) -> float:
+def _wait_for_service_ready(log_path: Path, timeout: float, marker: str) -> float:
     """
-    Poll the service log for the TLS listener ready marker.
+    Poll the service log for marker.
     Returns elapsed seconds. Raises TestFailure on timeout.
     """
     deadline = time.monotonic() + timeout
@@ -342,7 +441,7 @@ def _wait_for_service_ready(log_path: Path, timeout: float) -> float:
     while time.monotonic() < deadline:
         if log_path.is_file():
             with open(log_path, "r", errors="replace") as log_file:
-                if _SERVICE_READY_MARKER in log_file.read():
+                if marker in log_file.read():
                     return time.monotonic() - t0
         time.sleep(LOG_POLL_INTERVAL)
     die(f"authentication_service did not become ready within {timeout:.0f}s")
@@ -388,6 +487,7 @@ def _do_scram_exchange(
     comp_id: str,
     client_nonce: bytes,
     reply_timeout: float,
+    password: str = STUB_PASSWORD,
 ) -> tuple[AuthenticationChallenge, AuthenticationResult]:
     """
     Perform one full SCRAM-SHA-256 exchange on an established connection:
@@ -421,7 +521,7 @@ def _do_scram_exchange(
 
     # Step 3 -- compute real ClientProof and send AuthenticationProof.
     client_proof, expected_server_sig = _scram_compute(
-        STUB_PASSWORD, challenge.salt, challenge.iterations,
+        password, challenge.salt, challenge.iterations,
         comp_id, client_nonce, challenge.server_nonce)
 
     _send_pdu(connection, PDU_ID_AUTHENTICATION_PROOF,
@@ -449,7 +549,7 @@ def _do_scram_exchange(
 
 # ── scenario runners ───────────────────────────────────────────────────────────
 
-def _run_scenario_1(service_log: Path, port: int, args) -> bool:
+def _run_scenario_1(service_log: Path, port: int, args, admin_port: int = 0) -> bool:
     """Single full SCRAM exchange on one connection."""
     request_id   = 1
     comp_id      = "TEST_GATEWAY"
@@ -500,7 +600,7 @@ def _run_scenario_1(service_log: Path, port: int, args) -> bool:
     return True
 
 
-def _run_scenario_2(service_log: Path, port: int, args) -> bool:
+def _run_scenario_2(service_log: Path, port: int, args, admin_port: int = 0) -> bool:
     """Two sequential exchanges on a single connection."""
     log_pos = service_log.stat().st_size if service_log.is_file() else 0
 
@@ -547,7 +647,7 @@ def _run_scenario_2(service_log: Path, port: int, args) -> bool:
     return True
 
 
-def _run_scenario_3(service_log: Path, port: int, args) -> bool:
+def _run_scenario_3(service_log: Path, port: int, args, admin_port: int = 0) -> bool:
     """Three independent connections each with one full exchange."""
     log_pos = service_log.stat().st_size if service_log.is_file() else 0
 
@@ -588,6 +688,92 @@ def _run_scenario_3(service_log: Path, port: int, args) -> bool:
     return True
 
 
+def _run_scenario_4(service_log: Path, port: int, args, admin_port: int = 0) -> bool:
+    """Update an existing comp_id's password via TLS admin channel, then authenticate."""
+    comp_id      = "CLIENT_ONE"
+    new_password = "new_secure_password_4"
+    request_id   = 40
+
+    log(f"=== Connecting to TLS admin channel (port {admin_port}) ===")
+    admin_conn = _connect_tls("127.0.0.1", admin_port)
+
+    log(f"  SetCredentialRequest: comp_id={comp_id} new_password=<redacted>")
+    result = _do_set_credential(admin_conn, request_id, comp_id, new_password, 0,
+                                args.reply_timeout)
+    admin_conn.close()
+
+    if result.outcome != SET_CREDENTIAL_OUTCOME_SUCCESS:
+        die(f"SetCredentialResult outcome={result.outcome}, expected Success (0)")
+    if result.comp_id != comp_id:
+        die(f"SetCredentialResult comp_id='{result.comp_id}', expected '{comp_id}'")
+    log(f"  SetCredentialResult: Success — OK")
+
+    log("=== Verifying service log for credential update ===")
+    log_pos = 0
+    marker = f"SetCredentialRequest request_id={request_id} comp_id={comp_id}"
+    found, _ = _poll_log_for(service_log, marker, args.reply_timeout, log_pos)
+    if not found:
+        die(f"service log missing: '{marker}'")
+    log("  service log confirmed SetCredential: OK")
+
+    log("=== Authenticating with the new password via PDU channel ===")
+    client_nonce = os.urandom(16)
+    pdu_conn = _connect_tcp("127.0.0.1", port)
+    _, auth_result = _do_scram_exchange(pdu_conn, request_id + 1, comp_id,
+                                        client_nonce, args.reply_timeout,
+                                        password=new_password)
+    pdu_conn.close()
+
+    if auth_result.outcome != AUTHENTICATION_OUTCOME_GRANTED:
+        die(f"expected Granted after credential update, got outcome={auth_result.outcome}")
+    log("  authentication with new password: Granted — OK")
+
+    return True
+
+
+def _run_scenario_5(service_log: Path, port: int, args, admin_port: int = 0) -> bool:
+    """Create a brand-new comp_id via TLS admin channel, then authenticate with it."""
+    comp_id   = "BRAND_NEW_COMP"
+    password  = "brand_new_password_5"
+    request_id = 50
+
+    log(f"=== Connecting to TLS admin channel (port {admin_port}) ===")
+    admin_conn = _connect_tls("127.0.0.1", admin_port)
+
+    log(f"  SetCredentialRequest: comp_id={comp_id} (new identity)")
+    result = _do_set_credential(admin_conn, request_id, comp_id, password, 4096,
+                                args.reply_timeout)
+    admin_conn.close()
+
+    if result.outcome != SET_CREDENTIAL_OUTCOME_SUCCESS:
+        die(f"SetCredentialResult outcome={result.outcome}, expected Success (0)")
+    log("  SetCredentialResult: Success — OK")
+
+    log("=== Verifying new comp_id cannot authenticate with wrong password ===")
+    pdu_conn = _connect_tcp("127.0.0.1", port)
+    _, bad_result = _do_scram_exchange(pdu_conn, request_id + 1, comp_id,
+                                       os.urandom(16), args.reply_timeout,
+                                       password="definitely_wrong_password")
+    pdu_conn.close()
+
+    if bad_result.outcome == AUTHENTICATION_OUTCOME_GRANTED:
+        die(f"authentication with wrong password should have failed but returned Granted")
+    log(f"  wrong password rejected (outcome={bad_result.outcome}): OK")
+
+    log("=== Authenticating with the correct password ===")
+    pdu_conn = _connect_tcp("127.0.0.1", port)
+    _, good_result = _do_scram_exchange(pdu_conn, request_id + 2, comp_id,
+                                        os.urandom(16), args.reply_timeout,
+                                        password=password)
+    pdu_conn.close()
+
+    if good_result.outcome != AUTHENTICATION_OUTCOME_GRANTED:
+        die(f"expected Granted for new comp_id, got outcome={good_result.outcome}")
+    log("  correct password: Granted — OK")
+
+    return True
+
+
 # ── scenario registry ──────────────────────────────────────────────────────────
 
 _SCENARIOS = [
@@ -596,13 +782,21 @@ _SCENARIOS = [
      "outcome=Granted; request_id echoed; server_nonce starts with client_nonce",
      _run_scenario_1),
     (2, "sequential_exchanges_same_connection",
-     "Two sequential exchanges on one TLS connection",
+     "Two sequential exchanges on one PDU connection",
      "both exchanges complete with Granted; each request_id correctly correlated",
      _run_scenario_2),
     (3, "multiple_clients",
-     "Three independent TLS connections each performing one full exchange",
+     "Three independent PDU connections each performing one full exchange",
      "all three exchanges complete with Granted; all logged in service log",
      _run_scenario_3),
+    (4, "set_credential_update",
+     "Update existing comp_id password via TLS admin channel; re-authenticate",
+     "SetCredential Success; subsequent SCRAM exchange with new password: Granted",
+     _run_scenario_4),
+    (5, "set_credential_new_comp_id",
+     "Create new comp_id via TLS admin channel; authenticate with it",
+     "SetCredential Success; wrong password rejected; correct password: Granted",
+     _run_scenario_5),
 ]
 
 _SCENARIO_MAP = {
@@ -620,17 +814,29 @@ def run_scenario(
     args,
 ) -> bool:
     short_name, description, expected_outcome, runner = _SCENARIO_MAP[number]
+    tls_mode = args.tls
 
     listen_port = _find_free_port()
     config_path = temp_dir / f"scenario_{number}.toml"
     log_path    = temp_dir / f"scenario_{number}" / "authentication_service.log"
 
-    _write_test_toml(config_path, listen_port)
+    if tls_mode:
+        admin_port = _find_free_port()
+        cert_path, key_path = _generate_test_tls_cert(temp_dir)
+        _write_test_toml(config_path, listen_port, admin_port, cert_path, key_path,
+                         tls_mode=True)
+        ready_marker = _SERVICE_READY_MARKER_TLS
+    else:
+        admin_port = 0
+        _write_test_toml(config_path, listen_port, tls_mode=False)
+        ready_marker = _SERVICE_READY_MARKER_PDU
 
     log("=" * 60)
     log(f"  auth_service_test  —  Scenario {number}: {description}")
     log("=" * 60)
     log(f"  port             : {listen_port}")
+    if tls_mode:
+        log(f"  admin port       : {admin_port}")
     log(f"  expected outcome : {expected_outcome}")
     log("")
 
@@ -648,11 +854,11 @@ def run_scenario(
 
         log(f"  Waiting for service ready "
             f"(timeout {args.ready_timeout:.0f}s) ...")
-        elapsed = _wait_for_service_ready(log_path, args.ready_timeout)
+        elapsed = _wait_for_service_ready(log_path, args.ready_timeout, ready_marker)
         log(f"  service ready in {elapsed:.2f}s")
         log("")
 
-        result_pass = runner(log_path, listen_port, args)
+        result_pass = runner(log_path, listen_port, args, admin_port)
 
     except TestFailure:
         pass
@@ -687,19 +893,29 @@ def _scenario_type(value: str):
         )
 
 
+_TLS_ADMIN_SCENARIOS = frozenset({4, 5})
+
+
 def main() -> None:
-    valid_scenario_numbers = [entry[0] for entry in _SCENARIOS]
+    all_scenario_numbers = [entry[0] for entry in _SCENARIOS]
 
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
+        "--tls", action="store_true", default=False,
+        help=(
+            "Enable TLS admin listener.  Required to run scenarios 4 and 5.  "
+            "Without --tls only scenarios 1-3 (plain PDU) are available."
+        ),
+    )
+    parser.add_argument(
         "--scenario", type=_scenario_type, default="all", metavar="N|all",
         help=(
-            "Scenario to run, or 'all' to run every scenario in order. "
+            "Scenario to run, or 'all' to run every available scenario in order. "
             "Valid numbers: "
-            + ", ".join(str(n) for n in valid_scenario_numbers)
+            + ", ".join(str(n) for n in all_scenario_numbers)
             + ".  (default: all)"
         ),
     )
@@ -717,6 +933,11 @@ def main() -> None:
         help="Max seconds to wait for each PDU reply (default: 5)",
     )
     args = parser.parse_args()
+
+    valid_scenario_numbers = (
+        all_scenario_numbers if args.tls
+        else [n for n in all_scenario_numbers if n not in _TLS_ADMIN_SCENARIOS]
+    )
 
     script_dir  = Path(__file__).resolve().parent
     raw_prefix  = args.prefix
@@ -745,7 +966,11 @@ def main() -> None:
         scenario_number = args.scenario
         if scenario_number not in _SCENARIO_MAP:
             print(f"error: unknown scenario {scenario_number}; valid: "
-                  + ", ".join(str(n) for n in valid_scenario_numbers),
+                  + ", ".join(str(n) for n in all_scenario_numbers),
+                  file=sys.stderr)
+            sys.exit(1)
+        if scenario_number in _TLS_ADMIN_SCENARIOS and not args.tls:
+            print(f"error: scenario {scenario_number} requires --tls",
                   file=sys.stderr)
             sys.exit(1)
         scenarios_to_run = [scenario_number]

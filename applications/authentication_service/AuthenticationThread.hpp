@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <pubsub_itc_fw/ApplicationThread.hpp>
@@ -20,20 +21,21 @@
 namespace authentication_service {
 
 /**
- * @brief ApplicationThread subclass that handles the SCRAM-SHA-256 authentication protocol.
+ * @brief ApplicationThread subclass handling the SCRAM-SHA-256 authentication protocol
+ * and TLS admin channel credential management.
  *
- * Accepts inbound PDU connections from gateways. Each connection carries one or more
- * four-message SCRAM-SHA-256 exchanges (AuthenticationRequest -> AuthenticationChallenge ->
- * AuthenticationProof -> AuthenticationResult), one per gateway logon attempt.
+ * Two listener types are served by this thread:
  *
- * Credentials are loaded from the file named by config.credentials_file at startup.
- * An AuthenticationRequest from an unknown comp_id is answered with UnknownUser.
+ *   PDU listener (FrameworkPdu, plain TCP) — gateway authentication exchanges.
+ *     500 AuthenticationRequest   -- received from gateway
+ *     501 AuthenticationChallenge -- sent to gateway
+ *     502 AuthenticationProof     -- received from gateway
+ *     503 AuthenticationResult    -- sent to gateway
  *
- * PDU IDs (from authentication.dsl):
- *   500 AuthenticationRequest   -- received from gateway
- *   501 AuthenticationChallenge -- sent to gateway
- *   502 AuthenticationProof     -- received from gateway
- *   503 AuthenticationResult    -- sent to gateway
+ *   TLS admin listener (TlsRawBytes) — credential management.
+ *     510 SetCredentialRequest  -- received from admin tool (plaintext password, TLS-protected)
+ *     511 SetCredentialResult   -- sent to admin tool
+ *     Both PDUs use the same 24-byte framework PDU header framing over the raw byte stream.
  *
  * Threading: ThreadID 1.
  */
@@ -54,6 +56,7 @@ class AuthenticationThread : public pubsub_itc_fw::ApplicationThread {
     void on_connection_established(pubsub_itc_fw::ConnectionID id) override;
     void on_connection_lost(pubsub_itc_fw::ConnectionID id, const std::string& reason) override;
     void on_framework_pdu_message(const pubsub_itc_fw::EventMessage& msg) override;
+    void on_raw_socket_message(const pubsub_itc_fw::EventMessage& msg) override;
     void on_itc_message(const pubsub_itc_fw::EventMessage& msg) override;
 
   private:
@@ -68,13 +71,25 @@ class AuthenticationThread : public pubsub_itc_fw::ApplicationThread {
         std::vector<uint8_t> server_key;
     };
 
+    // PDU listener handlers
     void handle_authentication_request(pubsub_itc_fw::ConnectionID conn_id,
                                         const pubsub_itc_fw::EventMessage& msg);
     void handle_authentication_proof(pubsub_itc_fw::ConnectionID conn_id,
                                       const pubsub_itc_fw::EventMessage& msg);
 
+    // TLS admin channel handlers
+    void handle_set_credential_request(pubsub_itc_fw::ConnectionID conn_id,
+                                        const uint8_t* payload, uint32_t payload_size);
+    void send_admin_pdu(pubsub_itc_fw::ConnectionID conn_id,
+                        uint16_t pdu_id, const uint8_t* payload, uint32_t payload_size);
+    void persist_credentials();
+
     const AuthenticationServiceConfiguration& config_;
+    // Mutable credential map — updated by SetCredentialRequest at runtime.
+    std::unordered_map<std::string, scram_crypto::ScramCredential> credentials_;
     std::unordered_map<pubsub_itc_fw::ConnectionID, ExchangeState> exchanges_;
+    // Tracks connections accepted on the TLS admin listener.
+    std::unordered_set<pubsub_itc_fw::ConnectionID> admin_connections_;
 };
 
 } // namespace authentication_service

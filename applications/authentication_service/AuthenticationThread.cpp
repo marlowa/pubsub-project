@@ -6,6 +6,9 @@
 #include <AuthenticationThread.hpp>
 
 #include <cstdint>
+#include <cstring>
+#include <fstream>
+#include <stdexcept>
 #include <string>
 
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
@@ -27,6 +30,15 @@ static constexpr int16_t pdu_id_authentication_request   = 500;
 static constexpr int16_t pdu_id_authentication_challenge = 501;
 static constexpr int16_t pdu_id_authentication_proof     = 502;
 static constexpr int16_t pdu_id_authentication_result    = 503;
+
+static constexpr uint16_t pdu_id_set_credential_request = 510;
+static constexpr uint16_t pdu_id_set_credential_result  = 511;
+
+// PDU header layout (24 bytes, all fields big-endian):
+//   byte_count(4) pdu_id(2) version(1) filler(1) seq_no(8) canary(4) filler(4)
+static constexpr size_t   admin_pdu_header_size = 24;
+static constexpr uint32_t admin_pdu_canary      = 0xC0FFEE00;
+static constexpr uint8_t  admin_pdu_version     = 1;
 
 pubsub_itc_fw::QueueConfiguration make_queue_config() {
     pubsub_itc_fw::QueueConfiguration queue_configuration{};
@@ -57,7 +69,8 @@ AuthenticationThread::AuthenticationThread(pubsub_itc_fw::ApplicationThread::Con
     : ApplicationThread(token, logger, reactor, "AuthenticationThread", pubsub_itc_fw::ThreadID{1},
                         make_queue_config(), make_allocator_config(config, logger),
                         pubsub_itc_fw::ApplicationThreadConfiguration{})
-    , config_(config) {}
+    , config_(config)
+    , credentials_(config.credentials) {}
 
 void AuthenticationThread::on_connection_established(pubsub_itc_fw::ConnectionID id) {
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
@@ -65,9 +78,14 @@ void AuthenticationThread::on_connection_established(pubsub_itc_fw::ConnectionID
 }
 
 void AuthenticationThread::on_connection_lost(pubsub_itc_fw::ConnectionID id, const std::string& reason) {
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "AuthenticationThread: connection lost conn_id={} reason={}", id.get_value(), reason);
-    exchanges_.erase(id);
+    if (admin_connections_.erase(id) > 0) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "AuthenticationThread: admin connection lost conn_id={} reason={}", id.get_value(), reason);
+    } else {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "AuthenticationThread: connection lost conn_id={} reason={}", id.get_value(), reason);
+        exchanges_.erase(id);
+    }
 }
 
 void AuthenticationThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& msg) {
@@ -124,7 +142,7 @@ void AuthenticationThread::handle_authentication_request(pubsub_itc_fw::Connecti
     }
     server_nonce.insert(server_nonce.end(), random_suffix, random_suffix + sizeof(random_suffix));
 
-    auto cred_it = config_.credentials.find(comp_id);
+    auto cred_it = credentials_.find(comp_id);
     if (cred_it == config_.credentials.end()) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                    "AuthenticationThread: unknown comp_id={} conn_id={} request_id={} -- UnknownUser",
@@ -260,6 +278,215 @@ void AuthenticationThread::handle_authentication_proof(pubsub_itc_fw::Connection
 
     exchanges_.erase(it);
     send_result(pubsub_itc_fw_app::AuthenticationOutcome::Granted, server_signature);
+}
+
+void AuthenticationThread::on_raw_socket_message(const pubsub_itc_fw::EventMessage& msg) {
+    const pubsub_itc_fw::ConnectionID conn_id = msg.connection_id();
+    admin_connections_.insert(conn_id);
+
+    const auto* data      = static_cast<const uint8_t*>(msg.payload());
+    const auto  available = static_cast<int64_t>(msg.payload_size());
+
+    if (available < static_cast<int64_t>(admin_pdu_header_size)) {
+        return; // Partial header — wait for more bytes, do not commit.
+    }
+
+    // Parse big-endian header fields.
+    const uint32_t byte_count = (uint32_t{data[0]} << 24) | (uint32_t{data[1]} << 16) |
+                                (uint32_t{data[2]} << 8)  |  uint32_t{data[3]};
+    const uint16_t pdu_id     = (uint16_t{data[4]} << 8) |  uint16_t{data[5]};
+    const uint32_t canary     = (uint32_t{data[16]} << 24) | (uint32_t{data[17]} << 16) |
+                                (uint32_t{data[18]} << 8)  |  uint32_t{data[19]};
+
+    const int64_t total_size = static_cast<int64_t>(admin_pdu_header_size) + static_cast<int64_t>(byte_count);
+    if (available < total_size) {
+        return; // Partial payload — wait for more bytes, do not commit.
+    }
+
+    if (canary != admin_pdu_canary) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "AuthenticationThread: admin conn_id={} bad canary 0x{:08x} -- closing",
+                   conn_id.get_value(), canary);
+        commit_raw_bytes(conn_id, total_size);
+        return;
+    }
+
+    const uint8_t* payload = data + admin_pdu_header_size;
+
+    if (pdu_id == pdu_id_set_credential_request) {
+        handle_set_credential_request(conn_id, payload, static_cast<uint32_t>(byte_count));
+    } else {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "AuthenticationThread: admin conn_id={} unknown pdu_id={} -- dropping",
+                   conn_id.get_value(), pdu_id);
+    }
+
+    commit_raw_bytes(conn_id, total_size);
+}
+
+void AuthenticationThread::handle_set_credential_request(pubsub_itc_fw::ConnectionID conn_id,
+                                                          const uint8_t* payload,
+                                                          uint32_t payload_size) {
+    auto& arena_buffer = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buffer.data(), arena_buffer.size());
+    arena.reset();
+
+    pubsub_itc_fw_app::SetCredentialRequestView view{};
+    size_t bytes_consumed   = 0;
+    size_t arena_bytes_needed = 0;
+
+    if (!pubsub_itc_fw_app::decode(view, payload, payload_size, bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                   "AuthenticationThread: failed to decode SetCredentialRequest conn_id={} -- dropping",
+                   conn_id.get_value());
+        return;
+    }
+
+    const std::string comp_id(view.comp_id.data(), view.comp_id.size());
+    const std::string password(view.password.data(), view.password.size());
+    int32_t iterations = view.iterations;
+    if (iterations == 0) iterations = 4096;
+
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "AuthenticationThread: SetCredentialRequest request_id={} comp_id={} iterations={} conn_id={}",
+               view.request_id, comp_id, iterations, conn_id.get_value());
+
+    auto send_result = [&](pubsub_itc_fw_app::SetCredentialOutcome outcome) {
+        pubsub_itc_fw_app::SetCredentialResult result{};
+        result.request_id = view.request_id;
+        result.comp_id    = comp_id;
+        result.outcome    = outcome;
+
+        static constexpr size_t result_buffer_size = 512;
+        uint8_t result_buffer[result_buffer_size];
+        size_t bytes_written = 0;
+        size_t bytes_needed  = 0;
+        if (!pubsub_itc_fw_app::encode(result, result_buffer, result_buffer_size,
+                                       bytes_written, bytes_needed)) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                       "AuthenticationThread: failed to encode SetCredentialResult conn_id={}",
+                       conn_id.get_value());
+            return;
+        }
+        send_admin_pdu(conn_id, pdu_id_set_credential_result, result_buffer,
+                       static_cast<uint32_t>(bytes_written));
+    };
+
+    if (comp_id.empty()) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "AuthenticationThread: SetCredentialRequest empty comp_id -- InvalidInput");
+        send_result(pubsub_itc_fw_app::SetCredentialOutcome::InvalidInput);
+        return;
+    }
+    if (password.empty()) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "AuthenticationThread: SetCredentialRequest empty password comp_id={} -- InvalidInput",
+                   comp_id);
+        send_result(pubsub_itc_fw_app::SetCredentialOutcome::InvalidInput);
+        return;
+    }
+    if (iterations < 1000 || iterations > 1000000) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "AuthenticationThread: SetCredentialRequest iterations={} out of range "
+                   "[1000,1000000] comp_id={} -- InvalidInput",
+                   iterations, comp_id);
+        send_result(pubsub_itc_fw_app::SetCredentialOutcome::InvalidInput);
+        return;
+    }
+
+    try {
+        uint8_t salt_bytes[16];
+        if (RAND_bytes(salt_bytes, static_cast<int>(sizeof(salt_bytes))) != 1) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                       "AuthenticationThread: RAND_bytes failed for SetCredentialRequest comp_id={}",
+                       comp_id);
+            send_result(pubsub_itc_fw_app::SetCredentialOutcome::InternalError);
+            return;
+        }
+
+        credentials_[comp_id] = scram_crypto::make_scram_credential(
+            password, salt_bytes, sizeof(salt_bytes), iterations);
+
+        persist_credentials();
+
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "AuthenticationThread: SetCredentialRequest request_id={} comp_id={} -- Success",
+                   view.request_id, comp_id);
+        send_result(pubsub_itc_fw_app::SetCredentialOutcome::Success);
+
+    } catch (const std::exception& ex) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                   "AuthenticationThread: SetCredentialRequest comp_id={} exception: {}",
+                   comp_id, ex.what());
+        send_result(pubsub_itc_fw_app::SetCredentialOutcome::InternalError);
+    }
+}
+
+void AuthenticationThread::send_admin_pdu(pubsub_itc_fw::ConnectionID conn_id,
+                                           uint16_t pdu_id,
+                                           const uint8_t* payload,
+                                           uint32_t payload_size) {
+    const size_t total_size = admin_pdu_header_size + payload_size;
+    std::vector<uint8_t> buffer(total_size);
+    uint8_t* h = buffer.data();
+
+    h[0] = static_cast<uint8_t>((payload_size >> 24) & 0xFF);
+    h[1] = static_cast<uint8_t>((payload_size >> 16) & 0xFF);
+    h[2] = static_cast<uint8_t>((payload_size >>  8) & 0xFF);
+    h[3] = static_cast<uint8_t>( payload_size        & 0xFF);
+    h[4] = static_cast<uint8_t>((pdu_id >> 8) & 0xFF);
+    h[5] = static_cast<uint8_t>( pdu_id       & 0xFF);
+    h[6] = admin_pdu_version;
+    h[7] = 0; // filler_a
+    // seq_no (bytes 8-15): zero for admin PDUs
+    h[8] = h[9] = h[10] = h[11] = h[12] = h[13] = h[14] = h[15] = 0;
+    h[16] = static_cast<uint8_t>((admin_pdu_canary >> 24) & 0xFF);
+    h[17] = static_cast<uint8_t>((admin_pdu_canary >> 16) & 0xFF);
+    h[18] = static_cast<uint8_t>((admin_pdu_canary >>  8) & 0xFF);
+    h[19] = static_cast<uint8_t>( admin_pdu_canary        & 0xFF);
+    h[20] = h[21] = h[22] = h[23] = 0; // filler_b
+
+    if (payload_size > 0) {
+        std::memcpy(h + admin_pdu_header_size, payload, payload_size);
+    }
+
+    send_raw(conn_id, buffer.data(), static_cast<uint32_t>(total_size));
+}
+
+void AuthenticationThread::persist_credentials() {
+    const std::string tmp_path = config_.credentials_file + ".tmp";
+
+    auto hex_encode = [](const std::vector<uint8_t>& bytes) -> std::string {
+        static constexpr char hex_chars[] = "0123456789abcdef";
+        std::string result;
+        result.reserve(bytes.size() * 2);
+        for (const uint8_t byte : bytes) {
+            result += hex_chars[(byte >> 4) & 0xF];
+            result += hex_chars[ byte       & 0xF];
+        }
+        return result;
+    };
+
+    {
+        std::ofstream out(tmp_path);
+        if (!out) {
+            throw std::runtime_error("persist_credentials: failed to open " + tmp_path);
+        }
+        out << "# SCRAM-SHA-256 credentials managed by the authentication service.\n"
+            << "# Do not edit manually while the service is running.\n\n";
+        for (const auto& [comp_id, cred] : credentials_) {
+            out << "[[credential]]\n"
+                << "comp_id    = \"" << comp_id << "\"\n"
+                << "stored_key = \"" << hex_encode(cred.stored_key) << "\"\n"
+                << "server_key = \"" << hex_encode(cred.server_key) << "\"\n"
+                << "salt       = \"" << hex_encode(cred.salt) << "\"\n"
+                << "iterations = " << cred.iterations << "\n\n";
+        }
+    }
+
+    if (std::rename(tmp_path.c_str(), config_.credentials_file.c_str()) != 0) {
+        throw std::runtime_error("persist_credentials: rename failed for " + config_.credentials_file);
+    }
 }
 
 } // namespace authentication_service

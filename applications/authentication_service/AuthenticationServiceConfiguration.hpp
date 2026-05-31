@@ -17,21 +17,43 @@ namespace authentication_service {
 /**
  * @brief Configuration for the authentication service application.
  *
- * The authentication service listens for inbound PDU connections from gateways
- * and handles the SCRAM-SHA-256 four-message exchange for each logon attempt.
- * Gateway-to-authentication-service communication is internal to the project and
- * uses plain TCP with PDU framing; TLS is not used on this path.
+ * The authentication service exposes two listeners:
+ *   - PDU listener (plain TCP): for gateway SCRAM-SHA-256 exchanges.
+ *   - TLS admin listener: for credential management (SetCredential). The
+ *     plaintext password is protected by TLS in transit; the service derives
+ *     and stores only the SCRAM-SHA-256 values.
  */
 struct AuthenticationServiceConfiguration {
     // ----------------------------------------------------------------
-    // Network
+    // Network — PDU listener (gateway authentication exchanges)
     // ----------------------------------------------------------------
 
     /** @brief Host address on which the service listens for inbound connections. */
     std::string listen_host{"127.0.0.1"};
 
-    /** @brief TCP port on which the service listens for inbound connections. */
+    /** @brief TCP port on which the service listens for inbound PDU connections. */
     uint16_t listen_port{7070};
+
+    // ----------------------------------------------------------------
+    // Network — TLS admin listener (credential management)
+    // ----------------------------------------------------------------
+
+    /** @brief TCP port on which the service listens for TLS admin connections. */
+    uint16_t admin_listen_port{7072};
+
+    /** @brief Path to the PEM-encoded server certificate for the admin TLS listener. */
+    std::string admin_tls_certificate_path;
+
+    /** @brief Path to the PEM-encoded private key for the admin TLS listener. */
+    std::string admin_tls_private_key_path;
+
+    /** @brief Path to the PEM-encoded CA certificate used to verify admin client
+     *  certificates. Empty string disables client certificate verification. */
+    std::string admin_tls_ca_path;
+
+    /** @brief If true, admin clients must present a valid certificate signed by the CA.
+     *  Ignored when admin_tls_ca_path is empty. */
+    bool admin_tls_require_client_certificate{false};
 
     // ----------------------------------------------------------------
     // Logging

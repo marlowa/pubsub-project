@@ -46,6 +46,11 @@
 #    100-401 are used by the leader-follower protocol.
 #    1000+   are used by the equity order topics.
 #
+#  Admin channel:
+#    510-519 are used by the TLS admin channel (SetCredential etc.).
+#    The admin channel uses TlsRawBytes transport with the same 24-byte PDU
+#    header framing as FrameworkPdu connections.
+#
 # -----------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
@@ -123,4 +128,46 @@ message AuthenticationResult (id=503, version=1)
     AuthenticationOutcome outcome
     bytes                 server_signature        # SCRAM ServerSignature; empty on failure
     bool                  force_password_change   # true when outcome is Granted but the credential must be renewed
+end
+
+# ---------------------------------------------------------------------------
+# SetCredentialOutcome
+# ---------------------------------------------------------------------------
+
+enum SetCredentialOutcome : i32 {
+    Success       = 0
+    InvalidInput  = 1
+    InternalError = 2
+}
+
+# ---------------------------------------------------------------------------
+# SetCredentialRequest (id=510)
+#
+# Sent by an admin tool to the authentication service over the TLS admin
+# channel to create or update the SCRAM-SHA-256 credential for a comp_id.
+# The plaintext password is transmitted; TLS protects it in transit. The
+# service derives stored_key, server_key, salt, and iterations server-side
+# and persists them to the credentials file. The plaintext is not retained.
+#
+# iterations: 0 = use the server default (4096). Values outside [1000,1000000]
+# are rejected as insecure or impractical.
+# ---------------------------------------------------------------------------
+
+message SetCredentialRequest (id=510, version=1)
+    i64    request_id    # caller-assigned correlation handle
+    string comp_id       # identity to create or update
+    string password      # plaintext password, protected by TLS
+    i32    iterations    # PBKDF2 iteration count; 0 = server default (4096)
+end
+
+# ---------------------------------------------------------------------------
+# SetCredentialResult (id=511)
+#
+# Sent by the authentication service in response to SetCredentialRequest.
+# ---------------------------------------------------------------------------
+
+message SetCredentialResult (id=511, version=1)
+    i64                  request_id
+    string               comp_id
+    SetCredentialOutcome outcome
 end

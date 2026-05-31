@@ -169,12 +169,38 @@ AuthenticationServiceConfigurationLoader::load_and_init_logging(const std::strin
 
         toml.get_required_except("credentials_file", config.credentials_file);
 
-        // Resolve relative credentials_file path relative to the service config file's directory.
-        const std::filesystem::path cred_path{config.credentials_file};
-        if (cred_path.is_relative()) {
-            config.credentials_file =
-                (std::filesystem::path{file_path}.parent_path() / cred_path).string();
+        auto resolve_path_relative_to_config = [&](std::string& path) {
+            if (!path.empty()) {
+                const std::filesystem::path p{path};
+                if (p.is_relative()) {
+                    path = (std::filesystem::path{file_path}.parent_path() / p).string();
+                }
+            }
+        };
+
+        resolve_path_relative_to_config(config.credentials_file);
+
+        int32_t admin_listen_port = 0;
+        toml.get_required_except("admin.listen_port", admin_listen_port);
+        if (admin_listen_port < 1 || admin_listen_port > 65535) {
+            throw pubsub_itc_fw::ConfigurationException(
+                "AuthenticationServiceConfigurationLoader: admin.listen_port must be in [1, 65535], got " +
+                std::to_string(admin_listen_port));
         }
+        config.admin_listen_port = static_cast<uint16_t>(admin_listen_port);
+
+        toml.get_required_except("admin.tls_certificate_path", config.admin_tls_certificate_path);
+        toml.get_required_except("admin.tls_private_key_path", config.admin_tls_private_key_path);
+        // ca_path and require_client_certificate are optional.
+        auto [ca_ok, ca_err] = toml.get_required("admin.tls_ca_path", config.admin_tls_ca_path);
+        (void)ca_ok; (void)ca_err;
+        auto [req_ok, req_err] = toml.get_required("admin.tls_require_client_certificate",
+                                                    config.admin_tls_require_client_certificate);
+        (void)req_ok; (void)req_err;
+
+        resolve_path_relative_to_config(config.admin_tls_certificate_path);
+        resolve_path_relative_to_config(config.admin_tls_private_key_path);
+        resolve_path_relative_to_config(config.admin_tls_ca_path);
 
     } catch (const pubsub_itc_fw::ConfigurationException&) {
         throw;

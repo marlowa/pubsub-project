@@ -32,5 +32,7 @@ install(FILES
         ${CMAKE_CURRENT_SOURCE_DIR}/authentication_service.toml
         ${CMAKE_CURRENT_SOURCE_DIR}/authentication_service_secondary.toml
         ${CMAKE_CURRENT_SOURCE_DIR}/credentials.toml
+        ${CMAKE_CURRENT_SOURCE_DIR}/admin.crt
+        ${CMAKE_CURRENT_SOURCE_DIR}/admin.key
         DESTINATION etc/authentication_service
 )

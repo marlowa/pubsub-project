@@ -13,6 +13,7 @@
 #include <pubsub_itc_fw/NetworkEndpointConfiguration.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
+#include <pubsub_itc_fw/TlsListenerConfiguration.hpp>
 
 namespace authentication_service {
 
@@ -39,11 +40,25 @@ AuthenticationService::AuthenticationService(const AuthenticationServiceConfigur
         pubsub_itc_fw::NetworkEndpointConfiguration{config_.listen_host, config_.listen_port},
         pubsub_itc_fw::ThreadID{1});
 
+    reactor_->register_inbound_tls_listener(
+        pubsub_itc_fw::NetworkEndpointConfiguration{config_.listen_host, config_.admin_listen_port},
+        pubsub_itc_fw::ThreadID{1},
+        65536,
+        pubsub_itc_fw::TlsListenerConfiguration{
+            config_.admin_tls_certificate_path,
+            config_.admin_tls_private_key_path,
+            config_.admin_tls_ca_path,
+            config_.admin_tls_require_client_certificate
+        });
+
     authentication_thread_ = pubsub_itc_fw::ApplicationThread::create<AuthenticationThread>(*logger_, *reactor_, config_);
 
     reactor_->register_thread(authentication_thread_);
 
-    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "AuthenticationService: PDU listener on {}:{}", config_.listen_host, config_.listen_port);
+    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info,
+               "AuthenticationService: PDU listener on {}:{}", config_.listen_host, config_.listen_port);
+    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info,
+               "AuthenticationService: TLS admin listener on {}:{}", config_.listen_host, config_.admin_listen_port);
 }
 
 int AuthenticationService::run() {

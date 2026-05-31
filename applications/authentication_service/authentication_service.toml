@@ -4,6 +4,13 @@ credentials_file = "credentials.toml"
 listen_host = "127.0.0.1"
 listen_port = 7070
 
+[admin]
+listen_port                    = 7072
+tls_certificate_path           = "admin.crt"
+tls_private_key_path           = "admin.key"
+tls_ca_path                    = ""
+tls_require_client_certificate = false
+
 [logging]
 applog_level     = "info"
 syslog_level     = "critical"
