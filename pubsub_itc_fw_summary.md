@@ -402,13 +402,132 @@ On heartbeat loss:
 
 ---
 
-### 13. Logging Subsystem
+### 13. Authentication Service and SCRAM-SHA-256
+
+**Overview.** A standalone application (`applications/authentication_service/`) that authenticates FIX gateway clients using SCRAM-SHA-256 (RFC 5802 variant). The service is stateless: each four-message exchange is self-contained. Two instances run for HA (primary port 7070, secondary port 7071); they share no state and require no synchronisation.
+
+**PDU protocol** (defined in `applications/authentication.dsl`, namespace `pubsub_itc_fw_app`):
+
+| ID | Message | Key fields |
+|---|---|---|
+| 500 | `AuthenticationRequest` | `request_id` (i64), `comp_id` (string), `client_nonce` (bytes) |
+| 501 | `AuthenticationChallenge` | `request_id`, `server_nonce` (bytes), `salt` (bytes), `iterations` (i32) |
+| 502 | `AuthenticationProof` | `request_id`, `client_proof` (bytes, 32 bytes) |
+| 503 | `AuthenticationResult` | `request_id`, `outcome` (enum), `server_signature` (bytes, 32 bytes), `force_password_change` (bool) |
+
+`request_id` is the gateway's `ConnectionID` for the FIX session, carried unchanged through all four messages so the gateway can correlate the result with the correct pending session.
+
+**SCRAM computation** (performed client-side by the gateway):
+```
+SaltedPassword = PBKDF2-SHA256(password, salt, iterations)
+ClientKey      = HMAC-SHA256(SaltedPassword, "Client Key")
+StoredKey      = SHA256(ClientKey)
+ServerKey      = HMAC-SHA256(SaltedPassword, "Server Key")
+AuthMessage    = uint32le(len(comp_id)) || comp_id
+               || uint32le(len(client_nonce)) || client_nonce
+               || uint32le(len(server_nonce)) || server_nonce
+               || uint32le(len(salt)) || salt
+               || uint32le(iterations)
+ClientSig      = HMAC-SHA256(StoredKey, AuthMessage)
+ClientProof    = ClientKey XOR ClientSig        -- sent in AuthenticationProof
+ServerSig      = HMAC-SHA256(ServerKey, AuthMessage)  -- verified by gateway on AuthenticationResult
+```
+
+**`ScramCrypto` shared library** (`libraries/scram_crypto/`). Static library linked by both the authentication service and the gateway. Namespace `scram_crypto`. Free functions: `hmac_sha256`, `sha256`, `pbkdf2_sha256`, `make_scram_credential`, `compute_auth_message`. Depends on `OpenSSL::Crypto` (PRIVATE linkage). `find_package(OpenSSL REQUIRED)` in top-level CMakeLists.
+
+**Current credential store.** A single stub `ScramCredential` (`stub_credential_`) hardcoded in `AuthenticationThread`. Credential database integration is the next major work item; see "Database Access Design" below.
+
+**Mutual authentication.** The gateway verifies the `ServerSignature` in `AuthenticationResult` before completing the FIX Logon. This confirms the service is genuine (not an impostor). If verification fails the gateway sends FIX Logout and disconnects.
+
+---
+
+### 14. Logging Subsystem
 
 `QuillLogger` wrapping `quill::Logger*`. `PUBSUB_LOG(logger, level, fmt, ...)` for format args; `PUBSUB_LOG_STR(logger, level, str)` for single string (required by `-Werror=variadic-macros`).
 
 Log levels: `FwLogLevel::Alert`, `Critical`, `Error`, `Warning`, `Notice`, `Info`, `Debug`, `Trace`. Currently everything is logged at `Info`; level differentiation is a future task.
 
 Any class that needs to log receives a `QuillLogger&` in its constructor and stores it as a member. The Reactor does not own all logging — each class logs for itself.
+
+---
+
+### 15. Database Access Design (discussed, not yet implemented)
+
+**Rationale for a database.** `comp_id` identities appear in many places beyond SCRAM credentials: per-comp-id and per-firm-id gateway throttle limits, risk management parameters, position limits, and more. A flat file per concern quickly becomes unmanageable. The authentication service and risk subsystem both need a relational store. The workplace uses Oracle; personal preference is PostgreSQL. To avoid vendor lock-in, **unixODBC** is the chosen abstraction layer — the application talks to `libodbc.so` via the standard ODBC API and the DSN configuration selects the underlying driver.
+
+**The async problem.** Standard ODBC has no async API. Each query blocks the calling thread until the RDBMS replies. Blocking the reactor thread or any `ApplicationThread` would stall the entire event loop. The solution is a **thread pool of `std::thread` workers**, each holding a persistent ODBC connection. The reactor thread never touches ODBC directly.
+
+**`DatabaseThread` design.** A subclass of `ApplicationThread`. It owns:
+- A pool of `std::thread` workers (count configurable). Each worker holds one open ODBC connection and blocks on a work queue.
+- An ITC interface: other `ApplicationThread` subclasses post request messages to `DatabaseThread`'s ITC queue. `DatabaseThread::on_itc_message()` dispatches the request to a free worker.
+- A result-delivery path back into the reactor's epoll loop (two open options — see below).
+
+No `std::thread` idle-keepalive timer is needed. `Reactor::check_for_stuck_threads()` checks only callback duration (time from `time_event_started_` to `time_event_finished_` per thread); a `DatabaseThread` that has no work to do sits idle between ITC deliveries and the reactor never marks it stuck. An idle thread is always safe.
+
+**Two open options for worker → reactor result delivery:**
+
+1. **eventfd registered with epoll.** Each worker writes to an `eventfd` when a result is ready. The reactor sees `EPOLLIN` on the `eventfd` and delivers a `DatabaseResult` event to the requesting `ApplicationThread`. Requires a small extension to the framework to support non-socket fds in epoll.
+2. **Workers post directly to the ITC queue.** Workers call `thread.post_to_queue(result_message)` directly. The result lands in the requesting thread's ITC queue without involving the reactor at all. Simpler — no framework changes needed — but the ITC queue must be safe for cross-thread post from a raw `std::thread` (it is: `LockFreeMessageQueue` is MPSC-safe).
+
+Neither option has been chosen yet; this remains an open design question.
+
+**Credential pre-load strategy.** For the authentication service the hot path (SCRAM exchange) must never block on the database. The chosen approach is to **pre-load all credentials at startup** into an `unordered_map<string, ScramCredential>` held in the `AuthenticationThread`. The hot path only reads the in-memory map. On SIGHUP or an admin PDU, `DatabaseThread` reloads the credential table and posts the new map to `AuthenticationThread` via ITC. This also avoids the N idle ODBC connections problem — the worker pool can be shut down after the initial load (or kept alive only for periodic refresh).
+
+---
+
+### 16. TLS Subsystem (framework complete; not yet wired to applications)
+
+TLS support was added to the framework's raw-bytes connection layer in Session 20. It covers both inbound (server-side) and outbound (client-side) connections. The matching-engine-facing and auth-service-facing paths remain plain TCP; TLS is intended for future use on the FIX client-facing gateway listener and any other externally-exposed connection.
+
+**New `ProtocolType` value:** `ProtocolType::TlsRawBytes` (value 2). Selecting this type on an `InboundListenerConfiguration` causes `InboundConnectionManager` to create a `TlsRawBytesProtocolHandler` for each accepted connection instead of a `RawBytesProtocolHandler`. The application thread receives the same `RawSocketCommunication` events as it does for plain `RawBytes`; TLS is transparent above the protocol-handler boundary.
+
+**`TlsContext`** (`TlsContext.hpp` / `.cpp`). Wraps an `SSL_CTX`. Non-copyable. Factory methods:
+- `create_server(cert_path, key_path, ca_path, require_client_cert)` — server-side context. `ca_path` empty disables client certificate verification.
+- `create_client(ca_path, cert_path, key_path)` — client-side context. `ca_path` empty skips server verification.
+
+Both enforce TLS 1.2 minimum, prefer TLS 1.3. Ciphers: TLS 1.2 AEAD only (`ECDHE-ECDSA-AES256-GCM-SHA384` etc.); TLS 1.3 `TLS_AES_256_GCM_SHA384` and `TLS_CHACHA20_POLY1305_SHA256`. One `TlsContext` per listener or outbound service; certificate loading happens once at construction, not per-connection.
+
+**`TlsState`** (`TlsState.hpp` / `.cpp`). Per-connection. Owns `SSL*`, `BIO* rbio`, `BIO* wbio`. Owns a `pending_outbound` byte vector (ciphertext bytes that could not be sent immediately). `HandshakePhase` enum: `Pending`, `Complete`, `Failed`. Move-constructible (needed when `OutboundConnection` is move-inserted into the connections map).
+
+**`TlsRawBytesProtocolHandler`** (`TlsRawBytesProtocolHandler.hpp` / `.cpp`). Implements `ProtocolHandlerInterface`. Uses **OpenSSL memory BIOs** so the reactor thread never blocks: all socket reads/writes use `MSG_DONTWAIT`; `SSL_read`/`SSL_write` work against in-memory BIOs rather than the socket fd directly. Key details:
+- Constructor: `is_server` flag selects `SSL_accept` vs `SSL_connect` path.
+- `start_outbound_handshake()`: generates the client's initial `ClientHello` record and flushes the write BIO to the socket. Called once by `OutboundConnectionManager` immediately after TCP connection is established.
+- Handshake subsequent steps are driven by `on_data_ready()` arrivals from epoll. `ConnectionEstablished` is NOT delivered until `HandshakePhase::Complete`.
+- Once complete, `drain_plaintext()` loops `SSL_read()` into the `MirroredBuffer` and delivers a `RawSocketCommunication` event.
+- `send_prebuilt()`: calls `SSL_write()` (which copies the plaintext internally), then releases the slab chunk **immediately**. The resulting ciphertext in the write BIO is flushed; unsent ciphertext goes into `TlsState::pending_outbound`.
+- `continue_send()`: drains `pending_outbound` on `EPOLLOUT`.
+- Backpressure: same high-water (75%) / low-water (50%) mark scheme as `RawBytesProtocolHandler`.
+- Peer close: `SSL_ERROR_ZERO_RETURN` (TLS `close_notify`) → `{false, "", false}` → `ConnectionLost`.
+
+**`TlsListenerConfiguration`** (`TlsListenerConfiguration.hpp`). Fields: `certificate_path`, `private_key_path`, `ca_path`, `require_client_certificate`. Carried by `InboundListenerConfiguration::tls` (`std::optional<TlsListenerConfiguration>`). The `Reactor` reads this during init, calls `TlsContext::create_server`, and stores the context in the `InboundListener`. Each accepted connection creates one `SSL` object from the shared context.
+
+**`TlsClientConfiguration`** (`TlsClientConfiguration.hpp`). Fields: `ca_path`, `certificate_path`, `private_key_path`, `raw_buffer_capacity`. Carried by `ServiceEndpoints::tls` (`std::optional<TlsClientConfiguration>`). When present, `OutboundConnectionManager` creates a `TlsContext` and a `TlsRawBytesProtocolHandler` for the connection instead of a `PduProtocolHandler`.
+
+**`ProtocolHandlerInterface` additions**: `start_outbound_handshake()`, `is_handshake_complete()`, `is_reads_paused()` virtuals. Non-TLS handlers return sensible defaults (`{true, ""}`, `true`, `false` respectively).
+
+**`OutboundConnectionManager` TLS integration**: on TCP connect-ready, if `conn.is_tls()`, calls `start_outbound_handshake()` instead of delivering `ConnectionEstablished` immediately. On subsequent `on_data_ready()` arrivals while handshake is pending, drives `on_data_ready()` which internally calls `drive_handshake()` until `HandshakePhase::Complete`, at which point `ConnectionEstablished` is delivered. `process_send_pdu_command` and `process_send_raw_command` check `is_tls()` and use `send_prebuilt()` accordingly; TLS slab deallocation differs (slab freed inside `send_prebuilt()` rather than on send completion).
+
+**OpenSSL dependency**: `find_package(OpenSSL REQUIRED)` in top-level `CMakeLists.txt`; `target_link_libraries` against `OpenSSL::SSL` and `OpenSSL::Crypto`.
+
+**Integration tests** (`TlsProtocolHandlerIntegrationTest.cpp` — 5 tests; `TlsOutboundIntegrationTest.cpp` — 4 tests):
+
+| Test | Scenario |
+|---|---|
+| `TlsHandshakeAndRoundTrip` | Inbound: client establishes TLS, sends framed message, receives reply |
+| `FragmentedCiphertextDelivery` | Inbound: length prefix in first SSL_write, payload 20 ms later; framework accumulates both records |
+| `PeerDisconnect` | Inbound: SSL_shutdown → close_notify → ConnectionLost |
+| `MutualTlsHandshake` | Inbound: server requires client certificate; both sides authenticate |
+| `HandshakeFailure` | Inbound: client has wrong CA; TLS alert → server tears down → ConnectionLost |
+| `OutboundTlsHandshakeAndRoundTrip` | Outbound: reactor as TLS client; send on ConnectionEstablished; server replies; ConnectionLost on server close |
+| `OutboundMutualTls` | Outbound: server requires client certificate; TlsClientConfiguration carries cert/key paths |
+| `OutboundTlsServerDisconnect` | Outbound: server closes after handshake; ConnectionEstablished delivered before ConnectionLost |
+| `OutboundTlsHandshakeFailureNoConnectionEstablished` | Outbound: wrong trust anchor; cert verification fails; ConnectionEstablished never delivered; reactor stays alive |
+
+All certificates generated programmatically in tests via OpenSSL C API (EC prime256v1, SHA-256). No external tooling required.
+
+**Relationship to SCRAM-SHA-256.** SCRAM (see Section 13) provides *authentication* — proof that the client knows the correct password — but does not encrypt the channel. TLS provides *confidentiality and integrity* for the byte stream. In the full production design, the gateway's inbound FIX listener should use `TlsRawBytes` so that both the FIX messages and the SCRAM exchange over that channel are protected in transit. The two mechanisms are complementary: SCRAM authenticates the SCRAM exchange itself (mutual authentication via `ServerSignature`), TLS prevents the exchange from being observed or tampered with by a network eavesdropper. Until TLS is wired to the gateway listener, the SCRAM exchange travels over a plaintext TCP connection; this is acceptable for localhost/internal development but not for production.
+
+**Current status.** Framework complete and tested. No application currently uses `TlsRawBytes` — the gateway FIX listener uses `RawBytes` and the authentication service uses plain `FrameworkPdu`. TLS is available to wire up when the gateway needs to expose an encrypted endpoint to external FIX clients.
 
 ---
 
@@ -450,7 +569,61 @@ The receiving node's reactor accepts data via epoll and delivers it zero-copy to
 
 ## Session Accomplishments
 
-### Session 19 (current)
+### Session 20 (current)
+
+**SCRAM-SHA-256 authentication service — full end-to-end implementation.**
+
+The system now requires every FIX client to complete a SCRAM-SHA-256 challenge-response exchange before a FIX session is established. The exchange happens over the internal PDU path (not over the FIX connection), using four new PDU types defined in `applications/authentication.dsl`:
+
+| PDU ID | Name | Direction |
+|---|---|---|
+| 500 | `AuthenticationRequest` | gateway → auth service |
+| 501 | `AuthenticationChallenge` | auth service → gateway |
+| 502 | `AuthenticationProof` | gateway → auth service |
+| 503 | `AuthenticationResult` | auth service → gateway |
+
+`AuthenticationRequest` carries `request_id` (= the gateway's internal `ConnectionID` for the FIX session, used to correlate all four messages), `comp_id`, and a random 16-byte `client_nonce`. `AuthenticationChallenge` returns `server_nonce` (server-appended bytes concatenated with client_nonce), `salt`, and `iterations`. `AuthenticationProof` carries the SCRAM `ClientProof`. `AuthenticationResult` carries `outcome` (Granted/Denied), `server_signature` (32 bytes, for mutual authentication), and `force_password_change` flag.
+
+**`ScramCrypto` shared library** (`libraries/scram_crypto/`). Moved from `applications/authentication_service/` into a proper static library so both the authentication service and the gateway can link against it. Namespace `scram_crypto`. Exports: `hmac_sha256`, `sha256`, `pbkdf2_sha256`, `make_scram_credential`, `compute_auth_message`. Links against `OpenSSL::Crypto` (PRIVATE). `find_package(OpenSSL REQUIRED)` added to top-level `CMakeLists.txt`.
+
+**Authentication service** (`applications/authentication_service/`). Stateless: each SCRAM exchange is fully self-contained with no server-side session state between Request and Proof. On receiving an `AuthenticationRequest`, the service generates a random 16-byte server nonce, derives SCRAM parameters from its stored credential for the comp_id, and replies with `AuthenticationChallenge`. On receiving `AuthenticationProof`, it verifies `ClientProof` via `StoredKey`, computes `ServerSignature` via `ServerKey`, and replies with `AuthenticationResult`. Currently uses a single stub credential (`stub_credential_`) for all comp_ids; credential database integration is the next major work item. Two instances are run for HA: primary on port 7070, secondary on port 7071. Both are stateless and independent — no synchronisation between them is needed.
+
+**Gateway SCRAM integration** (`applications/sample_fix_gateway_seq/`). On receiving a FIX Logon:
+1. Cancels the logon timeout timer.
+2. Selects the auth service connection: primary if connected, secondary as fallback (when `ha_enabled`).
+3. If neither is connected, sends FIX Logout and disconnects.
+4. Generates 16 random bytes as `client_nonce` (via `RAND_bytes`), sends `AuthenticationRequest`, sets `session.auth_pending = true`, and arms a `scram_auth_timeout` timer (default 10 s, configurable).
+5. `handle_authentication_challenge`: derives `ClientProof` and `expected_server_signature` locally using `scram_crypto::pbkdf2_sha256`, `hmac_sha256`, `sha256`. Sends `AuthenticationProof` on the same connection the challenge arrived on (correct for HA routing).
+6. `handle_authentication_result`: cancels the SCRAM timeout, verifies `ServerSignature` for mutual authentication, then either completes the FIX Logon reply or sends FIX Logout.
+7. SCRAM timeout fires: sends FIX Logout and disconnects — session never hangs.
+
+Key configuration additions to `FixGatewaySeqConfiguration`:
+- `authentication_service_host / port` (primary, always required)
+- `authentication_service_secondary_host / port` (required when `ha_enabled`)
+- `scram_password` — the password sent to the auth service on behalf of FIX clients
+- `scram_auth_timeout` — maximum time for a SCRAM exchange (default 10 s)
+
+**HA test infrastructure update** (`ha_test.py`). Two authentication service instances (`authentication_service_primary` on port 7070, `authentication_service_secondary` on port 7071) added to the launch table before `sample_fix_gateway_seq`. Binary preflight check extended to include `authentication_service`. Auth service log files added to stale-log cleanup. Startup order is now 9 processes: witness → arbiter_primary → arbiter_secondary → authentication_service_primary → authentication_service_secondary → sample_fix_gateway_seq → sequencer_primary → sequencer_secondary → matching_engine.
+
+**TLS subsystem added to the framework.** Two sessions of work (both within Session 20) added full TLS support to the raw-bytes connection layer.
+
+*Inbound TLS* (`TlsRawBytesProtocolHandler`, `TlsContext`, `TlsState`, `TlsListenerConfiguration`, `ProtocolType::TlsRawBytes`). The `InboundListenerConfiguration` gains an optional `TlsListenerConfiguration`; when present the `Reactor` builds a `TlsContext` at init (loading certificates once) and constructs a `TlsRawBytesProtocolHandler` for each accepted connection. TLS is handled non-blockingly via OpenSSL memory BIOs — the reactor thread never blocks. `ConnectionEstablished` is not delivered until the handshake completes. Five integration tests cover the happy path, fragmented ciphertext, `close_notify`, mutual TLS, and deliberate handshake failure.
+
+*Outbound TLS* (`TlsClientConfiguration`, `ServiceEndpoints::tls`, `OutboundConnection` and `OutboundConnectionManager` TLS paths). `ServiceEndpoints` gains `std::optional<TlsClientConfiguration> tls`. When present, the outbound manager calls `start_outbound_handshake()` after TCP connect and defers `ConnectionEstablished` until the TLS handshake completes. Four outbound integration tests cover the happy path, mutual TLS, server-initiated disconnect after handshake, and handshake failure with wrong trust anchor.
+
+`ProtocolHandlerInterface` gains three new virtuals: `start_outbound_handshake()`, `is_handshake_complete()`, `is_reads_paused()`. Non-TLS handlers return safe defaults.
+
+Status: framework complete, tested (9 integration tests). Not yet wired to any application — the gateway FIX listener and auth service still use plain TCP. See subsystem section 16 for full detail.
+
+**`build.py` improvements.** Pylint always runs (on `python/dsl/`) before CMake. Pytest runs by default; suppressed by `--no-tests` or the new `--no-pytest` flag. This catches Python DSL regressions before the slower C++ build begins.
+
+**All 13 HA scenarios pass.** `auth_service_test.py` (3 scenarios: single exchange, sequential exchanges on one connection, multiple independent clients) all pass. Build clean, all unit and integration tests pass.
+
+**Database access — design discussion (not yet implemented).** See "Database Access Design" section below.
+
+---
+
+### Session 19
 
 **Quill SPSC queue initial capacity raised to 32 MiB (`PubsubFrontendOptions`).** Under high-throughput runs the default 128 KiB Quill SPSC queue was doubling seven times (reaching 32 MiB) before stabilising, printing an INFO reallocation message on each doubling. A new `PubsubFrontendOptions` struct (`libraries/pubsub_itc_fw/include/pubsub_itc_fw/PubsubFrontendOptions.hpp`) sets `initial_queue_capacity = 32 MiB` to match the observed worst case and eliminates all reallocation. Queue type remains `UnboundedBlocking` so producers block rather than drop if the queue ever exceeds the 2 GiB cap. Physical memory is only touched as the queue fills — the 32 MiB is virtual address space reserved up-front. A companion `QuillLoggerFrontendOptions.hpp` wires the options into the logger type. Files: `PubsubFrontendOptions.hpp` (new), `QuillLoggerFrontendOptions.hpp` (new), `QuillLogger.hpp`, `QuillLogger.cpp`.
 
@@ -958,6 +1131,7 @@ TcpSocket EAGAIN/EOF fix, use-after-free fix, InboundConnection infrastructure, 
 - `fix_equity_orders.dsl` — FIX 5.0 SP2 equity order topic registry
 - Logging subsystem — complete
 - `RawBytesProtocolHandler` — complete; `on_data_ready`/`send_prebuilt`/`continue_send` return `tuple<bool, std::string>`; no disconnect-handler member; no logger member (session 14)
+- TLS subsystem — complete, tested (session 20). `TlsContext` (wraps SSL_CTX; `create_server`/`create_client`; TLS 1.2 minimum, TLS 1.3 preferred; AEAD-only ciphers), `TlsState` (per-connection; memory BIOs; pending ciphertext buffer), `TlsRawBytesProtocolHandler` (implements `ProtocolHandlerInterface`; non-blocking handshake; same `RawSocketCommunication` delivery), `TlsListenerConfiguration`, `TlsClientConfiguration`. `ServiceEndpoints` carries `optional<TlsClientConfiguration>`. `ProtocolHandlerInterface` gains `start_outbound_handshake`, `is_handshake_complete`, `is_reads_paused`. `ProtocolType::TlsRawBytes` (value 2). 9 integration tests (5 inbound, 4 outbound). Not yet wired to any application.
 - `sample_fix_gateway_seq` — FIX session layer complete; PDU encoding to sequencer complete; ER routing back to fix8 complete. Session 17 adds `ha_enabled` flag (default false): when false, secondary sequencer connect is skipped, `forward_pdu_to_sequencers` sends only to primary, and secondary host/port are not required in the toml. When `ha_enabled=true`, dual-publish to primary and secondary is restored. `forward_pdu_to_sequencers` name kept plural — the dual-publish branch returns when leader-follower is fully live.
 - `sequencer` — Slices 1–6 complete. PDU forwarding (NOS, OCR, ER), topology, re-encode fixes all from session 15. WAL (`SequencerWal`: mmap'd segments, snapshot, CRC32, replay on restart), seqNo on wire, `routing_comp_id` stamping, and leader-follower state machine (`Role::unknown/leader/follower`, `adopt_role`, `peer_heartbeat_timeout`, epoch, fence file) from sessions covered by the session-17 entry. `ha_enabled=false` (default): sequencer immediately adopts `Role::leader` in `on_initial_event` and skips arbiter/peer connects. Only the leader forwards order PDUs to ME.
 - `matching_engine` — complete for the round-trip stub. `on_framework_pdu_message` decodes inbound `NewOrderSingle` PDUs (session 15) and emits a fully-filled `ExecutionReport` over the existing outbound `sequencer_er_conn_id_`. The ER populates every field that `SequencerThread`'s ER decoder reads. No real order book or matching — every order becomes a single fill at its limit price (or a zero sentinel for market orders). `OrderID` and `ExecID` are generated as `ME-ORD-N` / `ME-EXEC-N`. `OrderCancelRequest` is not yet handled (logs and drops at the `else` branch); cancel handling is a small follow-up.
@@ -973,6 +1147,7 @@ TcpSocket EAGAIN/EOF fix, use-after-free fix, InboundConnection infrastructure, 
 5. **`SequencedMessage` wrapper** — currently the sequencer forwards raw PDUs to ME without a sequence-number envelope; add this once stable.
 6. **Trace logs in `PduParser` and elsewhere** — the two `Info`-level lines in `PduParser::receive` (header decode + raw 16 header bytes), the `Info`-level payload hex dump in `PduParser::dispatch_pdu`, and the short `TRACE` lines in `InboundConnectionManager::on_accept` and `SequencerThread::on_framework_pdu_message` are valuable for diagnosis but noisy at production rates. Drop to `Debug` or wrap behind a compile-time switch when production traffic begins.
 7. **Pub/sub WAL** — long-term replacement for direct TCP; eliminates the rendezvous problem and the retry workaround.
+8. **Authentication service database integration** — replace the stub `stub_credential_` in `AuthenticationThread` with a `DatabaseThread`-backed credential store via unixODBC. Depends on: (a) finalising the worker→reactor result-delivery mechanism (eventfd-in-epoll vs direct ITC post); (b) implementing `DatabaseThread` as an `ApplicationThread` subclass with a `std::thread` worker pool and persistent ODBC connections. Use the pre-load strategy: load all credentials at startup into `unordered_map<string, ScramCredential>`, reload on SIGHUP or admin PDU. See "Database Access Design" section for design details.
 
 ## Immediate Next Task
 
@@ -1981,6 +2156,8 @@ sample_fix_gateway_seq --> FIX ER --> FIX client (via cl_ord_id_to_session_)
 | 7004 | (reserved) follower-side equivalent of 7003 if leader and follower listen on different ports |
 | 7010 | sequencer → gateway (ER forwarding inbound) |
 | 7020 | sequencer → ME (sequenced order PDUs inbound) |
+| 7070 | gateway → authentication_service_primary (PDU, ProtocolType::FrameworkPdu) |
+| 7071 | gateway → authentication_service_secondary (PDU, ProtocolType::FrameworkPdu) |
 | 7021 | ME → sequencer ER listener |
 | 7022 | (reserved) ME → sequencer-follower ER listener; not in use post session 15 |
 | 7100 | sequencer → arbiter |

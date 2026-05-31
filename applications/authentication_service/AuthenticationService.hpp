@@ -20,11 +20,12 @@ namespace authentication_service {
  *
  * Owns all framework objects and wires them together:
  *
- *   - One inbound TLS listener for gateway connections.
+ *   - One inbound FrameworkPdu listener for gateway connections (plain TCP;
+ *     this path is internal to the deployment and does not use TLS).
  *   - One AuthenticationThread that handles the SCRAM-SHA-256 protocol.
  *
- * Gateways connect as TLS clients and exchange PDU-framed SCRAM messages.
- * The listener is configured for mutual TLS when ca_path is non-empty.
+ * Gateways connect as PDU clients and exchange SCRAM messages using the
+ * four-PDU protocol defined in authentication.dsl.
  *
  * The logger is constructed in main() before the config is loaded.
  */

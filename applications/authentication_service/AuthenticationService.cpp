@@ -43,7 +43,7 @@ AuthenticationService::AuthenticationService(const AuthenticationServiceConfigur
 
     reactor_->register_thread(authentication_thread_);
 
-    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "AuthenticationService: TLS listener on {}:{}", config_.listen_host, config_.listen_port);
+    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "AuthenticationService: PDU listener on {}:{}", config_.listen_host, config_.listen_port);
 }
 
 int AuthenticationService::run() {
