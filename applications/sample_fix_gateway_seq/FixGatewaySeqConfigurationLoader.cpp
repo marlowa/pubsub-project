@@ -39,6 +39,8 @@ FixGatewaySeqConfigurationLoader::load_and_init_logging(const std::string& file_
     try {
         toml.get_required_except("network.listen_host", config.listen_host);
         toml.get_required_except("network.er_listen_host", config.er_listen_host);
+        toml.get_required_except("authentication_service.host", config.authentication_service_host);
+        toml.get_required_except("authentication_service.scram_password", config.scram_password);
         toml.get_required_except("fix_session.sender_comp_id", config.sender_comp_id);
         toml.get_required_except("fix_session.default_target_comp_id", config.default_target_comp_id);
         toml.get_required_except("timeouts.logon_timeout", config.logon_timeout);
@@ -50,12 +52,14 @@ FixGatewaySeqConfigurationLoader::load_and_init_logging(const std::string& file_
         int32_t listen_port = 0;
         int32_t er_listen_port = 0;
         int32_t primary_port = 0;
+        int32_t authentication_service_port = 0;
         int64_t raw_buffer_capacity = 0;
 
         toml.get_required_except("network.listen_port", listen_port);
         toml.get_required_except("network.er_listen_port", er_listen_port);
         toml.get_required_except("network.raw_buffer_capacity", raw_buffer_capacity);
         toml.get_required_except("sequencer.primary_port", primary_port);
+        toml.get_required_except("authentication_service.port", authentication_service_port);
 
         auto validate_port = [&](int32_t port, const std::string& name) {
             if (port < 1 || port > 65535) {
@@ -67,6 +71,7 @@ FixGatewaySeqConfigurationLoader::load_and_init_logging(const std::string& file_
         validate_port(listen_port, "network.listen_port");
         validate_port(er_listen_port, "network.er_listen_port");
         validate_port(primary_port, "sequencer.primary_port");
+        validate_port(authentication_service_port, "authentication_service.port");
 
         if (raw_buffer_capacity <= 0) {
             throw pubsub_itc_fw::ConfigurationException("FixGatewaySeqConfigurationLoader: network.raw_buffer_capacity must be positive, got " +
@@ -76,6 +81,7 @@ FixGatewaySeqConfigurationLoader::load_and_init_logging(const std::string& file_
         config.listen_port = static_cast<uint16_t>(listen_port);
         config.er_listen_port = static_cast<uint16_t>(er_listen_port);
         config.sequencer_primary_port = static_cast<uint16_t>(primary_port);
+        config.authentication_service_port = static_cast<uint16_t>(authentication_service_port);
         config.raw_buffer_capacity = raw_buffer_capacity;
 
         if (config.ha_enabled) {

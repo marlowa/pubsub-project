@@ -75,7 +75,7 @@ class AuthenticationThread : public pubsub_itc_fw::ApplicationThread {
                                       const pubsub_itc_fw::EventMessage& msg);
 
     const AuthenticationServiceConfiguration& config_;
-    ScramCredential stub_credential_;
+    scram_crypto::ScramCredential stub_credential_;
     std::unordered_map<pubsub_itc_fw::ConnectionID, ExchangeState> exchanges_;
 };
 

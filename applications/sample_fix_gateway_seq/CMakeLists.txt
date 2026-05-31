@@ -14,9 +14,10 @@ target_include_directories(sample_fix_gateway_seq PRIVATE
 
 target_link_libraries(sample_fix_gateway_seq PRIVATE
         pubsub_itc_fw
+        scram_crypto
 )
 
-add_dependencies(sample_fix_gateway_seq fix_equity_orders_generated)
+add_dependencies(sample_fix_gateway_seq fix_equity_orders_generated authentication_generated)
 
 # Header files listed explicitly so CLion indexes them correctly.
 target_sources(sample_fix_gateway_seq PRIVATE

@@ -4,6 +4,8 @@
 #include "FixGatewaySeqThread.hpp"
 #include "FixErEncoder.hpp"
 
+#include <openssl/rand.h>
+
 #include <charconv>
 #include <cstring>
 #include <string>
@@ -22,6 +24,13 @@
 namespace sample_fix_gateway_seq {
 
 namespace {
+
+static constexpr int16_t pdu_id_authentication_request   = 500;
+static constexpr int16_t pdu_id_authentication_challenge = 501;
+static constexpr int16_t pdu_id_authentication_proof     = 502;
+static constexpr int16_t pdu_id_authentication_result    = 503;
+
+static constexpr size_t scram_client_nonce_size = 16;
 
 pubsub_itc_fw::QueueConfiguration make_queue_config() {
     pubsub_itc_fw::QueueConfiguration queue_configuration{};
@@ -50,10 +59,12 @@ FixGatewaySeqThread::FixGatewaySeqThread(pubsub_itc_fw::ApplicationThread::Const
     , config_(config)
     , er_inbound_svc_("inbound:" + std::to_string(config.er_listen_port))
     , serialiser_(config.sender_comp_id, config.default_target_comp_id)
+    , auth_service_conn_id_{}
     , sequencer_primary_conn_id_{}
     , sequencer_secondary_conn_id_{} {}
 
 void FixGatewaySeqThread::on_app_ready_event() {
+    connect_to_service("authentication_service");
     connect_to_service("sequencer_primary");
     if (config_.ha_enabled) {
         connect_to_service("sequencer_secondary");
@@ -61,7 +72,11 @@ void FixGatewaySeqThread::on_app_ready_event() {
 }
 
 void FixGatewaySeqThread::on_connection_established(pubsub_itc_fw::ConnectionID id) {
-    if (id.service_name() == "sequencer_primary") {
+    if (id.service_name() == "authentication_service") {
+        auth_service_conn_id_ = id;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "FixGatewaySeqThread: authentication service connection {} established", id.get_value());
+    } else if (id.service_name() == "sequencer_primary") {
         sequencer_primary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixGatewaySeqThread: primary sequencer connection {} ({}) established", id.get_value(),
                    id.service_name());
@@ -85,7 +100,11 @@ void FixGatewaySeqThread::on_connection_lost(pubsub_itc_fw::ConnectionID id, con
         sessions_.erase(it);
     }
 
-    if (id == sequencer_primary_conn_id_) {
+    if (id == auth_service_conn_id_) {
+        auth_service_conn_id_ = pubsub_itc_fw::ConnectionID{};
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "FixGatewaySeqThread: authentication service connection {} lost: {}", id.get_value(), reason);
+    } else if (id == sequencer_primary_conn_id_) {
         sequencer_primary_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "FixGatewaySeqThread: primary sequencer connection {} lost: {}", id.get_value(), reason);
     } else if (id == sequencer_secondary_conn_id_) {
@@ -264,6 +283,19 @@ void FixGatewaySeqThread::on_raw_socket_message(const pubsub_itc_fw::EventMessag
 void FixGatewaySeqThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message) {
     const auto pdu_id = static_cast<int16_t>(message.pdu_id());
 
+    if (message.connection_id() == auth_service_conn_id_) {
+        if (pdu_id == pdu_id_authentication_challenge) {
+            handle_authentication_challenge(message);
+        } else if (pdu_id == pdu_id_authentication_result) {
+            handle_authentication_result(message);
+        } else {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "FixGatewaySeqThread: unexpected PDU id {} from authentication service -- dropping", pdu_id);
+            release_pdu_payload(message);
+        }
+        return;
+    }
+
     if (pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::ExecutionReport)) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "FixGatewaySeqThread: unsupported PDU id {} on connection {} -- dropping", pdu_id,
                    message.connection_id().get_value());
@@ -333,6 +365,158 @@ void FixGatewaySeqThread::on_timer_event(const std::string& name) {
 void FixGatewaySeqThread::on_itc_message([[maybe_unused]] const pubsub_itc_fw::EventMessage& message) {}
 
 // -----------------------------------------------------------------------
+// Authentication PDU handlers
+// -----------------------------------------------------------------------
+
+void FixGatewaySeqThread::handle_authentication_challenge(const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buffer = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buffer.data(), arena_buffer.size());
+    arena.reset();
+
+    pubsub_itc_fw_app::AuthenticationChallengeView view{};
+    size_t bytes_consumed = 0;
+    size_t arena_bytes_needed = 0;
+
+    if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()),
+                                    bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                       "FixGatewaySeqThread: failed to decode AuthenticationChallenge -- dropping");
+        release_pdu_payload(message);
+        return;
+    }
+
+    release_pdu_payload(message);
+
+    // Correlate back to the FIX session using request_id == conn_id.
+    FixSession* session_ptr = find_session_by_conn_id(static_cast<int32_t>(view.request_id));
+    if (!session_ptr || !session_ptr->auth_pending) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "FixGatewaySeqThread: AuthenticationChallenge request_id={} -- no matching pending session -- dropping",
+                   view.request_id);
+        return;
+    }
+    FixSession& session = *session_ptr;
+
+    const std::vector<uint8_t> server_nonce(view.server_nonce.data, view.server_nonce.data + view.server_nonce.size);
+    const std::vector<uint8_t> salt(view.salt.data, view.salt.data + view.salt.size);
+    const int32_t iterations = view.iterations;
+
+    // Derive the SCRAM proof and the expected ServerSignature locally.
+    // The password never leaves the gateway process.
+    static const std::string client_key_label = "Client Key";
+    static const std::string server_key_label = "Server Key";
+
+    const std::vector<uint8_t> auth_message = scram_crypto::compute_auth_message(
+        session.client_comp_id, session.scram_client_nonce, server_nonce,
+        salt.data(), salt.size(), iterations);
+
+    const std::vector<uint8_t> salted_password = scram_crypto::pbkdf2_sha256(
+        config_.scram_password, salt.data(), salt.size(), iterations);
+
+    const std::vector<uint8_t> client_key = scram_crypto::hmac_sha256(
+        salted_password.data(), salted_password.size(),
+        reinterpret_cast<const uint8_t*>(client_key_label.data()), client_key_label.size());
+
+    const std::vector<uint8_t> stored_key = scram_crypto::sha256(client_key.data(), client_key.size());
+
+    const std::vector<uint8_t> client_signature = scram_crypto::hmac_sha256(
+        stored_key.data(), stored_key.size(),
+        auth_message.data(), auth_message.size());
+
+    static constexpr size_t sha256_size = 32;
+    std::vector<uint8_t> client_proof(sha256_size);
+    for (size_t i = 0; i < sha256_size; ++i) {
+        client_proof[i] = client_key[i] ^ client_signature[i];
+    }
+
+    const std::vector<uint8_t> server_key = scram_crypto::hmac_sha256(
+        salted_password.data(), salted_password.size(),
+        reinterpret_cast<const uint8_t*>(server_key_label.data()), server_key_label.size());
+
+    session.scram_expected_server_signature = scram_crypto::hmac_sha256(
+        server_key.data(), server_key.size(),
+        auth_message.data(), auth_message.size());
+
+    pubsub_itc_fw_app::AuthenticationProof proof{};
+    proof.request_id   = view.request_id;
+    proof.client_proof = pubsub_itc_fw_app::BytesView{client_proof.data(), client_proof.size()};
+    send_pdu(auth_service_conn_id_, pdu_id_authentication_proof, 0, proof);
+
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "FixGatewaySeqThread: connection {} AuthenticationProof sent request_id={}",
+               session.conn_id.get_value(), view.request_id);
+}
+
+void FixGatewaySeqThread::handle_authentication_result(const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buffer = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buffer.data(), arena_buffer.size());
+    arena.reset();
+
+    pubsub_itc_fw_app::AuthenticationResultView view{};
+    size_t bytes_consumed = 0;
+    size_t arena_bytes_needed = 0;
+
+    if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()),
+                                    bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                       "FixGatewaySeqThread: failed to decode AuthenticationResult -- dropping");
+        release_pdu_payload(message);
+        return;
+    }
+
+    release_pdu_payload(message);
+
+    FixSession* session_ptr = find_session_by_conn_id(static_cast<int32_t>(view.request_id));
+    if (!session_ptr || !session_ptr->auth_pending) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "FixGatewaySeqThread: AuthenticationResult request_id={} -- no matching pending session -- dropping",
+                   view.request_id);
+        return;
+    }
+    FixSession& session = *session_ptr;
+    session.auth_pending = false;
+
+    if (view.outcome != pubsub_itc_fw_app::AuthenticationOutcome::Granted) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "FixGatewaySeqThread: connection {} authentication failed outcome={} -- sending Logout",
+                   session.conn_id.get_value(), static_cast<int32_t>(view.outcome));
+        FixMessage logout;
+        logout.set(Tag::MsgType, MsgType::Logout);
+        logout.set(Tag::Text, std::string("Authentication failed"));
+        send_fix_to_session(session, logout);
+        disconnect_session(session, "authentication failed");
+        return;
+    }
+
+    // Verify ServerSignature to confirm we are speaking to the genuine service.
+    const std::vector<uint8_t> received_signature(view.server_signature.data,
+                                                   view.server_signature.data + view.server_signature.size);
+    if (received_signature != session.scram_expected_server_signature) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "FixGatewaySeqThread: connection {} ServerSignature mismatch -- possible impostor -- sending Logout",
+                   session.conn_id.get_value());
+        FixMessage logout;
+        logout.set(Tag::MsgType, MsgType::Logout);
+        logout.set(Tag::Text, std::string("Authentication service identity could not be verified"));
+        send_fix_to_session(session, logout);
+        disconnect_session(session, "ServerSignature mismatch");
+        return;
+    }
+
+    // Authenticated. Send the FIX Logon reply and open the session.
+    FixMessage reply;
+    reply.set(Tag::MsgType, MsgType::Logon);
+    reply.set(Tag::EncryptMethod, 0);
+    reply.set(Tag::HeartBtInt, session.heartbeat_interval);
+    send_fix_to_session(session, reply);
+    session.session_established = true;
+
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "FixGatewaySeqThread: connection {} authentication succeeded -- FIX session established comp_id='{}'",
+               session.conn_id.get_value(), session.client_comp_id);
+}
+
+// -----------------------------------------------------------------------
 // FIX session handlers
 // -----------------------------------------------------------------------
 
@@ -342,24 +526,47 @@ void FixGatewaySeqThread::handle_logon(FixSession& session, const ParsedFixMessa
     // the implicit conversion from string_view copies the bytes here.
     session.client_comp_id = msg.get(Tag::SenderCompID);
 
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixGatewaySeqThread: connection {} Logon from SenderCompID='{}'", session.conn_id.get_value(),
-               session.client_comp_id);
-
-    FixMessage reply;
-    reply.set(Tag::MsgType, MsgType::Logon);
-    reply.set(Tag::EncryptMethod, 0);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "FixGatewaySeqThread: connection {} Logon from SenderCompID='{}' -- initiating SCRAM authentication",
+               session.conn_id.get_value(), session.client_comp_id);
 
     const std::string_view heartbeat_interval_text = msg.get(Tag::HeartBtInt);
-    int heartbeat_interval = 30;
+    session.heartbeat_interval = 30;
     if (!heartbeat_interval_text.empty()) {
-        std::from_chars(heartbeat_interval_text.data(), heartbeat_interval_text.data() + heartbeat_interval_text.size(), heartbeat_interval);
+        std::from_chars(heartbeat_interval_text.data(), heartbeat_interval_text.data() + heartbeat_interval_text.size(), session.heartbeat_interval);
     }
-    reply.set(Tag::HeartBtInt, heartbeat_interval);
 
-    send_fix_to_session(session, reply);
-    session.session_established = true;
+    if (!auth_service_conn_id_.is_valid()) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "FixGatewaySeqThread: connection {} Logon rejected -- authentication service not connected",
+                   session.conn_id.get_value());
+        FixMessage logout;
+        logout.set(Tag::MsgType, MsgType::Logout);
+        logout.set(Tag::Text, std::string("Authentication service unavailable"));
+        send_fix_to_session(session, logout);
+        disconnect_session(session, "authentication service not connected");
+        return;
+    }
 
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixGatewaySeqThread: connection {} FIX session established", session.conn_id.get_value());
+    uint8_t nonce_bytes[scram_client_nonce_size];
+    if (RAND_bytes(nonce_bytes, static_cast<int>(sizeof(nonce_bytes))) != 1) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                   "FixGatewaySeqThread: connection {} RAND_bytes failed -- disconnecting", session.conn_id.get_value());
+        disconnect_session(session, "failed to generate client nonce");
+        return;
+    }
+    session.scram_client_nonce.assign(nonce_bytes, nonce_bytes + sizeof(nonce_bytes));
+    session.auth_pending = true;
+
+    pubsub_itc_fw_app::AuthenticationRequest auth_request{};
+    auth_request.request_id  = static_cast<int64_t>(session.conn_id.get_value());
+    auth_request.comp_id     = session.client_comp_id;
+    auth_request.client_nonce = pubsub_itc_fw_app::BytesView{session.scram_client_nonce.data(), session.scram_client_nonce.size()};
+    send_pdu(auth_service_conn_id_, pdu_id_authentication_request, 0, auth_request);
+
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "FixGatewaySeqThread: connection {} AuthenticationRequest sent request_id={} comp_id='{}'",
+               session.conn_id.get_value(), auth_request.request_id, session.client_comp_id);
 }
 
 void FixGatewaySeqThread::handle_heartbeat(FixSession& session, [[maybe_unused]] const ParsedFixMessage& msg) {

@@ -18,9 +18,17 @@
 #include "FixSerialiser.hpp"
 #include "FixSession.hpp"
 
+// authentication.hpp must be included before fix_equity_orders.hpp because only
+// authentication.hpp defines BytesView inside the PUBSUB_ITC_FW_APP_DSL_SHARED_HELPERS
+// guard block; fix_equity_orders.hpp sets the guard without providing BytesView.
+#include <authentication.hpp>
+
 // DSL-generated message types for the equity order flow.
 // The generated header lives in the build tree under dsl/.
 #include <fix_equity_orders.hpp>
+
+// Shared SCRAM-SHA-256 crypto primitives.
+#include <ScramCrypto.hpp>
 
 namespace sample_fix_gateway_seq {
 
@@ -72,6 +80,10 @@ class FixGatewaySeqThread : public pubsub_itc_fw::ApplicationThread {
     void on_itc_message(const pubsub_itc_fw::EventMessage& message) override;
 
   private:
+    // Authentication PDU handlers (inbound from the authentication service).
+    void handle_authentication_challenge(const pubsub_itc_fw::EventMessage& message);
+    void handle_authentication_result(const pubsub_itc_fw::EventMessage& message);
+
     // FIX session message handlers.
     // All inbound messages are received as ParsedFixMessage: string_views into
     // the MirroredBuffer, valid only for the duration of the callback.
@@ -147,6 +159,9 @@ class FixGatewaySeqThread : public pubsub_itc_fw::ApplicationThread {
 
     // Stateless serialiser shared across all sessions.
     FixSerialiser serialiser_;
+
+    // ConnectionID of the outbound connection to the authentication service.
+    pubsub_itc_fw::ConnectionID auth_service_conn_id_;
 
     // ConnectionID of the primary sequencer outbound connection.
     pubsub_itc_fw::ConnectionID sequencer_primary_conn_id_;

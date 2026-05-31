@@ -12,6 +12,28 @@ import platform
 import shutil
 from pathlib import Path
 
+def run_pylint(source_dir):
+    """Run pylint on the Python DSL source."""
+    python_dir = source_dir / "python"
+    run_command(
+        [sys.executable, "-m", "pylint", "dsl"],
+        cwd=python_dir,
+        description="Running pylint on Python DSL source"
+    )
+    print("\n✓ pylint passed")
+
+
+def run_pytest(source_dir):
+    """Run the Python DSL test suite."""
+    python_dir = source_dir / "python"
+    run_command(
+        [sys.executable, "-m", "pytest", "-q"],
+        cwd=python_dir,
+        description="Running Python DSL test suite"
+    )
+    print("\n✓ Python tests passed")
+
+
 def generate_coverage_report(build_dir, source_dir):
     """Generate LCOV + genhtml coverage report"""
     print("\n============================================================")
@@ -273,7 +295,8 @@ Examples:
   %(prog)s --valgrind                         # Build with Valgrind compatibility
   %(prog)s --doxygen                          # Build and generate docs
   %(prog)s --doxygen-only                     # Only generate documentation
-  %(prog)s --no-tests                         # Build without running tests
+  %(prog)s --no-tests                         # Build without running any tests
+  %(prog)s --no-pytest                        # Build without running Python tests only
   %(prog)s --clean --valgrind                 # Clean build for Valgrind
   %(prog)s --install-dir /opt/pubsub_itc_fw  # Build, test, and install
   %(prog)s --no-tests --install-dir ~/install # Build and install without running tests
@@ -297,7 +320,11 @@ Examples:
     )
 
     parser.add_argument('--no-tests', action='store_true',
-        help='Skip running tests after building'
+        help='Skip running all tests (pylint still runs; suppresses pytest and C++ tests)'
+    )
+
+    parser.add_argument('--no-pytest', action='store_true',
+        help='Skip the Python DSL test suite only (pylint still runs; C++ tests are unaffected)'
     )
 
     parser.add_argument('--jobs', '-j', type=int, metavar='N',
@@ -359,6 +386,12 @@ Examples:
         run_doxygen(source_dir)
         return 0
 
+    # Python DSL checks always run first so problems are caught before the
+    # (much slower) C++ build begins.
+    run_pylint(source_dir)
+    if not args.no_tests and not args.no_pytest:
+        run_pytest(source_dir)
+
     # Clean if requested
     if args.clean:
         clean_build(build_dir)
@@ -374,7 +407,7 @@ Examples:
     # Build
     build_project(build_dir, jobs=args.jobs, verbose=args.verbose)
 
-    # Run tests unless disabled
+    # Run C++ tests unless disabled
     if not args.no_tests:
         run_tests(build_dir, use_tsan=args.tsan, tsan_suppressions=args.tsan_suppressions)
         run_integration_tests(build_dir)

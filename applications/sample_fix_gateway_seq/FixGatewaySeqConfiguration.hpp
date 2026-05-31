@@ -80,6 +80,24 @@ struct FixGatewaySeqConfiguration {
     uint16_t er_listen_port{7010};
 
     // ----------------------------------------------------------------
+    // Authentication service outbound connection
+    //
+    // The gateway connects to the authentication service as a plain TCP PDU
+    // client. Each FIX Logon triggers a SCRAM-SHA-256 exchange; the gateway
+    // only completes the FIX session once the exchange returns Granted and the
+    // ServerSignature is verified.
+    // ----------------------------------------------------------------
+
+    /** @brief Host address of the authentication service. */
+    std::string authentication_service_host{"127.0.0.1"};
+
+    /** @brief TCP port of the authentication service. */
+    uint16_t authentication_service_port{7070};
+
+    /** @brief SCRAM-SHA-256 password the gateway sends on behalf of connecting FIX clients. */
+    std::string scram_password{"stubpassword"};
+
+    // ----------------------------------------------------------------
     // FIX session identity
     // ----------------------------------------------------------------
 

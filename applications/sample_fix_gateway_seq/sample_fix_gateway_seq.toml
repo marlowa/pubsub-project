@@ -9,6 +9,11 @@ raw_buffer_capacity = 4194304 # for TCP buffering; 4 MiB per FIX session.
 er_listen_host      = "127.0.0.1"
 er_listen_port      = 7010
 
+[authentication_service]
+host          = "127.0.0.1"
+port          = 7070
+scram_password = "stubpassword"
+
 [sequencer]
 ha_enabled      = true
 primary_host    = "127.0.0.1"

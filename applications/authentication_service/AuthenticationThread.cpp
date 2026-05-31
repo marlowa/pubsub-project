@@ -70,7 +70,7 @@ AuthenticationThread::AuthenticationThread(pubsub_itc_fw::ApplicationThread::Con
                         make_queue_config(), make_allocator_config(config, logger),
                         pubsub_itc_fw::ApplicationThreadConfiguration{})
     , config_(config)
-    , stub_credential_(make_scram_credential(stub_password, stub_salt, sizeof(stub_salt), stub_iterations)) {}
+    , stub_credential_(scram_crypto::make_scram_credential(stub_password, stub_salt, sizeof(stub_salt), stub_iterations)) {}
 
 void AuthenticationThread::on_connection_established(pubsub_itc_fw::ConnectionID id) {
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
@@ -225,11 +225,11 @@ void AuthenticationThread::handle_authentication_proof(pubsub_itc_fw::Connection
         return;
     }
 
-    const std::vector<uint8_t> auth_message = compute_auth_message(
+    const std::vector<uint8_t> auth_message = scram_crypto::compute_auth_message(
         state.comp_id, state.client_nonce, state.server_nonce,
         state.salt.data(), state.salt.size(), state.iterations);
 
-    const std::vector<uint8_t> client_signature = hmac_sha256(
+    const std::vector<uint8_t> client_signature = scram_crypto::hmac_sha256(
         state.stored_key.data(), state.stored_key.size(),
         auth_message.data(), auth_message.size());
 
@@ -238,7 +238,7 @@ void AuthenticationThread::handle_authentication_proof(pubsub_itc_fw::Connection
         client_key[i] = view.client_proof.data[i] ^ client_signature[i];
     }
 
-    const std::vector<uint8_t> recovered_stored_key = sha256(client_key.data(), client_key.size());
+    const std::vector<uint8_t> recovered_stored_key = scram_crypto::sha256(client_key.data(), client_key.size());
     if (recovered_stored_key != state.stored_key) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                    "AuthenticationThread: ClientProof verification failed "
@@ -250,7 +250,7 @@ void AuthenticationThread::handle_authentication_proof(pubsub_itc_fw::Connection
     }
 
     // Proof is valid. Compute ServerSignature and send Granted.
-    const std::vector<uint8_t> server_signature = hmac_sha256(
+    const std::vector<uint8_t> server_signature = scram_crypto::hmac_sha256(
         state.server_key.data(), state.server_key.size(),
         auth_message.data(), auth_message.size());
 

@@ -143,6 +143,7 @@ find_package(fmt REQUIRED CONFIG)
 find_package(quill REQUIRED CONFIG)
 find_package(argparse REQUIRED CONFIG)
 find_package(GTest REQUIRED CONFIG)
+find_package(OpenSSL REQUIRED)
 
 find_package(PkgConfig)
 if(PkgConfig_FOUND)
@@ -268,9 +269,10 @@ add_custom_target(authentication_generated
 )
 
 # ------------------------------------------------------------
-# Add the library
+# Add the libraries
 # ------------------------------------------------------------
 add_subdirectory(libraries/pubsub_itc_fw)
+add_subdirectory(libraries/scram_crypto)
 
 # ------------------------------------------------------------
 # Tests and performance harnesses
