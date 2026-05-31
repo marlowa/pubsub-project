@@ -44,6 +44,7 @@ FixGatewaySeqConfigurationLoader::load_and_init_logging(const std::string& file_
         toml.get_required_except("fix_session.sender_comp_id", config.sender_comp_id);
         toml.get_required_except("fix_session.default_target_comp_id", config.default_target_comp_id);
         toml.get_required_except("timeouts.logon_timeout", config.logon_timeout);
+        toml.get_required_except("timeouts.scram_auth_timeout", config.scram_auth_timeout);
 
         toml.get_required_except("sequencer.ha_enabled", config.ha_enabled);
 
@@ -90,6 +91,12 @@ FixGatewaySeqConfigurationLoader::load_and_init_logging(const std::string& file_
             toml.get_required_except("sequencer.secondary_port", secondary_port);
             validate_port(secondary_port, "sequencer.secondary_port");
             config.sequencer_secondary_port = static_cast<uint16_t>(secondary_port);
+
+            toml.get_required_except("authentication_service.secondary_host", config.authentication_service_secondary_host);
+            int32_t authentication_service_secondary_port = 0;
+            toml.get_required_except("authentication_service.secondary_port", authentication_service_secondary_port);
+            validate_port(authentication_service_secondary_port, "authentication_service.secondary_port");
+            config.authentication_service_secondary_port = static_cast<uint16_t>(authentication_service_secondary_port);
         }
 
         std::string applog_level_str;

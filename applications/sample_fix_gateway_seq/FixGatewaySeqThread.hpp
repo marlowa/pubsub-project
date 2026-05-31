@@ -160,8 +160,12 @@ class FixGatewaySeqThread : public pubsub_itc_fw::ApplicationThread {
     // Stateless serialiser shared across all sessions.
     FixSerialiser serialiser_;
 
-    // ConnectionID of the outbound connection to the authentication service.
-    pubsub_itc_fw::ConnectionID auth_service_conn_id_;
+    // ConnectionID of the outbound connection to the primary authentication service.
+    pubsub_itc_fw::ConnectionID auth_service_primary_conn_id_;
+
+    // ConnectionID of the outbound connection to the secondary authentication service.
+    // Only connected when ha_enabled is true.
+    pubsub_itc_fw::ConnectionID auth_service_secondary_conn_id_;
 
     // ConnectionID of the primary sequencer outbound connection.
     pubsub_itc_fw::ConnectionID sequencer_primary_conn_id_;

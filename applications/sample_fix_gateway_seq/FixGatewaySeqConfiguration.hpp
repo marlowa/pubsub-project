@@ -88,11 +88,17 @@ struct FixGatewaySeqConfiguration {
     // ServerSignature is verified.
     // ----------------------------------------------------------------
 
-    /** @brief Host address of the authentication service. */
+    /** @brief Host address of the primary authentication service. */
     std::string authentication_service_host{"127.0.0.1"};
 
-    /** @brief TCP port of the authentication service. */
+    /** @brief TCP port of the primary authentication service. */
     uint16_t authentication_service_port{7070};
+
+    /** @brief Host address of the secondary authentication service. Only used when ha_enabled=true. */
+    std::string authentication_service_secondary_host{"127.0.0.1"};
+
+    /** @brief TCP port of the secondary authentication service. Only used when ha_enabled=true. */
+    uint16_t authentication_service_secondary_port{7071};
 
     /** @brief SCRAM-SHA-256 password the gateway sends on behalf of connecting FIX clients. */
     std::string scram_password{"stubpassword"};
@@ -113,6 +119,9 @@ struct FixGatewaySeqConfiguration {
 
     /** @brief Maximum time allowed for a newly connected FIX client to send a Logon. */
     std::chrono::seconds logon_timeout{30};
+
+    /** @brief Maximum time allowed for a SCRAM-SHA-256 exchange to complete after Logon is received. */
+    std::chrono::seconds scram_auth_timeout{10};
 
     /** @brief Minimum severity written to the application log file. */
     pubsub_itc_fw::FwLogLevel applog_level{pubsub_itc_fw::FwLogLevel::Info};

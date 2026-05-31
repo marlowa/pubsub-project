@@ -176,6 +176,10 @@ struct FixSession {
     [[nodiscard]] std::string logon_timeout_timer_name() const {
         return "logon_timeout_" + std::to_string(conn_id.get_value());
     }
+
+    [[nodiscard]] std::string scram_auth_timeout_timer_name() const {
+        return "scram_auth_timeout_" + std::to_string(conn_id.get_value());
+    }
 };
 
 } // namespace sample_fix_gateway_seq

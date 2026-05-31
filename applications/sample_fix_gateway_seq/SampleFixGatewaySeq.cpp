@@ -52,9 +52,14 @@ SampleFixGatewaySeq::SampleFixGatewaySeq(const FixGatewaySeqConfiguration& confi
     // Outbound PDU connections are initiated from FixGatewaySeqThread::on_app_ready_event()
     // via connect_to_service(). The ServiceRegistry is populated here so the reactor can
     // resolve the names.
-    service_registry_.add("authentication_service",
+    service_registry_.add("authentication_service_primary",
                           pubsub_itc_fw::NetworkEndpointConfiguration{config_.authentication_service_host, config_.authentication_service_port},
                           pubsub_itc_fw::NetworkEndpointConfiguration{});
+    if (config_.ha_enabled) {
+        service_registry_.add("authentication_service_secondary",
+                              pubsub_itc_fw::NetworkEndpointConfiguration{config_.authentication_service_secondary_host, config_.authentication_service_secondary_port},
+                              pubsub_itc_fw::NetworkEndpointConfiguration{});
+    }
     service_registry_.add("sequencer_primary", pubsub_itc_fw::NetworkEndpointConfiguration{config_.sequencer_primary_host, config_.sequencer_primary_port},
                           pubsub_itc_fw::NetworkEndpointConfiguration{});
     if (config_.ha_enabled) {
@@ -65,7 +70,13 @@ SampleFixGatewaySeq::SampleFixGatewaySeq(const FixGatewaySeqConfiguration& confi
 
     PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "SampleFixGatewaySeq: FIX listener on {}:{}", config_.listen_host, config_.listen_port);
     PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "SampleFixGatewaySeq: ER listener on {}:{}", config_.er_listen_host, config_.er_listen_port);
-    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "SampleFixGatewaySeq: authentication service at {}:{}", config_.authentication_service_host, config_.authentication_service_port);
+    if (config_.ha_enabled) {
+        PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "SampleFixGatewaySeq: authentication service primary={}:{} secondary={}:{} (HA enabled)",
+                   config_.authentication_service_host, config_.authentication_service_port,
+                   config_.authentication_service_secondary_host, config_.authentication_service_secondary_port);
+    } else {
+        PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "SampleFixGatewaySeq: authentication service primary={}:{}", config_.authentication_service_host, config_.authentication_service_port);
+    }
     if (config_.ha_enabled) {
         PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "SampleFixGatewaySeq: sequencer primary={}:{} secondary={}:{} (HA enabled)",
                    config_.sequencer_primary_host, config_.sequencer_primary_port, config_.sequencer_secondary_host, config_.sequencer_secondary_port);

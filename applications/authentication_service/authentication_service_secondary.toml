@@ -1,0 +1,23 @@
+[network]
+listen_host = "127.0.0.1"
+listen_port = 7071
+
+[logging]
+applog_level     = "info"
+syslog_level     = "critical"
+mode             = "none"
+max_file_size    = 10240000
+max_backup_files = 10
+
+[reactor]
+cpu_pinning_enabled    = false
+cpu_pinning_dev_mode   = true
+cpu_registry_lock_file = "/dev/shm/pubsub_cpu_registry.lock"
+
+[event_queue_pool]
+objects_per_slab = 64
+initial_slabs    = 1
+
+[command_queue_pool]
+objects_per_slab = 64
+initial_slabs    = 1

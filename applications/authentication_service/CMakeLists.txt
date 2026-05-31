@@ -28,6 +28,8 @@ install(TARGETS authentication_service
         RUNTIME DESTINATION bin
 )
 
-install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/authentication_service.toml
+install(FILES
+        ${CMAKE_CURRENT_SOURCE_DIR}/authentication_service.toml
+        ${CMAKE_CURRENT_SOURCE_DIR}/authentication_service_secondary.toml
         DESTINATION etc/authentication_service
 )

@@ -120,13 +120,15 @@ Options:
     --recovery-timeout S  Max seconds for recovery orders (default: 30)
 
 Startup order (mirrors start_fix_seq_system.py):
-  1. witness                -- arbiters connect outbound to it (port 7100)
-  2. arbiter_primary        -- component listener 7200, peer listener 7203
-  3. arbiter_secondary      -- component listener 7201, peer listener 7204
-  4. sample_fix_gateway_seq -- FIX client port 9879, ER inbound port 7010
-  5. sequencer_primary      -- listens on port 7001
-  6. sequencer_secondary    -- listens on port 7002
-  7. matching_engine        -- connects outbound to sequencer ER listeners 7021/7022
+  1. witness                          -- arbiters connect outbound to it (port 7100)
+  2. arbiter_primary                  -- component listener 7200, peer listener 7203
+  3. arbiter_secondary                -- component listener 7201, peer listener 7204
+  4. authentication_service_primary   -- listens on port 7070
+  5. authentication_service_secondary -- listens on port 7071
+  6. sample_fix_gateway_seq           -- FIX client port 9879, ER inbound port 7010
+  7. sequencer_primary                -- listens on port 7001
+  8. sequencer_secondary              -- listens on port 7002
+  9. matching_engine                  -- connects outbound to sequencer ER listeners 7021/7022
 
 Failover timing:
   Both the sequencer and arbiter followers arm a 15 s peer_heartbeat_timeout
@@ -779,7 +781,8 @@ def preflight(prefix: Path) -> None:
     if not FIX8_BIN.is_file() or not os.access(FIX8_BIN, os.X_OK):
         die(f"f8test not found or not executable: {FIX8_BIN}")
     for name in ("witness", "arbiter", "sequencer",
-                 "matching_engine", "sample_fix_gateway_seq"):
+                 "matching_engine", "sample_fix_gateway_seq",
+                 "authentication_service"):
         exe = prefix / "bin" / name
         if not exe.is_file() or not os.access(exe, os.X_OK):
             die(f"binary not found or not executable: {exe}")
@@ -1096,11 +1099,13 @@ def run_scenario(scenario: Scenario, args) -> bool:
     etc_dir = prefix / "etc"
     log_dir = prefix / "log"
 
-    me_log            = log_dir / "matching_engine.log"
-    seq_primary_log   = log_dir / "sequencer_primary.log"
-    seq_secondary_log = log_dir / "sequencer_secondary.log"
-    arb_primary_log   = log_dir / "arbiter_primary.log"
-    arb_secondary_log = log_dir / "arbiter_secondary.log"
+    me_log                     = log_dir / "matching_engine.log"
+    seq_primary_log            = log_dir / "sequencer_primary.log"
+    seq_secondary_log          = log_dir / "sequencer_secondary.log"
+    arb_primary_log            = log_dir / "arbiter_primary.log"
+    arb_secondary_log          = log_dir / "arbiter_secondary.log"
+    auth_primary_log           = log_dir / "authentication_service_primary.log"
+    auth_secondary_log         = log_dir / "authentication_service_secondary.log"
 
     log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1108,7 +1113,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
     # overwrite (not append) their logs on each start, so any pre-existing EOF
     # offset would skip past content written by the new run.
     for stale in (seq_primary_log, seq_secondary_log,
-                  arb_primary_log, arb_secondary_log, me_log):
+                  arb_primary_log, arb_secondary_log, me_log,
+                  auth_primary_log, auth_secondary_log):
         stale.unlink(missing_ok=True)
 
     # ── header ────────────────────────────────────────────────────────────────
@@ -1139,20 +1145,26 @@ def run_scenario(scenario: Scenario, args) -> bool:
     log("")
 
     # Process launch table (name, binary, config).
+    # Authentication services start before the gateway so the gateway can connect
+    # to them immediately on startup.
     launch_table = [
-        ("witness",                "witness",
+        ("witness",                          "witness",
          etc_dir / "witness"                / "witness.toml"),
-        ("arbiter_primary",        "arbiter",
+        ("arbiter_primary",                  "arbiter",
          etc_dir / "arbiter"                / "arbiter.toml"),
-        ("arbiter_secondary",      "arbiter",
+        ("arbiter_secondary",                "arbiter",
          etc_dir / "arbiter"                / "arbiter_secondary.toml"),
-        ("sample_fix_gateway_seq", "sample_fix_gateway_seq",
+        ("authentication_service_primary",   "authentication_service",
+         etc_dir / "authentication_service" / "authentication_service.toml"),
+        ("authentication_service_secondary", "authentication_service",
+         etc_dir / "authentication_service" / "authentication_service_secondary.toml"),
+        ("sample_fix_gateway_seq",           "sample_fix_gateway_seq",
          etc_dir / "sample_fix_gateway_seq" / "sample_fix_gateway_seq.toml"),
-        ("sequencer_primary",      "sequencer",
+        ("sequencer_primary",                "sequencer",
          etc_dir / "sequencer"              / "sequencer.toml"),
-        ("sequencer_secondary",    "sequencer",
+        ("sequencer_secondary",              "sequencer",
          etc_dir / "sequencer"              / "sequencer_secondary.toml"),
-        ("matching_engine",        "matching_engine",
+        ("matching_engine",                  "matching_engine",
          etc_dir / "matching_engine"        / "matching_engine.toml"),
     ]
 
