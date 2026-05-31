@@ -14,30 +14,27 @@
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
 
-#include "AuthenticationServiceConfiguration.hpp"
+#include <AuthenticationServiceConfiguration.hpp>
+#include <ScramCrypto.hpp>
 
 namespace authentication_service {
 
 /**
  * @brief ApplicationThread subclass that handles the SCRAM-SHA-256 authentication protocol.
  *
- * Accepts TLS connections from gateways. Each connection carries one or more
- * four-message SCRAM-SHA-256 exchanges (AuthenticationRequest → AuthenticationChallenge →
- * AuthenticationProof → AuthenticationResult), one per gateway logon attempt.
+ * Accepts inbound PDU connections from gateways. Each connection carries one or more
+ * four-message SCRAM-SHA-256 exchanges (AuthenticationRequest -> AuthenticationChallenge ->
+ * AuthenticationProof -> AuthenticationResult), one per gateway logon attempt.
  *
- * For the skeleton implementation each connection is assumed to carry at most one
- * active exchange at a time. Multiple concurrent exchanges on the same connection,
- * distinguishable by request_id, are a planned extension.
+ * For the stub implementation every comp_id maps to the same pre-derived credential
+ * (password "stubpassword"). Replace the credential lookup with a real account store
+ * before production use.
  *
  * PDU IDs (from authentication.dsl):
- *   500 AuthenticationRequest   — received from gateway
- *   501 AuthenticationChallenge — sent to gateway
- *   502 AuthenticationProof     — received from gateway
- *   503 AuthenticationResult    — sent to gateway
- *
- * The SCRAM crypto is stubbed: the challenge carries placeholder values and every
- * proof is accepted unconditionally with a Granted outcome. Replace the TODO
- * sections with a real SCRAM-SHA-256 implementation before production use.
+ *   500 AuthenticationRequest   -- received from gateway
+ *   501 AuthenticationChallenge -- sent to gateway
+ *   502 AuthenticationProof     -- received from gateway
+ *   503 AuthenticationResult    -- sent to gateway
  *
  * Threading: ThreadID 1.
  */
@@ -64,7 +61,12 @@ class AuthenticationThread : public pubsub_itc_fw::ApplicationThread {
     struct ExchangeState {
         int64_t request_id{0};
         std::string comp_id;
+        std::vector<uint8_t> client_nonce;
         std::vector<uint8_t> server_nonce;
+        std::vector<uint8_t> salt;
+        int32_t iterations{0};
+        std::vector<uint8_t> stored_key;
+        std::vector<uint8_t> server_key;
     };
 
     void handle_authentication_request(pubsub_itc_fw::ConnectionID conn_id,
@@ -73,6 +75,7 @@ class AuthenticationThread : public pubsub_itc_fw::ApplicationThread {
                                       const pubsub_itc_fw::EventMessage& msg);
 
     const AuthenticationServiceConfiguration& config_;
+    ScramCredential stub_credential_;
     std::unordered_map<pubsub_itc_fw::ConnectionID, ExchangeState> exchanges_;
 };
 

@@ -1,13 +1,6 @@
 [network]
-listen_host         = "127.0.0.1"
-listen_port         = 7070
-raw_buffer_capacity = 65536
-
-[tls]
-certificate_path           = "/etc/authentication_service/server.crt"
-private_key_path           = "/etc/authentication_service/server.key"
-ca_path                    = ""
-require_client_certificate = false
+listen_host = "127.0.0.1"
+listen_port = 7070
 
 [logging]
 applog_level     = "info"

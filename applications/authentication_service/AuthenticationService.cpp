@@ -13,7 +13,6 @@
 #include <pubsub_itc_fw/NetworkEndpointConfiguration.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
-#include <pubsub_itc_fw/TlsListenerConfiguration.hpp>
 
 namespace authentication_service {
 
@@ -36,19 +35,9 @@ AuthenticationService::AuthenticationService(const AuthenticationServiceConfigur
 
     reactor_ = std::make_unique<pubsub_itc_fw::Reactor>(reactor_configuration_, service_registry_, *logger_);
 
-    pubsub_itc_fw::TlsListenerConfiguration tls_config;
-    tls_config.certificate_path = config_.certificate_path;
-    tls_config.private_key_path = config_.private_key_path;
-    if (!config_.ca_path.empty()) {
-        tls_config.ca_path = config_.ca_path;
-        tls_config.require_client_certificate = config_.require_client_certificate;
-    }
-
-    reactor_->register_inbound_tls_listener(
+    reactor_->register_inbound_listener(
         pubsub_itc_fw::NetworkEndpointConfiguration{config_.listen_host, config_.listen_port},
-        pubsub_itc_fw::ThreadID{1},
-        config_.raw_buffer_capacity,
-        tls_config);
+        pubsub_itc_fw::ThreadID{1});
 
     authentication_thread_ = pubsub_itc_fw::ApplicationThread::create<AuthenticationThread>(*logger_, *reactor_, config_);
 

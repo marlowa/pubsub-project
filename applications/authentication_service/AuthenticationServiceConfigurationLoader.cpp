@@ -48,19 +48,6 @@ AuthenticationServiceConfigurationLoader::load_and_init_logging(const std::strin
         }
         config.listen_port = static_cast<uint16_t>(listen_port);
 
-        int64_t raw_buffer_capacity = 0;
-        toml.get_required_except("network.raw_buffer_capacity", raw_buffer_capacity);
-        if (raw_buffer_capacity <= 0) {
-            throw pubsub_itc_fw::ConfigurationException("AuthenticationServiceConfigurationLoader: network.raw_buffer_capacity must be positive, got " +
-                                                        std::to_string(raw_buffer_capacity));
-        }
-        config.raw_buffer_capacity = raw_buffer_capacity;
-
-        toml.get_required_except("tls.certificate_path", config.certificate_path);
-        toml.get_required_except("tls.private_key_path", config.private_key_path);
-        toml.get_required_except("tls.ca_path", config.ca_path);
-        toml.get_required_except("tls.require_client_certificate", config.require_client_certificate);
-
         std::string applog_level_str;
         std::string syslog_level_str;
         toml.get_required_except("logging.applog_level", applog_level_str);

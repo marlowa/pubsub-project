@@ -14,42 +14,21 @@ namespace authentication_service {
 /**
  * @brief Configuration for the authentication service application.
  *
- * The authentication service listens for inbound TLS connections from gateways
+ * The authentication service listens for inbound PDU connections from gateways
  * and handles the SCRAM-SHA-256 four-message exchange for each logon attempt.
- * All fields have sensible defaults for local development. Production deployments
- * must provide real TLS certificate paths and credentials.
+ * Gateway-to-authentication-service communication is internal to the project and
+ * uses plain TCP with PDU framing; TLS is not used on this path.
  */
 struct AuthenticationServiceConfiguration {
     // ----------------------------------------------------------------
     // Network
     // ----------------------------------------------------------------
 
-    /** @brief Host address on which the service listens for inbound TLS connections. */
+    /** @brief Host address on which the service listens for inbound connections. */
     std::string listen_host{"127.0.0.1"};
 
-    /** @brief TCP port on which the service listens for inbound TLS connections. */
+    /** @brief TCP port on which the service listens for inbound connections. */
     uint16_t listen_port{7070};
-
-    /** @brief Size in bytes of the per-connection raw receive buffer. */
-    int64_t raw_buffer_capacity{65536};
-
-    // ----------------------------------------------------------------
-    // TLS
-    // ----------------------------------------------------------------
-
-    /** @brief Path to the server certificate PEM file. */
-    std::string certificate_path;
-
-    /** @brief Path to the server private key PEM file. */
-    std::string private_key_path;
-
-    /** @brief Path to the CA certificate PEM file used for client certificate
-     *         verification. Empty means client certificates are not verified. */
-    std::string ca_path;
-
-    /** @brief If true, require connecting clients to present a certificate
-     *         signed by the CA at ca_path. Ignored when ca_path is empty. */
-    bool require_client_certificate{false};
 
     // ----------------------------------------------------------------
     // Logging

@@ -1,2 +1,9 @@
+build/
 build/docs
+thirdparty/
 
+# Python build artefacts
+__pycache__/
+*.egg-info/
+python/build/
+python/errors.txt

@@ -2,6 +2,7 @@ add_executable(authentication_service
         AuthenticationServiceConfigurationLoader.cpp
         AuthenticationThread.cpp
         AuthenticationService.cpp
+        ScramCrypto.cpp
 )
 
 target_include_directories(authentication_service PRIVATE
@@ -21,6 +22,7 @@ target_sources(authentication_service PRIVATE
         AuthenticationServiceConfigurationLoader.hpp
         AuthenticationThread.hpp
         AuthenticationService.hpp
+        ScramCrypto.hpp
 )
 
 install(TARGETS authentication_service
