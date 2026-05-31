@@ -1,0 +1,30 @@
+[network]
+listen_host         = "127.0.0.1"
+listen_port         = 7070
+raw_buffer_capacity = 65536
+
+[tls]
+certificate_path           = "/etc/authentication_service/server.crt"
+private_key_path           = "/etc/authentication_service/server.key"
+ca_path                    = ""
+require_client_certificate = false
+
+[logging]
+applog_level     = "info"
+syslog_level     = "critical"
+mode             = "none"
+max_file_size    = 10240000
+max_backup_files = 10
+
+[reactor]
+cpu_pinning_enabled    = false
+cpu_pinning_dev_mode   = true
+cpu_registry_lock_file = "/dev/shm/pubsub_cpu_registry.lock"
+
+[event_queue_pool]
+objects_per_slab = 64
+initial_slabs    = 1
+
+[command_queue_pool]
+objects_per_slab = 64
+initial_slabs    = 1

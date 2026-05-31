@@ -248,6 +248,25 @@ add_custom_target(leader_follower_generated
     DEPENDS "${LF_DSL_GENERATED_HPP}"
 )
 
+# Authentication service protocol PDU header (plain integer IDs 500-503; no --topics).
+set(AUTH_DSL_SOURCE "${CMAKE_SOURCE_DIR}/applications/authentication.dsl")
+set(AUTH_DSL_GENERATED_HPP "${FIX_DSL_INCLUDE_DIR}/authentication.hpp")
+
+add_custom_command(
+    OUTPUT "${AUTH_DSL_GENERATED_HPP}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${FIX_DSL_INCLUDE_DIR}"
+    COMMAND ${Python3_EXECUTABLE} "${FIX_DSL_GENERATOR}"
+            --namespace pubsub_itc_fw_app
+            "${AUTH_DSL_SOURCE}"
+            "${AUTH_DSL_GENERATED_HPP}"
+    DEPENDS "${AUTH_DSL_SOURCE}" "${FIX_DSL_GENERATOR}"
+    COMMENT "Generating authentication.hpp from authentication.dsl"
+    VERBATIM
+)
+add_custom_target(authentication_generated
+    DEPENDS "${AUTH_DSL_GENERATED_HPP}"
+)
+
 # ------------------------------------------------------------
 # Add the library
 # ------------------------------------------------------------
