@@ -569,7 +569,49 @@ The receiving node's reactor accepts data via epoll and delivers it zero-copy to
 
 ## Session Accomplishments
 
-### Session 21 (current)
+### Session 22 (current)
+
+**`auth_service_test.py` — `--tls` flag.** Without `--tls`, the service starts with no TLS admin section and scenarios 1–3 (plain-PDU SCRAM) are the only valid choices. With `--tls`, all 5 scenarios are available; requesting scenario 4 or 5 without the flag exits with an error message. `_wait_for_service_ready` now takes an explicit `marker` argument; `_SERVICE_READY_MARKER_PDU` and `_SERVICE_READY_MARKER_TLS` are separate constants. `_write_test_toml` only emits the `[admin]` TLS section when `tls_mode=True`.
+
+**PostgreSQL database setup and schema (`db/`).**
+
+- `db/create_db.py` — idempotent Python script: (1) creates `pubsub_app` role with `DO $$ IF NOT EXISTS … CREATE ROLE … ELSE ALTER ROLE …`; (2) skips `CREATE DATABASE` if `pubsub` already exists (checked via `pg_database`); (3) runs `liquibase update`. Omits `--host` for localhost connections (peer auth; TCP password prompting avoided). Options: `--pg-superuser <name>` (default `postgres`), `--sudo-postgres`, `--drop-existing`. JDBC driver is expected at `/opt/liquibase/lib/postgresql*.jar`; script checks and exits with instructions if absent — no network downloads (appropriate for corporate environments). Liquibase is invoked with `--search-path=<script_dir>` and `--changeLogFile=changelog/db.changelog-root.xml` (Liquibase 5.x requires changeLogFile relative to searchPath).
+- `db/liquibase.properties` — datasource config; password from `${env.PUBSUB_APP_DB_PASSWORD}`.
+- `db/changelog/db.changelog-root.xml` — root changelog; property `tablePrefix = pubsub_`; includes `v1_initial_schema.xml`.
+- `db/changelog/v1_initial_schema.xml` — three changesets, all using `${tablePrefix}`:
+  - `v1-001-create-firm`: `firm_id varchar(32) PK`, `name varchar(255) NOT NULL`, `enabled boolean DEFAULT true NOT NULL`, `created_at/updated_at timestamptz DEFAULT now() NOT NULL`.
+  - `v1-002-create-comp-id`: `comp_id varchar(64) PK`, `firm_id FK→firm NOT NULL`, SCRAM fields `stored_key/server_key/salt varchar(64) NOT NULL`, `iterations integer NOT NULL`, `enabled DEFAULT true`, `force_password_change DEFAULT true`, `consecutive_failed_logins DEFAULT 0`, `locked DEFAULT false`, `locked_reason varchar(255)` (nullable), `locked_at/last_login_at/password_changed_at timestamptz` (nullable), `created_at/updated_at NOT NULL`.
+  - `v1-003-create-comp-id-gateway-permission`: `comp_id FK→comp_id`, `gateway_type varchar(64)`, `enabled DEFAULT true`, `created_at`; composite PK `(comp_id, gateway_type)`. Gateway type is free text (e.g. `order`, `drop_copy`, `risk`).
+
+**Java admin service (`java/admin-service/`).**
+
+A standalone Javalin 6 + Freemarker 2.3 + plain JDBC (HikariCP) web application. Technology choices: Javalin for HTTP (not Spring — never Spring), Pico.css classless CSS from CDN, Freemarker for server-rendered templates, HikariCP + PostgreSQL JDBC for database access, Maven Shade plugin for a fat JAR. Java 17.
+
+*Package layout:*
+- `Config` — loads `application.properties` from classpath; overrides `db.url`, `db.username`, `db.password` from env vars `PUBSUB_DB_URL`, `PUBSUB_DB_USERNAME`, `PUBSUB_APP_DB_PASSWORD`. Fields include `tablePrefix`, `authServiceEnabled`, `authServiceHost`, `authServiceAdminPort`, `serverPort`.
+- `model/`: `FirmRow`, `CompIdRow` (SCRAM fields present but never rendered in templates), `GatewayPermissionRow`.
+- `exception/`: `NotFoundException` (404), `ConflictException` (409).
+- `db/`: `Database` (HikariCP factory), `FirmDao`, `CompIdDao`, `GatewayPermissionDao` — plain JDBC, explicit column lists, `PreparedStatement` for all data. `CompIdDao.insert` requires a `ScramCredential`; `updateStatus` sets `enabled/locked/forcePasswordChange/lockedReason` and manages `locked_at` via a SQL CASE expression; `updateCredentials` resets `force_password_change=false`, `consecutive_failed_logins=0`, updates `password_changed_at`.
+- `service/`: `ScramCredential` (record: `storedKey`, `serverKey`, `salt`, `iterations` — all hex strings matching the format used in `auth_service_test.py`). `ScramDerivation.derive(password, iterations)` — PBKDF2WithHmacSHA256 → HMAC-SHA256(saltedPassword, "Client Key") → SHA256(clientKey) for storedKey; random 16-byte salt encoded as 32-char hex. `AuthServiceClient.setCredential(compId, password, iterations)` sends `SetCredentialRequest` (PDU 510) over TLS: 24-byte big-endian header (canary `0xC0FFEE00`) + little-endian payload (i64 requestId, string compId, string password, i32 iterations); reads `SetCredentialResult` (PDU 511); validates requestId and outcome. One TLS connection per call; server cert not verified (admin channel, internal network only).
+- `web/`: `FirmHandler`, `CompIdHandler`, `GatewayPermissionHandler`. Methods match Javalin's `Handler` interface (`throws Exception`). SCRAM iterations fixed at 4096. On password set: derive SCRAM → write DB → call auth service (when `authServiceEnabled=true`).
+- `Main` — Javalin routes and global exception handlers.
+
+*Routes:* `GET/POST /firms`, `/firms/new`, `/firms/{id}`, `/firms/{id}/delete`; `GET /comp-ids` (all or `?firmId=X`); `GET/POST /firms/{firmId}/comp-ids/new`, `/firms/{firmId}/comp-ids`; `GET/POST /comp-ids/{id}`, `/comp-ids/{id}/delete`, `/comp-ids/{id}/password`; `GET/POST /comp-ids/{id}/gateways`, `/comp-ids/{id}/gateways/{type}/delete`.
+
+*Freemarker templates* (under `src/main/resources/templates/`): `layout.ftl` (Pico.css nav macro), `error.ftl`, `firms/list.ftl`, `firms/form.ftl` (create and edit via `<#if firm?>` branching), `comp-ids/list.ftl`, `comp-ids/form.ftl` (create and edit), `comp-ids/set-password.ftl`, `gateway-permissions/list.ftl` (list + inline add form).
+
+*Build tooling added to `pom.xml`:*
+- `maven-checkstyle-plugin:3.3.1` — bound to `validate` phase; custom `checkstyle.xml` (unused imports, need braces, empty catch exemption for `ignored`-named variables, etc.). Zero violations.
+- `spotbugs-maven-plugin:4.8.6.0` — bound to `verify` phase; effort Max, threshold Medium.
+- `dependency-check-maven:10.0.4` (OWASP Dependency Check) — **not** bound to the build lifecycle; run manually with `mvn dependency-check:check`. Requires NVD database download or a local mirror; `failBuildOnCVSS=7`.
+
+Note on startup flow: the auth service never accesses the database directly. Before starting the auth service, a separate export script (not yet written — see item 8 in "What Is Not Yet Done") reads `pubsub_comp_id` from the DB and writes SCRAM credentials into the auth service TOML. Live credential changes made through the admin UI are pushed immediately via `SetCredentialRequest` (PDU 510) without restarting the auth service.
+
+Build: `mvn compile` succeeds (17 source files, 0 errors); `mvn checkstyle:check` passes with 0 violations.
+
+---
+
+### Session 21
 
 **Java DSL code generator — Java backend added.**
 
@@ -1157,6 +1199,8 @@ TcpSocket EAGAIN/EOF fix, use-after-free fix, InboundConnection infrastructure, 
 - `matching_engine` — complete for the round-trip stub. `on_framework_pdu_message` decodes inbound `NewOrderSingle` PDUs (session 15) and emits a fully-filled `ExecutionReport` over the existing outbound `sequencer_er_conn_id_`. The ER populates every field that `SequencerThread`'s ER decoder reads. No real order book or matching — every order becomes a single fill at its limit price (or a zero sentinel for market orders). `OrderID` and `ExecID` are generated as `ME-ORD-N` / `ME-EXEC-N`. `OrderCancelRequest` is not yet handled (logs and drops at the `else` branch); cancel handling is a small follow-up.
 - `arbiter` — stub, compiling
 - `start_fix_seq_system.py` — runs primary only (secondary launch removed in session 15 pending leader-follower)
+- PostgreSQL schema and migration tooling — complete (session 22). `db/create_db.py` idempotent setup script; Liquibase 5.x changelog; three tables: `pubsub_firm`, `pubsub_comp_id` (SCRAM fields, account status, audit timestamps), `pubsub_comp_id_gateway_permission`. Table prefix configurable (default `pubsub_`).
+- Java admin service (`java/admin-service/`) — complete (session 22). Javalin 6 + Freemarker 2.3 + plain JDBC + Pico.css. Full CRUD for firms, comp_ids, and gateway permissions. Password set path: derives SCRAM-SHA-256 → writes to DB → pushes plaintext password to auth service via `SetCredentialRequest` (PDU 510) over TLS. Maven build with Checkstyle, SpotBugs, and OWASP Dependency Check plugins configured.
 
 ## What Is Not Yet Done (in dependency order)
 
@@ -1167,7 +1211,7 @@ TcpSocket EAGAIN/EOF fix, use-after-free fix, InboundConnection infrastructure, 
 5. **`SequencedMessage` wrapper** — currently the sequencer forwards raw PDUs to ME without a sequence-number envelope; add this once stable.
 6. **Trace logs in `PduParser` and elsewhere** — the two `Info`-level lines in `PduParser::receive` (header decode + raw 16 header bytes), the `Info`-level payload hex dump in `PduParser::dispatch_pdu`, and the short `TRACE` lines in `InboundConnectionManager::on_accept` and `SequencerThread::on_framework_pdu_message` are valuable for diagnosis but noisy at production rates. Drop to `Debug` or wrap behind a compile-time switch when production traffic begins.
 7. **Pub/sub WAL** — long-term replacement for direct TCP; eliminates the rendezvous problem and the retry workaround.
-8. **Authentication service database integration** — replace the stub `stub_credential_` in `AuthenticationThread` with a `DatabaseThread`-backed credential store via unixODBC. Depends on: (a) finalising the worker→reactor result-delivery mechanism (eventfd-in-epoll vs direct ITC post); (b) implementing `DatabaseThread` as an `ApplicationThread` subclass with a `std::thread` worker pool and persistent ODBC connections. Use the pre-load strategy: load all credentials at startup into `unordered_map<string, ScramCredential>`, reload on SIGHUP or admin PDU. See "Database Access Design" section for design details.
+8. **Credential export script** — the auth service never accesses the database directly. At startup it reads SCRAM credentials from its TOML config file (the same format `auth_service_test.py` writes via `_write_test_toml`: `stored_key`, `server_key`, `salt`, `iterations` fields per comp_id). What is needed is a Python export script (e.g. `db/export_credentials.py`) that reads all rows from `pubsub_comp_id` and writes them into the auth service TOML in that format. The script is run once before the auth service starts (and again after bulk credential changes). Live updates while the service is running already work via `SetCredentialRequest` (PDU 510) pushed by the Java admin service. The auth service C++ code requires no changes.
 
 ## Immediate Next Task
 
