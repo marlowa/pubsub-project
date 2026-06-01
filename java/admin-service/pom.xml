@@ -124,6 +124,60 @@
                 </executions>
             </plugin>
 
+            <!-- Code coverage: mvn verify produces target/site/jacoco/index.html
+                 DAO, web handler, AuthServiceClient, and Main classes are excluded
+                 because they require a live database or TLS server — those belong
+                 in integration tests, not unit tests. -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>0.8.12</version>
+                <executions>
+                    <execution>
+                        <id>jacoco-prepare-agent</id>
+                        <goals><goal>prepare-agent</goal></goals>
+                    </execution>
+                    <execution>
+                        <id>jacoco-report</id>
+                        <phase>verify</phase>
+                        <goals><goal>report</goal></goals>
+                    </execution>
+                    <execution>
+                        <id>jacoco-check</id>
+                        <phase>verify</phase>
+                        <goals><goal>check</goal></goals>
+                        <configuration>
+                            <excludes>
+                                <!-- Needs live database -->
+                                <exclude>com/pubsub/admin/db/**</exclude>
+                                <!-- Needs live database + Javalin context -->
+                                <exclude>com/pubsub/admin/web/**</exclude>
+                                <!-- Needs live TLS auth service -->
+                                <exclude>com/pubsub/admin/service/AuthServiceClient.class</exclude>
+                                <!-- Wiring only — no logic -->
+                                <exclude>com/pubsub/admin/Main.class</exclude>
+                                <!-- Pure data records — no logic to measure -->
+                                <exclude>com/pubsub/admin/model/**</exclude>
+                                <!-- Trivial super() delegates — no logic to measure -->
+                                <exclude>com/pubsub/admin/exception/**</exclude>
+                            </excludes>
+                            <rules>
+                                <rule>
+                                    <element>BUNDLE</element>
+                                    <limits>
+                                        <limit>
+                                            <counter>INSTRUCTION</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>0.80</minimum>
+                                        </limit>
+                                    </limits>
+                                </rule>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
             <!-- Dependency CVE scan: mvn dependency-check:check
                  Not bound to the build lifecycle — requires NVD database download.
                  Set env DEPENDENCYCHECK_NVDAPIKEY or configure a local mirror. -->

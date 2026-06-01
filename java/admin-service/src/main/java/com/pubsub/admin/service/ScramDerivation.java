@@ -22,6 +22,11 @@ public class ScramDerivation {
     public static ScramCredential derive(String password, int iterations) {
         byte[] salt = new byte[SALT_BYTES];
         new SecureRandom().nextBytes(salt);
+        return derive(password, iterations, salt);
+    }
+
+    /** Package-private to allow tests to supply a fixed salt for cross-validation. */
+    static ScramCredential derive(String password, int iterations, byte[] salt) {
         try {
             byte[] saltedPassword = pbkdf2(password, salt, iterations);
             byte[] clientKey = hmacSha256(saltedPassword, "Client Key");
