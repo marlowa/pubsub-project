@@ -6,11 +6,15 @@
                         http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.20.xsd">
 
     <!--
-        Application changesets are included here as the schema evolves.
+        Table name prefix applied to all application tables.
+        Liquibase's own tracking tables (DATABASECHANGELOG, DATABASECHANGELOGLOCK)
+        are never prefixed — they are owned by Liquibase, not by this application.
 
-        Example (add after the first migration is written):
-            <include file="changelog/v1/create_credentials_table.xml"
-                     relativeToChangelogFile="false"/>
+        Override on the command line when needed:
+            liquibase -DtablePrefix=other_ update
     -->
+    <property name="tablePrefix" value="pubsub_"/>
+
+    <include file="v1_initial_schema.xml" relativeToChangelogFile="true"/>
 
 </databaseChangeLog>
