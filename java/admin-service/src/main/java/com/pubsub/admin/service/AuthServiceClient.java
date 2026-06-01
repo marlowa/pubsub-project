@@ -15,15 +15,20 @@ import java.security.cert.X509Certificate;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Sends SetCredentialRequest (PDU 510) to the authentication service TLS admin channel.
+ * Sends credential management PDUs to the authentication service TLS admin channel.
  * Protocol: 24-byte big-endian header followed by a little-endian encoded payload.
+ *
+ * PDU 510 SetCredentialRequest   / PDU 511 SetCredentialResult
+ * PDU 512 RemoveCredentialRequest / PDU 513 RemoveCredentialResult
  */
 public class AuthServiceClient {
     private static final int PDU_HEADER_SIZE = 24;
     private static final int PDU_CANARY = 0xC0FFEE00;
     private static final int PDU_VERSION = 1;
-    private static final int PDU_ID_SET_CREDENTIAL_REQUEST = 510;
-    private static final int PDU_ID_SET_CREDENTIAL_RESULT = 511;
+    private static final int PDU_ID_SET_CREDENTIAL_REQUEST    = 510;
+    private static final int PDU_ID_SET_CREDENTIAL_RESULT     = 511;
+    private static final int PDU_ID_REMOVE_CREDENTIAL_REQUEST = 512;
+    private static final int PDU_ID_REMOVE_CREDENTIAL_RESULT  = 513;
     private static final int OUTCOME_SUCCESS = 0;
 
     private final String host;
@@ -55,6 +60,26 @@ public class AuthServiceClient {
         }
     }
 
+    public void removeCredential(String compId) throws IOException {
+        long requestId = requestIdCounter.getAndIncrement();
+        try (SSLSocket socket = connectTls()) {
+            DataInputStream in = new DataInputStream(
+                    new BufferedInputStream(socket.getInputStream()));
+            OutputStream out = socket.getOutputStream();
+
+            byte[] payload = encodeRemoveCredentialRequest(requestId, compId);
+            sendPdu(out, PDU_ID_REMOVE_CREDENTIAL_REQUEST, payload);
+
+            int[] pduIdOut = new int[1];
+            byte[] responsePayload = recvPdu(in, pduIdOut);
+            if (pduIdOut[0] != PDU_ID_REMOVE_CREDENTIAL_RESULT) {
+                throw new IOException("Expected PDU " + PDU_ID_REMOVE_CREDENTIAL_RESULT
+                        + " (RemoveCredentialResult), got " + pduIdOut[0]);
+            }
+            decodeAndValidateRemoveResult(responsePayload, requestId, compId);
+        }
+    }
+
     private void decodeAndValidateResult(byte[] payload, long requestId, String compId)
             throws IOException {
         ByteBuffer buf = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN);
@@ -70,6 +95,25 @@ public class AuthServiceClient {
         if (outcome != OUTCOME_SUCCESS) {
             throw new IOException("SetCredentialResult outcome=" + outcome
                     + " for compId='" + compId + "' (expected 0=Success)");
+        }
+    }
+
+    private void decodeAndValidateRemoveResult(byte[] payload, long requestId, String compId)
+            throws IOException {
+        ByteBuffer buf = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN);
+        long responseRequestId = buf.getLong();
+        if (responseRequestId != requestId) {
+            throw new IOException("RemoveCredentialResult request_id mismatch: expected "
+                    + requestId + ", got " + responseRequestId);
+        }
+        int compIdLen = buf.getInt();
+        byte[] compIdBytes = new byte[compIdLen];
+        buf.get(compIdBytes);
+        int outcome = buf.getInt();
+        // 0=Success, 1=NotFound — both are acceptable (NotFound means already absent)
+        if (outcome != OUTCOME_SUCCESS && outcome != 1) {
+            throw new IOException("RemoveCredentialResult outcome=" + outcome
+                    + " for compId='" + compId + "'");
         }
     }
 
@@ -92,6 +136,16 @@ public class AuthServiceClient {
         } catch (Exception e) {
             throw new IOException("TLS connection to " + host + ":" + port + " failed", e);
         }
+    }
+
+    private byte[] encodeRemoveCredentialRequest(long requestId, String compId) {
+        byte[] compIdBytes = compId.getBytes(StandardCharsets.UTF_8);
+        int size = 8 + 4 + compIdBytes.length;
+        ByteBuffer buf = ByteBuffer.allocate(size).order(ByteOrder.LITTLE_ENDIAN);
+        buf.putLong(requestId);
+        buf.putInt(compIdBytes.length);
+        buf.put(compIdBytes);
+        return buf.array();
     }
 
     private byte[] encodeSetCredentialRequest(long requestId, String compId,

@@ -70,7 +70,7 @@ public class CompIdHandler {
         ctx.render("/templates/comp-ids/form.ftl", Map.of("row", row));
     }
 
-    public void update(Context ctx) throws SQLException {
+    public void update(Context ctx) throws SQLException, IOException {
         String compId = ctx.pathParam("compId");
         CompIdRow existing = compIdDao.findById(compId)
                 .orElseThrow(() -> new NotFoundException("CompID not found: " + compId));
@@ -79,14 +79,20 @@ public class CompIdHandler {
         boolean locked = "on".equals(ctx.formParam("locked"));
         String lockedReason = ctx.formParam("lockedReason");
         compIdDao.updateStatus(compId, enabled, forcePasswordChange, locked, lockedReason);
+        if ((!enabled || locked) && authServiceClient != null) {
+            authServiceClient.removeCredential(compId);
+        }
         ctx.redirect("/comp-ids?firmId=" + existing.firmId());
     }
 
-    public void delete(Context ctx) throws SQLException {
+    public void delete(Context ctx) throws SQLException, IOException {
         String compId = ctx.pathParam("compId");
         CompIdRow existing = compIdDao.findById(compId)
                 .orElseThrow(() -> new NotFoundException("CompID not found: " + compId));
         compIdDao.delete(compId);
+        if (authServiceClient != null) {
+            authServiceClient.removeCredential(compId);
+        }
         ctx.redirect("/comp-ids?firmId=" + existing.firmId());
     }
 

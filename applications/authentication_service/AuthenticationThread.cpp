@@ -31,8 +31,10 @@ static constexpr int16_t pdu_id_authentication_challenge = 501;
 static constexpr int16_t pdu_id_authentication_proof     = 502;
 static constexpr int16_t pdu_id_authentication_result    = 503;
 
-static constexpr uint16_t pdu_id_set_credential_request = 510;
-static constexpr uint16_t pdu_id_set_credential_result  = 511;
+static constexpr uint16_t pdu_id_set_credential_request    = 510;
+static constexpr uint16_t pdu_id_set_credential_result     = 511;
+static constexpr uint16_t pdu_id_remove_credential_request = 512;
+static constexpr uint16_t pdu_id_remove_credential_result  = 513;
 
 // PDU header layout (24 bytes, all fields big-endian):
 //   byte_count(4) pdu_id(2) version(1) filler(1) seq_no(8) canary(4) filler(4)
@@ -315,6 +317,8 @@ void AuthenticationThread::on_raw_socket_message(const pubsub_itc_fw::EventMessa
 
     if (pdu_id == pdu_id_set_credential_request) {
         handle_set_credential_request(conn_id, payload, static_cast<uint32_t>(byte_count));
+    } else if (pdu_id == pdu_id_remove_credential_request) {
+        handle_remove_credential_request(conn_id, payload, static_cast<uint32_t>(byte_count));
     } else {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                    "AuthenticationThread: admin conn_id={} unknown pdu_id={} -- dropping",
@@ -419,6 +423,80 @@ void AuthenticationThread::handle_set_credential_request(pubsub_itc_fw::Connecti
                    "AuthenticationThread: SetCredentialRequest comp_id={} exception: {}",
                    comp_id, ex.what());
         send_result(pubsub_itc_fw_app::SetCredentialOutcome::InternalError);
+    }
+}
+
+void AuthenticationThread::handle_remove_credential_request(pubsub_itc_fw::ConnectionID conn_id,
+                                                              const uint8_t* payload,
+                                                              uint32_t payload_size) {
+    auto& arena_buffer = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buffer.data(), arena_buffer.size());
+    arena.reset();
+
+    pubsub_itc_fw_app::RemoveCredentialRequestView view{};
+    size_t bytes_consumed    = 0;
+    size_t arena_bytes_needed = 0;
+
+    if (!pubsub_itc_fw_app::decode(view, payload, payload_size, bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                   "AuthenticationThread: failed to decode RemoveCredentialRequest conn_id={} -- dropping",
+                   conn_id.get_value());
+        return;
+    }
+
+    const std::string comp_id(view.comp_id.data(), view.comp_id.size());
+
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "AuthenticationThread: RemoveCredentialRequest request_id={} comp_id={} conn_id={}",
+               view.request_id, comp_id, conn_id.get_value());
+
+    auto send_result = [&](pubsub_itc_fw_app::RemoveCredentialOutcome outcome) {
+        pubsub_itc_fw_app::RemoveCredentialResult result{};
+        result.request_id = view.request_id;
+        result.comp_id    = comp_id;
+        result.outcome    = outcome;
+
+        static constexpr size_t result_buffer_size = 512;
+        uint8_t result_buffer[result_buffer_size];
+        size_t bytes_written = 0;
+        size_t bytes_needed  = 0;
+        if (!pubsub_itc_fw_app::encode(result, result_buffer, result_buffer_size,
+                                       bytes_written, bytes_needed)) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                       "AuthenticationThread: failed to encode RemoveCredentialResult conn_id={}",
+                       conn_id.get_value());
+            return;
+        }
+        send_admin_pdu(conn_id, pdu_id_remove_credential_result, result_buffer,
+                       static_cast<uint32_t>(bytes_written));
+    };
+
+    if (comp_id.empty()) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "AuthenticationThread: RemoveCredentialRequest empty comp_id -- InvalidInput");
+        send_result(pubsub_itc_fw_app::RemoveCredentialOutcome::InvalidInput);
+        return;
+    }
+
+    try {
+        const bool erased = credentials_.erase(comp_id) > 0;
+        if (erased) {
+            persist_credentials();
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                       "AuthenticationThread: RemoveCredentialRequest request_id={} comp_id={} -- Success",
+                       view.request_id, comp_id);
+            send_result(pubsub_itc_fw_app::RemoveCredentialOutcome::Success);
+        } else {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "AuthenticationThread: RemoveCredentialRequest request_id={} comp_id={} -- NotFound",
+                       view.request_id, comp_id);
+            send_result(pubsub_itc_fw_app::RemoveCredentialOutcome::NotFound);
+        }
+    } catch (const std::exception& ex) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                   "AuthenticationThread: RemoveCredentialRequest comp_id={} exception: {}",
+                   comp_id, ex.what());
+        send_result(pubsub_itc_fw_app::RemoveCredentialOutcome::InternalError);
     }
 }
 

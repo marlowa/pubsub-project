@@ -29,7 +29,7 @@ public class Main {
                 ? new AuthServiceClient(config.authServiceHost(), config.authServiceAdminPort())
                 : null;
 
-        FirmHandler firmHandler = new FirmHandler(firmDao);
+        FirmHandler firmHandler = new FirmHandler(firmDao, compIdDao, authServiceClient);
         CompIdHandler compIdHandler = new CompIdHandler(compIdDao, firmDao, authServiceClient);
         GatewayPermissionHandler gwHandler =
                 new GatewayPermissionHandler(gatewayPermissionDao, compIdDao);

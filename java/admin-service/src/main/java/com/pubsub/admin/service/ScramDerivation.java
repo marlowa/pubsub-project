@@ -12,6 +12,7 @@ import java.security.SecureRandom;
 public class ScramDerivation {
     private static final int DEFAULT_ITERATIONS = 4096;
     private static final int SALT_BYTES = 16;
+    private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
     private ScramDerivation() {}
 
@@ -21,7 +22,7 @@ public class ScramDerivation {
 
     public static ScramCredential derive(String password, int iterations) {
         byte[] salt = new byte[SALT_BYTES];
-        new SecureRandom().nextBytes(salt);
+        SECURE_RANDOM.nextBytes(salt);
         return derive(password, iterations, salt);
     }
 

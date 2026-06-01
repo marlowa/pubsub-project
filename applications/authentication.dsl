@@ -47,7 +47,7 @@
 #    1000+   are used by the equity order topics.
 #
 #  Admin channel:
-#    510-519 are used by the TLS admin channel (SetCredential etc.).
+#    510-519 are used by the TLS admin channel (SetCredential, RemoveCredential etc.).
 #    The admin channel uses TlsRawBytes transport with the same 24-byte PDU
 #    header framing as FrameworkPdu connections.
 #
@@ -170,4 +170,43 @@ message SetCredentialResult (id=511, version=1)
     i64                  request_id
     string               comp_id
     SetCredentialOutcome outcome
+end
+
+# ---------------------------------------------------------------------------
+# RemoveCredentialOutcome
+# ---------------------------------------------------------------------------
+
+enum RemoveCredentialOutcome : i32 {
+    Success      = 0
+    NotFound     = 1
+    InvalidInput = 2
+    InternalError = 3
+}
+
+# ---------------------------------------------------------------------------
+# RemoveCredentialRequest (id=512)
+#
+# Sent by an admin tool to the authentication service over the TLS admin
+# channel to remove the credential for a comp_id from the in-memory store
+# and the credentials file. Sent when a comp_id or its owning firm is
+# disabled, locked, or deleted so that the auth service immediately stops
+# accepting authentication for that identity without requiring a restart.
+# ---------------------------------------------------------------------------
+
+message RemoveCredentialRequest (id=512, version=1)
+    i64    request_id    # caller-assigned correlation handle
+    string comp_id       # identity to remove
+end
+
+# ---------------------------------------------------------------------------
+# RemoveCredentialResult (id=513)
+#
+# Sent by the authentication service in response to RemoveCredentialRequest.
+# NotFound is not an error; it means the comp_id was already absent.
+# ---------------------------------------------------------------------------
+
+message RemoveCredentialResult (id=513, version=1)
+    i64                    request_id
+    string                 comp_id
+    RemoveCredentialOutcome outcome
 end

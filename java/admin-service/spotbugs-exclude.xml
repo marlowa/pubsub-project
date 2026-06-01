@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  SpotBugs exclusion filter.
+
+  EI_EXPOSE_REP2: storing an injected dependency (DataSource, DAO, AuthServiceClient) by
+  reference is intentional — these are application-scoped singletons created in Main and
+  shared safely through constructor injection.  Defensive copies are meaningless for
+  interface types and would not improve safety.
+-->
+<FindBugsFilter>
+    <Match>
+        <Bug pattern="EI_EXPOSE_REP2"/>
+        <Or>
+            <Class name="com.pubsub.admin.db.FirmDao"/>
+            <Class name="com.pubsub.admin.db.CompIdDao"/>
+            <Class name="com.pubsub.admin.db.GatewayPermissionDao"/>
+            <Class name="com.pubsub.admin.web.FirmHandler"/>
+            <Class name="com.pubsub.admin.web.CompIdHandler"/>
+            <Class name="com.pubsub.admin.web.GatewayPermissionHandler"/>
+        </Or>
+    </Match>
+</FindBugsFilter>
