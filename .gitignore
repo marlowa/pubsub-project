@@ -2,6 +2,9 @@ build/
 build/docs
 thirdparty/
 
+# Manually placed JDBC drivers (see db/create_db.py --help for options)
+db/drivers/
+
 # Python build artefacts
 __pycache__/
 *.egg-info/
