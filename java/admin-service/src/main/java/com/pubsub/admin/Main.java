@@ -9,6 +9,7 @@ import com.pubsub.admin.exception.NotFoundException;
 import com.pubsub.admin.service.AuthServiceClient;
 import com.pubsub.admin.web.CompIdHandler;
 import com.pubsub.admin.web.FirmHandler;
+import com.pubsub.admin.web.FreemarkerRenderer;
 import com.pubsub.admin.web.GatewayPermissionHandler;
 import io.javalin.Javalin;
 
@@ -34,7 +35,7 @@ public class Main {
         GatewayPermissionHandler gwHandler =
                 new GatewayPermissionHandler(gatewayPermissionDao, compIdDao);
 
-        Javalin app = Javalin.create();
+        Javalin app = Javalin.create(cfg -> cfg.fileRenderer(new FreemarkerRenderer()));
 
         app.get("/", ctx -> ctx.redirect("/firms"));
 
