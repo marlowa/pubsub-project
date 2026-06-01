@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+    xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+                        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.20.xsd">
+
+    <!-- ================================================================
+         v1-001  firm
+         A firm groups one or more comp_ids under a single legal entity.
+         Disabling a firm blocks authentication for all its comp_ids.
+         ================================================================ -->
+    <changeSet id="v1-001-create-firm" author="pubsub">
+        <createTable tableName="${tablePrefix}firm">
+            <column name="firm_id" type="varchar(32)">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="name" type="varchar(255)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="enabled" type="boolean" defaultValueBoolean="true">
+                <constraints nullable="false"/>
+            </column>
+            <column name="created_at" type="timestamptz" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+            <column name="updated_at" type="timestamptz" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+    </changeSet>
+
+    <!-- ================================================================
+         v1-002  comp_id
+         One row per FIX SenderCompID.  Holds SCRAM-SHA-256 credential
+         material and account-status fields.
+
+         Authentication is only granted when:
+             firm.enabled = true
+             AND comp_id.enabled = true
+             AND comp_id.locked  = false
+         ================================================================ -->
+    <changeSet id="v1-002-create-comp-id" author="pubsub">
+        <createTable tableName="${tablePrefix}comp_id">
+            <column name="comp_id" type="varchar(64)">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="firm_id" type="varchar(32)">
+                <constraints nullable="false"
+                             foreignKeyName="fk_comp_id_firm"
+                             references="${tablePrefix}firm(firm_id)"/>
+            </column>
+
+            <!-- SCRAM-SHA-256 credential material (hex-encoded). -->
+            <column name="stored_key" type="varchar(64)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="server_key" type="varchar(64)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="salt" type="varchar(64)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="iterations" type="integer">
+                <constraints nullable="false"/>
+            </column>
+
+            <!-- Account status. -->
+            <column name="enabled" type="boolean" defaultValueBoolean="true">
+                <constraints nullable="false"/>
+            </column>
+            <column name="force_password_change" type="boolean" defaultValueBoolean="true">
+                <constraints nullable="false"/>
+            </column>
+            <column name="consecutive_failed_logins" type="integer" defaultValueNumeric="0">
+                <constraints nullable="false"/>
+            </column>
+            <column name="locked" type="boolean" defaultValueBoolean="false">
+                <constraints nullable="false"/>
+            </column>
+            <column name="locked_reason" type="varchar(255)"/>
+            <column name="locked_at" type="timestamptz"/>
+
+            <!-- Audit timestamps. -->
+            <column name="last_login_at" type="timestamptz"/>
+            <column name="password_changed_at" type="timestamptz"/>
+            <column name="created_at" type="timestamptz" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+            <column name="updated_at" type="timestamptz" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+    </changeSet>
+
+    <!-- ================================================================
+         v1-003  comp_id_gateway_permission
+         Many-to-many: which gateway types a comp_id is permitted to use.
+         gateway_type is free text (e.g. 'order', 'drop_copy', 'risk').
+         A comp_id with no rows here has no gateway access at all.
+         ================================================================ -->
+    <changeSet id="v1-003-create-comp-id-gateway-permission" author="pubsub">
+        <createTable tableName="${tablePrefix}comp_id_gateway_permission">
+            <column name="comp_id" type="varchar(64)">
+                <constraints nullable="false"
+                             foreignKeyName="fk_cgp_comp_id"
+                             references="${tablePrefix}comp_id(comp_id)"/>
+            </column>
+            <column name="gateway_type" type="varchar(64)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="enabled" type="boolean" defaultValueBoolean="true">
+                <constraints nullable="false"/>
+            </column>
+            <column name="created_at" type="timestamptz" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+        <addPrimaryKey tableName="${tablePrefix}comp_id_gateway_permission"
+                       columnNames="comp_id, gateway_type"
+                       constraintName="pk_cgp"/>
+    </changeSet>
+
+</databaseChangeLog>
