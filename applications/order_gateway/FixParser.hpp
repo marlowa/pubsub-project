@@ -11,7 +11,7 @@
 
 #include "FixMessage.hpp"
 
-namespace sample_fix_gateway_seq {
+namespace order_gateway {
 
 /**
  * @brief Stateless FIX 5.0SP2 / FIXT 1.1 stream parser.
@@ -128,4 +128,4 @@ class FixParser {
     pubsub_itc_fw::QuillLogger& logger_;
 };
 
-} // namespace sample_fix_gateway_seq
+} // namespace order_gateway

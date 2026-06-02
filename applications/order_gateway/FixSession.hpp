@@ -12,7 +12,7 @@
 
 #include "FixParser.hpp"
 
-namespace sample_fix_gateway_seq {
+namespace order_gateway {
 
 /**
  * @brief Holds the state for a single active FIX 5.0SP2 / FIXT 1.1 session.
@@ -23,7 +23,7 @@ namespace sample_fix_gateway_seq {
  * calls) so each connection must have its own independent instance.
  *
  * The FixSerialiser is stateless and is shared across all sessions by
- * FixGatewaySeqThread.
+ * OrderGatewayThread.
  *
  * Sequence numbers reset to 1 on each new connection. A production gateway
  * would persist sequence numbers across connections but that is out of scope
@@ -182,4 +182,4 @@ struct FixSession {
     }
 };
 
-} // namespace sample_fix_gateway_seq
+} // namespace order_gateway

@@ -8,7 +8,7 @@
 
 #include <fix_equity_orders.hpp>
 
-namespace sample_fix_gateway_seq {
+namespace order_gateway {
 
 // Generous upper bound for a fully-populated ExecutionReport wire message.
 // Actual size is ~290 bytes; 512 gives comfortable headroom on the stack.
@@ -36,4 +36,4 @@ static constexpr size_t execution_report_buffer_size = 512;
 [[nodiscard]] size_t encode_execution_report(const pubsub_itc_fw_app::ExecutionReportView& view, std::string_view sender_comp_id,
                                              std::string_view target_comp_id, int seq_num, char* output_buffer, size_t output_buffer_size);
 
-} // namespace sample_fix_gateway_seq
+} // namespace order_gateway

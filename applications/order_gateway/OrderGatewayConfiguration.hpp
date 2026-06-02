@@ -10,7 +10,7 @@
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/RollingLogfileConfiguration.hpp>
 
-namespace sample_fix_gateway_seq {
+namespace order_gateway {
 
 /**
  * @brief Configuration for the sequencer-backed FIX gateway application.
@@ -23,7 +23,7 @@ namespace sample_fix_gateway_seq {
  *
  * All fields have sensible defaults suitable for local development.
  */
-struct FixGatewaySeqConfiguration {
+struct OrderGatewayConfiguration {
     // ----------------------------------------------------------------
     // Inbound FIX listener
     // ----------------------------------------------------------------
@@ -172,4 +172,4 @@ struct FixGatewaySeqConfiguration {
     int32_t command_queue_pool_initial_slabs{1};
 };
 
-} // namespace sample_fix_gateway_seq
+} // namespace order_gateway

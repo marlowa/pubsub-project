@@ -125,7 +125,7 @@ Startup order (mirrors start_fix_seq_system.py):
   3. arbiter_secondary                -- component listener 7201, peer listener 7204
   4. authentication_service_primary   -- listens on port 7070
   5. authentication_service_secondary -- listens on port 7071
-  6. sample_fix_gateway_seq           -- FIX client port 9879, ER inbound port 7010
+  6. order_gateway           -- FIX client port 9879, ER inbound port 7010
   7. sequencer_primary                -- listens on port 7001
   8. sequencer_secondary              -- listens on port 7002
   9. matching_engine                  -- connects outbound to sequencer ER listeners 7021/7022
@@ -786,7 +786,7 @@ def preflight(prefix: Path) -> None:
     if not FIX8_BIN.is_file() or not os.access(FIX8_BIN, os.X_OK):
         die(f"f8test not found or not executable: {FIX8_BIN}")
     for name in ("witness", "arbiter", "sequencer",
-                 "matching_engine", "sample_fix_gateway_seq",
+                 "matching_engine", "order_gateway",
                  "authentication_service"):
         exe = prefix / "bin" / name
         if not exe.is_file() or not os.access(exe, os.X_OK):
@@ -1148,7 +1148,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
     arb_secondary_log          = log_dir / "arbiter_secondary.log"
     auth_primary_log           = log_dir / "authentication_service_primary.log"
     auth_secondary_log         = log_dir / "authentication_service_secondary.log"
-    gw_log                     = log_dir / "sample_fix_gateway_seq.log"
+    gw_log                     = log_dir / "order_gateway.log"
 
     log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1201,8 +1201,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
          etc_dir / "authentication_service" / "authentication_service.toml"),
         ("authentication_service_secondary", "authentication_service",
          etc_dir / "authentication_service" / "authentication_service_secondary.toml"),
-        ("sample_fix_gateway_seq",           "sample_fix_gateway_seq",
-         etc_dir / "sample_fix_gateway_seq" / "sample_fix_gateway_seq.toml"),
+        ("order_gateway",           "order_gateway",
+         etc_dir / "order_gateway" / "order_gateway.toml"),
         ("sequencer_primary",                "sequencer",
          etc_dir / "sequencer"              / "sequencer.toml"),
         ("sequencer_secondary",              "sequencer",
@@ -1224,6 +1224,28 @@ def run_scenario(scenario: Scenario, args) -> bool:
     running_me_pos   = 0
 
     try:
+        # ── Pre-phase: export credentials ─────────────────────────────────────
+        # Always regenerate credentials.toml from the database before starting
+        # the authentication service so that DB-managed credentials (including
+        # the CLIENT test fixture added via the 'test' Liquibase context) are
+        # present.  Fail fast with a clear message if the DB is unreachable so
+        # that a missing credential doesn't cause an opaque logon hang later.
+        log("=== Exporting credentials ===")
+        export_script = script_dir / "db" / "export_credentials.py"
+        creds_file    = etc_dir / "authentication_service" / "credentials.toml"
+        export_result = subprocess.run(
+            [sys.executable, str(export_script),
+             "--credentials-file", str(creds_file)],
+            capture_output=True, text=True,
+        )
+        if export_result.returncode != 0:
+            die(
+                f"export_credentials.py failed (is the database running?):\n"
+                f"{export_result.stderr.strip()}"
+            )
+        log(f"  credentials written to {creds_file}")
+        log("")
+
         # ── Phase 1: start all processes ──────────────────────────────────────
         log("=== Phase 1: starting all processes ===")
         for name, bin_name, config in launch_table:
@@ -1306,6 +1328,11 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # f8proc stays alive so the FIX session remains established.
         # extra_steps (when present) replaces steps+restart_steps and may
         # include InterimOrdersStep entries that send orders mid-phase.
+        #
+        # seq_primary_pos_pre_kill is used after Phase 4 to wait for
+        # sequencer_primary to re-establish its ME connection (see below).
+        seq_primary_pos_pre_kill = file_end(seq_primary_log)
+
         log(f"=== Phase 4: {scenario.description} ===")
         for step in effective_steps:
             if isinstance(step, KillStep):
@@ -1340,11 +1367,35 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     )
                 log(f"  {count} interim orders confirmed ({elapsed:.1f}s)")
                 phase4_results.append(("interim", count))
+
+        # If ME was restarted, the _ME_READY_MARKERS fire as soon as the first
+        # sequencer (primary or secondary) re-establishes its order connection.
+        # When the secondary connects first the primary may still be in its
+        # retry window.  Wait explicitly for the primary's connection to avoid
+        # Phase 5 orders arriving while the primary still has ME disconnected
+        # (sequencer drops orders when me_outbound_order_conn_id_ is invalid).
+        has_me_restart = any(
+            isinstance(s, RestartStep) and s.resets_me_counter
+            for s in effective_steps
+        )
+        if has_me_restart:
+            log("  Waiting for sequencer_primary to re-establish ME connection ...")
+            found, elapsed, _ = poll_log_for(
+                seq_primary_log,
+                "SequencerThread: matching engine order connection",
+                "established",
+                timeout=10.0,
+                from_byte=seq_primary_pos_pre_kill,
+            )
+            if not found:
+                die(
+                    "sequencer_primary did not re-establish ME connection "
+                    "within 10s after ME restart"
+                )
+            log(f"  sequencer_primary: ME connection restored ({elapsed:.1f}s)")
         log("")
 
         # ── Phase 5: recovery orders ──────────────────────────────────────────
-        # Re-use the established FIX session from Phase 3.
-        #
         # Target calculation:
         #   ME restart   → ME log and counter reset; target = after_total,
         #                  scan from byte 0.
@@ -1376,7 +1427,17 @@ def run_scenario(scenario: Scenario, args) -> bool:
             f"(ME-ORD target: {after_target}) ==="
         )
 
-        log(f"  Sending {after_total} recovery orders via existing FIX session ...")
+        # When ME was restarted while orders were in flight (scenario 10-style),
+        # the old f8test session is blocked waiting for ERs from the orders the
+        # sequencer dropped while ME was disconnected.  Those ERs will never
+        # arrive, so Phase 5 T commands written to the old stdin would just queue
+        # behind them.  Start a fresh FIX session to unblock.
+        if me_restarted and args.orders_during > 0 and not scenario.extra_steps:
+            log("  Restarting FIX session (old session blocked on dropped in-flight orders) ...")
+            stop_f8test(f8proc)
+            f8proc = send_burst(0, gw_log)
+
+        log(f"  Sending {after_total} recovery orders ...")
         for _ in range(args.orders_after):
             f8proc.stdin.write(b"T\n")
         f8proc.stdin.flush()

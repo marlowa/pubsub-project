@@ -10,20 +10,20 @@
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/TomlConfiguration.hpp>
 
-#include "FixGatewaySeqConfigurationLoader.hpp"
+#include "OrderGatewayConfigurationLoader.hpp"
 
-namespace sample_fix_gateway_seq {
+namespace order_gateway {
 
-std::tuple<FixGatewaySeqConfiguration, std::unique_ptr<pubsub_itc_fw::QuillLogger>>
-FixGatewaySeqConfigurationLoader::load_and_init_logging(const std::string& file_path, const std::string& log_file_path) {
+std::tuple<OrderGatewayConfiguration, std::unique_ptr<pubsub_itc_fw::QuillLogger>>
+OrderGatewayConfigurationLoader::load_and_init_logging(const std::string& file_path, const std::string& log_file_path) {
     pubsub_itc_fw::TomlConfiguration toml;
 
     auto [ok, err] = toml.load_file(file_path);
     if (!ok) {
-        throw pubsub_itc_fw::ConfigurationException("FixGatewaySeqConfigurationLoader: failed to load '" + file_path + "': " + err);
+        throw pubsub_itc_fw::ConfigurationException("OrderGatewayConfigurationLoader: failed to load '" + file_path + "': " + err);
     }
 
-    FixGatewaySeqConfiguration config;
+    OrderGatewayConfiguration config;
 
     // Get the logger going early
     try {
@@ -64,7 +64,7 @@ FixGatewaySeqConfigurationLoader::load_and_init_logging(const std::string& file_
 
         auto validate_port = [&](int32_t port, const std::string& name) {
             if (port < 1 || port > 65535) {
-                throw pubsub_itc_fw::ConfigurationException("FixGatewaySeqConfigurationLoader: " + name + " must be in range [1, 65535], got " +
+                throw pubsub_itc_fw::ConfigurationException("OrderGatewayConfigurationLoader: " + name + " must be in range [1, 65535], got " +
                                                             std::to_string(port));
             }
         };
@@ -75,7 +75,7 @@ FixGatewaySeqConfigurationLoader::load_and_init_logging(const std::string& file_
         validate_port(authentication_service_port, "authentication_service.port");
 
         if (raw_buffer_capacity <= 0) {
-            throw pubsub_itc_fw::ConfigurationException("FixGatewaySeqConfigurationLoader: network.raw_buffer_capacity must be positive, got " +
+            throw pubsub_itc_fw::ConfigurationException("OrderGatewayConfigurationLoader: network.raw_buffer_capacity must be positive, got " +
                                                         std::to_string(raw_buffer_capacity));
         }
 
@@ -105,11 +105,11 @@ FixGatewaySeqConfigurationLoader::load_and_init_logging(const std::string& file_
         toml.get_required_except("logging.syslog_level", syslog_level_str);
 
         if (!pubsub_itc_fw::FwLogLevel::from_string(applog_level_str, config.applog_level)) {
-            throw pubsub_itc_fw::ConfigurationException("FixGatewaySeqConfigurationLoader: logging.applog_level '" + applog_level_str +
+            throw pubsub_itc_fw::ConfigurationException("OrderGatewayConfigurationLoader: logging.applog_level '" + applog_level_str +
                                                         "' is not a recognised log level");
         }
         if (!pubsub_itc_fw::FwLogLevel::from_string(syslog_level_str, config.syslog_level)) {
-            throw pubsub_itc_fw::ConfigurationException("FixGatewaySeqConfigurationLoader: logging.syslog_level '" + syslog_level_str +
+            throw pubsub_itc_fw::ConfigurationException("OrderGatewayConfigurationLoader: logging.syslog_level '" + syslog_level_str +
                                                         "' is not a recognised log level");
         }
 
@@ -120,22 +120,22 @@ FixGatewaySeqConfigurationLoader::load_and_init_logging(const std::string& file_
         toml.get_required_except("event_queue_pool.objects_per_slab", config.event_queue_pool_objects_per_slab);
         toml.get_required_except("event_queue_pool.initial_slabs", config.event_queue_pool_initial_slabs);
         if (config.event_queue_pool_objects_per_slab < 1) {
-            throw pubsub_itc_fw::ConfigurationException("FixGatewaySeqConfigurationLoader: event_queue_pool.objects_per_slab must be >= 1, got " +
+            throw pubsub_itc_fw::ConfigurationException("OrderGatewayConfigurationLoader: event_queue_pool.objects_per_slab must be >= 1, got " +
                                                         std::to_string(config.event_queue_pool_objects_per_slab));
         }
         if (config.event_queue_pool_initial_slabs < 1) {
-            throw pubsub_itc_fw::ConfigurationException("FixGatewaySeqConfigurationLoader: event_queue_pool.initial_slabs must be >= 1, got " +
+            throw pubsub_itc_fw::ConfigurationException("OrderGatewayConfigurationLoader: event_queue_pool.initial_slabs must be >= 1, got " +
                                                         std::to_string(config.event_queue_pool_initial_slabs));
         }
 
         toml.get_required_except("command_queue_pool.objects_per_slab", config.command_queue_pool_objects_per_slab);
         toml.get_required_except("command_queue_pool.initial_slabs", config.command_queue_pool_initial_slabs);
         if (config.command_queue_pool_objects_per_slab < 1) {
-            throw pubsub_itc_fw::ConfigurationException("FixGatewaySeqConfigurationLoader: command_queue_pool.objects_per_slab must be >= 1, got " +
+            throw pubsub_itc_fw::ConfigurationException("OrderGatewayConfigurationLoader: command_queue_pool.objects_per_slab must be >= 1, got " +
                                                         std::to_string(config.command_queue_pool_objects_per_slab));
         }
         if (config.command_queue_pool_initial_slabs < 1) {
-            throw pubsub_itc_fw::ConfigurationException("FixGatewaySeqConfigurationLoader: command_queue_pool.initial_slabs must be >= 1, got " +
+            throw pubsub_itc_fw::ConfigurationException("OrderGatewayConfigurationLoader: command_queue_pool.initial_slabs must be >= 1, got " +
                                                         std::to_string(config.command_queue_pool_initial_slabs));
         }
 
@@ -146,4 +146,4 @@ FixGatewaySeqConfigurationLoader::load_and_init_logging(const std::string& file_
     return std::make_tuple(std::move(config), std::move(logger));
 }
 
-} // namespace sample_fix_gateway_seq
+} // namespace order_gateway

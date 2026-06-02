@@ -133,7 +133,7 @@ TEST_F(MirroredBufferTest, HandlesExhaustiveWrapAroundStress) {
 
 /*
  * Regression test for the wrapping-counter bug discovered when running the
- * sample_fix_gateway_seq under a multi-T burst from fix8.
+ * order_gateway under a multi-T burst from fix8.
  *
  * Background: head() and tail() are documented as indices that the consumer
  * can compare across deliveries "to detect unambiguously whether the tail
@@ -481,7 +481,7 @@ TEST_F(MirroredBufferTest, SideChannelVisibilityFailure) {
 
 /*
  * Regression test for the dangling-pointer bug discovered when running the
- * sample_fix_gateway_seq under a 1000-NewOrderSingle burst from fix8.
+ * order_gateway under a 1000-NewOrderSingle burst from fix8.
  *
  * Background: RawBytesProtocolHandler enqueues RawSocketCommunication events
  * to an ApplicationThread queue. Each event carries a pointer into the
@@ -509,7 +509,7 @@ TEST_F(MirroredBufferTest, SideChannelVisibilityFailure) {
  * safe. Before the fix, this would crash under ASan.
  *
  * The test does not exercise threading or the queue. The framework-level
- * scenario is tested end-to-end by running the sample_fix_gateway_seq
+ * scenario is tested end-to-end by running the order_gateway
  * under fix8's T command; this unit test pins down the invariant that
  * makes that scenario work.
  */

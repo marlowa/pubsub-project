@@ -10,8 +10,7 @@ cmake_minimum_required(VERSION 3.11 FATAL_ERROR)
 # ---------------------------------------------------------------------------
 # Applications
 # ---------------------------------------------------------------------------
-add_subdirectory(sample_fix_gateway)
-add_subdirectory(sample_fix_gateway_seq)
+add_subdirectory(order_gateway)
 add_subdirectory(sequencer)
 add_subdirectory(matching_engine)
 add_subdirectory(arbiter)

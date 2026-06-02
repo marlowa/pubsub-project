@@ -10,7 +10,7 @@ Startup order:
   2. arbiter (primary)      -- component listener port 7200, peer listener 7203.
                                Must be up before sequencers try to connect.
   3. arbiter (secondary)    -- component listener port 7201, peer listener 7204.
-  4. sample_fix_gateway_seq -- must be listening on port 7010 before sequencers
+  4. order_gateway -- must be listening on port 7010 before sequencers
                                start, because sequencers connect outbound to the
                                gateway's ER inbound listener at startup.
   5. sequencer (primary)    -- instance_id=1, listens on port 7001
@@ -130,7 +130,7 @@ def main() -> None:
         "arbiter",
         "sequencer",
         "matching_engine",
-        "sample_fix_gateway_seq",
+        "order_gateway",
     ]
 
     check_executables(bin_dir, executables)
@@ -156,8 +156,8 @@ def main() -> None:
          etc_dir / "arbiter"               / "arbiter.toml"),
         ("arbiter_secondary",      "arbiter",                "arbiter_secondary.log",
          etc_dir / "arbiter"               / "arbiter_secondary.toml"),
-        ("sample_fix_gateway_seq", "sample_fix_gateway_seq", "sample_fix_gateway_seq.log",
-         etc_dir / "sample_fix_gateway_seq" / "sample_fix_gateway_seq.toml"),
+        ("order_gateway", "order_gateway", "order_gateway.log",
+         etc_dir / "order_gateway" / "order_gateway.toml"),
         ("sequencer_primary",      "sequencer",              "sequencer_primary.log",
          etc_dir / "sequencer"             / "sequencer.toml"),
         ("sequencer_secondary",    "sequencer",              "sequencer_secondary.log",

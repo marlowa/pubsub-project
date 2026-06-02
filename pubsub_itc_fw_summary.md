@@ -650,7 +650,7 @@ The system now requires every FIX client to complete a SCRAM-SHA-256 challenge-r
 
 **Authentication service** (`applications/authentication_service/`). Stateless: each SCRAM exchange is fully self-contained with no server-side session state between Request and Proof. On receiving an `AuthenticationRequest`, the service generates a random 16-byte server nonce, derives SCRAM parameters from its stored credential for the comp_id, and replies with `AuthenticationChallenge`. On receiving `AuthenticationProof`, it verifies `ClientProof` via `StoredKey`, computes `ServerSignature` via `ServerKey`, and replies with `AuthenticationResult`. Currently uses a single stub credential (`stub_credential_`) for all comp_ids; credential database integration is the next major work item. Two instances are run for HA: primary on port 7070, secondary on port 7071. Both are stateless and independent — no synchronisation between them is needed.
 
-**Gateway SCRAM integration** (`applications/sample_fix_gateway_seq/`). On receiving a FIX Logon:
+**Gateway SCRAM integration** (`applications/order_gateway/`). On receiving a FIX Logon:
 1. Cancels the logon timeout timer.
 2. Selects the auth service connection: primary if connected, secondary as fallback (when `ha_enabled`).
 3. If neither is connected, sends FIX Logout and disconnects.
@@ -665,7 +665,7 @@ Key configuration additions to `FixGatewaySeqConfiguration`:
 - `scram_password` — the password sent to the auth service on behalf of FIX clients
 - `scram_auth_timeout` — maximum time for a SCRAM exchange (default 10 s)
 
-**HA test infrastructure update** (`ha_test.py`). Two authentication service instances (`authentication_service_primary` on port 7070, `authentication_service_secondary` on port 7071) added to the launch table before `sample_fix_gateway_seq`. Binary preflight check extended to include `authentication_service`. Auth service log files added to stale-log cleanup. Startup order is now 9 processes: witness → arbiter_primary → arbiter_secondary → authentication_service_primary → authentication_service_secondary → sample_fix_gateway_seq → sequencer_primary → sequencer_secondary → matching_engine.
+**HA test infrastructure update** (`ha_test.py`). Two authentication service instances (`authentication_service_primary` on port 7070, `authentication_service_secondary` on port 7071) added to the launch table before `order_gateway`. Binary preflight check extended to include `authentication_service`. Auth service log files added to stale-log cleanup. Startup order is now 9 processes: witness → arbiter_primary → arbiter_secondary → authentication_service_primary → authentication_service_secondary → order_gateway → sequencer_primary → sequencer_secondary → matching_engine.
 
 **TLS subsystem added to the framework.** Two sessions of work (both within Session 20) added full TLS support to the raw-bytes connection layer.
 
@@ -799,11 +799,11 @@ Files changed (Slice 6 + regression fix):
 - `applications/sequencer/SequencerConfigurationLoader.cpp` (added `#include <tuple>` for `std::ignore`)
 - `applications/sequencer/SequencerThread.cpp`
 - `applications/sequencer/SequencerThread.hpp`
-- `applications/sample_fix_gateway_seq/FixGatewaySeqConfiguration.hpp`
-- `applications/sample_fix_gateway_seq/FixGatewaySeqConfigurationLoader.cpp`
-- `applications/sample_fix_gateway_seq/FixGatewaySeqThread.hpp`
-- `applications/sample_fix_gateway_seq/FixGatewaySeqThread.cpp`
-- `applications/sample_fix_gateway_seq/SampleFixGatewaySeq.cpp`
+- `applications/order_gateway/FixGatewaySeqConfiguration.hpp`
+- `applications/order_gateway/FixGatewaySeqConfigurationLoader.cpp`
+- `applications/order_gateway/FixGatewaySeqThread.hpp`
+- `applications/order_gateway/FixGatewaySeqThread.cpp`
+- `applications/order_gateway/SampleFixGatewaySeq.cpp`
 - `libraries/pubsub_itc_fw/src/OutboundConnectionManager.cpp`
 
 **Build and test status at session end:** all unit tests pass including `ConcurrentSmallSlabHighChurn`. End-to-end verified: fix8 NOS → gateway → sequencer (immediately leader with `ha_enabled=false`) → ME → sequencer → gateway → fix8 ER. No silent drops.
@@ -880,7 +880,7 @@ The ME's `handle_new_order_single` keeps fabricated `std::string` locals on the 
 - `sequencer.toml` gained a `[matching_engine]` section.
 
 **Secondary sequencer expunged from the gateway.** The gateway-side dual-publish was incomplete and was breaking the single-sequencer test setup: the gateway required `[sequencer.secondary_host]`/`[sequencer.secondary_port]` in its toml and would attempt to connect to a secondary that wasn't running, retrying forever. The user chose to remove the secondary references entirely rather than carry broken half-configuration. The dual-publish concept is preserved in code (the function name `forward_pdu_to_sequencers` retained, with a comment explaining the plural will be reasserted when leader-follower lands) but the secondary endpoint, member, connect call, and toml entries are all gone:
-- `sample_fix_gateway_seq.toml` — `secondary_host`/`secondary_port` lines removed from `[sequencer]`.
+- `order_gateway.toml` — `secondary_host`/`secondary_port` lines removed from `[sequencer]`.
 - `FixGatewaySeqConfiguration.hpp` — `sequencer_secondary_host`/`sequencer_secondary_port` members removed; class doxygen rephrased.
 - `FixGatewaySeqConfigurationLoader.cpp` — secondary parsing/validation removed.
 - `FixGatewaySeqConfigurationLoader.hpp` — doxygen example updated.
@@ -908,14 +908,14 @@ The ME's `handle_new_order_single` keeps fabricated `std::string` locals on the 
 - `applications/sequencer/sequencer.toml`
 - `applications/matching_engine/MatchingEngineThread.hpp`
 - `applications/matching_engine/MatchingEngineThread.cpp`
-- `applications/sample_fix_gateway_seq/sample_fix_gateway_seq.toml`
-- `applications/sample_fix_gateway_seq/FixGatewaySeqConfiguration.hpp`
-- `applications/sample_fix_gateway_seq/FixGatewaySeqConfigurationLoader.cpp`
-- `applications/sample_fix_gateway_seq/FixGatewaySeqConfigurationLoader.hpp`
-- `applications/sample_fix_gateway_seq/SampleFixGatewaySeq.cpp`
-- `applications/sample_fix_gateway_seq/SampleFixGatewaySeq.hpp`
-- `applications/sample_fix_gateway_seq/FixGatewaySeqThread.hpp`
-- `applications/sample_fix_gateway_seq/FixGatewaySeqThread.cpp`
+- `applications/order_gateway/order_gateway.toml`
+- `applications/order_gateway/FixGatewaySeqConfiguration.hpp`
+- `applications/order_gateway/FixGatewaySeqConfigurationLoader.cpp`
+- `applications/order_gateway/FixGatewaySeqConfigurationLoader.hpp`
+- `applications/order_gateway/SampleFixGatewaySeq.cpp`
+- `applications/order_gateway/SampleFixGatewaySeq.hpp`
+- `applications/order_gateway/FixGatewaySeqThread.hpp`
+- `applications/order_gateway/FixGatewaySeqThread.cpp`
 - `scripts/start_fix_seq_system.py`
 - `libraries/pubsub_itc_fw/include/pubsub_itc_fw/EventMessage.hpp`
 - `libraries/pubsub_itc_fw/src/EventMessage.cpp`
@@ -968,7 +968,7 @@ The gateway's `FixSerialiser` already supported every tag the ER routing populat
 **Files changed in the continuation work (eight, beyond the twenty earlier):**
 - `libraries/pubsub_itc_fw/src/PduParser.cpp` (payload hex dump trace)
 - `applications/sequencer/SequencerThread.cpp` (three re-encode blocks fixed; complete optional-field propagation)
-- `applications/sample_fix_gateway_seq/FixGatewaySeqThread.cpp` (`on_framework_pdu_message` implemented; `on_connection_lost` map sweep added; BumpAllocator include added)
+- `applications/order_gateway/FixGatewaySeqThread.cpp` (`on_framework_pdu_message` implemented; `on_connection_lost` map sweep added; BumpAllocator include added)
 
 (The summary's earlier "Files changed (twenty)" list at the top of the Session 15 entry covers the topology and ME-ER-fabrication work; the three above are the ones that closed the loop.)
 
@@ -1133,7 +1133,7 @@ The crash was *not* introduced by any session-13 patch; the bug has been latent 
 
 **Logging infrastructure overhaul** — proper startup sequence across all four applications. New framework additions: `FileSystemUtils` (`make_directories` via POSIX `mkdir`), `FwLogLevel::from_string`, `QuillLogger::ensure_log_file_writable`, `QuillLogger::set_syslog_level`. All four configs gain required `[logging]` section. Applications now take `<logfile> <config.toml>` as arguments.
 
-**FIX parsing in `sample_fix_gateway_seq`** — `FixParser`, `FixSerialiser`, `FixMessage`, `FixSession` added. Logon handling, heartbeats, preamble checking all working.
+**FIX parsing in `order_gateway`** — `FixParser`, `FixSerialiser`, `FixMessage`, `FixSession` added. Logon handling, heartbeats, preamble checking all working.
 
 ### Session 8
 
@@ -1143,7 +1143,7 @@ The crash was *not* introduced by any session-13 patch; the bug has been latent 
 
 **`ReactorConfiguration`** — `connect_retry_interval_` added (later used for retry). `connect_timeout` present.
 
-**Application stubs** — `sample_fix_gateway_seq`, `sequencer`, `matching_engine`, `arbiter` — all compiling with correct Aeron topology and startup pattern.
+**Application stubs** — `order_gateway`, `sequencer`, `matching_engine`, `arbiter` — all compiling with correct Aeron topology and startup pattern.
 
 ### Session 7
 
@@ -1151,7 +1151,7 @@ The crash was *not* introduced by any session-13 patch; the bug has been latent 
 
 ### Session 6
 
-**`RawBytesProtocolHandler` bugs fixed** — intermittent `BurstDelivery` test failure resolved. `EventMessage::create_raw_socket_message` carries `tail_position`. Design documentation written. `sample_fix_gateway` tested with fix8. All 411 tests passing.
+**`RawBytesProtocolHandler` bugs fixed** — intermittent `BurstDelivery` test failure resolved. `EventMessage::create_raw_socket_message` carries `tail_position`. Design documentation written. `order_gateway` tested with fix8. All 411 tests passing.
 
 ### Session 5
 
@@ -1194,7 +1194,7 @@ TcpSocket EAGAIN/EOF fix, use-after-free fix, InboundConnection infrastructure, 
 - Logging subsystem — complete
 - `RawBytesProtocolHandler` — complete; `on_data_ready`/`send_prebuilt`/`continue_send` return `tuple<bool, std::string>`; no disconnect-handler member; no logger member (session 14)
 - TLS subsystem — complete, tested (session 20). `TlsContext` (wraps SSL_CTX; `create_server`/`create_client`; TLS 1.2 minimum, TLS 1.3 preferred; AEAD-only ciphers), `TlsState` (per-connection; memory BIOs; pending ciphertext buffer), `TlsRawBytesProtocolHandler` (implements `ProtocolHandlerInterface`; non-blocking handshake; same `RawSocketCommunication` delivery), `TlsListenerConfiguration`, `TlsClientConfiguration`. `ServiceEndpoints` carries `optional<TlsClientConfiguration>`. `ProtocolHandlerInterface` gains `start_outbound_handshake`, `is_handshake_complete`, `is_reads_paused`. `ProtocolType::TlsRawBytes` (value 2). 9 integration tests (5 inbound, 4 outbound). Not yet wired to any application.
-- `sample_fix_gateway_seq` — FIX session layer complete; PDU encoding to sequencer complete; ER routing back to fix8 complete. Session 17 adds `ha_enabled` flag (default false): when false, secondary sequencer connect is skipped, `forward_pdu_to_sequencers` sends only to primary, and secondary host/port are not required in the toml. When `ha_enabled=true`, dual-publish to primary and secondary is restored. `forward_pdu_to_sequencers` name kept plural — the dual-publish branch returns when leader-follower is fully live.
+- `order_gateway` — FIX session layer complete; PDU encoding to sequencer complete; ER routing back to fix8 complete. Session 17 adds `ha_enabled` flag (default false): when false, secondary sequencer connect is skipped, `forward_pdu_to_sequencers` sends only to primary, and secondary host/port are not required in the toml. When `ha_enabled=true`, dual-publish to primary and secondary is restored. `forward_pdu_to_sequencers` name kept plural — the dual-publish branch returns when leader-follower is fully live.
 - `sequencer` — Slices 1–6 complete. PDU forwarding (NOS, OCR, ER), topology, re-encode fixes all from session 15. WAL (`SequencerWal`: mmap'd segments, snapshot, CRC32, replay on restart), seqNo on wire, `routing_comp_id` stamping, and leader-follower state machine (`Role::unknown/leader/follower`, `adopt_role`, `peer_heartbeat_timeout`, epoch, fence file) from sessions covered by the session-17 entry. `ha_enabled=false` (default): sequencer immediately adopts `Role::leader` in `on_initial_event` and skips arbiter/peer connects. Only the leader forwards order PDUs to ME.
 - `matching_engine` — complete for the round-trip stub. `on_framework_pdu_message` decodes inbound `NewOrderSingle` PDUs (session 15) and emits a fully-filled `ExecutionReport` over the existing outbound `sequencer_er_conn_id_`. The ER populates every field that `SequencerThread`'s ER decoder reads. No real order book or matching — every order becomes a single fill at its limit price (or a zero sentinel for market orders). `OrderID` and `ExecID` are generated as `ME-ORD-N` / `ME-EXEC-N`. `OrderCancelRequest` is not yet handled (logs and drops at the `else` branch); cancel handling is a small follow-up.
 - `arbiter` — stub, compiling
@@ -1270,7 +1270,7 @@ syslog_level = "info"
 ```
 Both fields are required. There are no optional config fields — making a field optional hides it from operators and makes it unconfigurable in practice.
 
-**FIX parsing implemented in `sample_fix_gateway_seq`** — `FixParser`, `FixSerialiser`, `FixMessage`, `FixSession` copied from `sample_fix_gateway` with namespace changed to `sample_fix_gateway_seq`. `MsgType::OrderCancelRequest` and `Tag::OrigClOrdID` added to `FixMessage.hpp`. Logger threaded through `FixParser` constructor so bad checksums are logged at Debug rather than silently dropped. Full FIX session layer implemented in `FixGatewaySeqThread` (Logon, Heartbeat, TestRequest, Logout, NewOrderSingle, OrderCancelRequest). PDU encoding and ER routing remain TODO.
+**FIX parsing implemented in `order_gateway`** — `FixParser`, `FixSerialiser`, `FixMessage`, `FixSession` copied from `order_gateway` with namespace changed to `order_gateway`. `MsgType::OrderCancelRequest` and `Tag::OrigClOrdID` added to `FixMessage.hpp`. Logger threaded through `FixParser` constructor so bad checksums are logged at Debug rather than silently dropped. Full FIX session layer implemented in `FixGatewaySeqThread` (Logon, Heartbeat, TestRequest, Logout, NewOrderSingle, OrderCancelRequest). PDU encoding and ER routing remain TODO.
 
 ---
 
@@ -2142,7 +2142,7 @@ Two Python scripts live in the project root.
 ./start_fix_seq_system.py build/installed --valgrind --valgrind_command "valgrind"
 ```
 
-Starts 7 processes in dependency order: witness → arbiter-primary → arbiter-secondary → sample_fix_gateway_seq → sequencer-primary → sequencer-secondary → matching_engine. Monitors for unexpected exits. Ctrl-C sends SIGTERM to all processes.
+Starts 7 processes in dependency order: witness → arbiter-primary → arbiter-secondary → order_gateway → sequencer-primary → sequencer-secondary → matching_engine. Monitors for unexpected exits. Ctrl-C sends SIGTERM to all processes.
 
 **`perf_run.py`** — starts the full system, attaches `perf record` to gateway and ME, fires fix8 NOS orders, waits for completion, SIGTERMs everything, then produces per-process perf reports and flamegraph SVGs.
 
@@ -2193,7 +2193,7 @@ Inspired by the Aeron sequencer pattern. The sequencer is the **sole writer** to
 FIX client
     | raw FIX bytes (RawBytesProtocolHandler)
     v
-sample_fix_gateway_seq          (single instance)
+order_gateway          (single instance)
     | NewOrderSingle / OrderCancelRequest PDUs -- single sequencer (post session 15)
     v
 sequencer (single instance, "primary" naming preserved)
@@ -2204,7 +2204,7 @@ matching_engine                 (single instance)
     v
 sequencer (receives ER, forwards to gateway on port 7010)
     v
-sample_fix_gateway_seq --> FIX ER --> FIX client (via cl_ord_id_to_session_)
+order_gateway --> FIX ER --> FIX client (via cl_ord_id_to_session_)
 ```
 
 **Future state (after WAL+HA slices land):** the second sequencer returns as a passive follower, the gateway connects to both but sends only to the leader, and the WAL replication channel runs alongside the data channels. See "WAL and HA Design" above for the full topology diagram.
@@ -2325,7 +2325,7 @@ encode(msg, wire_buf, real);
 Run identifier: **20260525_220617**.
 Profiling flags: `perf record --call-graph dwarf -F 999`.
 Kernel tuning: `/proc/sys/kernel/kptr_restrict = 0`, `/proc/sys/kernel/perf_event_paranoid = -1`.
-Binary: `sample_fix_gateway_seq` (RelWithDebInfo, full DWARF).
+Binary: `order_gateway` (RelWithDebInfo, full DWARF).
 Workload: fix8 sending 100,000 NewOrderSingles + OrderCancelRequests over loopback (127.0.0.1).
 
 > **Why dwarf instead of fp?**
@@ -2338,7 +2338,7 @@ Workload: fix8 sending 100,000 NewOrderSingles + OrderCancelRequests over loopba
 | Kernel TCP / net stack (`kernel.kallsyms`) | 39.24 % | Normal for TCP I/O — send/recv, SKB management, scheduler |
 | **Netfilter** (`nf_tables` / `nf_conntrack` / `nf_nat`) | **13.04 %** | **Surprise: loopback traffic goes through the full nftables chain** |
 | Framework (`libpubsub_itc_fw`) | 8.80 % | Dominated by `ReactorControlCommand` slab operations |
-| Application binary (`sample_fix_gateway_seq`) | 8.14 % | FIX parsing, serialisation, hashtable, PDU send |
+| Application binary (`order_gateway`) | 8.14 % | FIX parsing, serialisation, hashtable, PDU send |
 | libc | 7.82 % | Heap allocation (3.34 %), timestamp (0.86 %), memchr/memmove |
 | libstdc++ | 1.84 % | |
 | vdso | 0.68 % | `gettimeofday` fast-path |

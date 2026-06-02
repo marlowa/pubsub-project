@@ -52,7 +52,7 @@ FREQ             = 99      # perf sample frequency (Hz)
 # Processes to profile; set to None to profile all launched processes.
 # Profiling arbiters, the witness, and both sequencers with DWARF is expensive
 # and rarely useful; the hot path is gateway and ME.
-PERF_TARGETS     = {"sample_fix_gateway_seq", "matching_engine"}
+PERF_TARGETS     = {"order_gateway", "matching_engine"}
 SHUTDOWN_TIMEOUT = 5.0   # seconds to wait for each app to exit after SIGTERM
 
 FIX8_DIR  = Path("/home/marlowa/mystuff/fix8_install")
@@ -84,7 +84,7 @@ def preflight(prefix: Path) -> None:
     if subprocess.call(["which", "perf"],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) != 0:
         die("'perf' not found in PATH")
-    for name in ("witness", "arbiter", "sequencer", "matching_engine", "sample_fix_gateway_seq"):
+    for name in ("witness", "arbiter", "sequencer", "matching_engine", "order_gateway"):
         exe = prefix / "bin" / name
         if not exe.is_file() or not os.access(exe, os.X_OK):
             die(f"binary not found or not executable: {exe}")
@@ -425,7 +425,7 @@ def main() -> None:
         ("witness",                "witness",                etc_dir / "witness"               / "witness.toml"),
         ("arbiter_primary",        "arbiter",                etc_dir / "arbiter"               / "arbiter.toml"),
         ("arbiter_secondary",      "arbiter",                etc_dir / "arbiter"               / "arbiter_secondary.toml"),
-        ("sample_fix_gateway_seq", "sample_fix_gateway_seq", etc_dir / "sample_fix_gateway_seq" / "sample_fix_gateway_seq.toml"),
+        ("order_gateway", "order_gateway", etc_dir / "order_gateway" / "order_gateway.toml"),
         ("sequencer_primary",      "sequencer",              etc_dir / "sequencer"             / "sequencer.toml"),
         ("sequencer_secondary",    "sequencer",              etc_dir / "sequencer"             / "sequencer_secondary.toml"),
         ("matching_engine",        "matching_engine",        etc_dir / "matching_engine"       / "matching_engine.toml"),

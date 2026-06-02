@@ -8,9 +8,11 @@
 #include <ctime>
 #include <string>
 
-namespace sample_fix_gateway {
+namespace order_gateway {
 
-static constexpr char SOH = '\x01';
+namespace {
+constexpr char fix_delimiter = '\x01';
+} // namespace
 
 FixSerialiser::FixSerialiser(std::string sender_comp_id, std::string target_comp_id)
     : sender_comp_id_(std::move(sender_comp_id)), target_comp_id_(std::move(target_comp_id)) {}
@@ -53,20 +55,20 @@ std::string FixSerialiser::serialise(const FixMessage& msg, int seq_num) const {
     return frame;
 }
 
-void FixSerialiser::append_field(std::string& buf, int tag, const std::string& value) {
-    buf += std::to_string(tag);
-    buf += '=';
-    buf += value;
-    buf += SOH;
+void FixSerialiser::append_field(std::string& output, int tag, const std::string& value) {
+    output += std::to_string(tag);
+    output += '=';
+    output += value;
+    output += fix_delimiter;
 }
 
-void FixSerialiser::append_field(std::string& buf, int tag, int value) {
-    append_field(buf, tag, std::to_string(value));
+void FixSerialiser::append_field(std::string& output, int tag, int value) {
+    append_field(output, tag, std::to_string(value));
 }
 
-std::string FixSerialiser::compute_checksum(const std::string& buf) {
+std::string FixSerialiser::compute_checksum(const std::string& input) {
     unsigned int sum = 0;
-    for (const unsigned char c : buf) {
+    for (const unsigned char c : input) {
         sum += c;
     }
     char result[5];
@@ -79,9 +81,9 @@ std::string FixSerialiser::current_utc_timestamp() {
     const std::time_t t = std::chrono::system_clock::to_time_t(now);
     struct tm utc_tm {};
     gmtime_r(&t, &utc_tm);
-    char buf[20];
-    std::strftime(buf, sizeof(buf), "%Y%m%d-%H:%M:%S", &utc_tm);
-    return {buf};
+    char timestamp_buffer[20];
+    std::strftime(timestamp_buffer, sizeof(timestamp_buffer), "%Y%m%d-%H:%M:%S", &utc_tm);
+    return {timestamp_buffer};
 }
 
-} // namespace sample_fix_gateway
+} // namespace order_gateway

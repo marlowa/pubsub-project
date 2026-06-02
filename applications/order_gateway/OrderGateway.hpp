@@ -10,10 +10,10 @@
 #include <pubsub_itc_fw/ReactorConfiguration.hpp>
 #include <pubsub_itc_fw/ServiceRegistry.hpp>
 
-#include "FixGatewaySeqConfiguration.hpp"
-#include "FixGatewaySeqThread.hpp"
+#include "OrderGatewayConfiguration.hpp"
+#include "OrderGatewayThread.hpp"
 
-namespace sample_fix_gateway_seq {
+namespace order_gateway {
 
 /**
  * @brief Top-level application class for the sequencer-backed FIX gateway.
@@ -26,7 +26,7 @@ namespace sample_fix_gateway_seq {
  *
  * The logger is constructed in main() before the config is loaded.
  */
-class SampleFixGatewaySeq {
+class OrderGateway {
   public:
     /**
      * @brief Constructs the gateway and wires all connections.
@@ -34,7 +34,7 @@ class SampleFixGatewaySeq {
      * @param[in] logger Logger. Ownership transferred. Must already have the
      *                   correct log levels applied from config.
      */
-    explicit SampleFixGatewaySeq(const FixGatewaySeqConfiguration& config, std::unique_ptr<pubsub_itc_fw::QuillLogger> logger);
+    explicit OrderGateway(const OrderGatewayConfiguration& config, std::unique_ptr<pubsub_itc_fw::QuillLogger> logger);
 
     /**
      * @brief Starts the reactor event loop. Blocks until shutdown.
@@ -43,12 +43,12 @@ class SampleFixGatewaySeq {
     int run();
 
   private:
-    FixGatewaySeqConfiguration config_;
+    OrderGatewayConfiguration config_;
     std::unique_ptr<pubsub_itc_fw::QuillLogger> logger_;
     pubsub_itc_fw::ServiceRegistry service_registry_;
     pubsub_itc_fw::ReactorConfiguration reactor_configuration_;
     std::unique_ptr<pubsub_itc_fw::Reactor> reactor_;
-    std::shared_ptr<FixGatewaySeqThread> gateway_thread_;
+    std::shared_ptr<OrderGatewayThread> gateway_thread_;
 };
 
-} // namespace sample_fix_gateway_seq
+} // namespace order_gateway

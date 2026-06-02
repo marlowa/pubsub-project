@@ -13,7 +13,7 @@
 #include <pubsub_itc_fw/Reactor.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 
-#include "FixGatewaySeqConfiguration.hpp"
+#include "OrderGatewayConfiguration.hpp"
 #include "FixMessage.hpp"
 #include "FixSerialiser.hpp"
 #include "FixSession.hpp"
@@ -30,7 +30,7 @@
 // Shared SCRAM-SHA-256 crypto primitives.
 #include <scram_crypto/ScramCrypto.hpp>
 
-namespace sample_fix_gateway_seq {
+namespace order_gateway {
 
 /**
  * @brief ApplicationThread subclass for the sequencer-backed FIX gateway.
@@ -59,7 +59,7 @@ namespace sample_fix_gateway_seq {
  *
  * Threading: ThreadID 1.
  */
-class FixGatewaySeqThread : public pubsub_itc_fw::ApplicationThread {
+class OrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
   public:
     /**
      * @param[in] token    Constructor token to force use of factory.
@@ -67,8 +67,8 @@ class FixGatewaySeqThread : public pubsub_itc_fw::ApplicationThread {
      * @param[in] reactor  The owning Reactor. Must outlive this object.
      * @param[in] config   Gateway configuration.
      */
-    FixGatewaySeqThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger, pubsub_itc_fw::Reactor& reactor,
-                        const FixGatewaySeqConfiguration& config);
+    OrderGatewayThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger, pubsub_itc_fw::Reactor& reactor,
+                        const OrderGatewayConfiguration& config);
 
   protected:
     void on_app_ready_event() override;
@@ -137,19 +137,19 @@ class FixGatewaySeqThread : public pubsub_itc_fw::ApplicationThread {
             send_pdu(sequencer_primary_conn_id_, pdu_id, 0, msg);
         } else {
             PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                           "FixGatewaySeqThread: primary sequencer not connected -- PDU not forwarded to primary");
+                           "OrderGatewayThread: primary sequencer not connected -- PDU not forwarded to primary");
         }
         if (config_.ha_enabled) {
             if (sequencer_secondary_conn_id_.get_value() != 0) {
                 send_pdu(sequencer_secondary_conn_id_, pdu_id, 0, msg);
             } else {
                 PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                               "FixGatewaySeqThread: secondary sequencer not connected -- PDU not forwarded to secondary");
+                               "OrderGatewayThread: secondary sequencer not connected -- PDU not forwarded to secondary");
             }
         }
     }
 
-    const FixGatewaySeqConfiguration& config_;
+    const OrderGatewayConfiguration& config_;
 
     // Precomputed inbound service name for the sequencer ER listener port.
     const std::string er_inbound_svc_;
@@ -185,4 +185,4 @@ class FixGatewaySeqThread : public pubsub_itc_fw::ApplicationThread {
     FixSession* find_session_by_comp_id(const std::string& comp_id);
 };
 
-} // namespace sample_fix_gateway_seq
+} // namespace order_gateway

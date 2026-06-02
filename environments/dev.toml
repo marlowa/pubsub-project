@@ -1,0 +1,168 @@
+# environments/dev.toml
+#
+# Single-machine developer sandbox.
+# All components run on localhost with the same TLS settings as production.
+# This is NOT a production deployment config — it is a convenience tool for
+# local development only.  In production each component runs on its own host.
+#
+# Consumed by:
+#   deploy.py --env environments/dev.toml
+#   devenv.py --env environments/dev.toml   (default)
+#   build.py  --install                     (uses dev defaults equivalent to this file)
+
+[env]
+name        = "dev"
+description = "Single-machine developer sandbox. All components on localhost."
+
+# ── Paths ─────────────────────────────────────────────────────────────────────
+# Relative paths are resolved from the project root (the directory that
+# contains the environments/ folder).
+
+[paths]
+install_dir = "build/installed"     # binaries, component configs, certs
+log_dir     = "build/installed/log" # component stdout/stderr and applog files
+run_dir     = "/var/tmp/pubsub/run" # PID files written here by devenv.py
+
+# ── Database ──────────────────────────────────────────────────────────────────
+# Used by deploy.py (runs create_db.py and export_credentials.py) and by
+# devenv.py (re-exports credentials before starting the auth service).
+# Password: set PUBSUB_APP_DB_PASSWORD in the environment; falls back to
+# the dev default "pubsub_dev" if unset.
+
+[db]
+host = "localhost"
+port = 5432
+name = "pubsub"
+user = "pubsub_app"
+
+# ── High availability ─────────────────────────────────────────────────────────
+# When enabled = true, all components marked ha_only = true are started.
+# Pass --no-ha to devenv.py to override for a quick single-instance session.
+# In production HA is always on.
+
+[ha]
+enabled = true
+
+# ── TLS certificates ──────────────────────────────────────────────────────────
+# Currently only the authentication service admin channel uses TLS.
+# As TLS is added to other inter-component channels, add a [tls.<name>]
+# section here.
+#
+# Paths are relative to each component's working directory (its
+# etc/<component>/ directory within the install tree), matching the relative
+# paths already used in the component TOML configs.
+#
+# In dev: deploy.py generates self-signed certs and writes them into the
+# install tree at these paths.
+#
+# In production: replace with paths to certs issued by your CA, and set
+# ca to the path of the CA certificate if client certificate verification
+# is required.
+
+[tls.auth_service_primary]
+cert = "admin.crt"
+key  = "admin.key"
+ca   = ""
+
+[tls.auth_service_secondary]
+cert = "admin.crt"
+key  = "admin.key"
+ca   = ""
+
+# ── Components ────────────────────────────────────────────────────────────────
+# binary and config paths are relative to install_dir.
+# workdir is the process working directory at launch, relative to install_dir.
+# Components that reference certs or data files by relative path in their
+# TOML must be started from the directory containing those files.
+# ha_only = true: component is skipped when HA is disabled.
+
+# Startup order is listed explicitly here so devenv.py can start components
+# in dependency order and wait for each to be ready before proceeding.
+# Shutdown is performed in reverse order.
+#
+# Dependencies:
+#   auth_service        — no outbound; gateway depends on it
+#   witness             — no outbound; arbiters depend on it
+#   arbiter             — connects to witness and peer; sequencers depend on it
+#   matching_engine     — listens for sequencer; also connects back to sequencer
+#                         ER ports (retries until ready)
+#   sequencer           — connects to arbiter and matching_engine
+#   gateway             — connects to auth_service and sequencer
+#   admin_service       — independent; started last for convenience
+
+[startup_order]
+components = [
+    "auth_service_primary",
+    "auth_service_secondary",
+    "witness",
+    "arbiter_primary",
+    "arbiter_secondary",
+    "matching_engine",
+    "sequencer_primary",
+    "sequencer_secondary",
+    "gateway",
+    "admin_service",
+]
+
+[components.auth_service_primary]
+binary  = "bin/authentication_service"
+config  = "etc/authentication_service/authentication_service.toml"
+workdir = "etc/authentication_service"
+ha_only = false
+
+[components.auth_service_secondary]
+binary  = "bin/authentication_service"
+config  = "etc/authentication_service/authentication_service_secondary.toml"
+workdir = "etc/authentication_service"
+ha_only = true
+
+[components.witness]
+binary  = "bin/witness"
+config  = "etc/witness/witness.toml"
+workdir = "etc/witness"
+ha_only = true
+
+[components.arbiter_primary]
+binary  = "bin/arbiter"
+config  = "etc/arbiter/arbiter.toml"
+workdir = "etc/arbiter"
+ha_only = true
+
+[components.arbiter_secondary]
+binary  = "bin/arbiter"
+config  = "etc/arbiter/arbiter_secondary.toml"
+workdir = "etc/arbiter"
+ha_only = true
+
+[components.matching_engine]
+binary  = "bin/matching_engine"
+config  = "etc/matching_engine/matching_engine.toml"
+workdir = "etc/matching_engine"
+ha_only = false
+
+[components.sequencer_primary]
+binary  = "bin/sequencer"
+config  = "etc/sequencer/sequencer.toml"
+workdir = "etc/sequencer"
+ha_only = false
+
+[components.sequencer_secondary]
+binary  = "bin/sequencer"
+config  = "etc/sequencer/sequencer_secondary.toml"
+workdir = "etc/sequencer"
+ha_only = true
+
+[components.gateway]
+binary  = "bin/order_gateway"
+config  = "etc/order_gateway/order_gateway.toml"
+workdir = "etc/order_gateway"
+ha_only = false
+
+# The admin service JAR is placed in install_dir/lib/ by deploy.py.
+# workdir is etc/admin_service/ so that relative paths in application.properties
+# (e.g. admin.users-file = admin_users.toml) resolve there.
+[components.admin_service]
+jar     = "lib/admin-service.jar"
+config  = "etc/admin_service/application.properties"
+workdir = "etc/admin_service"
+ha_only = false

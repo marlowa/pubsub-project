@@ -12,7 +12,7 @@
 
 #include <FixMessage.hpp>
 
-namespace sample_fix_gateway_seq {
+namespace order_gateway {
 namespace {
 
 static constexpr char fix_delimiter = '\x01';
@@ -216,4 +216,4 @@ size_t encode_execution_report(const pubsub_itc_fw_app::ExecutionReportView& vie
     return writer.valid ? static_cast<size_t>(writer.cursor - output_buffer) : 0;
 }
 
-} // namespace sample_fix_gateway_seq
+} // namespace order_gateway

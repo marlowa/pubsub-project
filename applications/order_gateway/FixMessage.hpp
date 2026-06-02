@@ -8,7 +8,7 @@
 #include <string_view>
 #include <unordered_map>
 
-namespace sample_fix_gateway_seq {
+namespace order_gateway {
 
 /**
  * @brief A simple container for a single FIX message's tag/value pairs.
@@ -237,4 +237,4 @@ struct ParsedFixMessage {
  */
 static constexpr std::string_view expected_preamble = "8=FIXT.1.1\x01";
 
-} // namespace sample_fix_gateway_seq
+} // namespace order_gateway

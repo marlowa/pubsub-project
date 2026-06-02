@@ -11,7 +11,7 @@
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 
-namespace sample_fix_gateway_seq {
+namespace order_gateway {
 
 namespace {
 constexpr char field_delimiter = '\x01'; // FIX SOH
@@ -203,4 +203,4 @@ std::string FixParser::format_checksum(int sum) {
     return {buffer};
 }
 
-} // namespace sample_fix_gateway_seq
+} // namespace order_gateway
