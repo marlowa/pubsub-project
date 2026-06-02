@@ -46,6 +46,13 @@
             <version>42.7.4</version>
         </dependency>
 
+        <!-- Password hashing -->
+        <dependency>
+            <groupId>org.mindrot</groupId>
+            <artifactId>jbcrypt</artifactId>
+            <version>0.4</version>
+        </dependency>
+
         <!-- Logging: SLF4J API + Logback implementation -->
         <dependency>
             <groupId>ch.qos.logback</groupId>

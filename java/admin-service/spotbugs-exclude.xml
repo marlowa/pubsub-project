@@ -17,6 +17,11 @@
             <Class name="com.pubsub.admin.web.FirmHandler"/>
             <Class name="com.pubsub.admin.web.CompIdHandler"/>
             <Class name="com.pubsub.admin.web.GatewayPermissionHandler"/>
+            <Class name="com.pubsub.admin.web.AuthFilter"/>
+            <Class name="com.pubsub.admin.web.LoginHandler"/>
+            <Class name="com.pubsub.admin.web.SetupHandler"/>
+            <Class name="com.pubsub.admin.web.ChangePasswordHandler"/>
+            <Class name="com.pubsub.admin.web.UserManagementHandler"/>
         </Or>
     </Match>
 </FindBugsFilter>

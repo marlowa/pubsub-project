@@ -1,0 +1,14 @@
+# PubSub admin service users — do not edit while the service is running.
+
+[[user]]
+username              = "admin"
+password_hash         = "$2a$12$k76jGXeEPBDLy7O3jFh0reoJKEIjQSYN.nOSbhHviPQBmhdJ5OXOO"
+role                  = "ADMIN"
+force_password_change = false
+
+[[user]]
+username              = "viewer1"
+password_hash         = "$2a$12$UMeiNF3kZUdky1zsWUCmXua3PYLTu9sTHC/CqAf7UiPiLfuRcgRoC"
+role                  = "VIEWER"
+force_password_change = false
+

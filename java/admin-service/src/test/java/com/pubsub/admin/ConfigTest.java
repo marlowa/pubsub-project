@@ -17,5 +17,8 @@ class ConfigTest {
         assertEquals("127.0.0.1", config.authServiceHost());
         assertEquals(7072, config.authServiceAdminPort());
         assertTrue(config.authServiceEnabled());
+        assertEquals("PubSub Admin", config.brandName());
+        assertEquals("", config.brandLogoUrl());
+        assertEquals("", config.brandCssFile());
     }
 }

@@ -12,7 +12,11 @@ public record Config(
         boolean authServiceEnabled,
         String authServiceHost,
         int authServiceAdminPort,
-        int serverPort
+        int serverPort,
+        String adminUsersFile,
+        String brandName,
+        String brandLogoUrl,
+        String brandCssFile
 ) {
     public static Config load() {
         Properties props = new Properties();
@@ -33,7 +37,11 @@ public record Config(
                 Boolean.parseBoolean(props.getProperty("auth-service.enabled", "true")),
                 props.getProperty("auth-service.host", "127.0.0.1"),
                 Integer.parseInt(props.getProperty("auth-service.admin-port", "7072")),
-                Integer.parseInt(props.getProperty("server.port", "8080"))
+                Integer.parseInt(props.getProperty("server.port", "8080")),
+                props.getProperty("admin.users-file", "admin_users.toml"),
+                props.getProperty("brand.name", "PubSub Admin"),
+                props.getProperty("brand.logo-url", ""),
+                props.getProperty("brand.css-file", "")
         );
     }
 
