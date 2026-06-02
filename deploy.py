@@ -28,11 +28,16 @@ except ImportError:
         sys.exit("error: Python 3.11+ or the 'tomli' package is required to parse TOML")
 
 import argparse
+import re
 import string
 import subprocess
 import sys
 import tarfile
 from pathlib import Path
+
+# Matches intentional ${placeholder} patterns — used to catch unresolved
+# placeholders after safe_substitute (which silently skips unknowns).
+_PLACEHOLDER_RE = re.compile(r'\$\{([_a-zA-Z][_a-zA-Z0-9]*)\}')
 
 _SCRIPT_DIR       = Path(__file__).resolve().parent
 _DEFAULT_ENV_FILE = _SCRIPT_DIR / "environments" / "dev.toml"
@@ -78,7 +83,18 @@ def unpack_artefact(artefact_path: Path, install_dir: Path) -> None:
             if len(parts) < 2 or not parts[1]:
                 continue
             member.name = parts[1]
-            tar.extract(member, path=install_dir)
+            try:
+                tar.extract(member, path=install_dir)
+            except OSError as exc:
+                if exc.errno == 26:  # ETXTBSY — binary is running
+                    target = install_dir / member.name
+                    sys.exit(
+                        f"\nerror: cannot overwrite running binary: {target}\n"
+                        f"Stop the sandbox first:\n"
+                        f"  python3 devenv.py stop\n"
+                        f"Then re-run deploy."
+                    )
+                raise
     file_count = sum(1 for _ in install_dir.rglob("*") if _.is_file())
     print(f"  {file_count} file(s) installed")
 
@@ -95,12 +111,14 @@ def expand_templates(install_dir: Path, namespace: dict[str, str]) -> None:
     expanded = 0
     for toml_path in sorted(etc_dir.rglob("*.toml")):
         text = toml_path.read_text(encoding="utf-8")
-        try:
-            result = string.Template(text).substitute(namespace)
-        except KeyError as exc:
-            sys.exit(f"error: undefined placeholder {exc} in {toml_path.relative_to(install_dir)}")
-        except ValueError as exc:
-            sys.exit(f"error: malformed placeholder in {toml_path.relative_to(install_dir)}: {exc}")
+        # safe_substitute leaves unrecognised $ sequences (e.g. bcrypt hashes
+        # containing $2a$12$…) intact instead of raising ValueError.  We then
+        # scan the result for any remaining ${identifier} patterns to catch
+        # typos or genuinely missing namespace entries.
+        result = string.Template(text).safe_substitute(namespace)
+        unresolved = _PLACEHOLDER_RE.findall(result)
+        if unresolved:
+            sys.exit(f"error: undefined placeholder(s) {unresolved} in {toml_path.relative_to(install_dir)}")
         if result != text:
             toml_path.write_text(result, encoding="utf-8")
             expanded += 1

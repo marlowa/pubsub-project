@@ -1,0 +1,10 @@
+#pragma once
+// Generated at build time by cmake/GenerateBuildInfo.cmake. Do not edit.
+namespace pubsub_itc_fw {
+struct BuildInfo {
+    static constexpr const char* version        = "@PROJECT_VERSION@";
+    static constexpr const char* git_sha        = "@GIT_SHA@";
+    static constexpr const char* git_branch     = "@GIT_BRANCH@";
+    static constexpr const char* build_datetime = "@BUILD_DATETIME@";
+};
+} // namespace pubsub_itc_fw

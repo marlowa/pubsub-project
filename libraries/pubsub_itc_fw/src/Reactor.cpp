@@ -194,11 +194,11 @@ void Reactor::route_message(ThreadID target_id, EventMessage message) {
 }
 
 void Reactor::register_inbound_listener(NetworkEndpointConfiguration address, ThreadID target_thread_id, ProtocolType protocol_type,
-                                        int64_t raw_buffer_capacity) {
+                                        int64_t raw_buffer_capacity, bool idle_timeout_exempt) {
     if (is_running()) {
         throw PreconditionAssertion("Reactor::register_inbound_listener: must be called before run()", __FILE__, __LINE__);
     }
-    inbound_manager_.register_inbound_listener(std::move(address), target_thread_id, protocol_type, raw_buffer_capacity);
+    inbound_manager_.register_inbound_listener(std::move(address), target_thread_id, protocol_type, raw_buffer_capacity, idle_timeout_exempt);
 }
 
 void Reactor::register_inbound_tls_listener(NetworkEndpointConfiguration address, ThreadID target_thread_id,

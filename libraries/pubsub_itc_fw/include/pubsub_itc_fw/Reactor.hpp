@@ -171,7 +171,8 @@ class Reactor : public ThreadLookupInterface {
      * @throws PreconditionAssertion if called after run().
      */
     void register_inbound_listener(NetworkEndpointConfiguration address, ThreadID target_thread_id,
-                                   ProtocolType protocol_type = ProtocolType{ProtocolType::FrameworkPdu}, int64_t raw_buffer_capacity = 0);
+                                   ProtocolType protocol_type = ProtocolType{ProtocolType::FrameworkPdu}, int64_t raw_buffer_capacity = 0,
+                                   bool idle_timeout_exempt = false);
 
     /**
      * @brief Registers a TLS-protected inbound listener.

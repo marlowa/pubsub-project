@@ -129,6 +129,32 @@ message Heartbeat (id=102, version=1)
 end
 
 # ------------------------------------------------------------
+#  103 — WalRecord
+#  Sent by the leader to the follower to replicate each WAL
+#  entry as it is committed.  The follower appends the record
+#  to its own WAL and replies with WalAck.  The leader gates
+#  ER emission to the gateway on receipt of that ack, ensuring
+#  the follower has durably recorded the order before the
+#  client-visible fill notification is sent.
+# ------------------------------------------------------------
+message WalRecord (id=103, version=1)
+    i64 seq_no      # sequence number assigned by the leader
+    i16 pdu_id      # PDU type tag (e.g. NewOrderSingle = 1000)
+    bytes payload   # complete encoded PDU payload (as stored in the WAL)
+end
+
+# ------------------------------------------------------------
+#  104 — WalAck
+#  Sent by the follower to the leader to confirm that the WAL
+#  entry for seq_no has been durably written to the follower's
+#  on-disk WAL.  Receipt of this PDU by the leader releases any
+#  buffered ExecutionReport for the corresponding order.
+# ------------------------------------------------------------
+message WalAck (id=104, version=1)
+    i64 seq_no      # sequence number echoed from the WalRecord
+end
+
+# ------------------------------------------------------------
 #  200 — ArbitrationReport
 #  Sent by a component (sequencer or ME) to the active arbiter
 #  when arbitration is required (startup or after peer heartbeat

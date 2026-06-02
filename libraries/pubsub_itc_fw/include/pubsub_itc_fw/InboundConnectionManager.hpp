@@ -90,7 +90,8 @@ class InboundConnectionManager {
      *                                listeners. Ignored for FrameworkPdu listeners.
      */
     void register_inbound_listener(NetworkEndpointConfiguration address, ThreadID target_thread_id,
-                                   ProtocolType protocol_type = ProtocolType{ProtocolType::FrameworkPdu}, int64_t raw_buffer_capacity = 0);
+                                   ProtocolType protocol_type = ProtocolType{ProtocolType::FrameworkPdu}, int64_t raw_buffer_capacity = 0,
+                                   bool idle_timeout_exempt = false);
 
     /**
      * @brief Stages a TLS inbound listener for initialisation.

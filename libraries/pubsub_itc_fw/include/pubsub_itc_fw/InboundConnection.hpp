@@ -72,7 +72,7 @@ class InboundConnection {
      *                             (e.g. "192.168.1.10:5001") for logging.
      */
     InboundConnection(ConnectionID id, std::unique_ptr<TcpSocket> socket, ThreadID target_thread_id, std::unique_ptr<ProtocolHandlerInterface> handler,
-                      std::string peer_description);
+                      std::string peer_description, bool idle_timeout_exempt = false);
 
     /**
      * @brief Returns the ConnectionID assigned to this connection.
@@ -113,6 +113,16 @@ class InboundConnection {
     }
 
     /**
+     * @brief Returns true if this connection is exempt from idle timeout teardown.
+     *
+     * Set at construction time from InboundListenerConfiguration::idle_timeout_exempt.
+     * Exempt connections are never torn down by check_for_inactive_connections().
+     */
+    [[nodiscard]] bool idle_timeout_exempt() const {
+        return idle_timeout_exempt_;
+    }
+
+    /**
      * @brief Services a readable socket event (EPOLLIN).
      *
      * Updates the last activity timestamp and delegates to the protocol
@@ -150,6 +160,7 @@ class InboundConnection {
     std::unique_ptr<ProtocolHandlerInterface> handler_;
 
     std::chrono::steady_clock::time_point last_activity_time_;
+    bool idle_timeout_exempt_;
 };
 
 } // namespace pubsub_itc_fw

@@ -165,9 +165,11 @@ void SequencerThread::on_connection_lost(pubsub_itc_fw::ConnectionID id, const s
     } else if (id == peer_conn_id_) {
         peer_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: outbound peer connection {} lost: {}", id.get_value(), reason);
+        flush_pending_er();
     } else if (id == peer_inbound_conn_id_) {
         peer_inbound_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: inbound peer connection {} lost: {}", id.get_value(), reason);
+        flush_pending_er();
     } else {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: inbound connection {} lost: {}", id.get_value(), reason);
     }
@@ -207,16 +209,23 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         // The ME reads it via message.seq_no() and echoes it on the ER reply.
         const int64_t seq = next_sequence_number_++;
 
-        // WAL commit: append before forwarding -- the append is the
-        // irreversible act. The ME send happens only after this returns.
-        wal_.append(seq, static_cast<int16_t>(message.pdu_id()), message.payload(), message.payload_size());
-
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "SequencerThread: order PDU on connection {} pdu_id={} seq={} -- WAL append ok (wal_size={}) role={}", message.connection_id().get_value(),
-                   message.pdu_id(), seq, wal_.record_count(), pubsub_itc_fw_app::to_string(role_));
+        // WAL commit: only the leader appends from the direct gateway PDU.
+        // Followers write their WAL exclusively via WalRecord from the leader,
+        // which ensures WALs are identical byte-for-byte.  Unknown role (during
+        // election startup) appends locally because it may become the leader.
+        if (role_ != pubsub_itc_fw_app::Role::follower) {
+            wal_.append(seq, static_cast<int16_t>(message.pdu_id()), message.payload(), message.payload_size());
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
+                       "SequencerThread: order PDU on connection {} pdu_id={} seq={} -- WAL append ok (wal_size={}) role={}",
+                       message.connection_id().get_value(), message.pdu_id(), seq, wal_.record_count(), pubsub_itc_fw_app::to_string(role_));
+        } else {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
+                       "SequencerThread: order PDU on connection {} pdu_id={} seq={} -- follower, WAL written via WalRecord",
+                       message.connection_id().get_value(), message.pdu_id(), seq);
+        }
 
         if (role_ != pubsub_itc_fw_app::Role::leader) {
-            // Follower: keep WAL and routing map in sync, but don't forward to ME.
+            // Follower/unknown: do not forward to ME.
             release_pdu_payload(message);
             return;
         }
@@ -231,6 +240,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         // We use the pdu_id from the incoming message so the ME sees the
         // correct topic tag (NewOrderSingle=1000, OrderCancelRequest=1001).
         const int16_t pdu_id = static_cast<int16_t>(message.pdu_id());
+        bool forwarded_to_me = false;
 
         if (pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::NewOrderSingle)) {
             auto& arena_buf = decode_arena_buffer();
@@ -302,6 +312,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             }
 
             send_pdu(me_outbound_order_conn_id_, pdu_id, seq, nos);
+            forwarded_to_me = true;
 
         } else if (pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::OrderCancelRequest)) {
             auto& arena_buf = decode_arena_buffer();
@@ -337,9 +348,15 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             }
 
             send_pdu(me_outbound_order_conn_id_, pdu_id, seq, ocr);
+            forwarded_to_me = true;
 
         } else {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: unknown order PDU id {} -- dropping", pdu_id);
+        }
+
+        // Replicate to follower before releasing the slab so the payload pointer stays valid.
+        if (forwarded_to_me && config_.ha_enabled) {
+            send_wal_record(seq, pdu_id, message);
         }
 
         release_pdu_payload(message);
@@ -353,7 +370,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             return;
         }
 
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: ER PDU on connection {} pdu_id={} seq={} -- forwarding to gateway",
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: ER PDU on connection {} pdu_id={} seq={} -- forwarding to gateway",
                    message.connection_id().get_value(), message.pdu_id(), message.seq_no());
 
         if (!gateway_conn_id_.is_valid()) {
@@ -475,11 +492,35 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             }
         }
 
-        send_pdu(gateway_conn_id_, pdu_id, er_seq_no, er);
-        release_pdu_payload(message);
-
-        if (erase_routing_entry) {
-            seq_no_to_session_conn_id_.erase(er_seq_no);
+        if (!needs_wal_ack()) {
+            send_pdu(gateway_conn_id_, pdu_id, er_seq_no, er);
+            release_pdu_payload(message);
+            if (erase_routing_entry) {
+                seq_no_to_session_conn_id_.erase(er_seq_no);
+            }
+        } else {
+            auto acked_it = wal_acked_seq_nos_.find(er_seq_no);
+            if (acked_it != wal_acked_seq_nos_.end()) {
+                // Follower already acked this seq_no; forward immediately.
+                wal_acked_seq_nos_.erase(acked_it);
+                send_pdu(gateway_conn_id_, pdu_id, er_seq_no, er);
+                release_pdu_payload(message);
+                if (erase_routing_entry) {
+                    seq_no_to_session_conn_id_.erase(er_seq_no);
+                }
+            } else {
+                // WalAck not yet received; buffer the ER until it arrives.
+                PendingEr pending{};
+                pending.pdu_id = pdu_id;
+                pending.seq_no = er_seq_no;
+                pending.payload.assign(message.payload(), message.payload() + static_cast<size_t>(message.payload_size()));
+                pending.has_gateway_session_conn_id = er.has_gateway_session_conn_id;
+                pending.gateway_session_conn_id = er.gateway_session_conn_id;
+                pending.erase_routing_entry = erase_routing_entry;
+                PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: ER seq={} buffered -- awaiting WalAck from follower", er_seq_no);
+                pending_er_.emplace(er_seq_no, std::move(pending));
+                release_pdu_payload(message);
+            }
         }
 
     } else {
@@ -557,6 +598,8 @@ void SequencerThread::on_itc_message([[maybe_unused]] const pubsub_itc_fw::Event
 static constexpr int16_t pdu_status_query = 100;
 static constexpr int16_t pdu_status_response = 101;
 static constexpr int16_t pdu_heartbeat = 102;
+static constexpr int16_t pdu_wal_record = 103;
+static constexpr int16_t pdu_wal_ack = 104;
 static constexpr int16_t pdu_arbitration_report = 200;
 static constexpr int16_t pdu_arbitration_decision = 201;
 
@@ -834,12 +877,183 @@ void SequencerThread::handle_peer_pdu(const pubsub_itc_fw::ConnectionID& conn_id
         handle_peer_status_response(message);
     } else if (pdu_id == pdu_heartbeat) {
         handle_peer_heartbeat(message);
+    } else if (pdu_id == pdu_wal_record) {
+        handle_wal_record(conn_id, message);
+    } else if (pdu_id == pdu_wal_ack) {
+        handle_wal_ack(message);
     } else if (pdu_id == pdu_arbitration_decision) {
         // Should not arrive on the peer channel — decisions come from the arbiter.
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                        "SequencerThread: ArbitrationDecision received on peer channel (unexpected) -- dropping");
     } else {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: unknown peer PDU id {} -- dropping", pdu_id);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// WAL replication helpers (Slice 7)
+// ---------------------------------------------------------------------------
+
+bool SequencerThread::needs_wal_ack() const {
+    return config_.ha_enabled && peer_active_conn().is_valid();
+}
+
+void SequencerThread::send_wal_record(int64_t seq, int16_t wal_pdu_id, const pubsub_itc_fw::EventMessage& message) {
+    const pubsub_itc_fw::ConnectionID target = peer_active_conn();
+    if (!target.is_valid()) {
+        return;
+    }
+    pubsub_itc_fw_app::WalRecord wal_record{};
+    wal_record.seq_no = seq;
+    wal_record.pdu_id = wal_pdu_id;
+    wal_record.payload.data = message.payload();
+    wal_record.payload.size = static_cast<size_t>(message.payload_size());
+    send_pdu(target, pdu_wal_record, seq, wal_record);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: WalRecord sent to follower seq={} pdu_id={}", seq, wal_pdu_id);
+}
+
+void SequencerThread::handle_wal_record(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    arena.reset();
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw_app::WalRecordView view{};
+
+    if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode WalRecord -- dropping");
+        return;
+    }
+
+    wal_.append(view.seq_no, view.pdu_id, view.payload.data, static_cast<int>(view.payload.size));
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
+               "SequencerThread: WalRecord seq={} pdu_id={} written to follower WAL (wal_size={}) -- sending WalAck",
+               view.seq_no, view.pdu_id, wal_.record_count());
+
+    pubsub_itc_fw_app::WalAck wal_ack{};
+    wal_ack.seq_no = view.seq_no;
+    send_pdu(conn_id, pdu_wal_ack, 0, wal_ack);
+}
+
+void SequencerThread::handle_wal_ack(const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    arena.reset();
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw_app::WalAckView view{};
+
+    if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode WalAck -- dropping");
+        return;
+    }
+
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: WalAck received seq={}", view.seq_no);
+
+    auto it = pending_er_.find(view.seq_no);
+    if (it != pending_er_.end()) {
+        forward_pending_er(it->second);
+        pending_er_.erase(it);
+    } else {
+        // ER hasn't arrived yet; record the ack so the ER path can forward immediately on arrival.
+        wal_acked_seq_nos_.insert(view.seq_no);
+    }
+}
+
+void SequencerThread::flush_pending_er() {
+    if (!pending_er_.empty()) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "SequencerThread: peer lost -- flushing {} buffered ERs to gateway (degraded mode)", pending_er_.size());
+        for (auto& [seq_no, pending] : pending_er_) {
+            forward_pending_er(pending);
+        }
+        pending_er_.clear();
+    }
+    wal_acked_seq_nos_.clear();
+}
+
+void SequencerThread::forward_pending_er(const PendingEr& pending) {
+    if (!gateway_conn_id_.is_valid()) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: gateway not connected -- dropping buffered ER");
+        return;
+    }
+
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    arena.reset();
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw_app::ExecutionReportView view{};
+
+    if (!pubsub_itc_fw_app::decode(view, pending.payload.data(), pending.payload.size(), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode buffered ExecutionReport -- dropping");
+        return;
+    }
+
+    // pending.payload is alive for the lifetime of this call; string_view fields
+    // in both view and er borrow from it and remain valid through send_pdu.
+    pubsub_itc_fw_app::ExecutionReport er{};
+    er.order_id = view.order_id;
+    er.exec_id = view.exec_id;
+    er.exec_type = view.exec_type;
+    er.ord_status = view.ord_status;
+    er.symbol = view.symbol;
+    er.side = view.side;
+    er.leaves_qty = view.leaves_qty;
+    er.cum_qty = view.cum_qty;
+    er.avg_px = view.avg_px;
+    er.transact_time = view.transact_time;
+    er.has_cl_ord_id = view.has_cl_ord_id;
+    er.cl_ord_id = view.cl_ord_id;
+    er.has_orig_cl_ord_id = view.has_orig_cl_ord_id;
+    er.orig_cl_ord_id = view.orig_cl_ord_id;
+    er.has_ord_type = view.has_ord_type;
+    er.ord_type = view.ord_type;
+    er.has_price = view.has_price;
+    er.price = view.price;
+    er.has_stop_px = view.has_stop_px;
+    er.stop_px = view.stop_px;
+    er.has_order_qty = view.has_order_qty;
+    er.order_qty = view.order_qty;
+    er.has_time_in_force = view.has_time_in_force;
+    er.time_in_force = view.time_in_force;
+    er.has_account = view.has_account;
+    er.account = view.account;
+    er.has_ex_destination = view.has_ex_destination;
+    er.ex_destination = view.ex_destination;
+    er.has_exec_inst = view.has_exec_inst;
+    er.exec_inst = view.exec_inst;
+    er.has_last_qty = view.has_last_qty;
+    er.last_qty = view.last_qty;
+    er.has_last_px = view.has_last_px;
+    er.last_px = view.last_px;
+    er.has_trade_date = view.has_trade_date;
+    er.trade_date = view.trade_date;
+    er.has_exec_ref_id = view.has_exec_ref_id;
+    er.exec_ref_id = view.exec_ref_id;
+    er.has_ord_rej_reason = view.has_ord_rej_reason;
+    er.ord_rej_reason = view.ord_rej_reason;
+    er.has_cxl_rej_reason = view.has_cxl_rej_reason;
+    er.cxl_rej_reason = view.cxl_rej_reason;
+    er.has_text = view.has_text;
+    er.text = view.text;
+    er.has_min_qty = view.has_min_qty;
+    er.min_qty = view.min_qty;
+    er.has_max_floor = view.has_max_floor;
+    er.max_floor = view.max_floor;
+    er.has_expire_time = view.has_expire_time;
+    er.expire_time = view.expire_time;
+
+    if (pending.has_gateway_session_conn_id) {
+        er.has_gateway_session_conn_id = true;
+        er.gateway_session_conn_id = pending.gateway_session_conn_id;
+    }
+
+    send_pdu(gateway_conn_id_, pending.pdu_id, pending.seq_no, er);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: buffered ER seq={} forwarded to gateway", pending.seq_no);
+
+    if (pending.erase_routing_entry) {
+        seq_no_to_session_conn_id_.erase(pending.seq_no);
     }
 }
 

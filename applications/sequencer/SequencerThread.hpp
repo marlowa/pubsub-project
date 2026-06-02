@@ -6,6 +6,8 @@
 #include <cstdint> // IWYU pragma: keep
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
@@ -100,6 +102,23 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     pubsub_itc_fw_app::Role role_{pubsub_itc_fw_app::Role::unknown};
     int32_t epoch_{0};
 
+    // WAL replication state (Slice 7).
+    //
+    // An ExecutionReport from the ME is held here until the follower has
+    // confirmed it wrote the corresponding WAL entry.  The gateway only sees
+    // the ER once the follower has durably committed it.
+    struct PendingEr {
+        int16_t pdu_id{};
+        int64_t seq_no{};
+        std::vector<uint8_t> payload;           // copy of the raw encoded ER from ME
+        bool has_gateway_session_conn_id{false};
+        int32_t gateway_session_conn_id{0};
+        bool erase_routing_entry{false};
+    };
+
+    std::unordered_map<int64_t, PendingEr> pending_er_;      // seq_no → buffered ER
+    std::unordered_set<int64_t> wal_acked_seq_nos_;           // acked but ER not yet received
+
     // Leader-follower helpers.
     pubsub_itc_fw::ConnectionID peer_active_conn() const;
     void adopt_role(pubsub_itc_fw_app::Role new_role);
@@ -115,6 +134,14 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void handle_peer_heartbeat(const pubsub_itc_fw::EventMessage& message);
     void handle_peer_pdu(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     void handle_arbitration_decision(const pubsub_itc_fw::EventMessage& message);
+
+    // WAL replication helpers (Slice 7).
+    [[nodiscard]] bool needs_wal_ack() const;
+    void send_wal_record(int64_t seq, int16_t pdu_id, const pubsub_itc_fw::EventMessage& message);
+    void handle_wal_record(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
+    void handle_wal_ack(const pubsub_itc_fw::EventMessage& message);
+    void flush_pending_er();
+    void forward_pending_er(const PendingEr& pending);
 
     // seq_no → gateway_session_conn_id of the originating FIX session.
     // Keyed by the sequence number assigned to each NOS/OCR (globally unique,

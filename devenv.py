@@ -185,7 +185,7 @@ def stop_one(name: str, run_dir: Path, timeout: float = _SHUTDOWN_TIMEOUT) -> No
             pass
 
     remove_pid(run_dir, name)
-    print(f"  {name}: stopped")
+    print(f"  {name} (PID {pid}): stopped")
 
 
 # ── Credential export ─────────────────────────────────────────────────────────

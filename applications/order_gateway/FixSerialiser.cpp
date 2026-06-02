@@ -33,8 +33,8 @@ std::string FixSerialiser::serialise(const FixMessage& msg, int seq_num) const {
     // to keep FixMessage's internals private. For this sample the set of
     // application tags is small and fixed.
     constexpr int app_tags[] = {
-        Tag::EncryptMethod, Tag::HeartBtInt, Tag::Text,     Tag::ClOrdID, Tag::OrderID, Tag::ExecID, Tag::ExecType,  Tag::OrdStatus,
-        Tag::Symbol,        Tag::Side,       Tag::OrderQty, Tag::Price,   Tag::OrdType, Tag::CumQty, Tag::LeavesQty,
+        Tag::EncryptMethod, Tag::HeartBtInt, Tag::DefaultApplVerID, Tag::Text,     Tag::ClOrdID, Tag::OrderID, Tag::ExecID, Tag::ExecType,  Tag::OrdStatus,
+        Tag::Symbol,        Tag::Side,       Tag::OrderQty,         Tag::Price,    Tag::OrdType, Tag::CumQty, Tag::LeavesQty,
     };
 
     for (const int tag : app_tags) {

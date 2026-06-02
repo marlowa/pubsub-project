@@ -540,6 +540,7 @@ void OrderGatewayThread::handle_authentication_result(const pubsub_itc_fw::Event
     reply.set(Tag::MsgType, MsgType::Logon);
     reply.set(Tag::EncryptMethod, 0);
     reply.set(Tag::HeartBtInt, session.heartbeat_interval);
+    reply.set(Tag::DefaultApplVerID, std::string("9"));
     send_fix_to_session(session, reply);
     session.session_established = true;
 

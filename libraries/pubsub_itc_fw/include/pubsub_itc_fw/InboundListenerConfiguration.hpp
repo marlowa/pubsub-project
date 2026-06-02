@@ -64,6 +64,19 @@ struct InboundListenerConfiguration {
      * that is shared by all connections accepted on this listener.
      */
     std::optional<TlsListenerConfiguration> tls;
+
+    /**
+     * @brief When true, connections accepted on this listener are never torn
+     *        down by the idle timeout sweep.
+     *
+     * Use for long-lived trusted internal connections (e.g. ER inbound from the
+     * matching engine, replication channels) that may be legitimately quiet for
+     * extended periods. For external client-facing listeners leave this false so
+     * that zombie connections are detected and cleaned up.
+     *
+     * Default: false.
+     */
+    bool idle_timeout_exempt{false};
 };
 
 } // namespace pubsub_itc_fw

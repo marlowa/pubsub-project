@@ -35,12 +35,13 @@ InboundConnectionManager::InboundConnectionManager(int epoll_fd, const ReactorCo
     : epoll_fd_(epoll_fd), config_(config), inbound_allocator_(inbound_allocator), thread_lookup_(thread_lookup), logger_(logger) {}
 
 void InboundConnectionManager::register_inbound_listener(NetworkEndpointConfiguration address, ThreadID target_thread_id, ProtocolType protocol_type,
-                                                         int64_t raw_buffer_capacity) {
+                                                         int64_t raw_buffer_capacity, bool idle_timeout_exempt) {
     InboundListener listener;
     listener.configuration.address = std::move(address);
     listener.configuration.target_thread_id = target_thread_id;
     listener.configuration.protocol_type = protocol_type;
     listener.configuration.raw_buffer_capacity = raw_buffer_capacity;
+    listener.configuration.idle_timeout_exempt = idle_timeout_exempt;
     inbound_listeners_staging_.push_back(std::move(listener));
 }
 
@@ -157,7 +158,8 @@ void InboundConnectionManager::on_accept(InboundListener& listener, ConnectionID
     } else {
         handler = std::make_unique<PduProtocolHandler>(*socket, *target_thread, inbound_allocator_, logger_, populated_id);
     }
-    auto conn = std::make_unique<InboundConnection>(populated_id, std::move(socket), listener.configuration.target_thread_id, std::move(handler), peer_desc);
+    auto conn = std::make_unique<InboundConnection>(populated_id, std::move(socket), listener.configuration.target_thread_id, std::move(handler), peer_desc,
+                                                    listener.configuration.idle_timeout_exempt);
     InboundConnection* conn_ptr = conn.get();
     connections_[populated_id] = std::move(conn);
     connections_by_fd_[fd] = conn_ptr;
@@ -174,7 +176,7 @@ void InboundConnectionManager::on_accept(InboundListener& listener, ConnectionID
         return;
     }
 
-    PUBSUB_LOG(logger_, FwLogLevel::Info, "InboundConnectionManager::on_accept: accepted connection {} from {} on port {} service [{}]",
+    PUBSUB_LOG(logger_, FwLogLevel::Debug, "InboundConnectionManager::on_accept: accepted connection {} from {} on port {} service [{}]",
                populated_id.get_value(), peer_desc, listener.configuration.address.port, populated_id.service_name());
 
     target_thread->get_queue().enqueue(EventMessage::create_connection_established_event(populated_id));
@@ -301,6 +303,9 @@ void InboundConnectionManager::check_for_inactive_connections() {
     // teardown_connection() modifies connections_.
     std::vector<ConnectionID> idle_connections;
     for (const auto& [id, conn] : connections_) {
+        if (conn->idle_timeout_exempt()) {
+            continue;
+        }
         const auto elapsed = now - conn->last_activity_time();
         if (elapsed > config_.socket_maximum_inactivity_interval_) {
             idle_connections.push_back(id);
