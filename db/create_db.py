@@ -155,6 +155,13 @@ def main() -> None:
         "--drop-existing", action="store_true",
         help="Drop the database and role before recreating (destructive)",
     )
+    parser.add_argument(
+        "--contexts", default="",
+        help=(
+            "Liquibase context filter (e.g. 'production' to skip test fixtures). "
+            "Default: empty — all changesets including context='test' are applied."
+        ),
+    )
     args = parser.parse_args()
 
     app_password = os.environ.get(DEFAULT_APP_PASS_ENV, DEFAULT_DEV_PASSWORD)
@@ -217,15 +224,18 @@ def main() -> None:
     # Liquibase 5.x resolves --changeLogFile relative to --search-path, not
     # as a filesystem absolute path.  Point the search path at db/ so that
     # changelog paths are relative to the same root used by liquibase.properties.
-    _run([
+    liquibase_cmd = [
         "liquibase",
         f"--search-path={script_dir}",
         f"--url=jdbc:postgresql://{args.pg_host}:{args.pg_port}/{args.db_name}",
         f"--username={args.app_user}",
         f"--password={app_password}",
         "--changeLogFile=changelog/db.changelog-root.xml",
-        "update",
-    ])
+    ]
+    if args.contexts:
+        liquibase_cmd.append(f"--contexts={args.contexts}")
+    liquibase_cmd.append("update")
+    _run(liquibase_cmd)
     print()
 
     print("=== Done ===")

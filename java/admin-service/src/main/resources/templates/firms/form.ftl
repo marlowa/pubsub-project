@@ -20,6 +20,11 @@
         <input type="checkbox" name="enabled" <#if firm.enabled()>checked</#if>>
         Enabled
     </label>
+    <#if !firm.enabled()>
+    <p><strong>Note:</strong> Re-enabling this firm will not automatically restore
+    gateway credentials for its comp_ids. After re-enabling, reset each comp_id's
+    password to restore gateway access.</p>
+    </#if>
     <button type="submit">Update</button>
     <a href="/firms">Cancel</a>
 </form>

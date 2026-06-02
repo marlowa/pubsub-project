@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+    xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+                        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.20.xsd">
+
+    <!--
+        Test fixtures — only applied when the Liquibase context filter includes "test".
+        Run with:  liquibase update  (no filter — applies everything, suitable for dev/test)
+        Skip with: liquibase update -\-contexts production
+    -->
+
+    <!-- ================================================================
+         test-001  TEST firm
+         Owns the CLIENT comp_id used by the fix8 HA test harness.
+         ================================================================ -->
+    <changeSet id="v1-test-001-test-firm" author="pubsub" context="test">
+        <insert tableName="${tablePrefix}firm">
+            <column name="firm_id" value="TEST"/>
+            <column name="name"    value="Test Harness"/>
+            <column name="enabled" valueBoolean="true"/>
+        </insert>
+    </changeSet>
+
+    <!-- ================================================================
+         test-002  CLIENT comp_id
+         SenderCompID used by the fix8 HA test client (stubpassword).
+         SCRAM-SHA-256 values derived from password "stubpassword",
+         salt 25df8d5e141f62c447da65e44ee4a6aa, 4096 iterations.
+         force_password_change is false — this is a service account,
+         not a human admin UI user.
+         ================================================================ -->
+    <changeSet id="v1-test-002-client-comp-id" author="pubsub" context="test">
+        <insert tableName="${tablePrefix}comp_id">
+            <column name="comp_id"               value="CLIENT"/>
+            <column name="firm_id"               value="TEST"/>
+            <column name="stored_key"            value="51ea66c1a17638cdc7559f4cda85218e82aa9bb5379f72907836bd1877896aca"/>
+            <column name="server_key"            value="79c79d0aec244f14d135f9b9907d2f85ec2c414f36f9d8a5459da2e8a187d833"/>
+            <column name="salt"                  value="25df8d5e141f62c447da65e44ee4a6aa"/>
+            <column name="iterations"            valueNumeric="4096"/>
+            <column name="enabled"               valueBoolean="true"/>
+            <column name="force_password_change" valueBoolean="false"/>
+            <column name="locked"                valueBoolean="false"/>
+            <column name="consecutive_failed_logins" valueNumeric="0"/>
+        </insert>
+    </changeSet>
+
+</databaseChangeLog>

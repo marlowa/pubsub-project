@@ -162,6 +162,11 @@ FIX8_BIN = FIX8_DIR / "bin" / "f8test"
 FIX8_CFG = "myfix_gateway_client.xml"
 # ──────────────────────────────────────────────────────────────────────────────
 
+# Gateway log substrings for FIX logon outcome detection.
+_GW_LOGON_OK       = "authentication succeeded -- FIX session established"
+_GW_LOGON_FAIL     = "authentication failed"
+_GW_SIG_MISMATCH   = "ServerSignature mismatch"
+
 # Substrings that appear together on adopt_role() log lines:
 #   "SequencerThread: role transition {from} -> {to} (epoch={n})"
 #   "ArbiterThread:   role transition {from} -> {to} (epoch={n})"
@@ -819,6 +824,32 @@ def poll_log_for(log_path: Path, *markers: str,
     return False, time.monotonic() - t0, pos
 
 
+def wait_for_fix_logon(gw_log: Path, from_byte: int,
+                       timeout: float) -> str:
+    """
+    Poll the gateway log for the outcome of a FIX logon attempt.
+    Returns 'ok', 'auth_failed', 'sig_mismatch', or 'timeout'.
+    Only bytes beyond from_byte are examined so pre-existing content is skipped.
+    """
+    deadline = time.monotonic() + timeout
+    pos = from_byte
+    while time.monotonic() < deadline:
+        if gw_log.is_file():
+            with open(gw_log, "r", errors="replace") as fh:
+                fh.seek(pos)
+                chunk = fh.read()
+                pos   = fh.tell()
+            for line in chunk.splitlines():
+                if _GW_LOGON_OK in line:
+                    return "ok"
+                if _GW_LOGON_FAIL in line:
+                    return "auth_failed"
+                if _GW_SIG_MISMATCH in line:
+                    return "sig_mismatch"
+        time.sleep(LOG_POLL_INTERVAL)
+    return "timeout"
+
+
 def wait_for_me_ord(me_log: Path, target: int,
                     timeout: float, from_byte: int = 0) -> tuple[bool, float, int]:
     """
@@ -907,11 +938,13 @@ def launch_app(name: str, bin_name: str, config: Path,
     return proc
 
 
-def send_burst(count: int) -> subprocess.Popen:
+def send_burst(count: int, gw_log: Path) -> subprocess.Popen:
     """
-    Launch one f8test session, wait for FIX logon, then send `count` T commands.
-    Each T command sends 1000 NOS.  Returns the Popen object.
+    Launch one f8test session, wait for confirmed FIX logon, then send `count`
+    T commands.  Each T command sends 1000 NOS.  Returns the Popen object.
+    Dies immediately on authentication failure or timeout instead of hanging.
     """
+    gw_pos = file_end(gw_log)
     proc = subprocess.Popen(
         [str(FIX8_BIN), "-c", FIX8_CFG, "-N", "GW1"],
         cwd=str(FIX8_DIR),
@@ -919,8 +952,17 @@ def send_burst(count: int) -> subprocess.Popen:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    log(f"  f8test PID {proc.pid}: waiting {FIX8_LOGON_WAIT:.0f}s for FIX logon ...")
-    time.sleep(FIX8_LOGON_WAIT)
+    log(f"  f8test PID {proc.pid}: waiting up to {FIX8_LOGON_WAIT:.0f}s for FIX logon ...")
+    outcome = wait_for_fix_logon(gw_log, gw_pos, FIX8_LOGON_WAIT)
+    if outcome == "auth_failed":
+        stop_f8test(proc)
+        die("FIX logon failed: authentication rejected — check credentials.toml has an entry for this comp_id")
+    if outcome == "sig_mismatch":
+        stop_f8test(proc)
+        die("FIX logon failed: ServerSignature mismatch — auth service identity could not be verified")
+    if outcome == "timeout":
+        stop_f8test(proc)
+        die(f"FIX logon timed out after {FIX8_LOGON_WAIT:.0f}s — gateway or auth service may not be ready")
     for _ in range(count):
         proc.stdin.write(b"T\n")
     proc.stdin.flush()
@@ -1106,6 +1148,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
     arb_secondary_log          = log_dir / "arbiter_secondary.log"
     auth_primary_log           = log_dir / "authentication_service_primary.log"
     auth_secondary_log         = log_dir / "authentication_service_secondary.log"
+    gw_log                     = log_dir / "sample_fix_gateway_seq.log"
 
     log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1234,7 +1277,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
         before_total = args.orders_before * 1000
         log(f"=== Phase 3: {before_total} baseline orders ===")
 
-        f8proc = send_burst(args.orders_before)
+        f8proc = send_burst(args.orders_before, gw_log)
         log(f"  Waiting for ME-ORD-{before_total} ...")
         found, elapsed, me_pos = wait_for_me_ord(
             me_log, before_total, timeout=120.0, from_byte=0,

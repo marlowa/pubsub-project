@@ -56,6 +56,39 @@ temporarily unavailable.
 Accounts created by an ADMIN have **force-password-change** set. The new user is
 redirected to `/change-password` immediately after their first login.
 
+## Credential Lifecycle
+
+The admin service keeps credentials in two places in sync: the PostgreSQL database
+(SCRAM-derived values only — no plaintext password is ever stored) and the running
+authentication service (updated live via PDU 510/512 over the TLS admin channel).
+
+### What happens automatically
+
+| Action | Effect on auth service |
+|--------|----------------------|
+| Set password on comp_id | PDU 510 sent — credential activated |
+| Disable firm | PDU 512 sent for every comp_id in the firm — credentials revoked |
+| Delete firm | PDU 512 sent for every comp_id in the firm — credentials revoked |
+| Disable comp_id | PDU 512 sent — credential revoked |
+| Lock comp_id | PDU 512 sent — credential revoked |
+| Delete comp_id | PDU 512 sent — credential revoked |
+
+### What does NOT happen automatically — the re-enable/unlock gap
+
+PDU 510 requires the plaintext password, which the system never stores. When a firm
+or comp_id is re-enabled or unlocked, there is no plaintext to send, so **no PDU is
+sent and gateway access is not restored automatically**.
+
+The operator must reset the password after re-enabling or unlocking:
+
+1. Re-enable the firm or comp_id using the Edit form.
+2. Navigate to the comp_id and click **Set Password**.
+3. Enter a new password. This derives fresh SCRAM values, updates the database, and
+   sends PDU 510 to the authentication service — restoring gateway access.
+
+The UI displays a warning on the Edit form whenever a firm or comp_id is currently
+disabled or locked, as a reminder to take this step after re-enabling.
+
 ## Configuration Reference
 
 All properties live in `application.properties`. Defaults shown.
