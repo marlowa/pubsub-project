@@ -284,22 +284,55 @@ def clean_build(build_dir):
         print(f"Build directory does not exist: {build_dir}")
 
 
+def check_mvn():
+    if shutil.which("mvn") is None:
+        print("ERROR: 'mvn' not found on PATH — install Maven to build the Java admin service",
+              file=sys.stderr)
+        sys.exit(1)
+
+
+def build_java_service(source_dir: Path, install_dir: Path, skip_tests: bool, clean: bool):
+    """Build the Java admin service fat JAR and copy it to install_dir/lib/."""
+    check_mvn()
+
+    java_dir = source_dir / "java" / "admin-service"
+    mvn_cmd = ["mvn"] + (["clean", "package"] if clean else ["package"])
+    if skip_tests:
+        mvn_cmd.append("-DskipTests")
+
+    run_command(mvn_cmd, cwd=java_dir, description="Building Java admin service")
+
+    target_dir = java_dir / "target"
+    candidates = [
+        jar for jar in target_dir.glob("admin-service-*.jar")
+        if not jar.name.startswith("original-")
+    ]
+    if len(candidates) != 1:
+        print(f"ERROR: expected exactly one admin-service JAR in {target_dir}, "
+              f"found: {[c.name for c in candidates]}", file=sys.stderr)
+        sys.exit(1)
+
+    lib_dir = install_dir / "lib"
+    lib_dir.mkdir(parents=True, exist_ok=True)
+    jar_dst = lib_dir / "admin-service.jar"
+    shutil.copy2(candidates[0], jar_dst)
+    print(f"\n✓ Java admin service installed: {jar_dst}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Build script for pubsub_itc_fw_project",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s                                    # Normal build and test
-  %(prog)s --clean                            # Clean and rebuild
-  %(prog)s --valgrind                         # Build with Valgrind compatibility
-  %(prog)s --doxygen                          # Build and generate docs
-  %(prog)s --doxygen-only                     # Only generate documentation
+  %(prog)s                                    # Build C++ and Java, run all tests
+  %(prog)s --clean                            # Clean and rebuild both
+  %(prog)s --no-java                          # C++ only
+  %(prog)s --no-cpp                           # Java admin service only
   %(prog)s --no-tests                         # Build without running any tests
-  %(prog)s --no-pytest                        # Build without running Python tests only
-  %(prog)s --clean --valgrind                 # Clean build for Valgrind
-  %(prog)s --install-dir /opt/pubsub_itc_fw  # Build, test, and install
-  %(prog)s --no-tests --install-dir ~/install # Build and install without running tests
+  %(prog)s --valgrind                         # C++ build with Valgrind compatibility
+  %(prog)s --doxygen                          # Build and generate Doxygen docs
+  %(prog)s --doxygen-only                     # Only generate documentation
         """
     )
 
@@ -339,12 +372,6 @@ Examples:
         help='Build directory path (default: ./build)'
     )
 
-    parser.add_argument('--install-dir', type=Path, default=None,
-        help='Installation prefix directory. If specified, runs cmake --install after a '
-             'successful build. Sets CMAKE_INSTALL_PREFIX. '
-             'The install tree will contain bin/, include/, lib/ (or lib64/), and docs/.'
-    )
-
     parser.add_argument('--coverage', action='store_true',
         help='Build with GCC/Clang code coverage instrumentation')
 
@@ -363,14 +390,27 @@ Examples:
         help='Path to TSan suppressions file (only used with --tsan)'
     )
 
+    parser.add_argument('--no-cpp', action='store_true',
+        help='Skip the C++ build (cmake/make/tests/install); build Java only'
+    )
+
+    parser.add_argument('--no-java', action='store_true',
+        help='Skip the Java admin service build; build C++ only'
+    )
+
     args = parser.parse_args()
+
+    if args.no_cpp and args.no_java:
+        print("ERROR: --no-cpp and --no-java together leave nothing to build", file=sys.stderr)
+        sys.exit(1)
 
     # Get source directory (parent of this script)
     source_dir = Path(__file__).parent.resolve()
     build_dir = source_dir / args.build_dir
 
-    # Verify environment variables
-    check_environment_variables()
+    # Staging dir: CMake installs here after the build; release.py reads from here.
+    # Not the runtime location — that is set up by deploy.py from the release tarball.
+    staging_dir = (build_dir / "installed").resolve()
 
     # Sanitizer mutual exclusion checks
     if args.asan and args.tsan:
@@ -386,42 +426,44 @@ Examples:
         run_doxygen(source_dir)
         return 0
 
-    # Python DSL checks always run first so problems are caught before the
-    # (much slower) C++ build begins.
-    run_pylint(source_dir)
-    if not args.no_tests and not args.no_pytest:
-        run_pytest(source_dir)
+    # ── C++ build ─────────────────────────────────────────────────────────────
+    if not args.no_cpp:
+        # Verify C++ build environment variables
+        check_environment_variables()
 
-    # Clean if requested
-    if args.clean:
-        clean_build(build_dir)
+        # Python DSL checks run first so problems are caught before the
+        # (much slower) C++ build begins.
+        run_pylint(source_dir)
+        if not args.no_tests and not args.no_pytest:
+            run_pytest(source_dir)
 
-    # Create build directory
-    build_dir.mkdir(parents=True, exist_ok=True)
+        if args.clean:
+            clean_build(build_dir)
 
-    # Configure
-    configure_cmake(build_dir, source_dir, enable_valgrind=args.valgrind,
-                    enable_coverage=args.coverage, enable_asan=args.asan, enable_tsan=args.tsan,
-                    install_dir=args.install_dir)
+        build_dir.mkdir(parents=True, exist_ok=True)
 
-    # Build
-    build_project(build_dir, jobs=args.jobs, verbose=args.verbose)
+        configure_cmake(build_dir, source_dir, enable_valgrind=args.valgrind,
+                        enable_coverage=args.coverage, enable_asan=args.asan,
+                        enable_tsan=args.tsan, install_dir=staging_dir)
 
-    # Run C++ tests unless disabled
-    if not args.no_tests:
-        run_tests(build_dir, use_tsan=args.tsan, tsan_suppressions=args.tsan_suppressions)
-        run_integration_tests(build_dir)
+        build_project(build_dir, jobs=args.jobs, verbose=args.verbose)
 
-    if args.coverage_report:
-        generate_coverage_report(build_dir, source_dir)
+        if not args.no_tests:
+            run_tests(build_dir, use_tsan=args.tsan, tsan_suppressions=args.tsan_suppressions)
+            run_integration_tests(build_dir)
 
-    # Install if requested
-    if args.install_dir is not None:
-        install_project(build_dir, args.install_dir)
+        if args.coverage_report:
+            generate_coverage_report(build_dir, source_dir)
 
-    # Generate Doxygen if requested
-    if args.doxygen:
-        run_doxygen(source_dir)
+        install_project(build_dir, staging_dir)
+
+        if args.doxygen:
+            run_doxygen(source_dir)
+
+    # ── Java build ────────────────────────────────────────────────────────────
+    if not args.no_java:
+        build_java_service(source_dir, staging_dir,
+                           skip_tests=args.no_tests, clean=args.clean)
 
 
     print("\n" + "="*60)

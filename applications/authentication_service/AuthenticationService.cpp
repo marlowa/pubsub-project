@@ -7,6 +7,7 @@
 #include <chrono>
 #include <iostream>
 
+#include <pubsub_itc_fw/ApplicationAnnouncer.hpp>
 #include <pubsub_itc_fw/ConfigurationException.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
@@ -104,6 +105,7 @@ int main(int argc, char* argv[]) {
 
     logger->set_log_level(config.applog_level);
     logger->set_syslog_level(config.syslog_level);
+    pubsub_itc_fw::ApplicationAnnouncer::announce(*logger, "authentication_service");
 
     try {
         authentication_service::AuthenticationService service{config, std::move(logger)};

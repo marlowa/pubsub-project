@@ -132,8 +132,6 @@ def start_one(
     command, workdir = build_command(name, comp, install_dir, log_dir)
     stdout_path = log_dir / f"{name}.stdout"
 
-    if not workdir.is_dir():
-        sys.exit(f"error: workdir not found for {name}: {workdir}")
     if "binary" in comp:
         binary_path = (install_dir / comp["binary"]).resolve()
         if not binary_path.is_file():
@@ -143,12 +141,20 @@ def start_one(
         if not jar_path.is_file():
             sys.exit(f"error: JAR not found for {name}: {jar_path}")
 
+    workdir.mkdir(parents=True, exist_ok=True)
+
+    lib_dir = str(install_dir / "lib")
+    child_env = os.environ.copy()
+    existing_ldpath = child_env.get("LD_LIBRARY_PATH", "")
+    child_env["LD_LIBRARY_PATH"] = f"{lib_dir}:{existing_ldpath}" if existing_ldpath else lib_dir
+
     with stdout_path.open("w") as stdout_file:
         proc = subprocess.Popen(
             command,
             cwd=str(workdir),
             stdout=stdout_file,
             stderr=subprocess.STDOUT,
+            env=child_env,
         )
     write_pid(run_dir, name, proc.pid)
     print(f"  {name} — PID {proc.pid}")
@@ -318,6 +324,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    sys.stdout.reconfigure(line_buffering=True)
     args = parse_args()
 
     env_path = args.env.resolve() if args.env.is_absolute() else (_SCRIPT_DIR / args.env).resolve()

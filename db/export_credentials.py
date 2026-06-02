@@ -101,6 +101,7 @@ def _write_credentials_toml(path: Path, rows: list[dict]) -> None:
 
     # Atomic write: temp file then rename so the auth service never sees
     # a partial file if it re-reads credentials.
+    path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
     tmp.write_text("".join(lines), encoding="utf-8")
     tmp.replace(path)

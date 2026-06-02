@@ -107,7 +107,7 @@ Options:
     --scenario N|all      Scenario number, or 'all' to run every scenario in
                           order (required).  All scenarios must pass for the
                           command to exit with code 0.
-    install_prefix        Path to cmake install prefix (default: build/installed)
+    install_prefix        Path to cmake install prefix (default: installed)
     --orders-before N     Bursts of 1000 NOS to confirm health before kill (default: 1)
     --orders-during N     Extra bursts of 1000 NOS sent after the health check
                           and left in flight during Phase 4 so orders are
@@ -1542,9 +1542,9 @@ def main() -> None:
         ),
     )
     parser.add_argument(
-        "prefix", nargs="?", default="build/installed",
+        "prefix", nargs="?", default="installed",
         metavar="install_prefix",
-        help="Path to the cmake install prefix (default: build/installed)",
+        help="Path to the cmake install prefix (default: installed)",
     )
     parser.add_argument(
         "--orders-before", type=int, default=1, metavar="N",

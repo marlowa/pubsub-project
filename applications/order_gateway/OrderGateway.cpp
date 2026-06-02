@@ -7,6 +7,7 @@
 #include <chrono>
 #include <iostream>
 
+#include <pubsub_itc_fw/ApplicationAnnouncer.hpp>
 #include <pubsub_itc_fw/ConfigurationException.hpp>
 #include <pubsub_itc_fw/FileOpenMode.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
@@ -128,6 +129,7 @@ int main(int argc, char* argv[]) {
 
     logger->set_log_level(config.applog_level);
     logger->set_syslog_level(config.syslog_level);
+    pubsub_itc_fw::ApplicationAnnouncer::announce(*logger, "order_gateway");
 
     try {
         order_gateway::OrderGateway app{config, std::move(logger)};

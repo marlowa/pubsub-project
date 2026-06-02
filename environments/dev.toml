@@ -19,8 +19,8 @@ description = "Single-machine developer sandbox. All components on localhost."
 # contains the environments/ folder).
 
 [paths]
-install_dir = "build/installed"     # binaries, component configs, certs
-log_dir     = "build/installed/log" # component stdout/stderr and applog files
+install_dir = "installed"     # binaries, component configs, certs
+log_dir     = "installed/log" # component stdout/stderr and applog files
 run_dir     = "/var/tmp/pubsub/run" # PID files written here by devenv.py
 
 # ── Database ──────────────────────────────────────────────────────────────────
@@ -100,7 +100,7 @@ components = [
     "matching_engine",
     "sequencer_primary",
     "sequencer_secondary",
-    "gateway",
+    "order_gateway",
     "admin_service",
 ]
 
@@ -152,7 +152,7 @@ config  = "etc/sequencer/sequencer_secondary.toml"
 workdir = "etc/sequencer"
 ha_only = true
 
-[components.gateway]
+[components.order_gateway]
 binary  = "bin/order_gateway"
 config  = "etc/order_gateway/order_gateway.toml"
 workdir = "etc/order_gateway"

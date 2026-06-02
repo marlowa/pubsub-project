@@ -240,7 +240,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--install-dir", type=Path, default=_DEFAULT_INSTALL, metavar="PATH",
-        help=f"cmake install prefix (default: {_DEFAULT_INSTALL})",
+        help=f"cmake staging directory written by build.py (default: {_DEFAULT_INSTALL})",
     )
     parser.add_argument(
         "--env", type=Path, default=_DEFAULT_ENV_FILE, metavar="PATH",

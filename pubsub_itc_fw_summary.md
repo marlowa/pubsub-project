@@ -569,7 +569,36 @@ The receiving node's reactor accepts data via epoll and delivers it zero-copy to
 
 ## Session Accomplishments
 
-### Session 23 (current)
+### Session 24 (current)
+
+**`ApplicationAnnouncer` — startup one-liner in each application.**
+
+Every application now logs a single structured line at `Info` level as soon as its logger is ready:
+
+```
+sequencer: version=0.1.0 pid=12345 built=2026-06-02T10:14:07Z branch=main sha=654da89 host=seq-primary
+```
+
+**CMake build info generation.** Three new files:
+
+- `cmake/BuildInfo.hpp.in` — template for the generated header; substitution variables are `@PROJECT_VERSION@`, `@GIT_SHA@`, `@GIT_BRANCH@`, `@BUILD_DATETIME@`.
+- `cmake/GenerateBuildInfo.cmake` — cmake -P script run at build time. Queries `git rev-parse --short HEAD` and `git rev-parse --abbrev-ref HEAD`; stamps UTC datetime with `string(TIMESTAMP ... UTC)`; writes `${CMAKE_BINARY_DIR}/generated_build_info/pubsub_itc_fw/BuildInfo.hpp` using `copy_if_different` so an unchanged git state does not force recompilation.
+- `libraries/pubsub_itc_fw/include/pubsub_itc_fw/ApplicationAnnouncer.hpp` — header-only static class. `announce(QuillLogger& logger, const std::string& app_name)` calls `gethostname` + `getpid`, then `PUBSUB_LOG` at `Info` level with all fields.
+
+`CMakeLists.txt` gains a `build_info_generated ALL` custom target (runs before `add_subdirectory(libraries/pubsub_itc_fw)`) and a `BUILD_INFO_INCLUDE_DIR` cache variable. `libraries/pubsub_itc_fw/CMakeLists.txt` adds `build_info_generated` to `add_dependencies` and `$<BUILD_INTERFACE:${BUILD_INFO_INCLUDE_DIR}>` to public include paths, so all downstream targets get `BuildInfo.hpp` transitively.
+
+**Call sites in `main()`.** Two patterns:
+
+- *Pattern A* (sequencer, arbiter, matching_engine, witness): announce immediately after `make_unique<QuillLogger>`, before config load. Logger is at its initial `Info` level; the announcement is always visible.
+- *Pattern B* (authentication_service, order_gateway): announce after `load_and_init_logging` + `set_log_level` + `set_syslog_level`. Logger is fully configured before the announcement fires.
+
+**Version management.** The semantic version is the `VERSION` field in `project(... VERSION x.y.z ...)` in `CMakeLists.txt`. This is the source of truth; `release.py` already reads it by regex when naming the artefact, and the new `build_info_generated` target passes it to `GenerateBuildInfo.cmake` via `-DPROJECT_VERSION`. Release workflow: bump the version in `CMakeLists.txt`, commit, tag `v{version}`.
+
+*Future enhancement:* derive the version from `git describe --tags --match 'v*'` at build time so the tag is the single source of truth. Preferred approach would be to examine the tag the current commit is reachable from (i.e. the nearest ancestor tag, resolving ambiguity via commit distance). Deferred for now because `git describe` returns nothing before the first tag exists and produces a non-semver suffix (`v1.2.3-5-gabc1234`) between releases; the manual bump is simpler and fully auditable.
+
+---
+
+### Session 23
 
 **HA scenario 10 (`me_death_restart`) fixed — all 14 HA scenarios now pass.**
 
@@ -640,8 +669,8 @@ Mirrors `dev.toml` structure; every field that requires a real value is marked `
 
 | Setting | dev | prod |
 |---|---|---|
-| `paths.install_dir` | `build/installed` | `/opt/pubsub` |
-| `paths.log_dir` | `build/installed/log` | `/var/log/pubsub` |
+| `paths.install_dir` | `installed` | `/opt/pubsub` |
+| `paths.log_dir` | `installed/log` | `/var/log/pubsub` |
 | `paths.run_dir` | `/var/tmp/pubsub/run` | `/var/run/pubsub` |
 | WAL directories | `/var/tmp/pubsub/sequencer*_wal` | `/var/lib/pubsub/sequencer*_wal` |
 | Listen hosts | `127.0.0.1` | `0.0.0.0` |
@@ -2251,9 +2280,9 @@ Five Python scripts live in the project root.
 **`start_fix_seq_system.py`** — starts the full system for interactive testing.
 
 ```
-./start_fix_seq_system.py build/installed
-./start_fix_seq_system.py build/installed --startup-delay 2.0
-./start_fix_seq_system.py build/installed --valgrind --valgrind_command "valgrind"
+./start_fix_seq_system.py installed
+./start_fix_seq_system.py installed --startup-delay 2.0
+./start_fix_seq_system.py installed --valgrind --valgrind_command "valgrind"
 ```
 
 Starts 7 processes in dependency order: witness → arbiter-primary → arbiter-secondary → order_gateway → sequencer-primary → sequencer-secondary → matching_engine. Monitors for unexpected exits. Ctrl-C sends SIGTERM to all processes.
@@ -2264,10 +2293,10 @@ Starts 7 processes in dependency order: witness → arbiter-primary → arbiter-
 ./perf_run.py                              # 1 client, 1 burst (1 000 orders)
 ./perf_run.py --burst=5                    # 1 client, 5 000 orders
 ./perf_run.py --clients=3 --burst=4        # 3 clients × 4 bursts = 12 000 orders
-./perf_run.py build/installed --burst=2    # explicit install prefix
+./perf_run.py installed --burst=2    # explicit install prefix
 ```
 
-Output goes to `build/installed/perf/<YYYYMMDD_HHMMSS>/`. Requires `perf` in PATH and the FlameGraph scripts at `/home/marlowa/mystuff/FlameGraph`.
+Output goes to `installed/perf/<YYYYMMDD_HHMMSS>/`. Requires `perf` in PATH and the FlameGraph scripts at `/home/marlowa/mystuff/FlameGraph`.
 
 ### Manual fix8 testing
 
@@ -2293,7 +2322,7 @@ Add `-d` on the command line for verbose debug output from startup:
 ./bin/f8test -d -c myfix_gateway_client.xml -N GW1
 ```
 
-The gateway listens for FIX connections on port 9879. The matching engine log at `build/installed/log/matching_engine.log` contains `ME-ORD-N` entries that confirm each order was processed.
+The gateway listens for FIX connections on port 9879. The matching engine log at `installed/log/matching_engine.log` contains `ME-ORD-N` entries that confirm each order was processed.
 
 ---
 

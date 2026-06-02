@@ -9,6 +9,7 @@
 #include <iostream>
 #include <memory>
 
+#include <pubsub_itc_fw/ApplicationAnnouncer.hpp>
 #include <pubsub_itc_fw/ConfigurationException.hpp>
 #include <pubsub_itc_fw/FileOpenMode.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
@@ -77,6 +78,7 @@ int main(int argc, char* argv[]) {
 
     auto logger = std::make_unique<pubsub_itc_fw::QuillLogger>(log_file, pubsub_itc_fw::FileOpenMode{pubsub_itc_fw::FileOpenMode::Truncate},
                                                                pubsub_itc_fw::FwLogLevel::Info, pubsub_itc_fw::FwLogLevel::Info);
+    pubsub_itc_fw::ApplicationAnnouncer::announce(*logger, "witness");
 
     witness::WitnessConfiguration config;
     try {

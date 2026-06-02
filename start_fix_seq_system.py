@@ -18,7 +18,7 @@ Startup order:
   7. matching_engine        -- connects outbound to sequencer ER listener (7021)
 
 Usage with valgrind:
-  ./start_fix_seq_system.py build/installed --valgrind --valgrind_command "vg"
+  ./start_fix_seq_system.py installed --valgrind --valgrind_command "vg"
 """
 
 import argparse
@@ -41,7 +41,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "prefix",
         metavar="install_prefix",
-        help="Path to the cmake install prefix (e.g. build/installed).",
+        help="Path to the cmake install prefix (e.g. installed).",
     )
     parser.add_argument(
         "--startup-delay",

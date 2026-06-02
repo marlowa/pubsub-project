@@ -50,13 +50,136 @@ Supported field types include `i8`, `i16`, `i32`, `i64`, `bool`, `datetime_ns`, 
 | Logging | Quill v11.x |
 | Test framework | GoogleTest (C++), pytest (DSL tests) |
 
-## Building
+## Developer Quick-start (`devsetup.sh`)
+
+The fastest path from source to a running sandbox is the convenience wrapper, which runs all three steps — build, release, deploy — in sequence:
 
 ```bash
-python3 build.py
+./devsetup.sh                        # first time (creates DB)
+./devsetup.sh --skip-create-db       # subsequent runs (DB already exists)
 ```
 
-Unit tests and integration tests are run automatically as part of the build. The build script reports signal-based failures (SIGABRT, SIGSEGV, etc.) by name.
+Once setup completes, start the stack:
+
+```bash
+python3 devenv.py start
+```
+
+`devsetup.sh` sets the required environment variables (third-party library paths and versions) and forwards all arguments to `devsetup.py`. Any flag accepted by the build or deploy steps can be passed through — see `./devsetup.sh --help`.
+
+## Building (`build.py` / `build.sh`)
+
+```bash
+./build.sh
+```
+
+Builds both the C++ components and the Java admin service, runs all tests, and stages the result into `build/installed/`. This staging directory is what `release.py` reads from — it is not the runtime location.
+
+Unit tests and integration tests run automatically. The build script reports signal-based failures (SIGABRT, SIGSEGV, etc.) by name.
+
+Common options:
+
+| Flag | Effect |
+|---|---|
+| `--no-java` | Skip the Java admin service build |
+| `--no-cpp` | Skip the C++ build; build Java only |
+| `--clean` | Clean before building (C++: deletes `build/`; Java: runs `mvn clean`) |
+| `--no-tests` | Skip all tests (C++ unit/integration tests and Maven Surefire) |
+| `--valgrind` | C++ build with Valgrind-compatible options (disables lock-free optimisations) |
+| `--doxygen` | Generate Doxygen documentation after the C++ build |
+| `-j N` | C++ build parallelism (default: all CPUs) |
+
+`build.sh` is a thin wrapper that sets the platform-specific environment variables required by CMake and then calls `build.py`.
+
+## Packaging (`release.py`)
+
+Assembles a versioned deployment artefact from the build staging area:
+
+```bash
+python3 release.py
+```
+
+Reads the version from `project(... VERSION x.y.z ...)` in `CMakeLists.txt` and the git short hash from `git rev-parse`. Reads binaries and the admin-service JAR from `build/installed/`. Outputs `build/release/pubsub-<version>-<hash>.tar.gz` containing `bin/`, `lib/`, `etc/` (config templates with unexpanded `${placeholder}` values), `db/`, `environments/`, `devenv.py`, `deploy.py`, and a `release.json` manifest.
+
+Options: `--install-dir` (staging dir, default: `build/installed`), `--env`, `--version`, `--output-dir`, `--no-git-hash`.
+
+## Deployment (`deploy.py`)
+
+Unpacks a release artefact and prepares it for launch:
+
+```bash
+python3 deploy.py --env environments/prod.toml \
+                  --artefact pubsub-<version>-<hash>.tar.gz \
+                  --install-dir /opt/pubsub \
+                  --skip-certs
+```
+
+Steps performed in order:
+
+1. **Unpack** the artefact into the install directory, stripping its top-level directory.
+2. **Expand config templates** — substitutes `${placeholder}` values in all `etc/**/*.toml` files using flattened keys from the env TOML (e.g. `${sequencer_primary_peer_host}`).
+3. **Generate TLS certificates** — self-signed via `openssl req -x509` for each `[tls.*]` section. Pass `--skip-certs` when placing CA-signed certificates for production.
+4. **Create the database** — delegates to `db/create_db.py`.
+5. **Export SCRAM credentials** — delegates to `db/export_credentials.py`.
+
+The install directory defaults to `paths.install_dir` from the env TOML (`installed/` for dev, `/opt/pubsub` for prod).
+
+Options: `--skip-certs`, `--force-certs`, `--skip-db`, `--skip-create-db`, `--drop-db`, `--sudo-postgres`, `--liquibase-contexts`.
+
+## Developer Sandbox (`devenv.py`)
+
+`devenv.py` starts, stops, and monitors the full component stack on a developer machine. It reads component definitions and paths from an environment TOML (default: `environments/dev.toml`).
+
+**Prerequisite:** run `devsetup.sh` (or the three steps manually) before the first start.
+
+**Starting everything:**
+
+```bash
+python3 devenv.py start
+```
+
+Components are started in the order defined in `[startup_order]` in the env TOML, with a 1-second delay between each. Logs go to `installed/log/<name>.log` (application log) and `installed/log/<name>.stdout` (stdout/stderr). PID files go to `/var/tmp/pubsub/run/<name>.pid`.
+
+**Checking status:**
+
+```bash
+python3 devenv.py status
+```
+
+**Stopping everything:**
+
+```bash
+python3 devenv.py stop
+```
+
+Components are stopped in reverse startup order. Stale PID files are cleaned up automatically.
+
+**Restarting a single component** (useful during development iteration):
+
+```bash
+python3 devenv.py restart sequencer
+python3 devenv.py restart               # restarts everything
+```
+
+**Skipping HA components** (run without arbiters, witness, and secondary instances):
+
+```bash
+python3 devenv.py --no-ha start
+```
+
+**Using a different environment:**
+
+```bash
+python3 devenv.py --env environments/test-1.toml start
+```
+
+**Options summary:**
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--env PATH` | `environments/dev.toml` | Environment TOML to use |
+| `--no-ha` | off | Skip components with `ha_only = true` |
+| `--delay SECONDS` | `1.0` | Pause between component starts |
 
 ## Namespace
 

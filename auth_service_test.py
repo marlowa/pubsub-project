@@ -31,7 +31,7 @@ Scenarios
        not in the initial credentials.toml, then authenticate with it (Granted).
 
 Options:
-    install_prefix      Path to cmake install prefix (default: build/installed)
+    install_prefix      Path to cmake install prefix (default: installed)
     --tls               Start the service with the TLS admin listener.  Required
                         for scenarios 4 and 5.  Without this flag only scenarios
                         1-3 (plain PDU SCRAM) are available.
@@ -920,9 +920,9 @@ def main() -> None:
         ),
     )
     parser.add_argument(
-        "prefix", nargs="?", default="build/installed",
+        "prefix", nargs="?", default="installed",
         metavar="install_prefix",
-        help="Path to the cmake install prefix (default: build/installed)",
+        help="Path to the cmake install prefix (default: installed)",
     )
     parser.add_argument(
         "--ready-timeout", type=float, default=5.0, metavar="SECS",

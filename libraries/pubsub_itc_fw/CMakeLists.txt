@@ -84,7 +84,7 @@ add_library(pubsub_itc_fw SHARED
         ${GENERATED_DSL_HEADERS}
 )
 
-add_dependencies(pubsub_itc_fw pubsub_itc_fw_dsl)
+add_dependencies(pubsub_itc_fw pubsub_itc_fw_dsl build_info_generated)
 
 # ------------------------------------------------------------
 # Include paths
@@ -93,6 +93,7 @@ target_include_directories(pubsub_itc_fw PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/dsl>
+        $<BUILD_INTERFACE:${BUILD_INFO_INCLUDE_DIR}>
         $<INSTALL_INTERFACE:include>
 )
 

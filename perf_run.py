@@ -9,7 +9,7 @@ Usage (from the project root):
     ./perf_run.py --burst=5                    # 1 client, 5 x T = 5000 orders
     ./perf_run.py --clients=3                  # 3 concurrent clients, 1 burst each
     ./perf_run.py --burst=4 --clients=2        # 2 clients x 4 bursts = 8000 orders
-    ./perf_run.py build/installed --burst=2    # explicit install prefix
+    ./perf_run.py installed --burst=2    # explicit install prefix
 
 Options:
     --burst=N    Number of times the 'T' command is sent per fix8 session.
@@ -376,9 +376,9 @@ def run_fix8_session(me_log: Path, burst: int, clients: int) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("prefix", nargs="?", default="build/installed",
+    parser.add_argument("prefix", nargs="?", default="installed",
                         metavar="install_prefix",
-                        help="Path to the cmake install prefix (default: build/installed)")
+                        help="Path to the cmake install prefix (default: installed)")
     parser.add_argument("--burst", type=int, default=1, metavar="N",
                         help="Number of T commands per fix8 session (each T = 1000 NOS). Default: 1")
     parser.add_argument("--clients", type=int, default=1, metavar="N",

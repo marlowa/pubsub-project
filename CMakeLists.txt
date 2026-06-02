@@ -269,6 +269,23 @@ add_custom_target(authentication_generated
 )
 
 # ------------------------------------------------------------
+# Build info generation (version, git SHA/branch, build datetime)
+# ------------------------------------------------------------
+set(BUILD_INFO_OUTPUT_DIR "${CMAKE_BINARY_DIR}/generated_build_info")
+set(BUILD_INFO_INCLUDE_DIR "${BUILD_INFO_OUTPUT_DIR}" CACHE INTERNAL "Directory containing generated BuildInfo.hpp")
+
+add_custom_target(build_info_generated ALL
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${BUILD_INFO_OUTPUT_DIR}/pubsub_itc_fw"
+    COMMAND ${CMAKE_COMMAND}
+        -DSOURCE_DIR=${CMAKE_SOURCE_DIR}
+        -DOUTPUT_DIR=${BUILD_INFO_OUTPUT_DIR}
+        -DPROJECT_VERSION=${PROJECT_VERSION}
+        -P ${CMAKE_SOURCE_DIR}/cmake/GenerateBuildInfo.cmake
+    COMMENT "Generating BuildInfo.hpp"
+    VERBATIM
+)
+
+# ------------------------------------------------------------
 # Add the libraries
 # ------------------------------------------------------------
 add_subdirectory(libraries/pubsub_itc_fw)

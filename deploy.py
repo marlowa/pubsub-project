@@ -240,6 +240,10 @@ def parse_args() -> argparse.Namespace:
         help="skip database creation and credential export",
     )
     parser.add_argument(
+        "--skip-create-db", action="store_true",
+        help="skip database creation but still export credentials (use when the database already exists)",
+    )
+    parser.add_argument(
         "--drop-db", action="store_true",
         help="drop and recreate the database before applying Liquibase changesets (destructive)",
     )
@@ -301,9 +305,10 @@ def main() -> None:
 
     # Steps 4 & 5: database
     if not args.skip_db:
-        print("=== creating database ===")
-        run_create_db(env, args.drop_db, args.sudo_postgres, args.liquibase_contexts)
-        print()
+        if not args.skip_create_db:
+            print("=== creating database ===")
+            run_create_db(env, args.drop_db, args.sudo_postgres, args.liquibase_contexts)
+            print()
 
         print("=== exporting credentials ===")
         run_export_credentials(env, install_dir)
