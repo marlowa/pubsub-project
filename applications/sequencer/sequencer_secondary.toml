@@ -1,38 +1,38 @@
 [network]
-listen_host    = "127.0.0.1"
+listen_host    = "${sequencer_secondary_network_listen_host}"
 listen_port    = 7002
-er_listen_host = "127.0.0.1"
+er_listen_host = "${sequencer_secondary_network_er_listen_host}"
 er_listen_port = 7022
 
 [gateway]
-host = "127.0.0.1"
+host = "${sequencer_secondary_gateway_host}"
 port = 7010
 
 [matching_engine]
-host = "127.0.0.1"
+host = "${sequencer_secondary_matching_engine_host}"
 port = 7020
 
 [ha]
 ha_enabled                  = true
 instance_id                 = 2
-arbiter_primary_host        = "127.0.0.1"
+arbiter_primary_host        = "${sequencer_secondary_ha_arbiter_primary_host}"
 arbiter_primary_port        = 7200
-arbiter_secondary_host      = "127.0.0.1"
+arbiter_secondary_host      = "${sequencer_secondary_ha_arbiter_secondary_host}"
 arbiter_secondary_port      = 7201
 arbitration_timeout_seconds = 3
 
 [peer]
-listen_host                = "127.0.0.1"
-listen_port                = 7004
-host                       = "127.0.0.1"
-port                       = 7003
-heartbeat_interval_seconds = 2
-heartbeat_timeout_seconds = 6
+listen_host                      = "${sequencer_secondary_peer_listen_host}"
+listen_port                      = 7004
+host                             = "${sequencer_secondary_peer_host}"
+port                             = 7003
+heartbeat_interval_seconds       = 2
+heartbeat_timeout_seconds        = 6
 startup_election_timeout_seconds = 20
-fence_file_path = "/dev/shm/sequencer_secondary_fence"
+fence_file_path                  = "${sequencer_secondary_peer_fence_file_path}"
 
 [wal]
-directory                 = "/var/tmp/pubsub/sequencer_secondary_wal"
+directory                 = "${sequencer_secondary_wal_directory}"
 segment_size              = 4194304
 snapshot_interval_seconds = 30
 
@@ -41,9 +41,9 @@ applog_level = "info"
 syslog_level = "critical"
 
 [reactor]
-cpu_pinning_enabled = true
-cpu_pinning_dev_mode = true
-cpu_registry_lock_file = "/dev/shm/pubsub_cpu_registry.lock"
+cpu_pinning_enabled    = true
+cpu_pinning_reserve_cpu0   = ${shared_reactor_cpu_pinning_reserve_cpu0}
+cpu_registry_lock_file = "${shared_reactor_cpu_registry_lock_file}"
 
 [event_queue_pool]
 # Single pre-allocated pool sized for observed peak (50 clients, burst=10).
@@ -56,4 +56,3 @@ initial_slabs    = 1
 # 130 slabs × 4096 = 532,480 objects; never exhausted.
 objects_per_slab = 532480
 initial_slabs    = 1
-

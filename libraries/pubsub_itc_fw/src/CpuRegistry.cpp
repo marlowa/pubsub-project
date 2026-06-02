@@ -83,7 +83,7 @@ CpuRegistry& CpuRegistry::operator=(CpuRegistry&& other) {
     return *this;
 }
 
-AvailableCpuVector CpuRegistry::claim_cpus(size_t count, bool is_dev_mode) {
+AvailableCpuVector CpuRegistry::claim_cpus(size_t count, bool reserve_cpu0) {
     if (layout_ == nullptr || count == 0) {
         return {};
     }
@@ -91,7 +91,7 @@ AvailableCpuVector CpuRegistry::claim_cpus(size_t count, bool is_dev_mode) {
     const FileLock lock(lock_file_path_);
 
     // Find CPUs not owned by any live process.
-    AvailableCpuVector available = get_available_cpu_ids(is_dev_mode, *layout_);
+    AvailableCpuVector available = get_available_cpu_ids(reserve_cpu0, *layout_);
 
     // Limit to what was requested.
     if (available.size() > count) {

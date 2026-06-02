@@ -183,7 +183,7 @@ struct SequencerConfiguration {
 
     /** @brief Exclude CPU 0 from pinning candidates (for machines without isolated cores).
      *  Mandatory: must be set explicitly in the TOML configuration file. */
-    bool cpu_pinning_dev_mode;
+    bool cpu_pinning_reserve_cpu0;
 
     /** @brief Path to the flock file used to serialise cross-process CPU registry access.
      *  Prefer /dev/shm/ so the file is cleared on reboot.

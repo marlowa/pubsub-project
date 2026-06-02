@@ -96,18 +96,18 @@ inline std::vector<CpuId> parse_cpu_list(const std::string& input) {
  * favours NUMA-local allocation. For each candidate CPU, the cross-process
  * registry is consulted: cores owned by live processes are excluded.
  *
- * @param is_dev_mode  When true, CPU 0 is excluded (reserved for OS use).
+ * @param reserve_cpu0  When true, CPU 0 is excluded (reserved for OS use).
  * @param registry     Cross-process shared registry of currently claimed cores.
  * @return Flat list of available CPU IDs in NUMA-near order.
  */
-inline AvailableCpuVector get_available_cpu_ids(bool is_dev_mode, const SharedCoreRegistryLayout& registry) {
+inline AvailableCpuVector get_available_cpu_ids(bool reserve_cpu0, const SharedCoreRegistryLayout& registry) {
     AvailableCpuVector candidates;
 
     const std::filesystem::path node_base{"/sys/devices/system/node"};
 
     // Fallback for containers / restricted environments without sysfs NUMA info.
     if (!std::filesystem::exists(node_base)) {
-        if (!is_dev_mode) {
+        if (!reserve_cpu0) {
             candidates.emplace_back(0);
         }
         return candidates;
@@ -137,7 +137,7 @@ inline AvailableCpuVector get_available_cpu_ids(bool is_dev_mode, const SharedCo
         }
 
         for (const CpuId cpu_id : detail::parse_cpu_list(cpulist_str)) {
-            if (is_dev_mode && cpu_id.get_value() == 0) {
+            if (reserve_cpu0 && cpu_id.get_value() == 0) {
                 continue;
             }
 

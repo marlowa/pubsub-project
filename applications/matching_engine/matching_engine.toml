@@ -1,13 +1,13 @@
 [network]
-listen_host = "127.0.0.1"
+listen_host = "${matching_engine_network_listen_host}"
 listen_port = 7020
 
 [sequencer_er]
-host = "127.0.0.1"
+host = "${matching_engine_sequencer_er_host}"
 port = 7021
 
 [sequencer_er_secondary]
-host = "127.0.0.1"
+host = "${matching_engine_sequencer_er_secondary_host}"
 port = 7022
 
 [logging]
@@ -15,9 +15,9 @@ applog_level = "info"
 syslog_level = "critical"
 
 [reactor]
-cpu_pinning_enabled = true
-cpu_pinning_dev_mode = true
-cpu_registry_lock_file = "/dev/shm/pubsub_cpu_registry.lock"
+cpu_pinning_enabled    = true
+cpu_pinning_reserve_cpu0   = ${shared_reactor_cpu_pinning_reserve_cpu0}
+cpu_registry_lock_file = "${shared_reactor_cpu_registry_lock_file}"
 
 [event_queue_pool]
 # Single pre-allocated pool sized for observed peak (50 clients, burst=10).
@@ -29,4 +29,3 @@ initial_slabs    = 1
 # 216 slabs × 1024 base + 100 exhaustion chains × 1024 = 323,584; rounded to 327,680.
 objects_per_slab = 327680
 initial_slabs    = 1
-

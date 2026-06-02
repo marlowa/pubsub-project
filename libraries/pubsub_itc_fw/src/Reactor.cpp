@@ -541,7 +541,7 @@ void Reactor::pin_registered_threads() {
         for (const auto& [name, thread] : threads_) {
             total_needed += 1 + thread->get_extra_threads().size();
         }
-        AvailableCpuVector cpus = cpu_registry_->claim_cpus(total_needed, config_.cpu_pinning_dev_mode);
+        AvailableCpuVector cpus = cpu_registry_->claim_cpus(total_needed, config_.cpu_pinning_reserve_cpu0);
 
         if (cpus.empty()) {
             PUBSUB_LOG_STR(logger_, FwLogLevel::Warning, "CPU pinning: no CPUs available — skipping");

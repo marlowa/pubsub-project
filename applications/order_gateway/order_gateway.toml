@@ -1,26 +1,26 @@
 [network]
-listen_host         = "127.0.0.1"
+listen_host         = "${order_gateway_network_listen_host}"
 listen_port         = 9879
 raw_buffer_capacity = 4194304 # for TCP buffering; 4 MiB per FIX session.
                               # At ~175 bytes/NOS, 4 MiB holds ~24,000 messages at the high-water
                               # mark (75%), far more than any single session's burst (10,000 max).
                               # This prevents TCP flow-control backpressure being applied to fix8,
                               # which loses one order per session when its send is blocked for >100ms.
-er_listen_host      = "127.0.0.1"
+er_listen_host      = "${order_gateway_network_er_listen_host}"
 er_listen_port      = 7010
 
 [authentication_service]
-host           = "127.0.0.1"
+host           = "${order_gateway_authentication_service_host}"
 port           = 7070
-secondary_host = "127.0.0.1"
+secondary_host = "${order_gateway_authentication_service_secondary_host}"
 secondary_port = 7071
-scram_password = "stubpassword"
+scram_password = "${order_gateway_authentication_service_scram_password}"
 
 [sequencer]
 ha_enabled      = true
-primary_host    = "127.0.0.1"
+primary_host    = "${order_gateway_sequencer_primary_host}"
 primary_port    = 7001
-secondary_host  = "127.0.0.1"
+secondary_host  = "${order_gateway_sequencer_secondary_host}"
 secondary_port  = 7002
 
 [fix_session]
@@ -32,15 +32,16 @@ logon_timeout      = "30s"
 scram_auth_timeout = "10s"
 
 [logging]
-applog_level = "info"
-syslog_level = "critical"
-mode = "none"
-max_file_size = 10240000
-max_backup_files=10
+applog_level     = "info"
+syslog_level     = "critical"
+mode             = "none"
+max_file_size    = 10240000
+max_backup_files = 10
+
 [reactor]
-cpu_pinning_enabled = true
-cpu_pinning_dev_mode = true
-cpu_registry_lock_file = "/dev/shm/pubsub_cpu_registry.lock"
+cpu_pinning_enabled    = true
+cpu_pinning_reserve_cpu0   = ${shared_reactor_cpu_pinning_reserve_cpu0}
+cpu_registry_lock_file = "${shared_reactor_cpu_registry_lock_file}"
 
 [event_queue_pool]
 # Single pre-allocated pool sized for observed peak (50 clients, burst=10).
@@ -54,4 +55,3 @@ initial_slabs    = 1
 # 62 slabs × 1024 base + 253 exhaustion chains × 1024 = 322,560; rounded to 327,680.
 objects_per_slab = 327680
 initial_slabs    = 1
-

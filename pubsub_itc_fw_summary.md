@@ -569,7 +569,115 @@ The receiving node's reactor accepts data via epoll and delivers it zero-copy to
 
 ## Session Accomplishments
 
-### Session 22 (current)
+### Session 23 (current)
+
+**HA scenario 10 (`me_death_restart`) fixed — all 14 HA scenarios now pass.**
+
+The scenario kills and restarts the matching engine during a live order run. The previous failure: `_ME_READY_MARKERS` fires at ~0.3 s when the secondary sequencer connects to the restarted ME; the primary sequencer only re-establishes its own ME connection at ~2.1 s. Phase 5 orders arriving in that gap were forwarded to ME over an invalid (unestablished) connection and dropped — approximately 21,000 drops.
+
+Two-part fix in `ha_test.py`:
+1. Capture `seq_primary_pos_pre_kill = file_end(seq_primary_log)` before Phase 4 (the kill/restart phase).
+2. After Phase 4, when the scenario includes a ME restart, poll `seq_primary_log` from that position for the log message `"matching engine order connection established"` (10 s timeout) before proceeding to Phase 5.
+3. In Phase 5, if ME was restarted, stop and restart the FIX session — the existing FIX session was blocked waiting for dropped in-flight order responses and would never drain.
+
+**`devenv.py` — developer sandbox management script.**
+
+New root-level script for starting, stopping, and monitoring all components on a dev machine.
+
+- Subcommands: `start`, `stop`, `status`, `restart [name]`
+- `--env PATH` selects the environment TOML (default: `environments/dev.toml`); `--no-ha` skips `ha_only=true` components; `--delay SECONDS` controls inter-start sleep.
+- Components are launched in the order listed in `[startup_order]`, shut down in reverse order.
+- Binary processes: `[binary_path, log_file, config_path]`, cwd = `install_dir/workdir`.
+- JAR processes: `["java", "-jar", jar_path]`, cwd = `install_dir/workdir`. stdout/stderr go to `log_dir/<name>.stdout`.
+- PID files: `run_dir/<name>.pid`. Stale PIDs cleaned on stop.
+- Exports credentials (runs `db/export_credentials.py`) before starting any component; re-exports when restarting an auth service instance.
+
+**`release.py` — versioned deployment artefact assembly.**
+
+New root-level script that packages the build output into a `pubsub-<version>-<git-short-hash>.tar.gz`.
+
+- Version read from `project(...VERSION x.y.z...)` in `CMakeLists.txt` via regex.
+- Git hash from `git rev-parse --short HEAD`; `--no-git-hash` omits it.
+- Deployment binaries derived from `[startup_order]` + `[components]` in the env TOML (set deduplication handles the shared `arbiter` binary).
+- Staged layout: `bin/` (deployment binaries only; test/bench binaries skipped), `lib/` (`libpubsub_itc_fw.so` + jars from env TOML), `etc/` (config templates from `applications/`, not the installed tree; `credentials.toml` excluded), `db/` (Liquibase changelog + scripts), `environments/` (all `.toml` files), `devenv.py`, `deploy.py`, `release.json` (version, git hash, build timestamp).
+- `--install-dir`, `--env`, `--version`, `--output-dir`, `--no-git-hash` options.
+
+**Config template system — all 9 component TOML files converted.**
+
+Component TOML files in `applications/` are now templates with `${placeholder}` syntax (Python `string.Template`). Placeholder names are the full flattened TOML path of the substitution value — for example `[arbiter_primary] peer_host` → `${arbiter_primary_peer_host}`. This avoids cryptic abbreviations.
+
+Files converted: `witness/witness.toml`, `arbiter/arbiter.toml`, `arbiter/arbiter_secondary.toml`, `authentication_service/authentication_service.toml`, `authentication_service/authentication_service_secondary.toml`, `matching_engine/matching_engine.toml`, `order_gateway/order_gateway.toml`, `sequencer/sequencer.toml`, `sequencer/sequencer_secondary.toml`.
+
+`environments/dev.toml` extended with substitution sections at the end: `[shared]`, `[witness]`, `[arbiter_primary]`, `[arbiter_secondary]`, `[auth_service_primary]`, `[auth_service_secondary]`, `[matching_engine]`, `[order_gateway]`, `[sequencer_primary]`, `[sequencer_secondary]`. Values are placed in their logically-appropriate section, not a flat `[vars]` block.
+
+**`cpu_pinning_dev_mode` → `cpu_pinning_reserve_cpu0` rename (C++ + TOML).**
+
+`cpu_pinning_dev_mode` was ambiguous — "dev" could mean "development mode" generally. The flag means "exclude CPU 0 from pinning candidates (leave it for OS/interrupt use)"; `cpu_pinning_reserve_cpu0` says this precisely.
+
+Renamed across 24 files:
+- C++ struct field: `ReactorConfiguration::cpu_pinning_reserve_cpu0` and all six app-level `*Configuration` structs.
+- C++ function parameter: `is_dev_mode` → `reserve_cpu0` in `get_available_cpu_ids()` (`CpuPinning.hpp`), `claim_cpus()` (`CpuRegistry.hpp`, `CpuRegistry.cpp`).
+- TOML key in all 9 config templates: `cpu_pinning_reserve_cpu0 = ${shared_reactor_cpu_pinning_reserve_cpu0}`.
+- `dev.toml` substitution key: `reactor_cpu_pinning_reserve_cpu0 = true` (set to `false` in `prod.toml`).
+- `ReactorConfiguration.hpp` doc comment updated to remove "development machines" phrasing.
+
+**`deploy.py` — deployment script.**
+
+New root-level script; included in the release artefact.
+
+Steps performed in order:
+1. **Unpack** `--artefact pubsub-<ver>.tar.gz` into `install_dir`, stripping the top-level artefact directory (optional; skip if already unpacked).
+2. **Expand templates**: `flatten_toml(env)` recursively flattens the env TOML into a `{key: str}` namespace (booleans → `"true"`/`"false"`; lists skipped), then `string.Template.substitute(namespace)` expands every `*.toml` in `install_dir/etc/`. Undefined placeholder → hard exit with file name and key.
+3. **Generate TLS certs**: for each `[tls.*]` section, looks up the matching component's `workdir`, resolves cert/key paths, generates a 2048-bit self-signed RSA cert via `openssl req -x509` (3650-day validity, `/CN=localhost`). Deduplicates pairs sharing the same cert file. Skipped if cert+key already exist (use `--force-certs` to regenerate). Pass `--skip-certs` when deploying real CA-signed certs.
+4. **Create database**: delegates to `db/create_db.py` with `[db]` section values. `--drop-db`, `--sudo-postgres`, `--liquibase-contexts` forwarded.
+5. **Export credentials**: delegates to `db/export_credentials.py`.
+
+Options: `--artefact`, `--env`, `--install-dir`, `--skip-certs`, `--force-certs`, `--skip-db`, `--drop-db`, `--sudo-postgres`, `--liquibase-contexts`.
+
+**`environments/prod.toml` — production environment configuration.**
+
+Mirrors `dev.toml` structure; every field that requires a real value is marked `# REPLACE`. Key differences:
+
+| Setting | dev | prod |
+|---|---|---|
+| `paths.install_dir` | `build/installed` | `/opt/pubsub` |
+| `paths.log_dir` | `build/installed/log` | `/var/log/pubsub` |
+| `paths.run_dir` | `/var/tmp/pubsub/run` | `/var/run/pubsub` |
+| WAL directories | `/var/tmp/pubsub/sequencer*_wal` | `/var/lib/pubsub/sequencer*_wal` |
+| Listen hosts | `127.0.0.1` | `0.0.0.0` |
+| Connect hosts | `127.0.0.1` | `*.exchange.internal` (REPLACE) |
+| `reactor_cpu_pinning_reserve_cpu0` | `true` | `false` (isolated CPUs) |
+| TLS `ca` field | `""` | `"ca.crt"` (REPLACE with CA cert) |
+| SCRAM password | `"stubpassword"` | `"REPLACE_WITH_GATEWAY_SCRAM_PASSWORD"` |
+
+Production deploy workflow: edit `prod.toml` with real hostnames, place CA-signed certs, set `PUBSUB_APP_DB_PASSWORD`, then:
+```
+./deploy.py --env environments/prod.toml \
+            --artefact pubsub-<ver>.tar.gz \
+            --install-dir /opt/pubsub \
+            --skip-certs
+```
+
+**`environments/preprod.toml` and `environments/test-1.toml` — additional environment configurations.**
+
+`preprod.toml` is structurally identical to `prod.toml` — same paths, CA-signed TLS, `cpu_pinning_reserve_cpu0 = false` — with hostnames in the `*.preprod.exchange.internal` namespace. Intended for final release validation under near-production conditions before promotion.
+
+`test-1.toml` targets a dedicated test cluster with full HA enabled. Differs from preprod/prod in two ways: `cpu_pinning_reserve_cpu0 = true` (test machines are not CPU-isolated) and self-signed TLS (`ca = ""`, deploy.py generates certs — no CA required). Hostnames in the `*.test-1.exchange.internal` namespace. Additional test environments follow the same pattern (`test-2.toml`, etc.).
+
+Environment comparison:
+
+| Setting | `dev` | `test-1` | `preprod` | `prod` |
+|---|---|---|---|---|
+| `ha.enabled` | `true` (overridable with `--no-ha`) | `true` | `true` | `true` |
+| Topology | single machine | multi-machine | multi-machine | multi-machine |
+| `cpu_pinning_reserve_cpu0` | `true` | `true` | `false` | `false` |
+| TLS CA verification | none (`ca=""`) | none (`ca=""`) | CA cert required | CA cert required |
+| TLS certs | self-signed by deploy.py | self-signed by deploy.py | CA-signed, `--skip-certs` | CA-signed, `--skip-certs` |
+| Hostnames | `127.0.0.1` | `*.test-1.exchange.internal` | `*.preprod.exchange.internal` | `*.exchange.internal` |
+
+---
+
+### Session 22
 
 **`auth_service_test.py` — `--tls` flag.** Without `--tls`, the service starts with no TLS admin section and scenarios 1–3 (plain-PDU SCRAM) are the only valid choices. With `--tls`, all 5 scenarios are available; requesting scenario 4 or 5 without the flag exits with an error message. `_wait_for_service_ready` now takes an explicit `marker` argument; `_SERVICE_READY_MARKER_PDU` and `_SERVICE_READY_MARKER_TLS` are separate constants. `_write_test_toml` only emits the `[admin]` TLS section when `tls_mode=True`.
 
@@ -2132,7 +2240,13 @@ because matching-engine workloads have different durability constraints than the
 
 ### Scripts
 
-Two Python scripts live in the project root.
+Five Python scripts live in the project root.
+
+**`devenv.py`** — developer sandbox management. Subcommands: `start`, `stop`, `status`, `restart [name]`. Reads component definitions from the env TOML (`--env`, default `environments/dev.toml`). Starts components in dependency order, stops in reverse. `--no-ha` skips `ha_only=true` components. Exports credentials before start; re-exports on auth service restart.
+
+**`release.py`** — assembles a versioned deployment artefact. Reads version from `CMakeLists.txt`, git hash from `git rev-parse --short HEAD`. Stages `bin/` (deployment binaries), `lib/` (`.so` + jars), `etc/` (config templates from `applications/`), `db/`, `environments/`, `devenv.py`, `deploy.py`, `release.json`. Output: `build/release/pubsub-<version>-<hash>.tar.gz`.
+
+**`deploy.py`** — deploys a release artefact or expands an in-place install. Steps: (1) unpack artefact if `--artefact` given; (2) expand `${...}` placeholders in `etc/**/*.toml` using the env TOML flattened into a substitution namespace; (3) generate self-signed TLS certs via `openssl req -x509` (skip with `--skip-certs` for production CA certs); (4) run `db/create_db.py`; (5) run `db/export_credentials.py`. Use `--skip-db` to skip database steps on re-deploy.
 
 **`start_fix_seq_system.py`** — starts the full system for interactive testing.
 

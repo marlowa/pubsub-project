@@ -115,7 +115,7 @@ struct ArbiterConfiguration {
     bool cpu_pinning_enabled;
 
     /** @brief Exclude CPU 0 from pinning candidates (for machines without isolated cores). */
-    bool cpu_pinning_dev_mode;
+    bool cpu_pinning_reserve_cpu0;
 
     /** @brief Path to the flock file used to serialise cross-process CPU registry access. */
     std::string cpu_registry_lock_file;

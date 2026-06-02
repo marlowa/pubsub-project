@@ -43,7 +43,7 @@ struct ReactorConfiguration {
         // directly (unit tests, benchmarks) do not trigger undefined behaviour
         // from uninitialised booleans.
         cpu_pinning_enabled = false;
-        cpu_pinning_dev_mode = false;
+        cpu_pinning_reserve_cpu0 = false;
         // cpu_registry_lock_file is std::string — default-constructed to "".
         // Reactor::pin_registered_threads() skips pinning when it is empty.
     }
@@ -208,12 +208,12 @@ struct ReactorConfiguration {
      * @brief Exclude CPU 0 from the set of pinning candidates.
      *
      * CPU 0 is typically used by the OS for interrupt handling and housekeeping.
-     * Set to true on development machines where isolation is not configured;
-     * set to false on production machines with properly isolated cores.
+     * Set to true on machines where CPU 0 is not isolated (OS/interrupt use);
+     * set to false on machines with properly isolated cores.
      *
      * Mandatory: must be explicitly set from the application's TOML configuration.
      */
-    bool cpu_pinning_dev_mode;
+    bool cpu_pinning_reserve_cpu0;
 
     /**
      * @brief Path to the shared registry file used for cross-process coordination.

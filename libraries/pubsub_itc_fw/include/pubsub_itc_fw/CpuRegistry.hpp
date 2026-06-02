@@ -64,11 +64,11 @@ class CpuRegistry {
      *  - Writes registry entries recording this process as the owner.
      *
      * @param count       Maximum number of CPUs to claim.
-     * @param is_dev_mode When true, CPU 0 is excluded from candidates.
+     * @param reserve_cpu0 When true, CPU 0 is excluded from candidates.
      * @return The claimed CPU IDs. May be fewer than `count` if not enough
      *         cores are available; never exceeds SharedCoreRegistryLayout::MAX_SYSTEM_CORES.
      */
-    AvailableCpuVector claim_cpus(size_t count, bool is_dev_mode);
+    AvailableCpuVector claim_cpus(size_t count, bool reserve_cpu0);
 
     /**
      * @brief Remove all registry entries owned by this process.

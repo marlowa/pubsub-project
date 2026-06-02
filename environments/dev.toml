@@ -166,3 +166,73 @@ jar     = "lib/admin-service.jar"
 config  = "etc/admin_service/application.properties"
 workdir = "etc/admin_service"
 ha_only = false
+
+# ── Template substitution values ──────────────────────────────────────────────
+# deploy.py expands ${placeholder} in component config templates using these
+# values.  Placeholder names are the full flattened TOML path of the value
+# below: section + "_" + key, e.g. [arbiter_primary] peer_host → ${arbiter_primary_peer_host}.
+
+[shared]
+reactor_cpu_pinning_reserve_cpu0   = true
+reactor_cpu_registry_lock_file = "/dev/shm/pubsub_cpu_registry.lock"
+
+[witness]
+network_listen_host = "127.0.0.1"
+
+[arbiter_primary]
+network_listen_host  = "127.0.0.1"
+peer_listen_host     = "127.0.0.1"
+peer_host            = "127.0.0.1"
+peer_fence_file_path = "/dev/shm/arbiter_primary_fence"
+witness_host         = "127.0.0.1"
+
+[arbiter_secondary]
+network_listen_host  = "127.0.0.1"
+peer_listen_host     = "127.0.0.1"
+peer_host            = "127.0.0.1"
+peer_fence_file_path = "/dev/shm/arbiter_secondary_fence"
+witness_host         = "127.0.0.1"
+
+[auth_service_primary]
+network_listen_host = "127.0.0.1"
+
+[auth_service_secondary]
+network_listen_host = "127.0.0.1"
+
+[matching_engine]
+network_listen_host         = "127.0.0.1"
+sequencer_er_host           = "127.0.0.1"
+sequencer_er_secondary_host = "127.0.0.1"
+
+[order_gateway]
+network_listen_host                   = "127.0.0.1"
+network_er_listen_host                = "127.0.0.1"
+authentication_service_host           = "127.0.0.1"
+authentication_service_secondary_host = "127.0.0.1"
+authentication_service_scram_password = "stubpassword"
+sequencer_primary_host                = "127.0.0.1"
+sequencer_secondary_host              = "127.0.0.1"
+
+[sequencer_primary]
+network_listen_host       = "127.0.0.1"
+network_er_listen_host    = "127.0.0.1"
+gateway_host              = "127.0.0.1"
+matching_engine_host      = "127.0.0.1"
+ha_arbiter_primary_host   = "127.0.0.1"
+ha_arbiter_secondary_host = "127.0.0.1"
+peer_listen_host          = "127.0.0.1"
+peer_host                 = "127.0.0.1"
+peer_fence_file_path      = "/dev/shm/sequencer_primary_fence"
+wal_directory             = "/var/tmp/pubsub/sequencer_wal"
+
+[sequencer_secondary]
+network_listen_host       = "127.0.0.1"
+network_er_listen_host    = "127.0.0.1"
+gateway_host              = "127.0.0.1"
+matching_engine_host      = "127.0.0.1"
+ha_arbiter_primary_host   = "127.0.0.1"
+ha_arbiter_secondary_host = "127.0.0.1"
+peer_listen_host          = "127.0.0.1"
+peer_host                 = "127.0.0.1"
+peer_fence_file_path      = "/dev/shm/sequencer_secondary_fence"
+wal_directory             = "/var/tmp/pubsub/sequencer_secondary_wal"

@@ -38,7 +38,7 @@ namespace authentication_service {
  *
  * [reactor]
  * cpu_pinning_enabled    = false
- * cpu_pinning_dev_mode   = true
+ * cpu_pinning_reserve_cpu0   = true
  * cpu_registry_lock_file = "/dev/shm/pubsub_cpu_registry.lock"
  *
  * [event_queue_pool]

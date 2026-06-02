@@ -1,22 +1,22 @@
 [network]
-listen_host = "127.0.0.1"
+listen_host = "${arbiter_primary_network_listen_host}"
 listen_port = 7200
 
 [ha]
 instance_id = 1
 
 [peer]
-listen_host                      = "127.0.0.1"
+listen_host                      = "${arbiter_primary_peer_listen_host}"
 listen_port                      = 7203
-host                             = "127.0.0.1"
+host                             = "${arbiter_primary_peer_host}"
 port                             = 7204
-fence_file_path                  = "/dev/shm/arbiter_primary_fence"
+fence_file_path                  = "${arbiter_primary_peer_fence_file_path}"
 heartbeat_interval_seconds       = 2
 heartbeat_timeout_seconds        = 6
 startup_election_timeout_seconds = 20
 
 [witness]
-host                       = "127.0.0.1"
+host                       = "${arbiter_primary_witness_host}"
 port                       = 7100
 vote_timeout_seconds       = 3
 heartbeat_interval_seconds = 30
@@ -27,8 +27,8 @@ syslog_level = "critical"
 
 [reactor]
 cpu_pinning_enabled    = true
-cpu_pinning_dev_mode   = true
-cpu_registry_lock_file = "/dev/shm/pubsub_cpu_registry.lock"
+cpu_pinning_reserve_cpu0   = ${shared_reactor_cpu_pinning_reserve_cpu0}
+cpu_registry_lock_file = "${shared_reactor_cpu_registry_lock_file}"
 
 [event_queue_pool]
 objects_per_slab = 64

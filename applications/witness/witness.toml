@@ -1,5 +1,5 @@
 [network]
-listen_host = "127.0.0.1"
+listen_host = "${witness_network_listen_host}"
 listen_port = 7100
 
 [logging]
@@ -7,9 +7,9 @@ applog_level = "info"
 syslog_level = "critical"
 
 [reactor]
-cpu_pinning_enabled = true
-cpu_pinning_dev_mode = true
-cpu_registry_lock_file = "/dev/shm/pubsub_cpu_registry.lock"
+cpu_pinning_enabled    = true
+cpu_pinning_reserve_cpu0   = ${shared_reactor_cpu_pinning_reserve_cpu0}
+cpu_registry_lock_file = "${shared_reactor_cpu_registry_lock_file}"
 
 [event_queue_pool]
 objects_per_slab = 16

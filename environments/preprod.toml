@@ -1,0 +1,194 @@
+# environments/preprod.toml
+#
+# Pre-production deployment.  Mirrors prod.toml in every structural respect —
+# same paths, same TLS CA requirement, same CPU isolation assumption — so that
+# a release can be validated under near-production conditions before promotion.
+# Only the hostnames differ.
+#
+# Fill in the actual hostnames/IPs for your pre-prod environment before running
+# deploy.py.  Lines marked REPLACE must be changed; all others are
+# reasonable defaults matching production.
+#
+# Consumed by:
+#   deploy.py --env environments/preprod.toml --artefact pubsub-<ver>.tar.gz \
+#             --install-dir /opt/pubsub --skip-certs
+
+[env]
+name        = "preprod"
+description = "Pre-production deployment. Full production topology; separate host set."
+
+# ── Paths ─────────────────────────────────────────────────────────────────────
+
+[paths]
+install_dir = "/opt/pubsub"
+log_dir     = "/var/log/pubsub"
+run_dir     = "/var/run/pubsub"
+
+# ── Database ──────────────────────────────────────────────────────────────────
+
+[db]
+host = "db.preprod.exchange.internal"  # REPLACE
+port = 5432
+name = "pubsub"
+user = "pubsub_app"
+
+# ── High availability ─────────────────────────────────────────────────────────
+
+[ha]
+enabled = true
+
+# ── TLS certificates ──────────────────────────────────────────────────────────
+# Place CA-signed certs before running deploy.py, then pass --skip-certs.
+
+[tls.auth_service_primary]
+cert = "admin.crt"  # REPLACE with CA-signed cert
+key  = "admin.key"  # REPLACE with private key
+ca   = "ca.crt"     # REPLACE with CA cert, or "" to skip client cert verification
+
+[tls.auth_service_secondary]
+cert = "admin.crt"
+key  = "admin.key"
+ca   = "ca.crt"
+
+# ── Components ────────────────────────────────────────────────────────────────
+
+[startup_order]
+components = [
+    "auth_service_primary",
+    "auth_service_secondary",
+    "witness",
+    "arbiter_primary",
+    "arbiter_secondary",
+    "matching_engine",
+    "sequencer_primary",
+    "sequencer_secondary",
+    "gateway",
+    "admin_service",
+]
+
+[components.auth_service_primary]
+binary  = "bin/authentication_service"
+config  = "etc/authentication_service/authentication_service.toml"
+workdir = "etc/authentication_service"
+ha_only = false
+
+[components.auth_service_secondary]
+binary  = "bin/authentication_service"
+config  = "etc/authentication_service/authentication_service_secondary.toml"
+workdir = "etc/authentication_service"
+ha_only = true
+
+[components.witness]
+binary  = "bin/witness"
+config  = "etc/witness/witness.toml"
+workdir = "etc/witness"
+ha_only = true
+
+[components.arbiter_primary]
+binary  = "bin/arbiter"
+config  = "etc/arbiter/arbiter.toml"
+workdir = "etc/arbiter"
+ha_only = true
+
+[components.arbiter_secondary]
+binary  = "bin/arbiter"
+config  = "etc/arbiter/arbiter_secondary.toml"
+workdir = "etc/arbiter"
+ha_only = true
+
+[components.matching_engine]
+binary  = "bin/matching_engine"
+config  = "etc/matching_engine/matching_engine.toml"
+workdir = "etc/matching_engine"
+ha_only = false
+
+[components.sequencer_primary]
+binary  = "bin/sequencer"
+config  = "etc/sequencer/sequencer.toml"
+workdir = "etc/sequencer"
+ha_only = false
+
+[components.sequencer_secondary]
+binary  = "bin/sequencer"
+config  = "etc/sequencer/sequencer_secondary.toml"
+workdir = "etc/sequencer"
+ha_only = true
+
+[components.gateway]
+binary  = "bin/order_gateway"
+config  = "etc/order_gateway/order_gateway.toml"
+workdir = "etc/order_gateway"
+ha_only = false
+
+[components.admin_service]
+jar     = "lib/admin-service.jar"
+config  = "etc/admin_service/application.properties"
+workdir = "etc/admin_service"
+ha_only = false
+
+# ── Template substitution values ──────────────────────────────────────────────
+
+[shared]
+reactor_cpu_pinning_reserve_cpu0   = false
+reactor_cpu_registry_lock_file = "/dev/shm/pubsub_cpu_registry.lock"
+
+[witness]
+network_listen_host = "0.0.0.0"
+
+[arbiter_primary]
+network_listen_host  = "0.0.0.0"
+peer_listen_host     = "0.0.0.0"
+peer_host            = "arbiter-secondary.preprod.exchange.internal"  # REPLACE
+peer_fence_file_path = "/dev/shm/arbiter_primary_fence"
+witness_host         = "witness.preprod.exchange.internal"            # REPLACE
+
+[arbiter_secondary]
+network_listen_host  = "0.0.0.0"
+peer_listen_host     = "0.0.0.0"
+peer_host            = "arbiter-primary.preprod.exchange.internal"    # REPLACE
+peer_fence_file_path = "/dev/shm/arbiter_secondary_fence"
+witness_host         = "witness.preprod.exchange.internal"            # REPLACE
+
+[auth_service_primary]
+network_listen_host = "0.0.0.0"
+
+[auth_service_secondary]
+network_listen_host = "0.0.0.0"
+
+[matching_engine]
+network_listen_host         = "0.0.0.0"
+sequencer_er_host           = "sequencer-primary.preprod.exchange.internal"    # REPLACE
+sequencer_er_secondary_host = "sequencer-secondary.preprod.exchange.internal"  # REPLACE
+
+[order_gateway]
+network_listen_host                   = "0.0.0.0"
+network_er_listen_host                = "0.0.0.0"
+authentication_service_host           = "auth-primary.preprod.exchange.internal"    # REPLACE
+authentication_service_secondary_host = "auth-secondary.preprod.exchange.internal"  # REPLACE
+authentication_service_scram_password = "REPLACE_WITH_GATEWAY_SCRAM_PASSWORD"
+sequencer_primary_host                = "sequencer-primary.preprod.exchange.internal"    # REPLACE
+sequencer_secondary_host              = "sequencer-secondary.preprod.exchange.internal"  # REPLACE
+
+[sequencer_primary]
+network_listen_host       = "0.0.0.0"
+network_er_listen_host    = "0.0.0.0"
+gateway_host              = "gateway.preprod.exchange.internal"                 # REPLACE
+matching_engine_host      = "matching-engine.preprod.exchange.internal"         # REPLACE
+ha_arbiter_primary_host   = "arbiter-primary.preprod.exchange.internal"         # REPLACE
+ha_arbiter_secondary_host = "arbiter-secondary.preprod.exchange.internal"       # REPLACE
+peer_listen_host          = "0.0.0.0"
+peer_host                 = "sequencer-secondary.preprod.exchange.internal"     # REPLACE
+peer_fence_file_path      = "/dev/shm/sequencer_primary_fence"
+wal_directory             = "/var/lib/pubsub/sequencer_wal"
+
+[sequencer_secondary]
+network_listen_host       = "0.0.0.0"
+network_er_listen_host    = "0.0.0.0"
+gateway_host              = "gateway.preprod.exchange.internal"                 # REPLACE
+matching_engine_host      = "matching-engine.preprod.exchange.internal"         # REPLACE
+ha_arbiter_primary_host   = "arbiter-primary.preprod.exchange.internal"         # REPLACE
+ha_arbiter_secondary_host = "arbiter-secondary.preprod.exchange.internal"       # REPLACE
+peer_listen_host          = "0.0.0.0"
+peer_host                 = "sequencer-primary.preprod.exchange.internal"       # REPLACE
+peer_fence_file_path      = "/dev/shm/sequencer_secondary_fence"
+wal_directory             = "/var/lib/pubsub/sequencer_secondary_wal"

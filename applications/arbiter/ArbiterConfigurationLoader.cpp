@@ -100,7 +100,7 @@ ArbiterConfiguration ArbiterConfigurationLoader::load(const std::string& file_pa
         }
 
         toml.get_required_except("reactor.cpu_pinning_enabled", config.cpu_pinning_enabled);
-        toml.get_required_except("reactor.cpu_pinning_dev_mode", config.cpu_pinning_dev_mode);
+        toml.get_required_except("reactor.cpu_pinning_reserve_cpu0", config.cpu_pinning_reserve_cpu0);
         toml.get_required_except("reactor.cpu_registry_lock_file", config.cpu_registry_lock_file);
 
         toml.get_required_except("event_queue_pool.objects_per_slab", config.event_queue_pool_objects_per_slab);
