@@ -2579,3 +2579,76 @@ These are normal for a TCP-over-loopback workload and cannot be reduced without 
 4. **Cache `FixSerialiser::current_utc_timestamp()` at second resolution** — eliminates 0.86 % strftime cost.
 5. **Batch `ReactorControlCommand` allocations** — reduces 5.34 % framework overhead; requires API change.
 6. **Switch to Unix domain sockets for intra-host connections** — bypasses kernel TCP entirely (39 % of samples); largest possible gain but highest effort.
+
+---
+
+## Session 2026-06-02 — FIX Logon fix, WAL replication verification, fix-test-client
+
+### Gateway: DefaultApplVerID fix
+
+The order gateway's Logon reply was missing `DefaultApplVerID` (tag 1137), causing fix8 clients to
+reject the session with `Missing Mandatory Field`. Fix applied in two parts:
+
+- `applications/order_gateway/FixMessage.hpp`: added `static constexpr int DefaultApplVerID = 1137`
+  to the `Tag` namespace.
+- `applications/order_gateway/OrderGatewayThread.cpp`: added `reply.set(Tag::DefaultApplVerID, "9")`
+  to the Logon reply block (value "9" = FIX.5.0SP2).
+- `applications/order_gateway/FixSerialiser.cpp`: added `Tag::DefaultApplVerID` to the `app_tags[]`
+  array so the serialiser actually emits the field on the wire.
+
+After rebuilding, fix8 connected successfully. Session log confirms: 1,002 messages processed,
+heartbeat active at 10-second interval.
+
+### WAL replication verification
+
+Confirmed WAL sync between leader and follower sequencers is working:
+
+- Primary WAL: `/var/tmp/pubsub/sequencer_wal/wal_001964.log` — 4,194,304 bytes,
+  `last_seq_no = 79,479,215`, modified 19:26:46.325 BST.
+- Secondary WAL: `/var/tmp/pubsub/sequencer_secondary_wal/wal_002051.log` — 4,194,304 bytes,
+  `last_seq_no = 79,479,215`, modified 19:26:46.337 BST.
+
+Both files at identical sequence number, 12 ms apart.
+
+### New component: java/fix-test-client
+
+A FIX 5.0 SP2 gateway test client replacing fix8 for interactive and scripted testing.
+Single-user, single-session web application.
+
+**Technology stack:** QuickFIX/J 2.3.1, Javalin 6.3.0, Groovy 4.0.21, toml4j, Logback 1.5.x,
+Pico.css styling. Fat JAR via maven-shade. Java 17. No Spring.
+
+**Architecture:**
+- `FixEngine` — wraps `SocketInitiator`; owns session lifecycle; exposes `SessionStatus` record.
+- `FixApplication` — `quickfix.Application` implementation; routes inbound messages to blotter and
+  capture queue via registered listener.
+- `BlotterStore` — thread-safe; accumulates all outbound NOS and inbound ER messages for the session;
+  parses ER fields (ClOrdID, OrderID, ExecID, ExecType, OrdStatus, Symbol, Side, OrdQty, Price,
+  OrdType, CumQty, LeavesQty) to `BlotterRow` records.
+- `MessageCapture` — writer thread drains a `LinkedBlockingQueue<Message>` to a timestamped log
+  file in `output/`. Active while a script is running.
+- `LogBuffer` — Logback `AppenderBase`; copies every `ILoggingEvent` into a 1000-line ring buffer;
+  pushes new entries to SSE subscriber queues.
+- `ScriptRunner` — executes Groovy scripts in a dedicated thread via `GroovyShell`; binds `session`
+  (`FixSessionBinding`), `fix` (`FixHelper`), and `sleep` (a `groovy.lang.Closure`).
+- `WebServer` (Main) — Javalin with five page sets of routes; manual DI; centralized exception
+  handling; static files from classpath `/web/`.
+
+**UI (five pages, always-visible nav + session status strip on every page):**
+- Session — logon form with optional seq-num override; live post-logon detail (ticking duration,
+  live seq counters); last-session summary shown after logout.
+- Script — Groovy editor with Load/Save/New; state badge (IDLE / RUNNING / COMPLETED / FAILED);
+  live output; capture status.
+- Messages — New Order Single send form; blotter table with row colouring by OrdStatus (filled=green,
+  partial=amber, rejected/cancelled=red); blotter persists for the session.
+- Config — read-only display of `app.toml` and `session.cfg`.
+- Logs — SSE log stream with Pause/Resume; last 1000 lines shown on load.
+
+**Build:** `mvn package` in `java/fix-test-client/`. Fat JAR at `target/fix-test-client-*.jar`.
+**Run:** `java -jar target/fix-test-client-*.jar` — opens on `http://localhost:8081`.
+
+Session config fix required: `StartTime=00:00:00` and `EndTime=00:00:00` added to `config/session.cfg`
+so QuickFIX/J does not reject startup with `ConfigError: StartTime not defined`.
+
+**Status:** builds cleanly; startup confirmed. End-to-end testing (logon, NOS send, ER receipt,
+blotter, scripting) deferred to next session.

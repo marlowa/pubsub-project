@@ -1,0 +1,11 @@
+[server]
+port = 8081
+
+[fix]
+session_config = "config/session.cfg"
+
+[capture]
+output_dir = "output"
+
+[scripts]
+scripts_dir = "scripts"

@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>FIX Test Client — Session</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div id="content">
+    <h1>Session</h1>
+    <hr class="section-rule">
+
+    <!-- Last session summary (shown after logout) -->
+    <div id="last-session-summary" style="display:none; margin-bottom:20px;">
+        <div style="margin-bottom:4px; font-weight:bold;">Last session</div>
+        <hr class="section-rule">
+        <table class="info-table">
+            <tr><td>Logged in as</td><td id="ls-sender"></td></tr>
+            <tr><td>Started</td><td id="ls-start"></td></tr>
+            <tr><td>Ended</td><td id="ls-end"></td></tr>
+            <tr><td>Duration</td><td id="ls-duration"></td></tr>
+        </table>
+    </div>
+
+    <!-- Pre-logon form -->
+    <div id="logon-form">
+        <div class="form-row">
+            <label>SenderCompID</label>
+            <input type="text" id="sender-comp-id" value="CLIENT">
+        </div>
+        <div class="form-row">
+            <label>Starting seq num</label>
+            <input type="checkbox" id="override-seq-check" onchange="toggleSeqInput()">
+            Override
+            <input type="number" id="override-seq-num" value="1" disabled style="width:80px;">
+        </div>
+        <div class="form-row" style="margin-top:10px;">
+            <label></label>
+            <button onclick="doLogon()">Log On</button>
+        </div>
+    </div>
+
+    <!-- Post-logon detail -->
+    <div id="logon-detail" style="display:none;">
+        <table class="info-table">
+            <tr><td>Logged in as</td><td id="d-sender"></td></tr>
+            <tr><td>Gateway</td><td id="d-gateway"></td></tr>
+            <tr><td>Logged in at</td><td id="d-logon-time"></td></tr>
+            <tr><td>Duration</td><td id="d-duration"></td></tr>
+            <tr><td>Starting seq</td><td id="d-start-seq"></td></tr>
+            <tr><td>Outbound seq</td><td id="d-out-seq"></td></tr>
+            <tr><td>Inbound seq</td><td id="d-in-seq"></td></tr>
+        </table>
+        <button onclick="doLogout()">Log Out</button>
+    </div>
+</div>
+
+<script src="/app.js"></script>
+<script>
+'use strict';
+
+let durationTimer = null;
+let logonEpochMs = null;
+
+function toggleSeqInput() {
+    document.getElementById('override-seq-num').disabled =
+        !document.getElementById('override-seq-check').checked;
+}
+
+async function doLogon() {
+    const params = {
+        senderCompId: document.getElementById('sender-comp-id').value,
+        overrideSeq:  document.getElementById('override-seq-check').checked,
+        overrideSeqNum: document.getElementById('override-seq-num').value,
+    };
+    await apiPost('/api/session/logon', params);
+}
+
+async function doLogout() {
+    await apiPost('/api/session/logout', {});
+}
+
+function startDurationTick(logonTimeStr) {
+    const parts = logonTimeStr.split(/[\- :]/);
+    logonEpochMs = Date.UTC(parts[0], parts[1]-1, parts[2], parts[3], parts[4], parts[5]);
+    clearInterval(durationTimer);
+    durationTimer = setInterval(() => {
+        const elapsed = Math.floor((Date.now() - logonEpochMs) / 1000);
+        const h = String(Math.floor(elapsed / 3600)).padStart(2, '0');
+        const m = String(Math.floor((elapsed % 3600) / 60)).padStart(2, '0');
+        const s = String(elapsed % 60).padStart(2, '0');
+        const el = document.getElementById('d-duration');
+        if (el) {
+            el.textContent = h + ':' + m + ':' + s;
+        }
+    }, 1000);
+}
+
+function renderLoggedOn(status) {
+    document.getElementById('logon-form').style.display = 'none';
+    document.getElementById('logon-detail').style.display = '';
+    document.getElementById('last-session-summary').style.display = 'none';
+
+    document.getElementById('d-sender').textContent = status.senderCompId;
+    document.getElementById('d-gateway').textContent =
+        status.targetCompId + '  @  ' + status.host + ':' + status.port;
+    document.getElementById('d-logon-time').textContent = status.logonTime;
+    document.getElementById('d-start-seq').textContent = status.startingSeqNum;
+    document.getElementById('d-out-seq').textContent = status.nextOutgoingSeqNum;
+    document.getElementById('d-in-seq').textContent = status.nextIncomingSeqNum;
+
+    if (logonEpochMs === null && status.logonTime) {
+        startDurationTick(status.logonTime);
+    }
+}
+
+function renderNotLoggedOn(status) {
+    document.getElementById('logon-form').style.display = '';
+    document.getElementById('logon-detail').style.display = 'none';
+    clearInterval(durationTimer);
+    logonEpochMs = null;
+}
+
+async function loadLastSession() {
+    const data = await apiGet('/api/session/last');
+    if (data.present) {
+        document.getElementById('last-session-summary').style.display = '';
+        document.getElementById('ls-sender').textContent = data.senderCompId;
+        document.getElementById('ls-start').textContent = data.startTime;
+        document.getElementById('ls-end').textContent = data.endTime;
+        document.getElementById('ls-duration').textContent = data.duration;
+    }
+}
+
+let prevLoggedOn = null;
+
+function pageInit() {
+    loadLastSession();
+
+    const originalPoll = window._sessionStatusCallback;
+    window._sessionStatusCallback = function(status) {
+        if (status.loggedOn) {
+            renderLoggedOn(status);
+        } else {
+            if (prevLoggedOn === true) {
+                loadLastSession();
+            }
+            renderNotLoggedOn(status);
+        }
+        prevLoggedOn = status.loggedOn;
+    };
+
+    // Override the status strip updater to also drive the page.
+    const originalUpdate = window.updateStatusStrip || function() {};
+    window.updateStatusStrip = function(status) {
+        originalUpdate(status);
+        window._sessionStatusCallback(status);
+    };
+}
+</script>
+</body>
+</html>

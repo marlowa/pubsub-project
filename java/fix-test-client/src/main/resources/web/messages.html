@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>FIX Test Client — Messages</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div id="content">
+    <h1>Messages</h1>
+    <hr class="section-rule">
+
+    <div style="font-weight:bold; margin-bottom:6px;">New Order Single</div>
+    <div style="display:flex; flex-wrap:wrap; gap:10px; align-items:flex-end; margin-bottom:14px;">
+        <label>ClOrdID <input type="text" id="f-clordid" value="ORD-001" style="width:110px;"></label>
+        <label>Symbol  <input type="text" id="f-symbol"  value="BHP"    style="width:80px;"></label>
+        <label>Side
+            <select id="f-side" style="font-family:monospace; font-size:13px; padding:4px 6px; border:1px solid #aaa;">
+                <option value="Buy">Buy</option>
+                <option value="Sell">Sell</option>
+                <option value="Sell Short">Sell Short</option>
+            </select>
+        </label>
+        <label>OrdType
+            <select id="f-ordtype" style="font-family:monospace; font-size:13px; padding:4px 6px; border:1px solid #aaa;">
+                <option value="Limit">Limit</option>
+                <option value="Market">Market</option>
+            </select>
+        </label>
+        <label>Qty   <input type="number" id="f-qty"   value="100"   style="width:80px;"></label>
+        <label>Price <input type="number" id="f-price" value="10.50" step="0.01" style="width:90px;"></label>
+        <button onclick="doSend()">Send</button>
+    </div>
+
+    <div id="send-error" style="color:#c00; margin-bottom:8px; display:none;"></div>
+
+    <!-- Blotter -->
+    <div id="blotter-wrap">
+        <table id="blotter">
+            <thead>
+                <tr>
+                    <th>Time</th>
+                    <th>Dir</th>
+                    <th>Seq</th>
+                    <th>ClOrdID</th>
+                    <th>OrderID</th>
+                    <th>ExecID</th>
+                    <th>ExecType</th>
+                    <th>OrdStatus</th>
+                    <th>Symbol</th>
+                    <th>Side</th>
+                    <th>OrdQty</th>
+                    <th>Price</th>
+                    <th>OrdType</th>
+                    <th>CumQty</th>
+                    <th>LeavesQty</th>
+                </tr>
+            </thead>
+            <tbody id="blotter-body"></tbody>
+        </table>
+    </div>
+</div>
+
+<script src="/app.js"></script>
+<script>
+'use strict';
+
+let lastBlotterSize = 0;
+
+const ORD_STATUS_CLASS = {
+    '2': 'status-filled',
+    '1': 'status-partial',
+    '8': 'status-rejected',
+    '4': 'status-cancelled',
+};
+
+async function doSend() {
+    const errEl = document.getElementById('send-error');
+    errEl.style.display = 'none';
+
+    const params = {
+        clOrdId:  document.getElementById('f-clordid').value,
+        symbol:   document.getElementById('f-symbol').value,
+        side:     document.getElementById('f-side').value,
+        ordType:  document.getElementById('f-ordtype').value,
+        qty:      document.getElementById('f-qty').value,
+        price:    document.getElementById('f-price').value,
+    };
+
+    const data = await apiPost('/api/messages/send', params);
+    if (data.error) {
+        errEl.textContent = data.error;
+        errEl.style.display = '';
+    }
+}
+
+async function pollBlotter() {
+    try {
+        const rows = await apiGet('/api/messages');
+        if (rows.length !== lastBlotterSize) {
+            renderBlotter(rows);
+            lastBlotterSize = rows.length;
+        }
+    } catch (e) {
+        // ignore
+    }
+    setTimeout(pollBlotter, 1000);
+}
+
+function renderBlotter(rows) {
+    const tbody = document.getElementById('blotter-body');
+    tbody.innerHTML = '';
+    for (const row of rows) {
+        const tr = document.createElement('tr');
+
+        if (row.direction === 'OUT') {
+            tr.className = 'dir-out';
+        } else if (row.direction === 'IN' && row.ordStatus) {
+            const cls = ORD_STATUS_CLASS[row.ordStatus];
+            if (cls) {
+                tr.className = cls;
+            }
+        }
+
+        const cells = [
+            row.time, row.direction, row.seqNum,
+            row.clOrdId, row.orderId, row.execId,
+            row.execType, row.ordStatus,
+            row.symbol, row.side,
+            row.ordQty, row.price, row.ordType,
+            row.cumQty, row.leavesQty,
+        ];
+        for (const val of cells) {
+            const td = document.createElement('td');
+            td.textContent = val || '';
+            tr.appendChild(td);
+        }
+        tbody.appendChild(tr);
+    }
+}
+
+function pageInit() {
+    pollBlotter();
+}
+</script>
+</body>
+</html>

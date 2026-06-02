@@ -1,0 +1,246 @@
+*, *::before, *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    font-family: monospace;
+    font-size: 14px;
+    background: #f4f4f4;
+    color: #111;
+}
+
+/* ── Fixed top chrome ─────────────────────────────────────────── */
+
+#chrome {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 100;
+    background: #e0e0e0;
+    border-bottom: 1px solid #aaa;
+}
+
+#nav-row {
+    display: flex;
+    gap: 6px;
+    padding: 6px 10px;
+    border-bottom: 1px solid #bbb;
+}
+
+#status-row {
+    padding: 4px 10px;
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    background: #ddd;
+}
+
+#status-row .status-dot {
+    font-size: 16px;
+    line-height: 1;
+}
+
+/* ── Main content ─────────────────────────────────────────────── */
+
+#content {
+    margin-top: 62px;   /* height of chrome */
+    padding: 20px;
+    max-width: 1400px;
+}
+
+h1 {
+    font-size: 16px;
+    font-weight: bold;
+    margin-bottom: 4px;
+}
+
+hr.section-rule {
+    border: none;
+    border-top: 1px solid #bbb;
+    margin-bottom: 16px;
+}
+
+/* ── Buttons ──────────────────────────────────────────────────── */
+
+button, input[type=submit] {
+    font-family: monospace;
+    font-size: 13px;
+    cursor: pointer;
+    box-shadow: 2px 2px 4px #888, -1px -1px 2px #fff;
+    border: 1px solid #999;
+    background: #e8e8e8;
+    padding: 5px 14px;
+    border-radius: 3px;
+}
+
+button:active, button.pressed {
+    box-shadow: inset 2px 2px 4px #888;
+    border: 1px solid #777;
+    background: #d0d0d0;
+}
+
+button:disabled {
+    opacity: 0.45;
+    cursor: default;
+    box-shadow: none;
+}
+
+/* ── Forms ────────────────────────────────────────────────────── */
+
+.form-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+}
+
+.form-row label {
+    min-width: 140px;
+    text-align: right;
+    font-size: 13px;
+}
+
+.form-row input[type=text],
+.form-row input[type=number] {
+    font-family: monospace;
+    font-size: 13px;
+    border: 1px solid #aaa;
+    padding: 4px 6px;
+    background: #fff;
+    width: 160px;
+}
+
+.form-row input:disabled {
+    background: #eee;
+    color: #888;
+}
+
+/* ── Info table (session detail) ──────────────────────────────── */
+
+.info-table {
+    border-collapse: collapse;
+    margin-bottom: 16px;
+}
+
+.info-table td {
+    padding: 2px 12px 2px 0;
+    vertical-align: top;
+}
+
+.info-table td:first-child {
+    color: #555;
+    min-width: 160px;
+}
+
+/* ── Blotter ──────────────────────────────────────────────────── */
+
+#blotter-wrap {
+    overflow-x: auto;
+    margin-top: 16px;
+}
+
+#blotter {
+    border-collapse: collapse;
+    font-size: 12px;
+    white-space: nowrap;
+    width: 100%;
+}
+
+#blotter th {
+    background: #ccc;
+    border: 1px solid #aaa;
+    padding: 3px 8px;
+    text-align: left;
+    position: sticky;
+    top: 62px;
+}
+
+#blotter td {
+    border: 1px solid #ccc;
+    padding: 2px 8px;
+}
+
+#blotter tr.dir-out td {
+    background: #f8f8f8;
+}
+
+/* OrdStatus row colours for inbound ERs */
+#blotter tr.status-filled td       { background: #c8f0c8; }
+#blotter tr.status-partial td      { background: #fff0a0; }
+#blotter tr.status-rejected td     { background: #f5c0c0; }
+#blotter tr.status-cancelled td    { background: #f5c0c0; }
+
+/* ── Script editor ────────────────────────────────────────────── */
+
+#script-editor {
+    width: 100%;
+    height: 300px;
+    font-family: monospace;
+    font-size: 13px;
+    border: 1px solid #aaa;
+    padding: 6px;
+    resize: vertical;
+    background: #fff;
+}
+
+#script-output {
+    width: 100%;
+    height: 160px;
+    font-family: monospace;
+    font-size: 12px;
+    border: 1px solid #aaa;
+    padding: 6px;
+    background: #f8f8f0;
+    overflow-y: auto;
+    white-space: pre-wrap;
+}
+
+/* ── Log viewer ───────────────────────────────────────────────── */
+
+#log-view {
+    height: calc(100vh - 120px);
+    overflow-y: auto;
+    font-size: 12px;
+    background: #1e1e1e;
+    color: #d4d4d4;
+    padding: 8px;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+#log-view .level-ERROR { color: #f48771; }
+#log-view .level-WARN  { color: #dcdcaa; }
+#log-view .level-INFO  { color: #9cdcfe; }
+#log-view .level-DEBUG { color: #888; }
+
+/* ── Config page ──────────────────────────────────────────────── */
+
+.config-file-label {
+    font-weight: bold;
+    margin-top: 14px;
+    margin-bottom: 4px;
+}
+
+.config-file-content {
+    white-space: pre;
+    background: #fff;
+    border: 1px solid #aaa;
+    padding: 8px;
+    font-size: 12px;
+    overflow-x: auto;
+}
+
+/* ── Misc ─────────────────────────────────────────────────────── */
+
+.state-badge {
+    font-weight: bold;
+}
+
+.state-idle      { color: #555; }
+.state-running   { color: #0a0; }
+.state-completed { color: #060; }
+.state-failed    { color: #c00; }

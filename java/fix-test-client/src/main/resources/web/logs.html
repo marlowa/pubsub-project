@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>FIX Test Client — Logs</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div id="content">
+    <h1>Logs</h1>
+    <hr class="section-rule">
+
+    <div style="margin-bottom:8px;">
+        <button id="btn-pause" onclick="togglePause()">Pause</button>
+        <span id="pause-note" style="margin-left:10px; color:#888; display:none;">
+            Auto-scroll paused — new entries still arriving
+        </span>
+    </div>
+
+    <div id="log-view"></div>
+</div>
+
+<script src="/app.js"></script>
+<script>
+'use strict';
+
+let paused = false;
+let eventSource = null;
+
+function levelClass(line) {
+    if (line.includes(' ERROR ')) {
+        return 'level-ERROR';
+    }
+    if (line.includes(' WARN ')) {
+        return 'level-WARN';
+    }
+    if (line.includes(' DEBUG ')) {
+        return 'level-DEBUG';
+    }
+    return 'level-INFO';
+}
+
+function appendLine(text) {
+    const view = document.getElementById('log-view');
+    const span = document.createElement('span');
+    span.className = levelClass(text);
+    span.textContent = text + '\n';
+    view.appendChild(span);
+
+    if (!paused) {
+        view.scrollTop = view.scrollHeight;
+    }
+
+    // Cap DOM to last 2000 lines.
+    while (view.children.length > 2000) {
+        view.removeChild(view.firstChild);
+    }
+}
+
+function togglePause() {
+    paused = !paused;
+    const btn = document.getElementById('btn-pause');
+    const note = document.getElementById('pause-note');
+    btn.textContent = paused ? 'Resume' : 'Pause';
+    note.style.display = paused ? '' : 'none';
+    if (!paused) {
+        const view = document.getElementById('log-view');
+        view.scrollTop = view.scrollHeight;
+    }
+}
+
+function startStream() {
+    eventSource = new EventSource('/api/logs/stream');
+    eventSource.addEventListener('log', (e) => {
+        appendLine(e.data);
+    });
+    eventSource.onerror = () => {
+        // Browser auto-reconnects; no action needed.
+    };
+}
+
+function pageInit() {
+    startStream();
+}
+</script>
+</body>
+</html>

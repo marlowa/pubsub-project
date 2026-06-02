@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  SpotBugs exclusion filter.
+
+  EI_EXPOSE_REP2: handler classes store injected singletons (FixEngine, ScriptRunner,
+  MessageCapture, etc.) by reference — intentional, these are application-scoped objects
+  created in Main and shared safely through constructor injection.
+-->
+<FindBugsFilter>
+    <Match>
+        <Bug pattern="EI_EXPOSE_REP2"/>
+        <Or>
+            <Class name="com.pubsub.fixtestclient.web.SessionHandler"/>
+            <Class name="com.pubsub.fixtestclient.web.ScriptHandler"/>
+            <Class name="com.pubsub.fixtestclient.web.MessagesHandler"/>
+            <Class name="com.pubsub.fixtestclient.web.ConfigHandler"/>
+            <Class name="com.pubsub.fixtestclient.web.LogHandler"/>
+            <Class name="com.pubsub.fixtestclient.script.ScriptRunner"/>
+        </Or>
+    </Match>
+</FindBugsFilter>

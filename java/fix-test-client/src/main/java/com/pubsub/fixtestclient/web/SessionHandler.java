@@ -1,0 +1,94 @@
+package com.pubsub.fixtestclient.web;
+
+import com.pubsub.fixtestclient.fix.FixEngine;
+import com.pubsub.fixtestclient.fix.SessionStatus;
+import io.javalin.http.Context;
+
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
+import java.util.Map;
+
+
+public class SessionHandler {
+
+    private static final DateTimeFormatter TIMESTAMP =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneOffset.UTC);
+
+    private final FixEngine fixEngine;
+
+    private volatile LastSession lastSession;
+
+    public SessionHandler(FixEngine fixEngine) {
+        this.fixEngine = fixEngine;
+    }
+
+    public void getStatus(Context ctx) {
+        SessionStatus status = fixEngine.getStatus();
+        ctx.json(Map.of(
+                "connected", status.connected(),
+                "loggedOn", status.loggedOn(),
+                "senderCompId", status.senderCompId(),
+                "targetCompId", status.targetCompId(),
+                "host", status.host(),
+                "port", status.port(),
+                "logonTime", status.logonTime() != null ? TIMESTAMP.format(status.logonTime()) : "",
+                "startingSeqNum", status.startingSeqNum(),
+                "nextOutgoingSeqNum", status.nextOutgoingSeqNum(),
+                "nextIncomingSeqNum", status.nextIncomingSeqNum()
+        ));
+    }
+
+    public void logon(Context ctx) {
+        String senderCompId = ctx.formParam("senderCompId");
+        String overrideSeqStr = ctx.formParam("overrideSeqNum");
+        boolean overrideSeq = "true".equals(ctx.formParam("overrideSeq"));
+
+        if (overrideSeq && overrideSeqStr != null && !overrideSeqStr.isBlank()) {
+            try {
+                fixEngine.setOverrideSeqNum(Integer.parseInt(overrideSeqStr.trim()));
+            } catch (NumberFormatException ignored) {
+            }
+        }
+
+        fixEngine.logon();
+        ctx.json(Map.of("ok", true));
+    }
+
+    public void logout(Context ctx) {
+        SessionStatus status = fixEngine.getStatus();
+        if (status.loggedOn() && status.logonTime() != null) {
+            lastSession = new LastSession(
+                    status.senderCompId(),
+                    status.logonTime(),
+                    Instant.now()
+            );
+        }
+        fixEngine.logout();
+        ctx.json(Map.of("ok", true));
+    }
+
+    public void getLastSession(Context ctx) {
+        LastSession ls = lastSession;
+        if (ls == null) {
+            ctx.json(Map.of("present", false));
+            return;
+        }
+        long durationSeconds = ls.endTime().getEpochSecond() - ls.startTime().getEpochSecond();
+        long minutes = durationSeconds / 60;
+        long seconds = durationSeconds % 60;
+        String duration = minutes > 0
+                ? minutes + " minutes " + seconds + " seconds"
+                : seconds + " seconds";
+        ctx.json(Map.of(
+                "present", true,
+                "senderCompId", ls.senderCompId(),
+                "startTime", TIMESTAMP.format(ls.startTime()),
+                "endTime", TIMESTAMP.format(ls.endTime()),
+                "duration", duration
+        ));
+    }
+
+    private record LastSession(String senderCompId, Instant startTime, Instant endTime) {
+    }
+}
