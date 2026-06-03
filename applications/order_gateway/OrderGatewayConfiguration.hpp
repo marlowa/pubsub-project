@@ -5,10 +5,12 @@
 
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <string>
 
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/RollingLogfileConfiguration.hpp>
+#include <pubsub_itc_fw/WallClock.hpp>
 
 namespace order_gateway {
 
@@ -170,6 +172,15 @@ struct OrderGatewayConfiguration {
 
     /** @brief Number of command queue pool slabs pre-allocated at startup. */
     int32_t command_queue_pool_initial_slabs{1};
+
+    // ----------------------------------------------------------------
+    // Wall clock
+    // ----------------------------------------------------------------
+
+    /** @brief Clock used to generate SendingTime (tag 52) in all outbound FIX messages.
+     *  Defaults to SystemWallClock (real UTC wall time). Inject a ReplayClock
+     *  to produce deterministic timestamps in tests. */
+    std::shared_ptr<pubsub_itc_fw::WallClock> wall_clock{std::make_shared<pubsub_itc_fw::SystemWallClock>()};
 };
 
 } // namespace order_gateway

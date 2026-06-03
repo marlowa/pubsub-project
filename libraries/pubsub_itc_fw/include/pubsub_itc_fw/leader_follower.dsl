@@ -138,9 +138,10 @@ end
 #  client-visible fill notification is sent.
 # ------------------------------------------------------------
 message WalRecord (id=103, version=1)
-    i64 seq_no      # sequence number assigned by the leader
-    i16 pdu_id      # PDU type tag (e.g. NewOrderSingle = 1000)
-    bytes payload   # complete encoded PDU payload (as stored in the WAL)
+    i64 seq_no           # sequence number assigned by the leader
+    i16 pdu_id           # PDU type tag (e.g. NewOrderSingle = 1000)
+    bytes payload        # complete encoded PDU payload (as stored in the WAL)
+    datetime_ns wall_time_ns  # wall time at which the leader sequenced this record; used for WAL replay clock
 end
 
 # ------------------------------------------------------------

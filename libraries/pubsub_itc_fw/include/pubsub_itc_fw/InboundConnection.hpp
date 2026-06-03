@@ -9,6 +9,7 @@
 #include <tuple>
 
 #include <pubsub_itc_fw/ConnectionID.hpp>
+#include <pubsub_itc_fw/IdleTimeoutFlag.hpp>
 #include <pubsub_itc_fw/ProtocolHandlerInterface.hpp>
 #include <pubsub_itc_fw/TcpSocket.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
@@ -70,13 +71,13 @@ class InboundConnection {
      *                             Ownership transferred.
      * @param[in] peer_description   Human-readable description of the remote peer
      *                               (e.g. "192.168.1.10:5001") for logging.
-     * @param[in] idle_timeout_exempt When true, this connection is exempt from the
-     *                               inactivity timeout and will never be disconnected
-     *                               for being idle. Use for long-lived control
-     *                               connections that do not exchange heartbeats.
+     * @param[in] idle_timeout           IdleTimeoutFlag::UseIdleTimeout (default) or
+     *                                   IdleTimeoutFlag::BypassIdleTimeout for connections
+     *                                   that do not exchange heartbeats.
      */
     InboundConnection(ConnectionID id, std::unique_ptr<TcpSocket> socket, ThreadID target_thread_id, std::unique_ptr<ProtocolHandlerInterface> handler,
-                      std::string peer_description, bool idle_timeout_exempt = false);
+                      std::string peer_description,
+                      IdleTimeoutFlag idle_timeout = IdleTimeoutFlag{IdleTimeoutFlag::UseIdleTimeout});
 
     /**
      * @brief Returns the ConnectionID assigned to this connection.
@@ -119,11 +120,11 @@ class InboundConnection {
     /**
      * @brief Returns true if this connection is exempt from idle timeout teardown.
      *
-     * Set at construction time from InboundListenerConfiguration::idle_timeout_exempt.
+     * Set at construction time from InboundListenerConfiguration::idle_timeout.
      * Exempt connections are never torn down by check_for_inactive_connections().
      */
     [[nodiscard]] bool idle_timeout_exempt() const {
-        return idle_timeout_exempt_;
+        return idle_timeout_ == IdleTimeoutFlag::BypassIdleTimeout;
     }
 
     /**
@@ -164,7 +165,7 @@ class InboundConnection {
     std::unique_ptr<ProtocolHandlerInterface> handler_;
 
     std::chrono::steady_clock::time_point last_activity_time_;
-    bool idle_timeout_exempt_;
+    IdleTimeoutFlag idle_timeout_;
 };
 
 } // namespace pubsub_itc_fw

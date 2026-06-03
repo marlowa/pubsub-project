@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <optional>
 
+#include <pubsub_itc_fw/IdleTimeoutFlag.hpp>
 #include <pubsub_itc_fw/NetworkEndpointConfiguration.hpp>
 #include <pubsub_itc_fw/ProtocolType.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
@@ -74,9 +75,9 @@ struct InboundListenerConfiguration {
      * extended periods. For external client-facing listeners leave this false so
      * that zombie connections are detected and cleaned up.
      *
-     * Default: false.
+     * Default: UseIdleTimeout (timeout is active).
      */
-    bool idle_timeout_exempt{false};
+    IdleTimeoutFlag idle_timeout{IdleTimeoutFlag::UseIdleTimeout};
 };
 
 } // namespace pubsub_itc_fw

@@ -27,7 +27,7 @@ import java.util.Map;
 public class MessagesHandler {
 
     private static final DateTimeFormatter TIME_FORMAT =
-            DateTimeFormatter.ofPattern("HH:mm:ss.SSS").withZone(ZoneOffset.UTC);
+            DateTimeFormatter.ofPattern("HH:mm:ss.SSSSSS").withZone(ZoneOffset.UTC);
 
     private final FixEngine fixEngine;
     private final BlotterStore blotterStore;

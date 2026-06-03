@@ -128,3 +128,10 @@ It creates extra work to keep the comments accurate when tests are prepended or 
 dont use switch statements on integers, should be for enums only.
 do not say std::size_t, say size_t instead. Qualifying that particular typedef is just too much aggro.
 when writing code that invokes a function with the attribute nodiscard, do not use trickery to still disregard the return value.
+Never pass a bare true or false as a function argument. The reader at the call site cannot know what it means without consulting the function signature.
+Instead, define a small typed flag class following the UseHugePagesFlag pattern in UseHugePagesFlag.hpp: a class whose name describes the concept,
+containing a Tag enum whose values name both states without negatives (e.g. UseIdleTimeout / BypassIdleTimeout, not Exempt / NotExempt).
+The class provides isEqual(), value(), and free operator== overloads so the flag can be compared against the tag enum directly.
+Boolean function parameters (bool in the signature) are therefore banned when the call site would have to pass a literal true or false.
+A bool return value, a bool local variable, or a bool struct field are all fine; the restriction applies only to function parameters
+whose call sites would otherwise be burdened with unexplained true/false literals.

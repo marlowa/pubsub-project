@@ -5,6 +5,7 @@
 
 #include <string>
 
+#include <pubsub_itc_fw/WallClock.hpp>
 #include "FixMessage.hpp"
 
 namespace order_gateway {
@@ -37,12 +38,13 @@ namespace order_gateway {
 class FixSerialiser {
   public:
     /**
-     * @brief Constructs a FixSerialiser with fixed SenderCompID and TargetCompID.
+     * @brief Constructs a FixSerialiser with fixed SenderCompID, TargetCompID, and an injectable clock.
      *
      * @param[in] sender_comp_id SenderCompID (tag 49) for all outbound messages.
      * @param[in] target_comp_id TargetCompID (tag 56) for all outbound messages.
+     * @param[in] wall_clock     Clock used to generate SendingTime (tag 52). Must outlive this object.
      */
-    FixSerialiser(std::string sender_comp_id, std::string target_comp_id);
+    FixSerialiser(std::string sender_comp_id, std::string target_comp_id, const pubsub_itc_fw::WallClock& wall_clock);
 
     /**
      * @brief Serialises a FixMessage to a complete wire-ready FIX byte string.
@@ -73,12 +75,13 @@ class FixSerialiser {
     static std::string compute_checksum(const std::string& input);
 
     /*
-     * Returns the current UTC time formatted as YYYYMMDD-HH:MM:SS.
+     * Returns the time from wall_clock_ formatted as YYYYMMDD-HH:MM:SS UTC.
      */
-    static std::string current_utc_timestamp();
+    [[nodiscard]] std::string current_utc_timestamp() const;
 
     std::string sender_comp_id_;
     std::string target_comp_id_;
+    const pubsub_itc_fw::WallClock& wall_clock_;
 };
 
 } // namespace order_gateway

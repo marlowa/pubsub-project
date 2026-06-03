@@ -597,7 +597,7 @@ TEST_F(OutboundConnectionManagerTest, TeardownWithPendingSendFreesChunk) {
     // Call teardown_connection. It must free the chunk via
     // conn.current_allocator()->deallocate() (the uncovered lines 451-452).
     // deliver_lost_event=false so fast_path_threads_ is not accessed.
-    reactor_->outbound_manager().teardown_connection(conn_id, "test teardown", false);
+    reactor_->outbound_manager().teardown_connection(conn_id, "test teardown", DeliverLostEventFlag{DeliverLostEventFlag::SuppressLostEvent});
 
     // Verify the chunk was freed: allocate the same size again — the slab
     // count must not have grown beyond what it was before teardown.
@@ -659,7 +659,7 @@ TEST_F(OutboundConnectionManagerTest, DrainPendingSendDispatchesStashedCommand) 
             ::close(peer_fd_);
             peer_fd_ = -1;
         }
-        mgr.teardown_connection(conn_id, "cleanup", false);
+        mgr.teardown_connection(conn_id, "cleanup", DeliverLostEventFlag{DeliverLostEventFlag::SuppressLostEvent});
         GTEST_SKIP() << "Kernel send buffer absorbed the full frame — skipping";
     }
 
@@ -701,7 +701,7 @@ TEST_F(OutboundConnectionManagerTest, DrainPendingSendDispatchesStashedCommand) 
         ::close(peer_fd_);
         peer_fd_ = -1;
     }
-    mgr.teardown_connection(conn_id, "test complete", false);
+    mgr.teardown_connection(conn_id, "test complete", DeliverLostEventFlag{DeliverLostEventFlag::SuppressLostEvent});
 }
 
 // ============================================================
@@ -770,7 +770,7 @@ TEST_F(OutboundConnectionManagerTest, ProcessCommitRawBytesReturnsTrueForKnownId
     ASSERT_NE(conn, nullptr);
     EXPECT_TRUE(reactor_->outbound_manager().process_commit_raw_bytes(conn_id, 0));
 
-    reactor_->outbound_manager().teardown_connection(conn_id, "cleanup", false);
+    reactor_->outbound_manager().teardown_connection(conn_id, "cleanup", DeliverLostEventFlag{DeliverLostEventFlag::SuppressLostEvent});
 }
 
 TEST_F(OutboundConnectionManagerTest, FindByIdReturnsNullForUnknownId) {

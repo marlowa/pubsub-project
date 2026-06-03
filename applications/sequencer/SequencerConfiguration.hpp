@@ -4,9 +4,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <cstdint> // IWYU pragma: keep
+#include <memory>
 #include <string>
 
 #include <pubsub_itc_fw/FwLogLevel.hpp>
+#include <pubsub_itc_fw/WallClock.hpp>
 
 namespace sequencer {
 
@@ -211,6 +213,25 @@ struct SequencerConfiguration {
 
     /** @brief Number of command queue pool slabs pre-allocated at startup. */
     int32_t command_queue_pool_initial_slabs{1};
+
+    // ----------------------------------------------------------------
+    // Wall clock
+    // ----------------------------------------------------------------
+
+    /** @brief Clock used to stamp sequenced_at on outbound NOS and OCR PDUs.
+     *  Defaults to SystemWallClock (real UTC wall time). Inject a ReplayClock
+     *  to drive timestamps from WAL records during replay. */
+    std::shared_ptr<pubsub_itc_fw::WallClock> wall_clock{std::make_shared<pubsub_itc_fw::SystemWallClock>()};
+
+    // ----------------------------------------------------------------
+    // Replay mode  (set by the --replay command-line flag)
+    // ----------------------------------------------------------------
+
+    /** @brief When true, the sequencer reads the WAL and replays all records
+     *  to the matching engine instead of accepting live gateway connections.
+     *  HA, gateway, arbiter, and peer connections are skipped.  The WAL
+     *  snapshot timer is suppressed.  Set via the --replay command-line flag. */
+    bool replay_mode{false};
 };
 
 } // namespace sequencer

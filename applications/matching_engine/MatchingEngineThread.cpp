@@ -3,7 +3,7 @@
 
 #include "MatchingEngineThread.hpp"
 
-#include <chrono>
+// <chrono> not required here; time is obtained via the injected WallClock.
 
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
@@ -130,8 +130,9 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
     const std::string order_qty  = std::string(view.order_qty);
     const std::string price      = view.has_price ? std::string(view.price) : std::string{};
     const std::string exec_id    = generate_exec_id();
-    const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                            std::chrono::system_clock::now().time_since_epoch()).count();
+    const int64_t now_ns = view.has_sequenced_at
+                               ? view.sequenced_at
+                               : config_.wall_clock->now_ns();
 
     // Reject duplicate ClOrdID.
     if (order_book_.count(cl_ord_id)) {
@@ -212,8 +213,9 @@ void MatchingEngineThread::handle_order_cancel_request(const pubsub_itc_fw_app::
     const std::string orig_cl_ord_id = std::string(view.orig_cl_ord_id);
     const std::string order_qty      = std::string(view.order_qty);
     const std::string exec_id        = generate_exec_id();
-    const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                            std::chrono::system_clock::now().time_since_epoch()).count();
+    const int64_t now_ns = view.has_sequenced_at
+                               ? view.sequenced_at
+                               : config_.wall_clock->now_ns();
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "MatchingEngineThread: OrderCancelRequest seq={} ClOrdID={} OrigClOrdID={} Symbol={} Side={}",

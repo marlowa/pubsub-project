@@ -20,6 +20,8 @@
 #include <pubsub_itc_fw/ProtocolType.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/ReactorConfiguration.hpp>
+#include <pubsub_itc_fw/DeliverLostEventFlag.hpp>
+#include <pubsub_itc_fw/IdleTimeoutFlag.hpp>
 #include <pubsub_itc_fw/ReactorControlCommand.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 #include <pubsub_itc_fw/ThreadLookupInterface.hpp>
@@ -88,13 +90,13 @@ class InboundConnectionManager {
      *                                or RawBytesProtocolHandler. Defaults to FrameworkPdu.
      * @param[in] raw_buffer_capacity Minimum MirroredBuffer capacity in bytes for RawBytes
      *                                listeners. Ignored for FrameworkPdu listeners.
-     * @param[in] idle_timeout_exempt When true, accepted connections on this listener are
-     *                                exempt from the inactivity timeout. Use for listeners
-     *                                that serve long-lived connections without heartbeats.
+     * @param[in] idle_timeout        IdleTimeoutFlag::UseIdleTimeout (default) or
+     *                                IdleTimeoutFlag::BypassIdleTimeout for listeners that
+     *                                serve long-lived connections without heartbeats.
      */
     void register_inbound_listener(NetworkEndpointConfiguration address, ThreadID target_thread_id,
                                    ProtocolType protocol_type = ProtocolType{ProtocolType::FrameworkPdu}, int64_t raw_buffer_capacity = 0,
-                                   bool idle_timeout_exempt = false);
+                                   IdleTimeoutFlag idle_timeout = IdleTimeoutFlag{IdleTimeoutFlag::UseIdleTimeout});
 
     /**
      * @brief Stages a TLS inbound listener for initialisation.
@@ -165,7 +167,7 @@ class InboundConnectionManager {
      * @param[in] reason             Human-readable reason for logging and event delivery.
      * @param[in] deliver_lost_event If true, delivers ConnectionLost to the target thread.
      */
-    void teardown_connection(ConnectionID id, const std::string& reason, bool deliver_lost_event);
+    void teardown_connection(ConnectionID id, const std::string& reason, DeliverLostEventFlag deliver_lost_event);
 
     /**
      * @brief Checks all inbound connections for idle timeout and tears down

@@ -3,7 +3,6 @@
 
 #include "FixSerialiser.hpp"
 
-#include <chrono>
 #include <cstdio>
 #include <ctime>
 #include <string>
@@ -14,8 +13,8 @@ namespace {
 constexpr char fix_delimiter = '\x01';
 } // namespace
 
-FixSerialiser::FixSerialiser(std::string sender_comp_id, std::string target_comp_id)
-    : sender_comp_id_(std::move(sender_comp_id)), target_comp_id_(std::move(target_comp_id)) {}
+FixSerialiser::FixSerialiser(std::string sender_comp_id, std::string target_comp_id, const pubsub_itc_fw::WallClock& wall_clock)
+    : sender_comp_id_(std::move(sender_comp_id)), target_comp_id_(std::move(target_comp_id)), wall_clock_(wall_clock) {}
 
 std::string FixSerialiser::serialise(const FixMessage& msg, int seq_num) const {
     // Build the body -- everything after tag 9 and before tag 10.
@@ -76,9 +75,8 @@ std::string FixSerialiser::compute_checksum(const std::string& input) {
     return {result};
 }
 
-std::string FixSerialiser::current_utc_timestamp() {
-    const auto now = std::chrono::system_clock::now();
-    const std::time_t t = std::chrono::system_clock::to_time_t(now);
+std::string FixSerialiser::current_utc_timestamp() const {
+    const std::time_t t = static_cast<std::time_t>(wall_clock_.now_ns() / 1'000'000'000LL);
     struct tm utc_tm {};
     gmtime_r(&t, &utc_tm);
     char timestamp_buffer[20];

@@ -4,9 +4,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <cstdint>
+#include <memory>
 #include <string>
 
 #include <pubsub_itc_fw/FwLogLevel.hpp>
+#include <pubsub_itc_fw/WallClock.hpp>
 
 namespace matching_engine {
 
@@ -103,6 +105,16 @@ struct MatchingEngineConfiguration {
      *  Size to the expected peak number of simultaneously live (non-terminal)
      *  orders.  Increase for load-test environments. */
     int32_t order_book_initial_capacity{1024};
+
+    // ----------------------------------------------------------------
+    // Wall clock
+    // ----------------------------------------------------------------
+
+    /** @brief Clock used to generate transact_time on ExecutionReports when the
+     *  inbound PDU does not carry a sequenced_at timestamp.
+     *  Defaults to SystemWallClock (real UTC wall time). Inject a ReplayClock
+     *  to produce deterministic timestamps in tests. */
+    std::shared_ptr<pubsub_itc_fw::WallClock> wall_clock{std::make_shared<pubsub_itc_fw::SystemWallClock>()};
 };
 
 } // namespace matching_engine

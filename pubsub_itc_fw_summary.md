@@ -2914,3 +2914,228 @@ now correctly matches every row's colour, including status-filled (green), statu
    `{data, size}` pair pointing into the wire buffer, zero-copy). Distinguished from `string`
    (which implies UTF-8 text).
 3. **Wire format table** — added `bytes | 4-byte byte-count + raw bytes` row.
+
+### Build status
+
+Full build (`./build.sh --no-tests --doxygen`) passes cleanly: pylint, C++ (32-core make),
+CMake install, Doxygen (zero warnings with `WARN_AS_ERROR=FAIL_ON_WARNINGS`), Java admin
+service, fix-test-client. All changes from both 2026-06-03 sessions committed.
+
+---
+
+## Session 2026-06-04 — Injectable WallClock for replay
+
+### Motivation
+
+For replay to produce correct results, any component that generates a business
+timestamp (particularly `transact_time` on ExecutionReports) must draw from an
+injectable clock rather than calling `system_clock::now()` directly. This allows
+a `ReplayClock` to be driven from the original WAL timestamps, ensuring that
+replayed ERs carry the same `transact_time` as the originals.
+
+### New framework type: `WallClock`
+
+`libraries/pubsub_itc_fw/include/pubsub_itc_fw/WallClock.hpp`
+
+Three classes, all tagged `@ingroup instrumentation_subsystem`:
+
+- **`WallClock`** — abstract base; single pure-virtual `int64_t now_ns() const`.
+- **`SystemWallClock`** — wraps `std::chrono::system_clock::now()`. Used in all
+  production configurations (the default everywhere).
+- **`ReplayClock`** — holds an `std::atomic<int64_t>`. `set_time_ns(t)` advances
+  the clock; `now_ns()` returns it. Thread-safe. Intended to be driven by the
+  sequencer replay loop (call `set_time_ns(wal_record.timestamp)` before
+  dispatching each WAL record to the ME).
+
+### DSL: `sequenced_at` field on NOS and OCR
+
+`optional datetime_ns sequenced_at` added to both `NewOrderSingle` and
+`OrderCancelRequest` in `fix_equity_orders.dsl`. This field is the carrier for
+the sequencer's timestamp: it is set when the sequencer sequences the PDU and
+read by the ME when generating the ER's `transact_time`. The gateway never sets
+it; the field is absent on the inbound PDU from the FIX client.
+
+### Sequencer: stamp `sequenced_at`
+
+`SequencerConfiguration` gains `std::shared_ptr<WallClock> wall_clock` (default:
+`SystemWallClock`). `wall_time_ns` is computed once per order PDU and reused for
+the WAL record, the NOS/OCR `sequenced_at` field, and the `WalRecord` PDU sent
+to the follower (see WAL timestamp section below for detail).
+
+### Matching engine: `sequenced_at`-first transact_time
+
+`MatchingEngineConfiguration` gains `std::shared_ptr<WallClock> wall_clock`
+(default: `SystemWallClock`). Both `handle_new_order_single` and
+`handle_order_cancel_request` replace the old `system_clock::now()` call with:
+```cpp
+const int64_t now_ns = view.has_sequenced_at
+                           ? view.sequenced_at
+                           : config_.wall_clock->now_ns();
+```
+Live path: `has_sequenced_at` is always true (sequencer stamps it), so the clock
+fallback is a safety net only.
+
+### Gateway: clock injected into FixSerialiser and FixErEncoder
+
+`OrderGatewayConfiguration` gains `std::shared_ptr<WallClock> wall_clock`
+(default: `SystemWallClock`).
+
+- **`FixSerialiser`**: constructor now takes `const WallClock&`; stored as a
+  member reference. `current_utc_timestamp()` made non-static; derives time from
+  `wall_clock_.now_ns()` rather than `system_clock::now()`.
+- **`FixErEncoder::encode_execution_report()`**: signature extended with
+  `const WallClock& wall_clock`; `fill_utc_timestamp()` updated accordingly.
+
+`SendingTime` (FIX tag 52) is a transport field (when the message was put on the
+wire). `SystemWallClock` is correct here even during replay; the injection point
+exists for unit-test determinism.
+
+---
+
+## Session 2026-06-04 (continued) — WAL timestamp + sequencer --replay flag
+
+### WAL on-disk format: `wall_time_ns` added
+
+**On-disk layout changed** (backward-incompatible; delete the WAL directory
+before running updated binaries):
+
+```
+Old: pdu_id (int16_t, 2 bytes) | PDU payload bytes
+New: wall_time_ns (int64_t, 8 bytes) | pdu_id (int16_t, 2 bytes) | PDU payload bytes
+```
+
+**Files changed:**
+
+- `leader_follower.dsl` (`WalRecord` message): added `datetime_ns wall_time_ns`
+  so the leader sends the original timestamp to the follower along with the PDU.
+- `SequencerWal.hpp`:
+  - Class doc updated to reflect new payload format.
+  - `append()` gains `int64_t wall_time_ns` parameter.
+  - `ReplayCallback` gains `int64_t wall_time_ns` parameter (after `payload_size`).
+- `SequencerWal.cpp`:
+  - `append()`: writes `wall_time_ns` (8 bytes) before `pdu_id` in the combined
+    buffer; total buffer size increases by 8 bytes per record.
+  - `open()` callback: extracts `wall_time_ns` from bytes 0–7, `pdu_id` from
+    bytes 8–9, then calls the `ReplayCallback` with all five parameters.
+- `SequencerThread.hpp`: `send_wal_record()` declaration updated.
+- `SequencerThread.cpp`:
+  - `wall_time_ns` computed **once** per order PDU at the top of the
+    `is_order_pdu` block (`const int64_t wall_time_ns = config_.wall_clock->now_ns()`),
+    then used for: local WAL `append()`, NOS/OCR `sequenced_at` field, and the
+    `WalRecord` sent to the follower. The three values are guaranteed identical.
+  - `send_wal_record()`: populates `wal_record.wall_time_ns`.
+  - `handle_wal_record()`: passes `view.wall_time_ns` to `wal_.append()`.
+
+### Sequencer `--replay` flag
+
+Usage: `sequencer <logfile> <config.toml> [--replay]`
+
+**Behaviour in replay mode:**
+1. `main()` sets `config.replay_mode = true`.
+2. `on_initial_event()`: opens the WAL with a buffering `ReplayCallback` that
+   copies each record (seq_no, pdu_id, wall_time_ns, payload bytes) into
+   `replay_buffer_`. Skips the WAL snapshot timer. Sets role = leader immediately
+   (no HA election).
+3. `on_app_ready_event()`: connects to the matching engine only — no gateway,
+   arbiter, or peer connections.
+4. `on_connection_established()` when ME connects: calls
+   `dispatch_replay_records()`.
+5. `dispatch_replay_records()`: for each buffered record, decodes the payload into
+   an owning NOS/OCR struct, stamps `sequenced_at = record.wall_time_ns`, then
+   calls `send_pdu(me_outbound_order_conn_id_, record.pdu_id, record.seq_no, ...)`.
+   The ME receives each PDU with its original timestamp, processes it as normal,
+   and sends back ERs. Logs completion with dispatched/total counts.
+
+**Key design properties:**
+- The ME and gateway binaries are unchanged — replay is entirely a sequencer
+  concern.
+- `sequenced_at` in each replayed PDU equals the `wall_time_ns` stored in the
+  WAL record, which equals what was stamped during the original live run. The ME's
+  `sequenced_at`-first logic produces identical `transact_time` values on ERs.
+- No `ReplayClock` injection is needed for dispatch: `sequenced_at` carries the
+  original timestamp directly. The `wall_clock` in `SequencerConfiguration`
+  remains `SystemWallClock` in replay mode (it is not called during dispatch).
+
+**New types in `SequencerThread.hpp`:**
+```cpp
+struct ReplayRecord {
+    int64_t seq_no{};
+    int16_t pdu_id{};
+    int64_t wall_time_ns{};
+    std::vector<uint8_t> payload;
+};
+std::vector<ReplayRecord> replay_buffer_;
+void dispatch_replay_records();
+```
+
+**Build:** `cmake --build build --target sequencer` — clean.
+
+---
+
+## Session 2026-06-04 (continued) — Replay bug fixes and end-to-end verification
+
+Two bugs found during live testing and fixed before a successful end-to-end replay.
+
+### Bug 1: dispatch race — ME drops NOS because ER connection not yet ready
+
+**Symptom:** Matching engine log showed:
+```
+MatchingEngineThread: no sequencer ER connections established -- dropping NOS
+```
+
+**Root cause:** `dispatch_replay_records()` was triggered as soon as the outbound
+sequencer→ME order connection was established. The ME received the NOS immediately
+but its outbound connection back to the sequencer's ER inbound port (7021) was not
+yet up, so `sequencer_er_conn_id_` was invalid and the ME dropped the order.
+
+**Fix:** Two readiness flags in `SequencerThread`:
+- `replay_me_order_ready_` — set when outbound ME order connection establishes
+- `replay_me_er_ready_` — set when the inbound ME→sequencer ER connection arrives
+  (detected in `on_connection_established()` `else` branch when
+  `svc == er_inbound_svc_`)
+
+New helper `try_dispatch_replay()` gates dispatch on both flags being true.
+Dispatch fires only once the ME can both receive orders AND send ERs back.
+
+### Bug 2: snapshot bypasses all WAL records during full replay
+
+**Symptom:** Sequencer replay log showed `0 record(s)` even though `last_seq_no=8`.
+
+**Root cause:** `SequencerWal::open()` loads the snapshot first. The snapshot's WAL
+anchor points to the position AFTER all committed records (written at snapshot time),
+so `WalReader::replay()` finds nothing to replay from that anchor. This is correct
+for crash recovery (avoids re-processing already-applied records) but wrong for full
+replay where every record must be revisited.
+
+**Fix:** Added `bool full_replay = false` parameter to `SequencerWal::open()`. When
+`true`, `load_snapshot()` is skipped entirely and the WAL anchor stays at `{0, 0}`,
+causing `WalReader::replay()` to visit every record from segment 0. The sequencer
+passes `full_replay = true` in replay mode; normal crash-recovery open is unchanged.
+
+### End-to-end test result
+
+```
+# Sequencer replay log
+WAL read complete: 3 record(s), last seq_no=3
+Both ME connections ready, starting dispatch
+Replay complete -- 3/3 record(s) dispatched to matching engine
+
+# Matching engine log
+accepted NOS OrderID=ME-ORD-1 ExecID=ME-EXEC-1 ClOrdID=ORD-001 book_size=1
+accepted NOS OrderID=ME-ORD-2 ExecID=ME-EXEC-2 ClOrdID=ORD-002 book_size=2
+accepted NOS OrderID=ME-ORD-3 ExecID=ME-EXEC-3 ClOrdID=ORD-003 book_size=3
+```
+
+All three orders replayed in sequence with their original `sequenced_at` timestamps.
+The ME's order book rebuilds to the same state as the original live run.
+
+**Complete replay flow (as verified):**
+1. Run live session: send orders via fix-test-client → WAL records written with
+   `wall_time_ns` per record.
+2. Stop all components.
+3. Start matching engine only (`devenv.py restart matching_engine`).
+4. Run replay: `sequencer <logfile> <config.toml> --replay`
+5. Sequencer opens WAL from segment 0 (ignoring snapshot), buffers all records,
+   connects to ME, waits for both ME connections, dispatches all records with
+   original timestamps.
+6. ME rebuilds order book identically to the live run.

@@ -54,12 +54,37 @@ SequencerThread::SequencerThread(pubsub_itc_fw::ApplicationThread::ConstructorTo
     , arbiter_secondary_conn_id_{} {}
 
 void SequencerThread::on_initial_event() {
-    // WAL replay is used only to recover next_sequence_number_. The routing
-    // map is intentionally not rebuilt: by the time the sequencer restarts,
-    // the ME has almost certainly already sent ERs for any in-flight orders
-    // from the previous run, and those ERs will not be re-sent. Populating
-    // the routing map from WAL replay would leave entries that are never
-    // erased, causing unbounded heap growth under high throughput.
+    if (config_.replay_mode) {
+        // Replay mode: open WAL with a buffering callback that accumulates all
+        // records into replay_buffer_.  dispatch_replay_records() sends them to
+        // the ME once the ME connection is established.
+        const int64_t recovered_seq = wal_.open(
+            config_.wal_directory, config_.wal_segment_size,
+            [this](int64_t seq_no, int16_t pdu_id, const uint8_t* payload, size_t payload_size, int64_t wall_time_ns) {
+                ReplayRecord rec;
+                rec.seq_no = seq_no;
+                rec.pdu_id = pdu_id;
+                rec.wall_time_ns = wall_time_ns;
+                rec.payload.assign(payload, payload + payload_size);
+                replay_buffer_.push_back(std::move(rec));
+            }, WalOpenMode{WalOpenMode::IgnoreSnapshot});
+        next_sequence_number_ = recovered_seq > 0 ? recovered_seq + 1 : 1;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: replay mode -- WAL read complete: {} record(s), last seq_no={}, "
+                   "next_sequence_number={}",
+                   replay_buffer_.size(), recovered_seq, next_sequence_number_);
+        // Start as leader so that send_pdu paths are active.
+        ++epoch_;
+        adopt_role(pubsub_itc_fw_app::Role::leader);
+        return;
+    }
+
+    // Normal mode: WAL replay is used only to recover next_sequence_number_.
+    // The routing map is intentionally not rebuilt: by the time the sequencer
+    // restarts, the ME has almost certainly already sent ERs for any in-flight
+    // orders from the previous run, and those ERs will not be re-sent.
+    // Populating the routing map from WAL replay would leave entries that are
+    // never erased, causing unbounded heap growth under high throughput.
     // ERs for unroutable seq_nos are handled gracefully by the "not in
     // routing map" fallback in on_framework_pdu_message().
     const int64_t recovered_seq = wal_.open(config_.wal_directory, config_.wal_segment_size, nullptr);
@@ -92,6 +117,15 @@ void SequencerThread::on_initial_event() {
 }
 
 void SequencerThread::on_app_ready_event() {
+    if (config_.replay_mode) {
+        // Replay mode: connect only to the matching engine; skip gateway, HA
+        // arbiters, and peer replication.
+        connect_to_service("matching_engine");
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                       "SequencerThread: replay mode -- connecting to matching engine only");
+        return;
+    }
+
     connect_to_service("gateway");
     connect_to_service("matching_engine");
     if (config_.ha_enabled) {
@@ -111,6 +145,10 @@ void SequencerThread::on_connection_established(pubsub_itc_fw::ConnectionID id) 
     } else if (svc == "matching_engine") {
         me_outbound_order_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: matching engine order connection {} established", id.get_value());
+        if (config_.replay_mode) {
+            replay_me_order_ready_ = true;
+            try_dispatch_replay();
+        }
     } else if (svc == "arbiter_primary") {
         const bool first_arbiter = !arbiter_primary_conn_id_.is_valid() && !arbiter_secondary_conn_id_.is_valid();
         arbiter_primary_conn_id_ = id;
@@ -140,6 +178,12 @@ void SequencerThread::on_connection_established(pubsub_itc_fw::ConnectionID id) 
         //   inbound:7001 / inbound:7002 -- gateway sending order PDUs
         //   inbound:7021 / inbound:7022 -- matching engine sending ER PDUs
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: inbound connection {} established ({})", id.get_value(), svc);
+        if (config_.replay_mode && svc == er_inbound_svc_) {
+            // The ME has connected to our ER port and can now receive ER PDUs
+            // back from the ME after we dispatch. Safe to send orders now.
+            replay_me_er_ready_ = true;
+            try_dispatch_replay();
+        }
     }
 }
 
@@ -208,13 +252,14 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         // seq_no is carried in the PDU transport header (third arg to send_pdu).
         // The ME reads it via message.seq_no() and echoes it on the ER reply.
         const int64_t seq = next_sequence_number_++;
+        const int64_t wall_time_ns = config_.wall_clock->now_ns();
 
         // WAL commit: only the leader appends from the direct gateway PDU.
         // Followers write their WAL exclusively via WalRecord from the leader,
         // which ensures WALs are identical byte-for-byte.  Unknown role (during
         // election startup) appends locally because it may become the leader.
         if (role_ != pubsub_itc_fw_app::Role::follower) {
-            wal_.append(seq, static_cast<int16_t>(message.pdu_id()), message.payload(), message.payload_size());
+            wal_.append(seq, static_cast<int16_t>(message.pdu_id()), message.payload(), message.payload_size(), wall_time_ns);
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
                        "SequencerThread: order PDU on connection {} pdu_id={} seq={} -- WAL append ok (wal_size={}) role={}",
                        message.connection_id().get_value(), message.pdu_id(), seq, wal_.record_count(), pubsub_itc_fw_app::to_string(role_));
@@ -304,6 +349,11 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             nos.has_sender_comp_id = view.has_sender_comp_id;
             nos.sender_comp_id = view.sender_comp_id;
 
+            // Stamp wall time so the ME can use the original sequencing time
+            // for transact_time during replay instead of calling system_clock::now().
+            nos.has_sequenced_at = true;
+            nos.sequenced_at = wall_time_ns;
+
             // Record seq_no → gateway_session_conn_id for ER routing back to the
             // exact FIX session.  seq_no is globally unique; gateway_session_conn_id
             // identifies the specific connection within the gateway.
@@ -342,6 +392,9 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             ocr.has_sender_comp_id = view.has_sender_comp_id;
             ocr.sender_comp_id = view.sender_comp_id;
 
+            ocr.has_sequenced_at = true;
+            ocr.sequenced_at = wall_time_ns;
+
             // Record seq_no → gateway_session_conn_id for cancel-ER routing.
             if (view.has_gateway_session_conn_id) {
                 seq_no_to_session_conn_id_[seq] = view.gateway_session_conn_id;
@@ -356,7 +409,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
 
         // Replicate to follower before releasing the slab so the payload pointer stays valid.
         if (forwarded_to_me && config_.ha_enabled) {
-            send_wal_record(seq, pdu_id, message);
+            send_wal_record(seq, pdu_id, message, wall_time_ns);
         }
 
         release_pdu_payload(message);
@@ -891,6 +944,106 @@ void SequencerThread::handle_peer_pdu(const pubsub_itc_fw::ConnectionID& conn_id
 }
 
 // ---------------------------------------------------------------------------
+// Replay mode dispatch
+// ---------------------------------------------------------------------------
+
+void SequencerThread::try_dispatch_replay() {
+    if (replay_me_order_ready_ && replay_me_er_ready_) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                       "SequencerThread: replay -- both ME connections ready, starting dispatch");
+        dispatch_replay_records();
+    }
+}
+
+void SequencerThread::dispatch_replay_records() {
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "SequencerThread: replay -- dispatching {} record(s) to matching engine",
+               replay_buffer_.size());
+
+    size_t dispatched = 0;
+    for (const auto& record : replay_buffer_) {
+        auto& arena_buf = decode_arena_buffer();
+        pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+        arena.reset();
+        size_t arena_bytes_needed = 0;
+        size_t bytes_consumed = 0;
+
+        if (record.pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::NewOrderSingle)) {
+            pubsub_itc_fw_app::NewOrderSingleView view{};
+            if (!pubsub_itc_fw_app::decode(view, record.payload.data(), record.payload.size(), bytes_consumed, arena, arena_bytes_needed)) {
+                PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                           "SequencerThread: replay -- failed to decode NOS seq={} -- skipping", record.seq_no);
+                continue;
+            }
+
+            pubsub_itc_fw_app::NewOrderSingle nos{};
+            nos.cl_ord_id           = view.cl_ord_id;
+            nos.side                = view.side;
+            nos.symbol              = view.symbol;
+            nos.ord_type            = view.ord_type;
+            nos.transact_time       = view.transact_time;
+            nos.order_qty           = view.order_qty;
+            nos.has_price           = view.has_price;           nos.price           = view.price;
+            nos.has_stop_px         = view.has_stop_px;         nos.stop_px         = view.stop_px;
+            nos.has_time_in_force   = view.has_time_in_force;   nos.time_in_force   = view.time_in_force;
+            nos.has_account         = view.has_account;         nos.account         = view.account;
+            nos.has_ex_destination  = view.has_ex_destination;  nos.ex_destination  = view.ex_destination;
+            nos.has_exec_inst       = view.has_exec_inst;       nos.exec_inst       = view.exec_inst;
+            nos.has_min_qty         = view.has_min_qty;         nos.min_qty         = view.min_qty;
+            nos.has_max_floor       = view.has_max_floor;       nos.max_floor       = view.max_floor;
+            nos.has_expire_time     = view.has_expire_time;     nos.expire_time     = view.expire_time;
+            nos.has_text            = view.has_text;            nos.text            = view.text;
+            nos.has_sender_comp_id  = view.has_sender_comp_id;  nos.sender_comp_id  = view.sender_comp_id;
+            nos.has_gateway_session_conn_id = view.has_gateway_session_conn_id;
+            nos.gateway_session_conn_id     = view.gateway_session_conn_id;
+            // Stamp the original sequencing time so the ME uses it for transact_time.
+            nos.has_sequenced_at = true;
+            nos.sequenced_at     = record.wall_time_ns;
+
+            send_pdu(me_outbound_order_conn_id_, record.pdu_id, record.seq_no, nos);
+
+        } else if (record.pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::OrderCancelRequest)) {
+            pubsub_itc_fw_app::OrderCancelRequestView view{};
+            if (!pubsub_itc_fw_app::decode(view, record.payload.data(), record.payload.size(), bytes_consumed, arena, arena_bytes_needed)) {
+                PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                           "SequencerThread: replay -- failed to decode OCR seq={} -- skipping", record.seq_no);
+                continue;
+            }
+
+            pubsub_itc_fw_app::OrderCancelRequest ocr{};
+            ocr.orig_cl_ord_id      = view.orig_cl_ord_id;
+            ocr.cl_ord_id           = view.cl_ord_id;
+            ocr.symbol              = view.symbol;
+            ocr.side                = view.side;
+            ocr.transact_time       = view.transact_time;
+            ocr.order_qty           = view.order_qty;
+            ocr.has_account         = view.has_account;         ocr.account         = view.account;
+            ocr.has_text            = view.has_text;            ocr.text            = view.text;
+            ocr.has_sender_comp_id  = view.has_sender_comp_id;  ocr.sender_comp_id  = view.sender_comp_id;
+            ocr.has_gateway_session_conn_id = view.has_gateway_session_conn_id;
+            ocr.gateway_session_conn_id     = view.gateway_session_conn_id;
+            ocr.has_sequenced_at = true;
+            ocr.sequenced_at     = record.wall_time_ns;
+
+            send_pdu(me_outbound_order_conn_id_, record.pdu_id, record.seq_no, ocr);
+
+        } else {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "SequencerThread: replay -- unknown pdu_id={} seq={} -- skipping", record.pdu_id, record.seq_no);
+            continue;
+        }
+        ++dispatched;
+    }
+
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "SequencerThread: replay complete -- {}/{} record(s) dispatched to matching engine",
+               dispatched, replay_buffer_.size());
+
+    replay_buffer_.clear();
+    replay_buffer_.shrink_to_fit();
+}
+
+// ---------------------------------------------------------------------------
 // WAL replication helpers (Slice 7)
 // ---------------------------------------------------------------------------
 
@@ -898,7 +1051,7 @@ bool SequencerThread::needs_wal_ack() const {
     return config_.ha_enabled && peer_active_conn().is_valid();
 }
 
-void SequencerThread::send_wal_record(int64_t seq, int16_t wal_pdu_id, const pubsub_itc_fw::EventMessage& message) {
+void SequencerThread::send_wal_record(int64_t seq, int16_t wal_pdu_id, const pubsub_itc_fw::EventMessage& message, int64_t wall_time_ns) {
     const pubsub_itc_fw::ConnectionID target = peer_active_conn();
     if (!target.is_valid()) {
         return;
@@ -908,6 +1061,7 @@ void SequencerThread::send_wal_record(int64_t seq, int16_t wal_pdu_id, const pub
     wal_record.pdu_id = wal_pdu_id;
     wal_record.payload.data = message.payload();
     wal_record.payload.size = static_cast<size_t>(message.payload_size());
+    wal_record.wall_time_ns = wall_time_ns;
     send_pdu(target, pdu_wal_record, seq, wal_record);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: WalRecord sent to follower seq={} pdu_id={}", seq, wal_pdu_id);
 }
@@ -925,7 +1079,7 @@ void SequencerThread::handle_wal_record(const pubsub_itc_fw::ConnectionID& conn_
         return;
     }
 
-    wal_.append(view.seq_no, view.pdu_id, view.payload.data, static_cast<int>(view.payload.size));
+    wal_.append(view.seq_no, view.pdu_id, view.payload.data, static_cast<int>(view.payload.size), view.wall_time_ns);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
                "SequencerThread: WalRecord seq={} pdu_id={} written to follower WAL (wal_size={}) -- sending WalAck",
                view.seq_no, view.pdu_id, wal_.record_count());

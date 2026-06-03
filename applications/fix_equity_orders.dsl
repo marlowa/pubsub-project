@@ -1,4 +1,4 @@
-# -----------------------------------------------------------------------------
+    # -----------------------------------------------------------------------------
 #  fix_equity_orders.dsl
 #
 #  FIX 5.0 SP2 equity order topic registry for pubsub_itc_fw.
@@ -269,6 +269,7 @@ message NewOrderSingle (id=Topics.NewOrderSingle)
     optional string text
     optional string sender_comp_id
     optional i32 gateway_session_conn_id  # internal conn_id of the originating FIX session; used for ER routing
+    optional datetime_ns sequenced_at     # wall time stamped by sequencer when this PDU is sequenced; used by ME for transact_time during replay
 end
 
 # ---------------------------------------------------------------------------
@@ -293,6 +294,7 @@ message OrderCancelRequest (id=Topics.OrderCancelRequest)
     optional string text
     optional string sender_comp_id
     optional i32 gateway_session_conn_id  # internal conn_id of the originating FIX session; used for ER routing
+    optional datetime_ns sequenced_at     # wall time stamped by sequencer when this PDU is sequenced; used by ME for transact_time during replay
 end
 
 # ---------------------------------------------------------------------------

@@ -3,7 +3,6 @@
 
 #include <cassert>
 #include <charconv>
-#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -121,9 +120,8 @@ uint8_t compute_checksum(const char* buf, size_t length) {
 
 // ── Timestamp ────────────────────────────────────────────────────────────────
 
-void fill_utc_timestamp(char* out) {
-    const auto now = std::chrono::system_clock::now();
-    const std::time_t t = std::chrono::system_clock::to_time_t(now);
+void fill_utc_timestamp(char* out, const pubsub_itc_fw::WallClock& clock) {
+    const std::time_t t = static_cast<std::time_t>(clock.now_ns() / 1'000'000'000LL);
     struct tm utc {};
     gmtime_r(&t, &utc);
     std::strftime(out, timestamp_length + 1, "%Y%m%d-%H:%M:%S", &utc);
@@ -134,7 +132,8 @@ void fill_utc_timestamp(char* out) {
 // ── Public encoder ────────────────────────────────────────────────────────────
 
 size_t encode_execution_report(const pubsub_itc_fw_app::ExecutionReportView& view, std::string_view sender_comp_id, std::string_view target_comp_id,
-                               int seq_num, char* output_buffer, size_t output_buffer_size) {
+                               int seq_num, const pubsub_itc_fw::WallClock& wall_clock,
+                               char* output_buffer, size_t output_buffer_size) {
     // Single-char wire representations of enum fields.
     const char exec_type_char = static_cast<char>(view.exec_type);
     const char ord_status_char = static_cast<char>(view.ord_status);
@@ -142,7 +141,7 @@ size_t encode_execution_report(const pubsub_itc_fw_app::ExecutionReportView& vie
 
     // Stack-allocated timestamp — no heap allocation.
     char timestamp_buffer[timestamp_length + 1];
-    fill_utc_timestamp(timestamp_buffer);
+    fill_utc_timestamp(timestamp_buffer, wall_clock);
     const std::string_view timestamp{timestamp_buffer, timestamp_length};
 
     static constexpr std::string_view er_msg_type = "8";

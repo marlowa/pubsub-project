@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <string_view>
 
+#include <pubsub_itc_fw/WallClock.hpp>
 #include <fix_equity_orders.hpp>
 
 namespace order_gateway {
@@ -29,11 +30,14 @@ static constexpr size_t execution_report_buffer_size = 512;
  * @param[in]  sender_comp_id  SenderCompID for the outbound FIX header.
  * @param[in]  target_comp_id  TargetCompID for the outbound FIX header.
  * @param[in]  seq_num         Outbound sequence number.
+ * @param[in]  wall_clock      Clock used to generate SendingTime (tag 52).
  * @param[out] output_buffer        Caller-supplied output buffer.
  * @param[in]  output_buffer_size   Size of output_buffer in bytes.
  * @return Number of bytes written, or 0 on overflow.
  */
 [[nodiscard]] size_t encode_execution_report(const pubsub_itc_fw_app::ExecutionReportView& view, std::string_view sender_comp_id,
-                                             std::string_view target_comp_id, int seq_num, char* output_buffer, size_t output_buffer_size);
+                                             std::string_view target_comp_id, int seq_num,
+                                             const pubsub_itc_fw::WallClock& wall_clock,
+                                             char* output_buffer, size_t output_buffer_size);
 
 } // namespace order_gateway

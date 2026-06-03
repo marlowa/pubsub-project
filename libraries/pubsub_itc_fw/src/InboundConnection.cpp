@@ -12,14 +12,14 @@ namespace pubsub_itc_fw {
 
 InboundConnection::InboundConnection(ConnectionID id, std::unique_ptr<TcpSocket> socket, ThreadID target_thread_id,
                                      std::unique_ptr<ProtocolHandlerInterface> handler, std::string peer_description,
-                                     bool idle_timeout_exempt)
+                                     IdleTimeoutFlag idle_timeout)
     : id_(id)
     , peer_description_(std::move(peer_description))
     , target_thread_id_(target_thread_id)
     , socket_(std::move(socket))
     , handler_(std::move(handler))
     , last_activity_time_(std::chrono::steady_clock::now())
-    , idle_timeout_exempt_(idle_timeout_exempt) {
+    , idle_timeout_(idle_timeout) {
     if (socket_ == nullptr) {
         throw PreconditionAssertion("InboundConnection: socket must not be null", __FILE__, __LINE__);
     }

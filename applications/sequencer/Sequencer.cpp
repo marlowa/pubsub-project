@@ -7,6 +7,7 @@
 
 #include <chrono>
 #include <iostream>
+#include <string>
 
 #include <pubsub_itc_fw/ApplicationAnnouncer.hpp>
 #include <pubsub_itc_fw/ConfigurationException.hpp>
@@ -42,18 +43,18 @@ Sequencer::Sequencer(SequencerConfiguration config, std::unique_ptr<pubsub_itc_f
     // Exempt from idle timeout: the gateway connection is long-lived and may be
     // legitimately quiet during periods of low order flow.
     reactor_->register_inbound_listener(pubsub_itc_fw::NetworkEndpointConfiguration{config_.listen_host, config_.listen_port}, pubsub_itc_fw::ThreadID{1},
-                                        pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::FrameworkPdu}, 0, /*idle_timeout_exempt=*/true);
+                                        pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::FrameworkPdu}, 0, pubsub_itc_fw::IdleTimeoutFlag{pubsub_itc_fw::IdleTimeoutFlag::BypassIdleTimeout});
 
     // Inbound PDU listener for ExecutionReport PDUs from the matching engine.
     // Exempt from idle timeout: the ME connection is long-lived and quiet between bursts.
     reactor_->register_inbound_listener(pubsub_itc_fw::NetworkEndpointConfiguration{config_.er_listen_host, config_.er_listen_port}, pubsub_itc_fw::ThreadID{1},
-                                        pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::FrameworkPdu}, 0, /*idle_timeout_exempt=*/true);
+                                        pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::FrameworkPdu}, 0, pubsub_itc_fw::IdleTimeoutFlag{pubsub_itc_fw::IdleTimeoutFlag::BypassIdleTimeout});
 
     // Inbound PDU listener for peer-to-peer leader-follower protocol PDUs.
     // Exempt from idle timeout: the peer connection is long-lived; heartbeats are
     // application-level and do not produce TCP data on every interval.
     reactor_->register_inbound_listener(pubsub_itc_fw::NetworkEndpointConfiguration{config_.peer_listen_host, config_.peer_listen_port},
-                                        pubsub_itc_fw::ThreadID{1}, pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::FrameworkPdu}, 0, /*idle_timeout_exempt=*/true);
+                                        pubsub_itc_fw::ThreadID{1}, pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::FrameworkPdu}, 0, pubsub_itc_fw::IdleTimeoutFlag{pubsub_itc_fw::IdleTimeoutFlag::BypassIdleTimeout});
 
     sequencer_thread_ = pubsub_itc_fw::ApplicationThread::create<SequencerThread>(*logger_, *reactor_, config_);
 
@@ -93,13 +94,16 @@ int Sequencer::run() const {
 // ============================================================
 
 int main(int argc, char* argv[]) {
-    if (argc != 3) {
-        std::cerr << "Usage: sequencer <logfile> <config.toml>\n";
+    if (argc < 3 || argc > 4) {
+        std::cerr << "Usage: sequencer <logfile> <config.toml> [--replay]\n";
+        std::cerr << "  --replay  Read the WAL and replay all records to the matching engine,\n";
+        std::cerr << "            then exit.  No gateway or HA connections are opened.\n";
         return 1;
     }
 
     const std::string log_file = argv[1];
     const std::string config_file = argv[2];
+    const bool replay_mode = (argc == 4 && std::string(argv[3]) == "--replay");
 
     const std::string writable_error = pubsub_itc_fw::QuillLogger::ensure_log_file_writable(log_file);
     if (!writable_error.empty()) {
@@ -119,6 +123,11 @@ int main(int argc, char* argv[]) {
     } catch (const pubsub_itc_fw::ConfigurationException& ex) {
         PUBSUB_LOG((*logger), pubsub_itc_fw::FwLogLevel::Error, "Sequencer: configuration error: {}", ex.what());
         return 1;
+    }
+
+    if (replay_mode) {
+        config.replay_mode = true;
+        PUBSUB_LOG_STR((*logger), pubsub_itc_fw::FwLogLevel::Info, "Sequencer: --replay flag set -- WAL replay mode enabled");
     }
 
     logger->set_log_level(config.applog_level);

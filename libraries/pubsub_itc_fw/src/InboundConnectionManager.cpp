@@ -35,13 +35,13 @@ InboundConnectionManager::InboundConnectionManager(int epoll_fd, const ReactorCo
     : epoll_fd_(epoll_fd), config_(config), inbound_allocator_(inbound_allocator), thread_lookup_(thread_lookup), logger_(logger) {}
 
 void InboundConnectionManager::register_inbound_listener(NetworkEndpointConfiguration address, ThreadID target_thread_id, ProtocolType protocol_type,
-                                                         int64_t raw_buffer_capacity, bool idle_timeout_exempt) {
+                                                         int64_t raw_buffer_capacity, IdleTimeoutFlag idle_timeout) {
     InboundListener listener;
     listener.configuration.address = std::move(address);
     listener.configuration.target_thread_id = target_thread_id;
     listener.configuration.protocol_type = protocol_type;
     listener.configuration.raw_buffer_capacity = raw_buffer_capacity;
-    listener.configuration.idle_timeout_exempt = idle_timeout_exempt;
+    listener.configuration.idle_timeout = idle_timeout;
     inbound_listeners_staging_.push_back(std::move(listener));
 }
 
@@ -159,7 +159,7 @@ void InboundConnectionManager::on_accept(InboundListener& listener, ConnectionID
         handler = std::make_unique<PduProtocolHandler>(*socket, *target_thread, inbound_allocator_, logger_, populated_id);
     }
     auto conn = std::make_unique<InboundConnection>(populated_id, std::move(socket), listener.configuration.target_thread_id, std::move(handler), peer_desc,
-                                                    listener.configuration.idle_timeout_exempt);
+                                                    listener.configuration.idle_timeout);
     InboundConnection* conn_ptr = conn.get();
     connections_[populated_id] = std::move(conn);
     connections_by_fd_[fd] = conn_ptr;
@@ -172,7 +172,7 @@ void InboundConnectionManager::on_accept(InboundListener& listener, ConnectionID
                    "InboundConnectionManager::on_accept: epoll_ctl ADD failed for "
                    "connection from {} -- {}",
                    peer_desc, StringUtils::get_errno_string());
-        teardown_connection(populated_id, "epoll_ctl failed", false);
+        teardown_connection(populated_id, "epoll_ctl failed", DeliverLostEventFlag{DeliverLostEventFlag::SuppressLostEvent});
         return;
     }
 
@@ -197,7 +197,7 @@ void InboundConnectionManager::on_data_ready(InboundConnection& conn) {
             PUBSUB_LOG(logger_, FwLogLevel::Error, "InboundConnectionManager::on_data_ready: {}", reason);
         }
 
-        teardown_connection(id, reason, true);
+        teardown_connection(id, reason, DeliverLostEventFlag{DeliverLostEventFlag::DeliverLostEvent});
         return;
     }
 
@@ -235,7 +235,7 @@ void InboundConnectionManager::on_write_ready(InboundConnection& conn) {
     if (!ok) {
         const std::string reason = fmt::format("send error on connection from '{}': {}", conn.peer_description(), error);
         PUBSUB_LOG(logger_, FwLogLevel::Error, "InboundConnectionManager::on_write_ready: {}", reason);
-        teardown_connection(id, reason, true);
+        teardown_connection(id, reason, DeliverLostEventFlag{DeliverLostEventFlag::DeliverLostEvent});
         return;
     }
 
@@ -254,7 +254,7 @@ void InboundConnectionManager::on_write_ready(InboundConnection& conn) {
     }
 }
 
-void InboundConnectionManager::teardown_connection(ConnectionID id, const std::string& reason, bool deliver_lost_event) {
+void InboundConnectionManager::teardown_connection(ConnectionID id, const std::string& reason, DeliverLostEventFlag deliver_lost_event) {
     auto it = connections_.find(id);
     if (it == connections_.end()) {
         return;
@@ -285,7 +285,7 @@ void InboundConnectionManager::teardown_connection(ConnectionID id, const std::s
     }
 
     // Deliver ConnectionLost if requested.
-    if (deliver_lost_event) {
+    if (deliver_lost_event == DeliverLostEventFlag::DeliverLostEvent) {
         auto* thread = thread_lookup_.get_fast_path_thread(target_thread_id);
         if (thread != nullptr) {
             thread->get_queue().enqueue(EventMessage::create_connection_lost_event(id, reason));
@@ -323,7 +323,7 @@ void InboundConnectionManager::check_for_inactive_connections() {
 
         PUBSUB_LOG(logger_, FwLogLevel::Info, "InboundConnectionManager::check_for_inactive_connections: {}", reason);
 
-        teardown_connection(id, reason, true);
+        teardown_connection(id, reason, DeliverLostEventFlag{DeliverLostEventFlag::DeliverLostEvent});
     }
 }
 
@@ -351,7 +351,7 @@ bool InboundConnectionManager::process_send_pdu_command(const ReactorControlComm
     if (!ok) {
         const std::string reason = fmt::format("send error on connection from '{}': {}", conn.peer_description(), error);
         PUBSUB_LOG(logger_, FwLogLevel::Error, "InboundConnectionManager::process_send_pdu_command: {}", reason);
-        teardown_connection(cid, reason, true);
+        teardown_connection(cid, reason, DeliverLostEventFlag{DeliverLostEventFlag::DeliverLostEvent});
         return true;
     }
 
@@ -389,7 +389,7 @@ bool InboundConnectionManager::process_send_raw_command(const ReactorControlComm
     if (!ok) {
         const std::string reason = fmt::format("send error on connection from '{}': {}", conn.peer_description(), error);
         PUBSUB_LOG(logger_, FwLogLevel::Error, "InboundConnectionManager::process_send_raw_command: {}", reason);
-        teardown_connection(cid, reason, true);
+        teardown_connection(cid, reason, DeliverLostEventFlag{DeliverLostEventFlag::DeliverLostEvent});
         return true;
     }
 
@@ -473,7 +473,7 @@ bool InboundConnectionManager::process_disconnect_command(ConnectionID id) {
     if (connections_.count(id) == 0) {
         return false;
     }
-    teardown_connection(id, "disconnect requested by application thread", true);
+    teardown_connection(id, "disconnect requested by application thread", DeliverLostEventFlag{DeliverLostEventFlag::DeliverLostEvent});
     return true;
 }
 

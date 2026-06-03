@@ -44,10 +44,11 @@ OrderGateway::OrderGateway(const OrderGatewayConfiguration& config, std::unique_
     // Inbound PDU listener for ExecutionReport PDUs from the matching engine.
     // Direct point-to-point connection for now; replace with pub/sub fanout once
     // the framework's fanout routing is implemented.
-    // idle_timeout_exempt=true: this is a long-lived quiet infrastructure connection;
+    // BypassIdleTimeout: this is a long-lived quiet infrastructure connection;
     // the idle timeout is for stale FIX client connections, not framework-internal links.
     reactor_->register_inbound_listener(pubsub_itc_fw::NetworkEndpointConfiguration{config_.er_listen_host, config_.er_listen_port}, pubsub_itc_fw::ThreadID{1},
-                                        pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::FrameworkPdu}, 0, true);
+                                        pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::FrameworkPdu}, 0,
+                                        pubsub_itc_fw::IdleTimeoutFlag{pubsub_itc_fw::IdleTimeoutFlag::BypassIdleTimeout});
 
     gateway_thread_ = pubsub_itc_fw::ApplicationThread::create<OrderGatewayThread>(*logger_, *reactor_, config_);
 

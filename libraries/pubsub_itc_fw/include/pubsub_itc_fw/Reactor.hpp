@@ -35,6 +35,7 @@
 #include <pubsub_itc_fw/ReactorControlCommand.hpp>
 #include <pubsub_itc_fw/ReactorLifecycleState.hpp>
 #include <pubsub_itc_fw/ServiceRegistry.hpp>
+#include <pubsub_itc_fw/IdleTimeoutFlag.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 #include <pubsub_itc_fw/ThreadLifecycleState.hpp>
 #include <pubsub_itc_fw/ThreadLookupInterface.hpp>
@@ -168,14 +169,14 @@ class Reactor : public ThreadLookupInterface {
      *                                Defaults to FrameworkPdu.
      * @param[in] raw_buffer_capacity Minimum MirroredBuffer size in bytes for
      *                                RawBytes listeners. Ignored for FrameworkPdu.
-     * @param[in] idle_timeout_exempt When true, accepted connections on this listener are
-     *                                exempt from the inactivity timeout. Use for listeners
-     *                                that serve long-lived connections without heartbeats.
+     * @param[in] idle_timeout        IdleTimeoutFlag::UseIdleTimeout (default) or
+     *                                IdleTimeoutFlag::BypassIdleTimeout for listeners that
+     *                                serve long-lived connections without heartbeats.
      * @throws PreconditionAssertion if called after run().
      */
     void register_inbound_listener(NetworkEndpointConfiguration address, ThreadID target_thread_id,
                                    ProtocolType protocol_type = ProtocolType{ProtocolType::FrameworkPdu}, int64_t raw_buffer_capacity = 0,
-                                   bool idle_timeout_exempt = false);
+                                   IdleTimeoutFlag idle_timeout = IdleTimeoutFlag{IdleTimeoutFlag::UseIdleTimeout});
 
     /**
      * @brief Registers a TLS-protected inbound listener.

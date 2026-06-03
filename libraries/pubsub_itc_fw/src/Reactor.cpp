@@ -25,6 +25,7 @@
 #include <quill/Backend.h>
 
 #include <pubsub_itc_fw/BackoffWithYield.hpp>
+#include <pubsub_itc_fw/DeliverLostEventFlag.hpp>
 #include <pubsub_itc_fw/CpuPinning.hpp>
 #include <pubsub_itc_fw/CpuRegistry.hpp>
 #include <pubsub_itc_fw/EventHandler.hpp>
@@ -194,11 +195,11 @@ void Reactor::route_message(ThreadID target_id, EventMessage message) {
 }
 
 void Reactor::register_inbound_listener(NetworkEndpointConfiguration address, ThreadID target_thread_id, ProtocolType protocol_type,
-                                        int64_t raw_buffer_capacity, bool idle_timeout_exempt) {
+                                        int64_t raw_buffer_capacity, IdleTimeoutFlag idle_timeout) {
     if (is_running()) {
         throw PreconditionAssertion("Reactor::register_inbound_listener: must be called before run()", __FILE__, __LINE__);
     }
-    inbound_manager_.register_inbound_listener(std::move(address), target_thread_id, protocol_type, raw_buffer_capacity, idle_timeout_exempt);
+    inbound_manager_.register_inbound_listener(std::move(address), target_thread_id, protocol_type, raw_buffer_capacity, idle_timeout);
 }
 
 void Reactor::register_inbound_tls_listener(NetworkEndpointConfiguration address, ThreadID target_thread_id,
@@ -978,7 +979,7 @@ void Reactor::dispatch_events(int nfds, epoll_event* events) {
                     ::getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len);
                     const std::string reason = fmt::format("socket error on connection {} to service {}: {}", conn->id().get_value(), conn->service_name(),
                                                            StringUtils::get_error_string(err));
-                    outbound_manager_.teardown_connection(conn->id(), reason, true);
+                    outbound_manager_.teardown_connection(conn->id(), reason, DeliverLostEventFlag{DeliverLostEventFlag::DeliverLostEvent});
                 } else if (conn->is_connecting() && ((ev & EPOLLOUT) || (ev & EPOLLERR))) {
                     // EPOLLOUT signals connect completion (success or failure).
                     // EPOLLERR on a connecting socket (e.g. ECONNREFUSED) also
@@ -1042,7 +1043,7 @@ void Reactor::dispatch_events(int nfds, epoll_event* events) {
                     ::getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len);
                     const std::string reason =
                         fmt::format("socket error on inbound connection from '{}': {}", conn->peer_description(), StringUtils::get_error_string(err));
-                    inbound_manager_.teardown_connection(conn->id(), reason, true);
+                    inbound_manager_.teardown_connection(conn->id(), reason, DeliverLostEventFlag{DeliverLostEventFlag::DeliverLostEvent});
                 } else {
                     if ((ev & EPOLLOUT) && conn->handler()->has_pending_send()) {
                         inbound_manager_.on_write_ready(*conn);

@@ -14,6 +14,7 @@
 #include <pubsub_itc_fw/OutboundConnection.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/ReactorConfiguration.hpp>
+#include <pubsub_itc_fw/DeliverLostEventFlag.hpp>
 #include <pubsub_itc_fw/ReactorControlCommand.hpp>
 #include <pubsub_itc_fw/ServiceRegistry.hpp>
 #include <pubsub_itc_fw/ThreadLookupInterface.hpp>
@@ -225,7 +226,7 @@ class OutboundConnectionManager {
      * @param[in] reason             Human-readable reason for logging and event delivery.
      * @param[in] deliver_lost_event If true, delivers ConnectionLost to the requesting thread.
      */
-    void teardown_connection(ConnectionID id, const std::string& reason, bool deliver_lost_event);
+    void teardown_connection(ConnectionID id, const std::string& reason, DeliverLostEventFlag deliver_lost_event);
 
   private:
     /**

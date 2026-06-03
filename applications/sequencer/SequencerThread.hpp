@@ -135,9 +135,26 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void handle_peer_pdu(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     void handle_arbitration_decision(const pubsub_itc_fw::EventMessage& message);
 
+    // Replay mode helpers.
+    //
+    // replay_buffer_ accumulates records during WAL replay in on_initial_event().
+    // dispatch_replay_records() sends them to the ME once the ME connection is up.
+    struct ReplayRecord {
+        int64_t seq_no{};
+        int16_t pdu_id{};
+        int64_t wall_time_ns{};
+        std::vector<uint8_t> payload;
+    };
+
+    std::vector<ReplayRecord> replay_buffer_;
+    bool replay_me_order_ready_{false};  // outbound sequencer→ME order connection up
+    bool replay_me_er_ready_{false};     // inbound ME→sequencer ER connection up
+    void try_dispatch_replay();          // dispatches once both flags are set
+    void dispatch_replay_records();
+
     // WAL replication helpers (Slice 7).
     [[nodiscard]] bool needs_wal_ack() const;
-    void send_wal_record(int64_t seq, int16_t pdu_id, const pubsub_itc_fw::EventMessage& message);
+    void send_wal_record(int64_t seq, int16_t pdu_id, const pubsub_itc_fw::EventMessage& message, int64_t wall_time_ns);
     void handle_wal_record(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     void handle_wal_ack(const pubsub_itc_fw::EventMessage& message);
     void flush_pending_er();

@@ -94,7 +94,7 @@ void OutboundConnectionManager::process_connect_command(const ReactorControlComm
         ev.data.fd = fd;
         if (::epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, fd, &ev) == -1) {
             PUBSUB_LOG(logger_, FwLogLevel::Error, "OutboundConnectionManager::process_connect_command: epoll_ctl ADD failed for fd {}", fd);
-            teardown_connection(id, "epoll_ctl failed during connect", false);
+            teardown_connection(id, "epoll_ctl failed during connect", DeliverLostEventFlag{DeliverLostEventFlag::SuppressLostEvent});
             target_thread->get_queue().enqueue(EventMessage::create_connection_failed_event("epoll_ctl failed during connect"));
         }
     }
@@ -123,7 +123,7 @@ void OutboundConnectionManager::on_connect_ready(OutboundConnection& conn) {
                                "OutboundConnectionManager::on_connect_ready: failed to resolve "
                                "secondary {}:{} — {}",
                                secondary.host, secondary.port, addr_error);
-                    teardown_connection(conn.id(), addr_error, false);
+                    teardown_connection(conn.id(), addr_error, DeliverLostEventFlag{DeliverLostEventFlag::SuppressLostEvent});
                     auto* thread = thread_lookup_.get_fast_path_thread(conn.requesting_thread_id());
                     if (thread != nullptr) {
                         thread->get_queue().enqueue(EventMessage::create_connection_failed_event(addr_error));
@@ -143,7 +143,7 @@ void OutboundConnectionManager::on_connect_ready(OutboundConnection& conn) {
                                "OutboundConnectionManager::on_connect_ready: secondary connect() "
                                "failed for service '{}': {}",
                                conn.service_name(), connect_error);
-                    teardown_connection(conn.id(), connect_error, false);
+                    teardown_connection(conn.id(), connect_error, DeliverLostEventFlag{DeliverLostEventFlag::SuppressLostEvent});
                     auto* thread = thread_lookup_.get_fast_path_thread(conn.requesting_thread_id());
                     if (thread != nullptr) {
                         thread->get_queue().enqueue(EventMessage::create_connection_failed_event(connect_error));
@@ -172,7 +172,7 @@ void OutboundConnectionManager::on_connect_ready(OutboundConnection& conn) {
             const std::string service_name = conn.service_name();
             const ThreadID requesting_thread_id = conn.requesting_thread_id();
 
-            teardown_connection(conn.id(), error, false);
+            teardown_connection(conn.id(), error, DeliverLostEventFlag{DeliverLostEventFlag::SuppressLostEvent});
             PUBSUB_LOG(logger_, FwLogLevel::Info,
                        "OutboundConnectionManager::on_connect_ready: service '{}' failed, "
                        "will retry in {}ms",
@@ -204,7 +204,7 @@ void OutboundConnectionManager::on_connect_ready(OutboundConnection& conn) {
             PUBSUB_LOG(logger_, FwLogLevel::Error,
                        "OutboundConnectionManager::on_connect_ready: TLS handshake initiation failed for service '{}': {}",
                        service_name, handshake_error);
-            teardown_connection(conn_id, handshake_error, false);
+            teardown_connection(conn_id, handshake_error, DeliverLostEventFlag{DeliverLostEventFlag::SuppressLostEvent});
             schedule_retry(service_name, requesting_thread_id);
             return;
         }
@@ -251,7 +251,9 @@ void OutboundConnectionManager::on_data_ready(OutboundConnection& conn) {
             const std::string reason = error.empty() ? fmt::format("peer closed TLS connection on service '{}'", service_name)
                                                      : fmt::format("TLS error on service '{}': {}", service_name, error);
             PUBSUB_LOG(logger_, FwLogLevel::Warning, "OutboundConnectionManager::on_data_ready: {}", reason);
-            teardown_connection(id, reason, was_established);
+            teardown_connection(id, reason, was_established
+                ? DeliverLostEventFlag{DeliverLostEventFlag::DeliverLostEvent}
+                : DeliverLostEventFlag{DeliverLostEventFlag::SuppressLostEvent});
             schedule_retry(service_name, requesting_thread_id);
             return;
         }
@@ -292,7 +294,7 @@ void OutboundConnectionManager::on_data_ready(OutboundConnection& conn) {
 
         PUBSUB_LOG(logger_, FwLogLevel::Warning, "OutboundConnectionManager::on_data_ready: {}", reason);
 
-        teardown_connection(id, reason, true);
+        teardown_connection(id, reason, DeliverLostEventFlag{DeliverLostEventFlag::DeliverLostEvent});
         schedule_retry(service_name, requesting_thread_id);
     }
 }
@@ -307,7 +309,9 @@ void OutboundConnectionManager::on_write_ready(OutboundConnection& conn) {
             const bool was_established = conn.is_established();
             const std::string reason = fmt::format("TLS send error on service '{}': {}", service_name, error);
             PUBSUB_LOG(logger_, FwLogLevel::Error, "OutboundConnectionManager::on_write_ready: {}", reason);
-            teardown_connection(id, reason, was_established);
+            teardown_connection(id, reason, was_established
+                ? DeliverLostEventFlag{DeliverLostEventFlag::DeliverLostEvent}
+                : DeliverLostEventFlag{DeliverLostEventFlag::SuppressLostEvent});
             schedule_retry(service_name, requesting_thread_id);
             return;
         }
@@ -333,7 +337,7 @@ void OutboundConnectionManager::on_write_ready(OutboundConnection& conn) {
         const ConnectionID id = conn.id();
         const std::string reason = fmt::format("send error on service '{}': {}", service_name, error);
         PUBSUB_LOG(logger_, FwLogLevel::Error, "OutboundConnectionManager::on_write_ready: {}", reason);
-        teardown_connection(id, reason, true);
+        teardown_connection(id, reason, DeliverLostEventFlag{DeliverLostEventFlag::DeliverLostEvent});
         schedule_retry(service_name, requesting_thread_id);
         return;
     }
@@ -384,7 +388,7 @@ bool OutboundConnectionManager::process_send_pdu_command(const ReactorControlCom
         const ConnectionID conn_id = conn.id();
         PUBSUB_LOG(logger_, FwLogLevel::Error, "OutboundConnectionManager::process_send_pdu_command: send error to '{}': {}", service_name, send_error);
         command.allocator_->deallocate(command.slab_id_, command.pdu_chunk_ptr_);
-        teardown_connection(conn_id, send_error, true);
+        teardown_connection(conn_id, send_error, DeliverLostEventFlag{DeliverLostEventFlag::DeliverLostEvent});
         schedule_retry(service_name, requesting_thread_id);
         return true;
     }
@@ -437,7 +441,7 @@ bool OutboundConnectionManager::process_send_raw_command(const ReactorControlCom
         PUBSUB_LOG(logger_, FwLogLevel::Error,
                    "OutboundConnectionManager::process_send_raw_command: TLS send error on service '{}': {}",
                    service_name, send_error);
-        teardown_connection(conn_id, send_error, true);
+        teardown_connection(conn_id, send_error, DeliverLostEventFlag{DeliverLostEventFlag::DeliverLostEvent});
         schedule_retry(service_name, requesting_thread_id);
         return true;
     }
@@ -512,7 +516,7 @@ bool OutboundConnectionManager::process_disconnect_command(ConnectionID id) {
     if (connections_.count(id) == 0) {
         return false;
     }
-    teardown_connection(id, "disconnect requested by application thread", true);
+    teardown_connection(id, "disconnect requested by application thread", DeliverLostEventFlag{DeliverLostEventFlag::DeliverLostEvent});
     return true;
 }
 
@@ -582,7 +586,7 @@ void OutboundConnectionManager::check_for_timed_out_connections() {
 
         PUBSUB_LOG(logger_, FwLogLevel::Warning, "OutboundConnectionManager::check_for_timed_out_connections: {}", reason);
 
-        teardown_connection(id, reason, false);
+        teardown_connection(id, reason, DeliverLostEventFlag{DeliverLostEventFlag::SuppressLostEvent});
 
         auto* thread = thread_lookup_.get_fast_path_thread(requesting_thread_id);
         if (thread != nullptr) {
@@ -603,7 +607,7 @@ OutboundConnection* OutboundConnectionManager::find_by_id(ConnectionID id) const
     return (it != connections_.end()) ? it->second.get() : nullptr;
 }
 
-void OutboundConnectionManager::teardown_connection(ConnectionID id, const std::string& reason, bool deliver_lost_event) {
+void OutboundConnectionManager::teardown_connection(ConnectionID id, const std::string& reason, DeliverLostEventFlag deliver_lost_event) {
     auto it = connections_.find(id);
     if (it == connections_.end()) {
         return;
@@ -655,7 +659,7 @@ void OutboundConnectionManager::teardown_connection(ConnectionID id, const std::
     }
 
     // Deliver ConnectionLost if requested and the connection was established.
-    if (deliver_lost_event && conn.is_established()) {
+    if (deliver_lost_event == DeliverLostEventFlag::DeliverLostEvent && conn.is_established()) {
         auto* thread = thread_lookup_.get_fast_path_thread(conn.requesting_thread_id());
         if (thread != nullptr) {
             thread->get_queue().enqueue(EventMessage::create_connection_lost_event(id, reason));

@@ -39,31 +39,39 @@ std::string SequencerWal::segment_path_for_delete(uint64_t seg_num) const {
 // open()
 // ---------------------------------------------------------------------------
 
-int64_t SequencerWal::open(const std::string& directory, size_t segment_size, ReplayCallback replay_cb) {
+int64_t SequencerWal::open(const std::string& directory, size_t segment_size, ReplayCallback replay_cb, WalOpenMode open_mode) {
     directory_ = directory;
     segment_size_ = segment_size;
 
     // Load snapshot (if present) to get the WAL anchor and pre-populate counters.
+    // In IgnoreSnapshot mode the snapshot is intentionally skipped so that every
+    // record ever written is visited by the replay callback.
     pubsub_itc_fw::WalPosition anchor{0, 0};
-    load_snapshot(anchor);
+    if (open_mode == WalOpenMode::UseSnapshot) {
+        load_snapshot(anchor);
+    }
 
     // Replay post-snapshot entries, unwrapping the sequencer payload format.
     pubsub_itc_fw::WalReader::EntryCallback fw_cb;
     if (replay_cb) {
         fw_cb = [this, &replay_cb](int64_t record_id, const void* payload, size_t size) {
-            if (size < sizeof(int16_t))
+            constexpr size_t header_size = sizeof(int64_t) + sizeof(int16_t);
+            if (size < header_size)
                 return; // malformed — skip
 
-            int16_t pdu_id{};
-            std::memcpy(&pdu_id, payload, sizeof(int16_t));
+            int64_t wall_time_ns{};
+            std::memcpy(&wall_time_ns, payload, sizeof(int64_t));
 
-            const auto* pdu_payload = static_cast<const uint8_t*>(payload) + sizeof(int16_t);
-            const size_t pdu_size = size - sizeof(int16_t);
+            int16_t pdu_id{};
+            std::memcpy(&pdu_id, static_cast<const uint8_t*>(payload) + sizeof(int64_t), sizeof(int16_t));
+
+            const auto* pdu_payload = static_cast<const uint8_t*>(payload) + header_size;
+            const size_t pdu_size = size - header_size;
 
             ++record_count_;
             last_seq_no_ = record_id;
 
-            replay_cb(record_id, pdu_id, pdu_payload, pdu_size);
+            replay_cb(record_id, pdu_id, pdu_payload, pdu_size, wall_time_ns);
         };
     } else {
         fw_cb = [this](int64_t record_id, const void* /*payload*/, size_t /*size*/) {
@@ -159,14 +167,14 @@ void SequencerWal::take_snapshot() {
 // append()
 // ---------------------------------------------------------------------------
 
-void SequencerWal::append(int64_t seq_no, int16_t pdu_id, const uint8_t* payload, int size) {
-    // Sequencer payload = pdu_id(2) | PDU bytes.
+void SequencerWal::append(int64_t seq_no, int16_t pdu_id, const uint8_t* payload, int size, int64_t wall_time_ns) {
+    // Sequencer payload = wall_time_ns(8) | pdu_id(2) | PDU bytes.
     // Use a stack buffer for typical sizes to avoid heap allocation on the hot path.
     constexpr int stack_buffer_size = 512;
     uint8_t stack_buffer[stack_buffer_size];
     std::vector<uint8_t> heap_buffer;
 
-    const size_t total = sizeof(int16_t) + static_cast<size_t>(size);
+    const size_t total = sizeof(int64_t) + sizeof(int16_t) + static_cast<size_t>(size);
     uint8_t* payload_buffer;
     if (total <= stack_buffer_size) {
         payload_buffer = stack_buffer;
@@ -175,8 +183,9 @@ void SequencerWal::append(int64_t seq_no, int16_t pdu_id, const uint8_t* payload
         payload_buffer = heap_buffer.data();
     }
 
-    std::memcpy(payload_buffer, &pdu_id, sizeof(int16_t));
-    std::memcpy(payload_buffer + sizeof(int16_t), payload, static_cast<size_t>(size));
+    std::memcpy(payload_buffer, &wall_time_ns, sizeof(int64_t));
+    std::memcpy(payload_buffer + sizeof(int64_t), &pdu_id, sizeof(int16_t));
+    std::memcpy(payload_buffer + sizeof(int64_t) + sizeof(int16_t), payload, static_cast<size_t>(size));
 
     writer_.append(seq_no, payload_buffer, total);
 

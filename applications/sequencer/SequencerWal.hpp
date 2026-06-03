@@ -12,6 +12,31 @@
 namespace sequencer {
 
 /**
+ * @brief Controls whether SequencerWal::open() uses the snapshot as a
+ *        starting anchor or replays all records from segment 0.
+ */
+class WalOpenMode {
+  public:
+    enum WalOpenModeTag {
+        UseSnapshot   = 0, ///< Normal crash-recovery open; starts from the snapshot anchor.
+        IgnoreSnapshot = 1  ///< Full replay; reads every record from segment 0 regardless of snapshot.
+    };
+
+    explicit WalOpenMode(WalOpenModeTag value) : value_{value} {}
+
+    bool isEqual(const WalOpenMode& rhs) const { return value_ == rhs.value_; }
+    bool isEqual(const WalOpenModeTag& rhs)    const { return value_ == rhs; }
+    WalOpenModeTag value() const { return value_; }
+
+  private:
+    WalOpenModeTag value_;
+};
+
+inline bool operator==(const WalOpenMode& lhs, const WalOpenMode& rhs) { return lhs.isEqual(rhs); }
+inline bool operator==(const WalOpenMode& lhs, const WalOpenMode::WalOpenModeTag& rhs) { return lhs.isEqual(rhs); }
+inline bool operator==(const WalOpenMode::WalOpenModeTag& lhs, const WalOpenMode& rhs) { return rhs.isEqual(lhs); }
+
+/**
  * @brief On-disk snapshot header written by SequencerWal::take_snapshot().
  *
  * Written atomically (write to .tmp then rename) to `snapshot.bin` in the WAL
@@ -43,7 +68,12 @@ static_assert(sizeof(SnapshotHeader) == 48, "SnapshotHeader must be 48 bytes");
  * format and snapshot management.
  *
  * Payload format stored in each WAL entry:
- *   [ pdu_id (int16_t, 2 bytes) | PDU payload bytes ]
+ *   [ wall_time_ns (int64_t, 8 bytes) | pdu_id (int16_t, 2 bytes) | PDU payload bytes ]
+ *
+ * wall_time_ns is the wall time (nanoseconds since the Unix epoch) at which the
+ * leader sequenced the record.  It is identical to the sequenced_at field stamped
+ * on the NOS/OCR PDU forwarded to the matching engine, enabling exact timestamp
+ * reconstruction during WAL replay.
  *
  * The framework WalEntryHeader carries seq_no as `record_id`; pdu_id travels
  * in the application payload so the framework header remains generic.
@@ -61,9 +91,12 @@ class SequencerWal {
      * @param seq_no       Sequence number stamped by the sequencer.
      * @param pdu_id       DSL message type identifier.
      * @param payload      Pointer to the raw PDU payload bytes (valid only during this call).
-     * @param payload_size Number of PDU payload bytes (excludes the 2-byte pdu_id prefix).
+     * @param payload_size Number of PDU payload bytes (excludes the header prefix).
+     * @param wall_time_ns Wall time at which the leader sequenced this record (nanoseconds
+     *                     since the Unix epoch). Feed into a ReplayClock before dispatching
+     *                     the PDU to reproduce the original sequenced_at timestamps.
      */
-    using ReplayCallback = std::function<void(int64_t seq_no, int16_t pdu_id, const uint8_t* payload, size_t payload_size)>;
+    using ReplayCallback = std::function<void(int64_t seq_no, int16_t pdu_id, const uint8_t* payload, size_t payload_size, int64_t wall_time_ns)>;
 
     SequencerWal() = default;
     ~SequencerWal() = default;
@@ -81,10 +114,14 @@ class SequencerWal {
      * @param[in] directory    Directory for segment files. Created if absent.
      * @param[in] segment_size Pre-allocation size of each segment in bytes.
      * @param[in] replay_cb    Optional callback invoked per replayed record.
+     * @param[in] open_mode    WalOpenMode::UseSnapshot (default) uses the snapshot
+     *                         anchor for crash-recovery. WalOpenMode::IgnoreSnapshot
+     *                         replays every record from segment 0; used by --replay mode.
      * @return Highest seq_no found during replay, or 0 if the WAL was empty.
      * @throws std::runtime_error on I/O failure.
      */
-    int64_t open(const std::string& directory, size_t segment_size, ReplayCallback replay_cb = nullptr);
+    int64_t open(const std::string& directory, size_t segment_size, ReplayCallback replay_cb = nullptr,
+                 WalOpenMode open_mode = WalOpenMode{WalOpenMode::UseSnapshot});
 
     /**
      * @brief Appends one order record to the WAL.
@@ -92,12 +129,14 @@ class SequencerWal {
      * Payload stored: pdu_id (2 bytes) followed by the raw PDU payload bytes.
      * The framework WalWriter handles segmentation, mmap, and CRC.
      *
-     * @param[in] seq_no   Stamped sequence number (stored as record_id).
-     * @param[in] pdu_id   DSL message type.
-     * @param[in] payload  Raw inbound PDU payload bytes.
-     * @param[in] size     Number of payload bytes.
+     * @param[in] seq_no       Stamped sequence number (stored as record_id).
+     * @param[in] pdu_id       DSL message type.
+     * @param[in] payload      Raw inbound PDU payload bytes.
+     * @param[in] size         Number of payload bytes.
+     * @param[in] wall_time_ns Wall time at which this record is being sequenced.
+     *                         Must equal the sequenced_at value stamped on the outbound PDU.
      */
-    void append(int64_t seq_no, int16_t pdu_id, const uint8_t* payload, int size);
+    void append(int64_t seq_no, int16_t pdu_id, const uint8_t* payload, int size, int64_t wall_time_ns);
 
     /**
      * @brief Writes a snapshot then deletes superseded WAL segments.

@@ -110,7 +110,7 @@ OrderGatewayThread::OrderGatewayThread(pubsub_itc_fw::ApplicationThread::Constru
                         pubsub_itc_fw::ApplicationThreadConfiguration{})
     , config_(config)
     , er_inbound_svc_("inbound:" + std::to_string(config.er_listen_port))
-    , serialiser_(config.sender_comp_id, config.default_target_comp_id)
+    , serialiser_(config.sender_comp_id, config.default_target_comp_id, *config.wall_clock)
     , auth_service_primary_conn_id_{}
     , auth_service_secondary_conn_id_{}
     , sequencer_primary_conn_id_{}
@@ -415,7 +415,7 @@ void OrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventMess
     // straight into the wire bytes; enum fields are cast to single chars.
     char wire_buffer[execution_report_buffer_size];
     const size_t wire_length =
-        encode_execution_report(view, config_.sender_comp_id, session.client_comp_id, session.outbound_seq_num++, wire_buffer, sizeof(wire_buffer));
+        encode_execution_report(view, config_.sender_comp_id, session.client_comp_id, session.outbound_seq_num++, *config_.wall_clock, wire_buffer, sizeof(wire_buffer));
     send_raw(session.conn_id, wire_buffer, static_cast<uint32_t>(wire_length));
     release_pdu_payload(message);
 }
