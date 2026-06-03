@@ -24,7 +24,7 @@ namespace pubsub_itc_fw {
  *   connection belongs to without any application-level bookkeeping.
  *
  *   For inbound connections (accepted by a TcpAcceptor), the service name is
- *   set to "inbound:<port>" where <port> is the listener port that accepted
+ *   set to "inbound:\<port\>" where \<port\> is the listener port that accepted
  *   the connection. This allows on_connection_established() to distinguish
  *   between multiple inbound listeners on the same ApplicationThread (for
  *   example, an order PDU listener and an execution report PDU listener).
@@ -88,7 +88,7 @@ class ConnectionID {
      * For outbound connections, this is the service name passed to
      * connect_to_service() (for example, "gateway", "arbiter").
      *
-     * For inbound connections, this is "inbound:<port>" where <port> is
+     * For inbound connections, this is "inbound:\<port\>" where \<port\> is
      * the listener port that accepted the connection.
      *
      * Empty only for ConnectionID values used in internal reactor

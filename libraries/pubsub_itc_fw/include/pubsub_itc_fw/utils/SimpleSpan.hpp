@@ -17,8 +17,8 @@ namespace pubsub_itc_fw::utils {
  * @brief A simple, lightweight span-like wrapper for contiguous sequences
  *
  * This class provides a non-owning view over a contiguous sequence of objects.
- * It's designed to be a drop-in replacement for std::span/boost::span in
- * environments where these are not available.
+ * It is used internally as a pre-C++20 substitute for `std::span` in
+ * environments where C++20 is not available.
  *
  * @tparam T The element type
  */

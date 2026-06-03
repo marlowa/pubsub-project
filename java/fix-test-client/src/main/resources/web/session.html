@@ -68,16 +68,26 @@ function toggleSeqInput() {
 }
 
 async function doLogon() {
+    const btn = document.querySelector('#logon-form button');
+    btn.textContent = 'Connecting…';
+    btn.disabled = true;
+
     const params = {
         senderCompId: document.getElementById('sender-comp-id').value,
         overrideSeq:  document.getElementById('override-seq-check').checked,
         overrideSeqNum: document.getElementById('override-seq-num').value,
     };
     await apiPost('/api/session/logon', params);
+    // Button is re-enabled by renderNotLoggedOn if the logon fails,
+    // or hidden by renderLoggedOn if it succeeds.
 }
 
 async function doLogout() {
+    const btn = document.querySelector('#logon-detail button');
+    btn.textContent = 'Logging out…';
+    btn.disabled = true;
     await apiPost('/api/session/logout', {});
+    // renderNotLoggedOn will fire on the next status poll and show the logon form.
 }
 
 function startDurationTick(logonTimeStr) {
@@ -96,15 +106,34 @@ function startDurationTick(logonTimeStr) {
     }, 1000);
 }
 
+function formatLogonTime(utcStr) {
+    if (!utcStr) return '';
+    // Server sends "yyyy-MM-dd HH:mm:ss" in UTC. Appending Z makes it
+    // unambiguously UTC for the Date constructor.
+    const d = new Date(utcStr.replace(' ', 'T') + 'Z');
+    if (isNaN(d)) return utcStr;
+    const local = d.toLocaleString(undefined, {
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
+    });
+    return utcStr + ' UTC  (' + local + ' local)';
+}
+
 function renderLoggedOn(status) {
     document.getElementById('logon-form').style.display = 'none';
     document.getElementById('logon-detail').style.display = '';
     document.getElementById('last-session-summary').style.display = 'none';
 
+    const logoutBtn = document.querySelector('#logon-detail button');
+    if (logoutBtn) {
+        logoutBtn.textContent = 'Log Out';
+        logoutBtn.disabled = false;
+    }
+
     document.getElementById('d-sender').textContent = status.senderCompId;
     document.getElementById('d-gateway').textContent =
         status.targetCompId + '  @  ' + status.host + ':' + status.port;
-    document.getElementById('d-logon-time').textContent = status.logonTime;
+    document.getElementById('d-logon-time').textContent = formatLogonTime(status.logonTime);
     document.getElementById('d-start-seq').textContent = status.startingSeqNum;
     document.getElementById('d-out-seq').textContent = status.nextOutgoingSeqNum;
     document.getElementById('d-in-seq').textContent = status.nextIncomingSeqNum;
@@ -119,6 +148,13 @@ function renderNotLoggedOn(status) {
     document.getElementById('logon-detail').style.display = 'none';
     clearInterval(durationTimer);
     logonEpochMs = null;
+
+    // Reset the Log On button in case it was left in "Connecting…" state.
+    const btn = document.querySelector('#logon-form button');
+    if (btn) {
+        btn.textContent = 'Log On';
+        btn.disabled = false;
+    }
 }
 
 async function loadLastSession() {

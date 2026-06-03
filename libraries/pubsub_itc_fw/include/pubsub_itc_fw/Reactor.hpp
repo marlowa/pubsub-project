@@ -168,6 +168,9 @@ class Reactor : public ThreadLookupInterface {
      *                                Defaults to FrameworkPdu.
      * @param[in] raw_buffer_capacity Minimum MirroredBuffer size in bytes for
      *                                RawBytes listeners. Ignored for FrameworkPdu.
+     * @param[in] idle_timeout_exempt When true, accepted connections on this listener are
+     *                                exempt from the inactivity timeout. Use for listeners
+     *                                that serve long-lived connections without heartbeats.
      * @throws PreconditionAssertion if called after run().
      */
     void register_inbound_listener(NetworkEndpointConfiguration address, ThreadID target_thread_id,

@@ -102,6 +102,7 @@ components = [
     "sequencer_secondary",
     "order_gateway",
     "admin_service",
+    "fix_test_client",
 ]
 
 [components.auth_service_primary]
@@ -158,13 +159,22 @@ config  = "etc/order_gateway/order_gateway.toml"
 workdir = "etc/order_gateway"
 ha_only = false
 
-# The admin service JAR is placed in install_dir/lib/ by deploy.py.
+# The admin service JAR is placed in install_dir/lib/ by build.py.
 # workdir is etc/admin_service/ so that relative paths in application.properties
-# (e.g. admin.users-file = admin_users.toml) resolve there.
+# (e.g. admin.users-file = admin_users.toml) resolve there.  Spring Boot reads
+# application.properties from the JAR classpath; no config arg is needed.
 [components.admin_service]
 jar     = "lib/admin-service.jar"
-config  = "etc/admin_service/application.properties"
 workdir = "etc/admin_service"
+ha_only = false
+
+# The fix-test-client JAR is placed in install_dir/lib/ by build.py.
+# Its config file (app.toml) is passed as the first positional argument; the
+# session config path inside app.toml is relative to workdir.
+[components.fix_test_client]
+jar     = "lib/fix-test-client.jar"
+config  = "etc/fix_test_client/config/app.toml"
+workdir = "etc/fix_test_client"
 ha_only = false
 
 # ── Template substitution values ──────────────────────────────────────────────

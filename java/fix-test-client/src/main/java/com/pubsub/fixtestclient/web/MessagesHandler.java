@@ -5,10 +5,12 @@ import com.pubsub.fixtestclient.blotter.BlotterStore;
 import com.pubsub.fixtestclient.fix.FixEngine;
 import io.javalin.http.Context;
 import quickfix.fix50sp2.NewOrderSingle;
+import quickfix.fix50sp2.OrderCancelRequest;
 import quickfix.field.ClOrdID;
 import quickfix.field.HandlInst;
 import quickfix.field.OrdType;
 import quickfix.field.OrderQty;
+import quickfix.field.OrigClOrdID;
 import quickfix.field.Price;
 import quickfix.field.Side;
 import quickfix.field.Symbol;
@@ -80,6 +82,46 @@ public class MessagesHandler {
         }
     }
 
+    public void cancel(Context ctx) {
+        String origClOrdId = ctx.formParam("origClOrdId");
+        String symbol = ctx.formParam("symbol");
+        String sideStr = ctx.formParam("side");
+        String qtyStr = ctx.formParam("qty");
+
+        if (origClOrdId == null || origClOrdId.isBlank()) {
+            ctx.status(400).json(Map.of("error", "OrigClOrdID is required"));
+            return;
+        }
+        if (symbol == null || symbol.isBlank()) {
+            ctx.status(400).json(Map.of("error", "Symbol is required"));
+            return;
+        }
+
+        try {
+            String clOrdId = "CXL-" + origClOrdId.trim() + "-" + System.currentTimeMillis();
+            OrderCancelRequest ocr = new OrderCancelRequest();
+            ocr.set(new ClOrdID(clOrdId));
+            ocr.set(new OrigClOrdID(origClOrdId.trim()));
+            ocr.set(new Symbol(symbol.trim()));
+            ocr.set(new TransactTime(LocalDateTime.now()));
+            ocr.set(new Side(parseSide(sideStr)));
+            if (qtyStr != null && !qtyStr.isBlank()) {
+                ocr.set(new OrderQty(Double.parseDouble(qtyStr.trim())));
+            }
+
+            fixEngine.send(ocr);
+            blotterStore.addOutbound(ocr);
+            ctx.json(Map.of("ok", true, "clOrdId", clOrdId));
+        } catch (Exception e) {
+            ctx.status(400).json(Map.of("error", e.getMessage()));
+        }
+    }
+
+    public void clear(Context ctx) {
+        blotterStore.clear();
+        ctx.json(Map.of("ok", true));
+    }
+
     public void getBlotter(Context ctx) {
         List<BlotterRow> rows = blotterStore.rows();
         List<Map<String, Object>> result = new ArrayList<>();
@@ -90,10 +132,13 @@ public class MessagesHandler {
             map.put("direction", row.direction());
             map.put("seqNum", row.seqNum());
             map.put("clOrdId", row.clOrdId());
+            map.put("origClOrdId", row.origClOrdId());
             map.put("orderId", row.orderId());
             map.put("execId", row.execId());
             map.put("execType", row.execType());
             map.put("ordStatus", row.ordStatus());
+            map.put("ordRejReason", row.ordRejReason());
+            map.put("cxlRejReason", row.cxlRejReason());
             map.put("symbol", row.symbol());
             map.put("side", row.side());
             map.put("ordQty", row.ordQty());

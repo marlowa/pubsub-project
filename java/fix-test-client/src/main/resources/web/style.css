@@ -140,14 +140,16 @@ button:disabled {
 
 #blotter-wrap {
     overflow-x: auto;
+    overflow-y: auto;
+    max-height: 50vh;
     margin-top: 16px;
+    border: 1px solid #aaa;
 }
 
 #blotter {
     border-collapse: collapse;
     font-size: 12px;
     white-space: nowrap;
-    width: 100%;
 }
 
 #blotter th {
@@ -156,7 +158,7 @@ button:disabled {
     padding: 3px 8px;
     text-align: left;
     position: sticky;
-    top: 62px;
+    top: 0;
 }
 
 #blotter td {
@@ -164,15 +166,25 @@ button:disabled {
     padding: 2px 8px;
 }
 
-#blotter tr.dir-out td {
-    background: #f8f8f8;
-}
+/* Row background colours applied to tr so that the sticky last-child
+   column can use background: inherit and always match the row. */
+#blotter thead tr          { background: #ccc; }
+#blotter tbody tr          { background: white; }
+#blotter tr.dir-out        { background: #f8f8f8; }
+#blotter tr.status-filled  { background: #c8f0c8; }
+#blotter tr.status-partial { background: #fff0a0; }
+#blotter tr.status-rejected,
+#blotter tr.status-cancelled { background: #f5c0c0; }
 
-/* OrdStatus row colours for inbound ERs */
-#blotter tr.status-filled td       { background: #c8f0c8; }
-#blotter tr.status-partial td      { background: #fff0a0; }
-#blotter tr.status-rejected td     { background: #f5c0c0; }
-#blotter tr.status-cancelled td    { background: #f5c0c0; }
+/* Sticky action column — always visible at the right edge.
+   background: inherit picks up the tr colour set above. */
+#blotter th:last-child,
+#blotter td:last-child {
+    position: sticky;
+    right: 0;
+    background: inherit;
+    border-left: 1px solid #aaa;
+}
 
 /* ── Script editor ────────────────────────────────────────────── */
 

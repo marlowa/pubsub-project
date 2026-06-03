@@ -170,6 +170,33 @@ def stage_etc(stage: Path) -> None:
     print(f"  etc/  {copied} template(s) staged, {skipped} excluded (credentials)")
 
 
+def stage_java_configs(stage: Path) -> None:
+    """Copy Java service config directories into etc/ in the staging tree.
+
+    Source layout:  java/<service-name>/config/<files>
+    Staged layout:  etc/<service_name>/config/<files>
+                    (hyphens in the directory name are replaced with underscores)
+
+    All files found under each config/ directory are copied verbatim; no
+    exclusion or template substitution is applied.
+    """
+    java_dir      = _SCRIPT_DIR / "java"
+    stage_etc_dir = stage / "etc"
+    copied = 0
+    for service_dir in sorted(java_dir.iterdir()):
+        config_src = service_dir / "config"
+        if not config_src.is_dir():
+            continue
+        component_name = service_dir.name.replace("-", "_")
+        config_dst = stage_etc_dir / component_name / "config"
+        config_dst.mkdir(parents=True, exist_ok=True)
+        for src_file in sorted(config_src.iterdir()):
+            if src_file.is_file():
+                shutil.copy2(src_file, config_dst / src_file.name)
+                copied += 1
+    print(f"  etc/  {copied} Java config file(s) staged")
+
+
 def stage_db(stage: Path) -> None:
     source_db = _SCRIPT_DIR / "db"
     stage_db_dir = stage / "db"
@@ -303,6 +330,7 @@ def main() -> None:
         stage_bin(install_dir, stage, binaries)
         stage_lib(install_dir, stage, jar_paths)
         stage_etc(stage)
+        stage_java_configs(stage)
         stage_db(stage)
         stage_environments(stage)
         stage_scripts(stage)

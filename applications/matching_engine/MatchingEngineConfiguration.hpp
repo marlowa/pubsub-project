@@ -92,6 +92,17 @@ struct MatchingEngineConfiguration {
 
     /** @brief Number of command queue pool slabs pre-allocated at startup. */
     int32_t command_queue_pool_initial_slabs{1};
+
+    // ----------------------------------------------------------------
+    // Order book
+    // ----------------------------------------------------------------
+
+    /** @brief Number of elements to pre-reserve in the order book hash map.
+     *  Sets the bucket count via unordered_map::reserve() at startup so that
+     *  no rehash occurs until the live order count exceeds this value.
+     *  Size to the expected peak number of simultaneously live (non-terminal)
+     *  orders.  Increase for load-test environments. */
+    int32_t order_book_initial_capacity{1024};
 };
 
 } // namespace matching_engine

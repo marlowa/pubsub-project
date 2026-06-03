@@ -43,7 +43,9 @@ MatchingEngineThread::MatchingEngineThread(pubsub_itc_fw::ApplicationThread::Con
                         pubsub_itc_fw::ApplicationThreadConfiguration{})
     , config_(config)
     , sequencer_er_conn_id_{}
-    , sequencer_er_secondary_conn_id_{} {}
+    , sequencer_er_secondary_conn_id_{} {
+    order_book_.reserve(static_cast<size_t>(config_.order_book_initial_capacity));
+}
 
 void MatchingEngineThread::on_app_ready_event() {
     connect_to_service("sequencer_er");
@@ -58,7 +60,6 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
         sequencer_er_secondary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: secondary sequencer ER connection {} established", id.get_value());
     } else {
-        // Inbound connection from sequencer carrying sequenced order PDUs.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: sequencer order connection {} established", id.get_value());
     }
 }
@@ -94,8 +95,22 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
             release_pdu_payload(message);
             return;
         }
-        // Pass the sequence number from the incoming message
         handle_new_order_single(view, message.seq_no());
+
+    } else if (pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::OrderCancelRequest)) {
+        auto& arena_buf = decode_arena_buffer();
+        pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+        arena.reset();
+        size_t arena_bytes_needed = 0;
+        size_t bytes_consumed = 0;
+        pubsub_itc_fw_app::OrderCancelRequestView view{};
+
+        if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode OrderCancelRequest -- dropping");
+            release_pdu_payload(message);
+            return;
+        }
+        handle_order_cancel_request(view, message.seq_no());
 
     } else {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: unsupported sequenced PDU id {} -- dropping", pdu_id);
@@ -106,77 +121,177 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
 
 void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number) {
     if (!sequencer_er_conn_id_.is_valid() && !sequencer_er_secondary_conn_id_.is_valid()) {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: no sequencer ER connections established -- dropping ER");
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: no sequencer ER connections established -- dropping NOS");
         return;
     }
 
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: NewOrderSingle seq={} ClOrdID={} Symbol={} Side={} OrderQty={}", sequence_number,
-               view.cl_ord_id, view.symbol, static_cast<char>(view.side), view.order_qty);
+    const std::string cl_ord_id  = std::string(view.cl_ord_id);
+    const std::string symbol     = std::string(view.symbol);
+    const std::string order_qty  = std::string(view.order_qty);
+    const std::string price      = view.has_price ? std::string(view.price) : std::string{};
+    const std::string exec_id    = generate_exec_id();
+    const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            std::chrono::system_clock::now().time_since_epoch()).count();
 
-    /*
-     * Fabricate a filled ExecutionReport. There is no real order book here --
-     * the matching engine is a stand-in to exercise the round-trip comms path.
-     * Every order is reported as fully filled at the requested limit price
-     * (or at a hardcoded sentinel price for market orders).
-     *
-     * The following std::string locals own the fabricated text. They must
-     * outlive the send_pdu() call below because ExecutionReport's fields are
-     * std::string_view and only borrow into these buffers.
-     */
+    // Reject duplicate ClOrdID.
+    if (order_book_.count(cl_ord_id)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "MatchingEngineThread: duplicate ClOrdID={} -- rejecting NOS", cl_ord_id);
+
+        pubsub_itc_fw_app::ExecutionReport er{};
+        er.order_id     = "NONE";
+        er.exec_id      = exec_id;
+        er.exec_type    = pubsub_itc_fw_app::ExecType::Rejected;
+        er.ord_status   = pubsub_itc_fw_app::OrdStatus::Rejected;
+        er.symbol       = symbol;
+        er.side         = view.side;
+        er.leaves_qty   = "0";
+        er.cum_qty      = "0";
+        er.avg_px       = "0.00";
+        er.transact_time = now_ns;
+        er.has_cl_ord_id      = true;
+        er.cl_ord_id          = cl_ord_id;
+        er.has_order_qty      = true;
+        er.order_qty          = order_qty;
+        er.has_ord_rej_reason = true;
+        er.ord_rej_reason     = pubsub_itc_fw_app::OrdRejReason::DuplicateOrder;
+
+        send_er_to_sequencer(er, sequence_number);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "MatchingEngineThread: sent rejection ER ExecID={} ClOrdID={} (DuplicateOrder)", exec_id, cl_ord_id);
+        return;
+    }
+
+    // Accept the order: add to book and acknowledge with ExecType=New.
     const std::string order_id = generate_order_id();
-    const std::string exec_id = generate_exec_id();
-    const std::string cl_ord_id = std::string(view.cl_ord_id);
-    const std::string symbol = std::string(view.symbol);
-    const std::string order_qty = std::string(view.order_qty);
-    const std::string price = view.has_price ? std::string(view.price) : std::string("0.00");
-
-    // CumQty == OrderQty (fully filled) and LeavesQty == 0.
-    // LastQty is the size of this fill, here equal to OrderQty.
-    const std::string& cum_qty = order_qty;
-    const std::string leaves_qty = "0";
-    const std::string& last_qty = order_qty;
-    const std::string& last_px = price;
-    const std::string& avg_px = price;
-
-    const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+    OrderEntry entry{};
+    entry.order_id  = order_id;
+    entry.symbol    = symbol;
+    entry.side      = view.side;
+    entry.order_qty = order_qty;
+    entry.has_price = view.has_price;
+    entry.price     = price;
+    entry.ord_type  = view.ord_type;
+    order_book_.emplace(cl_ord_id, std::move(entry));
 
     pubsub_itc_fw_app::ExecutionReport er{};
-    er.order_id = order_id;
-    er.exec_id = exec_id;
-    er.exec_type = pubsub_itc_fw_app::ExecType::Trade;
-    er.ord_status = pubsub_itc_fw_app::OrdStatus::Filled;
-    er.symbol = symbol;
-    er.side = view.side;
-    er.leaves_qty = leaves_qty;
-    er.cum_qty = cum_qty;
-    er.avg_px = avg_px;
+    er.order_id     = order_id;
+    er.exec_id      = exec_id;
+    er.exec_type    = pubsub_itc_fw_app::ExecType::New;
+    er.ord_status   = pubsub_itc_fw_app::OrdStatus::New;
+    er.symbol       = symbol;
+    er.side         = view.side;
+    er.leaves_qty   = order_qty;
+    er.cum_qty      = "0";
+    er.avg_px       = "0.00";
     er.transact_time = now_ns;
-
     er.has_cl_ord_id = true;
-    er.cl_ord_id = cl_ord_id;
+    er.cl_ord_id     = cl_ord_id;
     er.has_order_qty = true;
-    er.order_qty = order_qty;
-    er.has_last_qty = true;
-    er.last_qty = last_qty;
-    er.has_last_px = true;
-    er.last_px = last_px;
+    er.order_qty     = order_qty;
+    er.has_ord_type  = true;
+    er.ord_type      = view.ord_type;
     if (view.has_price) {
         er.has_price = true;
-        er.price = price;
+        er.price     = price;
+    }
+
+    send_er_to_sequencer(er, sequence_number);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "MatchingEngineThread: accepted NOS OrderID={} ExecID={} ClOrdID={} book_size={}",
+               order_id, exec_id, cl_ord_id, order_book_.size());
+}
+
+void MatchingEngineThread::handle_order_cancel_request(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t sequence_number) {
+    if (!sequencer_er_conn_id_.is_valid() && !sequencer_er_secondary_conn_id_.is_valid()) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: no sequencer ER connections established -- dropping OCR");
+        return;
+    }
+
+    const std::string cl_ord_id      = std::string(view.cl_ord_id);
+    const std::string orig_cl_ord_id = std::string(view.orig_cl_ord_id);
+    const std::string order_qty      = std::string(view.order_qty);
+    const std::string exec_id        = generate_exec_id();
+    const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            std::chrono::system_clock::now().time_since_epoch()).count();
+
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "MatchingEngineThread: OrderCancelRequest seq={} ClOrdID={} OrigClOrdID={} Symbol={} Side={}",
+               sequence_number, cl_ord_id, orig_cl_ord_id, view.symbol, static_cast<char>(view.side));
+
+    auto it = order_book_.find(orig_cl_ord_id);
+    if (it == order_book_.end()) {
+        // OrigClOrdID not in the book — order is unknown.
+        const std::string symbol = std::string(view.symbol);
+
+        pubsub_itc_fw_app::ExecutionReport er{};
+        er.order_id      = "NONE";
+        er.exec_id       = exec_id;
+        er.exec_type     = pubsub_itc_fw_app::ExecType::Rejected;
+        er.ord_status    = pubsub_itc_fw_app::OrdStatus::Rejected;
+        er.symbol        = symbol;
+        er.side          = view.side;
+        er.leaves_qty    = "0";
+        er.cum_qty       = "0";
+        er.avg_px        = "0.00";
+        er.transact_time = now_ns;
+        er.has_cl_ord_id      = true;
+        er.cl_ord_id          = cl_ord_id;
+        er.has_orig_cl_ord_id = true;
+        er.orig_cl_ord_id     = orig_cl_ord_id;
+        er.has_order_qty      = true;
+        er.order_qty          = order_qty;
+        er.has_ord_rej_reason = true;
+        er.ord_rej_reason     = pubsub_itc_fw_app::OrdRejReason::UnknownOrder;
+
+        send_er_to_sequencer(er, sequence_number);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "MatchingEngineThread: sent rejection ER ExecID={} OrigClOrdID={} (UnknownOrder)", exec_id, orig_cl_ord_id);
+        return;
+    }
+
+    // Order found — cancel it.
+    OrderEntry entry = std::move(it->second);
+    order_book_.erase(it);
+
+    pubsub_itc_fw_app::ExecutionReport er{};
+    er.order_id      = entry.order_id;
+    er.exec_id       = exec_id;
+    er.exec_type     = pubsub_itc_fw_app::ExecType::Canceled;
+    er.ord_status    = pubsub_itc_fw_app::OrdStatus::Canceled;
+    er.symbol        = entry.symbol;
+    er.side          = entry.side;
+    er.leaves_qty    = "0";
+    er.cum_qty       = "0";
+    er.avg_px        = "0.00";
+    er.transact_time = now_ns;
+    er.has_cl_ord_id      = true;
+    er.cl_ord_id          = cl_ord_id;
+    er.has_orig_cl_ord_id = true;
+    er.orig_cl_ord_id     = orig_cl_ord_id;
+    er.has_order_qty      = true;
+    er.order_qty          = entry.order_qty;
+    if (entry.has_price) {
+        er.has_price = true;
+        er.price     = entry.price;
     }
     er.has_ord_type = true;
-    er.ord_type = view.ord_type;
+    er.ord_type     = entry.ord_type;
 
+    send_er_to_sequencer(er, sequence_number);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "MatchingEngineThread: sent cancel ER OrderID={} ExecID={} ClOrdID={} OrigClOrdID={} book_size={}",
+               entry.order_id, exec_id, cl_ord_id, orig_cl_ord_id, order_book_.size());
+}
+
+void MatchingEngineThread::send_er_to_sequencer(const pubsub_itc_fw_app::ExecutionReport& er, int64_t seq_no) {
     constexpr auto er_pdu_id = static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::ExecutionReport);
     if (sequencer_er_conn_id_.is_valid()) {
-        send_pdu(sequencer_er_conn_id_, er_pdu_id, sequence_number, er);
+        send_pdu(sequencer_er_conn_id_, er_pdu_id, seq_no, er);
     }
     if (sequencer_er_secondary_conn_id_.is_valid()) {
-        send_pdu(sequencer_er_secondary_conn_id_, er_pdu_id, sequence_number, er);
+        send_pdu(sequencer_er_secondary_conn_id_, er_pdu_id, seq_no, er);
     }
-
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: sent ExecutionReport OrderID={} ExecID={} ClOrdID={}", order_id, exec_id,
-               cl_ord_id);
 }
 
 std::string MatchingEngineThread::generate_order_id() {

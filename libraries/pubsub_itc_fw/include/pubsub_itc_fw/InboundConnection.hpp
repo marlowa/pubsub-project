@@ -68,8 +68,12 @@ class InboundConnection {
      *                             events from this connection.
      * @param[in] handler          The protocol handler for this connection.
      *                             Ownership transferred.
-     * @param[in] peer_description Human-readable description of the remote peer
-     *                             (e.g. "192.168.1.10:5001") for logging.
+     * @param[in] peer_description   Human-readable description of the remote peer
+     *                               (e.g. "192.168.1.10:5001") for logging.
+     * @param[in] idle_timeout_exempt When true, this connection is exempt from the
+     *                               inactivity timeout and will never be disconnected
+     *                               for being idle. Use for long-lived control
+     *                               connections that do not exchange heartbeats.
      */
     InboundConnection(ConnectionID id, std::unique_ptr<TcpSocket> socket, ThreadID target_thread_id, std::unique_ptr<ProtocolHandlerInterface> handler,
                       std::string peer_description, bool idle_timeout_exempt = false);

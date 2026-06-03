@@ -2653,3 +2653,264 @@ so QuickFIX/J does not reject startup with `ConfigError: StartTime not defined`.
 
 **Status:** builds cleanly; startup confirmed. End-to-end testing (logon, NOS send, ER receipt,
 blotter, scripting) deferred to next session.
+
+---
+
+## Session 2026-06-03 — OrderCancelRequest stub in matching engine
+
+### Change
+
+Added `OrderCancelRequest` (PDU 1001) handling to the matching engine stub.
+
+**Root cause of gap:** The gateway (`OrderGatewayThread.cpp:775`) and sequencer
+(`SequencerThread.cpp:317`) already decoded and forwarded OCR PDUs end-to-end.
+The matching engine's `on_framework_pdu_message()` only checked for NOS (1000)
+and dropped everything else as "unsupported".
+
+**Files changed:**
+- `applications/matching_engine/MatchingEngineThread.hpp`: added
+  `handle_order_cancel_request(const OrderCancelRequestView&, int64_t seq_no)` declaration.
+- `applications/matching_engine/MatchingEngineThread.cpp`:
+  - Added OCR decode + dispatch branch in `on_framework_pdu_message()` (mirrors NOS branch).
+  - Added `handle_order_cancel_request()`: fabricates a cancel-confirmed ExecutionReport
+    (`ExecType::Canceled` / `OrdStatus::Canceled`, `LeavesQty=0`, `CumQty=0`) and sends it
+    to both sequencer ER connections with the incoming `seq_no` as the transport sequence
+    number — same mechanism used by `handle_new_order_single()`.
+
+**Stub behaviour:** every cancel is unconditionally confirmed (no real order book). The ER
+echoes `cl_ord_id` and `orig_cl_ord_id` from the OCR, and carries a fabricated `order_id` /
+`exec_id` ("ME-ORD-N" / "ME-EXEC-N" from the existing monotonic counters).
+
+**Build:** `cmake --build build --target matching_engine` — clean.
+
+### fix-test-client: OrderCancelRequest support
+
+Added full cancel support to the Java web client.
+
+**Files changed:**
+- `BlotterRow.java`: added `origClOrdId` field (after `clOrdId`).
+- `BlotterStore.java`: extracts `OrigClOrdID` (tag 41) in `buildRow`.
+- `MessagesHandler.java`: added `cancel(Context)` — reads `origClOrdId`, `symbol`, `side`, `qty`
+  from form params; auto-generates cancel `clOrdId` as `"CXL-{origClOrdId}-{millis}"`; builds
+  and sends `quickfix.fix50sp2.OrderCancelRequest`; adds row to blotter. Updated `getBlotter` to
+  expose `origClOrdId`.
+- `Main.java`: wired `POST /api/messages/cancel` → `messagesHandler::cancel`.
+- `FixHelper.java`: added `orderCancelRequest()` factory for Groovy scripts (pre-sets `TransactTime`).
+- `messages.html`:
+  - Added "Order Cancel Request" form (OrigClOrdID, Symbol, Side, Qty, Send Cancel button).
+  - Added `OrigClOrdID` column to blotter table.
+  - Added `Action` column: Cancel button on each outbound NOS row (rows without `origClOrdId`);
+    clicking pre-fills the cancel form.
+  - Added `doCancel()` and `prefillCancel()` JS functions.
+
+**Build:** `mvn package` in `java/fix-test-client/` — clean.
+
+---
+
+## Session 2026-06-03 (continued) — Matching engine order book, devenv/build pipeline, fix-test-client hardening
+
+### Matching engine: primitive order book + meaningful cancel
+
+Replaced the unconditional-fill stub with a primitive order book keyed by ClOrdID.
+
+**Order lifecycle:**
+
+| Inbound PDU | Condition | Response ER |
+|---|---|---|
+| NOS, new ClOrdID | — | ExecType=New / OrdStatus=New; order inserted into book |
+| NOS, duplicate ClOrdID | — | ExecType=Rejected / OrdStatus=Rejected / OrdRejReason=DuplicateOrder (6) |
+| OCR, OrigClOrdID found | — | ExecType=Canceled / OrdStatus=Canceled; order removed from book; original OrderID echoed |
+| OCR, OrigClOrdID unknown | — | ExecType=Rejected / OrdStatus=Rejected / OrdRejReason=UnknownOrder (5) |
+
+**No DSL changes required.** ExecutionReport already carries `optional OrdRejReason ord_rej_reason`.
+`CxlRejReason` (tag 102) was initially used for cancel rejections but removed after discovery that
+QFJ validates ER against FIX50SP2.xml and rejects messages containing tag 102 in MsgType=8.
+Both rejection cases now use `OrdRejReason` (tag 103), which IS valid in ExecutionReport.
+
+**Key files:**
+- `MatchingEngineThread.hpp`: added `OrderEntry` struct (order_id, symbol, side, order_qty,
+  price, ord_type); `order_book_` (`unordered_map<string, OrderEntry>`); `send_er_to_sequencer()`
+  helper; `order_book_initial_capacity` config field.
+- `MatchingEngineThread.cpp`: complete rewrite of `handle_new_order_single` and
+  `handle_order_cancel_request`; `send_er_to_sequencer()` eliminates repeated primary/secondary
+  send pattern; `order_book_.reserve(config_.order_book_initial_capacity)` in constructor.
+- `MatchingEngineConfiguration.hpp`: added `int32_t order_book_initial_capacity{1024}`.
+- `MatchingEngineConfigurationLoader.cpp`: loads and validates `order_book.initial_capacity`.
+- `matching_engine.toml`: added `[order_book]` section, `initial_capacity = 1024`.
+
+**Sizing guidance for `order_book.initial_capacity`:** set to peak concurrent live (non-terminal)
+orders for the target environment. Default 1024 covers manual/scripted testing without rehashing.
+Load-test deployments should increase to 65536 or higher.
+
+### FixErEncoder: OrigClOrdID, OrdRejReason encoding
+
+The FIX wire encoder was missing three optional ER fields. Added to both the body-length
+pre-calculation and the writer in `applications/order_gateway/FixErEncoder.cpp`:
+
+- Tag 41 `OrigClOrdID` — written immediately after ClOrdID when `has_orig_cl_ord_id`.
+- Tag 103 `OrdRejReason` — written after OrdStatus when `has_ord_rej_reason`.
+
+Tag constants `CxlRejReason = 102` and `OrdRejReason = 103` added to `FixMessage.hpp`.
+
+### build-release-deploy.sh rewrite
+
+Replaced the broken four-line script with a proper pipeline wrapper:
+
+- Cleans `installed/` before build.
+- Runs `./build.sh --no-tests` (skips C++, Java, and Python tests).
+- Runs `release.py`; finds the produced tarball in `build/release/` dynamically.
+- Runs `deploy.py --artefact <tarball>`.
+- `set -euo pipefail` aborts on any stage failure.
+- `--skip-db` flag passes through to `deploy.py` for environments where the DB already exists.
+
+### devenv.py: docstrings, fix_test_client and admin_service support
+
+Full rewrite of `devenv.py` (pylint score 10.00/10):
+
+- Docstrings added to all public and private functions.
+- `build_command()` updated: JAR components with a `config` key have the resolved config path
+  appended as a positional argument. This allows the fix-test-client to receive its `app.toml`
+  path. admin_service (Spring Boot) has no `config` key and launches without extra args.
+- Standard library imports moved above the `tomllib` try/except (fixes pylint ungrouped-imports).
+- `subprocess.run` uses explicit `check=False`; `Popen` suppress is documented with inline disable.
+
+### dev.toml, build.py, release.py: fix_test_client integration
+
+**`environments/dev.toml`:**
+- Added `fix_test_client` to `startup_order` (last, after `admin_service`).
+- Added `[components.fix_test_client]`: `jar = "lib/fix-test-client.jar"`,
+  `config = "etc/fix_test_client/config/app.toml"`, `workdir = "etc/fix_test_client"`.
+- Removed unused `config` field from `admin_service` (was always ignored for JARs).
+
+**`build.py`:** added `build_fix_test_client()`:
+- Runs `mvn package` in `java/fix-test-client/`.
+- Copies fat JAR to `build/installed/lib/fix-test-client.jar`.
+- Mirrors `java/fix-test-client/config/` → `build/installed/etc/fix_test_client/config/`
+  (both `app.toml` and `session.cfg`).
+- Called from `main()` alongside `build_java_service()`.
+
+**`release.py`:** added `stage_java_configs()`:
+- Scans `java/*/config/` directories; stages into `etc/<component_name>/config/`
+  (hyphens in directory name replaced with underscores).
+- Called from `main()` after `stage_etc()`.
+
+### fix-test-client: blotter improvements
+
+**Blotter container (sticky header, scrolling):**
+- `#blotter-wrap`: `overflow-y: auto; max-height: 50vh` — blotter scrolls independently.
+- `#blotter th`: `position: sticky; top: 0` — header sticks within the scroll container,
+  no longer collides with page-level scroll.
+- `#blotter`: removed `width: 100%` — table is as wide as content requires; `overflow-x: auto`
+  on the wrapper provides horizontal scrolling.
+- Action column (`th:last-child`, `td:last-child`): `position: sticky; right: 0; background: inherit`
+  — Cancel buttons remain visible at the right edge regardless of horizontal scroll position.
+
+**Clear button:** `POST /api/messages/clear` → `blotterStore.clear()`; wired in `Main.java`;
+`doClear()` in JS resets `lastBlotterSize` so blotter re-renders immediately.
+
+**Human-readable labels:** `EXEC_TYPE_LABEL` and `ORD_STATUS_LABEL` JS maps translate raw FIX
+characters to words (e.g. `'0'→'New'`, `'4'→'Canceled'`). Raw value shown as fallback.
+
+**Rejection reason column:** `Reason` column added between OrdStatus and Symbol.
+- `BlotterRow`: added `ordRejReason` and `cxlRejReason` fields.
+- `BlotterStore`: extracts tags 103 and 102 via `getString`.
+- `MessagesHandler`: exposes both in JSON.
+- `rejectionReason(row)` JS function: checks `ordRejReason` first, then `cxlRejReason`;
+  maps numeric codes to labels via `ORD_REJ_REASON_LABEL` and `CXL_REJ_REASON_LABEL`.
+
+**Stale Cancel button fix:** `isOrderTerminal(rows, clOrdId)` scans all IN rows for a terminal
+OrdStatus (Filled, Canceled, Rejected, DoneForDay, Expired) matching either `r.clOrdId` or
+`r.origClOrdId`. The Cancel button is suppressed for terminal orders. Originally only checked
+`clOrdId`; the `origClOrdId` check was required because a cancel ER carries the cancel request's
+ClOrdID in tag 11, not the original order's ClOrdID.
+
+**Order control button disabling (messages.html):** Send and Send Cancel buttons start `disabled`.
+`setOrderControlsEnabled(loggedOn)` toggles them. `pageInit` hooks into `window.updateStatusStrip`
+(same pattern as `session.html`) to keep buttons in sync with every 2-second status poll. Initial
+state applied immediately from `window._lastSessionStatus` if already populated.
+
+### fix-test-client: session page UX
+
+**`session.cfg`:**
+- `ResetOnLogon=N` → `ResetOnLogon=Y`: sequence numbers reset to 1 on every logon. Required
+  because the gateway always restarts fresh; without this, the stored client seq nums mismatch
+  and the gateway rejects the logon.
+- Added `ReconnectInterval=5`: QFJ reconnects within 5 s after disconnect instead of the
+  default 30 s. Clicking Log On is now near-instant rather than appearing to do nothing.
+
+**`session.html`:**
+- `doLogon()`: disables button and shows "Connecting…" immediately on click.
+- `doLogout()`: disables button and shows "Logging out…" immediately on click.
+- `renderNotLoggedOn()`: resets the Log On button (text + enabled state) so it is not left
+  stuck in "Connecting…" if the logon fails.
+- `renderLoggedOn()`: resets the Log Out button (text + enabled state) so it is not left
+  stuck in "Logging out…" after a reconnect.
+
+---
+
+## Session 2026-06-03 (continued) — Fix-test-client polish, Doxygen hardening, DSL bytes type
+
+### fix-test-client: local time on session page
+
+`formatLogonTime()` added to `session.html`. The server sends `logonTime` as a UTC string
+(`yyyy-MM-dd HH:mm:ss`). The helper appends `Z` to make it unambiguously UTC for the `Date`
+constructor, then formats both forms for display:
+```
+2026-06-03 09:18:54 UTC  (03/06/2026, 10:18:54 local)
+```
+`toLocaleString()` uses the browser's locale and timezone automatically.
+
+### fix-test-client: blotter sticky column alignment
+
+**Root cause:** Row background colours were applied via `#blotter tr.X td { background: Y }`
+selectors. The sticky last column uses `background: inherit`, which inherits from the parent
+`<tr>`, not from other `<td>` rules. `<tr>` had no explicit background, so `inherit` resolved
+to `transparent` (page background `#f4f4f4`), making the Cancel buttons appear against the
+wrong colour.
+
+**Fix:** All row colours moved to `<tr>`-level rules. Added `#blotter tbody tr { background: white }`
+as the default and `#blotter thead tr { background: #ccc }` for the header. The sticky column
+now correctly matches every row's colour, including status-filled (green), status-cancelled
+(pink), and dir-out (light gray).
+
+### Doxygen: warnings-as-errors, documentation fixes
+
+**`Doxyfile`:**
+- `WARN_AS_ERROR = FAIL_ON_WARNINGS` — Doxygen exits non-zero on any warning; `run_command()`
+  propagates the failure to abort the build.
+- `WARN_NO_PARAMDOC = YES` — warns when a documented function has undocumented parameters.
+- `EXCLUDE_PATTERNS = *.cpp` — coding rules state all docs live in headers; parsing `.cpp`
+  files was generating spurious include-path warnings.
+- `TIMESTAMP = DATETIME` — every generated page now shows date and time of generation.
+- `LatencyRecorder.hpp` added to INPUT (specific file, not the whole tests_common directory).
+
+**Source fixes (all pre-existing issues caught by the stricter settings):**
+- `ConnectionID.hpp`: escaped `<port>` → `\<port\>` in two doc comments (Doxygen was treating
+  the angle brackets as HTML tags).
+- `InboundConnection.hpp`, `InboundConnectionManager.hpp`, `Reactor.hpp`: added `@param[in]`
+  for `idle_timeout_exempt` on `InboundConnection` constructor and both `register_inbound_listener`
+  overloads. The parameter exempts a connection/listener from the inactivity timeout.
+- `SimpleSpan.hpp`: reworded `std::span/boost::span` as `` `std::span` `` (backtick code span)
+  to suppress Doxygen auto-link resolution of the unresolvable qualified name.
+- `MatchingEngineThread.hpp` class doc: `CxlRejReason=UnknownOrder` corrected to
+  `OrdRejReason=UnknownOrder` (reflects the fix made after QFJ rejected tag 102 in ER).
+- `mainpage.dox` development environment: updated from "Linux RHEL8 only" to document both
+  supported distributions (Linux Mint 22 primary, RHEL8/Rocky8 also supported).
+
+**Instrumentation subsystem page populated:**
+- `HighResolutionClock.hpp`: converted C block comment to Doxygen format; added `@brief`,
+  `@par` rationale sections, `@see MillisecondClock`, and `@ingroup instrumentation_subsystem`.
+- `MillisecondClock.hpp`: added `@ingroup instrumentation_subsystem` (doc was already thorough).
+- `LatencyRecorder.hpp`: added `@ingroup instrumentation_subsystem`; expanded class brief;
+  added missing `@param[in] label` to `dump_results()`.
+
+### DSL documentation: bytes type
+
+`docs/dsl_design.dox` updated in three places:
+
+1. **Primitives table** — added `bytes | BytesView | 4-byte length prefix + raw bytes`.
+2. **Compound types section** — added entry for `bytes`: variable-length raw byte sequence,
+   4-byte length prefix + raw bytes, decode-side C++ type is `BytesView` (non-owning
+   `{data, size}` pair pointing into the wire buffer, zero-copy). Distinguished from `string`
+   (which implies UTF-8 text).
+3. **Wire format table** — added `bytes | 4-byte byte-count + raw bytes` row.

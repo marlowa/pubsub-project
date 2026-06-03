@@ -319,6 +319,52 @@ def build_java_service(source_dir: Path, install_dir: Path, skip_tests: bool, cl
     print(f"\n✓ Java admin service installed: {jar_dst}")
 
 
+def build_fix_test_client(source_dir: Path, install_dir: Path, skip_tests: bool, clean: bool):
+    """Build the fix-test-client fat JAR, install it and its config into the staging tree.
+
+    The JAR is copied to install_dir/lib/fix-test-client.jar.
+    Config files (app.toml, session.cfg) are copied to
+    install_dir/etc/fix_test_client/config/ so that devenv.py can start the
+    service with workdir=etc/fix_test_client and session_config=config/session.cfg
+    resolves correctly against the working directory.
+    """
+    check_mvn()
+
+    java_dir = source_dir / "java" / "fix-test-client"
+    mvn_cmd = ["mvn"] + (["clean", "package"] if clean else ["package"])
+    if skip_tests:
+        mvn_cmd.append("-DskipTests")
+
+    run_command(mvn_cmd, cwd=java_dir, description="Building fix-test-client")
+
+    target_dir = java_dir / "target"
+    candidates = [
+        jar for jar in target_dir.glob("fix-test-client-*.jar")
+        if not jar.name.startswith("original-")
+    ]
+    if len(candidates) != 1:
+        print(f"ERROR: expected exactly one fix-test-client JAR in {target_dir}, "
+              f"found: {[c.name for c in candidates]}", file=sys.stderr)
+        sys.exit(1)
+
+    lib_dir = install_dir / "lib"
+    lib_dir.mkdir(parents=True, exist_ok=True)
+    jar_dst = lib_dir / "fix-test-client.jar"
+    shutil.copy2(candidates[0], jar_dst)
+
+    # Mirror java/fix-test-client/config/ → install_dir/etc/fix_test_client/config/
+    # so that devenv.py can pass the absolute path to app.toml as argv[1], while
+    # session_config = "config/session.cfg" in app.toml resolves against the workdir.
+    config_src = java_dir / "config"
+    config_dst = install_dir / "etc" / "fix_test_client" / "config"
+    config_dst.mkdir(parents=True, exist_ok=True)
+    for src_file in config_src.iterdir():
+        if src_file.is_file():
+            shutil.copy2(src_file, config_dst / src_file.name)
+
+    print(f"\n✓ fix-test-client installed: {jar_dst}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Build script for pubsub_itc_fw_project",
@@ -464,6 +510,8 @@ Examples:
     if not args.no_java:
         build_java_service(source_dir, staging_dir,
                            skip_tests=args.no_tests, clean=args.clean)
+        build_fix_test_client(source_dir, staging_dir,
+                              skip_tests=args.no_tests, clean=args.clean)
 
 
     print("\n" + "="*60)

@@ -13,9 +13,15 @@
 
 namespace pubsub_itc_fw::tests {
 
+/** @ingroup instrumentation_subsystem */
+
 /**
  * @brief Thread-safe latency recorder using nanosecond buckets.
- * Designed for NFT performance studies to identify long-tail outliers.
+ *
+ * Records duration samples into 10 ns-wide histogram buckets. Intended for
+ * non-functional test (NFT) performance studies to measure and identify
+ * long-tail latency outliers. All operations are protected by a mutex and
+ * safe to call from multiple threads simultaneously.
  */
 class LatencyRecorder {
   public:
@@ -72,6 +78,7 @@ class LatencyRecorder {
 
     /**
      * @brief Human-readable dump for quick console inspection.
+     * @param[in] label The dataset identifier printed in the header line.
      */
     void dump_results(const std::string& label) const {
         std::lock_guard<std::mutex> lock(buckets_mutex_);

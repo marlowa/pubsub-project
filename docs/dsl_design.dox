@@ -28,6 +28,7 @@ dependencies in the generated code, and allocator-friendly decoding via a
 | bool | bool | 1 byte (0 or 1) |
 | datetime_ns | int64_t | 8 bytes, little-endian nanoseconds since epoch |
 | string | std::string_view | 4-byte length prefix + UTF-8 bytes |
+| bytes | BytesView | 4-byte length prefix + raw bytes |
 
 All integers are signed. There are no unsigned integer types in the DSL -- the
 only unsigned value in the system is the magic constant in the framing header,
@@ -42,6 +43,11 @@ which is outside the DSL.
   as N consecutive elements.
 - \b string -- variable-length UTF-8 string. Encoded as a 4-byte byte-count
   followed by the UTF-8 bytes.
+- \b bytes -- variable-length raw byte sequence. Encoded as a 4-byte byte-count
+  followed by the raw bytes. The decode-side C++ type is \c BytesView, a
+  non-owning \c {data, size} pair that points directly into the wire buffer
+  (zero-copy). Use \b bytes instead of \b string when the content is binary
+  rather than text.
 - \b optional T -- presence flag (1 byte, 0 or 1) followed by the encoded value
   if present.
 
@@ -144,6 +150,7 @@ All multi-byte integers are little-endian. The wire format for each type is:
 | i32, string length, list count | 4 bytes LE |
 | i64, datetime_ns | 8 bytes LE |
 | string | 4-byte byte-count + UTF-8 bytes |
+| bytes | 4-byte byte-count + raw bytes |
 | list<T> | 4-byte element-count + N encoded elements |
 | T[N] | N consecutive elements, no length prefix |
 | optional T | 1-byte flag (0=absent, 1=present) + encoded T if present |

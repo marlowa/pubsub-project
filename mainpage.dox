@@ -129,7 +129,9 @@ handling, the commit protocol, and the tail_position fix, see:
 
 @section development_env_sec Development Environment
 
-Linux RHEL8, x86-64 (Intel architecture assumed). 100GB RAM, 200GB disk.
+Linux x86-64 (Intel architecture assumed). Supported distributions:
+Linux Mint 22 (primary development environment) and RHEL8/Rocky8/CentOS8.
+Platform detection and third-party library paths are set in \c build.sh.
 Latency target: publish to receive in under 30 microseconds for messages up to 1200 bytes.
 
 @section coding_rules_sec Coding Rules and Project Conventions

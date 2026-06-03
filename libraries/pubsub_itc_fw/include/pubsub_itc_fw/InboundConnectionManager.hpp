@@ -88,6 +88,9 @@ class InboundConnectionManager {
      *                                or RawBytesProtocolHandler. Defaults to FrameworkPdu.
      * @param[in] raw_buffer_capacity Minimum MirroredBuffer capacity in bytes for RawBytes
      *                                listeners. Ignored for FrameworkPdu listeners.
+     * @param[in] idle_timeout_exempt When true, accepted connections on this listener are
+     *                                exempt from the inactivity timeout. Use for listeners
+     *                                that serve long-lived connections without heartbeats.
      */
     void register_inbound_listener(NetworkEndpointConfiguration address, ThreadID target_thread_id,
                                    ProtocolType protocol_type = ProtocolType{ProtocolType::FrameworkPdu}, int64_t raw_buffer_capacity = 0,

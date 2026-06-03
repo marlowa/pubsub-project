@@ -74,6 +74,8 @@ public class Main {
 
         app.get("/api/messages",           messagesHandler::getBlotter);
         app.post("/api/messages/send",     messagesHandler::send);
+        app.post("/api/messages/cancel",   messagesHandler::cancel);
+        app.post("/api/messages/clear",    messagesHandler::clear);
 
         app.get("/api/config",             configHandler::getConfig);
 

@@ -19,16 +19,14 @@ Both directories are created automatically on first start.
 
 The database password is read from PUBSUB_APP_DB_PASSWORD; if not set it falls
 back to the dev default used by export_credentials.py.
-"""
 
-try:
-    import tomllib
-except ImportError:
-    try:
-        import tomli as tomllib  # type: ignore[no-redef]
-    except ImportError:
-        import sys
-        sys.exit("error: Python 3.11+ or the 'tomli' package is required to parse TOML")
+Java components (admin_service, fix_test_client) are launched with
+  java -jar <jar> [<config>]
+where <config> is appended as the first positional argument when the component
+defines a 'config' key in the env TOML.  C++ components are launched with
+  <binary> <log_file> <config>
+as before.
+"""
 
 import argparse
 import os
@@ -37,6 +35,14 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+
+try:
+    import tomllib
+except ImportError:
+    try:
+        import tomli as tomllib  # type: ignore[no-redef]
+    except ImportError:
+        sys.exit("error: Python 3.11+ or the 'tomli' package is required to parse TOML")
 
 _SCRIPT_DIR       = Path(__file__).resolve().parent
 _DEFAULT_ENV_FILE = _SCRIPT_DIR / "environments" / "dev.toml"
@@ -47,6 +53,7 @@ _SHUTDOWN_TIMEOUT = 10.0  # seconds to wait after SIGTERM before SIGKILL
 # ── TOML helpers ──────────────────────────────────────────────────────────────
 
 def load_env(path: Path) -> dict:
+    """Load and return the environment TOML file as a nested dict."""
     with open(path, "rb") as file_handle:
         return tomllib.load(file_handle)
 
@@ -71,14 +78,17 @@ def startup_order(env: dict, ha_enabled: bool) -> list[str]:
 # ── PID file helpers ──────────────────────────────────────────────────────────
 
 def _pid_path(run_dir: Path, name: str) -> Path:
+    """Return the path of the PID file for the named component."""
     return run_dir / f"{name}.pid"
 
 
 def write_pid(run_dir: Path, name: str, pid: int) -> None:
+    """Write pid to the PID file for the named component."""
     _pid_path(run_dir, name).write_text(str(pid))
 
 
 def read_pid(run_dir: Path, name: str) -> int | None:
+    """Return the PID from the PID file for name, or None if absent or unreadable."""
     path = _pid_path(run_dir, name)
     if not path.exists():
         return None
@@ -89,10 +99,12 @@ def read_pid(run_dir: Path, name: str) -> int | None:
 
 
 def remove_pid(run_dir: Path, name: str) -> None:
+    """Delete the PID file for the named component if it exists."""
     _pid_path(run_dir, name).unlink(missing_ok=True)
 
 
 def is_pid_alive(pid: int) -> bool:
+    """Return True if a process with the given pid exists and is reachable."""
     try:
         os.kill(pid, 0)
         return True
@@ -105,11 +117,19 @@ def is_pid_alive(pid: int) -> bool:
 def build_command(
     name: str, comp: dict, install_dir: Path, log_dir: Path,
 ) -> tuple[list[str], Path]:
-    """Return (command_list, working_dir) for a component."""
+    """Return (command_list, working_dir) for a component.
+
+    For C++ binaries the command is: <binary> <log_file> <config>.
+    For JAR components the command is: java -jar <jar> [<config>], where the
+    resolved config path is appended as the first positional argument only when
+    the component defines a 'config' key in the env TOML.
+    """
     workdir = (install_dir / comp["workdir"]).resolve()
     if "jar" in comp:
         jar_path = (install_dir / comp["jar"]).resolve()
         command = ["java", "-jar", str(jar_path)]
+        if "config" in comp:
+            command.append(str((install_dir / comp["config"]).resolve()))
     else:
         binary_path = (install_dir / comp["binary"]).resolve()
         log_file    = log_dir / f"{name}.log"
@@ -118,11 +138,19 @@ def build_command(
     return command, workdir
 
 
-def start_one(
+def start_one(  # pylint: disable=too-many-arguments,too-many-locals
     name: str, comp: dict,
     install_dir: Path, log_dir: Path, run_dir: Path,
     delay: float,
 ) -> None:
+    """Start a single component, writing a PID file on success.
+
+    If the component is already running the start is skipped.  The process is
+    launched with its working directory set to comp['workdir'] (created if
+    absent) and with install_dir/lib prepended to LD_LIBRARY_PATH so that
+    libpubsub_itc_fw.so is found at runtime.  stdout and stderr are redirected
+    to log_dir/<name>.stdout.
+    """
     existing_pid = read_pid(run_dir, name)
     if existing_pid is not None and is_pid_alive(existing_pid):
         print(f"  {name}: already running (PID {existing_pid}) — skipping")
@@ -149,7 +177,7 @@ def start_one(
     child_env["LD_LIBRARY_PATH"] = f"{lib_dir}:{existing_ldpath}" if existing_ldpath else lib_dir
 
     with stdout_path.open("w") as stdout_file:
-        proc = subprocess.Popen(
+        proc = subprocess.Popen(  # pylint: disable=consider-using-with
             command,
             cwd=str(workdir),
             stdout=stdout_file,
@@ -162,6 +190,13 @@ def start_one(
 
 
 def stop_one(name: str, run_dir: Path, timeout: float = _SHUTDOWN_TIMEOUT) -> None:
+    """Stop a single running component by sending SIGTERM, then SIGKILL if needed.
+
+    If no PID file exists the component is assumed to be already stopped.  A
+    stale PID file (process no longer alive) is removed without sending any
+    signal.  After SIGTERM the function polls until the process exits or the
+    timeout elapses, at which point SIGKILL is sent.
+    """
     pid = read_pid(run_dir, name)
     if pid is None:
         print(f"  {name}: no PID file — skipping")
@@ -191,6 +226,11 @@ def stop_one(name: str, run_dir: Path, timeout: float = _SHUTDOWN_TIMEOUT) -> No
 # ── Credential export ─────────────────────────────────────────────────────────
 
 def export_credentials(install_dir: Path, env: dict) -> None:
+    """Re-export SCRAM credentials from the database to credentials.toml.
+
+    Calls db/export_credentials.py using the database settings from the env
+    TOML.  Exits the process if the script fails.
+    """
     script      = _SCRIPT_DIR / "db" / "export_credentials.py"
     db          = env["db"]
     creds_file  = install_dir / "etc" / "authentication_service" / "credentials.toml"
@@ -201,7 +241,7 @@ def export_credentials(install_dir: Path, env: dict) -> None:
          "--db-port", str(db["port"]),
          "--db-name", db["name"],
          "--db-user", db["user"]],
-        capture_output=True, text=True,
+        capture_output=True, text=True, check=False,
     )
     if result.returncode != 0:
         print("error: export_credentials.py failed:", file=sys.stderr)
@@ -213,6 +253,11 @@ def export_credentials(install_dir: Path, env: dict) -> None:
 # ── Subcommands ───────────────────────────────────────────────────────────────
 
 def cmd_start(env: dict, ha_enabled: bool, delay: float) -> None:
+    """Implement the 'start' subcommand: export credentials then start all components.
+
+    Components are started in the order listed in startup_order.components,
+    with ha_only components skipped when ha_enabled is False.
+    """
     install_dir, log_dir, run_dir = resolve_paths(env)
     run_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -232,9 +277,12 @@ def cmd_start(env: dict, ha_enabled: bool, delay: float) -> None:
 
 
 def cmd_stop(env: dict) -> None:
+    """Implement the 'stop' subcommand: stop all components in reverse startup order.
+
+    Every component with a PID file is stopped regardless of whether HA is
+    enabled, so a partially-started HA environment is fully cleaned up.
+    """
     _, _, run_dir = resolve_paths(env)
-    # Stop everything that has a PID file, in reverse startup order so
-    # dependents shut down before the services they depend on.
     order = list(reversed(env["startup_order"]["components"]))
     print("=== stopping components ===")
     for name in order:
@@ -242,6 +290,7 @@ def cmd_stop(env: dict) -> None:
 
 
 def cmd_status(env: dict) -> None:
+    """Implement the 'status' subcommand: print running/stopped status for every component."""
     _, _, run_dir = resolve_paths(env)
     all_components = env["startup_order"]["components"]
     print(f"  {'component':<38}  {'PID':<8}  status")
@@ -262,6 +311,13 @@ def cmd_status(env: dict) -> None:
 def cmd_restart(
     env: dict, ha_enabled: bool, delay: float, component: str | None,
 ) -> None:
+    """Implement the 'restart' subcommand: stop and restart all or one named component.
+
+    When component is None every component is stopped then started via cmd_stop
+    and cmd_start.  When a single component name is given only that component is
+    cycled; credentials are re-exported first if the component name contains
+    'authentication_service' so that any database changes are picked up.
+    """
     install_dir, log_dir, run_dir = resolve_paths(env)
     run_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -271,8 +327,6 @@ def cmd_restart(
             sys.exit(f"error: unknown component '{component}'")
         print(f"=== restarting {component} ===")
         stop_one(component, run_dir)
-        # Re-export credentials whenever an auth service is (re)started so
-        # that any DB changes are picked up before the service reads its file.
         if "authentication_service" in component:
             print("=== re-exporting credentials ===")
             export_credentials(install_dir, env)
@@ -288,6 +342,7 @@ def cmd_restart(
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def parse_args() -> argparse.Namespace:
+    """Parse and return command-line arguments."""
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -324,6 +379,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """Entry point: load the env TOML, resolve the HA flag, dispatch to the requested subcommand."""
     sys.stdout.reconfigure(line_buffering=True)
     args = parse_args()
 

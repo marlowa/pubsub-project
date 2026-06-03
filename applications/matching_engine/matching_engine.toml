@@ -24,6 +24,12 @@ cpu_registry_lock_file = "${shared_reactor_cpu_registry_lock_file}"
 objects_per_slab = 10240
 initial_slabs    = 1
 
+[order_book]
+# Pre-reserved capacity of the live-order hash map (unordered_map::reserve).
+# No rehash occurs until the live order count exceeds this value.
+# Size to peak concurrent live orders for the target environment.
+initial_capacity = 1024
+
 [command_queue_pool]
 # Single pre-allocated pool sized for observed peak (50 clients, burst=10).
 # 216 slabs × 1024 base + 100 exhaustion chains × 1024 = 323,584; rounded to 327,680.

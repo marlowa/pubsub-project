@@ -9,8 +9,11 @@ import quickfix.field.ExecType;
 import quickfix.field.LeavesQty;
 import quickfix.field.MsgSeqNum;
 
+import quickfix.field.CxlRejReason;
 import quickfix.field.OrderID;
 import quickfix.field.OrderQty;
+import quickfix.field.OrigClOrdID;
+import quickfix.field.OrdRejReason;
 import quickfix.field.OrdStatus;
 import quickfix.field.OrdType;
 import quickfix.field.Price;
@@ -51,10 +54,13 @@ public class BlotterStore {
                 direction,
                 getInt(message, MsgSeqNum.FIELD),
                 getString(message, ClOrdID.FIELD),
+                getString(message, OrigClOrdID.FIELD),
                 getString(message, OrderID.FIELD),
                 getString(message, ExecID.FIELD),
                 getChar(message, ExecType.FIELD),
                 getChar(message, OrdStatus.FIELD),
+                getString(message, OrdRejReason.FIELD),
+                getString(message, CxlRejReason.FIELD),
                 getString(message, Symbol.FIELD),
                 getChar(message, Side.FIELD),
                 getDecimal(message, OrderQty.FIELD),

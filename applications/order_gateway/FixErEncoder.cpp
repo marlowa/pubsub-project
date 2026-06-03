@@ -158,6 +158,9 @@ size_t encode_execution_report(const pubsub_itc_fw_app::ExecutionReportView& vie
     if (view.has_cl_ord_id) {
         body_length += field_size(Tag::ClOrdID, view.cl_ord_id);
     }
+    if (view.has_orig_cl_ord_id) {
+        body_length += field_size(Tag::OrigClOrdID, view.orig_cl_ord_id);
+    }
     if (view.has_order_qty) {
         body_length += field_size(Tag::OrderQty, view.order_qty);
     }
@@ -166,6 +169,9 @@ size_t encode_execution_report(const pubsub_itc_fw_app::ExecutionReportView& vie
     }
     if (view.has_ord_type) {
         body_length += field_size_char(Tag::OrdType);
+    }
+    if (view.has_ord_rej_reason) {
+        body_length += field_size_int(Tag::OrdRejReason, static_cast<int>(view.ord_rej_reason));
     }
 
     // Write the complete FIX message in a single pass.
@@ -187,10 +193,16 @@ size_t encode_execution_report(const pubsub_itc_fw_app::ExecutionReportView& vie
     if (view.has_cl_ord_id) {
         writer.field(Tag::ClOrdID, view.cl_ord_id);
     }
+    if (view.has_orig_cl_ord_id) {
+        writer.field(Tag::OrigClOrdID, view.orig_cl_ord_id);
+    }
     writer.field(Tag::OrderID, view.order_id);
     writer.field(Tag::ExecID, view.exec_id);
     writer.field_char(Tag::ExecType, exec_type_char);
     writer.field_char(Tag::OrdStatus, ord_status_char);
+    if (view.has_ord_rej_reason) {
+        writer.field_int(Tag::OrdRejReason, static_cast<int>(view.ord_rej_reason));
+    }
     writer.field(Tag::Symbol, view.symbol);
     writer.field_char(Tag::Side, side_char);
     if (view.has_order_qty) {

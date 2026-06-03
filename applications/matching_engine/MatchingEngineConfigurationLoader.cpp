@@ -86,6 +86,12 @@ MatchingEngineConfiguration MatchingEngineConfigurationLoader::load(const std::s
                                                         std::to_string(config.command_queue_pool_initial_slabs));
         }
 
+        toml.get_required_except("order_book.initial_capacity", config.order_book_initial_capacity);
+        if (config.order_book_initial_capacity < 1) {
+            throw pubsub_itc_fw::ConfigurationException("MatchingEngineConfigurationLoader: order_book.initial_capacity must be >= 1, got " +
+                                                        std::to_string(config.order_book_initial_capacity));
+        }
+
     } catch (const pubsub_itc_fw::ConfigurationException&) {
         throw;
     }

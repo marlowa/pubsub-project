@@ -8,9 +8,9 @@
 
 namespace pubsub_itc_fw {
 
+/** @ingroup instrumentation_subsystem */
+
 /**
- * @class MillisecondClock
- *
  * @brief A fast, millisecond-resolution monotonic clock designed specifically for timeout and watchdog logic.
  *
  * This clock provides a stable, monotonic time source with millisecond precision. It is intentionally implemented
