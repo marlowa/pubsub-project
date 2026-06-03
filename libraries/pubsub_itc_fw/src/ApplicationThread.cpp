@@ -59,7 +59,7 @@ ApplicationThread::~ApplicationThread() {
     // The reactor owns the threads.
 }
 
-ApplicationThread::ApplicationThread(ConstructorToken, QuillLogger& logger, Reactor& reactor, const std::string& thread_name, ThreadID thread_id,
+ApplicationThread::ApplicationThread(ConstructorToken, QuillLogger& logger, Reactor& reactor, std::string thread_name, ThreadID thread_id,
                                      const QueueConfiguration& queue_config, const AllocatorConfiguration& allocator_config,
                                      const ApplicationThreadConfiguration& thread_config)
     : logger_(logger)
@@ -68,7 +68,7 @@ ApplicationThread::ApplicationThread(ConstructorToken, QuillLogger& logger, Reac
     , decode_arena_buffer_()
     , time_event_started_()
     , time_event_finished_()
-    , thread_name_(thread_name)
+    , thread_name_(std::move(thread_name))
     , thread_id_(thread_id)
     , thread_(nullptr) {
     if (thread_id.get_value() == 0) {
@@ -119,7 +119,7 @@ void ApplicationThread::start() {
     }
 }
 
-[[nodiscard]] bool ApplicationThread::join_with_timeout(std::chrono::milliseconds timeout) {
+[[nodiscard]] bool ApplicationThread::join_with_timeout(std::chrono::milliseconds timeout) const {
     if (thread_ == nullptr) {
         return false;
     }
@@ -142,7 +142,7 @@ void ApplicationThread::resume() {
     is_paused_.store(false, std::memory_order_relaxed);
 }
 
-void ApplicationThread::post_message(ThreadID target_thread_id, EventMessage message) {
+void ApplicationThread::post_message(ThreadID target_thread_id, EventMessage message) const {
     if (target_thread_id == thread_id_) {
         // Direct self-post
         message_queue_->enqueue(std::move(message));
@@ -179,7 +179,7 @@ void ApplicationThread::cancel_timer(const std::string& name) {
     name_to_id_.erase(it);
 }
 
-void ApplicationThread::connect_to_service(const std::string& service_name) {
+void ApplicationThread::connect_to_service(const std::string& service_name) const {
     assert_called_from_owner();
 
     ReactorControlCommand command(ReactorControlCommand::CommandTag::Connect);
@@ -188,7 +188,7 @@ void ApplicationThread::connect_to_service(const std::string& service_name) {
     reactor_.enqueue_control_command(command);
 }
 
-void ApplicationThread::commit_raw_bytes(ConnectionID conn_id, int64_t bytes_consumed) {
+void ApplicationThread::commit_raw_bytes(const ConnectionID& conn_id, int64_t bytes_consumed) {
     if (active_connection_ids_.find(conn_id) == active_connection_ids_.end()) {
         throw PreconditionAssertion(fmt::format("ApplicationThread::commit_raw_bytes: ConnectionID {} "
                                                 "does not belong to this thread",
@@ -201,7 +201,7 @@ void ApplicationThread::commit_raw_bytes(ConnectionID conn_id, int64_t bytes_con
     reactor_.enqueue_control_command(command);
 }
 
-void ApplicationThread::send_raw(ConnectionID conn_id, const void* data, uint32_t size) {
+void ApplicationThread::send_raw(const ConnectionID& conn_id, const void* data, uint32_t size) {
     if (active_connection_ids_.find(conn_id) == active_connection_ids_.end()) {
         throw PreconditionAssertion(fmt::format("ApplicationThread::send_raw: ConnectionID {} "
                                                 "does not belong to this thread",
@@ -228,7 +228,7 @@ void ApplicationThread::send_raw(ConnectionID conn_id, const void* data, uint32_
     reactor_.enqueue_control_command(cmd);
 }
 
-// Note: reason is used in the logging macros but we have to neutralise those macros for clang-tidy
+// Note: reason is used in the logging macros, but we have to neutralise those macros for clang-tidy
 void ApplicationThread::shutdown([[maybe_unused]] const std::string& reason) {
     auto state = get_lifecycle_state().as_tag();
     if (state >= ThreadLifecycleState::ShuttingDown) {
@@ -329,7 +329,7 @@ void ApplicationThread::run_internal() {
     set_lifecycle_state(ThreadLifecycleState::ShuttingDown);
 }
 
-void ApplicationThread::process_message(EventMessage& message) {
+void ApplicationThread::process_message(const EventMessage& message) {
     const EventType type = message.type();
     auto tag = static_cast<EventType::EventTypeTag>(type.as_tag());
 
@@ -403,13 +403,12 @@ void ApplicationThread::process_message(EventMessage& message) {
             // event is dispatched out of scope. This is the manual-release
             // contract.
             //
-            // The framework deliberately does NOT auto-release here. Auto-
-            // release combined with the subclass's own explicit release would
+            // The framework deliberately does NOT auto-release here.
+            // Auto-release combined with the subclass's own explicit release would
             // produce a double-free of the slab chunk, which manifests later
             // as a "slab has already been destroyed" exception when the slab's
             // outstanding-allocations counter races into a false zero and the
-            // reactor reclaims the slab while live allocations still reference
-            // it.
+            // reactor reclaims the slab while live allocations still reference it.
             PUBSUB_LOG(logger_, FwLogLevel::Debug, "Thread {}: Received PDU message", thread_name_);
             on_framework_pdu_message(message);
             break;
@@ -460,6 +459,8 @@ void ApplicationThread::on_timer_id_event(TimerID id) {
     on_timer_event(name);
 }
 
+void ApplicationThread::on_connection_established(ConnectionID) {}
+
 void ApplicationThread::set_lifecycle_state(ThreadLifecycleState::Tag new_tag) {
     auto old_tag = lifecycle_state_.load(std::memory_order_acquire);
 
@@ -499,7 +500,7 @@ TimerID ApplicationThread::schedule_timer(const std::string& name, std::chrono::
     return id;
 }
 
-void ApplicationThread::enqueue_send_pdu_command(ConnectionID conn_id, int slab_id, void* chunk, uint32_t payload_bytes) {
+void ApplicationThread::enqueue_send_pdu_command(const ConnectionID& conn_id, int slab_id, void* chunk, uint32_t payload_bytes) {
     ReactorControlCommand cmd(ReactorControlCommand::CommandTag::SendPdu);
     cmd.connection_id_ = conn_id;
     cmd.allocator_ = &outbound_allocator_;
@@ -509,7 +510,7 @@ void ApplicationThread::enqueue_send_pdu_command(ConnectionID conn_id, int slab_
     reactor_.enqueue_control_command(cmd);
 }
 
-void ApplicationThread::release_pdu_payload(const EventMessage& message) {
+void ApplicationThread::release_pdu_payload(const EventMessage& message) const {
     reactor_.inbound_slab_allocator().deallocate(message.slab_id(), const_cast<uint8_t*>(message.payload()));
 }
 

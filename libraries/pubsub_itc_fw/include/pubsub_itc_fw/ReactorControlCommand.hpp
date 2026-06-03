@@ -63,11 +63,11 @@ class ReactorControlCommand {
   public:
     explicit ReactorControlCommand(CommandTag tag) : tag_(tag) {}
 
-    CommandTag as_tag() const {
+    [[nodiscard]] CommandTag as_tag() const {
         return tag_;
     }
 
-    std::string as_string() const {
+    [[nodiscard]] std::string as_string() const {
         if (tag_ == AddTimer) {
             return "AddTimer";
         }
@@ -92,7 +92,7 @@ class ReactorControlCommand {
         return fmt::format("unknown ({})", static_cast<int>(tag_));
     }
 
-    bool is_equal(const ReactorControlCommand& rhs) const {
+    [[nodiscard]] bool is_equal(const ReactorControlCommand& rhs) const {
         return tag_ == rhs.tag_;
     }
 

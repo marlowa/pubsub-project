@@ -257,7 +257,7 @@ template <typename T> class FixedSizeMemoryPool {
      *       This is intentional cleanup, not a double-destruction hazard.
      *       ExpandablePoolAllocator::deallocate() always calls obj->~T() and
      *       clears is_constructed to 0 before returning the slot to this pool.
-     *       Therefore any slot still marked as is_constructed at destruction time
+     *       Therefore, any slot still marked as is_constructed at destruction time
      *       has definitely not had its destructor called yet.
      *
      */
@@ -600,7 +600,7 @@ template <typename T> class FixedSizeMemoryPool {
      *       This is intentional cleanup, not a double-destruction hazard.
      *       ExpandablePoolAllocator::deallocate() always calls obj->~T() and
      *       clears is_constructed to 0 before returning the slot to this pool.
-     *       Therefore any slot still marked as is_constructed at destruction time
+     *       Therefore, any slot still marked as is_constructed at destruction time
      *       has definitely not had its destructor called yet.
      *
      */
@@ -945,7 +945,7 @@ FixedSizeMemoryPool<T>::FixedSizeMemoryPool(int objects_per_pool, UseHugePagesFl
         // member in the mmap'd region before any atomic operations are used.
         // mmap returns raw uninitialised memory — the C++ object model requires
         // construction before any member access, including atomic stores.
-        SlotType* slot = new (&slots_[i]) SlotType();
+        auto* slot = new (&slots_[i]) SlotType();
         slot->is_constructed.store(0U, std::memory_order_relaxed);
         slot->canary = slot_canary_value;
         slot->free_next.store(nullptr, std::memory_order_relaxed);
@@ -1016,7 +1016,7 @@ template <typename T> int FixedSizeMemoryPool<T>::get_number_of_available_object
     const uint64_t allocated = allocation_count_.load(std::memory_order_relaxed);
     const uint64_t deallocated = deallocation_count_.load(std::memory_order_relaxed);
     const uint64_t outstanding = allocated - deallocated;
-    const uint64_t capacity = static_cast<uint64_t>(objects_per_pool_);
+    const auto capacity = static_cast<uint64_t>(objects_per_pool_);
     if (outstanding >= capacity) {
         return 0;
     }

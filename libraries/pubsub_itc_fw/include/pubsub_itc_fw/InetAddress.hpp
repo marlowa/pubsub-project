@@ -73,7 +73,7 @@ class InetAddress : public IpAddressInterface {
      * addresses stored in `addr_storage_`.
      * @returns A `std::string` containing the IP address, or an empty string on error.
      */
-    std::string get_ip_address_string() const override;
+    [[nodiscard]] std::string get_ip_address_string() const override;
 
     /**
      * @brief Returns the port number associated with this IP address.
@@ -82,33 +82,33 @@ class InetAddress : public IpAddressInterface {
      * The port is returned in host byte order.
      * @returns A `uint16_t` representing the port number, or 0 if address family is unknown.
      */
-    uint16_t get_port() const override;
+    [[nodiscard]] uint16_t get_port() const override;
 
     /**
      * @brief Checks if the encapsulated address is an IPv4 address.
      * @returns `true` if the address is IPv4, `false` otherwise.
      */
-    bool is_ipv4() const override;
+    [[nodiscard]] bool is_ipv4() const override;
 
     /**
      * @brief Checks if the encapsulated address is an IPv6 address.
      * @returns `true` if the address is IPv6, `false` otherwise.
      */
-    bool is_ipv6() const override;
+    [[nodiscard]] bool is_ipv6() const override;
 
     /**
      * @brief Provides a pointer to the underlying system `sockaddr` structure.
      * @returns A constant pointer to the `sockaddr` structure, or `nullptr` if the address is invalid.
      */
-    const struct sockaddr* get_sockaddr() const override;
+    [[nodiscard]] const struct sockaddr* get_sockaddr() const override;
 
     /**
      * @brief Returns the size of the underlying system `sockaddr` structure.
      * @returns A `socklen_t` representing the size of the `sockaddr` structure.
      */
-    socklen_t get_sockaddr_size() const override;
+    [[nodiscard]] socklen_t get_sockaddr_size() const override;
 
-    int address_family() const override;
+    [[nodiscard]] int address_family() const override;
 
     /**
      * @brief Compares this `InetAddress` with another `IpAddressInterface` for equality.
@@ -118,7 +118,7 @@ class InetAddress : public IpAddressInterface {
      * @param[in] rhs The other `IpAddressInterface` to compare against.
      * @returns `true` if the addresses and ports are equal, `false` otherwise.
      */
-    bool is_equal(const IpAddressInterface& rhs) const override;
+    [[nodiscard]] bool is_equal(const IpAddressInterface& rhs) const override;
 
     /**
      * @brief Compares this `InetAddress` with another `IpAddressInterface` for ordering.
@@ -129,7 +129,7 @@ class InetAddress : public IpAddressInterface {
      * @param[in] rhs The other `IpAddressInterface` to compare against.
      * @returns `true` if this address is less than `rhs`, `false` otherwise.
      */
-    bool is_less_than(const IpAddressInterface& rhs) const override;
+    [[nodiscard]] bool is_less_than(const IpAddressInterface& rhs) const override;
 
   private:
     /**

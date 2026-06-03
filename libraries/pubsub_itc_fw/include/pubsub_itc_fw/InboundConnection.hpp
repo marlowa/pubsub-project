@@ -75,9 +75,8 @@ class InboundConnection {
      *                                   IdleTimeoutFlag::BypassIdleTimeout for connections
      *                                   that do not exchange heartbeats.
      */
-    InboundConnection(ConnectionID id, std::unique_ptr<TcpSocket> socket, ThreadID target_thread_id, std::unique_ptr<ProtocolHandlerInterface> handler,
-                      std::string peer_description,
-                      IdleTimeoutFlag idle_timeout = IdleTimeoutFlag{IdleTimeoutFlag::UseIdleTimeout});
+    InboundConnection(const ConnectionID& id, std::unique_ptr<TcpSocket> socket, ThreadID target_thread_id, std::unique_ptr<ProtocolHandlerInterface> handler,
+                      std::string peer_description, IdleTimeoutFlag idle_timeout = IdleTimeoutFlag{IdleTimeoutFlag::UseIdleTimeout});
 
     /**
      * @brief Returns the ConnectionID assigned to this connection.

@@ -43,9 +43,8 @@ class EventHandler {
      * @brief Returns the file descriptor associated with this handler.
      * @return The file descriptor.
      */
-    virtual int get_fd() const = 0;
+    [[nodiscard]] virtual int get_fd() const = 0;
 
-  private:
     // A deleted copy constructor and assignment operator to prevent copying.
     EventHandler(const EventHandler&) = delete;
     EventHandler& operator=(const EventHandler&) = delete;

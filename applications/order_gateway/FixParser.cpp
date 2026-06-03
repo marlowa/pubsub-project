@@ -57,7 +57,7 @@ bool FixParser::try_extract_message(std::string_view window, size_t& parse_curso
     }
 
     // The field immediately after BeginString must be BodyLength (tag 9).
-    const std::string_view body_length_tag = "9=";
+    constexpr std::string_view body_length_tag = "9=";
     const size_t body_length_tag_start = begin_string_end + 1;
     if (window.size() < body_length_tag_start + body_length_tag.size()) {
         return false; // incomplete -- not enough bytes to check for "9="
@@ -103,7 +103,7 @@ bool FixParser::try_extract_message(std::string_view window, size_t& parse_curso
     // BodyLength counts from the byte immediately after the tag 9 SOH to the
     // byte immediately before the tag 10 SOH (inclusive). So the tag 10 field
     // starts at body_length_end + 1 + body_length.
-    const std::string_view checksum_tag = "10=";
+    constexpr std::string_view checksum_tag = "10=";
     const size_t tag10_start = body_length_end + 1 + static_cast<size_t>(body_length);
 
     if (window.size() < tag10_start + checksum_tag.size()) {

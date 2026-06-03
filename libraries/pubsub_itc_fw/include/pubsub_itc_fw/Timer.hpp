@@ -31,11 +31,11 @@ class Timer {
         return name_;
     }
 
-    ThreadID get_owner_thread_id() const {
+    [[nodiscard]] ThreadID get_owner_thread_id() const {
         return owner_thread_id_;
     }
 
-    TimerID get_timer_id() const {
+    [[nodiscard]] TimerID get_timer_id() const {
         return timer_id_;
     }
     /**

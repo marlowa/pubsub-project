@@ -67,7 +67,8 @@ void SequencerThread::on_initial_event() {
                 rec.wall_time_ns = wall_time_ns;
                 rec.payload.assign(payload, payload + payload_size);
                 replay_buffer_.push_back(std::move(rec));
-            }, WalOpenMode{WalOpenMode::IgnoreSnapshot});
+            },
+            WalOpenMode{WalOpenMode::IgnoreSnapshot});
         next_sequence_number_ = recovered_seq > 0 ? recovered_seq + 1 : 1;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "SequencerThread: replay mode -- WAL read complete: {} record(s), last seq_no={}, "
@@ -121,8 +122,7 @@ void SequencerThread::on_app_ready_event() {
         // Replay mode: connect only to the matching engine; skip gateway, HA
         // arbiters, and peer replication.
         connect_to_service("matching_engine");
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                       "SequencerThread: replay mode -- connecting to matching engine only");
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: replay mode -- connecting to matching engine only");
         return;
     }
 
@@ -227,9 +227,8 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
                conn_id.get_value(), svc);
 
     // Peer PDUs arrive on the outbound peer connection or from the inbound peer listener.
-    const bool is_peer_pdu = (conn_id == peer_conn_id_) || (conn_id == peer_inbound_conn_id_);
 
-    if (is_peer_pdu) {
+    if (conn_id == peer_conn_id_ || conn_id == peer_inbound_conn_id_) {
         handle_peer_pdu(conn_id, message);
         release_pdu_payload(message);
         return;
@@ -243,7 +242,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
     }
 
     const bool is_order_pdu = (svc == order_inbound_svc_);
-    const bool is_er_pdu    = (svc == er_inbound_svc_);
+    const bool is_er_pdu = (svc == er_inbound_svc_);
 
     if (is_order_pdu) {
         // Order PDU from a gateway instance. As leader, stamp a sequence number
@@ -284,7 +283,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         // Forward the raw PDU payload to the ME by re-encoding it.
         // We use the pdu_id from the incoming message so the ME sees the
         // correct topic tag (NewOrderSingle=1000, OrderCancelRequest=1001).
-        const int16_t pdu_id = static_cast<int16_t>(message.pdu_id());
+        const auto pdu_id = static_cast<int16_t>(message.pdu_id());
         bool forwarded_to_me = false;
 
         if (pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::NewOrderSingle)) {
@@ -432,7 +431,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             return;
         }
 
-        const int16_t pdu_id = static_cast<int16_t>(message.pdu_id());
+        const auto pdu_id = static_cast<int16_t>(message.pdu_id());
         auto& arena_buf = decode_arena_buffer();
         pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
         arena.reset();
@@ -806,9 +805,8 @@ void SequencerThread::handle_arbitration_decision(const pubsub_itc_fw::EventMess
         return;
     }
 
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "SequencerThread: ArbitrationDecision received (leader={} follower={} epoch={})", decision.leader_instance_id, decision.follower_instance_id,
-               decision.epoch);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: ArbitrationDecision received (leader={} follower={} epoch={})",
+               decision.leader_instance_id, decision.follower_instance_id, decision.epoch);
 
     epoch_ = decision.epoch;
 
@@ -886,8 +884,8 @@ void SequencerThread::handle_peer_status_response(const pubsub_itc_fw::EventMess
     // this sync the restarted follower would stamp wrong seq numbers and corrupt
     // the sequence when it is later promoted to leader.
     if (sr.next_sequence_number > next_sequence_number_) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "SequencerThread: advancing next_sequence_number_ from {} to {} (peer is ahead)", next_sequence_number_, sr.next_sequence_number);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: advancing next_sequence_number_ from {} to {} (peer is ahead)",
+                   next_sequence_number_, sr.next_sequence_number);
         next_sequence_number_ = sr.next_sequence_number;
     }
 }
@@ -922,7 +920,7 @@ void SequencerThread::handle_peer_heartbeat(const pubsub_itc_fw::EventMessage& m
 }
 
 void SequencerThread::handle_peer_pdu(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
-    const int16_t pdu_id = static_cast<int16_t>(message.pdu_id());
+    const auto pdu_id = static_cast<int16_t>(message.pdu_id());
 
     if (pdu_id == pdu_status_query) {
         handle_peer_status_query(conn_id, message);
@@ -949,16 +947,13 @@ void SequencerThread::handle_peer_pdu(const pubsub_itc_fw::ConnectionID& conn_id
 
 void SequencerThread::try_dispatch_replay() {
     if (replay_me_order_ready_ && replay_me_er_ready_) {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                       "SequencerThread: replay -- both ME connections ready, starting dispatch");
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: replay -- both ME connections ready, starting dispatch");
         dispatch_replay_records();
     }
 }
 
 void SequencerThread::dispatch_replay_records() {
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "SequencerThread: replay -- dispatching {} record(s) to matching engine",
-               replay_buffer_.size());
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: replay -- dispatching {} record(s) to matching engine", replay_buffer_.size());
 
     size_t dispatched = 0;
     for (const auto& record : replay_buffer_) {
@@ -971,73 +966,86 @@ void SequencerThread::dispatch_replay_records() {
         if (record.pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::NewOrderSingle)) {
             pubsub_itc_fw_app::NewOrderSingleView view{};
             if (!pubsub_itc_fw_app::decode(view, record.payload.data(), record.payload.size(), bytes_consumed, arena, arena_bytes_needed)) {
-                PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                           "SequencerThread: replay -- failed to decode NOS seq={} -- skipping", record.seq_no);
+                PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: replay -- failed to decode NOS seq={} -- skipping",
+                           record.seq_no);
                 continue;
             }
 
             pubsub_itc_fw_app::NewOrderSingle nos{};
-            nos.cl_ord_id           = view.cl_ord_id;
-            nos.side                = view.side;
-            nos.symbol              = view.symbol;
-            nos.ord_type            = view.ord_type;
-            nos.transact_time       = view.transact_time;
-            nos.order_qty           = view.order_qty;
-            nos.has_price           = view.has_price;           nos.price           = view.price;
-            nos.has_stop_px         = view.has_stop_px;         nos.stop_px         = view.stop_px;
-            nos.has_time_in_force   = view.has_time_in_force;   nos.time_in_force   = view.time_in_force;
-            nos.has_account         = view.has_account;         nos.account         = view.account;
-            nos.has_ex_destination  = view.has_ex_destination;  nos.ex_destination  = view.ex_destination;
-            nos.has_exec_inst       = view.has_exec_inst;       nos.exec_inst       = view.exec_inst;
-            nos.has_min_qty         = view.has_min_qty;         nos.min_qty         = view.min_qty;
-            nos.has_max_floor       = view.has_max_floor;       nos.max_floor       = view.max_floor;
-            nos.has_expire_time     = view.has_expire_time;     nos.expire_time     = view.expire_time;
-            nos.has_text            = view.has_text;            nos.text            = view.text;
-            nos.has_sender_comp_id  = view.has_sender_comp_id;  nos.sender_comp_id  = view.sender_comp_id;
+            nos.cl_ord_id = view.cl_ord_id;
+            nos.side = view.side;
+            nos.symbol = view.symbol;
+            nos.ord_type = view.ord_type;
+            nos.transact_time = view.transact_time;
+            nos.order_qty = view.order_qty;
+            nos.has_price = view.has_price;
+            nos.price = view.price;
+            nos.has_stop_px = view.has_stop_px;
+            nos.stop_px = view.stop_px;
+            nos.has_time_in_force = view.has_time_in_force;
+            nos.time_in_force = view.time_in_force;
+            nos.has_account = view.has_account;
+            nos.account = view.account;
+            nos.has_ex_destination = view.has_ex_destination;
+            nos.ex_destination = view.ex_destination;
+            nos.has_exec_inst = view.has_exec_inst;
+            nos.exec_inst = view.exec_inst;
+            nos.has_min_qty = view.has_min_qty;
+            nos.min_qty = view.min_qty;
+            nos.has_max_floor = view.has_max_floor;
+            nos.max_floor = view.max_floor;
+            nos.has_expire_time = view.has_expire_time;
+            nos.expire_time = view.expire_time;
+            nos.has_text = view.has_text;
+            nos.text = view.text;
+            nos.has_sender_comp_id = view.has_sender_comp_id;
+            nos.sender_comp_id = view.sender_comp_id;
             nos.has_gateway_session_conn_id = view.has_gateway_session_conn_id;
-            nos.gateway_session_conn_id     = view.gateway_session_conn_id;
+            nos.gateway_session_conn_id = view.gateway_session_conn_id;
             // Stamp the original sequencing time so the ME uses it for transact_time.
             nos.has_sequenced_at = true;
-            nos.sequenced_at     = record.wall_time_ns;
+            nos.sequenced_at = record.wall_time_ns;
 
             send_pdu(me_outbound_order_conn_id_, record.pdu_id, record.seq_no, nos);
 
         } else if (record.pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::OrderCancelRequest)) {
             pubsub_itc_fw_app::OrderCancelRequestView view{};
             if (!pubsub_itc_fw_app::decode(view, record.payload.data(), record.payload.size(), bytes_consumed, arena, arena_bytes_needed)) {
-                PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                           "SequencerThread: replay -- failed to decode OCR seq={} -- skipping", record.seq_no);
+                PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: replay -- failed to decode OCR seq={} -- skipping",
+                           record.seq_no);
                 continue;
             }
 
             pubsub_itc_fw_app::OrderCancelRequest ocr{};
-            ocr.orig_cl_ord_id      = view.orig_cl_ord_id;
-            ocr.cl_ord_id           = view.cl_ord_id;
-            ocr.symbol              = view.symbol;
-            ocr.side                = view.side;
-            ocr.transact_time       = view.transact_time;
-            ocr.order_qty           = view.order_qty;
-            ocr.has_account         = view.has_account;         ocr.account         = view.account;
-            ocr.has_text            = view.has_text;            ocr.text            = view.text;
-            ocr.has_sender_comp_id  = view.has_sender_comp_id;  ocr.sender_comp_id  = view.sender_comp_id;
+            ocr.orig_cl_ord_id = view.orig_cl_ord_id;
+            ocr.cl_ord_id = view.cl_ord_id;
+            ocr.symbol = view.symbol;
+            ocr.side = view.side;
+            ocr.transact_time = view.transact_time;
+            ocr.order_qty = view.order_qty;
+            ocr.has_account = view.has_account;
+            ocr.account = view.account;
+            ocr.has_text = view.has_text;
+            ocr.text = view.text;
+            ocr.has_sender_comp_id = view.has_sender_comp_id;
+            ocr.sender_comp_id = view.sender_comp_id;
             ocr.has_gateway_session_conn_id = view.has_gateway_session_conn_id;
-            ocr.gateway_session_conn_id     = view.gateway_session_conn_id;
+            ocr.gateway_session_conn_id = view.gateway_session_conn_id;
             ocr.has_sequenced_at = true;
-            ocr.sequenced_at     = record.wall_time_ns;
+            ocr.sequenced_at = record.wall_time_ns;
 
             send_pdu(me_outbound_order_conn_id_, record.pdu_id, record.seq_no, ocr);
 
         } else {
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                       "SequencerThread: replay -- unknown pdu_id={} seq={} -- skipping", record.pdu_id, record.seq_no);
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: replay -- unknown pdu_id={} seq={} -- skipping", record.pdu_id,
+                       record.seq_no);
             continue;
         }
         ++dispatched;
     }
 
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "SequencerThread: replay complete -- {}/{} record(s) dispatched to matching engine",
-               dispatched, replay_buffer_.size());
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: replay complete -- {}/{} record(s) dispatched to matching engine", dispatched,
+               replay_buffer_.size());
 
     replay_buffer_.clear();
     replay_buffer_.shrink_to_fit();
@@ -1081,8 +1089,8 @@ void SequencerThread::handle_wal_record(const pubsub_itc_fw::ConnectionID& conn_
 
     wal_.append(view.seq_no, view.pdu_id, view.payload.data, static_cast<int>(view.payload.size), view.wall_time_ns);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
-               "SequencerThread: WalRecord seq={} pdu_id={} written to follower WAL (wal_size={}) -- sending WalAck",
-               view.seq_no, view.pdu_id, wal_.record_count());
+               "SequencerThread: WalRecord seq={} pdu_id={} written to follower WAL (wal_size={}) -- sending WalAck", view.seq_no, view.pdu_id,
+               wal_.record_count());
 
     pubsub_itc_fw_app::WalAck wal_ack{};
     wal_ack.seq_no = view.seq_no;
@@ -1116,8 +1124,8 @@ void SequencerThread::handle_wal_ack(const pubsub_itc_fw::EventMessage& message)
 
 void SequencerThread::flush_pending_er() {
     if (!pending_er_.empty()) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "SequencerThread: peer lost -- flushing {} buffered ERs to gateway (degraded mode)", pending_er_.size());
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: peer lost -- flushing {} buffered ERs to gateway (degraded mode)",
+                   pending_er_.size());
         for (auto& [seq_no, pending] : pending_er_) {
             forward_pending_er(pending);
         }

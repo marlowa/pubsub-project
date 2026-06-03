@@ -3,7 +3,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-#include <cstdint>
+#include <cstdint> // IWYU pragma: keep
 #include <string>
 #include <unordered_map>
 

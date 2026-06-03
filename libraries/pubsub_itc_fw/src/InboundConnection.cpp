@@ -10,9 +10,8 @@
 
 namespace pubsub_itc_fw {
 
-InboundConnection::InboundConnection(ConnectionID id, std::unique_ptr<TcpSocket> socket, ThreadID target_thread_id,
-                                     std::unique_ptr<ProtocolHandlerInterface> handler, std::string peer_description,
-                                     IdleTimeoutFlag idle_timeout)
+InboundConnection::InboundConnection(const ConnectionID& id, std::unique_ptr<TcpSocket> socket, ThreadID target_thread_id,
+                                     std::unique_ptr<ProtocolHandlerInterface> handler, std::string peer_description, IdleTimeoutFlag idle_timeout)
     : id_(id)
     , peer_description_(std::move(peer_description))
     , target_thread_id_(target_thread_id)

@@ -3,7 +3,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-#include <cstdint>
+#include <cstdint> // IWYU pragma: keep
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -49,9 +49,7 @@ class AuthenticationThread : public pubsub_itc_fw::ApplicationThread {
      * @param[in] reactor The owning Reactor. Must outlive this object.
      * @param[in] config  Service configuration.
      */
-    AuthenticationThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token,
-                         pubsub_itc_fw::QuillLogger& logger,
-                         pubsub_itc_fw::Reactor& reactor,
+    AuthenticationThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger, pubsub_itc_fw::Reactor& reactor,
                          const AuthenticationServiceConfiguration& config);
 
   protected:
@@ -74,18 +72,13 @@ class AuthenticationThread : public pubsub_itc_fw::ApplicationThread {
     };
 
     // PDU listener handlers
-    void handle_authentication_request(pubsub_itc_fw::ConnectionID conn_id,
-                                        const pubsub_itc_fw::EventMessage& msg);
-    void handle_authentication_proof(pubsub_itc_fw::ConnectionID conn_id,
-                                      const pubsub_itc_fw::EventMessage& msg);
+    void handle_authentication_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& msg);
+    void handle_authentication_proof(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& msg);
 
     // TLS admin channel handlers
-    void handle_set_credential_request(pubsub_itc_fw::ConnectionID conn_id,
-                                        const uint8_t* payload, uint32_t payload_size);
-    void handle_remove_credential_request(pubsub_itc_fw::ConnectionID conn_id,
-                                           const uint8_t* payload, uint32_t payload_size);
-    void send_admin_pdu(pubsub_itc_fw::ConnectionID conn_id,
-                        uint16_t pdu_id, const uint8_t* payload, uint32_t payload_size);
+    void handle_set_credential_request(const pubsub_itc_fw::ConnectionID& conn_id, const uint8_t* payload, uint32_t payload_size);
+    void handle_remove_credential_request(const pubsub_itc_fw::ConnectionID& conn_id, const uint8_t* payload, uint32_t payload_size);
+    void send_admin_pdu(const pubsub_itc_fw::ConnectionID& conn_id, uint16_t pdu_id, const uint8_t* payload, uint32_t payload_size);
     void persist_credentials();
 
     const AuthenticationServiceConfiguration& config_;

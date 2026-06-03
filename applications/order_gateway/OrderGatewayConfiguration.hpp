@@ -4,7 +4,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <chrono>
-#include <cstdint>
+#include <cstdint> // IWYU pragma: keep
 #include <memory>
 #include <string>
 

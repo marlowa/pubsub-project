@@ -32,8 +32,8 @@ std::string FixSerialiser::serialise(const FixMessage& msg, int seq_num) const {
     // to keep FixMessage's internals private. For this sample the set of
     // application tags is small and fixed.
     constexpr int app_tags[] = {
-        Tag::EncryptMethod, Tag::HeartBtInt, Tag::DefaultApplVerID, Tag::Text,     Tag::ClOrdID, Tag::OrderID, Tag::ExecID, Tag::ExecType,  Tag::OrdStatus,
-        Tag::Symbol,        Tag::Side,       Tag::OrderQty,         Tag::Price,    Tag::OrdType, Tag::CumQty, Tag::LeavesQty,
+        Tag::EncryptMethod, Tag::HeartBtInt, Tag::DefaultApplVerID, Tag::Text,  Tag::ClOrdID, Tag::OrderID, Tag::ExecID,    Tag::ExecType, Tag::OrdStatus,
+        Tag::Symbol,        Tag::Side,       Tag::OrderQty,         Tag::Price, Tag::OrdType, Tag::CumQty,  Tag::LeavesQty,
     };
 
     for (const int tag : app_tags) {
@@ -76,7 +76,7 @@ std::string FixSerialiser::compute_checksum(const std::string& input) {
 }
 
 std::string FixSerialiser::current_utc_timestamp() const {
-    const std::time_t t = static_cast<std::time_t>(wall_clock_.now_ns() / 1'000'000'000LL);
+    const auto t = static_cast<std::time_t>(wall_clock_.now_ns() / 1'000'000'000LL);
     struct tm utc_tm {};
     gmtime_r(&t, &utc_tm);
     char timestamp_buffer[20];

@@ -11,24 +11,19 @@
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
-#include <pubsub_itc_fw/ThreadID.hpp>
 
-#include "OrderGatewayConfiguration.hpp"
 #include "FixMessage.hpp"
 #include "FixSerialiser.hpp"
 #include "FixSession.hpp"
+#include "OrderGatewayConfiguration.hpp"
 
 // authentication.hpp must be included before fix_equity_orders.hpp because only
 // authentication.hpp defines BytesView inside the PUBSUB_ITC_FW_APP_DSL_SHARED_HELPERS
 // guard block; fix_equity_orders.hpp sets the guard without providing BytesView.
 #include <authentication.hpp>
 
-// DSL-generated message types for the equity order flow.
-// The generated header lives in the build tree under dsl/.
-#include <fix_equity_orders.hpp>
-
 // Shared SCRAM-SHA-256 crypto primitives.
-#include <scram_crypto/ScramCrypto.hpp>
+#include <scram_crypto/ScramCrypto.hpp> // IWYU pragma: keep
 
 namespace order_gateway {
 
@@ -68,7 +63,7 @@ class OrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
      * @param[in] config   Gateway configuration.
      */
     OrderGatewayThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger, pubsub_itc_fw::Reactor& reactor,
-                        const OrderGatewayConfiguration& config);
+                       const OrderGatewayConfiguration& config);
 
   protected:
     void on_app_ready_event() override;

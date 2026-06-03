@@ -19,6 +19,7 @@
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ExpandablePoolAllocator.hpp>
 #include <pubsub_itc_fw/QueueConfiguration.hpp>
+#include <utility>
 
 namespace pubsub_itc_fw {
 
@@ -149,12 +150,12 @@ template <typename T> class LockFreeMessageQueue {
     /**
      * @brief Constructs a queue using the provided configuration objects.
      */
-    LockFreeMessageQueue(const QueueConfiguration& queue_config, const AllocatorConfiguration& allocator_config)
+    LockFreeMessageQueue(QueueConfiguration queue_config, AllocatorConfiguration allocator_config)
         : stub_()
         , head_(&stub_)
         , tail_(&stub_)
-        , queue_configuration_(queue_config)
-        , allocator_configuration_(allocator_config)
+        , queue_configuration_(std::move(queue_config))
+        , allocator_configuration_(std::move(allocator_config))
         , node_allocator_(allocator_configuration_.pool_name, allocator_configuration_.objects_per_pool, allocator_configuration_.initial_pools,
                           allocator_configuration_.expansion_threshold_hint, allocator_configuration_.handler_for_pool_exhausted,
                           allocator_configuration_.handler_for_invalid_free, allocator_configuration_.handler_for_huge_pages_error,
@@ -266,7 +267,7 @@ template <typename T> class LockFreeMessageQueue {
     /**
      * @brief Checks if the queue is empty.
      */
-    bool empty() const {
+    [[nodiscard]] bool empty() const {
         Node* tail = tail_;
         if (tail == &stub_) {
             return tail->next_.load(std::memory_order_acquire) == nullptr;

@@ -18,23 +18,35 @@ namespace sequencer {
 class WalOpenMode {
   public:
     enum WalOpenModeTag {
-        UseSnapshot   = 0, ///< Normal crash-recovery open; starts from the snapshot anchor.
-        IgnoreSnapshot = 1  ///< Full replay; reads every record from segment 0 regardless of snapshot.
+        UseSnapshot = 0,   ///< Normal crash-recovery open; starts from the snapshot anchor.
+        IgnoreSnapshot = 1 ///< Full replay; reads every record from segment 0 regardless of snapshot.
     };
 
     explicit WalOpenMode(WalOpenModeTag value) : value_{value} {}
 
-    bool isEqual(const WalOpenMode& rhs) const { return value_ == rhs.value_; }
-    bool isEqual(const WalOpenModeTag& rhs)    const { return value_ == rhs; }
-    WalOpenModeTag value() const { return value_; }
+    [[nodiscard]] bool isEqual(const WalOpenMode& rhs) const {
+        return value_ == rhs.value_;
+    }
+    [[nodiscard]] bool isEqual(const WalOpenModeTag& rhs) const {
+        return value_ == rhs;
+    }
+    [[nodiscard]] WalOpenModeTag value() const {
+        return value_;
+    }
 
   private:
     WalOpenModeTag value_;
 };
 
-inline bool operator==(const WalOpenMode& lhs, const WalOpenMode& rhs) { return lhs.isEqual(rhs); }
-inline bool operator==(const WalOpenMode& lhs, const WalOpenMode::WalOpenModeTag& rhs) { return lhs.isEqual(rhs); }
-inline bool operator==(const WalOpenMode::WalOpenModeTag& lhs, const WalOpenMode& rhs) { return rhs.isEqual(lhs); }
+inline bool operator==(const WalOpenMode& lhs, const WalOpenMode& rhs) {
+    return lhs.isEqual(rhs);
+}
+inline bool operator==(const WalOpenMode& lhs, const WalOpenMode::WalOpenModeTag& rhs) {
+    return lhs.isEqual(rhs);
+}
+inline bool operator==(const WalOpenMode::WalOpenModeTag& lhs, const WalOpenMode& rhs) {
+    return rhs.isEqual(lhs);
+}
 
 /**
  * @brief On-disk snapshot header written by SequencerWal::take_snapshot().
@@ -161,8 +173,8 @@ class SequencerWal {
   private:
     static constexpr size_t snapshot_checksum_offset = 40;
 
-    std::string snapshot_path() const;
-    std::string segment_path_for_delete(uint64_t seg_num) const;
+    [[nodiscard]] std::string snapshot_path() const;
+    [[nodiscard]] std::string segment_path_for_delete(uint64_t seg_num) const;
     bool load_snapshot(pubsub_itc_fw::WalPosition& out_pos);
     void delete_segments_before(uint64_t seg_num) const;
 

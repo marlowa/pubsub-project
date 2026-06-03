@@ -164,7 +164,7 @@ class PduProtocolHandlerConnectorThread : public ApplicationThread {
 
     void on_framework_pdu_message(const EventMessage& msg) override {
         const uint8_t* payload = msg.payload();
-        const size_t size = static_cast<size_t>(msg.payload_size());
+        const auto size = static_cast<size_t>(msg.payload_size());
 
         DataResponseView response{};
         BumpAllocator arena(decode_arena_buffer().data(), decode_arena_buffer().capacity());
@@ -219,7 +219,7 @@ class PduProtocolHandlerListenerThread : public ApplicationThread {
 
     void on_framework_pdu_message(const EventMessage& msg) override {
         const uint8_t* payload = msg.payload();
-        const size_t size = static_cast<size_t>(msg.payload_size());
+        const auto size = static_cast<size_t>(msg.payload_size());
 
         DataQueryView query{};
         BumpAllocator arena(decode_arena_buffer().data(), decode_arena_buffer().capacity());
@@ -283,7 +283,7 @@ class LargeResponseListenerThread : public ApplicationThread {
 
     void on_framework_pdu_message(const EventMessage& msg) override {
         const uint8_t* payload = msg.payload();
-        const size_t size = static_cast<size_t>(msg.payload_size());
+        const auto size = static_cast<size_t>(msg.payload_size());
 
         DataQueryView query{};
         BumpAllocator arena(decode_arena_buffer().data(), decode_arena_buffer().capacity());

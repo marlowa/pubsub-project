@@ -193,6 +193,7 @@ class Sca: # pylint: disable=too-many-instance-attributes
         self.ignore_checks = get_checks_from_ignore_list(ignore_checks_config.name) if ignore_checks_config else []
         self.extra_macros = get_extra_macros(extra_macros_config.name) if extra_macros_config else ''
         self.exclude_files = read_exclude_files_from_config(exclude_files_config.name) if exclude_files_config else []
+        self.header_filter = kwargs.get('header_filter', '')
         self.get_filelist()
         self.set_batch_size_details()
         self.process_priority = get_process_priority(self.batch_size)
@@ -271,14 +272,13 @@ class Sca: # pylint: disable=too-many-instance-attributes
 
     def is_directory_excluded(self, name):
         """Returns true if the specified pathname refers to an excluded directory"""
-        omit = False
+        normalised = name[2:] if name.startswith('./') else name
         for exclusion_dir in self.exclusion_dirlist:
             edir = '{}/'.format(exclusion_dir) if '/' in exclusion_dir else '/{}/'.format(exclusion_dir)
-            if edir in name:
+            if edir in normalised or normalised.startswith(exclusion_dir + '/'):
                 LOGGER.info('Skipping file %s because it refers to excluded directory %s', name, exclusion_dir)
-                omit = True
-                continue
-        return omit
+                return True
+        return False
 
     def check_name_excluded(self, root, name, filelist):
         """adds non-excluded name to the filelist."""
@@ -400,7 +400,8 @@ class Sca: # pylint: disable=too-many-instance-attributes
         LOGGER.info('Starting clang-tidy for batch %4d item %4d index %4d: %s', batch, item_number, index, full_filename)
 
         check_arguments = self.get_check_arguments()
-        call_command = f'clang-tidy --extra-arg=-ferror-limit=100000 {check_arguments} {full_filename}'
+        header_filter_arg = f'--header-filter={self.header_filter}' if self.header_filter else ''
+        call_command = f'clang-tidy --extra-arg=-ferror-limit=100000 {check_arguments} {header_filter_arg} {full_filename}'
         LOGGER.info("clang-tidy command: %s", call_command)
         output, err, returncode, exception_text = self.run_command_and_get_output(call_command, index)
         return filename, index, output, err, returncode, exception_text
@@ -418,6 +419,8 @@ class Sca: # pylint: disable=too-many-instance-attributes
             if re.search('Suppressed [0-9]* warnings', line): # skip Suppressed [0-9]* warnings
                 continue
             if re.search('/usr/include/', line):
+                continue
+            if '/thirdparty/' in line:
                 continue
             if not f'{leafname}:' in line:
                 new_output.append(line) # we still want the output to contain the details.
@@ -528,6 +531,9 @@ def main():
                         help='Keep individual logs from clang-tidy runs (normally tidied up after use)')
     parser.add_argument('--output_style', action='store', default='clang-tidy', choices=['clang-tidy', 'vs'],
                         help='Output style of warning messages produced by clang.')
+    parser.add_argument('--header_filter', action='store', dest='header_filter', default='',
+                        help='Regex passed to clang-tidy --header-filter to restrict which headers are checked. '
+                             'Headers whose path does not match are not reported on.')
 
     args = parser.parse_args()
     exit_status = 0
@@ -541,7 +547,8 @@ def main():
                        extra_macros=args.extra_macros,
                        exclude_files=args.exclude_files,
                        keep_logs=args.keep_logs,
-                       output_style=args.output_style)
+                       output_style=args.output_style,
+                       header_filter=args.header_filter)
         analyser.analyse()
     except MyException as ex:
         exit_status = -1

@@ -9,6 +9,7 @@
 #include <memory>
 #include <string>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include <arpa/inet.h>
@@ -160,7 +161,7 @@ class ApplicationThread {
 
     virtual ~ApplicationThread();
 
-    ApplicationThread(ConstructorToken, QuillLogger& logger, Reactor& reactor, const std::string& thread_name, ThreadID thread_id,
+    ApplicationThread(ConstructorToken, QuillLogger& logger, Reactor& reactor, std::string thread_name, ThreadID thread_id,
                       const QueueConfiguration& queue_config, const AllocatorConfiguration& allocator_config,
                       const ApplicationThreadConfiguration& thread_config);
 
@@ -187,7 +188,7 @@ class ApplicationThread {
     /**
      * @brief Joins the underlying thread with a timeout for hung threads.
      */
-    [[nodiscard]] bool join_with_timeout(std::chrono::milliseconds timeout);
+    [[nodiscard]] bool join_with_timeout(std::chrono::milliseconds timeout) const;
 
     /**
      * @brief Returns the underlying pthread handle.
@@ -238,7 +239,7 @@ class ApplicationThread {
      * For now, this posts to this thread's own queue; routing to other
      * threads is handled by the Reactor.
      */
-    void post_message(ThreadID target_thread_id, EventMessage message);
+    void post_message(ThreadID target_thread_id, EventMessage message) const;
 
     /**
      * @brief Returns a reference to the thread's message queue.
@@ -349,7 +350,7 @@ class ApplicationThread {
      *
      * @param[in] service_name Logical name of the service to connect to.
      */
-    void connect_to_service(const std::string& service_name);
+    void connect_to_service(const std::string& service_name) const;
 
     /**
      * @brief Notifies the reactor that the application has finished processing
@@ -371,7 +372,7 @@ class ApplicationThread {
      *                           count delivered in the most recent RawSocketCommunication
      *                           event for this connection.
      */
-    void commit_raw_bytes(ConnectionID conn_id, int64_t bytes_consumed);
+    void commit_raw_bytes(const ConnectionID& conn_id, int64_t bytes_consumed);
 
     /**
      * @brief Sends raw bytes on a RawBytesProtocolHandler connection.
@@ -388,7 +389,7 @@ class ApplicationThread {
      * @param[in] data    Pointer to the bytes to send. Must not be nullptr.
      * @param[in] size    Number of bytes to send. Must be > 0.
      */
-    void send_raw(ConnectionID conn_id, const void* data, uint32_t size);
+    void send_raw(const ConnectionID& conn_id, const void* data, uint32_t size);
 
     /**
      * @brief Schedules a high-resolution timer.
@@ -513,7 +514,7 @@ class ApplicationThread {
      *
      * @param[in] message The FrameworkPdu EventMessage whose payload is to be freed.
      */
-    void release_pdu_payload(const EventMessage& message);
+    void release_pdu_payload(const EventMessage& message) const;
 
     ExpandableSlabAllocator& outbound_slab_allocator() {
         return outbound_allocator_;
@@ -584,7 +585,7 @@ class ApplicationThread {
         // Write PduHeader in network byte order.
         auto* hdr = static_cast<PduHeader*>(chunk);
         hdr->byte_count = htonl(static_cast<uint32_t>(bytes_needed));
-        hdr->pdu_id = htons(static_cast<uint16_t>(pdu_id));
+        hdr->pdu_id = static_cast<int16_t>(htons(static_cast<uint16_t>(pdu_id)));
         hdr->version = 1;
         hdr->filler_a = 0;
         hdr->seq_no = static_cast<int64_t>(htobe64(static_cast<uint64_t>(seq_no)));
@@ -603,13 +604,13 @@ class ApplicationThread {
         // where Reactor is fully defined. This avoids an incomplete-type error when
         // send_pdu is instantiated in translation units that only have a forward
         // declaration of Reactor.
-        enqueue_send_pdu_command(conn_id, slab_id, chunk, static_cast<uint32_t>(bytes_written));
+        enqueue_send_pdu_command(std::move(conn_id), slab_id, chunk, static_cast<uint32_t>(bytes_written));
     }
 
   protected:
     void run_internal();
 
-    void process_message(EventMessage& message);
+    void process_message(const EventMessage& message);
 
     virtual void on_initial_event() {}
 
@@ -648,7 +649,7 @@ class ApplicationThread {
      * @param[in] id The ConnectionID assigned by the reactor. Use this in
      *               subsequent send_pdu() calls to identify the connection.
      */
-    virtual void on_connection_established([[maybe_unused]] ConnectionID id) {}
+    virtual void on_connection_established([[maybe_unused]] ConnectionID id);
 
     /**
      * @brief Called when an outbound TCP connection attempt has failed.
@@ -686,7 +687,7 @@ class ApplicationThread {
     // Non-template helper for send_pdu. Defined in ApplicationThread.cpp where
     // Reactor is fully defined, avoiding incomplete-type errors in translation
     // units that include ApplicationThread.hpp with only a forward-declared Reactor.
-    void enqueue_send_pdu_command(ConnectionID conn_id, int slab_id, void* chunk, uint32_t payload_bytes);
+    void enqueue_send_pdu_command(const ConnectionID& conn_id, int slab_id, void* chunk, uint32_t payload_bytes);
 
     std::string thread_name_;
     ThreadID thread_id_;

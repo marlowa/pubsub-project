@@ -596,6 +596,22 @@ sequencer: version=0.1.0 pid=12345 built=2026-06-02T10:14:07Z branch=main sha=65
 
 *Future enhancement:* derive the version from `git describe --tags --match 'v*'` at build time so the tag is the single source of truth. Preferred approach would be to examine the tag the current commit is reachable from (i.e. the nearest ancestor tag, resolving ambiguity via commit distance). Deferred for now because `git describe` returns nothing before the first tag exists and produces a non-semver suffix (`v1.2.3-5-gabc1234`) between releases; the manual bump is simpler and fully auditable.
 
+**`ct.sh` — clang-tidy script hardened.**
+
+`ct.sh` is the project's static analysis driver. Several issues were found and fixed:
+
+- **DSL headers missing.** `ct.sh` wipes `build/` before running `sca.py`, but `sca.py` needs the generated DSL headers to compile. Fixed by adding explicit generator invocations before `sca.py`: `build/generated_dsl/` (three app-level headers: `fix_equity_orders.hpp`, `authentication.hpp`, `leader_follower.hpp` with namespace `pubsub_itc_fw_app`) and `build/libraries/pubsub_itc_fw/dsl/` (three framework-internal headers with namespace `pubsub_itc_fw`). `build/generated_dsl` and `build/libraries/pubsub_itc_fw/dsl` added to `includes.txt`.
+
+- **`BuildInfo.hpp` missing.** `ApplicationAnnouncer.hpp` includes `pubsub_itc_fw/BuildInfo.hpp` which is generated at CMake build time. Fixed by running `cmake/GenerateBuildInfo.cmake` via `cmake -P` in `ct.sh`, extracting the version from `CMakeLists.txt` with `sed`. `build/generated_build_info` added to `includes.txt`.
+
+- **toml++ not in include path.** `TomlConfiguration.cpp` includes `<toml++/toml.hpp>`. Added `/home/marlowa/mystuff/thirdparty/installed/tomlplusplus/3.4.0/include` to `includes.txt`.
+
+- **`compile_commands.json` left in project root by `sca.py`, breaking Clangd.** `sca.py` writes `compile_commands.json` to the current directory after each batch. Clangd finds this file before the CMake-generated one in `cmake-build-debug/` and loses standard-header resolution. Fixed by deleting it at the end of `ct.sh`. A `.clangd` config file pointing Clangd at `cmake-build-debug/` was also added as a fallback for interrupted runs.
+
+- **`thirdparty/` `.cpp` exclusion bug in `sca.py`.** `is_directory_excluded()` built the check pattern as `/{name}/` but paths from `os.walk` start with `./`, so `./thirdparty/` never matched `/{name}/`. Fixed by normalising the path (stripping the leading `./`) before the check and adding a `startswith(exclusion_dir + '/')` guard.
+
+- **Thirdparty header violations in output.** Even with `.cpp` exclusion working, clang-tidy follows `#include` into thirdparty headers and reports violations there. The `/usr/include/` filter already existed in `tidy_up_clang_output`; added a matching `/thirdparty/` filter. Also added `--header-filter` support to `sca.py` (new `--header_filter` argparse argument, passed to clang-tidy), with `ct.sh` passing `$(realpath .)` so the project's real path (not the symlink path from `pwd`) is used.
+
 ---
 
 ### Session 23
@@ -1343,7 +1359,7 @@ TcpSocket EAGAIN/EOF fix, use-after-free fix, InboundConnection infrastructure, 
 ## What Is Not Yet Done (in dependency order)
 
 1. ~~**Re-verify fix8 wrong-port issue is gone**~~ — DONE (session 2026-06-03). `f8test` connected to port 9879, SCRAM auth succeeded, FIX session established. Closed.
-2. **Matching engine — `OrderCancelRequest` handling** — the ME currently logs and drops cancels at the `else` branch. Mirror the NewOrderSingle path: decode, fabricate a `Canceled` ER, send. Small follow-up; will exercise the same plumbing again with a different message type.
+2. ~~**Matching engine — `OrderCancelRequest` handling**~~ — DONE (session 2026-06-03). ME now decodes `OrderCancelRequest`, fabricates a `Canceled` ER, and sends it back via the sequencer to the gateway. Verified end-to-end via fix-test-client (place order, cancel order, Execution Report received with `OrdStatus=Canceled`).
 3. **Arbiter — end-to-end failover verification** — the arbiter code is substantially complete: PSA election between the two arbiter instances, witness vote protocol, `ArbitrationReport` → `decide_and_broadcast` → `ArbitrationDecision`, state replication. The arbiter is consulted during failover (when `peer_heartbeat_timeout` fires on the secondary), not during cold start (cold start uses the instance_id tiebreaker directly). What is NOT yet verified: kill the primary sequencer, confirm the secondary sends `ArbitrationReport`, confirm the arbiter sends `ArbitrationDecision`, confirm the secondary promotes to leader, confirm WAL continuity. Extend `ha_test.py` with a scenario that covers this path. Summary entry was wrongly describing this as "stub" — the code is real; the gap is test coverage of the failover path.
 4. **Leader-follower — Slice 7 (network WAL replication)** — COMPLETE (session 18). Leader streams `WalRecord` PDUs to follower over peer TCP; follower acks with `WalAck`; leader gates ER emission on ack. Both sequencer TOMLs have `ha_enabled=true`. Next: extend `ha_test.py` with a new scenario that verifies WAL sequence number continuity across failover.
 5. ~~**`SequencedMessage` wrapper**~~ — the sequencer already forwards to the ME with `send_pdu(me_conn, pdu_id, seq, nos)` where `seq` is the WAL sequence number encoded into `PduHeader.seq_no`; the ME reads `message.seq_no()` to retrieve it. The envelope is already explicit. **Open question for WAL replay:** when a downstream consumer (Kafka publisher, future broadcast) connects with a position cursor, the seq_no in each replayed `WalRecord` already serves as the cursor position identifier. Verify at implementation time that no additional wrapper is needed for the replay/Aeron-style consumer path.
@@ -1360,7 +1376,7 @@ A WAL+HA design has been worked through in detail (see "WAL and HA Design" secti
 **Slice 7 — Network WAL replication — COMPLETE (session 18).** Leader streams `WalRecord` (pdu_id=103) PDUs to follower over the existing peer TCP connection (7003/7004). Follower appends each record to its own WAL and replies with `WalAck` (pdu_id=104). Leader buffers ERs from the ME in `pending_er_` (keyed by seq_no) and only forwards them to the gateway once the corresponding WalAck arrives. On peer disconnect the buffered ERs are flushed immediately (degraded mode). The follower no longer writes its WAL from the direct gateway PDU path; it writes exclusively from WalRecord, ensuring WAL contents are byte-for-byte identical to the leader's.
 
 **Smaller items deferred but still on the list:**
-- OrderCancelRequest round trip (item 2): mirrors NewOrderSingle path on ME side. Small. Fits in a session corner.
+- ~~OrderCancelRequest round trip (item 2)~~ — DONE (session 2026-06-03).
 - ~~fix8 wrong-port re-verification~~ — DONE (session 2026-06-03).
 - ~~`k`-prefix constants in `ExpandableSlabAllocatorTest`'s fixture~~ — checked clean; no k-prefix violations anywhere in the codebase.
 - ~~Quill thread-name population~~ — DONE (session 2026-06-03). `ApplicationThread::run_internal()` calls `pthread_setname_np(pthread_self(), os_name.c_str())` before first log; Quill captures the OS thread name on first log call. Names longer than 15 chars are truncated by the OS limit.

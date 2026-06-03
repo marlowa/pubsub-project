@@ -1,6 +1,8 @@
 libraries
 libraries/pubsub_itc_fw/include
 libraries/pubsub_itc_fw/tests_common/include/
+build/generated_dsl
+build/generated_build_info
 build/libraries/pubsub_itc_fw/dsl
 /usr/include/c++/13/
 /usr/include/x86_64-linux-gnu/c++/13
@@ -9,3 +11,4 @@ build/libraries/pubsub_itc_fw/dsl
 /home/marlowa/mystuff/thirdparty/installed/quill/quill-10.0.1/include
 /home/marlowa/mystuff/thirdparty/installed/argparse/argparse-3.2/include
 /home/marlowa/mystuff/thirdparty/installed/googletest/googletest-1.8.1/include
+/home/marlowa/mystuff/thirdparty/installed/tomlplusplus/3.4.0/include

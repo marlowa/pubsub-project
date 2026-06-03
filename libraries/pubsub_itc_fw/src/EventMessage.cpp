@@ -43,7 +43,7 @@ EventMessage EventMessage::create_itc_message(ThreadID originating_thread_id, co
     return msg;
 }
 
-EventMessage EventMessage::create_raw_socket_message(ConnectionID connection_id, const uint8_t* data, int size, int64_t tail_position,
+EventMessage EventMessage::create_raw_socket_message(const ConnectionID& connection_id, const uint8_t* data, int size, int64_t tail_position,
                                                      std::shared_ptr<MirroredBuffer> buffer_owner) {
     EventMessage msg(EventType(EventType::RawSocketCommunication), data, size);
     msg.header_.connection_id = connection_id;
@@ -52,7 +52,7 @@ EventMessage EventMessage::create_raw_socket_message(ConnectionID connection_id,
     return msg;
 }
 
-EventMessage EventMessage::create_framework_pdu_message(const uint8_t* data, int size, int slab_id, ConnectionID connection_id, int16_t pdu_id,
+EventMessage EventMessage::create_framework_pdu_message(const uint8_t* data, int size, int slab_id, const ConnectionID& connection_id, int16_t pdu_id,
                                                         int64_t seq_no) {
     EventMessage msg(EventType(EventType::FrameworkPdu), data, size);
     msg.slab_id_ = slab_id;
@@ -62,7 +62,7 @@ EventMessage EventMessage::create_framework_pdu_message(const uint8_t* data, int
     return msg;
 }
 
-EventMessage EventMessage::create_connection_established_event(ConnectionID connection_id) {
+EventMessage EventMessage::create_connection_established_event(const ConnectionID& connection_id) {
     EventMessage msg(EventType(EventType::ConnectionEstablished), nullptr, 0);
     msg.header_.connection_id = connection_id;
     return msg;
@@ -74,7 +74,7 @@ EventMessage EventMessage::create_connection_failed_event(const std::string& rea
     return msg;
 }
 
-EventMessage EventMessage::create_connection_lost_event(ConnectionID connection_id, const std::string& reason) {
+EventMessage EventMessage::create_connection_lost_event(const ConnectionID& connection_id, const std::string& reason) {
     EventMessage msg(EventType(EventType::ConnectionLost), nullptr, 0);
     msg.header_.connection_id = connection_id;
     msg.header_.reason = reason;

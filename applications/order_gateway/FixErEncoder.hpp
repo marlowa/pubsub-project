@@ -3,11 +3,11 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-#include <cstddef>
+#include <cstddef> // IWYU pragma: keep
 #include <string_view>
 
-#include <pubsub_itc_fw/WallClock.hpp>
 #include <fix_equity_orders.hpp>
+#include <pubsub_itc_fw/WallClock.hpp>
 
 namespace order_gateway {
 
@@ -36,8 +36,7 @@ static constexpr size_t execution_report_buffer_size = 512;
  * @return Number of bytes written, or 0 on overflow.
  */
 [[nodiscard]] size_t encode_execution_report(const pubsub_itc_fw_app::ExecutionReportView& view, std::string_view sender_comp_id,
-                                             std::string_view target_comp_id, int seq_num,
-                                             const pubsub_itc_fw::WallClock& wall_clock,
-                                             char* output_buffer, size_t output_buffer_size);
+                                             std::string_view target_comp_id, int seq_num, const pubsub_itc_fw::WallClock& wall_clock, char* output_buffer,
+                                             size_t output_buffer_size);
 
 } // namespace order_gateway

@@ -219,8 +219,8 @@ class SenderThread : public ApplicationThread {
             encoded.resize(bytes_written);
             sent_payloads_.push_back(std::move(encoded));
 
-            const int16_t pdu_id = static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::ExecutionReport);
-            const int64_t seq_no = static_cast<int64_t>(i);
+            constexpr auto pdu_id = static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::ExecutionReport);
+            const auto seq_no = static_cast<int64_t>(i);
             send_pdu(conn_id_, pdu_id, seq_no, er);
         }
         burst_sent.store(true, std::memory_order_release);
@@ -323,7 +323,7 @@ class ReceiverThread : public ApplicationThread {
      */
     void on_raw_socket_message(const EventMessage& message) override {
         const int64_t event_tail = message.tail_position();
-        const int64_t event_bytes = static_cast<int64_t>(message.payload_size());
+        const auto event_bytes = static_cast<int64_t>(message.payload_size());
         const int64_t absolute_head_now = event_tail + event_bytes;
 
         if (absolute_head_now > absolute_head_seen_) {
@@ -398,7 +398,7 @@ class FrameworkPduBurstIntegrationTest : public ::testing::Test {
         return true;
     }
 
-    std::string last_wait_failure_description() const {
+    [[nodiscard]] std::string last_wait_failure_description() const {
         if (reactor_died_) {
             const Reactor* reactor = (died_reactor_name_ == "sender") ? sender_reactor_ : receiver_reactor_;
             const std::string reason = (reactor != nullptr) ? reactor->get_shutdown_reason() : "(no reactor)";

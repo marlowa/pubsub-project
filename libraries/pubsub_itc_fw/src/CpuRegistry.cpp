@@ -83,7 +83,7 @@ CpuRegistry& CpuRegistry::operator=(CpuRegistry&& other) {
     return *this;
 }
 
-AvailableCpuVector CpuRegistry::claim_cpus(size_t count, bool reserve_cpu0) {
+AvailableCpuVector CpuRegistry::claim_cpus(size_t count, bool reserve_cpu0) const {
     if (layout_ == nullptr || count == 0) {
         return {};
     }
@@ -116,7 +116,7 @@ AvailableCpuVector CpuRegistry::claim_cpus(size_t count, bool reserve_cpu0) {
     return available;
 }
 
-void CpuRegistry::release_cpus() {
+void CpuRegistry::release_cpus() const {
     if (layout_ == nullptr || lock_file_path_.empty()) {
         return;
     }

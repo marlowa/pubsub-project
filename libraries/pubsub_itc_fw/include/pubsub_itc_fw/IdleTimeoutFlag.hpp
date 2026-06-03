@@ -26,15 +26,15 @@ class IdleTimeoutFlag {
 
     explicit IdleTimeoutFlag(IdleTimeoutFlagTag value) : value_{value} {}
 
-    bool isEqual(const IdleTimeoutFlag& rhs) const {
+    [[nodiscard]] bool isEqual(const IdleTimeoutFlag& rhs) const {
         return value_ == rhs.value_;
     }
 
-    bool isEqual(const IdleTimeoutFlagTag& rhs) const {
+    [[nodiscard]] bool isEqual(const IdleTimeoutFlagTag& rhs) const {
         return value_ == rhs;
     }
 
-    IdleTimeoutFlagTag value() const {
+    [[nodiscard]] IdleTimeoutFlagTag value() const {
         return value_;
     }
 

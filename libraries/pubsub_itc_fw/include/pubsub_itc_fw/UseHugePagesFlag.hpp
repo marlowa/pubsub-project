@@ -13,15 +13,15 @@ class UseHugePagesFlag {
 
     explicit UseHugePagesFlag(UseHugePagesFlagTag value) : value_{value} {}
 
-    bool isEqual(const UseHugePagesFlag& rhs) const {
+    [[nodiscard]] bool isEqual(const UseHugePagesFlag& rhs) const {
         return value_ == rhs.value_;
     }
 
-    bool isEqual(const UseHugePagesFlagTag& rhs) const {
+    [[nodiscard]] bool isEqual(const UseHugePagesFlagTag& rhs) const {
         return value_ == rhs;
     }
 
-    UseHugePagesFlagTag value() const {
+    [[nodiscard]] UseHugePagesFlagTag value() const {
         return value_;
     }
 

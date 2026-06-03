@@ -42,11 +42,11 @@ class TimerHandler : public EventHandler {
      * @brief Returns the file descriptor associated with this handler.
      * @return The file descriptor.
      */
-    int get_fd() const override {
+    [[nodiscard]] int get_fd() const override {
         return fd_;
     }
 
-    const Timer& get_timer() const {
+    [[nodiscard]] const Timer& get_timer() const {
         return timer_;
     }
 

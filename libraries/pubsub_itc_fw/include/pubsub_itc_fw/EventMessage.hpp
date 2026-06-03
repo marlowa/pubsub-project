@@ -199,7 +199,7 @@ class EventMessage {
      *                           points into. Must not be nullptr.
      * @return EventMessage instance.
      */
-    [[nodiscard]] static EventMessage create_raw_socket_message(ConnectionID connection_id, const uint8_t* data, int size, int64_t tail_position,
+    [[nodiscard]] static EventMessage create_raw_socket_message(const ConnectionID& connection_id, const uint8_t* data, int size, int64_t tail_position,
                                                                 std::shared_ptr<MirroredBuffer> buffer_owner);
 
     /**
@@ -220,8 +220,8 @@ class EventMessage {
      *                           or 0 if the PDU has not yet been stamped by the sequencer.
      * @return EventMessage instance.
      */
-    [[nodiscard]] static EventMessage create_framework_pdu_message(const uint8_t* data, int size, int slab_id, ConnectionID connection_id, int16_t pdu_id,
-                                                                   int64_t seq_no);
+    [[nodiscard]] static EventMessage create_framework_pdu_message(const uint8_t* data, int size, int slab_id, const ConnectionID& connection_id,
+                                                                   int16_t pdu_id, int64_t seq_no);
 
     /**
      * @brief Factory method for a successful outbound connection event.
@@ -232,7 +232,7 @@ class EventMessage {
      * @param[in] connection_id The ConnectionID assigned by the reactor.
      * @return EventMessage instance.
      */
-    [[nodiscard]] static EventMessage create_connection_established_event(ConnectionID connection_id);
+    [[nodiscard]] static EventMessage create_connection_established_event(const ConnectionID& connection_id);
 
     /**
      * @brief Factory method for a failed outbound connection attempt.
@@ -255,7 +255,7 @@ class EventMessage {
      * @param[in] reason        Human-readable description of why the connection was lost.
      * @return EventMessage instance.
      */
-    [[nodiscard]] static EventMessage create_connection_lost_event(ConnectionID connection_id, const std::string& reason);
+    [[nodiscard]] static EventMessage create_connection_lost_event(const ConnectionID& connection_id, const std::string& reason);
 
     /**
      * @brief Gets the MirroredBuffer tail position at enqueue time.

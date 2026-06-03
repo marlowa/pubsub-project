@@ -20,16 +20,16 @@ namespace arbiter {
 
 namespace {
 
-static constexpr int16_t pdu_status_query = 100;
-static constexpr int16_t pdu_status_response = 101;
-static constexpr int16_t pdu_heartbeat = 102;
-static constexpr int16_t pdu_arbitration_report = 200;
-static constexpr int16_t pdu_arbitration_decision = 201;
-static constexpr int16_t pdu_arbiter_heartbeat = 300;
-static constexpr int16_t pdu_arbiter_vote_request = 301;
-static constexpr int16_t pdu_arbiter_vote_response = 302;
-static constexpr int16_t pdu_arbiter_state_record = 400;
-static constexpr int16_t pdu_arbiter_state_ack = 401;
+constexpr int16_t pdu_status_query = 100;
+constexpr int16_t pdu_status_response = 101;
+constexpr int16_t pdu_heartbeat = 102;
+constexpr int16_t pdu_arbitration_report = 200;
+constexpr int16_t pdu_arbitration_decision = 201;
+constexpr int16_t pdu_arbiter_heartbeat = 300;
+constexpr int16_t pdu_arbiter_vote_request = 301;
+constexpr int16_t pdu_arbiter_vote_response = 302;
+constexpr int16_t pdu_arbiter_state_record = 400;
+constexpr int16_t pdu_arbiter_state_ack = 401;
 
 pubsub_itc_fw::QueueConfiguration make_queue_config() {
     pubsub_itc_fw::QueueConfiguration queue_configuration{};
@@ -51,10 +51,10 @@ pubsub_itc_fw::AllocatorConfiguration make_allocator_config(const ArbiterConfigu
 
 } // namespace
 
-ArbiterThread::ArbiterThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger,
-                             pubsub_itc_fw::Reactor& reactor, const ArbiterConfiguration& config)
-    : ApplicationThread(token, logger, reactor, "ArbiterThread", pubsub_itc_fw::ThreadID{1}, make_queue_config(),
-                        make_allocator_config(config, logger), pubsub_itc_fw::ApplicationThreadConfiguration{})
+ArbiterThread::ArbiterThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger, pubsub_itc_fw::Reactor& reactor,
+                             const ArbiterConfiguration& config)
+    : ApplicationThread(token, logger, reactor, "ArbiterThread", pubsub_itc_fw::ThreadID{1}, make_queue_config(), make_allocator_config(config, logger),
+                        pubsub_itc_fw::ApplicationThreadConfiguration{})
     , config_(config)
     , peer_conn_id_{}
     , peer_inbound_conn_id_{}
@@ -63,8 +63,7 @@ ArbiterThread::ArbiterThread(pubsub_itc_fw::ApplicationThread::ConstructorToken 
 void ArbiterThread::on_initial_event() {
     // Arm startup election window.
     start_one_off_timer("peer_heartbeat_timeout", std::chrono::seconds(config_.startup_election_timeout_seconds));
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: startup election timeout armed ({}s)",
-               config_.startup_election_timeout_seconds);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: startup election timeout armed ({}s)", config_.startup_election_timeout_seconds);
 }
 
 void ArbiterThread::on_app_ready_event() {
@@ -126,15 +125,14 @@ void ArbiterThread::on_connection_lost(pubsub_itc_fw::ConnectionID id, const std
 void ArbiterThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message) {
     const pubsub_itc_fw::ConnectionID& conn_id = message.connection_id();
 
-    const bool is_peer_pdu = (conn_id == peer_conn_id_) || (conn_id == peer_inbound_conn_id_);
-    if (is_peer_pdu) {
+    if (conn_id == peer_conn_id_ || conn_id == peer_inbound_conn_id_) {
         handle_peer_pdu(conn_id, message);
         release_pdu_payload(message);
         return;
     }
 
     if (conn_id == witness_conn_id_) {
-        const int16_t pdu_id = static_cast<int16_t>(message.pdu_id());
+        const auto pdu_id = static_cast<int16_t>(message.pdu_id());
         if (pdu_id == pdu_arbiter_vote_response) {
             handle_arbiter_vote_response(message);
         } else {
@@ -145,7 +143,7 @@ void ArbiterThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& 
     }
 
     // Component PDU (sequencer, ME, or other registered component).
-    const int16_t pdu_id = static_cast<int16_t>(message.pdu_id());
+    const auto pdu_id = static_cast<int16_t>(message.pdu_id());
     if (pdu_id == pdu_heartbeat) {
         handle_component_heartbeat(conn_id, message);
     } else if (pdu_id == pdu_arbitration_report) {
@@ -243,8 +241,8 @@ void ArbiterThread::elect_role(int64_t peer_id, int32_t peer_epoch, pubsub_itc_f
     }
 
     if (peer_epoch > epoch_) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "ArbiterThread: peer epoch {} > my epoch {} -- adopting passive (peer is newer generation)", peer_epoch, epoch_);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: peer epoch {} > my epoch {} -- adopting passive (peer is newer generation)",
+                   peer_epoch, epoch_);
         epoch_ = peer_epoch;
         adopt_role(pubsub_itc_fw_app::Role::follower);
         return;
@@ -272,8 +270,8 @@ void ArbiterThread::send_status_query(const pubsub_itc_fw::ConnectionID& conn_id
     sq.instance_id = static_cast<int64_t>(config_.instance_id);
     sq.epoch = epoch_;
     send_pdu(conn_id, pdu_status_query, 0, sq);
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: StatusQuery sent on connection {} (instance_id={} epoch={})",
-               conn_id.get_value(), sq.instance_id, sq.epoch);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: StatusQuery sent on connection {} (instance_id={} epoch={})", conn_id.get_value(),
+               sq.instance_id, sq.epoch);
 }
 
 void ArbiterThread::send_status_response(const pubsub_itc_fw::ConnectionID& conn_id) {
@@ -308,8 +306,8 @@ void ArbiterThread::send_witness_heartbeat() {
     hb.instance_id = static_cast<int64_t>(config_.instance_id);
     hb.epoch = epoch_;
     send_pdu(witness_conn_id_, pdu_arbiter_heartbeat, 0, hb);
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "ArbiterThread: ArbiterHeartbeat sent to witness (instance_id={} epoch={})",
-               hb.instance_id, hb.epoch);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "ArbiterThread: ArbiterHeartbeat sent to witness (instance_id={} epoch={})", hb.instance_id,
+               hb.epoch);
 }
 
 void ArbiterThread::request_witness_vote() {
@@ -344,7 +342,7 @@ void ArbiterThread::write_fence_file() const {
 // ---------------------------------------------------------------------------
 
 void ArbiterThread::handle_peer_pdu(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
-    const int16_t pdu_id = static_cast<int16_t>(message.pdu_id());
+    const auto pdu_id = static_cast<int16_t>(message.pdu_id());
 
     if (pdu_id == pdu_status_query) {
         handle_peer_status_query(conn_id, message);
@@ -416,8 +414,8 @@ void ArbiterThread::handle_peer_heartbeat(const pubsub_itc_fw::EventMessage& mes
     }
 
     if (hb.epoch < epoch_) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "ArbiterThread: Heartbeat from stale peer (epoch={} < my epoch={}) -- ignoring",
-                   hb.epoch, epoch_);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "ArbiterThread: Heartbeat from stale peer (epoch={} < my epoch={}) -- ignoring", hb.epoch,
+                   epoch_);
         return;
     }
 
@@ -443,9 +441,8 @@ void ArbiterThread::handle_arbiter_state_record(const pubsub_itc_fw::EventMessag
         return;
     }
 
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "ArbiterThread: ArbiterStateRecord received (component={} leader={} epoch={})", record.component_instance_id, record.leader_instance_id,
-               record.epoch);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: ArbiterStateRecord received (component={} leader={} epoch={})",
+               record.component_instance_id, record.leader_instance_id, record.epoch);
 
     leadership_state_[record.component_instance_id] = ComponentState{record.leader_instance_id, 0, record.epoch};
 
@@ -472,8 +469,8 @@ void ArbiterThread::handle_arbiter_state_ack(const pubsub_itc_fw::EventMessage& 
         return;
     }
 
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "ArbiterThread: ArbiterStateAck received (component={} epoch={})",
-               ack.component_instance_id, ack.epoch);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "ArbiterThread: ArbiterStateAck received (component={} epoch={})", ack.component_instance_id,
+               ack.epoch);
 }
 
 // ---------------------------------------------------------------------------
@@ -583,8 +580,8 @@ void ArbiterThread::decide_and_broadcast(int64_t self_instance_id, int64_t peer_
     const int64_t follower_id = (leader_id == self_instance_id) ? peer_instance_id : self_instance_id;
     const int32_t new_epoch = epoch + 1;
 
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "ArbiterThread: decision: leader={} follower={} epoch={} (peer_connected={})", leader_id, follower_id, new_epoch, peer_connected);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: decision: leader={} follower={} epoch={} (peer_connected={})", leader_id,
+               follower_id, new_epoch, peer_connected);
 
     // Store in leadership-state map.
     leadership_state_[self_instance_id] = ComponentState{leader_id, follower_id, new_epoch};
@@ -608,9 +605,8 @@ void ArbiterThread::send_arbitration_decision(const pubsub_itc_fw::ConnectionID&
     decision.follower_instance_id = follower_id;
     decision.epoch = epoch;
     send_pdu(conn_id, pdu_arbitration_decision, 0, decision);
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "ArbiterThread: ArbitrationDecision sent to connection {} (leader={} follower={} epoch={})", conn_id.get_value(), leader_id, follower_id,
-               epoch);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: ArbitrationDecision sent to connection {} (leader={} follower={} epoch={})",
+               conn_id.get_value(), leader_id, follower_id, epoch);
 }
 
 void ArbiterThread::replicate_state_to_peer(int64_t component_instance_id, int64_t leader_id, int32_t epoch) {
@@ -624,8 +620,8 @@ void ArbiterThread::replicate_state_to_peer(int64_t component_instance_id, int64
     record.leader_instance_id = leader_id;
     record.epoch = epoch;
     send_pdu(peer, pdu_arbiter_state_record, 0, record);
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
-               "ArbiterThread: ArbiterStateRecord replicated to peer (component={} leader={} epoch={})", component_instance_id, leader_id, epoch);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "ArbiterThread: ArbiterStateRecord replicated to peer (component={} leader={} epoch={})",
+               component_instance_id, leader_id, epoch);
 }
 
 } // namespace arbiter

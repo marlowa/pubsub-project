@@ -13,6 +13,7 @@
 #include <new>
 #include <string>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include <pubsub_itc_fw/AllocatorBehaviourStatistics.hpp>
@@ -251,7 +252,7 @@ template <typename T> class ExpandablePoolAllocator {
      * @param[in] handler_for_huge_pages_error Callback if huge page allocation fails.
      * @param[in] use_huge_pages_flag Whether to attempt 2MB huge page allocation.
      */
-    ExpandablePoolAllocator(const std::string& pool_name, int objects_per_pool, int initial_pools, int expansion_threshold_hint,
+    ExpandablePoolAllocator(std::string pool_name, int objects_per_pool, int initial_pools, int expansion_threshold_hint,
                             std::function<void(void*, int)> handler_for_pool_exhausted, std::function<void(void*, void*)> handler_for_invalid_free,
                             std::function<void(void*)> handler_for_huge_pages_error, UseHugePagesFlag use_huge_pages_flag);
 
@@ -369,11 +370,11 @@ template <typename T> class ExpandablePoolAllocator {
 };
 
 template <typename T>
-ExpandablePoolAllocator<T>::ExpandablePoolAllocator(const std::string& pool_name, int objects_per_pool, int initial_pools, int expansion_threshold_hint,
+ExpandablePoolAllocator<T>::ExpandablePoolAllocator(std::string pool_name, int objects_per_pool, int initial_pools, int expansion_threshold_hint,
                                                     std::function<void(void*, int)> handler_for_pool_exhausted,
                                                     std::function<void(void*, void*)> handler_for_invalid_free,
                                                     std::function<void(void*)> handler_for_huge_pages_error, UseHugePagesFlag use_huge_pages_flag)
-    : pool_name_(pool_name)
+    : pool_name_(std::move(pool_name))
     , objects_per_pool_(objects_per_pool)
     , initial_pools_(initial_pools)
     , expansion_threshold_hint_(expansion_threshold_hint)

@@ -97,7 +97,7 @@ class WalWriter {
     // Minimum space for any entry (header + 1 byte payload + CRC32).
     static constexpr size_t min_entry_bytes = 24 + 1 + sizeof(uint32_t);
 
-    std::string segment_path(uint64_t seg_num) const;
+    [[nodiscard]] std::string segment_path(uint64_t seg_num) const;
     void open_segment(uint64_t seg_num);
     void close_segment();
     void ensure_capacity(size_t bytes_needed);

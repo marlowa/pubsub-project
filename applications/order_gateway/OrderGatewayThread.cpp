@@ -26,12 +26,12 @@ namespace order_gateway {
 
 namespace {
 
-static constexpr int16_t pdu_id_authentication_request   = 500;
-static constexpr int16_t pdu_id_authentication_challenge = 501;
-static constexpr int16_t pdu_id_authentication_proof     = 502;
-static constexpr int16_t pdu_id_authentication_result    = 503;
+constexpr int16_t pdu_id_authentication_request = 500;
+constexpr int16_t pdu_id_authentication_challenge = 501;
+constexpr int16_t pdu_id_authentication_proof = 502;
+constexpr int16_t pdu_id_authentication_result = 503;
 
-static constexpr size_t scram_client_nonce_size = 16;
+constexpr size_t scram_client_nonce_size = 16;
 
 pubsub_itc_fw::QueueConfiguration make_queue_config() {
     pubsub_itc_fw::QueueConfiguration queue_configuration{};
@@ -65,26 +65,24 @@ int64_t parse_fix_utc_timestamp(std::string_view sv) {
         return (result.ec == std::errc{}) ? value : -1;
     };
 
-    const int year   = parse_digits(0, 4);
-    const int month  = parse_digits(4, 2);
-    const int day    = parse_digits(6, 2);
-    const int hour   = parse_digits(9, 2);
+    const int year = parse_digits(0, 4);
+    const int month = parse_digits(4, 2);
+    const int day = parse_digits(6, 2);
+    const int hour = parse_digits(9, 2);
     const int minute = parse_digits(12, 2);
     const int second = parse_digits(15, 2);
 
-    if (year < 0 || month < 1 || month > 12 || day < 1 || day > 31
-            || hour < 0 || hour > 23 || minute < 0 || minute > 59
-            || second < 0 || second > 60) {
+    if (year < 0 || month < 1 || month > 12 || day < 1 || day > 31 || hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 60) {
         return 0;
     }
 
-    struct tm utc_tm{};
+    struct tm utc_tm {};
     utc_tm.tm_year = year - 1900;
-    utc_tm.tm_mon  = month - 1;
+    utc_tm.tm_mon = month - 1;
     utc_tm.tm_mday = day;
     utc_tm.tm_hour = hour;
-    utc_tm.tm_min  = minute;
-    utc_tm.tm_sec  = second;
+    utc_tm.tm_min = minute;
+    utc_tm.tm_sec = second;
 
     const time_t epoch_seconds = timegm(&utc_tm);
     if (epoch_seconds == static_cast<time_t>(-1)) {
@@ -105,7 +103,7 @@ int64_t parse_fix_utc_timestamp(std::string_view sv) {
 } // namespace
 
 OrderGatewayThread::OrderGatewayThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger,
-                                         pubsub_itc_fw::Reactor& reactor, const OrderGatewayConfiguration& config)
+                                       pubsub_itc_fw::Reactor& reactor, const OrderGatewayConfiguration& config)
     : ApplicationThread(token, logger, reactor, "OrderGatewayThread", pubsub_itc_fw::ThreadID{1}, make_queue_config(), make_allocator_config(config, logger),
                         pubsub_itc_fw::ApplicationThreadConfiguration{})
     , config_(config)
@@ -130,12 +128,12 @@ void OrderGatewayThread::on_app_ready_event() {
 void OrderGatewayThread::on_connection_established(pubsub_itc_fw::ConnectionID id) {
     if (id.service_name() == "authentication_service_primary") {
         auth_service_primary_conn_id_ = id;
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "OrderGatewayThread: primary authentication service connection {} established", id.get_value());
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "OrderGatewayThread: primary authentication service connection {} established",
+                   id.get_value());
     } else if (id.service_name() == "authentication_service_secondary") {
         auth_service_secondary_conn_id_ = id;
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "OrderGatewayThread: secondary authentication service connection {} established", id.get_value());
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "OrderGatewayThread: secondary authentication service connection {} established",
+                   id.get_value());
     } else if (id.service_name() == "sequencer_primary") {
         sequencer_primary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "OrderGatewayThread: primary sequencer connection {} ({}) established", id.get_value(),
@@ -163,12 +161,12 @@ void OrderGatewayThread::on_connection_lost(pubsub_itc_fw::ConnectionID id, cons
 
     if (id == auth_service_primary_conn_id_) {
         auth_service_primary_conn_id_ = pubsub_itc_fw::ConnectionID{};
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "OrderGatewayThread: primary authentication service connection {} lost: {}", id.get_value(), reason);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "OrderGatewayThread: primary authentication service connection {} lost: {}",
+                   id.get_value(), reason);
     } else if (id == auth_service_secondary_conn_id_) {
         auth_service_secondary_conn_id_ = pubsub_itc_fw::ConnectionID{};
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "OrderGatewayThread: secondary authentication service connection {} lost: {}", id.get_value(), reason);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "OrderGatewayThread: secondary authentication service connection {} lost: {}",
+                   id.get_value(), reason);
     } else if (id == sequencer_primary_conn_id_) {
         sequencer_primary_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "OrderGatewayThread: primary sequencer connection {} lost: {}", id.get_value(), reason);
@@ -176,8 +174,7 @@ void OrderGatewayThread::on_connection_lost(pubsub_itc_fw::ConnectionID id, cons
         sequencer_secondary_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "OrderGatewayThread: secondary sequencer connection {} lost: {}", id.get_value(), reason);
     } else if (id.service_name() == er_inbound_svc_) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "OrderGatewayThread: sequencer ER inbound connection {} lost: {}", id.get_value(),
-                   reason);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "OrderGatewayThread: sequencer ER inbound connection {} lost: {}", id.get_value(), reason);
     } else {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "OrderGatewayThread: FIX client connection {} lost: {} -- active sessions: {}",
                    id.get_value(), reason, sessions_.size());
@@ -352,16 +349,16 @@ void OrderGatewayThread::on_raw_socket_message(const pubsub_itc_fw::EventMessage
 void OrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message) {
     const auto pdu_id = static_cast<int16_t>(message.pdu_id());
 
-    const bool from_auth_service = (message.connection_id() == auth_service_primary_conn_id_) ||
-                                    (config_.ha_enabled && message.connection_id() == auth_service_secondary_conn_id_);
+    const bool from_auth_service =
+        (message.connection_id() == auth_service_primary_conn_id_) || (config_.ha_enabled && message.connection_id() == auth_service_secondary_conn_id_);
     if (from_auth_service) {
         if (pdu_id == pdu_id_authentication_challenge) {
             handle_authentication_challenge(message);
         } else if (pdu_id == pdu_id_authentication_result) {
             handle_authentication_result(message);
         } else {
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                       "OrderGatewayThread: unexpected PDU id {} from authentication service -- dropping", pdu_id);
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "OrderGatewayThread: unexpected PDU id {} from authentication service -- dropping",
+                       pdu_id);
             release_pdu_payload(message);
         }
         return;
@@ -414,8 +411,8 @@ void OrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventMess
     // No heap allocation: all string_view fields from view are memcpy'd
     // straight into the wire bytes; enum fields are cast to single chars.
     char wire_buffer[execution_report_buffer_size];
-    const size_t wire_length =
-        encode_execution_report(view, config_.sender_comp_id, session.client_comp_id, session.outbound_seq_num++, *config_.wall_clock, wire_buffer, sizeof(wire_buffer));
+    const size_t wire_length = encode_execution_report(view, config_.sender_comp_id, session.client_comp_id, session.outbound_seq_num++, *config_.wall_clock,
+                                                       wire_buffer, sizeof(wire_buffer));
     send_raw(session.conn_id, wire_buffer, static_cast<uint32_t>(wire_length));
     release_pdu_payload(message);
 }
@@ -432,8 +429,7 @@ void OrderGatewayThread::on_timer_event(const std::string& name) {
         }
         if (session.scram_auth_timeout_timer_name() == name) {
             if (session.auth_pending) {
-                PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                           "OrderGatewayThread: connection {} SCRAM authentication timeout -- disconnecting",
+                PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "OrderGatewayThread: connection {} SCRAM authentication timeout -- disconnecting",
                            id.get_value());
                 FixMessage logout;
                 logout.set(Tag::MsgType, MsgType::Logout);
@@ -461,24 +457,21 @@ void OrderGatewayThread::handle_authentication_challenge(const pubsub_itc_fw::Ev
     size_t bytes_consumed = 0;
     size_t arena_bytes_needed = 0;
 
-    if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()),
-                                    bytes_consumed, arena, arena_bytes_needed)) {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
-                       "OrderGatewayThread: failed to decode AuthenticationChallenge -- dropping");
+    if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "OrderGatewayThread: failed to decode AuthenticationChallenge -- dropping");
         release_pdu_payload(message);
         return;
     }
 
     // Capture the connection ID before releasing the payload buffer.
-    const pubsub_itc_fw::ConnectionID auth_service_conn_id = message.connection_id();
+    const pubsub_itc_fw::ConnectionID& auth_service_conn_id = message.connection_id();
     release_pdu_payload(message);
 
     // Correlate back to the FIX session using request_id == conn_id.
     FixSession* session_ptr = find_session_by_conn_id(static_cast<int32_t>(view.request_id));
     if (!session_ptr || !session_ptr->auth_pending) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "OrderGatewayThread: AuthenticationChallenge request_id={} -- no matching pending session -- dropping",
-                   view.request_id);
+                   "OrderGatewayThread: AuthenticationChallenge request_id={} -- no matching pending session -- dropping", view.request_id);
         return;
     }
     FixSession& session = *session_ptr;
@@ -492,22 +485,17 @@ void OrderGatewayThread::handle_authentication_challenge(const pubsub_itc_fw::Ev
     static const std::string client_key_label = "Client Key";
     static const std::string server_key_label = "Server Key";
 
-    const std::vector<uint8_t> auth_message = scram_crypto::compute_auth_message(
-        session.client_comp_id, session.scram_client_nonce, server_nonce,
-        salt.data(), salt.size(), iterations);
+    const std::vector<uint8_t> auth_message =
+        scram_crypto::compute_auth_message(session.client_comp_id, session.scram_client_nonce, server_nonce, salt.data(), salt.size(), iterations);
 
-    const std::vector<uint8_t> salted_password = scram_crypto::pbkdf2_sha256(
-        config_.scram_password, salt.data(), salt.size(), iterations);
+    const std::vector<uint8_t> salted_password = scram_crypto::pbkdf2_sha256(config_.scram_password, salt.data(), salt.size(), iterations);
 
-    const std::vector<uint8_t> client_key = scram_crypto::hmac_sha256(
-        salted_password.data(), salted_password.size(),
-        reinterpret_cast<const uint8_t*>(client_key_label.data()), client_key_label.size());
+    const std::vector<uint8_t> client_key = scram_crypto::hmac_sha256(salted_password.data(), salted_password.size(),
+                                                                      reinterpret_cast<const uint8_t*>(client_key_label.data()), client_key_label.size());
 
     const std::vector<uint8_t> stored_key = scram_crypto::sha256(client_key.data(), client_key.size());
 
-    const std::vector<uint8_t> client_signature = scram_crypto::hmac_sha256(
-        stored_key.data(), stored_key.size(),
-        auth_message.data(), auth_message.size());
+    const std::vector<uint8_t> client_signature = scram_crypto::hmac_sha256(stored_key.data(), stored_key.size(), auth_message.data(), auth_message.size());
 
     static constexpr size_t sha256_size = 32;
     std::vector<uint8_t> client_proof(sha256_size);
@@ -515,22 +503,18 @@ void OrderGatewayThread::handle_authentication_challenge(const pubsub_itc_fw::Ev
         client_proof[i] = client_key[i] ^ client_signature[i];
     }
 
-    const std::vector<uint8_t> server_key = scram_crypto::hmac_sha256(
-        salted_password.data(), salted_password.size(),
-        reinterpret_cast<const uint8_t*>(server_key_label.data()), server_key_label.size());
+    const std::vector<uint8_t> server_key = scram_crypto::hmac_sha256(salted_password.data(), salted_password.size(),
+                                                                      reinterpret_cast<const uint8_t*>(server_key_label.data()), server_key_label.size());
 
-    session.scram_expected_server_signature = scram_crypto::hmac_sha256(
-        server_key.data(), server_key.size(),
-        auth_message.data(), auth_message.size());
+    session.scram_expected_server_signature = scram_crypto::hmac_sha256(server_key.data(), server_key.size(), auth_message.data(), auth_message.size());
 
     pubsub_itc_fw_app::AuthenticationProof proof{};
-    proof.request_id   = view.request_id;
+    proof.request_id = view.request_id;
     proof.client_proof = pubsub_itc_fw_app::BytesView{client_proof.data(), client_proof.size()};
     // Send on the connection the challenge arrived on — correct for both primary and secondary.
     send_pdu(auth_service_conn_id, pdu_id_authentication_proof, 0, proof);
 
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "OrderGatewayThread: connection {} AuthenticationProof sent request_id={}",
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "OrderGatewayThread: connection {} AuthenticationProof sent request_id={}",
                session.conn_id.get_value(), view.request_id);
 }
 
@@ -543,10 +527,8 @@ void OrderGatewayThread::handle_authentication_result(const pubsub_itc_fw::Event
     size_t bytes_consumed = 0;
     size_t arena_bytes_needed = 0;
 
-    if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()),
-                                    bytes_consumed, arena, arena_bytes_needed)) {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
-                       "OrderGatewayThread: failed to decode AuthenticationResult -- dropping");
+    if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "OrderGatewayThread: failed to decode AuthenticationResult -- dropping");
         release_pdu_payload(message);
         return;
     }
@@ -556,8 +538,7 @@ void OrderGatewayThread::handle_authentication_result(const pubsub_itc_fw::Event
     FixSession* session_ptr = find_session_by_conn_id(static_cast<int32_t>(view.request_id));
     if (!session_ptr || !session_ptr->auth_pending) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "OrderGatewayThread: AuthenticationResult request_id={} -- no matching pending session -- dropping",
-                   view.request_id);
+                   "OrderGatewayThread: AuthenticationResult request_id={} -- no matching pending session -- dropping", view.request_id);
         return;
     }
     FixSession& session = *session_ptr;
@@ -565,8 +546,7 @@ void OrderGatewayThread::handle_authentication_result(const pubsub_itc_fw::Event
     cancel_timer(session.scram_auth_timeout_timer_name());
 
     if (view.outcome != pubsub_itc_fw_app::AuthenticationOutcome::Granted) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "OrderGatewayThread: connection {} authentication failed outcome={} -- sending Logout",
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "OrderGatewayThread: connection {} authentication failed outcome={} -- sending Logout",
                    session.conn_id.get_value(), static_cast<int32_t>(view.outcome));
         FixMessage logout;
         logout.set(Tag::MsgType, MsgType::Logout);
@@ -577,12 +557,10 @@ void OrderGatewayThread::handle_authentication_result(const pubsub_itc_fw::Event
     }
 
     // Verify ServerSignature to confirm we are speaking to the genuine service.
-    const std::vector<uint8_t> received_signature(view.server_signature.data,
-                                                   view.server_signature.data + view.server_signature.size);
+    const std::vector<uint8_t> received_signature(view.server_signature.data, view.server_signature.data + view.server_signature.size);
     if (received_signature != session.scram_expected_server_signature) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "OrderGatewayThread: connection {} ServerSignature mismatch -- possible impostor -- sending Logout",
-                   session.conn_id.get_value());
+                   "OrderGatewayThread: connection {} ServerSignature mismatch -- possible impostor -- sending Logout", session.conn_id.get_value());
         FixMessage logout;
         logout.set(Tag::MsgType, MsgType::Logout);
         logout.set(Tag::Text, std::string("Authentication service identity could not be verified"));
@@ -601,8 +579,8 @@ void OrderGatewayThread::handle_authentication_result(const pubsub_itc_fw::Event
     session.session_established = true;
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "OrderGatewayThread: connection {} authentication succeeded -- FIX session established comp_id='{}'",
-               session.conn_id.get_value(), session.client_comp_id);
+               "OrderGatewayThread: connection {} authentication succeeded -- FIX session established comp_id='{}'", session.conn_id.get_value(),
+               session.client_comp_id);
 }
 
 // -----------------------------------------------------------------------
@@ -616,8 +594,8 @@ void OrderGatewayThread::handle_logon(FixSession& session, const ParsedFixMessag
     session.client_comp_id = msg.get(Tag::SenderCompID);
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "OrderGatewayThread: connection {} Logon from SenderCompID='{}' -- initiating SCRAM authentication",
-               session.conn_id.get_value(), session.client_comp_id);
+               "OrderGatewayThread: connection {} Logon from SenderCompID='{}' -- initiating SCRAM authentication", session.conn_id.get_value(),
+               session.client_comp_id);
 
     const std::string_view heartbeat_interval_text = msg.get(Tag::HeartBtInt);
     session.heartbeat_interval = 30;
@@ -631,12 +609,10 @@ void OrderGatewayThread::handle_logon(FixSession& session, const ParsedFixMessag
         auth_conn_id = auth_service_primary_conn_id_;
     } else if (config_.ha_enabled && auth_service_secondary_conn_id_.is_valid()) {
         auth_conn_id = auth_service_secondary_conn_id_;
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "OrderGatewayThread: connection {} primary auth service not connected -- using secondary",
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "OrderGatewayThread: connection {} primary auth service not connected -- using secondary",
                    session.conn_id.get_value());
     } else {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "OrderGatewayThread: connection {} Logon rejected -- no authentication service connected",
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "OrderGatewayThread: connection {} Logon rejected -- no authentication service connected",
                    session.conn_id.get_value());
         FixMessage logout;
         logout.set(Tag::MsgType, MsgType::Logout);
@@ -648,8 +624,8 @@ void OrderGatewayThread::handle_logon(FixSession& session, const ParsedFixMessag
 
     uint8_t nonce_bytes[scram_client_nonce_size];
     if (RAND_bytes(nonce_bytes, static_cast<int>(sizeof(nonce_bytes))) != 1) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
-                   "OrderGatewayThread: connection {} RAND_bytes failed -- disconnecting", session.conn_id.get_value());
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "OrderGatewayThread: connection {} RAND_bytes failed -- disconnecting",
+                   session.conn_id.get_value());
         disconnect_session(session, "failed to generate client nonce");
         return;
     }
@@ -657,8 +633,8 @@ void OrderGatewayThread::handle_logon(FixSession& session, const ParsedFixMessag
     session.auth_pending = true;
 
     pubsub_itc_fw_app::AuthenticationRequest auth_request{};
-    auth_request.request_id  = static_cast<int64_t>(session.conn_id.get_value());
-    auth_request.comp_id     = session.client_comp_id;
+    auth_request.request_id = static_cast<int64_t>(session.conn_id.get_value());
+    auth_request.comp_id = session.client_comp_id;
     auth_request.client_nonce = pubsub_itc_fw_app::BytesView{session.scram_client_nonce.data(), session.scram_client_nonce.size()};
     send_pdu(auth_conn_id, pdu_id_authentication_request, 0, auth_request);
 
@@ -667,9 +643,8 @@ void OrderGatewayThread::handle_logon(FixSession& session, const ParsedFixMessag
     start_one_off_timer(session.scram_auth_timeout_timer_name(), config_.scram_auth_timeout);
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "OrderGatewayThread: connection {} AuthenticationRequest sent request_id={} comp_id='{}' timeout={}s",
-               session.conn_id.get_value(), auth_request.request_id, session.client_comp_id,
-               config_.scram_auth_timeout.count());
+               "OrderGatewayThread: connection {} AuthenticationRequest sent request_id={} comp_id='{}' timeout={}s", session.conn_id.get_value(),
+               auth_request.request_id, session.client_comp_id, config_.scram_auth_timeout.count());
 }
 
 void OrderGatewayThread::handle_heartbeat(FixSession& session, [[maybe_unused]] const ParsedFixMessage& msg) {

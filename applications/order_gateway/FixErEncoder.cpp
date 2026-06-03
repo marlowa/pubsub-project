@@ -14,14 +14,14 @@
 namespace order_gateway {
 namespace {
 
-static constexpr char fix_delimiter = '\x01';
-static constexpr size_t timestamp_length = 17; // YYYYMMDD-HH:MM:SS
+constexpr char fix_delimiter = '\x01';
+constexpr size_t timestamp_length = 17; // YYYYMMDD-HH:MM:SS
 
 // ── Wire writer ──────────────────────────────────────────────────────────────
 
 struct FixWireWriter {
-    char* cursor;
-    char* limit;
+    char* cursor{nullptr};
+    char* limit{nullptr};
     bool valid{true};
 
     void write_sv(std::string_view sv) {
@@ -121,7 +121,7 @@ uint8_t compute_checksum(const char* buf, size_t length) {
 // ── Timestamp ────────────────────────────────────────────────────────────────
 
 void fill_utc_timestamp(char* out, const pubsub_itc_fw::WallClock& clock) {
-    const std::time_t t = static_cast<std::time_t>(clock.now_ns() / 1'000'000'000LL);
+    const auto t = static_cast<std::time_t>(clock.now_ns() / 1'000'000'000LL);
     struct tm utc {};
     gmtime_r(&t, &utc);
     std::strftime(out, timestamp_length + 1, "%Y%m%d-%H:%M:%S", &utc);
@@ -132,8 +132,7 @@ void fill_utc_timestamp(char* out, const pubsub_itc_fw::WallClock& clock) {
 // ── Public encoder ────────────────────────────────────────────────────────────
 
 size_t encode_execution_report(const pubsub_itc_fw_app::ExecutionReportView& view, std::string_view sender_comp_id, std::string_view target_comp_id,
-                               int seq_num, const pubsub_itc_fw::WallClock& wall_clock,
-                               char* output_buffer, size_t output_buffer_size) {
+                               int seq_num, const pubsub_itc_fw::WallClock& wall_clock, char* output_buffer, size_t output_buffer_size) {
     // Single-char wire representations of enum fields.
     const char exec_type_char = static_cast<char>(view.exec_type);
     const char ord_status_char = static_cast<char>(view.ord_status);

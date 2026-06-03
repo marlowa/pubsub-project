@@ -34,15 +34,15 @@ class DeliverLostEventFlag {
 
     explicit DeliverLostEventFlag(DeliverLostEventFlagTag value) : value_{value} {}
 
-    bool isEqual(const DeliverLostEventFlag& rhs) const {
+    [[nodiscard]] bool isEqual(const DeliverLostEventFlag& rhs) const {
         return value_ == rhs.value_;
     }
 
-    bool isEqual(const DeliverLostEventFlagTag& rhs) const {
+    [[nodiscard]] bool isEqual(const DeliverLostEventFlagTag& rhs) const {
         return value_ == rhs;
     }
 
-    DeliverLostEventFlagTag value() const {
+    [[nodiscard]] DeliverLostEventFlagTag value() const {
         return value_;
     }
 

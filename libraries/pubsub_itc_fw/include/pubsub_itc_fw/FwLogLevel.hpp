@@ -28,7 +28,7 @@ class FwLogLevel {
      * @brief Returns a fixed-width string representation of this log level.
      * @return Eight-character string, space-padded.
      */
-    std::string as_string() const {
+    [[nodiscard]] std::string as_string() const {
         return log_level_ == Trace      ? "TRACE   "
                : log_level_ == Debug    ? "DEBUG   "
                : log_level_ == Info     ? "INFO    "
@@ -86,11 +86,11 @@ class FwLogLevel {
         return false;
     }
 
-    bool is_equal(const FwLogLevel& rhs) const {
+    [[nodiscard]] bool is_equal(const FwLogLevel& rhs) const {
         return log_level_ == rhs.log_level_;
     }
 
-    bool is_less_than(const FwLogLevel& rhs) const {
+    [[nodiscard]] bool is_less_than(const FwLogLevel& rhs) const {
         return log_level_ < rhs.log_level_;
     }
 

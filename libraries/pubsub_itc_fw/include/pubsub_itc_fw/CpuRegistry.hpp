@@ -68,14 +68,14 @@ class CpuRegistry {
      * @return The claimed CPU IDs. May be fewer than `count` if not enough
      *         cores are available; never exceeds SharedCoreRegistryLayout::MAX_SYSTEM_CORES.
      */
-    AvailableCpuVector claim_cpus(size_t count, bool reserve_cpu0);
+    AvailableCpuVector claim_cpus(size_t count, bool reserve_cpu0) const;
 
     /**
      * @brief Remove all registry entries owned by this process.
      *
      * Idempotent: safe to call multiple times or after a failed claim.
      */
-    void release_cpus();
+    void release_cpus() const;
 
   private:
     void close_mapping();

@@ -226,7 +226,7 @@ class TcpSocket : public ByteStreamInterface {
      *
      * @returns An `int` representing the socket file descriptor, or -1 if the socket is closed or invalid.
      */
-    int get_file_descriptor() const;
+    [[nodiscard]] int get_file_descriptor() const;
 
     /**
      * @brief Shuts down one or both halves of the connection.
@@ -256,7 +256,7 @@ class TcpSocket : public ByteStreamInterface {
      */
     [[nodiscard]] std::tuple<bool, std::string> finish_connect() const;
 
-    bool is_connected() const;
+    [[nodiscard]] bool is_connected() const;
 
   private:
     /**

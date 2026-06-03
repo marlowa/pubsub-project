@@ -17,9 +17,9 @@ namespace witness {
 
 namespace {
 
-static constexpr int16_t pdu_arbiter_heartbeat = 300;
-static constexpr int16_t pdu_arbiter_vote_request = 301;
-static constexpr int16_t pdu_arbiter_vote_response = 302;
+constexpr int16_t pdu_arbiter_heartbeat = 300;
+constexpr int16_t pdu_arbiter_vote_request = 301;
+constexpr int16_t pdu_arbiter_vote_response = 302;
 
 pubsub_itc_fw::QueueConfiguration make_queue_config() {
     pubsub_itc_fw::QueueConfiguration queue_configuration{};
@@ -41,10 +41,10 @@ pubsub_itc_fw::AllocatorConfiguration make_allocator_config(const WitnessConfigu
 
 } // namespace
 
-WitnessThread::WitnessThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger,
-                             pubsub_itc_fw::Reactor& reactor, const WitnessConfiguration& config)
-    : ApplicationThread(token, logger, reactor, "WitnessThread", pubsub_itc_fw::ThreadID{1}, make_queue_config(),
-                        make_allocator_config(config, logger), pubsub_itc_fw::ApplicationThreadConfiguration{})
+WitnessThread::WitnessThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger, pubsub_itc_fw::Reactor& reactor,
+                             const WitnessConfiguration& config)
+    : ApplicationThread(token, logger, reactor, "WitnessThread", pubsub_itc_fw::ThreadID{1}, make_queue_config(), make_allocator_config(config, logger),
+                        pubsub_itc_fw::ApplicationThreadConfiguration{})
     , config_(config) {}
 
 void WitnessThread::on_initial_event() {}
@@ -69,7 +69,7 @@ void WitnessThread::on_connection_lost(pubsub_itc_fw::ConnectionID id, const std
 
 void WitnessThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message) {
     const pubsub_itc_fw::ConnectionID& conn_id = message.connection_id();
-    const int16_t pdu_id = static_cast<int16_t>(message.pdu_id());
+    const auto pdu_id = static_cast<int16_t>(message.pdu_id());
 
     if (pdu_id == pdu_arbiter_heartbeat) {
         handle_arbiter_heartbeat(conn_id, message);
@@ -113,8 +113,7 @@ void WitnessThread::handle_arbiter_heartbeat(const pubsub_itc_fw::ConnectionID& 
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "WitnessThread: arbiter instance_id={} registered on connection {} (epoch={})",
                    hb.instance_id, conn_id.get_value(), hb.epoch);
     } else {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "WitnessThread: ArbiterHeartbeat from instance_id={} (epoch={})", hb.instance_id,
-                   hb.epoch);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "WitnessThread: ArbiterHeartbeat from instance_id={} (epoch={})", hb.instance_id, hb.epoch);
     }
 }
 
@@ -131,17 +130,15 @@ void WitnessThread::handle_arbiter_vote_request(const pubsub_itc_fw::ConnectionI
         return;
     }
 
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "WitnessThread: ArbiterVoteRequest from instance_id={} (peer_instance_id={} epoch={})", req.self_instance_id, req.peer_instance_id,
-               req.epoch);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "WitnessThread: ArbiterVoteRequest from instance_id={} (peer_instance_id={} epoch={})",
+               req.self_instance_id, req.peer_instance_id, req.epoch);
 
     max_observed_epoch_ = std::max(max_observed_epoch_, req.epoch);
     const int32_t new_epoch = max_observed_epoch_ + 1;
 
     // Grant to requester if peer arbiter is not connected; else to the lower instance_id.
     const bool peer_connected = instance_to_conn_id_.count(req.peer_instance_id) > 0;
-    const int64_t granted_to =
-        peer_connected ? std::min(req.self_instance_id, req.peer_instance_id) : req.self_instance_id;
+    const int64_t granted_to = peer_connected ? std::min(req.self_instance_id, req.peer_instance_id) : req.self_instance_id;
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "WitnessThread: vote granted to instance_id={} epoch={} (peer_connected={})", granted_to,
                new_epoch, peer_connected);
@@ -154,8 +151,8 @@ void WitnessThread::send_arbiter_vote_response(const pubsub_itc_fw::ConnectionID
     resp.granted_to_instance_id = granted_to_instance_id;
     resp.epoch = epoch;
     send_pdu(conn_id, pdu_arbiter_vote_response, 0, resp);
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "WitnessThread: ArbiterVoteResponse sent to connection {} (granted_to={} epoch={})", conn_id.get_value(), granted_to_instance_id, epoch);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "WitnessThread: ArbiterVoteResponse sent to connection {} (granted_to={} epoch={})",
+               conn_id.get_value(), granted_to_instance_id, epoch);
 }
 
 } // namespace witness

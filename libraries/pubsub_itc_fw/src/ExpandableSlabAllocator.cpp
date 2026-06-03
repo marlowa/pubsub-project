@@ -290,7 +290,7 @@ SlabAllocator* ExpandableSlabAllocator::append_new_slab() {
         pages_[page_idx].store(new_page, std::memory_order_release);
     }
 
-    SlabAllocator* new_slab = new SlabAllocator(slab_size_, new_id, empty_slab_queue_);
+    auto new_slab = new SlabAllocator(slab_size_, new_id, empty_slab_queue_);
     // Release-store so workers that load with acquire see the fully constructed slab.
     pages_[page_idx].load(std::memory_order_relaxed)->slots[slot_idx].store(new_slab, std::memory_order_release);
 
