@@ -1342,15 +1342,16 @@ TcpSocket EAGAIN/EOF fix, use-after-free fix, InboundConnection infrastructure, 
 
 ## What Is Not Yet Done (in dependency order)
 
-1. **Re-verify fix8 wrong-port issue is gone** — session 13 logs showed fix8 reaching the gateway's ER inbound listener (port 7010) rather than the FIX listener (port 9879). Sessions 14 and 15 did not reproduce this; fix8 connected cleanly to 9879 throughout. Worth one explicit check (`f8test -d -c myfix_gateway_client.xml -N GW1`) before retiring the item.
+1. ~~**Re-verify fix8 wrong-port issue is gone**~~ — DONE (session 2026-06-03). `f8test` connected to port 9879, SCRAM auth succeeded, FIX session established. Closed.
 2. **Matching engine — `OrderCancelRequest` handling** — the ME currently logs and drops cancels at the `else` branch. Mirror the NewOrderSingle path: decode, fabricate a `Canceled` ER, send. Small follow-up; will exercise the same plumbing again with a different message type.
-3. **Arbiter stub → real** — `ArbitrationReport` → `ArbitrationDecision`
+3. **Arbiter — end-to-end failover verification** — the arbiter code is substantially complete: PSA election between the two arbiter instances, witness vote protocol, `ArbitrationReport` → `decide_and_broadcast` → `ArbitrationDecision`, state replication. The arbiter is consulted during failover (when `peer_heartbeat_timeout` fires on the secondary), not during cold start (cold start uses the instance_id tiebreaker directly). What is NOT yet verified: kill the primary sequencer, confirm the secondary sends `ArbitrationReport`, confirm the arbiter sends `ArbitrationDecision`, confirm the secondary promotes to leader, confirm WAL continuity. Extend `ha_test.py` with a scenario that covers this path. Summary entry was wrongly describing this as "stub" — the code is real; the gap is test coverage of the failover path.
 4. **Leader-follower — Slice 7 (network WAL replication)** — COMPLETE (session 18). Leader streams `WalRecord` PDUs to follower over peer TCP; follower acks with `WalAck`; leader gates ER emission on ack. Both sequencer TOMLs have `ha_enabled=true`. Next: extend `ha_test.py` with a new scenario that verifies WAL sequence number continuity across failover.
-5. **`SequencedMessage` wrapper** — currently the sequencer forwards raw PDUs to ME without a sequence-number envelope; add this once stable.
+5. ~~**`SequencedMessage` wrapper**~~ — the sequencer already forwards to the ME with `send_pdu(me_conn, pdu_id, seq, nos)` where `seq` is the WAL sequence number encoded into `PduHeader.seq_no`; the ME reads `message.seq_no()` to retrieve it. The envelope is already explicit. **Open question for WAL replay:** when a downstream consumer (Kafka publisher, future broadcast) connects with a position cursor, the seq_no in each replayed `WalRecord` already serves as the cursor position identifier. Verify at implementation time that no additional wrapper is needed for the replay/Aeron-style consumer path.
 6. ~~**Trace logs in `PduParser` and elsewhere**~~ — DONE. All five `PduParser.cpp` log lines (header fields, raw 16 header bytes, slab alloc, alloc result, payload hex dump) are at `Debug`. `InboundConnectionManager::on_accept` TRACE is `Debug`. `SequencerThread::on_framework_pdu_message` TRACE is `Debug`. Per-PDU `Info` hot-path logs in `SequencerThread` (WAL append, ER forwarding) and `MatchingEngineThread` (sequenced PDU received) also demoted to `Debug` in the same pass.
 7. **Pub/sub WAL** — long-term replacement for direct TCP; eliminates the rendezvous problem and the retry workaround.
 8. ~~**Credential export script**~~ — done (session 23). `db/export_credentials.py` exports DB credentials to auth service `credentials.toml`. Live CRUD updates go via PDU 510/512.
 9. **`RestoreCredentialRequest` PDU (514/515)** — long-term fix for the re-enable/unlock credential gap. The DB already holds all SCRAM-derived values (`stored_key`, `server_key`, `salt`, `iterations`); a new PDU pair carrying those four fields would let the admin service restore credentials on firm/comp_id re-enable or comp_id unlock without requiring the plaintext password. Work needed: PDU 514 request + PDU 515 result in the auth service (parallel to 510/511 but skip the PBKDF2 step); new `AuthServiceClient.restoreCredential(compId, scramCredential)` method; call it from `FirmHandler.update()` and `CompIdHandler.update()` on the re-enable/unlock branch. The current warning UI and documented password-reset workaround remain valid until this is implemented.
+10. **FIX message capture** — all inbound and outbound FIX messages must be capturable to a file for audit and replay purposes. Constraint: no direct file I/O on the hot path. Design: the `OrderGatewayThread` is the natural capture point (it processes every FIX message); it enqueues raw FIX bytes into a lock-free ring buffer; a dedicated background writer thread drains to a rolling binary capture file. This is the same pattern as Quill's async logger. The capture file format should be simple: length-prefixed records with a nanosecond timestamp, direction flag (inbound/outbound), and raw FIX bytes. Capture is optional (controlled by config). Not yet implemented.
 
 ## Immediate Next Task
 
@@ -1360,11 +1361,11 @@ A WAL+HA design has been worked through in detail (see "WAL and HA Design" secti
 
 **Smaller items deferred but still on the list:**
 - OrderCancelRequest round trip (item 2): mirrors NewOrderSingle path on ME side. Small. Fits in a session corner.
-- fix8 wrong-port re-verification (item 1): one `f8test -d` run.
-- `k`-prefix constants in `ExpandableSlabAllocatorTest`'s fixture (`kSmallSlab`, `kLargeSlab`) — violates the project rule that constants are snake_case. Mechanical search-and-replace.
-- Quill thread-name population — call `quill::Frontend::set_thread_name()` at thread spawn sites so the `thread_name` log column shows something.
-- Quill backend CPU tuning — pin the backend thread and tune `BackendOptions::sleep_duration`.
-- Sequencer ER inbound 120s idle-timeout killing healthy quiet connections.
+- ~~fix8 wrong-port re-verification~~ — DONE (session 2026-06-03).
+- ~~`k`-prefix constants in `ExpandableSlabAllocatorTest`'s fixture~~ — checked clean; no k-prefix violations anywhere in the codebase.
+- ~~Quill thread-name population~~ — DONE (session 2026-06-03). `ApplicationThread::run_internal()` calls `pthread_setname_np(pthread_self(), os_name.c_str())` before first log; Quill captures the OS thread name on first log call. Names longer than 15 chars are truncated by the OS limit.
+- ~~Quill backend CPU pinning~~ — DONE. Confirmed in startup logs: `CPU pinning: Quill backend thread pinned to CPU N`.
+- ~~Sequencer ER inbound idle-timeout killing healthy quiet connections~~ — DONE (session 2026-06-03). Gateway ER inbound listener registered with `idle_timeout_exempt=true`; the 600s timeout no longer applies to this framework-internal connection.
 - Hex-dump debug logging on hot path needs a compile-time flag gate before production.
 
 **Design note — the rendezvous problem:**

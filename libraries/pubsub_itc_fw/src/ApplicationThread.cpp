@@ -10,6 +10,8 @@
 #include <thread>
 #include <utility>
 
+#include <pthread.h>
+
 #include <fmt/format.h>
 
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
@@ -266,6 +268,13 @@ void ApplicationThread::run() {
 }
 
 void ApplicationThread::run_internal() {
+    // Set the OS thread name so Quill's %(thread_name) column shows the thread's
+    // logical name rather than the process name. pthread_setname_np is capped at
+    // 15 characters on Linux; names are truncated silently. Quill caches the name
+    // on first log call from this thread, so this must run before set_lifecycle_state.
+    const std::string os_name = thread_name_.substr(0, 15);
+    pthread_setname_np(pthread_self(), os_name.c_str());
+
     set_lifecycle_state(ThreadLifecycleState::Started);
 
     PUBSUB_LOG(logger_, FwLogLevel::Info, "Starting thread {}", thread_name_);
