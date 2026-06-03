@@ -6,15 +6,11 @@
 #include <memory>
 
 /*
-Note: This central unit test runner was going to ensure that each unit test program adjusts its argument list
-so that by default the program runs all the tests twice, doing a random shuffle between.
-The idea is to shake out idempotency issues in the tests and possibly in the code being tested as well.
-However, this doesn't work with quill.
-
-TODO I am not sure what to do about this for the moment because one of our unit tests
-performs tests on the quill wrapper.
-These cannot be repeated within a single invocation of the executable.
-
+ * Note: The original plan was to run all tests twice with a random shuffle in between,
+ * to expose idempotency issues. This is not done because tests that exercise the Quill
+ * logger cannot be safely repeated within a single process invocation (Quill initialises
+ * global state on first use). The double-run idea is therefore shelved; each test
+ * executable runs its suite once.
  */
 
 namespace pubsub_itc_fw::tests_common {

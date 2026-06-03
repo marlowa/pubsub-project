@@ -42,7 +42,8 @@ OrderGateway::OrderGateway(const OrderGatewayConfiguration& config, std::unique_
                                         pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::RawBytes}, config_.raw_buffer_capacity);
 
     // Inbound PDU listener for ExecutionReport PDUs from the matching engine.
-    // TODO: replace with pub/sub fanout when implemented.
+    // Direct point-to-point connection for now; replace with pub/sub fanout once
+    // the framework's fanout routing is implemented.
     reactor_->register_inbound_listener(pubsub_itc_fw::NetworkEndpointConfiguration{config_.er_listen_host, config_.er_listen_port}, pubsub_itc_fw::ThreadID{1},
                                         pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::FrameworkPdu}, 0);
 

@@ -133,17 +133,6 @@ bool TimerHandler::handle_event(uint32_t events) {
     }
 
     auto msg = EventMessage::create_timer_event(timer_.get_timer_id());
-
-    // TODO Optional future refinement:
-    // if (!reactor_.route_message(owner, std::move(msg))) {
-    //     PUBSUB_LOG(reactor_.get_logger(), FwLogLevel::Warning,
-    //                "TimerHandler: route_message dropped event {} "
-    //                "for timer '{}'; stopping expiration loop",
-    //                i,
-    //                timer_.get_name());
-    //     break;
-    // }
-
     reactor_.route_message(owner, std::move(msg));
 
     return true;

@@ -26,9 +26,9 @@ namespace matching_engine {
  * sequencer over the outbound `sequencer_er` connection. The sequencer is
  * responsible for routing the ER on to the originating gateway.
  *
- * The order book and matching logic are TODO. The stub fills every order
- * at the requested limit price (or a sentinel zero for market orders) so
- * the end-to-end comms round-trip can be verified.
+ * The order book and matching logic are not yet implemented. The stub fills
+ * every order at the requested limit price (or a sentinel zero for market
+ * orders) so the end-to-end comms round-trip can be verified.
  *
  * Threading: ThreadID 1.
  */

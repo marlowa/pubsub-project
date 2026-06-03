@@ -29,7 +29,7 @@
 #include <pubsub_itc_fw/utils/FileSystemUtils.hpp>
 
 /*
- * TODO: CPU pinning of the Quill backend thread.
+ * CPU pinning of the Quill backend thread — design note.
  *
  * The Quill backend thread should be pinned to a dedicated CPU core to prevent
  * the OS scheduler from migrating it onto cores reserved for latency-sensitive

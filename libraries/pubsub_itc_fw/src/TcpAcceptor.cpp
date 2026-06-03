@@ -98,7 +98,8 @@ std::tuple<std::unique_ptr<TcpAcceptor>, std::string> TcpAcceptor::create(const 
 
     // 4. Construct acceptor
     auto impl = std::make_unique<TcpAcceptorImpl>(local_address, std::move(socket_ptr));
-    // TODO clang-tidy says the below leaks, maybe used make_unique?
+    // TcpAcceptor's constructor is private (factory-only); make_unique cannot access it.
+    // The unique_ptr wrapping here is safe — no intermediate raw pointer escapes.
     return {std::unique_ptr<TcpAcceptor>(new TcpAcceptor(std::move(impl))), ""};
 }
 

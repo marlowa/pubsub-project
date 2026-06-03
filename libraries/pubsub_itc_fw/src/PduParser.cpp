@@ -81,14 +81,17 @@ std::tuple<bool, std::string> PduParser::receive() {
                        "canary=0x{:08x} byte_count={} pdu_id={} version={}",
                        connection_id_.get_value(), ntohl(hdr->canary), current_payload_size_, current_pdu_id_, static_cast<int>(hdr->version));
 
-            // TODO should now dump 24 bytes
             PUBSUB_LOG(logger_, FwLogLevel::Debug,
                        "TRACE PduParser::receive: header bytes: "
                        "{:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} "
+                       "{:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} "
                        "{:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
-                       header_buffer_[0], header_buffer_[1], header_buffer_[2], header_buffer_[3], header_buffer_[4], header_buffer_[5], header_buffer_[6],
-                       header_buffer_[7], header_buffer_[8], header_buffer_[9], header_buffer_[10], header_buffer_[11], header_buffer_[12], header_buffer_[13],
-                       header_buffer_[14], header_buffer_[15]);
+                       header_buffer_[0],  header_buffer_[1],  header_buffer_[2],  header_buffer_[3],
+                       header_buffer_[4],  header_buffer_[5],  header_buffer_[6],  header_buffer_[7],
+                       header_buffer_[8],  header_buffer_[9],  header_buffer_[10], header_buffer_[11],
+                       header_buffer_[12], header_buffer_[13], header_buffer_[14], header_buffer_[15],
+                       header_buffer_[16], header_buffer_[17], header_buffer_[18], header_buffer_[19],
+                       header_buffer_[20], header_buffer_[21], header_buffer_[22], header_buffer_[23]);
 
             if (current_payload_size_ == 0) {
                 return {false, "PduParser: zero-length payload is not permitted"};

@@ -8,6 +8,7 @@
 
 #include <charconv>
 #include <cstring>
+#include <ctime>
 #include <string>
 #include <string_view>
 
@@ -48,6 +49,57 @@ pubsub_itc_fw::AllocatorConfiguration make_allocator_config(const OrderGatewayCo
         PUBSUB_LOG(logger, pubsub_itc_fw::FwLogLevel::Warning, "OrderGatewayPool exhausted: chaining new pool slab ({} objects)", objects_per_pool);
     };
     return allocator_configuration;
+}
+
+// Parses a FIX SendingTime (tag 52) string to nanoseconds since the Unix epoch.
+// Accepted formats: "YYYYMMDD-HH:MM:SS" and "YYYYMMDD-HH:MM:SS.sss".
+// Returns 0 if the string is empty or malformed.
+int64_t parse_fix_utc_timestamp(std::string_view sv) {
+    if (sv.size() < 17) {
+        return 0;
+    }
+
+    auto parse_digits = [&](size_t offset, size_t count) -> int {
+        int value = 0;
+        auto result = std::from_chars(sv.data() + offset, sv.data() + offset + count, value);
+        return (result.ec == std::errc{}) ? value : -1;
+    };
+
+    const int year   = parse_digits(0, 4);
+    const int month  = parse_digits(4, 2);
+    const int day    = parse_digits(6, 2);
+    const int hour   = parse_digits(9, 2);
+    const int minute = parse_digits(12, 2);
+    const int second = parse_digits(15, 2);
+
+    if (year < 0 || month < 1 || month > 12 || day < 1 || day > 31
+            || hour < 0 || hour > 23 || minute < 0 || minute > 59
+            || second < 0 || second > 60) {
+        return 0;
+    }
+
+    struct tm utc_tm{};
+    utc_tm.tm_year = year - 1900;
+    utc_tm.tm_mon  = month - 1;
+    utc_tm.tm_mday = day;
+    utc_tm.tm_hour = hour;
+    utc_tm.tm_min  = minute;
+    utc_tm.tm_sec  = second;
+
+    const time_t epoch_seconds = timegm(&utc_tm);
+    if (epoch_seconds == static_cast<time_t>(-1)) {
+        return 0;
+    }
+
+    int64_t millis = 0;
+    if (sv.size() >= 21 && sv[17] == '.') {
+        millis = parse_digits(18, 3);
+        if (millis < 0) {
+            millis = 0;
+        }
+    }
+
+    return static_cast<int64_t>(epoch_seconds) * 1'000'000'000LL + millis * 1'000'000LL;
 }
 
 } // namespace
@@ -156,7 +208,11 @@ void OrderGatewayThread::on_raw_socket_message(const pubsub_itc_fw::EventMessage
     PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, pubsub_itc_fw::StringUtils::hex_dump(data, hex_dump_len));
 
     // Create a session on first data from this connection if not already present.
-    // TODO need to document why we use piecewise_construct here.
+    // piecewise_construct is required because FixSession has no copy or move constructor
+    // (it captures a lambda referencing its own members). std::map::emplace with a direct
+    // value argument would try to copy/move-construct; piecewise_construct with
+    // forward_as_tuple constructs the key and value in-place directly inside the map node,
+    // bypassing any copy or move.
 
     auto it = sessions_.find(conn_id);
     if (it == sessions_.end()) {
@@ -684,7 +740,7 @@ void OrderGatewayThread::handle_new_order_single(FixSession& session, const Pars
     nos.symbol = symbol;
     nos.side = static_cast<pubsub_itc_fw_app::Side>(side_str[0]);
     nos.ord_type = static_cast<pubsub_itc_fw_app::OrdType>(ord_type_str[0]);
-    nos.transact_time = 0; // TODO: parse SendingTime (tag 52) to epoch nanos
+    nos.transact_time = parse_fix_utc_timestamp(msg.get(Tag::SendingTime));
     nos.order_qty = order_qty;
 
     if (!price_str.empty()) {
@@ -752,7 +808,7 @@ void OrderGatewayThread::handle_order_cancel_request(FixSession& session, const 
     ocr.cl_ord_id = cl_ord_id;
     ocr.symbol = symbol;
     ocr.side = static_cast<pubsub_itc_fw_app::Side>(side_str[0]);
-    ocr.transact_time = 0; // TODO: parse SendingTime
+    ocr.transact_time = parse_fix_utc_timestamp(msg.get(Tag::SendingTime));
     ocr.order_qty = order_qty;
 
     // Retain SenderCompID for audit/logging.

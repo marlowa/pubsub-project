@@ -32,7 +32,10 @@ add_compile_options(
     -Wnon-virtual-dtor
 )
 
-# TODO Note: cannot use -Wshadow yet because of code emitted by DSL code generator.
+# -Wshadow is not enabled: the DSL code generator emits shared helper functions
+# (write_uint64_le / read_uint64_le) using a loop variable named "i". These are
+# top-level inline functions and do not shadow anything in current code, but
+# enabling -Wshadow here should be re-evaluated after any DSL generator change.
 
 # ------------------------------------------------------------
 # Valgrind / TSAN / ASAN / Coverage

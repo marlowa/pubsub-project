@@ -89,7 +89,12 @@ class StringUtils {
         return fmt::format("{}", timepoint);
     }
 
-    // TODO doxygen comments
+    /**
+     * @brief Returns a hex-dump string of the given memory region.
+     * @param[in] data Pointer to the start of the region to dump.
+     * @param[in] len  Number of bytes to dump.
+     * @returns std::string Space-separated two-digit hex values, e.g. "de ad be ef".
+     */
     static std::string hex_dump(const void* data, size_t len);
 };
 

@@ -16,7 +16,6 @@ class UnitTestLogger {
         enum class Dest { File, Syslog, Console } dest;
     };
 
-    // TODO do we force logger instantiations to specify severity? Dunno
     UnitTestLogger() = default;
 
     std::vector<Entry> entries;
