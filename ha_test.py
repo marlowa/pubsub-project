@@ -103,6 +103,18 @@ Scenarios
        Expected: ME restart; recovery orders OK (WARNING: HA severely
        degraded — full restart of all HA components required to restore).
 
+ 15  Arbiter-mediated election: explicit PDU exchange trace
+       Kills sequencer_primary (no failover flag — VerifySteps do the
+       checking).  Explicitly verifies each step of the arbitration
+       PDU exchange in the logs:
+         a. sequencer_secondary sends ArbitrationReport to the arbiter pool
+         b. arbiter_primary sends ArbitrationDecision back
+         c. sequencer_secondary receives the ArbitrationDecision
+         d. sequencer_secondary transitions to leader
+       Confirms that sequencer promotion goes through the full arbitration
+       protocol rather than the self-promotion fallback.
+       Expected: all four PDU-exchange markers seen; recovery orders flow.
+
 Options:
     --scenario N|all      Scenario number, or 'all' to run every scenario in
                           order (required).  All scenarios must pass for the
@@ -254,6 +266,27 @@ class InterimOrdersStep(NamedTuple):
     count_batches * 1000 orders are sent and confirmed before proceeding.
     """
     count_batches: int
+
+
+class VerifyStep(NamedTuple):
+    """
+    Poll a log file for a line containing ALL of the given markers.
+
+    Used to verify intermediate PDU-exchange steps (e.g. ArbitrationReport
+    sent, ArbitrationDecision received) without relying solely on the final
+    role-transition marker.
+
+    log_name:    base name of the log file in log_dir
+    markers:     tuple of strings that must all appear on the same line
+    timeout:     maximum seconds to wait
+    description: human-readable label shown in test output
+    from_byte:   byte offset to start reading from (0 = beginning of file)
+    """
+    log_name: str
+    markers: tuple
+    timeout: float
+    description: str
+    from_byte: int = 0
 
 
 class Scenario(NamedTuple):
@@ -755,6 +788,65 @@ _SCENARIOS: list[Scenario] = [
             ),
         ],
     ),
+
+    # 15 — Arbiter-mediated election: explicit ArbitrationReport/Decision trace
+    #
+    # Scenario 1 verifies that sequencer_secondary becomes leader after primary
+    # dies, but only checks the final role-transition log line.  This scenario
+    # additionally verifies each step of the arbitration PDU exchange:
+    #   a. sequencer_secondary arms peer_heartbeat_timeout (~15 s after kill).
+    #   b. On timeout it sends ArbitrationReport to both arbiters.
+    #   c. The active arbiter (arbiter_primary) processes the report and sends
+    #      ArbitrationDecision back.
+    #   d. sequencer_secondary receives the decision and transitions to leader.
+    # Each step is watched in the appropriate log with a generous timeout.
+    # The peer_heartbeat_timeout fires within 15 s; the full exchange adds only
+    # a few milliseconds on top.  A 25 s timeout per VerifyStep gives headroom.
+    Scenario(
+        number=15,
+        short_name="arbiter_mediated_election",
+        description="Arbiter-mediated election: explicit ArbitrationReport/Decision PDU trace",
+        expected_outcome=(
+            "sequencer_secondary sends ArbitrationReport; "
+            "arbiter_primary sends ArbitrationDecision; "
+            "sequencer_secondary receives decision and transitions to leader; "
+            "recovery orders flow"
+        ),
+        steps=[],
+        restart_steps=[],
+        extra_steps=[
+            KillStep(
+                proc_name="sequencer_primary",
+                secondary_log_name=None,
+                role_prefix=None,
+                settle_secs=0.0,
+            ),
+            VerifyStep(
+                log_name="sequencer_secondary.log",
+                markers=("ArbitrationReport sent to arbiter pool",),
+                timeout=25.0,
+                description="sequencer_secondary sent ArbitrationReport to arbiter pool",
+            ),
+            VerifyStep(
+                log_name="arbiter_primary.log",
+                markers=("ArbitrationDecision sent to connection",),
+                timeout=5.0,
+                description="arbiter_primary sent ArbitrationDecision",
+            ),
+            VerifyStep(
+                log_name="sequencer_secondary.log",
+                markers=("ArbitrationDecision received",),
+                timeout=5.0,
+                description="sequencer_secondary received ArbitrationDecision",
+            ),
+            VerifyStep(
+                log_name="sequencer_secondary.log",
+                markers=(_SEQ_ROLE, _TO_LEADER),
+                timeout=5.0,
+                description="sequencer_secondary transitioned to leader",
+            ),
+        ],
+    ),
 ]
 
 _SCENARIO_MAP: dict[int, Scenario] = {s.number: s for s in _SCENARIOS}
@@ -1168,6 +1260,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
             return f"RESTART:{s.proc_name}"
         if isinstance(s, InterimOrdersStep):
             return f"({s.count_batches * 1000} interim orders)"
+        if isinstance(s, VerifyStep):
+            return f"VERIFY:{s.description}"
         return str(s)
 
     effective_steps = scenario.extra_steps or (list(scenario.steps) + list(scenario.restart_steps))
@@ -1367,6 +1461,22 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     )
                 log(f"  {count} interim orders confirmed ({elapsed:.1f}s)")
                 phase4_results.append(("interim", count))
+            elif isinstance(step, VerifyStep):
+                markers_repr = " + ".join(repr(m) for m in step.markers)
+                log(f"  VERIFY: {step.description}")
+                log(f"    watching {step.log_name} for {markers_repr} (timeout {step.timeout:.0f}s) ...")
+                found, elapsed, _ = poll_log_for(
+                    log_dir / step.log_name, *step.markers,
+                    timeout=step.timeout,
+                    from_byte=step.from_byte,
+                )
+                if not found:
+                    die(
+                        f"Verification failed: {step.description} — "
+                        f"marker not seen in {step.log_name} within {step.timeout:.0f}s"
+                    )
+                log(f"    confirmed ({elapsed:.1f}s)")
+                phase4_results.append(("verify", step.description, elapsed))
 
         # If ME was restarted, the _ME_READY_MARKERS fire as soon as the first
         # sequencer (primary or secondary) re-establishes its order connection.
@@ -1495,6 +1605,9 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 elif entry[0] == "interim":
                     _, count = entry
                     log(f"  interim : {count} orders confirmed")
+                elif entry[0] == "verify":
+                    _, description, elapsed = entry
+                    log(f"  verified: {description} ({elapsed:.1f}s)")
         else:
             for failover_occurred, label, elapsed in kill_results:
                 if failover_occurred:
