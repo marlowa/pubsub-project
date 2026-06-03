@@ -71,7 +71,7 @@ std::string FixSerialiser::compute_checksum(const std::string& input) {
         sum += c;
     }
     char result[5];
-    std::snprintf(result, sizeof(result), "%03u", sum % 256u);
+    std::snprintf(result, sizeof(result), "%03u", sum % 256U);
     return {result};
 }
 

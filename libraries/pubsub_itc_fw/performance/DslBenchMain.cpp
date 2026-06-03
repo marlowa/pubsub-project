@@ -12,8 +12,9 @@ using namespace pubsub_itc_fw;
 // Timing helper
 // ------------------------------------------------------------
 template <typename F> long long measure_avg_ns(F&& fn, int iterations, long long& min_ns, long long& max_ns) {
-    for (int i = 0; i < 100; ++i)
+    for (int i = 0; i < 100; ++i) {
         fn();
+    }
 
     min_ns = std::numeric_limits<long long>::max();
     max_ns = 0;
@@ -24,7 +25,7 @@ template <typename F> long long measure_avg_ns(F&& fn, int iterations, long long
         fn();
         auto end = std::chrono::high_resolution_clock::now();
 
-        long long ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
+        const long long ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
         total += ns;
         min_ns = std::min(min_ns, ns);
         max_ns = std::max(max_ns, ns);

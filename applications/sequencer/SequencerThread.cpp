@@ -258,7 +258,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         // which ensures WALs are identical byte-for-byte.  Unknown role (during
         // election startup) appends locally because it may become the leader.
         if (role_ != pubsub_itc_fw_app::Role::follower) {
-            wal_.append(seq, static_cast<int16_t>(message.pdu_id()), message.payload(), message.payload_size(), wall_time_ns);
+            wal_.append(seq, message.pdu_id(), message.payload(), message.payload_size(), wall_time_ns);
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
                        "SequencerThread: order PDU on connection {} pdu_id={} seq={} -- WAL append ok (wal_size={}) role={}",
                        message.connection_id().get_value(), message.pdu_id(), seq, wal_.record_count(), pubsub_itc_fw_app::to_string(role_));
@@ -283,7 +283,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         // Forward the raw PDU payload to the ME by re-encoding it.
         // We use the pdu_id from the incoming message so the ME sees the
         // correct topic tag (NewOrderSingle=1000, OrderCancelRequest=1001).
-        const auto pdu_id = static_cast<int16_t>(message.pdu_id());
+        const auto pdu_id = message.pdu_id();
         bool forwarded_to_me = false;
 
         if (pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::NewOrderSingle)) {
@@ -431,7 +431,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             return;
         }
 
-        const auto pdu_id = static_cast<int16_t>(message.pdu_id());
+        const auto pdu_id = message.pdu_id();
         auto& arena_buf = decode_arena_buffer();
         pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
         arena.reset();
@@ -656,14 +656,16 @@ static constexpr int16_t pdu_arbitration_report = 200;
 static constexpr int16_t pdu_arbitration_decision = 201;
 
 pubsub_itc_fw::ConnectionID SequencerThread::peer_active_conn() const {
-    if (peer_conn_id_.is_valid())
+    if (peer_conn_id_.is_valid()) {
         return peer_conn_id_;
+    }
     return peer_inbound_conn_id_;
 }
 
 void SequencerThread::adopt_role(pubsub_itc_fw_app::Role new_role) {
-    if (new_role == role_)
+    if (new_role == role_) {
         return;
+    }
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: role transition {} -> {} (epoch={})", pubsub_itc_fw_app::to_string(role_),
                pubsub_itc_fw_app::to_string(new_role), epoch_);

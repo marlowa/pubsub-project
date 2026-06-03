@@ -157,8 +157,9 @@ static bool send_all(int sock_fd, const void* buf, size_t size) {
     size_t remaining = size;
     while (remaining > 0) {
         const ssize_t sent = ::send(sock_fd, ptr, remaining, 0);
-        if (sent <= 0)
+        if (sent <= 0) {
             return false;
+        }
         ptr += sent;
         remaining -= static_cast<size_t>(sent);
     }
@@ -170,8 +171,9 @@ static bool recv_all(int sock_fd, void* buf, size_t size) {
     size_t remaining = size;
     while (remaining > 0) {
         const ssize_t received = ::recv(sock_fd, ptr, remaining, 0);
-        if (received <= 0)
+        if (received <= 0) {
             return false;
+        }
         ptr += received;
         remaining -= static_cast<size_t>(received);
     }
@@ -180,19 +182,22 @@ static bool recv_all(int sock_fd, void* buf, size_t size) {
 
 static std::string recv_framed(int sock_fd) {
     uint32_t length_be = 0;
-    if (!recv_all(sock_fd, &length_be, sizeof(length_be)))
+    if (!recv_all(sock_fd, &length_be, sizeof(length_be))) {
         return {};
+    }
     const uint32_t payload_length = ntohl(length_be);
     std::string payload(payload_length, '\0');
-    if (!recv_all(sock_fd, payload.data(), payload_length))
+    if (!recv_all(sock_fd, payload.data(), payload_length)) {
         return {};
+    }
     return payload;
 }
 
 static int connect_raw_socket(uint16_t port) {
     const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (fd == -1)
+    if (fd == -1) {
         return -1;
+    }
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port);
@@ -217,14 +222,16 @@ static int connect_raw_socket(uint16_t port) {
 
 static std::string try_decode_framed(const uint8_t* data, int available, int64_t& bytes_consumed) {
     bytes_consumed = 0;
-    if (available < static_cast<int>(length_prefix_size))
+    if (available < static_cast<int>(length_prefix_size)) {
         return {};
+    }
     uint32_t length_be = 0;
     std::memcpy(&length_be, data, length_prefix_size);
     const uint32_t payload_length = ntohl(length_be);
     const int64_t total = static_cast<int64_t>(length_prefix_size + payload_length);
-    if (available < static_cast<int>(total))
+    if (available < static_cast<int>(total)) {
         return {};
+    }
     std::string payload(reinterpret_cast<const char*>(data + length_prefix_size), payload_length);
     bytes_consumed = total;
     return payload;
@@ -238,8 +245,9 @@ static int decode_all_framed(const uint8_t* data, int available, std::vector<std
     while (remaining > 0) {
         int64_t consumed = 0;
         std::string payload = try_decode_framed(ptr, remaining, consumed);
-        if (consumed == 0)
+        if (consumed == 0) {
             break;
+        }
         results.push_back(std::move(payload));
         ptr += consumed;
         remaining -= static_cast<int>(consumed);
@@ -305,8 +313,9 @@ class RawListenerThread : public ApplicationThread {
         const uint8_t* data = message.payload();
         const int available = message.payload_size();
 
-        if (data == nullptr || available <= 0)
+        if (data == nullptr || available <= 0) {
             return;
+        }
 
         // If available shrank, the reactor processed our commit and the tail
         // advanced -- reset decode tracking.
@@ -316,13 +325,15 @@ class RawListenerThread : public ApplicationThread {
         last_available_ = available;
 
         const int unprocessed = available - bytes_decoded_;
-        if (unprocessed <= 0)
+        if (unprocessed <= 0) {
             return;
+        }
 
         int64_t bytes_consumed = 0;
-        std::string payload = try_decode_framed(data + bytes_decoded_, unprocessed, bytes_consumed);
-        if (bytes_consumed == 0)
+        const std::string payload = try_decode_framed(data + bytes_decoded_, unprocessed, bytes_consumed);
+        if (bytes_consumed == 0) {
             return; // incomplete -- wait for more data
+        }
 
         received_payload = payload;
         message_received.store(true, std::memory_order_release);
@@ -376,8 +387,9 @@ class BurstListenerThread : public ApplicationThread {
         const int available = message.payload_size();
         const int64_t tail = message.tail_position();
 
-        if (data == nullptr || available <= 0)
+        if (data == nullptr || available <= 0) {
             return;
+        }
 
         // Exact tail-advance detection: if the tail moved since the last
         // delivery, start decoding from the beginning of the new window.
@@ -388,8 +400,9 @@ class BurstListenerThread : public ApplicationThread {
         }
 
         const int unprocessed = available - bytes_decoded_;
-        if (unprocessed <= 0)
+        if (unprocessed <= 0) {
             return;
+        }
 
         int64_t total_consumed = 0;
         decode_all_framed(data + bytes_decoded_, unprocessed, received_payloads, total_consumed);
@@ -497,8 +510,9 @@ class RawBytesProtocolHandlerIntegrationTest : public ::testing::Test {
                 reactor_died_ = true;
                 return false;
             }
-            if (std::chrono::steady_clock::now() > deadline)
+            if (std::chrono::steady_clock::now() > deadline) {
                 return false;
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
         return true;
@@ -512,7 +526,7 @@ class RawBytesProtocolHandlerIntegrationTest : public ::testing::Test {
      * trailing message on an EXPECT_TRUE(wait_for(...)) so a regression in any
      * reactor code path produces an immediately actionable failure.
      */
-    std::string last_wait_failure_description() const {
+    [[nodiscard]] std::string last_wait_failure_description() const {
         if (reactor_died_ && current_reactor_ != nullptr) {
             return "reactor terminated during wait; shutdown reason: " + current_reactor_->get_shutdown_reason();
         }
@@ -522,14 +536,15 @@ class RawBytesProtocolHandlerIntegrationTest : public ::testing::Test {
     uint16_t start_listener_reactor(Reactor& reactor) {
         EXPECT_TRUE(wait_for([&]() { return reactor.is_initialized(); })) << "Listener reactor did not initialise within timeout";
         const uint16_t port = reactor.get_inbound_listener_port(0);
-        EXPECT_NE(port, 0u) << "OS did not assign a valid listening port";
+        EXPECT_NE(port, 0U) << "OS did not assign a valid listening port";
         return port;
     }
 
     static void shutdown_and_join(Reactor& reactor, std::thread& reactor_thread, const std::string& reason = "test complete") {
         reactor.shutdown(reason);
-        if (reactor_thread.joinable())
+        if (reactor_thread.joinable()) {
             reactor_thread.join();
+        }
     }
 
     std::unique_ptr<LoggerWithSink> logger_;
@@ -541,7 +556,7 @@ class RawBytesProtocolHandlerIntegrationTest : public ::testing::Test {
 // Test: happy-path round-trip
 // ============================================================
 TEST_F(RawBytesProtocolHandlerIntegrationTest, RawByteRoundTrip) {
-    ServiceRegistry listener_registry;
+    const ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(make_reactor_config(), listener_registry, logger_->logger);
     set_current_reactor(*listener_reactor);
 
@@ -582,7 +597,7 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, RawByteRoundTrip) {
 // Test: fragmented delivery
 // ============================================================
 TEST_F(RawBytesProtocolHandlerIntegrationTest, FragmentedDelivery) {
-    ServiceRegistry listener_registry;
+    const ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(make_reactor_config(), listener_registry, logger_->logger);
     set_current_reactor(*listener_reactor);
 
@@ -636,7 +651,7 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, BurstDelivery) {
     const std::vector<std::string> burst_payloads = {"MESSAGE_ONE", "MESSAGE_TWO", "MESSAGE_THREE", "MESSAGE_FOUR", "MESSAGE_FIVE"};
     const int expected_count = static_cast<int>(burst_payloads.size());
 
-    ServiceRegistry listener_registry;
+    const ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(make_reactor_config(), listener_registry, logger_->logger);
     set_current_reactor(*listener_reactor);
 
@@ -676,7 +691,7 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, BurstDelivery) {
 // Test: peer disconnect detected by listener (exercises recv==0 path)
 // ============================================================
 TEST_F(RawBytesProtocolHandlerIntegrationTest, PeerDisconnect) {
-    ServiceRegistry listener_registry;
+    const ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(make_reactor_config(), listener_registry, logger_->logger);
     set_current_reactor(*listener_reactor);
 
@@ -714,7 +729,7 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, PeerDisconnect) {
 // the second.
 // ============================================================
 TEST_F(RawBytesProtocolHandlerIntegrationTest, MultipleConnectionsAccepted) {
-    ServiceRegistry listener_registry;
+    const ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(make_reactor_config(), listener_registry, logger_->logger);
     set_current_reactor(*listener_reactor);
 
@@ -751,7 +766,7 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, MultipleConnectionsAccepted) {
 // Test: idle timeout teardown
 // ============================================================
 TEST_F(RawBytesProtocolHandlerIntegrationTest, IdleTimeout) {
-    ServiceRegistry listener_registry;
+    const ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(make_short_idle_reactor_config(), listener_registry, logger_->logger);
     set_current_reactor(*listener_reactor);
 
@@ -821,8 +836,9 @@ class LargeReplyListenerThread : public ApplicationThread {
         // Commit the incoming bytes immediately so the buffer stays clear.
         commit_raw_bytes(conn_id, message.payload_size());
 
-        if (reply_sent.load(std::memory_order_acquire))
+        if (reply_sent.load(std::memory_order_acquire)) {
             return;
+        }
 
         // Send a 512 KB reply — large enough to overflow a 4096-byte SO_RCVBUF
         // and force framer_->has_pending_data() to be true, exercising
@@ -842,7 +858,7 @@ class LargeReplyListenerThread : public ApplicationThread {
 // Test: large reply forces partial send, exercising continue_send().
 // ============================================================
 TEST_F(RawBytesProtocolHandlerIntegrationTest, LargeReplyContinueSend) {
-    ServiceRegistry listener_registry;
+    const ServiceRegistry listener_registry;
 
     // Small send buffer on the listener's accepted socket forces the 512 KB
     // reply to block, guaranteeing continue_send() is called on EPOLLOUT.
@@ -879,8 +895,9 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, LargeReplyContinueSend) {
     size_t total_received = 0;
     while (total_received < large_reply_payload_size) {
         const ssize_t n = ::recv(sock_fd, drain_buf.data(), drain_buf.size(), 0);
-        if (n <= 0)
+        if (n <= 0) {
             break;
+        }
         total_received += static_cast<size_t>(n);
     }
     EXPECT_EQ(total_received, large_reply_payload_size) << "Did not receive the full large reply";
@@ -898,7 +915,7 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, LargeReplyContinueSend) {
 // deallocate_pending_send() via teardown_connection.
 // ============================================================
 TEST_F(RawBytesProtocolHandlerIntegrationTest, TeardownWhilePendingSendFreesChunk) {
-    ServiceRegistry listener_registry;
+    const ServiceRegistry listener_registry;
 
     ReactorConfiguration listener_cfg = make_reactor_config();
     listener_cfg.socket_send_buffer_size = tiny_rcvbuf_size;

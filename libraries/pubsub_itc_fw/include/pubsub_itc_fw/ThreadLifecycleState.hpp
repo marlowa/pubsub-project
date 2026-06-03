@@ -15,11 +15,11 @@ class ThreadLifecycleState {
         tag_ = tag;
     }
 
-    Tag as_tag() const {
+    [[nodiscard]] Tag as_tag() const {
         return tag_;
     }
 
-    bool is_equal(const ThreadLifecycleState& rhs) const {
+    [[nodiscard]] bool is_equal(const ThreadLifecycleState& rhs) const {
         return tag_ == rhs.tag_;
     }
 
@@ -28,20 +28,27 @@ class ThreadLifecycleState {
     }
 
     static std::string to_string(Tag tag) {
-        if (tag == NotCreated)
+        if (tag == NotCreated) {
             return "NotCreated";
-        if (tag == Created)
+        }
+        if (tag == Created) {
             return "Created";
-        if (tag == Started)
+        }
+        if (tag == Started) {
             return "Started";
-        if (tag == InitialProcessed)
+        }
+        if (tag == InitialProcessed) {
             return "InitialProcessed";
-        if (tag == Operational)
+        }
+        if (tag == Operational) {
             return "Operational";
-        if (tag == ShuttingDown)
+        }
+        if (tag == ShuttingDown) {
             return "ShuttingDown";
-        if (tag == Terminated)
+        }
+        if (tag == Terminated) {
             return "Terminated";
+        }
         return fmt::format("unknown ({})", static_cast<int>(tag));
     }
 

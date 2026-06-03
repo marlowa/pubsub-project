@@ -56,8 +56,9 @@ int64_t SequencerWal::open(const std::string& directory, size_t segment_size, Re
     if (replay_cb) {
         fw_cb = [this, &replay_cb](int64_t record_id, const void* payload, size_t size) {
             constexpr size_t header_size = sizeof(int64_t) + sizeof(int16_t);
-            if (size < header_size)
+            if (size < header_size) {
                 return; // malformed — skip
+            }
 
             int64_t wall_time_ns{};
             std::memcpy(&wall_time_ns, payload, sizeof(int64_t));
@@ -96,8 +97,9 @@ bool SequencerWal::load_snapshot(pubsub_itc_fw::WalPosition& out_pos) {
 
     const int fd = ::open(path.c_str(), O_RDONLY);
     if (fd < 0) {
-        if (errno == ENOENT)
+        if (errno == ENOENT) {
             return false;
+        }
         throw PubSubItcException("SequencerWal: load_snapshot open(" + path + "): " + std::strerror(errno));
     }
 
@@ -105,15 +107,18 @@ bool SequencerWal::load_snapshot(pubsub_itc_fw::WalPosition& out_pos) {
     const ssize_t n = ::read(fd, &hdr, sizeof(hdr));
     ::close(fd);
 
-    if (n != static_cast<ssize_t>(sizeof(hdr)))
+    if (n != static_cast<ssize_t>(sizeof(hdr))) {
         return false;
-    if (hdr.magic != snapshot_magic || hdr.version != snapshot_version)
+    }
+    if (hdr.magic != snapshot_magic || hdr.version != snapshot_version) {
         return false;
+    }
 
     pubsub_itc_fw::Crc32 crc;
     crc.feed(&hdr, snapshot_checksum_offset);
-    if (crc.finalize() != hdr.checksum)
+    if (crc.finalize() != hdr.checksum) {
         return false;
+    }
 
     last_seq_no_ = hdr.last_seq_no;
     record_count_ = static_cast<size_t>(hdr.record_count);

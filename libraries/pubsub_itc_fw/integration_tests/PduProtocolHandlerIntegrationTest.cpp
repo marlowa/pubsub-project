@@ -230,8 +230,8 @@ class PduProtocolHandlerListenerThread : public ApplicationThread {
             received_query_name_length = query.query_name.size();
 
             bool all_x = true;
-            for (size_t i = 0; i < query.query_name.size(); ++i) {
-                if (query.query_name[i] != 'x') {
+            for (const auto character : query.query_name) {
+                if (character != 'x') {
                     all_x = false;
                     break;
                 }
@@ -478,7 +478,7 @@ class PduProtocolHandlerIntegrationTest : public ::testing::Test {
 // and verifies content.
 // ============================================================
 TEST_F(PduProtocolHandlerIntegrationTest, LargeQueryNameForcesPartialsend) {
-    ServiceRegistry listener_registry;
+    const ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(make_listener_reactor_config(), listener_registry, logger_->logger);
 
     listener_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
@@ -491,7 +491,7 @@ TEST_F(PduProtocolHandlerIntegrationTest, LargeQueryNameForcesPartialsend) {
     ASSERT_TRUE(wait_for([&]() { return listener_reactor->is_initialized(); })) << "Listener reactor did not initialise within timeout";
 
     const uint16_t listen_port = listener_reactor->get_inbound_listener_port(0);
-    ASSERT_NE(listen_port, 0u) << "OS did not assign a valid listening port";
+    ASSERT_NE(listen_port, 0U) << "OS did not assign a valid listening port";
 
     ServiceRegistry connector_registry;
     connector_registry.add("listener", NetworkEndpointConfiguration{"127.0.0.1", listen_port}, NetworkEndpointConfiguration{});
@@ -544,7 +544,7 @@ TEST_F(PduProtocolHandlerIntegrationTest, LargeQueryNameForcesPartialsend) {
 // exercising PduProtocolHandler::continue_send().
 // ============================================================
 TEST_F(PduProtocolHandlerIntegrationTest, LargeResponseForcesPartialSend) {
-    ServiceRegistry listener_registry;
+    const ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(make_small_sndbuf_listener_reactor_config(), listener_registry, logger_->logger);
 
     listener_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
@@ -557,7 +557,7 @@ TEST_F(PduProtocolHandlerIntegrationTest, LargeResponseForcesPartialSend) {
     ASSERT_TRUE(wait_for([&]() { return listener_reactor->is_initialized(); })) << "Listener reactor did not initialise within timeout";
 
     const uint16_t listen_port = listener_reactor->get_inbound_listener_port(0);
-    ASSERT_NE(listen_port, 0u) << "OS did not assign a valid listening port";
+    ASSERT_NE(listen_port, 0U) << "OS did not assign a valid listening port";
 
     ServiceRegistry connector_registry;
     connector_registry.add("listener", NetworkEndpointConfiguration{"127.0.0.1", listen_port}, NetworkEndpointConfiguration{});
@@ -606,7 +606,7 @@ TEST_F(PduProtocolHandlerIntegrationTest, LargeResponseForcesPartialSend) {
 // exercising OutboundConnectionManager::on_write_ready().
 // ============================================================
 TEST_F(PduProtocolHandlerIntegrationTest, LargeQueryNameForcesOutboundWriteReady) {
-    ServiceRegistry listener_registry;
+    const ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(make_listener_reactor_config(), listener_registry, logger_->logger);
 
     listener_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
@@ -619,7 +619,7 @@ TEST_F(PduProtocolHandlerIntegrationTest, LargeQueryNameForcesOutboundWriteReady
     ASSERT_TRUE(wait_for([&]() { return listener_reactor->is_initialized(); })) << "Listener reactor did not initialise within timeout";
 
     const uint16_t listen_port = listener_reactor->get_inbound_listener_port(0);
-    ASSERT_NE(listen_port, 0u) << "OS did not assign a valid listening port";
+    ASSERT_NE(listen_port, 0U) << "OS did not assign a valid listening port";
 
     // The connector's socket gets a small send buffer, forcing its 2 MB write
     // to block and causing the reactor to call on_write_ready() repeatedly.
@@ -713,7 +713,7 @@ class DisconnectingListenerThread : public ApplicationThread {
 // and the disconnect handler lambda in on_connect_ready.
 // ============================================================
 TEST_F(PduProtocolHandlerIntegrationTest, ListenerClosesConnection) {
-    ServiceRegistry listener_registry;
+    const ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(make_listener_reactor_config(), listener_registry, logger_->logger);
 
     listener_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
@@ -726,7 +726,7 @@ TEST_F(PduProtocolHandlerIntegrationTest, ListenerClosesConnection) {
     ASSERT_TRUE(wait_for([&]() { return listener_reactor->is_initialized(); })) << "Listener reactor did not initialise within timeout";
 
     const uint16_t listen_port = listener_reactor->get_inbound_listener_port(0);
-    ASSERT_NE(listen_port, 0u) << "OS did not assign a valid listening port";
+    ASSERT_NE(listen_port, 0U) << "OS did not assign a valid listening port";
 
     ServiceRegistry connector_registry;
     connector_registry.add("listener", NetworkEndpointConfiguration{"127.0.0.1", listen_port}, NetworkEndpointConfiguration{});
@@ -862,7 +862,7 @@ class DoubleSendConnectorThread : public ApplicationThread {
 // ============================================================
 TEST_F(PduProtocolHandlerIntegrationTest, DoubleSendThenTeardown) {
     // Listener closes the connection immediately on receiving any PDU.
-    ServiceRegistry listener_registry;
+    const ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(make_listener_reactor_config(), listener_registry, logger_->logger);
 
     listener_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
@@ -875,7 +875,7 @@ TEST_F(PduProtocolHandlerIntegrationTest, DoubleSendThenTeardown) {
     ASSERT_TRUE(wait_for([&]() { return listener_reactor->is_initialized(); })) << "Listener reactor did not initialise within timeout";
 
     const uint16_t listen_port = listener_reactor->get_inbound_listener_port(0);
-    ASSERT_NE(listen_port, 0u) << "OS did not assign a valid listening port";
+    ASSERT_NE(listen_port, 0U) << "OS did not assign a valid listening port";
 
     // Small send buffer on the connector forces the first PDU to block,
     // guaranteeing set_pending_send is called before the second SendPdu

@@ -248,7 +248,7 @@ class VariableLengthPduTest : public ::testing::Test {
 // ============================================================
 TEST_F(VariableLengthPduTest, DataQueryResponseRoundTrip) {
     // --- Listener side ---
-    ServiceRegistry listener_registry;
+    const ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(make_reactor_config(), listener_registry, logger_->logger);
 
     listener_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
@@ -261,7 +261,7 @@ TEST_F(VariableLengthPduTest, DataQueryResponseRoundTrip) {
     ASSERT_TRUE(wait_for([&]() { return listener_reactor->is_initialized(); })) << "Listener reactor did not initialise within timeout";
 
     const uint16_t listen_port = listener_reactor->get_inbound_listener_port(0);
-    ASSERT_NE(listen_port, 0u) << "OS did not assign a valid listening port";
+    ASSERT_NE(listen_port, 0U) << "OS did not assign a valid listening port";
 
     // --- Connector side ---
     ServiceRegistry connector_registry;
@@ -305,7 +305,7 @@ TEST_F(VariableLengthPduTest, DataQueryResponseRoundTrip) {
     // --- Verify DataResponse fields on the connector ---
     EXPECT_EQ(connector_thread->received_response.request_id, 42);
     EXPECT_EQ(connector_thread->received_response.status_code, 0);
-    ASSERT_EQ(connector_thread->received_results.size(), 3u);
+    ASSERT_EQ(connector_thread->received_results.size(), 3U);
     EXPECT_EQ(connector_thread->received_results[0], "alpha");
     EXPECT_EQ(connector_thread->received_results[1], "beta");
     EXPECT_EQ(connector_thread->received_results[2], "gamma");

@@ -199,7 +199,7 @@ bool FixParser::validate_checksum(std::string_view message_bytes, std::string_vi
 
 std::string FixParser::format_checksum(int sum) {
     char buffer[5];
-    std::snprintf(buffer, sizeof(buffer), "%03u", static_cast<unsigned int>(sum) % 256u);
+    std::snprintf(buffer, sizeof(buffer), "%03u", static_cast<unsigned int>(sum) % 256U);
     return {buffer};
 }
 

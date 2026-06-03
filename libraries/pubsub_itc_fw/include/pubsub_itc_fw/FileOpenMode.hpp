@@ -37,10 +37,12 @@ class FileOpenMode {
      * @return File open mode as string.
      */
     [[nodiscard]] std::string as_string() const {
-        if (mode_ == Append)
+        if (mode_ == Append) {
             return "Append";
-        if (mode_ == Truncate)
+        }
+        if (mode_ == Truncate) {
             return "Truncate";
+        }
         return "unknown";
     }
 

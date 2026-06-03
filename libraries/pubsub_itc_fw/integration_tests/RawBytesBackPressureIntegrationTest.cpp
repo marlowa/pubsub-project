@@ -317,7 +317,7 @@ class RawBytesBackpressureIntegrationTest : public ::testing::Test {
         return true;
     }
 
-    std::string last_wait_failure_description() const {
+    [[nodiscard]] std::string last_wait_failure_description() const {
         if (reactor_died_ && current_reactor_ != nullptr) {
             return "reactor terminated during wait; shutdown reason: " + current_reactor_->get_shutdown_reason();
         }
@@ -327,7 +327,7 @@ class RawBytesBackpressureIntegrationTest : public ::testing::Test {
     uint16_t start_listener_reactor(Reactor& reactor) {
         EXPECT_TRUE(wait_for([&]() { return reactor.is_initialized(); })) << "Listener reactor did not initialise within timeout";
         const uint16_t port = reactor.get_inbound_listener_port(0);
-        EXPECT_NE(port, 0u) << "OS did not assign a valid listening port";
+        EXPECT_NE(port, 0U) << "OS did not assign a valid listening port";
         return port;
     }
 
@@ -389,7 +389,7 @@ class RawBytesBackpressureIntegrationTest : public ::testing::Test {
 // reading) or the peer has pushed an unreasonably large amount, which would
 // indicate that backpressure did not engage at all.
 TEST_F(RawBytesBackpressureIntegrationTest, BackpressureEngagesWhenApplicationIsSlow) {
-    ServiceRegistry listener_registry;
+    const ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(make_backpressure_reactor_config(), listener_registry, logger_->logger);
     set_current_reactor(*listener_reactor);
 
@@ -464,7 +464,7 @@ TEST_F(RawBytesBackpressureIntegrationTest, BackpressureEngagesWhenApplicationIs
 // peer's send() must start succeeding again within a bounded time, and all
 // bytes must be eventually delivered.
 TEST_F(RawBytesBackpressureIntegrationTest, BackpressureReleasesAfterCommitsDrainBuffer) {
-    ServiceRegistry listener_registry;
+    const ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(make_backpressure_reactor_config(), listener_registry, logger_->logger);
     set_current_reactor(*listener_reactor);
 
@@ -572,7 +572,7 @@ TEST_F(RawBytesBackpressureIntegrationTest, BackpressureReleasesAfterCommitsDrai
 // pushed must eventually be received by the listener, and the connection
 // must remain alive.
 TEST_F(RawBytesBackpressureIntegrationTest, SustainedThroughputThroughManyBackpressureCycles) {
-    ServiceRegistry listener_registry;
+    const ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(make_backpressure_reactor_config(), listener_registry, logger_->logger);
     set_current_reactor(*listener_reactor);
 

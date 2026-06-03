@@ -89,7 +89,7 @@ class EventType {
     /**
      * @brief Returns the underlying tag value.
      */
-    EventTypeTag as_tag() const {
+    [[nodiscard]] EventTypeTag as_tag() const {
         return event_type_;
     }
 
@@ -98,7 +98,7 @@ class EventType {
      * @param[in] rhs EventType to compare with.
      * @return True if equal, false otherwise.
      */
-    bool is_equal(const EventType& rhs) const {
+    [[nodiscard]] bool is_equal(const EventType& rhs) const {
         return event_type_ == rhs.event_type_;
     }
 

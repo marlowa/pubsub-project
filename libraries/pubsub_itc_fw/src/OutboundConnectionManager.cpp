@@ -415,7 +415,7 @@ bool OutboundConnectionManager::process_send_raw_command(const ReactorControlCom
         return false;
     }
 
-    OutboundConnection& conn = *it->second;
+    const OutboundConnection& conn = *it->second;
     if (!conn.is_tls()) {
         // Plain-TCP outbound connections use PDU framing, not raw bytes.
         return false;
@@ -467,7 +467,7 @@ bool OutboundConnectionManager::process_commit_raw_bytes(ConnectionID id, int64_
         return false;
     }
 
-    OutboundConnection& conn = *it->second;
+    const OutboundConnection& conn = *it->second;
     if (!conn.is_tls() || conn.protocol_handler() == nullptr) {
         // PDU connections have no MirroredBuffer; this is a no-op but we own the ID.
         return true;
@@ -550,7 +550,7 @@ void OutboundConnectionManager::retry_failed_connections(const std::function<Con
         if (it == pending_retries_.end()) {
             continue;
         }
-        ReactorControlCommand cmd = it->second.command;
+        const ReactorControlCommand cmd = it->second.command;
         pending_retries_.erase(it);
 
         PUBSUB_LOG(logger_, FwLogLevel::Info, "OutboundConnectionManager::retry_failed_connections: retrying service '{}'", service_name);

@@ -196,16 +196,18 @@ struct ParsedFixMessage {
 
     [[nodiscard]] std::string_view get(int tag) const {
         for (int i = 0; i < field_count; ++i) {
-            if (fields[static_cast<size_t>(i)].tag == tag)
+            if (fields[static_cast<size_t>(i)].tag == tag) {
                 return fields[static_cast<size_t>(i)].value;
+            }
         }
         return {};
     }
 
     [[nodiscard]] bool has(int tag) const {
         for (int i = 0; i < field_count; ++i) {
-            if (fields[static_cast<size_t>(i)].tag == tag)
+            if (fields[static_cast<size_t>(i)].tag == tag) {
                 return true;
+            }
         }
         return false;
     }

@@ -39,10 +39,12 @@ class TimerType {
      * @brief Returns a string representation of the timer type.
      */
     [[nodiscard]] std::string as_string() const {
-        if (timer_type_ == SingleShot)
+        if (timer_type_ == SingleShot) {
             return "SingleShot";
-        if (timer_type_ == Recurring)
+        }
+        if (timer_type_ == Recurring) {
             return "Recurring";
+        }
         return "unknown";
     }
 

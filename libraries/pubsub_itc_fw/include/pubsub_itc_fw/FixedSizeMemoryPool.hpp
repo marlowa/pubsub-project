@@ -160,7 +160,7 @@ template <typename T> struct SlotStorage {
     T* object_ptr() {
         return reinterpret_cast<T*>(&storage);
     }
-    const T* object_ptr() const {
+    [[nodiscard]] const T* object_ptr() const {
         return reinterpret_cast<const T*>(&storage);
     }
 };
@@ -549,7 +549,7 @@ template <typename T> struct SlotStorage {
         return reinterpret_cast<T*>(&storage);
     }
 
-    const T* object_ptr() const {
+    [[nodiscard]] const T* object_ptr() const {
         return reinterpret_cast<const T*>(&storage);
     }
 };
@@ -853,7 +853,7 @@ template <typename T> class FixedSizeMemoryPool {
         static_assert(sizeof(expected_raw) == sizeof(expected), "HeadPtr must be 128 bits");
         std::memcpy(&expected_raw, &expected, sizeof(expected));
         std::memcpy(&desired_raw, &desired, sizeof(desired));
-        bool ok = __sync_bool_compare_and_swap(&head_raw_, expected_raw, desired_raw);
+        const bool ok = __sync_bool_compare_and_swap(&head_raw_, expected_raw, desired_raw);
         if (!ok) {
             // Reload the current head using inline SSE movdqa to avoid the
             // libatomic PLT call that __atomic_load generates on GCC 13+.

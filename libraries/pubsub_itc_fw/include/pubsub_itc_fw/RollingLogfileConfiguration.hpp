@@ -29,8 +29,8 @@ struct RollingLogfileConfiguration {
         if (time_hh_mm.size() != 5 || time_hh_mm[2] != ':') {
             throw std::invalid_argument("rotation_time must be in HH:MM format, got: " + time_hh_mm);
         }
-        int hours = std::stoi(time_hh_mm.substr(0, 2));
-        int minutes = std::stoi(time_hh_mm.substr(3, 2));
+        const int hours = std::stoi(time_hh_mm.substr(0, 2));
+        const int minutes = std::stoi(time_hh_mm.substr(3, 2));
         if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
             throw std::invalid_argument("rotation_time out of range: " + time_hh_mm);
         }

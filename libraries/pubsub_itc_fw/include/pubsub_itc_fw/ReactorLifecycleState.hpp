@@ -13,11 +13,11 @@ class ReactorLifecycleState {
 
     constexpr explicit ReactorLifecycleState(Tag tag) : tag_(tag) {}
 
-    Tag as_tag() const {
+    [[nodiscard]] Tag as_tag() const {
         return tag_;
     }
 
-    bool is_equal(const ReactorLifecycleState& rhs) const {
+    [[nodiscard]] bool is_equal(const ReactorLifecycleState& rhs) const {
         return tag_ == rhs.tag_;
     }
 
@@ -26,16 +26,21 @@ class ReactorLifecycleState {
     }
 
     static std::string to_string(Tag tag) {
-        if (tag == NotStarted)
+        if (tag == NotStarted) {
             return "NotStarted";
-        if (tag == Running)
+        }
+        if (tag == Running) {
             return "Running";
-        if (tag == ShutdownRequested)
+        }
+        if (tag == ShutdownRequested) {
             return "ShutdownRequested";
-        if (tag == FinalizingThreads)
+        }
+        if (tag == FinalizingThreads) {
             return "FinalizingThreads";
-        if (tag == Finished)
+        }
+        if (tag == Finished) {
             return "Finished";
+        }
         return fmt::format("unknown ({})", static_cast<int>(tag));
     }
 

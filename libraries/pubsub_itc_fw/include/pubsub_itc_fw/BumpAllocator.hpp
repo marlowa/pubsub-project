@@ -110,7 +110,7 @@ class BumpAllocator {
      * @param[in] capacity Size of the backing buffer in bytes, or zero for
      *                     measuring mode.
      */
-    BumpAllocator(uint8_t* storage, size_t capacity) : storage_(storage), capacity_(capacity), bytes_used_(0) {}
+    BumpAllocator(uint8_t* storage, size_t capacity) : storage_(storage), capacity_(capacity) {}
 
     ~BumpAllocator() = default;
 
@@ -144,8 +144,8 @@ class BumpAllocator {
         }
 
         constexpr size_t alignment = alignof(T);
-        size_t aligned_offset = (bytes_used_ + alignment - 1) & ~(alignment - 1);
-        size_t required_bytes = aligned_offset + sizeof(T) * element_count;
+        const size_t aligned_offset = (bytes_used_ + alignment - 1) & ~(alignment - 1);
+        const size_t required_bytes = aligned_offset + sizeof(T) * element_count;
 
         bytes_used_ = required_bytes;
 
@@ -219,7 +219,7 @@ class BumpAllocator {
   private:
     uint8_t* storage_;
     size_t capacity_;
-    size_t bytes_used_;
+    size_t bytes_used_{0};
 };
 
 } // namespace pubsub_itc_fw

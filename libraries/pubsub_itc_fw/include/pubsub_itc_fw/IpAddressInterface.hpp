@@ -49,31 +49,31 @@ class IpAddressInterface {
      * into a string format (e.g., "192.168.1.1" for IPv4, "::1" for IPv6).
      * @returns A `std::string` containing the IP address.
      */
-    virtual std::string get_ip_address_string() const = 0;
+    [[nodiscard]] virtual std::string get_ip_address_string() const = 0;
 
     /**
      * @brief Returns the port number associated with this IP address.
      *
      * @returns A `uint16_t` representing the port number.
      */
-    virtual uint16_t get_port() const = 0;
+    [[nodiscard]] virtual uint16_t get_port() const = 0;
 
     /**
      * @brief Checks if the encapsulated address is an IPv4 address.
      *
      * @returns `true` if the address is IPv4, `false` otherwise.
      */
-    virtual bool is_ipv4() const = 0;
+    [[nodiscard]] virtual bool is_ipv4() const = 0;
 
     /**
      * @brief Checks if the encapsulated address is an IPv6 address.
      *
      * @returns `true` if the address is IPv6, `false` otherwise.
      */
-    virtual bool is_ipv6() const = 0;
+    [[nodiscard]] virtual bool is_ipv6() const = 0;
 
     /// expose address family (AF_INET, AF_INET6, or AF_UNSPEC)
-    virtual int address_family() const = 0;
+    [[nodiscard]] virtual int address_family() const = 0;
 
     /**
      * @brief Provides a pointer to the underlying system `sockaddr` structure.
@@ -83,7 +83,7 @@ class IpAddressInterface {
      * @returns A constant pointer to the `sockaddr` structure. The caller must
      * not modify the returned pointer or its contents.
      */
-    const virtual struct sockaddr* get_sockaddr() const = 0;
+    [[nodiscard]] const virtual struct sockaddr* get_sockaddr() const = 0;
 
     /**
      * @brief Returns the size of the underlying system `sockaddr` structure.
@@ -91,7 +91,7 @@ class IpAddressInterface {
      * This size is needed for system calls that operate on `sockaddr` structures.
      * @returns A `socklen_t` representing the size of the `sockaddr` structure.
      */
-    virtual socklen_t get_sockaddr_size() const = 0;
+    [[nodiscard]] virtual socklen_t get_sockaddr_size() const = 0;
 
     /**
      * @brief Compares this IP address with another for equality.
@@ -100,7 +100,7 @@ class IpAddressInterface {
      * @param[in] rhs The other `IpAddressInterface` to compare against.
      * @returns `true` if the addresses and ports are equal, `false` otherwise.
      */
-    virtual bool is_equal(const IpAddressInterface& rhs) const = 0;
+    [[nodiscard]] virtual bool is_equal(const IpAddressInterface& rhs) const = 0;
 
     /**
      * @brief Compares this IP address with another for ordering.
@@ -111,7 +111,7 @@ class IpAddressInterface {
      * @param[in] rhs The other `IpAddressInterface` to compare against.
      * @returns `true` if this address is less than `rhs`, `false` otherwise.
      */
-    virtual bool is_less_than(const IpAddressInterface& rhs) const = 0;
+    [[nodiscard]] virtual bool is_less_than(const IpAddressInterface& rhs) const = 0;
 };
 
 // --- Non-member comparison operators for convenience ---

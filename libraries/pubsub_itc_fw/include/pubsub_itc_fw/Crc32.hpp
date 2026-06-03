@@ -38,7 +38,7 @@ class Crc32 {
     [[nodiscard]] static uint32_t compute(const void* data, size_t length);
 
   private:
-    uint32_t state_{0xFFFFFFFFu};
+    uint32_t state_{0xFFFFFFFFU};
 };
 
 } // namespace pubsub_itc_fw

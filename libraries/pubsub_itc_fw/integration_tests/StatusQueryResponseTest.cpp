@@ -235,7 +235,7 @@ class StatusQueryResponseTest : public ::testing::Test {
 // ============================================================
 TEST_F(StatusQueryResponseTest, StatusQueryResponseRoundTrip) {
     // --- Listener side ---
-    ServiceRegistry listener_registry; // no outbound connections needed
+    const ServiceRegistry listener_registry; // no outbound connections needed
     auto listener_reactor = std::make_unique<Reactor>(make_reactor_config(), listener_registry, logger_->logger);
 
     // port=0 asks the OS to assign a free port
@@ -251,7 +251,7 @@ TEST_F(StatusQueryResponseTest, StatusQueryResponseRoundTrip) {
     ASSERT_TRUE(wait_for([&]() { return listener_reactor->is_initialized(); })) << "Listener reactor did not initialize within timeout";
 
     const uint16_t listen_port = listener_reactor->get_inbound_listener_port(0);
-    ASSERT_NE(listen_port, 0u) << "OS did not assign a valid listening port";
+    ASSERT_NE(listen_port, 0U) << "OS did not assign a valid listening port";
 
     // --- Connector side ---
     ServiceRegistry connector_registry;

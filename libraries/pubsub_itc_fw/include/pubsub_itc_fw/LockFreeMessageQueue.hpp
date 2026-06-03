@@ -122,9 +122,9 @@ template <typename T> class LockFreeMessageQueue {
     struct Node {
         std::atomic<Node*> next_;
         alignas(T) std::byte data_storage_[sizeof(T)];
-        bool has_data_;
+        bool has_data_{false};
 
-        Node() : next_(nullptr), has_data_(false) {}
+        Node() : next_(nullptr) {}
 
         ~Node() {
             if (has_data_) {
@@ -202,7 +202,7 @@ template <typename T> class LockFreeMessageQueue {
 
         prev_head->next_.store(node, std::memory_order_release);
 
-        int current_size = ++size_;
+        const int current_size = ++size_;
         if (queue_configuration_.gone_above_high_watermark_handler && current_size >= queue_configuration_.high_watermark &&
             !is_high_watermark_breached_.exchange(true)) {
             queue_configuration_.gone_above_high_watermark_handler(queue_configuration_.for_client_use);

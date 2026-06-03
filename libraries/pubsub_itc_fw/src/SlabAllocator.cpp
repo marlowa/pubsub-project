@@ -39,8 +39,8 @@ void* SlabAllocator::allocate(size_t size) {
     }
 
     constexpr size_t alignment = alignof(std::max_align_t);
-    size_t aligned_bump = (bump_ + alignment - 1) & ~(alignment - 1);
-    size_t new_bump = aligned_bump + size;
+    const size_t aligned_bump = (bump_ + alignment - 1) & ~(alignment - 1);
+    const size_t new_bump = aligned_bump + size;
 
     if (new_bump > slab_size_) {
         return nullptr;
@@ -57,7 +57,7 @@ void SlabAllocator::deallocate(void* ptr) {
         throw PreconditionAssertion("SlabAllocator::deallocate: ptr must not be nullptr", __FILE__, __LINE__);
     }
 
-    int old = outstanding_allocations_count_.fetch_sub(1, std::memory_order_acq_rel);
+    const int old = outstanding_allocations_count_.fetch_sub(1, std::memory_order_acq_rel);
 
     if (old != 1) {
         return; // Not the last outstanding chunk.
@@ -97,7 +97,7 @@ bool SlabAllocator::is_empty() const {
 
 bool SlabAllocator::is_full() const {
     constexpr size_t alignment = alignof(std::max_align_t);
-    size_t aligned_bump = (bump_ + alignment - 1) & ~(alignment - 1);
+    const size_t aligned_bump = (bump_ + alignment - 1) & ~(alignment - 1);
     return aligned_bump >= slab_size_;
 }
 

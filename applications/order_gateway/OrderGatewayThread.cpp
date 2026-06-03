@@ -347,7 +347,7 @@ void OrderGatewayThread::on_raw_socket_message(const pubsub_itc_fw::EventMessage
 }
 
 void OrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message) {
-    const auto pdu_id = static_cast<int16_t>(message.pdu_id());
+    const auto pdu_id = message.pdu_id();
 
     const bool from_auth_service =
         (message.connection_id() == auth_service_primary_conn_id_) || (config_.ha_enabled && message.connection_id() == auth_service_secondary_conn_id_);
@@ -888,8 +888,9 @@ void OrderGatewayThread::send_reject_execution_report(FixSession& session, const
 
 FixSession* OrderGatewayThread::find_session_by_conn_id(int32_t gateway_session_conn_id) {
     auto it = sessions_.find(pubsub_itc_fw::ConnectionID{gateway_session_conn_id});
-    if (it == sessions_.end())
+    if (it == sessions_.end()) {
         return nullptr;
+    }
     return &it->second;
 }
 

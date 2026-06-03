@@ -132,7 +132,7 @@ void ArbiterThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& 
     }
 
     if (conn_id == witness_conn_id_) {
-        const auto pdu_id = static_cast<int16_t>(message.pdu_id());
+        const auto pdu_id = message.pdu_id();
         if (pdu_id == pdu_arbiter_vote_response) {
             handle_arbiter_vote_response(message);
         } else {
@@ -143,7 +143,7 @@ void ArbiterThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& 
     }
 
     // Component PDU (sequencer, ME, or other registered component).
-    const auto pdu_id = static_cast<int16_t>(message.pdu_id());
+    const auto pdu_id = message.pdu_id();
     if (pdu_id == pdu_heartbeat) {
         handle_component_heartbeat(conn_id, message);
     } else if (pdu_id == pdu_arbitration_report) {
@@ -201,14 +201,16 @@ void ArbiterThread::on_itc_message([[maybe_unused]] const pubsub_itc_fw::EventMe
 // ---------------------------------------------------------------------------
 
 pubsub_itc_fw::ConnectionID ArbiterThread::peer_active_conn() const {
-    if (peer_conn_id_.is_valid())
+    if (peer_conn_id_.is_valid()) {
         return peer_conn_id_;
+    }
     return peer_inbound_conn_id_;
 }
 
 void ArbiterThread::adopt_role(pubsub_itc_fw_app::Role new_role) {
-    if (new_role == role_)
+    if (new_role == role_) {
         return;
+    }
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "ArbiterThread: role transition {} -> {} (epoch={})", pubsub_itc_fw_app::to_string(role_),
                pubsub_itc_fw_app::to_string(new_role), epoch_);
@@ -342,7 +344,7 @@ void ArbiterThread::write_fence_file() const {
 // ---------------------------------------------------------------------------
 
 void ArbiterThread::handle_peer_pdu(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
-    const auto pdu_id = static_cast<int16_t>(message.pdu_id());
+    const auto pdu_id = message.pdu_id();
 
     if (pdu_id == pdu_status_query) {
         handle_peer_status_query(conn_id, message);

@@ -118,14 +118,16 @@ static std::string make_tls_framed(const std::string& payload) {
 
 static std::string try_decode_tls_framed(const uint8_t* data, int available, int64_t& bytes_consumed) {
     bytes_consumed = 0;
-    if (available < static_cast<int>(tls_length_prefix_size))
+    if (available < static_cast<int>(tls_length_prefix_size)) {
         return {};
+    }
     uint32_t length_be = 0;
     std::memcpy(&length_be, data, tls_length_prefix_size);
     const uint32_t payload_length = ntohl(length_be);
     const int64_t total = static_cast<int64_t>(tls_length_prefix_size + payload_length);
-    if (available < static_cast<int>(total))
+    if (available < static_cast<int>(total)) {
         return {};
+    }
     std::string payload(reinterpret_cast<const char*>(data + tls_length_prefix_size), payload_length);
     bytes_consumed = total;
     return payload;
@@ -137,8 +139,9 @@ static std::string try_decode_tls_framed(const uint8_t* data, int available, int
 
 static EVP_PKEY* generate_ec_key() {
     EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_EC, nullptr);
-    if (!ctx)
+    if (!ctx) {
         return nullptr;
+    }
     if (EVP_PKEY_keygen_init(ctx) <= 0) {
         EVP_PKEY_CTX_free(ctx);
         return nullptr;
@@ -167,8 +170,9 @@ static void add_basic_constraints(X509* x509, bool is_ca) {
 
 static X509* create_self_signed_cert(EVP_PKEY* key, const char* cn, long serial) {
     X509* x509 = X509_new();
-    if (!x509)
+    if (!x509) {
         return nullptr;
+    }
     X509_set_version(x509, 2);
     ASN1_INTEGER_set(X509_get_serialNumber(x509), serial);
     X509_gmtime_adj(X509_get_notBefore(x509), 0);
@@ -189,8 +193,9 @@ static X509* create_self_signed_cert(EVP_PKEY* key, const char* cn, long serial)
 static X509* create_signed_cert(EVP_PKEY* subject_key, const char* cn, long serial,
                                  X509* issuer_cert, EVP_PKEY* issuer_key) {
     X509* x509 = X509_new();
-    if (!x509)
+    if (!x509) {
         return nullptr;
+    }
     X509_set_version(x509, 2);
     ASN1_INTEGER_set(X509_get_serialNumber(x509), serial);
     X509_gmtime_adj(X509_get_notBefore(x509), 0);
@@ -210,8 +215,9 @@ static X509* create_signed_cert(EVP_PKEY* subject_key, const char* cn, long seri
 
 static bool write_cert_pem(const std::string& path, X509* cert) {
     FILE* f = fopen(path.c_str(), "w");
-    if (!f)
+    if (!f) {
         return false;
+    }
     const int result = PEM_write_X509(f, cert);
     fclose(f);
     return result == 1;
@@ -219,8 +225,9 @@ static bool write_cert_pem(const std::string& path, X509* cert) {
 
 static bool write_key_pem(const std::string& path, EVP_PKEY* key) {
     FILE* f = fopen(path.c_str(), "w");
-    if (!f)
+    if (!f) {
         return false;
+    }
     const int result = PEM_write_PrivateKey(f, key, nullptr, nullptr, 0, nullptr, nullptr);
     fclose(f);
     return result == 1;
@@ -249,8 +256,9 @@ class TlsCertDirectory {
     TlsCertDirectory() {
         char tmp_dir[] = "/tmp/tls_test_XXXXXX";
         char* dir = mkdtemp(tmp_dir);
-        if (!dir)
+        if (!dir) {
             return;
+        }
         directory_ = dir;
 
         EVP_PKEY* ca_key = generate_ec_key();
@@ -276,12 +284,12 @@ class TlsCertDirectory {
                  && write_key_pem(client_key_path, client_key);
         }
 
-        if (client_cert) X509_free(client_cert);
-        if (client_key) EVP_PKEY_free(client_key);
-        if (server_cert) X509_free(server_cert);
-        if (server_key) EVP_PKEY_free(server_key);
-        if (ca_cert) X509_free(ca_cert);
-        if (ca_key) EVP_PKEY_free(ca_key);
+        if (client_cert) { X509_free(client_cert); }
+        if (client_key) { EVP_PKEY_free(client_key); }
+        if (server_cert) { X509_free(server_cert); }
+        if (server_key) { EVP_PKEY_free(server_key); }
+        if (ca_cert) { X509_free(ca_cert); }
+        if (ca_key) { EVP_PKEY_free(ca_key); }
     }
 
     ~TlsCertDirectory() {
@@ -290,8 +298,9 @@ class TlsCertDirectory {
         ::unlink(server_key_path.c_str());
         ::unlink(client_cert_path.c_str());
         ::unlink(client_key_path.c_str());
-        if (!directory_.empty())
+        if (!directory_.empty()) {
             ::rmdir(directory_.c_str());
+        }
     }
 
     TlsCertDirectory(const TlsCertDirectory&) = delete;
@@ -369,8 +378,9 @@ static TlsClientConnection connect_tls(uint16_t port, const std::string& ca_path
     TlsClientConnection conn;
 
     conn.ctx = SSL_CTX_new(TLS_client_method());
-    if (!conn.ctx)
+    if (!conn.ctx) {
         return conn;
+    }
 
     SSL_CTX_set_min_proto_version(conn.ctx, TLS1_2_VERSION);
 
@@ -385,8 +395,9 @@ static TlsClientConnection connect_tls(uint16_t port, const std::string& ca_path
     }
 
     conn.fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (conn.fd == -1)
+    if (conn.fd == -1) {
         return conn;
+    }
 
     timeval timeout{5, 0};
     ::setsockopt(conn.fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
@@ -395,12 +406,14 @@ static TlsClientConnection connect_tls(uint16_t port, const std::string& ca_path
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port);
     addr.sin_addr.s_addr = inet_addr("127.0.0.1");
-    if (::connect(conn.fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0)
+    if (::connect(conn.fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
         return conn;
+    }
 
     conn.ssl = SSL_new(conn.ctx);
-    if (!conn.ssl)
+    if (!conn.ssl) {
         return conn;
+    }
 
     SSL_set_fd(conn.ssl, conn.fd);
 
@@ -417,8 +430,9 @@ static bool tls_send_all(SSL* ssl, const void* buf, size_t size) {
     size_t remaining = size;
     while (remaining > 0) {
         const int sent = SSL_write(ssl, ptr, static_cast<int>(remaining));
-        if (sent <= 0)
+        if (sent <= 0) {
             return false;
+        }
         ptr += sent;
         remaining -= static_cast<size_t>(sent);
     }
@@ -430,8 +444,9 @@ static bool tls_recv_all(SSL* ssl, void* buf, size_t size) {
     size_t remaining = size;
     while (remaining > 0) {
         const int received = SSL_read(ssl, ptr, static_cast<int>(remaining));
-        if (received <= 0)
+        if (received <= 0) {
             return false;
+        }
         ptr += received;
         remaining -= static_cast<size_t>(received);
     }
@@ -440,12 +455,14 @@ static bool tls_recv_all(SSL* ssl, void* buf, size_t size) {
 
 static std::string tls_recv_framed(SSL* ssl) {
     uint32_t length_be = 0;
-    if (!tls_recv_all(ssl, &length_be, sizeof(length_be)))
+    if (!tls_recv_all(ssl, &length_be, sizeof(length_be))) {
         return {};
+    }
     const uint32_t payload_length = ntohl(length_be);
     std::string payload(payload_length, '\0');
-    if (!tls_recv_all(ssl, payload.data(), payload_length))
+    if (!tls_recv_all(ssl, payload.data(), payload_length)) {
         return {};
+    }
     return payload;
 }
 
@@ -496,21 +513,25 @@ class TlsListenerThread : public ApplicationThread {
         const uint8_t* data = message.payload();
         const int available = message.payload_size();
 
-        if (data == nullptr || available <= 0)
+        if (data == nullptr || available <= 0) {
             return;
+        }
 
-        if (available < last_available_)
+        if (available < last_available_) {
             bytes_decoded_ = 0;
+        }
         last_available_ = available;
 
         const int unprocessed = available - bytes_decoded_;
-        if (unprocessed <= 0)
+        if (unprocessed <= 0) {
             return;
+        }
 
         int64_t bytes_consumed = 0;
-        std::string payload = try_decode_tls_framed(data + bytes_decoded_, unprocessed, bytes_consumed);
-        if (bytes_consumed == 0)
+        const std::string payload = try_decode_tls_framed(data + bytes_decoded_, unprocessed, bytes_consumed);
+        if (bytes_consumed == 0) {
             return;
+        }
 
         received_payload = payload;
         message_received.store(true, std::memory_order_release);
@@ -589,14 +610,15 @@ class TlsProtocolHandlerIntegrationTest : public ::testing::Test {
                 reactor_died_ = true;
                 return false;
             }
-            if (std::chrono::steady_clock::now() > deadline)
+            if (std::chrono::steady_clock::now() > deadline) {
                 return false;
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
         return true;
     }
 
-    std::string last_wait_failure_description() const {
+    [[nodiscard]] std::string last_wait_failure_description() const {
         if (reactor_died_ && current_reactor_ != nullptr) {
             return "reactor terminated during wait; shutdown reason: " + current_reactor_->get_shutdown_reason();
         }
@@ -607,15 +629,16 @@ class TlsProtocolHandlerIntegrationTest : public ::testing::Test {
         EXPECT_TRUE(wait_for([&]() { return reactor.is_initialized(); }))
             << "Listener reactor did not initialise within timeout";
         const uint16_t port = reactor.get_inbound_listener_port(0);
-        EXPECT_NE(port, 0u) << "OS did not assign a valid listening port";
+        EXPECT_NE(port, 0U) << "OS did not assign a valid listening port";
         return port;
     }
 
     static void shutdown_and_join(Reactor& reactor, std::thread& reactor_thread,
                                    const std::string& reason = "test complete") {
         reactor.shutdown(reason);
-        if (reactor_thread.joinable())
+        if (reactor_thread.joinable()) {
             reactor_thread.join();
+        }
     }
 
     std::unique_ptr<LoggerWithSink> logger_;
@@ -628,7 +651,7 @@ class TlsProtocolHandlerIntegrationTest : public ::testing::Test {
 // Test: happy-path TLS round trip
 // ============================================================
 TEST_F(TlsProtocolHandlerIntegrationTest, TlsHandshakeAndRoundTrip) {
-    ServiceRegistry listener_registry;
+    const ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(make_tls_reactor_config(), listener_registry, logger_->logger);
     set_current_reactor(*listener_reactor);
 
@@ -673,7 +696,7 @@ TEST_F(TlsProtocolHandlerIntegrationTest, TlsHandshakeAndRoundTrip) {
 // Test: two TLS records per on_data_ready call (fragmented plaintext accumulation)
 // ============================================================
 TEST_F(TlsProtocolHandlerIntegrationTest, FragmentedCiphertextDelivery) {
-    ServiceRegistry listener_registry;
+    const ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(make_tls_reactor_config(), listener_registry, logger_->logger);
     set_current_reactor(*listener_reactor);
 
@@ -731,7 +754,7 @@ TEST_F(TlsProtocolHandlerIntegrationTest, FragmentedCiphertextDelivery) {
 // Test: graceful TLS close delivers ConnectionLost
 // ============================================================
 TEST_F(TlsProtocolHandlerIntegrationTest, PeerDisconnect) {
-    ServiceRegistry listener_registry;
+    const ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(make_tls_reactor_config(), listener_registry, logger_->logger);
     set_current_reactor(*listener_reactor);
 
@@ -767,7 +790,7 @@ TEST_F(TlsProtocolHandlerIntegrationTest, PeerDisconnect) {
 // Test: mutual TLS — both sides present certificates
 // ============================================================
 TEST_F(TlsProtocolHandlerIntegrationTest, MutualTlsHandshake) {
-    ServiceRegistry listener_registry;
+    const ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(make_tls_reactor_config(), listener_registry, logger_->logger);
     set_current_reactor(*listener_reactor);
 
@@ -823,7 +846,7 @@ TEST_F(TlsProtocolHandlerIntegrationTest, MutualTlsHandshake) {
 // follows when the alert is processed.
 // ============================================================
 TEST_F(TlsProtocolHandlerIntegrationTest, HandshakeFailure) {
-    ServiceRegistry listener_registry;
+    const ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(make_tls_reactor_config(), listener_registry, logger_->logger);
     set_current_reactor(*listener_reactor);
 

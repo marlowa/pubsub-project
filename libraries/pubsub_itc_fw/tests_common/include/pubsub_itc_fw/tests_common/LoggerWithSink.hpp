@@ -36,7 +36,7 @@ class LoggerWithSink {
         records.clear();
     }
 
-    bool contains_message(const std::string& text) const {
+    [[nodiscard]] bool contains_message(const std::string& text) const {
         for (const auto& record : records) {
             if (record.find(text) != std::string::npos) {
                 return true;
@@ -45,7 +45,7 @@ class LoggerWithSink {
         return false;
     }
 
-    size_t count() const {
+    [[nodiscard]] size_t count() const {
         return records.size();
     }
 

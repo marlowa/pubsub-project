@@ -457,7 +457,7 @@ class ApplicationThread {
             throw PreconditionAssertion("Timer APIs must not be called before the ApplicationThread has been started", __FILE__, __LINE__);
         }
 
-        pthread_t owner = thread_->get_pthread_id();
+        const pthread_t owner = thread_->get_pthread_id();
         if (!pthread_equal(owner, pthread_self())) {
             throw PreconditionAssertion("Timer APIs must be called from within the owning ApplicationThread's callbacks", __FILE__, __LINE__);
         }
@@ -577,7 +577,7 @@ class ApplicationThread {
         // variable-length messages), but we check anyway for safety.
         size_t bytes_written = 0;
         size_t bytes_needed = 0;
-        [[maybe_unused]] bool ok = encode(msg, nullptr, 0, bytes_written, bytes_needed);
+        [[maybe_unused]] const bool ok = encode(msg, nullptr, 0, bytes_written, bytes_needed);
 
         const size_t frame_size = sizeof(PduHeader) + bytes_needed;
         auto [slab_id, chunk] = outbound_allocator_.allocate(frame_size);

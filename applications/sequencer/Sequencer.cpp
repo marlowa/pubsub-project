@@ -134,7 +134,7 @@ int main(int argc, char* argv[]) {
     logger->set_syslog_level(config.syslog_level);
 
     try {
-        sequencer::Sequencer app{config, std::move(logger)};
+        const sequencer::Sequencer app{config, std::move(logger)};
         return app.run();
     } catch (const std::exception& ex) {
         std::cerr << "Sequencer: fatal exception: " << ex.what() << "\n";

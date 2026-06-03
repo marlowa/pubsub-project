@@ -108,7 +108,7 @@ int main(int argc, char* argv[]) {
     logger->set_syslog_level(config.syslog_level);
 
     try {
-        arbiter::Arbiter app{config, std::move(logger)};
+        const arbiter::Arbiter app{config, std::move(logger)};
         return app.run();
     } catch (const std::exception& ex) {
         std::cerr << "Arbiter: fatal exception: " << ex.what() << "\n";

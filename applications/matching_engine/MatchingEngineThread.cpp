@@ -77,7 +77,7 @@ void MatchingEngineThread::on_connection_lost(pubsub_itc_fw::ConnectionID id, co
 }
 
 void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message) {
-    const auto pdu_id = static_cast<int16_t>(message.pdu_id());
+    const auto pdu_id = message.pdu_id();
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MatchingEngineThread: sequenced PDU received on connection {} pdu_id={}",
                message.connection_id().get_value(), pdu_id);
@@ -253,7 +253,7 @@ void MatchingEngineThread::handle_order_cancel_request(const pubsub_itc_fw_app::
     }
 
     // Order found — cancel it.
-    OrderEntry entry = std::move(it->second);
+    const OrderEntry entry = std::move(it->second);
     order_book_.erase(it);
 
     pubsub_itc_fw_app::ExecutionReport er{};

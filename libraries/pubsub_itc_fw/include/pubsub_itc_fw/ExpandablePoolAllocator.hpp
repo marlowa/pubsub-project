@@ -412,7 +412,7 @@ template <typename T> T* ExpandablePoolAllocator<T>::allocate() {
 
     slow_path_allocations_.value.fetch_add(1, std::memory_order_relaxed);
 
-    std::lock_guard<std::mutex> lock(expansion_mutex_);
+    const std::lock_guard<std::mutex> lock(expansion_mutex_);
 
     FixedSizeMemoryPool<T>* traverse = __atomic_load_n(&head_pool_, __ATOMIC_ACQUIRE);
 

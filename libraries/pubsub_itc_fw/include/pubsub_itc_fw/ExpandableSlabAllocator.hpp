@@ -222,7 +222,7 @@ class ExpandableSlabAllocator {
 
     void drain_empty_slab_queue();
     SlabAllocator* append_new_slab();
-    SlabAllocator* load_slab_reactor(int slab_id) const; // reactor thread only
+    [[nodiscard]] SlabAllocator* load_slab_reactor(int slab_id) const; // reactor thread only
 
     size_t slab_size_;
     int current_slab_id_{-1};

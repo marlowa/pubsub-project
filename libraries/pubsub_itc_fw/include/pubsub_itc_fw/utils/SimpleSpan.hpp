@@ -96,7 +96,7 @@ template <typename T> class SimpleSpan {
     /**
      * @brief Bounds-checked element access
      */
-    constexpr reference at(size_type index) const {
+    [[nodiscard]] constexpr reference at(size_type index) const {
         if (index >= size_) {
             throw std::out_of_range("SimpleSpan::at: index out of range");
         }
@@ -106,49 +106,49 @@ template <typename T> class SimpleSpan {
     /**
      * @brief Access first element
      */
-    constexpr reference front() const {
+    [[nodiscard]] constexpr reference front() const {
         return data_[0];
     }
 
     /**
      * @brief Access last element
      */
-    constexpr reference back() const {
+    [[nodiscard]] constexpr reference back() const {
         return data_[size_ - 1];
     }
 
     /**
      * @brief Direct access to underlying data
      */
-    constexpr pointer data() const {
+    [[nodiscard]] constexpr pointer data() const {
         return data_;
     }
 
     // --- Iterators ---
 
-    constexpr iterator begin() const {
+    [[nodiscard]] constexpr iterator begin() const {
         return data_;
     }
-    constexpr iterator end() const {
+    [[nodiscard]] constexpr iterator end() const {
         return data_ + size_;
     }
-    constexpr const_iterator cbegin() const {
+    [[nodiscard]] constexpr const_iterator cbegin() const {
         return data_;
     }
-    constexpr const_iterator cend() const {
+    [[nodiscard]] constexpr const_iterator cend() const {
         return data_ + size_;
     }
 
-    constexpr reverse_iterator rbegin() const {
+    [[nodiscard]] constexpr reverse_iterator rbegin() const {
         return reverse_iterator(end());
     }
-    constexpr reverse_iterator rend() const {
+    [[nodiscard]] constexpr reverse_iterator rend() const {
         return reverse_iterator(begin());
     }
-    constexpr const_reverse_iterator crbegin() const {
+    [[nodiscard]] constexpr const_reverse_iterator crbegin() const {
         return const_reverse_iterator(cend());
     }
-    constexpr const_reverse_iterator crend() const {
+    [[nodiscard]] constexpr const_reverse_iterator crend() const {
         return const_reverse_iterator(cbegin());
     }
 
@@ -157,21 +157,21 @@ template <typename T> class SimpleSpan {
     /**
      * @brief Number of elements in the span
      */
-    constexpr size_type size() const {
+    [[nodiscard]] constexpr size_type size() const {
         return size_;
     }
 
     /**
      * @brief Size in bytes
      */
-    constexpr size_type size_bytes() const {
+    [[nodiscard]] constexpr size_type size_bytes() const {
         return size_ * sizeof(T);
     }
 
     /**
      * @brief Check if span is empty
      */
-    constexpr bool empty() const {
+    [[nodiscard]] constexpr bool empty() const {
         return size_ == 0;
     }
 
@@ -182,7 +182,7 @@ template <typename T> class SimpleSpan {
      * @param offset Starting position
      * @param count Number of elements (npos means until the end)
      */
-    constexpr SimpleSpan subspan(size_type offset, size_type count = npos) const {
+    [[nodiscard]] constexpr SimpleSpan subspan(size_type offset, size_type count = npos) const {
         if (offset > size_) {
             throw std::out_of_range("SimpleSpan::subspan: offset out of range");
         }
@@ -198,7 +198,7 @@ template <typename T> class SimpleSpan {
     /**
      * @brief Get first n elements
      */
-    constexpr SimpleSpan first(size_type count) const {
+    [[nodiscard]] constexpr SimpleSpan first(size_type count) const {
         if (count > size_) {
             throw std::out_of_range("SimpleSpan::first: count too large");
         }
@@ -208,7 +208,7 @@ template <typename T> class SimpleSpan {
     /**
      * @brief Get last n elements
      */
-    constexpr SimpleSpan last(size_type count) const {
+    [[nodiscard]] constexpr SimpleSpan last(size_type count) const {
         if (count > size_) {
             throw std::out_of_range("SimpleSpan::last: count too large");
         }
@@ -225,8 +225,9 @@ template <typename T, typename Allocator> SimpleSpan(const std::vector<T, Alloca
 
 // --- Comparison operators ---
 template <typename T, typename U> constexpr bool operator==(const SimpleSpan<T>& lhs, const SimpleSpan<U>& rhs) {
-    if (lhs.size() != rhs.size())
+    if (lhs.size() != rhs.size()) {
         return false;
+    }
     return std::equal(lhs.begin(), lhs.end(), rhs.begin());
 }
 

@@ -83,7 +83,7 @@ void AuthenticationThread::on_connection_lost(pubsub_itc_fw::ConnectionID id, co
 }
 
 void AuthenticationThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& msg) {
-    const auto pdu_id = static_cast<int16_t>(msg.pdu_id());
+    const auto pdu_id = msg.pdu_id();
     const pubsub_itc_fw::ConnectionID& conn_id = msg.connection_id();
 
     if (pdu_id == pdu_id_authentication_request) {
@@ -120,7 +120,7 @@ void AuthenticationThread::handle_authentication_request(const pubsub_itc_fw::Co
                view.request_id, comp_id, conn_id.get_value());
 
     // Build server_nonce = client_nonce || 16 cryptographically random bytes.
-    std::vector<uint8_t> client_nonce(view.client_nonce.data, view.client_nonce.data + view.client_nonce.size);
+    const std::vector<uint8_t> client_nonce(view.client_nonce.data, view.client_nonce.data + view.client_nonce.size);
     std::vector<uint8_t> server_nonce = client_nonce;
     uint8_t random_suffix[16];
     if (RAND_bytes(random_suffix, static_cast<int>(sizeof(random_suffix))) != 1) {
@@ -256,7 +256,7 @@ void AuthenticationThread::on_raw_socket_message(const pubsub_itc_fw::EventMessa
     const pubsub_itc_fw::ConnectionID& conn_id = msg.connection_id();
     admin_connections_.insert(conn_id);
 
-    const auto* data = static_cast<const uint8_t*>(msg.payload());
+    const auto* data = msg.payload();
     const auto available = static_cast<int64_t>(msg.payload_size());
 
     if (available < static_cast<int64_t>(admin_pdu_header_size)) {
@@ -312,8 +312,9 @@ void AuthenticationThread::handle_set_credential_request(const pubsub_itc_fw::Co
     const std::string comp_id(view.comp_id.data(), view.comp_id.size());
     const std::string password(view.password.data(), view.password.size());
     int32_t iterations = view.iterations;
-    if (iterations == 0)
+    if (iterations == 0) {
         iterations = 4096;
+    }
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "AuthenticationThread: SetCredentialRequest request_id={} comp_id={} iterations={} conn_id={}",
                view.request_id, comp_id, iterations, conn_id.get_value());

@@ -18,7 +18,7 @@ namespace {
 
 std::string get_leafname(const char* filepath) {
     std::string path_str(filepath);
-    size_t pos = path_str.find_last_of("/\\");
+    const size_t pos = path_str.find_last_of("/\\");
     if (pos == std::string::npos) {
         return path_str;
     }

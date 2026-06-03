@@ -391,8 +391,9 @@ class FrameworkPduBurstIntegrationTest : public ::testing::Test {
                 died_reactor_name_ = "receiver";
                 return false;
             }
-            if (std::chrono::steady_clock::now() > deadline)
+            if (std::chrono::steady_clock::now() > deadline) {
                 return false;
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
         return true;
@@ -409,8 +410,9 @@ class FrameworkPduBurstIntegrationTest : public ::testing::Test {
 
     static void shutdown_and_join(Reactor& reactor, std::thread& reactor_thread, const std::string& reason = "test complete") {
         reactor.shutdown(reason);
-        if (reactor_thread.joinable())
+        if (reactor_thread.joinable()) {
             reactor_thread.join();
+        }
     }
 
     std::unique_ptr<LoggerWithSink> logger_;
@@ -426,7 +428,7 @@ class FrameworkPduBurstIntegrationTest : public ::testing::Test {
 
 TEST_F(FrameworkPduBurstIntegrationTest, ExecutionReportBurstSurvivesEndToEnd) {
     // ----- Receiver -----
-    ServiceRegistry receiver_registry;
+    const ServiceRegistry receiver_registry;
     auto receiver_reactor = std::make_unique<Reactor>(make_reactor_config(), receiver_registry, logger_->logger);
 
     receiver_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", any_os_assigned_port}, ThreadID{2});
@@ -440,7 +442,7 @@ TEST_F(FrameworkPduBurstIntegrationTest, ExecutionReportBurstSurvivesEndToEnd) {
     // before any sender attempts to connect.
     ASSERT_TRUE(wait_for([&]() { return receiver_reactor->is_initialized(); })) << "Receiver reactor did not initialise within timeout";
     const uint16_t receiver_port = receiver_reactor->get_inbound_listener_port(0);
-    ASSERT_NE(receiver_port, 0u) << "OS did not assign a valid listening port";
+    ASSERT_NE(receiver_port, 0U) << "OS did not assign a valid listening port";
 
     // ----- Sender -----
     ServiceRegistry sender_registry;
@@ -514,8 +516,9 @@ namespace {
 
 int connect_raw_socket(uint16_t port) {
     const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (fd == -1)
+    if (fd == -1) {
         return -1;
+    }
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port);
@@ -536,8 +539,9 @@ bool send_all(int fd, const void* data, size_t size) {
     size_t remaining = size;
     while (remaining > 0) {
         const ssize_t n = ::send(fd, ptr, remaining, MSG_NOSIGNAL);
-        if (n <= 0)
+        if (n <= 0) {
             return false;
+        }
         ptr += n;
         remaining -= static_cast<size_t>(n);
     }
@@ -552,7 +556,7 @@ bool send_all(int fd, const void* data, size_t size) {
 
 TEST_F(FrameworkPduBurstIntegrationTest, ExecutionReportBurstUnderConcurrentRawPressure) {
     // ----- Receiver: framework PDU listener (port A) + raw bytes listener (port B) -----
-    ServiceRegistry receiver_registry;
+    const ServiceRegistry receiver_registry;
     auto receiver_reactor = std::make_unique<Reactor>(make_reactor_config(), receiver_registry, logger_->logger);
 
     receiver_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", any_os_assigned_port}, ThreadID{2});
@@ -571,8 +575,8 @@ TEST_F(FrameworkPduBurstIntegrationTest, ExecutionReportBurstUnderConcurrentRawP
     // first inbound listener slot; the raw listener is the second.
     const uint16_t pdu_port = receiver_reactor->get_inbound_listener_port(0);
     const uint16_t raw_port = receiver_reactor->get_inbound_listener_port(1);
-    ASSERT_NE(pdu_port, 0u) << "Receiver framework-PDU port not assigned";
-    ASSERT_NE(raw_port, 0u) << "Receiver raw-bytes port not assigned";
+    ASSERT_NE(pdu_port, 0U) << "Receiver framework-PDU port not assigned";
+    ASSERT_NE(raw_port, 0U) << "Receiver raw-bytes port not assigned";
 
     // ----- Raw client thread: pump bytes until told to stop -----
     std::atomic<bool> stop_raw_client{false};
@@ -596,10 +600,12 @@ TEST_F(FrameworkPduBurstIntegrationTest, ExecutionReportBurstUnderConcurrentRawP
         const uint32_t len_be = htonl(static_cast<uint32_t>(payload.size()));
 
         while (!stop_raw_client.load(std::memory_order_acquire)) {
-            if (!send_all(sock, &len_be, sizeof(len_be)))
+            if (!send_all(sock, &len_be, sizeof(len_be))) {
                 break;
-            if (!send_all(sock, payload.data(), payload.size()))
+            }
+            if (!send_all(sock, payload.data(), payload.size())) {
                 break;
+            }
             raw_bytes_sent.fetch_add(static_cast<int>(sizeof(len_be) + payload.size()), std::memory_order_acq_rel);
             // Small sleep so we don't dominate the CPU; the goal is sustained
             // concurrent activity, not throughput maximisation.
@@ -640,8 +646,9 @@ TEST_F(FrameworkPduBurstIntegrationTest, ExecutionReportBurstUnderConcurrentRawP
 
     // ----- Stop raw client, then shut down both reactors -----
     stop_raw_client.store(true, std::memory_order_release);
-    if (raw_client_thread.joinable())
+    if (raw_client_thread.joinable()) {
         raw_client_thread.join();
+    }
 
     shutdown_and_join(*sender_reactor, sender_reactor_thread);
     shutdown_and_join(*receiver_reactor, receiver_reactor_thread);

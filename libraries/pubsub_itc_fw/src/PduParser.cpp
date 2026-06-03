@@ -26,15 +26,7 @@ PduParser::PduParser(ByteStreamInterface& stream, ApplicationThread& target_thre
     , slab_allocator_(slab_allocator)
     , logger_(logger)
     , disconnect_handler_(std::move(disconnect_handler))
-    , connection_id_(connection_id)
-    , header_bytes_{0}
-    , header_validated_{false}
-    , current_payload_size_{0}
-    , current_pdu_id_{0}
-    , current_seq_no_{0}
-    , payload_chunk_{nullptr}
-    , payload_slab_id_{-1}
-    , payload_bytes_received_{0} {}
+    , connection_id_(connection_id) {}
 
 std::tuple<bool, std::string> PduParser::receive() {
     for (;;) {

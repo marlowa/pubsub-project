@@ -76,20 +76,27 @@ struct FixWireWriter {
 // ── Field-size helpers (arithmetic only, no writing) ─────────────────────────
 
 size_t count_digits(int v) {
-    if (v < 10)
+    if (v < 10) {
         return 1;
-    if (v < 100)
+    }
+    if (v < 100) {
         return 2;
-    if (v < 1000)
+    }
+    if (v < 1000) {
         return 3;
-    if (v < 10000)
+    }
+    if (v < 10000) {
         return 4;
-    if (v < 100000)
+    }
+    if (v < 100000) {
         return 5;
-    if (v < 1000000)
+    }
+    if (v < 1000000) {
         return 6;
-    if (v < 10000000)
+    }
+    if (v < 10000000) {
         return 7;
+    }
     return 8;
 }
 
@@ -115,7 +122,7 @@ uint8_t compute_checksum(const char* buf, size_t length) {
     for (size_t i = 0; i < length; ++i) {
         sum += static_cast<unsigned char>(buf[i]);
     }
-    return static_cast<uint8_t>(sum & 0xFFu);
+    return static_cast<uint8_t>(sum & 0xFFU);
 }
 
 // ── Timestamp ────────────────────────────────────────────────────────────────

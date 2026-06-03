@@ -185,7 +185,7 @@ QuillLogger::QuillLogger(const std::string& file_path, FileOpenMode file_mode, F
         applog_sink_ = PubsubFrontend::create_or_get_sink<quill::FileSink>(file_path, file_config, quill::FileEventNotifier{});
     }
 
-    quill::PatternFormatterOptions formatter_options = make_pattern_formatter_options();
+    const quill::PatternFormatterOptions formatter_options = make_pattern_formatter_options();
 
     quill::SyslogSinkConfig syslog_config;
     syslog_config.set_identifier("pubsub_app");

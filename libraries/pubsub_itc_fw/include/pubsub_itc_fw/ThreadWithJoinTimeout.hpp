@@ -115,7 +115,7 @@ class ThreadWithJoinTimeout {
     /**
      * @brief Returns true if the wrapper still owns a joinable thread.
      */
-    bool joinable() const {
+    [[nodiscard]] bool joinable() const {
         return has_thread_;
     }
 
@@ -168,7 +168,7 @@ class ThreadWithJoinTimeout {
             ts.tv_nsec -= 1000000000L;
         }
 
-        int rc = pthread_timedjoin_np(thread_, nullptr, &ts);
+        const int rc = pthread_timedjoin_np(thread_, nullptr, &ts);
         if (rc == 0) {
             has_thread_ = false;
             return true;
@@ -180,7 +180,7 @@ class ThreadWithJoinTimeout {
         return false;
     }
 
-    pthread_t get_pthread_id() const {
+    [[nodiscard]] pthread_t get_pthread_id() const {
         if (!has_thread_) {
             throw PubSubItcException("ThreadWithJoinTimeout: get_pthread_id called with no running thread");
         }
