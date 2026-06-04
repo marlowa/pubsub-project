@@ -198,15 +198,13 @@ void OrderGatewayThread::on_raw_socket_message(const pubsub_itc_fw::EventMessage
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "OrderGatewayThread: {} raw bytes received on connection {} ({}) at tail {}", available,
                conn_id.get_value(), conn_id.service_name(), event_tail_position);
 
-    // Hex-dump only the first few hundred bytes. Under burst load, available
-    // can reach the MirroredBuffer's capacity (~64 KB), and a full hex_dump
-    // produces a multi-hundred-KB string that adds nothing useful to the log
-    // and has been observed to crash the gateway under fix8 command "T"
-    // (1000 NOS burst). The truncation is purely a logging-helper concern;
-    // the rest of this function still processes all `available` bytes.
-    constexpr int hex_dump_limit = 256;
-    const int hex_dump_len = (available < hex_dump_limit) ? available : hex_dump_limit;
-    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, pubsub_itc_fw::StringUtils::hex_dump(data, hex_dump_len));
+    // Hex-dump only when Trace logging is active, and only the first few hundred
+    // bytes. The hex string is expensive to build so we guard it with a level check.
+    if (get_logger().log_level() <= pubsub_itc_fw::FwLogLevel{pubsub_itc_fw::FwLogLevel::Trace}) {
+        constexpr int hex_dump_limit = 256;
+        const int hex_dump_len = (available < hex_dump_limit) ? available : hex_dump_limit;
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Trace, pubsub_itc_fw::StringUtils::hex_dump(data, hex_dump_len));
+    }
 
     // Create a session on first data from this connection if not already present.
     // piecewise_construct is required because FixSession has no copy or move constructor

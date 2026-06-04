@@ -46,7 +46,7 @@ import tempfile
 from pathlib import Path
 
 _SCRIPT_DIR       = Path(__file__).resolve().parent
-_DEFAULT_INSTALL  = _SCRIPT_DIR / "build" / "installed"
+_DEFAULT_INSTALL  = _SCRIPT_DIR / "installed"
 _DEFAULT_ENV_FILE = _SCRIPT_DIR / "environments" / "dev.toml"
 _DEFAULT_OUTPUT   = _SCRIPT_DIR / "build" / "release"
 _CMAKE_LISTS      = _SCRIPT_DIR / "CMakeLists.txt"
