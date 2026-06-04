@@ -3173,3 +3173,76 @@ The ME's order book rebuilds to the same state as the original live run.
    connects to ME, waits for both ME connections, dispatches all records with
    original timestamps.
 6. ME rebuilds order book identically to the live run.
+
+---
+
+## Session 2026-06-04 (continued) — Outbound retry log noise reduction
+
+### Problem
+
+When the primary sequencer is killed during HA testing, the gateway log filled with
+noise: "connection refused" logged at Info/Warning level on every retry attempt
+(every 2 seconds by default). This made it impossible to see anything else in the
+log during a failover.
+
+### Design
+
+Log behaviour for a failing outbound connection is now:
+
+| Event | Log |
+|---|---|
+| First connect failure | Warning: "service X failed to connect; retrying every Yms (next reminder in 15min if still down)" |
+| Retry attempts (silent period) | Nothing |
+| Every 15 minutes still disconnected | Warning: "service X still not connected (N seconds disconnected); still retrying every Yms" — then timer resets |
+| Successful reconnect | Warning: "service X reconnected after Ns" |
+| First-time connect (no prior failure) | Info: existing "connection established" message unchanged |
+
+The 15-minute reminder interval is configurable via `reactor.connect_retry_warning_interval`
+in each application's TOML file.
+
+### Implementation
+
+**`ReactorConfiguration`** — new field:
+```cpp
+std::chrono::milliseconds connect_retry_warning_interval_{std::chrono::minutes{15}};
+```
+
+**`OutboundConnectionManager`** — new inner struct and map:
+```cpp
+struct RetryContext {
+    std::chrono::steady_clock::time_point first_fail_time;
+    std::chrono::steady_clock::time_point last_warning_time;
+};
+std::unordered_map<std::string, RetryContext> retry_contexts_;
+```
+
+`retry_contexts_` is created on first failure in `schedule_retry` and erased when
+the connection is successfully established (in both the non-TLS `on_connect_ready`
+path and the TLS `on_data_ready` handshake-complete path).
+
+Log suppression is applied in three places:
+- `schedule_retry` — silent after first call for a service
+- `on_connect_ready` `finish_connect` failure log — guarded by `retry_contexts_` check
+- `teardown_connection` Info log — guarded by `retry_contexts_` check
+
+Periodic reminders are emitted in `retry_failed_connections` by comparing
+`now - ctx.last_warning_time` against `connect_retry_warning_interval_`.
+
+**Wired through all six application config stacks** (order_gateway, matching_engine,
+authentication_service, sequencer, witness, arbiter) — each gains a
+`connect_retry_warning_interval` field in its `*Configuration.hpp`, loaded via
+`get_required_except` in its `*ConfigurationLoader.cpp`, and assigned to
+`reactor_configuration_` in its main `.cpp`. Nine TOML files updated with
+`connect_retry_warning_interval = "15m"`.
+
+### Coding rules update
+
+The no-alignment rule was generalised from C++ variable declarations to all file
+types: "Do not add spaces to make adjacent statements or declarations line up,
+regardless of file type (C++, TOML, YAML, or any other)."
+
+### FIX test client blotter
+
+Outbound order rows (`dir-out`) now use a light green background (`#e4f5e4`) instead
+of near-white (`#f8f8f8`), making sent orders visually distinguishable from the
+default row colour.

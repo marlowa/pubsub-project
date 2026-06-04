@@ -270,6 +270,16 @@ class OutboundConnectionManager {
     };
     std::unordered_map<std::string, PendingRetry> pending_retries_;
 
+    // Tracks the start time and last-warning time for each service currently in
+    // retry. Created on first failure, erased when the connection is established.
+    // Lives separately from pending_retries_ so the timing survives the
+    // erase/reschedule cycle in retry_failed_connections().
+    struct RetryContext {
+        std::chrono::steady_clock::time_point first_fail_time;
+        std::chrono::steady_clock::time_point last_warning_time;
+    };
+    std::unordered_map<std::string, RetryContext> retry_contexts_;
+
     std::optional<ReactorControlCommand> pending_send_;
 };
 

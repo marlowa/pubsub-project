@@ -170,7 +170,7 @@ button:disabled {
    column can use background: inherit and always match the row. */
 #blotter thead tr          { background: #ccc; }
 #blotter tbody tr          { background: white; }
-#blotter tr.dir-out        { background: #f8f8f8; }
+#blotter tr.dir-out        { background: #e4f5e4; }
 #blotter tr.status-filled  { background: #c8f0c8; }
 #blotter tr.status-partial { background: #fff0a0; }
 #blotter tr.status-rejected,

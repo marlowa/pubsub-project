@@ -10,6 +10,7 @@ syslog_level = "critical"
 cpu_pinning_enabled    = true
 cpu_pinning_reserve_cpu0   = ${shared_reactor_cpu_pinning_reserve_cpu0}
 cpu_registry_lock_file = "${shared_reactor_cpu_registry_lock_file}"
+connect_retry_warning_interval = "15m"
 
 [event_queue_pool]
 objects_per_slab = 16

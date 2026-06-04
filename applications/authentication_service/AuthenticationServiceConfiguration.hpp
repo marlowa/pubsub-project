@@ -85,6 +85,9 @@ struct AuthenticationServiceConfiguration {
      *  Mandatory: must be set explicitly in the TOML configuration file. */
     std::string cpu_registry_lock_file;
 
+    /** @brief How long to wait between "still disconnected" log warnings during outbound retry. */
+    std::chrono::milliseconds connect_retry_warning_interval;
+
     // ----------------------------------------------------------------
     // Event queue pool  (ApplicationThread inbound EventMessage queue)
     // ----------------------------------------------------------------

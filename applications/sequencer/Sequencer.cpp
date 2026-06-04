@@ -30,6 +30,7 @@ Sequencer::Sequencer(SequencerConfiguration config, std::unique_ptr<pubsub_itc_f
     reactor_configuration_.cpu_pinning_enabled = config_.cpu_pinning_enabled;
     reactor_configuration_.cpu_pinning_reserve_cpu0 = config_.cpu_pinning_reserve_cpu0;
     reactor_configuration_.cpu_registry_lock_file = config_.cpu_registry_lock_file;
+    reactor_configuration_.connect_retry_warning_interval_ = config_.connect_retry_warning_interval;
     reactor_configuration_.command_allocator_configuration_.pool_name = "SequencerCommandPool";
     reactor_configuration_.command_allocator_configuration_.objects_per_pool = config_.command_queue_pool_objects_per_slab;
     reactor_configuration_.command_allocator_configuration_.initial_pools = config_.command_queue_pool_initial_slabs;

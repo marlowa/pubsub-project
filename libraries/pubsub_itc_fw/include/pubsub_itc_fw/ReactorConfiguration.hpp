@@ -139,6 +139,20 @@ struct ReactorConfiguration {
     std::chrono::milliseconds connect_retry_interval_{std::chrono::seconds{2}};
 
     /**
+     * @brief How long to wait between "still not reconnected" log warnings during retry.
+     *
+     * After the first connect failure is logged, subsequent retry attempts are silent.
+     * Once this interval elapses without a successful reconnect, a single warning is
+     * logged showing the total time disconnected, then the timer resets. The cycle
+     * repeats until the connection is re-established.
+     *
+     * Set to zero to disable the periodic reminder (all retries silent after the first).
+     *
+     * Default: 15 minutes.
+     */
+    std::chrono::milliseconds connect_retry_warning_interval_{std::chrono::minutes{15}};
+
+    /**
      * @brief Size in bytes of each slab used by the reactor's inbound PDU slab allocator.
      *
      * The inbound allocator receives payload bytes directly from the socket into

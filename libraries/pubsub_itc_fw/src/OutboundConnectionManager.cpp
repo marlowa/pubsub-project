@@ -51,11 +51,7 @@ void OutboundConnectionManager::process_connect_command(const ReactorControlComm
 
     auto [addr, addr_error] = InetAddress::create(primary.host, primary.port);
     if (!addr) {
-        PUBSUB_LOG(logger_, FwLogLevel::Info,
-                   "OutboundConnectionManager::process_connect_command: failed to resolve {}:{} for "
-                   "service '{}' -- {}, will retry in {}ms",
-                   primary.host, primary.port, service_name, addr_error, config_.connect_retry_interval_.count());
-        pending_retries_[service_name] = PendingRetry(command, std::chrono::steady_clock::now() + config_.connect_retry_interval_);
+        schedule_retry(service_name, command.requesting_thread_id_);
         return;
     }
 
@@ -63,11 +59,7 @@ void OutboundConnectionManager::process_connect_command(const ReactorControlComm
     auto [connected_immediately, connect_error] = connector->connect(*addr);
 
     if (!connect_error.empty()) {
-        PUBSUB_LOG(logger_, FwLogLevel::Info,
-                   "OutboundConnectionManager::process_connect_command: connect() to {}:{} for "
-                   "service '{}' failed -- {}, will retry in {}ms",
-                   primary.host, primary.port, service_name, connect_error, config_.connect_retry_interval_.count());
-        pending_retries_[service_name] = PendingRetry(command, std::chrono::steady_clock::now() + config_.connect_retry_interval_);
+        schedule_retry(service_name, command.requesting_thread_id_);
         return;
     }
 
@@ -105,10 +97,12 @@ void OutboundConnectionManager::on_connect_ready(OutboundConnection& conn) {
 
     if (!connected) {
         if (!error.empty()) {
-            PUBSUB_LOG(logger_, FwLogLevel::Warning,
-                       "OutboundConnectionManager::on_connect_ready: finish_connect failed for "
-                       "service '{}': {}",
-                       conn.service_name(), error);
+            if (retry_contexts_.find(conn.service_name()) == retry_contexts_.end()) {
+                PUBSUB_LOG(logger_, FwLogLevel::Warning,
+                           "OutboundConnectionManager::on_connect_ready: finish_connect failed for "
+                           "service '{}': {}",
+                           conn.service_name(), error);
+            }
 
             const NetworkEndpointConfiguration& secondary = conn.endpoints().secondary;
             if (!conn.is_trying_secondary() && secondary.port != 0) {
@@ -173,10 +167,6 @@ void OutboundConnectionManager::on_connect_ready(OutboundConnection& conn) {
             const ThreadID requesting_thread_id = conn.requesting_thread_id();
 
             teardown_connection(conn.id(), error, DeliverLostEventFlag{DeliverLostEventFlag::SuppressLostEvent});
-            PUBSUB_LOG(logger_, FwLogLevel::Info,
-                       "OutboundConnectionManager::on_connect_ready: service '{}' failed, "
-                       "will retry in {}ms",
-                       service_name, config_.connect_retry_interval_.count());
             schedule_retry(service_name, requesting_thread_id);
         }
         // else still in progress — wait for next EPOLLOUT
@@ -228,8 +218,21 @@ void OutboundConnectionManager::on_connect_ready(OutboundConnection& conn) {
         ev.data.fd = fd;
         ::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, fd, &ev);
 
-        PUBSUB_LOG(logger_, FwLogLevel::Info, "OutboundConnectionManager::on_connect_ready: connection {} to service '{}' established", conn.id().get_value(),
-                   conn.service_name());
+        {
+            auto ctx_it = retry_contexts_.find(conn.service_name());
+            if (ctx_it != retry_contexts_.end()) {
+                const auto elapsed_s = std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::steady_clock::now() - ctx_it->second.first_fail_time).count();
+                PUBSUB_LOG(logger_, FwLogLevel::Warning,
+                           "OutboundConnectionManager: service '{}' reconnected after {}s",
+                           conn.service_name(), elapsed_s);
+                retry_contexts_.erase(ctx_it);
+            } else {
+                PUBSUB_LOG(logger_, FwLogLevel::Info,
+                           "OutboundConnectionManager::on_connect_ready: connection {} to service '{}' established",
+                           conn.id().get_value(), conn.service_name());
+            }
+        }
 
         auto* thread = thread_lookup_.get_fast_path_thread(conn.requesting_thread_id());
         if (thread != nullptr) {
@@ -260,9 +263,21 @@ void OutboundConnectionManager::on_data_ready(OutboundConnection& conn) {
 
         if (!was_established && conn.protocol_handler()->is_handshake_complete()) {
             conn.mark_as_established();
-            PUBSUB_LOG(logger_, FwLogLevel::Info,
-                       "OutboundConnectionManager::on_data_ready: TLS handshake complete, connection {} to service '{}' established",
-                       id.get_value(), service_name);
+            {
+                auto ctx_it = retry_contexts_.find(service_name);
+                if (ctx_it != retry_contexts_.end()) {
+                    const auto elapsed_s = std::chrono::duration_cast<std::chrono::seconds>(
+                        std::chrono::steady_clock::now() - ctx_it->second.first_fail_time).count();
+                    PUBSUB_LOG(logger_, FwLogLevel::Warning,
+                               "OutboundConnectionManager: service '{}' reconnected (TLS) after {}s",
+                               service_name, elapsed_s);
+                    retry_contexts_.erase(ctx_it);
+                } else {
+                    PUBSUB_LOG(logger_, FwLogLevel::Info,
+                               "OutboundConnectionManager::on_data_ready: TLS handshake complete, connection {} to service '{}' established",
+                               id.get_value(), service_name);
+                }
+            }
             auto* thread = thread_lookup_.get_fast_path_thread(conn.requesting_thread_id());
             if (thread != nullptr) {
                 thread->get_queue().enqueue(EventMessage::create_connection_established_event(ConnectionID{id.get_value(), service_name}));
@@ -524,10 +539,27 @@ void OutboundConnectionManager::schedule_retry(const std::string& service_name, 
     ReactorControlCommand retry_cmd{ReactorControlCommand::CommandTag::Connect};
     retry_cmd.requesting_thread_id_ = requesting_thread_id;
     retry_cmd.service_name_ = service_name;
-    pending_retries_[service_name] = PendingRetry(retry_cmd, std::chrono::steady_clock::now() + config_.connect_retry_interval_);
+    const auto now = std::chrono::steady_clock::now();
+    pending_retries_[service_name] = PendingRetry(retry_cmd, now + config_.connect_retry_interval_);
 
-    PUBSUB_LOG(logger_, FwLogLevel::Info, "OutboundConnectionManager::schedule_retry: service '{}' will be retried in {}ms", service_name,
-               config_.connect_retry_interval_.count());
+    if (retry_contexts_.find(service_name) == retry_contexts_.end()) {
+        // First failure for this service — log once and create context.
+        retry_contexts_[service_name] = RetryContext{now, now};
+        const auto warning_min = std::chrono::duration_cast<std::chrono::minutes>(
+            config_.connect_retry_warning_interval_).count();
+        if (warning_min > 0) {
+            PUBSUB_LOG(logger_, FwLogLevel::Warning,
+                       "OutboundConnectionManager: service '{}' failed to connect; "
+                       "retrying every {}ms (next reminder in {}min if still down)",
+                       service_name, config_.connect_retry_interval_.count(), warning_min);
+        } else {
+            PUBSUB_LOG(logger_, FwLogLevel::Warning,
+                       "OutboundConnectionManager: service '{}' failed to connect; "
+                       "retrying every {}ms",
+                       service_name, config_.connect_retry_interval_.count());
+        }
+    }
+    // Subsequent retries are silent — handled by periodic reminder in retry_failed_connections().
 }
 
 void OutboundConnectionManager::retry_failed_connections(const std::function<ConnectionID()>& next_id_fn) {
@@ -553,7 +585,19 @@ void OutboundConnectionManager::retry_failed_connections(const std::function<Con
         const ReactorControlCommand cmd = it->second.command;
         pending_retries_.erase(it);
 
-        PUBSUB_LOG(logger_, FwLogLevel::Info, "OutboundConnectionManager::retry_failed_connections: retrying service '{}'", service_name);
+        // Emit periodic "still failing" reminder if the warning interval has elapsed.
+        auto ctx_it = retry_contexts_.find(service_name);
+        if (ctx_it != retry_contexts_.end() && config_.connect_retry_warning_interval_.count() > 0) {
+            if (now - ctx_it->second.last_warning_time >= config_.connect_retry_warning_interval_) {
+                const auto total_s = std::chrono::duration_cast<std::chrono::seconds>(
+                    now - ctx_it->second.first_fail_time).count();
+                PUBSUB_LOG(logger_, FwLogLevel::Warning,
+                           "OutboundConnectionManager: service '{}' still not connected "
+                           "({} seconds disconnected); still retrying every {}ms",
+                           service_name, total_s, config_.connect_retry_interval_.count());
+                ctx_it->second.last_warning_time = now;
+            }
+        }
 
         process_connect_command(cmd, next_id_fn());
     }
@@ -615,8 +659,10 @@ void OutboundConnectionManager::teardown_connection(ConnectionID id, const std::
 
     OutboundConnection& conn = *it->second;
 
-    PUBSUB_LOG(logger_, FwLogLevel::Info, "OutboundConnectionManager::teardown_connection: connection {} service '{}': {}", id.get_value(), conn.service_name(),
-               reason);
+    if (retry_contexts_.find(conn.service_name()) == retry_contexts_.end()) {
+        PUBSUB_LOG(logger_, FwLogLevel::Info, "OutboundConnectionManager::teardown_connection: connection {} service '{}': {}", id.get_value(), conn.service_name(),
+                   reason);
+    }
 
     // Free any in-flight outbound data.
     if (conn.has_pending_send()) {

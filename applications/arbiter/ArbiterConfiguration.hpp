@@ -3,6 +3,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <chrono>
 #include <cstdint>
 #include <string>
 
@@ -119,6 +120,9 @@ struct ArbiterConfiguration {
 
     /** @brief Path to the flock file used to serialise cross-process CPU registry access. */
     std::string cpu_registry_lock_file;
+
+    /** @brief How long to wait between "still disconnected" log warnings during outbound retry. */
+    std::chrono::milliseconds connect_retry_warning_interval;
 
     // ----------------------------------------------------------------
     // Event queue pool  (ApplicationThread inbound EventMessage queue)

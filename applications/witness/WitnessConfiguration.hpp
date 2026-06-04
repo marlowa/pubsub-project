@@ -3,6 +3,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <chrono>
 #include <cstdint> // IWYU pragma: keep
 #include <string>
 
@@ -48,6 +49,9 @@ struct WitnessConfiguration {
      *  Prefer /dev/shm/ so the file is cleared on reboot.
      *  Mandatory: must be set explicitly in the TOML configuration file. */
     std::string cpu_registry_lock_file;
+
+    /** @brief How long to wait between "still disconnected" log warnings during outbound retry. */
+    std::chrono::milliseconds connect_retry_warning_interval;
 
     // ----------------------------------------------------------------
     // Event queue pool  (ApplicationThread inbound EventMessage queue)
