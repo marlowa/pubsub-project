@@ -145,6 +145,14 @@ inline AvailableCpuVector get_available_cpu_ids(bool reserve_cpu0, const SharedC
             bool busy = false;
             for (uint32_t i = 0; i < registry.active_entry_count; ++i) {
                 const auto& e = registry.entries[i];
+                // Entries with pid <= 0 are corrupt or zero-initialised and can
+                // never correspond to a real process; skip them.  kill(0, 0) sends
+                // to the calling process group (always returns 0) and kill(-1, 0)
+                // sends to all processes (also always returns 0), so without this
+                // guard every such entry would spuriously mark a CPU as busy.
+                if (e.process_id <= 0) {
+                    continue;
+                }
                 if (e.core_id == cpu_id.get_value()) {
                     // kill(pid, 0): returns 0 if process exists; ESRCH if not.
                     if (kill(e.process_id, 0) == 0 || errno != ESRCH) {

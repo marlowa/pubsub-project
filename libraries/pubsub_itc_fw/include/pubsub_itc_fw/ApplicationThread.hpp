@@ -14,6 +14,7 @@
 
 #include <arpa/inet.h>
 #include <endian.h>
+#include <sys/eventfd.h>
 
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
@@ -248,6 +249,20 @@ class ApplicationThread {
     LockFreeMessageQueue<EventMessage>& get_queue() const {
         return *message_queue_;
     }
+
+    /**
+     * @brief Enqueues a message and wakes the thread immediately.
+     *
+     * All producers (Reactor, InboundConnectionManager, OutboundConnectionManager,
+     * PduParser, RawBytesProtocolHandler) must call this instead of accessing
+     * get_queue().enqueue() directly.  The eventfd write that follows the queue
+     * enqueue is what allows run_internal() to block on epoll_wait instead of
+     * spin-sleeping, giving sub-10µs wakeup rather than the ~65µs sleep of
+     * BackoffWithYield tier-3.
+     *
+     * @param[in] message The event message to deliver.
+     */
+    void enqueue(EventMessage message);
 
     /**
      * @brief Returns a reference to the logger.
@@ -673,6 +688,11 @@ class ApplicationThread {
     QuillLogger& logger_;
     Reactor& reactor_;
     ExpandableSlabAllocator outbound_allocator_;
+
+    // eventfd used to wake the ApplicationThread immediately when a message is
+    // enqueued.  Producers write 1 via enqueue(); run_internal() blocks on this
+    // fd via epoll_wait instead of polling with BackoffWithYield.
+    int notify_fd_ = -1;
 
     // Backing store for BumpAllocator when decoding variable-length inbound PDUs.
     // Reserved once at construction to inbound_decode_arena_size bytes and reused

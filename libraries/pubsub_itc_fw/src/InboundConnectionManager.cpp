@@ -179,7 +179,7 @@ void InboundConnectionManager::on_accept(InboundListener& listener, ConnectionID
     PUBSUB_LOG(logger_, FwLogLevel::Debug, "InboundConnectionManager::on_accept: accepted connection {} from {} on port {} service [{}]",
                populated_id.get_value(), peer_desc, listener.configuration.address.port, populated_id.service_name());
 
-    target_thread->get_queue().enqueue(EventMessage::create_connection_established_event(populated_id));
+    target_thread->enqueue(EventMessage::create_connection_established_event(populated_id));
 }
 
 void InboundConnectionManager::on_data_ready(InboundConnection& conn) {
@@ -288,7 +288,7 @@ void InboundConnectionManager::teardown_connection(ConnectionID id, const std::s
     if (deliver_lost_event == DeliverLostEventFlag::DeliverLostEvent) {
         auto* thread = thread_lookup_.get_fast_path_thread(target_thread_id);
         if (thread != nullptr) {
-            thread->get_queue().enqueue(EventMessage::create_connection_lost_event(id, reason));
+            thread->enqueue(EventMessage::create_connection_lost_event(id, reason));
         }
     }
 

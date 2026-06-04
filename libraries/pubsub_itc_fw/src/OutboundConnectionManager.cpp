@@ -42,7 +42,7 @@ void OutboundConnectionManager::process_connect_command(const ReactorControlComm
         PUBSUB_LOG(logger_, FwLogLevel::Error, "OutboundConnectionManager::process_connect_command: unknown service '{}'", service_name);
         auto* thread = thread_lookup_.get_fast_path_thread(command.requesting_thread_id_);
         if (thread != nullptr) {
-            thread->get_queue().enqueue(EventMessage::create_connection_failed_event(fmt::format("Unknown service: {}", service_name)));
+            thread->enqueue(EventMessage::create_connection_failed_event(fmt::format("Unknown service: {}", service_name)));
         }
         return;
     }
@@ -87,7 +87,7 @@ void OutboundConnectionManager::process_connect_command(const ReactorControlComm
         if (::epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, fd, &ev) == -1) {
             PUBSUB_LOG(logger_, FwLogLevel::Error, "OutboundConnectionManager::process_connect_command: epoll_ctl ADD failed for fd {}", fd);
             teardown_connection(id, "epoll_ctl failed during connect", DeliverLostEventFlag{DeliverLostEventFlag::SuppressLostEvent});
-            target_thread->get_queue().enqueue(EventMessage::create_connection_failed_event("epoll_ctl failed during connect"));
+            target_thread->enqueue(EventMessage::create_connection_failed_event("epoll_ctl failed during connect"));
         }
     }
 }
@@ -120,7 +120,7 @@ void OutboundConnectionManager::on_connect_ready(OutboundConnection& conn) {
                     teardown_connection(conn.id(), addr_error, DeliverLostEventFlag{DeliverLostEventFlag::SuppressLostEvent});
                     auto* thread = thread_lookup_.get_fast_path_thread(conn.requesting_thread_id());
                     if (thread != nullptr) {
-                        thread->get_queue().enqueue(EventMessage::create_connection_failed_event(addr_error));
+                        thread->enqueue(EventMessage::create_connection_failed_event(addr_error));
                     }
                     return;
                 }
@@ -140,7 +140,7 @@ void OutboundConnectionManager::on_connect_ready(OutboundConnection& conn) {
                     teardown_connection(conn.id(), connect_error, DeliverLostEventFlag{DeliverLostEventFlag::SuppressLostEvent});
                     auto* thread = thread_lookup_.get_fast_path_thread(conn.requesting_thread_id());
                     if (thread != nullptr) {
-                        thread->get_queue().enqueue(EventMessage::create_connection_failed_event(connect_error));
+                        thread->enqueue(EventMessage::create_connection_failed_event(connect_error));
                     }
                     return;
                 }
@@ -236,7 +236,7 @@ void OutboundConnectionManager::on_connect_ready(OutboundConnection& conn) {
 
         auto* thread = thread_lookup_.get_fast_path_thread(conn.requesting_thread_id());
         if (thread != nullptr) {
-            thread->get_queue().enqueue(EventMessage::create_connection_established_event(ConnectionID{conn.id().get_value(), conn.service_name()}));
+            thread->enqueue(EventMessage::create_connection_established_event(ConnectionID{conn.id().get_value(), conn.service_name()}));
         }
     }
 }
@@ -280,7 +280,7 @@ void OutboundConnectionManager::on_data_ready(OutboundConnection& conn) {
             }
             auto* thread = thread_lookup_.get_fast_path_thread(conn.requesting_thread_id());
             if (thread != nullptr) {
-                thread->get_queue().enqueue(EventMessage::create_connection_established_event(ConnectionID{id.get_value(), service_name}));
+                thread->enqueue(EventMessage::create_connection_established_event(ConnectionID{id.get_value(), service_name}));
             }
         }
 
@@ -634,7 +634,7 @@ void OutboundConnectionManager::check_for_timed_out_connections() {
 
         auto* thread = thread_lookup_.get_fast_path_thread(requesting_thread_id);
         if (thread != nullptr) {
-            thread->get_queue().enqueue(EventMessage::create_connection_failed_event(reason));
+            thread->enqueue(EventMessage::create_connection_failed_event(reason));
         }
 
         schedule_retry(service_name, requesting_thread_id);
@@ -708,7 +708,7 @@ void OutboundConnectionManager::teardown_connection(ConnectionID id, const std::
     if (deliver_lost_event == DeliverLostEventFlag::DeliverLostEvent && conn.is_established()) {
         auto* thread = thread_lookup_.get_fast_path_thread(conn.requesting_thread_id());
         if (thread != nullptr) {
-            thread->get_queue().enqueue(EventMessage::create_connection_lost_event(id, reason));
+            thread->enqueue(EventMessage::create_connection_lost_event(id, reason));
         }
     }
 

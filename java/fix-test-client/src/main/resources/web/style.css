@@ -141,7 +141,10 @@ button:disabled {
 #blotter-wrap {
     overflow-x: auto;
     overflow-y: auto;
-    max-height: 50vh;
+    /* Use remaining viewport height below the form controls (~340px of chrome
+       + nav + NOS/OCR forms).  min-height keeps the area usable on tiny screens. */
+    max-height: calc(100vh - 340px);
+    min-height: 100px;
     margin-top: 16px;
     border: 1px solid #aaa;
 }

@@ -191,7 +191,7 @@ void Reactor::route_message(ThreadID target_id, EventMessage message) {
         }
     }
 
-    target->get_queue().enqueue(std::move(message));
+    target->enqueue(std::move(message));
 }
 
 void Reactor::register_inbound_listener(NetworkEndpointConfiguration address, ThreadID target_thread_id, ProtocolType protocol_type,
@@ -1101,7 +1101,7 @@ void Reactor::handle_sigterm_and_singint() {
         const std::lock_guard<std::mutex> lock(thread_registry_mutex_);
         for (auto& [name, thread] : threads_) {
             if (thread != nullptr) {
-                thread->get_queue().enqueue(EventMessage::create_termination_event("SIGTERM received"));
+                thread->enqueue(EventMessage::create_termination_event("SIGTERM received"));
             }
         }
     }

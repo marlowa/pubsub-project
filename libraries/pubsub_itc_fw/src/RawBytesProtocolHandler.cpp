@@ -54,7 +54,7 @@ std::tuple<bool, std::string, bool> RawBytesProtocolHandler::on_data_ready() {
     // Pass a shared_ptr copy of the buffer into the event so the buffer
     // outlives this handler if the connection is torn down while events for
     // it are still in the application thread's queue.
-    target_thread_.get_queue().enqueue(
+    target_thread_.enqueue(
         EventMessage::create_raw_socket_message(connection_id_, buffer_->read_ptr(), static_cast<int>(buffer_->bytes_available()), buffer_->tail(), buffer_));
 
     // High-water check. Edge-triggered: only emit a pause signal on the

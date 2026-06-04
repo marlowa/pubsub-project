@@ -312,6 +312,16 @@ def main() -> None:
     # Step 2: template expansion
     print("=== expanding templates ===")
     namespace = flatten_toml(env)
+    # Override paths_install_dir with the resolved absolute path so that any
+    # namespace values that reference ${paths_install_dir} expand correctly.
+    namespace["paths_install_dir"] = str(install_dir)
+    # CPU registry files always live under install_dir/run/ regardless of what
+    # the env TOML says.  Inject the absolute paths here so the templates get
+    # concrete values and operators can see the resolved paths in installed/etc/.
+    cpu_run_dir = install_dir / "run"
+    cpu_run_dir.mkdir(parents=True, exist_ok=True)
+    namespace["shared_reactor_cpu_registry_shm_path"] = str(cpu_run_dir / "pubsub_cpu_registry")
+    namespace["shared_reactor_cpu_registry_lock_file"] = str(cpu_run_dir / "pubsub_cpu_registry.lock")
     expand_templates(install_dir, namespace)
     print()
 

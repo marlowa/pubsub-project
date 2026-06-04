@@ -171,7 +171,7 @@ std::tuple<bool, std::string, bool> TlsRawBytesProtocolHandler::drain_plaintext(
         return {true, "", false};
     }
 
-    target_thread_.get_queue().enqueue(
+    target_thread_.enqueue(
         EventMessage::create_raw_socket_message(connection_id_, plaintext_buffer_->read_ptr(),
                                                 static_cast<int>(plaintext_buffer_->bytes_available()),
                                                 plaintext_buffer_->tail(), plaintext_buffer_));

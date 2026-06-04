@@ -569,7 +569,67 @@ The receiving node's reactor accepts data via epoll and delivers it zero-copy to
 
 ## Session Accomplishments
 
-### Session 24 (current)
+### Session 25 (current)
+
+**ApplicationThread: BackoffWithYield replaced with eventfd-based blocking.**
+
+Root-cause analysis established that `BackoffWithYield` tier-3 (entered after ~20ms of queue inactivity) calls `sleep_for(microseconds(10))`, which on this machine (CONFIG_HZ=1000, CONFIG_HIGH_RES_TIMERS=y) actually sleeps ~65µs. With the order pipeline passing through five ApplicationThread hops (OrderGatewayThread → SequencerThread → MatchingEngineThread → SequencerThread → OrderGatewayThread), each hop could be sleeping ~65µs when a message arrived, contributing ~325µs of avoidable overhead. ITC latency measured from heartbeat timer pairs in the logs confirmed ~140µs average wakeup time per hop when the thread was in tier-3 sleep.
+
+Fix: each `ApplicationThread` now owns a non-blocking `eventfd` (`notify_fd_`). A new public `enqueue(EventMessage)` method enqueues to the MPSC queue and then writes 1 to `notify_fd_`. `run_internal()` drains the queue in a tight loop; when the queue is empty it calls `epoll_wait(notify_fd_, timeout=1s)` rather than spin-sleeping. The 1-second timeout is a safety net only — normal wakeup is immediate (kernel delivers the eventfd signal in <1µs). `shutdown()` also writes to `notify_fd_` so the thread exits promptly rather than waiting for the timeout. All 15 producer call sites across `Reactor.cpp`, `InboundConnectionManager.cpp`, `OutboundConnectionManager.cpp`, `PduParser.cpp`, `RawBytesProtocolHandler.cpp`, and `TlsRawBytesProtocolHandler.cpp` were updated from `thing->get_queue().enqueue(msg)` to `thing->enqueue(std::move(msg))`. All unit and integration tests pass.
+
+**CPU registry bug: all processes claiming the same CPU set.**
+
+Observed in logs: every process — matching engine (CPU 1, 2, 3), sequencer primary (CPU 1, 2, 3), sequencer secondary (CPU 1, 2, 3), order gateway (CPU 1, 2, 3) — was pinned to identical CPUs, completely defeating the purpose of the cross-process registry.
+
+Root cause: `/dev/shm/pubsub_cpu_registry` was a stale file from a previous run with `active_entry_count = 256 = MAX_SYSTEM_CORES`. All 256 entries had `process_id = 0` or `process_id = -1`. `kill(0, 0)` sends to the calling process group (always returns 0) and `kill(-1, 0)` sends to all processes (also always returns 0), so every stale entry appeared alive. `get_available_cpu_ids()` therefore found no free CPUs — but that is not what the logs showed. The real mechanism: because none of the stale `core_id` values matched any valid CPU (they were all 0 or -1 from zero-initialised memory), the "busy" check was never triggered for CPUs 1–31, so `get_available_cpu_ids()` returned all of CPUs 1–31 as free. Every process then selected 1, 2, 3 (the first three). When they tried to write their claims to the registry, `active_entry_count >= MAX_SYSTEM_CORES` caused `claim_cpus()` to silently break from the write loop without recording anything. The next process found the same state and claimed the same CPUs.
+
+Fixes:
+- `CpuPinning.hpp` `get_available_cpu_ids()`: skip entries with `process_id <= 0` before the `kill()` check.
+- `CpuRegistry.cpp` `claim_cpus()`: at the start of the flock-protected section, compact all entries whose PID is <= 0 or no longer alive (reuses the same `kill()` check), resetting `active_entry_count` before the availability scan. This prevents a full but corrupt table from blocking all future claims.
+- `devenv.py` `cmd_start()`: delete `/dev/shm/pubsub_cpu_registry` (later moved — see below) on every start so each run begins with a clean registry.
+- `deploy.py`: compute both `shared_reactor_cpu_registry_shm_path` and `shared_reactor_cpu_registry_lock_file` from `install_dir / "run"` and inject into the template namespace, overriding any env-TOML value. Creates `install_dir/run/` if it does not exist. This moves both registry files to under the install directory (principle: all runtime state under the install tree for container-readiness).
+- `devenv.py`: updated to delete from `install_dir/run/pubsub_cpu_registry` and to `mkdir install_dir/run/` if absent.
+
+Result after fix: matching engine on CPUs 10–12, sequencer primary on CPUs 13–15, sequencer secondary on CPUs 16–18, order gateway on CPUs 19–21. All processes on independent CPU sets.
+
+**Partial — cpu_registry_shm_path not yet configurable from TOML.** `deploy.py` injects the correct absolute path for the lock file via the template namespace. However `ReactorConfiguration::cpu_registry_shm_path` still defaults to `/dev/shm/pubsub_cpu_registry` in C++ and is not yet read from the TOML. Making it configurable requires adding the field to six application `*Configuration.hpp` / `*ConfigurationLoader.cpp` / `*.cpp` wiring files and to all nine TOML templates. Deferred to next session.
+
+**Blotter scrolling fix (fix-test-client GUI).**
+
+Problem: 12 orders placed but only 9 visible; no auto-scroll.
+- `style.css`: `max-height: 50vh` → `max-height: calc(100vh - 340px)` with `min-height: 100px`. The viewport-relative calculation uses the actual remaining height below the form controls rather than a fixed half-screen cap.
+- `messages.html` `renderBlotter()`: added `wrap.scrollTop = wrap.scrollHeight` after populating the table body. The blotter now auto-scrolls to the most recent row after each poll update.
+
+**Latency measurements and WAL jitter analysis.**
+
+Before the eventfd fix (all processes sharing CPUs 1–3): gateway internal latency ~520–660µs. After the eventfd fix with broken pinning (still all sharing): ~600–700µs (similar; the CPU competition obscured the gain). After both fixes (dedicated CPUs): best observed ORD-010 at **389µs**, most orders 490–690µs.
+
+Remaining variance (389–1769µs) was diagnosed as **WAL replication jitter**, described in detail below.
+
+**WAL replication jitter: root cause, adversarial scenario, and options.**
+
+The sequencer leader (sequencer primary) gates ER emission on two independent events completing in parallel:
+1. ER arriving from the matching engine (path: sequencer primary → matching engine → sequencer primary)
+2. WalAck arriving from the sequencer secondary after it appends the WalRecord to its own WAL (path: sequencer primary → sequencer secondary → sequencer primary)
+
+The order pipeline stalls until both arrive (`max(ME_round_trip, WAL_round_trip)`). The WAL replication round-trip involves three `epoll_wait` wakeup events (secondary SequencerThread wakeup, secondary reactor wakeup for WalAck send, primary SequencerThread wakeup for WalAck receipt). On a non-realtime kernel each wakeup adds 10–50µs of scheduler jitter. Additionally, the primary SequencerThread handles heartbeat (every 2 seconds) and WAL snapshot (every 30 seconds) timer events from the same queue as WalAck events; if a timer event is queued just ahead of a WalAck it is processed first, adding timer overhead to the order path.
+
+**Option A — decouple ER emission from WalAck (rejected).** Forward the ER to the gateway as soon as it arrives from the matching engine; continue WAL replication asynchronously. This eliminates the WAL round-trip from the critical path, giving a projected 150–250µs consistent latency.
+
+This option is **not safe**. The adversarial scenario: the sequencer primary appends WAL record N, sends WalRecord N to the secondary (in transit, ~100–200µs), receives the ER from the ME, and forwards it to the gateway immediately. The primary then crashes before the WalRecord reaches the secondary. The secondary promotes to leader; its WAL ends at N−1; its `next_sequence_number` is therefore N. Two consequences:
+
+1. **Sequence number N is reused.** The new leader assigns seq N to the next order that arrives after failover. Two completely different orders from different FIX clients now carry seq N in the system. Any downstream consumer that uses seq N as a unique record identifier finds a collision.
+2. **The ER for the original order N cannot be routed after failover.** The routing table (seq_no → FIX session conn_id) is rebuilt from WAL replay. The new leader's WAL ends at N−1, so there is no routing entry for seq N. When the matching engine sends back the ER for the original order N (which the ME did execute), the new leader cannot route it to the FIX client. The trade happened; the client never receives the fill notification.
+
+The secondary has no way to know record N existed. It cannot ask the primary (dead) and has no other source of truth.
+
+**Option B — prioritise PDU events over timer events in SequencerThread (planned, not yet implemented).** Keep the WalAck gate intact (correctness preserved). Change the SequencerThread's event drain loop so that `FrameworkPdu` and connection events are drained to exhaustion before timer events are processed. This prevents a heartbeat or snapshot timer from adding its processing time to the WalAck path when both arrive in the queue simultaneously. Reduces worst-case latency spikes without touching the replication semantics.
+
+Status: to be implemented next session.
+
+---
+
+### Session 24
 
 **`ApplicationAnnouncer` — startup one-liner in each application.**
 
@@ -1379,19 +1439,27 @@ TcpSocket EAGAIN/EOF fix, use-after-free fix, InboundConnection infrastructure, 
 1. ~~**Re-verify fix8 wrong-port issue is gone**~~ — DONE (session 2026-06-03). `f8test` connected to port 9879, SCRAM auth succeeded, FIX session established. Closed.
 2. ~~**Matching engine — `OrderCancelRequest` handling**~~ — DONE (session 2026-06-03). ME now decodes `OrderCancelRequest`, fabricates a `Canceled` ER, and sends it back via the sequencer to the gateway. Verified end-to-end via fix-test-client (place order, cancel order, Execution Report received with `OrdStatus=Canceled`).
 3. ~~**Arbiter — end-to-end failover verification**~~ — DONE (session 2026-06-03). Added `VerifyStep` NamedTuple to `ha_test.py` and scenario 15 (`arbiter_mediated_election`). Scenario 15 explicitly verifies each step of the ArbitrationReport/Decision PDU exchange after killing `sequencer_primary`: (a) `sequencer_secondary` sends `ArbitrationReport` to the arbiter pool (confirmed in log in 5.8 s — well within the 15 s `peer_heartbeat_timeout`); (b) `arbiter_primary` sends `ArbitrationDecision` back (confirmed in 0.0 s); (c) `sequencer_secondary` receives the decision (0.0 s); (d) `sequencer_secondary` transitions to leader (0.0 s). Recovery orders flow. Scenario 15 PASS confirmed.
-4. **Leader-follower — Slice 7 (network WAL replication)** — COMPLETE (session 18). Leader streams `WalRecord` PDUs to follower over peer TCP; follower acks with `WalAck`; leader gates ER emission on ack. Both sequencer TOMLs have `ha_enabled=true`. Next: extend `ha_test.py` with a new scenario that verifies WAL sequence number continuity across failover.
+4. ~~**Leader-follower — Slice 7 (network WAL replication)**~~ — DONE. Slice 7 complete (session 18): leader streams `WalRecord` PDUs to follower; follower acks with `WalAck`; leader gates ER emission on ack. WAL sequence number continuity across failover verified by scenario 14 (`wal_recovery`) added in session 2026-05-30: primary kills → secondary becomes leader → 1000 interim orders (seq 1001–2000) → primary restarts, reads WAL, syncs from peer, rejoins as follower → secondary kills → primary re-elected leader → recovery orders continue from seq 2001 with no reset or gap.
 5. ~~**`SequencedMessage` wrapper**~~ — the sequencer already forwards to the ME with `send_pdu(me_conn, pdu_id, seq, nos)` where `seq` is the WAL sequence number encoded into `PduHeader.seq_no`; the ME reads `message.seq_no()` to retrieve it. The envelope is already explicit. **Open question for WAL replay:** when a downstream consumer (Kafka publisher, future broadcast) connects with a position cursor, the seq_no in each replayed `WalRecord` already serves as the cursor position identifier. Verify at implementation time that no additional wrapper is needed for the replay/Aeron-style consumer path.
 6. ~~**Trace logs in `PduParser` and elsewhere**~~ — DONE. All five `PduParser.cpp` log lines (header fields, raw 16 header bytes, slab alloc, alloc result, payload hex dump) are at `Debug`. `InboundConnectionManager::on_accept` TRACE is `Debug`. `SequencerThread::on_framework_pdu_message` TRACE is `Debug`. Per-PDU `Info` hot-path logs in `SequencerThread` (WAL append, ER forwarding) and `MatchingEngineThread` (sequenced PDU received) also demoted to `Debug` in the same pass.
 7. **Pub/sub WAL** — long-term replacement for direct TCP; eliminates the rendezvous problem and the retry workaround.
 8. ~~**Credential export script**~~ — done (session 23). `db/export_credentials.py` exports DB credentials to auth service `credentials.toml`. Live CRUD updates go via PDU 510/512.
 9. ~~**`RestoreCredentialRequest` PDU (514/515)**~~ — DONE (session 2026-06-03). PDU 514/515 added to `authentication.dsl`; `handle_restore_credential_request()` implemented in `AuthenticationThread` (decodes pre-derived SCRAM binary fields, validates sizes, installs into `credentials_` map, persists). `AuthServiceClient.restoreCredential()` added in Java (hex→binary conversion; sends PDU 514, validates PDU 515). `CompIdHandler.update()` now calls `restoreCredential` when transitioning from disabled/locked → enabled+unlocked. `FirmHandler.update()` now calls `restoreCredential` for all enabled+unlocked comp_ids when a firm is re-enabled. Warning notices removed from both Edit form templates. README credential lifecycle table updated to include the new restore actions.
 10. ~~**FIX message capture**~~ — DONE (session 2026-06-04). `FixCapture` class (`applications/order_gateway/FixCapture.hpp/.cpp`): gateway thread calls `capture(Direction, data, size, timestamp_ns)` which enqueues a record onto a `std::vector<Record>` queue (protected by mutex; short critical section, no file I/O). A background `std::thread` drains the queue via `condition_variable` and writes binary records to disk. Record format (little-endian): `uint32_t payload_size | int64_t timestamp_ns | uint8_t direction(0=in,1=out) | bytes`. Three capture points in `OrderGatewayThread`: (1) inbound — after `parser.feed()`, captures the consumed bytes of all complete FIX messages; (2) outbound session messages — in `send_fix_to_session`, after serialise; (3) outbound ERs — after `encode_execution_report`. Config: mandatory `[fix_capture] enabled` + `file` fields in `order_gateway.toml`; `enabled=false` in `dev.toml` by default. `capture_` member is `nullptr` when disabled; all three capture calls are guarded by `if (capture_ != nullptr)` so there is zero overhead when capture is off.
+11. **WAL replication jitter — Option B fix** — Root cause identified (session 25): three `epoll_wait` wakeup events in the sequencer primary → sequencer secondary → sequencer primary WAL round-trip, plus timer events (heartbeat/snapshot) potentially queued ahead of WalAck events in the sequencer primary's event queue. Option A (decouple ER emission from WalAck) rejected as unsafe — see adversarial scenario in session 25 entry. Option B: change `SequencerThread`'s event drain loop to process `FrameworkPdu` and connection events to exhaustion before processing any timer event. Keeps the WalAck gate intact. To be implemented next session.
+12. **cpu_registry_shm_path configurable from TOML** — Partial (session 25): `deploy.py` now injects the correct absolute path for the lock file. The shm file path in `ReactorConfiguration` still defaults to `/dev/shm/pubsub_cpu_registry` (hardcoded C++). Making it configurable requires adding the field to six application `*Configuration.hpp`, six `*ConfigurationLoader.cpp`, six `*.cpp` wiring files, and nine TOML templates. Deferred.
 
 ## Immediate Next Task
 
+**Item 11 — WAL replication jitter, Option B.** Implement priority-based event processing in `SequencerThread::run_internal()` (or in the drain loop in `ApplicationThread::run_internal()`): drain `FrameworkPdu` and connection events to exhaustion before processing any timer event. This prevents heartbeat and snapshot timers from adding latency to the WalAck path. Design and adversarial analysis documented in the session 25 entry above.
+
+**Item 12 — cpu_registry_shm_path configurable from TOML.** Add `cpu_registry_shm_path` to the six application config structs, loaders, and wiring files; add the key to all nine TOML templates. `deploy.py` already injects the correct absolute value; the C++ just needs to read it from TOML rather than using the hardcoded default.
+
+---
+
 A WAL+HA design has been worked through in detail (see "WAL and HA Design" section below) and an eleven-slice implementation plan agreed. **Slices 1–7 are complete** (session-18 entry for Slice 7):
 
-**Slice 7 — Network WAL replication — COMPLETE (session 18).** Leader streams `WalRecord` (pdu_id=103) PDUs to follower over the existing peer TCP connection (7003/7004). Follower appends each record to its own WAL and replies with `WalAck` (pdu_id=104). Leader buffers ERs from the ME in `pending_er_` (keyed by seq_no) and only forwards them to the gateway once the corresponding WalAck arrives. On peer disconnect the buffered ERs are flushed immediately (degraded mode). The follower no longer writes its WAL from the direct gateway PDU path; it writes exclusively from WalRecord, ensuring WAL contents are byte-for-byte identical to the leader's.
+**Slice 7 — Network WAL replication — COMPLETE (session 18).** Leader streams `WalRecord` (pdu_id=103) PDUs to follower over the existing peer TCP connection (7003/7004). Follower appends each record to its own WAL and replies with `WalAck` (pdu_id=104). Leader buffers ERs from the ME in `pending_er_` (keyed by seq_no) and only forwards them to the gateway once the corresponding WalAck arrives. On peer disconnect the buffered ERs are flushed immediately (degraded mode). The follower no longer writes its WAL from the direct gateway PDU path; it writes exclusively from WalRecord, ensuring WAL contents are byte-for-byte identical to the leader's. WAL sequence number continuity across failover verified by scenario 14 (`wal_recovery`) — added and passing.
 
 **Smaller items deferred but still on the list:**
 - ~~OrderCancelRequest round trip (item 2)~~ — DONE (session 2026-06-03).

@@ -194,6 +194,9 @@ function renderBlotter(rows) {
         tr.appendChild(actionTd);
         tbody.appendChild(tr);
     }
+
+    const wrap = document.getElementById('blotter-wrap');
+    wrap.scrollTop = wrap.scrollHeight;
 }
 
 async function doCancel() {

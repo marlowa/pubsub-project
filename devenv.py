@@ -264,6 +264,18 @@ def cmd_start(env: dict, ha_enabled: bool, delay: float) -> None:
 
     order = startup_order(env, ha_enabled)
 
+    # CPU registry lives under install_dir/run/ (same location that deploy.py
+    # configures in the component TOMLs).  Remove the stale file on every start
+    # so the first process recreates it from scratch; without this, corrupt or
+    # zero-filled entries from a previous run fill the table and every process
+    # independently claims the same CPUs.
+    cpu_run_dir = install_dir / "run"
+    cpu_run_dir.mkdir(parents=True, exist_ok=True)
+    cpu_registry = cpu_run_dir / "pubsub_cpu_registry"
+    if cpu_registry.exists():
+        cpu_registry.unlink()
+        print("removed stale CPU registry")
+
     print("=== exporting credentials ===")
     export_credentials(install_dir, env)
     print()

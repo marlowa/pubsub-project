@@ -197,7 +197,7 @@ void PduParser::dispatch_pdu(int slab_id, void* payload_chunk) {
 
     EventMessage msg = EventMessage::create_framework_pdu_message(payload, payload_size, slab_id, connection_id_, current_pdu_id_, current_seq_no_);
 
-    target_thread_.get_queue().enqueue(std::move(msg));
+    target_thread_.enqueue(std::move(msg));
 }
 
 void PduParser::reset_header() {

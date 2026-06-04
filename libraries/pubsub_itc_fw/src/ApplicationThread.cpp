@@ -11,6 +11,9 @@
 #include <utility>
 
 #include <pthread.h>
+#include <sys/epoll.h>
+#include <sys/eventfd.h>
+#include <unistd.h>
 
 #include <fmt/format.h>
 
@@ -57,6 +60,10 @@ ApplicationThread::~ApplicationThread() {
 
     // Note: We do not tell the reactor to deregister the thread.
     // The reactor owns the threads.
+    if (notify_fd_ != -1) {
+        ::close(notify_fd_);
+        notify_fd_ = -1;
+    }
 }
 
 ApplicationThread::ApplicationThread(ConstructorToken, QuillLogger& logger, Reactor& reactor, std::string thread_name, ThreadID thread_id,
@@ -77,6 +84,12 @@ ApplicationThread::ApplicationThread(ConstructorToken, QuillLogger& logger, Reac
 
     decode_arena_buffer_.reserve(thread_config.inbound_decode_arena_size);
     message_queue_ = std::make_unique<LockFreeMessageQueue<EventMessage>>(queue_config, allocator_config);
+
+    notify_fd_ = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    if (notify_fd_ == -1) {
+        throw PubSubItcException(fmt::format("ApplicationThread {}: eventfd creation failed", thread_name_));
+    }
+
     set_lifecycle_state(ThreadLifecycleState::Created);
 }
 
@@ -142,10 +155,21 @@ void ApplicationThread::resume() {
     is_paused_.store(false, std::memory_order_relaxed);
 }
 
+void ApplicationThread::enqueue(EventMessage message) {
+    message_queue_->enqueue(std::move(message));
+    const uint64_t one = 1;
+    if (::write(notify_fd_, &one, sizeof(one)) == -1 && errno != EAGAIN) {
+        PUBSUB_LOG(logger_, FwLogLevel::Warning, "Thread {}: notify_fd_ write failed errno {}", thread_name_, errno);
+    }
+}
+
 void ApplicationThread::post_message(ThreadID target_thread_id, EventMessage message) const {
     if (target_thread_id == thread_id_) {
-        // Direct self-post
         message_queue_->enqueue(std::move(message));
+        const uint64_t one = 1;
+        if (::write(notify_fd_, &one, sizeof(one)) == -1 && errno != EAGAIN) {
+            PUBSUB_LOG(logger_, FwLogLevel::Warning, "Thread {}: notify_fd_ write failed errno {}", thread_name_, errno);
+        }
         return;
     }
 
@@ -245,6 +269,13 @@ void ApplicationThread::shutdown([[maybe_unused]] const std::string& reason) {
         message_queue_->shutdown();
     }
 
+    // Wake the thread so it exits epoll_wait promptly instead of waiting for
+    // the 1-second safety timeout.
+    const uint64_t one = 1;
+    if (::write(notify_fd_, &one, sizeof(one)) == -1 && errno != EAGAIN) {
+        PUBSUB_LOG(logger_, FwLogLevel::Warning, "Thread {}: notify_fd_ write on shutdown failed errno {}", thread_name_, errno);
+    }
+
     PUBSUB_LOG(logger_, FwLogLevel::Info, "Thread {} received shutdown signal: {}", thread_name_, reason);
 
     // Joining is the sole responsibility of Reactor::finalize_threads_after_shutdown().
@@ -268,10 +299,6 @@ void ApplicationThread::run() {
 }
 
 void ApplicationThread::run_internal() {
-    // Set the OS thread name so Quill's %(thread_name) column shows the thread's
-    // logical name rather than the process name. pthread_setname_np is capped at
-    // 15 characters on Linux; names are truncated silently. Quill caches the name
-    // on first log call from this thread, so this must run before set_lifecycle_state.
     const std::string os_name = thread_name_.substr(0, 15);
     pthread_setname_np(pthread_self(), os_name.c_str());
 
@@ -279,52 +306,68 @@ void ApplicationThread::run_internal() {
 
     PUBSUB_LOG(logger_, FwLogLevel::Info, "Starting thread {}", thread_name_);
 
-    BackoffWithYield backoff;
+    const int ep = ::epoll_create1(EPOLL_CLOEXEC);
+    if (ep == -1) {
+        PUBSUB_LOG(logger_, FwLogLevel::Error, "Thread {}: epoll_create1 failed errno {}", thread_name_, errno);
+        set_lifecycle_state(ThreadLifecycleState::ShuttingDown);
+        return;
+    }
+    struct epoll_event watch{};
+    watch.events = EPOLLIN;
+    watch.data.fd = notify_fd_;
+    ::epoll_ctl(ep, EPOLL_CTL_ADD, notify_fd_, &watch);
 
-    for (;;) {
-        // Optional pause mechanism
+    bool keep_running = true;
+    while (keep_running) {
         if (is_paused_.load(std::memory_order_relaxed)) {
             std::this_thread::yield();
             continue;
         }
 
-        // Physical/lifecycle running state: hard stop once we leave the running band
         if (!is_running()) {
             break;
         }
 
-        // If the Reactor has begun shutdown, this thread should exit promptly
         if (!reactor_.is_running()) {
             PUBSUB_LOG(logger_, FwLogLevel::Warning, "Thread {} detected Reactor shutdown, exiting", thread_name_);
             break;
         }
 
-        // Defensive: queue must exist while the thread is running
         if (message_queue_ == nullptr) {
             PUBSUB_LOG(logger_, FwLogLevel::Error, "Thread {} no longer has message queue, shutting down.", thread_name_);
             break;
         }
 
-        // Main dequeue path
-        auto maybe_msg = message_queue_->dequeue();
-        if (!maybe_msg.has_value()) {
-            // No work available: apply backoff
-            backoff.pause();
-            continue;
+        // Drain all available messages before potentially blocking.
+        bool any_processed = false;
+        while (keep_running) {
+            auto maybe_msg = message_queue_->dequeue();
+            if (!maybe_msg.has_value()) {
+                break;
+            }
+            any_processed = true;
+            EventMessage msg = std::move(*maybe_msg);
+            process_message(msg);
+            if (get_lifecycle_state().as_tag() == ThreadLifecycleState::Terminated) {
+                keep_running = false;
+            }
         }
 
-        // We successfully dequeued a message: reset backoff
-        backoff.reset();
-
-        EventMessage msg = std::move(*maybe_msg);
-        process_message(msg);
-
-        // Application logic may decide this thread is now Terminated
-        if (get_lifecycle_state().as_tag() == ThreadLifecycleState::Terminated) {
-            break;
+        if (keep_running && !any_processed) {
+            // Queue empty: block until a producer signals notify_fd_.  The 1-second
+            // timeout is a safety net for shutdown races; normal wakeup is immediate.
+            struct epoll_event fired[1];
+            const int nfds = ::epoll_wait(ep, fired, 1, 1000);
+            if (nfds > 0) {
+                uint64_t count = 0;
+                if (::read(notify_fd_, &count, sizeof(count)) == -1 && errno != EAGAIN) {
+                    PUBSUB_LOG(logger_, FwLogLevel::Warning, "Thread {}: notify_fd_ read failed errno {}", thread_name_, errno);
+                }
+            }
         }
     }
 
+    ::close(ep);
     PUBSUB_LOG(logger_, FwLogLevel::Info, "Thread {} is shutting down.", thread_name_);
     set_lifecycle_state(ThreadLifecycleState::ShuttingDown);
 }

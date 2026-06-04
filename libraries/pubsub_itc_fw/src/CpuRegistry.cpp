@@ -90,6 +90,20 @@ AvailableCpuVector CpuRegistry::claim_cpus(size_t count, bool reserve_cpu0) cons
 
     const FileLock lock(lock_file_path_);
 
+    // Compact stale entries (dead or invalid PIDs) before consulting the registry.
+    // Entries with pid <= 0 are corrupt/zero-initialised and can never be released
+    // by release_cpus() (which only removes entries matching the current process),
+    // so they must be evicted here to prevent the table from filling permanently.
+    uint32_t write_idx = 0;
+    for (uint32_t i = 0; i < layout_->active_entry_count; ++i) {
+        const auto& e = layout_->entries[i];
+        bool keep = (e.process_id > 0) && (kill(e.process_id, 0) == 0 || errno != ESRCH);
+        if (keep) {
+            layout_->entries[write_idx++] = e;
+        }
+    }
+    layout_->active_entry_count = write_idx;
+
     // Find CPUs not owned by any live process.
     AvailableCpuVector available = get_available_cpu_ids(reserve_cpu0, *layout_);
 
