@@ -12,6 +12,7 @@
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
 
+#include "FixCapture.hpp"
 #include "FixMessage.hpp"
 #include "FixSerialiser.hpp"
 #include "FixSession.hpp"
@@ -167,6 +168,9 @@ class OrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
 
     // ConnectionID of the secondary sequencer outbound connection.
     pubsub_itc_fw::ConnectionID sequencer_secondary_conn_id_;
+
+    // FIX capture: non-null only when fix_capture_enabled=true in config.
+    std::unique_ptr<FixCapture> capture_;
 
     // gateway_session_conn_id → FixSession lookup: O(1) direct map lookup by
     // the internal connection ID stamped by the gateway on each NOS and echoed

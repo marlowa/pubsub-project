@@ -35,9 +35,11 @@ namespace authentication_service {
  *   TLS admin listener (TlsRawBytes) — credential management.
  *     510 SetCredentialRequest    -- received from admin tool (plaintext password, TLS-protected)
  *     511 SetCredentialResult     -- sent to admin tool
- *     512 RemoveCredentialRequest -- received from admin tool (remove a comp_id credential)
- *     513 RemoveCredentialResult  -- sent to admin tool
- *     Both PDUs use the same 24-byte framework PDU header framing over the raw byte stream.
+ *     512 RemoveCredentialRequest  -- received from admin tool (remove a comp_id credential)
+ *     513 RemoveCredentialResult   -- sent to admin tool
+ *     514 RestoreCredentialRequest -- received from admin tool (restore pre-derived SCRAM fields)
+ *     515 RestoreCredentialResult  -- sent to admin tool
+ *     All PDUs use the same 24-byte framework PDU header framing over the raw byte stream.
  *
  * Threading: ThreadID 1.
  */
@@ -78,6 +80,7 @@ class AuthenticationThread : public pubsub_itc_fw::ApplicationThread {
     // TLS admin channel handlers
     void handle_set_credential_request(const pubsub_itc_fw::ConnectionID& conn_id, const uint8_t* payload, uint32_t payload_size);
     void handle_remove_credential_request(const pubsub_itc_fw::ConnectionID& conn_id, const uint8_t* payload, uint32_t payload_size);
+    void handle_restore_credential_request(const pubsub_itc_fw::ConnectionID& conn_id, const uint8_t* payload, uint32_t payload_size);
     void send_admin_pdu(const pubsub_itc_fw::ConnectionID& conn_id, uint16_t pdu_id, const uint8_t* payload, uint32_t payload_size);
     void persist_credentials();
 

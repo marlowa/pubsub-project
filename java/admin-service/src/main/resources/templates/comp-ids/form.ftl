@@ -31,11 +31,6 @@
                    value="${(row.lockedReason())!''}" maxlength="255">
         </label>
     </fieldset>
-    <#if !row.enabled() || row.locked()>
-    <p><strong>Note:</strong> This comp_id's credential has been revoked from the
-    authentication service. Re-enabling or unlocking will not automatically restore
-    gateway access — the password must be reset afterwards.</p>
-    </#if>
     <button type="submit">Update</button>
     <a href="/comp-ids/${row.compId()}/password" role="button">Set Password</a>
     <a href="/comp-ids/${row.compId()}/gateways">Gateways</a>

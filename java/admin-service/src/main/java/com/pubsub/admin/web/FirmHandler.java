@@ -7,6 +7,7 @@ import com.pubsub.admin.exception.NotFoundException;
 import com.pubsub.admin.model.CompIdRow;
 import com.pubsub.admin.model.FirmRow;
 import com.pubsub.admin.service.AuthServiceClient;
+import com.pubsub.admin.service.ScramCredential;
 import io.javalin.http.Context;
 
 import java.io.IOException;
@@ -52,14 +53,15 @@ public class FirmHandler {
 
     public void update(Context ctx) throws SQLException, IOException {
         String firmId = ctx.pathParam("firmId");
-        if (firmDao.findById(firmId).isEmpty()) {
-            throw new NotFoundException("Firm not found: " + firmId);
-        }
+        FirmRow existing = firmDao.findById(firmId)
+                .orElseThrow(() -> new NotFoundException("Firm not found: " + firmId));
         String name = requireParam(ctx, "name");
         boolean enabled = "on".equals(ctx.formParam("enabled"));
         firmDao.update(firmId, name, enabled);
         if (!enabled && authServiceClient != null) {
             removeAllCompIdCredentials(firmId);
+        } else if (!existing.enabled() && enabled && authServiceClient != null) {
+            restoreAllCompIdCredentials(firmId);
         }
         ctx.redirect("/firms");
     }
@@ -77,6 +79,17 @@ public class FirmHandler {
         List<CompIdRow> compIds = compIdDao.listByFirm(firmId);
         for (CompIdRow row : compIds) {
             authServiceClient.removeCredential(row.compId());
+        }
+    }
+
+    private void restoreAllCompIdCredentials(String firmId) throws SQLException, IOException {
+        List<CompIdRow> compIds = compIdDao.listByFirm(firmId);
+        for (CompIdRow row : compIds) {
+            if (row.enabled() && !row.locked()) {
+                ScramCredential cred = new ScramCredential(
+                        row.storedKey(), row.serverKey(), row.salt(), row.iterations());
+                authServiceClient.restoreCredential(row.compId(), cred);
+            }
         }
     }
 

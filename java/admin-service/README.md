@@ -60,7 +60,7 @@ redirected to `/change-password` immediately after their first login.
 
 The admin service keeps credentials in two places in sync: the PostgreSQL database
 (SCRAM-derived values only — no plaintext password is ever stored) and the running
-authentication service (updated live via PDU 510/512 over the TLS admin channel).
+authentication service (updated live via PDU 510/512/514 over the TLS admin channel).
 
 ### What happens automatically
 
@@ -72,22 +72,13 @@ authentication service (updated live via PDU 510/512 over the TLS admin channel)
 | Disable comp_id | PDU 512 sent — credential revoked |
 | Lock comp_id | PDU 512 sent — credential revoked |
 | Delete comp_id | PDU 512 sent — credential revoked |
+| Re-enable firm | PDU 514 sent for every enabled+unlocked comp_id — credentials restored |
+| Re-enable comp_id | PDU 514 sent — credential restored |
+| Unlock comp_id | PDU 514 sent — credential restored |
 
-### What does NOT happen automatically — the re-enable/unlock gap
-
-PDU 510 requires the plaintext password, which the system never stores. When a firm
-or comp_id is re-enabled or unlocked, there is no plaintext to send, so **no PDU is
-sent and gateway access is not restored automatically**.
-
-The operator must reset the password after re-enabling or unlocking:
-
-1. Re-enable the firm or comp_id using the Edit form.
-2. Navigate to the comp_id and click **Set Password**.
-3. Enter a new password. This derives fresh SCRAM values, updates the database, and
-   sends PDU 510 to the authentication service — restoring gateway access.
-
-The UI displays a warning on the Edit form whenever a firm or comp_id is currently
-disabled or locked, as a reminder to take this step after re-enabling.
+PDU 514 (RestoreCredentialRequest) carries the pre-derived SCRAM fields directly from
+the database — no plaintext password is needed or transmitted. The authentication service
+installs the credential into its in-memory store and persists it to credentials.toml.
 
 ## Configuration Reference
 

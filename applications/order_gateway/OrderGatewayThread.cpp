@@ -112,7 +112,11 @@ OrderGatewayThread::OrderGatewayThread(pubsub_itc_fw::ApplicationThread::Constru
     , auth_service_primary_conn_id_{}
     , auth_service_secondary_conn_id_{}
     , sequencer_primary_conn_id_{}
-    , sequencer_secondary_conn_id_{} {}
+    , sequencer_secondary_conn_id_{}
+    , capture_(config.fix_capture_enabled
+               ? std::make_unique<FixCapture>(config.fix_capture_file, logger,
+                                              static_cast<size_t>(config.fix_capture_queue_depth))
+               : nullptr) {}
 
 void OrderGatewayThread::on_app_ready_event() {
     connect_to_service("authentication_service_primary");
@@ -342,6 +346,10 @@ void OrderGatewayThread::on_raw_socket_message(const pubsub_itc_fw::EventMessage
     // bytes, followed by whatever new TCP data arrived, and the parser picks up
     // exactly where it left off.
     const size_t consumed = session.parser.feed(new_bytes_ptr, static_cast<size_t>(new_bytes_len));
+    if (capture_ != nullptr && consumed > 0) {
+        capture_->capture(FixCapture::Direction::Inbound, new_bytes_ptr, consumed,
+                          config_.wall_clock->now_ns());
+    }
     commit_raw_bytes(conn_id, static_cast<int64_t>(consumed));
     session.absolute_bytes_committed_ += static_cast<int64_t>(consumed);
 }
@@ -413,6 +421,11 @@ void OrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventMess
     char wire_buffer[execution_report_buffer_size];
     const size_t wire_length = encode_execution_report(view, config_.sender_comp_id, session.client_comp_id, session.outbound_seq_num++, *config_.wall_clock,
                                                        wire_buffer, sizeof(wire_buffer));
+    if (capture_ != nullptr) {
+        capture_->capture(FixCapture::Direction::Outbound,
+                          reinterpret_cast<const uint8_t*>(wire_buffer), wire_length,
+                          config_.wall_clock->now_ns());
+    }
     send_raw(session.conn_id, wire_buffer, static_cast<uint32_t>(wire_length));
     release_pdu_payload(message);
 }
@@ -813,6 +826,11 @@ void OrderGatewayThread::disconnect_session(const FixSession& session, const std
 
 void OrderGatewayThread::send_fix_to_session(FixSession& session, const FixMessage& msg) {
     const std::string wire = serialiser_.serialise(msg, session.outbound_seq_num++);
+    if (capture_ != nullptr) {
+        capture_->capture(FixCapture::Direction::Outbound,
+                          reinterpret_cast<const uint8_t*>(wire.data()), wire.size(),
+                          config_.wall_clock->now_ns());
+    }
     send_raw(session.conn_id, wire.data(), static_cast<uint32_t>(wire.size()));
 }
 

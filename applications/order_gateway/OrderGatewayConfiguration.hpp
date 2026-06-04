@@ -174,6 +174,27 @@ struct OrderGatewayConfiguration {
     int32_t command_queue_pool_initial_slabs{1};
 
     // ----------------------------------------------------------------
+    // FIX capture
+    // ----------------------------------------------------------------
+
+    /** @brief Whether to capture all inbound and outbound FIX wire bytes to a file.
+     *  Mandatory: must be set explicitly in the TOML configuration file. */
+    bool fix_capture_enabled;
+
+    /** @brief Path to the binary FIX capture file.
+     *  Required when fix_capture_enabled=true; ignored otherwise.
+     *  Mandatory: must be set explicitly in the TOML configuration file. */
+    std::string fix_capture_file;
+
+    /** @brief Maximum number of records the capture queue may hold before
+     *  new records are dropped with a warning.  Size for expected burst depth:
+     *  at 10,000 messages/second and a writer that flushes at least once per
+     *  millisecond, 65536 is ample for development; production high-throughput
+     *  deployments should increase this value.
+     *  Mandatory: must be set explicitly in the TOML configuration file. */
+    int32_t fix_capture_queue_depth{65536};
+
+    // ----------------------------------------------------------------
     // Wall clock
     // ----------------------------------------------------------------
 

@@ -229,7 +229,7 @@ add_custom_command(
     COMMENT "Generating fix_equity_orders.hpp from fix_equity_orders.dsl"
     VERBATIM
 )
-add_custom_target(fix_equity_orders_generated
+add_custom_target(fix_equity_orders_generated ALL
     DEPENDS "${FIX_DSL_GENERATED_HPP}"
 )
 
@@ -248,7 +248,7 @@ add_custom_command(
     COMMENT "Generating leader_follower.hpp from leader_follower.dsl"
     VERBATIM
 )
-add_custom_target(leader_follower_generated
+add_custom_target(leader_follower_generated ALL
     DEPENDS "${LF_DSL_GENERATED_HPP}"
 )
 
@@ -267,7 +267,7 @@ add_custom_command(
     COMMENT "Generating authentication.hpp from authentication.dsl"
     VERBATIM
 )
-add_custom_target(authentication_generated
+add_custom_target(authentication_generated ALL
     DEPENDS "${AUTH_DSL_GENERATED_HPP}"
 )
 

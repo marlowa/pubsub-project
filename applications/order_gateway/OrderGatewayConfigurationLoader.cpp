@@ -139,6 +139,17 @@ OrderGatewayConfigurationLoader::load_and_init_logging(const std::string& file_p
                                                         std::to_string(config.command_queue_pool_initial_slabs));
         }
 
+        toml.get_required_except("fix_capture.enabled", config.fix_capture_enabled);
+        toml.get_required_except("fix_capture.file", config.fix_capture_file);
+        toml.get_required_except("fix_capture.queue_depth", config.fix_capture_queue_depth);
+        if (config.fix_capture_enabled && config.fix_capture_file.empty()) {
+            throw pubsub_itc_fw::ConfigurationException("OrderGatewayConfigurationLoader: fix_capture.file must not be empty when fix_capture.enabled=true");
+        }
+        if (config.fix_capture_queue_depth < 1) {
+            throw pubsub_itc_fw::ConfigurationException("OrderGatewayConfigurationLoader: fix_capture.queue_depth must be >= 1, got " +
+                                                        std::to_string(config.fix_capture_queue_depth));
+        }
+
     } catch (const pubsub_itc_fw::ConfigurationException&) {
         throw;
     }

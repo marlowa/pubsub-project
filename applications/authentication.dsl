@@ -210,3 +210,54 @@ message RemoveCredentialResult (id=513, version=1)
     string                 comp_id
     RemoveCredentialOutcome outcome
 end
+
+# ---------------------------------------------------------------------------
+# RestoreCredentialOutcome
+# ---------------------------------------------------------------------------
+
+enum RestoreCredentialOutcome : i32 {
+    Success       = 0
+    InvalidInput  = 1
+    InternalError = 2
+}
+
+# ---------------------------------------------------------------------------
+# RestoreCredentialRequest (id=514)
+#
+# Sent by an admin tool to the authentication service over the TLS admin
+# channel to restore a previously-derived SCRAM-SHA-256 credential for a
+# comp_id without requiring the plaintext password.  Used when re-enabling a
+# firm or comp_id, or unlocking a comp_id, where the plaintext password is no
+# longer available but the stored SCRAM fields are still in the database.
+#
+# The four binary fields (stored_key, server_key, salt, iterations) are
+# exactly those stored in the pubsub_comp_id DB table.  The authentication
+# service installs them directly into its in-memory credential map and
+# persists them to credentials.toml — no password derivation is performed.
+#
+# stored_key must be exactly 32 bytes (SHA-256 output).
+# server_key must be exactly 32 bytes (HMAC-SHA-256 output).
+# salt must be non-empty (typically 16 bytes).
+# iterations must be in [1000, 1000000].
+# ---------------------------------------------------------------------------
+
+message RestoreCredentialRequest (id=514, version=1)
+    i64    request_id    # caller-assigned correlation handle
+    string comp_id       # identity to restore
+    bytes  stored_key    # SHA-256(HMAC-SHA-256(SaltedPassword, "Client Key")), 32 bytes
+    bytes  server_key    # HMAC-SHA-256(SaltedPassword, "Server Key"), 32 bytes
+    bytes  salt          # PBKDF2 salt, binary
+    i32    iterations    # PBKDF2 iteration count
+end
+
+# ---------------------------------------------------------------------------
+# RestoreCredentialResult (id=515)
+#
+# Sent by the authentication service in response to RestoreCredentialRequest.
+# ---------------------------------------------------------------------------
+
+message RestoreCredentialResult (id=515, version=1)
+    i64                      request_id
+    string                   comp_id
+    RestoreCredentialOutcome outcome
+end

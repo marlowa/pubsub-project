@@ -455,8 +455,10 @@ Examples:
     build_dir = source_dir / args.build_dir
 
     # Staging dir: CMake installs here after the build; release.py reads from here.
-    # Not the runtime location — that is set up by deploy.py from the release tarball.
-    staging_dir = (build_dir / "installed").resolve()
+    # Fixed relative to the project root, not the build directory, so that all
+    # tooling (ha_test.py, auth_service_test.py, devenv.py) finds binaries in the
+    # same well-known location regardless of which --build-dir was used.
+    staging_dir = (source_dir / "installed").resolve()
 
     # Sanitizer mutual exclusion checks
     if args.asan and args.tsan:

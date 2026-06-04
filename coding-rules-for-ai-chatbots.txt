@@ -135,3 +135,11 @@ The class provides isEqual(), value(), and free operator== overloads so the flag
 Boolean function parameters (bool in the signature) are therefore banned when the call site would have to pass a literal true or false.
 A bool return value, a bool local variable, or a bool struct field are all fine; the restriction applies only to function parameters
 whose call sites would otherwise be burdened with unexplained true/false literals.
+
+FIX Protocol Version
+
+This project uses FIX 5.0 SP2 with FIXT 1.1 transport. The BeginString (tag 8) in every FIX message
+must be "8=FIXT.1.1", NOT "8=FIX.4.2" or any other version string. The gateway enforces this with a
+preamble check (see FixMessage.hpp expected_preamble) and disconnects immediately if the wrong
+BeginString is received. Any test code, scripts, or utilities that construct raw FIX messages must
+use "8=FIXT.1.1" as the BeginString.

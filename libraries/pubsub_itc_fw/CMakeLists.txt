@@ -32,7 +32,7 @@ foreach(DSL_FILE ${DSL_SCHEMAS})
     list(APPEND GENERATED_DSL_HEADERS ${OUT_HPP})
 endforeach()
 
-add_custom_target(pubsub_itc_fw_dsl
+add_custom_target(pubsub_itc_fw_dsl ALL
         DEPENDS ${GENERATED_DSL_HEADERS}
 )
 

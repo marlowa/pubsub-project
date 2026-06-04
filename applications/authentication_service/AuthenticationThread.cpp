@@ -35,6 +35,8 @@ constexpr uint16_t pdu_id_set_credential_request = 510;
 constexpr uint16_t pdu_id_set_credential_result = 511;
 constexpr uint16_t pdu_id_remove_credential_request = 512;
 constexpr uint16_t pdu_id_remove_credential_result = 513;
+constexpr uint16_t pdu_id_restore_credential_request = 514;
+constexpr uint16_t pdu_id_restore_credential_result = 515;
 
 // PDU header layout (24 bytes, all fields big-endian):
 //   byte_count(4) pdu_id(2) version(1) filler(1) seq_no(8) canary(4) filler(4)
@@ -286,6 +288,8 @@ void AuthenticationThread::on_raw_socket_message(const pubsub_itc_fw::EventMessa
         handle_set_credential_request(conn_id, payload, static_cast<uint32_t>(byte_count));
     } else if (pdu_id == pdu_id_remove_credential_request) {
         handle_remove_credential_request(conn_id, payload, static_cast<uint32_t>(byte_count));
+    } else if (pdu_id == pdu_id_restore_credential_request) {
+        handle_restore_credential_request(conn_id, payload, static_cast<uint32_t>(byte_count));
     } else {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "AuthenticationThread: admin conn_id={} unknown pdu_id={} -- dropping",
                    conn_id.get_value(), pdu_id);
@@ -438,6 +442,94 @@ void AuthenticationThread::handle_remove_credential_request(const pubsub_itc_fw:
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "AuthenticationThread: RemoveCredentialRequest comp_id={} exception: {}", comp_id,
                    ex.what());
         send_result(pubsub_itc_fw_app::RemoveCredentialOutcome::InternalError);
+    }
+}
+
+void AuthenticationThread::handle_restore_credential_request(const pubsub_itc_fw::ConnectionID& conn_id, const uint8_t* payload, uint32_t payload_size) {
+    auto& arena_buffer = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buffer.data(), arena_buffer.size());
+    arena.reset();
+
+    pubsub_itc_fw_app::RestoreCredentialRequestView view{};
+    size_t bytes_consumed = 0;
+    size_t arena_bytes_needed = 0;
+
+    if (!pubsub_itc_fw_app::decode(view, payload, payload_size, bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "AuthenticationThread: failed to decode RestoreCredentialRequest conn_id={} -- dropping",
+                   conn_id.get_value());
+        return;
+    }
+
+    const std::string comp_id(view.comp_id.data(), view.comp_id.size());
+
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "AuthenticationThread: RestoreCredentialRequest request_id={} comp_id={} conn_id={}",
+               view.request_id, comp_id, conn_id.get_value());
+
+    auto send_result = [&](pubsub_itc_fw_app::RestoreCredentialOutcome outcome) {
+        pubsub_itc_fw_app::RestoreCredentialResult result{};
+        result.request_id = view.request_id;
+        result.comp_id = comp_id;
+        result.outcome = outcome;
+
+        static constexpr size_t result_buffer_size = 512;
+        uint8_t result_buffer[result_buffer_size];
+        size_t bytes_written = 0;
+        size_t bytes_needed = 0;
+        if (!pubsub_itc_fw_app::encode(result, result_buffer, result_buffer_size, bytes_written, bytes_needed)) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "AuthenticationThread: failed to encode RestoreCredentialResult conn_id={}",
+                       conn_id.get_value());
+            return;
+        }
+        send_admin_pdu(conn_id, pdu_id_restore_credential_result, result_buffer, static_cast<uint32_t>(bytes_written));
+    };
+
+    if (comp_id.empty()) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "AuthenticationThread: RestoreCredentialRequest empty comp_id -- InvalidInput");
+        send_result(pubsub_itc_fw_app::RestoreCredentialOutcome::InvalidInput);
+        return;
+    }
+    if (view.stored_key.size != 32) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "AuthenticationThread: RestoreCredentialRequest stored_key size={} (expected 32) comp_id={} -- InvalidInput",
+                   view.stored_key.size, comp_id);
+        send_result(pubsub_itc_fw_app::RestoreCredentialOutcome::InvalidInput);
+        return;
+    }
+    if (view.server_key.size != 32) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "AuthenticationThread: RestoreCredentialRequest server_key size={} (expected 32) comp_id={} -- InvalidInput",
+                   view.server_key.size, comp_id);
+        send_result(pubsub_itc_fw_app::RestoreCredentialOutcome::InvalidInput);
+        return;
+    }
+    if (view.salt.size == 0) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "AuthenticationThread: RestoreCredentialRequest empty salt comp_id={} -- InvalidInput", comp_id);
+        send_result(pubsub_itc_fw_app::RestoreCredentialOutcome::InvalidInput);
+        return;
+    }
+    if (view.iterations < 1000 || view.iterations > 1000000) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "AuthenticationThread: RestoreCredentialRequest iterations={} out of range [1000,1000000] comp_id={} -- InvalidInput",
+                   view.iterations, comp_id);
+        send_result(pubsub_itc_fw_app::RestoreCredentialOutcome::InvalidInput);
+        return;
+    }
+
+    try {
+        scram_crypto::ScramCredential cred;
+        cred.salt.assign(view.salt.data, view.salt.data + view.salt.size);
+        cred.iterations = view.iterations;
+        cred.stored_key.assign(view.stored_key.data, view.stored_key.data + view.stored_key.size);
+        cred.server_key.assign(view.server_key.data, view.server_key.data + view.server_key.size);
+
+        credentials_[comp_id] = std::move(cred);
+        persist_credentials();
+
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "AuthenticationThread: RestoreCredentialRequest request_id={} comp_id={} -- Success",
+                   view.request_id, comp_id);
+        send_result(pubsub_itc_fw_app::RestoreCredentialOutcome::Success);
+
+    } catch (const std::exception& ex) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "AuthenticationThread: RestoreCredentialRequest comp_id={} exception: {}", comp_id, ex.what());
+        send_result(pubsub_itc_fw_app::RestoreCredentialOutcome::InternalError);
     }
 }
 

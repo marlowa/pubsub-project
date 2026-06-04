@@ -55,3 +55,11 @@ initial_slabs    = 1
 # 62 slabs × 1024 base + 253 exhaustion chains × 1024 = 322,560; rounded to 327,680.
 objects_per_slab = 327680
 initial_slabs    = 1
+
+[fix_capture]
+# Set enabled=true to write all inbound and outbound FIX wire bytes to a binary file.
+# The file is truncated on each gateway start.  Record format (little-endian):
+#   uint32_t payload_size | int64_t timestamp_ns | uint8_t direction(0=in,1=out) | bytes
+enabled     = false
+file        = "${order_gateway_fix_capture_file}"
+queue_depth = ${order_gateway_fix_capture_queue_depth}

@@ -30,6 +30,13 @@ Scenarios
        TLS admin channel: create a credential for a brand-new comp_id that is
        not in the initial credentials.toml, then authenticate with it (Granted).
 
+  6  restore_credential_revoke_and_restore
+       TLS admin channel: authenticate a comp_id (Granted), remove its credential
+       via PDU 512 (authentication now fails with UnknownUser), then restore it
+       via PDU 514 using the original pre-derived SCRAM fields (no plaintext
+       password needed), then authenticate again (Granted).
+       Verifies the full revoke-and-restore credential lifecycle.
+
 Options:
     install_prefix      Path to cmake install prefix (default: installed)
     --tls               Start the service with the TLS admin listener.  Required
@@ -75,11 +82,18 @@ PDU_ID_AUTHENTICATION_CHALLENGE = 501
 PDU_ID_AUTHENTICATION_PROOF     = 502
 PDU_ID_AUTHENTICATION_RESULT    = 503
 
-PDU_ID_SET_CREDENTIAL_REQUEST = 510
-PDU_ID_SET_CREDENTIAL_RESULT  = 511
+PDU_ID_SET_CREDENTIAL_REQUEST     = 510
+PDU_ID_SET_CREDENTIAL_RESULT      = 511
+PDU_ID_REMOVE_CREDENTIAL_REQUEST  = 512
+PDU_ID_REMOVE_CREDENTIAL_RESULT   = 513
+PDU_ID_RESTORE_CREDENTIAL_REQUEST = 514
+PDU_ID_RESTORE_CREDENTIAL_RESULT  = 515
 
-AUTHENTICATION_OUTCOME_GRANTED  = 0
-SET_CREDENTIAL_OUTCOME_SUCCESS  = 0
+AUTHENTICATION_OUTCOME_GRANTED       = 0
+AUTHENTICATION_OUTCOME_UNKNOWN_USER  = 7
+SET_CREDENTIAL_OUTCOME_SUCCESS       = 0
+REMOVE_CREDENTIAL_OUTCOME_SUCCESS    = 0
+RESTORE_CREDENTIAL_OUTCOME_SUCCESS   = 0
 
 # Stub password shared between the service and this test client.
 # Must match stub_password in AuthenticationThread.cpp.
@@ -192,6 +206,18 @@ def _encode_authentication_proof(request_id: int, client_proof: bytes) -> bytes:
 
 @dataclass
 class SetCredentialResult:
+    request_id: int
+    comp_id: str
+    outcome: int
+
+@dataclass
+class RemoveCredentialResult:
+    request_id: int
+    comp_id: str
+    outcome: int
+
+@dataclass
+class RestoreCredentialResult:
     request_id: int
     comp_id: str
     outcome: int
@@ -317,6 +343,107 @@ def _do_set_credential(
     return result
 
 
+def _encode_remove_credential_request(request_id: int, comp_id: str) -> bytes:
+    return _encode_i64(request_id) + _encode_string(comp_id)
+
+
+def _decode_remove_credential_result(payload: bytes) -> RemoveCredentialResult:
+    offset = 0
+    request_id, offset = _decode_i64(payload, offset)
+    comp_id, offset = _decode_string(payload, offset)
+    outcome, offset = _decode_i32(payload, offset)
+    return RemoveCredentialResult(request_id=request_id, comp_id=comp_id, outcome=outcome)
+
+
+def _do_remove_credential(
+    connection: ssl.SSLSocket,
+    request_id: int,
+    comp_id: str,
+    reply_timeout: float,
+) -> RemoveCredentialResult:
+    """Send RemoveCredentialRequest over the TLS admin channel and return the result."""
+    _send_pdu(connection, PDU_ID_REMOVE_CREDENTIAL_REQUEST,
+              _encode_remove_credential_request(request_id, comp_id))
+    pdu_id, payload = _recv_pdu(connection, reply_timeout)
+    if pdu_id != PDU_ID_REMOVE_CREDENTIAL_RESULT:
+        die(f"expected PDU {PDU_ID_REMOVE_CREDENTIAL_RESULT} (RemoveCredentialResult), got {pdu_id}")
+    result = _decode_remove_credential_result(payload)
+    if result.request_id != request_id:
+        die(f"RemoveCredentialResult request_id mismatch: expected {request_id}, got {result.request_id}")
+    return result
+
+
+def _encode_restore_credential_request(request_id: int, comp_id: str,
+                                        stored_key: bytes, server_key: bytes,
+                                        salt: bytes, iterations: int) -> bytes:
+    return (
+        _encode_i64(request_id) +
+        _encode_string(comp_id) +
+        _encode_bytes_field(stored_key) +
+        _encode_bytes_field(server_key) +
+        _encode_bytes_field(salt) +
+        _encode_i32(iterations)
+    )
+
+
+def _decode_restore_credential_result(payload: bytes) -> RestoreCredentialResult:
+    offset = 0
+    request_id, offset = _decode_i64(payload, offset)
+    comp_id, offset = _decode_string(payload, offset)
+    outcome, offset = _decode_i32(payload, offset)
+    return RestoreCredentialResult(request_id=request_id, comp_id=comp_id, outcome=outcome)
+
+
+def _do_authentication_request_only(
+    connection: socket.socket,
+    request_id: int,
+    comp_id: str,
+    client_nonce: bytes,
+    reply_timeout: float,
+) -> AuthenticationResult | None:
+    """
+    Send one AuthenticationRequest and read the immediate response.
+
+    Returns an AuthenticationResult if the service replies directly with PDU 503
+    (e.g. UnknownUser when the credential is absent), or None if it replies with
+    a challenge (PDU 501), which means the credential exists.
+    """
+    _send_pdu(connection, PDU_ID_AUTHENTICATION_REQUEST,
+              _encode_authentication_request(request_id, comp_id, client_nonce))
+    pdu_id, payload = _recv_pdu(connection, reply_timeout)
+    if pdu_id == PDU_ID_AUTHENTICATION_RESULT:
+        result = _decode_authentication_result(payload)
+        if result.request_id != request_id:
+            die(f"result request_id mismatch: expected {request_id}, got {result.request_id}")
+        return result
+    if pdu_id == PDU_ID_AUTHENTICATION_CHALLENGE:
+        return None
+    die(f"unexpected PDU {pdu_id} in response to AuthenticationRequest")
+
+
+def _do_restore_credential(
+    connection: ssl.SSLSocket,
+    request_id: int,
+    comp_id: str,
+    stored_key: bytes,
+    server_key: bytes,
+    salt: bytes,
+    iterations: int,
+    reply_timeout: float,
+) -> RestoreCredentialResult:
+    """Send RestoreCredentialRequest over the TLS admin channel and return the result."""
+    _send_pdu(connection, PDU_ID_RESTORE_CREDENTIAL_REQUEST,
+              _encode_restore_credential_request(request_id, comp_id,
+                                                  stored_key, server_key, salt, iterations))
+    pdu_id, payload = _recv_pdu(connection, reply_timeout)
+    if pdu_id != PDU_ID_RESTORE_CREDENTIAL_RESULT:
+        die(f"expected PDU {PDU_ID_RESTORE_CREDENTIAL_RESULT} (RestoreCredentialResult), got {pdu_id}")
+    result = _decode_restore_credential_result(payload)
+    if result.request_id != request_id:
+        die(f"RestoreCredentialResult request_id mismatch: expected {request_id}, got {result.request_id}")
+    return result
+
+
 # ── service helpers ────────────────────────────────────────────────────────────
 
 def _find_free_port() -> int:
@@ -373,19 +500,19 @@ def _write_test_toml(path: Path, listen_port: int,
         "".join(_credential_block(c) + "\n" for c in _TEST_COMP_IDS)
     )
 
-    admin_section = ""
-    if tls_mode:
-        admin_cert = str(cert_path) if cert_path else ""
-        admin_key  = str(key_path)  if key_path  else ""
-        admin_section = (
-            f'[admin]\n'
-            f'listen_port                    = {admin_port}\n'
-            f'tls_certificate_path           = "{admin_cert}"\n'
-            f'tls_private_key_path           = "{admin_key}"\n'
-            f'tls_ca_path                    = ""\n'
-            f'tls_require_client_certificate = false\n'
-            f'\n'
-        )
+    # [admin] is always required by the loader regardless of tls_mode.
+    # For non-TLS scenarios the admin listener is started but never used by the test.
+    admin_cert = str(cert_path) if cert_path else ""
+    admin_key  = str(key_path)  if key_path  else ""
+    admin_section = (
+        f'[admin]\n'
+        f'listen_port                    = {admin_port}\n'
+        f'tls_certificate_path           = "{admin_cert}"\n'
+        f'tls_private_key_path           = "{admin_key}"\n'
+        f'tls_ca_path                    = ""\n'
+        f'tls_require_client_certificate = false\n'
+        f'\n'
+    )
 
     path.write_text(
         f'credentials_file = "{credentials_path}"\n'
@@ -403,8 +530,8 @@ def _write_test_toml(path: Path, listen_port: int,
         f'max_backup_files = 10\n'
         f'\n'
         f'[reactor]\n'
-        f'cpu_pinning_enabled    = false\n'
-        f'cpu_pinning_dev_mode   = true\n'
+        f'cpu_pinning_enabled       = false\n'
+        f'cpu_pinning_reserve_cpu0  = true\n'
         f'cpu_registry_lock_file = "/dev/shm/pubsub_cpu_registry.lock"\n'
         f'\n'
         f'[event_queue_pool]\n'
@@ -774,6 +901,84 @@ def _run_scenario_5(service_log: Path, port: int, args, admin_port: int = 0) -> 
     return True
 
 
+def _run_scenario_6(service_log: Path, port: int, args, admin_port: int = 0) -> bool:
+    """Revoke a credential via PDU 512, restore it via PDU 514, verify authentication."""
+    comp_id    = "CLIENT_ONE"
+    request_id = 60
+
+    stored_key_bytes = bytes.fromhex(_STUB_STORED_KEY)
+    server_key_bytes = bytes.fromhex(_STUB_SERVER_KEY)
+    salt_bytes       = bytes.fromhex(_STUB_SALT)
+
+    # Step 1: confirm baseline authentication works.
+    log("=== Step 1: baseline authentication (Granted expected) ===")
+    pdu_conn = _connect_tcp("127.0.0.1", port)
+    _, result = _do_scram_exchange(pdu_conn, request_id, comp_id,
+                                   os.urandom(16), args.reply_timeout)
+    pdu_conn.close()
+    if result.outcome != AUTHENTICATION_OUTCOME_GRANTED:
+        die(f"baseline auth expected Granted, got outcome={result.outcome}")
+    log("  baseline authentication: Granted — OK")
+
+    # Step 2: remove the credential via PDU 512.
+    log(f"=== Step 2: RemoveCredentialRequest (PDU 512) for comp_id={comp_id} ===")
+    admin_conn = _connect_tls("127.0.0.1", admin_port)
+    remove_result = _do_remove_credential(admin_conn, request_id + 1, comp_id,
+                                          args.reply_timeout)
+    admin_conn.close()
+    if remove_result.outcome != REMOVE_CREDENTIAL_OUTCOME_SUCCESS:
+        die(f"RemoveCredentialResult outcome={remove_result.outcome}, expected Success (0)")
+    log("  RemoveCredentialResult: Success — OK")
+
+    # Step 3: confirm authentication now fails.
+    # The service responds directly with AuthenticationResult (UnknownUser) when
+    # the comp_id is absent — no challenge is issued, so we use the single-step helper.
+    log("=== Step 3: authentication after removal (UnknownUser expected) ===")
+    pdu_conn = _connect_tcp("127.0.0.1", port)
+    immediate_result = _do_authentication_request_only(
+        pdu_conn, request_id + 2, comp_id, os.urandom(16), args.reply_timeout)
+    pdu_conn.close()
+    if immediate_result is None:
+        die("service issued a challenge for removed comp_id — credential was not removed")
+    if immediate_result.outcome == AUTHENTICATION_OUTCOME_GRANTED:
+        die("authentication after removal returned Granted — credential was not removed")
+    log(f"  authentication after removal: outcome={immediate_result.outcome} (not Granted) — OK")
+
+    # Step 4: restore the credential via PDU 514 using the original SCRAM fields.
+    log(f"=== Step 4: RestoreCredentialRequest (PDU 514) for comp_id={comp_id} ===")
+    admin_conn = _connect_tls("127.0.0.1", admin_port)
+    restore_result = _do_restore_credential(
+        admin_conn, request_id + 3, comp_id,
+        stored_key_bytes, server_key_bytes, salt_bytes, _STUB_ITERATIONS,
+        args.reply_timeout,
+    )
+    admin_conn.close()
+    if restore_result.outcome != RESTORE_CREDENTIAL_OUTCOME_SUCCESS:
+        die(f"RestoreCredentialResult outcome={restore_result.outcome}, expected Success (0)")
+    log("  RestoreCredentialResult: Success — OK")
+
+    # Step 5: confirm authentication works again with the original password.
+    log("=== Step 5: authentication after restore (Granted expected) ===")
+    pdu_conn = _connect_tcp("127.0.0.1", port)
+    _, result = _do_scram_exchange(pdu_conn, request_id + 4, comp_id,
+                                   os.urandom(16), args.reply_timeout)
+    pdu_conn.close()
+    if result.outcome != AUTHENTICATION_OUTCOME_GRANTED:
+        die(f"authentication after restore expected Granted, got outcome={result.outcome}")
+    log("  authentication after restore: Granted — OK")
+
+    log("=== Verifying service log ===")
+    found, _ = _poll_log_for(service_log,
+                              f"RestoreCredentialRequest request_id={request_id + 3} "
+                              f"comp_id={comp_id}",
+                              LOG_CONFIRM_TIMEOUT)
+    if not found:
+        die("service log did not confirm RestoreCredentialRequest")
+    log("  service log confirmed RestoreCredentialRequest: OK")
+
+    return True
+
+
 # ── scenario registry ──────────────────────────────────────────────────────────
 
 _SCENARIOS = [
@@ -797,6 +1002,10 @@ _SCENARIOS = [
      "Create new comp_id via TLS admin channel; authenticate with it",
      "SetCredential Success; wrong password rejected; correct password: Granted",
      _run_scenario_5),
+    (6, "restore_credential_revoke_and_restore",
+     "Revoke credential via PDU 512, restore via PDU 514, re-authenticate",
+     "Remove Success; auth fails (UnknownUser); Restore Success; auth Granted again",
+     _run_scenario_6),
 ]
 
 _SCENARIO_MAP = {
@@ -820,16 +1029,12 @@ def run_scenario(
     config_path = temp_dir / f"scenario_{number}.toml"
     log_path    = temp_dir / f"scenario_{number}" / "authentication_service.log"
 
-    if tls_mode:
-        admin_port = _find_free_port()
-        cert_path, key_path = _generate_test_tls_cert(temp_dir)
-        _write_test_toml(config_path, listen_port, admin_port, cert_path, key_path,
-                         tls_mode=True)
-        ready_marker = _SERVICE_READY_MARKER_TLS
-    else:
-        admin_port = 0
-        _write_test_toml(config_path, listen_port, tls_mode=False)
-        ready_marker = _SERVICE_READY_MARKER_PDU
+    # Always generate a cert and admin port — [admin] is required by the loader.
+    admin_port = _find_free_port()
+    cert_path, key_path = _generate_test_tls_cert(temp_dir)
+    _write_test_toml(config_path, listen_port, admin_port, cert_path, key_path,
+                     tls_mode=tls_mode)
+    ready_marker = _SERVICE_READY_MARKER_TLS if tls_mode else _SERVICE_READY_MARKER_PDU
 
     log("=" * 60)
     log(f"  auth_service_test  —  Scenario {number}: {description}")
@@ -893,7 +1098,7 @@ def _scenario_type(value: str):
         )
 
 
-_TLS_ADMIN_SCENARIOS = frozenset({4, 5})
+_TLS_ADMIN_SCENARIOS = frozenset({4, 5, 6})
 
 
 def main() -> None:

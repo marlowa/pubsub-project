@@ -81,6 +81,10 @@ public class CompIdHandler {
         compIdDao.updateStatus(compId, enabled, forcePasswordChange, locked, lockedReason);
         if ((!enabled || locked) && authServiceClient != null) {
             authServiceClient.removeCredential(compId);
+        } else if ((!existing.enabled() || existing.locked()) && enabled && !locked && authServiceClient != null) {
+            ScramCredential cred = new ScramCredential(
+                    existing.storedKey(), existing.serverKey(), existing.salt(), existing.iterations());
+            authServiceClient.restoreCredential(compId, cred);
         }
         ctx.redirect("/comp-ids?firmId=" + existing.firmId());
     }

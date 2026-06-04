@@ -18,17 +18,20 @@ import java.util.concurrent.atomic.AtomicLong;
  * Sends credential management PDUs to the authentication service TLS admin channel.
  * Protocol: 24-byte big-endian header followed by a little-endian encoded payload.
  *
- * PDU 510 SetCredentialRequest   / PDU 511 SetCredentialResult
+ * PDU 510 SetCredentialRequest    / PDU 511 SetCredentialResult
  * PDU 512 RemoveCredentialRequest / PDU 513 RemoveCredentialResult
+ * PDU 514 RestoreCredentialRequest / PDU 515 RestoreCredentialResult
  */
 public class AuthServiceClient {
     private static final int PDU_HEADER_SIZE = 24;
     private static final int PDU_CANARY = 0xC0FFEE00;
     private static final int PDU_VERSION = 1;
-    private static final int PDU_ID_SET_CREDENTIAL_REQUEST    = 510;
-    private static final int PDU_ID_SET_CREDENTIAL_RESULT     = 511;
-    private static final int PDU_ID_REMOVE_CREDENTIAL_REQUEST = 512;
-    private static final int PDU_ID_REMOVE_CREDENTIAL_RESULT  = 513;
+    private static final int PDU_ID_SET_CREDENTIAL_REQUEST     = 510;
+    private static final int PDU_ID_SET_CREDENTIAL_RESULT      = 511;
+    private static final int PDU_ID_REMOVE_CREDENTIAL_REQUEST  = 512;
+    private static final int PDU_ID_REMOVE_CREDENTIAL_RESULT   = 513;
+    private static final int PDU_ID_RESTORE_CREDENTIAL_REQUEST = 514;
+    private static final int PDU_ID_RESTORE_CREDENTIAL_RESULT  = 515;
     private static final int OUTCOME_SUCCESS = 0;
 
     private final String host;
@@ -80,6 +83,26 @@ public class AuthServiceClient {
         }
     }
 
+    public void restoreCredential(String compId, ScramCredential cred) throws IOException {
+        long requestId = requestIdCounter.getAndIncrement();
+        try (SSLSocket socket = connectTls()) {
+            DataInputStream in = new DataInputStream(
+                    new BufferedInputStream(socket.getInputStream()));
+            OutputStream out = socket.getOutputStream();
+
+            byte[] payload = encodeRestoreCredentialRequest(requestId, compId, cred);
+            sendPdu(out, PDU_ID_RESTORE_CREDENTIAL_REQUEST, payload);
+
+            int[] pduIdOut = new int[1];
+            byte[] responsePayload = recvPdu(in, pduIdOut);
+            if (pduIdOut[0] != PDU_ID_RESTORE_CREDENTIAL_RESULT) {
+                throw new IOException("Expected PDU " + PDU_ID_RESTORE_CREDENTIAL_RESULT
+                        + " (RestoreCredentialResult), got " + pduIdOut[0]);
+            }
+            decodeAndValidateRestoreResult(responsePayload, requestId, compId);
+        }
+    }
+
     private void decodeAndValidateResult(byte[] payload, long requestId, String compId)
             throws IOException {
         ByteBuffer buf = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN);
@@ -117,6 +140,24 @@ public class AuthServiceClient {
         }
     }
 
+    private void decodeAndValidateRestoreResult(byte[] payload, long requestId, String compId)
+            throws IOException {
+        ByteBuffer buf = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN);
+        long responseRequestId = buf.getLong();
+        if (responseRequestId != requestId) {
+            throw new IOException("RestoreCredentialResult request_id mismatch: expected "
+                    + requestId + ", got " + responseRequestId);
+        }
+        int compIdLen = buf.getInt();
+        byte[] compIdBytes = new byte[compIdLen];
+        buf.get(compIdBytes);
+        int outcome = buf.getInt();
+        if (outcome != OUTCOME_SUCCESS) {
+            throw new IOException("RestoreCredentialResult outcome=" + outcome
+                    + " for compId='" + compId + "' (expected 0=Success)");
+        }
+    }
+
     private SSLSocket connectTls() throws IOException {
         try {
             TrustManager[] trustAll = new TrustManager[]{
@@ -136,6 +177,41 @@ public class AuthServiceClient {
         } catch (Exception e) {
             throw new IOException("TLS connection to " + host + ":" + port + " failed", e);
         }
+    }
+
+    private byte[] encodeRestoreCredentialRequest(long requestId, String compId, ScramCredential cred) {
+        byte[] compIdBytes   = compId.getBytes(StandardCharsets.UTF_8);
+        byte[] storedKeyBytes = hexToBytes(cred.storedKey());
+        byte[] serverKeyBytes = hexToBytes(cred.serverKey());
+        byte[] saltBytes      = hexToBytes(cred.salt());
+        int size = 8
+                + 4 + compIdBytes.length
+                + 4 + storedKeyBytes.length
+                + 4 + serverKeyBytes.length
+                + 4 + saltBytes.length
+                + 4;
+        ByteBuffer buf = ByteBuffer.allocate(size).order(ByteOrder.LITTLE_ENDIAN);
+        buf.putLong(requestId);
+        buf.putInt(compIdBytes.length);
+        buf.put(compIdBytes);
+        buf.putInt(storedKeyBytes.length);
+        buf.put(storedKeyBytes);
+        buf.putInt(serverKeyBytes.length);
+        buf.put(serverKeyBytes);
+        buf.putInt(saltBytes.length);
+        buf.put(saltBytes);
+        buf.putInt(cred.iterations());
+        return buf.array();
+    }
+
+    private static byte[] hexToBytes(String hex) {
+        int len = hex.length();
+        byte[] data = new byte[len / 2];
+        for (int i = 0; i < len; i += 2) {
+            data[i / 2] = (byte) ((Character.digit(hex.charAt(i), 16) << 4)
+                    + Character.digit(hex.charAt(i + 1), 16));
+        }
+        return data;
     }
 
     private byte[] encodeRemoveCredentialRequest(long requestId, String compId) {
