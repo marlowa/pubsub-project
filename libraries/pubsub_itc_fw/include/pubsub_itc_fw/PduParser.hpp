@@ -70,10 +70,43 @@ namespace pubsub_itc_fw {
  *
  * The ApplicationThread is responsible for freeing each payload chunk after
  * processing by calling release_pdu_payload() or deallocating directly.
+ *
+ * Inline PDU handler:
+ *   An optional InlinePduHandler may be installed via set_inline_handler().
+ *   When set, it is called on the reactor thread for every complete PDU frame
+ *   before the normal ITC dispatch path. If the handler returns true the PDU
+ *   is consumed (slab freed, no EventMessage enqueued). If it returns false
+ *   the PDU proceeds to the normal ITC dispatch path as usual.
+ *
+ *   The inline handler runs on the reactor thread and must not block, allocate
+ *   from the heap, or perform I/O other than direct socket sends via the
+ *   PduFramer supplied at installation time.
  */
 class PduParser {
   public:
     ~PduParser() = default;
+
+    /**
+     * @brief Signature of an optional reactor-thread inline PDU handler.
+     *
+     * @param pdu_id  PDU identifier from the frame header.
+     * @param seq_no  Sequence number from the frame header.
+     * @param payload Pointer to the payload bytes (valid only during this call).
+     * @param size    Payload size in bytes.
+     * @return true if the PDU was consumed inline (no ITC dispatch); false to
+     *         fall through to the normal ITC dispatch path.
+     */
+    using InlinePduHandler = std::function<bool(int16_t pdu_id, int64_t seq_no, const uint8_t* payload, size_t size)>;
+
+    /**
+     * @brief Installs an optional reactor-thread inline PDU handler.
+     *
+     * Replaces any previously installed handler. Pass a default-constructed
+     * (empty) function to remove the handler.
+     *
+     * Must be called from the reactor thread only.
+     */
+    void set_inline_handler(InlinePduHandler handler);
 
     /**
      * @brief Constructs a PduParser.
@@ -131,6 +164,8 @@ class PduParser {
     void* payload_chunk_{nullptr};
     int payload_slab_id_{-1};
     size_t payload_bytes_received_{0};
+
+    InlinePduHandler inline_handler_;
 };
 
 } // namespace pubsub_itc_fw

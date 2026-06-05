@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <string>
 
 #include <fmt/format.h>
@@ -14,6 +15,11 @@
 #include <pubsub_itc_fw/ThreadID.hpp>
 #include <pubsub_itc_fw/TimerID.hpp>
 #include <pubsub_itc_fw/TimerType.hpp>
+
+namespace pubsub_itc_fw {
+class PduParser;
+class PduFramer;
+} // namespace pubsub_itc_fw
 
 namespace pubsub_itc_fw {
 
@@ -52,12 +58,14 @@ class ReactorControlCommand {
     enum CommandTag {
         AddTimer,
         CancelTimer,
-        Connect,       ///< Request the reactor to establish an outbound TCP connection.
-        Disconnect,    ///< Request the reactor to close an established connection.
-        SendPdu,       ///< Request the reactor to send a framed PDU on a PDU connection.
-        SendRaw,       ///< Request the reactor to send raw bytes on a raw-bytes connection.
-        CommitRawBytes ///< Notify the reactor that the application has consumed N bytes from
-                       ///< the MirroredBuffer of a RawBytesProtocolHandler connection.
+        Connect,                  ///< Request the reactor to establish an outbound TCP connection.
+        Disconnect,               ///< Request the reactor to close an established connection.
+        SendPdu,                  ///< Request the reactor to send a framed PDU on a PDU connection.
+        SendRaw,                  ///< Request the reactor to send raw bytes on a raw-bytes connection.
+        CommitRawBytes,           ///< Notify the reactor that the application has consumed N bytes from
+                                  ///< the MirroredBuffer of a RawBytesProtocolHandler connection.
+        InstallInlinePduHandler   ///< Install a reactor-thread inline PDU handler on a connection's
+                                  ///< PduParser, bypassing the ITC dispatch path for matching PDUs.
     };
 
   public:
@@ -88,6 +96,9 @@ class ReactorControlCommand {
         }
         if (tag_ == CommitRawBytes) {
             return "CommitRawBytes";
+        }
+        if (tag_ == InstallInlinePduHandler) {
+            return "InstallInlinePduHandler";
         }
         return fmt::format("unknown ({})", static_cast<int>(tag_));
     }
@@ -230,6 +241,22 @@ class ReactorControlCommand {
      * time the command is processed.
      */
     int64_t bytes_consumed_{0};
+
+    // ----------------------------------------------------------------
+    // InstallInlinePduHandler payload fields
+    // ----------------------------------------------------------------
+
+    /**
+     * @brief Installer called by the reactor with (PduParser*, PduFramer*) for the
+     *        connection identified by connection_id_.
+     *
+     * The installer is expected to call parser->set_inline_handler(...), capturing
+     * the supplied PduFramer* for reply sends. The reactor supplies the framer so
+     * that application code never holds a raw PduFramer pointer directly.
+     *
+     * connection_id_ (shared with Disconnect/SendPdu/etc.) identifies the target.
+     */
+    std::function<void(PduParser*, PduFramer*)> inline_handler_installer_;
 
   private:
     CommandTag tag_{AddTimer};

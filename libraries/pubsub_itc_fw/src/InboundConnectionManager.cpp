@@ -482,6 +482,11 @@ InboundConnection* InboundConnectionManager::find_by_fd(int fd) const {
     return (it != connections_by_fd_.end()) ? it->second : nullptr;
 }
 
+InboundConnection* InboundConnectionManager::find_by_id(ConnectionID id) const {
+    auto it = connections_.find(id);
+    return (it != connections_.end()) ? it->second.get() : nullptr;
+}
+
 InboundListener* InboundConnectionManager::find_listener_by_fd(int fd) {
     auto it = inbound_listeners_.find(fd);
     return (it != inbound_listeners_.end()) ? &it->second : nullptr;

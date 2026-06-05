@@ -7,9 +7,13 @@
 #include <cstdio>
 #include <cstring>
 
+#include <array>
+
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
 #include <pubsub_itc_fw/BumpAllocator.hpp>
+#include <pubsub_itc_fw/PduFramer.hpp>
+#include <pubsub_itc_fw/PduParser.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/QueueConfiguration.hpp>
@@ -167,11 +171,13 @@ void SequencerThread::on_connection_established(pubsub_itc_fw::ConnectionID id) 
         peer_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: outbound peer connection {} established -- sending StatusQuery",
                    id.get_value());
+        install_peer_wal_inline_handler(id);
         send_status_query(id);
     } else if (svc == peer_inbound_svc) {
         peer_inbound_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: inbound peer connection {} established -- sending StatusQuery",
                    id.get_value());
+        install_peer_wal_inline_handler(id);
         send_status_query(id);
     } else {
         // Inbound connection identified by listener port:
@@ -1122,6 +1128,58 @@ void SequencerThread::handle_wal_ack(const pubsub_itc_fw::EventMessage& message)
         // ER hasn't arrived yet; record the ack so the ER path can forward immediately on arrival.
         wal_acked_seq_nos_.insert(view.seq_no);
     }
+}
+
+void SequencerThread::install_peer_wal_inline_handler(const pubsub_itc_fw::ConnectionID& conn_id) {
+    if (!config_.ha_enabled) {
+        return;
+    }
+
+    install_inline_pdu_handler(conn_id,
+        [this](pubsub_itc_fw::PduParser* parser, pubsub_itc_fw::PduFramer* framer) {
+            parser->set_inline_handler(
+                [this, framer](int16_t pdu_id, int64_t /*seq_no*/, const uint8_t* payload, size_t size) -> bool {
+                    if (pdu_id != pdu_wal_record) {
+                        return false;
+                    }
+                    if (framer->has_pending_data()) {
+                        return false;
+                    }
+
+                    std::array<uint8_t, 4096> arena_buffer;
+                    pubsub_itc_fw::BumpAllocator arena(arena_buffer.data(), arena_buffer.size());
+                    size_t arena_bytes_needed = 0;
+                    size_t bytes_consumed = 0;
+                    pubsub_itc_fw_app::WalRecordView view{};
+
+                    if (!pubsub_itc_fw_app::decode(view, payload, size, bytes_consumed, arena, arena_bytes_needed)) {
+                        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                                       "SequencerThread (inline): failed to decode WalRecord -- falling back to ITC");
+                        return false;
+                    }
+
+                    wal_.append(view.seq_no, view.pdu_id, view.payload.data, static_cast<int>(view.payload.size), view.wall_time_ns);
+
+                    pubsub_itc_fw_app::WalAck wal_ack{};
+                    wal_ack.seq_no = view.seq_no;
+                    std::array<uint8_t, 8> ack_buffer;
+                    pubsub_itc_fw_app::encode_fast(wal_ack, ack_buffer.data());
+
+                    auto [ok, err] = framer->send(pdu_wal_ack, 0, 0, ack_buffer.data(), static_cast<uint32_t>(ack_buffer.size()));
+                    if (!ok) {
+                        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                                   "SequencerThread (inline): WalAck send failed for seq={}: {}", view.seq_no, err);
+                    } else {
+                        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
+                                   "SequencerThread (inline): WalRecord seq={} written and WalAck sent", view.seq_no);
+                    }
+
+                    return true;
+                });
+        });
+
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "SequencerThread: WAL inline handler installation requested for peer connection {}", conn_id.get_value());
 }
 
 void SequencerThread::flush_pending_er() {

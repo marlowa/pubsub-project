@@ -154,7 +154,7 @@ std::tuple<bool, std::string> PduParser::receive() {
             return {true, ""}; // Payload not yet complete.
         }
 
-        // Complete frame — dispatch to target thread.
+        // Complete frame — offer to inline handler first, then dispatch to target thread.
         dispatch_pdu(payload_slab_id_, payload_chunk_);
 
         payload_chunk_ = nullptr;
@@ -195,9 +195,20 @@ void PduParser::dispatch_pdu(int slab_id, void* payload_chunk) {
         }
     }
 
+    if (inline_handler_) {
+        if (inline_handler_(current_pdu_id_, current_seq_no_, payload, static_cast<size_t>(current_payload_size_))) {
+            slab_allocator_.deallocate(slab_id, payload_chunk);
+            return;
+        }
+    }
+
     EventMessage msg = EventMessage::create_framework_pdu_message(payload, payload_size, slab_id, connection_id_, current_pdu_id_, current_seq_no_);
 
     target_thread_.enqueue(std::move(msg));
+}
+
+void PduParser::set_inline_handler(InlinePduHandler handler) {
+    inline_handler_ = std::move(handler);
 }
 
 void PduParser::reset_header() {

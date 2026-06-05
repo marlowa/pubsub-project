@@ -90,7 +90,12 @@ static_assert(sizeof(SnapshotHeader) == 48, "SnapshotHeader must be 48 bytes");
  * The framework WalEntryHeader carries seq_no as `record_id`; pdu_id travels
  * in the application payload so the framework header remains generic.
  *
- * Threading: single-writer — all methods must be called from the SequencerThread.
+ * Threading: single-writer at any given time.
+ *   On the leader: all writes happen from SequencerThread.
+ *   On the follower: writes for WalRecord PDUs happen from the reactor thread
+ *   via the inline PDU handler installed in install_peer_wal_inline_handler().
+ *   SequencerThread never writes on the follower (role guard in
+ *   on_framework_pdu_message), so there is no concurrent access.
  */
 class SequencerWal {
   public:

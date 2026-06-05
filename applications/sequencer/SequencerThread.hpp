@@ -157,6 +157,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void send_wal_record(int64_t seq, int16_t pdu_id, const pubsub_itc_fw::EventMessage& message, int64_t wall_time_ns);
     void handle_wal_record(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     void handle_wal_ack(const pubsub_itc_fw::EventMessage& message);
+    void install_peer_wal_inline_handler(const pubsub_itc_fw::ConnectionID& conn_id);
     void flush_pending_er();
     void forward_pending_er(const PendingEr& pending);
 

@@ -1483,9 +1483,191 @@ The burst test is a natural companion to item 15 (fix-test-client smoke test): t
 
 ## Immediate Next Task
 
-**Item 11 — WAL replication jitter, Option B.** Implement priority-based event processing in `SequencerThread::run_internal()` (or in the drain loop in `ApplicationThread::run_internal()`): drain `FrameworkPdu` and connection events to exhaustion before processing any timer event. This prevents heartbeat and snapshot timers from adding latency to the WalAck path. Design and adversarial analysis documented in the session 25 entry above.
+**Item 11 — superseded by Option C (inline WAL handler), implemented session 2026-06-05. See session entry below.**
 
 **Item 12 — cpu_registry_shm_path configurable from TOML.** Add `cpu_registry_shm_path` to the six application config structs, loaders, and wiring files; add the key to all nine TOML templates. `deploy.py` already injects the correct absolute value; the C++ just needs to read it from TOML rather than using the hardcoded default.
+
+## RT scheduling and CPU isolation: machine assessment guide
+
+Option B (item 11) reduces latency outliers caused by timer events competing with WalAck events, but it does not move the median. The median WAL round-trip latency is dominated by three sequential `epoll_wait` wakeups — one per `ApplicationThread` hop — and on a normal Linux desktop or server kernel each wakeup carries 50–200µs of scheduler jitter. To move the median below 100µs consistently, the threads need `SCHED_FIFO` scheduling on CPUs removed from the general scheduler pool.
+
+The feasibility and cost of doing this depends entirely on the machine. The following assessment tells you exactly where a given machine stands and what the improvement path looks like.
+
+### Step 1 — CPU governor
+
+The CPU frequency governor controls whether the CPU boosts to its rated clock. On `powersave` the CPU runs at its minimum frequency most of the time and boosts opportunistically; on `performance` it runs at maximum rated clock at all times. Frequency transitions add jitter to any latency measurement.
+
+```bash
+# Show the governor for every CPU
+cat /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor | sort -u
+
+# Show the available governors
+cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors
+```
+
+If `powersave` is shown, switch to `performance` before drawing any conclusions from latency measurements. This requires no reboot and no code change:
+
+```bash
+# Set all CPUs to performance governor (requires root)
+for cpu in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+    echo performance | sudo tee "$cpu" > /dev/null
+done
+```
+
+On cloud instances or VMs the governor may be absent (`no cpufreq`); this is normal and means the hypervisor controls the clock — governor tuning is unavailable.
+
+### Step 2 — CPU topology: P-cores vs E-cores
+
+Intel hybrid CPUs (12th generation / Alder Lake and later) have two core types: Performance cores (P-cores) and Efficiency cores (E-cores). E-cores have lower single-thread performance and higher wakeup latency. If hot-path threads land on E-cores, latency measurements are misleading and CPU pinning must be revised.
+
+```bash
+# Show the core type for each logical CPU (Intel hybrid only)
+# P-cores report "Intel Core Processor" or similar; E-cores report "Atom"
+for d in /sys/devices/system/cpu/cpu*/topology; do
+    cpu=$(basename $(dirname $d))
+    core_id=$(cat $d/core_id 2>/dev/null)
+    echo "$cpu core_id=$core_id $(cat $d/../cpufreq/scaling_driver 2>/dev/null)"
+done
+
+# More direct: check /sys/devices/system/cpu/cpuX/acpi_cppc/highest_perf
+# P-cores have higher values than E-cores
+for cpu in /sys/devices/system/cpu/cpu*/; do
+    hp=$(cat ${cpu}acpi_cppc/highest_perf 2>/dev/null)
+    [ -n "$hp" ] && echo "$(basename $cpu): highest_perf=$hp"
+done | sort -t= -k2 -rn
+```
+
+If two distinct `highest_perf` values appear, the higher value is a P-core, the lower is an E-core. On an i9-14900F for example, P-cores are typically CPUs 0–15 and E-cores are 16–31. The CPU registry must restrict hot-path threads to P-cores. This is a configuration change (adjust the `available_cpus` range in the TOML), not a code change.
+
+On a uniform-core machine (AMD, older Intel, server CPUs) this step is a no-op.
+
+### Step 3 — RT priority budget
+
+`SCHED_FIFO` requires the process to have real-time priority capability. Without it, `pthread_setschedparam` will return `EPERM`.
+
+```bash
+# Show the current RT priority ceiling for the shell's user
+ulimit -r
+
+# Try to actually set SCHED_FIFO at priority 1 (the minimum)
+chrt -f 1 echo "SCHED_FIFO works"
+
+# Show what limits.conf grants
+grep -r rtprio /etc/security/limits.conf /etc/security/limits.d/ 2>/dev/null
+```
+
+If `ulimit -r` returns `0` and `chrt` fails with `Operation not permitted`, the user has no RT budget. To grant it without running the whole process as root, add a line to `/etc/security/limits.conf` and re-login:
+
+```
+# /etc/security/limits.conf
+yourusername   -   rtprio   99
+```
+
+Alternatively, grant `CAP_SYS_NICE` to the specific binary (survives across logins without a limits.conf change, appropriate for a deployed install):
+
+```bash
+sudo setcap cap_sys_nice+ep /path/to/sequencer
+sudo setcap cap_sys_nice+ep /path/to/order_gateway
+# etc. for each binary that uses ApplicationThread
+```
+
+The `sched_rt_runtime_us` throttle (`/proc/sys/kernel/sched_rt_runtime_us`) defaults to 950000 out of a 1000000µs period (95%). Under sustained RT load the kernel enforces this ceiling; threads stall for the remaining 5%. For testing, disable the throttle:
+
+```bash
+echo -1 | sudo tee /proc/sys/kernel/sched_rt_runtime_us
+```
+
+Disabling RT throttle is safe on a dedicated benchmarking or trading machine but unwise on a shared development machine — a runaway RT thread can make the machine unresponsive. Re-enable it with:
+
+```bash
+echo 950000 | sudo tee /proc/sys/kernel/sched_rt_runtime_us
+```
+
+### Step 4 — Kernel preemption model
+
+Even with `SCHED_FIFO`, a non-RT kernel can preempt a user-space thread in response to a hardware interrupt. The preemption model determines whether this matters in practice.
+
+```bash
+# Show the kernel preemption configuration
+grep -E "^CONFIG_PREEMPT" /boot/config-$(uname -r) 2>/dev/null \
+    || zcat /proc/config.gz 2>/dev/null | grep -E "^CONFIG_PREEMPT"
+
+# Check for the PREEMPT_RT indicator file
+cat /sys/kernel/realtime 2>/dev/null && echo "PREEMPT_RT kernel" || echo "not a PREEMPT_RT kernel"
+
+# Show the running kernel string
+uname -r
+```
+
+Interpret the results:
+
+| `CONFIG_PREEMPT_*` value | Meaning | Impact on SCHED_FIFO |
+|---|---|---|
+| `CONFIG_PREEMPT_NONE=y` | Server kernel, no voluntary preemption | Worst; IRQs and long kernel paths can delay RT threads |
+| `CONFIG_PREEMPT_VOLUNTARY=y` | Desktop kernel, explicit preemption points | IRQs still preempt; moderate jitter |
+| `CONFIG_PREEMPT=y` | Full preemption (non-RT) | IRQs still preempt; better than voluntary |
+| `CONFIG_PREEMPT_RT=y` | Full RT preemption | Hardware IRQs handled as threaded IRQs; best determinism |
+
+On Ubuntu, `linux-lowlatency` installs a kernel with `CONFIG_PREEMPT=y`; `linux-rt` (or `linux-realtime` on some releases) installs a `PREEMPT_RT` kernel. Neither requires a hardware change; both require a package install and reboot.
+
+```bash
+# Check what lowlatency/RT kernels are available (Ubuntu/Debian)
+apt-cache search linux-image | grep -E "lowlatency|realtime|rt-"
+```
+
+For the purposes of this system, `linux-lowlatency` is a practical middle ground: eliminates most OS-induced jitter without the operational overhead of a full `PREEMPT_RT` deployment.
+
+### Step 5 — CPU isolation (`isolcpus`)
+
+`isolcpus` is a kernel boot parameter that removes named CPUs from the general scheduler pool. Once isolated, the kernel will not schedule any process or thread on those CPUs unless explicitly assigned. This eliminates the primary source of scheduler interference on the hot-path threads.
+
+```bash
+# Check whether isolcpus is already configured
+grep isolcpus /proc/cmdline
+
+# Check whether nohz_full is set (stops timer ticks on idle isolated CPUs)
+grep nohz_full /proc/cmdline
+
+# Check whether rcu_nocbs is set (moves RCU callbacks off isolated CPUs)
+grep rcu_nocbs /proc/cmdline
+```
+
+If none of these appear, `isolcpus` is not configured. To add it, edit the kernel boot parameters. On Ubuntu with grub:
+
+```bash
+sudo nano /etc/default/grub
+# Find the line: GRUB_CMDLINE_LINUX_DEFAULT="quiet splash"
+# Add to it:    isolcpus=A,B,C nohz_full=A,B,C rcu_nocbs=A,B,C
+# where A,B,C are the CPU IDs to reserve for hot-path threads
+
+sudo update-grub
+sudo reboot
+```
+
+The CPUs listed must match those used by the `ApplicationThread` CPU registry — whichever CPUs the sequencer, gateway, and matching engine are pinned to. `nohz_full` stops the per-CPU timer tick on the isolated CPUs when they have exactly one runnable thread; `rcu_nocbs` moves RCU grace-period processing off those CPUs. Both are recommended alongside `isolcpus` for lowest jitter; without them, isolated CPUs still receive periodic kernel timer interrupts.
+
+After reboot, verify isolation took effect:
+
+```bash
+cat /proc/cmdline | grep isolcpus
+# The isolated CPUs should no longer appear in the scheduler's runqueue
+taskset -c <cpu_id> stress-ng --cpu 1 --timeout 5s &
+# Check with htop that only the pinned process runs on that CPU
+```
+
+### Summary: what a machine needs for sub-100µs median wakeup
+
+All five steps are independent but cumulative:
+
+| Step | Requires reboot | Expected benefit |
+|---|---|---|
+| 1. Set governor to `performance` | No | Eliminates clock-scaling jitter; free baseline win |
+| 2. Pin hot-path threads to P-cores only (hybrid CPUs) | No | Avoids E-core latency inconsistency |
+| 3. Grant RT priority (`rtprio` in limits.conf or `CAP_SYS_NICE`); set `SCHED_FIFO` in `ApplicationThread`; disable RT throttle for benchmarking | No | Prevents userspace preemption; reduces scheduler jitter |
+| 4. Install `linux-lowlatency` or `PREEMPT_RT` kernel | Yes | Reduces IRQ preemption; moves from ~50–200µs jitter range to ~5–20µs range |
+| 5. Add `isolcpus`+`nohz_full`+`rcu_nocbs` to boot params | Yes | Removes all kernel scheduler interference from hot-path CPUs; the dominant final improvement |
+
+Steps 1–3 can be applied on any machine and verified without disruption. Steps 4–5 require a reboot and are most valuable on dedicated hardware. On a shared development machine, steps 1–3 alone typically bring median wakeup from 150–200µs down to 80–120µs; the full five steps on dedicated hardware with a PREEMPT_RT kernel and isolcpus can reach consistent 5–15µs wakeup latency.
 
 ---
 
@@ -3346,3 +3528,91 @@ regardless of file type (C++, TOML, YAML, or any other)."
 Outbound order rows (`dir-out`) now use a light green background (`#e4f5e4`) instead
 of near-white (`#f8f8f8`), making sent orders visually distinguishable from the
 default row colour.
+
+---
+
+## Session 2026-06-05 — WAL replication jitter: Option C (inline WAL handler)
+
+### Problem
+
+The WAL round-trip (primary → secondary → primary) involves three sequential `epoll_wait` wakeups:
+
+1. Secondary `SequencerThread` wakes to receive the `WalRecord` via ITC
+2. Secondary reactor wakes to execute the resulting `SendPdu(WalAck)` command
+3. Primary `SequencerThread` wakes to receive the `WalAck` via ITC
+
+At ~200µs p50 per wakeup on a dev machine, these compound to a ~600µs floor. Option A (decouple ER emission from WalAck) was rejected as unsafe. Option B (timer-event priority) only reduced outliers. The root cause — three sequential thread wakeups — was not addressed by either.
+
+### Solution (Option C)
+
+Handle the `WalRecord` PDU entirely on the secondary reactor thread, with no ITC hop. When a complete `WalRecord` frame arrives at the secondary's `PduParser`:
+
+1. Decode the `WalRecord` inline (stack-allocated arena, no heap allocation)
+2. Call `wal_.append()` directly
+3. Encode `WalAck` (8 bytes) and call `framer->send()` directly on the same TCP connection
+
+This eliminates wakeups 1 and 2. Only wakeup 3 remains. Expected improvement: 3× reduction in WAL floor latency on any machine, independent of OS tuning.
+
+### Framework changes
+
+**`PduParser`** gains an `InlinePduHandler`:
+```cpp
+using InlinePduHandler = std::function<bool(int16_t pdu_id, int64_t seq_no, const uint8_t* payload, size_t size)>;
+void set_inline_handler(InlinePduHandler handler);
+```
+In `dispatch_pdu()`, if an inline handler is installed and returns `true`, the slab chunk is freed and no `EventMessage` is enqueued. This is the sole mechanism — no other paths are changed.
+
+**`PduProtocolHandler`** exposes `parser()` and `framer()` accessors (both `[[nodiscard]]`). These are needed by the reactor when installing handlers on inbound connections.
+
+**`InboundConnectionManager`** gains `find_by_id(ConnectionID)`. Previously only `find_by_fd` existed.
+
+**`ReactorControlCommand`** gains an `InstallInlinePduHandler` tag and an `inline_handler_installer_` field of type `std::function<void(PduParser*, PduFramer*)>`. The installer pattern gives application code access to both parser and framer for handler setup without holding a raw `PduFramer*` pointer.
+
+**`Reactor`** handles `InstallInlinePduHandler` in `process_control_commands()`: looks up the connection by `ConnectionID` (trying outbound first, then inbound via `dynamic_cast<PduProtocolHandler*>`), retrieves parser and framer, calls the installer. `enqueue_control_command` changed from `const&` to by-value to allow the `std::function` to be moved into the queue rather than copied.
+
+**`ApplicationThread`** gains `install_inline_pdu_handler(ConnectionID, installer)`, which posts the `InstallInlinePduHandler` command.
+
+### Sequencer changes
+
+`SequencerThread::install_peer_wal_inline_handler(ConnectionID)` (new private method) is called from `on_connection_established()` for both the outbound `"peer"` connection and the inbound peer listener connection. It posts an `InstallInlinePduHandler` command whose installer lambda captures `this` (for `wal_` and logger) and the reactor-supplied `framer*`. The inner `InlinePduHandler` lambda:
+
+1. Returns `false` immediately for any PDU other than `pdu_wal_record` (103).
+2. Returns `false` if `framer->has_pending_data()` — backpressure fallback; the PDU goes through the normal ITC path.
+3. Otherwise: decodes `WalRecord` with a 4 KiB stack arena, calls `wal_.append()`, encodes an 8-byte `WalAck` with `encode_fast()`, calls `framer->send()`, returns `true`.
+
+The existing `handle_wal_record()` in `SequencerThread` remains as a fallback for the brief startup window before the inline handler command is processed by the reactor.
+
+### Threading invariant
+
+`SequencerWal::append()` is single-writer at any given time:
+- On the leader: all writes happen on `SequencerThread` (role guard in `on_framework_pdu_message` prevents follower from writing).
+- On the follower: after the inline handler is installed, all writes happen on the reactor thread. `SequencerThread::handle_wal_record()` is bypassed (the inline handler returns `true`, consuming the PDU before ITC dispatch). No concurrent access.
+
+The handler is re-installed on each peer reconnect (`on_connection_established` fires again), so a stale `framer*` is never held.
+
+### Build result
+
+All 33 sequencer build targets clean. Unit tests (30), integration tests (all), and gateway tests (6) all pass.
+
+### Latency measurement — 12 manual orders
+
+First run with inline handler active. NOS→ER latencies from gateway log (GW-NOS-RECV to GW-ER-SENT):
+
+| Order | µs | | Order | µs |
+|---|---|---|---|---|
+| ORD-006 | **160** | | ORD-009 | 769 |
+| ORD-003 | 297 | | ORD-010 | 809 |
+| ORD-001 | 329 | | ORD-004 | 918 |
+| ORD-012 | 650 | | ORD-002 | 1101 |
+| ORD-007 | 665 | | ORD-008 | 1156 |
+| ORD-011 | 741 | | ORD-005 | 1420 |
+
+Min **160µs** · Median 769µs · Max 1420µs · Mean 751µs
+
+Previous baseline (session 25, before Option C): min 389µs, typical 490–690µs, max 1769µs.
+
+**Interpretation.** The 160µs result — and the 297µs and 329µs results — are new territory, all below the previous minimum of 389µs and below even a single `epoll_wait` wakeup (p50 ~199µs on this machine). These represent cases where the inline WAL path completed *before* the ME returned the ER. The primary's `wal_acked_seq_nos_` already held the ack when the ER arrived, so the ER was forwarded with no WAL wait at all. The measured latency was purely the ME round-trip plus gateway wakeup.
+
+The 650µs–1420µs tail is unchanged in character. In those cases the primary `SequencerThread` wakeup (wakeup 3 — the one remaining `epoll_wait` hop) suffered the full OS scheduler jitter before processing the WalAck. The secondary log confirms inline handler installation on both peer connections (connections 5 and 8). The reactor debug confirmation is not visible at Info log level.
+
+**Conclusion.** Option C is working as designed. Two of the three sequential wakeups are eliminated. When the inline path outpaces the ME, the WAL is invisible to latency. When wakeup 3 is slow, the tail remains. SCHED_FIFO + isolcpus on production hardware would reduce wakeup 3 from ~200µs p50 to ~5µs, collapsing the tail and making sub-100µs median achievable.

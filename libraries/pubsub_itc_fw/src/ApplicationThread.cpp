@@ -32,6 +32,8 @@
 #include <pubsub_itc_fw/QueueConfiguration.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
+#include <pubsub_itc_fw/PduFramer.hpp>
+#include <pubsub_itc_fw/PduParser.hpp>
 #include <pubsub_itc_fw/ReactorControlCommand.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 #include <pubsub_itc_fw/ThreadLifecycleState.hpp>
@@ -551,6 +553,13 @@ void ApplicationThread::enqueue_send_pdu_command(const ConnectionID& conn_id, in
     cmd.pdu_chunk_ptr_ = chunk;
     cmd.pdu_byte_count_ = payload_bytes;
     reactor_.enqueue_control_command(cmd);
+}
+
+void ApplicationThread::install_inline_pdu_handler(ConnectionID conn_id, std::function<void(PduParser*, PduFramer*)> installer) {
+    ReactorControlCommand cmd(ReactorControlCommand::CommandTag::InstallInlinePduHandler);
+    cmd.connection_id_ = conn_id;
+    cmd.inline_handler_installer_ = std::move(installer);
+    reactor_.enqueue_control_command(std::move(cmd));
 }
 
 void ApplicationThread::release_pdu_payload(const EventMessage& message) const {

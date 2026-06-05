@@ -39,6 +39,8 @@ namespace pubsub_itc_fw {
 
 // Forward declarations
 class Reactor;
+class PduParser;
+class PduFramer;
 
 /** @ingroup threading_subsystem */
 
@@ -405,6 +407,27 @@ class ApplicationThread {
      * @param[in] size    Number of bytes to send. Must be > 0.
      */
     void send_raw(const ConnectionID& conn_id, const void* data, uint32_t size);
+
+    /**
+     * @brief Installs a reactor-thread inline PDU handler on the PduParser of an
+     *        established connection.
+     *
+     * The installer callable is invoked by the reactor thread with (PduParser*,
+     * PduFramer*) for the connection identified by conn_id. It is expected to call
+     * parser->set_inline_handler(...) capturing framer for reply sends. Once
+     * installed, matching PDUs are handled on the reactor thread without an ITC
+     * hop, eliminating two of the three epoll_wait wakeups in the WAL replication
+     * round-trip.
+     *
+     * Must be called from this ApplicationThread. The connection must already be
+     * established before this command is processed by the reactor.
+     *
+     * @param[in] conn_id   Established connection whose PduParser to target.
+     * @param[in] installer Called by the reactor with (parser, framer) to set up
+     *                      the inline handler. Captures whatever application state
+     *                      the handler needs.
+     */
+    void install_inline_pdu_handler(ConnectionID conn_id, std::function<void(PduParser*, PduFramer*)> installer);
 
     /**
      * @brief Schedules a high-resolution timer.

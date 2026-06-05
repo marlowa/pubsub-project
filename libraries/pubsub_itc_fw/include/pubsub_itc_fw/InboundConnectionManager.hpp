@@ -250,6 +250,13 @@ class InboundConnectionManager {
     [[nodiscard]] InboundConnection* find_by_fd(int fd) const;
 
     /**
+     * @brief Returns a non-owning pointer to an inbound connection by ConnectionID,
+     *        or nullptr if not found. Used by the Reactor when processing
+     *        InstallInlinePduHandler commands.
+     */
+    [[nodiscard]] InboundConnection* find_by_id(ConnectionID id) const;
+
+    /**
      * @brief Returns a non-owning pointer to an InboundListener by fd,
      *        or nullptr if not found. Used by the Reactor's epoll dispatch.
      */

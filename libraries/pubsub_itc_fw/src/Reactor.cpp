@@ -34,6 +34,7 @@
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/MillisecondClock.hpp>
 #include <pubsub_itc_fw/NetworkEndpointConfiguration.hpp>
+#include <pubsub_itc_fw/PduProtocolHandler.hpp>
 #include <pubsub_itc_fw/ProtocolType.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
@@ -616,8 +617,8 @@ void Reactor::pin_registered_threads() {
     }
 }
 
-void Reactor::enqueue_control_command(const ReactorControlCommand& command) {
-    command_queue_.enqueue(command);
+void Reactor::enqueue_control_command(ReactorControlCommand command) {
+    command_queue_.enqueue(std::move(command));
     uint64_t one = 1;
     ssize_t n{0};
 
@@ -934,6 +935,41 @@ void Reactor::process_control_commands() {
                         PUBSUB_LOG(logger_, FwLogLevel::Warning, "Reactor::process_control_commands: unknown connection id {} for CommitRawBytes",
                                    cid.get_value());
                     }
+                }
+                break;
+            }
+
+            case ReactorControlCommand::InstallInlinePduHandler: {
+                if (!command.inline_handler_installer_) {
+                    break;
+                }
+                const ConnectionID cid = command.connection_id_;
+                PduParser* parser = nullptr;
+                PduFramer* framer = nullptr;
+
+                auto* outbound = outbound_manager_.find_by_id(cid);
+                if (outbound && outbound->parser()) {
+                    parser = outbound->parser();
+                    framer = outbound->framer();
+                }
+
+                if (!parser) {
+                    auto* inbound = inbound_manager_.find_by_id(cid);
+                    if (inbound) {
+                        auto* pdu_handler = dynamic_cast<PduProtocolHandler*>(inbound->handler());
+                        if (pdu_handler) {
+                            parser = pdu_handler->parser();
+                            framer = pdu_handler->framer();
+                        }
+                    }
+                }
+
+                if (parser && framer) {
+                    command.inline_handler_installer_(parser, framer);
+                    PUBSUB_LOG(logger_, FwLogLevel::Debug, "Reactor: inline PDU handler installed on connection {}", cid.get_value());
+                } else {
+                    PUBSUB_LOG(logger_, FwLogLevel::Warning, "Reactor::process_control_commands: connection {} not found or not a PDU connection for InstallInlinePduHandler",
+                               cid.get_value());
                 }
                 break;
             }

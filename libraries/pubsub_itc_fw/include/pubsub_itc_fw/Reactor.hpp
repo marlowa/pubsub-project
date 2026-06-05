@@ -249,7 +249,7 @@ class Reactor : public ThreadLookupInterface {
 
     void cancel_all_timer_fds_for_thread(ThreadID owner_thread_id);
 
-    void enqueue_control_command(const ReactorControlCommand& command);
+    void enqueue_control_command(ReactorControlCommand command);
 
     void on_housekeeping_tick();
 
