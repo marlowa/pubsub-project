@@ -421,6 +421,23 @@ def main() -> None:
     log(f"  clients        : {args.clients}")
     log(f"  burst          : {args.burst}  ({args.clients * args.burst * 1000} orders total)")
 
+    # -- export SCRAM credentials from the database before starting the auth service
+    log("Exporting credentials ...")
+    creds_file   = etc_dir / "authentication_service" / "credentials.toml"
+    export_script = script_dir / "db" / "export_credentials.py"
+    result = subprocess.run(
+        [sys.executable, str(export_script),
+         "--credentials-file", str(creds_file),
+         "--db-host", "localhost",
+         "--db-port", "5432",
+         "--db-name", "pubsub",
+         "--db-user", "pubsub_app"],
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0:
+        die(f"export_credentials.py failed:\n{result.stderr.strip()}")
+    log("  credentials exported")
+
     # -- launch applications in dependency order (mirrors dev.toml startup_order)
     # Each tuple: (name, binary, config, optional_workdir).
     # auth services must start first; gateway connects to them on startup.
