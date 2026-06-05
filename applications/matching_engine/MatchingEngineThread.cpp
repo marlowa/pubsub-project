@@ -35,6 +35,15 @@ pubsub_itc_fw::AllocatorConfiguration make_allocator_config(const MatchingEngine
     return allocator_configuration;
 }
 
+std::string make_order_key(int32_t gateway_session_conn_id, std::string_view cl_ord_id) {
+    std::string key;
+    key.reserve(12 + cl_ord_id.size());
+    key += std::to_string(gateway_session_conn_id);
+    key += ':';
+    key.append(cl_ord_id);
+    return key;
+}
+
 } // namespace
 
 MatchingEngineThread::MatchingEngineThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger,
@@ -133,11 +142,13 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
     const int64_t now_ns = view.has_sequenced_at
                                ? view.sequenced_at
                                : config_.wall_clock->now_ns();
+    const int32_t session_id = view.has_gateway_session_conn_id ? view.gateway_session_conn_id : 0;
+    const std::string order_key = make_order_key(session_id, view.cl_ord_id);
 
-    // Reject duplicate ClOrdID.
-    if (order_book_.count(cl_ord_id)) {
+    // Reject duplicate ClOrdID within the same FIX session.
+    if (order_book_.count(order_key)) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "MatchingEngineThread: duplicate ClOrdID={} -- rejecting NOS", cl_ord_id);
+                   "MatchingEngineThread: duplicate ClOrdID={} (session {}) -- rejecting NOS", cl_ord_id, session_id);
 
         pubsub_itc_fw_app::ExecutionReport er{};
         er.order_id     = "NONE";
@@ -173,7 +184,7 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
     entry.has_price = view.has_price;
     entry.price     = price;
     entry.ord_type  = view.ord_type;
-    order_book_.emplace(cl_ord_id, std::move(entry));
+    order_book_.emplace(order_key, std::move(entry));
 
     pubsub_itc_fw_app::ExecutionReport er{};
     er.order_id     = order_id;
@@ -216,12 +227,14 @@ void MatchingEngineThread::handle_order_cancel_request(const pubsub_itc_fw_app::
     const int64_t now_ns = view.has_sequenced_at
                                ? view.sequenced_at
                                : config_.wall_clock->now_ns();
+    const int32_t session_id = view.has_gateway_session_conn_id ? view.gateway_session_conn_id : 0;
+    const std::string orig_order_key = make_order_key(session_id, view.orig_cl_ord_id);
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "MatchingEngineThread: OrderCancelRequest seq={} ClOrdID={} OrigClOrdID={} Symbol={} Side={}",
                sequence_number, cl_ord_id, orig_cl_ord_id, view.symbol, static_cast<char>(view.side));
 
-    auto it = order_book_.find(orig_cl_ord_id);
+    auto it = order_book_.find(orig_order_key);
     if (it == order_book_.end()) {
         // OrigClOrdID not in the book — order is unknown.
         const std::string symbol = std::string(view.symbol);

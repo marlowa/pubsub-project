@@ -82,7 +82,9 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     pubsub_itc_fw::ConnectionID sequencer_er_conn_id_;
     pubsub_itc_fw::ConnectionID sequencer_er_secondary_conn_id_;
 
-    // Primitive order book: ClOrdID → live order entry.
+    // Order book: composite key (gateway_session_conn_id + ':' + cl_ord_id) → live order entry.
+    // Scoped per FIX session so concurrent sessions can reuse the same ClOrdID sequence
+    // without collision, matching the FIX standard (ClOrdID unique per client session).
     // Orders are inserted on NOS acceptance and erased on cancel confirmation.
     std::unordered_map<std::string, OrderEntry> order_book_;
 
