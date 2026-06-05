@@ -64,6 +64,7 @@ class AuthenticationThread : public pubsub_itc_fw::ApplicationThread {
   private:
     struct ExchangeState {
         int64_t request_id{0};
+        pubsub_itc_fw::ConnectionID conn_id;
         std::string comp_id;
         std::vector<uint8_t> client_nonce;
         std::vector<uint8_t> server_nonce;
@@ -87,7 +88,9 @@ class AuthenticationThread : public pubsub_itc_fw::ApplicationThread {
     const AuthenticationServiceConfiguration& config_;
     // Mutable credential map — updated by SetCredentialRequest at runtime.
     std::unordered_map<std::string, scram_crypto::ScramCredential> credentials_;
-    std::unordered_map<pubsub_itc_fw::ConnectionID, ExchangeState> exchanges_;
+    // Keyed by request_id so concurrent authentication sessions on the same
+    // gateway connection do not overwrite each other's SCRAM exchange state.
+    std::unordered_map<int64_t, ExchangeState> exchanges_;
     // Tracks connections accepted on the TLS admin listener.
     std::unordered_set<pubsub_itc_fw::ConnectionID> admin_connections_;
 };

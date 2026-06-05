@@ -80,7 +80,9 @@ void AuthenticationThread::on_connection_lost(pubsub_itc_fw::ConnectionID id, co
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "AuthenticationThread: admin connection lost conn_id={} reason={}", id.get_value(), reason);
     } else {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "AuthenticationThread: connection lost conn_id={} reason={}", id.get_value(), reason);
-        exchanges_.erase(id);
+        for (auto it = exchanges_.begin(); it != exchanges_.end(); ) {
+            it = (it->second.conn_id == id) ? exchanges_.erase(it) : std::next(it);
+        }
     }
 }
 
@@ -145,8 +147,9 @@ void AuthenticationThread::handle_authentication_request(const pubsub_itc_fw::Co
     }
 
     const scram_crypto::ScramCredential& cred = cred_it->second;
-    ExchangeState& state = exchanges_[conn_id];
+    ExchangeState& state = exchanges_[view.request_id];
     state.request_id = view.request_id;
+    state.conn_id = conn_id;
     state.comp_id = comp_id;
     state.client_nonce = client_nonce;
     state.server_nonce = server_nonce;
@@ -181,7 +184,7 @@ void AuthenticationThread::handle_authentication_proof(const pubsub_itc_fw::Conn
         return;
     }
 
-    auto it = exchanges_.find(conn_id);
+    auto it = exchanges_.find(view.request_id);
     if (it == exchanges_.end()) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                    "AuthenticationThread: AuthenticationProof with no pending exchange "
@@ -191,11 +194,6 @@ void AuthenticationThread::handle_authentication_proof(const pubsub_itc_fw::Conn
     }
 
     const ExchangeState& state = it->second;
-    if (state.request_id != view.request_id) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "AuthenticationThread: request_id mismatch expected={} got={} conn_id={} -- dropping",
-                   state.request_id, view.request_id, conn_id.get_value());
-        return;
-    }
 
     auto send_result = [&](pubsub_itc_fw_app::AuthenticationOutcome outcome, const std::vector<uint8_t>& server_signature) {
         pubsub_itc_fw_app::AuthenticationResult result{};

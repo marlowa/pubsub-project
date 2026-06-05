@@ -353,6 +353,8 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             nos.text = view.text;
             nos.has_sender_comp_id = view.has_sender_comp_id;
             nos.sender_comp_id = view.sender_comp_id;
+            nos.has_gateway_session_conn_id = view.has_gateway_session_conn_id;
+            nos.gateway_session_conn_id = view.gateway_session_conn_id;
 
             // Stamp wall time so the ME can use the original sequencing time
             // for transact_time during replay instead of calling system_clock::now().
@@ -396,6 +398,8 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             ocr.text = view.text;
             ocr.has_sender_comp_id = view.has_sender_comp_id;
             ocr.sender_comp_id = view.sender_comp_id;
+            ocr.has_gateway_session_conn_id = view.has_gateway_session_conn_id;
+            ocr.gateway_session_conn_id = view.gateway_session_conn_id;
 
             ocr.has_sequenced_at = true;
             ocr.sequenced_at = wall_time_ns;
