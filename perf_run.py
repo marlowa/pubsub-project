@@ -91,15 +91,17 @@ def preflight(prefix: Path) -> None:
 
 
 def launch_app(name: str, bin_name: str, config: Path,
-               bin_dir: Path, log_dir: Path) -> subprocess.Popen:
+               bin_dir: Path, log_dir: Path,
+               workdir: Path | None = None) -> subprocess.Popen:
     if not config.is_file():
         die(f"config not found: {config}")
     log_file = log_dir / f"{name}.log"
     log(f"Starting {name} ...")
+    cwd = str(workdir) if workdir is not None else str(log_dir)
     with open(log_dir / f"{name}.stdout", "w") as stdout_fh:
         proc = subprocess.Popen(
             [str(bin_dir / bin_name), str(log_file), str(config)],
-            cwd=str(log_dir),
+            cwd=cwd,
             stdout=stdout_fh,
             stderr=subprocess.STDOUT,
         )
@@ -419,16 +421,19 @@ def main() -> None:
     log(f"  clients        : {args.clients}")
     log(f"  burst          : {args.burst}  ({args.clients * args.burst * 1000} orders total)")
 
-    # -- launch applications in dependency order (mirrors start_fix_seq_system.py)
-    # witness first: arbiters connect outbound to it at startup.
+    # -- launch applications in dependency order (mirrors dev.toml startup_order)
+    # Each tuple: (name, binary, config, optional_workdir).
+    # auth services must start first; gateway connects to them on startup.
     steps = [
-        ("witness",                "witness",                etc_dir / "witness"               / "witness.toml"),
-        ("arbiter_primary",        "arbiter",                etc_dir / "arbiter"               / "arbiter.toml"),
-        ("arbiter_secondary",      "arbiter",                etc_dir / "arbiter"               / "arbiter_secondary.toml"),
-        ("order_gateway", "order_gateway", etc_dir / "order_gateway" / "order_gateway.toml"),
-        ("sequencer_primary",      "sequencer",              etc_dir / "sequencer"             / "sequencer.toml"),
-        ("sequencer_secondary",    "sequencer",              etc_dir / "sequencer"             / "sequencer_secondary.toml"),
-        ("matching_engine",        "matching_engine",        etc_dir / "matching_engine"       / "matching_engine.toml"),
+        ("auth_service_primary",   "authentication_service", etc_dir / "authentication_service" / "authentication_service.toml",  etc_dir / "authentication_service"),
+        ("auth_service_secondary", "authentication_service", etc_dir / "authentication_service" / "authentication_service_secondary.toml", etc_dir / "authentication_service"),
+        ("witness",                "witness",                etc_dir / "witness"               / "witness.toml",                  None),
+        ("arbiter_primary",        "arbiter",                etc_dir / "arbiter"               / "arbiter.toml",                  None),
+        ("arbiter_secondary",      "arbiter",                etc_dir / "arbiter"               / "arbiter_secondary.toml",        None),
+        ("matching_engine",        "matching_engine",        etc_dir / "matching_engine"       / "matching_engine.toml",          None),
+        ("sequencer_primary",      "sequencer",              etc_dir / "sequencer"             / "sequencer.toml",                None),
+        ("sequencer_secondary",    "sequencer",              etc_dir / "sequencer"             / "sequencer_secondary.toml",      None),
+        ("order_gateway",          "order_gateway",          etc_dir / "order_gateway"         / "order_gateway.toml",            None),
     ]
 
     app_procs:  list[tuple[str, subprocess.Popen]] = []
@@ -441,8 +446,8 @@ def main() -> None:
             generate_reports([n for n, _ in app_procs], perf_dir)
 
     try:
-        for name, bin_name, config in steps:
-            proc = launch_app(name, bin_name, config, bin_dir, log_dir)
+        for name, bin_name, config, workdir in steps:
+            proc = launch_app(name, bin_name, config, bin_dir, log_dir, workdir)
             app_procs.append((name, proc))
             time.sleep(STARTUP_DELAY)
 
