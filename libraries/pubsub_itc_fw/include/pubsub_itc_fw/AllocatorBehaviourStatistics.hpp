@@ -58,8 +58,7 @@ namespace pubsub_itc_fw {
  * This class is deliberately simple and does not expose any mutating
  * operations. It is designed to be returned by value and copied freely.
  */
-class AllocatorBehaviourStatistics {
-  public:
+struct AllocatorBehaviourStatistics {
     /**
      * @brief Constructs an empty statistics object.
      *

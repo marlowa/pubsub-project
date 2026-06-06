@@ -15,6 +15,7 @@
 
 #include <pubsub_itc_fw/Crc32.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
+#include <pubsub_itc_fw/StringUtils.hpp>
 #include <pubsub_itc_fw/WalReader.hpp>
 
 namespace sequencer {
@@ -100,7 +101,7 @@ bool SequencerWal::load_snapshot(pubsub_itc_fw::WalPosition& out_pos) {
         if (errno == ENOENT) {
             return false;
         }
-        throw PubSubItcException("SequencerWal: load_snapshot open(" + path + "): " + std::strerror(errno));
+        throw PubSubItcException("SequencerWal: load_snapshot open(" + path + "): " + StringUtils::get_errno_string());
     }
 
     SnapshotHeader hdr{};
@@ -151,7 +152,7 @@ void SequencerWal::take_snapshot() {
 
     const int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) {
-        throw PubSubItcException("SequencerWal: take_snapshot open(" + tmp + "): " + std::strerror(errno));
+        throw PubSubItcException("SequencerWal: take_snapshot open(" + tmp + "): " + StringUtils::get_errno_string());
     }
 
     const ssize_t written = ::write(fd, &hdr, sizeof(hdr));
@@ -162,7 +163,7 @@ void SequencerWal::take_snapshot() {
     }
 
     if (::rename(tmp.c_str(), final.c_str()) != 0) {
-        throw PubSubItcException("SequencerWal: take_snapshot rename(" + tmp + " -> " + final + "): " + std::strerror(errno));
+        throw PubSubItcException("SequencerWal: take_snapshot rename(" + tmp + " -> " + final + "): " + StringUtils::get_errno_string());
     }
 
     delete_segments_before(pos.segment);

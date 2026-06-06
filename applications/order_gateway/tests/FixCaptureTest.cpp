@@ -162,7 +162,7 @@ TEST_F(FixCaptureTest, FileIsTruncatedWhenNewInstanceCreated) {
 
 TEST_F(FixCaptureTest, EmptyFileWhenNothingCaptured) {
     {
-        FixCapture capture(capture_file_, logger_.logger, 1000);
+        const FixCapture capture(capture_file_, logger_.logger, 1000);
     }
 
     const auto records = read_all_records(capture_file_);

@@ -12,7 +12,6 @@
 #include <fmt/format.h>
 
 #include <pubsub_itc_fw/InetAddress.hpp>
-#include <pubsub_itc_fw/StringUtils.hpp>
 #include <pubsub_itc_fw/TcpConnector.hpp>
 #include <pubsub_itc_fw/TcpSocket.hpp>
 

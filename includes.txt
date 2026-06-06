@@ -1,3 +1,4 @@
+applications/order_gateway
 libraries
 libraries/pubsub_itc_fw/include
 libraries/pubsub_itc_fw/tests_common/include/

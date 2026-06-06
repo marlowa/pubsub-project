@@ -98,7 +98,7 @@ class ThreadWithJoinTimeout {
         int rc = pthread_create(
             &thread_, nullptr,
             [](void* arg) -> void* {
-                std::unique_ptr<Functor> f(static_cast<Functor*>(arg));
+                const std::unique_ptr<Functor> f(static_cast<Functor*>(arg));
                 (*f)();
                 return nullptr;
             },

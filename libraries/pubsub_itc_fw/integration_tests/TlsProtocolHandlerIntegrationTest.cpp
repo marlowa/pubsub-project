@@ -124,7 +124,7 @@ static std::string try_decode_tls_framed(const uint8_t* data, int available, int
     uint32_t length_be = 0;
     std::memcpy(&length_be, data, tls_length_prefix_size);
     const uint32_t payload_length = ntohl(length_be);
-    const int64_t total = static_cast<int64_t>(tls_length_prefix_size + payload_length);
+    const auto total = static_cast<int64_t>(tls_length_prefix_size + payload_length);
     if (available < static_cast<int>(total)) {
         return {};
     }

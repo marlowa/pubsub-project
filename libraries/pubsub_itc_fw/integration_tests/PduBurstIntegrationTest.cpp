@@ -338,8 +338,8 @@ class ReceiverThread : public ApplicationThread {
         }
     }
 
-    void on_itc_message(const EventMessage&) override {}
-    void on_timer_event(const std::string&) override {}
+    void on_itc_message([[maybe_unused]] const EventMessage& msg) override {}
+    void on_timer_event([[maybe_unused]] const std::string& name) override {}
 
   private:
     // Highest absolute head position observed across raw-socket events.

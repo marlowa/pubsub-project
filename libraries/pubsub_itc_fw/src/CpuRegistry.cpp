@@ -10,6 +10,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <string>
+
 #include <pubsub_itc_fw/CpuPinning.hpp>
 #include <pubsub_itc_fw/CpuRegistry.hpp>
 #include <pubsub_itc_fw/FileLock.hpp>
@@ -97,7 +99,7 @@ AvailableCpuVector CpuRegistry::claim_cpus(size_t count, bool reserve_cpu0) cons
     uint32_t write_idx = 0;
     for (uint32_t i = 0; i < layout_->active_entry_count; ++i) {
         const auto& e = layout_->entries[i];
-        bool keep = (e.process_id > 0) && (kill(e.process_id, 0) == 0 || errno != ESRCH);
+        const bool keep = (e.process_id > 0) && (kill(e.process_id, 0) == 0 || errno != ESRCH);
         if (keep) {
             layout_->entries[write_idx++] = e;
         }

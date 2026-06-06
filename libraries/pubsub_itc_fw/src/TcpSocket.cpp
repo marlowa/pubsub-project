@@ -48,6 +48,7 @@ namespace {
     auto flags = static_cast<unsigned>(raw_flags);
     flags |= O_NONBLOCK;
 
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg, hicpp-vararg)
     if (fcntl(socket_fd, F_SETFL, static_cast<int>(flags)) == -1) {
         return {false, fmt::format("Failed to set socket {} to non-blocking mode: {}", socket_fd, StringUtils::get_errno_string())};
     }

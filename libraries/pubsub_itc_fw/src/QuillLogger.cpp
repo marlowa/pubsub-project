@@ -4,10 +4,15 @@
 #include <atomic>
 #include <csignal>
 #include <cstdint>
+
 #include <fstream>
+#include <ios>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
+#include <utility> // for std::move and std::pair
+#include <vector>
 
 #include <quill/Backend.h>
 #include <quill/Frontend.h>
@@ -35,11 +40,11 @@
  * the OS scheduler from migrating it onto cores reserved for latency-sensitive
  * threads (the Reactor event loop and ApplicationThreads).
  *
- * Design decision: the Reactor owns all thread pinning, including the Quill
- * backend.  QuillLogger starts the backend as early as possible (on first
- * construction, before the Reactor exists) so that the application can log
- * during config loading and startup.  The Reactor then pins the already-running
- * backend thread from within Reactor::run(), before the event loop starts.
+ * Design decision: the Reactor owns all thread pinning, including the Quill backend.
+ * QuillLogger starts the backend as early as possible (on first construction, before
+ * the Reactor exists) so that the application can log during config loading and startup.
+ * The Reactor then pins the already-running backend thread from within Reactor::run(),
+ * before the event loop starts.
  *
  * Mechanism:
  *   1. sched_getaffinity(0, ...) discovers the cores the process is allowed to

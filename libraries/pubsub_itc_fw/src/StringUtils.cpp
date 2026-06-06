@@ -1,8 +1,12 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-#include <array>
 #include <cerrno>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+
+#include <array>
 #include <string>
 #include <string_view>
 
@@ -65,11 +69,6 @@ std::string StringUtils::leafname(const std::string& filename) {
     return filename;
 }
 
-#include <cstddef>
-#include <cstdint>
-#include <cstdio>
-#include <string>
-
 std::string StringUtils::hex_dump(const void* data, size_t len) {
     const auto* bytes = static_cast<const uint8_t*>(data);
 
@@ -86,13 +85,13 @@ std::string StringUtils::hex_dump(const void* data, size_t len) {
         char buf[32];
 
         // Offset
-        std::snprintf(buf, sizeof(buf), "%04zx: ", i);
+        (void)std::snprintf(buf, sizeof(buf), "%04zx: ", i);
         out += buf;
 
         // Hex column
         for (size_t j = 0; j < bytes_per_line; ++j) {
             if (i + j < len) {
-                std::snprintf(buf, sizeof(buf), "%02X ", bytes[i + j]);
+                (void)std::snprintf(buf, sizeof(buf), "%02X ", bytes[i + j]);
                 out += buf;
             } else {
                 out += "   ";
@@ -104,7 +103,7 @@ std::string StringUtils::hex_dump(const void* data, size_t len) {
         // ASCII column (strict)
         for (size_t j = 0; j < bytes_per_line; ++j) {
             if (i + j < len) {
-                uint8_t c = bytes[i + j];
+                const uint8_t c = bytes[i + j];
                 if (c >= 32 && c <= 126) {
                     out += static_cast<char>(c);
                 } else {

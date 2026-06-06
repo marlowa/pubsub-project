@@ -48,3 +48,11 @@ readability-identifier-length
 
 # we want to be able to say #if 0 ... #endif
 readability-avoid-unconditional-preprocessor-if
+
+# we prefer pragma once to macro include guards
+llvm-header-guard
+
+# We do not use noexcept because once you start down the dark path, forever will it dominate your destiny.
+cppcoreguidelines-noexcept-move-operations
+hicpp-noexcept-move
+performance-noexcept-move-constructor

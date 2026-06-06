@@ -41,10 +41,10 @@ fixed_pool_bench:
 
  Performance counter stats for './build/libraries/pubsub_itc_fw/performance/fixed_pool_bench':
 
-            400.27 msec task-clock                       #    1.985 CPUs utilized
-                 6      context-switches                 #   14.990 /sec
-                 4      cpu-migrations                   #    9.993 /sec
-               171      page-faults                      #  427.217 /sec
+            400.27 msec task-clock                #    1.985 CPUs utilized
+                 6      context-switches          #   14.990 /sec
+                 4      cpu-migrations            #    9.993 /sec
+               171      page-faults               #  427.217 /sec
        410,231,474      cpu_atom/instructions/           #    0.78  insn per cycle              (0.08%)
      1,508,273,262      cpu_core/instructions/           #    0.69  insn per cycle              (99.89%)
        527,565,839      cpu_atom/cycles/                 #    1.318 GHz                         (0.10%)
@@ -82,6 +82,7 @@ install imagemagick to be able to convert svg files to jpg.
 
  */
 
+#include <array>
 #include <atomic>
 #include <cassert>
 #include <chrono>
@@ -122,14 +123,12 @@ std::function<void(void*, size_t)> MakeHugePageErrorHandler() {
 
 } // unnamed namespace
 
-using namespace pubsub_itc_fw;
-
 // -----------------------------------------------------------------------------
 // Simple test object
 // -----------------------------------------------------------------------------
 struct TestObject {
     int id_{0};
-    std::byte padding_[64]; // keep it non-trivial, but not huge
+    std::array<std::byte, 64> padding_{}; // Fixes C-style array and missing member init warnings
 };
 
 // -----------------------------------------------------------------------------
@@ -171,10 +170,101 @@ template <typename T> class SpscRing {
     std::atomic<size_t> tail_{0};
 };
 
+namespace {
+
+// -----------------------------------------------------------------------------
+// Decoupled execution loops to resolve cognitive complexity rules
+// -----------------------------------------------------------------------------
+void RunProducer(
+    int cpu,
+    size_t iterations,
+    std::atomic<bool>& startFlag,
+    std::atomic<bool>& doneFlag,
+    std::atomic<size_t>& produced,
+    pubsub_itc_fw::FixedSizeMemoryPool<TestObject>& pool,
+    SpscRing<TestObject>& ring)
+{
+    if (!PinToCpu(cpu)) {
+        std::cerr << "Producer: failed to pin to CPU " << cpu << "\n";
+    }
+
+    while (!startFlag.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+    }
+
+    for (size_t i = 0; i < iterations; ++i) {
+        TestObject* obj = nullptr;
+        while ((obj = pool.allocate()) == nullptr) {
+            std::this_thread::yield();
+        }
+
+        obj = new (obj) TestObject();
+        obj->id_ = static_cast<int>(i);
+
+        while (!ring.Push(obj)) {
+            std::this_thread::yield();
+        }
+
+        produced.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    doneFlag.store(true, std::memory_order_release);
+}
+
+void RunConsumer(
+    int cpu,
+    bool simulateSlowConsumer,
+    int busyWorkIters,
+    std::atomic<bool>& startFlag,
+    const std::atomic<bool>& doneFlag,
+    const std::atomic<size_t>& produced,
+    std::atomic<size_t>& consumed,
+    pubsub_itc_fw::FixedSizeMemoryPool<TestObject>& pool,
+    SpscRing<TestObject>& ring)
+{
+    if (!PinToCpu(cpu)) {
+        std::cerr << "Consumer: failed to pin to CPU " << cpu << "\n";
+    }
+
+    while (!startFlag.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+    }
+
+    for (;;) {
+        TestObject* obj = ring.Pop();
+        if (obj != nullptr) {
+            if (simulateSlowConsumer) {
+                for (int k = 0; k < busyWorkIters; ++k) {
+                    asm volatile("" ::: "memory");
+                }
+            }
+
+            const int id = obj->id_;
+            (void)id;
+
+            obj->~TestObject();
+            pool.deallocate(obj);
+
+            consumed.fetch_add(1, std::memory_order_relaxed);
+        } else {
+            if (doneFlag.load(std::memory_order_acquire) &&
+                consumed.load(std::memory_order_relaxed) >= produced.load(std::memory_order_relaxed)) {
+                break;
+            }
+            std::this_thread::yield();
+        }
+    }
+}
+
+} // unnamed namespace
+
 // -----------------------------------------------------------------------------
 // Main benchmark
 // -----------------------------------------------------------------------------
 int main() {
+    using pubsub_itc_fw::FixedSizeMemoryPool;
+    using pubsub_itc_fw::UseHugePagesFlag;
+
     // Tunables: adjust for your machine / perf session
     const int poolCapacity = 1024;        // number of slots in pool
     const size_t ringCapacity = 1024;     // must be power of two
@@ -184,7 +274,11 @@ int main() {
     const bool simulateSlowConsumer = true;
     const int consumerBusyWorkIters = 50; // small spin to lag consumer
 
-    FixedSizeMemoryPool<TestObject> pool(poolCapacity, UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages), MakeHugePageErrorHandler());
+    FixedSizeMemoryPool<TestObject> pool(
+        poolCapacity,
+        UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages),
+        MakeHugePageErrorHandler()
+    );
 
     SpscRing<TestObject> ring(ringCapacity);
 
@@ -193,85 +287,20 @@ int main() {
     std::atomic<size_t> produced{0};
     std::atomic<size_t> consumed{0};
 
-    // Optional: CAS failure counter (for manual inspection)
-    // If you want to wire this into the pool, you can add a hook there.
-    // For now, we just focus on perf/flamegraphs.
-
     std::thread producer([&]() {
-        if (!PinToCpu(producerCpu)) {
-            std::cerr << "Producer: failed to pin to CPU " << producerCpu << "\n";
-        }
-
-        while (!startFlag.load(std::memory_order_acquire)) {
-            std::this_thread::yield();
-        }
-
-        for (size_t i = 0; i < iterations; ++i) {
-            // Allocate from pool (raw memory)
-            TestObject* obj = nullptr;
-            while ((obj = pool.allocate()) == nullptr) {
-                // Pool exhausted: let consumer catch up
-                std::this_thread::yield();
-            }
-
-            // Construct object in-place
-            obj = new (obj) TestObject();
-            obj->id_ = static_cast<int>(i);
-
-            // Enqueue into ring
-            while (!ring.Push(obj)) {
-                std::this_thread::yield();
-            }
-
-            produced.fetch_add(1, std::memory_order_relaxed);
-        }
-
-        doneFlag.store(true, std::memory_order_release);
+        RunProducer(producerCpu, iterations, startFlag, doneFlag, produced, pool, ring);
     });
 
     std::thread consumer([&]() {
-        if (!PinToCpu(consumerCpu)) {
-            std::cerr << "Consumer: failed to pin to CPU " << consumerCpu << "\n";
-        }
-
-        while (!startFlag.load(std::memory_order_acquire)) {
-            std::this_thread::yield();
-        }
-
-        for (;;) {
-            TestObject* obj = ring.Pop();
-            if (obj != nullptr) {
-                // Simulate slightly slower consumer
-                if (simulateSlowConsumer) {
-                    for (int k = 0; k < consumerBusyWorkIters; ++k) {
-                        asm volatile("" ::: "memory");
-                    }
-                }
-
-                // Consume: trivial read
-                const int id = obj->id_;
-                (void)id;
-
-                // Destroy and return to pool
-                obj->~TestObject();
-                pool.deallocate(obj);
-
-                consumed.fetch_add(1, std::memory_order_relaxed);
-            } else {
-                if (doneFlag.load(std::memory_order_acquire) && consumed.load(std::memory_order_relaxed) >= produced.load(std::memory_order_relaxed)) {
-                    break;
-                }
-                std::this_thread::yield();
-            }
-        }
+        RunConsumer(consumerCpu, simulateSlowConsumer, consumerBusyWorkIters, startFlag, doneFlag, produced, consumed, pool, ring);
     });
 
     startFlag.store(true, std::memory_order_release);
 
-    auto t0 = std::chrono::steady_clock::now();
+    const auto t0 = std::chrono::steady_clock::now();
     producer.join();
     consumer.join();
-    auto t1 = std::chrono::steady_clock::now();
+    const auto t1 = std::chrono::steady_clock::now();
 
     const auto elapsedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
 

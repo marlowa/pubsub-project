@@ -1,11 +1,16 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <cstdint>
+
+#include <memory>
+
 #include <pubsub_itc_fw/OutboundConnection.hpp>
 
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/ServiceEndpoints.hpp>
+#include <pubsub_itc_fw/TcpSocket.hpp>
 #include <pubsub_itc_fw/TlsContext.hpp>
 #include <pubsub_itc_fw/TlsRawBytesProtocolHandler.hpp>
 

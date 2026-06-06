@@ -66,9 +66,11 @@ template <typename S, typename... Args> void validate_at_compile_time(S format_s
 // In clang-tidy analysis mode the macros are neutralised to avoid false
 // positives from the variadic forwarding.
 #ifdef CLANG_TIDY
+// NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
 #define PUBSUB_LOG(logger_expr, log_level_expr, fmt, ...)                                                                                                      \
     do {                                                                                                                                                       \
     } while (0)
+// NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
 #define PUBSUB_LOG_STR(logger_expr, log_level_expr, msg)                                                                                                       \
     do {                                                                                                                                                       \
     } while (0)

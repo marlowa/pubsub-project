@@ -117,7 +117,9 @@ python3 deploy.py --env environments/prod.toml \
 Steps performed in order:
 
 1. **Unpack** the artefact into the install directory, stripping its top-level directory.
-2. **Expand config templates** — substitutes `${placeholder}` values in all `etc/**/*.toml` files using flattened keys from the env TOML (e.g. `${sequencer_primary_peer_host}`).
+2. **Expand config templates** — substitutes `${placeholder}` values in all `etc/**/*.toml` files. Placeholder names are derived mechanically from the environment TOML by flattening every section and key into a single string: `[section] key` → `${section_key}`. For example, `[arbiter_primary] peer_host` in the env TOML becomes `${arbiter_primary_peer_host}` in the component template. A small number of placeholders are injected programmatically by `deploy.py` itself rather than read from the env TOML (currently `${paths_install_dir}`, `${shared_reactor_cpu_registry_shm_path}`, and `${shared_reactor_cpu_registry_lock_file}`). An undefined placeholder causes a hard exit naming the file and the missing key — there are no silent failures.
+
+   **Tracing a placeholder:** if you see `${foo_bar_baz}` in an application template and cannot find its value, either (a) open the env TOML and look for a `[foo]` section with key `bar_baz`, or (b) search `deploy.py` for `namespace["foo_bar_baz"]`.
 3. **Generate TLS certificates** — self-signed via `openssl req -x509` for each `[tls.*]` section. Pass `--skip-certs` when placing CA-signed certificates for production.
 4. **Create the database** — delegates to `db/create_db.py`.
 5. **Export SCRAM credentials** — delegates to `db/export_credentials.py`.

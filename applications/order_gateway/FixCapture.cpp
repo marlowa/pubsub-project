@@ -56,7 +56,7 @@ FixCapture::~FixCapture() {
 }
 
 void FixCapture::capture(Direction direction, const uint8_t* data, size_t size, int64_t timestamp_ns) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    const std::lock_guard<std::mutex> lock(mutex_);
     if (pending_.size() >= queue_depth_) {
         PUBSUB_LOG_STR(logger_, pubsub_itc_fw::FwLogLevel::Warning,
                        "FixCapture: queue full -- dropping record");

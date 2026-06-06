@@ -159,7 +159,7 @@ void ApplicationThread::resume() {
 
 void ApplicationThread::enqueue(EventMessage message) {
     message_queue_->enqueue(std::move(message));
-    const uint64_t one = 1;
+    constexpr uint64_t one = 1;
     if (::write(notify_fd_, &one, sizeof(one)) == -1 && errno != EAGAIN) {
         PUBSUB_LOG(logger_, FwLogLevel::Warning, "Thread {}: notify_fd_ write failed errno {}", thread_name_, errno);
     }
@@ -168,7 +168,7 @@ void ApplicationThread::enqueue(EventMessage message) {
 void ApplicationThread::post_message(ThreadID target_thread_id, EventMessage message) const {
     if (target_thread_id == thread_id_) {
         message_queue_->enqueue(std::move(message));
-        const uint64_t one = 1;
+        constexpr uint64_t one = 1;
         if (::write(notify_fd_, &one, sizeof(one)) == -1 && errno != EAGAIN) {
             PUBSUB_LOG(logger_, FwLogLevel::Warning, "Thread {}: notify_fd_ write failed errno {}", thread_name_, errno);
         }
@@ -273,7 +273,7 @@ void ApplicationThread::shutdown([[maybe_unused]] const std::string& reason) {
 
     // Wake the thread so it exits epoll_wait promptly instead of waiting for
     // the 1-second safety timeout.
-    const uint64_t one = 1;
+    constexpr uint64_t one = 1;
     if (::write(notify_fd_, &one, sizeof(one)) == -1 && errno != EAGAIN) {
         PUBSUB_LOG(logger_, FwLogLevel::Warning, "Thread {}: notify_fd_ write on shutdown failed errno {}", thread_name_, errno);
     }
@@ -557,7 +557,7 @@ void ApplicationThread::enqueue_send_pdu_command(const ConnectionID& conn_id, in
 
 void ApplicationThread::install_inline_pdu_handler(ConnectionID conn_id, std::function<void(PduParser*, PduFramer*)> installer) {
     ReactorControlCommand cmd(ReactorControlCommand::CommandTag::InstallInlinePduHandler);
-    cmd.connection_id_ = conn_id;
+    cmd.connection_id_ = std::move(conn_id);
     cmd.inline_handler_installer_ = std::move(installer);
     reactor_.enqueue_control_command(std::move(cmd));
 }

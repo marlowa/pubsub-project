@@ -52,6 +52,13 @@ class TcpSocket : public ByteStreamInterface {
      */
     ~TcpSocket() override;
 
+    // Explicitly delete copy and move constructors/assignment operators to ensure
+    // unique ownership of the socket file descriptor.
+    TcpSocket(const TcpSocket&) = delete;
+    TcpSocket& operator=(const TcpSocket&) = delete;
+    TcpSocket(TcpSocket&&) = delete;
+    TcpSocket& operator=(TcpSocket&&) = delete;
+
     /**
      * @brief Constructs a new `TcpSocket` instance.
      *
@@ -275,12 +282,6 @@ class TcpSocket : public ByteStreamInterface {
      */
     std::unique_ptr<TcpSocketImpl> p_impl_;
 
-    // Explicitly delete copy and move constructors/assignment operators to ensure
-    // unique ownership of the socket file descriptor.
-    TcpSocket(const TcpSocket&) = delete;
-    TcpSocket& operator=(const TcpSocket&) = delete;
-    TcpSocket(TcpSocket&&) = delete;
-    TcpSocket& operator=(TcpSocket&&) = delete;
 };
 
 } // namespace pubsub_itc_fw

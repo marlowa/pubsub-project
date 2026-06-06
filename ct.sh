@@ -37,7 +37,7 @@ python3 python/tools/generate_cpp_from_dsl.py --namespace pubsub_itc_fw \
         || { echo "Error: DSL generation failed (DslBenchProtocol)."; exit 1; }
 
 python3 sca.py --includes=includes.txt --ignore_checks=ignore-checks.txt \
-        --extra-macros=extra_macros.txt --exclusions=excludes.txt \
+        --extra-macros=extra_macros.txt --exclusions=excludes.txt --batch_size=50 \
         --header_filter="$(realpath .)" 2>&1 | tee clang-output.txt
 if [ $? -ne 0 ]; then
     echo Error: SCA failed.

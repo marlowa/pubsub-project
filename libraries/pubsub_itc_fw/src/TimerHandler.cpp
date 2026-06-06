@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <cstdint>
+#include <ctime>
 
 #include <unistd.h> // for close
 
@@ -80,7 +81,7 @@ TimerHandler::TimerHandler(const Timer& timer, Reactor& reactor) : timer_(timer)
 
 bool TimerHandler::handle_event(uint32_t events) {
     // 1. Must be a read event
-    if (!(events & EPOLLIN)) {
+    if ((events & EPOLLIN) == 0) {
         PUBSUB_LOG_STR(reactor_.get_logger(), FwLogLevel::Error, "handle_event not a read event");
         return false;
     }

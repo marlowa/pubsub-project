@@ -5,6 +5,9 @@
 #include <optional>
 #include <vector>
 
+#include <cstdint>
+#include <cstddef>
+
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/epoll.h>
@@ -13,6 +16,7 @@
 #include <fmt/format.h>
 
 #include <pubsub_itc_fw/ApplicationThread.hpp>
+#include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/InboundConnectionManager.hpp>
@@ -25,6 +29,7 @@
 #include <pubsub_itc_fw/RawBytesProtocolHandler.hpp>
 #include <pubsub_itc_fw/StringUtils.hpp>
 #include <pubsub_itc_fw/TcpAcceptor.hpp>
+#include <pubsub_itc_fw/TlsContext.hpp>
 #include <pubsub_itc_fw/TlsListenerConfiguration.hpp>
 #include <pubsub_itc_fw/TlsRawBytesProtocolHandler.hpp>
 
@@ -413,7 +418,7 @@ bool InboundConnectionManager::process_commit_raw_bytes(ConnectionID id, int64_t
     if (it == connections_.end()) {
         return false;
     }
-    InboundConnection& conn = *it->second;
+    const InboundConnection& conn = *it->second;
     const bool resume_reads = conn.handler()->commit_bytes(bytes_consumed);
 
     if (resume_reads) {

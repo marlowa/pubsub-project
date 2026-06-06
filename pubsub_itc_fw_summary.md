@@ -729,6 +729,34 @@ New root-level script that packages the build output into a `pubsub-<version>-<g
 
 Component TOML files in `applications/` are now templates with `${placeholder}` syntax (Python `string.Template`). Placeholder names are the full flattened TOML path of the substitution value — for example `[arbiter_primary] peer_host` → `${arbiter_primary_peer_host}`. This avoids cryptic abbreviations.
 
+**How to trace a placeholder back to its definition.**
+
+When you see `${some_placeholder}` in an application TOML template (e.g. `applications/matching_engine/matching_engine.toml`), find its value by:
+
+1. Split the placeholder on the *first* underscore boundary that matches a section name. The part before the first `_` is the TOML section; everything after is the key within that section. In practice: `shared_reactor_cpu_pinning_reserve_cpu0` → section `[shared]`, key `reactor_cpu_pinning_reserve_cpu0`.
+
+2. Open the appropriate environment file (e.g. `environments/dev.toml` for the sandbox, `environments/prod.toml` for production). Find the section and key. Example:
+
+   ```toml
+   # environments/dev.toml
+   [shared]
+   reactor_cpu_pinning_reserve_cpu0 = true   # ← this becomes ${shared_reactor_cpu_pinning_reserve_cpu0}
+   ```
+
+3. `deploy.py::flatten_toml(env)` recursively walks every section of the env TOML and produces a flat `{key: str}` dict where each key is `section_key` (section name + underscore + key name, with nested sections concatenated the same way). Booleans become `"true"`/`"false"`; lists are skipped. `string.Template.safe_substitute` then replaces every `${...}` in every `etc/**/*.toml` with the matching entry. An undefined placeholder causes a hard exit naming the file and the missing key.
+
+4. A small number of placeholders are **injected programmatically** by `deploy.py` rather than read from the env TOML. Currently these are:
+
+   | Placeholder | Injected value |
+   |---|---|
+   | `${paths_install_dir}` | The resolved install directory path |
+   | `${shared_reactor_cpu_registry_shm_path}` | `<install_dir>/run/pubsub_cpu_registry` |
+   | `${shared_reactor_cpu_registry_lock_file}` | `<install_dir>/run/pubsub_cpu_registry.lock` |
+
+   These override any same-named entry that might appear in the env TOML. The `run/` subdirectory is created by `deploy.py` if absent.
+
+**Rule of thumb**: every placeholder you see in an application template is defined either in the substitution section at the bottom of the env TOML (derived mechanically as `section_key`) or injected by `deploy.py` at expansion time. If a grep for the placeholder name finds no definition in the env TOML, look in `deploy.py` around the `namespace["..."] =` lines.
+
 Files converted: `witness/witness.toml`, `arbiter/arbiter.toml`, `arbiter/arbiter_secondary.toml`, `authentication_service/authentication_service.toml`, `authentication_service/authentication_service_secondary.toml`, `matching_engine/matching_engine.toml`, `order_gateway/order_gateway.toml`, `sequencer/sequencer.toml`, `sequencer/sequencer_secondary.toml`.
 
 `environments/dev.toml` extended with substitution sections at the end: `[shared]`, `[witness]`, `[arbiter_primary]`, `[arbiter_secondary]`, `[auth_service_primary]`, `[auth_service_secondary]`, `[matching_engine]`, `[order_gateway]`, `[sequencer_primary]`, `[sequencer_secondary]`. Values are placed in their logically-appropriate section, not a flat `[vars]` block.
