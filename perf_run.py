@@ -182,7 +182,8 @@ def _wait_for_log_pattern(log_path: Path, label: str, target: int,
 
             if total_seen > 0 and (time.monotonic() - last_change) >= idle_timeout:
                 log(f"  STALL: {label} stopped at {total_seen:,} / {target:,} "
-                    f"({target - total_seen:,} missing) — proceeding with shutdown.")
+                    f"({target - total_seen:,} apparently missing in live count; "
+                    f"post-shutdown totals are authoritative) — proceeding with shutdown.")
                 return False
 
         time.sleep(0.1)
@@ -529,6 +530,32 @@ def main() -> None:
         log("Interrupted — shutting down cleanly ...")
         full_shutdown()
         sys.exit(130)
+
+    # Post-shutdown ground-truth counts.  Quill flushes its remaining ring-buffer
+    # entries when processes exit, so these figures reflect what was truly processed
+    # regardless of what the live-monitoring bail-outs reported.
+    total_orders = args.clients * args.burst * 1000
+    def count_in_log(path: Path, marker: str) -> int:
+        try:
+            return sum(1 for line in path.open(errors="replace") if marker in line)
+        except FileNotFoundError:
+            return 0
+
+    me_final     = count_in_log(me_log,  "ME-ORD")
+    gw_nos_recv  = count_in_log(gw_log,  "GW-NOS-RECV")
+    gw_er_sent   = count_in_log(gw_log,  "GW-ER-SENT")
+    gw_gap_fills = count_in_log(gw_log,  "SequenceReset-GapFill")
+    me_ok        = me_final    == total_orders
+    nos_ok       = gw_nos_recv == total_orders
+    er_ok        = gw_er_sent  == total_orders
+    nos_er_match = gw_nos_recv == gw_er_sent
+    log("=== Post-shutdown ground-truth counts ===")
+    log(f"  ME-ORD        : {me_final:>10,} / {total_orders:,}  {'OK' if me_ok  else f'SHORT by {total_orders - me_final:,}'}")
+    log(f"  GW-NOS-RECV   : {gw_nos_recv:>10,} / {total_orders:,}  {'OK' if nos_ok else f'SHORT by {total_orders - gw_nos_recv:,}'}")
+    log(f"  GW-ER-SENT    : {gw_er_sent:>10,} / {total_orders:,}  {'OK' if er_ok  else f'SHORT by {total_orders - gw_er_sent:,}'}")
+    log(f"  NOS→ER match  : {'YES — every NOS received an ER' if nos_er_match else f'NO — {abs(gw_nos_recv - gw_er_sent):,} discrepancy (ERs without matching NOS or vice-versa)'}")
+    if gw_gap_fills > 0:
+        log(f"  Gap fills     : {gw_gap_fills:>10,}  (FIX SequenceReset-GapFill sent in response to ResendRequest)")
 
     log("=== Done ===")
 

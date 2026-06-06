@@ -713,28 +713,30 @@ void OrderGatewayThread::handle_logout(FixSession& session, const ParsedFixMessa
 }
 
 void OrderGatewayThread::handle_resend_request(FixSession& session, const ParsedFixMessage& msg) {
-    uint32_t begin_seq = 1;
+    int begin_seq = 1;
     const std::string_view begin_str = msg.get(Tag::BeginSeqNo);
     if (!begin_str.empty()) {
         std::from_chars(begin_str.data(), begin_str.data() + begin_str.size(), begin_seq);
     }
 
-    const uint32_t next_seq = session.outbound_seq_num;
+    // Fill the entire gap in one shot: NewSeqNo = current outbound position.
+    // fix8 will buffer messages it received after the gap; those with seq < NewSeqNo
+    // are gap-filled and discarded by fix8's session layer, but the session stays
+    // open and subsequent ERs (at NewSeqNo onwards) flow normally.
+    // One-at-a-time filling (NewSeqNo=begin_seq+1) creates a feedback loop of
+    // thousands of ResendRequest/SequenceReset exchanges that freezes the session.
+    const int next_seq = session.outbound_seq_num;
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-               "OrderGatewayThread: connection {} ResendRequest BeginSeqNo={} -- sending SequenceReset-GapFill to NewSeqNo={}",
+               "OrderGatewayThread: connection {} ResendRequest BeginSeqNo={} -- sending SequenceReset-GapFill NewSeqNo={}",
                session.conn_id.get_value(), begin_seq, next_seq);
 
-    // Send SequenceReset-GapFill with MsgSeqNum=BeginSeqNo so the client
-    // sees the gap filled from its expected position.  We temporarily set
-    // outbound_seq_num to begin_seq so send_fix_to_session stamps the right
-    // MsgSeqNum, then restore it so subsequent messages are not affected.
     session.outbound_seq_num = begin_seq;
     FixMessage reset;
     reset.set(Tag::MsgType, MsgType::SequenceReset);
     reset.set(Tag::GapFillFlag, std::string("Y"));
     reset.set(Tag::NewSeqNo, std::to_string(next_seq));
     send_fix_to_session(session, reset);  // stamps MsgSeqNum=begin_seq, increments to begin_seq+1
-    session.outbound_seq_num = next_seq;  // restore; the gap-fill consumed no real seq slot
+    session.outbound_seq_num = next_seq;
 }
 
 void OrderGatewayThread::handle_new_order_single(FixSession& session, const ParsedFixMessage& msg) {

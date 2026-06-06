@@ -30,6 +30,9 @@ initial_slabs    = 1
 # No rehash occurs until the live order count exceeds this value.
 # Size to peak concurrent live orders for the target environment.
 # 262144 (2^18) covers the 200,000-order perf test load with no rehash.
+# Larger values (512K, 1.25M) were tried and found to hurt either throughput
+# (cache/TLB pressure) or pipeline balance (the rehash pauses at 262K and 524K
+# act as natural flow control that lets the sequencer→gateway ER pipeline drain).
 initial_capacity = 262144
 
 [command_queue_pool]
