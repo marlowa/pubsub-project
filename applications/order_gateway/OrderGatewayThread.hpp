@@ -87,6 +87,7 @@ class OrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     void handle_heartbeat(FixSession& session, const ParsedFixMessage& msg);
     void handle_test_request(FixSession& session, const ParsedFixMessage& msg);
     void handle_logout(FixSession& session, const ParsedFixMessage& msg);
+    void handle_resend_request(FixSession& session, const ParsedFixMessage& msg);
     void handle_new_order_single(FixSession& session, const ParsedFixMessage& msg);
     void handle_order_cancel_request(FixSession& session, const ParsedFixMessage& msg);
 

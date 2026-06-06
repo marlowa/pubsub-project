@@ -40,7 +40,7 @@ from pathlib import Path
 STARTUP_DELAY   = 1.0    # seconds between app launches
 SETTLE_TIME     = 3.0    # seconds after last app before attaching perf
 FIX8_LOGON_WAIT = 3.0    # seconds for fix8 to establish the FIX session
-ORDER_TIMEOUT   = 120.0  # seconds to wait for ord1000 in the ME log
+ORDER_TIMEOUT   = 180.0  # seconds to wait for ord1000 in the ME log
 POST_ORDER_WAIT = 2.0    # seconds after last order before SIGTERM
 CALLGRAPH        = "dwarf" # dwarf unwinds across the user/kernel boundary; resolves the
                            # otherwise-anonymous kernel stacks that dominate the gateway profile.
@@ -124,91 +124,111 @@ def attach_perf(name: str, pid: int, perf_dir: Path) -> subprocess.Popen:
     return proc
 
 
-def wait_for_order_completion(me_log: Path, total_orders: int, timeout: float) -> bool:
+def _wait_for_log_pattern(log_path: Path, label: str, target: int,
+                           count_fn, timeout: float) -> bool:
     """
-    Poll the matching engine log until 'ME-ORD-<total_orders>' appears,
-    indicating that all orders have been processed.  Returns True on success,
-    False on timeout.  The pattern uses a negative look-ahead so that
-    ME-ORD-1000 does not match ME-ORD-10000.
+    Generic log-polling loop used by both wait phases.
 
-    Only new bytes appended since the last iteration are read, so memory
-    usage stays flat regardless of how large the log file grows.
+    count_fn(chunk: str) -> int  counts matching events in a new chunk.
 
-    The idle bail-out is computed dynamically from the observed throughput:
-    once at least MIN_CALIBRATION_SECS have elapsed since the first ME-ORD
-    entry appeared, the bail-out is set to 2× the estimated time remaining
-    at the current rate.  A generous fixed timeout is used until then.
+    Returns True when the running total reaches `target`, False on timeout
+    or stall.  Uses the same dynamic idle bail-out as before.
     """
-    # INITIAL_IDLE_TIMEOUT: patience before any throughput rate is known.
-    # Scale with the overall timeout so large runs aren't cut short early.
     INITIAL_IDLE_TIMEOUT = max(30.0, timeout * 0.10)
-    MIN_CALIBRATION_SECS = 2.0    # minimum elapsed time before trusting the rate
-    MIN_IDLE_TIMEOUT     = 5.0    # floor: never declare stall faster than this
-
-    target          = f"ME-ORD-{total_orders}"
-    pattern         = re.compile(re.escape(target) + r"(?!\d)")
-    any_ord_pattern = re.compile(r"ME-ORD-(\d+)")
+    MIN_CALIBRATION_SECS = 2.0
+    MIN_IDLE_TIMEOUT     = 8.0
 
     deadline        = time.monotonic() + timeout
-    last_seen       = 0
+    total_seen      = 0
     last_change     = time.monotonic()
-    rate_start_t    = None   # when the first ME-ORD entry was observed
-    # rate_start_n stays 0: rate is measured as "orders since monitoring started",
-    # not "orders since the first chunk".  If the first chunk already contains
-    # many orders, setting rate_start_n=highest makes rate=0 and calibration
-    # never fires.
-    rate_start_n    = 0
+    rate_start_t    = None
     idle_timeout    = INITIAL_IDLE_TIMEOUT
     rate_calibrated = False
-    file_pos        = 0      # byte offset of the next unread byte in the log
+    file_pos        = 0
 
-    log(f"Waiting for {target} in {me_log.name} (timeout {timeout:.0f}s) ...")
+    log(f"Waiting for {label} #{target:,} in {log_path.name} (timeout {timeout:.0f}s) ...")
 
     while time.monotonic() < deadline:
-        if me_log.is_file():
-            with open(me_log, "r", errors="replace") as fh:
+        if log_path.is_file():
+            with open(log_path, "r", errors="replace") as fh:
                 fh.seek(file_pos)
                 chunk = fh.read()
                 file_pos = fh.tell()
 
-            if pattern.search(chunk):
-                return True
-
-            matches = any_ord_pattern.findall(chunk)
-            if matches:
-                highest = max(int(m) for m in matches)
-                now     = time.monotonic()
-
-                if highest > last_seen:
-                    last_seen   = highest
+            if chunk:
+                new_count = count_fn(chunk)
+                if new_count > 0:
+                    now         = time.monotonic()
+                    total_seen += new_count
                     last_change = now
                     if rate_start_t is None:
                         rate_start_t = now
 
-                # Recompute idle_timeout from observed throughput.
+                if total_seen >= target:
+                    return True
+
                 if rate_start_t is not None:
                     elapsed = time.monotonic() - rate_start_t
                     if elapsed >= MIN_CALIBRATION_SECS:
-                        rate = (last_seen - rate_start_n) / elapsed
-                        if rate > 0:
-                            remaining    = total_orders - last_seen
-                            idle_timeout = max((remaining / rate) * 2, MIN_IDLE_TIMEOUT)
-                            if not rate_calibrated:
+                        # Only calculate the throughput and lock in the timeout once
+                        if not rate_calibrated:
+                            rate = total_seen / elapsed
+                            if rate > 0:
+                                remaining    = target - total_seen
+                                idle_timeout = max((remaining / rate) * 10, MIN_IDLE_TIMEOUT)
                                 rate_calibrated = True
-                                log(f"  throughput ~{rate:,.0f} orders/s → "
+                                log(f"  {label} throughput ~{rate:,.0f}/s → "
                                     f"dynamic idle bail-out {idle_timeout:.0f}s")
 
-            if last_seen > 0 and (time.monotonic() - last_change) >= idle_timeout:
-                log(f"  STALL DETECTED: ME-ORD progress stopped at {last_seen} "
-                    f"(expected {total_orders}, missing "
-                    f"{total_orders - last_seen} orders) — pipeline may have "
-                    f"lost orders silently. Proceeding with shutdown.")
+            if total_seen > 0 and (time.monotonic() - last_change) >= idle_timeout:
+                log(f"  STALL: {label} stopped at {total_seen:,} / {target:,} "
+                    f"({target - total_seen:,} missing) — proceeding with shutdown.")
                 return False
 
         time.sleep(0.1)
 
-    log(f"  TIMEOUT: last ME-ORD seen = {last_seen} / {total_orders}")
+    log(f"  TIMEOUT: {label} seen = {total_seen:,} / {target:,}")
     return False
+
+
+def wait_for_order_completion(me_log: Path, total_orders: int, timeout: float) -> bool:
+    """Phase 1: wait for the ME to accept all NOS orders."""
+    target_str      = f"ME-ORD-{total_orders}"
+    target_pattern  = re.compile(re.escape(target_str) + r"(?!\d)")
+    any_ord_pattern = re.compile(r"ME-ORD-(\d+)")
+    # Wrap the generic loop: we need the highest-seen counter rather than a
+    # simple running count, so we use a closure that resets on each chunk.
+    highest_seen = [0]
+
+    def count_nos(chunk: str) -> int:
+        if target_pattern.search(chunk):
+            highest_seen[0] = total_orders
+            return total_orders - highest_seen[0] + 1  # signal completion
+        matches = any_ord_pattern.findall(chunk)
+        if matches:
+            h = max(int(m) for m in matches)
+            if h > highest_seen[0]:
+                delta = h - highest_seen[0]
+                highest_seen[0] = h
+                return delta
+        return 0
+
+    return _wait_for_log_pattern(me_log, "ME-ORD", total_orders, count_nos, timeout)
+
+
+def wait_for_er_completion(gw_log: Path, total_orders: int, timeout: float) -> bool:
+    """Phase 2: wait for the gateway to deliver all ERs back to fix8 clients.
+
+    Counts GW-ER-SENT lines in the gateway log.  Each line represents one
+    completed NOS→ER round-trip.  This is the correct completion criterion:
+    the fix8 T command fires NOS messages without waiting for ERs, so the ME
+    finishing before the ERs have returned through the sequencer→gateway path
+    only measures NOS intake, not round-trip throughput.
+    """
+    def count_er(chunk: str) -> int:
+        return chunk.count("GW-ER-SENT")
+
+    return _wait_for_log_pattern(gw_log, "GW-ER-SENT", total_orders, count_er, timeout)
 
 
 def shutdown_processes(named_procs: list[tuple[str, subprocess.Popen]]) -> None:
@@ -302,13 +322,20 @@ def generate_reports(app_names: list[str], perf_dir: Path) -> None:
     log(f"Per-process SVGs     : {perf_dir}/*.svg")
 
 
-def run_fix8_session(me_log: Path, burst: int, clients: int) -> None:
+def run_fix8_session(me_log: Path, gw_log: Path, burst: int, clients: int) -> None:
     """
     Start `clients` concurrent f8test processes, wait for all FIX sessions to
     log on, then send `burst` 'T' commands to each (each T = 1000 NOS).
-    Waits until the matching engine has processed all clients*burst*1000 orders,
-    then SIGTERMs every f8test process.  f8test does not exit on stdin EOF so
-    we must kill it explicitly.
+
+    Two-phase completion:
+      Phase 1 — wait for the ME to accept all NOS orders (ME-ORD-N).
+      Phase 2 — wait for the gateway to deliver all ERs back to fix8 clients
+                 (GW-ER-SENT count reaches total_orders).  fix8 T commands
+                 fire NOS messages without waiting for ERs, so only phase 2
+                 measures true round-trip throughput.
+
+    fix8 clients are kept alive through both phases so the gateway can deliver
+    ERs.  They are killed only after phase 2 completes (or times out).
     """
     total_orders = clients * burst * 1000
     log(f"=== Starting {clients} fix8 client(s), {burst} T burst(s) each "
@@ -339,29 +366,33 @@ def run_fix8_session(me_log: Path, burst: int, clients: int) -> None:
             die(f"f8test client {i + 1} stdin pipe broke before T commands were sent")
 
     # Scale the timeout proportionally to total_orders, but cap at 10 minutes.
-    # ORDER_TIMEOUT is the per-1000-order budget; with large client/burst counts
-    # the naive product becomes absurdly long (e.g. 15,000s for 50×10 runs).
-    MAX_ORDER_TIMEOUT = 600.0  # 10 minutes hard cap
+    MAX_ORDER_TIMEOUT = 600.0
     timeout = min(ORDER_TIMEOUT * max(1, burst * clients), MAX_ORDER_TIMEOUT)
-    success = wait_for_order_completion(me_log, total_orders, timeout)
-    if not success:
-        log(f"  WARNING: timed out waiting for ME-ORD-{total_orders} — proceeding anyway")
+
+    # Phase 1: ME intake.
+    nos_ok = wait_for_order_completion(me_log, total_orders, timeout)
+    if not nos_ok:
+        log(f"  WARNING: timed out waiting for ME-ORD-{total_orders} — proceeding to ER phase anyway")
     else:
         log(f"  All {total_orders} orders confirmed in matching engine log")
 
+    # Phase 2: full round-trip — wait for gateway to deliver all ERs.
+    # Use the same timeout budget; after ME completion most of the remaining
+    # time is pipeline drain.
+    er_ok = wait_for_er_completion(gw_log, total_orders, timeout)
+    if not er_ok:
+        log(f"  WARNING: not all ERs delivered before timeout — {total_orders} ERs expected")
+
     log("  Terminating fix8 client(s) ...")
-    if success:
-        # Test completed cleanly: f8test ignores SIGTERM so skip the grace period
-        # and send SIGKILL immediately. There is nothing worth flushing at this
-        # point and the wait would only slow down the overall run.
+    if er_ok:
+        # Both phases completed cleanly. f8test ignores SIGTERM so use SIGKILL.
         for proc in procs:
             if proc.poll() is None:
                 proc.kill()
         for proc in procs:
             proc.wait()
     else:
-        # Test timed out or stalled: try SIGTERM first in case there is useful
-        # diagnostic state to flush, then SIGKILL if that does not work.
+        # Timed out or stalled: SIGTERM first, then SIGKILL if needed.
         for proc in procs:
             if proc.poll() is None:
                 proc.send_signal(signal.SIGTERM)
@@ -401,6 +432,7 @@ def main() -> None:
     ts         = datetime.now().strftime("%Y%m%d_%H%M%S")
     perf_dir   = prefix / "perf" / ts
     me_log     = log_dir / "matching_engine.log"
+    gw_log     = log_dir / "order_gateway.log"
 
     preflight(prefix)
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -486,7 +518,7 @@ def main() -> None:
         time.sleep(1)  # give perf a moment to start recording
 
         # Fire fix8 session(s)
-        run_fix8_session(me_log, args.burst, args.clients)
+        run_fix8_session(me_log, gw_log, args.burst, args.clients)
 
         log(f"Waiting {POST_ORDER_WAIT:.0f}s for pipeline to drain ...")
         time.sleep(POST_ORDER_WAIT)

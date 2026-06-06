@@ -3650,3 +3650,175 @@ Previous baseline (session 25, before Option C): min 389µs, typical 490–690µ
 The 650µs–1420µs tail is unchanged in character. In those cases the primary `SequencerThread` wakeup (wakeup 3 — the one remaining `epoll_wait` hop) suffered the full OS scheduler jitter before processing the WalAck. The secondary log confirms inline handler installation on both peer connections (connections 5 and 8). The reactor debug confirmation is not visible at Info log level.
 
 **Conclusion.** Option C is working as designed. Two of the three sequential wakeups are eliminated. When the inline path outpaces the ME, the WAL is invisible to latency. When wakeup 3 is slow, the tail remains. SCHED_FIFO + isolcpus on production hardware would reduce wakeup 3 from ~200µs p50 to ~5µs, collapsing the tail and making sub-100µs median achievable.
+
+## Session 2026-06-06 — Perf-test reliability, SEGV fix, ResendRequest handler
+
+### Overview
+
+This session investigated a SIGSEGV in the unit-test suite and the root cause of the
+"random missing orders" in the perf test. One bug was fully fixed; two issues remain
+outstanding and are documented below.
+
+---
+
+### Bug 1 — SIGSEGV in timer unit tests (fixed)
+
+**Symptom.** Running `TimerTest.*` caused a SIGSEGV on the second test case.
+
+**Root cause.** `Reactor::finalize_threads_after_shutdown()` waited for application
+threads to stop (step 2) and tried to join them (step 3), but never signalled them to
+stop. An `ApplicationThread` that had drained its queue sat blocked in
+`epoll_wait(..., 1000 ms)`. With a 200 ms shutdown timeout the wait expired, join failed,
+and the test's `Reactor` was destroyed while the zombie thread was still running. When the
+second test's `Reactor` was constructed, the zombie thread woke from `epoll_wait`, called
+`reactor_.is_running()` on the already-destroyed first `Reactor`, and crashed.
+
+**Fix.** Added a `thread->shutdown(shutdown_reason_)` call for every registered thread
+inside `finalize_threads_after_shutdown()`, immediately after cancelling timer fds and
+before the step-2 wait loop. `ApplicationThread::shutdown()` sets lifecycle state to
+`ShuttingDown` (making `is_running()` return false) and writes to `notify_fd_` to wake the
+thread from `epoll_wait` immediately.
+
+File changed: `libraries/pubsub_itc_fw/src/Reactor.cpp`
+
+**Status.** SIGSEGV eliminated; all `TimerTest.*` cases pass. However "did not stop
+within shutdown_timeout" and "failed to join within shutdown_timeout" errors still appear
+in the test logs. Despite `shutdown()` setting the lifecycle state atomically,
+`is_running()` still returns true for the full 200 ms timeout before the thread exits.
+Root cause of the remaining timeout not yet identified — separate follow-up item.
+
+---
+
+### Bug 2 — Perf-test "missing orders" root cause investigation
+
+#### What the perf script reports
+
+Running with 20 fix8 clients x 50 T-bursts (1 M orders total) the script reported:
+
+- `ME-ORD stopped at 999,830 / 1,000,000 (170 missing)` — bail-out after 279 s idle
+- `GW-ER-SENT stopped at 988,762 / 1,000,000 (11,238 missing)` — bail-out after 8 s idle
+- All 20 fix8 clients had to be killed explicitly
+
+The number of "missing" orders varied between runs (166, 170, ...).
+
+#### Finding 1 — ME-ORD "170 missing" is a Quill flushing artefact (no orders lost)
+
+`grep -c "ME-ORD" matching_engine.log` after process exit: **1,000,000** exactly.
+`ME-ORD-1000000` has timestamp `20:30:17.128` — the matching engine processed every order
+within **16 seconds** of the test starting. The OGT also processed all 1 M orders by
+`20:30:14`.
+
+The perf script polls `matching_engine.log` as a real-time proxy. Quill's async backend
+writes entries from multiple threads in timestamp order. The reactor thread's last log
+entry was `20:30:16.773`; the ME thread's last entries are at `20:30:17.xxx`. Because the
+reactor thread went silent at `20:30:16.773`, Quill's backend held the ME thread's
+trailing 170 entries (timestamps after the reactor's last entry) until SIGTERM forced a
+final flush at `20:36:47`. The dynamic idle bail-out (279 s of no new log lines, already
+increased by Gemini) fired before that flush.
+
+**Conclusion.** No orders were lost. The 170 "missing" lines are a Quill multi-thread
+timestamp-ordering artefact. Monitoring/tooling issue, not an application bug.
+
+#### Finding 2 — GW-ER-SENT 11,238 gap: genuine ER loss, root cause found and fixed
+
+Python analysis of all 988,762 GW-ER-SENT entries found exactly two contiguous gaps, all
+for `gateway_session_conn_id=9`:
+
+| Gap | Orders missing |
+|-----|----------------|
+| 686,108 - 696,988 | 10,881 |
+| 893,205 - 893,561 | 357 |
+
+The gap is visible directly in `er-records.txt`: because line numbers equal ME-ORD
+numbers up to the first gap, `grep -n ORD-686107` returns line 686107 and
+`grep -n ORD-696989` returns line 686108 — the two consecutive lines, 10,881 ME-ORD
+numbers apart.
+
+**Root cause chain:**
+
+1. During the burst at ~20:30:04-20:30:11, connection 9 experienced TCP read backpressure
+   (EPOLLIN deregistered for up to 2.5 s). During these windows the TCP send buffer to
+   that client also filled up.
+2. The OGT calls `session.outbound_seq_num++` *before* `send_raw`. If `send_raw` fails
+   (EAGAIN), the sequence number is burned. Only one pending-send slot exists
+   (`pending_send_` is `std::optional`); further failed sends are dropped.
+3. This created a gap in the OGT's outbound FIX sequence numbers as seen by fix8.
+4. Fix8 detected the gap and sent a ResendRequest (`MsgType=2`) at ~20:30:11.
+5. The OGT was ignoring all unrecognised message types, including ResendRequest — logged
+   as `"ignoring MsgType='2'"`.
+6. Fix8 waited ~3 s for a response, got none, and closed the TCP connection. OGT detected
+   Broken Pipe at `20:30:14`.
+7. All 11,238 ERs that subsequently arrived at the OGT for `gateway_session_conn_id=9`
+   were dropped: `"no matching FIX session — dropping"`.
+
+**Fix applied** (`applications/order_gateway/`):
+
+`FixMessage.hpp` — added four tag constants: `Tag::BeginSeqNo` (7), `Tag::EndSeqNo` (16),
+`Tag::NewSeqNo` (36), `Tag::GapFillFlag` (123).
+
+`OrderGatewayThread.hpp` — declared `handle_resend_request`.
+
+`OrderGatewayThread.cpp` — implemented `handle_resend_request` and wired it into the FIX
+dispatch. On receiving `MsgType=2`:
+1. Parses `BeginSeqNo` from the ResendRequest.
+2. Temporarily sets `session.outbound_seq_num = BeginSeqNo`.
+3. Sends SequenceReset-GapFill (`MsgType=4`, `GapFillFlag=Y`,
+   `NewSeqNo=<saved outbound position>`). `send_fix_to_session` stamps
+   `MsgSeqNum=BeginSeqNo` and increments `outbound_seq_num` to `BeginSeqNo+1`.
+4. Restores `session.outbound_seq_num` to the saved value so subsequent ERs are numbered
+   correctly.
+
+**Expected outcome.** Fix8 receives the SequenceReset-GapFill with
+`MsgSeqNum=BeginSeqNo` (matching its expected sequence) and advances its expected inbound
+sequence to `NewSeqNo`. The connection stays open; all subsequent ERs are delivered,
+eliminating the 11,238-ER cascade.
+
+**NOT TESTED YET.** Compiles cleanly. Verification is the next step before check-in.
+
+**Deeper outstanding issue.** The root cause (burning `outbound_seq_num` before
+confirming `send_raw` succeeds) is not fixed. If TCP send buffers fill up again a new
+small gap will occur, triggering another ResendRequest — now handled gracefully rather
+than causing a connection close. Full fix would require not incrementing `outbound_seq_num`
+until the send is confirmed, or a proper outbound message queue — a larger refactor.
+
+---
+
+### Outstanding issue — OGT "callback not finished, checking if stuck"
+
+The gateway log contained `"Thread OrderGatewayThread callback not finished, checking if
+stuck"` at 20:30:01 and 20:30:04. These fire when the backstop timer catches the OGT
+mid-callback during burst processing. The default threshold is
+`itc_maximum_inactivity_interval_ = 60 s`; neither instance exceeded it so no shutdown
+was triggered and no orders were lost.
+
+Gemini raised a concern: if the OGT becomes idle after a burst but `time_event_started_`
+remains greater than `time_event_finished_` (callback appears "in progress"), the reactor
+would falsely detect the idle thread as stuck after 60 s and call `shutdown()`.
+
+Current assessment: in the normal completed-callback case, `time_event_finished_` is
+always updated at the bottom of `process_message` (ApplicationThread.cpp:488), so a
+completed callback satisfies `time_event_started_ <= time_event_finished_`. Gemini's
+scenario would only occur if some exit path from `process_message` skips that update.
+
+**Action needed.** Audit every exit path from `process_message` (including exception
+paths and any early returns) to confirm `time_event_finished_` is always set before
+returning. Not yet investigated — **outstanding risk**.
+
+---
+
+### TCP backpressure (confirmed working)
+
+During the burst all 20 FIX connections had EPOLLIN deregistered (three rounds, 78
+engagements total, all with matching releases). Releases came one connection at a time
+~125 ms apart, driven by slab-commit rate. Confirmed intentional and working correctly.
+
+---
+
+### Summary of outstanding items from this session
+
+| Item | Status |
+|------|--------|
+| Shutdown timeout errors after SEGV fix | Root cause not yet identified |
+| ResendRequest / SequenceReset-GapFill fix | Compiled, NOT TESTED |
+| OGT idle-thread false-stuck risk (Gemini concern) | Needs process_message exit-path audit |
+| ME-ORD perf monitoring unreliable (Quill flush ordering) | Known; low-priority tooling issue |

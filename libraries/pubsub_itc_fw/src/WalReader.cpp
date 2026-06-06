@@ -15,6 +15,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <fmt/format.h>
+
 #include <pubsub_itc_fw/Crc32.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/WalWriter.hpp>
@@ -32,9 +34,7 @@ struct WalEntryHeader {
 static_assert(sizeof(WalEntryHeader) == 24, "WalEntryHeader must be 24 bytes");
 
 std::string segment_path(const std::string& directory, uint64_t seg_num) {
-    char buf[32];
-    std::snprintf(buf, sizeof(buf), "/wal_%06" PRIu64 ".log", seg_num);
-    return directory + buf;
+    return fmt::format("{}/wal_{:06}.log", directory, seg_num);
 }
 
 } // anonymous namespace

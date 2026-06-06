@@ -55,5 +55,6 @@ initial_slabs    = 1
 [command_queue_pool]
 # Single pre-allocated pool sized for observed peak (50 clients, burst=10).
 # 130 slabs × 4096 = 532,480 objects; never exhausted.
-objects_per_slab = 532480
+# A heavy perf test of a million orders caused this to be increased again, to 1,500,000
+objects_per_slab = 1500000
 initial_slabs    = 1

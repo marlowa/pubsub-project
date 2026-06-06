@@ -20,6 +20,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <fmt/chrono.h>
 #include <fmt/format.h>
 
 #include <quill/Backend.h>
@@ -290,6 +291,10 @@ void Reactor::finalize_threads_after_shutdown() {
     PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "finalize_threads_after_shutdown canceling timers");
     for (auto& thread : snapshot) {
         cancel_all_timer_fds_for_thread(thread->get_thread_id());
+    }
+
+    for (auto& thread : snapshot) {
+        thread->shutdown(shutdown_reason_);
     }
 
     PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "finalize_threads_after_shutdown step 2");
@@ -795,13 +800,16 @@ void Reactor::check_for_stuck_threads() {
                         return;
                     }
                 } else {
-                    PUBSUB_LOG(logger_, FwLogLevel::Info, "Thread {} callback not finished, checking if stuck", thread->get_thread_name());
                     auto now = HighResolutionClock::now();
                     auto duration = now - thread->get_time_event_started();
                     if (duration > config_.itc_maximum_inactivity_interval_) {
-                        auto reason = fmt::format("Thread {} callback appears to be stuck", thread->get_thread_name());
+                        auto reason = fmt::format("Thread {} callback appears to be stuck, was started at [{}]", thread->get_thread_name(),
+                                                  StringUtils::nanoseconds_since_epoch_as_datetime(thread->get_time_event_started().time_since_epoch().count()));
                         shutdown(reason);
                         return;
+                    } else {
+                        PUBSUB_LOG(logger_, FwLogLevel::Info, "Thread {} callback not finished yet, started at [{}]", thread->get_thread_name(),
+                                   StringUtils::nanoseconds_since_epoch_as_datetime(thread->get_time_event_started().time_since_epoch().count()));
                     }
                 }
             } else if (state == ThreadLifecycleState::Started) {

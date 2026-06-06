@@ -119,6 +119,7 @@ OrderGatewayThread::OrderGatewayThread(pubsub_itc_fw::ApplicationThread::Constru
                : nullptr) {}
 
 void OrderGatewayThread::on_app_ready_event() {
+    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "entered handler");
     connect_to_service("authentication_service_primary");
     if (config_.ha_enabled) {
         connect_to_service("authentication_service_secondary");
@@ -127,9 +128,12 @@ void OrderGatewayThread::on_app_ready_event() {
     if (config_.ha_enabled) {
         connect_to_service("sequencer_secondary");
     }
+
+    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "exit handler");
 }
 
 void OrderGatewayThread::on_connection_established(pubsub_itc_fw::ConnectionID id) {
+    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "entered handler");
     if (id.service_name() == "authentication_service_primary") {
         auth_service_primary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "OrderGatewayThread: primary authentication service connection {} established",
@@ -153,9 +157,13 @@ void OrderGatewayThread::on_connection_established(pubsub_itc_fw::ConnectionID i
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "OrderGatewayThread: FIX client connection {} ({}) established -- active sessions: {}",
                    id.get_value(), id.service_name(), sessions_.size() + 1);
     }
+
+    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "exit handler");
 }
 
 void OrderGatewayThread::on_connection_lost(pubsub_itc_fw::ConnectionID id, const std::string& reason) {
+    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "entered handler");
+
     auto it = sessions_.find(id);
     if (it != sessions_.end()) {
         cancel_timer(it->second.logon_timeout_timer_name());
@@ -183,9 +191,13 @@ void OrderGatewayThread::on_connection_lost(pubsub_itc_fw::ConnectionID id, cons
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "OrderGatewayThread: FIX client connection {} lost: {} -- active sessions: {}",
                    id.get_value(), reason, sessions_.size());
     }
+
+    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "exit handler");
 }
 
 void OrderGatewayThread::on_raw_socket_message(const pubsub_itc_fw::EventMessage& message) {
+    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "entered handler");
+
     const pubsub_itc_fw::ConnectionID& conn_id = message.connection_id();
     const uint8_t* data = message.payload();
     const int available = message.payload_size();
@@ -237,6 +249,8 @@ void OrderGatewayThread::on_raw_socket_message(const pubsub_itc_fw::EventMessage
                                   handle_test_request(session, msg);
                               } else if (type == MsgType::Logout) {
                                   handle_logout(session, msg);
+                              } else if (type == MsgType::ResendRequest) {
+                                  handle_resend_request(session, msg);
                               } else if (type == MsgType::NewOrderSingle) {
                                   handle_new_order_single(session, msg);
                               } else if (type == MsgType::OrderCancelRequest) {
@@ -350,9 +364,13 @@ void OrderGatewayThread::on_raw_socket_message(const pubsub_itc_fw::EventMessage
     }
     commit_raw_bytes(conn_id, static_cast<int64_t>(consumed));
     session.absolute_bytes_committed_ += static_cast<int64_t>(consumed);
+
+    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "exit handler");
 }
 
 void OrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message) {
+    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "enter handler");
+
     const auto pdu_id = message.pdu_id();
 
     const bool from_auth_service =
@@ -426,9 +444,13 @@ void OrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventMess
     }
     send_raw(session.conn_id, wire_buffer, static_cast<uint32_t>(wire_length));
     release_pdu_payload(message);
+
+    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "exit handler");
 }
 
 void OrderGatewayThread::on_timer_event(const std::string& name) {
+    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "entered handler");
+
     for (auto& [id, session] : sessions_) {
         if (session.logon_timeout_timer_name() == name) {
             if (!session.session_established) {
@@ -451,9 +473,14 @@ void OrderGatewayThread::on_timer_event(const std::string& name) {
             return;
         }
     }
+
+    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "exit handler");
 }
 
-void OrderGatewayThread::on_itc_message([[maybe_unused]] const pubsub_itc_fw::EventMessage& message) {}
+void OrderGatewayThread::on_itc_message([[maybe_unused]] const pubsub_itc_fw::EventMessage& message) {
+    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "entered handler");
+    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "exit handler");
+}
 
 // -----------------------------------------------------------------------
 // Authentication PDU handlers
@@ -685,7 +712,34 @@ void OrderGatewayThread::handle_logout(FixSession& session, const ParsedFixMessa
     disconnect_session(session, "client sent Logout");
 }
 
+void OrderGatewayThread::handle_resend_request(FixSession& session, const ParsedFixMessage& msg) {
+    uint32_t begin_seq = 1;
+    const std::string_view begin_str = msg.get(Tag::BeginSeqNo);
+    if (!begin_str.empty()) {
+        std::from_chars(begin_str.data(), begin_str.data() + begin_str.size(), begin_seq);
+    }
+
+    const uint32_t next_seq = session.outbound_seq_num;
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+               "OrderGatewayThread: connection {} ResendRequest BeginSeqNo={} -- sending SequenceReset-GapFill to NewSeqNo={}",
+               session.conn_id.get_value(), begin_seq, next_seq);
+
+    // Send SequenceReset-GapFill with MsgSeqNum=BeginSeqNo so the client
+    // sees the gap filled from its expected position.  We temporarily set
+    // outbound_seq_num to begin_seq so send_fix_to_session stamps the right
+    // MsgSeqNum, then restore it so subsequent messages are not affected.
+    session.outbound_seq_num = begin_seq;
+    FixMessage reset;
+    reset.set(Tag::MsgType, MsgType::SequenceReset);
+    reset.set(Tag::GapFillFlag, std::string("Y"));
+    reset.set(Tag::NewSeqNo, std::to_string(next_seq));
+    send_fix_to_session(session, reset);  // stamps MsgSeqNum=begin_seq, increments to begin_seq+1
+    session.outbound_seq_num = next_seq;  // restore; the gap-fill consumed no real seq slot
+}
+
 void OrderGatewayThread::handle_new_order_single(FixSession& session, const ParsedFixMessage& msg) {
+    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "entered handle_new_order_single");
+
     const std::string_view cl_ord_id = msg.get(Tag::ClOrdID);
     const std::string_view symbol = msg.get(Tag::Symbol);
     const std::string_view side_str = msg.get(Tag::Side);
@@ -756,6 +810,8 @@ void OrderGatewayThread::handle_new_order_single(FixSession& session, const Pars
     // Forward the encoded PDU to both sequencer instances.
     // The sequencer will wrap it in a SequencedMessage envelope.
     forward_pdu_to_sequencers(static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::NewOrderSingle), nos);
+
+    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "exit handle_new_order_single");
 }
 
 void OrderGatewayThread::handle_order_cancel_request(FixSession& session, const ParsedFixMessage& msg) {

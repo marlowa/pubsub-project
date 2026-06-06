@@ -4,6 +4,7 @@
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 
+#include <array>
 #include <memory>
 #include <string>
 #include <tuple>
@@ -16,14 +17,14 @@ namespace {
 
 std::string collect_openssl_errors() {
     std::string result;
-    char buffer[256];
+    std::array<char, 256> buffer{};
     unsigned long code{0};
     while ((code = ERR_get_error()) != 0) {
-        ERR_error_string_n(code, buffer, sizeof(buffer));
+        ERR_error_string_n(code, buffer.data(), buffer.size());
         if (!result.empty()) {
             result += "; ";
         }
-        result += buffer;
+        result += buffer.data();
     }
     return result.empty() ? "unknown OpenSSL error" : result;
 }

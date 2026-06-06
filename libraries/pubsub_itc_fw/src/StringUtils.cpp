@@ -82,17 +82,17 @@ std::string StringUtils::hex_dump(const void* data, size_t len) {
     out += " bytes\n";
 
     for (size_t i = 0; i < len; i += bytes_per_line) {
-        char buf[32];
+        std::array<char, 32> buf{};
 
         // Offset
-        (void)std::snprintf(buf, sizeof(buf), "%04zx: ", i);
-        out += buf;
+        (void)std::snprintf(buf.data(), buf.size(), "%04zx: ", i);
+        out += buf.data();
 
         // Hex column
         for (size_t j = 0; j < bytes_per_line; ++j) {
             if (i + j < len) {
-                (void)std::snprintf(buf, sizeof(buf), "%02X ", bytes[i + j]);
-                out += buf;
+                (void)std::snprintf(buf.data(), buf.size(), "%02X ", bytes[i + j]);
+                out += buf.data();
             } else {
                 out += "   ";
             }

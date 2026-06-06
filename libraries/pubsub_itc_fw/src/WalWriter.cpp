@@ -4,13 +4,14 @@
 #include <pubsub_itc_fw/WalWriter.hpp>
 
 #include <cerrno>
-#include <cinttypes>
 #include <cstring>
 
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+#include <fmt/format.h>
 
 #include <pubsub_itc_fw/Crc32.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
@@ -47,9 +48,7 @@ WalWriter::~WalWriter() {
 // ---------------------------------------------------------------------------
 
 std::string WalWriter::segment_path(uint64_t seg_num) const {
-    char buf[32];
-    std::snprintf(buf, sizeof(buf), "/wal_%06" PRIu64 ".log", seg_num);
-    return directory_ + buf;
+    return fmt::format("{}/wal_{:06}.log", directory_, seg_num);
 }
 
 // ---------------------------------------------------------------------------

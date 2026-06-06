@@ -129,9 +129,36 @@ uint8_t compute_checksum(const char* buf, size_t length) {
 
 void fill_utc_timestamp(char* out, const pubsub_itc_fw::WallClock& clock) {
     const auto t = static_cast<std::time_t>(clock.now_ns() / 1'000'000'000LL);
-    struct tm utc {};
+    struct tm utc{};
     gmtime_r(&t, &utc);
-    std::strftime(out, timestamp_length + 1, "%Y%m%d-%H:%M:%S", &utc);
+
+    // Manual digit formatting — no strftime, no printf machinery, no locale.
+    // Format: YYYYMMDD-HH:MM:SS (exactly timestamp_length = 17 bytes).
+    const int year  = utc.tm_year + 1900;
+    const int month = utc.tm_mon  + 1;
+    const int day   = utc.tm_mday;
+    const int hour  = utc.tm_hour;
+    const int min   = utc.tm_min;
+    const int sec   = utc.tm_sec;
+
+    out[0]  = static_cast<char>('0' + year  / 1000);
+    out[1]  = static_cast<char>('0' + (year / 100) % 10);
+    out[2]  = static_cast<char>('0' + (year / 10)  % 10);
+    out[3]  = static_cast<char>('0' + year  % 10);
+    out[4]  = static_cast<char>('0' + month / 10);
+    out[5]  = static_cast<char>('0' + month % 10);
+    out[6]  = static_cast<char>('0' + day   / 10);
+    out[7]  = static_cast<char>('0' + day   % 10);
+    out[8]  = '-';
+    out[9]  = static_cast<char>('0' + hour  / 10);
+    out[10] = static_cast<char>('0' + hour  % 10);
+    out[11] = ':';
+    out[12] = static_cast<char>('0' + min   / 10);
+    out[13] = static_cast<char>('0' + min   % 10);
+    out[14] = ':';
+    out[15] = static_cast<char>('0' + sec   / 10);
+    out[16] = static_cast<char>('0' + sec   % 10);
+    // No NUL terminator — callers use timestamp_length directly.
 }
 
 } // namespace

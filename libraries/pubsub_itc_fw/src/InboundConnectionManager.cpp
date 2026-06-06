@@ -225,10 +225,8 @@ void InboundConnectionManager::on_data_ready(InboundConnection& conn) {
                        "for connection from '{}': {}",
                        peer_desc, StringUtils::get_errno_string());
         } else {
-            PUBSUB_LOG(logger_, FwLogLevel::Info,
-                       "InboundConnectionManager::on_data_ready: read backpressure engaged on "
-                       "connection {} from '{}' -- EPOLLIN deregistered",
-                       id.get_value(), peer_desc);
+            PUBSUB_LOG(logger_, FwLogLevel::Warning, "InboundConnectionManager::on_data_ready: read backpressure engaged on "
+                       "connection {} from '{}' -- EPOLLIN deregistered", id.get_value(), peer_desc);
         }
     }
 }

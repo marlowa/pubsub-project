@@ -29,10 +29,12 @@ initial_slabs    = 1
 # Pre-reserved capacity of the live-order hash map (unordered_map::reserve).
 # No rehash occurs until the live order count exceeds this value.
 # Size to peak concurrent live orders for the target environment.
-initial_capacity = 1024
+# 262144 (2^18) covers the 200,000-order perf test load with no rehash.
+initial_capacity = 262144
 
 [command_queue_pool]
 # Single pre-allocated pool sized for observed peak (50 clients, burst=10).
 # 216 slabs × 1024 base + 100 exhaustion chains × 1024 = 323,584; rounded to 327,680.
-objects_per_slab = 327680
+# A heavy perf test of a million orders caused this to be increased again, to 500,000
+objects_per_slab = 500000
 initial_slabs    = 1

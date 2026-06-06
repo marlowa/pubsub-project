@@ -48,13 +48,15 @@ connect_retry_warning_interval = "15m"
 # Single pre-allocated pool sized for observed peak (50 clients, burst=10).
 # Previous peak 21,504; still exhausted at 22,528 once full pipeline active.
 # Doubled to 45,056 for headroom.
-objects_per_slab = 45056
+# A heavy perf test of a million orders caused this to be increased again, to xxxxx
+objects_per_slab = 80000
 initial_slabs    = 1
 
 [command_queue_pool]
 # Single pre-allocated pool sized for observed peak (50 clients, burst=10).
 # 62 slabs × 1024 base + 253 exhaustion chains × 1024 = 322,560; rounded to 327,680.
-objects_per_slab = 327680
+# A heavy perf test of a million orders caused this to be increased again, to 1,000,000
+objects_per_slab = 1000000
 initial_slabs    = 1
 
 [fix_capture]

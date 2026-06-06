@@ -72,12 +72,15 @@
 
 #include <pthread.h>
 #include <sched.h>
+#include <sys/epoll.h>
+#include <fcntl.h> // for F_SETFL
 
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/BackoffWithYield.hpp>
 #include <pubsub_itc_fw/LockFreeMessageQueue.hpp>
 #include <pubsub_itc_fw/QueueConfiguration.hpp>
 #include <pubsub_itc_fw/UseHugePagesFlag.hpp>
+#include <pubsub_itc_fw/ThreadWithJoinTimeout.hpp>
 #include <pubsub_itc_fw/tests_common/LatencyRecorder.hpp>
 
 using namespace pubsub_itc_fw;
@@ -1288,4 +1291,151 @@ TEST(LockFreeMessageQueueTest, ShouldSufferFromPriorityInversion) {
 
     EXPECT_FALSE(queue.dequeue().has_value());
 }
+
+namespace {
+
+struct TestOrder {
+    int order_id;
+};
+
+// A highly stripped-down mock of how an event loop Reactor processes
+// internal queues and external descriptor events.
+class MockReactor {
+public:
+    MockReactor() {
+        epoll_fd_ = epoll_create1(0);
+        // Create a dummy pipe just so epoll has a valid descriptor to wait on
+        if (pipe(pipe_fds_) == 0) {
+            epoll_event ev{};
+            ev.events = EPOLLIN;
+            ev.data.fd = pipe_fds_[0];
+            epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, pipe_fds_[0], &ev);
+            // Make read non-blocking
+            fcntl(pipe_fds_[0], F_SETFL, O_NONBLOCK);
+        }
+    }
+
+    ~MockReactor() {
+        close(epoll_fd_);
+        close(pipe_fds_[0]);
+        close(pipe_fds_[1]);
+    }
+
+    // Simulates one tick of your framework's dispatch loop
+    bool run_once(pubsub_itc_fw::LockFreeMessageQueue<TestOrder>& queue,
+                  std::vector<TestOrder>& processed_orders)
+    {
+        bool handled_work = false;
+
+        // 1. Process Internal Commands (Simulating Reactor::process_control_commands)
+        auto msg = queue.dequeue();
+        if (msg.has_value()) {
+            processed_orders.push_back(*msg);
+            handled_work = true;
+        }
+
+        // 2. Fall back to Epoll if user space looks quiet
+        if (!handled_work) {
+            epoll_event events[1];
+            // Simulating a standard non-zero timeout blocking call when idle
+            int nfds = epoll_wait(epoll_fd_, events, 1, 50); // 50ms block
+            if (nfds > 0) {
+                // Process socket data here...
+                handled_work = true;
+            }
+        }
+
+        return handled_work;
+    }
+
+private:
+    int epoll_fd_{-1};
+    int pipe_fds_[2]{-1, -1};
+};
+
+} // namespace
+
+TEST(LockFreeMessageQueueEdgeCaseTest, ExposeStrandedOrdersInReactorLoop) {
+    const QueueConfiguration queue_config = make_default_queue_config();
+    const AllocatorConfiguration allocator_config = make_default_allocator_config();
+
+    pubsub_itc_fw::LockFreeMessageQueue<TestOrder> queue(queue_config, allocator_config);
+    MockReactor reactor;
+    std::vector<TestOrder> processed_orders;
+
+    std::atomic<bool> producer_a_swapped{false};
+    std::atomic<bool> allow_producer_a_to_finish{false};
+    std::atomic<bool> producer_b_finished{false};
+
+    // PRODUCER A: Intercepts the push exactly inside the Dmitry Gap
+    ThreadWithJoinTimeout producer_a([&]() {
+        // Set up the internal hook that your test architecture provides
+        queue.test_stall_callback_ = [&]() {
+            producer_a_swapped.store(true, std::memory_order_release);
+
+            // Spin-stall here until the test explicitly tells us to continue.
+            // This simulates an OS preemption right after exchanging head_
+            // but before updating prev->next_.
+            pubsub_itc_fw::BackoffWithYield backoff;
+            while (!allow_producer_a_to_finish.load(std::memory_order_acquire)) {
+                backoff.pause();
+            }
+        };
+
+        queue.enqueue(TestOrder{101}); // First Order
+    });
+
+    // Wait until Producer A has claimed the head of the queue but stalled
+    pubsub_itc_fw::BackoffWithYield wait_backoff;
+    while (!producer_a_swapped.load(std::memory_order_acquire)) {
+        wait_backoff.pause();
+    }
+    queue.test_stall_callback_ = nullptr; // Detach hook for subsequent enqueues
+
+    // PRODUCER B: Enqueues a second order normally while A is stalled
+    ThreadWithJoinTimeout producer_b([&]() {
+        queue.enqueue(TestOrder{102}); // Second Order
+        producer_b_finished.store(true, std::memory_order_release);
+    });
+
+    producer_b.join();
+    ASSERT_TRUE(producer_b_finished.load());
+
+    // --- REACTOR ACTIONS ---
+    // Execute a reactor tick while Producer A is still stuck in the gap.
+    // The queue contains items structurally, but because head != tail and
+    // the linkage is broken, dequeue() returns std::nullopt.
+    reactor.run_once(queue, processed_orders);
+
+    // Un-stall Producer A now so it can finish its linkage and exit cleanly
+    allow_producer_a_to_finish.store(true, std::memory_order_release);
+    producer_a.join();
+
+    // --- REGRESSION GATE VERIFICATION ---
+// --- REGRESSION GATE VERIFICATION ---
+    // Both orders (101 and 102) are structurally inside the queue memory space.
+    // However, because Producer A was stalled mid-link, the consumer encountered
+    // an unlinked gap and correctly returned std::nullopt to prevent corrupted reads.
+    //
+    // This confirms that the Reactor saw an empty state and bypassed the queue
+    // during this tick, meaning it would fall into a blocking sleep in production.
+    EXPECT_TRUE(processed_orders.empty())
+        << "Regression: The queue layout changed, breaking the Dmitry gap detection!";
+
+    // Un-stall Producer A now so it can finish its linkage and link the broken chain
+    allow_producer_a_to_finish.store(true, std::memory_order_release);
+    producer_a.join();
+
+    // Cleanup: Now that the linkage is restored, drain the items to verify
+    // that no data was leaked or corrupted by the race condition.
+    while (auto clean_msg = queue.dequeue()) {
+        processed_orders.push_back(*clean_msg);
+    }
+
+    // Verify all messages survived the race and maintained clean FIFO ordering
+    ASSERT_EQ(processed_orders.size(), 2);
+    EXPECT_EQ(processed_orders[0].order_id, 101);
+    EXPECT_EQ(processed_orders[1].order_id, 102);
+}
+
 #endif
