@@ -1,4 +1,4 @@
-please# environments/dev.toml
+# environments/dev.toml
 #
 # Single-machine developer sandbox.
 # All components run on localhost with the same TLS settings as production.

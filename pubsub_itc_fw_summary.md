@@ -29,10 +29,13 @@ a topic-based pubsub primitive may be added later if specific use cases require 
 - Timers (timerfd, via epoll)
 - High availability via primary/secondary instance pairs with arbitration
 - A DSL-based binary serialisation layer replacing protobuf/SBE
+- Sample applications demonstrating framework usage: a simple order gateway (FIX 5.0 SP2 client connectivity, SCRAM authentication) and a matching engine (order book, execution report generation), forming a minimal exchange system skeleton
 
 Target environment is **low-latency** (sub-100ns encode/decode). Heap allocation is avoided on all hot paths.
 
 ---
+
+> For instructions on building, deploying and running the system, see [Running and Testing the System](#running-and-testing-the-system) below.
 
 ## Architectural Goals
 
@@ -49,14 +52,14 @@ Target environment is **low-latency** (sub-100ns encode/decode). Heap allocation
 
 ### 1. Allocator Subsystem
 
-| Class | One-liner |
+| Class | Description |
 |---|---|
 | `FixedSizeMemoryPool<T>` | Single fixed-capacity pool backed by `mmap`; Treiber stack free-list with 128-bit tagged CAS; `std::atomic<Slot<T>*> free_next` field in `Slot<T>` (outside union, before canary) eliminates data race on next pointer; `deallocation_count_` atomic for safe statistics without list traversal; Valgrind/TSan mutex fallback |
 | `ExpandablePoolAllocator<T>` | Chains `FixedSizeMemoryPool<T>` instances; lock-free fast path, mutex on expansion; pools never removed |
 | `BumpAllocator` | Non-owning bump allocator; snprintf contract — always advances `bytes_used()`; `nullptr`+0 = measuring mode; not thread-safe |
 | `SlabAllocator` | Single `mmap`-backed slab; bump allocation (reactor thread only); atomic outstanding count; notifies reactor on last-chunk free |
 | `ExpandableSlabAllocator` | Chains `SlabAllocator` instances; demand-driven reclamation (no GC thread); Vyukov sentinel deferred-reclamation (`deferred_reclaim_slab_id_`) so popped slabs are destroyed one drain after they are popped, safe against producers still mid-enqueue; wall-clock drain tripwire; returns `std::tuple<int, void*>` for structured bindings |
-| `EmptySlabQueue` | Intrusive Vyukov MPSC queue of slab IDs; one node embedded per slab. Consumer never resets head_/tail_ — Vyukov sentinel pattern relies on the most-recently-popped slab staying alive as the queue's sentinel (deferred-reclaim by one drain cycle, managed by `ExpandableSlabAllocator`). Four `peek_*` const accessors for diagnostics. |
+| `EmptySlabQueue` | Intrusive Vyukov MPSC queue of slab IDs used by `ExpandableSlabAllocator` to collect exhausted `SlabAllocator` instances for reclamation. One node is embedded per slab — no separate allocation needed. Used exclusively by the reactor thread as the consumer; multiple ApplicationThreads may produce concurrently. Consumer never resets head_/tail_ — the Vyukov sentinel pattern relies on the most-recently-popped slab staying alive as the queue's sentinel (deferred-reclaim by one drain cycle, managed by `ExpandableSlabAllocator::deferred_reclaim_slab_id_`). Four `peek_*` const accessors for diagnostics. |
 
 **`Slot<T>` layout (production path, not valgrind):**
 ```
@@ -64,17 +67,11 @@ Target environment is **low-latency** (sub-100ns encode/decode). Heap allocation
 ```
 `free_next` before `canary` — canary remains adjacent to storage for underrun detection.
 
-**Bug history:** Two bugs fixed in `FixedSizeMemoryPool`: (1) unsafe free-list traversal in `get_number_of_available_objects` — fixed with atomic counters; (2) data race on `next` pointer inside union — fixed by moving to `std::atomic<Slot<T>*> free_next` outside the union. Both produced ~1-in-100 failure rate under stress.
-
-**Bug fixed in `ExpandableSlabAllocator`:** `drain_empty_slab_queue()` was destroying a `SlabAllocator` (via `unique_ptr::reset()`) while still traversing the Vyukov queue whose nodes are embedded inside that slab. Fixed by collecting all slab IDs into a `std::vector` first, then processing them after the queue traversal completes. The vector allocation is on a cold path and not a hot-path concern. Detected by ASan on `ExpandableSlabAllocatorTest.OldSlabIsDestroyedAfterChaining`.
-
-**Bug fixed in `EmptySlabQueue` / `ExpandableSlabAllocator` (session 16):** `EmptySlabQueue::reset_to_empty()` did three non-atomic stores (`dummy_.next = nullptr; head_ = &dummy_; tail_.store(&dummy_)`). The `tail_.store(&dummy_)` would occasionally clobber a concurrent producer's `tail_.exchange(node)`, leaving the queue in a wedged state where `head_->next` pointed at a "ghost-enqueued" slab but `tail_` was reset to the dummy. The wedge could persist indefinitely. Reproducer test fired the bug in 1.1 seconds. Fixed by removing `reset_to_empty` entirely and adopting the classical Vyukov sentinel pattern: the most-recently-popped slab stays alive as the queue's sentinel until the next drain confirms head_ has advanced past it (via a `deferred_reclaim_slab_id_` member on `ExpandableSlabAllocator`). Producers never need a reset because they only touch `tail_` and `prev->next`. The fix also switched the drain-loop tripwire from iteration-count (100,000) to wall-clock (one second) — iteration-count was meaningless at nanosecond per-iteration speeds. Diagnosed in production under heavy fix8 T-burst load on the integrated gateway/sequencer; integrated load test now runs without the tripwire firing.
-
 ---
 
 ### 2. Lock-Free Queue Subsystem
 
-| Class | One-liner |
+| Class | Description |
 |---|---|
 | `LockFreeMessageQueue<T>` | Vyukov MPSC queue; nodes from `ExpandablePoolAllocator<Node>`; watermark hysteresis callbacks; shutdown semantics |
 | `QueueConfig` | Watermark thresholds and callbacks |
@@ -83,7 +80,7 @@ Target environment is **low-latency** (sub-100ns encode/decode). Heap allocation
 
 ### 3. Threading Subsystem
 
-| Class | One-liner |
+| Class | Description |
 |---|---|
 | `ApplicationThread` | Abstract base; owns queue and thread; timer APIs enforced from owning thread; `connect_to_service()` for outbound TCP; pure virtual `on_itc_message()` |
 | `ThreadWithJoinTimeout` | Wraps `std::thread`; `join_with_timeout()` |
@@ -102,7 +99,7 @@ Target environment is **low-latency** (sub-100ns encode/decode). Heap allocation
 
 ### 4. Reactor Subsystem
 
-| Class | One-liner |
+| Class | Description |
 |---|---|
 | `Reactor` | epoll event loop; owns all threads, timers; inherits `ThreadLookupInterface`; delegates inbound and outbound connection management to dedicated managers |
 | `ThreadLookupInterface` | Pure abstract interface with single method `get_fast_path_thread(ThreadID)`; implemented by `Reactor`; allows connection managers to deliver events to threads without depending on `Reactor` |
@@ -165,7 +162,7 @@ Represents one reactor-managed outbound TCP connection. Lives in `OutboundConnec
 
 **Protocol handler strategy:**
 
-| Class | One-liner |
+| Class | Description |
 |---|---|
 | `ProtocolHandlerInterface` | Pure abstract interface: `on_data_ready()`, `send_prebuilt()`, `continue_send()` all return `[[nodiscard]] tuple<bool, std::string>`; plus `has_pending_send()`, `deallocate_pending_send()`, `commit_bytes()` |
 | `PduProtocolHandler` | Strategy A: owns `PduParser` + `PduFramer` + pending-send slab state; handles framework-native PDU streams |
@@ -257,7 +254,7 @@ Without it, the app uses `available < last_available_` to detect a tail advance.
 
 ### 8. Messaging Subsystem
 
-| Class | One-liner |
+| Class | Description |
 |---|---|
 | `EventMessage` | Move-only envelope; `EventType` tag, payload pointer, `slab_id`, `TimerID`, reason string, originating `ThreadID`, `ConnectionID` |
 | `EventType` | None, Initial, AppReady, Termination, InterthreadCommunication, Timer, PubSubCommunication, RawSocketCommunication, FrameworkPdu, ConnectionEstablished, ConnectionFailed, ConnectionLost |
@@ -273,7 +270,7 @@ Without it, the app uses `available < last_available_` to detect a tail advance.
 
 ### 9. Socket / IPC Subsystem
 
-| Class | One-liner |
+| Class | Description |
 |---|---|
 | `TcpSocket` | Non-blocking TCP socket; `TCP_NODELAY` on all sockets; `get_file_descriptor()` for epoll |
 | `TcpAcceptor` | Non-blocking listening socket |
@@ -285,7 +282,7 @@ Without it, the app uses `available < last_available_` to detect a tail advance.
 
 ### 10. PDU Framing Subsystem
 
-| Class | One-liner |
+| Class | Description |
 |---|---|
 | `PduHeader` | 16-byte wire header: `byte_count` (u32), `pdu_id` (i16), `version` (i8), `filler_a` (u8), `canary` (u32=0xC0FFEE00), `filler_b` (u32); all multi-byte fields network byte order |
 | `PduFramer` | Two-mode send: `send()` builds frame internally (small fixed PDUs, max 256 bytes payload); `send_prebuilt()` zero-copy from slab chunk (large PDUs); both share `continue_send()` / `has_pending_data()` |
@@ -314,7 +311,7 @@ Python code generator producing C++17 headers for zero-copy binary encode/decode
 **generate_cpp_from_dsl.py** — takes input DSL path and output **file path** (not directory) as positional arguments, plus `--namespace` and `--topics` flags.
 
 ---
-### 12. Leader-Follower Protocol (DSL defined, not yet implemented)
+### 12. Leader-Follower Protocol
 
 #### Overview
 
@@ -348,7 +345,7 @@ For the sequencer-specific HA deployment described in the "WAL and HA Design" se
 
 #### Epoch Semantics
 
-The epoch is a generation counter that exists to detect stale nodes from a previous leadership cycle.
+The epoch is a generation counter that identifies which leadership generation the cluster is currently in. A *stale node* is a node that has been isolated from the cluster (e.g. due to a crash or network partition) and has since missed one or more leadership transitions. When it rejoins, its epoch is lower than the current generation's epoch. The epoch comparison allows the cluster to recognise and correctly demote a returning node without manual intervention, regardless of how it believes it left.
 
 Rules:
 
@@ -397,14 +394,14 @@ On heartbeat loss:
 
 #### Open Design Questions
 
-- **HA has not considered DR yet, the design at the moment is for main site only.**
-- **Heartbeat interval and loss threshold:** Not yet specified. These will be `ReactorConfiguration` parameters.
+- **HA has not considered DR (Disaster Recovery) yet; the design at the moment is for the main site only.**
+- **Heartbeat interval and loss threshold:** Implemented. `heartbeat_interval_seconds` (default 5 s) and `heartbeat_timeout_seconds` (default 15 s) are configurable fields in `SequencerConfiguration` and `ArbiterConfiguration`. The ha_test.py HA scenarios rely on these values: scenarios 1–15 all exercise the heartbeat timeout path and confirm correct failover behaviour within the expected window.
 
 ---
 
 ### 13. Authentication Service and SCRAM-SHA-256
 
-**Overview.** A standalone application (`applications/authentication_service/`) that authenticates FIX gateway clients using SCRAM-SHA-256 (RFC 5802 variant). The service is stateless: each four-message exchange is self-contained. Two instances run for HA (primary port 7070, secondary port 7071); they share no state and require no synchronisation.
+**Overview.** A standalone application (`applications/authentication_service/`) that authenticates FIX gateway clients using SCRAM-SHA-256 (RFC 5802 variant). SCRAM is chosen because it provides mutual authentication without ever transmitting the password in plaintext or storing it in recoverable form — the server stores only derived key material (`StoredKey`, `ServerKey`), so a database breach does not expose client passwords and cannot be used to impersonate the server. The service is stateless: each four-message exchange is self-contained. Two instances run for HA (primary port 7070, secondary port 7071); they share no state and require no synchronisation.
 
 **PDU protocol** (defined in `applications/authentication.dsl`, namespace `pubsub_itc_fw_app`):
 
@@ -433,7 +430,7 @@ ClientProof    = ClientKey XOR ClientSig        -- sent in AuthenticationProof
 ServerSig      = HMAC-SHA256(ServerKey, AuthMessage)  -- verified by gateway on AuthenticationResult
 ```
 
-**`ScramCrypto` shared library** (`libraries/scram_crypto/`). Static library linked by both the authentication service and the gateway. Namespace `scram_crypto`. Free functions: `hmac_sha256`, `sha256`, `pbkdf2_sha256`, `make_scram_credential`, `compute_auth_message`. Depends on `OpenSSL::Crypto` (PRIVATE linkage). `find_package(OpenSSL REQUIRED)` in top-level CMakeLists.
+**`ScramCrypto` static library** (`libraries/scram_crypto/`). Static library linked by both the authentication service and the gateway. Namespace `scram_crypto`. Free functions: `hmac_sha256`, `sha256`, `pbkdf2_sha256`, `make_scram_credential`, `compute_auth_message`. Depends on `OpenSSL::Crypto` (PRIVATE linkage). `find_package(OpenSSL REQUIRED)` in top-level CMakeLists.
 
 **Current credential store.** A single stub `ScramCredential` (`stub_credential_`) hardcoded in `AuthenticationThread`. Credential database integration is the next major work item; see "Database Access Design" below.
 
@@ -443,6 +440,8 @@ ServerSig      = HMAC-SHA256(ServerKey, AuthMessage)  -- verified by gateway on 
 
 ### 14. Logging Subsystem
 
+Several C++ logging libraries were evaluated, including spdlog, fmtlog, Boost.Log, and log4cxx. Quill was selected primarily for its throughput and latency characteristics: it uses a wait-free single-producer-single-consumer queue per caller thread, offloads all formatting and I/O to a dedicated backend thread, and imposes sub-100 ns overhead on the hot path. The async-first design aligns well with the reactor pattern: `ApplicationThread`s never block on I/O when logging.
+
 `QuillLogger` wrapping `quill::Logger*`. `PUBSUB_LOG(logger, level, fmt, ...)` for format args; `PUBSUB_LOG_STR(logger, level, str)` for single string (required by `-Werror=variadic-macros`).
 
 Log levels: `FwLogLevel::Alert`, `Critical`, `Error`, `Warning`, `Notice`, `Info`, `Debug`, `Trace`. Currently everything is logged at `Info`; level differentiation is a future task.
@@ -451,7 +450,9 @@ Any class that needs to log receives a `QuillLogger&` in its constructor and sto
 
 ---
 
-### 15. Database Access Design (discussed, not yet implemented)
+### 15. Database Access Design from C++ (discussed, not yet implemented)
+
+**Note: the RDBMS is in use today.** Credential and access-control data (firms, comp_ids, gateway permissions) are managed via the Java admin service (`java/admin-service/`) using plain JDBC. The `db/export_credentials.py` script exports SCRAM credentials from the database to `credentials.toml` for the authentication service. The design described in this section concerns a future C++ `DatabaseThread` that would allow C++ components to query the database directly; that has not yet been implemented. The principle is to limit direct database access to as few components as possible — currently only the Java admin service and the credential export script touch the database, and that is the preferred architecture.
 
 **Rationale for a database.** `comp_id` identities appear in many places beyond SCRAM credentials: per-comp-id and per-firm-id gateway throttle limits, risk management parameters, position limits, and more. A flat file per concern quickly becomes unmanageable. The authentication service and risk subsystem both need a relational store. The workplace uses Oracle; personal preference is PostgreSQL. To avoid vendor lock-in, **unixODBC** is the chosen abstraction layer — the application talks to `libodbc.so` via the standard ODBC API and the DSN configuration selects the underlying driver.
 
@@ -564,6 +565,12 @@ The receiving node's reactor accepts data via epoll and delivers it zero-copy to
 6. Dispatches `EventMessage::create_framework_pdu_message(payload, size, slab_id)` to thread queue
 7. Application thread calls `on_framework_pdu_message(msg)`, processes payload
 8. Application thread calls `inbound_slab_allocator_.deallocate(msg.slab_id(), msg.payload())`
+
+---
+
+## Development Sessions
+
+This project has been developed incrementally across a series of numbered work sessions. Each session focused on a specific area — a new feature, a bug fix, a performance investigation, or an infrastructure improvement. Many sections of this document refer to sessions by number (e.g. "session 16", "session 25") to indicate when a piece of work was completed or when a particular design decision was made. The full narrative of each session is recorded in the [Session Accomplishments](#session-accomplishments) section below, which forms a detailed change log.
 
 ---
 
@@ -731,7 +738,7 @@ Component TOML files in `applications/` are now templates with `${placeholder}` 
 
 **How to trace a placeholder back to its definition.**
 
-When you see `${some_placeholder}` in an application TOML template (e.g. `applications/matching_engine/matching_engine.toml`), find its value by:
+When `${some_placeholder}` appears in an application TOML template (e.g. `applications/matching_engine/matching_engine.toml`), its value can be traced as follows:
 
 1. Split the placeholder on the *first* underscore boundary that matches a section name. The part before the first `_` is the TOML section; everything after is the key within that section. In practice: `shared_reactor_cpu_pinning_reserve_cpu0` → section `[shared]`, key `reactor_cpu_pinning_reserve_cpu0`.
 
@@ -905,7 +912,7 @@ The system now requires every FIX client to complete a SCRAM-SHA-256 challenge-r
 
 `AuthenticationRequest` carries `request_id` (= the gateway's internal `ConnectionID` for the FIX session, used to correlate all four messages), `comp_id`, and a random 16-byte `client_nonce`. `AuthenticationChallenge` returns `server_nonce` (server-appended bytes concatenated with client_nonce), `salt`, and `iterations`. `AuthenticationProof` carries the SCRAM `ClientProof`. `AuthenticationResult` carries `outcome` (Granted/Denied), `server_signature` (32 bytes, for mutual authentication), and `force_password_change` flag.
 
-**`ScramCrypto` shared library** (`libraries/scram_crypto/`). Moved from `applications/authentication_service/` into a proper static library so both the authentication service and the gateway can link against it. Namespace `scram_crypto`. Exports: `hmac_sha256`, `sha256`, `pbkdf2_sha256`, `make_scram_credential`, `compute_auth_message`. Links against `OpenSSL::Crypto` (PRIVATE). `find_package(OpenSSL REQUIRED)` added to top-level `CMakeLists.txt`.
+**`ScramCrypto` static library** (`libraries/scram_crypto/`). Moved from `applications/authentication_service/` into a proper static library so both the authentication service and the gateway can link against it. Namespace `scram_crypto`. Exports: `hmac_sha256`, `sha256`, `pbkdf2_sha256`, `make_scram_credential`, `compute_auth_message`. Links against `OpenSSL::Crypto` (PRIVATE). `find_package(OpenSSL REQUIRED)` added to top-level `CMakeLists.txt`.
 
 **Authentication service** (`applications/authentication_service/`). Stateless: each SCRAM exchange is fully self-contained with no server-side session state between Request and Proof. On receiving an `AuthenticationRequest`, the service generates a random 16-byte server nonce, derives SCRAM parameters from its stored credential for the comp_id, and replies with `AuthenticationChallenge`. On receiving `AuthenticationProof`, it verifies `ClientProof` via `StoredKey`, computes `ServerSignature` via `ServerKey`, and replies with `AuthenticationResult`. Currently uses a single stub credential (`stub_credential_`) for all comp_ids; credential database integration is the next major work item. Two instances are run for HA: primary on port 7070, secondary on port 7071. Both are stateless and independent — no synchronisation between them is needed.
 
@@ -1090,7 +1097,7 @@ Files changed (Slice 6 + regression fix):
 
 **Tangential bug found and fixed in `ExpandablePoolAllocatorTest.AbaStressTest`.** Under Valgrind, the test was reporting "free-list corruption: unknown pointer 0x...". Initial theory (pool expansion firing because `pool_slots == num_threads` left no headroom) was partially right but the deeper bug was test-design: with `pool_slots = num_threads`, even after bumping by one to `num_threads + 1`, only `num_threads` slots are ever reachable by the workers (LIFO pop_back from a 5-slot pool with 4 threads holding at most one each leaves slot 0 perpetually untouched at the front of the vector). The drain phase still produced all 5 slots, one of which had never been recorded in `valid_addresses`, giving a phantom-address failure. Fix: pre-touch every slot at test setup (allocate all `pool_slots` in one go before stress so every slot's address is recorded), plus the `pool_slots = num_threads + 1` adjustment to ensure expansion never fires. Diagnosed by adding a one-line stderr print of `number_of_pools`, `total_capacity`, `valid_addresses.size`, and `behaviour_statistics.expansion_events` immediately before the assertion loop, which showed `expansion_events=0` and `valid_addresses.size=4` for a 5-slot pool — confirming the address-coverage gap rather than the expansion race. Test now passes under Valgrind with 500 repeats × 50,000 iterations (~hundred million allocate/deallocate pairs).
 
-**Test file reorganisation.** The user requested two structural rules: (1) one fixture per class under test, (2) one fixture per file. The previous layout was:
+**Test file reorganisation.** Two structural rules were adopted: (1) one fixture per class under test, (2) one fixture per file. The previous layout was:
 - `SlabAllocatorTest.cpp` contained three fixtures: `EmptySlabQueueTest`, `SlabAllocatorTest`, `ExpandableSlabAllocatorTest`.
 - `SlabAllocatorAdversarialTest.cpp` contained three more: `EmptySlabQueueAdversarialTest`, `SlabAllocatorAdversarialTest`, `ExpandableSlabAllocatorAdversarialTest`.
 - `ExpandableSlabAllocatorTest.cpp` contained `ExpandableSlabAllocatorTest` (a second copy, with different tests) and `ExpandableSlabAllocatorStressTest`.
@@ -1105,7 +1112,7 @@ The colliding test names `AdversarialDestroyedSlabIdThrowsOnDeallocate` and `Dea
 
 **Documentation correction in `FixedSizeMemoryPool.hpp`.** The `Slot<T>` docblocks (two of them: production and Valgrind paths) and the top-of-file CANARY DESIGN section claimed "Both the Valgrind and production Slot<T> definitions are identical in layout". They are NOT — the production path has `free_next` between `is_constructed` and `canary`; the Valgrind path doesn't (it uses a mutex-protected `std::vector` free list). The pointer arithmetic in `get_is_constructed_for_object` and `get_canary_for_object` works in each build path independently via `offsetof(SlotType, storage)` — it doesn't depend on the two layouts being byte-for-byte equivalent. Updated all three comments to describe the actual invariants: `is_constructed` is first, `canary` is immediately before `storage`, `storage` is last.
 
-**Verification.** All ~65 tests across the three reorganised files pass. The integrated gateway/sequencer/ME runs without the drain tripwire firing under sustained fix8 T-burst load. The user explicitly confirmed: "I also tried to make the gateway fall over with a heavy load via fix8 using loads of T commands. It all stayed up."
+**Verification.** All ~65 tests across the three reorganised files pass. Verified under sustained load: the gateway and sequencer remained stable under heavy fix8 T-burst load with no tripwire firing.
 
 **Files changed:**
 - `libraries/pubsub_itc_fw/include/pubsub_itc_fw/EmptySlabQueue.hpp` — `reset_to_empty` removed; four `peek_*` diagnostic accessors added.
@@ -1122,7 +1129,7 @@ The colliding test names `AdversarialDestroyedSlabIdThrowsOnDeallocate` and `Dea
 **Smaller deferred items noted during the session (none blocking):**
 - `k`-prefix constants (`kSmallSlab`, `kLargeSlab`, `kPartial`) in the `ExpandableSlabAllocatorTest` fixture violate the project rule that constants are snake_case. Left alone in this session to avoid scope creep; mechanical search-and-replace when next convenient.
 - The skipped `EmptySlabQueueTest.ReEnqueueOfSameNodeDoesNotCauseInfiniteSpin` test's comment was updated to remove the now-stale reference to `reset_to_empty` (which was supposed to mitigate the hazard but never did — the `is_enqueued_` one-shot CAS does).
-- A few existing tests in the new `ExpandableSlabAllocatorTest.cpp` are functional near-duplicates (e.g. `OldSlabIsDestroyedAfterChaining` vs `OldEmptySlabIsDestroyed`; `DeallocateInvalidSlabIdThrows` vs `DeallocateOutOfRangeSlabIdThrows`). All kept per the user's "option (a)" choice — test coverage is cheap; names disambiguated where they collided.
+- A few existing tests in the new `ExpandableSlabAllocatorTest.cpp` are functional near-duplicates (e.g. `OldSlabIsDestroyedAfterChaining` vs `OldEmptySlabIsDestroyed`; `DeallocateInvalidSlabIdThrows` vs `DeallocateOutOfRangeSlabIdThrows`). All kept — test coverage is cheap; names disambiguated where they collided.
 
 ### Session 15
 
@@ -1130,7 +1137,7 @@ The colliding test names `AdversarialDestroyedSlabIdThrowsOnDeallocate` and `Dea
 
 The ME's `handle_new_order_single` keeps fabricated `std::string` locals on the stack and assigns their `string_view`s into the ER struct, so the views are valid for the full duration of the immediately-following `send_pdu` call. This is a safer pattern than the existing `er.foo = std::string(view.foo);` style used in `SequencerThread`'s ER decoder (which assigns a temporary `std::string` to a `string_view`, leaving the view dangling at the end of the assignment statement; works in practice today only because the calling stack frame is not yet overwritten by the time `send_pdu` reads the bytes). The SequencerThread instances of that pattern have not been changed in this session — they should be cleaned up when next convenient.
 
-**Sequencer-to-ME topology corrected.** Until this session the sequencer was using a single TCP connection bidirectionally: the ME's outbound to the sequencer's `inbound:7021` (the ER channel) was being repurposed by the sequencer to push order PDUs back the wrong way down the same socket. The user confirmed this was unintended, and that the proper topology is two unicast pipes — one each way — until pub/sub fanout replaces direct TCP. The fix:
+**Sequencer-to-ME topology corrected.** Until this session the sequencer was using a single TCP connection bidirectionally: the ME's outbound to the sequencer's `inbound:7021` (the ER channel) was being repurposed by the sequencer to push order PDUs back the wrong way down the same socket. The proper topology is two unicast pipes — one each way — until pub/sub fanout replaces direct TCP. The fix:
 - `SequencerConfiguration.hpp` gained `matching_engine_host`/`matching_engine_port` members defaulting to `127.0.0.1:7020`.
 - `SequencerConfigurationLoader.cpp` now parses a `[matching_engine] host=... port=...` section.
 - `Sequencer.cpp` registers the `matching_engine` service in the `ServiceRegistry`.
@@ -1138,7 +1145,7 @@ The ME's `handle_new_order_single` keeps fabricated `std::string` locals on the 
 - `SequencerThread`'s previously-misnamed `matching_engine_conn_id_` was renamed to `me_outbound_order_conn_id_` to make the direction explicit. The `on_connection_established` branch that captured `inbound:7021` as "matching engine ER connection" was removed; ER PDUs are still routed correctly by `service_name == "inbound:7021"` matching in `on_framework_pdu_message` without needing the ID cached.
 - `sequencer.toml` gained a `[matching_engine]` section.
 
-**Secondary sequencer expunged from the gateway.** The gateway-side dual-publish was incomplete and was breaking the single-sequencer test setup: the gateway required `[sequencer.secondary_host]`/`[sequencer.secondary_port]` in its toml and would attempt to connect to a secondary that wasn't running, retrying forever. The user chose to remove the secondary references entirely rather than carry broken half-configuration. The dual-publish concept is preserved in code (the function name `forward_pdu_to_sequencers` retained, with a comment explaining the plural will be reasserted when leader-follower lands) but the secondary endpoint, member, connect call, and toml entries are all gone:
+**Secondary sequencer expunged from the gateway.** The gateway-side dual-publish was incomplete and was breaking the single-sequencer test setup: the gateway required `[sequencer.secondary_host]`/`[sequencer.secondary_port]` in its toml and would attempt to connect to a secondary that wasn't running, retrying forever. The secondary references were removed rather than carry broken half-configuration. The dual-publish concept is preserved in code (the function name `forward_pdu_to_sequencers` retained, with a comment explaining the plural will be reasserted when leader-follower lands) but the secondary endpoint, member, connect call, and toml entries are all gone:
 - `order_gateway.toml` — `secondary_host`/`secondary_port` lines removed from `[sequencer]`.
 - `FixGatewaySeqConfiguration.hpp` — `sequencer_secondary_host`/`sequencer_secondary_port` members removed; class doxygen rephrased.
 - `FixGatewaySeqConfigurationLoader.cpp` — secondary parsing/validation removed.
@@ -1456,7 +1463,7 @@ TcpSocket EAGAIN/EOF fix, use-after-free fix, InboundConnection infrastructure, 
 - `order_gateway` — FIX session layer complete; PDU encoding to sequencer complete; ER routing back to fix8 complete. Session 17 adds `ha_enabled` flag (default false): when false, secondary sequencer connect is skipped, `forward_pdu_to_sequencers` sends only to primary, and secondary host/port are not required in the toml. When `ha_enabled=true`, dual-publish to primary and secondary is restored. `forward_pdu_to_sequencers` name kept plural — the dual-publish branch returns when leader-follower is fully live.
 - `sequencer` — Slices 1–7 complete. PDU forwarding (NOS, OCR, ER), topology, re-encode fixes all from session 15. WAL (`SequencerWal`: mmap'd segments, snapshot, CRC32, replay on restart), seqNo on wire, `routing_comp_id` stamping, and leader-follower state machine (`Role::unknown/leader/follower`, `adopt_role`, `peer_heartbeat_timeout`, epoch, fence file) from sessions covered by the session-17 entry. Slice 7 (session 18): network WAL replication — leader streams `WalRecord` (id=103) PDUs to follower over peer TCP; follower appends to its WAL and replies `WalAck` (id=104); leader buffers ERs in `pending_er_` keyed by seq_no and gates gateway ER emission on WalAck; follower WAL written exclusively from WalRecord (not from direct gateway PDU); `flush_pending_er()` releases all buffered ERs on peer disconnect (degraded mode). `ha_enabled=false` (default): sequencer immediately adopts `Role::leader` in `on_initial_event` and skips arbiter/peer connects. Both TOMLs now have `ha_enabled=true`.
 - `matching_engine` — complete for the round-trip stub. `on_framework_pdu_message` decodes inbound `NewOrderSingle` PDUs (session 15) and emits a fully-filled `ExecutionReport` over the existing outbound `sequencer_er_conn_id_`. The ER populates every field that `SequencerThread`'s ER decoder reads. No real order book or matching — every order becomes a single fill at its limit price (or a zero sentinel for market orders). `OrderID` and `ExecID` are generated as `ME-ORD-N` / `ME-EXEC-N`. `OrderCancelRequest` is not yet handled (logs and drops at the `else` branch); cancel handling is a small follow-up.
-- `arbiter` — stub, compiling
+- `arbiter` — complete. Implements the `ArbitrationReport`/`ArbitrationDecision` PDU exchange. End-to-end arbiter-mediated election verified by ha_test.py scenario 15 (session 2026-06-03).
 - `start_fix_seq_system.py` — runs primary only (secondary launch removed in session 15 pending leader-follower)
 - PostgreSQL schema and migration tooling — complete (session 22). `db/create_db.py` idempotent setup script; Liquibase 5.x changelog; three tables: `pubsub_firm`, `pubsub_comp_id` (SCRAM fields, account status, audit timestamps), `pubsub_comp_id_gateway_permission`. Table prefix configurable (default `pubsub_`).
 - Java admin service (`java/admin-service/`) — complete (sessions 22–23). Javalin 6 + Freemarker 2.3 + plain JDBC + Pico.css. Full CRUD for firms, comp_ids, and gateway permissions. Password set path: derives SCRAM-SHA-256 → writes to DB → pushes plaintext password to auth service via `SetCredentialRequest` (PDU 510) over TLS. Credential revocation: `RemoveCredentialRequest` (PDU 512) sent when a firm or comp_id is disabled, locked, or deleted. Maven build with Checkstyle, SpotBugs (exclude filter for DI false positives), JaCoCo (80% threshold), and OWASP Dependency Check. Logging: SLF4J API + Logback 1.2.13 (not Log4j2 — Logback is the native SLF4J implementation and needs only one dependency; Log4j2 requires an additional `log4j-slf4j-impl` bridge adapter with no benefit in this context; Javalin 6.3.0 depends on SLF4J 1.x so Logback 1.5.x is incompatible — 1.2.13 is the correct version). `logback.xml` suppresses Javalin/Jetty/HikariCP noise to WARN. `FreemarkerRenderer` registered via `config.fileRenderer()` (Javalin 6 requires explicit registration). Fat JAR built with maven-shade-plugin including signature-file exclusion and ServicesResourceTransformer. Service starts cleanly and responds on port 8080. Admin UI authentication: Jenkins-style login system backed by a TOML file (`admin_users.toml`) — no database dependency. BCrypt-hashed passwords (jbcrypt 0.4, cost 12). Two roles: ADMIN (full CRUD) and VIEWER (read-only; POST routes blocked with 403 by `AuthFilter`). First-run setup wizard creates the initial ADMIN account. Force-password-change flag set on admin-created accounts; user is redirected to `/change-password` on next login. Session auth via Jetty `SessionHandler`; `AuthFilter` runs as Javalin `before()` handler. Pico.css is bundled in the JAR (`src/main/resources/static/`) — no CDN dependency; works in air-gapped corporate environments. Three branding properties in `application.properties`: `brand.name` (product name shown in titles and nav), `brand.logo-url` (logo image in nav and login page), `brand.css-file` (path to a CSS file inlined into every page for colour overrides). See `java/admin-service/README.md` for deployment and branding instructions. Credential lifecycle gap: re-enabling a firm or comp_id, or unlocking a comp_id, does NOT automatically restore the auth service credential (PDU 510 requires the plaintext password, which is never stored); the operator must reset the password afterwards. The Edit forms display a warning when this applies; the full procedure is documented in the README "Credential Lifecycle" section.
@@ -1519,7 +1526,7 @@ The burst test is a natural companion to item 15 (fix-test-client smoke test): t
 
 Option B (item 11) reduces latency outliers caused by timer events competing with WalAck events, but it does not move the median. The median WAL round-trip latency is dominated by three sequential `epoll_wait` wakeups — one per `ApplicationThread` hop — and on a normal Linux desktop or server kernel each wakeup carries 50–200µs of scheduler jitter. To move the median below 100µs consistently, the threads need `SCHED_FIFO` scheduling on CPUs removed from the general scheduler pool.
 
-The feasibility and cost of doing this depends entirely on the machine. The following assessment tells you exactly where a given machine stands and what the improvement path looks like.
+The feasibility and cost of doing this depends entirely on the target machine. The following assessment procedure determines where a given machine stands and what the improvement path looks like.
 
 ### Step 1 — CPU governor
 
@@ -1584,7 +1591,7 @@ chrt -f 1 echo "SCHED_FIFO works"
 grep -r rtprio /etc/security/limits.conf /etc/security/limits.d/ 2>/dev/null
 ```
 
-If `ulimit -r` returns `0` and `chrt` fails with `Operation not permitted`, the user has no RT budget. To grant it without running the whole process as root, add a line to `/etc/security/limits.conf` and re-login:
+If `ulimit -r` returns `0` and `chrt` fails with `Operation not permitted`, the process has no RT priority budget. To grant it without running as root, add a line to `/etc/security/limits.conf` and re-login:
 
 ```
 # /etc/security/limits.conf
@@ -1800,7 +1807,7 @@ What is decided, what is leaning, what is open.
 **Leaning:**
 
 - Per-component HA primitives provided by the framework: a `WAL` data structure, a replication-channel pattern, an arbiter-client API, a fencing-discipline helper. Each component composes these into its own HA strategy. Avoids "every component implements HA differently with different bugs".
-- Quill backtrace logging configured on each component's logger: when an `Error` or `Critical` log record fires, a buffered ring of recent diagnostic context is also flushed to the sink. Useful for incident debugging via Splunk. Quill v11 supports this directly. To-do for the framework when convenient; not blocking any HA slice. See "Statistics and metrics" section below.
+- Quill backtrace logging configured on each component's logger: when an `Error` or `Critical` log record fires, a buffered ring of recent diagnostic context is also flushed to the sink. Useful for incident debugging with any log aggregation tool. Quill v11 supports this directly. To-do for the framework when convenient; not blocking any HA slice. See "Statistics and metrics" section below.
 
 **Open:**
 
@@ -2022,7 +2029,7 @@ This is a defensible position. The trade-off (acceptable async latency vs perfec
 
 The alternative -- synchronous flushing per audit record -- was considered and rejected. Quill v11 does not provide a per-statement-priority flush; the `set_immediate_flush` API is global and would couple all logging to disk-flush latency. A dedicated synchronous logger for audit records was considered but rejected on the same grounds: per-record disk-flush latency on the ME's hot path is unacceptable, and the WAL already covers the audit-existence requirement.
 
-**Future enhancement: Quill backtrace logging.** When an `Error` or `Critical` log record fires, a buffered ring of recent diagnostic context is also flushed to the sink. This is useful for incident debugging via Splunk: support staff see the full picture at the moment something goes wrong, not just the error in isolation. Quill v11 supports this directly. To-do for the framework: configure backtrace logging on each component's logger, so recent operational context is preserved for incident analysis.
+**Future enhancement: Quill backtrace logging.** When an `Error` or `Critical` log record fires, a buffered ring of recent diagnostic context is also flushed to the sink. This is useful for incident debugging: operations staff see the full picture at the moment something goes wrong, not just the error in isolation. Quill v11 supports this directly. To-do for the framework: configure backtrace logging on each component's logger, so recent operational context is preserved for incident analysis.
 
 **The Kafka stats chain at the work system is intentionally not replicated.** That chain (ME stats → broker → Kafka publisher → external Kafka consumers) addresses the same question Prometheus addresses, less efficiently, with worse reliability semantics, and with more moving infrastructure. Prometheus replaces it cleanly. This is a hard break from the work system's pattern but a beneficial one.
 
@@ -2758,7 +2765,7 @@ encode(msg, wire_buf, real);
 
 ## Allocator Subsystem — Full Table
 
-| Class | One-liner |
+| Class | Description |
 |---|---|
 | `FixedSizeMemoryPool<T>` | See above |
 | `ExpandablePoolAllocator<T>` | See above |
@@ -2774,7 +2781,7 @@ encode(msg, wire_buf, real);
 
 ## Miscellaneous / Support
 
-| Class/File | One-liner |
+| Class/File | Description |
 |---|---|
 | `CacheLine<T>` | Aligns `T` to cache line boundary to prevent false sharing |
 | `PreconditionAssertion` | Exception thrown on precondition violations (not `assert`) |
@@ -2792,7 +2799,7 @@ encode(msg, wire_buf, real);
 
 **Test infrastructure:**
 
-| Class | One-liner |
+| Class | Description |
 |---|---|
 | `LoggerWithSink` | Logger wired to `TestSink`; in `pubsub_itc_fw` namespace (NOT `test_support`) — important for test compilation |
 | `TestSink` | In-memory log sink for test assertions |
@@ -2804,7 +2811,6 @@ encode(msg, wire_buf, real);
 
 ## Gateway Performance Analysis
 
-Run identifier: **20260525_220617**.
 Profiling flags: `perf record --call-graph dwarf -F 999`.
 Kernel tuning: `/proc/sys/kernel/kptr_restrict = 0`, `/proc/sys/kernel/perf_event_paranoid = -1`.
 Binary: `order_gateway` (RelWithDebInfo, full DWARF).
