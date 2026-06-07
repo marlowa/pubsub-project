@@ -7,7 +7,8 @@
 #include <charconv>
 #include <cstdint> // IWYU pragma: keep
 #include <cstring>
-#include <unordered_map>
+
+#include <tsl/robin_map.h>
 
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
@@ -163,7 +164,7 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // Order book keyed by (session_id, cl_ord_id) — scoped per FIX session so
     // concurrent sessions can reuse the same ClOrdID sequence without collision,
     // matching the FIX standard (ClOrdID unique per client session).
-    std::unordered_map<OrderKey, OrderEntry, OrderKeyHash> order_book_;
+    tsl::robin_map<OrderKey, OrderEntry, OrderKeyHash> order_book_;
 
     // Monotonic counters for generated OrderID and ExecID values.
     int64_t order_id_counter_{0};

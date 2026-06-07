@@ -11,6 +11,7 @@ target_include_directories(matching_engine PRIVATE
 
 target_link_libraries(matching_engine PRIVATE
         pubsub_itc_fw
+        tsl::robin_map
 )
 
 add_dependencies(matching_engine fix_equity_orders_generated)

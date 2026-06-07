@@ -119,7 +119,6 @@ OrderGatewayThread::OrderGatewayThread(pubsub_itc_fw::ApplicationThread::Constru
                : nullptr) {}
 
 void OrderGatewayThread::on_app_ready_event() {
-    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "entered handler");
     connect_to_service("authentication_service_primary");
     if (config_.ha_enabled) {
         connect_to_service("authentication_service_secondary");
@@ -128,12 +127,9 @@ void OrderGatewayThread::on_app_ready_event() {
     if (config_.ha_enabled) {
         connect_to_service("sequencer_secondary");
     }
-
-    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "exit handler");
 }
 
 void OrderGatewayThread::on_connection_established(pubsub_itc_fw::ConnectionID id) {
-    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "entered handler");
     if (id.service_name() == "authentication_service_primary") {
         auth_service_primary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "OrderGatewayThread: primary authentication service connection {} established",
@@ -157,13 +153,9 @@ void OrderGatewayThread::on_connection_established(pubsub_itc_fw::ConnectionID i
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "OrderGatewayThread: FIX client connection {} ({}) established -- active sessions: {}",
                    id.get_value(), id.service_name(), sessions_.size() + 1);
     }
-
-    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "exit handler");
 }
 
 void OrderGatewayThread::on_connection_lost(pubsub_itc_fw::ConnectionID id, const std::string& reason) {
-    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "entered handler");
-
     auto it = sessions_.find(id);
     if (it != sessions_.end()) {
         cancel_timer(it->second.logon_timeout_timer_name());
@@ -191,13 +183,9 @@ void OrderGatewayThread::on_connection_lost(pubsub_itc_fw::ConnectionID id, cons
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "OrderGatewayThread: FIX client connection {} lost: {} -- active sessions: {}",
                    id.get_value(), reason, sessions_.size());
     }
-
-    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "exit handler");
 }
 
 void OrderGatewayThread::on_raw_socket_message(const pubsub_itc_fw::EventMessage& message) {
-    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "entered handler");
-
     const pubsub_itc_fw::ConnectionID& conn_id = message.connection_id();
     const uint8_t* data = message.payload();
     const int available = message.payload_size();
@@ -364,13 +352,9 @@ void OrderGatewayThread::on_raw_socket_message(const pubsub_itc_fw::EventMessage
     }
     commit_raw_bytes(conn_id, static_cast<int64_t>(consumed));
     session.absolute_bytes_committed_ += static_cast<int64_t>(consumed);
-
-    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "exit handler");
 }
 
 void OrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message) {
-    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "enter handler");
-
     const auto pdu_id = message.pdu_id();
 
     const bool from_auth_service =
@@ -444,13 +428,9 @@ void OrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventMess
     }
     send_raw(session.conn_id, wire_buffer, static_cast<uint32_t>(wire_length));
     release_pdu_payload(message);
-
-    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "exit handler");
 }
 
 void OrderGatewayThread::on_timer_event(const std::string& name) {
-    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "entered handler");
-
     for (auto& [id, session] : sessions_) {
         if (session.logon_timeout_timer_name() == name) {
             if (!session.session_established) {
@@ -473,13 +453,10 @@ void OrderGatewayThread::on_timer_event(const std::string& name) {
             return;
         }
     }
-
-    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "exit handler");
 }
 
 void OrderGatewayThread::on_itc_message([[maybe_unused]] const pubsub_itc_fw::EventMessage& message) {
-    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "entered handler");
-    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "exit handler");
+    // Do nothing
 }
 
 // -----------------------------------------------------------------------

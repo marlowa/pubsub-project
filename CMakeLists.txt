@@ -111,6 +111,7 @@ set(QUILL_VERSION $ENV{QUILL_VERSION})
 set(ARGPARSE_VERSION_FROM_ENV $ENV{ARGPARSE_VERSION})
 set(GOOGLETEST_VERSION $ENV{GOOGLETEST_VERSION})
 set(TOMLPLUSPLUS_VERSION $ENV{TOMLPLUSPLUS_VERSION})
+set(ROBINMAP_VERSION $ENV{ROBINMAP_VERSION})
 
 list(PREPEND CMAKE_PREFIX_PATH ${THIRDPARTY_DIR})
 list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake_modules")
@@ -120,6 +121,7 @@ list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/quill/${QUILL_VERSION
 list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/argparse/${ARGPARSE_VERSION_FROM_ENV}")
 list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/googletest/${GOOGLETEST_VERSION}")
 list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/tomlplusplus/${TOMLPLUSPLUS_VERSION}")
+list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/tsl-robin-map/${ROBINMAP_VERSION}")
 
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)
     set(LIB_SUFFIX "64")
@@ -135,17 +137,22 @@ set(argparse_DIR
     "${THIRDPARTY_DIR}/installed/argparse/${ARGPARSE_VERSION_FROM_ENV}/lib${LIB_SUFFIX}/cmake/argparse")
 set(GTest_DIR
     "${THIRDPARTY_DIR}/installed/googletest/${GOOGLETEST_VERSION}/lib${LIB_SUFFIX}/cmake/GTest")
+# tsl-robin-map is header-only; cmake installs its config under share/cmake, not lib/cmake.
+set(tsl-robin-map_DIR
+    "${THIRDPARTY_DIR}/installed/tsl-robin-map/${ROBINMAP_VERSION}/share/cmake/tsl-robin-map")
 
-message(STATUS "fmt_DIR:      ${fmt_DIR}")
-message(STATUS "quill_DIR:    ${quill_DIR}")
-message(STATUS "argparse_DIR: ${argparse_DIR}")
-message(STATUS "GTest_DIR:    ${GTest_DIR}")
+message(STATUS "fmt_DIR:          ${fmt_DIR}")
+message(STATUS "quill_DIR:        ${quill_DIR}")
+message(STATUS "argparse_DIR:     ${argparse_DIR}")
+message(STATUS "GTest_DIR:        ${GTest_DIR}")
+message(STATUS "tsl-robin-map_DIR: ${tsl-robin-map_DIR}")
 
 find_package(Boost REQUIRED COMPONENTS system filesystem)
 find_package(fmt REQUIRED CONFIG)
 find_package(quill REQUIRED CONFIG)
 find_package(argparse REQUIRED CONFIG)
 find_package(GTest REQUIRED CONFIG)
+find_package(tsl-robin-map REQUIRED CONFIG)
 find_package(OpenSSL REQUIRED)
 
 find_package(PkgConfig)

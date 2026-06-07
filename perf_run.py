@@ -125,18 +125,30 @@ def attach_perf(name: str, pid: int, perf_dir: Path) -> subprocess.Popen:
 
 
 def _wait_for_log_pattern(log_path: Path, label: str, target: int,
-                           count_fn, timeout: float) -> bool:
+                           count_fn, timeout: float,
+                           min_idle_timeout: float = 8.0,
+                           stall_is_warning: bool = True) -> bool:
     """
     Generic log-polling loop used by both wait phases.
 
     count_fn(chunk: str) -> int  counts matching events in a new chunk.
 
+    min_idle_timeout controls the floor for the dynamic bail-out.  The ME
+    phase uses the default 8s.  The ER phase passes 120s because the initial
+    calibration captures a Quill burst-flush rate, not the true sequencer→
+    gateway pipeline drain rate.
+
+    stall_is_warning controls log severity on stall.  GW-ER-SENT stall is a
+    genuine failure (pass True).  ME-ORD stall is a pipeline-delay artefact —
+    the remaining NOS are still in transit; the ER phase is authoritative
+    (pass False, which logs an informational message instead of a warning).
+
     Returns True when the running total reaches `target`, False on timeout
-    or stall.  Uses the same dynamic idle bail-out as before.
+    or stall.
     """
     INITIAL_IDLE_TIMEOUT = max(30.0, timeout * 0.10)
     MIN_CALIBRATION_SECS = 2.0
-    MIN_IDLE_TIMEOUT     = 8.0
+    MIN_IDLE_TIMEOUT     = min_idle_timeout
 
     deadline        = time.monotonic() + timeout
     total_seen      = 0
@@ -181,9 +193,13 @@ def _wait_for_log_pattern(log_path: Path, label: str, target: int,
                                     f"dynamic idle bail-out {idle_timeout:.0f}s")
 
             if total_seen > 0 and (time.monotonic() - last_change) >= idle_timeout:
-                log(f"  STALL: {label} stopped at {total_seen:,} / {target:,} "
-                    f"({target - total_seen:,} apparently missing in live count; "
-                    f"post-shutdown totals are authoritative) — proceeding with shutdown.")
+                if stall_is_warning:
+                    log(f"  WARNING: {label} stalled at {total_seen:,} / {target:,} "
+                        f"— {target - total_seen:,} ERs not delivered before timeout.")
+                else:
+                    log(f"  {label} live count stalled at {total_seen:,} / {target:,} "
+                        f"— {target - total_seen:,} NOS still in the sequencer pipeline; "
+                        f"GW-ER-SENT is the authoritative completion signal.")
                 return False
 
         time.sleep(0.1)
@@ -214,7 +230,8 @@ def wait_for_order_completion(me_log: Path, total_orders: int, timeout: float) -
                 return delta
         return 0
 
-    return _wait_for_log_pattern(me_log, "ME-ORD", total_orders, count_nos, timeout)
+    return _wait_for_log_pattern(me_log, "ME-ORD", total_orders, count_nos, timeout,
+                                  stall_is_warning=False)
 
 
 def wait_for_er_completion(gw_log: Path, total_orders: int, timeout: float) -> bool:
@@ -225,11 +242,18 @@ def wait_for_er_completion(gw_log: Path, total_orders: int, timeout: float) -> b
     the fix8 T command fires NOS messages without waiting for ERs, so the ME
     finishing before the ERs have returned through the sequencer→gateway path
     only measures NOS intake, not round-trip throughput.
+
+    The min_idle_timeout is set to 120s (not the default 8s) because the
+    initial calibration rate is dominated by a Quill burst-flush of already-
+    queued entries, not the true sequencer→gateway pipeline drain rate.  The
+    actual pipeline can be 100× slower than the burst; 120s gives it time to
+    drain the backlog that accumulated during the ME phase.
     """
     def count_er(chunk: str) -> int:
         return chunk.count("GW-ER-SENT")
 
-    return _wait_for_log_pattern(gw_log, "GW-ER-SENT", total_orders, count_er, timeout)
+    return _wait_for_log_pattern(gw_log, "GW-ER-SENT", total_orders, count_er, timeout,
+                                  min_idle_timeout=120.0)
 
 
 def shutdown_processes(named_procs: list[tuple[str, subprocess.Popen]]) -> None:
@@ -370,12 +394,15 @@ def run_fix8_session(me_log: Path, gw_log: Path, burst: int, clients: int) -> No
     MAX_ORDER_TIMEOUT = 600.0
     timeout = min(ORDER_TIMEOUT * max(1, burst * clients), MAX_ORDER_TIMEOUT)
 
-    # Phase 1: ME intake.
+    # Phase 1: ME intake.  This is a progress indicator only — the ME processes
+    # NOS in pipeline order and its log may lag the ER log.  A stall here does
+    # not mean orders are lost; GW-ER-SENT is the authoritative end-to-end signal.
     nos_ok = wait_for_order_completion(me_log, total_orders, timeout)
     if not nos_ok:
-        log(f"  WARNING: timed out waiting for ME-ORD-{total_orders} — proceeding to ER phase anyway")
+        log(f"  ME-ORD live count did not reach {total_orders:,} — "
+            f"pipeline still draining; proceeding to ER phase (authoritative)")
     else:
-        log(f"  All {total_orders} orders confirmed in matching engine log")
+        log(f"  All {total_orders:,} NOS confirmed in matching engine log")
 
     # Phase 2: full round-trip — wait for gateway to deliver all ERs.
     # Use the same timeout budget; after ME completion most of the remaining
@@ -531,9 +558,9 @@ def main() -> None:
         full_shutdown()
         sys.exit(130)
 
-    # Post-shutdown ground-truth counts.  Quill flushes its remaining ring-buffer
-    # entries when processes exit, so these figures reflect what was truly processed
-    # regardless of what the live-monitoring bail-outs reported.
+    # Post-shutdown ground-truth counts.  Read after all processes have exited so
+    # any in-flight log entries are flushed.  GW-ER-SENT is the authoritative
+    # end-to-end signal: it confirms the full NOS→ME→sequencer→gateway→fix8 path.
     total_orders = args.clients * args.burst * 1000
     def count_in_log(path: Path, marker: str) -> int:
         try:
@@ -553,9 +580,18 @@ def main() -> None:
     log(f"  ME-ORD        : {me_final:>10,} / {total_orders:,}  {'OK' if me_ok  else f'SHORT by {total_orders - me_final:,}'}")
     log(f"  GW-NOS-RECV   : {gw_nos_recv:>10,} / {total_orders:,}  {'OK' if nos_ok else f'SHORT by {total_orders - gw_nos_recv:,}'}")
     log(f"  GW-ER-SENT    : {gw_er_sent:>10,} / {total_orders:,}  {'OK' if er_ok  else f'SHORT by {total_orders - gw_er_sent:,}'}")
-    log(f"  NOS→ER match  : {'YES — every NOS received an ER' if nos_er_match else f'NO — {abs(gw_nos_recv - gw_er_sent):,} discrepancy (ERs without matching NOS or vice-versa)'}")
+    log(f"  NOS→ER match  : {'YES — every NOS received an ER' if nos_er_match else f'NO — {abs(gw_nos_recv - gw_er_sent):,} discrepancy'}")
     if gw_gap_fills > 0:
         log(f"  Gap fills     : {gw_gap_fills:>10,}  (FIX SequenceReset-GapFill sent in response to ResendRequest)")
+
+    if er_ok and nos_er_match:
+        log("=== PASS — all orders processed and every ER delivered ===")
+    elif not er_ok:
+        log(f"=== FAIL — {total_orders - gw_er_sent:,} ERs not delivered "
+            f"(lost in pipeline or fix8 client disconnected) ===")
+    else:
+        log(f"=== FAIL — NOS/ER mismatch: "
+            f"{gw_nos_recv:,} NOS received, {gw_er_sent:,} ERs sent ===")
 
     log("=== Done ===")
 

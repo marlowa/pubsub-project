@@ -1,11 +1,15 @@
 [network]
 listen_host         = "${order_gateway_network_listen_host}"
 listen_port         = 9879
-raw_buffer_capacity = 4194304 # for TCP buffering; 4 MiB per FIX session.
-                              # At ~175 bytes/NOS, 4 MiB holds ~24,000 messages at the high-water
-                              # mark (75%), far more than any single session's burst (10,000 max).
-                              # This prevents TCP flow-control backpressure being applied to fix8,
-                              # which loses one order per session when its send is blocked for >100ms.
+raw_buffer_capacity = 16777216 # for TCP buffering; 16 MiB per FIX session.
+                              # At ~175 bytes/NOS, 16 MiB holds ~71,900 messages at the 75%
+                              # high-water mark — above the 50,000 NOS per session sent by the
+                              # standard 20-client × 50-burst perf test.  The previous 4 MiB
+                              # value (~24,000 messages at 75%) triggered read backpressure on
+                              # all sessions under that load, causing fix8 to reset connections
+                              # when the burst was higher (5×200 = 200K NOS/session).
+                              # Note: 5×200 still exceeds this buffer (200K > 71K); that
+                              # configuration is beyond the supported per-session burst size.
 er_listen_host      = "${order_gateway_network_er_listen_host}"
 er_listen_port      = 7010
 

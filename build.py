@@ -125,7 +125,8 @@ def check_environment_variables():
         'FMT_VERSION',
         'QUILL_VERSION',
         'ARGPARSE_VERSION',
-        'GOOGLETEST_VERSION'
+        'GOOGLETEST_VERSION',
+        'ROBINMAP_VERSION',
     ]
 
     missing = [var for var in required_vars if var not in os.environ]
