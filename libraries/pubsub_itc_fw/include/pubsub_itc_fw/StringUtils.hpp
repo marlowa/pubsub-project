@@ -89,30 +89,6 @@ class StringUtils {
         return fmt::format("{}", timepoint);
     }
 
-    static std::string nanoseconds_since_epoch_as_datetime(int64_t total_ns) {
-
-    // Break into seconds and nanosecond fraction
-    const auto seconds = std::chrono::seconds(total_ns / 1'000'000'000LL);
-    const auto nanoseconds = total_ns % 1'000'000'000LL;
-
-    // Convert seconds to std::time_t for calendar conversion
-    const std::time_t epoch_seconds = seconds.count();
-    std::tm tm_buf{};
-
-    // Use thread-safe gmtime_r
-    gmtime_r(&epoch_seconds, &tm_buf);
-
-    // Format: YYYY-MM-DDTHH:MM:SS.NNNNNNNNN
-    return fmt::format("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:09}",
-                       tm_buf.tm_year + 1900,
-                       tm_buf.tm_mon + 1,
-                       tm_buf.tm_mday,
-                       tm_buf.tm_hour,
-                       tm_buf.tm_min,
-                       tm_buf.tm_sec,
-                       nanoseconds);
-    }
-
     /**
      * @brief Returns a hex-dump string of the given memory region.
      * @param[in] data Pointer to the start of the region to dump.

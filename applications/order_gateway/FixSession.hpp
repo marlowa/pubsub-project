@@ -5,6 +5,7 @@
 
 #include <cstdint> // IWYU pragma: keep
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <pubsub_itc_fw/ConnectionID.hpp>
@@ -13,6 +14,17 @@
 #include "FixParser.hpp"
 
 namespace order_gateway {
+
+/**
+ * @brief Fields from a NewOrderSingle that must be remembered so the gateway
+ *        can send an OrderCancelRequest if the client disconnects before a
+ *        terminal ExecutionReport is received.
+ */
+struct OpenOrderInfo {
+    std::string symbol;
+    char side{};         // FIX Side field byte ('1'=Buy, '2'=Sell, etc.)
+    std::string order_qty;
+};
 
 /**
  * @brief Holds the state for a single active FIX 5.0SP2 / FIXT 1.1 session.
@@ -125,6 +137,21 @@ struct FixSession {
      * @brief Counter for generating unique ExecID values for this session.
      */
     int exec_id_counter{1};
+
+    /**
+     * @brief Counter used to generate unique ClOrdID values for gateway-initiated
+     *        OrderCancelRequests sent on client disconnect.
+     */
+    int cancel_id_counter{1};
+
+    /**
+     * @brief Orders forwarded to the sequencer that have not yet received a
+     *        terminal ExecutionReport (Filled, Canceled, Rejected, Expired,
+     *        DoneForDay).  Keyed by ClOrdID.  On client disconnect, one
+     *        OrderCancelRequest is sent to the ME for each entry so that orders
+     *        do not remain live on the book after the originating session is gone.
+     */
+    std::unordered_map<std::string, OpenOrderInfo> open_orders;
 
     // ----------------------------------------------------------------
     // Raw-bytes commit bookkeeping

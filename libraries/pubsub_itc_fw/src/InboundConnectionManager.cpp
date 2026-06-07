@@ -236,8 +236,11 @@ void InboundConnectionManager::on_write_ready(InboundConnection& conn) {
 
     auto [ok, error] = conn.handler()->continue_send();
     if (!ok) {
-        const std::string reason = fmt::format("send error on connection from '{}': {}", conn.peer_description(), error);
-        PUBSUB_LOG(logger_, FwLogLevel::Error, "InboundConnectionManager::on_write_ready: {}", reason);
+        const std::string reason = error.empty()
+            ? fmt::format("peer '{}' closed connection", conn.peer_description())
+            : fmt::format("send error on connection from '{}': {}", conn.peer_description(), error);
+        const FwLogLevel log_level = error.empty() ? FwLogLevel::Info : FwLogLevel::Error;
+        PUBSUB_LOG(logger_, log_level, "InboundConnectionManager::on_write_ready: {}", reason);
         teardown_connection(id, reason, DeliverLostEventFlag{DeliverLostEventFlag::DeliverLostEvent});
         return;
     }
@@ -390,8 +393,11 @@ bool InboundConnectionManager::process_send_raw_command(const ReactorControlComm
 
     auto [ok, error] = conn.handler()->send_prebuilt(command.allocator_, command.slab_id_, command.raw_chunk_ptr_, command.raw_byte_count_);
     if (!ok) {
-        const std::string reason = fmt::format("send error on connection from '{}': {}", conn.peer_description(), error);
-        PUBSUB_LOG(logger_, FwLogLevel::Error, "InboundConnectionManager::process_send_raw_command: {}", reason);
+        const std::string reason = error.empty()
+            ? fmt::format("peer '{}' closed connection", conn.peer_description())
+            : fmt::format("send error on connection from '{}': {}", conn.peer_description(), error);
+        const FwLogLevel log_level = error.empty() ? FwLogLevel::Info : FwLogLevel::Error;
+        PUBSUB_LOG(logger_, log_level, "InboundConnectionManager::process_send_raw_command: {}", reason);
         teardown_connection(cid, reason, DeliverLostEventFlag{DeliverLostEventFlag::DeliverLostEvent});
         return true;
     }

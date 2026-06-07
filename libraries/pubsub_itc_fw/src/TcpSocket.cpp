@@ -218,6 +218,9 @@ TcpSocketImpl::TcpSocketImpl(int socket_fd) : socketFileDescriptor(socket_fd) {
         if (errno == EWOULDBLOCK || errno == EAGAIN) {
             return {-EAGAIN, ""}; // Socket send buffer full — caller should wait for EPOLLOUT.
         }
+        if (errno == EPIPE) {
+            return {-EPIPE, ""}; // Peer closed its end — clean disconnect, not an error on our side.
+        }
         return {-errno, fmt::format("Failed to send data on socket {}: {}", socketFileDescriptor, StringUtils::get_errno_string())};
     }
 

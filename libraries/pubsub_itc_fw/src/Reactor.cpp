@@ -793,24 +793,23 @@ void Reactor::check_for_stuck_threads() {
             auto state = thread->get_lifecycle_state().as_tag();
             if (state == ThreadLifecycleState::Operational) {
                 if (thread->get_time_event_started() <= thread->get_time_event_finished()) {
-                    auto duration = thread->get_time_event_finished() - thread->get_time_event_started();
+                    const auto duration = thread->get_time_event_finished() - thread->get_time_event_started();
+                    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
                     if (duration > config_.itc_maximum_inactivity_interval_) {
-                        auto reason = fmt::format("Thread {} callback took too long", thread->get_thread_name());
+                        auto reason = fmt::format("Thread {} callback took too long, {} ms", thread->get_thread_name(), ms);
                         shutdown(reason);
                         return;
                     }
                 } else {
-                    auto now = HighResolutionClock::now();
-                    auto duration = now - thread->get_time_event_started();
+                    const auto now = HighResolutionClock::now();
+                    const auto duration = now - thread->get_time_event_started();
+                    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
                     if (duration > config_.itc_maximum_inactivity_interval_) {
-                        auto reason = fmt::format("Thread {} callback appears to be stuck, was started at [{}]", thread->get_thread_name(),
-                                                  StringUtils::nanoseconds_since_epoch_as_datetime(thread->get_time_event_started().time_since_epoch().count()));
+                        auto reason = fmt::format("Thread {} callback appears to be stuck, duration [{} ms]", thread->get_thread_name(), ms);
                         shutdown(reason);
                         return;
-                    } else {
-                        PUBSUB_LOG(logger_, FwLogLevel::Info, "Thread {} callback not finished yet, started at [{}]", thread->get_thread_name(),
-                                   StringUtils::nanoseconds_since_epoch_as_datetime(thread->get_time_event_started().time_since_epoch().count()));
                     }
+                    PUBSUB_LOG(logger_, FwLogLevel::Info, "Thread {} callback not finished yet, taken [{}] ms so far", thread->get_thread_name(), ms);
                 }
             } else if (state == ThreadLifecycleState::Started) {
                 PUBSUB_LOG(logger_, FwLogLevel::Info, "Thread {} is started but init not complete, checking if stuck", thread->get_thread_name());

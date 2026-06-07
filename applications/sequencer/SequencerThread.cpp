@@ -549,7 +549,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
                         break;
                 }
             } else {
-                PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                            "SequencerThread: ER seq_no={} not in routing map -- forwarding without gateway_session_conn_id", er_seq_no);
             }
         }

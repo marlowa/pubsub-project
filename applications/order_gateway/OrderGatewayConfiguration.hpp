@@ -189,13 +189,13 @@ struct OrderGatewayConfiguration {
      *  Mandatory: must be set explicitly in the TOML configuration file. */
     std::string fix_capture_file;
 
-    /** @brief Maximum number of records the capture queue may hold before
-     *  new records are dropped with a warning.  Size for expected burst depth:
-     *  at 10,000 messages/second and a writer that flushes at least once per
-     *  millisecond, 65536 is ample for development; production high-throughput
-     *  deployments should increase this value.
+    /** @brief Byte capacity of the lock-free ring buffer used by the FIX capture
+     *  writer thread.  The ring is pre-allocated once at startup; records are
+     *  packed into it with no per-record heap allocation.  If the writer falls
+     *  behind and the ring fills, records are dropped with a Warning.  64 MB
+     *  (67108864) is ample for most workloads.
      *  Mandatory: must be set explicitly in the TOML configuration file. */
-    int32_t fix_capture_queue_depth{65536};
+    int64_t fix_capture_ring_bytes{67108864};
 
     // ----------------------------------------------------------------
     // Wall clock

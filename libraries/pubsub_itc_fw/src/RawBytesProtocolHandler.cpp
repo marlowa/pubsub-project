@@ -181,6 +181,10 @@ std::tuple<bool, std::string> RawBytesProtocolHandler::attempt_send_remaining() 
             // reactor will invoke continue_send() when the socket is writable.
             return {true, ""};
         }
+        if (result == -EPIPE) {
+            // Peer closed its end of the connection — not a fault on our side.
+            return {false, ""};
+        }
         if (result < 0) {
             return {false, fmt::format("RawBytesProtocolHandler::attempt_send_remaining: send failed: {}", error)};
         }

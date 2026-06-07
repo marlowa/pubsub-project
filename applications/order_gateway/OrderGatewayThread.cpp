@@ -7,6 +7,7 @@
 #include <openssl/rand.h>
 
 #include <charconv>
+#include <chrono>
 #include <cstring>
 #include <ctime>
 #include <string>
@@ -100,6 +101,23 @@ int64_t parse_fix_utc_timestamp(std::string_view sv) {
     return static_cast<int64_t>(epoch_seconds) * 1'000'000'000LL + millis * 1'000'000LL;
 }
 
+constexpr const char* cancel_drain_timer_name = "cancel_drain";
+constexpr int cancel_drain_batch_size = 500;
+constexpr auto cancel_drain_interval = std::chrono::milliseconds{1};
+
+bool is_terminal_ord_status(pubsub_itc_fw_app::OrdStatus status) {
+    switch (status) {
+        case pubsub_itc_fw_app::OrdStatus::Filled:
+        case pubsub_itc_fw_app::OrdStatus::Canceled:
+        case pubsub_itc_fw_app::OrdStatus::DoneForDay:
+        case pubsub_itc_fw_app::OrdStatus::Rejected:
+        case pubsub_itc_fw_app::OrdStatus::Expired:
+            return true;
+        default:
+            return false;
+    }
+}
+
 } // namespace
 
 OrderGatewayThread::OrderGatewayThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger,
@@ -115,8 +133,12 @@ OrderGatewayThread::OrderGatewayThread(pubsub_itc_fw::ApplicationThread::Constru
     , sequencer_secondary_conn_id_{}
     , capture_(config.fix_capture_enabled
                ? std::make_unique<FixCapture>(config.fix_capture_file, logger,
-                                              static_cast<size_t>(config.fix_capture_queue_depth))
-               : nullptr) {}
+                                              static_cast<size_t>(config.fix_capture_ring_bytes))
+               : nullptr) {
+    if (capture_) {
+        register_extra_thread(capture_->writer_pthread_id(), "FixCaptureWriter");
+    }
+}
 
 void OrderGatewayThread::on_app_ready_event() {
     connect_to_service("authentication_service_primary");
@@ -158,8 +180,10 @@ void OrderGatewayThread::on_connection_established(pubsub_itc_fw::ConnectionID i
 void OrderGatewayThread::on_connection_lost(pubsub_itc_fw::ConnectionID id, const std::string& reason) {
     auto it = sessions_.find(id);
     if (it != sessions_.end()) {
-        cancel_timer(it->second.logon_timeout_timer_name());
-        cancel_timer(it->second.scram_auth_timeout_timer_name());
+        FixSession& session = it->second;
+        cancel_timer(session.logon_timeout_timer_name());
+        cancel_timer(session.scram_auth_timeout_timer_name());
+        queue_session_for_cleanup(session);
         sessions_.erase(it);
     }
 
@@ -403,14 +427,32 @@ void OrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventMess
 
     FixSession* session_ptr = find_session_by_conn_id(view.gateway_session_conn_id);
     if (!session_ptr) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+        // Expected after a client disconnect: in-flight ERs and cancel ACKs
+        // arrive for sessions that are already gone.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "OrderGatewayThread: ExecutionReport gateway_session_conn_id={} -- "
-                   "no matching FIX session (client may have disconnected) -- dropping",
+                   "client already disconnected -- dropping",
                    view.gateway_session_conn_id);
         release_pdu_payload(message);
         return;
     }
     FixSession& session = *session_ptr;
+
+    // Maintain the open-orders set from ME acknowledgements (not from NOS
+    // forward time) so only orders genuinely on the book are tracked.
+    // The view's string_views are backed by the PDU payload, which is valid
+    // until release_pdu_payload() below, so copies are safe here.
+    if (view.has_cl_ord_id) {
+        if (is_terminal_ord_status(view.ord_status)) {
+            session.open_orders.erase(std::string(view.cl_ord_id));
+        } else {
+            session.open_orders.insert_or_assign(
+                std::string(view.cl_ord_id),
+                OpenOrderInfo{std::string(view.symbol),
+                              static_cast<char>(view.side),
+                              view.has_order_qty ? std::string(view.order_qty) : std::string()});
+        }
+    }
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "GW-ER-SENT connection={} OrderID={} ExecID={} gateway_session_conn_id={}",
                session.conn_id.get_value(), view.order_id, view.exec_id, view.gateway_session_conn_id);
@@ -431,6 +473,11 @@ void OrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventMess
 }
 
 void OrderGatewayThread::on_timer_event(const std::string& name) {
+    if (name == cancel_drain_timer_name) {
+        drain_pending_cancels();
+        return;
+    }
+
     for (auto& [id, session] : sessions_) {
         if (session.logon_timeout_timer_name() == name) {
             if (!session.session_established) {
@@ -790,6 +837,11 @@ void OrderGatewayThread::handle_new_order_single(FixSession& session, const Pars
     // The sequencer will wrap it in a SequencedMessage envelope.
     forward_pdu_to_sequencers(static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::NewOrderSingle), nos);
 
+    // Do NOT record the order here. We record it when the ME sends back a
+    // non-terminal ExecutionReport (OrdStatus=New), which confirms the order
+    // is actually on the book. Tracking from NOS time would include every
+    // in-flight order and flood the sequencer with OCRs on disconnect.
+
     PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "exit handle_new_order_single");
 }
 
@@ -936,6 +988,76 @@ void OrderGatewayThread::send_reject_execution_report(FixSession& session, const
 // Warning is logged. The other sequencer still receives the PDU so the leader
 // can continue operating. When connection retry re-establishes the lost
 // connection the follower will resync from the leader's state.
+
+void OrderGatewayThread::queue_session_for_cleanup(FixSession& session) {
+    if (session.open_orders.empty()) {
+        return;
+    }
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "OrderGatewayThread: connection {} disconnected with {} open order(s) -- queuing cancels",
+               session.conn_id.get_value(), session.open_orders.size());
+
+    DeadSession dead;
+    dead.open_orders      = std::move(session.open_orders); // O(1) — map internal state transfer
+    dead.session_conn_id  = session.conn_id.get_value();
+    dead.client_comp_id   = session.client_comp_id;
+    dead.cancel_id_counter = session.cancel_id_counter;
+    pending_cancel_sessions_.push_back(std::move(dead));
+
+    if (!cancel_drain_timer_active_) {
+        start_one_off_timer(cancel_drain_timer_name, cancel_drain_interval);
+        cancel_drain_timer_active_ = true;
+    }
+}
+
+void OrderGatewayThread::drain_pending_cancels() {
+    cancel_drain_timer_active_ = false;
+
+    int sent = 0;
+    while (!pending_cancel_sessions_.empty() && sent < cancel_drain_batch_size) {
+        DeadSession& dead = pending_cancel_sessions_.front();
+
+        if (dead.open_orders.empty()) {
+            pending_cancel_sessions_.pop_front();
+            continue;
+        }
+
+        auto it = dead.open_orders.begin();
+        const std::string& orig_cl_ord_id = it->first;
+        const OpenOrderInfo& info         = it->second;
+
+        const std::string cancel_cl_ord_id =
+            "GW-CXL-" + std::to_string(dead.session_conn_id) + "-" + std::to_string(dead.cancel_id_counter++);
+
+        pubsub_itc_fw_app::OrderCancelRequest ocr{};
+        ocr.orig_cl_ord_id = orig_cl_ord_id;
+        ocr.cl_ord_id      = cancel_cl_ord_id;
+        ocr.symbol         = info.symbol;
+        ocr.side           = static_cast<pubsub_itc_fw_app::Side>(info.side);
+        ocr.transact_time  = config_.wall_clock->now_ns();
+        ocr.order_qty      = info.order_qty;
+
+        if (!dead.client_comp_id.empty()) {
+            ocr.has_sender_comp_id = true;
+            ocr.sender_comp_id     = dead.client_comp_id;
+        }
+        ocr.has_gateway_session_conn_id = true;
+        ocr.gateway_session_conn_id     = dead.session_conn_id;
+
+        forward_pdu_to_sequencers(static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::OrderCancelRequest), ocr);
+
+        dead.open_orders.erase(it);
+        ++sent;
+    }
+
+    if (!pending_cancel_sessions_.empty()) {
+        start_one_off_timer(cancel_drain_timer_name, cancel_drain_interval);
+        cancel_drain_timer_active_ = true;
+    } else if (sent > 0) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                       "OrderGatewayThread: cancel drain complete");
+    }
+}
 
 FixSession* OrderGatewayThread::find_session_by_conn_id(int32_t gateway_session_conn_id) {
     auto it = sessions_.find(pubsub_itc_fw::ConnectionID{gateway_session_conn_id});

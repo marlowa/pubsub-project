@@ -3,6 +3,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <deque>
 #include <string>
 #include <unordered_map>
 
@@ -94,6 +95,16 @@ class OrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     void disconnect_session(const FixSession& session, const std::string& reason);
     void send_fix_to_session(FixSession& session, const FixMessage& msg);
 
+    // On client disconnect: moves the session's open_orders into the pending
+    // cancel queue in O(1) and arms the drain timer.  The actual OCRs are
+    // sent in batches by drain_pending_cancels() so the reactor thread is
+    // never monopolised by a single disconnect with many open orders.
+    void queue_session_for_cleanup(FixSession& session);
+
+    // Timer callback: sends up to cancel_drain_batch_size OCRs from the
+    // pending queue, then reschedules itself if more remain.
+    void drain_pending_cancels();
+
     /**
      * @brief Sends an ExecutionReport-Rejected back to the originating client
      *        when an inbound order/cancel cannot be forwarded (e.g. primary
@@ -183,6 +194,23 @@ class OrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // Linear scan over sessions_ (small set; typically 1-10 sessions).
     // Returns nullptr if no matching session is found.
     FixSession* find_session_by_comp_id(const std::string& comp_id);
+
+    // Holds the open-orders state of a disconnected session, pending deferred
+    // cancellation.  The map is moved from the FixSession in O(1) at disconnect
+    // time; drain_pending_cancels() iterates it in small batches.
+    struct DeadSession {
+        std::unordered_map<std::string, OpenOrderInfo> open_orders;
+        int32_t     session_conn_id{0};
+        std::string client_comp_id;
+        int         cancel_id_counter{1};
+    };
+
+    // Sessions waiting for their open orders to be cancelled.  Entries are
+    // appended at disconnect time (O(1) map move) and consumed by the drain timer.
+    std::deque<DeadSession> pending_cancel_sessions_;
+
+    // True while the cancel-drain one-shot timer is armed.  Prevents double-arming.
+    bool cancel_drain_timer_active_{false};
 };
 
 } // namespace order_gateway

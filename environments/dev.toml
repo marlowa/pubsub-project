@@ -223,7 +223,7 @@ authentication_service_scram_password = "stubpassword"
 sequencer_primary_host                = "127.0.0.1"
 sequencer_secondary_host              = "127.0.0.1"
 fix_capture_file                      = "fix_capture.bin"
-fix_capture_queue_depth               = 65536
+fix_capture_ring_bytes                = 67108864
 
 [sequencer_primary]
 network_listen_host       = "127.0.0.1"
