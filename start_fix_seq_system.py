@@ -5,17 +5,21 @@ start_fix_seq_system.py
 Starts the sequencer-based FIX order flow system for testing with fix8.
 
 Startup order:
-  1. witness                -- arbiter tie-breaker; arbiters connect outbound to
-                               it (port 7100).  Must be up before the arbiters.
-  2. arbiter (primary)      -- component listener port 7200, peer listener 7203.
+  1. auth_service (primary)  -- gateway connects outbound to it at startup.
+                               Must be up before the gateway.
+  2. witness                 -- arbiter tie-breaker; arbiters connect outbound
+                               to it (port 7100). Must be up before arbiters.
+  3. arbiter (primary)       -- component listener port 7200, peer listener 7203.
                                Must be up before sequencers try to connect.
-  3. arbiter (secondary)    -- component listener port 7201, peer listener 7204.
-  4. order_gateway -- must be listening on port 7010 before sequencers
+  4. arbiter (secondary)     -- component listener port 7201, peer listener 7204.
+  5. order_gateway           -- must be listening on port 7010 before sequencers
                                start, because sequencers connect outbound to the
                                gateway's ER inbound listener at startup.
-  5. sequencer (primary)    -- instance_id=1, listens on port 7001
-  6. sequencer (secondary)  -- instance_id=2, listens on port 7002
-  7. matching_engine        -- connects outbound to sequencer ER listener (7021)
+  6. sequencer (primary)     -- instance_id=1, listens on port 7001
+  7. sequencer (secondary)   -- instance_id=2, listens on port 7002
+  8. matching_engine         -- connects outbound to sequencer ER listener (7021)
+  9. admin_service           -- Java admin web UI (port 8080)
+ 10. fix_test_client         -- Java FIX test client web UI (port 8081)
 
 Usage with valgrind:
   ./start_fix_seq_system.py installed --valgrind --valgrind_command "vg"
@@ -80,27 +84,60 @@ def check_executables(bin_dir: Path, names: list[str]) -> None:
             sys.exit(f"ERROR: {exe} is not executable")
 
 
+def check_jars(jars: list[Path]) -> None:
+    if not shutil.which("java"):
+        sys.exit("ERROR: 'java' not found on PATH — install a JRE to run the Java components")
+    for jar in jars:
+        if not jar.is_file():
+            sys.exit(f"ERROR: JAR not found: {jar}")
+
+
 def check_wrapper(wrapper_cmd: str) -> None:
-    """Ensure the wrapper (e.g., 'vg' or 'valgrind') exists in PATH."""
     main_exe = shlex.split(wrapper_cmd)[0]
     if not shutil.which(main_exe):
         sys.exit(f"ERROR: Wrapper command '{main_exe}' not found in PATH.")
 
 
-def launch(name: str, cmd: list[str], log_dir: Path) -> subprocess.Popen:
+def launch(name: str, cmd: list[str], log_dir: Path,
+           cwd: Path | None = None) -> subprocess.Popen:
     stdout_path = log_dir / f"{name}.stdout"
+    actual_cwd = cwd if cwd is not None else log_dir
+    actual_cwd.mkdir(parents=True, exist_ok=True)
     print(f"Starting {name}...")
     print(f"  Command: {' '.join(cmd)}")
 
     with stdout_path.open("w") as stdout_file:
         proc = subprocess.Popen(
             cmd,
-            cwd=str(log_dir),
+            cwd=str(actual_cwd),
             stdout=stdout_file,
             stderr=subprocess.STDOUT,
         )
     print(f"  {name} PID {proc.pid}")
     return proc
+
+
+def tail_log(path: Path, lines: int = 20) -> None:
+    """Print the last `lines` lines of a file if it exists and is non-empty."""
+    try:
+        text = path.read_text(errors="replace")
+    except OSError:
+        return
+    if not text.strip():
+        return
+    all_lines = text.splitlines()
+    shown = all_lines[-lines:]
+    print(f"  --- last {len(shown)} lines of {path.name} ---")
+    for line in shown:
+        print(f"  {line}")
+
+
+def show_failure_logs(name: str, log_dir: Path) -> None:
+    """Show the tail of whichever log files exist for a failed process."""
+    # C++ processes write structured logs to <name>.log via Quill.
+    # Java and all processes also have stdout/stderr captured in <name>.stdout.
+    for suffix in (".log", ".stdout"):
+        tail_log(log_dir / f"{name}{suffix}")
 
 
 def shutdown(procs: list[tuple[str, subprocess.Popen]]) -> None:
@@ -125,7 +162,8 @@ def main() -> None:
     etc_dir = prefix / "etc"
     log_dir = prefix / "log"
 
-    executables = [
+    cpp_executables = [
+        "authentication_service",
         "witness",
         "arbiter",
         "sequencer",
@@ -133,57 +171,88 @@ def main() -> None:
         "order_gateway",
     ]
 
-    check_executables(bin_dir, executables)
+    java_jars = [
+        prefix / "lib" / "admin-service.jar",
+        prefix / "lib" / "fix-test-client.jar",
+    ]
+
+    check_executables(bin_dir, cpp_executables)
+    check_jars(java_jars)
     if args.valgrind:
         check_wrapper(args.valgrind_command)
 
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    # Extend LD_LIBRARY_PATH so the installed shared library is found.
     lib_dir = str(prefix / "lib")
     existing = os.environ.get("LD_LIBRARY_PATH", "")
     os.environ["LD_LIBRARY_PATH"] = f"{lib_dir}:{existing}" if existing else lib_dir
 
     processes: list[tuple[str, subprocess.Popen]] = []
 
-    # Definition of the system components, in startup order.
-    # The witness must be first: arbiters connect outbound to it at startup.
-    # The arbiters must be before the sequencers: sequencers connect to both arbiters.
-    steps_data = [
-        ("witness",                "witness",                "witness.log",
-         etc_dir / "witness"               / "witness.toml"),
-        ("arbiter_primary",        "arbiter",                "arbiter_primary.log",
-         etc_dir / "arbiter"               / "arbiter.toml"),
-        ("arbiter_secondary",      "arbiter",                "arbiter_secondary.log",
-         etc_dir / "arbiter"               / "arbiter_secondary.toml"),
-        ("order_gateway", "order_gateway", "order_gateway.log",
-         etc_dir / "order_gateway" / "order_gateway.toml"),
-        ("sequencer_primary",      "sequencer",              "sequencer_primary.log",
-         etc_dir / "sequencer"             / "sequencer.toml"),
-        ("sequencer_secondary",    "sequencer",              "sequencer_secondary.log",
-         etc_dir / "sequencer"             / "sequencer_secondary.toml"),
-        ("matching_engine",        "matching_engine",        "matching_engine.log",
-         etc_dir / "matching_engine"       / "matching_engine.toml"),
+    # C++ components in startup order.
+    # Tuple: (name, bin_name, log_name, config_path, workdir)
+    # workdir=None means use log_dir (default for C++ apps that write their own logs).
+    cpp_steps = [
+        ("auth_service_primary",  "authentication_service", "auth_service_primary.log",
+         etc_dir / "authentication_service" / "authentication_service.toml",
+         etc_dir / "authentication_service"),
+        ("witness",               "witness",                "witness.log",
+         etc_dir / "witness"               / "witness.toml",                  None),
+        ("arbiter_primary",       "arbiter",                "arbiter_primary.log",
+         etc_dir / "arbiter"               / "arbiter.toml",                  None),
+        ("arbiter_secondary",     "arbiter",                "arbiter_secondary.log",
+         etc_dir / "arbiter"               / "arbiter_secondary.toml",        None),
+        ("order_gateway",         "order_gateway",          "order_gateway.log",
+         etc_dir / "order_gateway"         / "order_gateway.toml",            None),
+        ("sequencer_primary",     "sequencer",              "sequencer_primary.log",
+         etc_dir / "sequencer"             / "sequencer.toml",                None),
+        ("sequencer_secondary",   "sequencer",              "sequencer_secondary.log",
+         etc_dir / "sequencer"             / "sequencer_secondary.toml",      None),
+        ("matching_engine",       "matching_engine",        "matching_engine.log",
+         etc_dir / "matching_engine"       / "matching_engine.toml",          None),
+    ]
+
+    # Java components in startup order.
+    # Tuple: (name, jar_path, config_path_or_None, log_name, workdir)
+    java_steps = [
+        ("admin_service",
+         prefix / "lib" / "admin-service.jar",
+         None,
+         "admin_service.log",
+         etc_dir / "admin_service"),
+        ("fix_test_client",
+         prefix / "lib" / "fix-test-client.jar",
+         etc_dir / "fix_test_client" / "config" / "app.toml",
+         "fix_test_client.log",
+         etc_dir / "fix_test_client"),
     ]
 
     try:
-        for name, bin_name, log_name, config in steps_data:
+        for name, bin_name, log_name, config, workdir in cpp_steps:
             if not config.is_file():
                 sys.exit(f"ERROR: config file not found: {config}")
 
-            # Assemble core application arguments
             app_args = [str(bin_dir / bin_name), str(log_dir / log_name), str(config)]
 
-            # Use shlex to handle complex wrapper commands safely
             if args.valgrind:
                 cmd = shlex.split(args.valgrind_command) + app_args
             else:
                 cmd = app_args
 
-            proc = launch(name, cmd, log_dir)
+            proc = launch(name, cmd, log_dir, cwd=workdir)
             processes.append((name, proc))
 
-            # Increase delay under instrumentation to allow for slow startup
+            current_delay = args.startup_delay * 5 if args.valgrind else args.startup_delay
+            time.sleep(current_delay)
+
+        for name, jar, config, log_name, workdir in java_steps:
+            cmd = ["java", "-jar", str(jar)]
+            if config is not None:
+                cmd.append(str(config))
+
+            proc = launch(name, cmd, log_dir, cwd=workdir)
+            processes.append((name, proc))
+
             current_delay = args.startup_delay * 5 if args.valgrind else args.startup_delay
             time.sleep(current_delay)
 
@@ -196,6 +265,7 @@ def main() -> None:
                 if proc.poll() is not None:
                     print(f"\nERROR: {name} (PID {proc.pid}) exited unexpectedly "
                           f"with code {proc.returncode}")
+                    show_failure_logs(name, log_dir)
                     shutdown(processes)
                     sys.exit(1)
 

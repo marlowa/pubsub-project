@@ -17,12 +17,15 @@ FixSerialiser::FixSerialiser(std::string sender_comp_id, std::string target_comp
     : sender_comp_id_(std::move(sender_comp_id)), target_comp_id_(std::move(target_comp_id)), wall_clock_(wall_clock) {}
 
 std::string FixSerialiser::serialise(const FixMessage& msg, int seq_num) const {
-    // Build the body -- everything after tag 9 and before tag 10.
-    // Order follows the FIX standard header field ordering.
+    return serialise(msg, seq_num, target_comp_id_);
+}
+
+std::string FixSerialiser::serialise(const FixMessage& msg, int seq_num,
+                                     const std::string& target_comp_id) const {
     std::string body;
     append_field(body, Tag::MsgType, msg.msg_type());
     append_field(body, Tag::SenderCompID, sender_comp_id_);
-    append_field(body, Tag::TargetCompID, target_comp_id_);
+    append_field(body, Tag::TargetCompID, target_comp_id);
     append_field(body, Tag::MsgSeqNum, seq_num);
     append_field(body, Tag::SendingTime, current_utc_timestamp());
 

@@ -25,18 +25,19 @@ public class SessionHandler {
 
     public void getStatus(Context ctx) {
         SessionStatus status = fixEngine.getStatus();
-        ctx.json(Map.of(
-                "connected", status.connected(),
-                "loggedOn", status.loggedOn(),
-                "senderCompId", status.senderCompId(),
-                "targetCompId", status.targetCompId(),
-                "host", status.host(),
-                "port", status.port(),
-                "logonTime", status.logonTime() != null ? TIMESTAMP.format(status.logonTime()) : "",
-                "startingSeqNum", status.startingSeqNum(),
-                "nextOutgoingSeqNum", status.nextOutgoingSeqNum(),
-                "nextIncomingSeqNum", status.nextIncomingSeqNum()
-        ));
+        Map<String, Object> body = new java.util.LinkedHashMap<>();
+        body.put("connected", status.connected());
+        body.put("loggedOn", status.loggedOn());
+        body.put("senderCompId", status.senderCompId());
+        body.put("targetCompId", status.targetCompId());
+        body.put("host", status.host());
+        body.put("port", status.port());
+        body.put("logonTime", status.logonTime() != null ? TIMESTAMP.format(status.logonTime()) : "");
+        body.put("startingSeqNum", status.startingSeqNum());
+        body.put("nextOutgoingSeqNum", status.nextOutgoingSeqNum());
+        body.put("nextIncomingSeqNum", status.nextIncomingSeqNum());
+        body.put("lastError", status.lastError());
+        ctx.json(body);
     }
 
     public void logon(Context ctx) {

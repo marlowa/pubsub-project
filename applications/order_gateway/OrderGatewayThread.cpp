@@ -910,7 +910,7 @@ void OrderGatewayThread::disconnect_session(const FixSession& session, const std
 }
 
 void OrderGatewayThread::send_fix_to_session(FixSession& session, const FixMessage& msg) {
-    const std::string wire = serialiser_.serialise(msg, session.outbound_seq_num++);
+    const std::string wire = serialiser_.serialise(msg, session.outbound_seq_num++, session.client_comp_id);
     if (capture_ != nullptr) {
         capture_->capture(FixCapture::Direction::Outbound,
                           reinterpret_cast<const uint8_t*>(wire.data()), wire.size(),

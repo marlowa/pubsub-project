@@ -169,7 +169,8 @@ public class FixEngine {
                 logonTime,
                 startingSeqNum,
                 nextOut,
-                nextIn
+                nextIn,
+                fixApplication.getLastLogoutReason()
         );
     }
 

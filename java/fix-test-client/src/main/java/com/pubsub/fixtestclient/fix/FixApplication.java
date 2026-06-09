@@ -8,6 +8,8 @@ import quickfix.FieldNotFound;
 import quickfix.Message;
 import quickfix.SessionID;
 import quickfix.UnsupportedMessageType;
+import quickfix.field.MsgType;
+import quickfix.field.Text;
 
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -21,6 +23,8 @@ public class FixApplication implements Application {
     private volatile Consumer<Message> inboundListener = msg -> { };
     private volatile Runnable onLogon = () -> { };
     private volatile Runnable onLogout = () -> { };
+    private volatile String lastLogoutReason = "";
+    private volatile boolean sessionWasEstablished = false;
 
     @Override
     public void onCreate(SessionID sessionId) {
@@ -30,12 +34,18 @@ public class FixApplication implements Application {
     @Override
     public void onLogon(SessionID sessionId) {
         log.info("Logged on: {}", sessionId);
+        lastLogoutReason = "";
+        sessionWasEstablished = true;
         onLogon.run();
     }
 
     @Override
     public void onLogout(SessionID sessionId) {
         log.info("Logged out: {}", sessionId);
+        if (!sessionWasEstablished && lastLogoutReason.isEmpty()) {
+            lastLogoutReason = "Gateway rejected logon";
+        }
+        sessionWasEstablished = false;
         onLogout.run();
     }
 
@@ -45,6 +55,15 @@ public class FixApplication implements Application {
 
     @Override
     public void fromAdmin(Message message, SessionID sessionId) {
+        try {
+            if (MsgType.LOGOUT.equals(message.getHeader().getString(MsgType.FIELD))) {
+                lastLogoutReason = message.isSetField(Text.FIELD)
+                        ? message.getString(Text.FIELD)
+                        : "Gateway closed the session";
+                log.info("Logout received, reason: {}", lastLogoutReason);
+            }
+        } catch (FieldNotFound ignored) {
+        }
     }
 
     @Override
@@ -72,5 +91,13 @@ public class FixApplication implements Application {
 
     public void setOnLogout(Runnable callback) {
         this.onLogout = callback;
+    }
+
+    public String getLastLogoutReason() {
+        return lastLogoutReason;
+    }
+
+    public void clearLastLogoutReason() {
+        lastLogoutReason = "";
     }
 }

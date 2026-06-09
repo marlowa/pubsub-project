@@ -12,9 +12,10 @@ public record SessionStatus(
         Instant logonTime,
         int startingSeqNum,
         int nextOutgoingSeqNum,
-        int nextIncomingSeqNum
+        int nextIncomingSeqNum,
+        String lastError
 ) {
     public static SessionStatus disconnected() {
-        return new SessionStatus(false, false, "", "", "", 0, null, 0, 0, 0);
+        return new SessionStatus(false, false, "", "", "", 0, null, 0, 0, 0, "");
     }
 }

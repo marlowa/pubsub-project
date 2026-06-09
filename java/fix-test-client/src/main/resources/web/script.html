@@ -17,7 +17,9 @@
 
     <div class="form-row" style="margin-bottom:10px;">
         <input type="text" id="script-filename" value="untitled.groovy" style="width:240px;">
-        <button onclick="showLoadDialog()">Load</button>
+        <input type="file" id="file-picker" accept=".groovy,.txt,text/*" style="display:none;"
+               onchange="onFilePicked(this)">
+        <button onclick="document.getElementById('file-picker').click()">Load</button>
         <button onclick="doSave()">Save</button>
         <button onclick="doNew()">New</button>
     </div>
@@ -33,13 +35,6 @@
     <hr class="section-rule">
     <pre id="script-output"></pre>
 
-    <!-- Load dialog -->
-    <div id="load-dialog" style="display:none; position:fixed; top:80px; left:50%; transform:translateX(-50%);
-         background:#fff; border:1px solid #aaa; box-shadow:4px 4px 8px #888; padding:16px; z-index:200; min-width:260px;">
-        <div style="font-weight:bold; margin-bottom:8px;">Load script</div>
-        <ul id="script-list" style="list-style:none; max-height:240px; overflow-y:auto; margin-bottom:10px;"></ul>
-        <button onclick="hideLoadDialog()">Cancel</button>
-    </div>
 </div>
 
 <script src="/app.js"></script>
@@ -119,32 +114,17 @@ async function doSave() {
     await apiPost('/api/scripts/save', { filename, content });
 }
 
-async function showLoadDialog() {
-    const files = await apiGet('/api/scripts');
-    const list = document.getElementById('script-list');
-    list.innerHTML = '';
-    for (const name of files) {
-        const li = document.createElement('li');
-        const a = document.createElement('a');
-        a.href = '#';
-        a.textContent = name;
-        a.style.textDecoration = 'none';
-        a.style.color = '#00c';
-        a.onclick = async (e) => {
-            e.preventDefault();
-            const data = await apiGet('/api/scripts/' + encodeURIComponent(name));
-            document.getElementById('script-editor').value = data.content;
-            document.getElementById('script-filename').value = data.filename;
-            hideLoadDialog();
-        };
-        li.appendChild(a);
-        list.appendChild(li);
-    }
-    document.getElementById('load-dialog').style.display = '';
-}
-
-function hideLoadDialog() {
-    document.getElementById('load-dialog').style.display = 'none';
+function onFilePicked(input) {
+    const file = input.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        document.getElementById('script-editor').value = e.target.result;
+        document.getElementById('script-filename').value = file.name;
+    };
+    reader.readAsText(file);
+    // Reset so picking the same file again still fires onchange.
+    input.value = '';
 }
 
 function pageInit() {

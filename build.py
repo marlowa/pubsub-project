@@ -12,6 +12,16 @@ import platform
 import shutil
 from pathlib import Path
 
+def _is_rhel8():
+    try:
+        text = Path('/etc/os-release').read_text()
+        lines = {l.split('=')[0]: l.split('=', 1)[1] for l in text.splitlines() if '=' in l}
+        return lines.get('ID', '').strip('"') in ('rhel', 'rocky', 'centos') \
+            and lines.get('VERSION_ID', '').strip('"').startswith('8')
+    except OSError:
+        return False
+
+
 def run_pylint(source_dir):
     """Run pylint on the Python DSL source."""
     python_dir = source_dir / "python"
@@ -86,7 +96,7 @@ def generate_coverage_report(build_dir, source_dir):
     print("\n✓ Coverage report generated:")
     print(f"  {html_dir}/index.html")
 
-def run_command(cmd, cwd=None, description=None, env=None):
+def run_command(cmd, cwd=None, description=None, env=None, quiet=False):
     """Run a shell command and handle errors"""
     if description:
         print(f"\n{'='*60}")
@@ -95,13 +105,30 @@ def run_command(cmd, cwd=None, description=None, env=None):
 
     print(f"Running: {' '.join(cmd) if isinstance(cmd, list) else cmd}")
 
-    result = subprocess.run(
-        cmd,
-        cwd=cwd,
-        shell=isinstance(cmd, str),
-        check=False,
-        env=env
-    )
+    if quiet:
+        result = subprocess.run(
+            cmd,
+            cwd=cwd,
+            shell=isinstance(cmd, str),
+            check=False,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        if result.returncode != 0:
+            if result.stdout:
+                sys.stdout.write(result.stdout)
+            if result.stderr:
+                sys.stderr.write(result.stderr)
+    else:
+        result = subprocess.run(
+            cmd,
+            cwd=cwd,
+            shell=isinstance(cmd, str),
+            check=False,
+            env=env
+        )
 
     if result.returncode != 0:
         if result.returncode < 0:
@@ -150,7 +177,8 @@ def run_doxygen(source_dir):
     run_command(
         ["doxygen", str(doxyfile)],
         cwd=source_dir,
-        description="Generating Doxygen documentation"
+        description="Generating Doxygen documentation",
+        quiet=_is_rhel8()
     )
 
     print("\n✓ Doxygen documentation generated successfully")
@@ -270,7 +298,8 @@ def install_project(build_dir, install_dir):
     """Install the project to the specified directory."""
     run_command(
         ["cmake", "--install", str(build_dir)],
-        description=f"Installing to {install_dir}"
+        description=f"Installing to {install_dir}",
+        quiet=_is_rhel8()
     )
     print(f"\n✓ Installation complete: {install_dir}")
 
@@ -377,6 +406,7 @@ Examples:
   %(prog)s --no-java                          # C++ only
   %(prog)s --no-cpp                           # Java admin service only
   %(prog)s --no-tests                         # Build without running any tests
+  %(prog)s --no-pylint                        # Skip pylint on the Python DSL
   %(prog)s --valgrind                         # C++ build with Valgrind compatibility
   %(prog)s --doxygen                          # Build and generate Doxygen docs
   %(prog)s --doxygen-only                     # Only generate documentation
@@ -400,11 +430,15 @@ Examples:
     )
 
     parser.add_argument('--no-tests', action='store_true',
-        help='Skip running all tests (pylint still runs; suppresses pytest and C++ tests)'
+        help='Skip running all tests (suppresses pytest and C++ tests; pylint still runs)'
     )
 
     parser.add_argument('--no-pytest', action='store_true',
         help='Skip the Python DSL test suite only (pylint still runs; C++ tests are unaffected)'
+    )
+
+    parser.add_argument('--no-pylint', action='store_true',
+        help='Skip pylint on the Python DSL source'
     )
 
     parser.add_argument('--jobs', '-j', type=int, metavar='N',
@@ -482,7 +516,10 @@ Examples:
 
         # Python DSL checks run first so problems are caught before the
         # (much slower) C++ build begins.
-        run_pylint(source_dir)
+        if not args.no_pylint:
+            run_pylint(source_dir)
+        else:
+            print("NOTE: --no-pylint is set; skipping pylint")
         if not args.no_tests and not args.no_pytest:
             run_pytest(source_dir)
 

@@ -26,7 +26,7 @@
     <div id="logon-form">
         <div class="form-row">
             <label>SenderCompID</label>
-            <input type="text" id="sender-comp-id" value="CLIENT">
+            <input type="text" id="sender-comp-id" value="APM001">
         </div>
         <div class="form-row">
             <label>Starting seq num</label>
@@ -38,6 +38,7 @@
             <label></label>
             <button onclick="doLogon()">Log On</button>
         </div>
+        <div id="logon-error" style="display:none; color:#c00; margin-top:8px;"></div>
     </div>
 
     <!-- Post-logon detail -->
@@ -123,6 +124,7 @@ function renderLoggedOn(status) {
     document.getElementById('logon-form').style.display = 'none';
     document.getElementById('logon-detail').style.display = '';
     document.getElementById('last-session-summary').style.display = 'none';
+    document.getElementById('logon-error').style.display = 'none';
 
     const logoutBtn = document.querySelector('#logon-detail button');
     if (logoutBtn) {
@@ -154,6 +156,16 @@ function renderNotLoggedOn(status) {
     if (btn) {
         btn.textContent = 'Log On';
         btn.disabled = false;
+    }
+
+    const errEl = document.getElementById('logon-error');
+    if (errEl) {
+        if (status.lastError) {
+            errEl.textContent = 'Logon failed: ' + status.lastError;
+            errEl.style.display = '';
+        } else {
+            errEl.style.display = 'none';
+        }
     }
 }
 

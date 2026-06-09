@@ -61,6 +61,15 @@ class FixSerialiser {
      */
     [[nodiscard]] std::string serialise(const FixMessage& msg, int seq_num) const;
 
+    /**
+     * @brief Serialises with an explicit TargetCompID, overriding the one supplied at construction.
+     *
+     * Used when the target is known per-session (e.g. the client's SenderCompID from its Logon)
+     * rather than the configured default.
+     */
+    [[nodiscard]] std::string serialise(const FixMessage& msg, int seq_num,
+                                        const std::string& target_comp_id) const;
+
   private:
     /*
      * Appends a single tag=value<SOH> field to output.
