@@ -684,7 +684,15 @@ TEST_F(OutboundConnectionManagerTest, DrainPendingSendDispatchesStashedCommand) 
 
         std::vector<uint8_t> buf(65536);
         for (int i = 0; i < 100000 && conn->has_pending_send(); ++i) {
-            ASSERT_NE(::read(peer_fd_, buf.data(), buf.size()), -1);
+            const ssize_t n = ::read(peer_fd_, buf.data(), buf.size());
+            if (n == -1) {
+                // EAGAIN/EWOULDBLOCK is normal in non-blocking mode: the kernel
+                // has not yet forwarded data to the receive buffer (observable on
+                // RHEL8 and other systems with smaller loopback socket buffers).
+                // Any other errno is a genuine failure.
+                ASSERT_TRUE(errno == EAGAIN || errno == EWOULDBLOCK)
+                    << "read on peer_fd_ failed unexpectedly: " << strerror(errno);
+            }
             mgr.on_write_ready(*conn);
         }
     }
