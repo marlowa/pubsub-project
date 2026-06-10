@@ -62,7 +62,7 @@ def resolve_paths(env: dict) -> tuple[Path, Path, Path]:
     """Return (install_dir, log_dir, run_dir) as absolute Paths."""
     install_dir = (_SCRIPT_DIR / env["paths"]["install_dir"]).resolve()
     log_dir     = (_SCRIPT_DIR / env["paths"]["log_dir"]).resolve()
-    run_dir     = Path(env["paths"]["run_dir"]).expanduser().resolve()
+    run_dir     = (_SCRIPT_DIR / env["paths"]["run_dir"]).resolve()
     return install_dir, log_dir, run_dir
 
 

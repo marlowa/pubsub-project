@@ -21,7 +21,7 @@ description = "Single-machine developer sandbox. All components on localhost."
 [paths]
 install_dir = "installed"     # binaries, component configs, certs
 log_dir     = "installed/log" # component stdout/stderr and applog files
-run_dir     = "/var/tmp/pubsub/run" # PID files written here by devenv.py
+run_dir     = "installed/run"        # PID files written here by devenv.py
 
 # ── Database ──────────────────────────────────────────────────────────────────
 # Used by deploy.py (runs create_db.py and export_credentials.py) and by
@@ -235,7 +235,7 @@ ha_arbiter_secondary_host = "127.0.0.1"
 peer_listen_host          = "127.0.0.1"
 peer_host                 = "127.0.0.1"
 peer_fence_file_path      = "/dev/shm/sequencer_primary_fence"
-wal_directory             = "/var/tmp/pubsub/sequencer_wal"
+wal_directory             = "var/sequencer_wal"
 
 [sequencer_secondary]
 network_listen_host       = "127.0.0.1"
@@ -247,4 +247,4 @@ ha_arbiter_secondary_host = "127.0.0.1"
 peer_listen_host          = "127.0.0.1"
 peer_host                 = "127.0.0.1"
 peer_fence_file_path      = "/dev/shm/sequencer_secondary_fence"
-wal_directory             = "/var/tmp/pubsub/sequencer_secondary_wal"
+wal_directory             = "var/sequencer_secondary_wal"

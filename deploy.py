@@ -322,6 +322,18 @@ def main() -> None:
     cpu_run_dir.mkdir(parents=True, exist_ok=True)
     namespace["shared_reactor_cpu_registry_shm_path"] = str(cpu_run_dir / "pubsub_cpu_registry")
     namespace["shared_reactor_cpu_registry_lock_file"] = str(cpu_run_dir / "pubsub_cpu_registry.lock")
+
+    # Resolve WAL directory paths relative to install_dir when not absolute.
+    # The sequencer binary requires an absolute path; dev.toml stores them as
+    # relative paths so they stay portable across machines and containers.
+    for key in ("sequencer_primary_wal_directory", "sequencer_secondary_wal_directory"):
+        if key in namespace:
+            wal_path = Path(namespace[key])
+            if not wal_path.is_absolute():
+                wal_path = install_dir / wal_path
+            wal_path.mkdir(parents=True, exist_ok=True)
+            namespace[key] = str(wal_path)
+
     expand_templates(install_dir, namespace)
     print()
 
