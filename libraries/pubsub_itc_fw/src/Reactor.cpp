@@ -568,35 +568,35 @@ void Reactor::pin_registered_threads() {
             if (idx >= cpus.size()) {
                 break;
             }
-            const CpuId cpu = cpus[idx++];
-            if (pin_thread_to_core(thread->get_pthread_id(), cpu)) {
-                PUBSUB_LOG(logger_, FwLogLevel::Info, "CPU pinning: thread '{}' pinned to CPU {}", name, cpu.get_value());
+            const CpuAssignment cpu = cpus[idx++];
+            if (pin_thread_to_core(thread->get_pthread_id(), cpu.cpu_id)) {
+                PUBSUB_LOG(logger_, FwLogLevel::Info, "CPU pinning: thread '{}' pinned to CPU {} (NUMA node {})", name, cpu.cpu_id.get_value(), cpu.numa_node_id);
             } else {
-                PUBSUB_LOG(logger_, FwLogLevel::Warning, "CPU pinning: failed to pin thread '{}' to CPU {}", name, cpu.get_value());
+                PUBSUB_LOG(logger_, FwLogLevel::Warning, "CPU pinning: failed to pin thread '{}' to CPU {}", name, cpu.cpu_id.get_value());
             }
 
             for (const auto& extra : thread->get_extra_threads()) {
                 if (idx >= cpus.size()) {
                     break;
                 }
-                const CpuId extra_cpu = cpus[idx++];
-                if (pin_thread_to_core(extra.thread_id, extra_cpu)) {
-                    PUBSUB_LOG(logger_, FwLogLevel::Info, "CPU pinning: extra thread '{}' (registered by '{}') pinned to CPU {}", extra.name, name,
-                               extra_cpu.get_value());
+                const CpuAssignment extra_cpu = cpus[idx++];
+                if (pin_thread_to_core(extra.thread_id, extra_cpu.cpu_id)) {
+                    PUBSUB_LOG(logger_, FwLogLevel::Info, "CPU pinning: extra thread '{}' (registered by '{}') pinned to CPU {} (NUMA node {})", extra.name, name,
+                               extra_cpu.cpu_id.get_value(), extra_cpu.numa_node_id);
                 } else {
                     PUBSUB_LOG(logger_, FwLogLevel::Warning, "CPU pinning: failed to pin extra thread '{}' (registered by '{}') to CPU {}", extra.name, name,
-                               extra_cpu.get_value());
+                               extra_cpu.cpu_id.get_value());
                 }
             }
         }
 
         // Pin the reactor thread itself (the caller of run()).
         if (idx < cpus.size()) {
-            const CpuId cpu = cpus[idx++];
-            if (pin_thread_to_core(pthread_self(), cpu)) {
-                PUBSUB_LOG(logger_, FwLogLevel::Info, "CPU pinning: reactor thread pinned to CPU {}", cpu.get_value());
+            const CpuAssignment cpu = cpus[idx++];
+            if (pin_thread_to_core(pthread_self(), cpu.cpu_id)) {
+                PUBSUB_LOG(logger_, FwLogLevel::Info, "CPU pinning: reactor thread pinned to CPU {} (NUMA node {})", cpu.cpu_id.get_value(), cpu.numa_node_id);
             } else {
-                PUBSUB_LOG(logger_, FwLogLevel::Warning, "CPU pinning: failed to pin reactor thread to CPU {}", cpu.get_value());
+                PUBSUB_LOG(logger_, FwLogLevel::Warning, "CPU pinning: failed to pin reactor thread to CPU {}", cpu.cpu_id.get_value());
             }
         }
 
@@ -606,14 +606,14 @@ void Reactor::pin_registered_threads() {
         // happen here because the backend is started on first logger construction,
         // which occurs before Reactor::run() is entered.  Guard anyway.
         if (idx < cpus.size()) {
-            const CpuId cpu = cpus[idx];
+            const CpuAssignment cpu = cpus[idx];
             const auto quill_tid = static_cast<pid_t>(quill::Backend::get_thread_id());
             if (quill_tid == 0) {
                 PUBSUB_LOG_STR(logger_, FwLogLevel::Warning, "CPU pinning: Quill backend TID is 0 — skipping backend core assignment");
-            } else if (pin_tid_to_core(quill_tid, cpu)) {
-                PUBSUB_LOG(logger_, FwLogLevel::Info, "CPU pinning: Quill backend thread (tid={}) pinned to CPU {}", quill_tid, cpu.get_value());
+            } else if (pin_tid_to_core(quill_tid, cpu.cpu_id)) {
+                PUBSUB_LOG(logger_, FwLogLevel::Info, "CPU pinning: Quill backend thread (tid={}) pinned to CPU {} (NUMA node {})", quill_tid, cpu.cpu_id.get_value(), cpu.numa_node_id);
             } else {
-                PUBSUB_LOG(logger_, FwLogLevel::Warning, "CPU pinning: failed to pin Quill backend thread (tid={}) to CPU {}", quill_tid, cpu.get_value());
+                PUBSUB_LOG(logger_, FwLogLevel::Warning, "CPU pinning: failed to pin Quill backend thread (tid={}) to CPU {}", quill_tid, cpu.cpu_id.get_value());
             }
         }
     } catch (const std::exception& ex) {

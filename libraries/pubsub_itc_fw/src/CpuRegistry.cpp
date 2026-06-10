@@ -115,14 +115,14 @@ AvailableCpuVector CpuRegistry::claim_cpus(size_t count, bool reserve_cpu0) cons
     }
 
     // Claim each selected CPU by writing an entry into the shared registry.
-    for (const CpuId cpu : available) {
+    for (const CpuAssignment& cpu : available) {
         if (layout_->active_entry_count >= SharedCoreRegistryLayout::MAX_SYSTEM_CORES) {
             // Registry full — should not happen on a well-configured system.
             break;
         }
         auto& entry = layout_->entries[layout_->active_entry_count];
-        entry.core_id = cpu.get_value();
-        entry.numa_node_id = -1;
+        entry.core_id = cpu.cpu_id.get_value();
+        entry.numa_node_id = cpu.numa_node_id;
         entry.process_id = my_pid_;
         entry.thread_tag = 0;
         entry.timestamp_ns = 0;

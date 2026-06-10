@@ -24,8 +24,14 @@ namespace pubsub_itc_fw {
 /// Type-safe CPU identifier. Signed int to align with Linux system call APIs.
 using CpuId = WrappedInteger<struct CpuIdTag, int>;
 
-/// Flat vector of CPU IDs returned by discovery and claim functions.
-using AvailableCpuVector = std::vector<CpuId>;
+/// A CPU with its associated NUMA node, as returned by discovery and claim functions.
+struct CpuAssignment {
+    CpuId cpu_id;
+    int numa_node_id{-1};
+};
+
+/// Flat vector of CPU assignments returned by discovery and claim functions.
+using AvailableCpuVector = std::vector<CpuAssignment>;
 
 /// One entry in the cross-process shared registry: one CPU claimed by one PID.
 struct CoreAllocationEntry {
@@ -106,9 +112,23 @@ inline AvailableCpuVector get_available_cpu_ids(bool reserve_cpu0, const SharedC
     const std::filesystem::path node_base{"/sys/devices/system/node"};
 
     // Fallback for containers / restricted environments without sysfs NUMA info.
+    // Try /sys/devices/system/cpu/present to enumerate all CPUs rather than
+    // returning at most one, which was the old behaviour.
     if (!std::filesystem::exists(node_base)) {
-        if (!reserve_cpu0) {
-            candidates.emplace_back(0);
+        const std::filesystem::path present_path{"/sys/devices/system/cpu/present"};
+        if (std::filesystem::exists(present_path)) {
+            std::ifstream f(present_path);
+            std::string line;
+            if (std::getline(f, line)) {
+                for (const CpuId cpu_id : detail::parse_cpu_list(line)) {
+                    if (reserve_cpu0 && cpu_id.get_value() == 0) {
+                        continue;
+                    }
+                    candidates.push_back({cpu_id, 0});
+                }
+            }
+        } else if (!reserve_cpu0) {
+            candidates.push_back({CpuId{0}, 0});
         }
         return candidates;
     }
@@ -121,10 +141,24 @@ inline AvailableCpuVector get_available_cpu_ids(bool reserve_cpu0, const SharedC
         }
     }
 
-    // Sort so we traverse Node 0, Node 1, ... in order.
-    std::sort(node_dirs.begin(), node_dirs.end(), [](const auto& a, const auto& b) { return a.filename().string() < b.filename().string(); });
+    // Extract the numeric index from a "nodeN" directory name.
+    auto node_number = [](const std::filesystem::path& p) -> int {
+        try {
+            return std::stoi(p.filename().string().substr(4));
+        } catch (...) {
+            return -1;
+        }
+    };
+
+    // Sort numerically (node0, node1, ..., node10, ...) not lexicographically,
+    // which would wrongly order node10 before node2.
+    std::sort(node_dirs.begin(), node_dirs.end(),
+              [&node_number](const auto& a, const auto& b) {
+                  return node_number(a) < node_number(b);
+              });
 
     for (const auto& node_dir : node_dirs) {
+        const int numa_node = node_number(node_dir);
         const auto cpulist_path = node_dir / "cpulist";
         if (!std::filesystem::exists(cpulist_path)) {
             continue;
@@ -163,7 +197,7 @@ inline AvailableCpuVector get_available_cpu_ids(bool reserve_cpu0, const SharedC
             }
 
             if (!busy) {
-                candidates.push_back(cpu_id);
+                candidates.push_back({cpu_id, numa_node});
             }
         }
     }
