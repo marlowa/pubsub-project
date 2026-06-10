@@ -171,10 +171,13 @@ def start_one(  # pylint: disable=too-many-arguments,too-many-locals
 
     workdir.mkdir(parents=True, exist_ok=True)
 
-    lib_dir = str(install_dir / "lib")
+    # GNUInstallDirs uses lib64 on RHEL8; include both so the .so is found
+    # regardless of platform without needing to probe which one CMake chose.
+    lib_dirs = [str(d) for d in (install_dir / "lib64", install_dir / "lib") if d.is_dir()]
     child_env = os.environ.copy()
     existing_ldpath = child_env.get("LD_LIBRARY_PATH", "")
-    child_env["LD_LIBRARY_PATH"] = f"{lib_dir}:{existing_ldpath}" if existing_ldpath else lib_dir
+    ldpath = ":".join(lib_dirs)
+    child_env["LD_LIBRARY_PATH"] = f"{ldpath}:{existing_ldpath}" if existing_ldpath else ldpath
 
     with stdout_path.open("w") as stdout_file:
         proc = subprocess.Popen(  # pylint: disable=consider-using-with

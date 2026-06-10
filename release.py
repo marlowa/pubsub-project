@@ -57,6 +57,20 @@ _ETC_EXCLUDE_NAMES = {"credentials.toml"}
 _ETC_EXCLUDE_SUFFIXES = {".crt", ".key", ".pem", ".tmp"}
 
 
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def so_lib_dir(install_dir: Path) -> Path:
+    """Return the directory where CMake installed the C++ shared library.
+
+    GNUInstallDirs uses lib64 on RHEL/Rocky/CentOS 8 for 64-bit builds;
+    everywhere else it uses lib.
+    """
+    for candidate in (install_dir / "lib64", install_dir / "lib"):
+        if (candidate / "libpubsub_itc_fw.so").is_file():
+            return candidate
+    return install_dir / "lib"  # fallback; missing .so caught in stage_lib
+
+
 # ── Version helpers ───────────────────────────────────────────────────────────
 
 def read_cmake_version(cmake_lists: Path) -> str:
@@ -129,7 +143,7 @@ def stage_lib(install_dir: Path, stage: Path, jar_paths: set[str]) -> None:
     stage_lib_dir = stage / "lib"
     stage_lib_dir.mkdir()
 
-    shared_lib = install_dir / "lib" / "libpubsub_itc_fw.so"
+    shared_lib = so_lib_dir(install_dir) / "libpubsub_itc_fw.so"
     if not shared_lib.is_file():
         sys.exit(f"error: shared library not found: {shared_lib}")
     shutil.copy2(shared_lib, stage_lib_dir / shared_lib.name)

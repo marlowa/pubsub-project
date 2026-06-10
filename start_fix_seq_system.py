@@ -183,9 +183,12 @@ def main() -> None:
 
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    lib_dir = str(prefix / "lib")
+    # GNUInstallDirs uses lib64 on RHEL8; include both so the .so is found
+    # regardless of platform without needing to probe which one CMake chose.
+    lib_dirs = [str(d) for d in (prefix / "lib64", prefix / "lib") if d.is_dir()]
     existing = os.environ.get("LD_LIBRARY_PATH", "")
-    os.environ["LD_LIBRARY_PATH"] = f"{lib_dir}:{existing}" if existing else lib_dir
+    ldpath = ":".join(lib_dirs)
+    os.environ["LD_LIBRARY_PATH"] = f"{ldpath}:{existing}" if existing else ldpath
 
     processes: list[tuple[str, subprocess.Popen]] = []
 

@@ -410,6 +410,7 @@ Examples:
   %(prog)s --valgrind                         # C++ build with Valgrind compatibility
   %(prog)s --doxygen                          # Build and generate Doxygen docs
   %(prog)s --doxygen-only                     # Only generate documentation
+  %(prog)s --doxygen --no-doxygen             # Skip Doxygen (overrides --doxygen)
         """
     )
 
@@ -427,6 +428,10 @@ Examples:
 
     parser.add_argument('--doxygen-only', action='store_true',
         help='Only generate Doxygen documentation (skip build)'
+    )
+
+    parser.add_argument('--no-doxygen', action='store_true',
+        help='Skip Doxygen generation even if --doxygen or --doxygen-only is set'
     )
 
     parser.add_argument('--no-tests', action='store_true',
@@ -506,7 +511,10 @@ Examples:
 
     # Handle doxygen-only mode
     if args.doxygen_only:
-        run_doxygen(source_dir)
+        if not args.no_doxygen:
+            run_doxygen(source_dir)
+        else:
+            print("NOTE: --no-doxygen is set; skipping Doxygen")
         return 0
 
     # ── C++ build ─────────────────────────────────────────────────────────────
@@ -543,7 +551,7 @@ Examples:
 
         install_project(build_dir, staging_dir)
 
-        if args.doxygen:
+        if args.doxygen and not args.no_doxygen:
             run_doxygen(source_dir)
 
     # ── Java build ────────────────────────────────────────────────────────────

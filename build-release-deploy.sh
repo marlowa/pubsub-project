@@ -12,11 +12,13 @@ RELEASE_DIR="${SCRIPT_DIR}/build/release"
 SKIP_DB=false
 NO_PYLINT=false
 NO_CPP=false
+NO_DOXYGEN=false
 for arg in "$@"; do
     case "${arg}" in
-        --skip-db)    SKIP_DB=true ;;
-        --no-pylint)  NO_PYLINT=true ;;
-        --no-cpp)     NO_CPP=true ;;
+        --skip-db)     SKIP_DB=true ;;
+        --no-pylint)   NO_PYLINT=true ;;
+        --no-cpp)      NO_CPP=true ;;
+        --no-doxygen)  NO_DOXYGEN=true ;;
         *) echo "error: unknown argument: ${arg}" >&2; exit 1 ;;
     esac
 done
@@ -33,8 +35,9 @@ fi
 # ── Build ──────────────────────────────────────────────────────────────────────
 step "BUILD"
 BUILD_ARGS=(--no-tests)
-${NO_PYLINT} && BUILD_ARGS+=(--no-pylint)
-${NO_CPP}    && BUILD_ARGS+=(--no-cpp)
+${NO_PYLINT}   && BUILD_ARGS+=(--no-pylint)
+${NO_CPP}      && BUILD_ARGS+=(--no-cpp)
+${NO_DOXYGEN}  && BUILD_ARGS+=(--no-doxygen)
 "${SCRIPT_DIR}/build.sh" "${BUILD_ARGS[@]}"
 
 # ── Release ────────────────────────────────────────────────────────────────────
