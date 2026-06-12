@@ -18,8 +18,9 @@ and can be handed directly to deploy.py:
   deploy.py       deployment script (included if present)
   release.json    version, git hash, build timestamp
 
-Artefact name:  pubsub-<version>-<git-short-hash>.tar.gz
-                pubsub-<version>.tar.gz  (with --no-git-hash)
+Artefact name:  pubsub-<version>-<git-short-hash>-<mode>.tar.gz
+                pubsub-<version>-<git-short-hash>-<mode>-<sanitizer>.tar.gz
+                pubsub-<version>-<mode>.tar.gz  (with --no-git-hash)
 
 Usage:
   ./release.py [options]
@@ -48,7 +49,7 @@ from pathlib import Path
 _SCRIPT_DIR       = Path(__file__).resolve().parent
 _DEFAULT_INSTALL  = _SCRIPT_DIR / "installed"
 _DEFAULT_ENV_FILE = _SCRIPT_DIR / "environments" / "dev.toml"
-_DEFAULT_OUTPUT   = _SCRIPT_DIR / "build" / "release"
+_DEFAULT_OUTPUT   = _SCRIPT_DIR / "release"
 _CMAKE_LISTS      = _SCRIPT_DIR / "CMakeLists.txt"
 
 # Files under etc/ that are generated at deploy/start time and must not be
@@ -300,6 +301,14 @@ def parse_args() -> argparse.Namespace:
         "--no-git-hash", action="store_true",
         help="omit the git short hash from the artefact name",
     )
+    parser.add_argument(
+        "--mode", choices=["release", "debug"], default="release",
+        help="build mode to encode in the artefact name (default: release)",
+    )
+    parser.add_argument(
+        "--sanitizer", choices=["none", "asan", "tsan", "valgrind"], default="none",
+        help="sanitizer used in the build (default: none)",
+    )
     return parser.parse_args()
 
 
@@ -323,6 +332,9 @@ def main() -> None:
               file=sys.stderr)
 
     artefact_name = f"pubsub-{version}-{git_hash}" if git_hash else f"pubsub-{version}"
+    artefact_name += f"-{args.mode}"
+    if args.sanitizer != "none":
+        artefact_name += f"-{args.sanitizer}"
 
     binaries = deployment_binaries(env)
     jar_paths = deployment_jar_paths(env)

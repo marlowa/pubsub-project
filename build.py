@@ -200,12 +200,14 @@ def run_doxygen(source_dir):
 
 
 def configure_cmake(build_dir, source_dir, enable_valgrind=False, enable_coverage=False,
-                    enable_asan=False, enable_tsan=False, install_dir=None, enable_doxygen=True):
+                    enable_asan=False, enable_tsan=False, install_dir=None,
+                    enable_doxygen=True, debug=False):
     cmake_args = [
         "cmake",
         str(source_dir)
     ]
 
+    cmake_args.append(f"-DCMAKE_BUILD_TYPE={'Debug' if debug else 'Release'}")
     if not enable_doxygen:
         cmake_args.append("-DENABLE_DOXYGEN=OFF")
     if install_dir is not None:
@@ -491,6 +493,10 @@ Examples:
         help='Path to TSan suppressions file (only used with --tsan)'
     )
 
+    parser.add_argument('--debug', action='store_true',
+        help='Build with CMAKE_BUILD_TYPE=Debug (default: Release)'
+    )
+
     parser.add_argument('--no-cpp', action='store_true',
         help='Skip the C++ build (cmake/make/tests/install); build Java only'
     )
@@ -556,7 +562,7 @@ Examples:
         configure_cmake(build_dir, source_dir, enable_valgrind=args.valgrind,
                         enable_coverage=args.coverage, enable_asan=args.asan,
                         enable_tsan=args.tsan, install_dir=staging_dir,
-                        enable_doxygen=not args.no_doxygen)
+                        enable_doxygen=not args.no_doxygen, debug=args.debug)
 
         build_project(build_dir, jobs=args.jobs, verbose=args.verbose)
 

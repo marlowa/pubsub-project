@@ -32,14 +32,23 @@ def main() -> int:
     parser.add_argument("--skip-db",       action="store_true", help="Pass --skip-db to deploy.py")
     parser.add_argument("--drop-db",       action="store_true", help="Pass --drop-db to deploy.py (drop and recreate DB)")
     parser.add_argument("--sudo-postgres", action="store_true", help="Pass --sudo-postgres to deploy.py")
+    parser.add_argument("--debug",         action="store_true", help="Pass --debug to build.py (Debug build type)")
+    parser.add_argument("--asan",          action="store_true", help="Pass --asan to build.py")
+    parser.add_argument("--tsan",          action="store_true", help="Pass --tsan to build.py")
+    parser.add_argument("--valgrind",      action="store_true", help="Pass --valgrind to build.py")
     parser.add_argument("--no-pylint",     action="store_true", help="Pass --no-pylint to build.py")
     parser.add_argument("--no-cpp",        action="store_true", help="Pass --no-cpp to build.py")
     parser.add_argument("--no-doxygen",    action="store_true", help="Pass --no-doxygen to build.py")
     args = parser.parse_args()
 
+    if args.asan and args.tsan:
+        sys.exit("error: --asan and --tsan are mutually exclusive")
+    if args.valgrind and (args.asan or args.tsan):
+        sys.exit("error: --valgrind cannot be combined with --asan or --tsan")
+
     script_dir = Path(__file__).resolve().parent
     install_dir = script_dir / "installed"
-    release_dir = script_dir / "build" / "release"
+    release_dir = script_dir / "release"
 
     # ── Clean ──────────────────────────────────────────────────────────────────
     if args.no_cpp:
@@ -51,6 +60,14 @@ def main() -> int:
 
     # ── Build ──────────────────────────────────────────────────────────────────
     build_args = [sys.executable, str(script_dir / "build.py"), "--no-tests"]
+    if args.debug:
+        build_args.append("--debug")
+    if args.asan:
+        build_args.append("--asan")
+    if args.tsan:
+        build_args.append("--tsan")
+    if args.valgrind:
+        build_args.append("--valgrind")
     if args.no_pylint:
         build_args.append("--no-pylint")
     if args.no_cpp:
@@ -60,7 +77,12 @@ def main() -> int:
     run(build_args, "BUILD")
 
     # ── Release ────────────────────────────────────────────────────────────────
-    run([sys.executable, str(script_dir / "release.py")], "RELEASE")
+    mode = "debug" if args.debug else "release"
+    sanitizer = "asan" if args.asan else ("tsan" if args.tsan else ("valgrind" if args.valgrind else "none"))
+    release_args = [sys.executable, str(script_dir / "release.py"), "--mode", mode]
+    if sanitizer != "none":
+        release_args += ["--sanitizer", sanitizer]
+    run(release_args, "RELEASE")
 
     tarballs = sorted(release_dir.glob("pubsub-*.tar.gz"), key=lambda p: p.stat().st_mtime, reverse=True)
     if not tarballs:
