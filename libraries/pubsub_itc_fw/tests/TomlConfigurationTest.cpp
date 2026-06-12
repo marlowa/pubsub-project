@@ -540,12 +540,12 @@ TEST_F(TomlConfigurationTest, GetRequiredExceptHours) {
 // ============================================================
 
 TEST_F(TomlConfigurationTest, ArraySizeMissingKeyReturnsZero) {
-    EXPECT_EQ(config.array_size("credential"), std::size_t{0});
+    EXPECT_EQ(config.array_size("credential"), size_t{0});
 }
 
 TEST_F(TomlConfigurationTest, ArraySizeNonArrayKeyReturnsZero) {
     config.set("credential", std::string{"not_an_array"});
-    EXPECT_EQ(config.array_size("credential"), std::size_t{0});
+    EXPECT_EQ(config.array_size("credential"), size_t{0});
 }
 
 TEST_F(TomlConfigurationTest, ArraySizeOneEntry) {
@@ -555,7 +555,7 @@ TEST_F(TomlConfigurationTest, ArraySizeOneEntry) {
         iterations = 4096
     )");
     EXPECT_TRUE(ok) << err;
-    EXPECT_EQ(config.array_size("credential"), std::size_t{1});
+    EXPECT_EQ(config.array_size("credential"), size_t{1});
 }
 
 TEST_F(TomlConfigurationTest, ArraySizeTwoEntries) {
@@ -569,7 +569,7 @@ TEST_F(TomlConfigurationTest, ArraySizeTwoEntries) {
         iterations = 8192
     )");
     EXPECT_TRUE(ok) << err;
-    EXPECT_EQ(config.array_size("credential"), std::size_t{2});
+    EXPECT_EQ(config.array_size("credential"), size_t{2});
 }
 
 TEST_F(TomlConfigurationTest, ArrayOfTablesFieldAccess) {
@@ -630,13 +630,13 @@ TEST_F(TomlConfigurationTest, ArrayOfTablesGetRequiredExceptIteration) {
     )");
     EXPECT_TRUE(ok) << err;
 
-    const std::size_t count = config.array_size("credential");
-    ASSERT_EQ(count, std::size_t{2});
+    const size_t count = config.array_size("credential");
+    ASSERT_EQ(count, size_t{2});
 
     struct Entry { std::string comp_id; int32_t iterations{}; bool locked{}; };
     std::vector<Entry> entries;
 
-    for (std::size_t i = 0; i < count; ++i) {
+    for (size_t i = 0; i < count; ++i) {
         Entry entry;
         EXPECT_NO_THROW({
             config.get_required_except(
@@ -649,7 +649,7 @@ TEST_F(TomlConfigurationTest, ArrayOfTablesGetRequiredExceptIteration) {
         entries.push_back(entry);
     }
 
-    ASSERT_EQ(entries.size(), std::size_t{2});
+    ASSERT_EQ(entries.size(), size_t{2});
     EXPECT_EQ(entries[0].comp_id, "GATEWAY_ALPHA");
     EXPECT_EQ(entries[0].iterations, 4096);
     EXPECT_FALSE(entries[0].locked);

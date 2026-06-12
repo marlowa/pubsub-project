@@ -341,7 +341,7 @@ void TomlConfiguration::set(std::string_view key, std::chrono::hours value) {
 // array_size
 // ----------------------------------------------------------------
 
-std::size_t TomlConfiguration::array_size(std::string_view key) const {
+size_t TomlConfiguration::array_size(std::string_view key) const {
     const auto* node = impl_->find_node(key);
     if (!node) {
         return 0;
