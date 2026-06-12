@@ -43,5 +43,5 @@ esac
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 # Invoke Python build script with all arguments passed through
-# Note that by default it runs the test. Use --no_tests to suppress that.
+# Note that by default it runs the tests. Use --no-tests to suppress that.
 exec python3 "${SCRIPT_DIR}/build.py" "$@"
