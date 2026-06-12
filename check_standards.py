@@ -386,7 +386,7 @@ def check_tabs(path: Path, lines: list[str], stripped: list[str]) -> list[Violat
 # Trailing method const (void f() const) is not a violation.
 
 _TRAILING_METHOD_CONST_RE = re.compile(r'\)\s*const\s*(?:override\s*)?(?:=\s*0\s*)?[;{]')
-_EAST_CONST_RE = re.compile(r'\b(\w[\w<>:]*)\s+const\s*[*&]')
+_EAST_CONST_RE = re.compile(r'\b(\w[\w<>:]*)\s+const\s*([*&])')
 
 def check_east_const(path: Path, lines: list[str], stripped: list[str]) -> list[Violation]:
     violations = []
@@ -394,11 +394,12 @@ def check_east_const(path: Path, lines: list[str], stripped: list[str]) -> list[
         cleaned = _TRAILING_METHOD_CONST_RE.sub(') ', line)
         for match in _EAST_CONST_RE.finditer(cleaned):
             type_name = match.group(1)
+            ptr_or_ref = match.group(2)
             if type_name == 'const':
                 continue
             violations.append(Violation(path, i,
-                f"east const: write 'const {type_name}*' or 'const {type_name}&', "
-                f"not '{type_name} const'"))
+                f"east const: write 'const {type_name}{ptr_or_ref}', "
+                f"not '{type_name} const{ptr_or_ref}'"))
             break
     return violations
 

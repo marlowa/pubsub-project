@@ -74,8 +74,8 @@ namespace {
 // FrontendOptions (128 KiB). See QuillLoggerFrontendOptions.hpp for the rationale.
 using PubsubFrontend = quill::FrontendImpl<pubsub_itc_fw::QuillLoggerFrontendOptions>;
 
-constexpr char const* log_pattern = "%(time) [%(thread_id)] %(thread_name:<24) %(short_source_location:<28) %(log_level:<10) %(logger:<16) %(message)";
-constexpr char const* time_format = "%Y-%m-%d %H:%M:%S.%Qns";
+constexpr const char* log_pattern = "%(time) [%(thread_id)] %(thread_name:<24) %(short_source_location:<28) %(log_level:<10) %(logger:<16) %(message)";
+constexpr const char* time_format = "%Y-%m-%d %H:%M:%S.%Qns";
 
 std::once_flag backend_started;
 
@@ -101,10 +101,10 @@ class CallbackSink : public quill::Sink {
   public:
     explicit CallbackSink(pubsub_itc_fw::QuillLogger::LogCallback callback) : callback_(std::move(callback)) {}
 
-    void write_log(quill::MacroMetadata const* /*metadata*/, uint64_t /*log_timestamp*/, std::string_view /*thread_id*/, std::string_view /*thread_name*/,
-                   std::string const& /*process_id*/, std::string_view /*logger_name*/, quill::LogLevel /*log_level*/,
+    void write_log(const quill::MacroMetadata* /*metadata*/, uint64_t /*log_timestamp*/, std::string_view /*thread_id*/, std::string_view /*thread_name*/,
+                   const std::string& /*process_id*/, std::string_view /*logger_name*/, quill::LogLevel /*log_level*/,
                    std::string_view /*log_level_description*/, std::string_view /*log_level_short_code*/,
-                   std::vector<std::pair<std::string, std::string>> const* /*named_args*/, std::string_view /*log_message*/,
+                   const std::vector<std::pair<std::string, std::string>>* /*named_args*/, std::string_view /*log_message*/,
                    std::string_view log_statement) override {
         if (callback_ != nullptr) {
             callback_(std::string{log_statement});
