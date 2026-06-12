@@ -95,51 +95,97 @@ Common options:
 
 The `Dockerfile` at the project root provides a Rocky Linux 8 build environment that matches the RHEL 8 production target. Use it to verify RHEL 8 compatibility without access to a physical RHEL 8 machine.
 
-### Build the image
+### Step 1 — Install Docker (once, on your Mint machine)
+
+```bash
+sudo apt install docker.io
+sudo usermod -aG docker $USER
+```
+
+Log out and back in after the `usermod` step so the group membership takes effect. Verify with:
+
+```bash
+docker run --rm hello-world
+```
+
+### Step 2 — Build the image (once, or when the Dockerfile changes)
+
+From the project root:
 
 ```bash
 docker build -t pubsub-rhel8 .
 ```
 
-### Prerequisites inside the container
+This downloads Rocky Linux 8, installs the compiler toolchain and PostgreSQL, and saves the result as a local image called `pubsub-rhel8`. It takes a few minutes the first time; subsequent builds are fast because Docker caches layers.
 
-The container expects two directories to be bind-mounted:
+### Step 3 — Create the database volume (once, ever)
 
-| Host path | Container path | Contents |
-|---|---|---|
-| Project root | `/workspace` | Source tree (this repo) |
-| Third-party install prefix | `/workspace/thirdparty` | Pre-built fmt, quill, argparse, googletest, tsl-robin-map, tomlplusplus for Rocky 8 |
-
-`build.sh` detects the Rocky 8 platform automatically and sets `THIRDPARTY_DIR=/workspace/thirdparty` and the correct library version variables — no manual configuration is needed.
-
-### Build and test (C++ only)
+Docker containers are thrown away when they exit. A **named volume** gives the PostgreSQL data directory a permanent home on your host so the database survives across container runs:
 
 ```bash
-docker run --rm \
-    -v "$(pwd)":/workspace \
-    -v "/path/to/thirdparty":/workspace/thirdparty \
-    pubsub-rhel8 \
-    ./build.sh --no-java --no-pylint
+docker volume create pubsub-pgdata
 ```
 
-`--no-java` is required because the Dockerfile does not install Java or Maven.
-`--no-pylint` is recommended because the pylint version on Rocky 8 may differ from the development machine and produce false positives.
-
-### Build without running tests
+### Step 4 — Get a Rocky Linux shell
 
 ```bash
-docker run --rm \
+docker run -it --rm \
     -v "$(pwd)":/workspace \
-    -v "/path/to/thirdparty":/workspace/thirdparty \
-    pubsub-rhel8 \
-    ./build.sh --no-java --no-pylint --no-tests
+    -v /path/to/thirdparty:/workspace/thirdparty \
+    -v pubsub-pgdata:/var/lib/pgsql/data \
+    pubsub-rhel8
+```
+
+You are now at a bash prompt inside Rocky Linux 8. The flags mean:
+
+| Flag | Effect |
+|---|---|
+| `-it` | Interactive terminal — required for a usable shell |
+| `--rm` | Delete the container automatically when you type `exit` |
+| `-v "$(pwd)":/workspace` | Mounts the project root into the container at `/workspace`; edits are shared instantly in both directions |
+| `-v /path/to/thirdparty:/workspace/thirdparty` | Pre-built third-party libraries (fmt, quill, etc.) built for Rocky 8 |
+| `-v pubsub-pgdata:/var/lib/pgsql/data` | Persistent PostgreSQL data directory |
+
+The container entrypoint initialises the PostgreSQL cluster (first run only) and starts the server before dropping you into the shell.
+
+### Step 5 — Set up the database (first time inside the container)
+
+```bash
+./build-release-deploy.sh --no-java --no-pylint --sudo-postgres
+```
+
+`--sudo-postgres` causes `create_db.py` to run `psql` as the `postgres` Unix user, which is required for peer authentication. `--no-java` is needed because the image does not include Java or Maven.
+
+### Step 6 — Subsequent runs
+
+Start a new shell the same way as Step 4. The database already exists on the volume, so pass `--skip-db`:
+
+```bash
+./build-release-deploy.sh --no-java --no-pylint --skip-db
+```
+
+### Build and test only (no deploy, no database needed)
+
+If you only want to compile and run the C++ tests, omit the database volume entirely:
+
+```bash
+docker run -it --rm \
+    -v "$(pwd)":/workspace \
+    -v /path/to/thirdparty:/workspace/thirdparty \
+    pubsub-rhel8
+```
+
+Then inside the container:
+
+```bash
+./build.sh --no-java --no-pylint
 ```
 
 ### Notes
 
-- **Ninja vs Make:** `build.sh` uses `cmake --build` which respects the `CMAKE_GENERATOR` environment variable. Pass `-e CMAKE_GENERATOR=Ninja` to `docker run` if ninja is installed in the container.
-- **Java builds:** `admin-service` and `fix-test-client` are not buildable inside the container as supplied. To add Java support, extend the Dockerfile with `java-11-openjdk-devel` and `maven` packages.
-- **Database:** the container has no PostgreSQL instance, so `deploy.py` must be run with `--skip-db` if invoked inside the container.
+- **Pylint:** `--no-pylint` is recommended because the pylint version on Rocky 8 may differ from the development machine and produce false positives.
+- **Ninja vs Make:** `build.sh` respects the `CMAKE_GENERATOR` environment variable. Add `-e CMAKE_GENERATOR=Ninja` to the `docker run` command if ninja is installed in the container.
+- **Java builds:** `admin-service` and `fix-test-client` cannot be built inside the container as supplied. To add Java support, extend the Dockerfile with `java-11-openjdk-devel` and `maven` packages.
 
 ## Packaging (`release.py`)
 
