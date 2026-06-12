@@ -40,7 +40,7 @@ WalReader::EntryCallback capture(std::vector<Captured>& out) {
     };
 }
 
-} // namespace
+} // namespaces
 
 class WalTest : public ::testing::Test {
   protected:

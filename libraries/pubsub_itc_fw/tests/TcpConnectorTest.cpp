@@ -269,6 +269,6 @@ TEST_F(TcpConnectorTest, SecondConnectCallCancelsFirstAndRetries) {
     ::close(listen_fd);
 }
 
-} // namespace
+} // namespaces
 
 } // namespaces

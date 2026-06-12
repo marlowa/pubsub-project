@@ -28,7 +28,7 @@ class MirroredBufferTest : public ::testing::Test {
     const int64_t test_capacity = 65536; // 64KB (multiple of most page sizes)
 };
 
-} // namespace
+} // namespaces
 
 TEST_F(MirroredBufferTest, InitialisesWithExpectedCapacity) {
     const MirroredBuffer buffer(test_capacity);

@@ -28,7 +28,7 @@ constexpr std::string_view suffix_ms = "ms";
 constexpr std::string_view suffix_s = "s";
 constexpr std::string_view suffix_m = "m";
 constexpr std::string_view suffix_h = "h";
-} // namespace
+} // namespaces
 
 // ============================================================
 // Pimpl

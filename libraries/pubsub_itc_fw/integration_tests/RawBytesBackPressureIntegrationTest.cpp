@@ -285,7 +285,7 @@ ReactorConfiguration make_backpressure_reactor_config() {
     return cfg;
 }
 
-} // namespace
+} // namespaces
 
 // ============================================================
 // Test fixture

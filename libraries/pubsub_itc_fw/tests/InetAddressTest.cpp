@@ -258,6 +258,6 @@ TEST_F(InetAddressTest, Ipv4IsLessThanIpv6WhenFamilyDiffers) {
     EXPECT_NE(a->is_less_than(*b), b->is_less_than(*a));
 }
 
-} // namespace
+} // namespaces
 
 } // namespaces

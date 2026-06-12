@@ -44,7 +44,7 @@ std::string collect_openssl_errors() {
     return result.empty() ? "unknown OpenSSL error" : result;
 }
 
-} // namespace
+} // namespaces
 
 TlsRawBytesProtocolHandler::TlsRawBytesProtocolHandler(ConnectionID connection_id, TcpSocket& socket,
                                                        ApplicationThread& target_thread, int64_t buffer_capacity,

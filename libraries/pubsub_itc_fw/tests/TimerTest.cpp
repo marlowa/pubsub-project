@@ -33,7 +33,7 @@ constexpr auto interval = std::chrono::milliseconds(100);
 constexpr auto long_interval = std::chrono::milliseconds(500);
 constexpr int wait_milliseconds = 3000;
 
-} // namespace
+} // namespaces
 
 // ---------------------------------------------------------------------------
 // Fixture

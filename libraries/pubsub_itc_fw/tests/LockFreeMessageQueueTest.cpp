@@ -127,7 +127,7 @@ QueueConfiguration make_default_queue_config() {
     return cfg;
 }
 
-} // namespace
+} // namespaces
 
 // ------------------------------------------------------------
 // Basic sanity check: verifies FIFO ordering and that enqueue()
@@ -1353,7 +1353,7 @@ private:
     int pipe_fds_[2]{-1, -1};
 };
 
-} // namespace
+} // namespaces
 
 TEST(LockFreeMessageQueueEdgeCaseTest, ExposeStrandedOrdersInReactorLoop) {
     const QueueConfiguration queue_config = make_default_queue_config();

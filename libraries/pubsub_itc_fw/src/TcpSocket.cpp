@@ -64,7 +64,7 @@ namespace {
     return {true, ""};
 }
 
-} // namespace
+} // namespaces
 
 /**
  * @brief Implementation details for `TcpSocket`.

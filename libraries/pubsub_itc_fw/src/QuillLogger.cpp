@@ -117,7 +117,7 @@ class CallbackSink : public quill::Sink {
     pubsub_itc_fw::QuillLogger::LogCallback callback_;
 };
 
-} // namespace
+} // namespaces
 
 namespace pubsub_itc_fw {
 

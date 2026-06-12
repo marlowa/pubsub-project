@@ -38,7 +38,7 @@ void apply_common_tls_options(SSL_CTX* context) {
     SSL_CTX_set_ciphersuites(context, "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256");
 }
 
-} // namespace
+} // namespaces
 
 TlsContext::TlsContext(SSL_CTX* context) : context_(context) {}
 

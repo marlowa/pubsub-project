@@ -636,7 +636,7 @@ class WorkQueue {
     bool closed_{false};
 };
 
-} // namespace
+} // namespaces
 
 TEST_F(ExpandableSlabAllocatorTest, ConcurrentAllocateAndDeallocateMakesProgress) {
     // Small slab so chunks_per_slab is small (4-8 chunks). This forces frequent

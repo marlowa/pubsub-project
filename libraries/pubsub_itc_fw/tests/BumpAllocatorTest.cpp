@@ -14,7 +14,7 @@ namespace {
 constexpr size_t small_buffer_size = 256;
 constexpr size_t large_buffer_size = 4096;
 
-} // namespace
+} // namespaces
 
 class BumpAllocatorTest : public ::testing::Test {
   protected:

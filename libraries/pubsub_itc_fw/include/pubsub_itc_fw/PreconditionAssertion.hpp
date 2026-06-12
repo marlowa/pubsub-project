@@ -24,7 +24,7 @@ std::string get_leafname(const char* filepath) {
     }
     return path_str.substr(pos + 1);
 }
-} // namespace
+} // namespaces
 
 /** @ingroup utilities_subsystem */
 

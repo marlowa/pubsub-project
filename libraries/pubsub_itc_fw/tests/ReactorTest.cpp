@@ -203,7 +203,7 @@ class FakeThread : public ApplicationThread {
     void on_itc_message([[maybe_unused]] const EventMessage& event_message) override {}
 };
 
-} // namespace
+} // namespaces
 
 TEST_F(ReactorTest, InitializationTimeoutTriggersShutdown) {
     ReactorConfiguration cfg;
