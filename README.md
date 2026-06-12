@@ -91,6 +91,56 @@ Common options:
 
 `build.sh` is a thin wrapper that sets the platform-specific environment variables required by CMake and then calls `build.py`.
 
+## Building on RHEL 8 with Docker
+
+The `Dockerfile` at the project root provides a Rocky Linux 8 build environment that matches the RHEL 8 production target. Use it to verify RHEL 8 compatibility without access to a physical RHEL 8 machine.
+
+### Build the image
+
+```bash
+docker build -t pubsub-rhel8 .
+```
+
+### Prerequisites inside the container
+
+The container expects two directories to be bind-mounted:
+
+| Host path | Container path | Contents |
+|---|---|---|
+| Project root | `/workspace` | Source tree (this repo) |
+| Third-party install prefix | `/workspace/thirdparty` | Pre-built fmt, quill, argparse, googletest, tsl-robin-map, tomlplusplus for Rocky 8 |
+
+`build.sh` detects the Rocky 8 platform automatically and sets `THIRDPARTY_DIR=/workspace/thirdparty` and the correct library version variables — no manual configuration is needed.
+
+### Build and test (C++ only)
+
+```bash
+docker run --rm \
+    -v "$(pwd)":/workspace \
+    -v "/path/to/thirdparty":/workspace/thirdparty \
+    pubsub-rhel8 \
+    ./build.sh --no-java --no-pylint
+```
+
+`--no-java` is required because the Dockerfile does not install Java or Maven.
+`--no-pylint` is recommended because the pylint version on Rocky 8 may differ from the development machine and produce false positives.
+
+### Build without running tests
+
+```bash
+docker run --rm \
+    -v "$(pwd)":/workspace \
+    -v "/path/to/thirdparty":/workspace/thirdparty \
+    pubsub-rhel8 \
+    ./build.sh --no-java --no-pylint --no-tests
+```
+
+### Notes
+
+- **Ninja vs Make:** `build.sh` uses `cmake --build` which respects the `CMAKE_GENERATOR` environment variable. Pass `-e CMAKE_GENERATOR=Ninja` to `docker run` if ninja is installed in the container.
+- **Java builds:** `admin-service` and `fix-test-client` are not buildable inside the container as supplied. To add Java support, extend the Dockerfile with `java-11-openjdk-devel` and `maven` packages.
+- **Database:** the container has no PostgreSQL instance, so `deploy.py` must be run with `--skip-db` if invoked inside the container.
+
 ## Packaging (`release.py`)
 
 Assembles a versioned deployment artefact from the build staging area:
