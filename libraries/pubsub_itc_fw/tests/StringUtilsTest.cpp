@@ -98,7 +98,7 @@ TEST_F(StringUtilsTest, StartsWithAllOverloadsExplicit) {
     EXPECT_TRUE(StringUtils::starts_with("hello world", sv));
     EXPECT_FALSE(StringUtils::starts_with("hello world", std::string_view("world")));
 
-    // const char* overload — must use a variable to force this overload
+    // const char* overload -- must use a variable to force this overload
     const char* cprefix = "hello";
     EXPECT_TRUE(StringUtils::starts_with("hello world", cprefix));
 

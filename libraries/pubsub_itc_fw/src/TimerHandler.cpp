@@ -61,7 +61,7 @@ TimerHandler::TimerHandler(const Timer& timer, Reactor& reactor) : timer_(timer)
         }
     }
 
-    // Convert microseconds → nanoseconds for timerfd
+    // Convert microseconds -> nanoseconds for timerfd
     auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(timer.get_interval());
 
     itimerspec spec{};
@@ -91,7 +91,7 @@ bool TimerHandler::handle_event(uint32_t events) {
     const ssize_t s = ::read(fd_, &expirations, sizeof(expirations));
 
     if (s != sizeof(expirations)) {
-        // Nothing to read (EAGAIN) or interrupted — treat as consumed
+        // Nothing to read (EAGAIN) or interrupted -- treat as consumed
         PUBSUB_LOG(reactor_.get_logger(), FwLogLevel::Info, "handle_event nothing to read (s={}, errno={})", s, errno);
         return true;
     }

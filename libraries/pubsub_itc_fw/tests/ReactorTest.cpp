@@ -128,7 +128,7 @@ class ReactorTest : public ::testing::Test {
     }
 
     void join_reactor_or_die(std::chrono::milliseconds timeout) const {
-        ASSERT_TRUE(reactor_thread_); // if this fails, it’s a test bug
+        ASSERT_TRUE(reactor_thread_); // if this fails, it's a test bug
 
         if (!reactor_thread_->join_with_timeout(timeout)) {
             std::cerr << "FATAL: reactor thread did not join (timeout " << timeout.count() << " ms)\n";
@@ -210,7 +210,7 @@ TEST_F(ReactorTest, InitializationTimeoutTriggersShutdown) {
     cfg.init_phase_timeout_ = std::chrono::milliseconds(50);
 
     // A short shutdown_timeout_ is essential here. finalize_threads_after_shutdown()
-    // waits up to shutdown_timeout_ twice — once for the thread run loop to exit and
+    // waits up to shutdown_timeout_ twice -- once for the thread run loop to exit and
     // once for join_with_timeout(). BadThread never stops, so both waits will always
     // exhaust the full timeout. If shutdown_timeout_ is left at its default of 1000ms,
     // finalize_threads_after_shutdown() blocks for ~2000ms, exceeding TearDown's

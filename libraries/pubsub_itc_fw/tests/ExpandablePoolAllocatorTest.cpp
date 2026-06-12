@@ -693,7 +693,7 @@ TEST_F(ExpandablePoolAllocatorTest, AbaStressTest) {
     }
 
     // Each thread repeatedly allocates and immediately deallocates.
-    // We deliberately do NOT hold any lock — this is the ABA window.
+    // We deliberately do NOT hold any lock -- this is the ABA window.
     // If the Treiber stack's ABA prevention is broken, two threads could
     // receive the same pointer simultaneously, which would show up as a
     // duplicate in valid_addresses or a corrupted slot count in the drain phase.
@@ -723,7 +723,7 @@ TEST_F(ExpandablePoolAllocatorTest, AbaStressTest) {
     // After all threads finish, drain the pool and verify structural integrity.
     // We use get_pool_statistics() to find the true total capacity across all
     // pools including any created by expansion during the stress phase.
-    // We allocate exactly that many objects — no more, no less — so we never
+    // We allocate exactly that many objects -- no more, no less -- so we never
     // trigger further expansion.
     auto pool_stats_before_drain = allocator.get_pool_statistics();
     const int total_capacity = pool_stats_before_drain.number_of_pools_ * pool_stats_before_drain.number_of_objects_per_pool_;
@@ -748,10 +748,10 @@ TEST_F(ExpandablePoolAllocatorTest, AbaStressTest) {
         EXPECT_NE(valid_addresses.find(drained_object), valid_addresses.end()) << "free-list corruption: unknown pointer " << drained_object;
     }
 
-    // All slots should be recoverable — the number drained must equal the total
+    // All slots should be recoverable -- the number drained must equal the total
     // capacity across all pools, including any created by expansion during stress.
     // A smaller count means slots were lost; a larger count means slots were
-    // duplicated in the free list — both indicate Treiber stack corruption.
+    // duplicated in the free list -- both indicate Treiber stack corruption.
     EXPECT_EQ(static_cast<int>(drained_objects.size()), total_capacity)
         << "free-list corruption: expected " << total_capacity << " slots drained, got " << drained_objects.size();
 
@@ -766,7 +766,7 @@ TEST_F(ExpandablePoolAllocatorTest, AbaStressTest) {
  *
  * Deallocates the same pointer twice. The second call must trigger the
  * invalid_free callback exactly once via the atomic CAS on is_constructed.
- * After the double-free attempt the pool must remain fully usable — all
+ * After the double-free attempt the pool must remain fully usable -- all
  * slots must still be allocatable and unique.
  */
 TEST_F(ExpandablePoolAllocatorTest, DoubleFreeDetection) {
@@ -778,7 +778,7 @@ TEST_F(ExpandablePoolAllocatorTest, DoubleFreeDetection) {
     allocator.deallocate(obj); // valid free
     EXPECT_EQ(invalid_free_callback_count_.load(), 0);
 
-    allocator.deallocate(obj); // double free — is_constructed should catch it
+    allocator.deallocate(obj); // double free -- is_constructed should catch it
     EXPECT_EQ(invalid_free_callback_count_.load(), 1);
 
     // Pool must remain fully usable after a double-free attempt.
@@ -954,7 +954,7 @@ TEST_F(ExpandablePoolAllocatorTest, BehaviouralStatisticsStressTest) {
     const int iterations = 100; // Reduced to allow completion in seconds, not hours
 #else
     const int num_threads = 120; // Increased to raise contention
-    const int iterations = 2000; // More cycles → more slow-path
+    const int iterations = 2000; // More cycles -> more slow-path
 #endif
     const int objects_per_pool = 64; // Keep pool large enough to avoid expansion
     const int initial_pools = 1;
@@ -970,7 +970,7 @@ TEST_F(ExpandablePoolAllocatorTest, BehaviouralStatisticsStressTest) {
     for (int i = 0; i < num_threads; ++i) {
         threads.emplace_back([&allocator]() {
 
-        // Deterministic per-thread jitter (1–10 microseconds)
+        // Deterministic per-thread jitter (1--10 microseconds)
 #ifndef USING_VALGRIND
             const auto tid_hash = std::hash<std::thread::id>{}(std::this_thread::get_id());
             const int jitter_us = 1 + static_cast<int>(tid_hash % 10);
@@ -1042,7 +1042,7 @@ TEST_F(ExpandablePoolAllocatorTest, BehaviouralStatisticsStressTest) {
  * exceed 1, proving the race exists.
  *
  * After the callback_mutex_ fix is applied, peak concurrency must always
- * be exactly 1 — only one thread can be inside the callback at a time.
+ * be exactly 1 -- only one thread can be inside the callback at a time.
  *
  * The test exercises both invalid-free code paths:
  *   (a) pointer does not belong to any pool
@@ -1111,7 +1111,7 @@ TEST_F(ExpandablePoolAllocatorTest, ConcurrentInvalidFreeCallbackRace) {
                     // Path (a): pointer not in any pool.
                     allocator.deallocate(&stack_object);
                 } else {
-                    // Path (b): double-free — is_constructed is 0 after the
+                    // Path (b): double-free -- is_constructed is 0 after the
                     // initial valid deallocate above.
                     allocator.deallocate(valid_object);
                 }
@@ -1133,7 +1133,7 @@ TEST_F(ExpandablePoolAllocatorTest, ConcurrentInvalidFreeCallbackRace) {
     EXPECT_EQ(peak_concurrency.load(), 1) << "handler_for_invalid_free_ was invoked concurrently by " << peak_concurrency.load() << " threads simultaneously. "
                                           << "This demonstrates the race that callback_mutex_ is intended to prevent.";
 
-    EXPECT_GT(total_callback_invocations.load(), 0) << "callback was never invoked — test did not exercise the code path";
+    EXPECT_GT(total_callback_invocations.load(), 0) << "callback was never invoked -- test did not exercise the code path";
 }
 
 TEST_F(ExpandablePoolAllocatorTest, MisalignedPointerRejectedByContains) {
@@ -1144,13 +1144,13 @@ TEST_F(ExpandablePoolAllocatorTest, MisalignedPointerRejectedByContains) {
     TestObject* valid_object = pool.allocate();
     ASSERT_NE(valid_object, nullptr);
 
-    // A pointer one byte past a valid object — within the pool's memory
+    // A pointer one byte past a valid object -- within the pool's memory
     // region but not aligned to a slot boundary.
     auto* misaligned_ptr =
         reinterpret_cast<TestObject*>(reinterpret_cast<std::byte*>(valid_object) + 1); // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic)
 
-    // Before fix: contains() returns true — bounds check only.
-    // After fix:  contains() returns false — alignment check added.
+    // Before fix: contains() returns true -- bounds check only.
+    // After fix:  contains() returns false -- alignment check added.
     EXPECT_FALSE(pool.contains(misaligned_ptr)) << "contains() must reject a pointer that is within the pool's "
                                                 << "memory region but not aligned to a slot boundary";
 
@@ -1222,7 +1222,7 @@ TEST_F(ExpandablePoolAllocatorTest, AbaStressWithMidDrain) {
     }
     start_gate.store(true, std::memory_order_release);
 
-    // Mid‑run partial drains: steal a subset of slots from the allocator,
+    // Mid-run partial drains: steal a subset of slots from the allocator,
     // verify structural invariants on that subset, then return them.
     for (int drain_round = 0; drain_round < num_mid_drains; ++drain_round) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -1238,19 +1238,19 @@ TEST_F(ExpandablePoolAllocatorTest, AbaStressWithMidDrain) {
         for (int i = 0; i < max_drain; ++i) {
             TestObject* obj = allocator.allocate();
             if (obj == nullptr) {
-                // Some slots are in use by workers; stop this mid‑drain.
+                // Some slots are in use by workers; stop this mid-drain.
                 break;
             }
             drained.push_back(obj);
         }
 
         if (!drained.empty()) {
-            // Structural check: no duplicates in the mid‑drain slice.
+            // Structural check: no duplicates in the mid-drain slice.
             std::unordered_set<TestObject*> seen;
             for (auto* obj : drained) {
-                EXPECT_TRUE(seen.insert(obj).second) << "allocator free-list corruption: duplicate pointer " << obj << " in mid‑drain round " << drain_round;
+                EXPECT_TRUE(seen.insert(obj).second) << "allocator free-list corruption: duplicate pointer " << obj << " in mid-drain round " << drain_round;
                 // NOTE: we deliberately do NOT require membership in valid_addresses
-                // here, because mid‑drain may be the first user of a slot from a
+                // here, because mid-drain may be the first user of a slot from a
                 // newly expanded pool under coverage/timing variations.
             }
         }
@@ -1286,10 +1286,10 @@ TEST_F(ExpandablePoolAllocatorTest, AbaStressWithMidDrain) {
     std::unordered_set<TestObject*> seen_during_drain;
     for (auto* drained_object : drained_objects) {
         EXPECT_TRUE(seen_during_drain.insert(drained_object).second)
-            << "free-list corruption: duplicate pointer " << drained_object << " after ABA mid‑drain stress";
+            << "free-list corruption: duplicate pointer " << drained_object << " after ABA mid-drain stress";
     }
 
-    // All slots should still be recoverable — the number drained must equal the total capacity across all pools.
+    // All slots should still be recoverable -- the number drained must equal the total capacity across all pools.
     EXPECT_EQ(static_cast<int>(drained_objects.size()), total_capacity)
         << "free-list corruption: expected " << total_capacity << " slots drained, got " << drained_objects.size();
 
@@ -1351,7 +1351,7 @@ TEST_F(ExpandablePoolAllocatorTest, CrossPoolAbaInterleaving) {
     }
     start_gate.store(true, std::memory_order_release);
 
-    // Mid‑run partial drains across all pools.
+    // Mid-run partial drains across all pools.
     for (int round = 0; round < num_mid_drains; ++round) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
 
@@ -1649,7 +1649,7 @@ TEST_F(ExpandablePoolAllocatorTest, InvalidFreeDuringMidDrain) {
     }
     start_gate.store(true, std::memory_order_release);
 
-    // Mid‑run partial drains: steal a subset of slots while workers are active.
+    // Mid-run partial drains: steal a subset of slots while workers are active.
     for (int round = 0; round < num_mid_drains; ++round) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
 
@@ -1668,10 +1668,10 @@ TEST_F(ExpandablePoolAllocatorTest, InvalidFreeDuringMidDrain) {
             drained.push_back(obj);
         }
 
-        // Structural check: no duplicates in the mid‑drain slice.
+        // Structural check: no duplicates in the mid-drain slice.
         std::unordered_set<TestObject*> seen;
         for (auto* obj : drained) {
-            EXPECT_TRUE(seen.insert(obj).second) << "allocator free-list corruption: duplicate pointer " << obj << " in mid‑drain round " << round;
+            EXPECT_TRUE(seen.insert(obj).second) << "allocator free-list corruption: duplicate pointer " << obj << " in mid-drain round " << round;
         }
 
         // Return drained objects.
@@ -2072,7 +2072,7 @@ TEST_F(ExpandablePoolAllocatorTest, OobScribbleBeforeObjectFragilityProbe) {
 // is_constructed and the object storage in each Slot<T>.
 //
 // All three tests are skipped under ASAN and Valgrind because the
-// deliberate out-of-bounds write is what those tools are designed to catch —
+// deliberate out-of-bounds write is what those tools are designed to catch --
 // they would abort the process before the canary logic even runs.
 // ============================================================================
 
@@ -2095,8 +2095,8 @@ TEST_F(ExpandablePoolAllocatorTest, CanaryCorruptionDeallocateCallsHandler) {
     // The canary occupies the 8 bytes before the object in the Slot layout:
     //   [ is_constructed | canary | storage ]
     // A one-byte underrun lands in the canary, not in is_constructed.
-    *reinterpret_cast<std::byte*>(obj) = std::byte{0xAB};    // NOLINT — intentional OOB
-    reinterpret_cast<std::byte*>(obj)[-1] = std::byte{0xAB}; // NOLINT — intentional OOB
+    *reinterpret_cast<std::byte*>(obj) = std::byte{0xAB};    // NOLINT -- intentional OOB
+    reinterpret_cast<std::byte*>(obj)[-1] = std::byte{0xAB}; // NOLINT -- intentional OOB
 
     allocator.deallocate(obj);
 
@@ -2119,11 +2119,11 @@ TEST_F(ExpandablePoolAllocatorTest, CanaryCorruptionDeallocateDoesNotDestruct) {
     ASSERT_NE(obj, nullptr);
     EXPECT_EQ(TestObject::constructor_count_.load(), 1);
 
-    reinterpret_cast<std::byte*>(obj)[-1] = std::byte{0xAB}; // NOLINT — intentional OOB
+    reinterpret_cast<std::byte*>(obj)[-1] = std::byte{0xAB}; // NOLINT -- intentional OOB
 
     allocator.deallocate(obj);
 
-    // ~TestObject must not have been called — doing so on a potentially
+    // ~TestObject must not have been called -- doing so on a potentially
     // corrupt object risks a secondary crash that would obscure the real failure.
     EXPECT_EQ(TestObject::destructor_count_.load(), 0);
 }
@@ -2147,9 +2147,9 @@ TEST_F(ExpandablePoolAllocatorTest, CanaryCorruptionDestructorCallsHandlerAndSki
         ASSERT_NE(obj_corrupt, nullptr);
         EXPECT_EQ(TestObject::constructor_count_.load(), 2);
 
-        // Corrupt the canary on one object and leave both unreturned —
+        // Corrupt the canary on one object and leave both unreturned --
         // they become caller-leaked objects discovered by the allocator destructor.
-        reinterpret_cast<std::byte*>(obj_corrupt)[-1] = std::byte{0xAB}; // NOLINT — intentional OOB
+        reinterpret_cast<std::byte*>(obj_corrupt)[-1] = std::byte{0xAB}; // NOLINT -- intentional OOB
 
         // allocator goes out of scope here, triggering ~ExpandablePoolAllocator()
     }

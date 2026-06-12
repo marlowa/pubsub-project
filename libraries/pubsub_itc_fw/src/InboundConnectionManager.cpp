@@ -65,14 +65,14 @@ bool InboundConnectionManager::initialize_listeners() {
     for (auto& listener : inbound_listeners_staging_) {
         auto [addr, addr_error] = InetAddress::create(listener.configuration.address.host, listener.configuration.address.port);
         if (!addr) {
-            PUBSUB_LOG(logger_, FwLogLevel::Error, "InboundConnectionManager::initialize_listeners: failed to resolve {}:{} — {}",
+            PUBSUB_LOG(logger_, FwLogLevel::Error, "InboundConnectionManager::initialize_listeners: failed to resolve {}:{} -- {}",
                        listener.configuration.address.host, listener.configuration.address.port, addr_error);
             return false;
         }
 
         auto [acceptor, accept_error] = TcpAcceptor::create(*addr, /*backlog=*/4);
         if (!acceptor) {
-            PUBSUB_LOG(logger_, FwLogLevel::Error, "InboundConnectionManager::initialize_listeners: failed to create acceptor on {}:{} — {}",
+            PUBSUB_LOG(logger_, FwLogLevel::Error, "InboundConnectionManager::initialize_listeners: failed to create acceptor on {}:{} -- {}",
                        listener.configuration.address.host, listener.configuration.address.port, accept_error);
             return false;
         }
@@ -108,7 +108,7 @@ bool InboundConnectionManager::initialize_listeners() {
         ev.events = EPOLLIN;
         ev.data.fd = listen_fd;
         if (::epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, listen_fd, &ev) == -1) {
-            PUBSUB_LOG(logger_, FwLogLevel::Error, "InboundConnectionManager::initialize_listeners: epoll_ctl ADD failed — {}",
+            PUBSUB_LOG(logger_, FwLogLevel::Error, "InboundConnectionManager::initialize_listeners: epoll_ctl ADD failed -- {}",
                        StringUtils::get_errno_string());
             return false;
         }
@@ -474,7 +474,7 @@ bool InboundConnectionManager::drain_pending_send() {
     } else {
         processed = process_send_pdu_command(command);
         if (!processed) {
-            // Connection vanished while the command was stashed — deallocate.
+            // Connection vanished while the command was stashed -- deallocate.
             command.allocator_->deallocate(command.slab_id_, command.pdu_chunk_ptr_);
             return true;
         }

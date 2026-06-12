@@ -240,7 +240,7 @@ TEST_F(PduFramerParserTest, SendWritesHeaderAndPayload) {
 TEST_F(PduFramerParserTest, PartialWriteLeavesPendingData) {
     PduFramer framer(stream_);
 
-    // Send 4 bytes on first call, then EAGAIN — simulates kernel buffer filling up.
+    // Send 4 bytes on first call, then EAGAIN -- simulates kernel buffer filling up.
     stream_.send_limit = 4;
     stream_.send_eagain_after = 1;
 
@@ -356,7 +356,7 @@ TEST_F(PduFramerParserTest, SendPrebuiltTransmitsCompleteFrame) {
     EXPECT_TRUE(error.empty());
     EXPECT_FALSE(framer.has_pending_data());
 
-    // The bytes sent must exactly match the pre-built frame — no rewriting.
+    // The bytes sent must exactly match the pre-built frame -- no rewriting.
     ASSERT_EQ(stream_.sent_bytes.size(), frame.size());
     EXPECT_EQ(std::memcmp(stream_.sent_bytes.data(), frame.data(), frame.size()), 0);
 }
@@ -431,7 +431,7 @@ TEST_F(PduFramerParserTest, SendPrebuiltNullptrThrows) {
 TEST_F(PduFramerParserTest, SendPrebuiltTooSmallThrows) {
     PduFramer framer(stream_);
     const uint8_t buf[4] = {};
-    // total_bytes must be > sizeof(PduHeader) — passing exactly sizeof(PduHeader) is invalid.
+    // total_bytes must be > sizeof(PduHeader) -- passing exactly sizeof(PduHeader) is invalid.
     EXPECT_THROW(framer.send_prebuilt(buf, static_cast<uint32_t>(sizeof(PduHeader))), PreconditionAssertion);
 }
 
@@ -457,7 +457,7 @@ TEST_F(PduFramerParserTest, SendPrebuiltDoesNotCopyPayload) {
     const uint8_t payload[] = {0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE};
     auto frame = make_prebuilt_frame(205, 3, payload, sizeof(payload));
 
-    // Corrupt the payload area of frame AFTER building but BEFORE sending — if
+    // Corrupt the payload area of frame AFTER building but BEFORE sending -- if
     // send_prebuilt() copied the bytes internally the corruption would not show
     // in sent_bytes. If it stores the pointer (zero-copy) the corruption will.
     // This is a white-box test: it confirms pointer semantics.
@@ -534,7 +534,7 @@ TEST_F(PduFramerParserTest, ParseWithPartialHeaderDelivery) {
     auto [ok, error] = parser.receive();
     EXPECT_TRUE(ok);
 
-    // May or may not have dispatched depending on timing — just verify no crash.
+    // May or may not have dispatched depending on timing -- just verify no crash.
 }
 
 TEST_F(PduFramerParserTest, ParseDetectsCanaryMismatch) {
@@ -580,7 +580,7 @@ TEST_F(PduFramerParserTest, ParseDetectsPeerDisconnect) {
 TEST_F(PduFramerParserTest, ParseEagainWithNoDataReturnsOk) {
     PduParser parser(stream_, *thread_, slab_allocator_, logger_with_sink_->logger, nullptr, pubsub_itc_fw::ConnectionID{});
 
-    // No data at all — socket returns EAGAIN immediately.
+    // No data at all -- socket returns EAGAIN immediately.
     stream_.recv_eagain = true;
 
     auto [ok, error] = parser.receive();
@@ -591,7 +591,7 @@ TEST_F(PduFramerParserTest, ParseEagainWithNoDataReturnsOk) {
 }
 
 // ============================================================
-// Round-trip: framer → parser
+// Round-trip: framer -> parser
 // ============================================================
 
 TEST_F(PduFramerParserTest, RoundTripFramerToParser) {

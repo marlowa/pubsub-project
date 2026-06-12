@@ -13,7 +13,7 @@ namespace pubsub_itc_fw {
 /**
  * @brief A wrapper that places a value on its own hardware cache line.
  *
- * Modern x86‑64 processors use a 64‑byte cache line. When two frequently
+ * Modern x86-64 processors use a 64-byte cache line. When two frequently
  * modified variables share the same cache line, concurrent threads can
  * cause *false sharing*: the cache line bounces between cores even though
  * the threads are modifying different variables. This can severely degrade
@@ -24,7 +24,7 @@ namespace pubsub_itc_fw {
  * eliminating false sharing between them.
  *
  * Typical use cases include:
- *   - high‑frequency atomic counters (e.g. statistics, metrics)
+ *   - high-frequency atomic counters (e.g. statistics, metrics)
  *   - shared state that is written by one thread and read by others
  *   - any variable that is updated often enough to risk false sharing
  *

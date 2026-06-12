@@ -54,7 +54,7 @@
  *      everything), the fast path will miss on the next burst and fall
  *      through to the slow path, which traverses the chain from head_pool_
  *      and updates current_pool_ptr_ when it finds a slot. This is
- *      acceptable — the slow path is the recovery mechanism for exactly
+ *      acceptable -- the slow path is the recovery mechanism for exactly
  *      this case.
  *
  *    - If the allocator is consistently seeing slow-path hits after drains,
@@ -65,7 +65,7 @@
  * EXPANSION STRATEGY
  *    - Starts with initial_pools pre-allocated.
  *    - Expands on demand when all pools are exhausted.
- *    - No hard limit – expands as long as the operating system can provide memory.
+ *    - No hard limit -- expands as long as the operating system can provide memory.
  *    - expansion_threshold_hint is for monitoring and alerts only.
  *
  * OBJECT LIFETIME MANAGEMENT
@@ -129,7 +129,7 @@
  *        independent of queue depth. It signals that the allocator has grown
  *        beyond its pre-allocated capacity and that heap allocation is
  *        occurring. It may be used to log or raise an alert, but it is not a
- *        backpressure mechanism — by the time it fires, the allocation has
+ *        backpressure mechanism -- by the time it fires, the allocation has
  *        already succeeded.
  *
  *    - Because the allocator can grow without bound, the only true protection
@@ -221,7 +221,7 @@ template <typename T> class ExpandablePoolAllocator {
      * @note cleanup_list_ is traversed without a lock during destruction. This
      *       is safe only because of the precondition above. Any pool objects
      *       that still have allocated slots will have their objects destructed
-     *       here — see FixedSizeMemoryPool destructor for details.
+     *       here -- see FixedSizeMemoryPool destructor for details.
      */
     /**
      * @brief Destroys the allocator, checking canaries on any leaked objects.
@@ -229,7 +229,7 @@ template <typename T> class ExpandablePoolAllocator {
      * Sweeps all pools for slots still marked is_constructed (caller-leaked
      * objects). For each such slot, checks the canary before calling ~T().
      * If the canary is corrupt, handler_for_invalid_free_ is called and the
-     * destructor is skipped for that slot — calling ~T() on a corrupt object
+     * destructor is skipped for that slot -- calling ~T() on a corrupt object
      * risks a secondary crash that would obscure the real failure.
      *
      * @pre No other thread may be calling allocate() or deallocate() when
@@ -287,7 +287,7 @@ template <typename T> class ExpandablePoolAllocator {
      *      exactly one thread calls ~T() per allocation. If is_constructed is
      *      already 0, handler_for_invalid_free_ is called.
      *
-     * @param[in] obj Pointer to object to deallocate (nullptr is safe — throws
+     * @param[in] obj Pointer to object to deallocate (nullptr is safe -- throws
      *            PreconditionAssertion).
      */
     void deallocate(T* obj);
@@ -338,7 +338,7 @@ template <typename T> class ExpandablePoolAllocator {
 
     /**
      * expansion_threshold_hint A soft monitoring hint only. This value
-     * does NOT limit or prevent pool expansion — the allocator will
+     * does NOT limit or prevent pool expansion -- the allocator will
      * always expand when demand exceeds capacity, as long as the
      * operating system provides memory. On Linux with overcommit
      * enabled, this means expansion is effectively unbounded.
@@ -483,7 +483,7 @@ template <typename T> void ExpandablePoolAllocator<T>::deallocate(T* obj) {
     // --- Canary check ---
     // Check the canary before touching is_constructed or calling ~T().
     // A corrupt canary means the T object wrote before its own start address.
-    // In that case we must not call ~T() — the object may be corrupt and doing
+    // In that case we must not call ~T() -- the object may be corrupt and doing
     // so risks a secondary crash that would obscure the real failure. The slot
     // is deliberately not returned to the pool so the object pointer remains
     // valid for post-mortem examination in a core dump.
@@ -509,7 +509,7 @@ template <typename T> void ExpandablePoolAllocator<T>::deallocate(T* obj) {
     std::atomic<std::uintptr_t>* is_constructed = get_is_constructed_for_object(obj);
     std::uintptr_t expected = 1U;
     if (!is_constructed->compare_exchange_strong(expected, 0U, std::memory_order_acq_rel, std::memory_order_acquire)) {
-        // is_constructed was already 0 — double free
+        // is_constructed was already 0 -- double free
         if (handler_for_invalid_free_ != nullptr) {
             std::lock_guard<std::mutex> lock(callback_mutex_);
             handler_for_invalid_free_(nullptr, obj);
@@ -517,7 +517,7 @@ template <typename T> void ExpandablePoolAllocator<T>::deallocate(T* obj) {
         return;
     }
 
-    // Exactly one thread reaches here — safe to destruct and return to pool.
+    // Exactly one thread reaches here -- safe to destruct and return to pool.
     obj->~T();
     owner_pool->deallocate(obj);
 }
@@ -573,7 +573,7 @@ template <typename T> ExpandablePoolAllocator<T>::~ExpandablePoolAllocator() {
     // Sweep all pools for caller-leaked objects (slots still marked is_constructed).
     // For each such slot, check the canary before calling ~T(). If the canary is
     // corrupt, call handler_for_invalid_free_ and clear is_constructed without
-    // calling ~T() — doing so on a corrupt object risks a secondary crash.
+    // calling ~T() -- doing so on a corrupt object risks a secondary crash.
     // The pool destructor (run when cleanup_list_ is destroyed) will then find
     // is_constructed already cleared and skip those slots cleanly.
     for (auto& pool_uptr : cleanup_list_) {

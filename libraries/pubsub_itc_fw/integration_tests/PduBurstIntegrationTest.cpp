@@ -44,7 +44,7 @@
  *   so a death on either side fails the test fast with a useful message.
  *
  * Tests
- *   1. ExecutionReportBurstSurvivesEndToEnd -- baseline. Sender → receiver,
+ *   1. ExecutionReportBurstSurvivesEndToEnd -- baseline. Sender -> receiver,
  *      framework-PDU burst only, no concurrent raw traffic. This test is now
  *      a regression check: if it ever starts failing, the framework-PDU path
  *      itself is broken in isolation.

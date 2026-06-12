@@ -76,7 +76,7 @@ template <typename S, typename... Args> void validate_at_compile_time(S format_s
     } while (0)
 #else
 
-// PUBSUB_LOG — log a format string with zero or more arguments.
+// PUBSUB_LOG -- log a format string with zero or more arguments.
 //
 // Arguments are serialised into Quill's lock-free ring buffer on the calling
 // thread and formatted on the Quill backend thread.  No string construction
@@ -106,7 +106,7 @@ template <typename S, typename... Args> void validate_at_compile_time(S format_s
         }                                                                                                                                                      \
     } while (0)
 
-// PUBSUB_LOG_STR — log a single pre-formed string.
+// PUBSUB_LOG_STR -- log a single pre-formed string.
 //
 // Equivalent to PUBSUB_LOG with "{}" as the format string.  Required because
 // -Werror=variadic-macros rejects a macro invocation with no variadic args.

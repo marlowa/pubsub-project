@@ -20,7 +20,7 @@
 namespace pubsub_itc_fw {
 
 /*
- * QuillLogger — framework wrapper around a quill::Logger.
+ * QuillLogger -- framework wrapper around a quill::Logger.
  *
  * Two operating modes:
  *

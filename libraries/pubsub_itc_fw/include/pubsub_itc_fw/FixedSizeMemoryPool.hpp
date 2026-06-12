@@ -90,7 +90,7 @@
  *     - A corrupt canary in a core dump is unambiguous evidence that the
  *       caller's T object wrote outside its own bounds.
  *     - A clean canary in a core dump confirms that the allocator's own state
- *       machine was not corrupted — the bug lies elsewhere.
+ *       machine was not corrupted -- the bug lies elsewhere.
  *
  * MAGIC VALUE:
  *   slot_canary_value = 0xDEADC0DEFEEDFACEU
@@ -193,7 +193,7 @@ template <typename T> struct Slot {
     // Must be std::atomic so that allocate() (plain store) and deallocate()
     // (atomic CAS) access the same object without violating the C++ memory
     // model. In the Valgrind/TSan path all accesses are under the pool mutex,
-    // so relaxed ordering is sufficient — the mutex provides the necessary
+    // so relaxed ordering is sufficient -- the mutex provides the necessary
     // happens-before relationship. The type must match the production path
     // Slot<T> since ExpandablePoolAllocator::get_is_constructed_for_object()
     // operates on both paths identically.
@@ -237,7 +237,7 @@ template <typename T> class FixedSizeMemoryPool {
         for (int i = 0; i < objects_per_pool_; ++i) {
             // Placement-new is required to properly construct the std::atomic
             // member in the mmap'd region before any atomic operations are used.
-            // mmap returns raw uninitialised memory — the C++ object model requires
+            // mmap returns raw uninitialised memory -- the C++ object model requires
             // construction before any member access, including atomic stores.
             new (&slots_[i]) SlotType();
             slots_[i].is_constructed.store(0, std::memory_order_relaxed);
@@ -252,7 +252,7 @@ template <typename T> class FixedSizeMemoryPool {
      * @note This destructor explicitly calls the destructor on any slot whose
      *       is_constructed is 1 (allocated). These are objects that were allocated
      *       by the caller but never returned to the pool via deallocate() before
-     *       the allocator was destroyed — in other words, caller-leaked objects.
+     *       the allocator was destroyed -- in other words, caller-leaked objects.
      *
      *       This is intentional cleanup, not a double-destruction hazard.
      *       ExpandablePoolAllocator::deallocate() always calls obj->~T() and
@@ -294,7 +294,7 @@ template <typename T> class FixedSizeMemoryPool {
     /**
      * @brief Returns raw memory to the pool (Valgrind path).
      *
-     * Does NOT call the destructor — ExpandablePoolAllocator has already
+     * Does NOT call the destructor -- ExpandablePoolAllocator has already
      * handled object lifetime and checked the canary before calling this method.
      */
     void deallocate(T* ptr) {
@@ -429,7 +429,7 @@ template <typename T> class FixedSizeMemoryPool {
  *    - GCC recognises unsigned __int128 and emits CMPXCHG16B directly.
  *
  * 5. MEMORY ORDERING
- *    - load_head(): ACQUIRE ordering – ensures we see all prior writes to the node.
+ *    - load_head(): ACQUIRE ordering -- ensures we see all prior writes to the node.
  *    - compare_exchange_weak(): ACQ_REL on success, ACQUIRE on failure:
  *        * RELEASE: writes to the new head are visible before the head update.
  *        * ACQUIRE: we see the actual head value if CAS fails.
@@ -442,7 +442,7 @@ template <typename T> class FixedSizeMemoryPool {
  *
  * 7. THREAD SAFETY GUARANTEES
  *    - Multiple threads can allocate() and deallocate() concurrently.
- *    - No locks, no blocking – lock-free Treiber stack for the free list.
+ *    - No locks, no blocking -- lock-free Treiber stack for the free list.
  *    - Safe under x86-64 TSO (Total Store Order).
  *
  * 8. SAFETY OF TREIBER STACK IN NON-GC ENVIRONMENTS
@@ -477,7 +477,7 @@ namespace pubsub_itc_fw {
 template <typename T> struct SlotStorage; // forward declaration
 
 // ============================================================
-// Slot<T> — one allocator slot: [is_constructed][canary][storage]
+// Slot<T> -- one allocator slot: [is_constructed][canary][storage]
 // ============================================================
 
 /**
@@ -521,7 +521,7 @@ template <typename T> struct Slot {
      * when next was stored inside the union alongside T's object storage.
      *
      * Placed before canary so that the canary remains directly adjacent to
-     * storage — a one-byte underrun from T still hits canary, not free_next.
+     * storage -- a one-byte underrun from T still hits canary, not free_next.
      */
     std::atomic<Slot<T>*> free_next{nullptr};
 
@@ -539,7 +539,7 @@ template <typename T> struct Slot {
 };
 
 // ============================================================
-// SlotStorage<T> — raw storage helper for allocator slots
+// SlotStorage<T> -- raw storage helper for allocator slots
 // ============================================================
 
 template <typename T> struct SlotStorage {
@@ -595,7 +595,7 @@ template <typename T> class FixedSizeMemoryPool {
      * @note This destructor explicitly calls the destructor on any slot whose
      *       is_constructed is 1 (allocated). These are objects that were allocated
      *       by the caller but never returned to the pool via deallocate() before
-     *       the allocator was destroyed — in other words, caller-leaked objects.
+     *       the allocator was destroyed -- in other words, caller-leaked objects.
      *
      *       This is intentional cleanup, not a double-destruction hazard.
      *       ExpandablePoolAllocator::deallocate() always calls obj->~T() and
@@ -942,7 +942,7 @@ FixedSizeMemoryPool<T>::FixedSizeMemoryPool(int objects_per_pool, UseHugePagesFl
     for (int i = 0; i < objects_per_pool_; ++i) {
         // Placement-new is required to properly construct the std::atomic
         // member in the mmap'd region before any atomic operations are used.
-        // mmap returns raw uninitialised memory — the C++ object model requires
+        // mmap returns raw uninitialised memory -- the C++ object model requires
         // construction before any member access, including atomic stores.
         auto* slot = new (&slots_[i]) SlotType();
         slot->is_constructed.store(0U, std::memory_order_relaxed);
@@ -957,8 +957,8 @@ template <typename T> FixedSizeMemoryPool<T>::~FixedSizeMemoryPool() {
         // Destruct any objects that are still allocated in this pool.
         // Canary checking is the responsibility of ExpandablePoolAllocator::deallocate(),
         // which runs before returning memory to this pool. Any slot still marked
-        // is_constructed here was never returned via deallocate() — i.e. a caller
-        // leak — and its canary is expected to be intact.
+        // is_constructed here was never returned via deallocate() -- i.e. a caller
+        // leak -- and its canary is expected to be intact.
         for (int i = 0; i < objects_per_pool_; ++i) {
             SlotType* slot = &slots_[i];
             if (slot->is_constructed.load(std::memory_order_relaxed) == 1U) {
@@ -1009,7 +1009,7 @@ template <typename T> int FixedSizeMemoryPool<T>::get_number_of_available_object
     // available = total capacity - outstanding.
     //
     // Under concurrency this value is approximate: a thread may be
-    // mid-allocate or mid-deallocate when we read. That is acceptable —
+    // mid-allocate or mid-deallocate when we read. That is acceptable --
     // get_number_of_available_objects() is used only for diagnostics and
     // statistics, never for correctness decisions.
     const uint64_t allocated = allocation_count_.load(std::memory_order_relaxed);
@@ -1044,7 +1044,7 @@ template <typename T> typename FixedSizeMemoryPool<T>::SlotType* FixedSizeMemory
     // expansion even though a slot is about to become available.
     //
     // The retry loop closes this window. The bound (max_retries) is small
-    // enough that it adds no measurable cost on the common path — a push_to_free
+    // enough that it adds no measurable cost on the common path -- a push_to_free
     // in flight will complete within a handful of CPU cycles. If the list is
     // genuinely empty after max_retries attempts, we return nullptr as before.
     //

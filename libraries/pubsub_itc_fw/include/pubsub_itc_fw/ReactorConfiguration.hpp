@@ -44,7 +44,7 @@ struct ReactorConfiguration {
         // from uninitialised booleans.
         cpu_pinning_enabled = false;
         cpu_pinning_reserve_cpu0 = false;
-        // cpu_registry_lock_file is std::string — default-constructed to "".
+        // cpu_registry_lock_file is std::string -- default-constructed to "".
         // Reactor::pin_registered_threads() skips pinning when it is empty.
     }
 

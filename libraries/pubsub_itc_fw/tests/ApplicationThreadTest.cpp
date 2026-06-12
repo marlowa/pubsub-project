@@ -110,7 +110,7 @@ class ApplicationThreadTest : public ::testing::Test {
     }
 
     void join_reactor_or_die(std::chrono::milliseconds timeout) const {
-        ASSERT_TRUE(reactor_thread_); // if this fails, it’s a test bug
+        ASSERT_TRUE(reactor_thread_); // if this fails, it's a test bug
 
         if (!reactor_thread_->join_with_timeout(timeout)) {
             std::cerr << "FATAL: reactor thread did not join (timeout " << timeout.count() << " ms)\n";
@@ -307,7 +307,7 @@ TEST_F(ApplicationThreadTest, StartAndShutdown) {
 // ------------------------------------------------------------
 // TEST 2: Message processing
 // ------------------------------------------------------------
-// What: Ensures that messages enqueued to the thread’s queue are eventually
+// What: Ensures that messages enqueued to the thread's queue are eventually
 //       processed by process_message.
 // Why:  Validates the basic producer/consumer path and that the internal
 //       run loop is actually draining the queue.
@@ -544,7 +544,7 @@ TEST_F(ApplicationThreadTest, PauseResumeUnderLoad) {
 // What: Verifies that the high/low watermark handlers are invoked exactly
 //       once when the queue crosses the configured thresholds.
 // Why:  Confirms the hysteresis semantics of LockFreeMessageQueue and that
-//       ApplicationThread’s queue wiring preserves them.
+//       ApplicationThread's queue wiring preserves them.
 // How:  Install handlers that bump atomics, push enough messages to cross
 //       the high watermark, then drain via shutdown and assert each handler
 //       fired exactly once.
@@ -695,7 +695,7 @@ TEST_F(ApplicationThreadTest, ExceptionLoggingContainsThreadMetadata) {
 // ------------------------------------------------------------
 // TEST 11: Message ordering preserved
 // ------------------------------------------------------------
-// What: Checks that messages are processed in FIFO order by the thread’s
+// What: Checks that messages are processed in FIFO order by the thread's
 //       queue and run loop.
 // Why:  Ordering guarantees are important for many application-level
 //       protocols; this test gives a basic sanity check.
@@ -736,7 +736,7 @@ TEST_F(ApplicationThreadTest, MessageOrderingPreserved) {
 // TEST 12: Logger isolation across threads
 // ------------------------------------------------------------
 // What: Ensures that two ApplicationThread instances using different
-//       QuillLogger instances do not leak logs into each other’s sinks.
+//       QuillLogger instances do not leak logs into each other's sinks.
 // Why:  Confirms logger isolation and that the logging backend respects
 //       the configured sinks per logger.
 // How:  Create two loggers + sinks, run two threads, shutdown with
@@ -997,7 +997,7 @@ TEST_F(ApplicationThreadTest, InterThreadRoutingDeliversMessage) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
-    // Send an ITC message from A → B
+    // Send an ITC message from A -> B
     EventMessage msg = EventMessage::create_itc_message(thread_a->get_thread_id(), nullptr, 0);
     thread_a->post_message(ThreadID(2), std::move(msg));
 
@@ -1088,7 +1088,7 @@ TEST_F(ApplicationThreadTest, CancelTimerStopsEvents) {
 
     const int after_cancel = count.load();
 
-    // Wait a bit longer — count should not increase
+    // Wait a bit longer -- count should not increase
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
     cthread->shutdown("done");

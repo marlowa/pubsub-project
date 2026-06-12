@@ -243,12 +243,12 @@ bool write_outbound_key_pem(const std::string& path, EVP_PKEY* key) {
  * @brief Generates all certificate material for the outbound TLS tests.
  *
  * Layout:
- *   ca.crt         — primary CA (used by the reactor to verify the server cert)
- *   server.crt     — CA-signed server certificate
- *   server.key     — server private key
- *   client.crt     — CA-signed client certificate (mutual TLS test only)
- *   client.key     — client private key (mutual TLS test only)
- *   second_ca.crt  — independent self-signed CA used for the handshake-failure
+ *   ca.crt         -- primary CA (used by the reactor to verify the server cert)
+ *   server.crt     -- CA-signed server certificate
+ *   server.key     -- server private key
+ *   client.crt     -- CA-signed client certificate (mutual TLS test only)
+ *   client.key     -- client private key (mutual TLS test only)
+ *   second_ca.crt  -- independent self-signed CA used for the handshake-failure
  *                    test; it did NOT sign the server cert so verification fails
  */
 class TlsOutboundCertDirectory {
@@ -335,7 +335,7 @@ class TlsOutboundCertDirectory {
  *
  * Accepts one client at a time. Runs in a background thread in each test.
  * Uses SSL_set_fd (socket-BIO model) so SSL_read/SSL_write operate directly
- * on the socket fd — the standard blocking server pattern, distinct from the
+ * on the socket fd -- the standard blocking server pattern, distinct from the
  * reactor's non-blocking memory-BIO model.
  */
 class BlockingTlsServer {
@@ -660,7 +660,7 @@ class TlsOutboundIntegrationTest : public ::testing::Test {
     void SetUp() override {
         logger_ = std::make_unique<LoggerWithSink>();
         certs_ = std::make_unique<TlsOutboundCertDirectory>();
-        ASSERT_TRUE(certs_->valid) << "Certificate generation failed — check /tmp permissions and OpenSSL availability";
+        ASSERT_TRUE(certs_->valid) << "Certificate generation failed -- check /tmp permissions and OpenSSL availability";
     }
 
     void TearDown() override {
@@ -762,7 +762,7 @@ TEST_F(TlsOutboundIntegrationTest, OutboundTlsHandshakeAndRoundTrip) {
 }
 
 // ============================================================
-// Test: mutual TLS — connector presents a client certificate
+// Test: mutual TLS -- connector presents a client certificate
 // ============================================================
 TEST_F(TlsOutboundIntegrationTest, OutboundMutualTls) {
     BlockingTlsServer server(certs_->server_cert_path, certs_->server_key_path,
@@ -816,7 +816,7 @@ TEST_F(TlsOutboundIntegrationTest, OutboundMutualTls) {
 }
 
 // ============================================================
-// Test: server closes after TLS handshake — ConnectionLost is delivered
+// Test: server closes after TLS handshake -- ConnectionLost is delivered
 // ============================================================
 TEST_F(TlsOutboundIntegrationTest, OutboundTlsServerDisconnect) {
     BlockingTlsServer server(certs_->server_cert_path, certs_->server_key_path);
@@ -862,7 +862,7 @@ TEST_F(TlsOutboundIntegrationTest, OutboundTlsServerDisconnect) {
 }
 
 // ============================================================
-// Test: TLS handshake failure — wrong CA, ConnectionEstablished never delivered
+// Test: TLS handshake failure -- wrong CA, ConnectionEstablished never delivered
 // ============================================================
 TEST_F(TlsOutboundIntegrationTest, OutboundTlsHandshakeFailureNoConnectionEstablished) {
     BlockingTlsServer server(certs_->server_cert_path, certs_->server_key_path);

@@ -23,11 +23,11 @@ namespace pubsub_itc_fw {
  *
  * ### Typical lifecycle
  *
- *  1. Construct — opens (or creates) the shared file and maps it read/write.
- *  2. claim_cpus() — acquires flock, discovers free CPUs via get_available_cpu_ids(),
+ *  1. Construct -- opens (or creates) the shared file and maps it read/write.
+ *  2. claim_cpus() -- acquires flock, discovers free CPUs via get_available_cpu_ids(),
  *     writes ownership entries, releases flock, returns the claimed CPU IDs.
  *  3. Caller pins its threads to the returned IDs.
- *  4. Destructor / release_cpus() — acquires flock, removes this PID's entries.
+ *  4. Destructor / release_cpus() -- acquires flock, removes this PID's entries.
  *
  * ### File lifecycle
  *

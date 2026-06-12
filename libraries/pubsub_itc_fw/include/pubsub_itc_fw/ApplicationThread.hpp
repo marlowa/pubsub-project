@@ -140,7 +140,7 @@ class ApplicationThread {
      * time register_extra_thread() is called.  Because the Reactor pins threads
      * immediately after all ApplicationThreads reach the is_running() state,
      * registration must happen in the subclass constructor (or an override of
-     * start()) — never in response to the Initial or AppReady events.  If a
+     * start()) -- never in response to the Initial or AppReady events.  If a
      * subclass needs to start extra threads later than that, a deferred pinning
      * mechanism would be required (not yet designed; document the need first).
      */
@@ -258,7 +258,7 @@ class ApplicationThread {
      * PduParser, RawBytesProtocolHandler) must call this instead of accessing
      * get_queue().enqueue() directly.  The eventfd write that follows the queue
      * enqueue is what allows run_internal() to block on epoll_wait instead of
-     * spin-sleeping, giving sub-10µs wakeup rather than the ~65µs sleep of
+     * spin-sleeping, giving sub-10uss wakeup rather than the ~65uss sleep of
      * BackoffWithYield tier-3.
      *
      * @param[in] message The event message to deliver.
@@ -394,7 +394,7 @@ class ApplicationThread {
      * @brief Sends raw bytes on a RawBytesProtocolHandler connection.
      *
      * Allocates a slab chunk, copies the supplied bytes into it, and enqueues a
-     * SendRaw command to the reactor. The reactor transmits the bytes as-is — no
+     * SendRaw command to the reactor. The reactor transmits the bytes as-is -- no
      * header is prepended. The slab chunk is deallocated by the reactor once the
      * send completes.
      *

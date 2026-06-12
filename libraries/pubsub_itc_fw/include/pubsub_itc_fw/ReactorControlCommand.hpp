@@ -36,13 +36,13 @@ namespace pubsub_itc_fw {
  *
  * Tag / payload field mapping:
  *
- *   AddTimer       — owner_thread_id_, timer_id_, timer_name_, interval_, timer_type_
- *   CancelTimer    — owner_thread_id_, timer_id_
- *   Connect        — requesting_thread_id_, service_name_
- *   Disconnect     — connection_id_
- *   SendPdu        — connection_id_, allocator_, slab_id_, pdu_chunk_ptr_, pdu_byte_count_
- *   SendRaw        — connection_id_, allocator_, slab_id_, raw_chunk_ptr_, raw_byte_count_
- *   CommitRawBytes — connection_id_, bytes_consumed_
+ *   AddTimer       -- owner_thread_id_, timer_id_, timer_name_, interval_, timer_type_
+ *   CancelTimer    -- owner_thread_id_, timer_id_
+ *   Connect        -- requesting_thread_id_, service_name_
+ *   Disconnect     -- connection_id_
+ *   SendPdu        -- connection_id_, allocator_, slab_id_, pdu_chunk_ptr_, pdu_byte_count_
+ *   SendRaw        -- connection_id_, allocator_, slab_id_, raw_chunk_ptr_, raw_byte_count_
+ *   CommitRawBytes -- connection_id_, bytes_consumed_
  *
  * SendPdu vs SendRaw:
  *   SendPdu is for framework-native PDU connections (PduProtocolHandler). The
@@ -166,7 +166,7 @@ class ReactorControlCommand {
      * allocator_->deallocate(slab_id_, chunk_ptr) after the frame has been fully
      * transmitted.
      *
-     * This pointer is never sent over the network — it is purely local
+     * This pointer is never sent over the network -- it is purely local
      * bookkeeping so the reactor knows which allocator to return the chunk to.
      * ExpandableSlabAllocator::deallocate() is thread-safe so the reactor
      * may call it from the reactor thread without synchronisation.
@@ -208,7 +208,7 @@ class ReactorControlCommand {
      * @brief Pointer to the start of the raw outbound bytes in the slab chunk.
      *
      * The chunk contains the complete wire bytes exactly as they should be
-     * transmitted — no header is prepended by the reactor. The total number
+     * transmitted -- no header is prepended by the reactor. The total number
      * of bytes transmitted is raw_byte_count_.
      *
      * The same allocator_ and slab_id_ fields used by SendPdu are reused for
@@ -223,7 +223,7 @@ class ReactorControlCommand {
     /**
      * @brief Total number of raw bytes to transmit.
      *
-     * Unlike pdu_byte_count_, this is the complete wire size — no header
+     * Unlike pdu_byte_count_, this is the complete wire size -- no header
      * arithmetic is applied.
      */
     uint32_t raw_byte_count_{0};

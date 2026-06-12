@@ -146,7 +146,7 @@ TEST_F(ExpandableSlabAllocatorTest, SlabChainsWhenCurrentIsFull) {
     EXPECT_NE(ptr_0, nullptr);
     EXPECT_EQ(alloc.slab_count(), 1);
 
-    // This allocation cannot fit in slab 0 — a new slab must be chained.
+    // This allocation cannot fit in slab 0 -- a new slab must be chained.
     auto [slab_id_1, ptr_1] = alloc.allocate(small_slab);
     EXPECT_NE(ptr_1, nullptr);
     EXPECT_EQ(alloc.slab_count(), 2);
@@ -203,7 +203,7 @@ TEST_F(ExpandableSlabAllocatorTest, CurrentSlabIsResetWhenAllChunksFreed) {
         EXPECT_EQ(slab_id, 0);
     }
 
-    // Free all chunks — slab 0 will be enqueued in the empty slab queue.
+    // Free all chunks -- slab 0 will be enqueued in the empty slab queue.
     for (auto [slab_id, ptr] : allocations) {
         alloc.deallocate(slab_id, ptr);
     }
@@ -234,27 +234,27 @@ TEST_F(ExpandableSlabAllocatorTest, OldSlabIsDestroyedAfterChaining) {
     ASSERT_NE(ptr_0, nullptr);
     EXPECT_EQ(slab_id_0, 0);
 
-    // Allocate again — chains slab 1; slab 0 cleared is_current_ but its
+    // Allocate again -- chains slab 1; slab 0 cleared is_current_ but its
     // count is still 1, so no enqueue yet.
     auto [slab_id_1, ptr_1] = alloc.allocate(slab_and_chunk);
     ASSERT_NE(ptr_1, nullptr);
     EXPECT_EQ(slab_id_1, 1);
     EXPECT_EQ(alloc.slab_count(), 2);
 
-    // Free slab-0's chunk — slab 0's count -> 0, slab 0 is enqueued.
+    // Free slab-0's chunk -- slab 0's count -> 0, slab 0 is enqueued.
     alloc.deallocate(slab_id_0, ptr_0);
 
-    // Allocate again — drain pops slab 0 and HOLDS IT as the deferred
+    // Allocate again -- drain pops slab 0 and HOLDS IT as the deferred
     // sentinel (not yet destroyed). The allocate then chains slab 2.
     auto [slab_id_2, ptr_2] = alloc.allocate(slab_and_chunk);
     ASSERT_NE(ptr_2, nullptr);
     EXPECT_EQ(slab_id_2, 2);
     EXPECT_EQ(alloc.slab_count(), 3);
 
-    // Free slab-1's chunk — slab 1 enqueues.
+    // Free slab-1's chunk -- slab 1 enqueues.
     alloc.deallocate(slab_id_1, ptr_1);
 
-    // Allocate again — drain pops slab 1 and head_ advances past slab 0.
+    // Allocate again -- drain pops slab 1 and head_ advances past slab 0.
     // The previously-deferred slab 0 is now safe to destroy and IS destroyed
     // in this drain. Slab 1 becomes the new deferred sentinel.
     auto [slab_id_3, ptr_3] = alloc.allocate(slab_and_chunk);
@@ -309,13 +309,13 @@ TEST_F(ExpandableSlabAllocatorTest, DeallocateDestroyedSlabThrows) {
     // Chain slab 1.
     auto [slab_id_1, ptr_1] = alloc.allocate(slab_and_chunk);
 
-    // Free slab 0's chunk — slab 0 enqueues.
+    // Free slab 0's chunk -- slab 0 enqueues.
     alloc.deallocate(slab_id_0, ptr_0);
 
     // Trigger drain 1: pops slab 0, holds it as deferred sentinel. Chains slab 2.
     auto [slab_id_2, ptr_2] = alloc.allocate(slab_and_chunk);
 
-    // Free slab 1's chunk — slab 1 enqueues.
+    // Free slab 1's chunk -- slab 1 enqueues.
     alloc.deallocate(slab_id_1, ptr_1);
 
     // Trigger drain 2: pops slab 1; head_ advances past slab 0; slab 0 destroyed.
@@ -382,7 +382,7 @@ TEST_F(ExpandableSlabAllocatorTest, ConcurrentDeallocationsFromManySlabs) {
     // allocations live so no reclamation occurs during setup.
     // Then deallocate all chunks concurrently from separate threads.
     // Finally, drain one chunk at a time from the reactor thread to verify
-    // the allocator is structurally intact — reclamation is triggered
+    // the allocator is structurally intact -- reclamation is triggered
     // sequentially so the Vyukov MPSC queue is never in a multi-producer
     // mid-enqueue state when drain_empty_slab_queue() runs.
     ExpandableSlabAllocator alloc{small_slab};
@@ -411,7 +411,7 @@ TEST_F(ExpandableSlabAllocatorTest, ConcurrentDeallocationsFromManySlabs) {
         th.join();
     }
 
-    // All threads are joined — all deallocate() calls have returned and all
+    // All threads are joined -- all deallocate() calls have returned and all
     // Vyukov MPSC enqueue operations are complete. It is now safe for the
     // reactor thread to call allocate() and drain the empty slab queue.
     auto [slab_id_new, ptr_new] = alloc.allocate(64);
@@ -452,7 +452,7 @@ TEST_F(ExpandableSlabAllocatorTest, StressAllocateDeallocateCycle) {
         alloc.deallocate(slab_id_probe, ptr_probe);
     }
 
-    // Slab count should not have grown unboundedly — reclamation must have worked.
+    // Slab count should not have grown unboundedly -- reclamation must have worked.
     // At most we'd expect a handful of slabs, not cycle_count worth.
     EXPECT_LT(alloc.slab_count(), 10) << "slab count grew unexpectedly; reclamation may be broken";
 }
@@ -838,7 +838,7 @@ TEST_F(ExpandableSlabAllocatorTest, DestroyedSlabIdThrowsOnDeallocateCrossThread
     ASSERT_EQ(id0, 0);
     ASSERT_NE(ptr0, nullptr);
 
-    // Allocate again — chains slab 1.
+    // Allocate again -- chains slab 1.
     auto [id1, ptr1] = allocator.allocate(slab_and_chunk);
     ASSERT_EQ(id1, 1);
     ASSERT_NE(ptr1, nullptr);
@@ -941,7 +941,7 @@ TEST_F(ExpandableSlabAllocatorTest, ConcurrentDeallocWhileReactorAllocates) {
 //
 // Pattern mirrors real usage: the reactor allocates a batch of chunks, hands
 // them all to worker threads, then waits for all workers to finish before
-// allocating the next batch. No spin-waits or slot-coupling — each round is
+// allocating the next batch. No spin-waits or slot-coupling -- each round is
 // a clean barrier. If reclamation stalls, the allocator grows unboundedly and
 // allocate() eventually returns nullptr, which the test detects.
 TEST_F(ExpandableSlabAllocatorTest, NoStarvationUnderSustainedLoad) {
@@ -979,7 +979,7 @@ TEST_F(ExpandableSlabAllocatorTest, NoStarvationUnderSustainedLoad) {
         for (auto& t : workers) {
             t.join();
         }
-        // All chunks freed — next round triggers reclamation via allocate().
+        // All chunks freed -- next round triggers reclamation via allocate().
     }
 
     EXPECT_EQ(errors.load(), 0) << "allocator returned nullptr under sustained load";
@@ -1054,7 +1054,7 @@ TEST_F(ExpandableSlabAllocatorTest, OldEmptySlabIsDestroyed) {
     EXPECT_EQ(id1, 1);
     EXPECT_EQ(allocator.slab_count(), 2);
 
-    // Free the only chunk in slab 0 — notification enqueued
+    // Free the only chunk in slab 0 -- notification enqueued
     allocator.deallocate(id0, ptr0);
 
     // Next allocation drains queue: slab 0 is not current (slab 1 is).

@@ -7,7 +7,7 @@
 #include <sys/socket.h> // For socket(), bind(), listen(), accept(), connect(), shutdown(), setsockopt(), getsockopt(), socklen_t
 #include <unistd.h>     // For close()
 
-// C++ headers whose names start with ‘c’
+// C++ headers whose names start with 'c'
 #include <cstdint> // For int, uint16_t for port numbers
 
 // System C++ headers

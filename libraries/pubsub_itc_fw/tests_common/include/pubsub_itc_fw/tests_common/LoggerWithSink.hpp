@@ -13,7 +13,7 @@
 namespace pubsub_itc_fw {
 
 /*
- * LoggerWithSink — a QuillLogger wired to an in-memory record store for use
+ * LoggerWithSink -- a QuillLogger wired to an in-memory record store for use
  * in unit and integration tests.
  *
  * Construct with a desired applog threshold.  The logger is in unit-test mode:

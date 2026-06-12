@@ -32,7 +32,7 @@ class ApplicationThread;
  *
  * An `OutboundConnection` is created by the Reactor when an ApplicationThread
  * calls `connect_to_service(service_name)`. It encapsulates the full lifecycle
- * of one client-side TCP connection — from the initial non-blocking connect
+ * of one client-side TCP connection -- from the initial non-blocking connect
  * attempt through to steady-state PDU exchange and eventual teardown.
  *
  * Ownership and threading:
@@ -43,7 +43,7 @@ class ApplicationThread;
  *
  * Lifecycle phases:
  *
- *   Phase 1 — Connecting:
+ *   Phase 1 -- Connecting:
  *     The `OutboundConnection` is created with a `TcpConnector` that has
  *     initiated a non-blocking `connect()` to the primary endpoint of the
  *     named service. The reactor registers the connector's socket file
@@ -57,7 +57,7 @@ class ApplicationThread;
  *     delivered to the requesting ApplicationThread and the
  *     `OutboundConnection` is destroyed.
  *
- *   Phase 2 — Established:
+ *   Phase 2 -- Established:
  *     When `finish_connect()` succeeds, the `TcpConnector` is released, and
  *     the `TcpSocket` it was managing is transferred to this connection. A
  *     `PduFramer` and `PduParser` are constructed at this point. The reactor
@@ -101,15 +101,15 @@ class ApplicationThread;
  * Reactor maps:
  *   The reactor maintains two maps for `OutboundConnection` objects:
  *
- *     connections_by_id_  : ConnectionID → OutboundConnection*
+ *     connections_by_id_  : ConnectionID -> OutboundConnection*
  *       Used when processing `SendPdu` and `Disconnect` commands.
  *
- *     connections_by_fd_  : int (fd) → OutboundConnection*
+ *     connections_by_fd_  : int (fd) -> OutboundConnection*
  *       Used when dispatching epoll events (`EPOLLIN`, `EPOLLOUT`, `EPOLLERR`).
  *
  *   Ownership of all `OutboundConnection` instances lies with a third map:
  *
- *     connections_        : ConnectionID → unique_ptr<OutboundConnection>
+ *     connections_        : ConnectionID -> unique_ptr<OutboundConnection>
  */
 class OutboundConnection {
   public:

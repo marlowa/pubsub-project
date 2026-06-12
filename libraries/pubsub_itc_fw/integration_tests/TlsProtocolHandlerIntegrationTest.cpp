@@ -10,7 +10,7 @@
  *
  * The same framing as RawBytesProtocolHandlerIntegrationTest is reused. The
  * TlsRawBytesProtocolHandler must deliver the same plaintext view to the
- * application as RawBytesProtocolHandler — the only difference is that the
+ * application as RawBytesProtocolHandler -- the only difference is that the
  * byte stream is protected by TLS on the wire.
  *
  * Certificates:
@@ -241,12 +241,12 @@ bool write_key_pem(const std::string& path, EVP_PKEY* key) {
  * @brief Generates all certificate material for the TLS tests in a temporary directory.
  *
  * Layout:
- *   ca.crt       — self-signed CA (used by clients to verify the server, and by the
+ *   ca.crt       -- self-signed CA (used by clients to verify the server, and by the
  *                  server to verify client certs in the mutual TLS test)
- *   server.crt   — CA-signed server certificate
- *   server.key   — server private key
- *   client.crt   — CA-signed client certificate (mutual TLS test only)
- *   client.key   — client private key (mutual TLS test only)
+ *   server.crt   -- CA-signed server certificate
+ *   server.key   -- server private key
+ *   client.crt   -- CA-signed client certificate (mutual TLS test only)
+ *   client.key   -- client private key (mutual TLS test only)
  */
 class TlsCertDirectory {
   public:
@@ -597,7 +597,7 @@ class TlsProtocolHandlerIntegrationTest : public ::testing::Test {
     void SetUp() override {
         logger_ = std::make_unique<LoggerWithSink>();
         certs_ = std::make_unique<TlsCertDirectory>();
-        ASSERT_TRUE(certs_->valid) << "Certificate generation failed — check /tmp permissions and OpenSSL availability";
+        ASSERT_TRUE(certs_->valid) << "Certificate generation failed -- check /tmp permissions and OpenSSL availability";
     }
 
     void TearDown() override {
@@ -677,7 +677,7 @@ TEST_F(TlsProtocolHandlerIntegrationTest, TlsHandshakeAndRoundTrip) {
     const uint16_t listen_port = start_listener_reactor(*listener_reactor);
 
     TlsClientConnection client = connect_tls(listen_port, certs_->ca_cert_path);
-    ASSERT_TRUE(client.connected()) << "TLS handshake failed — server may have rejected the connection";
+    ASSERT_TRUE(client.connected()) << "TLS handshake failed -- server may have rejected the connection";
 
     EXPECT_TRUE(wait_for([&]() { return listener_thread->connection_established.load(std::memory_order_acquire); }))
         << "Listener: ConnectionEstablished not received: " << last_wait_failure_description();
@@ -795,7 +795,7 @@ TEST_F(TlsProtocolHandlerIntegrationTest, PeerDisconnect) {
 }
 
 // ============================================================
-// Test: mutual TLS — both sides present certificates
+// Test: mutual TLS -- both sides present certificates
 // ============================================================
 TEST_F(TlsProtocolHandlerIntegrationTest, MutualTlsHandshake) {
     const ServiceRegistry listener_registry;
@@ -817,7 +817,7 @@ TEST_F(TlsProtocolHandlerIntegrationTest, MutualTlsHandshake) {
     std::thread listener_reactor_thread([&]() { listener_reactor->run(); });
     const uint16_t listen_port = start_listener_reactor(*listener_reactor);
 
-    // Client presents its certificate — required by the server.
+    // Client presents its certificate -- required by the server.
     TlsClientConnection client = connect_tls(listen_port, certs_->ca_cert_path,
                                               certs_->client_cert_path, certs_->client_key_path);
     ASSERT_TRUE(client.connected()) << "Mutual TLS handshake failed";
@@ -845,7 +845,7 @@ TEST_F(TlsProtocolHandlerIntegrationTest, MutualTlsHandshake) {
 }
 
 // ============================================================
-// Test: TLS handshake failure — client rejects server certificate
+// Test: TLS handshake failure -- client rejects server certificate
 //
 // The client is constructed with no trusted CA. OpenSSL certificate
 // verification fails, the client sends a TLS alert, and the server

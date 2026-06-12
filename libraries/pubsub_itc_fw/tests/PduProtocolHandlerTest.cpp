@@ -14,7 +14,7 @@
  *   One end is wrapped in TcpSocket::adopt() and given to PduProtocolHandler.
  *   The other end is held raw by the test. By controlling how much the test
  *   reads from the raw end, the kernel send buffer can be kept full, forcing
- *   send() to return EAGAIN and keeping has_pending_data() true — without
+ *   send() to return EAGAIN and keeping has_pending_data() true -- without
  *   any timing dependence.
  *
  *   A Reactor is constructed but never run, purely to satisfy the
@@ -126,7 +126,7 @@ class PduProtocolHandlerTest : public ::testing::Test {
         inbound_allocator_ = std::make_unique<ExpandableSlabAllocator>(65536);
 
         // Create the socketpair. handler_fd_ is set non-blocking by TcpSocket::adopt().
-        // raw_fd_ is set non-blocking explicitly below — no fd in this test may block.
+        // raw_fd_ is set non-blocking explicitly below -- no fd in this test may block.
         int fds[2];
         ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0) << "socketpair() failed";
         handler_fd_ = fds[0];
@@ -209,7 +209,7 @@ class PduProtocolHandlerTest : public ::testing::Test {
         }
     }
 
-    // Outbound slab for frames being sent — separate from inbound_allocator_.
+    // Outbound slab for frames being sent -- separate from inbound_allocator_.
     // Sized large enough for the test payloads.
     ExpandableSlabAllocator& outbound_allocator() {
         if (outbound_allocator_ == nullptr) {
@@ -242,7 +242,7 @@ TEST_F(PduProtocolHandlerTest, SendPrebuiltCompletesImmediately) {
     auto [send_ok, send_error] = handler_->send_prebuilt(&outbound_allocator(), slab_id, chunk, total_bytes);
     ASSERT_TRUE(send_ok) << send_error;
 
-    // The send buffer has room for a tiny frame — the send should complete
+    // The send buffer has room for a tiny frame -- the send should complete
     // immediately, leaving no pending data and no live chunk.
     EXPECT_FALSE(handler_->has_pending_send());
 
@@ -322,7 +322,7 @@ TEST_F(PduProtocolHandlerTest, ContinueSendReleasesChunkOnCompletion) {
     }
 
     // If the chunk was correctly released, the slab allocator should be able
-    // to reclaim it. We verify this by allocating the full slab size again —
+    // to reclaim it. We verify this by allocating the full slab size again --
     // if the previous chunk was not freed the allocator would chain a new slab.
     // After reclamation (triggered by the next allocate) we should still have
     // only one slab (the original, reset) or at most two.
@@ -351,7 +351,7 @@ TEST_F(PduProtocolHandlerTest, DeallocatePendingSendReleasesChunk) {
     handler_->deallocate_pending_send();
 
     // deallocate_pending_send() frees the slab chunk but does not reset the
-    // framer's internal send state — has_pending_send() may still return true.
+    // framer's internal send state -- has_pending_send() may still return true.
     // What matters is that the chunk was freed. We verify this by checking
     // that the allocator can reclaim the memory without chaining a new slab.
     auto [slab_id2, chunk2] = send_allocator.allocate(4 * 1024 * 1024);

@@ -250,7 +250,7 @@ TEST_F(StatusQueryResponseTest, StatusQueryResponseRoundTrip) {
 
     std::thread listener_reactor_thread([&]() { listener_reactor->run(); });
 
-    // Wait for the listener reactor to finish initializing — at that point
+    // Wait for the listener reactor to finish initializing -- at that point
     // the acceptor socket is bound and the OS-assigned port is readable.
     ASSERT_TRUE(wait_for([&]() { return listener_reactor->is_initialized(); })) << "Listener reactor did not initialize within timeout";
 

@@ -115,7 +115,7 @@ void OutboundConnectionManager::on_connect_ready(OutboundConnection& conn) {
                 if (!addr) {
                     PUBSUB_LOG(logger_, FwLogLevel::Error,
                                "OutboundConnectionManager::on_connect_ready: failed to resolve "
-                               "secondary {}:{} — {}",
+                               "secondary {}:{} -- {}",
                                secondary.host, secondary.port, addr_error);
                     teardown_connection(conn.id(), addr_error, DeliverLostEventFlag{DeliverLostEventFlag::SuppressLostEvent});
                     auto* thread = thread_lookup_.get_fast_path_thread(conn.requesting_thread_id());
@@ -169,7 +169,7 @@ void OutboundConnectionManager::on_connect_ready(OutboundConnection& conn) {
             teardown_connection(conn.id(), error, DeliverLostEventFlag{DeliverLostEventFlag::SuppressLostEvent});
             schedule_retry(service_name, requesting_thread_id);
         }
-        // else still in progress — wait for next EPOLLOUT
+        // else still in progress -- wait for next EPOLLOUT
         return;
     }
 
@@ -429,7 +429,7 @@ bool OutboundConnectionManager::process_send_raw_command(const ReactorControlCom
     }
 
     if (!conn.is_established()) {
-        // TLS handshake still in progress — stash until established.
+        // TLS handshake still in progress -- stash until established.
         pending_send_ = command;
         return true;
     }
@@ -504,7 +504,7 @@ bool OutboundConnectionManager::drain_pending_send() {
     if (command.as_tag() == ReactorControlCommand::SendRaw) {
         const bool processed = process_send_raw_command(command);
         if (!processed) {
-            // Connection vanished while the command was stashed — deallocate.
+            // Connection vanished while the command was stashed -- deallocate.
             command.allocator_->deallocate(command.slab_id_, command.raw_chunk_ptr_);
         }
     } else {
@@ -534,7 +534,7 @@ void OutboundConnectionManager::schedule_retry(const std::string& service_name, 
     pending_retries_[service_name] = PendingRetry(retry_cmd, now + config_.connect_retry_interval_);
 
     if (retry_contexts_.find(service_name) == retry_contexts_.end()) {
-        // First failure for this service — log once and create context.
+        // First failure for this service -- log once and create context.
         retry_contexts_[service_name] = RetryContext{now, now};
         const auto warning_min = std::chrono::duration_cast<std::chrono::minutes>(config_.connect_retry_warning_interval_).count();
         if (warning_min > 0) {
@@ -549,7 +549,7 @@ void OutboundConnectionManager::schedule_retry(const std::string& service_name, 
                        service_name, config_.connect_retry_interval_.count());
         }
     }
-    // Subsequent retries are silent — handled by periodic reminder in retry_failed_connections().
+    // Subsequent retries are silent -- handled by periodic reminder in retry_failed_connections().
 }
 
 void OutboundConnectionManager::retry_failed_connections(const std::function<ConnectionID()>& next_id_fn) {

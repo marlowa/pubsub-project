@@ -182,7 +182,7 @@ std::tuple<bool, std::string> RawBytesProtocolHandler::attempt_send_remaining() 
             return {true, ""};
         }
         if (result == -EPIPE) {
-            // Peer closed its end of the connection — not a fault on our side.
+            // Peer closed its end of the connection -- not a fault on our side.
             return {false, ""};
         }
         if (result < 0) {

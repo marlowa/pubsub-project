@@ -13,7 +13,7 @@ class QueueConfiguration {
     int low_watermark{0};
     int high_watermark{0};
 
-    // Passed back to the client’s watermark handlers
+    // Passed back to the client's watermark handlers
     void* for_client_use{nullptr};
 
     // Called when queue size drops below low_watermark

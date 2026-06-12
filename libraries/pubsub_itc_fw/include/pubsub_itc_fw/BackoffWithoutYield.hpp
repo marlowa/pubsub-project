@@ -23,7 +23,7 @@ namespace pubsub_itc_fw {
  *
  * Contrast with BackoffWithYield
  * --------------------------------
- * `BackoffWithYield` is designed for open-ended waiting — for example, a
+ * `BackoffWithYield` is designed for open-ended waiting -- for example, a
  * consumer thread spinning on a message queue that may be empty for milliseconds
  * at a time. Its tiered strategy escalates from hardware pauses to OS-level
  * yield to sleep, giving up CPU time when progress is not imminent.
@@ -52,7 +52,7 @@ namespace pubsub_itc_fw {
  * and would spuriously return `nullptr`, triggering unnecessary pool expansion.
  *
  * `BackoffWithoutYield` is used in the pop retry loop to wait out this
- * window. The window closes in a handful of cycles — a few exponentially
+ * window. The window closes in a handful of cycles -- a few exponentially
  * increasing `_mm_pause` calls is all that is needed. Using `BackoffWithYield`
  * here would cause unnecessary fan noise and CPU heat under sustained stress
  * because its tier-2 yield and tier-3 sleep are triggered far too aggressively
@@ -62,7 +62,7 @@ namespace pubsub_itc_fw {
  * ---------
  * Each call to `pause()` emits an exponentially increasing number of
  * `_mm_pause` instructions: 1, 2, 4, 8, ... up to a ceiling of
- * `max_pauses_per_step`. The counter never resets automatically — call
+ * `max_pauses_per_step`. The counter never resets automatically -- call
  * `reset()` when progress is made.
  *
  * On non-x86 platforms `_mm_pause` is not available. A compiler barrier
@@ -71,8 +71,8 @@ namespace pubsub_itc_fw {
  * such platforms `BackoffWithoutYield` degenerates to a simple retry loop.
  *
  * Under USING_VALGRIND (Valgrind or TSan builds), the implementation
- * falls back to a single `std::this_thread::yield()` per step — the same
- * as `BackoffWithYield` tier 2 — because those tools cannot model the
+ * falls back to a single `std::this_thread::yield()` per step -- the same
+ * as `BackoffWithYield` tier 2 -- because those tools cannot model the
  * hardware pause instruction and need standard synchronisation primitives
  * to reason correctly about thread ordering.
  *
@@ -98,9 +98,9 @@ class BackoffWithoutYield {
      * @brief Maximum number of `_mm_pause` calls emitted in a single `pause()` step.
      *
      * Caps the exponential growth to prevent a single pause() call from
-     * consuming an excessive number of cycles. At 256 pauses × ~140 cycles
-     * each (Skylake+), the ceiling is approximately 35,000 cycles (~12 µs at
-     * 3 GHz) — still short enough to be appropriate for contention windows
+     * consuming an excessive number of cycles. At 256 pauses x ~140 cycles
+     * each (Skylake+), the ceiling is approximately 35,000 cycles (~12 uss at
+     * 3 GHz) -- still short enough to be appropriate for contention windows
      * measured in nanoseconds, while giving concurrent threads ample time to
      * complete a CAS.
      */

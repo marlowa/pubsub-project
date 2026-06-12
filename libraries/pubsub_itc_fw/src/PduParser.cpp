@@ -58,10 +58,10 @@ std::tuple<bool, std::string> PduParser::receive() {
                 return {true, ""}; // Need more data; wait for next epoll event.
             }
 
-            // Full header received — validate canary.
+            // Full header received -- validate canary.
             const auto* hdr = reinterpret_cast<const PduHeader*>(header_buffer_);
             if (ntohl(hdr->canary) != pdu_canary_value) {
-                return {false, "PduParser: canary mismatch — wire corruption or framing error"};
+                return {false, "PduParser: canary mismatch -- wire corruption or framing error"};
             }
 
             current_payload_size_ = ntohl(hdr->byte_count);
@@ -90,7 +90,7 @@ std::tuple<bool, std::string> PduParser::receive() {
             }
 
             // Guard against payloads that exceed the inbound slab size before
-            // calling allocate() — whose precondition is size <= slab_size().
+            // calling allocate() -- whose precondition is size <= slab_size().
             // Violating that precondition would throw PreconditionAssertion and
             // crash the reactor. Instead, we return a descriptive error so the
             // reactor tears down this connection cleanly and stays alive for all
@@ -98,12 +98,12 @@ std::tuple<bool, std::string> PduParser::receive() {
             // ReactorConfiguration::inbound_slab_size.
             if (current_payload_size_ > slab_allocator_.slab_size()) {
                 return {false, fmt::format("PduParser: inbound PDU payload of {} bytes exceeds "
-                                           "inbound_slab_size of {} bytes — increase "
+                                           "inbound_slab_size of {} bytes -- increase "
                                            "ReactorConfiguration::inbound_slab_size",
                                            current_payload_size_, slab_allocator_.slab_size())};
             }
 
-            // Allocate a slab chunk to receive the payload directly — zero copy.
+            // Allocate a slab chunk to receive the payload directly -- zero copy.
             PUBSUB_LOG(logger_, FwLogLevel::Trace, "TRACE PduParser::receive: connection_id={} about to allocate {} bytes from inbound slab allocator",
                        connection_id_.get_value(), current_payload_size_);
             auto [slab_id, chunk] = slab_allocator_.allocate(current_payload_size_);
@@ -139,7 +139,7 @@ std::tuple<bool, std::string> PduParser::receive() {
 
             if (bytes_read < 0) {
                 if (bytes_read == -EAGAIN || bytes_read == -EWOULDBLOCK) {
-                    return {true, ""}; // Partial payload — resume on next epoll event.
+                    return {true, ""}; // Partial payload -- resume on next epoll event.
                 }
                 slab_allocator_.deallocate(payload_slab_id_, payload_chunk_);
                 payload_chunk_ = nullptr;
@@ -154,7 +154,7 @@ std::tuple<bool, std::string> PduParser::receive() {
             return {true, ""}; // Payload not yet complete.
         }
 
-        // Complete frame — offer to inline handler first, then dispatch to target thread.
+        // Complete frame -- offer to inline handler first, then dispatch to target thread.
         dispatch_pdu(payload_slab_id_, payload_chunk_);
 
         payload_chunk_ = nullptr;

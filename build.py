@@ -22,6 +22,21 @@ def _is_rhel8():
         return False
 
 
+def run_check_standards(source_dir):
+    """Run check_standards.py and abort the build if any violations are found."""
+    script = source_dir / "check_standards.py"
+    result = subprocess.run(
+        [sys.executable, str(script)],
+        cwd=source_dir,
+        check=False,
+        text=True,
+    )
+    if result.returncode != 0:
+        print("\nERROR: coding-standard violations found. Fix them before building.", file=sys.stderr)
+        sys.exit(result.returncode)
+    print("\n✓ Coding standards check passed")
+
+
 def run_pylint(source_dir):
     """Run pylint on the Python DSL source."""
     python_dir = source_dir / "python"
@@ -522,8 +537,10 @@ Examples:
         # Verify C++ build environment variables
         check_environment_variables()
 
-        # Python DSL checks run first so problems are caught before the
-        # (much slower) C++ build begins.
+        # Coding-standard check runs first -- violations are fatal.
+        run_check_standards(source_dir)
+
+        # Python DSL checks run before the (much slower) C++ build begins.
         if not args.no_pylint:
             run_pylint(source_dir)
         else:

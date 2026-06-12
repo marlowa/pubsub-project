@@ -14,14 +14,14 @@
  * Zero-copy receive strategy:
  *   PduParser reads in two phases to avoid copying payload bytes:
  *
- *   Phase 1 — header:
+ *   Phase 1 -- header:
  *     Bytes are accumulated into a small fixed header_buffer_[sizeof(PduHeader)]
  *     until a complete 24-byte PduHeader has arrived. The canary is validated.
  *
- *   Phase 2 — payload:
+ *   Phase 2 -- payload:
  *     Once the payload size is known from the header, PduParser allocates a slab
  *     chunk of exactly byte_count bytes from the ExpandableSlabAllocator. Payload
- *     bytes from the socket are read directly into that slab chunk — no intermediate
+ *     bytes from the socket are read directly into that slab chunk -- no intermediate
  *     buffer, no copy.
  *
  *   On a complete frame:

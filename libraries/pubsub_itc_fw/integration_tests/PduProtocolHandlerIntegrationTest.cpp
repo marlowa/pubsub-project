@@ -75,7 +75,7 @@ namespace pubsub_itc_fw::tests {
 static constexpr int16_t pdu_id_data_query = 300;
 static constexpr int16_t pdu_id_data_response = 301;
 
-// 2 MB string — large enough to exceed any loopback socket send buffer,
+// 2 MB string -- large enough to exceed any loopback socket send buffer,
 // guaranteeing at least one partial send regardless of kernel defaults.
 static constexpr size_t large_string_bytes = 2 * 1024 * 1024;
 
@@ -89,7 +89,7 @@ static constexpr size_t inbound_decode_arena_size = 3 * 1024 * 1024;
 
 // SO_SNDBUF value applied to the sending socket to guarantee blocking.
 // The kernel doubles this value internally, giving an effective buffer of
-// 2 * small_send_buffer_size bytes — well below the 2 MB payload.
+// 2 * small_send_buffer_size bytes -- well below the 2 MB payload.
 static constexpr int small_send_buffer_size = 16384;
 
 // Size of the large DataResponse results string used in LargeResponseForcesPartialSend.
@@ -448,7 +448,7 @@ class PduProtocolHandlerIntegrationTest : public ::testing::Test {
         return cfg;
     }
 
-    // Listener reactor with a small send buffer — forces PduProtocolHandler::continue_send()
+    // Listener reactor with a small send buffer -- forces PduProtocolHandler::continue_send()
     // when the listener sends a 2 MB DataResponse.
     static ReactorConfiguration make_small_sndbuf_listener_reactor_config() {
         ReactorConfiguration cfg{};
@@ -461,7 +461,7 @@ class PduProtocolHandlerIntegrationTest : public ::testing::Test {
         return cfg;
     }
 
-    // Connector reactor with a small send buffer — forces
+    // Connector reactor with a small send buffer -- forces
     // OutboundConnectionManager::on_write_ready() when the connector sends a 2 MB DataQuery.
     static ReactorConfiguration make_small_sndbuf_connector_reactor_config() {
         ReactorConfiguration cfg{};
@@ -737,7 +737,7 @@ TEST_F(PduProtocolHandlerIntegrationTest, ListenerClosesConnection) {
 
     auto connector_reactor = std::make_unique<Reactor>(make_connector_reactor_config(), connector_registry, logger_->logger);
 
-    // Use SmallQueryConnectorThread — it sends a small DataQuery on connect
+    // Use SmallQueryConnectorThread -- it sends a small DataQuery on connect
     // and calls shutdown on connection lost, which is what we expect here
     // since the listener will close without replying.
     auto connector_thread = ApplicationThread::create<SmallQueryConnectorThread>(logger_->logger, *connector_reactor);
@@ -776,9 +776,9 @@ TEST_F(PduProtocolHandlerIntegrationTest, ListenerClosesConnection) {
 // on_connection_established, before the reactor has processed either.
 // This guarantees:
 //   1. The reactor processes the first SendPdu, finds has_pending_data()
-//      true, and calls set_pending_send — conn.has_pending_send() is true.
+//      true, and calls set_pending_send -- conn.has_pending_send() is true.
 //   2. The reactor processes the second SendPdu while the first is still
-//      blocked, and stashes it into pending_send_ — pending_send_.has_value()
+//      blocked, and stashes it into pending_send_ -- pending_send_.has_value()
 //      is true.
 // Used by DoubleSendThenTeardown.
 // ============================================================
@@ -844,7 +844,7 @@ class DoubleSendConnectorThread : public ApplicationThread {
         // Must fit two 2 MB frames: 2 * outbound_slab_size with margin.
         // Each send_pdu call allocates from the same ExpandableSlabAllocator,
         // which chains a new slab when the first is full, so outbound_slab_size
-        // per slab is sufficient — the allocator expands automatically.
+        // per slab is sufficient -- the allocator expands automatically.
         cfg.outbound_slab_size = outbound_slab_size;
         cfg.inbound_decode_arena_size = inbound_decode_arena_size;
         return cfg;
@@ -883,7 +883,7 @@ TEST_F(PduProtocolHandlerIntegrationTest, DoubleSendThenTeardown) {
 
     // Small send buffer on the connector forces the first PDU to block,
     // guaranteeing set_pending_send is called before the second SendPdu
-    // command is processed — which then stashes it into pending_send_.
+    // command is processed -- which then stashes it into pending_send_.
     ServiceRegistry connector_registry;
     connector_registry.add("listener", NetworkEndpointConfiguration{"127.0.0.1", listen_port}, NetworkEndpointConfiguration{});
 

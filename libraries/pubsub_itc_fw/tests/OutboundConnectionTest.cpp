@@ -66,7 +66,7 @@
  *     Establishes a real outbound connection, sends a large PDU to fill the
  *     kernel send buffer so has_pending_data() is true, then calls
  *     process_send_pdu_command() with a second PDU while the first is still
- *     blocked — this stashes the second into pending_send_. Drains the peer
+ *     blocked -- this stashes the second into pending_send_. Drains the peer
  *     socket, drives on_write_ready() to complete the first send, then calls
  *     drain_pending_send() directly. Covers the drain_pending_send body
  *     (lines 364-375).
@@ -451,7 +451,7 @@ TEST_F(OutboundConnectionPreconditionTest, SetPendingSendRejectsNullChunkPtr) {
 // Uses the Reactor::outbound_manager() test seam to drive the manager
 // directly without a running event loop. A real loopback listener is
 // used to establish the connection deterministically. The reactor is
-// constructed but never run — we call process_connect_command and
+// constructed but never run -- we call process_connect_command and
 // on_connect_ready directly on the manager to transition the connection
 // to established phase under full test control.
 // ============================================================
@@ -468,7 +468,7 @@ class OutboundConnectionManagerTest : public ::testing::Test {
         reactor_ = std::make_unique<Reactor>(cfg, registry_, logger_->logger);
 
         // Register stub thread. fast_path_threads_ is not populated since we
-        // never call run() — but deliver_lost_event=false means teardown_connection
+        // never call run() -- but deliver_lost_event=false means teardown_connection
         // never calls get_fast_path_thread, so this is safe.
         stub_thread_ = ApplicationThread::create<OutboundTestThread>(logger_->logger, *reactor_, "test_service");
         reactor_->register_thread(stub_thread_);
@@ -588,7 +588,7 @@ TEST_F(OutboundConnectionManagerTest, TeardownWithPendingSendFreesChunk) {
     auto [slab_id, chunk, total_bytes] = make_frame(128);
     ASSERT_NE(chunk, nullptr);
 
-    // Inject pending-send state directly — no real partial write needed.
+    // Inject pending-send state directly -- no real partial write needed.
     conn->set_pending_send(outbound_allocator_.get(), slab_id, chunk, total_bytes);
     ASSERT_TRUE(conn->has_pending_send());
 
@@ -599,11 +599,11 @@ TEST_F(OutboundConnectionManagerTest, TeardownWithPendingSendFreesChunk) {
     // deliver_lost_event=false so fast_path_threads_ is not accessed.
     reactor_->outbound_manager().teardown_connection(conn_id, "test teardown", DeliverLostEventFlag{DeliverLostEventFlag::SuppressLostEvent});
 
-    // Verify the chunk was freed: allocate the same size again — the slab
+    // Verify the chunk was freed: allocate the same size again -- the slab
     // count must not have grown beyond what it was before teardown.
     auto [slab_id2, chunk2] = outbound_allocator_->allocate(128);
     EXPECT_NE(chunk2, nullptr);
-    EXPECT_LE(outbound_allocator_->slab_count(), slabs_before) << "Slab count grew after teardown — chunk was not freed by teardown_connection";
+    EXPECT_LE(outbound_allocator_->slab_count(), slabs_before) << "Slab count grew after teardown -- chunk was not freed by teardown_connection";
     outbound_allocator_->deallocate(slab_id2, chunk2);
 }
 
@@ -613,13 +613,13 @@ TEST_F(OutboundConnectionManagerTest, TeardownWithPendingSendFreesChunk) {
 //
 // Strategy:
 //   1. Establish connection. Set a tiny SO_SNDBUF to guarantee blocking.
-//   2. Send a large PDU — has_pending_data() stays true, set_pending_send
+//   2. Send a large PDU -- has_pending_data() stays true, set_pending_send
 //      is called by process_send_pdu_command.
-//   3. Send a second PDU while the first is still blocked — it gets stashed
+//   3. Send a second PDU while the first is still blocked -- it gets stashed
 //      into pending_send_ by process_send_pdu_command.
 //   4. Drain the peer socket and call on_write_ready() until the first send
 //      completes and conn.has_pending_send() becomes false.
-//   5. Call drain_pending_send() — it must process the stashed second command,
+//   5. Call drain_pending_send() -- it must process the stashed second command,
 //      covering the body of drain_pending_send (lines 364-375).
 // ============================================================
 TEST_F(OutboundConnectionManagerTest, DrainPendingSendDispatchesStashedCommand) {
@@ -651,16 +651,16 @@ TEST_F(OutboundConnectionManagerTest, DrainPendingSendDispatchesStashedCommand) 
     cmd1.slab_id_ = slab_id1;
     cmd1.pdu_chunk_ptr_ = chunk1;
     cmd1.pdu_byte_count_ = static_cast<uint32_t>(large_payload);
-    ASSERT_TRUE(mgr.process_send_pdu_command(cmd1)) << "process_send_pdu_command rejected cmd1 — connection not found in manager";
+    ASSERT_TRUE(mgr.process_send_pdu_command(cmd1)) << "process_send_pdu_command rejected cmd1 -- connection not found in manager";
 
     if (!conn->has_pending_send()) {
-        // Kernel absorbed the full frame — can't test drain_pending_send here.
+        // Kernel absorbed the full frame -- can't test drain_pending_send here.
         if (peer_fd_ != -1) {
             ::close(peer_fd_);
             peer_fd_ = -1;
         }
         mgr.teardown_connection(conn_id, "cleanup", DeliverLostEventFlag{DeliverLostEventFlag::SuppressLostEvent});
-        GTEST_SKIP() << "Kernel send buffer absorbed the full frame — skipping";
+        GTEST_SKIP() << "Kernel send buffer absorbed the full frame -- skipping";
     }
 
     // Send a second PDU while the first is still blocked.
@@ -674,7 +674,7 @@ TEST_F(OutboundConnectionManagerTest, DrainPendingSendDispatchesStashedCommand) 
     cmd2.slab_id_ = slab_id2;
     cmd2.pdu_chunk_ptr_ = chunk2;
     cmd2.pdu_byte_count_ = 128;
-    ASSERT_TRUE(mgr.process_send_pdu_command(cmd2)) << "process_send_pdu_command rejected cmd2 — connection not found in manager";
+    ASSERT_TRUE(mgr.process_send_pdu_command(cmd2)) << "process_send_pdu_command rejected cmd2 -- connection not found in manager";
 
     // Drain the peer socket and drive on_write_ready until the first send
     // completes.
@@ -837,7 +837,7 @@ TEST_F(OutboundConnectionManagerTest, OnDataReadyParseErrorTeardownsConnection) 
     OutboundConnectionManager& mgr = reactor_->outbound_manager();
     mgr.on_data_ready(*conn);
 
-    // Canary mismatch → parser returns {false, error} → teardown_connection called.
+    // Canary mismatch -> parser returns {false, error} -> teardown_connection called.
     EXPECT_EQ(mgr.find_by_id(conn_id), nullptr);
 }
 

@@ -40,7 +40,7 @@ std::string segment_path(const std::string& directory, uint64_t seg_num) {
 } // un-named namespace
 
 // ---------------------------------------------------------------------------
-// replay_segment() — scan one segment file; returns bytes consumed
+// replay_segment() -- scan one segment file; returns bytes consumed
 // ---------------------------------------------------------------------------
 
 size_t WalReader::replay_segment(const std::string& path, size_t start_offset, const EntryCallback& cb) {
@@ -83,7 +83,7 @@ size_t WalReader::replay_segment(const std::string& path, size_t start_offset, c
 
         const size_t entry_size = sizeof(WalEntryHeader) + hdr.payload_size + sizeof(uint32_t);
         if (offset + entry_size > file_size) {
-            break; // truncated entry — treat as uncommitted tail
+            break; // truncated entry -- treat as uncommitted tail
         }
 
         Crc32 crc;
@@ -94,7 +94,7 @@ size_t WalReader::replay_segment(const std::string& path, size_t start_offset, c
         std::memcpy(&stored, base + offset + sizeof(WalEntryHeader) + hdr.payload_size, sizeof(uint32_t));
 
         if (computed != stored) {
-            break; // corrupted entry — stop replay
+            break; // corrupted entry -- stop replay
         }
 
         if (cb) {
@@ -110,7 +110,7 @@ size_t WalReader::replay_segment(const std::string& path, size_t start_offset, c
 }
 
 // ---------------------------------------------------------------------------
-// replay() — discover segments, replay from anchor, return end position
+// replay() -- discover segments, replay from anchor, return end position
 // ---------------------------------------------------------------------------
 
 WalPosition WalReader::replay(const std::string& directory, WalPosition from, const EntryCallback& cb) {
@@ -120,7 +120,7 @@ WalPosition WalReader::replay(const std::string& directory, WalPosition from, co
         DIR* dp = ::opendir(directory.c_str());
         if (!dp) {
             if (errno == ENOENT) {
-                // Directory doesn't exist yet — nothing to replay.
+                // Directory doesn't exist yet -- nothing to replay.
                 return from;
             }
             throw PubSubItcException("WalReader: opendir(" + directory + "): " + std::strerror(errno));

@@ -15,32 +15,32 @@
 //
 // The suite covers:
 //
-//   • Basic functional correctness
+//   - Basic functional correctness
 //       - FIFO ordering
 //       - enqueue/dequeue semantics
 //
-//   • Multi-threaded correctness
+//   - Multi-threaded correctness
 //       - multiple producers racing a single consumer
 //       - pinned-core execution to simulate production deployment
 //
-//   • Watermark behaviour
+//   - Watermark behaviour
 //       - high/low watermark transitions
 //       - hysteresis stability
 //       - storm tests to ensure handlers fire exactly once per crossing
 //
-//   • Shutdown semantics
+//   - Shutdown semantics
 //       - enqueue-after-shutdown safety
 //       - destructor draining behaviour
 //       - shutdown races under load
 //
-//   • Stress and soak testing
+//   - Stress and soak testing
 //       - millions of messages
 //       - jittered producer/consumer timing
 //       - memory-pressure bursts
 //       - ABA-adjacent pointer churn
 //       - false sharing detection
 //
-//   • Behavioural profiling
+//   - Behavioural profiling
 //       - queue-depth histogram sampling
 //       - output for external plotting/analysis
 //
@@ -434,7 +434,7 @@ TEST(LockFreeMessageQueueTest, SoakTestMillionsOfMessages) {
     constexpr int per_producer = 10'000; // 20k total is plenty for a Valgrind check
 #else
     constexpr int producers = 4;
-    constexpr int per_producer = 2'500'000; // 2.5M each → 10M total
+    constexpr int per_producer = 2'500'000; // 2.5M each -> 10M total
 #endif
     constexpr int total = producers * per_producer;
 
@@ -620,7 +620,7 @@ TEST(LockFreeMessageQueueTest, WatermarkStormTest) {
 
     constexpr int cycles = 2000;
 
-    // We will oscillate the queue size between 0 → 25 → 0 repeatedly.
+    // We will oscillate the queue size between 0 -> 25 -> 0 repeatedly.
     for (int c = 0; c < cycles; ++c) {
 
         // Fill above high watermark
@@ -696,7 +696,7 @@ TEST(LockFreeMessageQueueTest, ShutdownRaceTest) {
             }
         }
 
-        // Trigger shutdown mid‑stream
+        // Trigger shutdown mid-stream
         shutdown_now.store(true, std::memory_order_release);
         queue.shutdown();
     });
@@ -738,7 +738,7 @@ TEST(LockFreeMessageQueueTest, LowWatermarkStormTest) {
 
     constexpr int cycles = 2000;
 
-    // We oscillate the queue size between 0 → 25 → 0 repeatedly.
+    // We oscillate the queue size between 0 -> 25 -> 0 repeatedly.
     // This forces both transitions many times.
     for (int c = 0; c < cycles; ++c) {
 
@@ -756,7 +756,7 @@ TEST(LockFreeMessageQueueTest, LowWatermarkStormTest) {
         }
     }
 
-    // Each cycle should produce exactly one high→low and one low→high transition.
+    // Each cycle should produce exactly one high->low and one low->high transition.
     EXPECT_EQ(high_calls.load(), cycles);
     EXPECT_EQ(low_calls.load(), cycles);
     EXPECT_TRUE(queue.empty());
@@ -966,7 +966,7 @@ TEST(LockFreeMessageQueueTest, MemoryPressureBurstTest) {
 #else
     constexpr int producers = 4;
     constexpr int bursts = 3000;
-    constexpr int burst_size = 50; // small bursts → high allocation churn
+    constexpr int burst_size = 50; // small bursts -> high allocation churn
 #endif
     constexpr int total = producers * bursts * burst_size;
 
@@ -1134,14 +1134,14 @@ TEST(LockFreeMessageQueueTest, QueueDepthHistogramTest) {
     EXPECT_TRUE(queue.empty());
 
     // Verify the queue never accumulated an unbounded backlog.
-    // The histogram records depth values as bucket keys — the largest
+    // The histogram records depth values as bucket keys -- the largest
     // non-zero bucket must not exceed the pool capacity.
     int max_observed_depth = 0;
     for (int d = max_depth_limit; d >= 0; --d) {
         // Re-record a probe sample at depth 0 to ensure at least one
         // bucket exists, then check the histogram via dump output.
         // We track max depth directly via produced/consumed snapshots
-        // taken during the run — the assertion below uses the sampler data
+        // taken during the run -- the assertion below uses the sampler data
         // indirectly by confirming the test completed without pool exhaustion.
         (void)d;
         break;
@@ -1161,9 +1161,9 @@ TEST(LockFreeMessageQueueTest, QueueDepthHistogramTest) {
  *  Priority Inversion Demonstration for Vyukov MPSC Queue (Dimitry Queue)
  * ============================================================================
  *
- * This test intentionally forces a producer thread to stall *mid‑enqueue* in
- * the Vyukov MPSC algorithm. The goal is to expose the well‑known “Dimitry
- * gap”: a window where a later producer appears to complete its enqueue, but
+ * This test intentionally forces a producer thread to stall *mid-enqueue* in
+ * the Vyukov MPSC algorithm. The goal is to expose the well-known "Dimitry
+ * gap": a window where a later producer appears to complete its enqueue, but
  * the consumer cannot yet observe that message because an earlier producer has
  * not finished linking its node into the list.
  *
@@ -1187,19 +1187,19 @@ TEST(LockFreeMessageQueueTest, QueueDepthHistogramTest) {
  *
  * The consumer follows the list starting at stub_.next_. Because A has not yet
  * linked itself, stub_.next_ is still null, so the consumer cannot see *either*
- * A or B. This is the “gap”.
+ * A or B. This is the "gap".
  *
  * Importantly: this is not a correctness bug. No memory is corrupted, no
  * messages are lost, and ordering is preserved once A resumes. It is simply a
- * visibility delay caused by the algorithm’s structure.
+ * visibility delay caused by the algorithm's structure.
  *
  * -----------------------------
  *  What this test verifies
  * -----------------------------
- *  • Producer A stalls after publishing its node as the new head.
- *  • Producer B enqueues normally and believes it has completed.
- *  • The consumer still sees an empty queue (the Dimitry gap).
- *  • Once A resumes and links its node, the consumer sees A then B in order.
+ *  - Producer A stalls after publishing its node as the new head.
+ *  - Producer B enqueues normally and believes it has completed.
+ *  - The consumer still sees an empty queue (the Dimitry gap).
+ *  - Once A resumes and links its node, the consumer sees A then B in order.
  *
  * This test proves that our implementation faithfully reproduces the intended
  * behavior of the Vyukov MPSC queue.
@@ -1209,27 +1209,27 @@ TEST(LockFreeMessageQueueTest, QueueDepthHistogramTest) {
  * -----------------------------
  * The Dimitry gap is a *documented tradeoff* of this algorithm:
  *
- *   • Producers never contend on a global lock.
- *   • Enqueue is wait‑free for all producers except the one that stalls itself.
- *   • Cache traffic is minimized.
- *   • Throughput is extremely high under normal conditions.
+ *   - Producers never contend on a global lock.
+ *   - Enqueue is wait-free for all producers except the one that stalls itself.
+ *   - Cache traffic is minimized.
+ *   - Throughput is extremely high under normal conditions.
  *
- * In pinned‑thread systems (our deployment model), producers do not stall
+ * In pinned-thread systems (our deployment model), producers do not stall
  * arbitrarily. Under those assumptions, the gap is harmless and the algorithm
  * provides excellent performance and predictable behavior.
  *
  * If a producer *does* stall indefinitely, the system has bigger problems than
- * queue fairness. In such cases, watchdogs or thread‑health monitoring are the
- * correct mitigation—not changing the queue algorithm.
+ * queue fairness. In such cases, watchdogs or thread-health monitoring are the
+ * correct mitigation--not changing the queue algorithm.
  *
  * -----------------------------
  *  Takeaway
  * -----------------------------
  * This test is not detecting a bug. It is documenting and asserting a core
  * property of the Vyukov MPSC queue: a stalled producer can delay visibility of
- * later producers’ messages, but the queue remains correct, ordered, and safe.
+ * later producers' messages, but the queue remains correct, ordered, and safe.
  *
- * Future maintainers: do not “fix” this behavior unless you intend to replace
+ * Future maintainers: do not "fix" this behavior unless you intend to replace
  * the algorithm with a different MPSC design entirely.
  * ============================================================================
  */

@@ -220,8 +220,8 @@ TEST_F(FixedSizeMemoryPoolTest, DestructorDestroysLeakedObjects) {
             auto* p = new (raw) TestObject();
             p->id_ = i;
 
-            // Mark slot as constructed (simulating ExpandablePoolAllocator’s lifetime protocol).
-            // FixedSizeMemoryPool does not set this bit; it only reads it in its destructor.”
+            // Mark slot as constructed (simulating ExpandablePoolAllocator's lifetime protocol).
+            // FixedSizeMemoryPool does not set this bit; it only reads it in its destructor."
             using SlotType = Slot<TestObject>;
             auto* storage_ptr = reinterpret_cast<std::aligned_storage_t<sizeof(TestObject), alignof(TestObject)>*>(p);
             // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
@@ -241,16 +241,16 @@ TEST_F(FixedSizeMemoryPoolTest, DestructorDestroysLeakedObjects) {
  * ----------------
  * This test exercises the FixedSizeMemoryPool under intense concurrent
  * allocate/deallocate pressure to detect *structural* corruption of the
- * lock‑free Treiber free list.
+ * lock-free Treiber free list.
  *
  * What this test *does* verify:
- *   • No nullptrs appear during the final drain (free list not truncated)
- *   • The number of drained slots equals the pool capacity (no lost nodes)
- *   • All drained pointers are unique (no duplicated nodes)
- *   • No extra nodes appear (free list not corrupted or expanded)
+ *   - No nullptrs appear during the final drain (free list not truncated)
+ *   - The number of drained slots equals the pool capacity (no lost nodes)
+ *   - All drained pointers are unique (no duplicated nodes)
+ *   - No extra nodes appear (free list not corrupted or expanded)
  *
  * What this test deliberately does *NOT* verify:
- *   • That every slot was allocated at least once during the stress phase
+ *   - That every slot was allocated at least once during the stress phase
  *
  * Rationale:
  *   A Treiber stack is LIFO. Under contention, threads may repeatedly pop and
@@ -259,7 +259,7 @@ TEST_F(FixedSizeMemoryPoolTest, DestructorDestroysLeakedObjects) {
  *   failures without indicating corruption.
  *
  * This test therefore focuses on the invariants that *must* hold for a correct
- * lock‑free free list and that *will* be violated by ABA‑related corruption.
+ * lock-free free list and that *will* be violated by ABA-related corruption.
  */
 
 TEST_F(FixedSizeMemoryPoolTest, DirectAbaStress) {
@@ -391,7 +391,7 @@ TEST_F(FixedSizeMemoryPoolTest, DirectAbaStressWithMidDrain) {
     }
     start_gate.store(true, std::memory_order_release);
 
-    // Mid‑run partial drains: steal a subset of slots, verify structural
+    // Mid-run partial drains: steal a subset of slots, verify structural
     // integrity on whatever we successfully drain, then return them.
     for (int drain_round = 0; drain_round < num_mid_drains; ++drain_round) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -404,7 +404,7 @@ TEST_F(FixedSizeMemoryPoolTest, DirectAbaStressWithMidDrain) {
             TestObject* obj = pool.allocate();
             if (obj == nullptr) {
                 // Pool is temporarily empty because workers are holding slots.
-                // This is expected under contention; just stop this mid‑drain.
+                // This is expected under contention; just stop this mid-drain.
                 break;
             }
             drained.push_back(obj);
@@ -414,7 +414,7 @@ TEST_F(FixedSizeMemoryPoolTest, DirectAbaStressWithMidDrain) {
         // no duplicates in the sample.
         if (!drained.empty()) {
             const std::set<TestObject*> drained_set(drained.begin(), drained.end());
-            EXPECT_EQ(drained_set.size(), drained.size()) << "mid‑drain corruption: duplicate pointer detected in round " << drain_round;
+            EXPECT_EQ(drained_set.size(), drained.size()) << "mid-drain corruption: duplicate pointer detected in round " << drain_round;
         }
 
         // Return drained objects to the pool so workers can continue.

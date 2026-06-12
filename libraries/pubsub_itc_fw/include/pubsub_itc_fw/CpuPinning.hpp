@@ -10,10 +10,10 @@
 #include <string>
 #include <vector>
 
-#include <errno.h>   // NOLINT(modernize-deprecated-headers) — IWYU pragma: keep
+#include <errno.h>   // NOLINT(modernize-deprecated-headers) -- IWYU pragma: keep
 #include <pthread.h> // IWYU pragma: keep
-#include <sched.h>   // IWYU pragma: keep — cpu_set_t, sched_setaffinity
-#include <signal.h>  // NOLINT(modernize-deprecated-headers) — IWYU pragma: keep
+#include <sched.h>   // IWYU pragma: keep -- cpu_set_t, sched_setaffinity
+#include <signal.h>  // NOLINT(modernize-deprecated-headers) -- IWYU pragma: keep
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -222,7 +222,7 @@ inline bool pin_thread_to_core(pthread_t thread_handle, CpuId core_id) {
 /**
  * @brief Pin a kernel thread to a single CPU core using sched_setaffinity.
  *
- * For threads not addressable by a pthread_t — e.g. the Quill logger backend
+ * For threads not addressable by a pthread_t -- e.g. the Quill logger backend
  * thread, which is identified only by its Linux kernel TID as returned by
  * quill::Backend::get_thread_id().
  *

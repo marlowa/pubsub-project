@@ -11,7 +11,7 @@ namespace pubsub_itc_fw {
 /**
  * @brief Incremental CRC32 (IEEE polynomial, 0xEDB88320 reflected).
  *
- * Typical use — compute over multiple non-contiguous buffers:
+ * Typical use -- compute over multiple non-contiguous buffers:
  * @code
  *   Crc32 crc;
  *   crc.feed(header_ptr, header_size);

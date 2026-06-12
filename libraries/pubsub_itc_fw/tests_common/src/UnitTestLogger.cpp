@@ -5,6 +5,6 @@
 
 namespace pubsub_itc_fw::tests_common {
 
-// Nothing else needed — all logic is in the header.
+// Nothing else needed -- all logic is in the header.
 
 } // namespaces

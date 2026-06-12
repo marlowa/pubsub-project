@@ -41,8 +41,8 @@ struct InboundListenerConfiguration {
     /**
      * @brief Determines which protocol handler is constructed for accepted connections.
      *
-     * FrameworkPdu — constructs PduProtocolHandler (default).
-     * RawBytes     — constructs RawBytesProtocolHandler.
+     * FrameworkPdu -- constructs PduProtocolHandler (default).
+     * RawBytes     -- constructs RawBytesProtocolHandler.
      */
     ProtocolType protocol_type{ProtocolType::FrameworkPdu};
 

@@ -23,7 +23,7 @@
  *   Pre-built mode (send_prebuilt()):
  *     The caller has already assembled the complete frame (PduHeader followed
  *     immediately by the encoded payload) in a slab-allocated buffer. The
- *     framer stores only a pointer and size — no copy is performed. This is
+ *     framer stores only a pointer and size -- no copy is performed. This is
  *     the zero-copy path used for outbound framework PDUs, where the
  *     application thread encodes directly into a slab chunk. The slab chunk
  *     must remain valid until has_pending_data() returns false, at which point
@@ -122,7 +122,7 @@ class PduFramer {
      *
      * The caller must have written a complete frame into a slab-allocated
      * buffer: a PduHeader (in network byte order) followed immediately by
-     * the encoded payload. The framer stores only a pointer — no data is
+     * the encoded payload. The framer stores only a pointer -- no data is
      * copied. The slab chunk must remain valid until has_pending_data()
      * returns false, at which point the reactor deallocates it.
      *

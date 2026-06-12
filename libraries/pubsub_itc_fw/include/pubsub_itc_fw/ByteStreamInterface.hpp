@@ -3,7 +3,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-// C++ headers whose names start with ‘c’
+// C++ headers whose names start with 'c'
 #include <cstdint> // IWYU pragma: keep
 
 // System C++ headers

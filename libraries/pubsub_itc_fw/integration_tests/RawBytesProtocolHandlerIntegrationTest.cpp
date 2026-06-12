@@ -844,7 +844,7 @@ class LargeReplyListenerThread : public ApplicationThread {
             return;
         }
 
-        // Send a 512 KB reply — large enough to overflow a 4096-byte SO_RCVBUF
+        // Send a 512 KB reply -- large enough to overflow a 4096-byte SO_RCVBUF
         // and force framer_->has_pending_data() to be true, exercising
         // continue_send() on EPOLLOUT and deallocate_pending_send() on teardown.
         large_reply_.assign(large_reply_payload_size, 'Z');

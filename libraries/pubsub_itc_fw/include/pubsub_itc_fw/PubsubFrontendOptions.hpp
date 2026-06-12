@@ -19,7 +19,7 @@ namespace pubsub_itc_fw {
  *
  * Quill's built-in default is 128 KiB. That is too small for high-throughput
  * runs where a single thread can emit hundreds of thousands of Info-level log
- * records in a short burst — for example a matching engine processing 100 K
+ * records in a short burst -- for example a matching engine processing 100 K
  * orders with per-order logging enabled. In such a run the queue was observed
  * to double seven times, reaching 32 MiB before stabilising.
  *

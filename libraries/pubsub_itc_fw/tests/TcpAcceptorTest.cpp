@@ -67,7 +67,7 @@ TEST(TcpAcceptorTest, MoveConstructorTransfersOwnership) {
     // The moved-into acceptor owns the fd.
     EXPECT_EQ(moved.get_listening_file_descriptor(), original_fd);
 
-    // The moved-from acceptor has an empty p_impl_ — fd should be -1.
+    // The moved-from acceptor has an empty p_impl_ -- fd should be -1.
     EXPECT_EQ(original->get_listening_file_descriptor(), -1);
 }
 

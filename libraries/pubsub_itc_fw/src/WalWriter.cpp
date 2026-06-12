@@ -22,7 +22,7 @@ namespace pubsub_itc_fw {
 
 namespace {
 
-// On-disk entry header — internal to WalWriter/WalReader; not exposed to applications.
+// On-disk entry header -- internal to WalWriter/WalReader; not exposed to applications.
 // Wire layout (host byte order; Slice 7 will add endian conversion):
 //   magic(4) | payload_size(4) | record_id(8) | filler(8)  =  24 bytes
 struct WalEntryHeader {
@@ -75,7 +75,7 @@ void WalWriter::open(const std::string& directory, size_t segment_size, WalPosit
 }
 
 // ---------------------------------------------------------------------------
-// open_segment() — open or create a segment for writing
+// open_segment() -- open or create a segment for writing
 // ---------------------------------------------------------------------------
 
 void WalWriter::open_segment(uint64_t seg_num) {
@@ -128,7 +128,7 @@ void WalWriter::close_segment() {
 }
 
 // ---------------------------------------------------------------------------
-// ensure_capacity() — roll to next segment if needed
+// ensure_capacity() -- roll to next segment if needed
 // ---------------------------------------------------------------------------
 
 void WalWriter::ensure_capacity(size_t bytes_needed) {
@@ -142,7 +142,7 @@ void WalWriter::ensure_capacity(size_t bytes_needed) {
 }
 
 // ---------------------------------------------------------------------------
-// append() — the commit act
+// append() -- the commit act
 // ---------------------------------------------------------------------------
 
 void WalWriter::append(int64_t record_id, const void* payload, size_t size) {

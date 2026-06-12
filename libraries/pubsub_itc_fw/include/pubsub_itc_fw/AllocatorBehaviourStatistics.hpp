@@ -23,7 +23,7 @@ namespace pubsub_itc_fw {
  * container. All values are captured atomically with respect to the allocator
  * at the moment get_behaviour_statistics() is called. The statistics do not
  * prevent concurrent allocation or deallocation and do not interfere with the
- * allocator’s performance characteristics.
+ * allocator's performance characteristics.
  *
  * The statistics include:
  *

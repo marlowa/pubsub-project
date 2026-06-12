@@ -316,7 +316,7 @@ void Reactor::finalize_threads_after_shutdown() {
             PUBSUB_LOG(logger_, FwLogLevel::Error,
                        "Thread {} failed to join within shutdown_timeout. "
                        "The thread is still running and cannot be safely destroyed. "
-                       "This is a fatal condition in production — the process should be terminated.",
+                       "This is a fatal condition in production -- the process should be terminated.",
                        thread->get_thread_name());
         }
     }
@@ -502,7 +502,7 @@ bool Reactor::initialize_threads() {
     if (config_.cpu_pinning_enabled) {
         pin_registered_threads();
     } else {
-        PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "CPU pinning disabled — threads will run on any available core");
+        PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "CPU pinning disabled -- threads will run on any available core");
     }
 
     broadcast_reactor_event(EventType::Initial);
@@ -535,7 +535,7 @@ bool Reactor::initialize_threads() {
 
 void Reactor::pin_registered_threads() {
     if (config_.cpu_registry_lock_file.empty()) {
-        PUBSUB_LOG_STR(logger_, FwLogLevel::Warning, "CPU pinning: cpu_registry_lock_file is not configured — skipping pinning");
+        PUBSUB_LOG_STR(logger_, FwLogLevel::Warning, "CPU pinning: cpu_registry_lock_file is not configured -- skipping pinning");
         return;
     }
 
@@ -551,13 +551,13 @@ void Reactor::pin_registered_threads() {
         AvailableCpuVector cpus = cpu_registry_->claim_cpus(total_needed, config_.cpu_pinning_reserve_cpu0);
 
         if (cpus.empty()) {
-            PUBSUB_LOG_STR(logger_, FwLogLevel::Warning, "CPU pinning: no CPUs available — skipping");
+            PUBSUB_LOG_STR(logger_, FwLogLevel::Warning, "CPU pinning: no CPUs available -- skipping");
             cpu_registry_.reset();
             return;
         }
 
         if (cpus.size() < total_needed) {
-            PUBSUB_LOG(logger_, FwLogLevel::Warning, "CPU pinning: only {} CPUs available, {} needed — some threads will not be pinned", cpus.size(),
+            PUBSUB_LOG(logger_, FwLogLevel::Warning, "CPU pinning: only {} CPUs available, {} needed -- some threads will not be pinned", cpus.size(),
                        total_needed);
         }
 
@@ -610,7 +610,7 @@ void Reactor::pin_registered_threads() {
             const CpuAssignment cpu = cpus[idx];
             const auto quill_tid = static_cast<pid_t>(quill::Backend::get_thread_id());
             if (quill_tid == 0) {
-                PUBSUB_LOG_STR(logger_, FwLogLevel::Warning, "CPU pinning: Quill backend TID is 0 — skipping backend core assignment");
+                PUBSUB_LOG_STR(logger_, FwLogLevel::Warning, "CPU pinning: Quill backend TID is 0 -- skipping backend core assignment");
             } else if (pin_tid_to_core(quill_tid, cpu.cpu_id)) {
                 PUBSUB_LOG(logger_, FwLogLevel::Info, "CPU pinning: Quill backend thread (tid={}) pinned to CPU {} (NUMA node {})", quill_tid,
                            cpu.cpu_id.get_value(), cpu.numa_node_id);
@@ -620,7 +620,7 @@ void Reactor::pin_registered_threads() {
             }
         }
     } catch (const std::exception& ex) {
-        PUBSUB_LOG(logger_, FwLogLevel::Warning, "CPU pinning failed: {} — continuing without pinning", ex.what());
+        PUBSUB_LOG(logger_, FwLogLevel::Warning, "CPU pinning failed: {} -- continuing without pinning", ex.what());
         cpu_registry_.reset();
     }
 }

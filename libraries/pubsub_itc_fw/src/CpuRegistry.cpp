@@ -117,7 +117,7 @@ AvailableCpuVector CpuRegistry::claim_cpus(size_t count, bool reserve_cpu0) cons
     // Claim each selected CPU by writing an entry into the shared registry.
     for (const CpuAssignment& cpu : available) {
         if (layout_->active_entry_count >= SharedCoreRegistryLayout::max_system_cores) {
-            // Registry full — should not happen on a well-configured system.
+            // Registry full -- should not happen on a well-configured system.
             break;
         }
         auto& entry = layout_->entries[layout_->active_entry_count];

@@ -54,7 +54,7 @@ std::string StringUtils::get_error_string(int errnum) {
 }
 
 std::string StringUtils::get_errno_string() {
-    // Capture errno immediately — it is thread-local but can change
+    // Capture errno immediately -- it is thread-local but can change
     // between calls if any library function runs.
     const int err = errno;
     return get_error_string(err);

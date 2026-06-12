@@ -6,7 +6,7 @@
 #include <sys/socket.h>  // For socket(), bind(), listen(), accept(), connect(), shutdown(), setsockopt(), getsockopt(), socklen_t
 #include <unistd.h>      // For close()
 
-// C++ headers whose names start with ‘c’
+// C++ headers whose names start with 'c'
 #include <cerrno>  // For errno
 #include <cstdint> // For int, uint16_t
 #include <cstring> // For strerror, memset
@@ -216,10 +216,10 @@ TcpSocketImpl::TcpSocketImpl(int socket_fd) : socket_file_descriptor(socket_fd) 
 
     if (bytes_sent == -1) {
         if (errno == EWOULDBLOCK || errno == EAGAIN) {
-            return {-EAGAIN, ""}; // Socket send buffer full — caller should wait for EPOLLOUT.
+            return {-EAGAIN, ""}; // Socket send buffer full -- caller should wait for EPOLLOUT.
         }
         if (errno == EPIPE) {
-            return {-EPIPE, ""}; // Peer closed its end — clean disconnect, not an error on our side.
+            return {-EPIPE, ""}; // Peer closed its end -- clean disconnect, not an error on our side.
         }
         return {-errno, fmt::format("Failed to send data on socket {}: {}", socket_file_descriptor, StringUtils::get_errno_string())};
     }
@@ -240,7 +240,7 @@ TcpSocketImpl::TcpSocketImpl(int socket_fd) : socket_file_descriptor(socket_fd) 
 
     if (bytes_received == -1) {
         if (errno == EWOULDBLOCK || errno == EAGAIN) {
-            return {-EAGAIN, ""}; // No data available — caller should wait for next EPOLLIN.
+            return {-EAGAIN, ""}; // No data available -- caller should wait for next EPOLLIN.
         }
         return {-errno, fmt::format("Failed to receive data on socket {}: {}", socket_file_descriptor, StringUtils::get_errno_string())};
     }

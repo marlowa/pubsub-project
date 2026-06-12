@@ -72,10 +72,10 @@ std::tuple<bool, std::string> PduFramer::continue_send() {
 
         if (bytes_sent < 0) {
             if (bytes_sent == -EAGAIN || bytes_sent == -EWOULDBLOCK) {
-                // Socket buffer full — reactor must wait for EPOLLOUT.
+                // Socket buffer full -- reactor must wait for EPOLLOUT.
                 return {true, ""};
             }
-            // Non-recoverable error — reset state.
+            // Non-recoverable error -- reset state.
             active_frame_ptr_ = nullptr;
             frame_size_ = 0;
             send_offset_ = 0;
@@ -85,7 +85,7 @@ std::tuple<bool, std::string> PduFramer::continue_send() {
         send_offset_ += static_cast<size_t>(bytes_sent);
     }
 
-    // Frame fully sent — reset state.
+    // Frame fully sent -- reset state.
     active_frame_ptr_ = nullptr;
     frame_size_ = 0;
     send_offset_ = 0;

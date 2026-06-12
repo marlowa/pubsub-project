@@ -67,7 +67,7 @@ TEST(Crc32Test, ByteByByteMatchesCompute) {
 }
 
 // ---------------------------------------------------------------------------
-// finalize() resets state — can be reused
+// finalize() resets state -- can be reused
 // ---------------------------------------------------------------------------
 
 TEST(Crc32Test, FinalizeResetsState) {
@@ -89,7 +89,7 @@ TEST(Crc32Test, FinalizeOnFreshObjectGivesZero) {
 }
 
 // ---------------------------------------------------------------------------
-// Order sensitivity — different orderings give different results
+// Order sensitivity -- different orderings give different results
 // ---------------------------------------------------------------------------
 
 TEST(Crc32Test, OrderMatters) {

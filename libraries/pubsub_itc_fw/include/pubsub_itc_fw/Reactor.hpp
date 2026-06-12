@@ -44,7 +44,7 @@
 
 namespace pubsub_itc_fw {
 
-// Forward declaration — full definition in CpuRegistry.hpp, included only by Reactor.cpp.
+// Forward declaration -- full definition in CpuRegistry.hpp, included only by Reactor.cpp.
 class CpuRegistry;
 
 /** @ingroup reactor_subsystem */
@@ -452,7 +452,7 @@ class Reactor : public ThreadLookupInterface {
      */
     ConnectionID next_connection_id_{1};
 
-    // Configuration and dependencies — must precede slab allocators and managers
+    // Configuration and dependencies -- must precede slab allocators and managers
     // in declaration order so the constructor initialiser list is valid.
     ReactorConfiguration config_;
     const ServiceRegistry& service_registry_;

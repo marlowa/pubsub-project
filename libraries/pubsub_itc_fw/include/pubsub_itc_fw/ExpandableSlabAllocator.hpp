@@ -8,7 +8,7 @@
  * variable-sized chunk allocation for the reactor's PDU transport layer.
  *
  * ==========================================================================
- * THREADING CONTRACT — READ THIS BEFORE USING THIS CLASS
+ * THREADING CONTRACT -- READ THIS BEFORE USING THIS CLASS
  * ==========================================================================
  *
  * This allocator is designed for a specific two-thread concurrency model:
@@ -198,13 +198,13 @@ class ExpandableSlabAllocator {
     //     moves or is freed for the lifetime of the allocator.
     //   - Each Page is heap-allocated once and never freed until the destructor
     //     runs. Workers load the page pointer with acquire, then load the slab
-    //     pointer with acquire — both are stable once written.
+    //     pointer with acquire -- both are stable once written.
     //   - The reactor writes page pointers and slab pointers with release so
     //     workers see a consistent view.
     // =======================================================================
 
-    // 256 slots per page (page_bits=8 → page_size=256).
-    // 1024 pages max → 262,144 distinct slab IDs before capacity exhaustion.
+    // 256 slots per page (page_bits=8 -> page_size=256).
+    // 1024 pages max -> 262,144 distinct slab IDs before capacity exhaustion.
     static constexpr int page_bits = 8;
     static constexpr int page_size = 1 << page_bits;
     static constexpr int max_pages = 1024;

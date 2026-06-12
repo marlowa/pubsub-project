@@ -3,12 +3,12 @@
 
 // Unit tests for PduParser error paths not covered by PduFramerParserTest.cpp:
 //
-//   ZeroLengthPayload        — byte_count = 0 in header → error before allocation
-//   OversizedPayload         — byte_count > slab_size() → error before allocation
-//   DisconnectDuringPayload  — valid header then peer disconnect → handler called
-//   ReadErrorDuringPayload   — valid header then socket error → slab freed, error returned
-//   EagainDuringPayload      — valid header then EAGAIN → {true,""}, PDU dispatched on next call
-//   ReadErrorDuringHeader    — socket error while reading header bytes → {false, error}
+//   ZeroLengthPayload        -- byte_count = 0 in header -> error before allocation
+//   OversizedPayload         -- byte_count > slab_size() -> error before allocation
+//   DisconnectDuringPayload  -- valid header then peer disconnect -> handler called
+//   ReadErrorDuringPayload   -- valid header then socket error -> slab freed, error returned
+//   EagainDuringPayload      -- valid header then EAGAIN -> {true,""}, PDU dispatched on next call
+//   ReadErrorDuringHeader    -- socket error while reading header bytes -> {false, error}
 
 #include <cerrno>
 #include <cstring>
@@ -212,7 +212,7 @@ TEST_F(PduParserErrorTest, EagainDuringPayloadResumesOnNextCall) {
 
     const uint8_t payload[] = {0xAA, 0xBB, 0xCC, 0xDD};
 
-    // First call: header present, no payload yet → EAGAIN during payload read → {true, ""}
+    // First call: header present, no payload yet -> EAGAIN during payload read -> {true, ""}
     stream_.feed_header_only(10, 1, sizeof(payload));
 
     auto [ok1, err1] = parser.receive();
@@ -220,7 +220,7 @@ TEST_F(PduParserErrorTest, EagainDuringPayloadResumesOnNextCall) {
     EXPECT_TRUE(err1.empty());
     EXPECT_TRUE(thread_->get_queue().empty());
 
-    // Second call: payload arrives → complete frame dispatched → {true, ""}
+    // Second call: payload arrives -> complete frame dispatched -> {true, ""}
     for (uint8_t b : payload) {
         stream_.receive_bytes.push_back(b);
     }
@@ -240,7 +240,7 @@ TEST_F(PduParserErrorTest, EagainDuringPayloadResumesOnNextCall) {
 TEST_F(PduParserErrorTest, ReadErrorDuringHeaderReturnsError) {
     PduParser parser(stream_, *thread_, slab_, logger_->logger, nullptr, ConnectionID{});
 
-    // No bytes queued — error fires immediately on first header read.
+    // No bytes queued -- error fires immediately on first header read.
     stream_.recv_error_code = -ECONNRESET;
     stream_.recv_error_msg = "simulated reset during header";
 

@@ -10,7 +10,7 @@ namespace pubsub_itc_fw {
  * @brief Configuration data for an ApplicationThread.
  *
  * Holds settings that control the behaviour of an ApplicationThread instance.
- * This struct is designed to grow as development evolves — new configuration
+ * This struct is designed to grow as development evolves -- new configuration
  * items should be added here rather than scattered across constructor parameters.
  *
  * Each ApplicationThread receives its own instance of this struct at construction.
@@ -34,7 +34,7 @@ struct ApplicationThreadConfiguration {
      * would cause latency spikes and unpredictable memory pressure.
      *
      * The allocator grows automatically by chaining new slabs of this size when the
-     * current slab is exhausted, so overall throughput is not limited — only the
+     * current slab is exhausted, so overall throughput is not limited -- only the
      * size of any individual PDU frame.
      *
      * Default: 65536 bytes (64 KB).
@@ -46,7 +46,7 @@ struct ApplicationThreadConfiguration {
      *
      * This buffer provides backing store for BumpAllocator when decoding
      * variable-length inbound PDUs. It is reserved once at construction time
-     * and reused for every inbound PDU — there is no heap allocation on the
+     * and reused for every inbound PDU -- there is no heap allocation on the
      * message handling path.
      *
      * This value must be at least as large as the maximum arena bytes required

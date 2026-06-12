@@ -10,7 +10,7 @@
 namespace pubsub_itc_fw {
 
 /*
- * FwLogLevel — framework log level abstraction.
+ * FwLogLevel -- framework log level abstraction.
  *
  * Numerical values are significant: lower value means more severe.
  * The lower the number, the less is logged. Alert(7) logs everything

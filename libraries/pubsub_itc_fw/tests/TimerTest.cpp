@@ -84,7 +84,7 @@ class TimerTest : public ::testing::Test {
 };
 
 // ---------------------------------------------------------------------------
-// OneOffTimerThread — starts a single one-off timer in on_app_ready_event
+// OneOffTimerThread -- starts a single one-off timer in on_app_ready_event
 // ---------------------------------------------------------------------------
 
 class OneOffTimerThread : public ApplicationThread {
@@ -138,7 +138,7 @@ TEST_F(TimerTest, OneOffTimerDeliversCorrectNameToCallback) {
 }
 
 // ---------------------------------------------------------------------------
-// RecurringTimerThread — starts a recurring timer; self-cancels at cancel_after
+// RecurringTimerThread -- starts a recurring timer; self-cancels at cancel_after
 // ---------------------------------------------------------------------------
 
 class RecurringTimerThread : public ApplicationThread {
@@ -191,7 +191,7 @@ TEST_F(TimerTest, RecurringTimerStopsFiringAfterCancel) {
 }
 
 // ---------------------------------------------------------------------------
-// CancelBeforeExpiryThread — starts a one-off and cancels it immediately
+// CancelBeforeExpiryThread -- starts a one-off and cancels it immediately
 // ---------------------------------------------------------------------------
 
 class CancelBeforeExpiryThread : public ApplicationThread {
@@ -229,7 +229,7 @@ TEST_F(TimerTest, CancelledOneOffTimerNeverFires) {
 }
 
 // ---------------------------------------------------------------------------
-// TwoTimersThread — two independent one-off timers with different names
+// TwoTimersThread -- two independent one-off timers with different names
 // ---------------------------------------------------------------------------
 
 class TwoTimersThread : public ApplicationThread {
@@ -272,7 +272,7 @@ TEST_F(TimerTest, TwoIndependentTimersEachFireOnce) {
 }
 
 // ---------------------------------------------------------------------------
-// RescheduleTimerThread — rescheduling a timer by reusing its name
+// RescheduleTimerThread -- rescheduling a timer by reusing its name
 // ---------------------------------------------------------------------------
 
 class RescheduleTimerThread : public ApplicationThread {

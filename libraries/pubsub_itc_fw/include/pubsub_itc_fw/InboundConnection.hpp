@@ -24,7 +24,7 @@ namespace pubsub_itc_fw {
  *
  * An InboundConnection is created by the Reactor when TcpAcceptor::accept_connection()
  * returns a new connected socket. Unlike OutboundConnection there is no connecting
- * phase — the socket is already established at construction time. The Reactor
+ * phase -- the socket is already established at construction time. The Reactor
  * registers the socket with epoll for EPOLLIN immediately after construction.
  *
  * Protocol handling is fully delegated to a ProtocolHandlerInterface implementation

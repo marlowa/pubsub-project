@@ -9,7 +9,7 @@
  * check_for_timed_out_connections() tears down the connection and calls schedule_retry(),
  * which populates pending_retries_. On the next housekeeping tick,
  * retry_failed_connections() calls process_connect_command() again. We count
- * connection_failed events: ≥2 proves the retry path executed.
+ * connection_failed events: >=2 proves the retry path executed.
  */
 
 #include <atomic>
@@ -82,7 +82,7 @@ TEST(OutboundConnectionRetryIntegrationTest, RetryFailedConnectionsReissuesConne
     cfg.connect_timeout = std::chrono::milliseconds{50};
 
     ServiceRegistry registry;
-    registry.add("retry_svc", NetworkEndpointConfiguration{"192.0.2.1", 9999}, // TEST-NET — non-routable
+    registry.add("retry_svc", NetworkEndpointConfiguration{"192.0.2.1", 9999}, // TEST-NET -- non-routable
                  NetworkEndpointConfiguration{});
 
     LoggerWithSink logger;
@@ -100,7 +100,7 @@ TEST(OutboundConnectionRetryIntegrationTest, RetryFailedConnectionsReissuesConne
         std::this_thread::sleep_for(std::chrono::milliseconds{1});
     }
 
-    EXPECT_GE(thread->failed_count.load(std::memory_order_acquire), 2) << "Expected ≥2 connection_failed events (initial timeout + retry)";
+    EXPECT_GE(thread->failed_count.load(std::memory_order_acquire), 2) << "Expected >=2 connection_failed events (initial timeout + retry)";
 
     reactor->shutdown("test complete");
     if (reactor_thread.joinable()) {

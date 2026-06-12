@@ -34,7 +34,7 @@
 #include <pubsub_itc_fw/utils/FileSystemUtils.hpp>
 
 /*
- * CPU pinning of the Quill backend thread — design note.
+ * CPU pinning of the Quill backend thread -- design note.
  *
  * The Quill backend thread should be pinned to a dedicated CPU core to prevent
  * the OS scheduler from migrating it onto cores reserved for latency-sensitive
@@ -92,7 +92,7 @@ quill::PatternFormatterOptions make_pattern_formatter_options() {
 }
 
 /*
- * CallbackSink — a Quill sink that forwards each fully formatted log record
+ * CallbackSink -- a Quill sink that forwards each fully formatted log record
  * to a user-supplied callback.  Used in unit-test mode so that tests can
  * assert on the contents of logged records without touching the filesystem
  * or syslog.

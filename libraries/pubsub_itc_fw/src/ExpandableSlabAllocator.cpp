@@ -81,7 +81,7 @@ std::tuple<int, void*> ExpandableSlabAllocator::allocate(size_t size) {
     }
 
     if (ptr == nullptr) {
-        throw PubSubItcException("ExpandableSlabAllocator::allocate: allocation failed after chaining a new slab — "
+        throw PubSubItcException("ExpandableSlabAllocator::allocate: allocation failed after chaining a new slab -- "
                                  "this should not happen; mmap may have failed during slab construction");
     }
 

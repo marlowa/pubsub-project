@@ -211,12 +211,12 @@ TEST_F(SlabAllocatorTest, AlignmentPaddingCausesFailure) {
     constexpr size_t two_slot_slab = alignment * 2;
     SlabAllocator slab(two_slot_slab, 0, queue_);
 
-    // Allocate 1 byte — bump advances to alignment after padding.
+    // Allocate 1 byte -- bump advances to alignment after padding.
     void* ptr1 = slab.allocate(1);
     EXPECT_NE(ptr1, nullptr);
 
     // Now aligned offset is alignment, remaining is alignment bytes.
-    // Request alignment bytes — should succeed exactly.
+    // Request alignment bytes -- should succeed exactly.
     void* ptr2 = slab.allocate(alignment);
     EXPECT_NE(ptr2, nullptr);
 

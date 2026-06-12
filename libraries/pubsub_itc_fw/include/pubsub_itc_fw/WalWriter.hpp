@@ -33,7 +33,7 @@ namespace pubsub_itc_fw {
  *   power loss. Replication is the durability guarantee; local disk is
  *   the single-host recovery mechanism.
  *
- * Threading: single-writer — all methods must be called from the same thread.
+ * Threading: single-writer -- all methods must be called from the same thread.
  *
  * Typical lifecycle:
  * @code

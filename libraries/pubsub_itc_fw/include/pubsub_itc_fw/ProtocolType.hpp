@@ -14,15 +14,15 @@ namespace pubsub_itc_fw {
  * socket data on a given listener.
  *
  * Modes of operation:
- *   FrameworkPdu — the Reactor expects structured data containing framework
+ *   FrameworkPdu -- the Reactor expects structured data containing framework
  *   headers. It uses PduParser and ExpandableSlabAllocator to extract discrete
  *   messages before delivery to the application via the Vyukov queue.
  *
- *   RawBytes — the Reactor treats the connection as an opaque pipe. Bytes are
+ *   RawBytes -- the Reactor treats the connection as an opaque pipe. Bytes are
  *   read directly into a MirroredBuffer to provide the application with a
  *   contiguous view of the stream. No framework-level parsing is performed.
  *
- *   TlsRawBytes — as RawBytes but the byte stream is protected by TLS. The
+ *   TlsRawBytes -- as RawBytes but the byte stream is protected by TLS. The
  *   TLS handshake is performed non-blockingly by TlsRawBytesProtocolHandler
  *   before any plaintext is delivered to the application.
  */

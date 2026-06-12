@@ -475,7 +475,7 @@ TEST_F(TomlConfigurationTest, GetRequiredExceptFirstFailureAbortsTryBlock) {
 // ============================================================
 // get_required_except: one happy-path test per uncovered overload.
 // The error path (throws ConfigurationException) is already covered
-// by GetRequiredExceptThrowsOnMissingKey above — these tests exist
+// by GetRequiredExceptThrowsOnMissingKey above -- these tests exist
 // solely to ensure each overload's function body is entered.
 // ============================================================
 
