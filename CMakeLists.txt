@@ -163,8 +163,10 @@ endif()
 # ------------------------------------------------------------
 # Doxygen target (runs at install time)
 # ------------------------------------------------------------
+option(ENABLE_DOXYGEN "Generate Doxygen documentation at install time" ON)
+
 find_package(Doxygen QUIET)
-if(DOXYGEN_FOUND)
+if(DOXYGEN_FOUND AND ENABLE_DOXYGEN)
     set(DOXYGEN_OUTPUT_DIR "${CMAKE_BINARY_DIR}/docs")
 
     add_custom_target(doxygen_docs
@@ -190,8 +192,10 @@ if(DOXYGEN_FOUND)
         DESTINATION "${CMAKE_INSTALL_DOCDIR}"
         OPTIONAL
     )
-else()
+elseif(NOT DOXYGEN_FOUND)
     message(STATUS "Doxygen not found -- documentation will not be generated")
+else()
+    message(STATUS "Doxygen disabled (ENABLE_DOXYGEN=OFF)")
 endif()
 
 # ------------------------------------------------------------

@@ -200,12 +200,14 @@ def run_doxygen(source_dir):
 
 
 def configure_cmake(build_dir, source_dir, enable_valgrind=False, enable_coverage=False,
-                    enable_asan=False, enable_tsan=False, install_dir=None):
+                    enable_asan=False, enable_tsan=False, install_dir=None, enable_doxygen=True):
     cmake_args = [
         "cmake",
         str(source_dir)
     ]
 
+    if not enable_doxygen:
+        cmake_args.append("-DENABLE_DOXYGEN=OFF")
     if install_dir is not None:
         cmake_args.append(f"-DCMAKE_INSTALL_PREFIX={install_dir}")
     if enable_valgrind:
@@ -232,22 +234,20 @@ def configure_cmake(build_dir, source_dir, enable_valgrind=False, enable_coverag
 
 
 def build_project(build_dir, jobs=None, verbose=False):
-    """Build the project using make"""
+    """Build the project using cmake --build (works with make and ninja)"""
     if jobs is None:
-        # Get number of CPU cores
         try:
             import multiprocessing
             jobs = multiprocessing.cpu_count()
         except:
             jobs = 4
 
-    make_cmd = ["make", f"-j{jobs}"]
+    cmd = ["cmake", "--build", str(build_dir), "--parallel", str(jobs)]
     if verbose:
-        make_cmd.append("VERBOSE=1")
+        cmd.append("--verbose")
 
     run_command(
-        make_cmd,
-        cwd=build_dir,
+        cmd,
         description=f"Building project (using {jobs} cores)"
     )
 
@@ -555,7 +555,8 @@ Examples:
 
         configure_cmake(build_dir, source_dir, enable_valgrind=args.valgrind,
                         enable_coverage=args.coverage, enable_asan=args.asan,
-                        enable_tsan=args.tsan, install_dir=staging_dir)
+                        enable_tsan=args.tsan, install_dir=staging_dir,
+                        enable_doxygen=not args.no_doxygen)
 
         build_project(build_dir, jobs=args.jobs, verbose=args.verbose)
 
