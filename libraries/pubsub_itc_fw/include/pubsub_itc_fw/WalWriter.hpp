@@ -63,7 +63,6 @@ class WalWriter {
      * @param[in] directory    Directory for segment files.
      * @param[in] segment_size Pre-allocation size of each segment in bytes.
      * @param[in] start        Position at which to begin writing (from WalReader::replay()).
-     * @throws std::runtime_error on any I/O failure.
      */
     void open(const std::string& directory, size_t segment_size, WalPosition start);
 
@@ -75,7 +74,7 @@ class WalWriter {
      * @param[in] record_id  Application-supplied monotonic record identifier.
      * @param[in] payload    Pointer to the payload bytes.
      * @param[in] size       Number of payload bytes.
-     * @throws std::runtime_error if size exceeds segment_size.
+     * @pre size must not exceed segment_size. Violating this throws PreconditionAssertion.
      */
     void append(int64_t record_id, const void* payload, size_t size);
 

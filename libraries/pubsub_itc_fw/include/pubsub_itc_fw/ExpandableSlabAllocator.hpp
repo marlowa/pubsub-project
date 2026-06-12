@@ -141,9 +141,7 @@ class ExpandableSlabAllocator {
      * @param[in] size Number of bytes to allocate. Must be greater than zero
      *                 and must not exceed slab_size.
      * @return A tuple of { slab_id, ptr }. ptr is guaranteed non-null.
-     * @throws PreconditionAssertion if size is zero or exceeds slab_size.
-     * @throws PubSubItcException if a new slab was chained but allocation
-     *         still failed — this should never happen under normal conditions.
+     * @pre size > 0 and size <= slab_size. Violating either throws PreconditionAssertion.
      */
     [[nodiscard]] std::tuple<int, void*> allocate(size_t size);
 
@@ -163,8 +161,8 @@ class ExpandableSlabAllocator {
      * @param[in] slab_id The slab ID returned by the corresponding allocate().
      * @param[in] ptr     The pointer returned by the corresponding allocate().
      *                    Must not be nullptr.
-     * @throws PreconditionAssertion if slab_id is out of range, if the slab
-     *         has already been destroyed, or if ptr is nullptr.
+     * @pre slab_id must be in range, the slab must not have been destroyed,
+     *      and ptr must not be nullptr. Violating any of these throws PreconditionAssertion.
      */
     void deallocate(int slab_id, void* ptr);
 

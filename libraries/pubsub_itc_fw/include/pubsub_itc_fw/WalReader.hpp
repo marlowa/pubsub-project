@@ -52,7 +52,6 @@ class WalReader {
      * @param[in] cb         Called for each valid entry (may be nullptr to skip callbacks).
      * @return The position immediately after the last committed entry. Pass this
      *         to WalWriter::open() to resume writing without gaps or overwrites.
-     * @throws std::runtime_error on I/O failure opening or mapping a segment.
      */
     [[nodiscard]] static WalPosition replay(const std::string& directory, WalPosition from, const EntryCallback& cb);
 

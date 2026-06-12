@@ -57,8 +57,7 @@ class MirroredBuffer {
      * @param requested_capacity The minimum physical size of the buffer in bytes.
      * Will be rounded up to the nearest system page size.
      *
-     * @throw PreconditionAssertion If requested_capacity is non-positive.
-     * @throw PubSubItcException If system calls (memfd_create, mmap, ftruncate) fail.
+     * @pre requested_capacity must be greater than zero. Violating this throws PreconditionAssertion.
      */
     explicit MirroredBuffer(int64_t requested_capacity);
 
@@ -82,7 +81,7 @@ class MirroredBuffer {
      * @brief Updates the head index after data has been written to the buffer.
      *
      * @param bytes The number of bytes successfully written.
-     * @throw PreconditionAssertion If bytes is negative or exceeds space_remaining().
+     * @pre bytes must be non-negative and must not exceed space_remaining(). Violating this throws PreconditionAssertion.
      */
     void advance_head(int64_t bytes);
 
@@ -100,7 +99,7 @@ class MirroredBuffer {
      * @brief Updates the tail index after data has been consumed from the buffer.
      *
      * @param bytes The number of bytes successfully processed.
-     * @throw PreconditionAssertion If bytes is negative or exceeds bytes_available().
+     * @pre bytes must be non-negative and must not exceed bytes_available(). Violating this throws PreconditionAssertion.
      */
     void advance_tail(int64_t bytes);
 

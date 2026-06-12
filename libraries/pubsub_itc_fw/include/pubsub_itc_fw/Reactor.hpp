@@ -172,7 +172,7 @@ class Reactor : public ThreadLookupInterface {
      * @param[in] idle_timeout        IdleTimeoutFlag::UseIdleTimeout (default) or
      *                                IdleTimeoutFlag::BypassIdleTimeout for listeners that
      *                                serve long-lived connections without heartbeats.
-     * @throws PreconditionAssertion if called after run().
+     * @pre Must be called before run(). Violating this throws PreconditionAssertion.
      */
     void register_inbound_listener(NetworkEndpointConfiguration address, ThreadID target_thread_id,
                                    ProtocolType protocol_type = ProtocolType{ProtocolType::FrameworkPdu}, int64_t raw_buffer_capacity = 0,
@@ -192,7 +192,7 @@ class Reactor : public ThreadLookupInterface {
      * @param[in] target_thread_id    The ThreadID to receive connection events.
      * @param[in] raw_buffer_capacity Minimum MirroredBuffer size in bytes.
      * @param[in] tls_config          Certificate and key paths.
-     * @throws PreconditionAssertion if called after run().
+     * @pre Must be called before run(). Violating this throws PreconditionAssertion.
      */
     void register_inbound_tls_listener(NetworkEndpointConfiguration address, ThreadID target_thread_id,
                                        int64_t raw_buffer_capacity, TlsListenerConfiguration tls_config);
@@ -202,7 +202,7 @@ class Reactor : public ThreadLookupInterface {
      *
      * @param[in] id The ID of the thread.
      * @return The name of the thread.
-     * @throws PreconditionAssertion if the ThreadID is not found.
+     * @pre id must refer to a registered thread. Violating this throws PreconditionAssertion.
      */
     std::string get_thread_name_from_id(ThreadID id) const;
 
@@ -324,7 +324,7 @@ class Reactor : public ThreadLookupInterface {
      * Valid only after the reactor has been initialized (is_initialized() == true).
      * Returns 0 if the port cannot be determined.
      *
-     * @throws PreconditionAssertion if index is out of range.
+     * @pre index must be in range. Violating this throws PreconditionAssertion.
      */
     [[nodiscard]] uint16_t get_inbound_listener_port(int index) const;
 
@@ -378,7 +378,6 @@ class Reactor : public ThreadLookupInterface {
      * OutboundConnectionManager are constructed. Both managers store epoll_fd_
      * by value, so they must receive the final descriptor, not the -1 sentinel.
      *
-     * @throws PubSubItcException if epoll_create1 fails.
      */
     [[nodiscard]] static int create_epoll_fd();
 
@@ -390,8 +389,6 @@ class Reactor : public ThreadLookupInterface {
      * fd is registered with epoll by the constructor so that SIGTERM is
      * delivered to the reactor thread as a normal readable event, with no C
      * signal handler or global state required.
-     *
-     * @throws PubSubItcException if pthread_sigmask or signalfd fails.
      */
     [[nodiscard]] static int create_signal_fd();
 

@@ -142,6 +142,9 @@ void ApplicationThread::start() {
 }
 
 pthread_t ApplicationThread::get_pthread_id() const {
+    if (thread_ == nullptr) {
+        throw PreconditionAssertion("ApplicationThread::get_pthread_id called before start()", __FILE__, __LINE__);
+    }
     return thread_->get_pthread_id();
 }
 

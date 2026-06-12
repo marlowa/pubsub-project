@@ -196,10 +196,9 @@ class ApplicationThread {
     /**
      * @brief Returns the underlying pthread handle.
      *
-     * Valid only after start() has been called. Used by the Reactor to pin
-     * threads to CPU cores via pthread_setaffinity_np().
+     * Used by the Reactor to pin threads to CPU cores via pthread_setaffinity_np().
      *
-     * @throws PubSubItcException if the thread has not been started.
+     * @pre start() must have been called. Violating this throws PreconditionAssertion.
      */
     [[nodiscard]] pthread_t get_pthread_id() const;
 

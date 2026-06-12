@@ -274,7 +274,7 @@ class InboundConnectionManager {
      *
      * @param[in] index Zero-based registration index.
      * @return The port number, or 0 if the port cannot be determined.
-     * @throws PreconditionAssertion if index is out of range.
+     * @pre index must be in range. Violating this throws PreconditionAssertion.
      */
     [[nodiscard]] uint16_t get_listener_port(int index) const;
 

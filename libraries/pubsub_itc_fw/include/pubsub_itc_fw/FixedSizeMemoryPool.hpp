@@ -613,11 +613,10 @@ template <typename T> class FixedSizeMemoryPool {
      * @param[in] use_huge_pages_flag Whether to attempt huge page allocation.
      * @param[in] handler_for_huge_pages_error Callback invoked if huge page allocation fails.
      *
-     * @throws std::bad_alloc if memory allocation fails.
-     *
-     * @note The pool allocates all memory immediately during construction.
-     *       If huge pages are requested but unavailable, the pool falls back
-     *       to standard pages and invokes the error handler.
+     * @note The pool allocates all memory immediately during construction and
+     *       may throw std::bad_alloc if the allocation fails. If huge pages are
+     *       requested but unavailable, the pool falls back to standard pages and
+     *       invokes the error handler.
      */
     FixedSizeMemoryPool(int objects_per_pool, UseHugePagesFlag use_huge_pages_flag, std::function<void(void*, size_t)> handler_for_huge_pages_error);
 
@@ -662,7 +661,7 @@ template <typename T> class FixedSizeMemoryPool {
      * @note The caller must have already destructed any object at this address.
      *       This method does not call destructors.
      *
-     * @throws PreconditionAssertion if node_to_push is nullptr.
+     * @pre node_to_push must not be nullptr. Violating this throws PreconditionAssertion.
      */
     void deallocate(T* node_to_push);
 

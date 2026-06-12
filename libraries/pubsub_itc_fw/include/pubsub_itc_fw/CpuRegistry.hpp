@@ -42,7 +42,6 @@ class CpuRegistry {
      *                       Default: /dev/shm/pubsub_cpu_registry
      * @param lock_file_path Path to the flock serialisation file.
      *                       Default: /tmp/pubsub_cpu_registry.lock
-     * @throws PubSubItcException if the shared file cannot be opened, sized, or mapped.
      */
     CpuRegistry(std::string shm_path, std::string lock_file_path);
 

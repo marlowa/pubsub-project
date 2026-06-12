@@ -122,7 +122,6 @@ class TestSink : public quill::Sink {
 
     /**
      * @brief Returns the most recently captured record.
-     * @throws std::runtime_error if no records have been captured.
      */
     LogRecord last_record() const {
         std::lock_guard<std::mutex> lock(mutex_);

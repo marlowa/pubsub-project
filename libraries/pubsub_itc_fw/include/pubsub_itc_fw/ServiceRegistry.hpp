@@ -69,7 +69,7 @@ class ServiceRegistry {
      * @param[in] name      Logical service name (e.g. "joe", "mary"). Must be unique.
      * @param[in] primary   Primary endpoint. The reactor tries this address first.
      * @param[in] secondary Secondary (fallback) endpoint. Set port to 0 if not required.
-     * @throws PreconditionAssertion if name is empty or has already been registered.
+     * @pre name must be non-empty and not already registered. Violating either throws PreconditionAssertion.
      */
     void add(const std::string& name, NetworkEndpointConfiguration primary, NetworkEndpointConfiguration secondary) {
         if (name.empty()) {
@@ -93,7 +93,7 @@ class ServiceRegistry {
      * @param[in] primary   Primary endpoint.
      * @param[in] secondary Secondary endpoint. Set port to 0 if not required.
      * @param[in] tls       TLS configuration (CA path, optional client cert/key, buffer capacity).
-     * @throws PreconditionAssertion if name is empty or has already been registered.
+     * @pre name must be non-empty and not already registered. Violating either throws PreconditionAssertion.
      */
     void add_tls(const std::string& name, NetworkEndpointConfiguration primary, NetworkEndpointConfiguration secondary, TlsClientConfiguration tls) {
         if (name.empty()) {
