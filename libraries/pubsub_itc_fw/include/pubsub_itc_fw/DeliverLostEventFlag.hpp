@@ -34,11 +34,11 @@ class DeliverLostEventFlag {
 
     explicit DeliverLostEventFlag(DeliverLostEventFlagTag value) : value_{value} {}
 
-    [[nodiscard]] bool isEqual(const DeliverLostEventFlag& rhs) const {
+    [[nodiscard]] bool is_equal(const DeliverLostEventFlag& rhs) const {
         return value_ == rhs.value_;
     }
 
-    [[nodiscard]] bool isEqual(const DeliverLostEventFlagTag& rhs) const {
+    [[nodiscard]] bool is_equal(const DeliverLostEventFlagTag& rhs) const {
         return value_ == rhs;
     }
 
@@ -51,15 +51,15 @@ class DeliverLostEventFlag {
 };
 
 inline bool operator==(const DeliverLostEventFlag& lhs, const DeliverLostEventFlag& rhs) {
-    return lhs.isEqual(rhs);
+    return lhs.is_equal(rhs);
 }
 
 inline bool operator==(const DeliverLostEventFlag& lhs, const DeliverLostEventFlag::DeliverLostEventFlagTag& rhs) {
-    return lhs.isEqual(rhs);
+    return lhs.is_equal(rhs);
 }
 
 inline bool operator==(const DeliverLostEventFlag::DeliverLostEventFlagTag& lhs, const DeliverLostEventFlag& rhs) {
-    return rhs.isEqual(lhs);
+    return rhs.is_equal(lhs);
 }
 
 } // namespace pubsub_itc_fw

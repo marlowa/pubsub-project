@@ -110,7 +110,7 @@ InetAddress::InetAddress(const struct sockaddr* sockaddr_ptr, socklen_t sockaddr
 }
 
 std::string InetAddress::get_ip_address_string() const {
-    std::array<char, MaximumIpAddressStringLength> ipStringBuffer{};
+    std::array<char, MaximumIpAddressStringLength> ip_string_buffer{};
     const void* src_address = nullptr;
 
     if (addr_storage_.ss_family == AF_INET) {
@@ -124,12 +124,12 @@ std::string InetAddress::get_ip_address_string() const {
         return "";
     }
 
-    if (inet_ntop(addr_storage_.ss_family, src_address, ipStringBuffer.data(), MaximumIpAddressStringLength) == nullptr) {
+    if (inet_ntop(addr_storage_.ss_family, src_address, ip_string_buffer.data(), MaximumIpAddressStringLength) == nullptr) {
         // Error converting address to string
         return "";
     }
 
-    return {ipStringBuffer.data()};
+    return {ip_string_buffer.data()};
 }
 
 uint16_t InetAddress::get_port() const {

@@ -26,11 +26,11 @@ class IdleTimeoutFlag {
 
     explicit IdleTimeoutFlag(IdleTimeoutFlagTag value) : value_{value} {}
 
-    [[nodiscard]] bool isEqual(const IdleTimeoutFlag& rhs) const {
+    [[nodiscard]] bool is_equal(const IdleTimeoutFlag& rhs) const {
         return value_ == rhs.value_;
     }
 
-    [[nodiscard]] bool isEqual(const IdleTimeoutFlagTag& rhs) const {
+    [[nodiscard]] bool is_equal(const IdleTimeoutFlagTag& rhs) const {
         return value_ == rhs;
     }
 
@@ -43,15 +43,15 @@ class IdleTimeoutFlag {
 };
 
 inline bool operator==(const IdleTimeoutFlag& lhs, const IdleTimeoutFlag& rhs) {
-    return lhs.isEqual(rhs);
+    return lhs.is_equal(rhs);
 }
 
 inline bool operator==(const IdleTimeoutFlag& lhs, const IdleTimeoutFlag::IdleTimeoutFlagTag& rhs) {
-    return lhs.isEqual(rhs);
+    return lhs.is_equal(rhs);
 }
 
 inline bool operator==(const IdleTimeoutFlag::IdleTimeoutFlagTag& lhs, const IdleTimeoutFlag& rhs) {
-    return rhs.isEqual(lhs);
+    return rhs.is_equal(lhs);
 }
 
 } // namespace pubsub_itc_fw

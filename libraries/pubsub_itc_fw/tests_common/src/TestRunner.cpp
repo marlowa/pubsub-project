@@ -11,7 +11,7 @@
 
 namespace pubsub_itc_fw::tests_common {
 
-int TestRunner::runTests(int argc, char** argv) {
+int TestRunner::run_tests(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
 }
@@ -29,5 +29,5 @@ int main(int argc, char** argv) {
 #endif
 
     using namespace pubsub_itc_fw::tests_common;
-    return TestRunner::runTests(argc, argv);
+    return TestRunner::run_tests(argc, argv);
 }

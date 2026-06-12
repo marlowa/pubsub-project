@@ -82,10 +82,10 @@ class ApplicationThreadTestEnv : public ::testing::Environment {
 };
 
 // Register this environment ONLY for this translation unit
-static ::testing::Environment* const appThreadEnv = ::testing::AddGlobalTestEnvironment(new ApplicationThreadTestEnv());
+static ::testing::Environment* const app_thread_env = ::testing::AddGlobalTestEnvironment(new ApplicationThreadTestEnv());
 
 static ApplicationThreadTestEnv* env() {
-    return static_cast<ApplicationThreadTestEnv*>(appThreadEnv);
+    return static_cast<ApplicationThreadTestEnv*>(app_thread_env);
 }
 
 class ApplicationThreadTest : public ::testing::Test {
@@ -132,9 +132,9 @@ class TestThread : public ApplicationThread {
   public:
     ~TestThread() override = default;
 
-    TestThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, const std::string& name, ThreadID id, const QueueConfiguration& queueConfig,
-               const AllocatorConfiguration& allocatorConfig)
-        : ApplicationThread(token, logger, reactor, name, id, queueConfig, allocatorConfig, ApplicationThreadConfiguration{}) {}
+    TestThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, const std::string& name, ThreadID id, const QueueConfiguration& queue_config,
+               const AllocatorConfiguration& allocator_config)
+        : ApplicationThread(token, logger, reactor, name, id, queue_config, allocator_config, ApplicationThreadConfiguration{}) {}
 
     void on_initial_event() override {
         last_processed_type.store(EventType(EventType::Initial), std::memory_order_release);
@@ -171,8 +171,8 @@ class TestThread : public ApplicationThread {
 class TestThreadOneOffTimer : public TestThread {
   public:
     TestThreadOneOffTimer(ConstructorToken token, QuillLogger& logger, Reactor& reactor, const std::string& name, ThreadID id,
-                          const QueueConfiguration& queueConfig, const AllocatorConfiguration& allocatorConfig)
-        : TestThread(token, logger, reactor, name, id, queueConfig, allocatorConfig) {}
+                          const QueueConfiguration& queue_config, const AllocatorConfiguration& allocator_config)
+        : TestThread(token, logger, reactor, name, id, queue_config, allocator_config) {}
 
     void on_initial_event() override {
         TestThread::on_initial_event();
@@ -183,8 +183,8 @@ class TestThreadOneOffTimer : public TestThread {
 class TestThreadRecurringTimer : public TestThread {
   public:
     TestThreadRecurringTimer(ConstructorToken token, QuillLogger& logger, Reactor& reactor, const std::string& name, ThreadID id,
-                             const QueueConfiguration& queueConfig, const AllocatorConfiguration& allocatorConfig)
-        : TestThread(token, logger, reactor, name, id, queueConfig, allocatorConfig) {}
+                             const QueueConfiguration& queue_config, const AllocatorConfiguration& allocator_config)
+        : TestThread(token, logger, reactor, name, id, queue_config, allocator_config) {}
 
     void on_initial_event() override {
         TestThread::on_initial_event();
@@ -200,8 +200,8 @@ class TestThreadRecurringTimer : public TestThread {
 class TestThreadCancelTimer : public TestThread {
   public:
     TestThreadCancelTimer(ConstructorToken token, QuillLogger& logger, Reactor& reactor, const std::string& name, ThreadID id,
-                          const QueueConfiguration& queueConfig, const AllocatorConfiguration& allocatorConfig)
-        : TestThread(token, logger, reactor, name, id, queueConfig, allocatorConfig) {}
+                          const QueueConfiguration& queue_config, const AllocatorConfiguration& allocator_config)
+        : TestThread(token, logger, reactor, name, id, queue_config, allocator_config) {}
 
     void on_initial_event() override {
         TestThread::on_initial_event();
@@ -222,8 +222,8 @@ class TestThreadNameTimer : public TestThread {
   public:
     std::string out;
     TestThreadNameTimer(ConstructorToken token, QuillLogger& logger, Reactor& reactor, const std::string& name, ThreadID id,
-                        const QueueConfiguration& queueConfig, const AllocatorConfiguration& allocatorConfig)
-        : TestThread(token, logger, reactor, name, id, queueConfig, allocatorConfig) {}
+                        const QueueConfiguration& queue_config, const AllocatorConfiguration& allocator_config)
+        : TestThread(token, logger, reactor, name, id, queue_config, allocator_config) {}
 
     void on_initial_event() override {
         TestThread::on_initial_event();
@@ -241,8 +241,8 @@ class TestThreadMultiTimer : public TestThread {
     std::atomic<int>* b{nullptr};
 
     TestThreadMultiTimer(ConstructorToken token, QuillLogger& logger, Reactor& reactor, const std::string& name, ThreadID id,
-                         const QueueConfiguration& queueConfig, const AllocatorConfiguration& allocatorConfig)
-        : TestThread(token, logger, reactor, name, id, queueConfig, allocatorConfig) {}
+                         const QueueConfiguration& queue_config, const AllocatorConfiguration& allocator_config)
+        : TestThread(token, logger, reactor, name, id, queue_config, allocator_config) {}
 
     void on_initial_event() override {
         TestThread::on_initial_event();
@@ -983,33 +983,33 @@ TEST_F(ApplicationThreadTest, InterThreadRoutingDeliversMessage) {
     const QueueConfiguration qc = make_queue_config();
     const AllocatorConfiguration ac = make_allocator_config();
 
-    auto threadA = ApplicationThread::create<TestThread>(logger_with_sink_.logger, *reactor_, "ThreadA", ThreadID(1), qc, ac);
-    auto threadB = ApplicationThread::create<TestThread>(logger_with_sink_.logger, *reactor_, "ThreadB", ThreadID(2), qc, ac);
+    auto thread_a = ApplicationThread::create<TestThread>(logger_with_sink_.logger, *reactor_, "ThreadA", ThreadID(1), qc, ac);
+    auto thread_b = ApplicationThread::create<TestThread>(logger_with_sink_.logger, *reactor_, "ThreadB", ThreadID(2), qc, ac);
 
-    reactor_->register_thread(threadA);
-    reactor_->register_thread(threadB);
+    reactor_->register_thread(thread_a);
+    reactor_->register_thread(thread_b);
     reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>([this] { reactor_->run(); });
 
     // Wait until Reactor has started the threads and they are Operational
-    for (int i = 0; i < 200 && (threadA->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational ||
-                                threadB->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational || !reactor_->is_initialized());
+    for (int i = 0; i < 200 && (thread_a->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational ||
+                                thread_b->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational || !reactor_->is_initialized());
          ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
     // Send an ITC message from A → B
-    EventMessage msg = EventMessage::create_itc_message(threadA->get_thread_id(), nullptr, 0);
-    threadA->post_message(ThreadID(2), std::move(msg));
+    EventMessage msg = EventMessage::create_itc_message(thread_a->get_thread_id(), nullptr, 0);
+    thread_a->post_message(ThreadID(2), std::move(msg));
 
     // Wait for B to process the message
     {
         BackoffWithYield backoff;
-        while (threadB->last_processed_type.load(std::memory_order_acquire) != EventType(EventType::InterthreadCommunication)) {
+        while (thread_b->last_processed_type.load(std::memory_order_acquire) != EventType(EventType::InterthreadCommunication)) {
             backoff.pause();
         }
     }
 
-    EXPECT_EQ(threadB->last_processed_type.load(std::memory_order_acquire), EventType(EventType::InterthreadCommunication));
+    EXPECT_EQ(thread_b->last_processed_type.load(std::memory_order_acquire), EventType(EventType::InterthreadCommunication));
 }
 
 TEST_F(ApplicationThreadTest, OneOffTimerFiresOnce) {
@@ -1176,7 +1176,7 @@ TEST_F(ApplicationThreadTest, CreatingTimerFromWrongThreadThrows) {
 struct DefaultHandlerProbe : public ApplicationThread {
     using ApplicationThread::ApplicationThread;
     // Override the one pure virtual
-    void on_itc_message([[maybe_unused]] const EventMessage& eventMessage) override {}
+    void on_itc_message([[maybe_unused]] const EventMessage& event_message) override {}
 
     using ApplicationThread::on_app_ready_event;
     using ApplicationThread::on_initial_event;

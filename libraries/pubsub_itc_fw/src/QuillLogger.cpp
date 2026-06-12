@@ -164,26 +164,26 @@ std::string QuillLogger::ensure_log_file_writable(const std::string& file_path) 
 QuillLogger::~QuillLogger() = default;
 
 QuillLogger::QuillLogger(const std::string& file_path, FileOpenMode file_mode, FwLogLevel applog_level, FwLogLevel syslog_level,
-                         const RollingLogfileConfiguration& rollingLogfileConfiguration)
-    : applog_level_{applog_level}, syslog_level_{syslog_level}, m_rollingLogfileConfiguration(rollingLogfileConfiguration) {
+                         const RollingLogfileConfiguration& rolling_logfile_configuration)
+    : applog_level_{applog_level}, syslog_level_{syslog_level}, m_rolling_logfile_configuration(rolling_logfile_configuration) {
     ensure_backend_started();
 
     quill::FileSinkConfig file_config;
     file_config.set_open_mode(file_mode == FileOpenMode(FileOpenMode::Append) ? 'a' : 'w');
-    if (m_rollingLogfileConfiguration.mode == RollingLogfileConfiguration::Mode::Size) {
+    if (m_rolling_logfile_configuration.mode == RollingLogfileConfiguration::Mode::Size) {
         applog_sink_ = PubsubFrontend::create_or_get_sink<quill::RotatingFileSink>(file_path, [file_mode, this]() {
             quill::RotatingFileSinkConfig cfg;
             cfg.set_open_mode(file_mode == FileOpenMode(FileOpenMode::Append) ? 'a' : 'w');
-            cfg.set_rotation_max_file_size(m_rollingLogfileConfiguration.max_file_size);
-            cfg.set_max_backup_files(m_rollingLogfileConfiguration.max_backup_files);
+            cfg.set_rotation_max_file_size(m_rolling_logfile_configuration.max_file_size);
+            cfg.set_max_backup_files(m_rolling_logfile_configuration.max_backup_files);
             return cfg;
         }());
-    } else if (m_rollingLogfileConfiguration.mode == RollingLogfileConfiguration::Mode::Daily) {
+    } else if (m_rolling_logfile_configuration.mode == RollingLogfileConfiguration::Mode::Daily) {
         applog_sink_ = PubsubFrontend::create_or_get_sink<quill::RotatingFileSink>(file_path, [file_mode, this]() {
             quill::RotatingFileSinkConfig cfg;
             cfg.set_open_mode(file_mode == FileOpenMode(FileOpenMode::Append) ? 'a' : 'w');
-            cfg.set_rotation_time_daily(m_rollingLogfileConfiguration.rotation_time);
-            cfg.set_max_backup_files(m_rollingLogfileConfiguration.max_backup_files);
+            cfg.set_rotation_time_daily(m_rolling_logfile_configuration.rotation_time);
+            cfg.set_max_backup_files(m_rolling_logfile_configuration.max_backup_files);
             return cfg;
         }());
     } else {

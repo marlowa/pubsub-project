@@ -91,10 +91,10 @@ class ReactorTestEnv : public ::testing::Environment {
 };
 
 // Register this environment ONLY for this translation unit
-static ::testing::Environment* const reactorEnv = ::testing::AddGlobalTestEnvironment(new ReactorTestEnv());
+static ::testing::Environment* const reactor_env = ::testing::AddGlobalTestEnvironment(new ReactorTestEnv());
 
 static ReactorTestEnv* env() {
-    return static_cast<ReactorTestEnv*>(reactorEnv);
+    return static_cast<ReactorTestEnv*>(reactor_env);
 }
 
 class ReactorTest : public ::testing::Test {
@@ -187,7 +187,7 @@ class TestApplicationThread : public ApplicationThread {
         saw_app_ready_event.store(true, std::memory_order_release);
     }
 
-    void on_itc_message([[maybe_unused]] const EventMessage& eventMessage) override {
+    void on_itc_message([[maybe_unused]] const EventMessage& event_message) override {
         // Not used in this test.
     }
 };
@@ -200,7 +200,7 @@ class FakeThread : public ApplicationThread {
         set_lifecycle_state(ThreadLifecycleState::Operational);
     }
 
-    void on_itc_message([[maybe_unused]] const EventMessage& eventMessage) override {}
+    void on_itc_message([[maybe_unused]] const EventMessage& event_message) override {}
 };
 
 } // namespace

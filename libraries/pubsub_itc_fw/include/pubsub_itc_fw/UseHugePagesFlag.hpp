@@ -13,11 +13,11 @@ class UseHugePagesFlag {
 
     explicit UseHugePagesFlag(UseHugePagesFlagTag value) : value_{value} {}
 
-    [[nodiscard]] bool isEqual(const UseHugePagesFlag& rhs) const {
+    [[nodiscard]] bool is_equal(const UseHugePagesFlag& rhs) const {
         return value_ == rhs.value_;
     }
 
-    [[nodiscard]] bool isEqual(const UseHugePagesFlagTag& rhs) const {
+    [[nodiscard]] bool is_equal(const UseHugePagesFlagTag& rhs) const {
         return value_ == rhs;
     }
 
@@ -30,15 +30,15 @@ class UseHugePagesFlag {
 };
 
 inline bool operator==(const UseHugePagesFlag& lhs, const UseHugePagesFlag& rhs) {
-    return lhs.isEqual(rhs);
+    return lhs.is_equal(rhs);
 }
 
 inline bool operator==(const UseHugePagesFlag& lhs, const UseHugePagesFlag::UseHugePagesFlagTag& rhs) {
-    return lhs.isEqual(rhs);
+    return lhs.is_equal(rhs);
 }
 
 inline bool operator==(const UseHugePagesFlag::UseHugePagesFlagTag& lhs, const UseHugePagesFlag& rhs) {
-    return rhs.isEqual(lhs);
+    return rhs.is_equal(lhs);
 }
 
 } // namespace pubsub_itc_fw

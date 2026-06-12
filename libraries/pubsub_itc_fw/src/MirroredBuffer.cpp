@@ -29,30 +29,30 @@ MirroredBuffer::MirroredBuffer(int64_t requested_capacity) {
     // This avoids needing a named file in /dev/shm.
     shm_fd_ = memfd_create("mirrored_buffer", MFD_CLOEXEC);
     if (shm_fd_ == -1) {
-        PubSubItcException::throwErrno("Failed to create memfd for mirrored buffer", __FILE__, __LINE__);
+        PubSubItcException::throw_errno("Failed to create memfd for mirrored buffer", __FILE__, __LINE__);
     }
 
     if (ftruncate(shm_fd_, capacity_) == -1) {
-        PubSubItcException::throwErrno("Failed to truncate memfd to capacity", __FILE__, __LINE__);
+        PubSubItcException::throw_errno("Failed to truncate memfd to capacity", __FILE__, __LINE__);
     }
 
     // 1. Reserve a contiguous virtual address space of size 2 * capacity.
     // MAP_PRIVATE | MAP_ANONYMOUS with PROT_NONE ensures we don't commit physical memory yet.
     base_ptr_ = static_cast<uint8_t*>(mmap(nullptr, 2 * capacity_, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
     if (base_ptr_ == MAP_FAILED) {
-        PubSubItcException::throwErrno("Failed to reserve virtual address space for mirrored buffer", __FILE__, __LINE__);
+        PubSubItcException::throw_errno("Failed to reserve virtual address space for mirrored buffer", __FILE__, __LINE__);
     }
 
     // 2. Map the physical memory into the first half of the reserved range.
     auto* first_half = static_cast<uint8_t*>(mmap(base_ptr_, capacity_, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, shm_fd_, 0));
     if (first_half == MAP_FAILED) {
-        PubSubItcException::throwErrno("Failed to map first half of mirrored buffer", __FILE__, __LINE__);
+        PubSubItcException::throw_errno("Failed to map first half of mirrored buffer", __FILE__, __LINE__);
     }
 
     // 3. Map the SAME physical memory into the second half.
     auto* second_half = static_cast<uint8_t*>(mmap(base_ptr_ + capacity_, capacity_, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, shm_fd_, 0));
     if (second_half == MAP_FAILED) {
-        PubSubItcException::throwErrno("Failed to map second half of mirrored buffer", __FILE__, __LINE__);
+        PubSubItcException::throw_errno("Failed to map second half of mirrored buffer", __FILE__, __LINE__);
     }
 }
 
@@ -118,7 +118,7 @@ int64_t MirroredBuffer::space_remaining() const {
 /*static*/ int64_t MirroredBuffer::round_to_page_size(int64_t size) {
     const int64_t page_size_raw = sysconf(_SC_PAGESIZE);
     if (page_size_raw <= 0) {
-        PubSubItcException::throwErrno("Failed to retrieve system page size", __FILE__, __LINE__);
+        PubSubItcException::throw_errno("Failed to retrieve system page size", __FILE__, __LINE__);
     }
 
     const auto u_size = static_cast<uint64_t>(size);

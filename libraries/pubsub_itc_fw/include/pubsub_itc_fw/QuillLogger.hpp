@@ -96,10 +96,10 @@ class QuillLogger {
      * @param file_mode     [in] Truncate or append.
      * @param applog_level  [in] Minimum severity written to the applog file.
      * @param syslog_level  [in] Minimum severity written to syslog.
-     * @param rollingLogfileConfiguration [in] Configuration parameters for roll on size, time or not at all
+     * @param rolling_logfile_configuration [in] Configuration parameters for roll on size, time or not at all
      */
     QuillLogger(const std::string& file_path, FileOpenMode file_mode, FwLogLevel applog_level, FwLogLevel syslog_level,
-                const RollingLogfileConfiguration& rollingLogfileConfiguration = {});
+                const RollingLogfileConfiguration& rolling_logfile_configuration = {});
 
     /**
      * @brief Unit-test constructor.  Creates a console sink; syslog is suppressed.
@@ -188,7 +188,7 @@ class QuillLogger {
 
     FwLogLevel applog_level_;
     FwLogLevel syslog_level_;
-    RollingLogfileConfiguration m_rollingLogfileConfiguration;
+    RollingLogfileConfiguration m_rolling_logfile_configuration;
 
     quill::LoggerImpl<QuillLoggerFrontendOptions>* quill_logger_{nullptr};
 };

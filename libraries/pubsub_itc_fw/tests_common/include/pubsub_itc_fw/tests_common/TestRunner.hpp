@@ -17,7 +17,7 @@ namespace pubsub_itc_fw::tests_common {
 
 class TestRunner {
   public:
-    static int runTests(int argc, char** argv);
+    static int run_tests(int argc, char** argv);
 };
 
 } // namespace pubsub_itc_fw::tests_common

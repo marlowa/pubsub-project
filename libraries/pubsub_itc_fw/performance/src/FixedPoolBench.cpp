@@ -178,8 +178,8 @@ namespace {
 void RunProducer(
     int cpu,
     size_t iterations,
-    std::atomic<bool>& startFlag,
-    std::atomic<bool>& doneFlag,
+    std::atomic<bool>& start_flag,
+    std::atomic<bool>& done_flag,
     std::atomic<size_t>& produced,
     pubsub_itc_fw::FixedSizeMemoryPool<TestObject>& pool,
     SpscRing<TestObject>& ring)
@@ -188,7 +188,7 @@ void RunProducer(
         std::cerr << "Producer: failed to pin to CPU " << cpu << "\n";
     }
 
-    while (!startFlag.load(std::memory_order_acquire)) {
+    while (!start_flag.load(std::memory_order_acquire)) {
         std::this_thread::yield();
     }
 
@@ -208,15 +208,15 @@ void RunProducer(
         produced.fetch_add(1, std::memory_order_relaxed);
     }
 
-    doneFlag.store(true, std::memory_order_release);
+    done_flag.store(true, std::memory_order_release);
 }
 
 void RunConsumer(
     int cpu,
-    bool simulateSlowConsumer,
-    int busyWorkIters,
-    std::atomic<bool>& startFlag,
-    const std::atomic<bool>& doneFlag,
+    bool simulate_slow_consumer,
+    int busy_work_iters,
+    std::atomic<bool>& start_flag,
+    const std::atomic<bool>& done_flag,
     const std::atomic<size_t>& produced,
     std::atomic<size_t>& consumed,
     pubsub_itc_fw::FixedSizeMemoryPool<TestObject>& pool,
@@ -226,15 +226,15 @@ void RunConsumer(
         std::cerr << "Consumer: failed to pin to CPU " << cpu << "\n";
     }
 
-    while (!startFlag.load(std::memory_order_acquire)) {
+    while (!start_flag.load(std::memory_order_acquire)) {
         std::this_thread::yield();
     }
 
     for (;;) {
         TestObject* obj = ring.Pop();
         if (obj != nullptr) {
-            if (simulateSlowConsumer) {
-                for (int k = 0; k < busyWorkIters; ++k) {
+            if (simulate_slow_consumer) {
+                for (int k = 0; k < busy_work_iters; ++k) {
                     asm volatile("" ::: "memory");
                 }
             }
@@ -247,7 +247,7 @@ void RunConsumer(
 
             consumed.fetch_add(1, std::memory_order_relaxed);
         } else {
-            if (doneFlag.load(std::memory_order_acquire) &&
+            if (done_flag.load(std::memory_order_acquire) &&
                 consumed.load(std::memory_order_relaxed) >= produced.load(std::memory_order_relaxed)) {
                 break;
             }
@@ -266,51 +266,51 @@ int main() {
     using pubsub_itc_fw::UseHugePagesFlag;
 
     // Tunables: adjust for your machine / perf session
-    const int poolCapacity = 1024;        // number of slots in pool
-    const size_t ringCapacity = 1024;     // must be power of two
+    const int pool_capacity = 1024;        // number of slots in pool
+    const size_t ring_capacity = 1024;     // must be power of two
     const size_t iterations = 50'000'000; // producer iterations
-    const int producerCpu = 2;            // adjust as needed
-    const int consumerCpu = 3;            // adjust as needed
-    const bool simulateSlowConsumer = true;
-    const int consumerBusyWorkIters = 50; // small spin to lag consumer
+    const int producer_cpu = 2;            // adjust as needed
+    const int consumer_cpu = 3;            // adjust as needed
+    const bool simulate_slow_consumer = true;
+    const int consumer_busy_work_iters = 50; // small spin to lag consumer
 
     FixedSizeMemoryPool<TestObject> pool(
-        poolCapacity,
+        pool_capacity,
         UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages),
         MakeHugePageErrorHandler()
     );
 
-    SpscRing<TestObject> ring(ringCapacity);
+    SpscRing<TestObject> ring(ring_capacity);
 
-    std::atomic<bool> startFlag{false};
-    std::atomic<bool> doneFlag{false};
+    std::atomic<bool> start_flag{false};
+    std::atomic<bool> done_flag{false};
     std::atomic<size_t> produced{0};
     std::atomic<size_t> consumed{0};
 
     std::thread producer([&]() {
-        RunProducer(producerCpu, iterations, startFlag, doneFlag, produced, pool, ring);
+        RunProducer(producer_cpu, iterations, start_flag, done_flag, produced, pool, ring);
     });
 
     std::thread consumer([&]() {
-        RunConsumer(consumerCpu, simulateSlowConsumer, consumerBusyWorkIters, startFlag, doneFlag, produced, consumed, pool, ring);
+        RunConsumer(consumer_cpu, simulate_slow_consumer, consumer_busy_work_iters, start_flag, done_flag, produced, consumed, pool, ring);
     });
 
-    startFlag.store(true, std::memory_order_release);
+    start_flag.store(true, std::memory_order_release);
 
     const auto t0 = std::chrono::steady_clock::now();
     producer.join();
     consumer.join();
     const auto t1 = std::chrono::steady_clock::now();
 
-    const auto elapsedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
+    const auto elapsed_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
 
     std::cout << "fixed_pool_bench:\n";
     std::cout << "  produced: " << produced.load() << "\n";
     std::cout << "  consumed: " << consumed.load() << "\n";
-    std::cout << "  elapsed:  " << elapsedNs << " ns\n";
-    if (elapsedNs > 0) {
-        const double opsPerSec = static_cast<double>(consumed.load()) * 1e9 / static_cast<double>(elapsedNs);
-        std::cout << "  throughput: " << opsPerSec << " ops/sec\n";
+    std::cout << "  elapsed:  " << elapsed_ns << " ns\n";
+    if (elapsed_ns > 0) {
+        const double ops_per_sec = static_cast<double>(consumed.load()) * 1e9 / static_cast<double>(elapsed_ns);
+        std::cout << "  throughput: " << ops_per_sec << " ops/sec\n";
     }
 
     if (consumed.load() != iterations) {

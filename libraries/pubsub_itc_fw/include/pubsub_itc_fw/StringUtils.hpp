@@ -76,7 +76,7 @@ class StringUtils {
      * @param [in] duration The duration to convert.
      * @returns std::string A string representation of the duration.
      */
-    template <typename Rep, typename Period> static std::string chronoDurationAsString(const std::chrono::duration<Rep, Period>& duration) {
+    template <typename Rep, typename Period> static std::string chrono_duration_as_string(const std::chrono::duration<Rep, Period>& duration) {
         return fmt::format("{}", duration);
     }
 
@@ -85,7 +85,7 @@ class StringUtils {
      * @param [in] timepoint The time_point to convert.
      * @returns std::string A string representation of the time_point.
      */
-    template <typename Clock, typename Duration> static std::string chronoTimepointAsString(const std::chrono::time_point<Clock, Duration>& timepoint) {
+    template <typename Clock, typename Duration> static std::string chrono_timepoint_as_string(const std::chrono::time_point<Clock, Duration>& timepoint) {
         return fmt::format("{}", timepoint);
     }
 
