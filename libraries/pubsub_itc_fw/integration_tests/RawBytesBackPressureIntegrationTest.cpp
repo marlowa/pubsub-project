@@ -212,7 +212,7 @@ class BackpressureListenerThread : public ApplicationThread {
 
     std::atomic<bool> connection_established{false};
     std::atomic<bool> connection_lost{false};
-    std::atomic<bool> drain_enabled{false};
+    std::atomic<bool> drain_enabled{false}; // test knob: simulates a slow app that withholds commits
     std::atomic<int64_t> total_bytes_seen{0};
     std::atomic<int64_t> total_bytes_committed{0};
     std::atomic<int> callback_count{0};
@@ -254,7 +254,11 @@ class BackpressureListenerThread : public ApplicationThread {
             // long compared to the per-event work is enough to cause a
             // realistic backlog.
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
-            return;
+            // Re-check after the sleep: drain_enabled may have been set while
+            // this callback was paused. If still false, return without committing.
+            if (!drain_enabled.load(std::memory_order_acquire)) {
+                return;
+            }
         }
 
         // Drain mode: commit the new bytes in this window. new_bytes is the
@@ -525,11 +529,16 @@ TEST_F(RawBytesBackpressureIntegrationTest, BackpressureReleasesAfterCommitsDrai
     // manager to re-register EPOLLIN.
     listener_thread->drain_enabled.store(true, std::memory_order_release);
 
-    // Keep pushing. Within resume_timeout_ms the listener should commit, the
-    // manager should re-register EPOLLIN, and the listener should see more
-    // bytes. We check by waiting for total_bytes_seen to advance, since that
-    // is the most direct evidence that the reactor resumed reading.
-    EXPECT_TRUE(wait_for([&]() { return listener_thread->total_bytes_seen.load(std::memory_order_acquire) > bytes_seen_before_drain; }, resume_timeout_ms))
+    // Keep pushing. Within resume_timeout_ms the listener should commit,
+    // EPOLLIN should be re-registered, and the listener should see more bytes.
+    // We also send on every poll so that if the kernel receive buffer drained
+    // to zero before EPOLLIN was deregistered (a race where the peer saw EAGAIN
+    // from a delayed ACK rather than from a full buffer), there is always data
+    // in flight once the window reopens.
+    EXPECT_TRUE(wait_for([&]() {
+        try_send_chunk(sock_fd, chunk.data(), chunk.size());
+        return listener_thread->total_bytes_seen.load(std::memory_order_acquire) > bytes_seen_before_drain;
+    }, resume_timeout_ms))
         << "Listener never saw more bytes after drain was enabled; backpressure release "
         << "did not happen. bytes_seen_before_drain=" << bytes_seen_before_drain << "; " << last_wait_failure_description();
 

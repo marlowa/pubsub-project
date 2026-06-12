@@ -57,8 +57,8 @@ namespace pubsub_itc_fw::tests {
 // ============================================================
 // PDU IDs matching the variable-length test protocol DSL
 // ============================================================
-static constexpr int16_t PDU_ID_DATA_QUERY = 300;
-static constexpr int16_t PDU_ID_DATA_RESPONSE = 301;
+static constexpr int16_t pdu_id_data_query = 300;
+static constexpr int16_t pdu_id_data_response = 301;
 
 // ============================================================
 // Helpers
@@ -100,7 +100,7 @@ class ConnectorThread : public ApplicationThread {
         query.has_limit = true;
         query.limit = 10;
 
-        send_pdu(id, PDU_ID_DATA_QUERY, 0, query);
+        send_pdu(id, pdu_id_data_query, 0, query);
         query_sent.store(true, std::memory_order_release);
     }
 
@@ -199,7 +199,7 @@ class ListenerThread : public ApplicationThread {
             response.results.data = results_data.data();
             response.results.size = results_data.size();
 
-            send_pdu(conn_id, PDU_ID_DATA_RESPONSE, 0, response);
+            send_pdu(conn_id, pdu_id_data_response, 0, response);
             response_sent.store(true, std::memory_order_release);
         }
     }

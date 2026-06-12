@@ -66,7 +66,7 @@ class CpuRegistry {
      * @param count       Maximum number of CPUs to claim.
      * @param reserve_cpu0 When true, CPU 0 is excluded from candidates.
      * @return The claimed CPU IDs. May be fewer than `count` if not enough
-     *         cores are available; never exceeds SharedCoreRegistryLayout::MAX_SYSTEM_CORES.
+     *         cores are available; never exceeds SharedCoreRegistryLayout::max_system_cores.
      */
     [[nodiscard]] AvailableCpuVector claim_cpus(size_t count, bool reserve_cpu0) const;
 

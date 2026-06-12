@@ -46,13 +46,13 @@ struct CoreAllocationEntry {
  * @brief Fixed-size POD layout for the cross-process shared registry file.
  *
  * All cooperating processes memory-map the same file and read/write this
- * struct. MAX_SYSTEM_CORES must never change between processes on the same
+ * struct. max_system_cores must never change between processes on the same
  * machine; it determines the on-disk / in-memory file size.
  */
 struct SharedCoreRegistryLayout {
-    static constexpr size_t MAX_SYSTEM_CORES = 256;
+    static constexpr size_t max_system_cores = 256;
     uint32_t active_entry_count{0};
-    CoreAllocationEntry entries[MAX_SYSTEM_CORES]; // NOLINT(modernize-avoid-c-arrays)
+    CoreAllocationEntry entries[max_system_cores]; // NOLINT(modernize-avoid-c-arrays)
 };
 
 namespace detail {

@@ -422,7 +422,7 @@ bool InboundConnectionManager::process_commit_raw_bytes(ConnectionID id, int64_t
     if (it == connections_.end()) {
         return false;
     }
-    const InboundConnection& conn = *it->second;
+    InboundConnection& conn = *it->second;
     const bool resume_reads = conn.handler()->commit_bytes(bytes_consumed);
 
     if (resume_reads) {
@@ -445,6 +445,12 @@ bool InboundConnectionManager::process_commit_raw_bytes(ConnectionID id, int64_t
                        "InboundConnectionManager::process_commit_raw_bytes: read backpressure "
                        "released on connection {} from '{}' -- EPOLLIN re-registered",
                        id.get_value(), conn.peer_description());
+            // Bytes may have accumulated in the kernel TCP receive buffer while
+            // EPOLLIN was deregistered. Level-triggered epoll only fires when NEW
+            // data arrives after re-registration, so pre-existing bytes would
+            // never be delivered without this eager read. If the buffer is empty,
+            // recv returns EAGAIN and on_data_ready is a cheap no-op.
+            on_data_ready(conn);
         }
     }
     return true;

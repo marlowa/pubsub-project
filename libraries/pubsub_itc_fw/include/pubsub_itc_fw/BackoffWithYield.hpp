@@ -25,8 +25,8 @@ namespace pubsub_itc_fw {
 class BackoffWithYield {
   public:
     // Constants for tuning the backoff behaviour
-    static constexpr uint32_t UP_TO_YIELD = 10;
-    static constexpr uint32_t UP_TO_SLEEP = 20;
+    static constexpr uint32_t up_to_yield = 10;
+    static constexpr uint32_t up_to_sleep = 20;
 
     /**
      * @brief Performs one step of the backoff sequence.
@@ -37,7 +37,7 @@ class BackoffWithYield {
         // Valgrind is serialised; we MUST yield to let other threads run.
         std::this_thread::yield();
 #else
-        if (count_ < UP_TO_YIELD) {
+        if (count_ < up_to_yield) {
             // Tier 1: Hardware-level pause (exponentially increasing)
             // On Skylake+, one _mm_pause is ~140 cycles.
             for (uint32_t i = 0; i < (1U << count_); ++i) {
@@ -48,7 +48,7 @@ class BackoffWithYield {
                 std::this_thread::yield();
 #endif
             }
-        } else if (count_ < UP_TO_SLEEP) {
+        } else if (count_ < up_to_sleep) {
             // Tier 2: OS-level yield
             std::this_thread::yield();
         } else {
@@ -57,7 +57,7 @@ class BackoffWithYield {
         }
 
         // Prevent overflow while maintaining maximum backoff state
-        if (count_ < UP_TO_SLEEP + 1) {
+        if (count_ < up_to_sleep + 1) {
             count_++;
         }
 #endif

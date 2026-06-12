@@ -72,8 +72,8 @@
 
 namespace pubsub_itc_fw::tests {
 
-static constexpr int16_t PDU_ID_DATA_QUERY = 300;
-static constexpr int16_t PDU_ID_DATA_RESPONSE = 301;
+static constexpr int16_t pdu_id_data_query = 300;
+static constexpr int16_t pdu_id_data_response = 301;
 
 // 2 MB string — large enough to exceed any loopback socket send buffer,
 // guaranteeing at least one partial send regardless of kernel defaults.
@@ -149,7 +149,7 @@ class PduProtocolHandlerConnectorThread : public ApplicationThread {
         query.has_limit = false;
         query.limit = 0;
 
-        send_pdu(id, PDU_ID_DATA_QUERY, 0, query);
+        send_pdu(id, pdu_id_data_query, 0, query);
         query_sent.store(true, std::memory_order_release);
     }
 
@@ -246,7 +246,7 @@ class PduProtocolHandlerListenerThread : public ApplicationThread {
             response.results.data = results_data.data();
             response.results.size = results_data.size();
 
-            send_pdu(conn_id, PDU_ID_DATA_RESPONSE, 0, response);
+            send_pdu(conn_id, pdu_id_data_response, 0, response);
             response_sent.store(true, std::memory_order_release);
         }
     }
@@ -302,7 +302,7 @@ class LargeResponseListenerThread : public ApplicationThread {
         response.results.data = results_data.data();
         response.results.size = results_data.size();
 
-        send_pdu(conn_id, PDU_ID_DATA_RESPONSE, 0, response);
+        send_pdu(conn_id, pdu_id_data_response, 0, response);
         response_sent.store(true, std::memory_order_release);
     }
 
@@ -353,7 +353,7 @@ class SmallQueryConnectorThread : public ApplicationThread {
         query.has_limit = false;
         query.limit = 0;
 
-        send_pdu(id, PDU_ID_DATA_QUERY, 0, query);
+        send_pdu(id, pdu_id_data_query, 0, query);
         query_sent.store(true, std::memory_order_release);
     }
 
@@ -809,14 +809,14 @@ class DoubleSendConnectorThread : public ApplicationThread {
         first.query_name = std::string_view(first_payload_);
         first.has_limit = false;
         first.limit = 0;
-        send_pdu(id, PDU_ID_DATA_QUERY, 0, first);
+        send_pdu(id, pdu_id_data_query, 0, first);
 
         DataQuery second{};
         second.request_id = 2;
         second.query_name = std::string_view(second_payload_);
         second.has_limit = false;
         second.limit = 0;
-        send_pdu(id, PDU_ID_DATA_QUERY, 0, second);
+        send_pdu(id, pdu_id_data_query, 0, second);
 
         both_sent.store(true, std::memory_order_release);
     }
