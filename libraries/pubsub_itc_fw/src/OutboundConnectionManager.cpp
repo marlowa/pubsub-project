@@ -191,8 +191,7 @@ void OutboundConnectionManager::on_connect_ready(OutboundConnection& conn) {
             const std::string service_name = conn.service_name();
             const ThreadID requesting_thread_id = conn.requesting_thread_id();
             const ConnectionID conn_id = conn.id();
-            PUBSUB_LOG(logger_, FwLogLevel::Error,
-                       "OutboundConnectionManager::on_connect_ready: TLS handshake initiation failed for service '{}': {}",
+            PUBSUB_LOG(logger_, FwLogLevel::Error, "OutboundConnectionManager::on_connect_ready: TLS handshake initiation failed for service '{}': {}",
                        service_name, handshake_error);
             teardown_connection(conn_id, handshake_error, DeliverLostEventFlag{DeliverLostEventFlag::SuppressLostEvent});
             schedule_retry(service_name, requesting_thread_id);
@@ -208,9 +207,7 @@ void OutboundConnectionManager::on_connect_ready(OutboundConnection& conn) {
         ev.data.fd = fd;
         ::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, fd, &ev);
 
-        PUBSUB_LOG(logger_, FwLogLevel::Info,
-                   "OutboundConnectionManager::on_connect_ready: TLS handshake initiated for service '{}'",
-                   conn.service_name());
+        PUBSUB_LOG(logger_, FwLogLevel::Info, "OutboundConnectionManager::on_connect_ready: TLS handshake initiated for service '{}'", conn.service_name());
         // ConnectionEstablished is delivered from on_data_ready() once the handshake completes.
     } else {
         epoll_event ev{};
@@ -221,15 +218,12 @@ void OutboundConnectionManager::on_connect_ready(OutboundConnection& conn) {
         {
             auto ctx_it = retry_contexts_.find(conn.service_name());
             if (ctx_it != retry_contexts_.end()) {
-                const auto elapsed_s = std::chrono::duration_cast<std::chrono::seconds>(
-                    std::chrono::steady_clock::now() - ctx_it->second.first_fail_time).count();
-                PUBSUB_LOG(logger_, FwLogLevel::Warning,
-                           "OutboundConnectionManager: service '{}' reconnected after {}s",
-                           conn.service_name(), elapsed_s);
+                const auto elapsed_s =
+                    std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - ctx_it->second.first_fail_time).count();
+                PUBSUB_LOG(logger_, FwLogLevel::Warning, "OutboundConnectionManager: service '{}' reconnected after {}s", conn.service_name(), elapsed_s);
                 retry_contexts_.erase(ctx_it);
             } else {
-                PUBSUB_LOG(logger_, FwLogLevel::Info,
-                           "OutboundConnectionManager::on_connect_ready: connection {} to service '{}' established",
+                PUBSUB_LOG(logger_, FwLogLevel::Info, "OutboundConnectionManager::on_connect_ready: connection {} to service '{}' established",
                            conn.id().get_value(), conn.service_name());
             }
         }
@@ -254,9 +248,9 @@ void OutboundConnectionManager::on_data_ready(OutboundConnection& conn) {
             const std::string reason = error.empty() ? fmt::format("peer closed TLS connection on service '{}'", service_name)
                                                      : fmt::format("TLS error on service '{}': {}", service_name, error);
             PUBSUB_LOG(logger_, FwLogLevel::Warning, "OutboundConnectionManager::on_data_ready: {}", reason);
-            teardown_connection(id, reason, was_established
-                ? DeliverLostEventFlag{DeliverLostEventFlag::DeliverLostEvent}
-                : DeliverLostEventFlag{DeliverLostEventFlag::SuppressLostEvent});
+            teardown_connection(id, reason,
+                                was_established ? DeliverLostEventFlag{DeliverLostEventFlag::DeliverLostEvent}
+                                                : DeliverLostEventFlag{DeliverLostEventFlag::SuppressLostEvent});
             schedule_retry(service_name, requesting_thread_id);
             return;
         }
@@ -266,16 +260,14 @@ void OutboundConnectionManager::on_data_ready(OutboundConnection& conn) {
             {
                 auto ctx_it = retry_contexts_.find(service_name);
                 if (ctx_it != retry_contexts_.end()) {
-                    const auto elapsed_s = std::chrono::duration_cast<std::chrono::seconds>(
-                        std::chrono::steady_clock::now() - ctx_it->second.first_fail_time).count();
-                    PUBSUB_LOG(logger_, FwLogLevel::Warning,
-                               "OutboundConnectionManager: service '{}' reconnected (TLS) after {}s",
-                               service_name, elapsed_s);
+                    const auto elapsed_s =
+                        std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - ctx_it->second.first_fail_time).count();
+                    PUBSUB_LOG(logger_, FwLogLevel::Warning, "OutboundConnectionManager: service '{}' reconnected (TLS) after {}s", service_name, elapsed_s);
                     retry_contexts_.erase(ctx_it);
                 } else {
                     PUBSUB_LOG(logger_, FwLogLevel::Info,
-                               "OutboundConnectionManager::on_data_ready: TLS handshake complete, connection {} to service '{}' established",
-                               id.get_value(), service_name);
+                               "OutboundConnectionManager::on_data_ready: TLS handshake complete, connection {} to service '{}' established", id.get_value(),
+                               service_name);
                 }
             }
             auto* thread = thread_lookup_.get_fast_path_thread(conn.requesting_thread_id());
@@ -324,9 +316,9 @@ void OutboundConnectionManager::on_write_ready(OutboundConnection& conn) {
             const bool was_established = conn.is_established();
             const std::string reason = fmt::format("TLS send error on service '{}': {}", service_name, error);
             PUBSUB_LOG(logger_, FwLogLevel::Error, "OutboundConnectionManager::on_write_ready: {}", reason);
-            teardown_connection(id, reason, was_established
-                ? DeliverLostEventFlag{DeliverLostEventFlag::DeliverLostEvent}
-                : DeliverLostEventFlag{DeliverLostEventFlag::SuppressLostEvent});
+            teardown_connection(id, reason,
+                                was_established ? DeliverLostEventFlag{DeliverLostEventFlag::DeliverLostEvent}
+                                                : DeliverLostEventFlag{DeliverLostEventFlag::SuppressLostEvent});
             schedule_retry(service_name, requesting_thread_id);
             return;
         }
@@ -453,9 +445,8 @@ bool OutboundConnectionManager::process_send_raw_command(const ReactorControlCom
         const std::string service_name = conn.service_name();
         const ThreadID requesting_thread_id = conn.requesting_thread_id();
         const ConnectionID conn_id = conn.id();
-        PUBSUB_LOG(logger_, FwLogLevel::Error,
-                   "OutboundConnectionManager::process_send_raw_command: TLS send error on service '{}': {}",
-                   service_name, send_error);
+        PUBSUB_LOG(logger_, FwLogLevel::Error, "OutboundConnectionManager::process_send_raw_command: TLS send error on service '{}': {}", service_name,
+                   send_error);
         teardown_connection(conn_id, send_error, DeliverLostEventFlag{DeliverLostEventFlag::DeliverLostEvent});
         schedule_retry(service_name, requesting_thread_id);
         return true;
@@ -545,8 +536,7 @@ void OutboundConnectionManager::schedule_retry(const std::string& service_name, 
     if (retry_contexts_.find(service_name) == retry_contexts_.end()) {
         // First failure for this service — log once and create context.
         retry_contexts_[service_name] = RetryContext{now, now};
-        const auto warning_min = std::chrono::duration_cast<std::chrono::minutes>(
-            config_.connect_retry_warning_interval_).count();
+        const auto warning_min = std::chrono::duration_cast<std::chrono::minutes>(config_.connect_retry_warning_interval_).count();
         if (warning_min > 0) {
             PUBSUB_LOG(logger_, FwLogLevel::Warning,
                        "OutboundConnectionManager: service '{}' failed to connect; "
@@ -589,8 +579,7 @@ void OutboundConnectionManager::retry_failed_connections(const std::function<Con
         auto ctx_it = retry_contexts_.find(service_name);
         if (ctx_it != retry_contexts_.end() && config_.connect_retry_warning_interval_.count() > 0) {
             if (now - ctx_it->second.last_warning_time >= config_.connect_retry_warning_interval_) {
-                const auto total_s = std::chrono::duration_cast<std::chrono::seconds>(
-                    now - ctx_it->second.first_fail_time).count();
+                const auto total_s = std::chrono::duration_cast<std::chrono::seconds>(now - ctx_it->second.first_fail_time).count();
                 PUBSUB_LOG(logger_, FwLogLevel::Warning,
                            "OutboundConnectionManager: service '{}' still not connected "
                            "({} seconds disconnected); still retrying every {}ms",
@@ -660,8 +649,8 @@ void OutboundConnectionManager::teardown_connection(ConnectionID id, const std::
     OutboundConnection& conn = *it->second;
 
     if (retry_contexts_.find(conn.service_name()) == retry_contexts_.end()) {
-        PUBSUB_LOG(logger_, FwLogLevel::Info, "OutboundConnectionManager::teardown_connection: connection {} service '{}': {}", id.get_value(), conn.service_name(),
-                   reason);
+        PUBSUB_LOG(logger_, FwLogLevel::Info, "OutboundConnectionManager::teardown_connection: connection {} service '{}': {}", id.get_value(),
+                   conn.service_name(), reason);
     }
 
     // Free any in-flight outbound data.
@@ -679,9 +668,7 @@ void OutboundConnectionManager::teardown_connection(ConnectionID id, const std::
     if (pending_send_.has_value() && pending_send_->connection_id_ == id) {
         // The slab in the stashed command has not yet been passed to send_prebuilt
         // for either PDU or TLS sends, so it must be deallocated here.
-        void* chunk_ptr = (pending_send_->as_tag() == ReactorControlCommand::SendRaw)
-                              ? pending_send_->raw_chunk_ptr_
-                              : pending_send_->pdu_chunk_ptr_;
+        void* chunk_ptr = (pending_send_->as_tag() == ReactorControlCommand::SendRaw) ? pending_send_->raw_chunk_ptr_ : pending_send_->pdu_chunk_ptr_;
         pending_send_->allocator_->deallocate(pending_send_->slab_id_, chunk_ptr);
         pending_send_.reset();
     }

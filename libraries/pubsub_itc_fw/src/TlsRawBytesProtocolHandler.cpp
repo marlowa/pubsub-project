@@ -44,15 +44,11 @@ std::string collect_openssl_errors() {
     return result.empty() ? "unknown OpenSSL error" : result;
 }
 
-} // namespaces
+} // un-named namespace
 
-TlsRawBytesProtocolHandler::TlsRawBytesProtocolHandler(ConnectionID connection_id, TcpSocket& socket,
-                                                       ApplicationThread& target_thread, int64_t buffer_capacity,
+TlsRawBytesProtocolHandler::TlsRawBytesProtocolHandler(ConnectionID connection_id, TcpSocket& socket, ApplicationThread& target_thread, int64_t buffer_capacity,
                                                        TlsContext& tls_context, bool is_server)
-    : connection_id_(connection_id)
-    , socket_(socket)
-    , target_thread_(target_thread)
-    , plaintext_buffer_(std::make_shared<MirroredBuffer>(buffer_capacity)) {
+    : connection_id_(connection_id), socket_(socket), target_thread_(target_thread), plaintext_buffer_(std::make_shared<MirroredBuffer>(buffer_capacity)) {
     tls_state_.rbio = BIO_new(BIO_s_mem());
     if (tls_state_.rbio == nullptr) {
         throw PreconditionAssertion("TlsRawBytesProtocolHandler: BIO_new for rbio failed", __FILE__, __LINE__);
@@ -172,10 +168,8 @@ std::tuple<bool, std::string, bool> TlsRawBytesProtocolHandler::drain_plaintext(
         return {true, "", false};
     }
 
-    target_thread_.enqueue(
-        EventMessage::create_raw_socket_message(connection_id_, plaintext_buffer_->read_ptr(),
-                                                static_cast<int>(plaintext_buffer_->bytes_available()),
-                                                plaintext_buffer_->tail(), plaintext_buffer_));
+    target_thread_.enqueue(EventMessage::create_raw_socket_message(
+        connection_id_, plaintext_buffer_->read_ptr(), static_cast<int>(plaintext_buffer_->bytes_available()), plaintext_buffer_->tail(), plaintext_buffer_));
 
     bool emit_pause = false;
     if (!reads_paused_) {
@@ -194,8 +188,7 @@ std::tuple<bool, std::string> TlsRawBytesProtocolHandler::flush_wbio() {
     uint8_t temp_buffer[encrypted_read_buffer_size];
     int bytes_drained;
     while ((bytes_drained = BIO_read(tls_state_.wbio, temp_buffer, sizeof(temp_buffer))) > 0) {
-        tls_state_.pending_outbound.insert(tls_state_.pending_outbound.end(),
-                                           temp_buffer, temp_buffer + bytes_drained);
+        tls_state_.pending_outbound.insert(tls_state_.pending_outbound.end(), temp_buffer, temp_buffer + bytes_drained);
     }
 
     // Attempt a non-blocking send of all pending bytes.
@@ -216,7 +209,8 @@ std::tuple<bool, std::string> TlsRawBytesProtocolHandler::flush_wbio() {
     return {true, ""};
 }
 
-std::tuple<bool, std::string> TlsRawBytesProtocolHandler::send_prebuilt(ExpandableSlabAllocator* allocator, int slab_id, void* chunk_ptr, uint32_t total_bytes) {
+std::tuple<bool, std::string> TlsRawBytesProtocolHandler::send_prebuilt(ExpandableSlabAllocator* allocator, int slab_id, void* chunk_ptr,
+                                                                        uint32_t total_bytes) {
     if (allocator == nullptr) {
         throw PreconditionAssertion("TlsRawBytesProtocolHandler::send_prebuilt: allocator must not be nullptr", __FILE__, __LINE__);
     }

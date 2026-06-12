@@ -332,7 +332,7 @@ struct TlsClientConnection {
 
     TlsClientConnection() = default;
 
-    TlsClientConnection(TlsClientConnection&& other) noexcept
+    TlsClientConnection(TlsClientConnection&& other)
         : fd(other.fd), ctx(other.ctx), ssl(other.ssl) {
         other.fd = -1;
         other.ctx = nullptr;

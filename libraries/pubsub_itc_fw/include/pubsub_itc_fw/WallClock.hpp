@@ -43,7 +43,7 @@ class WallClock {
  *
  * @ingroup instrumentation_subsystem
  */
-class SystemWallClock final : public WallClock {
+class SystemWallClock : public WallClock {
   public:
     [[nodiscard]] int64_t now_ns() const override {
         return std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -66,7 +66,7 @@ class SystemWallClock final : public WallClock {
  *
  * @ingroup instrumentation_subsystem
  */
-class ReplayClock final : public WallClock {
+class ReplayClock : public WallClock {
   public:
     /**
      * @param[in] initial_ns Starting time in nanoseconds since the Unix epoch.

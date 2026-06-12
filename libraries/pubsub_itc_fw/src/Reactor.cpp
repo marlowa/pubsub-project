@@ -26,9 +26,9 @@
 #include <quill/Backend.h>
 
 #include <pubsub_itc_fw/BackoffWithYield.hpp>
-#include <pubsub_itc_fw/DeliverLostEventFlag.hpp>
 #include <pubsub_itc_fw/CpuPinning.hpp>
 #include <pubsub_itc_fw/CpuRegistry.hpp>
+#include <pubsub_itc_fw/DeliverLostEventFlag.hpp>
 #include <pubsub_itc_fw/EventHandler.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/HighResolutionClock.hpp>
@@ -47,9 +47,9 @@
 #include <pubsub_itc_fw/StringUtils.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 #include <pubsub_itc_fw/Timer.hpp>
-#include <pubsub_itc_fw/TlsListenerConfiguration.hpp>
 #include <pubsub_itc_fw/TimerHandler.hpp>
 #include <pubsub_itc_fw/TimerType.hpp>
+#include <pubsub_itc_fw/TlsListenerConfiguration.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -204,8 +204,8 @@ void Reactor::register_inbound_listener(NetworkEndpointConfiguration address, Th
     inbound_manager_.register_inbound_listener(std::move(address), target_thread_id, protocol_type, raw_buffer_capacity, idle_timeout);
 }
 
-void Reactor::register_inbound_tls_listener(NetworkEndpointConfiguration address, ThreadID target_thread_id,
-                                             int64_t raw_buffer_capacity, TlsListenerConfiguration tls_config) {
+void Reactor::register_inbound_tls_listener(NetworkEndpointConfiguration address, ThreadID target_thread_id, int64_t raw_buffer_capacity,
+                                            TlsListenerConfiguration tls_config) {
     if (is_running()) {
         throw PreconditionAssertion("Reactor::register_inbound_tls_listener: must be called before run()", __FILE__, __LINE__);
     }
@@ -570,7 +570,8 @@ void Reactor::pin_registered_threads() {
             }
             const CpuAssignment cpu = cpus[idx++];
             if (pin_thread_to_core(thread->get_pthread_id(), cpu.cpu_id)) {
-                PUBSUB_LOG(logger_, FwLogLevel::Info, "CPU pinning: thread '{}' pinned to CPU {} (NUMA node {})", name, cpu.cpu_id.get_value(), cpu.numa_node_id);
+                PUBSUB_LOG(logger_, FwLogLevel::Info, "CPU pinning: thread '{}' pinned to CPU {} (NUMA node {})", name, cpu.cpu_id.get_value(),
+                           cpu.numa_node_id);
             } else {
                 PUBSUB_LOG(logger_, FwLogLevel::Warning, "CPU pinning: failed to pin thread '{}' to CPU {}", name, cpu.cpu_id.get_value());
             }
@@ -581,8 +582,8 @@ void Reactor::pin_registered_threads() {
                 }
                 const CpuAssignment extra_cpu = cpus[idx++];
                 if (pin_thread_to_core(extra.thread_id, extra_cpu.cpu_id)) {
-                    PUBSUB_LOG(logger_, FwLogLevel::Info, "CPU pinning: extra thread '{}' (registered by '{}') pinned to CPU {} (NUMA node {})", extra.name, name,
-                               extra_cpu.cpu_id.get_value(), extra_cpu.numa_node_id);
+                    PUBSUB_LOG(logger_, FwLogLevel::Info, "CPU pinning: extra thread '{}' (registered by '{}') pinned to CPU {} (NUMA node {})", extra.name,
+                               name, extra_cpu.cpu_id.get_value(), extra_cpu.numa_node_id);
                 } else {
                     PUBSUB_LOG(logger_, FwLogLevel::Warning, "CPU pinning: failed to pin extra thread '{}' (registered by '{}') to CPU {}", extra.name, name,
                                extra_cpu.cpu_id.get_value());
@@ -611,9 +612,11 @@ void Reactor::pin_registered_threads() {
             if (quill_tid == 0) {
                 PUBSUB_LOG_STR(logger_, FwLogLevel::Warning, "CPU pinning: Quill backend TID is 0 — skipping backend core assignment");
             } else if (pin_tid_to_core(quill_tid, cpu.cpu_id)) {
-                PUBSUB_LOG(logger_, FwLogLevel::Info, "CPU pinning: Quill backend thread (tid={}) pinned to CPU {} (NUMA node {})", quill_tid, cpu.cpu_id.get_value(), cpu.numa_node_id);
+                PUBSUB_LOG(logger_, FwLogLevel::Info, "CPU pinning: Quill backend thread (tid={}) pinned to CPU {} (NUMA node {})", quill_tid,
+                           cpu.cpu_id.get_value(), cpu.numa_node_id);
             } else {
-                PUBSUB_LOG(logger_, FwLogLevel::Warning, "CPU pinning: failed to pin Quill backend thread (tid={}) to CPU {}", quill_tid, cpu.cpu_id.get_value());
+                PUBSUB_LOG(logger_, FwLogLevel::Warning, "CPU pinning: failed to pin Quill backend thread (tid={}) to CPU {}", quill_tid,
+                           cpu.cpu_id.get_value());
             }
         }
     } catch (const std::exception& ex) {
@@ -975,7 +978,8 @@ void Reactor::process_control_commands() {
                     command.inline_handler_installer_(parser, framer);
                     PUBSUB_LOG(logger_, FwLogLevel::Debug, "Reactor: inline PDU handler installed on connection {}", cid.get_value());
                 } else {
-                    PUBSUB_LOG(logger_, FwLogLevel::Warning, "Reactor::process_control_commands: connection {} not found or not a PDU connection for InstallInlinePduHandler",
+                    PUBSUB_LOG(logger_, FwLogLevel::Warning,
+                               "Reactor::process_control_commands: connection {} not found or not a PDU connection for InstallInlinePduHandler",
                                cid.get_value());
                 }
                 break;

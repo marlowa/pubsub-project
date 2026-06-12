@@ -118,13 +118,30 @@ def _is_define_line(line: str) -> bool:
 
 
 # ── Check 1: #define outside LoggingMacros.hpp ───────────────────────────────
+# Defines inside #ifdef CLANG_TIDY blocks are exempt: they are system-level
+# feature-test macros or test-infrastructure workarounds that cannot be
+# replaced with constexpr.
+
+_IFDEF_ANY_RE = re.compile(r'^\s*#\s*if(?:def|ndef)?\b')
+_IFDEF_CLANG_TIDY_RE = re.compile(r'^\s*#\s*ifdef\s+CLANG_TIDY\b')
+_ENDIF_RE = re.compile(r'^\s*#\s*endif\b')
 
 def check_defines(path: Path, lines: list[str], stripped: list[str]) -> list[Violation]:
     if path.name == 'LoggingMacros.hpp':
         return []
     violations = []
-    for i, line in enumerate(stripped, 1):
-        if _DEFINE_RE.match(line):
+    ifdef_stack: list[bool] = []  # True = this nesting level is a CLANG_TIDY block
+    for i, (line, sline) in enumerate(zip(lines, stripped), 1):
+        raw = line.strip()
+        if _IFDEF_CLANG_TIDY_RE.match(raw):
+            ifdef_stack.append(True)
+        elif _IFDEF_ANY_RE.match(raw):
+            ifdef_stack.append(False)
+        elif _ENDIF_RE.match(raw) and ifdef_stack:
+            ifdef_stack.pop()
+        if any(ifdef_stack):
+            continue
+        if _DEFINE_RE.match(sline):
             violations.append(Violation(path, i,
                 '#define used outside LoggingMacros.hpp; use constexpr or inline instead'))
     return violations
