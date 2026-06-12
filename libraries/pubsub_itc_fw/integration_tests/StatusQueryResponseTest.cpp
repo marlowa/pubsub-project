@@ -70,11 +70,15 @@ static constexpr int16_t pdu_id_status_response = 101;
 // Helpers
 // ============================================================
 
-static void enqueue_disconnect(Reactor& reactor, ConnectionID conn_id) {
+namespace {
+
+void enqueue_disconnect(Reactor& reactor, ConnectionID conn_id) {
     ReactorControlCommand cmd(ReactorControlCommand::CommandTag::Disconnect);
     cmd.connection_id_ = conn_id;
     reactor.enqueue_control_command(cmd);
 }
+
+} // anonymous namespace
 
 // ============================================================
 // Connector-side ApplicationThread.

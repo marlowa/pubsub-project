@@ -326,7 +326,9 @@ TEST_F(PduFramerParserTest, NoPendingDataInitially) {
 
 // Helper: build a complete frame (PduHeader + payload) into a buffer,
 // exactly as an application thread would before enqueuing a SendPdu command.
-static std::vector<uint8_t> make_prebuilt_frame(int16_t pdu_id, int8_t version, const uint8_t* payload, uint32_t payload_size) {
+namespace {
+
+std::vector<uint8_t> make_prebuilt_frame(int16_t pdu_id, int8_t version, const uint8_t* payload, uint32_t payload_size) {
     std::vector<uint8_t> frame(sizeof(PduHeader) + payload_size);
     PduHeader* hdr = reinterpret_cast<PduHeader*>(frame.data());
     hdr->byte_count = htonl(payload_size);
@@ -339,6 +341,8 @@ static std::vector<uint8_t> make_prebuilt_frame(int16_t pdu_id, int8_t version, 
     std::memcpy(frame.data() + sizeof(PduHeader), payload, payload_size);
     return frame;
 }
+
+} // anonymous namespace
 
 TEST_F(PduFramerParserTest, SendPrebuiltTransmitsCompleteFrame) {
     PduFramer framer(stream_);

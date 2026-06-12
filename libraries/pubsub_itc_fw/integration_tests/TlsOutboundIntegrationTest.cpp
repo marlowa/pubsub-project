@@ -112,7 +112,9 @@ static const std::string outbound_service_name = "auth_service";
 // Framing helpers
 // ============================================================
 
-static std::string make_outbound_framed(const std::string& payload) {
+namespace {
+
+std::string make_outbound_framed(const std::string& payload) {
     const uint32_t length_be = htonl(static_cast<uint32_t>(payload.size()));
     std::string frame(outbound_length_prefix_size + payload.size(), '\0');
     std::memcpy(frame.data(), &length_be, outbound_length_prefix_size);
@@ -120,7 +122,7 @@ static std::string make_outbound_framed(const std::string& payload) {
     return frame;
 }
 
-static std::string try_decode_outbound_framed(const uint8_t* data, int available, int64_t& bytes_consumed) {
+std::string try_decode_outbound_framed(const uint8_t* data, int available, int64_t& bytes_consumed) {
     bytes_consumed = 0;
     if (available < static_cast<int>(outbound_length_prefix_size)) {
         return {};
@@ -141,7 +143,7 @@ static std::string try_decode_outbound_framed(const uint8_t* data, int available
 // Certificate generation helpers
 // ============================================================
 
-static EVP_PKEY* generate_outbound_ec_key() {
+EVP_PKEY* generate_outbound_ec_key() {
     EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_EC, nullptr);
     if (!ctx) {
         return nullptr;
@@ -160,7 +162,7 @@ static EVP_PKEY* generate_outbound_ec_key() {
     return key;
 }
 
-static void add_outbound_basic_constraints(X509* x509, bool is_ca) {
+void add_outbound_basic_constraints(X509* x509, bool is_ca) {
     X509_EXTENSION* extension = X509V3_EXT_conf_nid(
         nullptr, nullptr, NID_basic_constraints,
         is_ca ? "critical,CA:TRUE" : "critical,CA:FALSE");
@@ -170,7 +172,7 @@ static void add_outbound_basic_constraints(X509* x509, bool is_ca) {
     }
 }
 
-static X509* create_outbound_self_signed_cert(EVP_PKEY* key, const char* cn, long serial) {
+X509* create_outbound_self_signed_cert(EVP_PKEY* key, const char* cn, long serial) {
     X509* x509 = X509_new();
     if (!x509) {
         return nullptr;
@@ -192,8 +194,8 @@ static X509* create_outbound_self_signed_cert(EVP_PKEY* key, const char* cn, lon
     return x509;
 }
 
-static X509* create_outbound_signed_cert(EVP_PKEY* subject_key, const char* cn, long serial,
-                                          X509* issuer_cert, EVP_PKEY* issuer_key) {
+X509* create_outbound_signed_cert(EVP_PKEY* subject_key, const char* cn, long serial,
+                                   X509* issuer_cert, EVP_PKEY* issuer_key) {
     X509* x509 = X509_new();
     if (!x509) {
         return nullptr;
@@ -215,7 +217,7 @@ static X509* create_outbound_signed_cert(EVP_PKEY* subject_key, const char* cn, 
     return x509;
 }
 
-static bool write_outbound_cert_pem(const std::string& path, X509* cert) {
+bool write_outbound_cert_pem(const std::string& path, X509* cert) {
     FILE* f = fopen(path.c_str(), "w");
     if (!f) {
         return false;
@@ -225,7 +227,7 @@ static bool write_outbound_cert_pem(const std::string& path, X509* cert) {
     return result == 1;
 }
 
-static bool write_outbound_key_pem(const std::string& path, EVP_PKEY* key) {
+bool write_outbound_key_pem(const std::string& path, EVP_PKEY* key) {
     FILE* f = fopen(path.c_str(), "w");
     if (!f) {
         return false;
@@ -234,6 +236,8 @@ static bool write_outbound_key_pem(const std::string& path, EVP_PKEY* key) {
     fclose(f);
     return result == 1;
 }
+
+} // anonymous namespace
 
 /**
  * @brief Generates all certificate material for the outbound TLS tests.
@@ -529,7 +533,9 @@ class BlockingTlsServer {
 // Reactor configuration
 // ============================================================
 
-static ReactorConfiguration make_outbound_reactor_config() {
+namespace {
+
+ReactorConfiguration make_outbound_reactor_config() {
     ReactorConfiguration cfg{};
     cfg.inactivity_check_interval_ = std::chrono::milliseconds(100);
     cfg.init_phase_timeout_ = std::chrono::milliseconds(5000);
@@ -537,6 +543,8 @@ static ReactorConfiguration make_outbound_reactor_config() {
     cfg.connect_timeout = std::chrono::milliseconds(2000);
     return cfg;
 }
+
+} // anonymous namespace
 
 // ============================================================
 // Connector thread: sends one framed request then decodes the reply.

@@ -113,7 +113,9 @@ static constexpr uint16_t any_os_assigned_port = 0;
 // Reactor / thread configuration helpers
 // ============================================================
 
-static ReactorConfiguration make_reactor_config() {
+namespace {
+
+ReactorConfiguration make_reactor_config() {
     ReactorConfiguration cfg{};
     cfg.inactivity_check_interval_ = std::chrono::milliseconds(100);
     cfg.init_phase_timeout_ = std::chrono::milliseconds(5000);
@@ -121,6 +123,8 @@ static ReactorConfiguration make_reactor_config() {
     cfg.connect_timeout = std::chrono::milliseconds(2000);
     return cfg;
 }
+
+} // anonymous namespace
 
 // ============================================================
 // SenderThread

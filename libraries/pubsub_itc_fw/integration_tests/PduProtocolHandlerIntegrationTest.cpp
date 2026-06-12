@@ -102,18 +102,22 @@ static constexpr size_t listener_outbound_slab_size = 4 * 1024 * 1024;
 // Helpers
 // ============================================================
 
-static ApplicationThreadConfiguration make_connector_thread_config() {
+namespace {
+
+ApplicationThreadConfiguration make_connector_thread_config() {
     ApplicationThreadConfiguration cfg{};
     cfg.outbound_slab_size = outbound_slab_size;
     cfg.inbound_decode_arena_size = inbound_decode_arena_size;
     return cfg;
 }
 
-static ApplicationThreadConfiguration make_listener_thread_config() {
+ApplicationThreadConfiguration make_listener_thread_config() {
     ApplicationThreadConfiguration cfg{};
     cfg.inbound_decode_arena_size = inbound_decode_arena_size;
     return cfg;
 }
+
+} // anonymous namespace
 
 // ============================================================
 // Connector thread: sends a 2 MB DataQuery, decodes the response,

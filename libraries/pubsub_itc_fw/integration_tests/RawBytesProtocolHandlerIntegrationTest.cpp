@@ -144,7 +144,9 @@ static constexpr size_t length_prefix_size = sizeof(uint32_t);
 // Raw POSIX socket helpers
 // ============================================================
 
-static std::string make_framed(const std::string& payload) {
+namespace {
+
+std::string make_framed(const std::string& payload) {
     const uint32_t length_be = htonl(static_cast<uint32_t>(payload.size()));
     std::string frame(length_prefix_size + payload.size(), '\0');
     std::memcpy(frame.data(), &length_be, length_prefix_size);
@@ -152,7 +154,7 @@ static std::string make_framed(const std::string& payload) {
     return frame;
 }
 
-static bool send_all(int sock_fd, const void* buf, size_t size) {
+bool send_all(int sock_fd, const void* buf, size_t size) {
     const auto* ptr = static_cast<const char*>(buf);
     size_t remaining = size;
     while (remaining > 0) {
@@ -166,7 +168,7 @@ static bool send_all(int sock_fd, const void* buf, size_t size) {
     return true;
 }
 
-static bool recv_all(int sock_fd, void* buf, size_t size) {
+bool recv_all(int sock_fd, void* buf, size_t size) {
     auto* ptr = static_cast<char*>(buf);
     size_t remaining = size;
     while (remaining > 0) {
@@ -180,7 +182,7 @@ static bool recv_all(int sock_fd, void* buf, size_t size) {
     return true;
 }
 
-static std::string recv_framed(int sock_fd) {
+std::string recv_framed(int sock_fd) {
     uint32_t length_be = 0;
     if (!recv_all(sock_fd, &length_be, sizeof(length_be))) {
         return {};
@@ -193,7 +195,7 @@ static std::string recv_framed(int sock_fd) {
     return payload;
 }
 
-static int connect_raw_socket(uint16_t port) {
+int connect_raw_socket(uint16_t port) {
     const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
     if (fd == -1) {
         return -1;
@@ -220,7 +222,7 @@ static int connect_raw_socket(uint16_t port) {
 // Test protocol decode helpers
 // ============================================================
 
-static std::string try_decode_framed(const uint8_t* data, int available, int64_t& bytes_consumed) {
+std::string try_decode_framed(const uint8_t* data, int available, int64_t& bytes_consumed) {
     bytes_consumed = 0;
     if (available < static_cast<int>(length_prefix_size)) {
         return {};
@@ -237,7 +239,7 @@ static std::string try_decode_framed(const uint8_t* data, int available, int64_t
     return payload;
 }
 
-static int decode_all_framed(const uint8_t* data, int available, std::vector<std::string>& results, int64_t& total_consumed) {
+int decode_all_framed(const uint8_t* data, int available, std::vector<std::string>& results, int64_t& total_consumed) {
     int count = 0;
     total_consumed = 0;
     int remaining = available;
@@ -261,7 +263,7 @@ static int decode_all_framed(const uint8_t* data, int available, std::vector<std
 // Application thread helpers
 // ============================================================
 
-static ReactorConfiguration make_reactor_config() {
+ReactorConfiguration make_reactor_config() {
     ReactorConfiguration cfg{};
     cfg.inactivity_check_interval_ = std::chrono::milliseconds(100);
     cfg.init_phase_timeout_ = std::chrono::milliseconds(5000);
@@ -270,12 +272,14 @@ static ReactorConfiguration make_reactor_config() {
     return cfg;
 }
 
-static ReactorConfiguration make_short_idle_reactor_config() {
+ReactorConfiguration make_short_idle_reactor_config() {
     ReactorConfiguration cfg = make_reactor_config();
     cfg.socket_maximum_inactivity_interval_ = std::chrono::milliseconds(300);
     cfg.inactivity_check_interval_ = std::chrono::milliseconds(50);
     return cfg;
 }
+
+} // anonymous namespace
 
 // ============================================================
 // Listener thread: decodes one complete message then replies via send_raw().

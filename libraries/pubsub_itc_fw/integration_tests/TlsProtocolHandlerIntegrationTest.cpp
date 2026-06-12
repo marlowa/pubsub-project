@@ -108,7 +108,9 @@ static constexpr size_t tls_length_prefix_size = sizeof(uint32_t);
 // Framing helpers (shared between server-side decode and client-side send)
 // ============================================================
 
-static std::string make_tls_framed(const std::string& payload) {
+namespace {
+
+std::string make_tls_framed(const std::string& payload) {
     const uint32_t length_be = htonl(static_cast<uint32_t>(payload.size()));
     std::string frame(tls_length_prefix_size + payload.size(), '\0');
     std::memcpy(frame.data(), &length_be, tls_length_prefix_size);
@@ -116,7 +118,7 @@ static std::string make_tls_framed(const std::string& payload) {
     return frame;
 }
 
-static std::string try_decode_tls_framed(const uint8_t* data, int available, int64_t& bytes_consumed) {
+std::string try_decode_tls_framed(const uint8_t* data, int available, int64_t& bytes_consumed) {
     bytes_consumed = 0;
     if (available < static_cast<int>(tls_length_prefix_size)) {
         return {};
@@ -137,7 +139,7 @@ static std::string try_decode_tls_framed(const uint8_t* data, int available, int
 // Certificate generation helpers
 // ============================================================
 
-static EVP_PKEY* generate_ec_key() {
+EVP_PKEY* generate_ec_key() {
     EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_EC, nullptr);
     if (!ctx) {
         return nullptr;
@@ -158,7 +160,7 @@ static EVP_PKEY* generate_ec_key() {
 
 // OpenSSL 3.0 chain verification requires basicConstraints: CA:TRUE on any cert
 // used as a trust anchor. Without it, SSL_connect fails with unknown_ca.
-static void add_basic_constraints(X509* x509, bool is_ca) {
+void add_basic_constraints(X509* x509, bool is_ca) {
     X509_EXTENSION* extension = X509V3_EXT_conf_nid(
         nullptr, nullptr, NID_basic_constraints,
         is_ca ? "critical,CA:TRUE" : "critical,CA:FALSE");
@@ -168,7 +170,7 @@ static void add_basic_constraints(X509* x509, bool is_ca) {
     }
 }
 
-static X509* create_self_signed_cert(EVP_PKEY* key, const char* cn, long serial) {
+X509* create_self_signed_cert(EVP_PKEY* key, const char* cn, long serial) {
     X509* x509 = X509_new();
     if (!x509) {
         return nullptr;
@@ -190,8 +192,8 @@ static X509* create_self_signed_cert(EVP_PKEY* key, const char* cn, long serial)
     return x509;
 }
 
-static X509* create_signed_cert(EVP_PKEY* subject_key, const char* cn, long serial,
-                                 X509* issuer_cert, EVP_PKEY* issuer_key) {
+X509* create_signed_cert(EVP_PKEY* subject_key, const char* cn, long serial,
+                          X509* issuer_cert, EVP_PKEY* issuer_key) {
     X509* x509 = X509_new();
     if (!x509) {
         return nullptr;
@@ -213,7 +215,7 @@ static X509* create_signed_cert(EVP_PKEY* subject_key, const char* cn, long seri
     return x509;
 }
 
-static bool write_cert_pem(const std::string& path, X509* cert) {
+bool write_cert_pem(const std::string& path, X509* cert) {
     FILE* f = fopen(path.c_str(), "w");
     if (!f) {
         return false;
@@ -223,7 +225,7 @@ static bool write_cert_pem(const std::string& path, X509* cert) {
     return result == 1;
 }
 
-static bool write_key_pem(const std::string& path, EVP_PKEY* key) {
+bool write_key_pem(const std::string& path, EVP_PKEY* key) {
     FILE* f = fopen(path.c_str(), "w");
     if (!f) {
         return false;
@@ -232,6 +234,8 @@ static bool write_key_pem(const std::string& path, EVP_PKEY* key) {
     fclose(f);
     return result == 1;
 }
+
+} // anonymous namespace
 
 /**
  * @brief Generates all certificate material for the TLS tests in a temporary directory.
@@ -372,9 +376,11 @@ struct TlsClientConnection {
  *
  * @return A TlsClientConnection. Check connected() for success.
  */
-static TlsClientConnection connect_tls(uint16_t port, const std::string& ca_path,
-                                        const std::string& client_cert_path = {},
-                                        const std::string& client_key_path = {}) {
+namespace {
+
+TlsClientConnection connect_tls(uint16_t port, const std::string& ca_path,
+                                 const std::string& client_cert_path = {},
+                                 const std::string& client_key_path = {}) {
     TlsClientConnection conn;
 
     conn.ctx = SSL_CTX_new(TLS_client_method());
@@ -425,7 +431,7 @@ static TlsClientConnection connect_tls(uint16_t port, const std::string& ca_path
     return conn;
 }
 
-static bool tls_send_all(SSL* ssl, const void* buf, size_t size) {
+bool tls_send_all(SSL* ssl, const void* buf, size_t size) {
     const auto* ptr = static_cast<const char*>(buf);
     size_t remaining = size;
     while (remaining > 0) {
@@ -439,7 +445,7 @@ static bool tls_send_all(SSL* ssl, const void* buf, size_t size) {
     return true;
 }
 
-static bool tls_recv_all(SSL* ssl, void* buf, size_t size) {
+bool tls_recv_all(SSL* ssl, void* buf, size_t size) {
     auto* ptr = static_cast<char*>(buf);
     size_t remaining = size;
     while (remaining > 0) {
@@ -453,7 +459,7 @@ static bool tls_recv_all(SSL* ssl, void* buf, size_t size) {
     return true;
 }
 
-static std::string tls_recv_framed(SSL* ssl) {
+std::string tls_recv_framed(SSL* ssl) {
     uint32_t length_be = 0;
     if (!tls_recv_all(ssl, &length_be, sizeof(length_be))) {
         return {};
@@ -470,7 +476,7 @@ static std::string tls_recv_framed(SSL* ssl) {
 // Reactor configuration helpers
 // ============================================================
 
-static ReactorConfiguration make_tls_reactor_config() {
+ReactorConfiguration make_tls_reactor_config() {
     ReactorConfiguration cfg{};
     cfg.inactivity_check_interval_ = std::chrono::milliseconds(100);
     cfg.init_phase_timeout_ = std::chrono::milliseconds(5000);
@@ -478,6 +484,8 @@ static ReactorConfiguration make_tls_reactor_config() {
     cfg.connect_timeout = std::chrono::milliseconds(2000);
     return cfg;
 }
+
+} // anonymous namespace
 
 // ============================================================
 // Listener thread: decodes one framed message then replies via send_raw().

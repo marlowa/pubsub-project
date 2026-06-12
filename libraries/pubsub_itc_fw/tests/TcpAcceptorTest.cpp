@@ -32,8 +32,10 @@
 
 namespace pubsub_itc_fw::tests {
 
+namespace {
+
 // Creates a TcpAcceptor bound to 127.0.0.1:0. Asserts on failure.
-static std::unique_ptr<TcpAcceptor> make_acceptor() {
+std::unique_ptr<TcpAcceptor> make_acceptor() {
     auto [addr, addr_err] = InetAddress::create("127.0.0.1", 0);
     if (!addr) {
         ADD_FAILURE() << "InetAddress::create failed: " << addr_err;
@@ -46,6 +48,8 @@ static std::unique_ptr<TcpAcceptor> make_acceptor() {
     }
     return std::move(acceptor);
 }
+
+} // anonymous namespace
 
 // ============================================================
 // Test: move constructor transfers p_impl_ ownership.
