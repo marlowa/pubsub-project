@@ -253,4 +253,4 @@ TEST_F(BumpAllocatorTest, UsableAsEncodeArena) {
     EXPECT_EQ(encode_arena.bytes_used(), 0u);
 }
 
-} // namespace pubsub_itc_fw::tests
+} // namespaces

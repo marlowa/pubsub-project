@@ -135,4 +135,4 @@ TEST_F(ServiceRegistryTest, HostnameRoundTrips) {
     EXPECT_EQ(endpoints.secondary.host, "secondary.example.com");
 }
 
-} // namespace pubsub_itc_fw::tests
+} // namespaces

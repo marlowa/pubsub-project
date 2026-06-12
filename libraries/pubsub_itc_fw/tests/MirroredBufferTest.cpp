@@ -551,4 +551,4 @@ TEST_F(MirroredBufferTest, EventMessageHoldsSharedOwnershipOfMirroredBuffer) {
     // last reference, and the buffer will be destroyed cleanly.
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

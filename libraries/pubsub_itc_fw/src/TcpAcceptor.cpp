@@ -114,4 +114,4 @@ int TcpAcceptor::get_listening_file_descriptor() const {
     return p_impl_ ? p_impl_->get_listening_file_descriptor() : -1;
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

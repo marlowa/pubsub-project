@@ -216,4 +216,4 @@ class TomlConfiguration {
     Impl* impl_;
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

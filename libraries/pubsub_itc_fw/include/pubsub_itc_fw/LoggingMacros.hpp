@@ -61,7 +61,7 @@ template <typename S, typename... Args> void validate_at_compile_time(S format_s
     (void)fmt::format(format_str, args...);
 }
 
-} // namespace pubsub_itc_fw::logging_help
+} // namespaces
 
 // In clang-tidy analysis mode the macros are neutralised to avoid false
 // positives from the variadic forwarding.

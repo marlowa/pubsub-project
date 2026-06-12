@@ -50,7 +50,7 @@ void expect_unique_non_null(const std::vector<pubsub_itc_fw::tests::TestObject*>
     }
 }
 
-} // unnamed namespace
+} // un-named namespace
 
 namespace pubsub_itc_fw::tests {
 
@@ -2161,4 +2161,4 @@ TEST_F(ExpandablePoolAllocatorTest, CanaryCorruptionDestructorCallsHandlerAndSki
     EXPECT_EQ(TestObject::destructor_count_.load(), 1);
 }
 
-} // namespace pubsub_itc_fw::tests
+} // namespaces

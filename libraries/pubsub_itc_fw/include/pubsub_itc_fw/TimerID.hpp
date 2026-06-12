@@ -27,4 +27,4 @@ struct TimerIDTag {};
  */
 using TimerID = WrappedInteger<TimerIDTag, int>;
 
-} // namespace pubsub_itc_fw
+} // namespaces

@@ -72,4 +72,4 @@ class MillisecondClock {
     static time_point now();
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

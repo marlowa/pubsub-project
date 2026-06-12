@@ -36,4 +36,4 @@ class PubSubItcException : public std::runtime_error {
     }
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

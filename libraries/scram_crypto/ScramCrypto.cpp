@@ -97,4 +97,4 @@ std::vector<uint8_t> compute_auth_message(std::string_view comp_id,
     return message;
 }
 
-} // namespace scram_crypto
+} // namespaces

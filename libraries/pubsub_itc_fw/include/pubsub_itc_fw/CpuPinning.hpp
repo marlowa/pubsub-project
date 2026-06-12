@@ -93,7 +93,7 @@ inline std::vector<CpuId> parse_cpu_list(const std::string& input) {
     return cpus;
 }
 
-} // namespace detail
+} // namespaces
 
 /**
  * @brief Discover CPUs available for pinning from the kernel sysfs topology.
@@ -237,4 +237,4 @@ inline bool pin_tid_to_core(pid_t tid, CpuId core_id) {
     return ::sched_setaffinity(tid, sizeof(cpu_set_t), &cpuset) == 0;
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

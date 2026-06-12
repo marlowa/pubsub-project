@@ -285,4 +285,4 @@ TEST_F(NumaAwarePoolAllocatorTest, NumaPinnedContentionStress) {
     std::cout << "  Allocation failures: " << allocation_failures.load() << " (expected if pool limit reached)\n";
 }
 
-} // namespace pubsub_itc_fw::tests
+} // namespaces

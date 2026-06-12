@@ -64,4 +64,4 @@ class TcpAcceptor {
     std::unique_ptr<TcpAcceptorImpl> p_impl_;
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

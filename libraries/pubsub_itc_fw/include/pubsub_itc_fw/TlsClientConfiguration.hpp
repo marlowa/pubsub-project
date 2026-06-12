@@ -44,4 +44,4 @@ struct TlsClientConfiguration {
     int64_t raw_buffer_capacity{65536};
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

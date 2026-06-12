@@ -193,4 +193,4 @@ class QuillLogger {
     quill::LoggerImpl<QuillLoggerFrontendOptions>* quill_logger_{nullptr};
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

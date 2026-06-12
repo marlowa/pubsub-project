@@ -120,4 +120,4 @@ inline bool operator!=(const EventType& lhs, const EventType& rhs) {
     return !lhs.is_equal(rhs);
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

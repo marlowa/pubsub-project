@@ -515,4 +515,4 @@ bool TcpSocket::is_connected() const {
     return error == 0;
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

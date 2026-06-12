@@ -56,4 +56,4 @@ inline bool operator!=(const ReactorLifecycleState& lhs, const ReactorLifecycleS
     return !lhs.is_equal(rhs);
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

@@ -39,4 +39,4 @@ DequeueResult EmptySlabQueue::try_dequeue(int& slab_id) {
     return DequeueResult::Retry;
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

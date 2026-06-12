@@ -121,4 +121,4 @@ inline bool operator!=(const FwLogLevel& lhs, const FwLogLevel& rhs) {
     return !lhs.is_equal(rhs);
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

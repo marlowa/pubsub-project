@@ -103,4 +103,4 @@ void OutboundConnection::clear_pending_send() {
     current_total_bytes_ = 0;
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

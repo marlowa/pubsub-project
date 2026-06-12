@@ -1152,4 +1152,4 @@ void Reactor::handle_sigterm_and_singint() {
     shutdown("SIGTERM received");
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

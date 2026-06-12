@@ -237,7 +237,7 @@ bool write_outbound_key_pem(const std::string& path, EVP_PKEY* key) {
     return result == 1;
 }
 
-} // anonymous namespace
+} // un-named namespace
 
 /**
  * @brief Generates all certificate material for the outbound TLS tests.
@@ -544,7 +544,7 @@ ReactorConfiguration make_outbound_reactor_config() {
     return cfg;
 }
 
-} // anonymous namespace
+} // un-named namespace
 
 // ============================================================
 // Connector thread: sends one framed request then decodes the reply.
@@ -908,4 +908,4 @@ TEST_F(TlsOutboundIntegrationTest, OutboundTlsHandshakeFailureNoConnectionEstabl
     shutdown_and_join(*reactor, reactor_thread);
 }
 
-} // namespace pubsub_itc_fw::tests
+} // namespaces

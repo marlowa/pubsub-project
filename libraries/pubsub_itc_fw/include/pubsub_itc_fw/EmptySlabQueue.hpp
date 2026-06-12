@@ -135,4 +135,4 @@ class EmptySlabQueue {
     std::atomic<EmptySlabQueueNode*> tail_;
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

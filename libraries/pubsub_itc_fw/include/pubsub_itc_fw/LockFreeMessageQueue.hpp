@@ -325,4 +325,4 @@ template <typename T> class LockFreeMessageQueue {
 
 #endif // check for is or is not USING_VALGRIND
 
-} // namespace pubsub_itc_fw
+} // namespaces

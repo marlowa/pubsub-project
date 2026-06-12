@@ -265,7 +265,7 @@ class TestThreadMultiTimer : public TestThread {
     }
 };
 
-} // unnamed namespace
+} // un-named namespace
 
 TEST_F(ApplicationThreadTest, GetThreadNameReturnsCorrectName) {
     auto thread = ApplicationThread::create<TestThread>(logger_with_sink_.logger, *reactor_, "GetThreadNameTest", ThreadID(123), make_queue_config(),

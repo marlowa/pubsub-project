@@ -26,4 +26,4 @@ struct ServiceEndpoints {
     std::optional<TlsClientConfiguration> tls; ///< Present when the service requires TLS.
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

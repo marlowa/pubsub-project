@@ -67,4 +67,4 @@ inline bool operator!=(const FileOpenMode& lhs, const FileOpenMode& rhs) {
     return !(lhs == rhs);
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

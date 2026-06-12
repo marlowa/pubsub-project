@@ -62,4 +62,4 @@ inline bool operator==(const DeliverLostEventFlag::DeliverLostEventFlagTag& lhs,
     return rhs.is_equal(lhs);
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

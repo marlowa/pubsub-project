@@ -25,4 +25,4 @@ class QueueConfiguration {
     QueueConfiguration() = default;
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

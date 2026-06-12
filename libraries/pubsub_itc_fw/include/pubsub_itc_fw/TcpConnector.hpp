@@ -90,4 +90,4 @@ class TcpConnector {
     std::unique_ptr<TcpConnectorImpl> p_impl_;
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

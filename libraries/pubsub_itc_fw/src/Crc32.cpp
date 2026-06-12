@@ -22,7 +22,7 @@ bool build_table() {
 
 const bool table_ready = build_table();
 
-} // anonymous namespace
+} // un-named namespace
 
 void Crc32::feed(const void* data, size_t length) {
     const auto* bytes = static_cast<const uint8_t*>(data);
@@ -43,4 +43,4 @@ uint32_t Crc32::compute(const void* data, size_t length) {
     return c.finalize();
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

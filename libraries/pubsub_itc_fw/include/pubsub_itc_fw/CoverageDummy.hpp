@@ -11,4 +11,4 @@ struct CoverageDummy {
     int x;
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

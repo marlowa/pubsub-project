@@ -124,7 +124,7 @@ ReactorConfiguration make_reactor_config() {
     return cfg;
 }
 
-} // anonymous namespace
+} // un-named namespace
 
 // ============================================================
 // SenderThread
@@ -552,7 +552,7 @@ bool send_all(int fd, const void* data, size_t size) {
     return true;
 }
 
-} // anonymous namespace
+} // un-named namespace
 
 // ============================================================
 // Test: burst of N PDUs survives concurrent raw-stream pressure
@@ -687,4 +687,4 @@ TEST_F(FrameworkPduBurstIntegrationTest, ExecutionReportBurstUnderConcurrentRawP
     EXPECT_GT(raw_bytes_sent.load(std::memory_order_acquire), 0) << "Raw client never sent any bytes -- concurrent pressure condition not exercised";
 }
 
-} // namespace pubsub_itc_fw::tests
+} // namespaces

@@ -139,4 +139,4 @@ bool TimerHandler::handle_event(uint32_t events) {
     return true;
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

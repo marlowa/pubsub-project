@@ -29,4 +29,4 @@ class UnitTestLogger {
     bool print_to_console = false; // optional for debugging tests
 };
 
-} // namespace pubsub_itc_fw::tests_common
+} // namespaces

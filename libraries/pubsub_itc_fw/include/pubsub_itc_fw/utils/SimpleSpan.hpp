@@ -251,4 +251,4 @@ template <typename T, typename U> constexpr bool operator>=(const SimpleSpan<T>&
     return !(lhs < rhs);
 }
 
-} // namespace pubsub_itc_fw::utils
+} // namespaces

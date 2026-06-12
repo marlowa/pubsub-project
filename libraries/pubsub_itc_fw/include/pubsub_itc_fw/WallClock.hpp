@@ -93,4 +93,4 @@ class ReplayClock final : public WallClock {
     std::atomic<int64_t> time_ns_;
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

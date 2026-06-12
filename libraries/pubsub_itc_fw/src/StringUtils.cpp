@@ -120,4 +120,4 @@ std::string StringUtils::hex_dump(const void* data, size_t len) {
     return out;
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

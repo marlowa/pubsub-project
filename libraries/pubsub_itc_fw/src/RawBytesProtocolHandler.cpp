@@ -194,4 +194,4 @@ std::tuple<bool, std::string> RawBytesProtocolHandler::attempt_send_remaining() 
     return {true, ""};
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

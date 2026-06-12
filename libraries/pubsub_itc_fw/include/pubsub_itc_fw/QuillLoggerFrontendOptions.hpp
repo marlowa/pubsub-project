@@ -45,4 +45,4 @@ struct QuillLoggerFrontendOptions {
     static constexpr quill::HugePagesPolicy huge_pages_policy = quill::HugePagesPolicy::Never;
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

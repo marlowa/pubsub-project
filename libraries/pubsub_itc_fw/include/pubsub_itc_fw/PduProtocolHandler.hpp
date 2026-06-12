@@ -160,4 +160,4 @@ class PduProtocolHandler : public ProtocolHandlerInterface {
     uint32_t current_total_bytes_{0};
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

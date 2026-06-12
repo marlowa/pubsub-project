@@ -36,4 +36,4 @@ inline AllocatorConfiguration make_allocator_config(const std::string& name) {
     return cfg;
 }
 
-} // namespace pubsub_itc_fw::tests
+} // namespaces

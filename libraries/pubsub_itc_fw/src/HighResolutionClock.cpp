@@ -21,4 +21,4 @@ HighResolutionClock::time_point HighResolutionClock::now() {
     return time_point(duration(static_cast<int64_t>(ts.tv_sec) * 1'000'000'000LL + ts.tv_nsec));
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

@@ -158,4 +158,4 @@ int TcpConnector::get_fd() const {
     return p_impl_->get_fd();
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

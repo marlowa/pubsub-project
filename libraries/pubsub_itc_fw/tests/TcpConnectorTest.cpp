@@ -271,4 +271,4 @@ TEST_F(TcpConnectorTest, SecondConnectCallCancelsFirstAndRetries) {
 
 } // namespace
 
-} // namespace pubsub_itc_fw
+} // namespaces

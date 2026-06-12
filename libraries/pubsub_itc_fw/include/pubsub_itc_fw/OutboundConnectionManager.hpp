@@ -283,4 +283,4 @@ class OutboundConnectionManager {
     std::optional<ReactorControlCommand> pending_send_;
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

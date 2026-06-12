@@ -217,4 +217,4 @@ TEST_F(StringUtilsTest, HexDumpLargeBufferSanity) {
     EXPECT_GT(out.size(), 1024u);
 }
 
-} // namespace pubsub_itc_fw::tests
+} // namespaces

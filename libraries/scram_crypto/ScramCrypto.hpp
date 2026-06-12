@@ -81,4 +81,4 @@ struct ScramCredential {
                                                         const uint8_t* salt, size_t salt_size,
                                                         int32_t iterations);
 
-} // namespace scram_crypto
+} // namespaces

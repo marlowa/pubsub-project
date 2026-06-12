@@ -298,4 +298,4 @@ SlabAllocator* ExpandableSlabAllocator::append_new_slab() {
     return new_slab;
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

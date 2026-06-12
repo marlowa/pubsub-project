@@ -27,4 +27,4 @@ struct ThreadIDTag {};
  */
 using ThreadID = WrappedInteger<ThreadIDTag, int>;
 
-} // namespace pubsub_itc_fw
+} // namespaces

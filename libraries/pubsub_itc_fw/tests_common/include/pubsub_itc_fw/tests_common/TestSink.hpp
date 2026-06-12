@@ -136,4 +136,4 @@ class TestSink : public quill::Sink {
     std::vector<LogRecord> records_;
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

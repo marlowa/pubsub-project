@@ -171,4 +171,4 @@ class PduFramer {
     size_t send_offset_{0}; // bytes already sent
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

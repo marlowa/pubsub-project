@@ -626,4 +626,4 @@ template <typename T> AllocatorBehaviourStatistics ExpandablePoolAllocator<T>::g
     return stats;
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

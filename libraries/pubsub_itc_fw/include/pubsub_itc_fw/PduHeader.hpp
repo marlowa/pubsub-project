@@ -90,4 +90,4 @@ static_assert(sizeof(PduHeader) == 24, "PduHeader must be exactly 24 bytes. "
 
 static_assert(alignof(PduHeader) == 8, "PduHeader must have 8-byte alignment.");
 
-} // namespace pubsub_itc_fw
+} // namespaces

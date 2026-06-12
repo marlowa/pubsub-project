@@ -50,4 +50,4 @@ std::string FileSystemUtils::make_directories(const std::string& path) {
     return "";
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

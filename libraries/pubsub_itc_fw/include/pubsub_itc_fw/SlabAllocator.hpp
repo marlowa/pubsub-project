@@ -224,4 +224,4 @@ class SlabAllocator {
     EmptySlabQueueNode queue_node_;
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

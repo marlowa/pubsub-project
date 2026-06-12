@@ -140,7 +140,7 @@ namespace pubsub_itc_fw {
  */
 static constexpr std::uint64_t slot_canary_value = 0xDEADC0DEFEEDFACEU;
 
-} // namespace pubsub_itc_fw
+} // namespaces
 
 #ifdef USING_VALGRIND
 
@@ -373,7 +373,7 @@ template <typename T> class FixedSizeMemoryPool {
     FixedSizeMemoryPool<T>* next_pool_{nullptr};
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces
 
 #else // the non-valgrind code
 
@@ -1082,7 +1082,7 @@ template <typename T> typename FixedSizeMemoryPool<T>::SlotType* FixedSizeMemory
     return nullptr;
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces
 
 #endif
 
@@ -1130,6 +1130,6 @@ template <typename T> inline FixedSizeMemoryPool<T>* FixedSizeMemoryPool<T>::get
     return __atomic_load_n(&next_pool_, __ATOMIC_ACQUIRE);
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces
 
 #pragma GCC diagnostic pop

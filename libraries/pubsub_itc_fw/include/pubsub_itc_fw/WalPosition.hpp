@@ -19,4 +19,4 @@ struct WalPosition {
     uint64_t offset{0};  ///< Byte offset within that segment.
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

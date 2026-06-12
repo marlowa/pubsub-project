@@ -108,4 +108,4 @@ TEST(OutboundConnectionRetryIntegrationTest, RetryFailedConnectionsReissuesConne
     }
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

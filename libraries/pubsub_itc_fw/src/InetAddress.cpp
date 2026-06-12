@@ -243,4 +243,4 @@ bool InetAddress::is_less_than(const IpAddressInterface& rhs) const {
     return get_port() < other->get_port();
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

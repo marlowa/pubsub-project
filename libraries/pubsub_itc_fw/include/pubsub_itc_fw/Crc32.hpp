@@ -41,4 +41,4 @@ class Crc32 {
     uint32_t state_{0xFFFFFFFFU};
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

@@ -117,7 +117,7 @@ ApplicationThreadConfiguration make_listener_thread_config() {
     return cfg;
 }
 
-} // anonymous namespace
+} // un-named namespace
 
 // ============================================================
 // Connector thread: sends a 2 MB DataQuery, decodes the response,
@@ -922,4 +922,4 @@ TEST_F(PduProtocolHandlerIntegrationTest, DoubleSendThenTeardown) {
     }
 }
 
-} // namespace pubsub_itc_fw::tests
+} // namespaces

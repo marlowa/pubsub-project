@@ -50,4 +50,4 @@ class EventHandler {
     EventHandler& operator=(const EventHandler&) = delete;
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

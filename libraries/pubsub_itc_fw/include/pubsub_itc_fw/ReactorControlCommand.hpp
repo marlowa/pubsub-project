@@ -19,7 +19,7 @@
 namespace pubsub_itc_fw {
 class PduParser;
 class PduFramer;
-} // namespace pubsub_itc_fw
+} // namespaces
 
 namespace pubsub_itc_fw {
 
@@ -270,4 +270,4 @@ inline bool operator!=(const ReactorControlCommand& lhs, const ReactorControlCom
     return !lhs.is_equal(rhs);
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

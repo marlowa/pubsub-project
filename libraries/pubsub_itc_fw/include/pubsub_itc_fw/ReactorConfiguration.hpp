@@ -251,4 +251,4 @@ struct ReactorConfiguration {
     std::string cpu_registry_lock_file;
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

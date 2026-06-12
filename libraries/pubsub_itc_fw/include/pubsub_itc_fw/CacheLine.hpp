@@ -47,4 +47,4 @@ template <typename T> struct alignas(64) CacheLine {
 static_assert(sizeof(CacheLine<std::atomic<uint64_t>>) >= 64 && sizeof(CacheLine<std::atomic<uint64_t>>) % 64 == 0,
               "CacheLine must occupy at least one full cache line.");
 
-} // namespace pubsub_itc_fw
+} // namespaces

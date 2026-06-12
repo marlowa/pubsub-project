@@ -362,4 +362,4 @@ TEST_F(PduProtocolHandlerTest, DeallocatePendingSendReleasesChunk) {
     drain_raw(total_bytes);
 }
 
-} // namespace pubsub_itc_fw::tests
+} // namespaces

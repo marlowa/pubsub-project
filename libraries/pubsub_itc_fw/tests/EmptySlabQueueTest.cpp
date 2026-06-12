@@ -233,4 +233,4 @@ TEST_F(EmptySlabQueueTest, InterleavedEnqueueDequeue) {
     EXPECT_EQ(consumed.load(), num_items);
 }
 
-} // namespace pubsub_itc_fw::tests
+} // namespaces

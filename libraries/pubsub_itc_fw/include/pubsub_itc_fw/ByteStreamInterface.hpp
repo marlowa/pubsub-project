@@ -103,4 +103,4 @@ class ByteStreamInterface {
     [[nodiscard]] virtual std::tuple<std::unique_ptr<InetAddress>, std::string> get_peer_address() const = 0;
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

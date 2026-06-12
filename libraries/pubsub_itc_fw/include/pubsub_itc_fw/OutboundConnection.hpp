@@ -437,4 +437,4 @@ class OutboundConnection {
     QuillLogger& logger_;
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

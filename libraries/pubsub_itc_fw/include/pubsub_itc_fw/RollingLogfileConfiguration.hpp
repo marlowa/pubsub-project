@@ -40,4 +40,4 @@ struct RollingLogfileConfiguration {
     }
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

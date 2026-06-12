@@ -80,4 +80,4 @@ struct InboundListenerConfiguration {
     IdleTimeoutFlag idle_timeout{IdleTimeoutFlag::UseIdleTimeout};
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

@@ -34,4 +34,4 @@ struct AllocatorConfiguration {
     AllocatorConfiguration() = default;
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

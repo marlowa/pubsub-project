@@ -758,4 +758,4 @@ class ApplicationThread {
     std::unordered_set<ConnectionID> active_connection_ids_;
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

@@ -112,7 +112,7 @@ template <typename Tag, typename T> std::ostream& operator<<(std::ostream& os, c
     return os << id.get_value();
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces
 
 // Define a hash for the generic ID class for use in standard containers
 namespace std {
@@ -121,4 +121,4 @@ template <typename Tag, typename T> struct hash<pubsub_itc_fw::WrappedInteger<Ta
         return hash<T>()(id.get_value());
     }
 };
-} // namespace std
+} // namespaces

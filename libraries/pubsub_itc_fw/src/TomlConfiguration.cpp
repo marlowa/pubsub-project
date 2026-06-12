@@ -367,7 +367,7 @@ std::string wrong_type_error(std::string_view key, std::string_view expected_typ
     return fmt::format("key '{}' has wrong type (expected {})", key, expected_type);
 }
 
-} // anonymous namespace
+} // un-named namespace
 
 // ----------------------------------------------------------------
 // get_required() overloads
@@ -593,4 +593,4 @@ void TomlConfiguration::get_required_except(std::string_view key, std::chrono::h
         throw ConfigurationException(err);
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

@@ -257,4 +257,4 @@ void QuillLogger::set_syslog_level(FwLogLevel level) {
     }
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

@@ -143,4 +143,4 @@ EmptySlabQueueNode& SlabAllocator::queue_node() {
     return queue_node_;
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

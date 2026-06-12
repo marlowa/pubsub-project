@@ -269,4 +269,4 @@ class RawBytesProtocolHandler : public ProtocolHandlerInterface {
     bool reads_paused_{false};
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

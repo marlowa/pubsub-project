@@ -405,4 +405,4 @@ TEST_F(WalTest, ReplayIsDeterministic) {
     EXPECT_EQ(end1.offset, end2.offset);
 }
 
-} // namespace pubsub_itc_fw::tests
+} // namespaces

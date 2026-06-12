@@ -54,4 +54,4 @@ inline bool operator==(const IdleTimeoutFlag::IdleTimeoutFlagTag& lhs, const Idl
     return rhs.is_equal(lhs);
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

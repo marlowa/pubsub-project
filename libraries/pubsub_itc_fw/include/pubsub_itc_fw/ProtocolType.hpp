@@ -72,4 +72,4 @@ inline bool operator==(ProtocolType::ProtocolTypeTag lhs, const ProtocolType& rh
     return rhs.is_equal(lhs);
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

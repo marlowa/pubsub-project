@@ -58,4 +58,4 @@ struct ApplicationThreadConfiguration {
      */
     size_t inbound_decode_arena_size{65536};
 };
-} // namespace pubsub_itc_fw
+} // namespaces

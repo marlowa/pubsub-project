@@ -57,4 +57,4 @@ class TimerHandler : public EventHandler {
     ApplicationThread* owner_thread_; // lock-free pointer to owner thread
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

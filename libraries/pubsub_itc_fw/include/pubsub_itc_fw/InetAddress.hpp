@@ -154,4 +154,4 @@ class InetAddress : public IpAddressInterface {
     socklen_t addr_len_;
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

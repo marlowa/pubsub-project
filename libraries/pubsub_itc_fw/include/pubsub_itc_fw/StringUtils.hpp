@@ -98,4 +98,4 @@ class StringUtils {
     static std::string hex_dump(const void* data, size_t len);
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

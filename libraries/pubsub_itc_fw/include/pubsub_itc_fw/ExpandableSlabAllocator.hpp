@@ -234,4 +234,4 @@ class ExpandableSlabAllocator {
     int deferred_reclaim_slab_id_{-1};
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

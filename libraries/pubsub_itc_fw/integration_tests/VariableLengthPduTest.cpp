@@ -322,4 +322,4 @@ TEST_F(VariableLengthPduTest, DataQueryResponseRoundTrip) {
     }
 }
 
-} // namespace pubsub_itc_fw::tests
+} // namespaces

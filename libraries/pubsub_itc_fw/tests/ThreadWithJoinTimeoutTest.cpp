@@ -137,4 +137,4 @@ TEST_F(ThreadWithJoinTimeoutTest, MoveAssignmentTransfersOwnership) {
     t2.join();
 }
 
-} // namespace pubsub_itc_fw::tests
+} // namespaces

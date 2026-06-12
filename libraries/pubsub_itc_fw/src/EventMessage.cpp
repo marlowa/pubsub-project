@@ -118,4 +118,4 @@ const uint8_t* EventMessage::payload() const {
     return payload_;
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

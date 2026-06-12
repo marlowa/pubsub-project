@@ -506,4 +506,4 @@ class Reactor : public ThreadLookupInterface {
     std::unique_ptr<CpuRegistry> cpu_registry_;
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

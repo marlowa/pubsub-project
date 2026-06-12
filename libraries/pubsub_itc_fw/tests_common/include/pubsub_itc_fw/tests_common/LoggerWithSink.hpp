@@ -53,4 +53,4 @@ class LoggerWithSink {
     std::vector<std::string> records;
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

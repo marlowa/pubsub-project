@@ -71,4 +71,4 @@ class PreconditionAssertion : public std::logic_error {
     }
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

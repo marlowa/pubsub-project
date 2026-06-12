@@ -37,7 +37,7 @@ std::string segment_path(const std::string& directory, uint64_t seg_num) {
     return fmt::format("{}/wal_{:06}.log", directory, seg_num);
 }
 
-} // anonymous namespace
+} // un-named namespace
 
 // ---------------------------------------------------------------------------
 // replay_segment() — scan one segment file; returns bytes consumed
@@ -153,4 +153,4 @@ WalPosition WalReader::replay(const std::string& directory, WalPosition from, co
     return end;
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

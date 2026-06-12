@@ -526,4 +526,4 @@ uint16_t InboundConnectionManager::get_listener_port(int index) const {
     return 0;
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

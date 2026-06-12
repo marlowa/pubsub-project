@@ -96,4 +96,4 @@ bool PduFramer::has_pending_data() const {
     return send_offset_ < frame_size_;
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

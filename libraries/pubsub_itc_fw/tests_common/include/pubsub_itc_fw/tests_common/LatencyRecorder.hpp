@@ -106,4 +106,4 @@ class LatencyRecorder {
     mutable std::mutex buckets_mutex_;
 };
 
-} // namespace pubsub_itc_fw::tests
+} // namespaces

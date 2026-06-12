@@ -81,4 +81,4 @@ private:
     SSL_CTX* context_{nullptr};
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

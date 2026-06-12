@@ -284,4 +284,4 @@ class TcpSocket : public ByteStreamInterface {
 
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

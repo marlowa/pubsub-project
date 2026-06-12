@@ -167,4 +167,4 @@ class InboundConnection {
     IdleTimeoutFlag idle_timeout_;
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

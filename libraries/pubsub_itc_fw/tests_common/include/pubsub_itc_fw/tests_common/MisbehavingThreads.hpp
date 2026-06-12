@@ -130,4 +130,4 @@ class RogueITCThread : public ApplicationThread {
     }
 };
 
-} // namespace pubsub_itc_fw::test_support
+} // namespaces

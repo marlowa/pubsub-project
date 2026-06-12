@@ -681,4 +681,4 @@ TEST_F(RawBytesBackpressureIntegrationTest, SustainedThroughputThroughManyBackpr
     shutdown_and_join(*listener_reactor, listener_reactor_thread);
 }
 
-} // namespace pubsub_itc_fw::tests
+} // namespaces

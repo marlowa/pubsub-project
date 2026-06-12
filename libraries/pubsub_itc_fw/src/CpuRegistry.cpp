@@ -160,4 +160,4 @@ void CpuRegistry::close_mapping() {
     }
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

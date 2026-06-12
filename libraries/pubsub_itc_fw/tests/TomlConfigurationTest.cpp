@@ -681,4 +681,4 @@ TEST_F(TomlConfigurationTest, ArrayOfTablesBoolAndStringFields) {
     EXPECT_TRUE(force_pw);
 }
 
-} // namespace pubsub_itc_fw::tests
+} // namespaces

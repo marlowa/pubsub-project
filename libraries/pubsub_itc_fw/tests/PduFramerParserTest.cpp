@@ -342,7 +342,7 @@ std::vector<uint8_t> make_prebuilt_frame(int16_t pdu_id, int8_t version, const u
     return frame;
 }
 
-} // anonymous namespace
+} // un-named namespace
 
 TEST_F(PduFramerParserTest, SendPrebuiltTransmitsCompleteFrame) {
     PduFramer framer(stream_);
@@ -627,4 +627,4 @@ TEST_F(PduFramerParserTest, RoundTripFramerToParser) {
     slab_allocator_.deallocate(msg->slab_id(), const_cast<uint8_t*>(msg->payload()));
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

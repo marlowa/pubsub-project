@@ -129,4 +129,4 @@ int64_t MirroredBuffer::space_remaining() const {
     return static_cast<int64_t>(aligned);
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

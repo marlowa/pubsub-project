@@ -60,4 +60,4 @@ inline bool operator!=(const TimerType& lhs, const TimerType& rhs) {
     return !(lhs == rhs);
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

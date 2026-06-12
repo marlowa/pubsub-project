@@ -16,7 +16,7 @@ int TestRunner::run_tests(int argc, char** argv) {
     return RUN_ALL_TESTS();
 }
 
-} // namespace pubsub_itc_fw::tests_common
+} // namespaces
 
 int main(int argc, char** argv) {
 #ifndef USING_VALGRIND

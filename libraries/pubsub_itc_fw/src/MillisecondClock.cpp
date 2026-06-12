@@ -23,4 +23,4 @@ MillisecondClock::time_point MillisecondClock::now() {
     return time_point{duration{total_ms}};
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

@@ -42,4 +42,4 @@ std::tuple<bool, std::string, bool> InboundConnection::handle_read() {
     return handler_->on_data_ready();
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

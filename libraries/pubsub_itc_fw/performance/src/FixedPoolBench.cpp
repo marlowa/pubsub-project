@@ -121,7 +121,7 @@ std::function<void(void*, size_t)> MakeHugePageErrorHandler() {
     };
 }
 
-} // unnamed namespace
+} // un-named namespace
 
 // -----------------------------------------------------------------------------
 // Simple test object
@@ -256,7 +256,7 @@ void RunConsumer(
     }
 }
 
-} // unnamed namespace
+} // un-named namespace
 
 // -----------------------------------------------------------------------------
 // Main benchmark

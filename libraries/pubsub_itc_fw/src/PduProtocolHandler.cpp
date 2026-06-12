@@ -89,4 +89,4 @@ void PduProtocolHandler::release_pending_send() {
     }
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

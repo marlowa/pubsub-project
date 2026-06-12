@@ -192,4 +192,4 @@ class ThreadWithJoinTimeout {
     bool has_thread_{false};
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

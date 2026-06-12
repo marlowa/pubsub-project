@@ -48,4 +48,4 @@ class ThreadLookupInterface {
     [[nodiscard]] virtual ApplicationThread* get_fast_path_thread(ThreadID id) const = 0;
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

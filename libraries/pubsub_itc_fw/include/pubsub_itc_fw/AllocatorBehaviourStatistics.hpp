@@ -125,4 +125,4 @@ struct AllocatorBehaviourStatistics {
     } per_pool_allocation_counts;
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

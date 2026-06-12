@@ -144,4 +144,4 @@ class ServiceRegistry {
     std::unordered_map<std::string, ServiceEndpoints> entries_;
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

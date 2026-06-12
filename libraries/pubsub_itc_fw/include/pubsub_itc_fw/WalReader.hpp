@@ -61,4 +61,4 @@ class WalReader {
     static size_t replay_segment(const std::string& path, size_t start_offset, const EntryCallback& cb);
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

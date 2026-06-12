@@ -235,7 +235,7 @@ bool write_key_pem(const std::string& path, EVP_PKEY* key) {
     return result == 1;
 }
 
-} // anonymous namespace
+} // un-named namespace
 
 /**
  * @brief Generates all certificate material for the TLS tests in a temporary directory.
@@ -485,7 +485,7 @@ ReactorConfiguration make_tls_reactor_config() {
     return cfg;
 }
 
-} // anonymous namespace
+} // un-named namespace
 
 // ============================================================
 // Listener thread: decodes one framed message then replies via send_raw().
@@ -930,4 +930,4 @@ TEST_F(TlsProtocolHandlerIntegrationTest, HandshakeFailure) {
     shutdown_and_join(*listener_reactor, listener_reactor_thread);
 }
 
-} // namespace pubsub_itc_fw::tests
+} // namespaces

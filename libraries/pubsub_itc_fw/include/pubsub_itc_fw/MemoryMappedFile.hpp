@@ -61,4 +61,4 @@ template <typename StateType> class MemoryMappedFile {
     bool is_new_;
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

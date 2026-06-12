@@ -307,4 +307,4 @@ TEST_F(TimerTest, RescheduledTimerFiresTwice) {
     ASSERT_TRUE(wait_for([&] { return t->fire_count.load(std::memory_order_acquire) >= 2; })) << "Timer did not fire twice after rescheduling";
 }
 
-} // namespace pubsub_itc_fw::tests
+} // namespaces

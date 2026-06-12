@@ -78,7 +78,7 @@ void enqueue_disconnect(Reactor& reactor, ConnectionID conn_id) {
     reactor.enqueue_control_command(cmd);
 }
 
-} // anonymous namespace
+} // un-named namespace
 
 // ============================================================
 // Connector-side ApplicationThread.
@@ -311,4 +311,4 @@ TEST_F(StatusQueryResponseTest, StatusQueryResponseRoundTrip) {
     }
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

@@ -715,4 +715,4 @@ void OutboundConnectionManager::teardown_connection(ConnectionID id, const std::
     connections_.erase(it);
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

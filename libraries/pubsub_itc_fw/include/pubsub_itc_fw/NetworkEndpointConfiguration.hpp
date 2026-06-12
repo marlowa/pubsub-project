@@ -39,4 +39,4 @@ struct NetworkEndpointConfiguration {
     uint16_t port{0};
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

@@ -222,4 +222,4 @@ class BumpAllocator {
     size_t bytes_used_{0};
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

@@ -127,7 +127,7 @@ class ConnectionID {
     std::string service_name_;
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces
 
 namespace std {
 
@@ -137,4 +137,4 @@ template <> struct hash<pubsub_itc_fw::ConnectionID> {
     }
 };
 
-} // namespace std
+} // namespaces

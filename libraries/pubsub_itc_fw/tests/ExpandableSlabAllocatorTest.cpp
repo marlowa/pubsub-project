@@ -1141,4 +1141,4 @@ TEST_F(ExpandableSlabAllocatorTest, CrossThreadDeallocationsWithExpansion) {
     }
 }
 
-} // namespace pubsub_itc_fw::tests
+} // namespaces

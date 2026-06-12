@@ -841,4 +841,4 @@ TEST_F(OutboundConnectionManagerTest, OnDataReadyParseErrorTeardownsConnection) 
     EXPECT_EQ(mgr.find_by_id(conn_id), nullptr);
 }
 
-} // namespace pubsub_itc_fw::tests
+} // namespaces

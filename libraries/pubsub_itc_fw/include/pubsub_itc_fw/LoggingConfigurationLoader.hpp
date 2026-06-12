@@ -33,4 +33,4 @@ class LoggingConfigurationLoader {
     }
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

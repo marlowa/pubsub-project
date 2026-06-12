@@ -64,4 +64,4 @@ inline bool operator!=(const ThreadLifecycleState& lhs, const ThreadLifecycleSta
     return !lhs.is_equal(rhs);
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

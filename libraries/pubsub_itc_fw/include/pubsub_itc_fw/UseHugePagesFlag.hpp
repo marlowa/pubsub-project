@@ -41,4 +41,4 @@ inline bool operator==(const UseHugePagesFlag::UseHugePagesFlagTag& lhs, const U
     return rhs.is_equal(lhs);
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

@@ -28,4 +28,4 @@ class ConfigurationException : public std::runtime_error {
     explicit ConfigurationException(const std::string& message) : std::runtime_error(message) {}
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

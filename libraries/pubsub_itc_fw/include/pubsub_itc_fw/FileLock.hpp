@@ -59,4 +59,4 @@ class FileLock {
     std::string file_path_;
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

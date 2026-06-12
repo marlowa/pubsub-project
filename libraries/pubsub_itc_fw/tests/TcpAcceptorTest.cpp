@@ -49,7 +49,7 @@ std::unique_ptr<TcpAcceptor> make_acceptor() {
     return std::move(acceptor);
 }
 
-} // anonymous namespace
+} // un-named namespace
 
 // ============================================================
 // Test: move constructor transfers p_impl_ ownership.
@@ -94,4 +94,4 @@ TEST(TcpAcceptorTest, MoveAssignmentTransfersOwnership) {
     EXPECT_EQ(source->get_listening_file_descriptor(), -1);
 }
 
-} // namespace pubsub_itc_fw::tests
+} // namespaces

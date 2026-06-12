@@ -148,4 +148,4 @@ class MirroredBuffer {
     int shm_fd_{-1};
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces

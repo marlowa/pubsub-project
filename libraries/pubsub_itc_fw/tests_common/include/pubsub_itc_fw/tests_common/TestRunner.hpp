@@ -20,4 +20,4 @@ class TestRunner {
     static int run_tests(int argc, char** argv);
 };
 
-} // namespace pubsub_itc_fw::tests_common
+} // namespaces

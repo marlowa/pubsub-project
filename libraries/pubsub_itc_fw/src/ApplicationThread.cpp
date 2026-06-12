@@ -569,4 +569,4 @@ void ApplicationThread::release_pdu_payload(const EventMessage& message) const {
     reactor_.inbound_slab_allocator().deallocate(message.slab_id(), const_cast<uint8_t*>(message.payload()));
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

@@ -279,7 +279,7 @@ ReactorConfiguration make_short_idle_reactor_config() {
     return cfg;
 }
 
-} // anonymous namespace
+} // un-named namespace
 
 // ============================================================
 // Listener thread: decodes one complete message then replies via send_raw().
@@ -961,4 +961,4 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, TeardownWhilePendingSendFreesChun
     shutdown_and_join(*listener_reactor, listener_reactor_thread);
 }
 
-} // namespace pubsub_itc_fw::tests
+} // namespaces

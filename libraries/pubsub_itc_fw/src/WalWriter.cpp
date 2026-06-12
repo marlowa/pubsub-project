@@ -33,7 +33,7 @@ struct WalEntryHeader {
 };
 static_assert(sizeof(WalEntryHeader) == 24, "WalEntryHeader must be 24 bytes");
 
-} // anonymous namespace
+} // un-named namespace
 
 // ---------------------------------------------------------------------------
 // Destructor
@@ -170,4 +170,4 @@ void WalWriter::append(int64_t record_id, const void* payload, size_t size) {
     write_offset_ += total;
 }
 
-} // namespace pubsub_itc_fw
+} // namespaces

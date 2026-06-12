@@ -21,7 +21,7 @@ class EventMessageTest : public ::testing::Test {
     ~EventMessageTest() override = default;
 };
 
-} // unnamed namespace
+} // un-named namespace
 
 // -----------------------------------------------------------------------------
 // TEST 1: Reactor event creation

@@ -62,4 +62,4 @@ class Timer {
     std::chrono::microseconds interval_;
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces
