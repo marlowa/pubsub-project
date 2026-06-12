@@ -576,7 +576,60 @@ This project has been developed incrementally across a series of numbered work s
 
 ## Session Accomplishments
 
-### Session 25 (current)
+### Session 26 (current)
+
+**MEP and TAP — design session. Full design in `docs/mep_tap_design.md`.**
+
+Two new application components designed, plus a DSL extension identified as a prerequisite. No code was written this session; the entire output is the design document and the decisions recorded here.
+
+**Motivation.** The system mirrors a production exchange. Two categories of downstream consumers exist that the existing WAL-follower-per-component pattern cannot serve cleanly at scale: a market data component (needs the order stream and ER stream) and TAP (Trade Activity Publisher, which publishes orders to an enterprise bus and maintains an L3 order book). With two named subscribers needing the same event streams, topic-based pub/sub is now justified.
+
+**MEP (Matching Engine Publisher) — `applications/matching_engine_publisher/`.**
+
+MEP is the topic publisher. It is a WAL follower on the sequencer (pure network protocol, separate TCP connection to the sequencer's new external WAL subscriber listener on ports 7030/7031; MEP is on its own machine and never touches the sequencer's WAL files). It maintains its own WAL of received records and fans them out to connected topic subscribers. It has no business logic; it routes by `pdu_id` without decoding payloads.
+
+Two topics:
+
+| Topic | PDU IDs | Subscribers |
+|---|---|---|
+| `orders` | 1000 (NOS), 1001 (OCR) | TAP, market data |
+| `execution_reports` | 1002 (ER) | TAP (internal L3 book), market data |
+
+Delivery uses `TopicPage` PDUs (id=109) with **page X of Y** pagination (`page_number`, `total_pages` fields). `total_pages` is calculated at the start of each delivery cycle and held fixed for that cycle. During catch-up a subscriber sees "page 3 of 47"; during live delivery it sees "page 1 of 1". Subscriber sends `TopicAck` (id=110) after each page; MEP sends the next page immediately if `page_number < total_pages` (catch-up), or waits for new records (live). `TOPIC_PAGE_SIZE = 16` records per page, `TOPIC_PAYLOAD_MAX_SIZE = 512` bytes per payload slot (covers all realistic NOS/OCR/ER encodings; calculation in `docs/mep_tap_design.md`).
+
+MEP WAL truncation is gated on the minimum cursor across all connected subscribers. A persistently-slow subscriber is disconnected when its cursor lag exceeds a configurable per-subscriber threshold.
+
+MEP is a primary/secondary HA pair. Both instances independently follow the sequencer WAL; each maintains its own WAL. Only the leader serves topic subscribers. On failover, subscribers reconnect with their persisted cursor; the new leader's WAL serves from there.
+
+**TAP (Trade Activity Publisher) — `applications/tap/`.**
+
+TAP subscribes to **both** MEP topics. It maintains an L3 order book (all live orders tracked individually) and publishes order events to an enterprise bus. TAP does NOT publish ERs to the enterprise bus; it uses ERs internally to know when an order is filled, so it can remove it from the L3 book after the enterprise bus acknowledges receipt of the corresponding order event. This mirrors the behaviour of the equivalent component at the work system.
+
+The enterprise bus is abstracted behind a `BusPublisher` pure virtual interface. `StubBusPublisher` (used for framework validation) logs and counts. `KafkaBusPublisher` and `PulsarBusPublisher` are concrete implementations compiled in when `USE_KAFKA=ON` or `USE_PULSAR=ON` respectively; the enterprise bus has not been decided. TAP persists its cursor for each topic in a small local file so restarts and failovers are gap-free.
+
+TAP is a primary/secondary HA pair with the same arbiter-mediated election as all other component pairs.
+
+**DSL extension — `array<MessageType>[N]`.**
+
+`TopicPage` contains `array<TopicRecord>[16]`. The current `ArrayType` in the DSL only accepts `PrimitiveType` elements. Extending it to accept `ReferenceType` (named message) elements is a prerequisite for writing `topics.dsl` and for the `TopicPage` design to be correct and bounded. Changes required: `ast.py`, `parser.py`, `validator.py`, `generator_cpp.py`, `generator_java.py`. Tests to add: three new cases in `python/tests/test_roundtrip_nested_lists.py` covering `array<FixedMessage>[N]`, fixed-size detection, and variable-element detection.
+
+**New DSL files.**
+
+`applications/topics.dsl` (new): defines the framework topic pub/sub protocol PDUs (ids 107–110: `TopicSubscribeRequest`, `TopicSubscribeAck`, `TopicPage`, `TopicAck`; inner type `TopicRecord`).
+
+`applications/leader_follower.dsl` additions: `WalSubscribeRequest` (id=105) and `WalSubscribeAck` (id=106) for the MEP→sequencer subscription handshake.
+
+**Sequencer changes (slice 10).**
+
+New external WAL subscriber listener (ports 7030/7031). Handles `WalSubscribeRequest`; streams `WalRecord` to external subscribers; tracks per-subscriber cursor; WAL truncation updated to `min(all_subscriber_cursors, snapshot_anchor)`. `SequencerWal` extracted to a shared `Wal` class reused by MEP.
+
+**New ports:** 7030–7047. See port table in `docs/mep_tap_design.md`.
+
+**Implementation order:** DSL extension → `topics.dsl` → sequencer slice 10 (including `Wal` extraction) → MEP → TAP.
+
+---
+
+### Session 25
 
 **ApplicationThread: BackoffWithYield replaced with eventfd-based blocking.**
 
@@ -2035,42 +2088,34 @@ The alternative -- synchronous flushing per audit record -- was considered and r
 
 ### Downstream consumers and broadcast streams
 
-The framework needs to support delivery of order/trade events to downstream applications outside the framework's order-flow components. The named use case is a Kafka publishing component: a process that consumes order and trade events from the framework and publishes them to an external Kafka cluster. Other potential consumers (market data publishers, surveillance systems, post-trade settlement) are forward-looking and not yet specified.
+The framework needs to support delivery of order/trade events to downstream applications outside the framework's order-flow components. Two named consumers exist: a **market data component** and **TAP** (Trade Activity Publisher). Full design in `docs/mep_tap_design.md`.
 
-**The chosen pattern: WAL followers, not pubsub.**
+**The chosen pattern: MEP (Matching Engine Publisher) + topic pub/sub.**
 
-The sequencer's WAL is the durable record of every order and ER. Components that need to consume order/trade events do so by becoming **WAL followers** -- they open a connection to the sequencer leader, request records from a position cursor onward, and receive a stream of WAL records.
+With two named subscribers needing the same event streams (orders and execution reports), the WAL-follower-per-consumer pattern is insufficient. Topic-based pub/sub is now justified and designed. The MEP is the publisher component; it follows the sequencer's WAL as an external WAL follower (over TCP, not file access) and fans out to connected topic subscribers using the framework's new topic pub/sub primitive.
 
-This is a generalisation of the existing replication channel. Currently the sequencer has one follower (the secondary sequencer). Generalising to N followers, each with their own position cursor, is an extension rather than a new mechanism. Each follower:
+**MEP input: WAL follower on the sequencer.**
 
-- Opens a TCP connection to the sequencer leader.
-- Identifies itself and its starting position cursor.
-- Receives WAL records in seqNo order from cursor onward.
-- Tracks its position locally; persists it via its own primary/secondary HA replication so failover doesn't lose position.
+MEP connects outbound to the sequencer's external WAL subscriber listener (new ports 7030/7031, added in sequencer slice 10). The protocol is: MEP sends `WalSubscribeRequest` (id=105) with its cursor on connection; sequencer replies with `WalSubscribeAck` (id=106) confirming the starting position; sequencer then streams `WalRecord` (103) PDUs; MEP replies with `WalAck` (104). MEP maintains its own WAL of all received records. Truncation is gated on the minimum cursor across all connected topic subscribers.
 
-The Kafka publisher is the first such follower (other than the secondary sequencer itself). It reads the WAL, derives trades from matched orders, and publishes to Kafka via Kafka's idempotent producer protocol. Kafka idempotency handles the brief overlap window during Kafka publisher failover so duplicates do not reach external consumers.
+**MEP output: two topics.**
 
-**Why not a generic pubsub primitive.**
+| Topic | PDU IDs | Subscribers |
+|---|---|---|
+| `orders` | 1000 (NOS), 1001 (OCR) | TAP, market data |
+| `execution_reports` | 1002 (ER) | TAP (L3 book only), market data |
 
-A topic-based pubsub primitive (publish to topic, N subscribers receive, framework handles fanout and replay) was considered. For the named requirement -- one Kafka publisher consuming the order/trade stream -- it is over-engineering. The WAL-follower pattern reuses what the framework already has to build for sequencer replication, generalises naturally to additional followers, and adds no new primitive.
+Delivery uses `TopicPage` PDUs (id=109) with page X of Y pagination. `TOPIC_PAGE_SIZE = 16`, `TOPIC_PAYLOAD_MAX_SIZE = 512` bytes per record slot. Subscriber sends `TopicAck` (id=110) after each page. See `docs/mep_tap_design.md` for the full delivery protocol.
 
-A pubsub primitive becomes justified when there are multiple downstream consumers with similar fanout-and-replay semantics that don't fit cleanly as WAL followers. Currently there are not enough such use cases to justify it. If future use cases accumulate (market data dissemination at scale, multiple surveillance subscribers, etc.), a pubsub primitive can be added at that point. For now: WAL followers.
+**TAP (Trade Activity Publisher).**
 
-**Snapshot-and-truncate is multi-subscriber-aware.** With multiple WAL followers each at their own position, the sequencer cannot truncate WAL beyond the slowest follower's position. The sequencer tracks each follower's position; the truncation target is the minimum-of-all-follower-positions ∧ snapshot-anchor-position. A persistently-slow follower (e.g. Kafka publisher backed up by Kafka cluster issues) extends WAL retention until it catches up. This is a known cost of the WAL-follower pattern and is acceptable.
+TAP subscribes to both topics. It publishes order events (NOS + OCR) to an enterprise bus (Kafka, Pulsar, or other — not yet decided) via a `BusPublisher` abstract interface. It uses ER events internally to manage an L3 order book and to know when orders are matched (filled), so it can retire them from the book after the enterprise bus acknowledges receipt. TAP does NOT publish ERs to the enterprise bus. `StubBusPublisher` is used for framework validation.
 
-**Open: the market data system at work.**
-
-The market data system at work currently consumes data published by the order placement system. The exact mechanism and the exact data are not yet known to this project; a conversation with the developer who maintains the market data system is pending. Until that conversation happens, the appropriate framework-side mechanism for delivering equivalent data to a market data system cannot be decided. Possibilities:
-
-- Market data system becomes another WAL follower (option α extended to a second consumer). Likely sufficient if market data consumes the same per-event stream the Kafka publisher does.
-- Market data system requires topic-based fanout to multiple downstream subscribers (e.g. tens of trading firms each subscribing to specific instrument feeds). In that case a pubsub primitive becomes justified -- not just for market data but as a framework primitive.
-- Market data system has its own bespoke requirements that don't fit either pattern.
-
-The investigation is recorded in the "Open Questions and Items to Investigate" section near the end of this summary.
+**Snapshot-and-truncate is multi-subscriber-aware.** The sequencer tracks each external WAL subscriber's cursor alongside the secondary sequencer's cursor. Truncation target: `min(all_follower_cursors, snapshot_anchor)`. MEP similarly tracks each of its topic subscribers' cursors; its own WAL truncation is the minimum across those. A persistently-slow subscriber is disconnected when its lag exceeds a configurable threshold.
 
 **On the framework's "pubsub" name.**
 
-The framework's name (`pubsub_itc_fw`) was chosen at a time when topic-based pubsub seemed central to the design. Looking at what the framework actually builds and what its named use cases need, the WAL is the more central abstraction. Components that need to consume broadcast-like streams do so by being WAL followers, not by subscribing to topics on a broker. The "pubsub" framing is more idiomatic for systems like Kafka and the work system's broker; "log + followers" is the framing that fits this design. The name can stay; the architecture is what it is.
+The framework's name (`pubsub_itc_fw`) was chosen at a time when topic-based pubsub seemed central to the design. The WAL is the more central abstraction; the log+followers pattern is what the framework actually builds. The topic pub/sub primitive now introduced in MEP is justified by multiple subscribers needing the same streams — not as a general-purpose broker replacement, but as a bounded fanout layer on top of the sequencer WAL. The name stays; the architecture is what it is.
 
 ### Clock injection
 
@@ -2506,14 +2551,14 @@ Each slice is shippable -- the system works at the end of each. Each slice is a 
 7. **Network replication.** ← **Next task.** Follower on another host. Leader streams WAL records over a dedicated TCP connection. Follower acks; commit-for-ER-emission = follower-acked.
 8. **Arbiter implementation.** Replaces file-based fencing with the real arbiter (lease+epoch handshake protocol from the Leader-Follower Protocol subsystem section). At this slice, the arbiter's own internal HA is implemented via the PSA+witness topology: two full arbiter instances with hand-rolled lease+epoch replication between them, plus one witness machine in a failure-independent location to break ties. See "Arbiter PSA topology" section.
 9. **Dual snapshots, snapshot validation, polish.** The safety-net layer that turns the system from "works" into "operationally bullet-proof".
-10. **WAL multi-subscriber generalisation.** Generalise the sequencer's WAL replication channel from "one follower (the secondary sequencer)" to "N followers, each with their own position cursor". Snapshot-and-truncate becomes follower-position-aware: truncation target is the minimum across all follower positions ∧ the snapshot anchor position. This slice unblocks slice 11 and any future WAL-follower components.
-11. **Kafka publishing component.** A new component that tails the WAL via the multi-subscriber mechanism from slice 10, derives trades from matched orders, and publishes to an external Kafka cluster via Kafka's idempotent producer protocol. Primary/secondary HA pair using the same arbiter+lease+epoch pattern as other components; cursor replication between Kafka publisher's own primary and secondary preserves position across failover. Kafka idempotency handles the brief overlap window during failover so external Kafka consumers see no duplicates.
+10. **WAL multi-subscriber generalisation + MEP.** Generalise the sequencer's WAL replication channel from "one follower (the secondary sequencer)" to "N external subscribers, each with their own cursor". Adds new sequencer inbound listener (ports 7030/7031) and `WalSubscribeRequest`/`WalSubscribeAck` handshake. `SequencerWal` extracted to a shared `Wal` class reused by MEP. Also in this slice: the DSL extension (`array<MessageType>[N]`), `topics.dsl`, and the `MatchingEnginePublisher` application (WAL follower + two topic listeners + own WAL). Design: `docs/mep_tap_design.md`.
+11. **TAP (Trade Activity Publisher).** Topic subscriber to MEP's two topics. Maintains L3 order book; publishes order events to enterprise bus (Kafka/Pulsar/TBD) via `BusPublisher` abstraction. Framework validation uses `StubBusPublisher`. Primary/secondary HA pair. Design: `docs/mep_tap_design.md`.
 
 Slices 12+ are forward-looking and not yet planned in detail:
 
 - **ME primary-secondary pair** (cancel-on-failover baseline). The ME-secondary maintains a replicated book; on promotion it reconciles against the sequencer's WAL before issuing cancel ERs. Includes the book-replication channel and the reconciliation-on-promotion logic.
 - **Gateway pool**. Multiple gateway instances; clients pin to one each; FIX-level reconnect on gateway machine failure.
-- **Market data integration mechanism.** Deferred pending requirements clarification with the maintainer of the work system's market data system. Possibilities: another WAL follower (analogous to the Kafka publisher); a topic-based pubsub primitive (only if multiple downstream subscribers with fanout-and-replay semantics emerge); a bespoke mechanism specific to market data's needs. See the "Open Questions" section.
+- **Market data component.** Subscribes to MEP's `orders` and `execution_reports` topics. Design deferred pending requirements clarification.
 - **Seamless ME failover**. Lockstep or near-lockstep replication. Determinism work. Far in the future.
 - **DR site**. A second site with its own arbiter pair, its own component pairs, cross-site replication. Far in the future.
 - **Multi-instrument scaling**. Sharded sequencer, instrument groups, etc. Out of scope until single-instrument is operationally proven.
