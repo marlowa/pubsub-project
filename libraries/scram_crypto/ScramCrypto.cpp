@@ -5,7 +5,7 @@
 #include <openssl/hmac.h>
 #include <openssl/sha.h>
 
-#include "ScramCrypto.hpp"
+#include <scram_crypto/ScramCrypto.hpp>
 
 #include <stdexcept>
 #include <string>
