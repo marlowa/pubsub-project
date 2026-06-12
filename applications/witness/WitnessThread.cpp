@@ -39,7 +39,7 @@ pubsub_itc_fw::AllocatorConfiguration make_allocator_config(const WitnessConfigu
     return allocator_configuration;
 }
 
-} // namespace
+} // namespaces
 
 WitnessThread::WitnessThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger, pubsub_itc_fw::Reactor& reactor,
                              const WitnessConfiguration& config)
@@ -155,4 +155,4 @@ void WitnessThread::send_arbiter_vote_response(const pubsub_itc_fw::ConnectionID
                conn_id.get_value(), granted_to_instance_id, epoch);
 }
 
-} // namespace witness
+} // namespaces

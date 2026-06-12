@@ -39,4 +39,4 @@ static constexpr size_t execution_report_buffer_size = 512;
                                              std::string_view target_comp_id, int seq_num, const pubsub_itc_fw::WallClock& wall_clock, char* output_buffer,
                                              size_t output_buffer_size);
 
-} // namespace order_gateway
+} // namespaces

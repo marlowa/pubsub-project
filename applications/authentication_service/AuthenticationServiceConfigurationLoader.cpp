@@ -54,8 +54,8 @@ void load_credentials(const std::string& credentials_file,
             credentials_file + "': " + err);
     }
 
-    const std::size_t count = cred_toml.array_size("credential");
-    for (std::size_t i = 0; i < count; ++i) {
+    const size_t count = cred_toml.array_size("credential");
+    for (size_t i = 0; i < count; ++i) {
         std::string comp_id;
         std::string stored_key_hex;
         std::string server_key_hex;
@@ -94,7 +94,7 @@ void load_credentials(const std::string& credentials_file,
     }
 }
 
-} // namespace
+} // un-named namespace
 
 std::tuple<AuthenticationServiceConfiguration, std::unique_ptr<pubsub_itc_fw::QuillLogger>>
 AuthenticationServiceConfigurationLoader::load_and_init_logging(const std::string& file_path, const std::string& log_file_path) {
@@ -212,4 +212,4 @@ AuthenticationServiceConfigurationLoader::load_and_init_logging(const std::strin
     return std::make_tuple(std::move(config), std::move(logger));
 }
 
-} // namespace authentication_service
+} // namespaces

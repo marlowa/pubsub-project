@@ -17,7 +17,7 @@ namespace {
 constexpr char fix_delimiter = '\x01';
 constexpr size_t timestamp_length = 17; // YYYYMMDD-HH:MM:SS
 
-// ── Wire writer ──────────────────────────────────────────────────────────────
+// -- Wire writer --------------------------------------------------------------
 
 struct FixWireWriter {
     char* cursor{nullptr};
@@ -73,7 +73,7 @@ struct FixWireWriter {
     }
 };
 
-// ── Field-size helpers (arithmetic only, no writing) ─────────────────────────
+// -- Field-size helpers (arithmetic only, no writing) -------------------------
 
 size_t count_digits(int v) {
     if (v < 10) {
@@ -115,7 +115,7 @@ size_t field_size_int(int tag, int value) {
     return count_digits(tag) + 1 + count_digits(value) + 1;
 }
 
-// ── Checksum ─────────────────────────────────────────────────────────────────
+// -- Checksum -----------------------------------------------------------------
 
 uint8_t compute_checksum(const char* buf, size_t length) {
     unsigned sum = 0;
@@ -125,14 +125,14 @@ uint8_t compute_checksum(const char* buf, size_t length) {
     return static_cast<uint8_t>(sum & 0xFFU);
 }
 
-// ── Timestamp ────────────────────────────────────────────────────────────────
+// -- Timestamp ----------------------------------------------------------------
 
 void fill_utc_timestamp(char* out, const pubsub_itc_fw::WallClock& clock) {
     const auto t = static_cast<std::time_t>(clock.now_ns() / 1'000'000'000LL);
     struct tm utc{};
     gmtime_r(&t, &utc);
 
-    // Manual digit formatting — no strftime, no printf machinery, no locale.
+    // Manual digit formatting -- no strftime, no printf machinery, no locale.
     // Format: YYYYMMDD-HH:MM:SS (exactly timestamp_length = 17 bytes).
     const int year  = utc.tm_year + 1900;
     const int month = utc.tm_mon  + 1;
@@ -158,12 +158,12 @@ void fill_utc_timestamp(char* out, const pubsub_itc_fw::WallClock& clock) {
     out[14] = ':';
     out[15] = static_cast<char>('0' + sec   / 10);
     out[16] = static_cast<char>('0' + sec   % 10);
-    // No NUL terminator — callers use timestamp_length directly.
+    // No NUL terminator -- callers use timestamp_length directly.
 }
 
-} // namespace
+} // un-named namespace
 
-// ── Public encoder ────────────────────────────────────────────────────────────
+// -- Public encoder ------------------------------------------------------------
 
 size_t encode_execution_report(const pubsub_itc_fw_app::ExecutionReportView& view, std::string_view sender_comp_id, std::string_view target_comp_id,
                                int seq_num, const pubsub_itc_fw::WallClock& wall_clock, char* output_buffer, size_t output_buffer_size) {
@@ -172,7 +172,7 @@ size_t encode_execution_report(const pubsub_itc_fw_app::ExecutionReportView& vie
     const char ord_status_char = static_cast<char>(view.ord_status);
     const char side_char = static_cast<char>(view.side);
 
-    // Stack-allocated timestamp — no heap allocation.
+    // Stack-allocated timestamp -- no heap allocation.
     char timestamp_buffer[timestamp_length + 1];
     fill_utc_timestamp(timestamp_buffer, wall_clock);
     const std::string_view timestamp{timestamp_buffer, timestamp_length};
@@ -260,4 +260,4 @@ size_t encode_execution_report(const pubsub_itc_fw_app::ExecutionReportView& vie
     return writer.valid ? static_cast<size_t>(writer.cursor - output_buffer) : 0;
 }
 
-} // namespace order_gateway
+} // namespaces

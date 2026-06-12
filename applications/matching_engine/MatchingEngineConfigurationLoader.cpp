@@ -100,4 +100,4 @@ MatchingEngineConfiguration MatchingEngineConfigurationLoader::load(const std::s
     return config;
 }
 
-} // namespace matching_engine
+} // namespaces

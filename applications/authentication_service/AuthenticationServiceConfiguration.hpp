@@ -25,7 +25,7 @@ namespace authentication_service {
  */
 struct AuthenticationServiceConfiguration {
     // ----------------------------------------------------------------
-    // Network — PDU listener (gateway authentication exchanges)
+    // Network -- PDU listener (gateway authentication exchanges)
     // ----------------------------------------------------------------
 
     /** @brief Host address on which the service listens for inbound connections. */
@@ -35,7 +35,7 @@ struct AuthenticationServiceConfiguration {
     uint16_t listen_port{7070};
 
     // ----------------------------------------------------------------
-    // Network — TLS admin listener (credential management)
+    // Network -- TLS admin listener (credential management)
     // ----------------------------------------------------------------
 
     /** @brief TCP port on which the service listens for TLS admin connections. */
@@ -119,4 +119,4 @@ struct AuthenticationServiceConfiguration {
     std::unordered_map<std::string, scram_crypto::ScramCredential> credentials;
 };
 
-} // namespace authentication_service
+} // namespaces

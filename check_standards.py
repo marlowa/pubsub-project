@@ -272,18 +272,26 @@ def check_final(path: Path, lines: list[str], stripped: list[str]) -> list[Viola
 
 
 # ── Check 9: #include with double quotes ─────────────────────────────────────
-# Exempted: test, integration-test, and performance directories — they are not
-# publishing an API and may use quoted includes for local convenience.
+# Exempted: test, integration-test, and performance directories.
+# Application files (under 'applications/') may use double quotes for their own
+# local headers (bare filename, no '/') — those are app-internal includes.
+# Any double-quoted include that contains a '/' is a cross-library reference and
+# must use angle brackets regardless of where the including file lives.
 
-_INCLUDE_QUOTE_RE = re.compile(r'^\s*#\s*include\s+"')
+_INCLUDE_QUOTE_RE = re.compile(r'^\s*#\s*include\s+"([^"]*)"')
 _INCLUDE_QUOTE_EXEMPT_DIRS = frozenset({'tests', 'integration_tests', 'performance'})
 
 def check_include_quotes(path: Path, lines: list[str], stripped: list[str]) -> list[Violation]:
     if any(part in _INCLUDE_QUOTE_EXEMPT_DIRS for part in path.parts):
         return []
+    is_application = 'applications' in path.parts
     violations = []
     for i, line in enumerate(lines, 1):
-        if _INCLUDE_QUOTE_RE.match(line):
+        m = _INCLUDE_QUOTE_RE.match(line)
+        if m:
+            included = m.group(1)
+            if is_application and '/' not in included:
+                continue  # local app header -- double quotes are fine
             violations.append(Violation(path, i,
                 '#include uses double quotes; all includes must use <angle brackets>'))
     return violations
@@ -530,11 +538,13 @@ _CHECKS = [
 
 def find_cpp_files(root: Path) -> list[Path]:
     files = []
-    for path in sorted(root.rglob('*')):
-        if any(part in _EXCLUDE_DIRS for part in path.parts):
+    for top in ('libraries', 'applications'):
+        scan_root = root / top
+        if not scan_root.is_dir():
             continue
-        if path.suffix in ('.hpp', '.cpp'):
-            files.append(path)
+        for path in sorted(scan_root.rglob('*')):
+            if path.suffix in ('.hpp', '.cpp'):
+                files.append(path)
     return files
 
 

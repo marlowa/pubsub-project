@@ -52,4 +52,4 @@ class Sequencer {
     std::shared_ptr<SequencerThread> sequencer_thread_;
 };
 
-} // namespace sequencer
+} // namespaces

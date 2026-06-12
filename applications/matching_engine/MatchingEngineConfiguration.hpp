@@ -120,4 +120,4 @@ struct MatchingEngineConfiguration {
     std::shared_ptr<pubsub_itc_fw::WallClock> wall_clock{std::make_shared<pubsub_itc_fw::SystemWallClock>()};
 };
 
-} // namespace matching_engine
+} // namespaces

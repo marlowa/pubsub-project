@@ -58,7 +58,7 @@ int64_t SequencerWal::open(const std::string& directory, size_t segment_size, Re
         fw_cb = [this, &replay_cb](int64_t record_id, const void* payload, size_t size) {
             constexpr size_t header_size = sizeof(int64_t) + sizeof(int16_t);
             if (size < header_size) {
-                return; // malformed — skip
+                return; // malformed -- skip
             }
 
             int64_t wall_time_ns{};
@@ -209,4 +209,4 @@ void SequencerWal::delete_segments_before(uint64_t seg_num) const {
     }
 }
 
-} // namespace sequencer
+} // namespaces

@@ -11,7 +11,7 @@ namespace order_gateway {
 
 namespace {
 constexpr char fix_delimiter = '\x01';
-} // namespace
+} // namespaces
 
 FixSerialiser::FixSerialiser(std::string sender_comp_id, std::string target_comp_id, const pubsub_itc_fw::WallClock& wall_clock)
     : sender_comp_id_(std::move(sender_comp_id)), target_comp_id_(std::move(target_comp_id)), wall_clock_(wall_clock) {}
@@ -87,4 +87,4 @@ std::string FixSerialiser::current_utc_timestamp() const {
     return {timestamp_buffer};
 }
 
-} // namespace order_gateway
+} // namespaces

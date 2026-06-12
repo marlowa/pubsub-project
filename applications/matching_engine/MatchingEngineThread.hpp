@@ -31,10 +31,10 @@ namespace matching_engine {
  * The sequencer routes ERs to the originating gateway.
  *
  * Order lifecycle:
- *   NOS (new ClOrdID)      → ER ExecType=New  / OrdStatus=New (order enters book)
- *   NOS (duplicate ClOrdID)→ ER ExecType=Rejected / OrdRejReason=DuplicateOrder
- *   OCR (known OrigClOrdID)→ ER ExecType=Canceled / OrdStatus=Canceled (removed from book)
- *   OCR (unknown OrigClOrdID) → ER ExecType=Rejected / OrdRejReason=UnknownOrder
+ *   NOS (new ClOrdID)      -> ER ExecType=New  / OrdStatus=New (order enters book)
+ *   NOS (duplicate ClOrdID)-> ER ExecType=Rejected / OrdRejReason=DuplicateOrder
+ *   OCR (known OrigClOrdID)-> ER ExecType=Canceled / OrdStatus=Canceled (removed from book)
+ *   OCR (unknown OrigClOrdID) -> ER ExecType=Rejected / OrdRejReason=UnknownOrder
  *
  * There is no real matching logic; orders sit as New until cancelled.
  *
@@ -68,13 +68,13 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     static constexpr size_t max_qty_length       = 24;
 
     // Composite order book key: FIX session + ClOrdID.
-    // Fixed-size struct — no heap allocation per lookup.
+    // Fixed-size struct -- no heap allocation per lookup.
     struct OrderKey {
         int32_t session_id{};
         uint8_t cl_ord_id_len{};
         std::array<char, max_cl_ord_id_length> cl_ord_id{};
 
-        static OrderKey make(int32_t sid, std::string_view id) noexcept {
+        static OrderKey make(int32_t sid, std::string_view id) {
             OrderKey k;
             k.session_id = sid;
             k.cl_ord_id_len = static_cast<uint8_t>(std::min(id.size(), max_cl_ord_id_length));
@@ -82,7 +82,7 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
             return k;
         }
 
-        bool operator==(const OrderKey& other) const noexcept {
+        bool operator==(const OrderKey& other) const {
             return session_id == other.session_id
                 && cl_ord_id_len == other.cl_ord_id_len
                 && std::memcmp(cl_ord_id.data(), other.cl_ord_id.data(), cl_ord_id_len) == 0;
@@ -90,7 +90,7 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     };
 
     struct OrderKeyHash {
-        size_t operator()(const OrderKey& key) const noexcept {
+        size_t operator()(const OrderKey& key) const {
             // FNV-1a over session_id bytes then cl_ord_id bytes.
             size_t h = 14695981039346656037ULL;
             const auto* sid_bytes = reinterpret_cast<const uint8_t*>(&key.session_id);
@@ -107,7 +107,7 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     };
 
     // Live order stored in the order book from NOS acceptance until cancel.
-    // All string fields stored as fixed-size char arrays — no heap allocation.
+    // All string fields stored as fixed-size char arrays -- no heap allocation.
     struct OrderEntry {
         int64_t order_id_num{};  // counter value; formatted to "ME-ORD-N" on demand
         pubsub_itc_fw_app::Side side{};
@@ -120,22 +120,22 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
         std::array<char, max_qty_length>    order_qty{};
         std::array<char, max_qty_length>    price{};
 
-        void set_symbol(std::string_view sv) noexcept {
+        void set_symbol(std::string_view sv) {
             symbol_len = static_cast<uint8_t>(std::min(sv.size(), max_symbol_length));
             std::memcpy(symbol.data(), sv.data(), symbol_len);
         }
-        void set_order_qty(std::string_view sv) noexcept {
+        void set_order_qty(std::string_view sv) {
             order_qty_len = static_cast<uint8_t>(std::min(sv.size(), max_qty_length));
             std::memcpy(order_qty.data(), sv.data(), order_qty_len);
         }
-        void set_price(std::string_view sv) noexcept {
+        void set_price(std::string_view sv) {
             price_len = static_cast<uint8_t>(std::min(sv.size(), max_qty_length));
             std::memcpy(price.data(), sv.data(), price_len);
         }
 
-        [[nodiscard]] std::string_view get_symbol()    const noexcept { return {symbol.data(),    symbol_len};    }
-        [[nodiscard]] std::string_view get_order_qty() const noexcept { return {order_qty.data(), order_qty_len}; }
-        [[nodiscard]] std::string_view get_price()     const noexcept { return {price.data(),     price_len};     }
+        [[nodiscard]] std::string_view get_symbol()    const { return {symbol.data(),    symbol_len};    }
+        [[nodiscard]] std::string_view get_order_qty() const { return {order_qty.data(), order_qty_len}; }
+        [[nodiscard]] std::string_view get_price()     const { return {price.data(),     price_len};     }
     };
 
     // Helper: format "ME-ORD-N" or "ME-EXEC-N" into a caller-provided stack buffer.
@@ -143,7 +143,7 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     template <size_t N>
     static std::string_view format_id(std::array<char, N>& buf,
                                       const char* prefix, size_t prefix_len,
-                                      int64_t counter) noexcept {
+                                      int64_t counter) {
         std::memcpy(buf.data(), prefix, prefix_len);
         auto [end, ec] = std::to_chars(buf.data() + prefix_len, buf.data() + N, counter);
         return {buf.data(), static_cast<size_t>(end - buf.data())};
@@ -161,7 +161,7 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     pubsub_itc_fw::ConnectionID sequencer_er_conn_id_;
     pubsub_itc_fw::ConnectionID sequencer_er_secondary_conn_id_;
 
-    // Order book keyed by (session_id, cl_ord_id) — scoped per FIX session so
+    // Order book keyed by (session_id, cl_ord_id) -- scoped per FIX session so
     // concurrent sessions can reuse the same ClOrdID sequence without collision,
     // matching the FIX standard (ClOrdID unique per client session).
     tsl::robin_map<OrderKey, OrderEntry, OrderKeyHash> order_book_;
@@ -171,4 +171,4 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     int64_t exec_id_counter_{0};
 };
 
-} // namespace matching_engine
+} // namespaces

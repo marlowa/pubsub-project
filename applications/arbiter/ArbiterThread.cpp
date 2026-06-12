@@ -49,7 +49,7 @@ pubsub_itc_fw::AllocatorConfiguration make_allocator_config(const ArbiterConfigu
     return allocator_configuration;
 }
 
-} // namespace
+} // un-named namespace
 
 ArbiterThread::ArbiterThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger, pubsub_itc_fw::Reactor& reactor,
                              const ArbiterConfiguration& config)
@@ -626,4 +626,4 @@ void ArbiterThread::replicate_state_to_peer(int64_t component_instance_id, int64
                component_instance_id, leader_id, epoch);
 }
 
-} // namespace arbiter
+} // namespaces

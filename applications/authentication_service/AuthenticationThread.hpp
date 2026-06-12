@@ -26,13 +26,13 @@ namespace authentication_service {
  *
  * Two listener types are served by this thread:
  *
- *   PDU listener (FrameworkPdu, plain TCP) — gateway authentication exchanges.
+ *   PDU listener (FrameworkPdu, plain TCP) -- gateway authentication exchanges.
  *     500 AuthenticationRequest   -- received from gateway
  *     501 AuthenticationChallenge -- sent to gateway
  *     502 AuthenticationProof     -- received from gateway
  *     503 AuthenticationResult    -- sent to gateway
  *
- *   TLS admin listener (TlsRawBytes) — credential management.
+ *   TLS admin listener (TlsRawBytes) -- credential management.
  *     510 SetCredentialRequest    -- received from admin tool (plaintext password, TLS-protected)
  *     511 SetCredentialResult     -- sent to admin tool
  *     512 RemoveCredentialRequest  -- received from admin tool (remove a comp_id credential)
@@ -86,7 +86,7 @@ class AuthenticationThread : public pubsub_itc_fw::ApplicationThread {
     void persist_credentials();
 
     const AuthenticationServiceConfiguration& config_;
-    // Mutable credential map — updated by SetCredentialRequest at runtime.
+    // Mutable credential map -- updated by SetCredentialRequest at runtime.
     std::unordered_map<std::string, scram_crypto::ScramCredential> credentials_;
     // Keyed by request_id so concurrent authentication sessions on the same
     // gateway connection do not overwrite each other's SCRAM exchange state.
@@ -95,4 +95,4 @@ class AuthenticationThread : public pubsub_itc_fw::ApplicationThread {
     std::unordered_set<pubsub_itc_fw::ConnectionID> admin_connections_;
 };
 
-} // namespace authentication_service
+} // namespaces

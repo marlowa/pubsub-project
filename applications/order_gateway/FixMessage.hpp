@@ -127,7 +127,7 @@ static const std::string SequenceReset = "4";
 static const std::string NewOrderSingle = "D";
 static const std::string OrderCancelRequest = "F";
 static const std::string ExecutionReport = "8";
-} // namespace MsgType
+} // namespaces
 
 // Commonly used tag numbers
 namespace Tag {
@@ -163,7 +163,7 @@ static constexpr int Text = 58;
 static constexpr int CxlRejReason = 102;
 static constexpr int OrdRejReason = 103;
 static constexpr int DefaultApplVerID = 1137;
-} // namespace Tag
+} // namespaces
 
 /**
  * @brief View-based representation of one complete inbound FIX message.
@@ -246,4 +246,4 @@ struct ParsedFixMessage {
  */
 static constexpr std::string_view expected_preamble = "8=FIXT.1.1\x01";
 
-} // namespace order_gateway
+} // namespaces

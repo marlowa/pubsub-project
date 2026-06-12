@@ -93,4 +93,4 @@ class FixSerialiser {
     const pubsub_itc_fw::WallClock& wall_clock_;
 };
 
-} // namespace order_gateway
+} // namespaces

@@ -39,7 +39,7 @@ void write_int64_le(FILE* file, int64_t value) {
     std::fwrite(buffer, 1, sizeof(buffer), file);
 }
 
-} // namespace
+} // un-named namespace
 
 FixCapture::FixCapture(const std::string& file_path, pubsub_itc_fw::QuillLogger& logger,
                        size_t ring_bytes)
@@ -175,4 +175,4 @@ void FixCapture::writer_loop() {
                "FixCapture: capture file closed: {}", file_path_);
 }
 
-} // namespace order_gateway
+} // namespaces

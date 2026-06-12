@@ -60,10 +60,10 @@ class WitnessThread : public pubsub_itc_fw::ApplicationThread {
     // ArbiterVoteResponse (max_observed_epoch_ + 1).
     int32_t max_observed_epoch_{0};
 
-    // connection value → arbiter instance_id, populated on first ArbiterHeartbeat.
+    // connection value -> arbiter instance_id, populated on first ArbiterHeartbeat.
     std::unordered_map<int32_t, int64_t> conn_to_instance_id_;
 
-    // arbiter instance_id → ConnectionID, used to identify connected arbiters.
+    // arbiter instance_id -> ConnectionID, used to identify connected arbiters.
     std::unordered_map<int64_t, pubsub_itc_fw::ConnectionID> instance_to_conn_id_;
 
     void handle_arbiter_heartbeat(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
@@ -71,4 +71,4 @@ class WitnessThread : public pubsub_itc_fw::ApplicationThread {
     void send_arbiter_vote_response(const pubsub_itc_fw::ConnectionID& conn_id, int64_t granted_to_instance_id, int32_t epoch);
 };
 
-} // namespace witness
+} // namespaces

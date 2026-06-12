@@ -76,4 +76,4 @@ struct WitnessConfiguration {
     int32_t command_queue_pool_initial_slabs{1};
 };
 
-} // namespace witness
+} // namespaces

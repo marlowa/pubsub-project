@@ -24,4 +24,4 @@ class WitnessConfigurationLoader {
     static WitnessConfiguration load(const std::string& file_path);
 };
 
-} // namespace witness
+} // namespaces

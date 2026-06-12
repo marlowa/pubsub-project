@@ -118,7 +118,7 @@ bool is_terminal_ord_status(pubsub_itc_fw_app::OrdStatus status) {
     }
 }
 
-} // namespace
+} // namespaces
 
 OrderGatewayThread::OrderGatewayThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger,
                                        pubsub_itc_fw::Reactor& reactor, const OrderGatewayConfiguration& config)
@@ -573,7 +573,7 @@ void OrderGatewayThread::handle_authentication_challenge(const pubsub_itc_fw::Ev
     pubsub_itc_fw_app::AuthenticationProof proof{};
     proof.request_id = view.request_id;
     proof.client_proof = pubsub_itc_fw_app::BytesView{client_proof.data(), client_proof.size()};
-    // Send on the connection the challenge arrived on — correct for both primary and secondary.
+    // Send on the connection the challenge arrived on -- correct for both primary and secondary.
     send_pdu(auth_service_conn_id, pdu_id_authentication_proof, 0, proof);
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "OrderGatewayThread: connection {} AuthenticationProof sent request_id={}",
@@ -998,7 +998,7 @@ void OrderGatewayThread::queue_session_for_cleanup(FixSession& session) {
                session.conn_id.get_value(), session.open_orders.size());
 
     DeadSession dead;
-    dead.open_orders      = std::move(session.open_orders); // O(1) — map internal state transfer
+    dead.open_orders      = std::move(session.open_orders); // O(1) -- map internal state transfer
     dead.session_conn_id  = session.conn_id.get_value();
     dead.client_comp_id   = session.client_comp_id;
     dead.cancel_id_counter = session.cancel_id_counter;
@@ -1076,4 +1076,4 @@ FixSession* OrderGatewayThread::find_session_by_comp_id(const std::string& comp_
     return nullptr;
 }
 
-} // namespace order_gateway
+} // namespaces

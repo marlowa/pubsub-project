@@ -48,4 +48,4 @@ class MatchingEngine {
     std::shared_ptr<MatchingEngineThread> matching_engine_thread_;
 };
 
-} // namespace matching_engine
+} // namespaces

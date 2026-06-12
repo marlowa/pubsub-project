@@ -45,4 +45,4 @@ class Witness {
     std::shared_ptr<WitnessThread> witness_thread_;
 };
 
-} // namespace witness
+} // namespaces

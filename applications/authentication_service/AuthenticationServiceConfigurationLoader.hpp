@@ -67,4 +67,4 @@ class AuthenticationServiceConfigurationLoader {
     load_and_init_logging(const std::string& file_path, const std::string& log_file_path);
 };
 
-} // namespace authentication_service
+} // namespaces

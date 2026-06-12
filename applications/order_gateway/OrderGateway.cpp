@@ -62,9 +62,10 @@ OrderGateway::OrderGateway(const OrderGatewayConfiguration& config, std::unique_
                           pubsub_itc_fw::NetworkEndpointConfiguration{config_.authentication_service_host, config_.authentication_service_port},
                           pubsub_itc_fw::NetworkEndpointConfiguration{});
     if (config_.ha_enabled) {
-        service_registry_.add("authentication_service_secondary",
-                              pubsub_itc_fw::NetworkEndpointConfiguration{config_.authentication_service_secondary_host, config_.authentication_service_secondary_port},
-                              pubsub_itc_fw::NetworkEndpointConfiguration{});
+        service_registry_.add(
+            "authentication_service_secondary",
+            pubsub_itc_fw::NetworkEndpointConfiguration{config_.authentication_service_secondary_host, config_.authentication_service_secondary_port},
+            pubsub_itc_fw::NetworkEndpointConfiguration{});
     }
     service_registry_.add("sequencer_primary", pubsub_itc_fw::NetworkEndpointConfiguration{config_.sequencer_primary_host, config_.sequencer_primary_port},
                           pubsub_itc_fw::NetworkEndpointConfiguration{});
@@ -78,10 +79,11 @@ OrderGateway::OrderGateway(const OrderGatewayConfiguration& config, std::unique_
     PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "OrderGateway: ER listener on {}:{}", config_.er_listen_host, config_.er_listen_port);
     if (config_.ha_enabled) {
         PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "OrderGateway: authentication service primary={}:{} secondary={}:{} (HA enabled)",
-                   config_.authentication_service_host, config_.authentication_service_port,
-                   config_.authentication_service_secondary_host, config_.authentication_service_secondary_port);
+                   config_.authentication_service_host, config_.authentication_service_port, config_.authentication_service_secondary_host,
+                   config_.authentication_service_secondary_port);
     } else {
-        PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "OrderGateway: authentication service primary={}:{}", config_.authentication_service_host, config_.authentication_service_port);
+        PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "OrderGateway: authentication service primary={}:{}", config_.authentication_service_host,
+                   config_.authentication_service_port);
     }
     if (config_.ha_enabled) {
         PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "OrderGateway: sequencer primary={}:{} secondary={}:{} (HA enabled)",
@@ -97,7 +99,7 @@ int OrderGateway::run() {
     return reactor_->run();
 }
 
-} // namespace order_gateway
+} // namespaces
 
 // ============================================================
 // main

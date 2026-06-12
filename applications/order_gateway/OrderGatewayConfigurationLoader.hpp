@@ -54,4 +54,4 @@ class OrderGatewayConfigurationLoader {
                                                                                                                      const std::string& log_file_path);
 };
 
-} // namespace order_gateway
+} // namespaces

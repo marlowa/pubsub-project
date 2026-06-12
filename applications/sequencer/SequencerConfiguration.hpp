@@ -143,7 +143,7 @@ struct SequencerConfiguration {
      *
      * This is the initial election window: if no peer contact is made within this
      * many seconds of startup, the node unilaterally promotes itself to leader.
-     * Should be short (≥ connect_retry_interval) so that single-node deployments
+     * Should be short (>= connect_retry_interval) so that single-node deployments
      * become operational quickly without waiting for the full heartbeat timeout.
      *
      * Default: 3 seconds (allows one connection retry cycle on the peer side).
@@ -237,4 +237,4 @@ struct SequencerConfiguration {
     bool replay_mode{false};
 };
 
-} // namespace sequencer
+} // namespaces

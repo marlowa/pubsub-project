@@ -39,7 +39,7 @@ namespace order_gateway {
  *
  * The ring buffer is allocated once at construction (no per-record heap
  * allocation) so capture() never calls malloc and the writer thread never
- * calls free — cross-thread allocator contention is eliminated entirely.
+ * calls free -- cross-thread allocator contention is eliminated entirely.
  *
  * The ring capacity is specified as a byte count at construction.  If the
  * writer thread falls behind and the ring fills, capture() drops the record
@@ -117,4 +117,4 @@ class FixCapture {
     pubsub_itc_fw::ThreadWithJoinTimeout writer_thread_;
 };
 
-} // namespace order_gateway
+} // namespaces

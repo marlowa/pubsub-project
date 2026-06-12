@@ -51,7 +51,7 @@ std::vector<ParsedRecord> read_all_records(const std::string& path) {
     return records;
 }
 
-} // namespace
+} // namespaces
 
 class FixCaptureTest : public ::testing::Test {
   protected:
@@ -180,7 +180,7 @@ TEST_F(FixCaptureTest, AllRecordsFlushedBeforeDestructorReturns) {
                             reinterpret_cast<const uint8_t*>(data.data()),
                             data.size(), static_cast<int64_t>(i));
         }
-    } // destructor must flush all records before returning
+    }
 
     const auto records = read_all_records(capture_file_);
     EXPECT_EQ(records.size(), static_cast<size_t>(record_count));

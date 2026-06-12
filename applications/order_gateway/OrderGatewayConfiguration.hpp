@@ -207,4 +207,4 @@ struct OrderGatewayConfiguration {
     std::shared_ptr<pubsub_itc_fw::WallClock> wall_clock{std::make_shared<pubsub_itc_fw::SystemWallClock>()};
 };
 
-} // namespace order_gateway
+} // namespaces

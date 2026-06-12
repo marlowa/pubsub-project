@@ -15,7 +15,7 @@ namespace order_gateway {
 
 namespace {
 constexpr char field_delimiter = '\x01'; // FIX SOH
-} // namespace
+} // namespaces
 
 FixParser::FixParser(pubsub_itc_fw::QuillLogger& logger, MessageCallback on_message) : on_message_(std::move(on_message)), logger_(logger) {}
 
@@ -203,4 +203,4 @@ std::string FixParser::format_checksum(int sum) {
     return {buffer};
 }
 
-} // namespace order_gateway
+} // namespaces

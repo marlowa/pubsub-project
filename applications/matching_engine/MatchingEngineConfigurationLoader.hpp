@@ -35,4 +35,4 @@ class MatchingEngineConfigurationLoader {
     static MatchingEngineConfiguration load(const std::string& file_path);
 };
 
-} // namespace matching_engine
+} // namespaces

@@ -129,4 +129,4 @@ ArbiterConfiguration ArbiterConfigurationLoader::load(const std::string& file_pa
     return config;
 }
 
-} // namespace arbiter
+} // namespaces

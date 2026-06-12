@@ -62,7 +62,7 @@ pubsub_itc_fw::AllocatorConfiguration make_allocator_config(const Authentication
     return allocator_configuration;
 }
 
-} // namespace
+} // un-named namespace
 
 AuthenticationThread::AuthenticationThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger,
                                            pubsub_itc_fw::Reactor& reactor, const AuthenticationServiceConfiguration& config)
@@ -80,7 +80,7 @@ void AuthenticationThread::on_connection_lost(pubsub_itc_fw::ConnectionID id, co
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "AuthenticationThread: admin connection lost conn_id={} reason={}", id.get_value(), reason);
     } else {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "AuthenticationThread: connection lost conn_id={} reason={}", id.get_value(), reason);
-        for (auto it = exchanges_.begin(); it != exchanges_.end(); ) {
+        for (auto it = exchanges_.begin(); it != exchanges_.end();) {
             it = (it->second.conn_id == id) ? exchanges_.erase(it) : std::next(it);
         }
     }
@@ -260,7 +260,7 @@ void AuthenticationThread::on_raw_socket_message(const pubsub_itc_fw::EventMessa
     const auto available = static_cast<int64_t>(msg.payload_size());
 
     if (available < static_cast<int64_t>(admin_pdu_header_size)) {
-        return; // Partial header — wait for more bytes, do not commit.
+        return; // Partial header -- wait for more bytes, do not commit.
     }
 
     // Parse big-endian header fields.
@@ -270,7 +270,7 @@ void AuthenticationThread::on_raw_socket_message(const pubsub_itc_fw::EventMessa
 
     const int64_t total_size = static_cast<int64_t>(admin_pdu_header_size) + static_cast<int64_t>(byte_count);
     if (available < total_size) {
-        return; // Partial payload — wait for more bytes, do not commit.
+        return; // Partial payload -- wait for more bytes, do not commit.
     }
 
     if (canary != admin_pdu_canary) {
@@ -487,26 +487,27 @@ void AuthenticationThread::handle_restore_credential_request(const pubsub_itc_fw
         return;
     }
     if (view.stored_key.size != 32) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "AuthenticationThread: RestoreCredentialRequest stored_key size={} (expected 32) comp_id={} -- InvalidInput",
-                   view.stored_key.size, comp_id);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "AuthenticationThread: RestoreCredentialRequest stored_key size={} (expected 32) comp_id={} -- InvalidInput", view.stored_key.size, comp_id);
         send_result(pubsub_itc_fw_app::RestoreCredentialOutcome::InvalidInput);
         return;
     }
     if (view.server_key.size != 32) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "AuthenticationThread: RestoreCredentialRequest server_key size={} (expected 32) comp_id={} -- InvalidInput",
-                   view.server_key.size, comp_id);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "AuthenticationThread: RestoreCredentialRequest server_key size={} (expected 32) comp_id={} -- InvalidInput", view.server_key.size, comp_id);
         send_result(pubsub_itc_fw_app::RestoreCredentialOutcome::InvalidInput);
         return;
     }
     if (view.salt.size == 0) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "AuthenticationThread: RestoreCredentialRequest empty salt comp_id={} -- InvalidInput", comp_id);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "AuthenticationThread: RestoreCredentialRequest empty salt comp_id={} -- InvalidInput",
+                   comp_id);
         send_result(pubsub_itc_fw_app::RestoreCredentialOutcome::InvalidInput);
         return;
     }
     if (view.iterations < 1000 || view.iterations > 1000000) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "AuthenticationThread: RestoreCredentialRequest iterations={} out of range [1000,1000000] comp_id={} -- InvalidInput",
-                   view.iterations, comp_id);
+                   "AuthenticationThread: RestoreCredentialRequest iterations={} out of range [1000,1000000] comp_id={} -- InvalidInput", view.iterations,
+                   comp_id);
         send_result(pubsub_itc_fw_app::RestoreCredentialOutcome::InvalidInput);
         return;
     }
@@ -526,7 +527,8 @@ void AuthenticationThread::handle_restore_credential_request(const pubsub_itc_fw
         send_result(pubsub_itc_fw_app::RestoreCredentialOutcome::Success);
 
     } catch (const std::exception& ex) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "AuthenticationThread: RestoreCredentialRequest comp_id={} exception: {}", comp_id, ex.what());
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "AuthenticationThread: RestoreCredentialRequest comp_id={} exception: {}", comp_id,
+                   ex.what());
         send_result(pubsub_itc_fw_app::RestoreCredentialOutcome::InternalError);
     }
 }
@@ -595,4 +597,4 @@ void AuthenticationThread::persist_credentials() {
     }
 }
 
-} // namespace authentication_service
+} // namespaces

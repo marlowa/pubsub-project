@@ -70,7 +70,7 @@ int Arbiter::run() const {
     return reactor_->run();
 }
 
-} // namespace arbiter
+} // namespaces
 
 // ============================================================
 // main

@@ -55,4 +55,4 @@ class AuthenticationService {
     std::shared_ptr<AuthenticationThread> authentication_thread_;
 };
 
-} // namespace authentication_service
+} // namespaces

@@ -184,7 +184,7 @@ class OrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // FIX capture: non-null only when fix_capture_enabled=true in config.
     std::unique_ptr<FixCapture> capture_;
 
-    // gateway_session_conn_id → FixSession lookup: O(1) direct map lookup by
+    // gateway_session_conn_id -> FixSession lookup: O(1) direct map lookup by
     // the internal connection ID stamped by the gateway on each NOS and echoed
     // back by the sequencer on each forwarded ER.  Returns nullptr if the
     // session has since disconnected.
@@ -213,4 +213,4 @@ class OrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     bool cancel_drain_timer_active_{false};
 };
 
-} // namespace order_gateway
+} // namespaces

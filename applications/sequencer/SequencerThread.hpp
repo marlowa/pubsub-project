@@ -116,7 +116,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
         bool erase_routing_entry{false};
     };
 
-    std::unordered_map<int64_t, PendingEr> pending_er_;      // seq_no → buffered ER
+    std::unordered_map<int64_t, PendingEr> pending_er_;      // seq_no -> buffered ER
     std::unordered_set<int64_t> wal_acked_seq_nos_;           // acked but ER not yet received
 
     // Leader-follower helpers.
@@ -147,8 +147,8 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     };
 
     std::vector<ReplayRecord> replay_buffer_;
-    bool replay_me_order_ready_{false};  // outbound sequencer→ME order connection up
-    bool replay_me_er_ready_{false};     // inbound ME→sequencer ER connection up
+    bool replay_me_order_ready_{false};  // outbound sequencer->ME order connection up
+    bool replay_me_er_ready_{false};     // inbound ME->sequencer ER connection up
     void try_dispatch_replay();          // dispatches once both flags are set
     void dispatch_replay_records();
 
@@ -161,7 +161,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void flush_pending_er();
     void forward_pending_er(const PendingEr& pending);
 
-    // seq_no → gateway_session_conn_id of the originating FIX session.
+    // seq_no -> gateway_session_conn_id of the originating FIX session.
     // Keyed by the sequence number assigned to each NOS/OCR (globally unique,
     // unlike ClOrdID which is only unique per FIX session).  Populated on each
     // sequenced NOS/OCR; rebuilt from WAL replay on startup.  Used to stamp
@@ -171,4 +171,4 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     std::unordered_map<int64_t, int32_t> seq_no_to_session_conn_id_;
 };
 
-} // namespace sequencer
+} // namespaces

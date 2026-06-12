@@ -21,4 +21,4 @@ class ArbiterConfigurationLoader {
     static ArbiterConfiguration load(const std::string& file_path);
 };
 
-} // namespace arbiter
+} // namespaces

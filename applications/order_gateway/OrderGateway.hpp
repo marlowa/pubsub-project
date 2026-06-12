@@ -51,4 +51,4 @@ class OrderGateway {
     std::shared_ptr<OrderGatewayThread> gateway_thread_;
 };
 
-} // namespace order_gateway
+} // namespaces

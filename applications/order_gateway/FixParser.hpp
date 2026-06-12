@@ -128,4 +128,4 @@ class FixParser {
     pubsub_itc_fw::QuillLogger& logger_;
 };
 
-} // namespace order_gateway
+} // namespaces

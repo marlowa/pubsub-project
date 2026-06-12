@@ -41,7 +41,7 @@ pubsub_itc_fw::AllocatorConfiguration make_allocator_config(const SequencerConfi
     return allocator_configuration;
 }
 
-} // namespace
+} // namespaces
 
 SequencerThread::SequencerThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger, pubsub_itc_fw::Reactor& reactor,
                                  const SequencerConfiguration& config)
@@ -361,7 +361,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             nos.has_sequenced_at = true;
             nos.sequenced_at = wall_time_ns;
 
-            // Record seq_no → gateway_session_conn_id for ER routing back to the
+            // Record seq_no -> gateway_session_conn_id for ER routing back to the
             // exact FIX session.  seq_no is globally unique; gateway_session_conn_id
             // identifies the specific connection within the gateway.
             if (view.has_gateway_session_conn_id) {
@@ -404,7 +404,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             ocr.has_sequenced_at = true;
             ocr.sequenced_at = wall_time_ns;
 
-            // Record seq_no → gateway_session_conn_id for cancel-ER routing.
+            // Record seq_no -> gateway_session_conn_id for cancel-ER routing.
             if (view.has_gateway_session_conn_id) {
                 seq_no_to_session_conn_id_[seq] = view.gateway_session_conn_id;
             }
@@ -629,7 +629,7 @@ void SequencerThread::on_timer_event(const std::string& name) {
             send_arbitration_report();
             start_one_off_timer("arbitration_timeout", std::chrono::seconds(config_.arbitration_timeout_seconds));
         } else {
-            // No arbiter connected — degrade to local instance-id rule.
+            // No arbiter connected -- degrade to local instance-id rule.
             PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                            "SequencerThread: no arbiter connected -- self-promoting using instance-id rule (degraded)");
             ++epoch_;
@@ -945,7 +945,7 @@ void SequencerThread::handle_peer_pdu(const pubsub_itc_fw::ConnectionID& conn_id
     } else if (pdu_id == pdu_wal_ack) {
         handle_wal_ack(message);
     } else if (pdu_id == pdu_arbitration_decision) {
-        // Should not arrive on the peer channel — decisions come from the arbiter.
+        // Should not arrive on the peer channel -- decisions come from the arbiter.
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                        "SequencerThread: ArbitrationDecision received on peer channel (unexpected) -- dropping");
     } else {
@@ -1283,4 +1283,4 @@ void SequencerThread::forward_pending_er(const PendingEr& pending) {
     }
 }
 
-} // namespace sequencer
+} // namespaces

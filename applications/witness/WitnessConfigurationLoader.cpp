@@ -78,4 +78,4 @@ WitnessConfiguration WitnessConfigurationLoader::load(const std::string& file_pa
     return config;
 }
 
-} // namespace witness
+} // namespaces

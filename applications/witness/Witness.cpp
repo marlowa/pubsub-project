@@ -54,7 +54,7 @@ int Witness::run() {
     return reactor_->run();
 }
 
-} // namespace witness
+} // namespaces
 
 // ============================================================
 // main

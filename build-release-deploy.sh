@@ -1,61 +1,39 @@
 #!/usr/bin/env bash
-# Convenience wrapper: build (no tests) → release → deploy.
-# Aborts on the first failure; each stage is announced so it is clear where a
-# failure occurred.
+# Sets platform-specific environment variables then delegates to build-release-deploy.py.
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-INSTALL_DIR="${SCRIPT_DIR}/installed"
-RELEASE_DIR="${SCRIPT_DIR}/build/release"
-
-SKIP_DB=false
-NO_PYLINT=false
-NO_CPP=false
-NO_DOXYGEN=false
-for arg in "$@"; do
-    case "${arg}" in
-        --skip-db)     SKIP_DB=true ;;
-        --no-pylint)   NO_PYLINT=true ;;
-        --no-cpp)      NO_CPP=true ;;
-        --no-doxygen)  NO_DOXYGEN=true ;;
-        *) echo "error: unknown argument: ${arg}" >&2; exit 1 ;;
-    esac
-done
-
-step() { echo; echo "=== $* ==="; }
-
-if ${NO_CPP}; then
-    echo "NOTE: --no-cpp set; skipping clean of ${INSTALL_DIR}"
+if [ -f /etc/os-release ]; then
+    . /etc/os-release
+    PLATFORM_ID="${ID}${VERSION_ID}"
 else
-    echo "cleaning out ${INSTALL_DIR}"
-    rm -fr "${INSTALL_DIR}"
+    PLATFORM_ID="unknown"
 fi
 
-# ── Build ──────────────────────────────────────────────────────────────────────
-step "BUILD"
-BUILD_ARGS=(--no-tests)
-${NO_PYLINT}   && BUILD_ARGS+=(--no-pylint)
-${NO_CPP}      && BUILD_ARGS+=(--no-cpp)
-${NO_DOXYGEN}  && BUILD_ARGS+=(--no-doxygen)
-"${SCRIPT_DIR}/build.sh" "${BUILD_ARGS[@]}"
+case "${PLATFORM_ID}" in
+    linuxmint22*)
+        export THIRDPARTY_DIR=/home/marlowa/mystuff/thirdparty
+        export FMT_VERSION=12.1.0
+        export QUILL_VERSION=11.0.2
+        export ARGPARSE_VERSION=3.2
+        export GOOGLETEST_VERSION=1.17.0
+        export TOMLPLUSPLUS_VERSION=3.4.0
+        export ROBINMAP_VERSION=1.4.1
+        ;;
+    rocky8*|rhel8*|centos8*)
+        export THIRDPARTY_DIR=/workspace/thirdparty
+        export FMT_VERSION=11.0.2
+        export QUILL_VERSION=11.0.2
+        export ARGPARSE_VERSION=3.2
+        export GOOGLETEST_VERSION=1.10.0
+        export TOMLPLUSPLUS_VERSION=3.4.0
+        export ROBINMAP_VERSION=1.4.1
+        ;;
+    *)
+        echo "ERROR: Unrecognised platform: ${PLATFORM_ID}" >&2
+        exit 1
+        ;;
+esac
 
-# ── Release ────────────────────────────────────────────────────────────────────
-step "RELEASE"
-python3 "${SCRIPT_DIR}/release.py"
-
-# Locate the tarball just produced (newest match in build/release/).
-TARBALL=$(ls -t "${RELEASE_DIR}"/pubsub-*.tar.gz 2>/dev/null | head -n1 || true)
-if [[ -z "${TARBALL}" ]]; then
-    echo "error: no release tarball found in ${RELEASE_DIR}" >&2
-    exit 1
-fi
-echo "  tarball: ${TARBALL}"
-
-# ── Deploy ─────────────────────────────────────────────────────────────────────
-step "DEPLOY"
-DEPLOY_ARGS=(--artefact "${TARBALL}")
-${SKIP_DB} && DEPLOY_ARGS+=(--skip-db)
-python3 "${SCRIPT_DIR}/deploy.py" "${DEPLOY_ARGS[@]}"
-
-step "DONE"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec python3 "${SCRIPT_DIR}/build-release-deploy.py" "$@"

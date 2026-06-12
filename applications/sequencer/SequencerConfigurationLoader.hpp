@@ -40,4 +40,4 @@ class SequencerConfigurationLoader {
     static SequencerConfiguration load(const std::string& file_path);
 };
 
-} // namespace sequencer
+} // namespaces

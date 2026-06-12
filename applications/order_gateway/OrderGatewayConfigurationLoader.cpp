@@ -158,4 +158,4 @@ OrderGatewayConfigurationLoader::load_and_init_logging(const std::string& file_p
     return std::make_tuple(std::move(config), std::move(logger));
 }
 
-} // namespace order_gateway
+} // namespaces

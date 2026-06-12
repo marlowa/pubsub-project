@@ -172,4 +172,4 @@ SequencerConfiguration SequencerConfigurationLoader::load(const std::string& fil
     return config;
 }
 
-} // namespace sequencer
+} // namespaces

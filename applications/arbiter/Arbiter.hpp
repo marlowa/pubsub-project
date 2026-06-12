@@ -45,4 +45,4 @@ class Arbiter {
     std::shared_ptr<ArbiterThread> arbiter_thread_;
 };
 
-} // namespace arbiter
+} // namespaces

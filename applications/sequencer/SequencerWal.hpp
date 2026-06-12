@@ -24,10 +24,10 @@ class WalOpenMode {
 
     explicit WalOpenMode(WalOpenModeTag value) : value_{value} {}
 
-    [[nodiscard]] bool isEqual(const WalOpenMode& rhs) const {
+    [[nodiscard]] bool is_equal(const WalOpenMode& rhs) const {
         return value_ == rhs.value_;
     }
-    [[nodiscard]] bool isEqual(const WalOpenModeTag& rhs) const {
+    [[nodiscard]] bool is_equal(const WalOpenModeTag& rhs) const {
         return value_ == rhs;
     }
     [[nodiscard]] WalOpenModeTag value() const {
@@ -39,13 +39,13 @@ class WalOpenMode {
 };
 
 inline bool operator==(const WalOpenMode& lhs, const WalOpenMode& rhs) {
-    return lhs.isEqual(rhs);
+    return lhs.is_equal(rhs);
 }
 inline bool operator==(const WalOpenMode& lhs, const WalOpenMode::WalOpenModeTag& rhs) {
-    return lhs.isEqual(rhs);
+    return lhs.is_equal(rhs);
 }
 inline bool operator==(const WalOpenMode::WalOpenModeTag& lhs, const WalOpenMode& rhs) {
-    return rhs.isEqual(lhs);
+    return rhs.is_equal(lhs);
 }
 
 /**
@@ -192,4 +192,4 @@ class SequencerWal {
     int64_t last_seq_no_{0};
 };
 
-} // namespace sequencer
+} // namespaces

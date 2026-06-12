@@ -70,7 +70,7 @@ class ArbiterThread : public pubsub_itc_fw::ApplicationThread {
     // Witness connection (outbound).
     pubsub_itc_fw::ConnectionID witness_conn_id_;
 
-    // Leadership-state map: component_instance_id → leader_instance_id.
+    // Leadership-state map: component_instance_id -> leader_instance_id.
     // Also tracks the epoch for each component pair's last decision.
     struct ComponentState {
         int64_t leader_instance_id{0};
@@ -79,14 +79,14 @@ class ArbiterThread : public pubsub_itc_fw::ApplicationThread {
     };
     std::unordered_map<int64_t, ComponentState> leadership_state_;
 
-    // Pending arbitration requests: component_instance_id → conn_id of requestor.
+    // Pending arbitration requests: component_instance_id -> conn_id of requestor.
     // Held until we can send ArbitrationDecision.
     std::unordered_map<int64_t, pubsub_itc_fw::ConnectionID> pending_requests_;
 
-    // Track all connected component instances: instance_id → ConnectionID.
+    // Track all connected component instances: instance_id -> ConnectionID.
     std::unordered_map<int64_t, pubsub_itc_fw::ConnectionID> component_connections_;
 
-    // Reverse map: connection value → component instance_id (populated on Heartbeat).
+    // Reverse map: connection value -> component instance_id (populated on Heartbeat).
     std::unordered_map<int32_t, int64_t> conn_to_component_instance_;
 
     // Arbiter peer helpers (mirror sequencer peer protocol).
@@ -121,4 +121,4 @@ class ArbiterThread : public pubsub_itc_fw::ApplicationThread {
     void replicate_state_to_peer(int64_t component_instance_id, int64_t leader_id, int32_t epoch);
 };
 
-} // namespace arbiter
+} // namespaces
