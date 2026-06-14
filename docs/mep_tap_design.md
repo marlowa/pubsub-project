@@ -234,8 +234,9 @@ end
 # ---------------------------------------------------------------------------
 # TopicSubscribeRequest -- subscriber -> publisher on connection.
 #
-# subscriber_id: stable name for this subscriber (e.g. "tap_primary").
-#   Used by the publisher for logging and per-subscriber cursor tracking.
+# subscriber_id: name for this subscriber (e.g. "tap_primary", "market_data").
+#   Used by MEP for logging and per-connection cursor tracking only.
+#   Not validated against any list; the topic API is open to any process.
 # topic_name:    e.g. "orders" or "execution_reports".
 # from_seq_no:   cursor. 0 = start of publisher's WAL (full replay).
 #               -1 = start from current head (no replay).
@@ -295,6 +296,17 @@ end
 message TopicAck (id=110)
     i64 last_seq_no
 end
+
+# ---------------------------------------------------------------------------
+# TopicNotLeader -- MEP secondary -> subscriber.
+#
+# Sent by a passive (non-leader) MEP instance immediately after receiving
+# a TopicSubscribeRequest. Signals to TopicSubscriberChannel that this
+# endpoint is not the current leader and it should try the other endpoint.
+# The connection is closed by MEP after sending this PDU.
+# ---------------------------------------------------------------------------
+message TopicNotLeader (id=111)
+end
 ```
 
 **Note:** `TopicRecord` (id=109) and `TopicPage` (id=109) cannot share the same PDU ID.
@@ -310,6 +322,7 @@ used as an array element inside `TopicPage`.
 | 108 | `TopicSubscribeAck` | publisher → subscriber |
 | 109 | `TopicPage` | publisher → subscriber |
 | 110 | `TopicAck` | subscriber → publisher |
+| 111 | `TopicNotLeader` | MEP secondary → subscriber |
 
 ---
 
@@ -414,6 +427,14 @@ MEP has no business logic. It receives WAL records from the sequencer, writes th
 own WAL, and fans them out to connected topic subscribers. It does not decode the message
 payloads — it routes by `pdu_id`.
 
+**The topic subscriber API is open.** Any process that can reach MEP's listener ports and
+speaks the topic protocol may subscribe. There is no pre-registration, no whitelist, and no
+configuration change required when a new subscriber type is added. TAP and market data are
+the named first consumers, but the API is a library interface: any component can link against
+it, connect to MEP, and begin receiving records. `subscriber_id` is a label used by MEP for
+logging and per-connection cursor tracking; it is not a registry key and is not validated
+against any list of known subscribers.
+
 ### 6.2 Input: WAL follower on the sequencer
 
 MEP connects outbound to the sequencer's external WAL subscriber listener (ports 7030/7031).
@@ -435,13 +456,21 @@ implementation will be extracted into a library class (`Wal`) reused by both.
 Key properties:
 - **Single WAL, all record types.** NOS, OCR, and ER records all go into the same WAL.
   Topic filtering (by `pdu_id`) happens at delivery time, not at write time.
-- **Truncation gated on subscriber cursors.** MEP tracks the last acked seq_no for each
-  connected subscriber. Truncation target: `min over all subscriber cursors`. A subscriber
-  that disconnects retains its last acked cursor as the truncation anchor until it reconnects
-  and sends new acks.
+- **Truncation gated on connected subscriber cursors and a minimum retention window.**
+  MEP tracks the last acked seq_no for each *currently connected* subscriber. Truncation
+  target: `min(connected_subscriber_cursors) ∧ oldest_record_within_retention_window`.
+  The retention window (configurable, e.g. 24 hours or N records) provides a floor: MEP
+  never truncates records newer than the window even when no subscribers are connected,
+  so a subscriber reconnecting after a short outage can always replay from its cursor.
+  Because the subscriber API is open, MEP does not retain cursor anchors for disconnected
+  subscribers — that would allow an anonymous subscriber that connects once and never
+  returns to hold back truncation indefinitely. The subscriber is responsible for
+  persisting its own cursor; MEP serves from the oldest available record if the cursor
+  has been truncated past, logging a warning.
 - **Lag threshold per subscriber.** If a subscriber's cursor falls more than a configurable
-  number of records behind MEP's WAL head, the subscriber is disconnected. Its cursor anchor
-  is retained for the reconnect. The threshold is configured per subscriber in MEP's config.
+  number of records behind MEP's WAL head, MEP disconnects it. The subscriber must
+  reconnect and replay from its persisted cursor. The threshold is configured with a default
+  and can be overridden per `subscriber_id`.
 - **Retention on MEP secondary.** The MEP secondary has no topic subscribers while passive.
   To ensure it can serve subscribers after a failover, it retains its full WAL indefinitely
   (no truncation while passive). The WAL segment files are small relative to disk; this is
@@ -459,6 +488,8 @@ Key properties:
 
 MEP listens on separate ports per topic (see port table). A subscriber subscribes to exactly
 one topic per connection. TAP connects twice (once per topic); market data connects twice.
+Any other process may also connect to either port and subscribe — no configuration change
+to MEP is required.
 
 ### 6.5 Topic delivery protocol
 
@@ -478,24 +509,44 @@ On a topic subscriber connection:
 Each subscriber has its own independent delivery cycle. A slow subscriber does not block a
 fast one. Per-connection isolation is the same discipline used throughout the framework.
 
-### 6.6 High availability
+### 6.6 High availability — transparent to subscribers
 
 MEP primary and MEP secondary both independently follow the sequencer WAL. Each maintains its
 own WAL. Leader election uses the same arbiter-mediated lease+epoch pattern as all other
 component pairs.
 
-Only the MEP leader accepts `TopicSubscribeRequest` connections. The secondary's topic
-listener ports are bound but reject connections (or accept and immediately close, returning a
-"not leader" indication — the exact mechanism to follow the pattern established by other
-components).
+**Failover is completely transparent to subscriber application code.** The subscriber
+application registers callbacks and sees a logical record stream. It never handles connections,
+reconnects, or leader discovery. All of that is owned by `TopicSubscriberChannel` (see
+section 6.9), the client-side library component that applications link against.
 
-On failover:
-- Subscribers' TCP connections to MEP primary drop.
-- Subscribers reconnect to MEP secondary (now leader) with their last acked cursor.
-- MEP secondary has its own WAL from the same sequencer stream; it can serve from the cursor.
+**MEP secondary behaviour on subscriber connection.** The secondary's topic listener ports are
+bound and accept connections. On receiving a `TopicSubscribeRequest`, the secondary replies
+with a new PDU `TopicNotLeader` (id=111) and closes the connection. `TopicSubscriberChannel`
+treats this as a signal to try the other endpoint. This is cleaner than silently closing the
+connection because it allows `TopicSubscriberChannel` to fail over immediately rather than
+waiting for a connect timeout.
 
-Subscriber cursors are maintained by the subscribers themselves, not replicated between MEP
-instances. This is sufficient because both MEP instances have independent WAL copies.
+**Failover sequence (invisible to the application):**
+1. MEP primary dies. `TopicSubscriberChannel` detects `ConnectionLost`.
+2. `TopicSubscriberChannel` tries the primary endpoint — connect fails (no server).
+3. `TopicSubscriberChannel` tries the secondary endpoint — connect succeeds.
+4. Secondary has been promoted to leader (arbiter-mediated). It accepts the
+   `TopicSubscribeRequest` and replies with `TopicSubscribeAck`.
+5. Delivery resumes from the subscriber's last acked cursor.
+6. Application code observes only a brief pause in record delivery.
+
+Subscriber cursors are maintained by `TopicSubscriberChannel` itself, updated on each
+`TopicAck` it sends. Both MEP instances have independent WAL copies from the same sequencer
+stream, so the new leader can always serve from the cursor the channel presents.
+
+**New PDU:**
+
+| ID | Name | Direction | Fields |
+|---|---|---|---|
+| 111 | `TopicNotLeader` | MEP secondary → subscriber | _(no fields)_ |
+
+Added to `topics.dsl`.
 
 ### 6.7 Component structure
 
@@ -512,6 +563,63 @@ applications/matching_engine_publisher/
 ├── MatchingEnginePublisherConfigurationLoader.hpp
 └── MatchingEnginePublisherConfigurationLoader.cpp
 ```
+
+All direct topic subscribers will be low-latency C++ applications. There is therefore no
+need for a standalone client library, a C API shim, or any other-language mechanism.
+Applications that need further downstream consumption at lower-latency requirements (Java
+services, analytics, settlement) subscribe to the enterprise bus via TAP, not to MEP
+directly.
+
+`TopicSubscriberChannel`, `TopicSubscriberChannelConfig`, and `TopicSubscriberThread` all
+live in the framework library:
+
+```
+libraries/pubsub_itc_fw/include/pubsub_itc_fw/
+├── TopicSubscriberChannel.hpp       # for framework components (TAP, market data)
+├── TopicSubscriberChannelConfig.hpp
+└── TopicSubscriberThread.hpp        # pre-built thread for external C++ apps
+
+libraries/pubsub_itc_fw/src/
+├── TopicSubscriberChannel.cpp
+└── TopicSubscriberThread.cpp
+```
+
+Any C++ application that wants to consume a MEP topic links against `pubsub_itc_fw` and
+uses either `TopicSubscriberChannel` (if it is already an `ApplicationThread` subclass) or
+`TopicSubscriberThread` (if it is an external application that does not subclass
+`ApplicationThread`). No separate subscriber library is needed.
+
+**`TopicSubscriberThread`** is a pre-built `ApplicationThread` subclass that owns the full
+subscriber boilerplate — connection management, `TopicSubscriberChannel` delegation,
+failover — and exposes only a callback interface and a Reactor to the external application:
+
+```cpp
+// External C++ application — no subclassing required
+TopicSubscriberChannelConfig config;
+config.subscriber_id   = "risk_engine";
+config.topic_name      = "orders";
+config.primary_host    = "mep-primary.internal";
+config.primary_port    = 7040;
+config.secondary_host  = "mep-secondary.internal";
+config.secondary_port  = 7042;
+config.from_seq_no     = load_cursor();
+
+QuillLogger logger(...);
+ReactorConfiguration reactor_config;  // CPU pinning, pool sizes, etc.
+
+auto thread = ApplicationThread::make<TopicSubscriberThread>(
+    config, logger,
+    [](const TopicRecordView& record) { /* process record */ },
+    [](int64_t seq_no) { save_cursor(seq_no); }
+);
+
+Reactor reactor(reactor_config, logger);
+reactor.register_thread(thread);
+reactor.run();  // put in its own std::thread if the app has its own event loop
+```
+
+The external application writes no protocol code and no connection management.
+`TopicSubscriberThread` and `TopicSubscriberChannel` handle everything.
 
 `MatchingEnginePublisher` follows the same pattern as `MatchingEngine` and `Sequencer`:
 top-level class that wires reactor, registers listeners, creates the thread, and calls
@@ -547,7 +655,100 @@ Key callbacks:
   retain cursor anchor, log.
 - `on_timer_event("housekeeping")`: check subscriber lag thresholds; disconnect slow subscribers.
 
-### 6.9 Configuration (`MatchingEnginePublisherConfiguration`)
+### 6.9 `TopicSubscriberChannel` and `TopicSubscriberThread` — client-side components
+
+`TopicSubscriberChannel` is the client-side half of the topic pub/sub primitive, for use by
+framework components (TAP, market data) that are already `ApplicationThread` subclasses.
+`TopicSubscriberThread` is a pre-built `ApplicationThread` subclass for external C++
+applications that do not want to write their own.
+
+All direct MEP topic subscribers are C++ applications — low-latency is the reason they
+connect directly rather than via the enterprise bus. There is therefore no standalone client
+library, no C API, and no other-language mechanism. Applications needing downstream
+consumption at lower-latency requirements subscribe to the enterprise bus via TAP.
+
+**`TopicSubscriberChannel` API (sketch):**
+
+```cpp
+class TopicSubscriberChannel {
+  public:
+    using RecordCallback = std::function<void(const TopicRecordView&)>;
+
+    TopicSubscriberChannel(const TopicSubscriberChannelConfig& config,
+                           QuillLogger& logger);
+
+    void on_record(RecordCallback callback);
+
+    // Wire into the owning ApplicationThread.
+    void attach(Reactor& reactor, ApplicationThread& owner);
+
+    // Delegate these from the owning ApplicationThread:
+    void handle_connection_established(ConnectionID id);
+    void handle_connection_lost(ConnectionID id, const std::string& reason);
+    void handle_pdu(const EventMessage& message);
+
+    // Last acked seq_no — application uses this for cursor persistence.
+    [[nodiscard]] int64_t cursor() const;
+};
+```
+
+**`TopicSubscriberChannelConfig` fields:**
+- `subscriber_id` — label for logging; not validated against any list.
+- `topic_name` — `"orders"` or `"execution_reports"`.
+- `primary_host` / `primary_port` — MEP primary topic listener.
+- `secondary_host` / `secondary_port` — MEP secondary topic listener.
+- `from_seq_no` — initial cursor (0 for cold start; load from cursor file on restart).
+
+**Internal behaviour:**
+- Connects to primary first. On `TopicNotLeader` or `ConnectionLost`, tries secondary. On
+  secondary failure, retries primary after a backoff interval. Cycle repeats until a leader
+  is found.
+- Tracks `current_cursor_`, updated on each `TopicAck` sent.
+- Invokes `RecordCallback` for each record in each received `TopicPage`, in seq_no order.
+- Never exposes connection IDs, PDU types, or failover state to the application.
+
+**Application pattern (TAP example using `TopicSubscriberChannel`):**
+
+```cpp
+// In TapThread constructor:
+orders_channel_ = std::make_unique<TopicSubscriberChannel>(orders_config, logger_);
+orders_channel_->on_record([this](const TopicRecordView& r) { handle_order(r); });
+
+// In TapThread::on_app_ready_event():
+orders_channel_->attach(reactor_, *this);
+
+// In TapThread::on_connection_established / on_connection_lost / on_framework_pdu_message:
+orders_channel_->handle_connection_established(id);
+// etc.
+```
+
+**External C++ application using `TopicSubscriberThread` (no subclassing required):**
+
+```cpp
+TopicSubscriberChannelConfig config;
+config.subscriber_id  = "risk_engine";
+config.topic_name     = "orders";
+config.primary_host   = "mep-primary.internal";
+config.primary_port   = 7040;
+config.secondary_host = "mep-secondary.internal";
+config.secondary_port = 7042;
+config.from_seq_no    = load_cursor();
+
+QuillLogger logger(...);
+
+auto thread = ApplicationThread::make<TopicSubscriberThread>(
+    config, logger,
+    [](const TopicRecordView& record) { /* process record */  },
+    [](int64_t seq_no)               { save_cursor(seq_no);  }
+);
+
+ReactorConfiguration reactor_config;
+Reactor reactor(reactor_config, logger);
+reactor.register_thread(thread);
+reactor.run();  // run in its own std::thread if the app has its own event loop
+```
+
+### 6.10 Configuration (`MatchingEnginePublisherConfiguration`)
 
 ```toml
 [network]
@@ -583,6 +784,14 @@ directory = "${matching_engine_publisher_wal_directory}"
 # cursor falls this far behind MEP's WAL head is disconnected.
 # Configure per subscriber_id if needed; this is the default.
 default_max_lag_records = 100000
+
+[wal_retention]
+# Minimum retention window. MEP never truncates records newer than this
+# window even when no subscribers are connected. Allows a subscriber that
+# briefly disconnects to replay from its persisted cursor on reconnect.
+# Set to cover the expected maximum reconnect time for your operational
+# recovery objectives. Value is a duration string.
+min_retention = "24h"
 
 [logging]
 applog_level = "info"

@@ -597,9 +597,13 @@ Two topics:
 
 Delivery uses `TopicPage` PDUs (id=109) with **page X of Y** pagination (`page_number`, `total_pages` fields). `total_pages` is calculated at the start of each delivery cycle and held fixed for that cycle. During catch-up a subscriber sees "page 3 of 47"; during live delivery it sees "page 1 of 1". Subscriber sends `TopicAck` (id=110) after each page; MEP sends the next page immediately if `page_number < total_pages` (catch-up), or waits for new records (live). `TOPIC_PAGE_SIZE = 16` records per page, `TOPIC_PAYLOAD_MAX_SIZE = 512` bytes per payload slot (covers all realistic NOS/OCR/ER encodings; calculation in `docs/mep_tap_design.md`).
 
-MEP WAL truncation is gated on the minimum cursor across all connected subscribers. A persistently-slow subscriber is disconnected when its cursor lag exceeds a configurable per-subscriber threshold.
+MEP WAL truncation is gated on the minimum cursor across all *currently connected* subscribers, combined with a configurable minimum retention window (e.g. 24 hours). Cursor anchors are not retained for disconnected subscribers — the open subscriber API makes that untenable, as an anonymous subscriber that connects once and disappears would block truncation indefinitely. Subscribers are responsible for persisting their own cursor; MEP logs a warning and serves from its oldest available record if the cursor has been truncated past. A persistently-slow connected subscriber is disconnected when its lag exceeds a configurable per-subscriber threshold.
 
-MEP is a primary/secondary HA pair. Both instances independently follow the sequencer WAL; each maintains its own WAL. Only the leader serves topic subscribers. On failover, subscribers reconnect with their persisted cursor; the new leader's WAL serves from there.
+**The topic subscriber API is open.** Any process that can reach MEP's listener ports and speaks the topic protocol may subscribe without pre-registration or configuration change to MEP. `subscriber_id` is a logging label, not a registry key.
+
+**Failover is transparent to subscriber application code.** `TopicSubscriberChannel` (a new class in `libraries/pubsub_itc_fw/`) is the client-side library that all subscriber applications link against. It owns connection management, endpoint selection, reconnect, and leader discovery. On MEP primary failure the channel detects the drop, tries the primary (fails), tries the secondary (now leader), sends `TopicSubscribeRequest` with the last acked cursor, and resumes delivery — all without any involvement from the application. The passive MEP secondary replies with `TopicNotLeader` (new PDU id=111) to any `TopicSubscribeRequest`, giving the channel an immediate redirect signal rather than a connect timeout.
+
+MEP is a primary/secondary HA pair. Both instances independently follow the sequencer WAL; each maintains its own WAL. Only the leader serves topic subscribers.
 
 **TAP (Trade Activity Publisher) — `applications/tap/`.**
 
