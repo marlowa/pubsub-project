@@ -1,9 +1,9 @@
 # MEP, TAP, and Supporting Infrastructure — Design
 
-This document captures the design agreed in the session of 2026-06-12. It covers four
-inter-dependent areas of work: a DSL extension, two new application components (MEP and TAP),
-and the sequencer changes needed to support them. Nothing here is implemented yet. The document
-is the reference for the implementation sessions that follow.
+This document captures the design agreed in the sessions of 2026-06-12/13/14. It covers three
+inter-dependent areas of work: two new application components (MEP and TAP) and the sequencer
+changes needed to support them. Nothing here is implemented yet. The document is the reference
+for the implementation sessions that follow.
 
 ---
 
@@ -29,165 +29,31 @@ to multiple consumers with fanout semantics. A topic-based pub/sub primitive is 
 for the first time. This document designs that primitive, the component that hosts it (MEP),
 and the first subscriber application (TAP).
 
+### Terminology
+
+**cursor** — a sequence number marking how far a subscriber has consumed an event stream. A
+subscriber presenting cursor N has already received and processed all records with seq_no ≤ N
+and wishes to receive records with seq_no > N next. Publishers use each subscriber's cursor to
+decide which old WAL segments are safe to delete: no segment may be deleted while it still
+contains records that any connected subscriber has not yet consumed. The concept is analogous
+to a position pointer in a file or a Kafka consumer offset.
+
 ---
 
-## 2. DSL Extension: `array<MessageType>[N]`
+## 2. DSL Extension: `array<MessageType>[N]` (future enhancement, not a MEP prerequisite)
 
-### 2.1 Why it is needed
+The `TopicPage` PDU uses `list<TopicRecord>` (already supported by the DSL generator). The
+`page_number` / `total_pages` fields bound the delivery semantics at the protocol level,
+making `list<TopicRecord>` sufficient — the subscriber always knows how many records are in a
+page and where the page falls in the batch. Variable-length PDUs with self-describing length
+prefixes are used throughout the framework; this is not a new concern.
 
-The topic delivery PDU (`TopicPage`) contains a fixed-size array of `TopicRecord` entries.
-`TopicRecord` is itself a DSL message. The current `ArrayType` in the DSL only accepts
-`PrimitiveType` elements (e.g., `array<i8>[512]`). To write `array<TopicRecord>[16]` we must
-extend `ArrayType` to accept `ReferenceType` (named message) elements as well.
-
-This extension is a prerequisite for writing `topics.dsl` and for the `TopicPage` PDU design
-to be correct and bounded. Using `list<TopicRecord>` as a stopgap is explicitly rejected
-because it produces open-ended PDUs.
-
-### 2.2 Changes required
-
-**`python/dsl/ast.py`**
-
-Change `ArrayType.element_type` from `PrimitiveType` to `Union[PrimitiveType, ReferenceType]`:
-
-```python
-@dataclass
-class ArrayType(Type):
-    """A fixed-length array of primitive or named-message elements."""
-    element_type: Union[PrimitiveType, ReferenceType]
-    length: int
-    line: int = 0
-```
-
-**`python/dsl/parser.py`**
-
-The `array<T>[N]` parser currently only accepts primitive type names in the `T` position.
-Extend it to also accept identifiers that may resolve to named messages (validated later by
-the Validator). The parser should not attempt to resolve names itself.
-
-**`python/dsl/validator.py`**
-
-When `ArrayType.element_type` is a `ReferenceType`:
-- Verify the referenced name is declared as a `MessageDecl` (not an `EnumDecl`) within the
-  same DSL file. Enum types in arrays must use `PrimitiveType` directly, not `ReferenceType`.
-- Emit a clear error if the referenced message is not yet declared at the point of reference
-  (or require forward declaration, consistent with the existing message reference rules).
-
-**`python/dsl/generator_cpp.py`**
-
-The following methods require new `isinstance(type_node.element_type, ReferenceType)` branches:
-
-| Method | Change |
-|---|---|
-| `_cpp_type_owning` | `array<Msg>[N]` → `std::array<Msg, N>` |
-| `_cpp_type_view` | `array<Msg>[N]` → `std::array<MsgView, N>` (or `std::array<Msg, N>` if Msg is enum) |
-| `_is_fixed_size` | Fixed only if the referenced message is itself fixed-size; call `_is_fixed_size` recursively on the referenced message's `MessageDecl` |
-| `_emit_fixed_encoded_size` | Sum `fixed_encoded_size(element)` × N when element is a fixed-size message |
-| `_emit_encode_fast_field` | Loop N times, call `encode_fast(element, write_cursor)` per element |
-| `_emit_encoded_size_field` | Loop N times, sum `encoded_size(element)` |
-| `_emit_encode_field` | Loop N times, call `encode(element, ...)` per element |
-| `_emit_decode_field` | Loop N times, call `decode_Msg(element, ...)` per element |
-| `_emit_skip_field` | Loop N times, call `skip_Msg(...)` per element |
-| `_emit_max_decode_arena_bytes` | Multiply referenced message's arena bytes by N |
-| `_emit_max_encode_arena_bytes` | Multiply referenced message's arena bytes by N |
-
-**`python/dsl/generator_java.py`**
-
-Apply equivalent changes for the Java backend. `array<Msg>[N]` maps to `Msg[] field = new Msg[N]`
-in Java. Encode/decode loops follow the same pattern as the C++ generator.
-
-### 2.3 Tests required
-
-Add to `python/tests/test_roundtrip_nested_lists.py` (the existing roundtrip test file):
-
-**Test 1 — `test_roundtrip_array_of_message`** (the new 3rd example)
-
-Demonstrates `array<MessageType>[N]` end-to-end:
-
-```python
-def test_roundtrip_array_of_message():
-    mod = build("""
-        message Item (id=1)
-            i32 value
-        end
-
-        message Batch (id=2)
-            i16 item_count
-            array<Item>[4] items
-        end
-    """)
-
-    batch = mod.Batch(
-        item_count=3,
-        items=[mod.Item(value=10), mod.Item(value=20), mod.Item(value=30), mod.Item(value=0)],
-    )
-
-    buf = mod.encode_Batch(batch)
-    batch2 = mod.decode_Batch(buf)
-
-    assert batch2.item_count == 3
-    assert batch2.items[0].value == 10
-    assert batch2.items[1].value == 20
-    assert batch2.items[2].value == 30
-```
-
-**Test 2 — `test_array_of_message_is_fixed_size`**
-
-Verifies that an `array<FixedMessage>[N]` message is treated as fixed-size by the generator
-(i.e., `encode_fast` is emitted):
-
-```python
-def test_array_of_message_is_fixed_size():
-    from dsl.parser import Parser
-    from dsl.validator import Validator
-    from dsl.generator_cpp import CppGenerator
-    text = """
-        message Item (id=1)
-            i32 value
-        end
-        message Batch (id=2)
-            array<Item>[4] items
-        end
-    """
-    ast = Parser(text).parse()
-    Validator(ast).validate()
-    code = CppGenerator("ns").emit(ast)
-    assert "encode_fast" in code
-```
-
-**Test 3 — `test_array_of_variable_message_is_not_fixed_size`**
-
-Verifies that if the element message contains a `string` field (variable-size), the containing
-`array<Msg>[N]` message is NOT treated as fixed-size:
-
-```python
-def test_array_of_variable_message_is_not_fixed_size():
-    from dsl.parser import Parser
-    from dsl.validator import Validator
-    from dsl.generator_cpp import CppGenerator
-    text = """
-        message Item (id=1)
-            string label
-        end
-        message Batch (id=2)
-            array<Item>[4] items
-        end
-    """
-    ast = Parser(text).parse()
-    Validator(ast).validate()
-    code = CppGenerator("ns").emit(ast)
-    assert "encode_fast" not in code
-```
-
-Additionally, add to the existing `test_generator_cpp.py`:
-
-**Test 4 — `test_array_of_message_struct_generation`**
-
-Checks that `std::array<Item, 4> items` appears in the generated struct.
-
-**Test 5 — `test_array_of_message_encode_decode_signatures`**
-
-Checks that the encode/decode loop for array elements calls `encode(message.items[i], ...)`.
+The `array<MessageType>[N]` DSL extension (allowing fixed-size arrays of named message types,
+e.g. `array<Item>[4]`) remains a worthwhile general framework capability for future use cases
+where structural enforcement at the type-system level is needed. It requires changes to
+`ast.py`, `parser.py`, `validator.py`, `generator_cpp.py`, and `generator_java.py`, plus
+new tests in `test_roundtrip_nested_lists.py`. It is **not** on the critical path for MEP or
+TAP and should be scheduled as a standalone DSL improvement session when time permits.
 
 ---
 
@@ -215,20 +81,18 @@ application topic (orders, execution reports, etc.) and is reusable for any futu
 
 # ---------------------------------------------------------------------------
 # TopicRecord -- one event payload within a TopicPage.
+# Inner message type; not dispatched as a standalone PDU.
+# id=0 is a sentinel meaning "inner type, no PDU dispatch".
 #
-# payload_size: actual number of valid bytes in payload_bytes (0..512).
-# payload_bytes: the raw encoded DSL message payload (NOS, OCR, ER, etc.).
-#   Fixed at 512 bytes per slot. Covers all realistic NOS/OCR/ER encodings
-#   with margin. See docs/mep_tap_design.md for the sizing calculation.
-#   If new fields are added to any of these messages, verify this constant
-#   remains sufficient.
+# payload: raw encoded DSL message payload (NOS, OCR, ER, etc.).
+#   Variable-length; carries exactly the bytes from the WAL record.
+#   Mirrors WalRecord.payload. No fixed size limit.
 # ---------------------------------------------------------------------------
-message TopicRecord (id=109)
-    i64        seq_no
-    i16        pdu_id
+message TopicRecord (id=0, version=1)
+    i64         seq_no
+    i16         pdu_id
     datetime_ns wall_time_ns
-    i16        payload_size
-    array<i8>[512] payload_bytes
+    bytes       payload
 end
 
 # ---------------------------------------------------------------------------
@@ -263,15 +127,18 @@ end
 # ---------------------------------------------------------------------------
 # TopicPage -- publisher -> subscriber.
 #
-# record_count:  number of populated entries in records[] (1..16).
+# record_count:  number of records in this page (1..TOPIC_PAGE_SIZE).
 # page_number:   1-based index of this page within the current delivery cycle
-#                (X in "page X of Y").
+#                (X in "page X of Y"). Fixed for the duration of the cycle.
 # total_pages:   total pages in this delivery cycle (Y in "page X of Y").
-#                Calculated at the start of each delivery cycle and held
-#                fixed for that cycle even if new records arrive mid-cycle.
-#                During live delivery (subscriber caught up), page_number
-#                and total_pages are both 1.
-# records:       the payload. Only records[0..record_count-1] are populated.
+#                Calculated at the start of each delivery cycle from the
+#                number of pending records / TOPIC_PAGE_SIZE (ceiling), and
+#                held fixed even if new records arrive mid-cycle.
+#                During live delivery (subscriber caught up), both fields
+#                equal 1.
+# records:       list of records for this page; length == record_count.
+#                The list is bounded by the protocol: publishers never send
+#                more than TOPIC_PAGE_SIZE records per page.
 #
 # Flow control: subscriber sends TopicAck after processing each page.
 # If page_number < total_pages, publisher sends next page immediately on
@@ -279,10 +146,10 @@ end
 # publisher sends next page when new records arrive (live path).
 # ---------------------------------------------------------------------------
 message TopicPage (id=109)
-    i16    record_count
-    i16    page_number
-    i16    total_pages
-    array<TopicRecord>[16] records
+    i16               record_count
+    i16               page_number
+    i16               total_pages
+    list<TopicRecord> records
 end
 
 # ---------------------------------------------------------------------------
@@ -380,25 +247,37 @@ failover), exactly as the ME and gateway connect to both sequencer instances.
 
 ### 5.2 New PDU handlers in `SequencerThread`
 
-- **`WalSubscribeRequest` (105):** Register the subscriber by `subscriber_id`. Record the
-  starting cursor (`from_seq_no`). If `from_seq_no` refers to a position before the oldest
-  available WAL record, start from the oldest available and reply with the adjusted cursor in
-  `WalSubscribeAck`. Begin streaming `WalRecord` (103) PDUs from that position over this
-  connection. Track the connection ID → subscriber state in a new map.
+- **`WalSubscribeRequest` (105):** Handled by `ExternalWalSubscriberRegistry::register_subscriber`.
+  The registry enforces a **last-in-wins pre-emption rule**: if a connection with the same
+  `subscriber_id` is already registered (e.g. a reconnect before the old TCP socket has been
+  torn down), `register_subscriber` removes the old entry and returns its `ConnectionID` as
+  an orphan. `SequencerThread` immediately enqueues a `ReactorControlCommand::Disconnect` for
+  the orphaned connection — the reactor closes the socket, and the old connection receives a
+  TCP reset. `SequencerThread` never closes sockets directly; all I/O remains with the
+  reactor thread. After handling any orphan, the new connection is registered with the
+  requested cursor, a `WalSubscribeAck` is sent, and streaming begins.
 
-- **`WalAck` (104) from external subscriber:** Update that subscriber's confirmed cursor.
-  This cursor participates in WAL truncation (see below).
+- **`WalAck` (104) from external subscriber:** Update that subscriber's confirmed cursor via
+  `ExternalWalSubscriberRegistry::update_cursor`. This cursor participates in WAL truncation.
+
+- **`ConnectionLost` for an external subscriber:** Call
+  `ExternalWalSubscriberRegistry::remove_subscriber` immediately. The cursor is removed from
+  truncation consideration at once — there is no grace period, no SUSPENDED state, and no
+  cursor anchor retained for the disconnected subscriber. The WAL retention floor is the
+  minimum retention window (configured separately), not any disconnected subscriber's cursor.
+  If the subscriber reconnects it presents its own persisted cursor; if the WAL has been
+  truncated past that cursor the sequencer starts it from the oldest available record.
 
 ### 5.3 WAL truncation update
 
 Current truncation target: `min(secondary_cursor, snapshot_anchor)`.
 
-New truncation target: `min(secondary_cursor, mep_primary_cursor, mep_secondary_cursor, ..., snapshot_anchor)`.
+New truncation target: `min(secondary_cursor, all_connected_external_subscriber_cursors, snapshot_anchor)`.
 
-In general: `min over all known subscriber cursors ∧ snapshot_anchor`. The sequencer tracks
-one cursor per registered external subscriber. A subscriber that has not yet sent any `WalAck`
-holds the truncation point at its last known cursor (or at its `accepted_from_seq_no` on
-first connect).
+Only **currently connected** subscribers participate. Disconnected subscribers are removed
+immediately (see `ConnectionLost` handling above) and do not constrain truncation. This
+ensures that a crashed or permanently disconnected MEP instance cannot pin WAL segments on
+disk indefinitely.
 
 ### 5.4 `SequencerConfiguration` additions
 
@@ -652,8 +531,27 @@ Key callbacks:
     `page_number < total_pages`.
   - Leader-follower PDUs (100–106): handled by the same state machine as the sequencer.
 - `on_connection_lost(id, reason)`: if sequencer — schedule reconnect. If subscriber —
-  retain cursor anchor, log.
+  call `ExternalWalSubscriberRegistry::remove_subscriber` immediately; log at Info level.
+  No cursor anchor is retained; the subscriber is responsible for persisting its own cursor.
 - `on_timer_event("housekeeping")`: check subscriber lag thresholds; disconnect slow subscribers.
+  Also log the sequencer-MEP WAL lag (see implementation note 2 below).
+
+**Implementation notes for `MatchingEnginePublisherThread`:**
+
+1. **Slow subscriber backpressure.** The framework's per-connection isolation means a slow
+   topic subscriber's TCP window filling up stalls only that connection's outbound queue —
+   it does not block delivery to other subscribers and does not block MEP from receiving
+   `WalRecord` PDUs from the sequencer. The lag threshold disconnect is the enforcement
+   mechanism. During testing, verify the threshold is tuned correctly for the expected
+   throughput before declaring the fanout path healthy.
+
+2. **Sequencer-MEP WAL lag monitoring.** If MEP's consumption of `WalRecord` PDUs from the
+   sequencer is slow, delivery latency to topic subscribers increases — and this lag may be
+   misattributed to the fanout logic rather than the inbound path. On every housekeeping
+   timer tick, log (at Debug level) the difference between MEP's current WAL write cursor
+   and the last seq_no received from the sequencer. A single `PUBSUB_LOG` call is
+   sufficient. This makes sequencer-MEP lag immediately visible in the log without
+   any instrumentation overhead on the hot path.
 
 ### 6.9 `TopicSubscriberChannel` and `TopicSubscriberThread` — client-side components
 
@@ -1034,16 +932,22 @@ order and component lists (MEP starts after the sequencer pair; TAP starts after
 Dependencies flow in this direction:
 
 ```
-DSL extension (array<MessageType>[N])
-    └── topics.dsl can be written
-        └── leader_follower.dsl additions (WalSubscribeRequest/Ack)
-            └── Sequencer slice 10 (external WAL subscriber listener)
-                └── MEP component (WAL follower + topic publisher)
-                    └── TAP component (topic subscriber + BusPublisher)
+topics.dsl (new file — list<TopicRecord> supported today, no DSL extension needed)
+    │
+leader_follower.dsl additions (WalSubscribeRequest/Ack)
+    │
+Sequencer slice 10 (external WAL subscriber listener + Wal extraction)
+    │
+MEP component (WAL follower + topic publisher)
+    │
+TAP component (topic subscriber + BusPublisher)
 ```
 
 Each step is a separate session. None should begin before the preceding step has been
 verified by tests and build.
+
+The `array<MessageType>[N]` DSL extension is a standalone improvement, independent of this
+chain. It can be scheduled whenever time permits.
 
 The `SequencerWal` → shared `Wal` extraction (so MEP can reuse the WAL implementation)
 should be done as the first task within the sequencer slice 10 session, before adding the

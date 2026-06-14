@@ -156,6 +156,51 @@ message WalAck (id=104, version=1)
 end
 
 # ------------------------------------------------------------
+#  External WAL subscriber protocol (105-106)
+#
+#  cursor: a sequence number marking how far an external subscriber
+#  has consumed the WAL stream. A subscriber presenting cursor N
+#  has already received and processed all records with seq_no <= N
+#  and wishes to receive records with seq_no > N next. The
+#  sequencer uses each subscriber's cursor when deciding which old
+#  WAL segments are safe to delete.
+#
+# ------------------------------------------------------------
+#  105 — WalSubscribeRequest
+#  Sent by an external WAL subscriber (e.g. MEP primary or
+#  MEP secondary) to the sequencer's external WAL subscriber
+#  listener immediately after the TCP connection is established.
+#  The sequencer replies with WalSubscribeAck and then streams
+#  WalRecord PDUs from accepted_from_seq_no onward.
+#
+#  from_seq_no semantics:
+#    0  = start from the sequencer's oldest retained WAL record
+#         (full replay from the beginning).
+#   -1  = start from the sequencer's current WAL head
+#         (no replay; live stream only).
+#    N  = resume from seq_no N (reconnect after disconnect).
+# ------------------------------------------------------------
+message WalSubscribeRequest (id=105, version=1)
+    string subscriber_id    # stable identity; used for logging and cursor tracking
+    i64    from_seq_no      # requested starting cursor
+end
+
+# ------------------------------------------------------------
+#  106 — WalSubscribeAck
+#  Sent by the sequencer to the external WAL subscriber in
+#  reply to WalSubscribeRequest.  Streaming of WalRecord PDUs
+#  begins immediately after this PDU is sent.
+#
+#  accepted_from_seq_no may differ from the requested cursor
+#  if the request predates the sequencer's oldest retained
+#  record; in that case streaming starts from the oldest
+#  available record and a warning is logged.
+# ------------------------------------------------------------
+message WalSubscribeAck (id=106, version=1)
+    i64 accepted_from_seq_no    # actual starting seq_no for the stream
+end
+
+# ------------------------------------------------------------
 #  200 — ArbitrationReport
 #  Sent by a component (sequencer or ME) to the active arbiter
 #  when arbitration is required (startup or after peer heartbeat

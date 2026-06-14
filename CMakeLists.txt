@@ -282,6 +282,25 @@ add_custom_target(authentication_generated ALL
     DEPENDS "${AUTH_DSL_GENERATED_HPP}"
 )
 
+# Topic pub/sub protocol PDU header (plain integer IDs 107-111; no --topics).
+set(TOPICS_DSL_SOURCE "${CMAKE_SOURCE_DIR}/applications/topics.dsl")
+set(TOPICS_DSL_GENERATED_HPP "${FIX_DSL_INCLUDE_DIR}/topics.hpp")
+
+add_custom_command(
+    OUTPUT "${TOPICS_DSL_GENERATED_HPP}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${FIX_DSL_INCLUDE_DIR}"
+    COMMAND ${Python3_EXECUTABLE} "${FIX_DSL_GENERATOR}"
+            --namespace pubsub_itc_fw_app
+            "${TOPICS_DSL_SOURCE}"
+            "${TOPICS_DSL_GENERATED_HPP}"
+    DEPENDS "${TOPICS_DSL_SOURCE}" "${FIX_DSL_GENERATOR}"
+    COMMENT "Generating topics.hpp from topics.dsl"
+    VERBATIM
+)
+add_custom_target(topics_generated ALL
+    DEPENDS "${TOPICS_DSL_GENERATED_HPP}"
+)
+
 # ------------------------------------------------------------
 # Build info generation (version, git SHA/branch, build datetime)
 # ------------------------------------------------------------

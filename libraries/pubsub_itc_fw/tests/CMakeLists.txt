@@ -3,6 +3,7 @@
 add_executable(pubsub_itc_fw_tests
     ApplicationThreadTest.cpp
     BumpAllocatorTest.cpp
+    ExternalWalSubscriberRegistryTest.cpp
     Crc32Test.cpp
     EmptySlabQueueTest.cpp
     EventMessageTest.cpp

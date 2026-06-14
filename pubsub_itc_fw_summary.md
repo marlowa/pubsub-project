@@ -580,7 +580,7 @@ This project has been developed incrementally across a series of numbered work s
 
 **MEP and TAP — design session. Full design in `docs/mep_tap_design.md`.**
 
-Two new application components designed, plus a DSL extension identified as a prerequisite. No code was written this session; the entire output is the design document and the decisions recorded here.
+Two new application components designed. No code was written this session; the entire output is the design document and the decisions recorded here.
 
 **Motivation.** The system mirrors a production exchange. Two categories of downstream consumers exist that the existing WAL-follower-per-component pattern cannot serve cleanly at scale: a market data component (needs the order stream and ER stream) and TAP (Trade Activity Publisher, which publishes orders to an enterprise bus and maintains an L3 order book). With two named subscribers needing the same event streams, topic-based pub/sub is now justified.
 
@@ -595,7 +595,7 @@ Two topics:
 | `orders` | 1000 (NOS), 1001 (OCR) | TAP, market data |
 | `execution_reports` | 1002 (ER) | TAP (internal L3 book), market data |
 
-Delivery uses `TopicPage` PDUs (id=109) with **page X of Y** pagination (`page_number`, `total_pages` fields). `total_pages` is calculated at the start of each delivery cycle and held fixed for that cycle. During catch-up a subscriber sees "page 3 of 47"; during live delivery it sees "page 1 of 1". Subscriber sends `TopicAck` (id=110) after each page; MEP sends the next page immediately if `page_number < total_pages` (catch-up), or waits for new records (live). `TOPIC_PAGE_SIZE = 16` records per page, `TOPIC_PAYLOAD_MAX_SIZE = 512` bytes per payload slot (covers all realistic NOS/OCR/ER encodings; calculation in `docs/mep_tap_design.md`).
+Delivery uses `TopicPage` PDUs (id=109) with **page X of Y** pagination (`page_number`, `total_pages` fields). `total_pages` is calculated at the start of each delivery cycle and held fixed for that cycle. During catch-up a subscriber sees "page 3 of 47"; during live delivery it sees "page 1 of 1". Subscriber sends `TopicAck` (id=110) after each page; MEP sends the next page immediately if `page_number < total_pages` (catch-up), or waits for new records (live). `TOPIC_PAGE_SIZE = 16` records per page. Each `TopicRecord.payload` is variable-length (`bytes` type), carrying exactly the raw bytes from the WAL record — no fixed size limit.
 
 MEP WAL truncation is gated on the minimum cursor across all *currently connected* subscribers, combined with a configurable minimum retention window (e.g. 24 hours). Cursor anchors are not retained for disconnected subscribers — the open subscriber API makes that untenable, as an anonymous subscriber that connects once and disappears would block truncation indefinitely. Subscribers are responsible for persisting their own cursor; MEP logs a warning and serves from its oldest available record if the cursor has been truncated past. A persistently-slow connected subscriber is disconnected when its lag exceeds a configurable per-subscriber threshold.
 
@@ -605,6 +605,12 @@ MEP WAL truncation is gated on the minimum cursor across all *currently connecte
 
 MEP is a primary/secondary HA pair. Both instances independently follow the sequencer WAL; each maintains its own WAL. Only the leader serves topic subscribers.
 
+**All direct topic subscribers are C++.** Low-latency is the reason any application connects directly to MEP rather than consuming via the enterprise bus. There is therefore no standalone client library, no C API, and no other-language mechanism. Applications needing downstream consumption without low-latency requirements subscribe to the enterprise bus via TAP (Kafka, Pulsar, or equivalent consumers in any language).
+
+The framework provides two subscriber-side components in `libraries/pubsub_itc_fw/`:
+- `TopicSubscriberChannel` — for applications that are already `ApplicationThread` subclasses (TAP, market data). Delegates into the owning thread's event callbacks.
+- `TopicSubscriberThread` — a pre-built `ApplicationThread` subclass for external C++ applications that do not want to write their own. Accepts a record callback and a cursor-persistence callback; the caller instantiates it, registers it with a `Reactor`, and calls `reactor.run()`. No subclassing required.
+
 **TAP (Trade Activity Publisher) — `applications/tap/`.**
 
 TAP subscribes to **both** MEP topics. It maintains an L3 order book (all live orders tracked individually) and publishes order events to an enterprise bus. TAP does NOT publish ERs to the enterprise bus; it uses ERs internally to know when an order is filled, so it can remove it from the L3 book after the enterprise bus acknowledges receipt of the corresponding order event. This mirrors the behaviour of the equivalent component at the work system.
@@ -613,9 +619,7 @@ The enterprise bus is abstracted behind a `BusPublisher` pure virtual interface.
 
 TAP is a primary/secondary HA pair with the same arbiter-mediated election as all other component pairs.
 
-**DSL extension — `array<MessageType>[N]`.**
-
-`TopicPage` contains `array<TopicRecord>[16]`. The current `ArrayType` in the DSL only accepts `PrimitiveType` elements. Extending it to accept `ReferenceType` (named message) elements is a prerequisite for writing `topics.dsl` and for the `TopicPage` design to be correct and bounded. Changes required: `ast.py`, `parser.py`, `validator.py`, `generator_cpp.py`, `generator_java.py`. Tests to add: three new cases in `python/tests/test_roundtrip_nested_lists.py` covering `array<FixedMessage>[N]`, fixed-size detection, and variable-element detection.
+**`TopicPage` uses `list<TopicRecord>`.** The `page_number`/`total_pages` (X of Y) fields bound the delivery semantics at the protocol level — the subscriber always knows exactly how many records are in a page and where it falls in the batch. `list<TopicRecord>` is already supported by the DSL generator; no extension is needed. The `array<MessageType>[N]` DSL extension remains a worthwhile future framework improvement but is not on the critical path for MEP or TAP.
 
 **New DSL files.**
 
@@ -629,7 +633,7 @@ New external WAL subscriber listener (ports 7030/7031). Handles `WalSubscribeReq
 
 **New ports:** 7030–7047. See port table in `docs/mep_tap_design.md`.
 
-**Implementation order:** DSL extension → `topics.dsl` → sequencer slice 10 (including `Wal` extraction) → MEP → TAP.
+**Implementation order:** `topics.dsl` → sequencer slice 10 (including `Wal` extraction) → MEP → TAP.
 
 ---
 
@@ -2109,7 +2113,7 @@ MEP connects outbound to the sequencer's external WAL subscriber listener (new p
 | `orders` | 1000 (NOS), 1001 (OCR) | TAP, market data |
 | `execution_reports` | 1002 (ER) | TAP (L3 book only), market data |
 
-Delivery uses `TopicPage` PDUs (id=109) with page X of Y pagination. `TOPIC_PAGE_SIZE = 16`, `TOPIC_PAYLOAD_MAX_SIZE = 512` bytes per record slot. Subscriber sends `TopicAck` (id=110) after each page. See `docs/mep_tap_design.md` for the full delivery protocol.
+Delivery uses `TopicPage` PDUs (id=109) with page X of Y pagination. `TOPIC_PAGE_SIZE = 16` records per page. Each `TopicRecord.payload` is variable-length (`bytes` type), mirroring `WalRecord.payload` — no fixed size limit. Subscriber sends `TopicAck` (id=110) after each page. See `docs/mep_tap_design.md` for the full delivery protocol.
 
 **TAP (Trade Activity Publisher).**
 
@@ -2555,7 +2559,7 @@ Each slice is shippable -- the system works at the end of each. Each slice is a 
 7. **Network replication.** ← **Next task.** Follower on another host. Leader streams WAL records over a dedicated TCP connection. Follower acks; commit-for-ER-emission = follower-acked.
 8. **Arbiter implementation.** Replaces file-based fencing with the real arbiter (lease+epoch handshake protocol from the Leader-Follower Protocol subsystem section). At this slice, the arbiter's own internal HA is implemented via the PSA+witness topology: two full arbiter instances with hand-rolled lease+epoch replication between them, plus one witness machine in a failure-independent location to break ties. See "Arbiter PSA topology" section.
 9. **Dual snapshots, snapshot validation, polish.** The safety-net layer that turns the system from "works" into "operationally bullet-proof".
-10. **WAL multi-subscriber generalisation + MEP.** Generalise the sequencer's WAL replication channel from "one follower (the secondary sequencer)" to "N external subscribers, each with their own cursor". Adds new sequencer inbound listener (ports 7030/7031) and `WalSubscribeRequest`/`WalSubscribeAck` handshake. `SequencerWal` extracted to a shared `Wal` class reused by MEP. Also in this slice: the DSL extension (`array<MessageType>[N]`), `topics.dsl`, and the `MatchingEnginePublisher` application (WAL follower + two topic listeners + own WAL). Design: `docs/mep_tap_design.md`.
+10. **WAL multi-subscriber generalisation + MEP.** Generalise the sequencer's WAL replication channel from "one follower (the secondary sequencer)" to "N external subscribers, each with their own cursor". Adds new sequencer inbound listener (ports 7030/7031) and `WalSubscribeRequest`/`WalSubscribeAck` handshake. `SequencerWal` extracted to a shared `Wal` class reused by MEP. Also in this slice: `topics.dsl` (uses `list<TopicRecord>` — no DSL extension required) and the `MatchingEnginePublisher` application (WAL follower + two topic listeners + own WAL). Design: `docs/mep_tap_design.md`.
 11. **TAP (Trade Activity Publisher).** Topic subscriber to MEP's two topics. Maintains L3 order book; publishes order events to enterprise bus (Kafka/Pulsar/TBD) via `BusPublisher` abstraction. Framework validation uses `StubBusPublisher`. Primary/secondary HA pair. Design: `docs/mep_tap_design.md`.
 
 Slices 12+ are forward-looking and not yet planned in detail:
