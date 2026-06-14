@@ -72,7 +72,7 @@ void SequencerThread::on_initial_event() {
                 rec.payload.assign(payload, payload + payload_size);
                 replay_buffer_.push_back(std::move(rec));
             },
-            WalOpenMode{WalOpenMode::IgnoreSnapshot});
+            pubsub_itc_fw::WalOpenMode{pubsub_itc_fw::WalOpenMode::IgnoreSnapshot});
         next_sequence_number_ = recovered_seq > 0 ? recovered_seq + 1 : 1;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "SequencerThread: replay mode -- WAL read complete: {} record(s), last seq_no={}, "

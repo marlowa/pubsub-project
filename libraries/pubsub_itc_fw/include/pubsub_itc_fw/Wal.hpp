@@ -9,10 +9,10 @@
 
 #include <pubsub_itc_fw/WalWriter.hpp>
 
-namespace sequencer {
+namespace pubsub_itc_fw {
 
 /**
- * @brief Controls whether SequencerWal::open() uses the snapshot as a
+ * @brief Controls whether Wal::open() uses the snapshot as a
  *        starting anchor or replays all records from segment 0.
  */
 class WalOpenMode {
@@ -49,7 +49,7 @@ inline bool operator==(const WalOpenMode::WalOpenModeTag& lhs, const WalOpenMode
 }
 
 /**
- * @brief On-disk snapshot header written by SequencerWal::take_snapshot().
+ * @brief On-disk snapshot header written by Wal::take_snapshot().
  *
  * Written atomically (write to .tmp then rename) to `snapshot.bin` in the WAL
  * directory. On startup, if a valid snapshot is found, WAL replay begins from
@@ -61,9 +61,9 @@ inline bool operator==(const WalOpenMode::WalOpenModeTag& lhs, const WalOpenMode
  *
  * checksum = CRC32 over the first 40 bytes (everything before checksum).
  */
-struct SnapshotHeader {
-    uint32_t magic;        ///< Must equal SequencerWal::snapshot_magic.
-    uint32_t version;      ///< Must equal SequencerWal::snapshot_version.
+struct WalSnapshotHeader {
+    uint32_t magic;        ///< Must equal Wal::snapshot_magic.
+    uint32_t version;      ///< Must equal Wal::snapshot_version.
     int64_t last_seq_no;   ///< Highest seq_no committed when snapshot was taken.
     uint64_t record_count; ///< Total records committed when snapshot was taken.
     uint64_t wal_segment;  ///< WalWriter::current_position().segment at snapshot time.
@@ -71,19 +71,19 @@ struct SnapshotHeader {
     uint32_t checksum;     ///< CRC32 over the 40 bytes above.
     uint32_t filler;       ///< Reserved; always zero.
 };
-static_assert(sizeof(SnapshotHeader) == 48, "SnapshotHeader must be 48 bytes");
+static_assert(sizeof(WalSnapshotHeader) == 48, "WalSnapshotHeader must be 48 bytes");
 
 /**
- * @brief Sequencer write-ahead log built on pubsub_itc_fw::WalWriter / WalReader.
+ * @brief Application write-ahead log built on WalWriter / WalReader.
  *
- * Extends the framework's generic WAL with the sequencer-specific payload
- * format and snapshot management.
+ * Extends the framework's generic WAL with the application-level payload
+ * format and snapshot management. Used by both the sequencer and MEP.
  *
  * Payload format stored in each WAL entry:
  *   [ wall_time_ns (int64_t, 8 bytes) | pdu_id (int16_t, 2 bytes) | PDU payload bytes ]
  *
  * wall_time_ns is the wall time (nanoseconds since the Unix epoch) at which the
- * leader sequenced the record.  It is identical to the sequenced_at field stamped
+ * leader sequenced the record. It is identical to the sequenced_at field stamped
  * on the NOS/OCR PDU forwarded to the matching engine, enabling exact timestamp
  * reconstruction during WAL replay.
  *
@@ -91,13 +91,8 @@ static_assert(sizeof(SnapshotHeader) == 48, "SnapshotHeader must be 48 bytes");
  * in the application payload so the framework header remains generic.
  *
  * Threading: single-writer at any given time.
- *   On the leader: all writes happen from SequencerThread.
- *   On the follower: writes for WalRecord PDUs happen from the reactor thread
- *   via the inline PDU handler installed in install_peer_wal_inline_handler().
- *   SequencerThread never writes on the follower (role guard in
- *   on_framework_pdu_message), so there is no concurrent access.
  */
-class SequencerWal {
+class Wal {
   public:
     static constexpr uint32_t snapshot_magic = 0xC0DEBA5EU;
     static constexpr uint32_t snapshot_version = 1;
@@ -110,16 +105,15 @@ class SequencerWal {
      * @param payload      Pointer to the raw PDU payload bytes (valid only during this call).
      * @param payload_size Number of PDU payload bytes (excludes the header prefix).
      * @param wall_time_ns Wall time at which the leader sequenced this record (nanoseconds
-     *                     since the Unix epoch). Feed into a ReplayClock before dispatching
-     *                     the PDU to reproduce the original sequenced_at timestamps.
+     *                     since the Unix epoch).
      */
     using ReplayCallback = std::function<void(int64_t seq_no, int16_t pdu_id, const uint8_t* payload, size_t payload_size, int64_t wall_time_ns)>;
 
-    SequencerWal() = default;
-    ~SequencerWal() = default;
+    Wal() = default;
+    ~Wal() = default;
 
-    SequencerWal(const SequencerWal&) = delete;
-    SequencerWal& operator=(const SequencerWal&) = delete;
+    Wal(const Wal&) = delete;
+    Wal& operator=(const Wal&) = delete;
 
     /**
      * @brief Opens (or creates) the WAL and replays any uncommitted records.
@@ -135,15 +129,15 @@ class SequencerWal {
      *                         anchor for crash-recovery. WalOpenMode::IgnoreSnapshot
      *                         replays every record from segment 0; used by --replay mode.
      * @return Highest seq_no found during replay, or 0 if the WAL was empty.
-     * @throws std::runtime_error on I/O failure.
+     *         Raises PubSubItcException on I/O failure.
      */
     int64_t open(const std::string& directory, size_t segment_size, ReplayCallback replay_cb = nullptr,
                  WalOpenMode open_mode = WalOpenMode{WalOpenMode::UseSnapshot});
 
     /**
-     * @brief Appends one order record to the WAL.
+     * @brief Appends one record to the WAL.
      *
-     * Payload stored: pdu_id (2 bytes) followed by the raw PDU payload bytes.
+     * Payload stored: wall_time_ns (8 bytes) | pdu_id (2 bytes) | raw PDU payload bytes.
      * The framework WalWriter handles segmentation, mmap, and CRC.
      *
      * @param[in] seq_no       Stamped sequence number (stored as record_id).
@@ -151,7 +145,6 @@ class SequencerWal {
      * @param[in] payload      Raw inbound PDU payload bytes.
      * @param[in] size         Number of payload bytes.
      * @param[in] wall_time_ns Wall time at which this record is being sequenced.
-     *                         Must equal the sequenced_at value stamped on the outbound PDU.
      */
     void append(int64_t seq_no, int16_t pdu_id, const uint8_t* payload, int size, int64_t wall_time_ns);
 
@@ -160,8 +153,7 @@ class SequencerWal {
      *
      * Captures last_seq_no, record_count, and the current WalWriter position.
      * Written atomically via write-to-tmp-then-rename.
-     *
-     * @throws std::runtime_error on I/O failure.
+     * Raises PubSubItcException on I/O failure.
      */
     void take_snapshot();
 
@@ -180,13 +172,13 @@ class SequencerWal {
 
     [[nodiscard]] std::string snapshot_path() const;
     [[nodiscard]] std::string segment_path_for_delete(uint64_t seg_num) const;
-    bool load_snapshot(pubsub_itc_fw::WalPosition& out_pos);
+    bool load_snapshot(WalPosition& out_pos);
     void delete_segments_before(uint64_t seg_num) const;
 
     std::string directory_;
     size_t segment_size_{0};
 
-    pubsub_itc_fw::WalWriter writer_;
+    WalWriter writer_;
 
     size_t record_count_{0};
     int64_t last_seq_no_{0};

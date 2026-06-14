@@ -18,8 +18,9 @@
 #include <fix_equity_orders.hpp>
 #include <leader_follower.hpp>
 
+#include <pubsub_itc_fw/Wal.hpp>
+
 #include "SequencerConfiguration.hpp"
-#include "SequencerWal.hpp"
 
 namespace sequencer {
 
@@ -96,7 +97,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
 
     // mmap'd on-disk write-ahead log (Slice 3). Opened in on_initial_event()
     // before the sequencer begins accepting connections.
-    SequencerWal wal_;
+    pubsub_itc_fw::Wal wal_;
 
     // Leader-follower state machine (slice 6).
     pubsub_itc_fw_app::Role role_{pubsub_itc_fw_app::Role::unknown};

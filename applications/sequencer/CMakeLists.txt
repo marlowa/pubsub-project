@@ -1,7 +1,6 @@
 add_executable(sequencer
         SequencerConfigurationLoader.cpp
         SequencerThread.cpp
-        SequencerWal.cpp
         Sequencer.cpp
 )
 
@@ -21,7 +20,6 @@ target_sources(sequencer PRIVATE
         SequencerConfiguration.hpp
         SequencerConfigurationLoader.hpp
         SequencerThread.hpp
-        SequencerWal.hpp
         Sequencer.hpp
 )
 
