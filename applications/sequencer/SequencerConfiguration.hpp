@@ -169,6 +169,16 @@ struct SequencerConfiguration {
     /** @brief How often the WAL snapshot is taken, in seconds. */
     int32_t snapshot_interval_seconds{30};
 
+    // ----------------------------------------------------------------
+    // External WAL subscriber listener (MEP primary and secondary connect here)
+    // ----------------------------------------------------------------
+
+    /** @brief Host address on which the external WAL subscriber listener binds. */
+    std::string wal_subscriber_listen_host{"127.0.0.1"};
+
+    /** @brief TCP port on which the external WAL subscriber listener binds (7030 primary, 7031 secondary). */
+    uint16_t wal_subscriber_listen_port{7030};
+
     /** @brief Minimum severity written to the application log file. */
     pubsub_itc_fw::FwLogLevel applog_level{pubsub_itc_fw::FwLogLevel::Info};
 

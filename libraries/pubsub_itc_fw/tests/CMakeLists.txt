@@ -28,10 +28,12 @@ add_executable(pubsub_itc_fw_tests
     TcpAcceptorTest.cpp
     TcpConnectorTest.cpp
     TcpSocketTest.cpp
+    TlsStateTest.cpp
     ThreadWithJoinTimeoutTest.cpp
     TimerTest.cpp
     TomlConfigurationTest.cpp
     WalTest.cpp
+    WalWriterReaderTest.cpp
 )
 
 target_link_libraries(pubsub_itc_fw_tests PRIVATE

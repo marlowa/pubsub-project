@@ -109,6 +109,12 @@ SequencerConfiguration SequencerConfigurationLoader::load(const std::string& fil
             }
         }
 
+        int32_t wal_subscriber_listen_port = 0;
+        toml.get_required_except("wal_subscriber.listen_host", config.wal_subscriber_listen_host);
+        toml.get_required_except("wal_subscriber.listen_port", wal_subscriber_listen_port);
+        validate_port(wal_subscriber_listen_port, "wal_subscriber.listen_port");
+        config.wal_subscriber_listen_port = static_cast<uint16_t>(wal_subscriber_listen_port);
+
         toml.get_required_except("wal.directory", config.wal_directory);
         int64_t segment_size_bytes = 0;
         toml.get_required_except("wal.segment_size", segment_size_bytes);

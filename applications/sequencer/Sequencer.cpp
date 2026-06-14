@@ -60,6 +60,12 @@ Sequencer::Sequencer(SequencerConfiguration config, std::unique_ptr<pubsub_itc_f
                                         pubsub_itc_fw::ThreadID{1}, pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::FrameworkPdu}, 0,
                                         pubsub_itc_fw::IdleTimeoutFlag{pubsub_itc_fw::IdleTimeoutFlag::BypassIdleTimeout});
 
+    // Inbound PDU listener for external WAL subscribers (MEP primary and secondary).
+    // Exempt from idle timeout: subscribers are long-lived; WalAck PDUs are sparse.
+    reactor_->register_inbound_listener(pubsub_itc_fw::NetworkEndpointConfiguration{config_.wal_subscriber_listen_host, config_.wal_subscriber_listen_port},
+                                        pubsub_itc_fw::ThreadID{1}, pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::FrameworkPdu}, 0,
+                                        pubsub_itc_fw::IdleTimeoutFlag{pubsub_itc_fw::IdleTimeoutFlag::BypassIdleTimeout});
+
     sequencer_thread_ = pubsub_itc_fw::ApplicationThread::create<SequencerThread>(*logger_, *reactor_, config_);
 
     reactor_->register_thread(sequencer_thread_);
@@ -77,8 +83,10 @@ Sequencer::Sequencer(SequencerConfiguration config, std::unique_ptr<pubsub_itc_f
     service_registry_.add("peer", pubsub_itc_fw::NetworkEndpointConfiguration{config_.peer_host, config_.peer_port},
                           pubsub_itc_fw::NetworkEndpointConfiguration{});
 
-    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "Sequencer: order listener on {}:{} ER listener on {}:{} instance_id={}", config_.listen_host,
-               config_.listen_port, config_.er_listen_host, config_.er_listen_port, config_.instance_id);
+    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info,
+               "Sequencer: order={}:{} er={}:{} wal_subscriber={}:{} instance_id={}",
+               config_.listen_host, config_.listen_port, config_.er_listen_host, config_.er_listen_port,
+               config_.wal_subscriber_listen_host, config_.wal_subscriber_listen_port, config_.instance_id);
     PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info,
                "Sequencer: gateway={}:{} matching_engine={}:{} arbiter_primary={}:{} arbiter_secondary={}:{} peer_listen={}:{} peer={}:{}",
                config_.gateway_host, config_.gateway_port, config_.matching_engine_host, config_.matching_engine_port, config_.arbiter_primary_host,

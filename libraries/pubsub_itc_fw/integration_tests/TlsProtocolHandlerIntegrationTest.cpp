@@ -590,6 +590,75 @@ class TlsPassiveListenerThread : public ApplicationThread {
 };
 
 // ============================================================
+// Backpressure server thread: receives plaintext but defers committing.
+//
+// On the first on_raw_socket_message callback a 100ms one-shot timer is
+// armed. The timer handler commits all bytes received so far in one call,
+// which drops the plaintext-buffer fill well below the low-water mark (50%).
+//
+// The intent:
+//   - Between receipt and the timer, the buffer stays filled above the
+//     high-water mark (75%). drain_plaintext() sets reads_paused_=true and
+//     returns emit_pause=true, causing the reactor to deregister EPOLLIN.
+//     This exercises lines 179-180 of TlsRawBytesProtocolHandler.cpp.
+//   - When the timer fires and commit_raw_bytes() is called, commit_bytes()
+//     advances the tail below the low-water mark and returns true, causing
+//     the reactor to re-register EPOLLIN.
+//     This exercises lines 279-286 of TlsRawBytesProtocolHandler.cpp.
+// ============================================================
+class TlsBackpressureServerThread : public ApplicationThread {
+  public:
+    TlsBackpressureServerThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
+        : ApplicationThread(token, logger, reactor, "TlsBackpressureServerThread", ThreadID{2},
+                            make_queue_config(), make_allocator_config("TlsBackpressurePool"),
+                            ApplicationThreadConfiguration{}) {}
+
+    std::atomic<bool> connection_established{false};
+    std::atomic<bool> connection_lost{false};
+    std::atomic<int64_t> bytes_received_head{0};
+    std::atomic<int64_t> bytes_committed{0};
+    ConnectionID conn_id{};
+
+  protected:
+    void on_connection_established(ConnectionID id) override {
+        conn_id = id;
+        connection_established.store(true, std::memory_order_release);
+    }
+
+    void on_connection_lost(ConnectionID, const std::string&) override {
+        connection_lost.store(true, std::memory_order_release);
+        shutdown("connection lost");
+    }
+
+    void on_raw_socket_message(const EventMessage& message) override {
+        const int64_t head = message.tail_position() + message.payload_size();
+        bytes_received_head.store(head, std::memory_order_release);
+
+        if (!timer_armed_) {
+            timer_armed_ = true;
+            start_one_off_timer("deferred_commit", std::chrono::milliseconds(100));
+        }
+    }
+
+    void on_timer_event(const std::string& name) override {
+        if (name == "deferred_commit") {
+            const int64_t head = bytes_received_head.load(std::memory_order_acquire);
+            const int64_t already = bytes_committed.load(std::memory_order_relaxed);
+            const int64_t to_commit = head - already;
+            if (to_commit > 0) {
+                commit_raw_bytes(conn_id, to_commit);
+                bytes_committed.store(head, std::memory_order_relaxed);
+            }
+        }
+    }
+
+    void on_itc_message([[maybe_unused]] const EventMessage& msg) override {}
+
+  private:
+    bool timer_armed_{false};
+};
+
+// ============================================================
 // Test fixture
 // ============================================================
 class TlsProtocolHandlerIntegrationTest : public ::testing::Test {
@@ -928,6 +997,70 @@ TEST_F(TlsProtocolHandlerIntegrationTest, HandshakeFailure) {
 
     client_thread.join();
     shutdown_and_join(*listener_reactor, listener_reactor_thread);
+}
+
+// ============================================================
+// Test: plaintext buffer high-water and low-water marks.
+//
+// A small plaintext buffer (2048 bytes) is used so that sending 1700 bytes
+// of plaintext fills it past the 75% high-water mark without exceeding the
+// buffer capacity. The server defers committing via a 100ms timer, which
+// keeps the buffer filled long enough for drain_plaintext() to set
+// reads_paused_=true (lines 179-180). When the timer fires and commit is
+// called, fill drops below 50% and commit_bytes() returns true (lines
+// 279-286), causing the reactor to re-register EPOLLIN.
+// ============================================================
+TEST_F(TlsProtocolHandlerIntegrationTest, TlsBackpressureHighAndLowWatermark) {
+    // 2048-byte plaintext buffer: high-water at 75%=1536, low-water at 50%=1024.
+    static constexpr int64_t small_buffer = 2048;
+    // 1700 bytes: 83% of 2048, safely above 75% high-water, below 100% capacity.
+    static constexpr int payload_bytes = 1700;
+
+    const ServiceRegistry listener_registry;
+    auto listener_reactor = std::make_unique<Reactor>(make_tls_reactor_config(), listener_registry, logger_->logger);
+    set_current_reactor(*listener_reactor);
+
+    TlsListenerConfiguration tls_config;
+    tls_config.certificate_path = certs_->server_cert_path;
+    tls_config.private_key_path = certs_->server_key_path;
+
+    listener_reactor->register_inbound_tls_listener(
+        NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2}, small_buffer, tls_config);
+
+    auto server_thread = ApplicationThread::create<TlsBackpressureServerThread>(logger_->logger, *listener_reactor);
+    listener_reactor->register_thread(server_thread);
+
+    std::thread reactor_thread([&]() { listener_reactor->run(); });
+    const uint16_t listen_port = start_listener_reactor(*listener_reactor);
+
+    // Connect a blocking TLS client and send payload_bytes of plaintext.
+    // The kernel send buffer is large relative to payload_bytes, so SSL_write
+    // returns immediately without blocking even though the server may pause reads.
+    std::thread client_thread([&]() {
+        TlsClientConnection conn = connect_tls(listen_port, certs_->ca_cert_path);
+        if (!conn.connected()) {
+            return;
+        }
+        const std::vector<uint8_t> payload(static_cast<size_t>(payload_bytes), 0xAB);
+        tls_send_all(conn.ssl, payload.data(), payload.size());
+        // Hold the connection open while the server processes and commits.
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    });
+
+    EXPECT_TRUE(wait_for([&]() {
+        return server_thread->bytes_received_head.load(std::memory_order_acquire) >= payload_bytes;
+    }, 5000)) << "Server did not receive expected bytes: " << last_wait_failure_description();
+
+    // The timer commits all received bytes. Wait for that to happen.
+    EXPECT_TRUE(wait_for([&]() {
+        return server_thread->bytes_committed.load(std::memory_order_acquire) >= payload_bytes;
+    }, 2000)) << "Server did not commit received bytes after timer: " << last_wait_failure_description();
+
+    EXPECT_FALSE(server_thread->connection_lost.load(std::memory_order_acquire))
+        << "Connection was torn down; backpressure should have paused reads, not disconnected";
+
+    client_thread.join();
+    shutdown_and_join(*listener_reactor, reactor_thread);
 }
 
 } // namespaces

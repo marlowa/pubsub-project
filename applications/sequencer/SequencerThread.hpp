@@ -18,6 +18,7 @@
 #include <fix_equity_orders.hpp>
 #include <leader_follower.hpp>
 
+#include <pubsub_itc_fw/ExternalWalSubscriberRegistry.hpp>
 #include <pubsub_itc_fw/Wal.hpp>
 
 #include "SequencerConfiguration.hpp"
@@ -71,6 +72,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // constructing strings on every call.
     const std::string order_inbound_svc_;
     const std::string er_inbound_svc_;
+    const std::string wal_subscriber_inbound_svc_;
 
     // Monotonically increasing sequence number. Incremented for every PDU
     // forwarded to the matching engine. Never resets within a process lifetime.
@@ -95,9 +97,16 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // Used to populate ArbitrationReport.peer_instance_id.
     int64_t peer_instance_id_{0};
 
-    // mmap'd on-disk write-ahead log (Slice 3). Opened in on_initial_event()
+    // mmap'd on-disk write-ahead log. Opened in on_initial_event()
     // before the sequencer begins accepting connections.
     pubsub_itc_fw::Wal wal_;
+
+    // External WAL subscriber registry and active connection set.
+    // The registry tracks each subscriber's cursor for WAL truncation.
+    // wal_subscriber_conn_ids_ is the set of connections that have completed
+    // the WalSubscribeRequest handshake and are receiving live WalRecord PDUs.
+    pubsub_itc_fw::ExternalWalSubscriberRegistry external_wal_subscriber_registry_;
+    std::unordered_set<pubsub_itc_fw::ConnectionID> wal_subscriber_conn_ids_;
 
     // Leader-follower state machine (slice 6).
     pubsub_itc_fw_app::Role role_{pubsub_itc_fw_app::Role::unknown};
@@ -153,7 +162,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void try_dispatch_replay();          // dispatches once both flags are set
     void dispatch_replay_records();
 
-    // WAL replication helpers (Slice 7).
+    // WAL replication helpers (peer follower).
     [[nodiscard]] bool needs_wal_ack() const;
     void send_wal_record(int64_t seq, int16_t pdu_id, const pubsub_itc_fw::EventMessage& message, int64_t wall_time_ns);
     void handle_wal_record(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
@@ -161,6 +170,11 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void install_peer_wal_inline_handler(const pubsub_itc_fw::ConnectionID& conn_id);
     void flush_pending_er();
     void forward_pending_er(const PendingEr& pending);
+
+    // External WAL subscriber helpers (MEP primary and secondary).
+    void handle_wal_subscribe_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
+    void handle_external_wal_ack(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
+    void stream_wal_record_to_external_subscribers(int64_t seq, int16_t pdu_id, const pubsub_itc_fw::EventMessage& message, int64_t wall_time_ns);
 
     // seq_no -> gateway_session_conn_id of the originating FIX session.
     // Keyed by the sequence number assigned to each NOS/OCR (globally unique,

@@ -31,6 +31,10 @@ heartbeat_timeout_seconds        = 6
 startup_election_timeout_seconds = 20
 fence_file_path                  = "${sequencer_primary_peer_fence_file_path}"
 
+[wal_subscriber]
+listen_host = "${sequencer_primary_wal_subscriber_listen_host}"
+listen_port = 7030
+
 [wal]
 directory                 = "${sequencer_primary_wal_directory}"
 segment_size              = 4194304

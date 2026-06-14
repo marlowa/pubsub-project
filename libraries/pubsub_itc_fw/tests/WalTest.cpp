@@ -1,9 +1,21 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+/**
+ * @file WalClassTest.cpp
+ * @brief Unit tests for pubsub_itc_fw::Wal.
+ *
+ * Wal wraps WalWriter/WalReader with the application-level payload format
+ * (wall_time_ns | pdu_id | PDU bytes) and snapshot management. These tests
+ * verify that framing, round-trip fidelity, snapshot creation, UseSnapshot
+ * vs IgnoreSnapshot replay semantics, and CRC-protected snapshot integrity
+ * all work correctly.
+ */
+
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -13,39 +25,35 @@
 #include <gtest/gtest.h>
 
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
-#include <pubsub_itc_fw/WalReader.hpp>
+#include <pubsub_itc_fw/Wal.hpp>
 #include <pubsub_itc_fw/WalWriter.hpp>
 
 namespace pubsub_itc_fw::tests {
 
 namespace {
 
-// Large segment used for most tests (no rollover).
 constexpr size_t segment_size = 4096;
 
-// Small segment for rollover tests.
-// Each entry with a 4-byte payload is 24 (header) + 4 (payload) + 4 (CRC) = 32 bytes.
-// With small_segment_size=128, exactly 4 entries fit per segment before the next roll.
-constexpr size_t small_segment_size = 128;
-
-struct Captured {
-    int64_t id;
-    std::vector<uint8_t> data;
+struct CapturedRecord {
+    int64_t seq_no{};
+    int16_t pdu_id{};
+    std::vector<uint8_t> payload;
+    int64_t wall_time_ns{};
 };
 
-WalReader::EntryCallback capture(std::vector<Captured>& out) {
-    return [&out](int64_t id, const void* payload, size_t size) {
+Wal::ReplayCallback capture(std::vector<CapturedRecord>& out) {
+    return [&out](int64_t seq_no, int16_t pdu_id, const uint8_t* payload, size_t size, int64_t wall_time_ns) {
         const auto* p = static_cast<const uint8_t*>(payload);
-        out.push_back({id, {p, p + size}});
+        out.push_back({seq_no, pdu_id, {p, p + size}, wall_time_ns});
     };
 }
 
 } // namespaces
 
-class WalTest : public ::testing::Test {
+class WalClassTest : public ::testing::Test {
   protected:
     void SetUp() override {
-        std::string tmpl = "/dev/shm/wal_test_XXXXXX";
+        std::string tmpl = "/dev/shm/wal_class_test_XXXXXX";
         ASSERT_NE(::mkdtemp(tmpl.data()), nullptr);
         dir_ = tmpl;
     }
@@ -54,355 +62,520 @@ class WalTest : public ::testing::Test {
         std::filesystem::remove_all(dir_);
     }
 
+    std::string snapshot_path() const {
+        return dir_ + "/snapshot.bin";
+    }
+
+    void corrupt_snapshot_crc() {
+        // The snapshot CRC sits at byte offset 40. Flip the first byte to break it.
+        const std::string path = snapshot_path();
+        const int fd = ::open(path.c_str(), O_RDWR);
+        ASSERT_GE(fd, 0);
+        uint8_t byte = 0;
+        ASSERT_EQ(::pread(fd, &byte, 1, 40), 1);
+        byte ^= 0xFF;
+        ASSERT_EQ(::pwrite(fd, &byte, 1, 40), 1);
+        ::close(fd);
+    }
+
     std::string dir_;
 };
 
 // ---------------------------------------------------------------------------
-// WalWriter: construction and basic state
+// Construction and initial state
 // ---------------------------------------------------------------------------
 
-TEST_F(WalTest, NotOpenByDefault) {
-    WalWriter w;
-    EXPECT_FALSE(w.is_open());
+TEST_F(WalClassTest, NotOpenByDefault) {
+    Wal wal;
+    EXPECT_FALSE(wal.is_open());
 }
 
-TEST_F(WalTest, IsOpenAfterOpen) {
-    WalWriter w;
-    w.open(dir_, segment_size, {0, 0});
-    EXPECT_TRUE(w.is_open());
+TEST_F(WalClassTest, IsOpenAfterOpen) {
+    Wal wal;
+    wal.open(dir_, segment_size);
+    EXPECT_TRUE(wal.is_open());
 }
 
-TEST_F(WalTest, OpenCreatesSegmentZeroFile) {
-    WalWriter w;
-    w.open(dir_, segment_size, {0, 0});
-    EXPECT_TRUE(std::filesystem::exists(dir_ + "/wal_000000.log"));
+TEST_F(WalClassTest, FreshOpenReturnsZero) {
+    Wal wal;
+    const int64_t last = wal.open(dir_, segment_size);
+    EXPECT_EQ(last, 0);
 }
 
-TEST_F(WalTest, OpenSegmentFileHasCorrectSize) {
-    WalWriter w;
-    w.open(dir_, segment_size, {0, 0});
-    EXPECT_EQ(std::filesystem::file_size(dir_ + "/wal_000000.log"), segment_size);
+TEST_F(WalClassTest, FreshOpenHasZeroRecordCount) {
+    Wal wal;
+    wal.open(dir_, segment_size);
+    EXPECT_EQ(wal.record_count(), 0u);
 }
 
-TEST_F(WalTest, SegmentSizeTooSmallThrows) {
-    WalWriter w;
-    EXPECT_THROW(w.open(dir_, 10, {0, 0}), pubsub_itc_fw::PreconditionAssertion);
-}
-
-TEST_F(WalTest, CurrentPositionZeroAfterFreshOpen) {
-    WalWriter w;
-    w.open(dir_, segment_size, {0, 0});
-    const WalPosition pos = w.current_position();
-    EXPECT_EQ(pos.segment, 0u);
-    EXPECT_EQ(pos.offset, 0u);
-}
-
-TEST_F(WalTest, AppendAdvancesOffset) {
-    WalWriter w;
-    w.open(dir_, segment_size, {0, 0});
-    const uint32_t payload = 0xDEADBEEFu;
-    w.append(1, &payload, sizeof(payload));
-    EXPECT_GT(w.current_position().offset, 0u);
-}
-
-TEST_F(WalTest, TwoAppendsAdvanceOffsetFurther) {
-    WalWriter w;
-    w.open(dir_, segment_size, {0, 0});
-    const uint32_t payload = 1u;
-    w.append(1, &payload, sizeof(payload));
-    const size_t after_one = w.current_position().offset;
-    w.append(2, &payload, sizeof(payload));
-    EXPECT_GT(w.current_position().offset, after_one);
-}
-
-TEST_F(WalTest, OversizedPayloadThrows) {
-    WalWriter w;
-    w.open(dir_, segment_size, {0, 0});
-    std::vector<uint8_t> big(segment_size + 1, 0xFFu);
-    EXPECT_THROW(w.append(1, big.data(), big.size()), pubsub_itc_fw::PreconditionAssertion);
+TEST_F(WalClassTest, FreshOpenHasZeroLastSeqNo) {
+    Wal wal;
+    wal.open(dir_, segment_size);
+    EXPECT_EQ(wal.last_seq_no(), 0);
 }
 
 // ---------------------------------------------------------------------------
-// WalReader: empty / missing directory
+// Single record round-trip
 // ---------------------------------------------------------------------------
 
-TEST_F(WalTest, ReplayMissingDirectoryReturnsFrom) {
-    const WalPosition from{0, 0};
-    const WalPosition end = WalReader::replay("/dev/shm/wal_no_such_dir_xyz_abc", from, nullptr);
-    EXPECT_EQ(end.segment, from.segment);
-    EXPECT_EQ(end.offset, from.offset);
-}
-
-TEST_F(WalTest, ReplayEmptyDirectoryReturnsFrom) {
-    const WalPosition from{0, 0};
-    const WalPosition end = WalReader::replay(dir_, from, nullptr);
-    EXPECT_EQ(end.segment, from.segment);
-    EXPECT_EQ(end.offset, from.offset);
-}
-
-TEST_F(WalTest, ReplayNullCallbackDoesNotCrash) {
-    WalWriter w;
-    w.open(dir_, segment_size, {0, 0});
-    const uint32_t payload = 42u;
-    w.append(1, &payload, sizeof(payload));
-    WalPosition end{};
-    EXPECT_NO_THROW(end = WalReader::replay(dir_, {0, 0}, nullptr));
-    EXPECT_GT(end.offset, 0u);
-}
-
-// ---------------------------------------------------------------------------
-// Round-trip: write then replay
-// ---------------------------------------------------------------------------
-
-TEST_F(WalTest, SingleRecordRoundTrip) {
-    const uint32_t val = 0xCAFEBABEu;
+TEST_F(WalClassTest, SingleRecordReplaySeqNo) {
     {
-        WalWriter w;
-        w.open(dir_, segment_size, {0, 0});
-        w.append(99, &val, sizeof(val));
+        Wal wal;
+        wal.open(dir_, segment_size);
+        const uint8_t payload[] = {0x01, 0x02, 0x03};
+        wal.append(42, 1000, payload, static_cast<int>(sizeof(payload)), 999);
     }
-    std::vector<Captured> entries;
-    const WalPosition end = WalReader::replay(dir_, {0, 0}, capture(entries));
-    ASSERT_EQ(entries.size(), 1u);
-    EXPECT_EQ(entries[0].id, 99);
-    ASSERT_EQ(entries[0].data.size(), sizeof(val));
-    EXPECT_EQ(std::memcmp(entries[0].data.data(), &val, sizeof(val)), 0);
-    EXPECT_GT(end.offset, 0u);
+
+    std::vector<CapturedRecord> records;
+    Wal wal;
+    wal.open(dir_, segment_size, capture(records));
+    ASSERT_EQ(records.size(), 1u);
+    EXPECT_EQ(records[0].seq_no, 42);
 }
 
-TEST_F(WalTest, MultipleRecordsReplayedInOrder) {
-    constexpr int N = 10;
+TEST_F(WalClassTest, SingleRecordReplayPduId) {
     {
-        WalWriter w;
-        w.open(dir_, segment_size, {0, 0});
-        for (int i = 0; i < N; ++i) {
-            const uint32_t v = static_cast<uint32_t>(i * 100);
-            w.append(static_cast<int64_t>(i), &v, sizeof(v));
+        Wal wal;
+        wal.open(dir_, segment_size);
+        const uint8_t payload[] = {0xAA};
+        wal.append(1, 1001, payload, 1, 0);
+    }
+
+    std::vector<CapturedRecord> records;
+    Wal wal;
+    wal.open(dir_, segment_size, capture(records));
+    ASSERT_EQ(records.size(), 1u);
+    EXPECT_EQ(records[0].pdu_id, 1001);
+}
+
+TEST_F(WalClassTest, SingleRecordReplayPayload) {
+    const std::vector<uint8_t> expected = {0x10, 0x20, 0x30, 0x40};
+    {
+        Wal wal;
+        wal.open(dir_, segment_size);
+        wal.append(1, 1000, expected.data(), static_cast<int>(expected.size()), 0);
+    }
+
+    std::vector<CapturedRecord> records;
+    Wal wal;
+    wal.open(dir_, segment_size, capture(records));
+    ASSERT_EQ(records.size(), 1u);
+    EXPECT_EQ(records[0].payload, expected);
+}
+
+TEST_F(WalClassTest, SingleRecordReplayWallTimeNs) {
+    {
+        Wal wal;
+        wal.open(dir_, segment_size);
+        const uint8_t payload[] = {0x00};
+        wal.append(1, 1000, payload, 1, 1234567890LL);
+    }
+
+    std::vector<CapturedRecord> records;
+    Wal wal;
+    wal.open(dir_, segment_size, capture(records));
+    ASSERT_EQ(records.size(), 1u);
+    EXPECT_EQ(records[0].wall_time_ns, 1234567890LL);
+}
+
+// ---------------------------------------------------------------------------
+// Counters and last_seq_no
+// ---------------------------------------------------------------------------
+
+TEST_F(WalClassTest, OpenReturnsLastSeqNo) {
+    {
+        Wal wal;
+        wal.open(dir_, segment_size);
+        const uint8_t payload[] = {0x00};
+        wal.append(7, 1000, payload, 1, 0);
+        wal.append(8, 1000, payload, 1, 0);
+        wal.append(9, 1000, payload, 1, 0);
+    }
+
+    Wal wal;
+    const int64_t last = wal.open(dir_, segment_size);
+    EXPECT_EQ(last, 9);
+}
+
+TEST_F(WalClassTest, RecordCountAfterReplay) {
+    {
+        Wal wal;
+        wal.open(dir_, segment_size);
+        const uint8_t payload[] = {0x00};
+        for (int i = 1; i <= 5; ++i) {
+            wal.append(i, 1000, payload, 1, 0);
         }
     }
-    std::vector<Captured> entries;
-    const WalPosition end = WalReader::replay(dir_, {0, 0}, capture(entries));
-    ASSERT_EQ(entries.size(), static_cast<size_t>(N));
-    for (int i = 0; i < N; ++i) {
-        EXPECT_EQ(entries[i].id, i);
-        uint32_t v{};
-        std::memcpy(&v, entries[i].data.data(), sizeof(v));
-        EXPECT_EQ(v, static_cast<uint32_t>(i * 100));
-    }
-    EXPECT_EQ(end.segment, 0u);
-    EXPECT_GT(end.offset, 0u);
+
+    Wal wal;
+    wal.open(dir_, segment_size, nullptr);
+    EXPECT_EQ(wal.record_count(), 5u);
+    EXPECT_EQ(wal.last_seq_no(), 5);
 }
 
-TEST_F(WalTest, VariablePayloadSizesRoundTrip) {
-    std::vector<std::vector<uint8_t>> payloads = {
-        {0x01},
-        {0x02, 0x03},
-        {0x04, 0x05, 0x06, 0x07, 0x08},
-        {0x09, 0x0A, 0x0B},
-    };
+// ---------------------------------------------------------------------------
+// Multiple records: ordering
+// ---------------------------------------------------------------------------
+
+TEST_F(WalClassTest, MultipleRecordsReplayedInOrder) {
     {
-        WalWriter w;
-        w.open(dir_, segment_size, {0, 0});
-        for (int i = 0; i < static_cast<int>(payloads.size()); ++i) {
-            w.append(static_cast<int64_t>(i), payloads[i].data(), payloads[i].size());
+        Wal wal;
+        wal.open(dir_, segment_size);
+        for (int i = 1; i <= 4; ++i) {
+            const uint8_t payload = static_cast<uint8_t>(i * 10);
+            wal.append(static_cast<int64_t>(i), static_cast<int16_t>(1000 + i), &payload, 1,
+                       static_cast<int64_t>(i) * 100);
         }
     }
-    std::vector<Captured> entries;
-    const WalPosition end = WalReader::replay(dir_, {0, 0}, capture(entries));
-    ASSERT_EQ(entries.size(), payloads.size());
-    for (size_t i = 0; i < payloads.size(); ++i) {
-        EXPECT_EQ(entries[i].data, payloads[i]);
+
+    std::vector<CapturedRecord> records;
+    Wal wal;
+    wal.open(dir_, segment_size, capture(records));
+    ASSERT_EQ(records.size(), 4u);
+    for (int i = 0; i < 4; ++i) {
+        EXPECT_EQ(records[static_cast<size_t>(i)].seq_no, i + 1) << "index " << i;
+        EXPECT_EQ(records[static_cast<size_t>(i)].pdu_id, 1000 + i + 1) << "index " << i;
+        EXPECT_EQ(records[static_cast<size_t>(i)].wall_time_ns, (i + 1) * 100) << "index " << i;
     }
-    EXPECT_GT(end.offset, 0u);
 }
 
-TEST_F(WalTest, ReplayReturnsEndPositionMatchingWriter) {
-    WalWriter w;
-    w.open(dir_, segment_size, {0, 0});
-    const uint32_t payload = 1u;
-    w.append(1, &payload, sizeof(payload));
-    w.append(2, &payload, sizeof(payload));
-    const WalPosition writer_pos = w.current_position();
+// ---------------------------------------------------------------------------
+// Null callback
+// ---------------------------------------------------------------------------
 
-    const WalPosition replay_end = WalReader::replay(dir_, {0, 0}, nullptr);
-    EXPECT_EQ(replay_end.segment, writer_pos.segment);
-    EXPECT_EQ(replay_end.offset, writer_pos.offset);
-}
-
-TEST_F(WalTest, ResumeWritingFromReplayPosition) {
-    // Write records 1-3, close writer, open a new writer at the replay end,
-    // write records 4-5. Full replay from {0,0} should yield all 5.
+TEST_F(WalClassTest, NullCallbackDoesNotCrash) {
     {
-        WalWriter w;
-        w.open(dir_, segment_size, {0, 0});
+        Wal wal;
+        wal.open(dir_, segment_size);
+        const uint8_t payload[] = {0xBB};
+        wal.append(1, 1000, payload, 1, 0);
+    }
+
+    Wal wal;
+    EXPECT_NO_THROW(wal.open(dir_, segment_size, nullptr));
+    EXPECT_EQ(wal.record_count(), 1u);
+}
+
+// ---------------------------------------------------------------------------
+// Snapshot: creation
+// ---------------------------------------------------------------------------
+
+TEST_F(WalClassTest, TakeSnapshotCreatesFile) {
+    Wal wal;
+    wal.open(dir_, segment_size);
+    const uint8_t payload[] = {0x01};
+    wal.append(1, 1000, payload, 1, 0);
+    wal.take_snapshot();
+    EXPECT_TRUE(std::filesystem::exists(snapshot_path()));
+}
+
+// ---------------------------------------------------------------------------
+// Snapshot: UseSnapshot replay semantics
+// ---------------------------------------------------------------------------
+
+TEST_F(WalClassTest, UseSnapshotSkipsPreSnapshotRecords) {
+    // Append records 1-3, take snapshot, then append 4-5.
+    // Reopening with UseSnapshot should replay only records 4-5.
+    {
+        Wal wal;
+        wal.open(dir_, segment_size);
+        const uint8_t payload[] = {0x00};
         for (int i = 1; i <= 3; ++i) {
-            const uint32_t v = static_cast<uint32_t>(i);
-            w.append(i, &v, sizeof(v));
+            wal.append(i, 1000, payload, 1, 0);
         }
-    }
-    const WalPosition mid = WalReader::replay(dir_, {0, 0}, nullptr);
-    {
-        WalWriter w;
-        w.open(dir_, segment_size, mid);
+        wal.take_snapshot();
         for (int i = 4; i <= 5; ++i) {
-            const uint32_t v = static_cast<uint32_t>(i);
-            w.append(i, &v, sizeof(v));
+            wal.append(i, 1000, payload, 1, 0);
         }
     }
-    std::vector<Captured> entries;
-    const WalPosition final_end = WalReader::replay(dir_, {0, 0}, capture(entries));
-    ASSERT_EQ(entries.size(), 5u);
+
+    std::vector<CapturedRecord> records;
+    Wal wal;
+    wal.open(dir_, segment_size, capture(records), WalOpenMode{WalOpenMode::UseSnapshot});
+    ASSERT_EQ(records.size(), 2u);
+    EXPECT_EQ(records[0].seq_no, 4);
+    EXPECT_EQ(records[1].seq_no, 5);
+}
+
+TEST_F(WalClassTest, UseSnapshotRestoresCountersFromSnapshot) {
+    {
+        Wal wal;
+        wal.open(dir_, segment_size);
+        const uint8_t payload[] = {0x00};
+        for (int i = 1; i <= 3; ++i) {
+            wal.append(i, 1000, payload, 1, 0);
+        }
+        wal.take_snapshot();
+    }
+
+    Wal wal;
+    wal.open(dir_, segment_size, nullptr, WalOpenMode{WalOpenMode::UseSnapshot});
+    EXPECT_EQ(wal.record_count(), 3u);
+    EXPECT_EQ(wal.last_seq_no(), 3);
+}
+
+TEST_F(WalClassTest, UseSnapshotWithNoSnapshotFileReplaysAll) {
+    {
+        Wal wal;
+        wal.open(dir_, segment_size);
+        const uint8_t payload[] = {0x00};
+        for (int i = 1; i <= 3; ++i) {
+            wal.append(i, 1000, payload, 1, 0);
+        }
+        // No take_snapshot() call -- snapshot.bin does not exist.
+    }
+
+    std::vector<CapturedRecord> records;
+    Wal wal;
+    wal.open(dir_, segment_size, capture(records), WalOpenMode{WalOpenMode::UseSnapshot});
+    EXPECT_EQ(records.size(), 3u);
+}
+
+// ---------------------------------------------------------------------------
+// Snapshot: IgnoreSnapshot replay semantics
+// ---------------------------------------------------------------------------
+
+TEST_F(WalClassTest, IgnoreSnapshotReplaysAllRecords) {
+    {
+        Wal wal;
+        wal.open(dir_, segment_size);
+        const uint8_t payload[] = {0x00};
+        for (int i = 1; i <= 3; ++i) {
+            wal.append(i, 1000, payload, 1, 0);
+        }
+        wal.take_snapshot();
+        for (int i = 4; i <= 5; ++i) {
+            wal.append(i, 1000, payload, 1, 0);
+        }
+    }
+
+    std::vector<CapturedRecord> records;
+    Wal wal;
+    wal.open(dir_, segment_size, capture(records), WalOpenMode{WalOpenMode::IgnoreSnapshot});
+    ASSERT_EQ(records.size(), 5u);
     for (int i = 0; i < 5; ++i) {
-        EXPECT_EQ(entries[i].id, i + 1);
+        EXPECT_EQ(records[static_cast<size_t>(i)].seq_no, i + 1) << "index " << i;
     }
-    EXPECT_GT(final_end.offset, mid.offset);
 }
 
 // ---------------------------------------------------------------------------
-// Segment rollover
+// Snapshot: CRC integrity
 // ---------------------------------------------------------------------------
 
-TEST_F(WalTest, SegmentRolloverCreatesSecondFile) {
-    // small_segment_size=128 holds exactly 4 entries of 32 bytes each.
-    // Writing a 5th entry forces creation of wal_000001.log.
-    WalWriter w;
-    w.open(dir_, small_segment_size, {0, 0});
-    const uint32_t v = 0u;
+TEST_F(WalClassTest, CorruptedSnapshotFallsBackToFullReplay) {
+    {
+        Wal wal;
+        wal.open(dir_, segment_size);
+        const uint8_t payload[] = {0x00};
+        for (int i = 1; i <= 3; ++i) {
+            wal.append(i, 1000, payload, 1, 0);
+        }
+        wal.take_snapshot();
+        for (int i = 4; i <= 5; ++i) {
+            wal.append(i, 1000, payload, 1, 0);
+        }
+    }
+
+    corrupt_snapshot_crc();
+
+    std::vector<CapturedRecord> records;
+    Wal wal;
+    wal.open(dir_, segment_size, capture(records), WalOpenMode{WalOpenMode::UseSnapshot});
+    EXPECT_EQ(records.size(), 5u);
+}
+
+// ---------------------------------------------------------------------------
+// Resume writing after reopen
+// ---------------------------------------------------------------------------
+
+TEST_F(WalClassTest, ResumeWritingAfterReopenNoGap) {
+    // Write 1-3, close, reopen, write 4-5, close, verify full replay gives 1-5.
+    {
+        Wal wal;
+        wal.open(dir_, segment_size);
+        const uint8_t payload[] = {0x00};
+        for (int i = 1; i <= 3; ++i) {
+            wal.append(i, 1000, payload, 1, 0);
+        }
+    }
+    {
+        Wal wal;
+        wal.open(dir_, segment_size, nullptr);
+        const uint8_t payload[] = {0x00};
+        for (int i = 4; i <= 5; ++i) {
+            wal.append(i, 1000, payload, 1, 0);
+        }
+    }
+
+    std::vector<CapturedRecord> records;
+    Wal wal;
+    wal.open(dir_, segment_size, capture(records));
+    ASSERT_EQ(records.size(), 5u);
     for (int i = 0; i < 5; ++i) {
-        w.append(i, &v, sizeof(v));
+        EXPECT_EQ(records[static_cast<size_t>(i)].seq_no, i + 1) << "index " << i;
     }
-    EXPECT_TRUE(std::filesystem::exists(dir_ + "/wal_000001.log"));
 }
 
-TEST_F(WalTest, SegmentRolloverAllRecordsReplayed) {
-    // Write 6 records across 2 segments; verify all 6 survive replay.
-    constexpr int N = 6;
+// ---------------------------------------------------------------------------
+// Oversized payload
+// ---------------------------------------------------------------------------
+
+TEST_F(WalClassTest, OversizedPayloadThrows) {
+    Wal wal;
+    wal.open(dir_, segment_size);
+    std::vector<uint8_t> big(segment_size + 1, 0xCC);
+    EXPECT_THROW(wal.append(1, 1000, big.data(), static_cast<int>(big.size()), 0),
+                 pubsub_itc_fw::PreconditionAssertion);
+}
+
+// ---------------------------------------------------------------------------
+// Segment deletion after snapshot
+// ---------------------------------------------------------------------------
+
+TEST_F(WalClassTest, SnapshotDeletesOldSegments) {
+    // Each Wal entry with a 1-byte PDU payload occupies:
+    //   24 (WalEntryHeader) + 8 (wall_time_ns) + 2 (pdu_id) + 1 (PDU) + 4 (CRC) = 39 bytes.
+    // With segment_size=128: 3 entries fit (3*39=117), the 4th triggers rollover to segment 1.
+    // take_snapshot() then calls delete_segments_before(1), removing segment 0.
+    constexpr size_t small_segment = 128;
     {
-        WalWriter w;
-        w.open(dir_, small_segment_size, {0, 0});
-        for (int i = 1; i <= N; ++i) {
-            const uint32_t v = static_cast<uint32_t>(i);
-            w.append(i, &v, sizeof(v));
+        Wal wal;
+        wal.open(dir_, small_segment);
+        const uint8_t payload[] = {0x00};
+        for (int i = 1; i <= 4; ++i) {
+            wal.append(i, 1000, payload, 1, 0);
+        }
+        wal.take_snapshot();
+    }
+
+    EXPECT_FALSE(std::filesystem::exists(dir_ + "/wal_000000.log"))
+        << "Segment 0 should have been deleted by take_snapshot()";
+    EXPECT_TRUE(std::filesystem::exists(dir_ + "/wal_000001.log"))
+        << "Segment 1 (current write segment) must still exist";
+}
+
+TEST_F(WalClassTest, SnapshotDeletesOldSegmentsAndReopenWorks) {
+    constexpr size_t small_segment = 128;
+    {
+        Wal wal;
+        wal.open(dir_, small_segment);
+        const uint8_t payload[] = {0x00};
+        for (int i = 1; i <= 4; ++i) {
+            wal.append(i, 1000, payload, 1, 0);
+        }
+        wal.take_snapshot();
+        const uint8_t p[] = {0x00};
+        wal.append(5, 1000, p, 1, 0);
+    }
+
+    std::vector<CapturedRecord> records;
+    Wal wal;
+    const int64_t last = wal.open(dir_, small_segment, capture(records), WalOpenMode{WalOpenMode::UseSnapshot});
+    EXPECT_EQ(last, 5);
+    ASSERT_EQ(records.size(), 1u);
+    EXPECT_EQ(records[0].seq_no, 5);
+}
+
+// ---------------------------------------------------------------------------
+// Snapshot format errors: truncated file and wrong header fields
+// ---------------------------------------------------------------------------
+
+TEST_F(WalClassTest, TruncatedSnapshotFallsBackToFullReplay) {
+    {
+        Wal wal;
+        wal.open(dir_, segment_size);
+        const uint8_t payload[] = {0x00};
+        for (int i = 1; i <= 3; ++i) {
+            wal.append(i, 1000, payload, 1, 0);
         }
     }
-    std::vector<Captured> entries;
-    const WalPosition end = WalReader::replay(dir_, {0, 0}, capture(entries));
-    ASSERT_EQ(entries.size(), static_cast<size_t>(N));
-    for (int i = 0; i < N; ++i) {
-        EXPECT_EQ(entries[i].id, i + 1);
-    }
-    EXPECT_EQ(end.segment, 1u);
-}
 
-TEST_F(WalTest, SegmentRolloverWriterPositionIsOnSecondSegment) {
-    WalWriter w;
-    w.open(dir_, small_segment_size, {0, 0});
-    const uint32_t v = 0u;
-    for (int i = 0; i < 5; ++i) {
-        w.append(i, &v, sizeof(v));
-    }
-    EXPECT_EQ(w.current_position().segment, 1u);
-}
-
-// ---------------------------------------------------------------------------
-// Replay from a non-zero anchor
-// ---------------------------------------------------------------------------
-
-TEST_F(WalTest, ReplayFromAnchorSkipsEarlierRecords) {
-    // Write 5 records, snapshot the position after record 3, replay from there.
-    WalPosition anchor{};
     {
-        WalWriter w;
-        w.open(dir_, segment_size, {0, 0});
-        for (int i = 1; i <= 5; ++i) {
-            const uint32_t v = static_cast<uint32_t>(i);
-            w.append(i, &v, sizeof(v));
-            if (i == 3) {
-                anchor = w.current_position();
-            }
+        const int fd = ::open(snapshot_path().c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        ASSERT_GE(fd, 0);
+        const uint8_t stub[10] = {};
+        ASSERT_EQ(::write(fd, stub, sizeof(stub)), static_cast<ssize_t>(sizeof(stub)));
+        ::close(fd);
+    }
+
+    std::vector<CapturedRecord> records;
+    Wal wal;
+    wal.open(dir_, segment_size, capture(records), WalOpenMode{WalOpenMode::UseSnapshot});
+    EXPECT_EQ(records.size(), 3u) << "Truncated snapshot must be ignored; all records replayed";
+}
+
+TEST_F(WalClassTest, WrongMagicSnapshotFallsBackToFullReplay) {
+    {
+        Wal wal;
+        wal.open(dir_, segment_size);
+        const uint8_t payload[] = {0x00};
+        for (int i = 1; i <= 3; ++i) {
+            wal.append(i, 1000, payload, 1, 0);
         }
-    }
-    std::vector<Captured> entries;
-    const WalPosition end = WalReader::replay(dir_, anchor, capture(entries));
-    ASSERT_EQ(entries.size(), 2u);
-    EXPECT_EQ(entries[0].id, 4);
-    EXPECT_EQ(entries[1].id, 5);
-    EXPECT_GT(end.offset, anchor.offset);
-}
-
-TEST_F(WalTest, ReplayFromEndPositionYieldsNoEntries) {
-    WalWriter w;
-    w.open(dir_, segment_size, {0, 0});
-    const uint32_t v = 1u;
-    w.append(1, &v, sizeof(v));
-    const WalPosition end = w.current_position();
-
-    std::vector<Captured> entries;
-    const WalPosition end2 = WalReader::replay(dir_, end, capture(entries));
-    EXPECT_EQ(entries.size(), 0u);
-    EXPECT_EQ(end2.segment, end.segment);
-    EXPECT_EQ(end2.offset, end.offset);
-}
-
-// ---------------------------------------------------------------------------
-// CRC corruption
-// ---------------------------------------------------------------------------
-
-TEST_F(WalTest, CrcCorruptionStopsReplay) {
-    // Write records 1 and 2. Corrupt a payload byte in record 2.
-    // Replay should return only record 1, with end == position after record 1.
-    WalPosition pos_after_first{};
-    {
-        WalWriter w;
-        w.open(dir_, segment_size, {0, 0});
-        const uint32_t v1 = 0xAAAAAAAAu;
-        w.append(1, &v1, sizeof(v1));
-        pos_after_first = w.current_position();
-        const uint32_t v2 = 0xBBBBBBBBu;
-        w.append(2, &v2, sizeof(v2));
+        wal.take_snapshot();
     }
 
-    // Record 2 starts at pos_after_first.offset. Its payload begins 24 bytes in
-    // (after the WalEntryHeader). Flip the first payload byte.
-    const std::string seg0 = dir_ + "/wal_000000.log";
-    const int fd = ::open(seg0.c_str(), O_RDWR);
-    ASSERT_GE(fd, 0);
-    const off_t corrupt_at = static_cast<off_t>(pos_after_first.offset) + 24;
-    uint8_t flipped = 0xFFu;
-    ASSERT_EQ(::pwrite(fd, &flipped, 1, corrupt_at), 1);
-    ::close(fd);
+    {
+        const int fd = ::open(snapshot_path().c_str(), O_RDWR);
+        ASSERT_GE(fd, 0);
+        const uint32_t bad_magic = 0xDEADBEEFU;
+        ASSERT_EQ(::pwrite(fd, &bad_magic, sizeof(bad_magic), 0),
+                  static_cast<ssize_t>(sizeof(bad_magic)));
+        ::close(fd);
+    }
 
-    std::vector<Captured> entries;
-    const WalPosition end = WalReader::replay(dir_, {0, 0}, capture(entries));
-    ASSERT_EQ(entries.size(), 1u);
-    EXPECT_EQ(entries[0].id, 1);
-    EXPECT_EQ(end.segment, pos_after_first.segment);
-    EXPECT_EQ(end.offset, pos_after_first.offset);
+    std::vector<CapturedRecord> records;
+    Wal wal;
+    wal.open(dir_, segment_size, capture(records), WalOpenMode{WalOpenMode::UseSnapshot});
+    EXPECT_EQ(records.size(), 3u) << "Wrong magic must be ignored; all records replayed";
 }
 
-// ---------------------------------------------------------------------------
-// Determinism
-// ---------------------------------------------------------------------------
-
-TEST_F(WalTest, ReplayIsDeterministic) {
+TEST_F(WalClassTest, WrongVersionSnapshotFallsBackToFullReplay) {
     {
-        WalWriter w;
-        w.open(dir_, segment_size, {0, 0});
-        for (int i = 1; i <= 5; ++i) {
-            const uint32_t v = static_cast<uint32_t>(i);
-            w.append(i, &v, sizeof(v));
+        Wal wal;
+        wal.open(dir_, segment_size);
+        const uint8_t payload[] = {0x00};
+        for (int i = 1; i <= 3; ++i) {
+            wal.append(i, 1000, payload, 1, 0);
         }
+        wal.take_snapshot();
     }
-    std::vector<Captured> first, second;
-    const WalPosition end1 = WalReader::replay(dir_, {0, 0}, capture(first));
-    const WalPosition end2 = WalReader::replay(dir_, {0, 0}, capture(second));
-    ASSERT_EQ(first.size(), second.size());
-    for (size_t i = 0; i < first.size(); ++i) {
-        EXPECT_EQ(first[i].id, second[i].id);
-        EXPECT_EQ(first[i].data, second[i].data);
+
+    {
+        const int fd = ::open(snapshot_path().c_str(), O_RDWR);
+        ASSERT_GE(fd, 0);
+        const uint32_t bad_version = 0xFFFFFFFFU;
+        ASSERT_EQ(::pwrite(fd, &bad_version, sizeof(bad_version), 4),
+                  static_cast<ssize_t>(sizeof(bad_version)));
+        ::close(fd);
     }
-    EXPECT_EQ(end1.segment, end2.segment);
-    EXPECT_EQ(end1.offset, end2.offset);
+
+    std::vector<CapturedRecord> records;
+    Wal wal;
+    wal.open(dir_, segment_size, capture(records), WalOpenMode{WalOpenMode::UseSnapshot});
+    EXPECT_EQ(records.size(), 3u) << "Wrong version must be ignored; all records replayed";
+}
+
+// ---------------------------------------------------------------------------
+// Malformed WAL entry: payload too small to contain the Wal header prefix
+// ---------------------------------------------------------------------------
+
+TEST_F(WalClassTest, MalformedWalEntryIsSkipped) {
+    // Write a raw WalWriter entry whose payload is smaller than the Wal
+    // header prefix (wall_time_ns(8) + pdu_id(2) = 10 bytes). Wal::open()
+    // must skip it silently rather than misinterpreting the bytes.
+    {
+        WalWriter writer;
+        writer.open(dir_, segment_size, {0, 0});
+        const uint8_t tiny[4] = {0xAA, 0xBB, 0xCC, 0xDD};
+        writer.append(1, tiny, sizeof(tiny));
+    }
+
+    std::vector<CapturedRecord> records;
+    Wal wal;
+    wal.open(dir_, segment_size, capture(records));
+    EXPECT_EQ(records.size(), 0u) << "Malformed entry must be silently skipped";
+    EXPECT_EQ(wal.record_count(), 0u);
 }
 
 } // namespaces
