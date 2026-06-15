@@ -100,6 +100,8 @@ components = [
     "matching_engine",
     "sequencer_primary",
     "sequencer_secondary",
+    "mep_primary",
+    "mep_secondary",
     "order_gateway",
     "admin_service",
     "fix_test_client",
@@ -151,6 +153,18 @@ ha_only = false
 binary  = "bin/sequencer"
 config  = "etc/sequencer/sequencer_secondary.toml"
 workdir = "etc/sequencer"
+ha_only = true
+
+[components.mep_primary]
+binary  = "bin/matching_engine_publisher"
+config  = "etc/matching_engine_publisher/matching_engine_publisher.toml"
+workdir = "etc/matching_engine_publisher"
+ha_only = false
+
+[components.mep_secondary]
+binary  = "bin/matching_engine_publisher"
+config  = "etc/matching_engine_publisher/matching_engine_publisher_secondary.toml"
+workdir = "etc/matching_engine_publisher"
 ha_only = true
 
 [components.order_gateway]
@@ -236,6 +250,7 @@ peer_listen_host          = "127.0.0.1"
 peer_host                 = "127.0.0.1"
 peer_fence_file_path      = "/dev/shm/sequencer_primary_fence"
 wal_directory             = "var/sequencer_wal"
+wal_subscriber_listen_host = "127.0.0.1"
 
 [sequencer_secondary]
 network_listen_host       = "127.0.0.1"
@@ -248,3 +263,26 @@ peer_listen_host          = "127.0.0.1"
 peer_host                 = "127.0.0.1"
 peer_fence_file_path      = "/dev/shm/sequencer_secondary_fence"
 wal_directory             = "var/sequencer_secondary_wal"
+wal_subscriber_listen_host = "127.0.0.1"
+
+[matching_engine_publisher_primary]
+network_listen_host          = "127.0.0.1"
+sequencer_wal_host           = "127.0.0.1"
+sequencer_wal_secondary_host = "127.0.0.1"
+wal_directory                = "var/mep_primary_wal"
+ha_arbiter_primary_host      = "127.0.0.1"
+ha_arbiter_secondary_host    = "127.0.0.1"
+ha_peer_listen_host          = "127.0.0.1"
+ha_peer_host                 = "127.0.0.1"
+ha_fence_file_path           = "/dev/shm/mep_primary_fence"
+
+[matching_engine_publisher_secondary]
+network_listen_host          = "127.0.0.1"
+sequencer_wal_host           = "127.0.0.1"
+sequencer_wal_secondary_host = "127.0.0.1"
+wal_directory                = "var/mep_secondary_wal"
+ha_arbiter_primary_host      = "127.0.0.1"
+ha_arbiter_secondary_host    = "127.0.0.1"
+ha_peer_listen_host          = "127.0.0.1"
+ha_peer_host                 = "127.0.0.1"
+ha_fence_file_path           = "/dev/shm/mep_secondary_fence"

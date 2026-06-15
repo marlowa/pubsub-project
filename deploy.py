@@ -205,7 +205,10 @@ def run_create_db(
 
     result = subprocess.run(command)
     if result.returncode != 0:
-        sys.exit(f"error: create_db.py exited with code {result.returncode}")
+        sys.exit(
+            f"error: create_db.py exited with code {result.returncode}\n"
+            "  hint: if the database already exists and is up to date, re-run with --skip-db"
+        )
 
 
 def run_export_credentials(env: dict, install_dir: Path) -> None:

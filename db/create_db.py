@@ -17,14 +17,16 @@ Environment:
 
 PostgreSQL superuser access:
     The script needs to connect as the PostgreSQL superuser (default:
-    postgres) to create the role and database.  On most Linux installs
-    peer authentication is active for localhost, so either:
-      a) run as the postgres unix user:
-             sudo -u postgres python3 db/create_db.py
-      b) pass --sudo-postgres to have the script prefix psql commands
-         with 'sudo -u postgres' automatically, or
-      c) configure pg_hba.conf to allow password auth on localhost for
-         the superuser and supply PGPASSWORD in the environment.
+    postgres) to create the role and database.  Two approaches:
+
+      a) Pass --sudo-postgres to prefix psql commands with
+         'sudo -u postgres'; psql then connects via the Unix socket
+         using peer authentication (no password required).
+
+      b) Allow password auth for the superuser in pg_hba.conf (md5 or
+         scram-sha-256 for host 127.0.0.1/32), then supply the password
+         either interactively (psql will prompt) or non-interactively
+         via the PGPASSWORD environment variable.
 
 PostgreSQL JDBC driver:
     Liquibase needs the PostgreSQL JDBC driver (postgresql-*.jar) installed
@@ -63,16 +65,17 @@ def _run(command: list[str], **kwargs) -> subprocess.CompletedProcess:
 
 def _superuser_psql_args(psql_prefix: list[str], host: str, port: int,
                           superuser: str) -> list[str]:
-    # Peer auth works only over the Unix socket.  Passing --host localhost
-    # forces TCP/IP where peer auth is not available, so omit --host for
-    # local connections and let psql fall back to the socket.
-    host_args = [] if host in ("localhost", "127.0.0.1") else ["--host", host]
+    # Use the Unix socket (omit --host) only when running as the postgres OS
+    # user via sudo, where peer auth is available.  Otherwise force TCP so
+    # that password auth (md5/scram) can be used — peer auth is not available
+    # over TCP, and the caller is not the postgres OS user.
+    use_socket = bool(psql_prefix) and host in ("localhost", "127.0.0.1")
+    host_args = [] if use_socket else ["--host", host]
     return psql_prefix + [
         "psql",
         *host_args, "--port", str(port),
         "--username", superuser,
         "--dbname", "postgres",
-        "--no-password",
     ]
 
 

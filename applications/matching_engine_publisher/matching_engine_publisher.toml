@@ -1,0 +1,59 @@
+[network]
+listen_host = "${matching_engine_publisher_primary_network_listen_host}"
+
+[sequencer_wal]
+host = "${matching_engine_publisher_primary_sequencer_wal_host}"
+port = 7030
+
+[sequencer_wal_secondary]
+host = "${matching_engine_publisher_primary_sequencer_wal_secondary_host}"
+port = 7031
+
+[topics.orders]
+listen_port = 7040
+
+[topics.execution_reports]
+listen_port = 7041
+
+[wal]
+directory                 = "${matching_engine_publisher_primary_wal_directory}"
+segment_size              = 4194304
+snapshot_interval_seconds = 30
+
+[ha]
+ha_enabled                      = true
+instance_id                     = 1
+arbiter_primary_host            = "${matching_engine_publisher_primary_ha_arbiter_primary_host}"
+arbiter_primary_port            = 7200
+arbiter_secondary_host          = "${matching_engine_publisher_primary_ha_arbiter_secondary_host}"
+arbiter_secondary_port          = 7201
+arbitration_timeout_seconds     = 3
+peer_listen_host                = "${matching_engine_publisher_primary_ha_peer_listen_host}"
+peer_listen_port                = 7044
+peer_host                       = "${matching_engine_publisher_primary_ha_peer_host}"
+peer_port                       = 7045
+heartbeat_interval_seconds      = 2
+heartbeat_timeout_seconds       = 6
+startup_election_timeout_seconds = 20
+fence_file_path                 = "${matching_engine_publisher_primary_ha_fence_file_path}"
+
+[subscriber_lag]
+default_max_lag_records = 100000
+
+[logging]
+applog_level = "info"
+syslog_level = "critical"
+
+[reactor]
+cpu_pinning_enabled            = true
+cpu_pinning_reserve_cpu0       = ${shared_reactor_cpu_pinning_reserve_cpu0}
+cpu_registry_lock_file         = "${shared_reactor_cpu_registry_lock_file}"
+connect_retry_warning_interval = "15m"
+
+[event_queue_pool]
+objects_per_slab = 1024
+initial_slabs    = 1
+
+[command_queue_pool]
+objects_per_slab = 1024
+initial_slabs    = 1

@@ -518,8 +518,14 @@ class CppGenerator:
             raise RuntimeError(f"Non-fixed-size field in fixed size computation: {type_node}")
 
     def _emit_encode_fast_impl(self, msg: MessageDecl, w, enum_names=None):
-        w(f"inline void encode_fast(const {msg.name}& message, uint8_t* out_buffer) {{")
-        w("    uint8_t* write_cursor = out_buffer;")
+        if msg.fields:
+            w(f"inline void encode_fast(const {msg.name}& message, uint8_t* out_buffer) {{")
+        else:
+            w(f"inline void encode_fast([[maybe_unused]] const {msg.name}& message, uint8_t* out_buffer) {{")
+        if msg.fields:
+            w("    uint8_t* write_cursor = out_buffer;")
+        else:
+            w("    [[maybe_unused]] uint8_t* write_cursor = out_buffer;")
         for field in msg.fields:
             self._emit_encode_fast_field(field, w, enum_names)
         w("}")
@@ -646,8 +652,12 @@ class CppGenerator:
         else:
             w("    bytes_needed = encoded_size(message);")
             w("    if (out_size < bytes_needed) { bytes_written = 0; return false; }")
-        w("    uint8_t* write_cursor = out_buffer;")
-        w("    std::size_t bytes_remaining = out_size;")
+        if msg.fields:
+            w("    uint8_t* write_cursor = out_buffer;")
+            w("    std::size_t bytes_remaining = out_size;")
+        else:
+            w("    [[maybe_unused]] uint8_t* write_cursor = out_buffer;")
+            w("    [[maybe_unused]] std::size_t bytes_remaining = out_size;")
         for field in msg.fields:
             self._emit_encode_field(field, w)
         w("    bytes_written = static_cast<std::size_t>(write_cursor - out_buffer);")
@@ -815,7 +825,10 @@ class CppGenerator:
     def _emit_decode_view_impl(self, msg: MessageDecl, w):
         name = msg.name
         requires_arena = self._message_requires_arena(msg)
-        w(f"inline bool decode_{name}({name}View& out, const uint8_t*& read_cursor, std::size_t& bytes_remaining, [[maybe_unused]] pubsub_itc_fw::BumpAllocator& decode_arena, [[maybe_unused]] std::size_t& arena_bytes_needed) {{")  # pylint: disable=line-too-long
+        if msg.fields:
+            w(f"inline bool decode_{name}({name}View& out, const uint8_t*& read_cursor, std::size_t& bytes_remaining, [[maybe_unused]] pubsub_itc_fw::BumpAllocator& decode_arena, [[maybe_unused]] std::size_t& arena_bytes_needed) {{")  # pylint: disable=line-too-long
+        else:
+            w(f"inline bool decode_{name}([[maybe_unused]] {name}View& out, [[maybe_unused]] const uint8_t*& read_cursor, [[maybe_unused]] std::size_t& bytes_remaining, [[maybe_unused]] pubsub_itc_fw::BumpAllocator& decode_arena, [[maybe_unused]] std::size_t& arena_bytes_needed) {{")  # pylint: disable=line-too-long
         if requires_arena:
             w("    bool arena_exhausted = false;")
         for field in msg.fields:
@@ -1018,7 +1031,10 @@ class CppGenerator:
     # ------------------------------------------------------------------
 
     def _emit_skip_impl(self, msg: MessageDecl, w):
-        w(f"inline bool skip_{msg.name}(const uint8_t*& read_cursor, std::size_t& bytes_remaining) {{")
+        if msg.fields:
+            w(f"inline bool skip_{msg.name}(const uint8_t*& read_cursor, std::size_t& bytes_remaining) {{")
+        else:
+            w(f"inline bool skip_{msg.name}([[maybe_unused]] const uint8_t*& read_cursor, [[maybe_unused]] std::size_t& bytes_remaining) {{")
         for field in msg.fields:
             self._emit_skip_field(field, w)
         w("    return true;")

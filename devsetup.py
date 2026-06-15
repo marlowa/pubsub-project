@@ -6,7 +6,7 @@ Equivalent to running:
   python3 build.py  [build options]
   python3 release.py
   python3 devenv.py --env environments/dev.toml stop
-  python3 deploy.py --artefact build/release/pubsub-<ver>-<hash>.tar.gz \\
+  python3 deploy.py --artefact release/pubsub-<ver>-<hash>.tar.gz \\
                     --env environments/dev.toml  [deploy options]
 
 The stop step prevents "Text file busy" errors when overwriting binaries that
@@ -32,13 +32,14 @@ def _run(command: list[str], step: str) -> None:
     print(f"\n{'='*60}")
     print(step)
     print('='*60)
+    sys.stdout.flush()
     result = subprocess.run(command)
     if result.returncode != 0:
         sys.exit(result.returncode)
 
 
 def _find_tarball() -> Path:
-    release_dir = _SCRIPT_DIR / "build" / "release"
+    release_dir = _SCRIPT_DIR / "release"
     tarballs = sorted(
         release_dir.glob("pubsub-*.tar.gz"),
         key=lambda p: p.stat().st_mtime,
