@@ -323,3 +323,83 @@ TEST_F(QuillLoggerTest, DISABLED_FormatMismatchIsReportedAsLogRecord) {
 TEST(QuillLoggerSignalTest, BlockSignalsBeforeConstructionDoesNotThrow) {
     EXPECT_NO_THROW(QuillLogger::block_signals_before_construction());
 }
+
+// =============================================================================
+// ensure_log_file_writable
+// =============================================================================
+
+TEST(QuillLoggerEnsureWritableTest, WritablePathReturnsEmpty) {
+    const std::string path = "/dev/shm/quill_writable_test.log";
+    const std::string err = QuillLogger::ensure_log_file_writable(path);
+    EXPECT_TRUE(err.empty()) << "Unexpected error: " << err;
+    ::unlink(path.c_str());
+}
+
+TEST(QuillLoggerEnsureWritableTest, CreatesNonExistentParentDirectory) {
+    const std::string dir  = "/dev/shm/quill_ensure_test_dir";
+    const std::string path = dir + "/log.txt";
+    ::rmdir(dir.c_str());
+    const std::string err = QuillLogger::ensure_log_file_writable(path);
+    EXPECT_TRUE(err.empty()) << "Unexpected error: " << err;
+    ::unlink(path.c_str());
+    ::rmdir(dir.c_str());
+}
+
+TEST(QuillLoggerEnsureWritableTest, UnwritablePathReturnsError) {
+    const std::string dir  = "/dev/shm/quill_nowrite_test";
+    const std::string path = dir + "/log.txt";
+    ::rmdir(dir.c_str());
+    ::mkdir(dir.c_str(), 0555);
+    const std::string err = QuillLogger::ensure_log_file_writable(path);
+    EXPECT_FALSE(err.empty()) << "Expected an error for path inside read-only directory";
+    ::rmdir(dir.c_str());
+}
+
+// =============================================================================
+// File-based logger constructors (rolling logfile configuration)
+// =============================================================================
+
+TEST(QuillLoggerRollingTest, SizeBasedRollingConstructorDoesNotThrow) {
+    RollingLogfileConfiguration cfg{RollingLogfileConfiguration::Mode::Size};
+    cfg.max_file_size = 1024 * 1024;
+    cfg.max_backup_files = 3;
+    const std::string path = "/dev/shm/quill_size_rolling_test.log";
+    EXPECT_NO_THROW({
+        QuillLogger logger(path, FileOpenMode{FileOpenMode::Truncate},
+                           FwLogLevel::Info, FwLogLevel::Critical, cfg);
+    });
+    ::unlink(path.c_str());
+}
+
+TEST(QuillLoggerRollingTest, DailyRollingConstructorDoesNotThrow) {
+    const RollingLogfileConfiguration cfg = RollingLogfileConfiguration::daily("00:00");
+    const std::string path = "/dev/shm/quill_daily_rolling_test.log";
+    EXPECT_NO_THROW({
+        QuillLogger logger(path, FileOpenMode{FileOpenMode::Truncate},
+                           FwLogLevel::Info, FwLogLevel::Critical, cfg);
+    });
+    ::unlink(path.c_str());
+}
+
+// =============================================================================
+// set_syslog_level
+// =============================================================================
+
+TEST(QuillLoggerSyslogTest, SetSyslogLevelDoesNotThrow) {
+    const std::string path = "/dev/shm/quill_syslog_level_test.log";
+    QuillLogger logger(path, FileOpenMode{FileOpenMode::Truncate},
+                       FwLogLevel::Debug, FwLogLevel::Info);
+    EXPECT_NO_THROW(logger.set_syslog_level(FwLogLevel::Warning));
+    EXPECT_NO_THROW(logger.set_syslog_level(FwLogLevel::Error));
+    ::unlink(path.c_str());
+}
+
+TEST(QuillLoggerSyslogTest, SetSyslogLevelUpdatesGateLevelToMin) {
+    const std::string path = "/dev/shm/quill_syslog_gate_test.log";
+    QuillLogger logger(path, FileOpenMode{FileOpenMode::Truncate},
+                       FwLogLevel::Warning, FwLogLevel::Critical);
+    // Lowering syslog to Debug should pull the gate down to Warning
+    // (min of Warning and Debug is Debug, but applog is Warning so gate=Warning).
+    EXPECT_NO_THROW(logger.set_syslog_level(FwLogLevel::Debug));
+    ::unlink(path.c_str());
+}

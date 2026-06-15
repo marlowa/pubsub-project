@@ -28,6 +28,7 @@ add_executable(pubsub_itc_fw_tests
     TcpAcceptorTest.cpp
     TcpConnectorTest.cpp
     TcpSocketTest.cpp
+    TlsContextTest.cpp
     TlsStateTest.cpp
     ThreadWithJoinTimeoutTest.cpp
     TimerTest.cpp
