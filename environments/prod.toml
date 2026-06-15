@@ -185,7 +185,6 @@ network_listen_host                   = "0.0.0.0"
 network_er_listen_host                = "0.0.0.0"
 authentication_service_host           = "auth-primary.exchange.internal"    # REPLACE
 authentication_service_secondary_host = "auth-secondary.exchange.internal"  # REPLACE
-authentication_service_scram_password = "REPLACE_WITH_GATEWAY_SCRAM_PASSWORD"
 sequencer_primary_host                = "sequencer-primary.exchange.internal"    # REPLACE
 sequencer_secondary_host              = "sequencer-secondary.exchange.internal"  # REPLACE
 

@@ -11,7 +11,11 @@ Steps (in order):
      TOML (unless --skip-certs).
   4. Create or update the PostgreSQL database via db/create_db.py
      (unless --skip-db).
-  5. Export SCRAM credentials from the database to credentials.toml via
+  5. Provision FIX client SCRAM credentials from [[fix_credentials]] entries in
+     the env TOML.  Derives fresh SCRAM material from the configured plaintext
+     password and writes it directly into the database, making this step the
+     single authoritative source for those credentials.
+  6. Export SCRAM credentials from the database to credentials.toml via
      db/export_credentials.py.
 
 Usage:
@@ -28,7 +32,11 @@ except ImportError:
         sys.exit("error: Python 3.11+ or the 'tomli' package is required to parse TOML")
 
 import argparse
+import hashlib
+import hmac
+import os
 import re
+import secrets
 import string
 import subprocess
 import sys
@@ -177,6 +185,130 @@ def generate_tls_certs(env: dict, install_dir: Path, force: bool) -> None:
         workdir.mkdir(parents=True, exist_ok=True)
         _generate_self_signed_cert(cert_path, key_path)
         print(f"  generated: {cert_path.relative_to(install_dir)}")
+
+    _generate_fix_client_truststore(env, install_dir, force)
+
+
+def _generate_fix_client_truststore(env: dict, install_dir: Path, force: bool) -> None:
+    """Import the order_gateway FIX TLS cert into a JKS truststore for fix-test-client."""
+    gateway_tls = env.get("tls", {}).get("order_gateway")
+    if gateway_tls is None:
+        return
+
+    gateway_comp = env.get("components", {}).get("order_gateway")
+    client_comp  = env.get("components", {}).get("fix_test_client")
+    if gateway_comp is None or client_comp is None:
+        return
+
+    cert_path = (install_dir / gateway_comp["workdir"]).resolve() / gateway_tls.get("cert", "")
+    if not cert_path.exists():
+        return
+
+    jks_dir  = (install_dir / client_comp["workdir"]).resolve() / "config"
+    jks_path = jks_dir / "fix_gateway_trust.jks"
+
+    if not force and jks_path.exists():
+        print(f"  fix_gateway_trust.jks: already exists — skipping (use --force-certs to regenerate)")
+        return
+
+    jks_dir.mkdir(parents=True, exist_ok=True)
+    if jks_path.exists():
+        jks_path.unlink()
+
+    subprocess.run(
+        [
+            "keytool", "-importcert", "-trustcacerts", "-noprompt",
+            "-file",      str(cert_path),
+            "-keystore",  str(jks_path),
+            "-storepass", "pubsub_dev",
+            "-alias",     "fix_gateway",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    print(f"  generated: {jks_path.relative_to(install_dir)}")
+
+
+# ── FIX credential provisioning ───────────────────────────────────────────────
+
+def _derive_scram(password: str, iterations: int = 4096) -> dict:
+    """Derive SCRAM-SHA-256 material from a plaintext password.
+
+    Returns a dict with stored_key, server_key, salt (all hex strings) and
+    iterations.  A fresh random salt is generated on each call so the output
+    changes every deploy; that is intentional -- the auth service is the source
+    of truth and always receives authoritative values from this step.
+    """
+    salt = secrets.token_bytes(16)
+    salted = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, iterations, dklen=32)
+    client_key = hmac.new(salted, b'Client Key', hashlib.sha256).digest()
+    stored_key = hashlib.sha256(client_key).hexdigest()
+    server_key = hmac.new(salted, b'Server Key', hashlib.sha256).digest().hex()
+    return {
+        'stored_key': stored_key,
+        'server_key': server_key,
+        'salt':       salt.hex(),
+        'iterations': iterations,
+    }
+
+
+def provision_fix_credentials(env: dict) -> None:
+    """Provision FIX client SCRAM credentials from [[fix_credentials]] in the env TOML.
+
+    For each entry, derives fresh SCRAM material from the plaintext password and
+    writes it to the database.  The subsequent export_credentials.py step will
+    then export correct values regardless of what was in the database before.
+
+    This step is the single authoritative source for FIX client credentials: the
+    plaintext password lives in the env TOML and the database always reflects it
+    after a deploy.
+    """
+    entries = env.get("fix_credentials", [])
+    if not entries:
+        print("  no [[fix_credentials]] entries -- skipping")
+        return
+
+    db       = env["db"]
+    host     = db["host"]
+    port     = db["port"]
+    name     = db["name"]
+    user     = db["user"]
+    prefix   = db.get("table_prefix", "pubsub_")
+    app_pass = os.environ.get("PUBSUB_APP_DB_PASSWORD", "pubsub_dev")
+
+    for entry in entries:
+        comp_id  = entry.get("comp_id", "")
+        password = entry.get("password", "")
+        if not comp_id or not password:
+            sys.exit("error: [[fix_credentials]] entry is missing comp_id or password")
+
+        scram = _derive_scram(password)
+        sql = (
+            f"UPDATE {prefix}comp_id "
+            f"SET stored_key='{scram['stored_key']}', "
+            f"    server_key='{scram['server_key']}', "
+            f"    salt='{scram['salt']}', "
+            f"    iterations={scram['iterations']} "
+            f"WHERE comp_id='{comp_id}';"
+        )
+        result = subprocess.run(
+            ["psql", "--host", host, "--port", str(port),
+             "--username", user, "--dbname", name,
+             "--command", sql],
+            capture_output=True, text=True,
+            env={**os.environ, "PGPASSWORD": app_pass},
+        )
+        if result.returncode != 0:
+            sys.exit(
+                f"error: failed to provision credential for '{comp_id}':\n"
+                f"  {result.stderr.strip()}"
+            )
+        if "UPDATE 0" in result.stdout:
+            sys.exit(
+                f"error: no row found for comp_id='{comp_id}' -- "
+                f"create the comp_id via the admin service before deploying"
+            )
+        print(f"  provisioned: {comp_id}")
 
 
 # ── Database setup ────────────────────────────────────────────────────────────
@@ -346,12 +478,16 @@ def main() -> None:
         generate_tls_certs(env, install_dir, force=args.force_certs)
         print()
 
-    # Steps 4 & 5: database
+    # Steps 4-6: database and credentials
     if not args.skip_db:
         if not args.skip_create_db:
             print("=== creating database ===")
             run_create_db(env, args.drop_db, args.sudo_postgres, args.liquibase_contexts)
             print()
+
+        print("=== provisioning FIX credentials ===")
+        provision_fix_credentials(env)
+        print()
 
         print("=== exporting credentials ===")
         run_export_credentials(env, install_dir)

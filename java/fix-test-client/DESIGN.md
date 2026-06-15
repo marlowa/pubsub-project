@@ -155,6 +155,37 @@ No Spring. No Freemarker. HTML pages are plain static files served from
 
 ---
 
+## TLS Version Constraint
+
+The gateway's TLS listener is capped at **TLS 1.2** even though Java 21 and
+OpenSSL 3.0 both support TLS 1.3. The reason is a fundamental incompatibility
+in Apache MINA 2.1.x's `SslFilter` (tracked as
+[DIRMINA-1149](https://issues.apache.org/jira/browse/DIRMINA-1149), fixed in
+MINA 2.2.0).
+
+In TLS 1.3, after the handshake the server sends one or more `NewSessionTicket`
+records. When `SSLEngine.unwrap()` processes these records it can return
+`HandshakeStatus.NEED_WRAP`, indicating the engine needs to write a response
+before it can continue delivering application data. MINA 2.1.x does not loop
+`unwrap/wrap` correctly in this state: it stops reading from the socket and
+never delivers the server's subsequent application data (the FIX Logon
+response) to the QuickFIX/J session layer. The result is that the FIX client
+times out with "Timed out waiting for logon response" on every connection
+attempt.
+
+The cap is applied in `TlsContext::apply_common_tls_options` in
+`libraries/pubsub_itc_fw/src/TlsContext.cpp`:
+
+```cpp
+SSL_CTX_set_max_proto_version(context, TLS1_2_VERSION);
+```
+
+TLS 1.2 with `ECDHE-RSA-AES256-GCM-SHA384` is still strong for a dev/POC
+environment. To move to TLS 1.3, upgrade QuickFIX/J to a version that depends
+on MINA 2.2.0 or later, then remove the `set_max_proto_version` call.
+
+---
+
 ## Project Structure
 
 ```

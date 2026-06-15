@@ -19,8 +19,11 @@
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
+#include <pubsub_itc_fw/FwLogLevel.hpp>
+#include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/MirroredBuffer.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
+#include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/StringUtils.hpp>
 #include <pubsub_itc_fw/TcpSocket.hpp>
 #include <pubsub_itc_fw/TlsContext.hpp>
@@ -47,8 +50,9 @@ std::string collect_openssl_errors() {
 } // un-named namespace
 
 TlsRawBytesProtocolHandler::TlsRawBytesProtocolHandler(ConnectionID connection_id, TcpSocket& socket, ApplicationThread& target_thread, int64_t buffer_capacity,
-                                                       TlsContext& tls_context, bool is_server)
-    : connection_id_(connection_id), socket_(socket), target_thread_(target_thread), plaintext_buffer_(std::make_shared<MirroredBuffer>(buffer_capacity)) {
+                                                       TlsContext& tls_context, bool is_server, QuillLogger& logger)
+    : connection_id_(connection_id), socket_(socket), target_thread_(target_thread), logger_(logger),
+      plaintext_buffer_(std::make_shared<MirroredBuffer>(buffer_capacity)) {
     tls_state_.rbio = BIO_new(BIO_s_mem());
     if (tls_state_.rbio == nullptr) {
         throw PreconditionAssertion("TlsRawBytesProtocolHandler: BIO_new for rbio failed", __FILE__, __LINE__);
@@ -187,15 +191,25 @@ std::tuple<bool, std::string> TlsRawBytesProtocolHandler::flush_wbio() {
     // Drain all bytes from the write BIO into the outbound buffer.
     uint8_t temp_buffer[encrypted_read_buffer_size];
     int bytes_drained;
+    size_t total_drained = 0;
     while ((bytes_drained = BIO_read(tls_state_.wbio, temp_buffer, sizeof(temp_buffer))) > 0) {
         tls_state_.pending_outbound.insert(tls_state_.pending_outbound.end(), temp_buffer, temp_buffer + bytes_drained);
+        total_drained += static_cast<size_t>(bytes_drained);
     }
+
+    const size_t total_pending = tls_state_.pending_outbound.size() - tls_state_.pending_outbound_offset;
+    PUBSUB_LOG(logger_, FwLogLevel::Debug,
+               "TlsRawBytesProtocolHandler::flush_wbio conn={}: drained {} bytes from wbio; {} bytes pending to send",
+               connection_id_.get_value(), total_drained, total_pending);
 
     // Attempt a non-blocking send of all pending bytes.
     while (tls_state_.has_pending_outbound()) {
         const uint8_t* data = tls_state_.pending_outbound.data() + tls_state_.pending_outbound_offset;
         const size_t size = tls_state_.pending_outbound.size() - tls_state_.pending_outbound_offset;
         const ssize_t sent = ::send(socket_.get_file_descriptor(), data, size, MSG_DONTWAIT | MSG_NOSIGNAL);
+        PUBSUB_LOG(logger_, FwLogLevel::Debug,
+                   "TlsRawBytesProtocolHandler::flush_wbio conn={}: send({} bytes) returned {} (errno={})",
+                   connection_id_.get_value(), size, sent, errno);
         if (sent == -1) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 return {true, ""};
@@ -226,6 +240,9 @@ std::tuple<bool, std::string> TlsRawBytesProtocolHandler::send_prebuilt(Expandab
     }
 
     const int result = SSL_write(tls_state_.ssl, chunk_ptr, static_cast<int>(total_bytes));
+    PUBSUB_LOG(logger_, FwLogLevel::Debug,
+               "TlsRawBytesProtocolHandler::send_prebuilt conn={}: SSL_write({} bytes) returned {}",
+               connection_id_.get_value(), total_bytes, result);
 
     // The plaintext has been consumed by SSL_write regardless of outcome.
     // OpenSSL copies it into its internal record buffer, so we release the

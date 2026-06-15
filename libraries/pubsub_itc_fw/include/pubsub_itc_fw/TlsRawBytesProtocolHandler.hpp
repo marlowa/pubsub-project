@@ -12,6 +12,7 @@
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/MirroredBuffer.hpp>
 #include <pubsub_itc_fw/ProtocolHandlerInterface.hpp>
+#include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/TcpSocket.hpp>
 #include <pubsub_itc_fw/TlsContext.hpp>
 #include <pubsub_itc_fw/TlsState.hpp>
@@ -71,7 +72,8 @@ public:
      *                            client-side (SSL_connect path).
      */
     TlsRawBytesProtocolHandler(ConnectionID connection_id, TcpSocket& socket, ApplicationThread& target_thread,
-                               int64_t buffer_capacity, TlsContext& tls_context, bool is_server);
+                               int64_t buffer_capacity, TlsContext& tls_context, bool is_server,
+                               QuillLogger& logger);
 
     /**
      * @brief Services a readable socket event (EPOLLIN).
@@ -200,6 +202,7 @@ private:
     ConnectionID connection_id_;
     TcpSocket& socket_;
     ApplicationThread& target_thread_;
+    QuillLogger& logger_;
 
     TlsState tls_state_;
     std::shared_ptr<MirroredBuffer> plaintext_buffer_;

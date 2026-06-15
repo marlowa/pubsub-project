@@ -43,10 +43,22 @@ user = "pubsub_app"
 [ha]
 enabled = true
 
+# ── FIX client credentials ────────────────────────────────────────────────────
+# Provisioned into the auth service database at deploy time.  deploy.py derives
+# fresh SCRAM-SHA-256 material from each plaintext password and writes it
+# directly to the database, making this the single authoritative source.
+# The subsequent export_credentials.py step then exports correct values.
+# In production, inject the password via an environment variable or secrets
+# manager rather than storing it here in plain text.
+
+[[fix_credentials]]
+comp_id  = "APM001"
+password = "stubpassword"
+
 # ── TLS certificates ──────────────────────────────────────────────────────────
-# Currently only the authentication service admin channel uses TLS.
-# As TLS is added to other inter-component channels, add a [tls.<name>]
-# section here.
+# Each [tls.<name>] section generates a self-signed cert/key pair during deploy.
+# The section name must match a key in [components.*]; cert and key paths are
+# resolved relative to that component's workdir in the install tree.
 #
 # Paths are relative to each component's working directory (its
 # etc/<component>/ directory within the install tree), matching the relative
@@ -67,6 +79,11 @@ ca   = ""
 [tls.auth_service_secondary]
 cert = "admin.crt"
 key  = "admin.key"
+ca   = ""
+
+[tls.order_gateway]
+cert = "fix_gateway.crt"
+key  = "fix_gateway.key"
 ca   = ""
 
 # ── Components ────────────────────────────────────────────────────────────────
@@ -233,9 +250,11 @@ network_listen_host                   = "127.0.0.1"
 network_er_listen_host                = "127.0.0.1"
 authentication_service_host           = "127.0.0.1"
 authentication_service_secondary_host = "127.0.0.1"
-authentication_service_scram_password = "stubpassword"
 sequencer_primary_host                = "127.0.0.1"
 sequencer_secondary_host              = "127.0.0.1"
+fix_tls_enabled                       = true
+fix_tls_cert                          = "fix_gateway.crt"
+fix_tls_key                           = "fix_gateway.key"
 fix_capture_file                      = "fix_capture.bin"
 fix_capture_ring_bytes                = 67108864
 

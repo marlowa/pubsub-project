@@ -30,8 +30,7 @@ public class Main {
         logBuffer.start();
 
         FixApplication fixApplication = new FixApplication();
-        FixEngine fixEngine = new FixEngine(config.sessionConfig(), fixApplication);
-        fixEngine.start();
+        FixEngine fixEngine = new FixEngine(config, fixApplication);
 
         BlotterStore blotterStore = new BlotterStore();
         fixApplication.setInboundListener(blotterStore::addInbound);
@@ -49,7 +48,7 @@ public class Main {
         SessionHandler sessionHandler = new SessionHandler(fixEngine);
         ScriptHandler scriptHandler = new ScriptHandler(scriptRunner, config.scriptsDir());
         MessagesHandler messagesHandler = new MessagesHandler(fixEngine, blotterStore);
-        ConfigHandler configHandler = new ConfigHandler(configPath, config.sessionConfig());
+        ConfigHandler configHandler = new ConfigHandler(configPath);
         LogHandler logHandler = new LogHandler(logBuffer);
 
         Javalin app = Javalin.create(cfg -> {

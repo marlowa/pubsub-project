@@ -26,25 +26,32 @@ public class SessionHandler {
     public void getStatus(Context ctx) {
         SessionStatus status = fixEngine.getStatus();
         Map<String, Object> body = new java.util.LinkedHashMap<>();
-        body.put("connected", status.connected());
-        body.put("loggedOn", status.loggedOn());
-        body.put("senderCompId", status.senderCompId());
-        body.put("targetCompId", status.targetCompId());
-        body.put("host", status.host());
-        body.put("port", status.port());
-        body.put("logonTime", status.logonTime() != null ? TIMESTAMP.format(status.logonTime()) : "");
-        body.put("startingSeqNum", status.startingSeqNum());
+        body.put("connected",         status.connected());
+        body.put("loggedOn",          status.loggedOn());
+        body.put("senderCompId",      status.senderCompId());
+        body.put("targetCompId",      status.targetCompId());
+        body.put("host",              status.host());
+        body.put("port",              status.port());
+        body.put("logonTime",         status.logonTime() != null ? TIMESTAMP.format(status.logonTime()) : "");
+        body.put("startingSeqNum",    status.startingSeqNum());
         body.put("nextOutgoingSeqNum", status.nextOutgoingSeqNum());
         body.put("nextIncomingSeqNum", status.nextIncomingSeqNum());
-        body.put("lastError", status.lastError());
+        body.put("lastError",         status.lastError());
         ctx.json(body);
     }
 
     public void logon(Context ctx) {
         String senderCompId = ctx.formParam("senderCompId");
-        String overrideSeqStr = ctx.formParam("overrideSeqNum");
-        boolean overrideSeq = "true".equals(ctx.formParam("overrideSeq"));
+        String password     = ctx.formParam("password");
+        boolean useTls      = "true".equals(ctx.formParam("useTls"));
 
+        if (password == null || password.isEmpty()) {
+            ctx.status(400).json(Map.of("ok", false, "error", "Password is required"));
+            return;
+        }
+
+        String overrideSeqStr = ctx.formParam("overrideSeqNum");
+        boolean overrideSeq   = "true".equals(ctx.formParam("overrideSeq"));
         if (overrideSeq && overrideSeqStr != null && !overrideSeqStr.isBlank()) {
             try {
                 fixEngine.setOverrideSeqNum(Integer.parseInt(overrideSeqStr.trim()));
@@ -52,7 +59,12 @@ public class SessionHandler {
             }
         }
 
-        fixEngine.logon();
+        try {
+            fixEngine.logon(senderCompId, password, useTls);
+        } catch (Exception e) {
+            ctx.status(500).json(Map.of("ok", false, "error", e.getMessage()));
+            return;
+        }
         ctx.json(Map.of("ok", true));
     }
 
@@ -82,11 +94,11 @@ public class SessionHandler {
                 ? minutes + " minutes " + seconds + " seconds"
                 : seconds + " seconds";
         ctx.json(Map.of(
-                "present", true,
+                "present",     true,
                 "senderCompId", ls.senderCompId(),
-                "startTime", TIMESTAMP.format(ls.startTime()),
-                "endTime", TIMESTAMP.format(ls.endTime()),
-                "duration", duration
+                "startTime",   TIMESTAMP.format(ls.startTime()),
+                "endTime",     TIMESTAMP.format(ls.endTime()),
+                "duration",    duration
         ));
     }
 

@@ -9,6 +9,7 @@ import quickfix.Message;
 import quickfix.SessionID;
 import quickfix.UnsupportedMessageType;
 import quickfix.field.MsgType;
+import quickfix.field.Password;
 import quickfix.field.Text;
 
 import java.util.concurrent.BlockingQueue;
@@ -25,6 +26,7 @@ public class FixApplication implements Application {
     private volatile Runnable onLogout = () -> { };
     private volatile String lastLogoutReason = "";
     private volatile boolean sessionWasEstablished = false;
+    private volatile String pendingPassword = null;
 
     @Override
     public void onCreate(SessionID sessionId) {
@@ -51,6 +53,15 @@ public class FixApplication implements Application {
 
     @Override
     public void toAdmin(Message message, SessionID sessionId) {
+        try {
+            if (MsgType.LOGON.equals(message.getHeader().getString(MsgType.FIELD))) {
+                String password = pendingPassword;
+                if (password != null && !password.isEmpty()) {
+                    message.setField(new Password(password));
+                }
+            }
+        } catch (FieldNotFound ignored) {
+        }
     }
 
     @Override
@@ -99,5 +110,9 @@ public class FixApplication implements Application {
 
     public void clearLastLogoutReason() {
         lastLogoutReason = "";
+    }
+
+    public void setPendingPassword(String password) {
+        this.pendingPassword = password;
     }
 }

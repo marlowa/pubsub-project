@@ -14,6 +14,7 @@
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/NetworkEndpointConfiguration.hpp>
 #include <pubsub_itc_fw/ProtocolType.hpp>
+#include <pubsub_itc_fw/TlsListenerConfiguration.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 
@@ -38,9 +39,20 @@ OrderGateway::OrderGateway(const OrderGatewayConfiguration& config, std::unique_
 
     reactor_ = std::make_unique<pubsub_itc_fw::Reactor>(reactor_configuration_, service_registry_, *logger_);
 
-    // Inbound RawBytes listener for FIX client connections.
-    reactor_->register_inbound_listener(pubsub_itc_fw::NetworkEndpointConfiguration{config_.listen_host, config_.listen_port}, pubsub_itc_fw::ThreadID{1},
-                                        pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::RawBytes}, config_.raw_buffer_capacity);
+    // Inbound FIX client listener: TLS when configured, plain TCP otherwise.
+    if (config_.fix_tls_enabled) {
+        pubsub_itc_fw::TlsListenerConfiguration tls_config;
+        tls_config.certificate_path = config_.fix_tls_cert_path;
+        tls_config.private_key_path = config_.fix_tls_key_path;
+        reactor_->register_inbound_tls_listener(
+            pubsub_itc_fw::NetworkEndpointConfiguration{config_.listen_host, config_.listen_port},
+            pubsub_itc_fw::ThreadID{1}, config_.raw_buffer_capacity, tls_config);
+    } else {
+        reactor_->register_inbound_listener(
+            pubsub_itc_fw::NetworkEndpointConfiguration{config_.listen_host, config_.listen_port},
+            pubsub_itc_fw::ThreadID{1},
+            pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::RawBytes}, config_.raw_buffer_capacity);
+    }
 
     // Inbound PDU listener for ExecutionReport PDUs from the matching engine.
     // Direct point-to-point connection for now; replace with pub/sub fanout once

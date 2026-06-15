@@ -102,8 +102,24 @@ struct OrderGatewayConfiguration {
     /** @brief TCP port of the secondary authentication service. Only used when ha_enabled=true. */
     uint16_t authentication_service_secondary_port{7071};
 
-    /** @brief SCRAM-SHA-256 password the gateway sends on behalf of connecting FIX clients. */
-    std::string scram_password{"stubpassword"};
+    // ----------------------------------------------------------------
+    // FIX listener TLS
+    //
+    // When fix_tls_enabled is true the FIX listener uses TLS (ProtocolType::TlsRawBytes).
+    // cert_path and key_path are PEM files, resolved relative to the process
+    // working directory (the component's etc/<name>/ directory in the install
+    // tree).  Client certificate verification is not required: FIX clients
+    // authenticate via SCRAM-SHA-256 in the application layer.
+    // ----------------------------------------------------------------
+
+    /** @brief Enable TLS on the inbound FIX listener. */
+    bool fix_tls_enabled{false};
+
+    /** @brief Path to the PEM server certificate for the FIX TLS listener. */
+    std::string fix_tls_cert_path;
+
+    /** @brief Path to the PEM private key for the FIX TLS listener. */
+    std::string fix_tls_key_path;
 
     // ----------------------------------------------------------------
     // FIX session identity

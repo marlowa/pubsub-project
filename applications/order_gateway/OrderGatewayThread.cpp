@@ -550,7 +550,12 @@ void OrderGatewayThread::handle_authentication_challenge(const pubsub_itc_fw::Ev
     const std::vector<uint8_t> auth_message =
         scram_crypto::compute_auth_message(session.client_comp_id, session.scram_client_nonce, server_nonce, salt.data(), salt.size(), iterations);
 
-    const std::vector<uint8_t> salted_password = scram_crypto::pbkdf2_sha256(config_.scram_password, salt.data(), salt.size(), iterations);
+    const std::vector<uint8_t> salted_password = scram_crypto::pbkdf2_sha256(session.client_password, salt.data(), salt.size(), iterations);
+
+    // Zero and release the password as soon as the SCRAM derivation is done.
+    std::fill(session.client_password.begin(), session.client_password.end(), '\0');
+    session.client_password.clear();
+    session.client_password.shrink_to_fit();
 
     const std::vector<uint8_t> client_key = scram_crypto::hmac_sha256(salted_password.data(), salted_password.size(),
                                                                       reinterpret_cast<const uint8_t*>(client_key_label.data()), client_key_label.size());
@@ -654,6 +659,11 @@ void OrderGatewayThread::handle_logon(FixSession& session, const ParsedFixMessag
     // client_comp_id is stored as std::string for use beyond this callback;
     // the implicit conversion from string_view copies the bytes here.
     session.client_comp_id = msg.get(Tag::SenderCompID);
+
+    // Copy tag 554 (Password) while the string_view into the MirroredBuffer is valid.
+    // Never logged: the field is intentionally absent from all log messages.
+    const std::string_view password_view = msg.get(Tag::Password);
+    session.client_password.assign(password_view.data(), password_view.size());
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "OrderGatewayThread: connection {} Logon from SenderCompID='{}' -- initiating SCRAM authentication", session.conn_id.get_value(),
@@ -916,6 +926,13 @@ void OrderGatewayThread::send_fix_to_session(FixSession& session, const FixMessa
                           reinterpret_cast<const uint8_t*>(wire.data()), wire.size(),
                           config_.wall_clock->now_ns());
     }
+    // Diagnostic: log outbound FIX message with SOH replaced by '|' for readability.
+    std::string readable = wire;
+    for (char& c : readable) {
+        if (c == '\x01') c = '|';
+    }
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "OrderGatewayThread: connection {} FIX OUT ({} bytes): {}", session.conn_id.get_value(), wire.size(), readable);
     send_raw(session.conn_id, wire.data(), static_cast<uint32_t>(wire.size()));
 }
 

@@ -60,4 +60,31 @@
         </insert>
     </changeSet>
 
+    <!-- ================================================================
+         test-003  APM001 comp_id
+         SenderCompID used by the fix-test-client Java web app.
+         SCRAM-SHA-256 values derived from password "stubpassword",
+         salt b5516de45039689523734faba0c9454f, 4096 iterations.
+         force_password_change is false — this is a dev test account.
+         ================================================================ -->
+    <changeSet id="v1-test-003-apm001-comp-id" author="pubsub" context="test">
+        <preConditions onFail="MARK_RAN">
+            <sqlCheck expectedResult="0">
+                SELECT COUNT(*) FROM ${tablePrefix}comp_id WHERE comp_id = 'APM001'
+            </sqlCheck>
+        </preConditions>
+        <insert tableName="${tablePrefix}comp_id">
+            <column name="comp_id"               value="APM001"/>
+            <column name="firm_id"               value="TEST"/>
+            <column name="stored_key"            value="81885fdbca54ed3429e2226facc8762f00de7175eda36b45b924e0f38de518d2"/>
+            <column name="server_key"            value="a850b65af2d73e8e8fa3a83b410bf26d6c408962fa1758871cd6e9a37bc53a44"/>
+            <column name="salt"                  value="b5516de45039689523734faba0c9454f"/>
+            <column name="iterations"            valueNumeric="4096"/>
+            <column name="enabled"               valueBoolean="true"/>
+            <column name="force_password_change" valueBoolean="false"/>
+            <column name="locked"                valueBoolean="false"/>
+            <column name="consecutive_failed_logins" valueNumeric="0"/>
+        </insert>
+    </changeSet>
+
 </databaseChangeLog>

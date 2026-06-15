@@ -40,7 +40,6 @@ OrderGatewayConfigurationLoader::load_and_init_logging(const std::string& file_p
         toml.get_required_except("network.listen_host", config.listen_host);
         toml.get_required_except("network.er_listen_host", config.er_listen_host);
         toml.get_required_except("authentication_service.host", config.authentication_service_host);
-        toml.get_required_except("authentication_service.scram_password", config.scram_password);
         toml.get_required_except("fix_session.sender_comp_id", config.sender_comp_id);
         toml.get_required_except("fix_session.default_target_comp_id", config.default_target_comp_id);
         toml.get_required_except("timeouts.logon_timeout", config.logon_timeout);
@@ -138,6 +137,18 @@ OrderGatewayConfigurationLoader::load_and_init_logging(const std::string& file_p
         if (config.command_queue_pool_initial_slabs < 1) {
             throw pubsub_itc_fw::ConfigurationException("OrderGatewayConfigurationLoader: command_queue_pool.initial_slabs must be >= 1, got " +
                                                         std::to_string(config.command_queue_pool_initial_slabs));
+        }
+
+        toml.get_required_except("fix_tls.enabled", config.fix_tls_enabled);
+        if (config.fix_tls_enabled) {
+            toml.get_required_except("fix_tls.cert", config.fix_tls_cert_path);
+            toml.get_required_except("fix_tls.key", config.fix_tls_key_path);
+            if (config.fix_tls_cert_path.empty()) {
+                throw pubsub_itc_fw::ConfigurationException("OrderGatewayConfigurationLoader: fix_tls.cert must not be empty when fix_tls.enabled=true");
+            }
+            if (config.fix_tls_key_path.empty()) {
+                throw pubsub_itc_fw::ConfigurationException("OrderGatewayConfigurationLoader: fix_tls.key must not be empty when fix_tls.enabled=true");
+            }
         }
 
         toml.get_required_except("fix_capture.enabled", config.fix_capture_enabled);

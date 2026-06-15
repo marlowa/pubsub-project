@@ -159,7 +159,7 @@ void InboundConnectionManager::on_accept(InboundListener& listener, ConnectionID
     } else if (listener.configuration.protocol_type == ProtocolType::TlsRawBytes) {
         handler = std::make_unique<TlsRawBytesProtocolHandler>(populated_id, *socket, *target_thread,
                                                                listener.configuration.raw_buffer_capacity,
-                                                               *listener.tls_context, /*is_server=*/true);
+                                                               *listener.tls_context, /*is_server=*/true, logger_);
     } else {
         handler = std::make_unique<PduProtocolHandler>(*socket, *target_thread, inbound_allocator_, logger_, populated_id);
     }
@@ -227,6 +227,21 @@ void InboundConnectionManager::on_data_ready(InboundConnection& conn) {
         } else {
             PUBSUB_LOG(logger_, FwLogLevel::Warning, "InboundConnectionManager::on_data_ready: read backpressure engaged on "
                        "connection {} from '{}' -- EPOLLIN deregistered", id.get_value(), peer_desc);
+        }
+    } else if (conn.handler()->has_pending_send()) {
+        // flush_wbio() left unsent ciphertext (e.g. EAGAIN during TLS handshake).
+        // Arm EPOLLOUT so continue_send() is triggered when the socket drains.
+        // Without this, any subsequent SendRaw command stashes itself in pending_send_
+        // and is never retried because EPOLLOUT never fires.
+        const int fd = conn.get_fd();
+        epoll_event ev{};
+        ev.events = EPOLLIN | EPOLLOUT | EPOLLERR;
+        ev.data.fd = fd;
+        if (::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, fd, &ev) == -1) {
+            PUBSUB_LOG(logger_, FwLogLevel::Error,
+                       "InboundConnectionManager::on_data_ready: epoll_ctl MOD (arm EPOLLOUT) failed "
+                       "for connection from '{}': {}",
+                       peer_desc, StringUtils::get_errno_string());
         }
     }
 }

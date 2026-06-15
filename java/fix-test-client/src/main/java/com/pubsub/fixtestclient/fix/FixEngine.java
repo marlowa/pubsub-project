@@ -1,5 +1,6 @@
 package com.pubsub.fixtestclient.fix;
 
+import com.pubsub.fixtestclient.Config;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import quickfix.ConfigError;
@@ -9,7 +10,7 @@ import quickfix.SessionID;
 import quickfix.SessionNotFound;
 import quickfix.SessionSettings;
 import quickfix.SocketInitiator;
-import java.io.FileInputStream;
+
 import java.io.IOException;
 import java.time.Instant;
 
@@ -17,7 +18,7 @@ public class FixEngine {
 
     private static final Logger log = LoggerFactory.getLogger(FixEngine.class);
 
-    private final String sessionConfigPath;
+    private final Config config;
     private final FixApplication fixApplication;
     private SocketInitiator initiator;
     private SessionID sessionId;
@@ -26,23 +27,22 @@ public class FixEngine {
     private volatile int startingSeqNum;
     private volatile Integer overrideSeqNum;
 
-    public FixEngine(String sessionConfigPath, FixApplication fixApplication) {
-        this.sessionConfigPath = sessionConfigPath;
+    public FixEngine(Config config, FixApplication fixApplication) {
+        this.config = config;
         this.fixApplication = fixApplication;
         fixApplication.setOnLogon(this::handleLogon);
         fixApplication.setOnLogout(this::handleLogout);
     }
 
-    public synchronized void start() throws ConfigError, IOException {
-        if (initiator != null) {
-            return;
-        }
-        SessionSettings settings;
-        try (FileInputStream stream = new FileInputStream(sessionConfigPath)) {
-            settings = new SessionSettings(stream);
-        }
-        var storeFactory = new quickfix.FileStoreFactory(settings);
-        var logFactory = new quickfix.FileLogFactory(settings);
+    public synchronized void logon(String compId, String password, boolean useTls)
+            throws ConfigError, IOException {
+        stopInitiator();
+
+        SessionSettings settings = buildSettings(compId, useTls);
+        fixApplication.setPendingPassword(password);
+
+        var storeFactory   = new quickfix.FileStoreFactory(settings);
+        var logFactory     = new MaskingLogFactory(new quickfix.FileLogFactory(settings));
         var messageFactory = new quickfix.DefaultMessageFactory();
         initiator = new SocketInitiator(fixApplication, storeFactory, settings, logFactory, messageFactory);
         initiator.start();
@@ -52,21 +52,12 @@ public class FixEngine {
             break;
         }
         log.info("FIX initiator started, session: {}", sessionId);
-    }
 
-    public synchronized void stop() {
-        if (initiator != null) {
-            initiator.stop();
-            initiator = null;
-            sessionId = null;
-        }
-    }
-
-    public void logon() {
         if (overrideSeqNum != null) {
             setNextOutgoingSeqNum(overrideSeqNum);
             overrideSeqNum = null;
         }
+
         Session session = getSession();
         if (session != null) {
             session.logon();
@@ -74,6 +65,7 @@ public class FixEngine {
     }
 
     public void logout() {
+        fixApplication.setPendingPassword(null);
         Session session = getSession();
         if (session != null) {
             session.logout();
@@ -89,6 +81,10 @@ public class FixEngine {
                 log.warn("Disconnect error", e);
             }
         }
+    }
+
+    public synchronized void stop() {
+        stopInitiator();
     }
 
     public boolean send(Message message) {
@@ -152,10 +148,10 @@ public class FixEngine {
         }
 
         int nextOut = 0;
-        int nextIn = 0;
+        int nextIn  = 0;
         try {
             nextOut = session.getExpectedSenderNum();
-            nextIn = session.getExpectedTargetNum();
+            nextIn  = session.getExpectedTargetNum();
         } catch (Exception ignored) {
         }
 
@@ -187,6 +183,7 @@ public class FixEngine {
 
     private void handleLogon() {
         logonTime = Instant.now();
+        fixApplication.setPendingPassword(null);
         Session session = getSession();
         if (session != null) {
             try {
@@ -199,5 +196,44 @@ public class FixEngine {
 
     private void handleLogout() {
         logonTime = null;
+    }
+
+    private synchronized void stopInitiator() {
+        if (initiator != null) {
+            initiator.stop();
+            initiator = null;
+            sessionId = null;
+        }
+    }
+
+    private SessionSettings buildSettings(String compId, boolean useTls) {
+        SessionSettings settings = new SessionSettings();
+
+        settings.setString("ConnectionType",          "initiator");
+        settings.setString("HeartBtInt",              "10");
+        settings.setString("SenderCompID",            compId);
+        settings.setString("TargetCompID",            config.targetCompId());
+        settings.setString("TransportDataDictionary", "FIXT11.xml");
+        settings.setString("AppDataDictionary",       "FIX50SP2.xml");
+        settings.setString("DefaultApplVerID",        "FIX.5.0SP2");
+        settings.setString("FileStorePath",           "data/sessions");
+        settings.setString("FileLogPath",             "logs/fix");
+        settings.setString("ResetOnLogon",            "Y");
+        settings.setString("ReconnectInterval",       "5");
+        settings.setString("StartTime",               "00:00:00");
+        settings.setString("EndTime",                 "00:00:00");
+
+        SessionID sid = new SessionID("FIXT.1.1", compId, config.targetCompId());
+        settings.setString(sid, "BeginString",       "FIXT.1.1");
+        settings.setString(sid, "SocketConnectHost", config.gatewayHost());
+        settings.setString(sid, "SocketConnectPort", String.valueOf(config.gatewayPort()));
+
+        if (useTls) {
+            settings.setString(sid, "SocketUseSSL",            "Y");
+            settings.setString(sid, "SocketTrustStore",         config.trustStorePath());
+            settings.setString(sid, "SocketTrustStorePassword", config.trustStorePassword());
+        }
+
+        return settings;
     }
 }

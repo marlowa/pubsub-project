@@ -17,10 +17,6 @@
     <div class="config-file-label">app.toml</div>
     <hr style="border:none; border-top:1px solid #bbb; margin-bottom:6px;">
     <pre id="app-toml" class="config-file-content"></pre>
-
-    <div class="config-file-label" style="margin-top:18px;">session.cfg</div>
-    <hr style="border:none; border-top:1px solid #bbb; margin-bottom:6px;">
-    <pre id="session-cfg" class="config-file-content"></pre>
 </div>
 
 <script src="/app.js"></script>
@@ -30,7 +26,6 @@
 async function pageInit() {
     const data = await apiGet('/api/config');
     document.getElementById('app-toml').textContent = data.appToml || '';
-    document.getElementById('session-cfg').textContent = data.sessionCfg || '';
 }
 </script>
 </body>

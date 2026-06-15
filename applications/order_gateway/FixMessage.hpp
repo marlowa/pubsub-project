@@ -163,6 +163,7 @@ static constexpr int Text = 58;
 static constexpr int CxlRejReason = 102;
 static constexpr int OrdRejReason = 103;
 static constexpr int DefaultApplVerID = 1137;
+static constexpr int Password = 554;
 } // namespaces
 
 /**

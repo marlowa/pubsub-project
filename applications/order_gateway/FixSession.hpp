@@ -115,6 +115,14 @@ struct FixSession {
     int heartbeat_interval{30};
 
     /**
+     * @brief Password extracted from tag 554 of the inbound Logon message.
+     *
+     * Held only for the duration of the SCRAM exchange: zeroed and cleared as
+     * soon as the AuthenticationProof has been sent.  Never logged.
+     */
+    std::string client_password;
+
+    /**
      * @brief The SenderCompID sent by the client in the Logon message.
      *
      * Used to validate subsequent messages and to set TargetCompID in

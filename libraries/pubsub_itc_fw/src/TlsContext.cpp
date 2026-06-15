@@ -30,12 +30,14 @@ std::string collect_openssl_errors() {
 }
 
 void apply_common_tls_options(SSL_CTX* context) {
+    // Cap at TLS 1.2: QuickFIX/J's MINA SslFilter does not handle TLS 1.3
+    // NewSessionTicket records correctly and deadlocks waiting for a response
+    // that it never sends, causing the FIX client to time out on logon.
     SSL_CTX_set_min_proto_version(context, TLS1_2_VERSION);
+    SSL_CTX_set_max_proto_version(context, TLS1_2_VERSION);
     SSL_CTX_set_options(context, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_COMPRESSION);
     // TLS 1.2 cipher suites: AEAD only.
     SSL_CTX_set_cipher_list(context, "ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES256-GCM-SHA384");
-    // TLS 1.3 cipher suites.
-    SSL_CTX_set_ciphersuites(context, "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256");
 }
 
 } // namespaces

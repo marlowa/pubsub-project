@@ -54,7 +54,7 @@ void OutboundConnection::on_connected(std::unique_ptr<TcpSocket> socket) {
     if (tls_context_) {
         const int64_t buffer_capacity = endpoints_.tls->raw_buffer_capacity;
         protocol_handler_ = std::make_unique<TlsRawBytesProtocolHandler>(
-            id_, *socket_, target_thread_, buffer_capacity, *tls_context_, /*is_server=*/false);
+            id_, *socket_, target_thread_, buffer_capacity, *tls_context_, /*is_server=*/false, logger_);
         // data_exchange_ready_ stays false until the TLS handshake completes.
     } else {
         framer_ = std::make_unique<PduFramer>(*socket_);

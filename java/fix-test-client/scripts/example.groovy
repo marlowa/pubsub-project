@@ -1,5 +1,5 @@
 // Example: logon, send 5 orders, logout.
-session.logon()
+session.logon("APM001", "stubpassword", true)
 sleep(2000)
 
 5.times { i ->

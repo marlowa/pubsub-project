@@ -66,6 +66,8 @@ def main() -> None:
         help="skip Java admin service build")
     build_group.add_argument("--no-cpp", action="store_true",
         help="skip C++ build")
+    build_group.add_argument("--no-doxygen", action="store_true",
+        help="skip Doxygen documentation generation")
     build_group.add_argument("--jobs", "-j", type=int, metavar="N",
         help="parallel C++ build jobs")
 
@@ -102,6 +104,8 @@ def main() -> None:
         build_cmd.append("--no-java")
     if args.no_cpp:
         build_cmd.append("--no-cpp")
+    if args.no_doxygen:
+        build_cmd.append("--no-doxygen")
     if args.jobs:
         build_cmd += ["-j", str(args.jobs)]
     _run(build_cmd, "Step 1/4: build")

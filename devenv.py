@@ -12,6 +12,7 @@ Options:
   --env PATH         Environment TOML (default: environments/dev.toml).
   --no-ha            Skip components marked ha_only = true.
   --delay SECONDS    Sleep between component starts (default: 1.0).
+  --debug            Override applog_level to 'debug' in C++ configs before starting.
 
 PID files are written to [run_dir]/<name>.pid as configured in the env TOML.
 Logs are written to [log_dir]/<name>.log and [log_dir]/<name>.stdout.
@@ -30,6 +31,7 @@ as before.
 
 import argparse
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -115,19 +117,23 @@ def is_pid_alive(pid: int) -> bool:
 # ── Process management ────────────────────────────────────────────────────────
 
 def build_command(
-    name: str, comp: dict, install_dir: Path, log_dir: Path,
+    name: str, comp: dict, install_dir: Path, log_dir: Path, debug: bool = False,
 ) -> tuple[list[str], Path]:
     """Return (command_list, working_dir) for a component.
 
     For C++ binaries the command is: <binary> <log_file> <config>.
-    For JAR components the command is: java -jar <jar> [<config>], where the
-    resolved config path is appended as the first positional argument only when
-    the component defines a 'config' key in the env TOML.
+    For JAR components the command is: java [-Djavax.net.debug=...] -jar <jar> [<config>],
+    where the resolved config path is appended as the first positional argument only when
+    the component defines a 'config' key in the env TOML.  When debug=True, the JVM
+    flag -Djavax.net.debug=ssl:handshake:data is added to expose MINA/SSL details.
     """
     workdir = (install_dir / comp["workdir"]).resolve()
     if "jar" in comp:
         jar_path = (install_dir / comp["jar"]).resolve()
-        command = ["java", "-jar", str(jar_path)]
+        command = ["java"]
+        if debug:
+            command.append("-Djavax.net.debug=ssl:handshake:data")
+        command.extend(["-jar", str(jar_path)])
         if "config" in comp:
             command.append(str((install_dir / comp["config"]).resolve()))
     else:
@@ -141,7 +147,7 @@ def build_command(
 def start_one(  # pylint: disable=too-many-arguments,too-many-locals
     name: str, comp: dict,
     install_dir: Path, log_dir: Path, run_dir: Path,
-    delay: float,
+    delay: float, debug: bool = False,
 ) -> None:
     """Start a single component, writing a PID file on success.
 
@@ -157,7 +163,7 @@ def start_one(  # pylint: disable=too-many-arguments,too-many-locals
         time.sleep(delay)
         return
 
-    command, workdir = build_command(name, comp, install_dir, log_dir)
+    command, workdir = build_command(name, comp, install_dir, log_dir, debug=debug)
     stdout_path = log_dir / f"{name}.stdout"
 
     if "binary" in comp:
@@ -255,7 +261,18 @@ def export_credentials(install_dir: Path, env: dict) -> None:
 
 # ── Subcommands ───────────────────────────────────────────────────────────────
 
-def cmd_start(env: dict, ha_enabled: bool, delay: float) -> None:
+def patch_debug_logging(install_dir: Path) -> None:
+    """Override applog_level to 'debug' in all deployed C++ component TOML configs."""
+    etc_dir = install_dir / "etc"
+    for config_file in sorted(etc_dir.glob("*/*.toml")):
+        content = config_file.read_text()
+        patched = re.sub(r'(applog_level\s*=\s*)"[^"]*"', r'\1"debug"', content)
+        if patched != content:
+            config_file.write_text(patched)
+            print(f"  debug logging enabled: {config_file.relative_to(install_dir)}")
+
+
+def cmd_start(env: dict, ha_enabled: bool, delay: float, debug: bool = False) -> None:
     """Implement the 'start' subcommand: export credentials then start all components.
 
     Components are started in the order listed in startup_order.components,
@@ -283,10 +300,15 @@ def cmd_start(env: dict, ha_enabled: bool, delay: float) -> None:
     export_credentials(install_dir, env)
     print()
 
+    if debug:
+        print("=== enabling debug logging ===")
+        patch_debug_logging(install_dir)
+        print()
+
     print("=== starting components ===")
     for name in order:
         comp = env["components"][name]
-        start_one(name, comp, install_dir, log_dir, run_dir, delay)
+        start_one(name, comp, install_dir, log_dir, run_dir, delay, debug=debug)
     print()
     print(f"all components started.  logs → {log_dir}/")
 
@@ -324,7 +346,7 @@ def cmd_status(env: dict) -> None:
 
 
 def cmd_restart(
-    env: dict, ha_enabled: bool, delay: float, component: str | None,
+    env: dict, ha_enabled: bool, delay: float, component: str | None, debug: bool = False,
 ) -> None:
     """Implement the 'restart' subcommand: stop and restart all or one named component.
 
@@ -347,11 +369,11 @@ def cmd_restart(
             export_credentials(install_dir, env)
             print()
         comp = env["components"][component]
-        start_one(component, comp, install_dir, log_dir, run_dir, delay)
+        start_one(component, comp, install_dir, log_dir, run_dir, delay, debug=debug)
     else:
         cmd_stop(env)
         print()
-        cmd_start(env, ha_enabled, delay)
+        cmd_start(env, ha_enabled, delay, debug=debug)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -369,6 +391,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--no-ha", action="store_true",
         help="skip components marked ha_only = true",
+    )
+    parser.add_argument(
+        "--debug", action="store_true",
+        help="override applog_level to 'debug' in all C++ component configs before starting",
     )
     parser.add_argument(
         "--delay", type=float, default=_STARTUP_DELAY, metavar="SECONDS",
@@ -407,13 +433,13 @@ def main() -> None:
     ha_enabled   = ha_from_toml and not args.no_ha
 
     if args.subcommand == "start":
-        cmd_start(env, ha_enabled, args.delay)
+        cmd_start(env, ha_enabled, args.delay, debug=args.debug)
     elif args.subcommand == "stop":
         cmd_stop(env)
     elif args.subcommand == "status":
         cmd_status(env)
     elif args.subcommand == "restart":
-        cmd_restart(env, ha_enabled, args.delay, args.component)
+        cmd_restart(env, ha_enabled, args.delay, args.component, debug=args.debug)
 
 
 if __name__ == "__main__":

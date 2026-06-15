@@ -11,8 +11,12 @@ public class FixSessionBinding {
         this.fixEngine = fixEngine;
     }
 
-    public void logon() {
-        fixEngine.logon();
+    public void logon(String compId, String password, boolean useTls) {
+        try {
+            fixEngine.logon(compId, password, useTls);
+        } catch (Exception e) {
+            throw new RuntimeException("Logon failed: " + e.getMessage(), e);
+        }
     }
 
     public void logout() {

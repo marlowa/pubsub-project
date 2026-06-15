@@ -5,7 +5,7 @@
 // Phase 3 — 250 buy cancels  (cancels BUY-00001 … BUY-00250)
 // Phase 4 — 250 sell cancels (cancels SELL-00001 … SELL-00250)
 
-session.logon()
+session.logon("APM001", "stubpassword", true)
 sleep(2000)
 
 def symbol   = "AAPL"

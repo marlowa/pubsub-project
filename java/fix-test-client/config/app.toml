@@ -2,7 +2,11 @@
 port = 8081
 
 [fix]
-session_config = "config/session.cfg"
+gateway_host         = "127.0.0.1"
+gateway_port         = 9879
+target_comp_id       = "GATEWAY"
+trust_store_path     = "config/fix_gateway_trust.jks"
+trust_store_password = "pubsub_dev"
 
 [capture]
 output_dir = "output"

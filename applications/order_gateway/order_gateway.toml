@@ -18,7 +18,6 @@ host           = "${order_gateway_authentication_service_host}"
 port           = 7070
 secondary_host = "${order_gateway_authentication_service_secondary_host}"
 secondary_port = 7071
-scram_password = "${order_gateway_authentication_service_scram_password}"
 
 [sequencer]
 ha_enabled      = true
@@ -62,6 +61,13 @@ initial_slabs    = 1
 # A heavy perf test of a million orders caused this to be increased again, to 1,000,000
 objects_per_slab = 1000000
 initial_slabs    = 1
+
+[fix_tls]
+# Set enabled=true to require TLS on the inbound FIX listener.
+# cert and key are paths relative to the process working directory.
+enabled  = ${order_gateway_fix_tls_enabled}
+cert     = "${order_gateway_fix_tls_cert}"
+key      = "${order_gateway_fix_tls_key}"
 
 [fix_capture]
 # Set enabled=true to write all inbound and outbound FIX wire bytes to a binary file.

@@ -29,6 +29,14 @@
             <input type="text" id="sender-comp-id" value="APM001">
         </div>
         <div class="form-row">
+            <label>Password</label>
+            <input type="password" id="password" oninput="updateLogonButton()">
+        </div>
+        <div class="form-row">
+            <label>Use TLS</label>
+            <input type="checkbox" id="use-tls" checked>
+        </div>
+        <div class="form-row">
             <label>Starting seq num</label>
             <input type="checkbox" id="override-seq-check" onchange="toggleSeqInput()">
             Override
@@ -36,7 +44,7 @@
         </div>
         <div class="form-row" style="margin-top:10px;">
             <label></label>
-            <button onclick="doLogon()">Log On</button>
+            <button id="logon-btn" onclick="doLogon()" disabled>Log On</button>
         </div>
         <div id="logon-error" style="display:none; color:#c00; margin-top:8px;"></div>
     </div>
@@ -68,14 +76,21 @@ function toggleSeqInput() {
         !document.getElementById('override-seq-check').checked;
 }
 
+function updateLogonButton() {
+    const password = document.getElementById('password').value;
+    document.getElementById('logon-btn').disabled = !password;
+}
+
 async function doLogon() {
-    const btn = document.querySelector('#logon-form button');
+    const btn = document.getElementById('logon-btn');
     btn.textContent = 'Connecting…';
     btn.disabled = true;
 
     const params = {
-        senderCompId: document.getElementById('sender-comp-id').value,
-        overrideSeq:  document.getElementById('override-seq-check').checked,
+        senderCompId:  document.getElementById('sender-comp-id').value,
+        password:      document.getElementById('password').value,
+        useTls:        document.getElementById('use-tls').checked,
+        overrideSeq:   document.getElementById('override-seq-check').checked,
         overrideSeqNum: document.getElementById('override-seq-num').value,
     };
     await apiPost('/api/session/logon', params);
@@ -151,11 +166,12 @@ function renderNotLoggedOn(status) {
     clearInterval(durationTimer);
     logonEpochMs = null;
 
-    // Reset the Log On button in case it was left in "Connecting…" state.
-    const btn = document.querySelector('#logon-form button');
+    // Reset the Log On button, re-enabling only if a password is present.
+    const btn = document.getElementById('logon-btn');
     if (btn) {
         btn.textContent = 'Log On';
-        btn.disabled = false;
+        const password = document.getElementById('password');
+        btn.disabled = !password || !password.value;
     }
 
     const errEl = document.getElementById('logon-error');
