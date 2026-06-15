@@ -90,6 +90,7 @@ MatchingEnginePublisherThread::MatchingEnginePublisherThread(
                         make_queue_config(), make_allocator_config(config, logger),
                         pubsub_itc_fw::ApplicationThreadConfiguration{})
     , config_(config)
+    , wal_subscriber_id_("mep_" + std::to_string(config.instance_id))
     , orders_inbound_svc_("inbound:" + std::to_string(config.orders_listen_port))
     , er_inbound_svc_("inbound:" + std::to_string(config.er_listen_port))
     , peer_inbound_svc_("inbound:" + std::to_string(config.peer_listen_port)) {}
@@ -147,7 +148,7 @@ void MatchingEnginePublisherThread::on_connection_established(pubsub_itc_fw::Con
                    "MepThread: sequencer (primary) connection {} established -- sending WalSubscribeRequest",
                    id.get_value());
         pubsub_itc_fw_app::WalSubscribeRequest req{};
-        req.subscriber_id = "mep_primary";
+        req.subscriber_id = wal_subscriber_id_;
         req.from_seq_no   = sequencer_cursor_;
         send_pdu(id, pdu_wal_subscribe_request, 0, req);
     } else if (svc == "sequencer_secondary") {
@@ -156,7 +157,7 @@ void MatchingEnginePublisherThread::on_connection_established(pubsub_itc_fw::Con
                    "MepThread: sequencer (secondary) connection {} established -- sending WalSubscribeRequest",
                    id.get_value());
         pubsub_itc_fw_app::WalSubscribeRequest req{};
-        req.subscriber_id = "mep_primary";
+        req.subscriber_id = wal_subscriber_id_;
         req.from_seq_no   = sequencer_cursor_;
         send_pdu(id, pdu_wal_subscribe_request, 0, req);
     } else if (svc == "arbiter_primary") {
@@ -375,7 +376,10 @@ void MatchingEnginePublisherThread::adopt_role(pubsub_itc_fw_app::Role new_role)
     if (new_role == role_) {
         return;
     }
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+    const auto transition_level = (role_ == pubsub_itc_fw_app::Role::unknown)
+                                      ? pubsub_itc_fw::FwLogLevel::Info
+                                      : pubsub_itc_fw::FwLogLevel::Warning;
+    PUBSUB_LOG(get_logger(), transition_level,
                "MepThread: role transition {} -> {} (epoch={})",
                pubsub_itc_fw_app::to_string(role_), pubsub_itc_fw_app::to_string(new_role), epoch_);
     role_ = new_role;

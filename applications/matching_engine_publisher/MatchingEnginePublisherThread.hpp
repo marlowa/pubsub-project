@@ -65,7 +65,8 @@ class MatchingEnginePublisherThread : public pubsub_itc_fw::ApplicationThread {
   private:
     const MatchingEnginePublisherConfiguration& config_;
 
-    // Precomputed inbound service name strings.
+    // Precomputed strings.
+    const std::string wal_subscriber_id_;
     const std::string orders_inbound_svc_;
     const std::string er_inbound_svc_;
     const std::string peer_inbound_svc_;

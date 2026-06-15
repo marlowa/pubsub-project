@@ -66,10 +66,8 @@ public class FixEngine {
 
     public void logout() {
         fixApplication.setPendingPassword(null);
-        Session session = getSession();
-        if (session != null) {
-            session.logout();
-        }
+        stopInitiator();
+        fixApplication.clearLastLogoutReason();
     }
 
     public void disconnect() {

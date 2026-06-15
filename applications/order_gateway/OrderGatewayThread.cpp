@@ -468,6 +468,12 @@ void OrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventMess
                           reinterpret_cast<const uint8_t*>(wire_buffer), wire_length,
                           config_.wall_clock->now_ns());
     }
+    std::string readable_er(wire_buffer, wire_length);
+    for (char& c : readable_er) {
+        if (c == '\x01') c = '|';
+    }
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
+               "OrderGatewayThread: connection {} FIX OUT ({} bytes): {}", session.conn_id.get_value(), wire_length, readable_er);
     send_raw(session.conn_id, wire_buffer, static_cast<uint32_t>(wire_length));
     release_pdu_payload(message);
 }
@@ -774,7 +780,7 @@ void OrderGatewayThread::handle_resend_request(FixSession& session, const Parsed
 }
 
 void OrderGatewayThread::handle_new_order_single(FixSession& session, const ParsedFixMessage& msg) {
-    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "entered handle_new_order_single");
+    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "entered handle_new_order_single");
 
     const std::string_view cl_ord_id = msg.get(Tag::ClOrdID);
     const std::string_view symbol = msg.get(Tag::Symbol);
@@ -852,7 +858,7 @@ void OrderGatewayThread::handle_new_order_single(FixSession& session, const Pars
     // is actually on the book. Tracking from NOS time would include every
     // in-flight order and flood the sequencer with OCRs on disconnect.
 
-    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "exit handle_new_order_single");
+    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "exit handle_new_order_single");
 }
 
 void OrderGatewayThread::handle_order_cancel_request(FixSession& session, const ParsedFixMessage& msg) {

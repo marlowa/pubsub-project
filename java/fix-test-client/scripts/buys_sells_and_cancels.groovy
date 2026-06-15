@@ -4,6 +4,9 @@
 // Phase 2 — 1000 sells (ClOrdID: SELL-00001 … SELL-01000)
 // Phase 3 — 250 buy cancels  (cancels BUY-00001 … BUY-00250)
 // Phase 4 — 250 sell cancels (cancels SELL-00001 … SELL-00250)
+//
+// Buy price (100.00) is below sell price (105.00) so orders do not cross —
+// all rest on the book and generate New ERs only, no fills.
 
 session.logon("APM001", "stubpassword", true)
 sleep(2000)
@@ -79,7 +82,7 @@ sellIds.take(250).eachWithIndex { origId, i ->
     session.send(ocr)
 }
 out.println "Phase 4 complete: sent 250 sell cancel requests"
-sleep(2000)
+sleep(5000)
 
 session.logout()
 out.println "Done."

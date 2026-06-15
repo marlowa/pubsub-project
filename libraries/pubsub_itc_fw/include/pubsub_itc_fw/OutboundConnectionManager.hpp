@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
@@ -279,6 +280,11 @@ class OutboundConnectionManager {
         std::chrono::steady_clock::time_point last_warning_time;
     };
     std::unordered_map<std::string, RetryContext> retry_contexts_;
+    // Services that have been successfully established at least once. Used to
+    // distinguish a startup connection race (first attempt fails, retry succeeds
+    // -> Info) from a runtime reconnect (was established, dropped, reconnected
+    // -> Warning).
+    std::unordered_set<std::string> ever_established_services_;
 
     std::optional<ReactorControlCommand> pending_send_;
 };

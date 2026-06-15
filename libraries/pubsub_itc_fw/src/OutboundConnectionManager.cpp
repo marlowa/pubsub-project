@@ -98,7 +98,8 @@ void OutboundConnectionManager::on_connect_ready(OutboundConnection& conn) {
     if (!connected) {
         if (!error.empty()) {
             if (retry_contexts_.find(conn.service_name()) == retry_contexts_.end()) {
-                PUBSUB_LOG(logger_, FwLogLevel::Warning,
+                const bool runtime_failure = ever_established_services_.count(conn.service_name()) > 0;
+                PUBSUB_LOG(logger_, runtime_failure ? FwLogLevel::Warning : FwLogLevel::Info,
                            "OutboundConnectionManager::on_connect_ready: finish_connect failed for "
                            "service '{}': {}",
                            conn.service_name(), error);
@@ -220,12 +221,15 @@ void OutboundConnectionManager::on_connect_ready(OutboundConnection& conn) {
             if (ctx_it != retry_contexts_.end()) {
                 const auto elapsed_s =
                     std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - ctx_it->second.first_fail_time).count();
-                PUBSUB_LOG(logger_, FwLogLevel::Warning, "OutboundConnectionManager: service '{}' reconnected after {}s", conn.service_name(), elapsed_s);
+                const bool runtime_reconnect = ever_established_services_.count(conn.service_name()) > 0;
+                PUBSUB_LOG(logger_, runtime_reconnect ? FwLogLevel::Warning : FwLogLevel::Info,
+                           "OutboundConnectionManager: service '{}' reconnected after {}s", conn.service_name(), elapsed_s);
                 retry_contexts_.erase(ctx_it);
             } else {
                 PUBSUB_LOG(logger_, FwLogLevel::Info, "OutboundConnectionManager::on_connect_ready: connection {} to service '{}' established",
                            conn.id().get_value(), conn.service_name());
             }
+            ever_established_services_.insert(conn.service_name());
         }
 
         auto* thread = thread_lookup_.get_fast_path_thread(conn.requesting_thread_id());
@@ -262,13 +266,16 @@ void OutboundConnectionManager::on_data_ready(OutboundConnection& conn) {
                 if (ctx_it != retry_contexts_.end()) {
                     const auto elapsed_s =
                         std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - ctx_it->second.first_fail_time).count();
-                    PUBSUB_LOG(logger_, FwLogLevel::Warning, "OutboundConnectionManager: service '{}' reconnected (TLS) after {}s", service_name, elapsed_s);
+                    const bool runtime_reconnect = ever_established_services_.count(service_name) > 0;
+                    PUBSUB_LOG(logger_, runtime_reconnect ? FwLogLevel::Warning : FwLogLevel::Info,
+                               "OutboundConnectionManager: service '{}' reconnected (TLS) after {}s", service_name, elapsed_s);
                     retry_contexts_.erase(ctx_it);
                 } else {
                     PUBSUB_LOG(logger_, FwLogLevel::Info,
                                "OutboundConnectionManager::on_data_ready: TLS handshake complete, connection {} to service '{}' established", id.get_value(),
                                service_name);
                 }
+                ever_established_services_.insert(service_name);
             }
             auto* thread = thread_lookup_.get_fast_path_thread(conn.requesting_thread_id());
             if (thread != nullptr) {
@@ -536,14 +543,16 @@ void OutboundConnectionManager::schedule_retry(const std::string& service_name, 
     if (retry_contexts_.find(service_name) == retry_contexts_.end()) {
         // First failure for this service -- log once and create context.
         retry_contexts_[service_name] = RetryContext{now, now};
+        const bool runtime_failure = ever_established_services_.count(service_name) > 0;
+        const FwLogLevel level = runtime_failure ? FwLogLevel::Warning : FwLogLevel::Info;
         const auto warning_min = std::chrono::duration_cast<std::chrono::minutes>(config_.connect_retry_warning_interval_).count();
         if (warning_min > 0) {
-            PUBSUB_LOG(logger_, FwLogLevel::Warning,
+            PUBSUB_LOG(logger_, level,
                        "OutboundConnectionManager: service '{}' failed to connect; "
                        "retrying every {}ms (next reminder in {}min if still down)",
                        service_name, config_.connect_retry_interval_.count(), warning_min);
         } else {
-            PUBSUB_LOG(logger_, FwLogLevel::Warning,
+            PUBSUB_LOG(logger_, level,
                        "OutboundConnectionManager: service '{}' failed to connect; "
                        "retrying every {}ms",
                        service_name, config_.connect_retry_interval_.count());

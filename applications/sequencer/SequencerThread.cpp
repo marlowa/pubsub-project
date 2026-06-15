@@ -711,7 +711,10 @@ void SequencerThread::adopt_role(pubsub_itc_fw_app::Role new_role) {
         return;
     }
 
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: role transition {} -> {} (epoch={})", pubsub_itc_fw_app::to_string(role_),
+    const auto transition_level = (role_ == pubsub_itc_fw_app::Role::unknown)
+                                      ? pubsub_itc_fw::FwLogLevel::Info
+                                      : pubsub_itc_fw::FwLogLevel::Warning;
+    PUBSUB_LOG(get_logger(), transition_level, "SequencerThread: role transition {} -> {} (epoch={})", pubsub_itc_fw_app::to_string(role_),
                pubsub_itc_fw_app::to_string(new_role), epoch_);
 
     role_ = new_role;
