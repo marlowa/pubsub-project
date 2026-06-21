@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 ha_test.py — HA test suite for the pubsub_itc_fw sequencer system.
 

@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Script to perform static code analysis on C++ source using clang-tidy.
 This is in preference to using the clang-tidy integration in cmake.

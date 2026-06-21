@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 auth_service_test.py — Integration tests for the authentication service.
 

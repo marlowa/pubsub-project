@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 devenv.py — manage the pubsub developer sandbox.
 

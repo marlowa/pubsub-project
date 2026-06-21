@@ -346,6 +346,9 @@ TEST(QuillLoggerEnsureWritableTest, CreatesNonExistentParentDirectory) {
 }
 
 TEST(QuillLoggerEnsureWritableTest, UnwritablePathReturnsError) {
+    if (::getuid() == 0) {
+        GTEST_SKIP() << "Skipped: root bypasses file permission checks";
+    }
     const std::string dir  = "/dev/shm/quill_nowrite_test";
     const std::string path = dir + "/log.txt";
     ::rmdir(dir.c_str());

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 create_db.py — Create the pubsub PostgreSQL database from scratch.
 
@@ -45,6 +46,7 @@ PostgreSQL JDBC driver:
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -98,16 +100,30 @@ def _database_exists(psql_prefix: list[str], host: str, port: int,
 
 def _check_jdbc_driver() -> Path:
     """
-    Verify that the PostgreSQL JDBC driver is installed in the Liquibase lib
-    directory.  Returns the path to the JAR.  Exits with a clear message if
-    the driver is absent — installation is a one-time environment setup step,
-    not something this script does automatically.
+    Locate the PostgreSQL JDBC driver for Liquibase.
+
+    First checks Liquibase's own lib directory.  If not found there, looks in
+    db/drivers/ (committed to the repo) and copies the JAR into the Liquibase
+    lib directory automatically — so no manual setup is required on a fresh
+    machine or Docker container.
     """
     liquibase_real = Path(os.path.realpath("/usr/bin/liquibase"))
     liquibase_lib  = liquibase_real.parent / "lib"
+
     jars = sorted(liquibase_lib.glob("postgresql*.jar"))
     if jars:
         return jars[0]
+
+    # Fall back to the driver bundled in the repository.
+    script_dir  = Path(__file__).resolve().parent
+    bundled_jars = sorted((script_dir / "drivers").glob("postgresql*.jar"))
+    if bundled_jars:
+        src = bundled_jars[0]
+        dst = liquibase_lib / src.name
+        print(f"  copying bundled JDBC driver to {dst}")
+        liquibase_lib.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+        return dst
 
     print(
         "\nerror: PostgreSQL JDBC driver not found in the Liquibase lib directory.\n"

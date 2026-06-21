@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 perf_run.py — start the full FIX sequencer system under perf, fire NOS orders
               via fix8, SIGTERM all processes, and produce per-process perf

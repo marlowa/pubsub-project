@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 release.py — assemble a versioned deployment artefact from the build tree.
 

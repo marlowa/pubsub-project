@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 check_standards.py -- Check C++ source files for coding-standard violations.
 

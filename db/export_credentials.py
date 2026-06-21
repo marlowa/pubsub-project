@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 export_credentials.py — Export SCRAM credentials from the database to the
 authentication service credentials.toml file.
