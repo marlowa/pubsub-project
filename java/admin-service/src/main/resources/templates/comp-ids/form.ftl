@@ -45,6 +45,10 @@
     <label for="password">Initial Password
         <input type="password" id="password" name="password" required>
     </label>
+    <label>
+        <input type="checkbox" name="forcePasswordChange" checked>
+        Force password change on first login
+    </label>
     <button type="submit">Create</button>
     <a href="/comp-ids?firmId=${firmId}">Cancel</a>
 </form>

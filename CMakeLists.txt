@@ -235,7 +235,7 @@ add_custom_command(
             --topics
             --namespace pubsub_itc_fw_app
             "${FIX_DSL_SOURCE}"
-            "${FIX_DSL_GENERATED_HPP}"
+            --cpp "${FIX_DSL_GENERATED_HPP}"
     DEPENDS "${FIX_DSL_SOURCE}" "${FIX_DSL_GENERATOR}"
     COMMENT "Generating fix_equity_orders.hpp from fix_equity_orders.dsl"
     VERBATIM
@@ -254,7 +254,7 @@ add_custom_command(
     COMMAND ${Python3_EXECUTABLE} "${FIX_DSL_GENERATOR}"
             --namespace pubsub_itc_fw_app
             "${LF_DSL_SOURCE}"
-            "${LF_DSL_GENERATED_HPP}"
+            --cpp "${LF_DSL_GENERATED_HPP}"
     DEPENDS "${LF_DSL_SOURCE}" "${FIX_DSL_GENERATOR}"
     COMMENT "Generating leader_follower.hpp from leader_follower.dsl"
     VERBATIM
@@ -273,7 +273,7 @@ add_custom_command(
     COMMAND ${Python3_EXECUTABLE} "${FIX_DSL_GENERATOR}"
             --namespace pubsub_itc_fw_app
             "${AUTH_DSL_SOURCE}"
-            "${AUTH_DSL_GENERATED_HPP}"
+            --cpp "${AUTH_DSL_GENERATED_HPP}"
     DEPENDS "${AUTH_DSL_SOURCE}" "${FIX_DSL_GENERATOR}"
     COMMENT "Generating authentication.hpp from authentication.dsl"
     VERBATIM
@@ -292,7 +292,7 @@ add_custom_command(
     COMMAND ${Python3_EXECUTABLE} "${FIX_DSL_GENERATOR}"
             --namespace pubsub_itc_fw_app
             "${TOPICS_DSL_SOURCE}"
-            "${TOPICS_DSL_GENERATED_HPP}"
+            --cpp "${TOPICS_DSL_GENERATED_HPP}"
     DEPENDS "${TOPICS_DSL_SOURCE}" "${FIX_DSL_GENERATOR}"
     COMMENT "Generating topics.hpp from topics.dsl"
     VERBATIM

@@ -13,6 +13,7 @@ from .ast import (
     DslFile,
     EnumDecl,
     Field,
+    FramingDecl,
     ListType,
     MessageDecl,
     PrimitiveType,
@@ -69,6 +70,11 @@ class JavaGenerator:
         }
 
         for decl in ast.declarations:
+            if isinstance(decl, FramingDecl):
+                self._emit_framing(decl, w)
+                w("")
+
+        for decl in ast.declarations:
             if isinstance(decl, EnumDecl):
                 self._emit_enum(decl, w)
                 w("")
@@ -97,6 +103,49 @@ class JavaGenerator:
         w("")
 
     # ------------------------------------------------------------------
+    # Framing
+    # ------------------------------------------------------------------
+
+    def _emit_framing(self, framing: FramingDecl, w) -> None:
+        const_names: Dict[str, str] = {}
+        for key, value in framing.constants.items():
+            const_name = key.upper()
+            formatted = f"0x{value:08X}" if value > 0xFFFF else str(value)
+            w(f"    public static final int {const_name} = {formatted};")
+            const_names[key] = const_name
+        w("")
+        self._emit_frame_header_codec(const_names, w)
+
+    def _emit_frame_header_codec(self, const_names: Dict[str, str], w) -> None:
+        canary = const_names.get("pdu_canary", "PDU_CANARY")
+        version = const_names.get("pdu_version", "PDU_VERSION")
+        w("    public static void writeHeader(ByteBuffer buf, int pduId, int payloadLength) {")
+        w("        buf.order(ByteOrder.BIG_ENDIAN);")
+        w("        buf.putInt(payloadLength);")
+        w("        buf.putShort((short) pduId);")
+        w(f"        buf.put((byte) {version});")
+        w("        buf.put((byte) 0);")
+        w("        buf.putLong(0L);")
+        w(f"        buf.putInt({canary});")
+        w("        buf.putInt(0);")
+        w("    }")
+        w("")
+        w("    public static int[] readHeader(ByteBuffer buf) throws java.io.IOException {")
+        w("        buf.order(ByteOrder.BIG_ENDIAN);")
+        w("        int payloadLength = buf.getInt();")
+        w("        int pduId = Short.toUnsignedInt(buf.getShort());")
+        w("        buf.get();")
+        w("        buf.get();")
+        w("        buf.getLong();")
+        w("        int receivedCanary = buf.getInt();")
+        w(f"        if (receivedCanary != {canary}) {{")
+        w("            throw new java.io.IOException(String.format(")
+        w(f'                "PDU canary mismatch: expected 0x%08X, got 0x%08X", {canary}, receivedCanary));')
+        w("        }")
+        w("        return new int[]{pduId, payloadLength};")
+        w("    }")
+
+    # ------------------------------------------------------------------
     # Enum
     # ------------------------------------------------------------------
 
@@ -123,6 +172,12 @@ class JavaGenerator:
 
     def _emit_message(self, msg: MessageDecl, w, enum_names: Set[str], enum_decls: Dict[str, EnumDecl]) -> None:
         w(f"    public static final class {msg.name} {{")
+        if "id" in msg.metadata:
+            w(f"        public static final int PDU_ID = {msg.metadata['id']};")
+        if "version" in msg.metadata:
+            w(f"        public static final int PDU_VERSION = {msg.metadata['version']};")
+        if "id" in msg.metadata or "version" in msg.metadata:
+            w("")
         for field in msg.fields:
             if field.optional:
                 w(f"        public boolean has_{field.name} = false;")

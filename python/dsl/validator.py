@@ -8,6 +8,7 @@ from .ast import (
     DslFile,
     EnumDecl,
     EnumRef,
+    FramingDecl,
     MessageDecl,
     Field,
     PrimitiveType,
@@ -52,6 +53,9 @@ class Validator:  # pylint: disable=too-few-public-methods
                         f"line {decl.line}: duplicate declaration name '{decl.name}'"
                     )
                 self.enums[decl.name] = decl
+
+            elif isinstance(decl, FramingDecl):
+                pass  # no name-collision checks needed for framing constants
 
             elif isinstance(decl, MessageDecl):
                 if decl.name in self.enums or decl.name in self.messages:

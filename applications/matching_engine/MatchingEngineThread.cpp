@@ -64,7 +64,7 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
     }
 }
 
-void MatchingEngineThread::on_connection_lost(pubsub_itc_fw::ConnectionID id, const std::string& reason) {
+void MatchingEngineThread::on_connection_lost(const pubsub_itc_fw::ConnectionID &id, const std::string& reason) {
     if (id == sequencer_er_conn_id_) {
         sequencer_er_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: primary sequencer ER connection {} lost: {}", id.get_value(),

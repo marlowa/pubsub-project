@@ -11,7 +11,7 @@ namespace pubsub_itc_fw {
 
 class ApplicationAnnouncer {
 public:
-    static void announce(QuillLogger& logger, const std::string& app_name) {
+    static void announce(const QuillLogger& logger, const std::string& app_name) {
         char hostname[256] = {};
         if (gethostname(hostname, sizeof(hostname) - 1) != 0) {
             std::strncpy(hostname, "unknown", sizeof(hostname) - 1);

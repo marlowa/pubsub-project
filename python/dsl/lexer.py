@@ -23,6 +23,7 @@ class Lexer:  # pylint: disable=too-few-public-methods
 
     KEYWORDS = {
         "enum",
+        "framing",
         "message",
         "optional",
         "list",
@@ -154,6 +155,12 @@ class Lexer:  # pylint: disable=too-few-public-methods
         start = self.pos
         if self._peek() == "-":
             self._advance()
-        while self._peek().isdigit():
-            self._advance()
+        if self._peek() == "0" and self.pos + 1 < len(self.text) and self.text[self.pos + 1] in "xX":
+            self._advance()  # consume '0'
+            self._advance()  # consume 'x' / 'X'
+            while self._peek() in "0123456789abcdefABCDEF":
+                self._advance()
+        else:
+            while self._peek().isdigit():
+                self._advance()
         return Token("INT", self.text[start:self.pos], line, col)

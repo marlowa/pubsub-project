@@ -111,7 +111,7 @@ class WalPublisherThread : public ApplicationThread {
         subscriber_connected.store(true, std::memory_order_release);
     }
 
-    void on_connection_lost(ConnectionID, const std::string&) override {
+    void on_connection_lost(const ConnectionID&, const std::string&) override {
         shutdown("subscriber disconnected");
     }
 
@@ -217,7 +217,7 @@ class WalSubscriberThread : public ApplicationThread {
         shutdown("connection failed: " + reason);
     }
 
-    void on_connection_lost(ConnectionID, const std::string&) override {
+    void on_connection_lost(const ConnectionID&, const std::string&) override {
         shutdown("connection lost");
     }
 

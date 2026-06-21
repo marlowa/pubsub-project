@@ -177,7 +177,7 @@ void OrderGatewayThread::on_connection_established(pubsub_itc_fw::ConnectionID i
     }
 }
 
-void OrderGatewayThread::on_connection_lost(pubsub_itc_fw::ConnectionID id, const std::string& reason) {
+void OrderGatewayThread::on_connection_lost(const pubsub_itc_fw::ConnectionID &id, const std::string& reason) {
     auto it = sessions_.find(id);
     if (it != sessions_.end()) {
         FixSession& session = it->second;

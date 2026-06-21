@@ -51,21 +51,23 @@ def _query_credentials(host: str, port: int, username: str, password: str,
                         db_name: str, table_prefix: str) -> list[dict]:
     firm_table    = f"{table_prefix}firm"
     comp_id_table = f"{table_prefix}comp_id"
-    sql = (
+    inner_sql = (
         f"SELECT ci.comp_id, ci.stored_key, ci.server_key, ci.salt, ci.iterations "
         f"FROM {comp_id_table} ci "
         f"JOIN {firm_table} f ON ci.firm_id = f.firm_id "
         f"WHERE ci.enabled = true "
         f"  AND f.enabled  = true "
         f"  AND ci.locked  = false "
-        f"ORDER BY ci.comp_id;"
+        f"ORDER BY ci.comp_id"
     )
+    # COPY TO STDOUT WITH (FORMAT CSV) has been available since PostgreSQL 8,
+    # unlike psql --csv which was added in PostgreSQL 12.
+    sql = f"COPY ({inner_sql}) TO STDOUT WITH (FORMAT CSV)"
     env = {**os.environ, "PGPASSWORD": password}
     result = subprocess.run(
         ["psql",
          "--host", host, "--port", str(port),
          "--username", username, "--dbname", db_name,
-         "--csv", "--tuples-only",
          "--command", sql],
         capture_output=True, text=True, check=True, env=env,
     )

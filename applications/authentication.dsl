@@ -54,6 +54,19 @@
 # -----------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
+# Wire-level framing constants for the admin channel.
+# These are emitted by the Java generator as outer-class constants and used
+# by PduChannel to frame all admin PDUs. They must match the C++ framework
+# constants in AuthenticationThread.cpp (admin_pdu_header_size, etc.).
+# ---------------------------------------------------------------------------
+
+framing {
+    pdu_header_size = 24
+    pdu_canary      = 0xC0FFEE00
+    pdu_version     = 1
+}
+
+# ---------------------------------------------------------------------------
 # AuthenticationOutcome
 # ---------------------------------------------------------------------------
 

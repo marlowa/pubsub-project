@@ -55,7 +55,7 @@ void WitnessThread::on_connection_established(pubsub_itc_fw::ConnectionID id) {
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "WitnessThread: arbiter connection {} established", id.get_value());
 }
 
-void WitnessThread::on_connection_lost(pubsub_itc_fw::ConnectionID id, const std::string& reason) {
+void WitnessThread::on_connection_lost(const pubsub_itc_fw::ConnectionID &id, const std::string& reason) {
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "WitnessThread: arbiter connection {} lost: {}", id.get_value(), reason);
 
     const auto conn_it = conn_to_instance_id_.find(id.get_value());

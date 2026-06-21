@@ -23,7 +23,7 @@
             <td>${firm.createdAt()!''}</td>
             <td>
                 <a href="/firms/${firm.firmId()}">Edit</a> |
-                <a href="/comp-ids?firmId=${firm.firmId()}">CompIDs</a> |
+                <a href="/comp-ids?firmId=${firm.firmId()}" role="button">CompIDs</a> |
                 <form method="post" action="/firms/${firm.firmId()}/delete"
                       style="display:inline"
                       onsubmit="return confirm('Delete firm ${firm.firmId()}?')">

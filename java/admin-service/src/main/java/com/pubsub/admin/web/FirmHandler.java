@@ -48,7 +48,8 @@ public class FirmHandler {
         String firmId = ctx.pathParam("firmId");
         FirmRow firm = firmDao.findById(firmId)
                 .orElseThrow(() -> new NotFoundException("Firm not found: " + firmId));
-        ctx.render("/templates/firms/form.ftl", Map.of("firm", firm));
+        List<CompIdRow> compIds = compIdDao.listByFirm(firmId);
+        ctx.render("/templates/firms/form.ftl", Map.of("firm", firm, "compIds", compIds));
     }
 
     public void update(Context ctx) throws SQLException, IOException {

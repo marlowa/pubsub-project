@@ -607,7 +607,7 @@ class ApplicationThread {
      *                     itself passes its own monotonic counter.
      * @param[in] msg      The DSL message struct to encode and send.
      */
-    template <typename MsgT> void send_pdu(ConnectionID conn_id, int16_t pdu_id, int64_t seq_no, const MsgT& msg) {
+    template <typename MsgT> void send_pdu(const ConnectionID& conn_id, int16_t pdu_id, int64_t seq_no, const MsgT& msg) {
         // Pass 1: measure payload size. encode() with out_size=0 sets bytes_needed
         // without writing anything. The call cannot fail on the measuring pass
         // (out_size=0 guarantees the buffer-too-small branch is not reached for
@@ -641,7 +641,7 @@ class ApplicationThread {
         // where Reactor is fully defined. This avoids an incomplete-type error when
         // send_pdu is instantiated in translation units that only have a forward
         // declaration of Reactor.
-        enqueue_send_pdu_command(std::move(conn_id), slab_id, chunk, static_cast<uint32_t>(bytes_written));
+        enqueue_send_pdu_command(conn_id, slab_id, chunk, static_cast<uint32_t>(bytes_written));
     }
 
   protected:
@@ -704,7 +704,7 @@ class ApplicationThread {
      * @param[in] id     The ConnectionID of the lost connection.
      * @param[in] reason Human-readable description of why the connection was lost.
      */
-    virtual void on_connection_lost([[maybe_unused]] ConnectionID id, [[maybe_unused]] const std::string& reason) {}
+    virtual void on_connection_lost([[maybe_unused]] const ConnectionID &id, [[maybe_unused]] const std::string& reason) {}
 
   private:
     QuillLogger& logger_;

@@ -168,7 +168,7 @@ class SenderThread : public ApplicationThread {
         connection_failed.store(true, std::memory_order_release);
     }
 
-    void on_connection_lost(ConnectionID, const std::string&) override {}
+    void on_connection_lost(const ConnectionID&, const std::string&) override {}
     void on_raw_socket_message(const EventMessage&) override {}
     void on_framework_pdu_message(const EventMessage&) override {}
     void on_itc_message(const EventMessage&) override {}
@@ -301,7 +301,7 @@ class ReceiverThread : public ApplicationThread {
     }
 
     void on_connection_established(ConnectionID) override {}
-    void on_connection_lost(ConnectionID, const std::string&) override {}
+    void on_connection_lost(const ConnectionID&, const std::string&) override {}
 
     /*
      * Used by test 2 only. Raw bytes that arrive on the receiver's second

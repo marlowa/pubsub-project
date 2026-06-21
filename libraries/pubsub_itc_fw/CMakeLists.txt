@@ -21,7 +21,7 @@ foreach(DSL_FILE ${DSL_SCHEMAS})
             COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/../../python/tools/generate_cpp_from_dsl.py
             ${DSL_FILE}
-            ${OUT_HPP}
+            --cpp ${OUT_HPP}
             --namespace pubsub_itc_fw
             DEPENDS ${DSL_FILE}
             ${CMAKE_CURRENT_SOURCE_DIR}/../../python/tools/generate_cpp_from_dsl.py

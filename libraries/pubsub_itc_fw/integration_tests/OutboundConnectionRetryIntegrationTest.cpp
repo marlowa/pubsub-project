@@ -62,7 +62,7 @@ class RetryCountingThread : public ApplicationThread {
         failed_count.fetch_add(1, std::memory_order_release);
         // deliberately do NOT shut down so the reactor exercises the retry path
     }
-    void on_connection_lost(ConnectionID, const std::string&) override {}
+    void on_connection_lost(const ConnectionID&, const std::string&) override {}
     void on_itc_message([[maybe_unused]] const EventMessage& msg) override {}
 
   private:

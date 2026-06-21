@@ -210,7 +210,7 @@ void SequencerThread::on_connection_established(pubsub_itc_fw::ConnectionID id) 
     }
 }
 
-void SequencerThread::on_connection_lost(pubsub_itc_fw::ConnectionID id, const std::string& reason) {
+void SequencerThread::on_connection_lost(const pubsub_itc_fw::ConnectionID &id, const std::string& reason) {
     if (id == gateway_conn_id_) {
         gateway_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: gateway connection {} lost: {}", id.get_value(), reason);

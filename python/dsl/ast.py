@@ -53,6 +53,14 @@ MetadataValue = Union[int, EnumRef]
 
 
 @dataclass
+class FramingDecl(Declaration):
+    """A framing block declaring wire-level protocol constants (canary, header size, etc.)."""
+
+    constants: Dict[str, int]
+    line: int = 0
+
+
+@dataclass
 class MessageDecl(Declaration):
     """A message declaration with metadata (e.g. id, version) and a list of fields."""
 

@@ -161,7 +161,7 @@ class PduProtocolHandlerConnectorThread : public ApplicationThread {
         shutdown("connection failed: " + reason);
     }
 
-    void on_connection_lost(ConnectionID, const std::string&) override {
+    void on_connection_lost(const ConnectionID&, const std::string&) override {
         connection_lost.store(true, std::memory_order_release);
         shutdown("connection lost");
     }
@@ -216,7 +216,7 @@ class PduProtocolHandlerListenerThread : public ApplicationThread {
         connection_established.store(true, std::memory_order_release);
     }
 
-    void on_connection_lost(ConnectionID, const std::string&) override {
+    void on_connection_lost(const ConnectionID&, const std::string&) override {
         connection_lost.store(true, std::memory_order_release);
         shutdown("peer disconnected");
     }
@@ -280,7 +280,7 @@ class LargeResponseListenerThread : public ApplicationThread {
         connection_established.store(true, std::memory_order_release);
     }
 
-    void on_connection_lost(ConnectionID, const std::string&) override {
+    void on_connection_lost(const ConnectionID&, const std::string&) override {
         connection_lost.store(true, std::memory_order_release);
         shutdown("peer disconnected");
     }
@@ -365,7 +365,7 @@ class SmallQueryConnectorThread : public ApplicationThread {
         shutdown("connection failed: " + reason);
     }
 
-    void on_connection_lost(ConnectionID, const std::string&) override {
+    void on_connection_lost(const ConnectionID&, const std::string&) override {
         connection_lost.store(true, std::memory_order_release);
         shutdown("connection lost");
     }
@@ -694,7 +694,7 @@ class DisconnectingListenerThread : public ApplicationThread {
         connection_established.store(true, std::memory_order_release);
     }
 
-    void on_connection_lost(ConnectionID, const std::string&) override {
+    void on_connection_lost(const ConnectionID&, const std::string&) override {
         connection_lost.store(true, std::memory_order_release);
         shutdown("disconnected");
     }
@@ -829,7 +829,7 @@ class DoubleSendConnectorThread : public ApplicationThread {
         shutdown("connection failed: " + reason);
     }
 
-    void on_connection_lost(ConnectionID, const std::string&) override {
+    void on_connection_lost(const ConnectionID&, const std::string&) override {
         connection_lost.store(true, std::memory_order_release);
         shutdown("connection lost");
     }

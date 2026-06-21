@@ -11,6 +11,7 @@ from .ast import (
     EnumDecl,
     EnumEntry,
     EnumRef,
+    FramingDecl,
     MessageDecl,
     Field,
     PrimitiveType,
@@ -81,6 +82,9 @@ class Parser:  # pylint: disable=too-few-public-methods
         if self.current.kind == "KEYWORD" and self.current.value == "enum":
             return self._parse_enum()
 
+        if self.current.kind == "KEYWORD" and self.current.value == "framing":
+            return self._parse_framing()
+
         if self.current.kind == "KEYWORD" and self.current.value == "message":
             return self._parse_message()
 
@@ -88,6 +92,21 @@ class Parser:  # pylint: disable=too-few-public-methods
             f"Unexpected token '{self.current.value}' at "
             f"{self.current.line}:{self.current.column}"
         )
+
+    # -----------------------------
+    # Framing
+    # -----------------------------
+
+    def _parse_framing(self) -> FramingDecl:
+        line = self._expect_keyword("framing")
+        self._eat("LBRACE")
+        constants = {}
+        while self.current.kind == "IDENT":
+            key_tok = self._eat("IDENT")
+            self._eat("EQUAL")
+            constants[key_tok.value] = int(self._eat("INT").value, 0)
+        self._eat("RBRACE")
+        return FramingDecl(constants=constants, line=line)
 
     # -----------------------------
     # Enum
@@ -124,7 +143,7 @@ class Parser:  # pylint: disable=too-few-public-methods
                     f"Expected integer or character literal for enum entry value, "
                     f"got {self.current.kind} at {self.current.line}:{self.current.column}"
                 )
-            value = int(self._eat(self.current.kind).value)
+            value = int(self._eat(self.current.kind).value, 0)
             entries.append(EnumEntry(
                 name=entry_tok.value,
                 value=value,
@@ -184,7 +203,7 @@ class Parser:  # pylint: disable=too-few-public-methods
     def _parse_metadata_value(self):
         """Parse a metadata value: either an integer literal or EnumName.EntryName."""
         if self.current.kind == "INT":
-            return int(self._eat("INT").value)
+            return int(self._eat("INT").value, 0)
 
         if self.current.kind == "IDENT":
             enum_tok = self._eat("IDENT")
@@ -282,7 +301,7 @@ class Parser:  # pylint: disable=too-few-public-methods
         if self.current.kind == "LBRACKET":
             bracket_line = self.current.line
             self.current = self.lexer.next_token()
-            length = int(self._eat("INT").value)
+            length = int(self._eat("INT").value, 0)
             self._eat("RBRACKET")
             base = ArrayType(element_type=base, length=length, line=bracket_line)
 

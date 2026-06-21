@@ -68,10 +68,12 @@ public class CompIdDao {
         }
     }
 
-    public void insert(String compId, String firmId, ScramCredential cred) throws SQLException {
+    public void insert(String compId, String firmId, ScramCredential cred,
+                       boolean forcePasswordChange) throws SQLException {
         String sql = "INSERT INTO " + table
-                + " (comp_id, firm_id, stored_key, server_key, salt, iterations)"
-                + " VALUES (?, ?, ?, ?, ?, ?)";
+                + " (comp_id, firm_id, stored_key, server_key, salt, iterations,"
+                + " force_password_change)"
+                + " VALUES (?, ?, ?, ?, ?, ?, ?)";
         try (Connection conn = dataSource.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, compId);
@@ -80,6 +82,7 @@ public class CompIdDao {
             ps.setString(4, cred.serverKey());
             ps.setString(5, cred.salt());
             ps.setInt(6, cred.iterations());
+            ps.setBoolean(7, forcePasswordChange);
             ps.executeUpdate();
         }
     }

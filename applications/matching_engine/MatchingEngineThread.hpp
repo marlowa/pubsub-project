@@ -54,7 +54,7 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
   protected:
     void on_app_ready_event() override;
     void on_connection_established(pubsub_itc_fw::ConnectionID id) override;
-    void on_connection_lost(pubsub_itc_fw::ConnectionID id, const std::string& reason) override;
+    void on_connection_lost(const pubsub_itc_fw::ConnectionID &id, const std::string& reason) override;
     void on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message) override;
     void on_timer_event(const std::string& name) override;
     void on_itc_message(const pubsub_itc_fw::EventMessage& message) override;

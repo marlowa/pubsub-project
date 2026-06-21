@@ -188,7 +188,7 @@ class OutboundTestThread : public ApplicationThread {
         shutdown("connection failed");
     }
 
-    void on_connection_lost(ConnectionID, const std::string&) override {
+    void on_connection_lost(const ConnectionID&, const std::string&) override {
         connection_lost.store(true, std::memory_order_release);
         shutdown("connection lost");
     }

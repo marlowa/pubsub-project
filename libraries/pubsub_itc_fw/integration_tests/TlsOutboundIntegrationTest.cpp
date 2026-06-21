@@ -575,7 +575,7 @@ class TlsOutboundConnectorThread : public ApplicationThread {
         send_raw(conn_id, frame.data(), static_cast<uint32_t>(frame.size()));
     }
 
-    void on_connection_lost(ConnectionID, const std::string&) override {
+    void on_connection_lost(const ConnectionID&, const std::string&) override {
         connection_lost.store(true, std::memory_order_release);
         shutdown("server disconnected");
     }
@@ -643,7 +643,7 @@ class TlsOutboundPassiveConnectorThread : public ApplicationThread {
         connection_established.store(true, std::memory_order_release);
     }
 
-    void on_connection_lost(ConnectionID, const std::string&) override {
+    void on_connection_lost(const ConnectionID&, const std::string&) override {
         connection_lost.store(true, std::memory_order_release);
         shutdown("server disconnected");
     }

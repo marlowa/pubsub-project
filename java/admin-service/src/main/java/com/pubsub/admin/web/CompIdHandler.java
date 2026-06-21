@@ -9,6 +9,8 @@ import com.pubsub.admin.service.AuthServiceClient;
 import com.pubsub.admin.service.ScramCredential;
 import com.pubsub.admin.service.ScramDerivation;
 import io.javalin.http.Context;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.sql.SQLException;
@@ -16,6 +18,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 public class CompIdHandler {
+    private static final Logger log = LoggerFactory.getLogger(CompIdHandler.class);
     private static final int SCRAM_ITERATIONS = 4096;
 
     private final CompIdDao compIdDao;
@@ -52,15 +55,20 @@ public class CompIdHandler {
         String firmId = ctx.pathParam("firmId");
         String compId = requireParam(ctx, "compId");
         String password = requireParam(ctx, "password");
+        boolean forcePasswordChange = "on".equals(ctx.formParam("forcePasswordChange"));
+        log.info("create: firmId={} compId={} forcePasswordChange={}", firmId, compId, forcePasswordChange);
         if (compIdDao.findById(compId).isPresent()) {
             throw new ConflictException("CompID '" + compId + "' already exists");
         }
         ScramCredential cred = ScramDerivation.derive(password, SCRAM_ITERATIONS);
-        compIdDao.insert(compId, firmId, cred);
+        compIdDao.insert(compId, firmId, cred, forcePasswordChange);
+        log.debug("create: DB insert done for compId={}", compId);
         if (authServiceClient != null) {
             authServiceClient.setCredential(compId, password, SCRAM_ITERATIONS);
+        } else {
+            log.warn("create: authServiceClient is null -- skipping auth service notification for compId={}", compId);
         }
-        ctx.redirect("/comp-ids?firmId=" + firmId);
+        ctx.redirect("/firms/" + firmId);
     }
 
     public void showEdit(Context ctx) throws SQLException {
@@ -97,7 +105,7 @@ public class CompIdHandler {
         if (authServiceClient != null) {
             authServiceClient.removeCredential(compId);
         }
-        ctx.redirect("/comp-ids?firmId=" + existing.firmId());
+        ctx.redirect("/firms/" + existing.firmId());
     }
 
     public void showSetPassword(Context ctx) throws SQLException {

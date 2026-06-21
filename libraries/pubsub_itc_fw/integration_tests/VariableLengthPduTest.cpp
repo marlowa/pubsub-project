@@ -108,7 +108,7 @@ class ConnectorThread : public ApplicationThread {
         shutdown("connection failed: " + reason);
     }
 
-    void on_connection_lost(ConnectionID, const std::string&) override {
+    void on_connection_lost(const ConnectionID&, const std::string&) override {
         connection_lost.store(true, std::memory_order_release);
         shutdown("connection lost");
     }
@@ -167,7 +167,7 @@ class ListenerThread : public ApplicationThread {
         connection_established.store(true, std::memory_order_release);
     }
 
-    void on_connection_lost(ConnectionID, const std::string&) override {
+    void on_connection_lost(const ConnectionID&, const std::string&) override {
         connection_lost.store(true, std::memory_order_release);
         shutdown("peer disconnected");
     }

@@ -77,6 +77,50 @@
                 <version>3.2.5</version>
             </plugin>
 
+            <!-- Generate Authentication.java from authentication.dsl -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.2.0</version>
+                <executions>
+                    <execution>
+                        <id>generate-authentication-protocol</id>
+                        <phase>generate-sources</phase>
+                        <goals><goal>exec</goal></goals>
+                        <configuration>
+                            <executable>python3</executable>
+                            <arguments>
+                                <argument>${project.basedir}/../../python/tools/generate_cpp_from_dsl.py</argument>
+                                <argument>${project.basedir}/../../applications/authentication.dsl</argument>
+                                <argument>--java</argument>
+                                <argument>${project.build.directory}/generated-sources/dsl/com/pubsub/admin/protocol/Authentication.java</argument>
+                                <argument>--package</argument>
+                                <argument>com.pubsub.admin.protocol</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- Register the generated sources directory -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>build-helper-maven-plugin</artifactId>
+                <version>3.5.0</version>
+                <executions>
+                    <execution>
+                        <id>add-generated-sources</id>
+                        <phase>generate-sources</phase>
+                        <goals><goal>add-source</goal></goals>
+                        <configuration>
+                            <sources>
+                                <source>${project.build.directory}/generated-sources/dsl</source>
+                            </sources>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
             <!-- Fat JAR for running standalone -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -120,6 +164,7 @@
                     <failsOnError>true</failsOnError>
                     <consoleOutput>true</consoleOutput>
                     <includeTestSourceDirectory>true</includeTestSourceDirectory>
+                    <excludes>com/pubsub/admin/protocol/Authentication.java</excludes>
                 </configuration>
                 <executions>
                     <execution>
@@ -180,12 +225,15 @@
                                 <exclude>com/pubsub/admin/web/**</exclude>
                                 <!-- Needs live TLS auth service -->
                                 <exclude>com/pubsub/admin/service/AuthServiceClient.class</exclude>
+                                <exclude>com/pubsub/admin/service/PduChannel.class</exclude>
                                 <!-- Wiring only — no logic -->
                                 <exclude>com/pubsub/admin/Main.class</exclude>
                                 <!-- Pure data records — no logic to measure -->
                                 <exclude>com/pubsub/admin/model/**</exclude>
                                 <!-- Trivial super() delegates — no logic to measure -->
                                 <exclude>com/pubsub/admin/exception/**</exclude>
+                                <!-- Generated from DSL — not hand-written -->
+                                <exclude>com/pubsub/admin/protocol/**</exclude>
                             </excludes>
                             <rules>
                                 <rule>

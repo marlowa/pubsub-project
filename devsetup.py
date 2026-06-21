@@ -68,6 +68,10 @@ def main() -> None:
         help="skip C++ build")
     build_group.add_argument("--no-doxygen", action="store_true",
         help="skip Doxygen documentation generation")
+    build_group.add_argument("--no-pylint", action="store_true",
+        help="skip pylint on the Python DSL source")
+    build_group.add_argument("--no-pytest", action="store_true",
+        help="skip Python DSL tests (pytest)")
     build_group.add_argument("--jobs", "-j", type=int, metavar="N",
         help="parallel C++ build jobs")
 
@@ -106,6 +110,10 @@ def main() -> None:
         build_cmd.append("--no-cpp")
     if args.no_doxygen:
         build_cmd.append("--no-doxygen")
+    if args.no_pylint:
+        build_cmd.append("--no-pylint")
+    if args.no_pytest:
+        build_cmd.append("--no-pytest")
     if args.jobs:
         build_cmd += ["-j", str(args.jobs)]
     _run(build_cmd, "Step 1/4: build")

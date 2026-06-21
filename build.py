@@ -598,9 +598,21 @@ if __name__ == '__main__':
         sys.exit(main())
     except KeyboardInterrupt:
         print("\n\nBuild interrupted by user", file=sys.stderr)
+        print("\n" + "="*60, file=sys.stderr)
+        print("BUILD FAILED", file=sys.stderr)
+        print("="*60, file=sys.stderr)
         sys.exit(130)
+    except SystemExit as e:
+        if e.code and e.code != 0:
+            print("\n" + "="*60, file=sys.stderr)
+            print("BUILD FAILED", file=sys.stderr)
+            print("="*60, file=sys.stderr)
+        raise
     except Exception as e:
         print(f"\n\nUnexpected error: {e}", file=sys.stderr)
         import traceback
         traceback.print_exc()
+        print("\n" + "="*60, file=sys.stderr)
+        print("BUILD FAILED", file=sys.stderr)
+        print("="*60, file=sys.stderr)
         sys.exit(1)

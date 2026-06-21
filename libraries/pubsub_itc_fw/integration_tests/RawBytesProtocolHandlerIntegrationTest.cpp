@@ -306,7 +306,7 @@ class RawListenerThread : public ApplicationThread {
         connection_established.store(true, std::memory_order_release);
     }
 
-    void on_connection_lost(ConnectionID, const std::string&) override {
+    void on_connection_lost(const ConnectionID&, const std::string&) override {
         connection_lost.store(true, std::memory_order_release);
         shutdown("peer disconnected");
     }
@@ -381,7 +381,7 @@ class BurstListenerThread : public ApplicationThread {
         connection_established.store(true, std::memory_order_release);
     }
 
-    void on_connection_lost(ConnectionID, const std::string&) override {
+    void on_connection_lost(const ConnectionID&, const std::string&) override {
         connection_lost.store(true, std::memory_order_release);
         shutdown("peer disconnected");
     }
@@ -462,7 +462,7 @@ class PassiveListenerThread : public ApplicationThread {
         connection_established.store(true, std::memory_order_release);
     }
 
-    void on_connection_lost(ConnectionID, const std::string&) override {
+    void on_connection_lost(const ConnectionID&, const std::string&) override {
         connection_lost.store(true, std::memory_order_release);
         shutdown("connection lost");
     }
@@ -831,7 +831,7 @@ class LargeReplyListenerThread : public ApplicationThread {
         connection_established.store(true, std::memory_order_release);
     }
 
-    void on_connection_lost(ConnectionID, const std::string&) override {
+    void on_connection_lost(const ConnectionID&, const std::string&) override {
         connection_lost.store(true, std::memory_order_release);
         shutdown("peer disconnected");
     }

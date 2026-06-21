@@ -75,7 +75,7 @@ void AuthenticationThread::on_connection_established(pubsub_itc_fw::ConnectionID
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "AuthenticationThread: connection established conn_id={}", id.get_value());
 }
 
-void AuthenticationThread::on_connection_lost(pubsub_itc_fw::ConnectionID id, const std::string& reason) {
+void AuthenticationThread::on_connection_lost(const pubsub_itc_fw::ConnectionID &id, const std::string& reason) {
     if (admin_connections_.erase(id) > 0) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "AuthenticationThread: admin connection lost conn_id={} reason={}", id.get_value(), reason);
     } else {

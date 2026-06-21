@@ -126,10 +126,10 @@ bool TimerHandler::handle_event(uint32_t events) {
 
     // 5. Deliver one event, coalescing multiple expirations (only when Operational)
     if (expirations == 1) {
-        PUBSUB_LOG(reactor_.get_logger(), FwLogLevel::Info, "handle_event single expiration event, sending single timer event {} {}", timer_.get_name(),
+        PUBSUB_LOG(reactor_.get_logger(), FwLogLevel::Debug, "handle_event single expiration event, sending single timer event {} {}", timer_.get_name(),
                    timer_.get_timer_id().get_value());
     } else {
-        PUBSUB_LOG(reactor_.get_logger(), FwLogLevel::Info, "handle_event coalescing {} expiration events into single timer event {} {}", expirations,
+        PUBSUB_LOG(reactor_.get_logger(), FwLogLevel::Debug, "handle_event coalescing {} expiration events into single timer event {} {}", expirations,
                    timer_.get_name(), timer_.get_timer_id().get_value());
     }
 

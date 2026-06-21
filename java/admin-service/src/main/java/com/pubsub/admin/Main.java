@@ -21,12 +21,15 @@ import com.pubsub.admin.web.UserManagementHandler;
 import io.javalin.Javalin;
 import io.javalin.http.staticfiles.Location;
 import org.eclipse.jetty.server.session.SessionHandler;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.sql.DataSource;
 import java.nio.file.Paths;
 import java.util.Map;
 
 public class Main {
+    private static final Logger log = LoggerFactory.getLogger(Main.class);
     public static void main(String[] args) {
         Config config = Config.load();
         DataSource dataSource = Database.createDataSource(config);
@@ -116,9 +119,11 @@ public class Main {
         app.exception(IllegalArgumentException.class, (e, ctx) ->
                 ctx.status(400).render("/templates/error.ftl",
                         Map.of("message", e.getMessage())));
-        app.exception(Exception.class, (e, ctx) ->
+        app.exception(Exception.class, (e, ctx) -> {
+                log.error("Unhandled exception for {} {}", ctx.req().getMethod(), ctx.req().getRequestURI(), e);
                 ctx.status(500).render("/templates/error.ftl",
-                        Map.of("message", "Internal error: " + e.getMessage())));
+                        Map.of("message", "Internal error: " + e.getMessage()));
+        });
 
         app.start(config.serverPort());
     }
