@@ -16,6 +16,8 @@ import quickfix.field.Side;
 import quickfix.field.Symbol;
 import quickfix.field.TransactTime;
 
+import quickfix.Message;
+
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
@@ -23,8 +25,11 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 public class MessagesHandler {
+
+    private static final Set<Integer> ENGINE_MANAGED_TAGS = Set.of(8, 9, 10, 34, 49, 52, 56);
 
     private static final DateTimeFormatter TIME_FORMAT =
             DateTimeFormatter.ofPattern("HH:mm:ss.SSSSSS").withZone(ZoneOffset.UTC);
@@ -112,6 +117,54 @@ public class MessagesHandler {
             fixEngine.send(ocr);
             blotterStore.addOutbound(ocr);
             ctx.json(Map.of("ok", true, "clOrdId", clOrdId));
+        } catch (Exception e) {
+            ctx.status(400).json(Map.of("error", e.getMessage()));
+        }
+    }
+
+    public void sendRaw(Context ctx) {
+        String raw = ctx.formParam("raw");
+        if (raw == null || raw.isBlank()) {
+            ctx.status(400).json(Map.of("error", "FIX string is required"));
+            return;
+        }
+
+        try {
+            Message message = new Message();
+            for (String pair : raw.trim().split("\\|")) {
+                pair = pair.trim();
+                if (pair.isEmpty()) {
+                    continue;
+                }
+                int eq = pair.indexOf('=');
+                if (eq < 1) {
+                    throw new IllegalArgumentException("Invalid field: '" + pair + "'");
+                }
+                int tag = Integer.parseInt(pair.substring(0, eq).trim());
+                String value = pair.substring(eq + 1);
+                if (ENGINE_MANAGED_TAGS.contains(tag)) {
+                    continue;
+                }
+                if (tag == 35) {
+                    message.getHeader().setString(tag, value);
+                } else {
+                    message.setString(tag, value);
+                }
+            }
+
+            if (!message.getHeader().isSetField(35)) {
+                ctx.status(400).json(Map.of("error", "MsgType (35) is required"));
+                return;
+            }
+
+            if (!fixEngine.send(message)) {
+                ctx.status(400).json(Map.of("error", "Not logged on"));
+                return;
+            }
+            blotterStore.addOutbound(message);
+            ctx.json(Map.of("ok", true));
+        } catch (NumberFormatException e) {
+            ctx.status(400).json(Map.of("error", "Invalid tag number: " + e.getMessage()));
         } catch (Exception e) {
             ctx.status(400).json(Map.of("error", e.getMessage()));
         }

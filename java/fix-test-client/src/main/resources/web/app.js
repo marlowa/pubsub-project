@@ -7,6 +7,7 @@ function buildChrome() {
         { label: 'Session',  href: '/session.html'  },
         { label: 'Script',   href: '/script.html'   },
         { label: 'Messages', href: '/messages.html' },
+        { label: 'Raw',      href: '/raw.html'      },
         { label: 'Config',   href: '/config.html'   },
         { label: 'Logs',     href: '/logs.html'      },
     ];

@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>FIX Test Client — Raw</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div id="content">
+    <h1>Send Raw FIX</h1>
+    <hr class="section-rule">
+
+    <p style="margin-bottom:10px; font-size:13px; color:#555;">
+        Enter a FIX message as pipe-separated <code>tag=value</code> pairs.
+        Session-level fields (8, 9, 10, 34, 49, 52, 56) are managed by the FIX
+        engine and are ignored if present. Field 35 (MsgType) is required.
+    </p>
+    <p style="margin-bottom:16px; font-size:12px; color:#777;">
+        Example:&nbsp;
+        <code>35=D|11=ORD-001|55=BHP|54=1|60=20260101-00:00:00|40=2|38=100|44=10.00</code>
+    </p>
+
+    <div style="display:flex; flex-direction:column; gap:8px; max-width:960px;">
+        <textarea id="raw-input" rows="4"
+            style="font-family:monospace; font-size:13px; border:1px solid #aaa; padding:6px; resize:vertical;"
+            placeholder="35=D|11=ORD-001|55=BHP|54=1|..."></textarea>
+        <div style="display:flex; gap:8px; align-items:center;">
+            <button id="btn-send-raw" onclick="doSendRaw()" disabled>Send</button>
+            <button onclick="clearForm()">Clear</button>
+        </div>
+        <div id="raw-result" style="display:none; font-size:13px; padding:6px 10px; border-radius:3px;"></div>
+    </div>
+</div>
+
+<script src="/app.js"></script>
+<script>
+'use strict';
+
+function clearForm() {
+    document.getElementById('raw-input').value = '';
+    document.getElementById('raw-result').style.display = 'none';
+}
+
+async function doSendRaw() {
+    const raw = document.getElementById('raw-input').value.trim();
+    const resultEl = document.getElementById('raw-result');
+    resultEl.style.display = 'none';
+    if (!raw) return;
+
+    const data = await apiPost('/api/messages/send-raw', { raw });
+    resultEl.style.display = '';
+    if (data.error) {
+        resultEl.style.background = '#fdd';
+        resultEl.style.border = '1px solid #f88';
+        resultEl.textContent = 'Error: ' + data.error;
+    } else {
+        resultEl.style.background = '#dfd';
+        resultEl.style.border = '1px solid #8c8';
+        resultEl.textContent = 'Sent.';
+    }
+}
+
+function pageInit() {
+    const initial = window._lastSessionStatus;
+    if (initial) {
+        document.getElementById('btn-send-raw').disabled = !initial.loggedOn;
+    }
+
+    const originalUpdate = window.updateStatusStrip || function() {};
+    window.updateStatusStrip = function(status) {
+        originalUpdate(status);
+        document.getElementById('btn-send-raw').disabled = !status.loggedOn;
+    };
+}
+</script>
+</body>
+</html>

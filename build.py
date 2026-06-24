@@ -112,52 +112,66 @@ def generate_coverage_report(build_dir, source_dir):
     print(f"  {html_dir}/index.html")
 
 def run_command(cmd, cwd=None, description=None, env=None, quiet=False):
-    """Run a shell command and handle errors"""
+    """Run a shell command, streaming output in real time while capturing it.
+
+    On failure, prints the captured output (quiet mode) or the last 30 lines
+    (non-quiet mode, where the full output already streamed to the terminal)
+    inside the error banner so the cause is clearly visible.
+    """
     if description:
         print(f"\n{'='*60}")
         print(f"{description}")
         print(f"{'='*60}")
 
     print(f"Running: {' '.join(cmd) if isinstance(cmd, list) else cmd}")
+    sys.stdout.flush()
 
-    if quiet:
-        result = subprocess.run(
-            cmd,
-            cwd=cwd,
-            shell=isinstance(cmd, str),
-            check=False,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-        if result.returncode != 0:
-            if result.stdout:
-                sys.stdout.write(result.stdout)
-            if result.stderr:
-                sys.stderr.write(result.stderr)
-    else:
-        result = subprocess.run(
-            cmd,
-            cwd=cwd,
-            shell=isinstance(cmd, str),
-            check=False,
-            env=env
-        )
+    process = subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        shell=isinstance(cmd, str),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
 
-    if result.returncode != 0:
-        if result.returncode < 0:
+    lines = []
+    for line in process.stdout:
+        if not quiet:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+        lines.append(line)
+    process.wait()
+
+    if process.returncode != 0:
+        sys.stdout.flush()
+        step = description or (cmd[0] if isinstance(cmd, list) else str(cmd))
+        print(f"\n{'='*60}", file=sys.stderr)
+        if process.returncode < 0:
             import signal
             try:
-                sig_name = signal.Signals(-result.returncode).name
-                print(f"ERROR: Command killed by signal {sig_name} ({-result.returncode})", file=sys.stderr)
+                sig_name = signal.Signals(-process.returncode).name
+                print(f"ERROR: '{step}' killed by signal {sig_name} ({-process.returncode})", file=sys.stderr)
             except ValueError:
-                print(f"ERROR: Command killed by signal {-result.returncode}", file=sys.stderr)
+                print(f"ERROR: '{step}' killed by signal {-process.returncode}", file=sys.stderr)
         else:
-            print(f"ERROR: Command failed with exit code {result.returncode}", file=sys.stderr)
-        sys.exit(result.returncode)
+            print(f"ERROR: '{step}' failed with exit code {process.returncode}", file=sys.stderr)
+        if quiet:
+            if lines:
+                print("--- output ---", file=sys.stderr)
+                sys.stderr.write(''.join(lines))
+        else:
+            tail = lines[-30:]
+            if tail:
+                print("--- last 30 lines ---", file=sys.stderr)
+                sys.stderr.write(''.join(tail))
+        print(f"{'='*60}", file=sys.stderr)
+        sys.stderr.flush()
+        sys.exit(process.returncode)
 
-    return result
+    return process
 
 
 def check_environment_variables():

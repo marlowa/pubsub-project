@@ -71,10 +71,11 @@ public class Main {
         app.get("/api/scripts/{filename}", scriptHandler::loadScript);
         app.post("/api/scripts/save",      scriptHandler::saveScript);
 
-        app.get("/api/messages",           messagesHandler::getBlotter);
-        app.post("/api/messages/send",     messagesHandler::send);
-        app.post("/api/messages/cancel",   messagesHandler::cancel);
-        app.post("/api/messages/clear",    messagesHandler::clear);
+        app.get("/api/messages",              messagesHandler::getBlotter);
+        app.post("/api/messages/send",        messagesHandler::send);
+        app.post("/api/messages/send-raw",    messagesHandler::sendRaw);
+        app.post("/api/messages/cancel",      messagesHandler::cancel);
+        app.post("/api/messages/clear",       messagesHandler::clear);
 
         app.get("/api/config",             configHandler::getConfig);
 
