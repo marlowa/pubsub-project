@@ -91,13 +91,6 @@
 
 let lastBlotterSize = 0;
 
-const ORD_STATUS_CLASS = {
-    '2': 'status-filled',
-    '1': 'status-partial',
-    '8': 'status-rejected',
-    '4': 'status-cancelled',
-};
-
 const EXEC_TYPE_LABEL = {
     '0': 'New', '3': 'DoneForDay', '4': 'Canceled', '5': 'Replaced',
     '6': 'PendingCancel', '7': 'Stopped', '8': 'Rejected', '9': 'Suspended',
@@ -161,10 +154,13 @@ function renderBlotter(rows) {
 
         if (row.direction === 'OUT') {
             tr.className = 'dir-out';
-        } else if (row.direction === 'IN' && row.ordStatus) {
-            const cls = ORD_STATUS_CLASS[row.ordStatus];
-            if (cls) {
-                tr.className = cls;
+        } else if (row.direction === 'IN') {
+            if (row.ordRejReason || row.cxlRejReason || row.ordStatus === '8') {
+                tr.className = 'er-error';
+            } else if (row.ordStatus === '4') {
+                tr.className = 'er-cancelled';
+            } else {
+                tr.className = 'er-normal';
             }
         }
 
