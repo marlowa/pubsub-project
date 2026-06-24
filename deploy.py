@@ -5,7 +5,8 @@ deploy.py — deploy a pubsub release artefact.
 
 Steps (in order):
   1. Unpack the release .tar.gz into the install directory (if --artefact given).
-  2. Expand ${placeholder} in etc/**/*.toml using values from the env TOML.
+  2. Expand ${placeholder} in etc/**/*.toml and in application.properties inside
+     the admin-service JAR, using values from the env TOML.
      Placeholder names are the full flattened TOML path, e.g.
        [arbiter_primary] peer_host  →  ${arbiter_primary_peer_host}.
   3. Generate self-signed TLS certificates for each [tls.*] section in the env
@@ -38,10 +39,12 @@ import hmac
 import os
 import re
 import secrets
+import shutil
 import string
 import subprocess
 import sys
 import tarfile
+import zipfile
 from pathlib import Path
 
 # Matches intentional ${placeholder} patterns — used to catch unresolved
@@ -132,6 +135,50 @@ def expand_templates(install_dir: Path, namespace: dict[str, str]) -> None:
             toml_path.write_text(result, encoding="utf-8")
             expanded += 1
     print(f"  {expanded} template(s) expanded in {etc_dir.relative_to(install_dir.parent)}/")
+
+
+# ── JAR property patching ─────────────────────────────────────────────────────
+
+def patch_jar_properties(env: dict, install_dir: Path, namespace: dict[str, str]) -> None:
+    """Expand ${placeholder} in application.properties inside the admin-service JAR."""
+    comp = env.get("components", {}).get("admin_service")
+    if comp is None or "jar" not in comp:
+        print("  no admin_service jar — skipping")
+        return
+
+    jar_path = (install_dir / comp["jar"]).resolve()
+    if not jar_path.is_file():
+        print(f"  warning: {jar_path.name} not found — skipping JAR properties patch")
+        return
+
+    prop_entry = "application.properties"
+    with zipfile.ZipFile(jar_path, "r") as zf:
+        if prop_entry not in zf.namelist():
+            sys.exit(f"error: {prop_entry} not found in {jar_path.name}")
+        original_text = zf.read(prop_entry).decode("utf-8")
+
+    result = string.Template(original_text).safe_substitute(namespace)
+    unresolved = _PLACEHOLDER_RE.findall(result)
+    if unresolved:
+        sys.exit(f"error: undefined placeholder(s) {unresolved} in {prop_entry}")
+
+    if result == original_text:
+        print(f"  {prop_entry}: no placeholders to expand")
+        return
+
+    tmp_path = jar_path.with_suffix(".jar.tmp")
+    try:
+        with zipfile.ZipFile(jar_path, "r") as zin, \
+             zipfile.ZipFile(tmp_path, "w") as zout:
+            for item in zin.infolist():
+                data = result.encode("utf-8") if item.filename == prop_entry else zin.read(item)
+                zout.writestr(item, data)
+        shutil.move(str(tmp_path), str(jar_path))
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink()
+        raise
+    print(f"  patched: {prop_entry} in {jar_path.name}")
 
 
 # ── TLS certificate generation ────────────────────────────────────────────────
@@ -471,6 +518,7 @@ def main() -> None:
             namespace[key] = str(wal_path)
 
     expand_templates(install_dir, namespace)
+    patch_jar_properties(env, install_dir, namespace)
     print()
 
     # Step 3: TLS certificates

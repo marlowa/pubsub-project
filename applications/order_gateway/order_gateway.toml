@@ -1,6 +1,6 @@
 [network]
 listen_host         = "${order_gateway_network_listen_host}"
-listen_port         = 9879
+listen_port         = ${order_gateway_network_listen_port}
 raw_buffer_capacity = 16777216 # for TCP buffering; 16 MiB per FIX session.
                               # At ~175 bytes/NOS, 16 MiB holds ~71,900 messages at the 75%
                               # high-water mark — above the 50,000 NOS per session sent by the
@@ -11,20 +11,20 @@ raw_buffer_capacity = 16777216 # for TCP buffering; 16 MiB per FIX session.
                               # Note: 5×200 still exceeds this buffer (200K > 71K); that
                               # configuration is beyond the supported per-session burst size.
 er_listen_host      = "${order_gateway_network_er_listen_host}"
-er_listen_port      = 7010
+er_listen_port      = ${order_gateway_network_er_listen_port}
 
 [authentication_service]
 host           = "${order_gateway_authentication_service_host}"
-port           = 7070
+port           = ${order_gateway_authentication_service_port}
 secondary_host = "${order_gateway_authentication_service_secondary_host}"
-secondary_port = 7071
+secondary_port = ${order_gateway_authentication_service_secondary_port}
 
 [sequencer]
 ha_enabled      = true
 primary_host    = "${order_gateway_sequencer_primary_host}"
-primary_port    = 7001
+primary_port    = ${order_gateway_sequencer_primary_port}
 secondary_host  = "${order_gateway_sequencer_secondary_host}"
-secondary_port  = 7002
+secondary_port  = ${order_gateway_sequencer_secondary_port}
 
 [fix_session]
 sender_comp_id         = "GATEWAY"

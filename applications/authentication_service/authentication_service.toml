@@ -2,10 +2,10 @@ credentials_file = "credentials.toml"
 
 [network]
 listen_host = "${auth_service_primary_network_listen_host}"
-listen_port = 7070
+listen_port = ${auth_service_primary_network_listen_port}
 
 [admin]
-listen_port                    = 7072
+listen_port                    = ${auth_service_primary_admin_listen_port}
 tls_certificate_path           = "admin.crt"
 tls_private_key_path           = "admin.key"
 tls_ca_path                    = ""

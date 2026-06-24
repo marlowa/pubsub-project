@@ -1,14 +1,14 @@
 [network]
 listen_host = "${matching_engine_network_listen_host}"
-listen_port = 7020
+listen_port = ${matching_engine_network_listen_port}
 
 [sequencer_er]
 host = "${matching_engine_sequencer_er_host}"
-port = 7021
+port = ${matching_engine_sequencer_er_port}
 
 [sequencer_er_secondary]
 host = "${matching_engine_sequencer_er_secondary_host}"
-port = 7022
+port = ${matching_engine_sequencer_er_secondary_port}
 
 [logging]
 applog_level = "info"

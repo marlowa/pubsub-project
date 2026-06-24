@@ -219,39 +219,61 @@ reactor_cpu_registry_lock_file = "/dev/shm/pubsub_cpu_registry.lock"
 
 [witness]
 network_listen_host = "127.0.0.1"
+network_listen_port = 7100
 
 [arbiter_primary]
 network_listen_host  = "127.0.0.1"
+network_listen_port  = 7200
 peer_listen_host     = "127.0.0.1"
+peer_listen_port     = 7203
 peer_host            = "127.0.0.1"
+peer_port            = 7204
 peer_fence_file_path = "/dev/shm/arbiter_primary_fence"
 witness_host         = "127.0.0.1"
+witness_port         = 7100
 
 [arbiter_secondary]
 network_listen_host  = "127.0.0.1"
+network_listen_port  = 7201
 peer_listen_host     = "127.0.0.1"
+peer_listen_port     = 7204
 peer_host            = "127.0.0.1"
+peer_port            = 7203
 peer_fence_file_path = "/dev/shm/arbiter_secondary_fence"
 witness_host         = "127.0.0.1"
+witness_port         = 7100
 
 [auth_service_primary]
-network_listen_host = "127.0.0.1"
+network_listen_host  = "127.0.0.1"
+network_listen_port  = 7070
+admin_listen_port    = 7072
 
 [auth_service_secondary]
-network_listen_host = "127.0.0.1"
+network_listen_host  = "127.0.0.1"
+network_listen_port  = 7071
+admin_listen_port    = 7073
 
 [matching_engine]
-network_listen_host         = "127.0.0.1"
-sequencer_er_host           = "127.0.0.1"
-sequencer_er_secondary_host = "127.0.0.1"
+network_listen_host           = "127.0.0.1"
+network_listen_port           = 7020
+sequencer_er_host             = "127.0.0.1"
+sequencer_er_port             = 7021
+sequencer_er_secondary_host   = "127.0.0.1"
+sequencer_er_secondary_port   = 7022
 
 [order_gateway]
 network_listen_host                   = "127.0.0.1"
+network_listen_port                   = 9879
 network_er_listen_host                = "127.0.0.1"
+network_er_listen_port                = 7010
 authentication_service_host           = "127.0.0.1"
+authentication_service_port           = 7070
 authentication_service_secondary_host = "127.0.0.1"
+authentication_service_secondary_port = 7071
 sequencer_primary_host                = "127.0.0.1"
+sequencer_primary_port                = 7001
 sequencer_secondary_host              = "127.0.0.1"
+sequencer_secondary_port              = 7002
 fix_tls_enabled                       = true
 fix_tls_cert                          = "fix_gateway.crt"
 fix_tls_key                           = "fix_gateway.key"
@@ -259,49 +281,100 @@ fix_capture_file                      = "fix_capture.bin"
 fix_capture_ring_bytes                = 67108864
 
 [sequencer_primary]
-network_listen_host       = "127.0.0.1"
-network_er_listen_host    = "127.0.0.1"
-gateway_host              = "127.0.0.1"
-matching_engine_host      = "127.0.0.1"
-ha_arbiter_primary_host   = "127.0.0.1"
-ha_arbiter_secondary_host = "127.0.0.1"
-peer_listen_host          = "127.0.0.1"
-peer_host                 = "127.0.0.1"
-peer_fence_file_path      = "/dev/shm/sequencer_primary_fence"
-wal_directory             = "var/sequencer_wal"
+network_listen_host        = "127.0.0.1"
+network_listen_port        = 7001
+network_er_listen_host     = "127.0.0.1"
+network_er_listen_port     = 7021
+gateway_host               = "127.0.0.1"
+gateway_port               = 7010
+matching_engine_host       = "127.0.0.1"
+matching_engine_port       = 7020
+ha_arbiter_primary_host    = "127.0.0.1"
+ha_arbiter_primary_port    = 7200
+ha_arbiter_secondary_host  = "127.0.0.1"
+ha_arbiter_secondary_port  = 7201
+peer_listen_host           = "127.0.0.1"
+peer_listen_port           = 7003
+peer_host                  = "127.0.0.1"
+peer_port                  = 7004
+peer_fence_file_path       = "/dev/shm/sequencer_primary_fence"
+wal_directory              = "var/sequencer_wal"
 wal_subscriber_listen_host = "127.0.0.1"
+wal_subscriber_listen_port = 7030
 
 [sequencer_secondary]
-network_listen_host       = "127.0.0.1"
-network_er_listen_host    = "127.0.0.1"
-gateway_host              = "127.0.0.1"
-matching_engine_host      = "127.0.0.1"
-ha_arbiter_primary_host   = "127.0.0.1"
-ha_arbiter_secondary_host = "127.0.0.1"
-peer_listen_host          = "127.0.0.1"
-peer_host                 = "127.0.0.1"
-peer_fence_file_path      = "/dev/shm/sequencer_secondary_fence"
-wal_directory             = "var/sequencer_secondary_wal"
+network_listen_host        = "127.0.0.1"
+network_listen_port        = 7002
+network_er_listen_host     = "127.0.0.1"
+network_er_listen_port     = 7022
+gateway_host               = "127.0.0.1"
+gateway_port               = 7010
+matching_engine_host       = "127.0.0.1"
+matching_engine_port       = 7020
+ha_arbiter_primary_host    = "127.0.0.1"
+ha_arbiter_primary_port    = 7200
+ha_arbiter_secondary_host  = "127.0.0.1"
+ha_arbiter_secondary_port  = 7201
+peer_listen_host           = "127.0.0.1"
+peer_listen_port           = 7004
+peer_host                  = "127.0.0.1"
+peer_port                  = 7003
+peer_fence_file_path       = "/dev/shm/sequencer_secondary_fence"
+wal_directory              = "var/sequencer_secondary_wal"
 wal_subscriber_listen_host = "127.0.0.1"
+wal_subscriber_listen_port = 7031
 
 [matching_engine_publisher_primary]
-network_listen_host          = "127.0.0.1"
-sequencer_wal_host           = "127.0.0.1"
-sequencer_wal_secondary_host = "127.0.0.1"
-wal_directory                = "var/mep_primary_wal"
-ha_arbiter_primary_host      = "127.0.0.1"
-ha_arbiter_secondary_host    = "127.0.0.1"
-ha_peer_listen_host          = "127.0.0.1"
-ha_peer_host                 = "127.0.0.1"
-ha_fence_file_path           = "/dev/shm/mep_primary_fence"
+network_listen_host                  = "127.0.0.1"
+sequencer_wal_host                   = "127.0.0.1"
+sequencer_wal_port                   = 7030
+sequencer_wal_secondary_host         = "127.0.0.1"
+sequencer_wal_secondary_port         = 7031
+topics_orders_listen_port            = 7040
+topics_execution_reports_listen_port = 7041
+wal_directory                        = "var/mep_primary_wal"
+ha_arbiter_primary_host              = "127.0.0.1"
+ha_arbiter_primary_port              = 7200
+ha_arbiter_secondary_host            = "127.0.0.1"
+ha_arbiter_secondary_port            = 7201
+ha_peer_listen_host                  = "127.0.0.1"
+ha_peer_listen_port                  = 7044
+ha_peer_host                         = "127.0.0.1"
+ha_peer_port                         = 7045
+ha_fence_file_path                   = "/dev/shm/mep_primary_fence"
 
 [matching_engine_publisher_secondary]
-network_listen_host          = "127.0.0.1"
-sequencer_wal_host           = "127.0.0.1"
-sequencer_wal_secondary_host = "127.0.0.1"
-wal_directory                = "var/mep_secondary_wal"
-ha_arbiter_primary_host      = "127.0.0.1"
-ha_arbiter_secondary_host    = "127.0.0.1"
-ha_peer_listen_host          = "127.0.0.1"
-ha_peer_host                 = "127.0.0.1"
-ha_fence_file_path           = "/dev/shm/mep_secondary_fence"
+network_listen_host                  = "127.0.0.1"
+sequencer_wal_host                   = "127.0.0.1"
+sequencer_wal_port                   = 7030
+sequencer_wal_secondary_host         = "127.0.0.1"
+sequencer_wal_secondary_port         = 7031
+topics_orders_listen_port            = 7042
+topics_execution_reports_listen_port = 7043
+wal_directory                        = "var/mep_secondary_wal"
+ha_arbiter_primary_host              = "127.0.0.1"
+ha_arbiter_primary_port              = 7200
+ha_arbiter_secondary_host            = "127.0.0.1"
+ha_arbiter_secondary_port            = 7201
+ha_peer_listen_host                  = "127.0.0.1"
+ha_peer_listen_port                  = 7045
+ha_peer_host                         = "127.0.0.1"
+ha_peer_port                         = 7044
+ha_fence_file_path                   = "/dev/shm/mep_secondary_fence"
+
+# ── Fix test client ────────────────────────────────────────────────────────────
+# fix_gateway_port must match order_gateway.network_listen_port above.
+
+[fix_test_client]
+server_port      = 8081
+fix_gateway_port = 9879
+
+# ── Admin service ──────────────────────────────────────────────────────────────
+# auth_service_admin_port must match auth_service_primary.admin_listen_port above.
+# db_url must match the [db] section above.
+
+[admin_service]
+db_url                  = "jdbc:postgresql://localhost:5432/pubsub"
+auth_service_host       = "127.0.0.1"
+auth_service_admin_port = 7072
+server_port             = 8080

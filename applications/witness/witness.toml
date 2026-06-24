@@ -1,6 +1,6 @@
 [network]
 listen_host = "${witness_network_listen_host}"
-listen_port = 7100
+listen_port = ${witness_network_listen_port}
 
 [logging]
 applog_level = "info"

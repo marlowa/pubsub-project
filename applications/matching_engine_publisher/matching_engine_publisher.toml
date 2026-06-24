@@ -3,17 +3,17 @@ listen_host = "${matching_engine_publisher_primary_network_listen_host}"
 
 [sequencer_wal]
 host = "${matching_engine_publisher_primary_sequencer_wal_host}"
-port = 7030
+port = ${matching_engine_publisher_primary_sequencer_wal_port}
 
 [sequencer_wal_secondary]
 host = "${matching_engine_publisher_primary_sequencer_wal_secondary_host}"
-port = 7031
+port = ${matching_engine_publisher_primary_sequencer_wal_secondary_port}
 
 [topics.orders]
-listen_port = 7040
+listen_port = ${matching_engine_publisher_primary_topics_orders_listen_port}
 
 [topics.execution_reports]
-listen_port = 7041
+listen_port = ${matching_engine_publisher_primary_topics_execution_reports_listen_port}
 
 [wal]
 directory                 = "${matching_engine_publisher_primary_wal_directory}"
@@ -24,14 +24,14 @@ snapshot_interval_seconds = 30
 ha_enabled                      = true
 instance_id                     = 1
 arbiter_primary_host            = "${matching_engine_publisher_primary_ha_arbiter_primary_host}"
-arbiter_primary_port            = 7200
+arbiter_primary_port            = ${matching_engine_publisher_primary_ha_arbiter_primary_port}
 arbiter_secondary_host          = "${matching_engine_publisher_primary_ha_arbiter_secondary_host}"
-arbiter_secondary_port          = 7201
+arbiter_secondary_port          = ${matching_engine_publisher_primary_ha_arbiter_secondary_port}
 arbitration_timeout_seconds     = 3
 peer_listen_host                = "${matching_engine_publisher_primary_ha_peer_listen_host}"
-peer_listen_port                = 7044
+peer_listen_port                = ${matching_engine_publisher_primary_ha_peer_listen_port}
 peer_host                       = "${matching_engine_publisher_primary_ha_peer_host}"
-peer_port                       = 7045
+peer_port                       = ${matching_engine_publisher_primary_ha_peer_port}
 heartbeat_interval_seconds      = 2
 heartbeat_timeout_seconds       = 6
 startup_election_timeout_seconds = 20

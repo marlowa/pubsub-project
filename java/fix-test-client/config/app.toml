@@ -1,9 +1,9 @@
 [server]
-port = 8081
+port = ${fix_test_client_server_port}
 
 [fix]
 gateway_host         = "127.0.0.1"
-gateway_port         = 9879
+gateway_port         = ${fix_test_client_fix_gateway_port}
 target_comp_id       = "GATEWAY"
 trust_store_path     = "config/fix_gateway_trust.jks"
 trust_store_password = "pubsub_dev"

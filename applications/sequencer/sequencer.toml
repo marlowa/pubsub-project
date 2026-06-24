@@ -1,31 +1,31 @@
 [network]
 listen_host    = "${sequencer_primary_network_listen_host}"
-listen_port    = 7001
+listen_port    = ${sequencer_primary_network_listen_port}
 er_listen_host = "${sequencer_primary_network_er_listen_host}"
-er_listen_port = 7021
+er_listen_port = ${sequencer_primary_network_er_listen_port}
 
 [gateway]
 host = "${sequencer_primary_gateway_host}"
-port = 7010
+port = ${sequencer_primary_gateway_port}
 
 [matching_engine]
 host = "${sequencer_primary_matching_engine_host}"
-port = 7020
+port = ${sequencer_primary_matching_engine_port}
 
 [ha]
 ha_enabled                  = true
 instance_id                 = 1
 arbiter_primary_host        = "${sequencer_primary_ha_arbiter_primary_host}"
-arbiter_primary_port        = 7200
+arbiter_primary_port        = ${sequencer_primary_ha_arbiter_primary_port}
 arbiter_secondary_host      = "${sequencer_primary_ha_arbiter_secondary_host}"
-arbiter_secondary_port      = 7201
+arbiter_secondary_port      = ${sequencer_primary_ha_arbiter_secondary_port}
 arbitration_timeout_seconds = 3
 
 [peer]
 listen_host                      = "${sequencer_primary_peer_listen_host}"
-listen_port                      = 7003
+listen_port                      = ${sequencer_primary_peer_listen_port}
 host                             = "${sequencer_primary_peer_host}"
-port                             = 7004
+port                             = ${sequencer_primary_peer_port}
 heartbeat_interval_seconds       = 2
 heartbeat_timeout_seconds        = 6
 startup_election_timeout_seconds = 20
@@ -33,7 +33,7 @@ fence_file_path                  = "${sequencer_primary_peer_fence_file_path}"
 
 [wal_subscriber]
 listen_host = "${sequencer_primary_wal_subscriber_listen_host}"
-listen_port = 7030
+listen_port = ${sequencer_primary_wal_subscriber_listen_port}
 
 [wal]
 directory                 = "${sequencer_primary_wal_directory}"

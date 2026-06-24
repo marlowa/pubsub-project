@@ -138,60 +138,112 @@ reactor_cpu_registry_lock_file = "/dev/shm/pubsub_cpu_registry.lock"
 
 [witness]
 network_listen_host = "0.0.0.0"
+network_listen_port = 7100
 
 [arbiter_primary]
 network_listen_host  = "0.0.0.0"
+network_listen_port  = 7200
 peer_listen_host     = "0.0.0.0"
+peer_listen_port     = 7203
 peer_host            = "arbiter-secondary.test-1.exchange.internal"  # REPLACE
+peer_port            = 7204
 peer_fence_file_path = "/dev/shm/arbiter_primary_fence"
 witness_host         = "witness.test-1.exchange.internal"            # REPLACE
+witness_port         = 7100
 
 [arbiter_secondary]
 network_listen_host  = "0.0.0.0"
+network_listen_port  = 7201
 peer_listen_host     = "0.0.0.0"
+peer_listen_port     = 7204
 peer_host            = "arbiter-primary.test-1.exchange.internal"    # REPLACE
+peer_port            = 7203
 peer_fence_file_path = "/dev/shm/arbiter_secondary_fence"
 witness_host         = "witness.test-1.exchange.internal"            # REPLACE
+witness_port         = 7100
 
 [auth_service_primary]
-network_listen_host = "0.0.0.0"
+network_listen_host  = "0.0.0.0"
+network_listen_port  = 7070
+admin_listen_port    = 7072
 
 [auth_service_secondary]
-network_listen_host = "0.0.0.0"
+network_listen_host  = "0.0.0.0"
+network_listen_port  = 7071
+admin_listen_port    = 7073
 
 [matching_engine]
-network_listen_host         = "0.0.0.0"
-sequencer_er_host           = "sequencer-primary.test-1.exchange.internal"    # REPLACE
-sequencer_er_secondary_host = "sequencer-secondary.test-1.exchange.internal"  # REPLACE
+network_listen_host           = "0.0.0.0"
+network_listen_port           = 7020
+sequencer_er_host             = "sequencer-primary.test-1.exchange.internal"    # REPLACE
+sequencer_er_port             = 7021
+sequencer_er_secondary_host   = "sequencer-secondary.test-1.exchange.internal"  # REPLACE
+sequencer_er_secondary_port   = 7022
 
 [order_gateway]
 network_listen_host                   = "0.0.0.0"
+network_listen_port                   = 9879
 network_er_listen_host                = "0.0.0.0"
+network_er_listen_port                = 7010
 authentication_service_host           = "auth-primary.test-1.exchange.internal"    # REPLACE
+authentication_service_port           = 7070
 authentication_service_secondary_host = "auth-secondary.test-1.exchange.internal"  # REPLACE
+authentication_service_secondary_port = 7071
 sequencer_primary_host                = "sequencer-primary.test-1.exchange.internal"    # REPLACE
+sequencer_primary_port                = 7001
 sequencer_secondary_host              = "sequencer-secondary.test-1.exchange.internal"  # REPLACE
+sequencer_secondary_port              = 7002
 
 [sequencer_primary]
-network_listen_host       = "0.0.0.0"
-network_er_listen_host    = "0.0.0.0"
-gateway_host              = "gateway.test-1.exchange.internal"                 # REPLACE
-matching_engine_host      = "matching-engine.test-1.exchange.internal"         # REPLACE
-ha_arbiter_primary_host   = "arbiter-primary.test-1.exchange.internal"         # REPLACE
-ha_arbiter_secondary_host = "arbiter-secondary.test-1.exchange.internal"       # REPLACE
-peer_listen_host          = "0.0.0.0"
-peer_host                 = "sequencer-secondary.test-1.exchange.internal"     # REPLACE
-peer_fence_file_path      = "/dev/shm/sequencer_primary_fence"
-wal_directory             = "/var/lib/pubsub/sequencer_wal"
+network_listen_host        = "0.0.0.0"
+network_listen_port        = 7001
+network_er_listen_host     = "0.0.0.0"
+network_er_listen_port     = 7021
+gateway_host               = "gateway.test-1.exchange.internal"                 # REPLACE
+gateway_port               = 7010
+matching_engine_host       = "matching-engine.test-1.exchange.internal"         # REPLACE
+matching_engine_port       = 7020
+ha_arbiter_primary_host    = "arbiter-primary.test-1.exchange.internal"         # REPLACE
+ha_arbiter_primary_port    = 7200
+ha_arbiter_secondary_host  = "arbiter-secondary.test-1.exchange.internal"       # REPLACE
+ha_arbiter_secondary_port  = 7201
+peer_listen_host           = "0.0.0.0"
+peer_listen_port           = 7003
+peer_host                  = "sequencer-secondary.test-1.exchange.internal"     # REPLACE
+peer_port                  = 7004
+peer_fence_file_path       = "/dev/shm/sequencer_primary_fence"
+wal_directory              = "/var/lib/pubsub/sequencer_wal"
+wal_subscriber_listen_host = "0.0.0.0"
+wal_subscriber_listen_port = 7030
 
 [sequencer_secondary]
-network_listen_host       = "0.0.0.0"
-network_er_listen_host    = "0.0.0.0"
-gateway_host              = "gateway.test-1.exchange.internal"                 # REPLACE
-matching_engine_host      = "matching-engine.test-1.exchange.internal"         # REPLACE
-ha_arbiter_primary_host   = "arbiter-primary.test-1.exchange.internal"         # REPLACE
-ha_arbiter_secondary_host = "arbiter-secondary.test-1.exchange.internal"       # REPLACE
-peer_listen_host          = "0.0.0.0"
-peer_host                 = "sequencer-primary.test-1.exchange.internal"       # REPLACE
-peer_fence_file_path      = "/dev/shm/sequencer_secondary_fence"
-wal_directory             = "/var/lib/pubsub/sequencer_secondary_wal"
+network_listen_host        = "0.0.0.0"
+network_listen_port        = 7002
+network_er_listen_host     = "0.0.0.0"
+network_er_listen_port     = 7022
+gateway_host               = "gateway.test-1.exchange.internal"                 # REPLACE
+gateway_port               = 7010
+matching_engine_host       = "matching-engine.test-1.exchange.internal"         # REPLACE
+matching_engine_port       = 7020
+ha_arbiter_primary_host    = "arbiter-primary.test-1.exchange.internal"         # REPLACE
+ha_arbiter_primary_port    = 7200
+ha_arbiter_secondary_host  = "arbiter-secondary.test-1.exchange.internal"       # REPLACE
+ha_arbiter_secondary_port  = 7201
+peer_listen_host           = "0.0.0.0"
+peer_listen_port           = 7004
+peer_host                  = "sequencer-primary.test-1.exchange.internal"       # REPLACE
+peer_port                  = 7003
+peer_fence_file_path       = "/dev/shm/sequencer_secondary_fence"
+wal_directory              = "/var/lib/pubsub/sequencer_secondary_wal"
+wal_subscriber_listen_host = "0.0.0.0"
+wal_subscriber_listen_port = 7031
+
+# ── Admin service ──────────────────────────────────────────────────────────────
+# auth_service_admin_port must match auth_service_primary.admin_listen_port above.
+# db_url must reference the same host/port/name as the [db] section above.
+
+[admin_service]
+db_url                  = "jdbc:postgresql://db.test-1.exchange.internal:5432/pubsub"  # REPLACE
+auth_service_host       = "auth-primary.test-1.exchange.internal"  # REPLACE
+auth_service_admin_port = 7072
+server_port             = 8080
