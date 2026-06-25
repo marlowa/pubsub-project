@@ -37,6 +37,10 @@
             <input type="checkbox" id="use-tls" checked>
         </div>
         <div class="form-row">
+            <label>Proprietary logon</label>
+            <input type="checkbox" id="proprietary-logon">
+        </div>
+        <div class="form-row">
             <label>Starting seq num</label>
             <input type="checkbox" id="override-seq-check" onchange="toggleSeqInput()">
             Override
@@ -87,11 +91,12 @@ async function doLogon() {
     btn.disabled = true;
 
     const params = {
-        senderCompId:  document.getElementById('sender-comp-id').value,
-        password:      document.getElementById('password').value,
-        useTls:        document.getElementById('use-tls').checked,
-        overrideSeq:   document.getElementById('override-seq-check').checked,
-        overrideSeqNum: document.getElementById('override-seq-num').value,
+        senderCompId:     document.getElementById('sender-comp-id').value,
+        password:         document.getElementById('password').value,
+        useTls:           document.getElementById('use-tls').checked,
+        proprietaryLogon: document.getElementById('proprietary-logon').checked,
+        overrideSeq:      document.getElementById('override-seq-check').checked,
+        overrideSeqNum:   document.getElementById('override-seq-num').value,
     };
     await apiPost('/api/session/logon', params);
     // Button is re-enabled by renderNotLoggedOn if the logon fails,
@@ -181,6 +186,17 @@ function renderNotLoggedOn(status) {
             errEl.style.display = '';
         } else {
             errEl.style.display = 'none';
+        }
+    }
+
+    const suggested = status.suggestedSeqNum;
+    if (suggested > 0) {
+        const overrideCheck = document.getElementById('override-seq-check');
+        const overrideNum   = document.getElementById('override-seq-num');
+        if (overrideCheck && overrideNum) {
+            overrideCheck.checked  = true;
+            overrideNum.value      = suggested;
+            overrideNum.disabled   = false;
         }
     }
 }

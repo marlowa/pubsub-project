@@ -273,15 +273,28 @@ def patch_debug_logging(install_dir: Path) -> None:
             print(f"  debug logging enabled: {config_file.relative_to(install_dir)}")
 
 
-def cmd_start(env: dict, ha_enabled: bool, delay: float, debug: bool = False) -> None:
+def cmd_start(
+    env: dict, ha_enabled: bool, delay: float, debug: bool = False,
+    component: str | None = None,
+) -> None:
     """Implement the 'start' subcommand: export credentials then start all components.
 
     Components are started in the order listed in startup_order.components,
-    with ha_only components skipped when ha_enabled is False.
+    with ha_only components skipped when ha_enabled is False.  When component
+    is given, only that single component is started and the full-stack preamble
+    (CPU registry reset, credential export) is skipped.
     """
     install_dir, log_dir, run_dir = resolve_paths(env)
     run_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
+
+    if component is not None:
+        if component not in env["components"]:
+            sys.exit(f"error: unknown component '{component}'")
+        print(f"=== starting {component} ===")
+        comp = env["components"][component]
+        start_one(component, comp, install_dir, log_dir, run_dir, delay, debug=debug)
+        return
 
     order = startup_order(env, ha_enabled)
 
@@ -405,7 +418,11 @@ def parse_args() -> argparse.Namespace:
     subparsers = parser.add_subparsers(dest="subcommand", metavar="subcommand")
     subparsers.required = True
 
-    subparsers.add_parser("start",  help="start all components")
+    start_parser = subparsers.add_parser("start", help="start all components, or one named component")
+    start_parser.add_argument(
+        "component", nargs="?", default=None, metavar="name",
+        help="component to start (omit to start everything)",
+    )
     subparsers.add_parser("stop",   help="stop all running components")
     subparsers.add_parser("status", help="show component status")
 
@@ -434,7 +451,7 @@ def main() -> None:
     ha_enabled   = ha_from_toml and not args.no_ha
 
     if args.subcommand == "start":
-        cmd_start(env, ha_enabled, args.delay, debug=args.debug)
+        cmd_start(env, ha_enabled, args.delay, debug=args.debug, component=args.component)
     elif args.subcommand == "stop":
         cmd_stop(env)
     elif args.subcommand == "status":

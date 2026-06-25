@@ -34,11 +34,16 @@ public class FixEngine {
         fixApplication.setOnLogout(this::handleLogout);
     }
 
-    public synchronized void logon(String compId, String password, boolean useTls)
+    public synchronized void logon(String compId, String password, boolean useTls, LogonMode logonMode)
             throws ConfigError, IOException {
         stopInitiator();
 
-        SessionSettings settings = buildSettings(compId, useTls);
+        fixApplication.clearSuggestedSeqNum();
+        fixApplication.setLogonMode(logonMode);
+        fixApplication.setPendingSeqNumOverride(overrideSeqNum);
+        overrideSeqNum = null;
+
+        SessionSettings settings = buildSettings(compId, useTls, logonMode);
         fixApplication.setPendingPassword(password);
 
         var storeFactory   = new quickfix.FileStoreFactory(settings);
@@ -52,11 +57,6 @@ public class FixEngine {
             break;
         }
         log.info("FIX initiator started, session: {}", sessionId);
-
-        if (overrideSeqNum != null) {
-            setNextOutgoingSeqNum(overrideSeqNum);
-            overrideSeqNum = null;
-        }
 
         Session session = getSession();
         if (session != null) {
@@ -164,7 +164,8 @@ public class FixEngine {
                 startingSeqNum,
                 nextOut,
                 nextIn,
-                fixApplication.getLastLogoutReason()
+                fixApplication.getLastLogoutReason(),
+                fixApplication.getSuggestedSeqNum()
         );
     }
 
@@ -204,7 +205,7 @@ public class FixEngine {
         }
     }
 
-    private SessionSettings buildSettings(String compId, boolean useTls) {
+    private SessionSettings buildSettings(String compId, boolean useTls, LogonMode logonMode) {
         SessionSettings settings = new SessionSettings();
 
         settings.setString("ConnectionType",          "initiator");
@@ -215,8 +216,8 @@ public class FixEngine {
         settings.setString("AppDataDictionary",       "FIX50SP2.xml");
         settings.setString("DefaultApplVerID",        "FIX.5.0SP2");
         settings.setString("FileStorePath",           "data/sessions");
-        settings.setString("FileLogPath",             "logs/fix");
-        settings.setString("ResetOnLogon",            "Y");
+        settings.setString("FileLogPath",             config.outputDir());
+        settings.setString("ResetOnLogon",            logonMode == LogonMode.PROPRIETARY ? "N" : "Y");
         settings.setString("ReconnectInterval",       "5");
         settings.setString("StartTime",               "00:00:00");
         settings.setString("EndTime",                 "00:00:00");

@@ -1,6 +1,7 @@
 package com.pubsub.fixtestclient.script;
 
 import com.pubsub.fixtestclient.fix.FixEngine;
+import com.pubsub.fixtestclient.fix.LogonMode;
 import quickfix.Message;
 
 public class FixSessionBinding {
@@ -13,7 +14,7 @@ public class FixSessionBinding {
 
     public void logon(String compId, String password, boolean useTls) {
         try {
-            fixEngine.logon(compId, password, useTls);
+            fixEngine.logon(compId, password, useTls, LogonMode.STANDARD);
         } catch (Exception e) {
             throw new RuntimeException("Logon failed: " + e.getMessage(), e);
         }

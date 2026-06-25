@@ -1,6 +1,7 @@
 package com.pubsub.fixtestclient.web;
 
 import com.pubsub.fixtestclient.fix.FixEngine;
+import com.pubsub.fixtestclient.fix.LogonMode;
 import com.pubsub.fixtestclient.fix.SessionStatus;
 import io.javalin.http.Context;
 
@@ -37,13 +38,17 @@ public class SessionHandler {
         body.put("nextOutgoingSeqNum", status.nextOutgoingSeqNum());
         body.put("nextIncomingSeqNum", status.nextIncomingSeqNum());
         body.put("lastError",         status.lastError());
+        body.put("suggestedSeqNum",   status.suggestedSeqNum());
         ctx.json(body);
     }
 
     public void logon(Context ctx) {
         String senderCompId = ctx.formParam("senderCompId");
         String password     = ctx.formParam("password");
-        boolean useTls      = "true".equals(ctx.formParam("useTls"));
+        boolean useTls             = "true".equals(ctx.formParam("useTls"));
+        LogonMode logonMode = "true".equals(ctx.formParam("proprietaryLogon"))
+                ? LogonMode.PROPRIETARY
+                : LogonMode.STANDARD;
 
         if (password == null || password.isEmpty()) {
             ctx.status(400).json(Map.of("ok", false, "error", "Password is required"));
@@ -60,7 +65,7 @@ public class SessionHandler {
         }
 
         try {
-            fixEngine.logon(senderCompId, password, useTls);
+            fixEngine.logon(senderCompId, password, useTls, logonMode);
         } catch (Exception e) {
             ctx.status(500).json(Map.of("ok", false, "error", e.getMessage()));
             return;

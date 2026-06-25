@@ -13,9 +13,10 @@ public record SessionStatus(
         int startingSeqNum,
         int nextOutgoingSeqNum,
         int nextIncomingSeqNum,
-        String lastError
+        String lastError,
+        int suggestedSeqNum
 ) {
     public static SessionStatus disconnected() {
-        return new SessionStatus(false, false, "", "", "", 0, null, 0, 0, 0, "");
+        return new SessionStatus(false, false, "", "", "", 0, null, 0, 0, 0, "", 0);
     }
 }
