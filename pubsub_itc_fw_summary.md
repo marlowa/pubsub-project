@@ -1575,13 +1575,98 @@ The real risks under burst load with WAL active are both in the sequencer:
 
 The burst test is a natural companion to item 15 (fix-test-client smoke test): the smoke test verifies correctness at moderate load; the burst test verifies the WAL replication path does not saturate or exhaust slab memory under peak load. A Groovy script submitted via the fix-test-client scripting API (item 14/15) is the natural driver.
 
+18. **Doxygen navigation layer — clickable architecture maps.**
+
+### Problem
+
+Doxygen's generated output is comprehensive but navigable only as a tree: classes, files, namespaces. Developers do not naturally think in document trees. When a developer wants to understand `ReferencePriceDataInterface`, they do not want to browse `Architecture → Core → Framework → Reactor → Services`; they want to click on a picture of the system and land in the right place. The documentation tree is fine as a reference index once you know where you are, but it is a poor entry point for orientation.
+
+The root insight (from a design discussion on 2026-06-25): the SVGs are not illustrations — they are part of the navigation layer. A clickable architecture map is a first-class navigation mechanism, not decoration.
+
+### What we are building
+
+A hierarchy of SVG architecture maps embedded directly in the Doxygen HTML output. Each map is a set of labelled rectangles, one per major component. Each rectangle is a hyperlink. Clicking it lands the developer on a curated landing page for that component, from which they can drill into the auto-generated API reference for the relevant classes.
+
+The top-level map covers the whole system. Complex components (Reactor, Sequencer) may have their own sub-maps linking to their internal subsystems.
+
+### Tool choice: Graphviz/DOT
+
+**Why DOT was chosen:**
+- Eclipse Public License — genuinely free software with no proprietary hosted component.
+- Native Doxygen support: the `\dotfile` command and `@dot`...`@enddot` inline blocks embed DOT diagrams directly into Doxygen HTML. No extra tooling step, no build pipeline change beyond what is already there.
+- Clickable links are trivial: adding `URL="doxygen_page_id"` to any node causes `dot -Tsvg` to wrap that node in an SVG `<a href>` element. No JavaScript required; the links work in static HTML.
+- Text-based source: the `.dot` files are version-controlled plain text alongside the code they describe. Diffing, reviewing, and updating is the same workflow as editing any other source file.
+- Auto-layout: when a component is added or removed, Graphviz recalculates the layout automatically. There is no need to manually reposition boxes.
+
+**Alternatives considered and rejected:**
+
+*draw.io* — Explicitly excluded. Although the desktop application source is Apache-licensed, draw.io is fundamentally a hosted service with a proprietary back end. The project requirement is free software only.
+
+*Mermaid (MIT)* — Free software, Doxygen support since v1.9.3 via `\mermaid` blocks. Syntactically simpler than DOT for some diagram types. Rejected because Mermaid's `click` directive for interactive links is JavaScript-driven: the links only work when the Mermaid JS runtime is present in the browser context. In static Doxygen HTML output (e.g. viewed from a file system or offline) this is not guaranteed. DOT's URL attribute produces native SVG `<a>` elements that work unconditionally.
+
+*PlantUML (GPL)* — Free software, native Doxygen support, SVG with clickable links via `[[URL]]` syntax. Rejected for two reasons: it requires a Java runtime as a separate build dependency, and for simple box-and-arrow architecture maps its syntax is more verbose than DOT with no compensating benefit. DOT is already available on the build machine (Doxygen depends on it).
+
+*Inkscape (GPL)* — Free software, excellent SVG editor, full support for adding hyperlinks to any element via Object Properties. Rejected because it produces a GUI-authored file rather than a text description. The result is harder to maintain in version control, harder to diff and review, and — critically — has no auto-layout: every time a component is added the developer must manually reposition boxes. The maintenance cost over time outweighs the advantage of a visual editor.
+
+*Hand-written SVG XML* — Maximally flexible but completely impractical. As noted in the design discussion: "creating and maintaining a hierarchy of clickable architecture maps by hand in SVG XML would be miserable." Rejected immediately.
+
+### Link target choice: dedicated .dox files
+
+Each rectangle links to a dedicated `.dox` file rather than to an auto-generated class page or a running service URL.
+
+**Why not auto-generated class pages:**
+- Each architectural component (Gateway, Reactor, Transport) spans many classes across many files. There is no single class that is the natural landing point for someone trying to understand the component.
+- Auto-generated Doxygen page names can shift when Doxygen changes its naming or hashing scheme. URL attributes in `.dot` files would break silently.
+- Auto-generated pages show API reference (the *what*). They do not contain architecture rationale, design decisions, invariants, or the *why*.
+
+**Why not service URLs (e.g. `http://localhost:8080`):**
+- Only work when the service is running. Documentation should be readable offline and independently of runtime state.
+
+**Why dedicated .dox files:**
+- User-defined page IDs are stable: `\page gateway_overview "Order Gateway"` gives the page the ID `gateway_overview`, which never changes unless you rename it deliberately.
+- Each `.dox` page is a curated landing page under the author's control: a component overview, design notes, non-obvious invariants, explicit `\ref` links to the key classes within the component.
+- The `.dox` files form the translation layer between visual navigation (the SVG maps) and API reference (the auto-generated pages). Each layer serves its purpose without collapsing into another.
+- Maintenance of the `.dox` files is forced to be conscious: when the architecture changes, the developer must update both the `.dot` diagram and the relevant `.dox` file. This is a feature — it prevents the navigation layer from silently drifting away from the implementation.
+
+### Intended hierarchy
+
+```
+Doxygen mainpage
+    └── architecture.dot (top-level SVG, one rectangle per major component)
+            │
+            ├── docs/gateway.dox          — Order Gateway landing page
+            │       overview, design notes, \ref GatewaySession, \ref FixParser, ...
+            │
+            ├── docs/reactor.dox          — Reactor Framework landing page
+            │       overview, \ref Reactor, \ref ApplicationThread, \ref SlabAllocator, ...
+            │       (may include a sub-diagram of reactor subsystem internals)
+            │
+            ├── docs/sequencer.dox        — Sequencer landing page
+            │       overview, WAL design, HA state machine, \ref SequencerThread, ...
+            │
+            ├── docs/matching_engine.dox  — Matching Engine landing page
+            │       overview, order book design, \ref MatchingEngineThread, ...
+            │
+            ├── docs/admin_service.dox    — Admin Service landing page
+            │       overview, auth flow, DB schema summary, link to Javadoc
+            │
+            └── docs/fix_test_client.dox  — FIX Test Client landing page
+                    overview, scripting API, link to web UI
+```
+
+### Implementation plan
+
+1. Create `docs/architecture.dot` with component nodes, directed edges showing data flow, and `URL` attributes linking to `.dox` page IDs.
+2. Write `docs/<component>.dox` stubs with `\page` declarations, one-paragraph overviews, and `\ref` links to key classes. Stubs can be expanded over time.
+3. Embed `architecture.dot` in a Doxygen `.dox` page (e.g. `docs/overview.dox` with `\mainpage` or `\page overview "System Overview"`) using `\dotfile docs/architecture.dot`.
+4. Build Doxygen and verify: open the generated HTML, click each rectangle, confirm navigation lands on the correct component page and that all `\ref` links resolve.
+5. Add sub-diagrams to complex component pages as needed.
+
 14. **fix-test-client scripting: idempotent ClOrdID and example script.** The script page runs Groovy via `GroovyShell`. Scripts receive `session` (`FixSessionBinding`: logon/logout/send), `fix` (`FixHelper`: creates blank QuickFIX/J message objects), `out` (PrintWriter → Output panel), and `sleep` (interruptible ms pause). Current example placing three orders: `3.times { i -> def nos = fix.newOrderSingle(); nos.set(new quickfix.field.ClOrdID("ORD-" + (i+1))); nos.set(new quickfix.field.Symbol("BHP")); nos.set(new quickfix.field.Side(quickfix.field.Side.BUY)); nos.set(new quickfix.field.OrdType(quickfix.field.OrdType.LIMIT)); nos.set(new quickfix.field.OrderQty(100)); nos.set(new quickfix.field.Price(10.50)); session.send(nos); out.println("Sent ORD-" + (i+1)); sleep(500) }`. Idempotency problem: running the same script twice produces duplicate ClOrdIDs. Fix: add `fix.uniqueId()` to `FixHelper` returning a unique string per call (e.g., a millisecond-epoch prefix stamped at script start, combined with a per-call counter). Scripts use `nos.set(new quickfix.field.ClOrdID(fix.uniqueId()))` and are then safely re-runnable. Also add a canonical example script saved in the scripts directory.
 
 ## Immediate Next Task
 
-**Item 11 — superseded by Option C (inline WAL handler), implemented session 2026-06-05. See session entry below.**
-
-**Item 12 — cpu_registry_shm_path configurable from TOML.** Add `cpu_registry_shm_path` to the six application config structs, loaders, and wiring files; add the key to all nine TOML templates. `deploy.py` already injects the correct absolute value; the C++ just needs to read it from TOML rather than using the hardcoded default.
+**Item 18 — Doxygen navigation layer (clickable architecture maps).** See the full discussion under item 18 in "What Is Not Yet Done" above. Implementation starts with `docs/architecture.dot` and a set of `.dox` stub pages, one per major component. The four questions that must be answered before the work is done: (1) clickable regions are trivially created (DOT `URL` attribute); (2) rearrangement as the project evolves is handled by Graphviz auto-layout; (3) SVG preserves hyperlinks as native `<a>` elements; (4) Doxygen preserves those hyperlinks via `\dotfile` embedding. All four are already confirmed by design. The implementation work is writing the `.dot` file and the `.dox` stub pages.
 
 ## RT scheduling and CPU isolation: machine assessment guide
 
