@@ -63,6 +63,10 @@ def main() -> None:
         help="clean before building")
     build_group.add_argument("--no-tests", action="store_true",
         help="skip all tests")
+    build_group.add_argument("--no-cpp-tests", action="store_true",
+        help="skip C++ tests only")
+    build_group.add_argument("--no-java-tests", action="store_true",
+        help="skip Java tests only")
     build_group.add_argument("--no-java", action="store_true",
         help="skip Java admin service build")
     build_group.add_argument("--no-cpp", action="store_true",
@@ -105,6 +109,10 @@ def main() -> None:
         build_cmd.append("--clean")
     if args.no_tests:
         build_cmd.append("--no-tests")
+    if args.no_cpp_tests:
+        build_cmd.append("--no-cpp-tests")
+    if args.no_java_tests:
+        build_cmd.append("--no-java-tests")
     if args.no_java:
         build_cmd.append("--no-java")
     if args.no_cpp:

@@ -218,17 +218,17 @@ button:disabled {
     height: calc(100vh - 120px);
     overflow-y: auto;
     font-size: 12px;
-    background: #1e1e1e;
-    color: #d4d4d4;
+    background: #f5f5ef;
+    color: #2a2a2a;
     padding: 8px;
     white-space: pre-wrap;
     word-break: break-all;
 }
 
-#log-view .level-ERROR { color: #f48771; }
-#log-view .level-WARN  { color: #dcdcaa; }
-#log-view .level-INFO  { color: #9cdcfe; }
-#log-view .level-DEBUG { color: #888; }
+#log-view .level-ERROR { color: #b82020; }
+#log-view .level-WARN  { color: #8b6600; }
+#log-view .level-INFO  { color: #1a6699; }
+#log-view .level-DEBUG { color: #6a7a8a; }
 
 /* ── Config page ──────────────────────────────────────────────── */
 

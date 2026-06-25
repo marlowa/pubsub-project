@@ -20,7 +20,10 @@ public class LogBuffer extends AppenderBase<ILoggingEvent> {
     private static final DateTimeFormatter FORMATTER =
             DateTimeFormatter.ofPattern("HH:mm:ss.SSS").withZone(ZoneOffset.UTC);
 
-    private static final LogBuffer INSTANCE = new LogBuffer();
+    // Logback instantiates appenders via reflection, so a separate object is
+    // created from the one the static initialiser makes.  start() is overridden
+    // below so the Logback-activated instance replaces the placeholder.
+    private static volatile LogBuffer instance = new LogBuffer();
 
     private final ArrayBlockingQueue<String> buffer = new ArrayBlockingQueue<>(CAPACITY);
     private final CopyOnWriteArrayList<BlockingQueue<String>> subscribers = new CopyOnWriteArrayList<>();
@@ -28,7 +31,13 @@ public class LogBuffer extends AppenderBase<ILoggingEvent> {
     private final Condition newEntry = lock.newCondition();
 
     public static LogBuffer getInstance() {
-        return INSTANCE;
+        return instance;
+    }
+
+    @Override
+    public void start() {
+        super.start();
+        instance = this;
     }
 
     @Override

@@ -437,6 +437,8 @@ Examples:
   %(prog)s --no-java                          # C++ only
   %(prog)s --no-cpp                           # Java admin service only
   %(prog)s --no-tests                         # Build without running any tests
+  %(prog)s --no-cpp-tests                     # Skip C++ tests only
+  %(prog)s --no-java-tests                    # Skip Java tests only
   %(prog)s --no-pylint                        # Skip pylint on the Python DSL
   %(prog)s --valgrind                         # C++ build with Valgrind compatibility
   %(prog)s --doxygen                          # Build and generate Doxygen docs
@@ -466,11 +468,19 @@ Examples:
     )
 
     parser.add_argument('--no-tests', action='store_true',
-        help='Skip running all tests (suppresses pytest and C++ tests; pylint still runs)'
+        help='Skip all tests: C++ unit+integration, Python DSL pytest, and Java Maven tests (pylint still runs)'
+    )
+
+    parser.add_argument('--no-cpp-tests', action='store_true',
+        help='Skip C++ unit and integration tests only; Python and Java tests are unaffected'
+    )
+
+    parser.add_argument('--no-java-tests', action='store_true',
+        help='Skip Java Maven tests only (-DskipTests); C++ and Python tests are unaffected'
     )
 
     parser.add_argument('--no-pytest', action='store_true',
-        help='Skip the Python DSL test suite only (pylint still runs; C++ tests are unaffected)'
+        help='Skip the Python DSL test suite only (pylint still runs; C++ and Java tests are unaffected)'
     )
 
     parser.add_argument('--no-pylint', action='store_true',
@@ -525,6 +535,10 @@ Examples:
         print("ERROR: --no-cpp and --no-java together leave nothing to build", file=sys.stderr)
         sys.exit(1)
 
+    skip_cpp_tests  = args.no_tests or args.no_cpp_tests
+    skip_java_tests = args.no_tests or args.no_java_tests
+    skip_pytest     = args.no_tests or args.no_pytest
+
     # Get source directory (parent of this script)
     source_dir = Path(__file__).parent.resolve()
     build_dir = source_dir / args.build_dir
@@ -565,7 +579,7 @@ Examples:
             run_pylint(source_dir)
         else:
             print("NOTE: --no-pylint is set; skipping pylint")
-        if not args.no_tests and not args.no_pytest:
+        if not skip_pytest:
             run_pytest(source_dir)
 
         if args.clean:
@@ -580,7 +594,7 @@ Examples:
 
         build_project(build_dir, jobs=args.jobs, verbose=args.verbose)
 
-        if not args.no_tests:
+        if not skip_cpp_tests:
             run_tests(build_dir, use_tsan=args.tsan, tsan_suppressions=args.tsan_suppressions)
             run_integration_tests(build_dir)
 
@@ -595,9 +609,9 @@ Examples:
     # ── Java build ────────────────────────────────────────────────────────────
     if not args.no_java:
         build_java_service(source_dir, staging_dir,
-                           skip_tests=args.no_tests, clean=args.clean)
+                           skip_tests=skip_java_tests, clean=args.clean)
         build_fix_test_client(source_dir, staging_dir,
-                              skip_tests=args.no_tests, clean=args.clean)
+                              skip_tests=skip_java_tests, clean=args.clean)
 
 
     print("\n" + "="*60)
