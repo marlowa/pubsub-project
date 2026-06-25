@@ -111,6 +111,49 @@ class AdminUserStoreTest {
     }
 
     @Test
+    void findByUsername_unknownUser_returnsEmpty() {
+        assertTrue(store().findByUsername("nobody").isEmpty());
+    }
+
+    @Test
+    void countAdmins_noAdmins_returnsZero() {
+        AdminUserStore s = store();
+        s.createUser("viewer", "Pass1234", AdminRole.VIEWER, false);
+
+        assertEquals(0, s.countAdmins());
+    }
+
+    @Test
+    void loadAll_multipleUsers_returnsAll() {
+        AdminUserStore s = store();
+        s.createUser("u1", "Pass1234", AdminRole.ADMIN,  false);
+        s.createUser("u2", "Pass5678", AdminRole.VIEWER, false);
+        s.createUser("u3", "Pass9012", AdminRole.ADMIN,  false);
+
+        assertEquals(3, s.loadAll().size());
+    }
+
+    @Test
+    void updateRole_unknownUser_isNoOp() {
+        AdminUserStore s = store();
+        s.createUser("alice", "Pass1234", AdminRole.VIEWER, false);
+
+        s.updateRole("nobody", AdminRole.ADMIN);
+
+        assertEquals(AdminRole.VIEWER, s.findByUsername("alice").orElseThrow().role());
+    }
+
+    @Test
+    void deleteUser_unknownUser_isNoOp() {
+        AdminUserStore s = store();
+        s.createUser("alice", "Pass1234", AdminRole.VIEWER, false);
+
+        s.deleteUser("nobody");
+
+        assertEquals(1, s.loadAll().size());
+    }
+
+    @Test
     void persistsAcrossInstances() {
         Path file = tempDir.resolve("shared.toml");
         AdminUserStore s1 = new AdminUserStore(file);

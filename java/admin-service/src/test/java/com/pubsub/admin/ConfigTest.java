@@ -20,5 +20,6 @@ class ConfigTest {
         assertEquals("PubSub Admin", config.brandName());
         assertEquals("", config.brandLogoUrl());
         assertEquals("", config.brandCssFile());
+        assertEquals("admin_users.toml", config.adminUsersFile());
     }
 }

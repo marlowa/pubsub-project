@@ -22,6 +22,11 @@
             <Class name="com.pubsub.admin.web.SetupHandler"/>
             <Class name="com.pubsub.admin.web.ChangePasswordHandler"/>
             <Class name="com.pubsub.admin.web.UserManagementHandler"/>
+            <!--
+              PduChannel stores HeaderWriter/HeaderReader functional interfaces by reference.
+              These are @FunctionalInterface types — defensive copying is not applicable.
+            -->
+            <Class name="com.pubsub.admin.service.PduChannel"/>
         </Or>
     </Match>
 </FindBugsFilter>

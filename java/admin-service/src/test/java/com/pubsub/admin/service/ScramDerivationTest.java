@@ -63,6 +63,15 @@ class ScramDerivationTest {
     }
 
     @Test
+    void deriveWithDefaultIterations_uses4096() {
+        ScramCredential cred = ScramDerivation.derive("anypassword");
+
+        assertEquals(4096, cred.iterations());
+        assertEquals(64, cred.storedKey().length());
+        assertEquals(64, cred.serverKey().length());
+    }
+
+    @Test
     void randomDerivationsUseDifferentSalts() {
         ScramCredential cred1 = ScramDerivation.derive("mypassword", 4096);
         ScramCredential cred2 = ScramDerivation.derive("mypassword", 4096);

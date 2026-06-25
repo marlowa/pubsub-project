@@ -17,7 +17,7 @@ import java.security.cert.X509Certificate;
  * delegated to the HeaderWriter and HeaderReader supplied by the caller,
  * which are generated from the DSL framing block.
  */
-public class PduChannel implements AutoCloseable {
+public final class PduChannel implements AutoCloseable {
 
     @FunctionalInterface
     public interface HeaderWriter {
