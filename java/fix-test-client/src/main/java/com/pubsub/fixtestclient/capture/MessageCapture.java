@@ -10,6 +10,7 @@ import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.io.PrintWriter;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
@@ -85,7 +86,7 @@ public class MessageCapture {
     }
 
     private void writerLoop() {
-        try (PrintWriter writer = new PrintWriter(new FileWriter(currentOutputPath, true))) {
+        try (PrintWriter writer = new PrintWriter(new FileWriter(currentOutputPath, StandardCharsets.UTF_8, true))) {
             while (active.get() || !queue.isEmpty()) {
                 Message message = queue.poll(100, java.util.concurrent.TimeUnit.MILLISECONDS);
                 if (message != null) {
@@ -104,7 +105,7 @@ public class MessageCapture {
     }
 
     private void drainRemaining() {
-        try (PrintWriter writer = new PrintWriter(new FileWriter(currentOutputPath, true))) {
+        try (PrintWriter writer = new PrintWriter(new FileWriter(currentOutputPath, StandardCharsets.UTF_8, true))) {
             Message message;
             while ((message = queue.poll()) != null) {
                 writeMessage(writer, message);

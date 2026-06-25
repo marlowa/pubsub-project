@@ -1,0 +1,15 @@
+[server]
+port = 9090
+
+[capture]
+output_dir = "test-output"
+
+[scripts]
+scripts_dir = "test-scripts"
+
+[fix]
+gateway_host = "192.168.1.1"
+gateway_port = 7777
+target_comp_id = "TEST_GW"
+trust_store_path = "certs/test.jks"
+trust_store_password = "test_pass"

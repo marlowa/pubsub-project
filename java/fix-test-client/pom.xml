@@ -180,8 +180,10 @@
                         <goals><goal>check</goal></goals>
                         <configuration>
                             <excludes>
-                                <!-- Needs live FIX gateway -->
-                                <exclude>com/pubsub/fixtestclient/fix/**</exclude>
+                                <!-- Needs live FIX gateway to exercise -->
+                                <exclude>com/pubsub/fixtestclient/fix/FixEngine.class</exclude>
+                                <exclude>com/pubsub/fixtestclient/fix/MaskingLog.class</exclude>
+                                <exclude>com/pubsub/fixtestclient/fix/MaskingLogFactory.class</exclude>
                                 <!-- Needs live FIX session -->
                                 <exclude>com/pubsub/fixtestclient/script/**</exclude>
                                 <!-- Needs live FIX session -->
@@ -190,8 +192,6 @@
                                 <exclude>com/pubsub/fixtestclient/web/**</exclude>
                                 <!-- Wiring only — no logic -->
                                 <exclude>com/pubsub/fixtestclient/Main.class</exclude>
-                                <!-- Pure data records -->
-                                <exclude>com/pubsub/fixtestclient/blotter/**</exclude>
                             </excludes>
                             <rules>
                                 <rule>

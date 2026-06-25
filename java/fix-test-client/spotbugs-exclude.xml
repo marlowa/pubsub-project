@@ -1,12 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!--
-  SpotBugs exclusion filter.
-
-  EI_EXPOSE_REP2: handler classes store injected singletons (FixEngine, ScriptRunner,
-  MessageCapture, etc.) by reference — intentional, these are application-scoped objects
-  created in Main and shared safely through constructor injection.
--->
 <FindBugsFilter>
+
+    <!--
+      EI_EXPOSE_REP2: handler and engine classes store injected singletons by reference.
+      These are application-scoped objects created in Main and shared safely through
+      constructor injection — wrapping them in a copy would be wrong.
+    -->
     <Match>
         <Bug pattern="EI_EXPOSE_REP2"/>
         <Or>
@@ -16,6 +15,89 @@
             <Class name="com.pubsub.fixtestclient.web.ConfigHandler"/>
             <Class name="com.pubsub.fixtestclient.web.LogHandler"/>
             <Class name="com.pubsub.fixtestclient.script.ScriptRunner"/>
+            <Class name="com.pubsub.fixtestclient.fix.FixEngine"/>
+            <Class name="com.pubsub.fixtestclient.script.FixSessionBinding"/>
         </Or>
     </Match>
+
+    <!--
+      EI_EXPOSE_REP: FixApplication.inboundQueue() returns the live queue intentionally
+      so ScriptRunner can poll it directly.  FixEngine.fixApplication() is similarly
+      an accessor for a shared singleton.
+    -->
+    <Match>
+        <Bug pattern="EI_EXPOSE_REP"/>
+        <Or>
+            <Class name="com.pubsub.fixtestclient.fix.FixApplication"/>
+            <Class name="com.pubsub.fixtestclient.fix.FixEngine"/>
+        </Or>
+    </Match>
+
+    <!--
+      ST_WRITE_TO_STATIC_FROM_INSTANCE_METHOD / SING_SINGLETON_HAS_NONPRIVATE_CONSTRUCTOR /
+      MS_EXPOSE_REP: LogBuffer is a Logback AppenderBase subclass.  Logback instantiates
+      appenders via reflection using the public no-arg constructor, so the constructor cannot
+      be private.  start() registers the Logback-activated instance as the singleton —
+      writing to the static field from an instance method is the only way to bridge Logback's
+      lifecycle into our singleton pattern.
+    -->
+    <Match>
+        <Bug pattern="ST_WRITE_TO_STATIC_FROM_INSTANCE_METHOD"/>
+        <Class name="com.pubsub.fixtestclient.log.LogBuffer"/>
+    </Match>
+    <Match>
+        <Bug pattern="SING_SINGLETON_HAS_NONPRIVATE_CONSTRUCTOR"/>
+        <Class name="com.pubsub.fixtestclient.log.LogBuffer"/>
+    </Match>
+    <Match>
+        <Bug pattern="MS_EXPOSE_REP"/>
+        <Class name="com.pubsub.fixtestclient.log.LogBuffer"/>
+    </Match>
+
+    <!--
+      RV_RETURN_VALUE_IGNORED_BAD_PRACTICE (BlockingQueue.offer): all queues here are
+      bounded; when full, the oldest entry is evicted elsewhere (LogBuffer) or the message
+      is intentionally dropped (FixApplication.fromApp subscriber queues, MessageCapture).
+      A failed offer is not an error condition.
+    -->
+    <Match>
+        <Bug pattern="RV_RETURN_VALUE_IGNORED_BAD_PRACTICE"/>
+        <Or>
+            <Class name="com.pubsub.fixtestclient.log.LogBuffer"/>
+            <Class name="com.pubsub.fixtestclient.fix.FixApplication"/>
+            <Class name="com.pubsub.fixtestclient.capture.MessageCapture"/>
+            <Class name="com.pubsub.fixtestclient.web.ScriptHandler"/>
+        </Or>
+    </Match>
+
+    <!--
+      IS2_INCONSISTENT_SYNC: FixEngine.getStatus() reads initiator and sessionId without
+      holding the lock.  getStatus() is called only for UI polling and can tolerate a
+      momentarily stale view; the cost of synchronising every status read is not justified.
+    -->
+    <Match>
+        <Bug pattern="IS2_INCONSISTENT_SYNC"/>
+        <Class name="com.pubsub.fixtestclient.fix.FixEngine"/>
+    </Match>
+
+    <!--
+      REC_CATCH_EXCEPTION: FixEngine.getStatus() wraps several QF/J calls that declare
+      different checked exceptions; catching Exception is the pragmatic approach for a
+      best-effort status read.
+    -->
+    <Match>
+        <Bug pattern="REC_CATCH_EXCEPTION"/>
+        <Class name="com.pubsub.fixtestclient.fix.FixEngine"/>
+    </Match>
+
+    <!--
+      DB_DUPLICATE_BRANCHES: ScriptHandler returns the same JSON structure for two
+      adjacent branches intentionally — the content differs at runtime based on
+      ScriptRunner state; SpotBugs sees the template code as identical.
+    -->
+    <Match>
+        <Bug pattern="DB_DUPLICATE_BRANCHES"/>
+        <Class name="com.pubsub.fixtestclient.web.ScriptHandler"/>
+    </Match>
+
 </FindBugsFilter>
