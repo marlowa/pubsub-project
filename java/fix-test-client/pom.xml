@@ -67,10 +67,11 @@
             <version>5.10.2</version>
             <scope>test</scope>
         </dependency>
+        <!-- 4.11.0 rather than the latest 5.x, makes it easier on RHEL8 -->
         <dependency>
             <groupId>org.mockito</groupId>
             <artifactId>mockito-core</artifactId>
-            <version>5.11.0</version>
+            <version>4.11.0</version>
             <scope>test</scope>
         </dependency>
     </dependencies>

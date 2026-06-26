@@ -74,7 +74,7 @@ Browser
 Wraps a QuickFIX/J `SocketInitiator`. Owns the session lifecycle.
 
 Responsibilities:
-- Load QuickFIX/J session config from `config/session.cfg`
+- Build QuickFIX/J `SessionSettings` programmatically from `Config` (loaded from `app.toml`)
 - Start and stop the initiator
 - Expose session state (connected / logged on / sequence numbers)
 - Route inbound messages to `FixApplication` callbacks
@@ -193,8 +193,7 @@ java/fix-test-client/
 ├── pom.xml
 ├── DESIGN.md
 ├── config/
-│   ├── app.toml                    application config (port, paths)
-│   └── session.cfg                 QuickFIX/J session config
+│   └── app.toml                    application config (host, port, paths)
 ├── scripts/                        saved Groovy scripts directory
 ├── src/
 │   └── main/
@@ -234,10 +233,14 @@ java/fix-test-client/
 
 ```toml
 [server]
-port = 8081
+port = ${fix_test_client_server_port}
 
 [fix]
-session_config = "config/session.cfg"
+gateway_host         = "127.0.0.1"
+gateway_port         = ${fix_test_client_fix_gateway_port}
+target_comp_id       = "GATEWAY"
+trust_store_path     = "config/fix_gateway_trust.jks"
+trust_store_password = "pubsub_dev"
 
 [capture]
 output_dir = "output"
@@ -246,29 +249,9 @@ output_dir = "output"
 scripts_dir = "scripts"
 ```
 
-### `config/session.cfg` (QuickFIX/J native format)
-
-```ini
-[DEFAULT]
-ConnectionType=initiator
-HeartBtInt=10
-SenderCompID=CLIENT
-TargetCompID=GATEWAY
-TransportDataDictionary=FIXT11.xml
-AppDataDictionary=FIX50SP2.xml
-DefaultApplVerID=FIX.5.0SP2
-FileStorePath=data/sessions
-FileLogPath=logs/fix
-ResetOnLogon=N
-
-[SESSION]
-BeginString=FIXT.1.1
-SocketConnectHost=127.0.0.1
-SocketConnectPort=9879
-```
-
-`ResetOnLogon=N` by default so sequence number recovery scenarios work. The
-user can override it per-test via the script API or by editing the file.
+All QuickFIX/J session settings (`TargetCompID`, host, port, etc.) are built
+programmatically by `FixEngine.buildSettings()` using the values from this
+file. There is no separate QuickFIX/J `session.cfg`.
 
 ---
 
@@ -466,11 +449,7 @@ Read-only display of the two config files as plain text:
   ─────────
   (file contents)
 
-  session.cfg
-  ───────────
-  (file contents)
-
-  Edit these files on disk and restart to apply changes.
+  Edit this file on disk and restart to apply changes.
 ```
 
 ### Logs Page
