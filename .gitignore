@@ -11,3 +11,6 @@ __pycache__/
 python/build/
 python/errors.txt
 docker-deps/
+
+# Admin service user store — created automatically on first run; contains hashed passwords
+admin_users.toml
