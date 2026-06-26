@@ -279,6 +279,11 @@ python3 devenv.py --env environments/test-1.toml start
 | `--no-ha` | off | Skip components with `ha_only = true` |
 | `--delay SECONDS` | `1.0` | Pause between component starts |
 
+## Documentation
+
+- **[Documentation index](docs/index.md)** — architecture, design topics, application guides, roadmap
+- **API reference** — run `./build.sh --doxygen` then open `build/doxygen/html/index.html`
+
 ## Namespace
 
 All framework classes live in the `pubsub_itc_fw` namespace.

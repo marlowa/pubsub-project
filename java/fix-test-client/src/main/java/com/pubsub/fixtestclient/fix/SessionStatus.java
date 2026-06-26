@@ -4,6 +4,7 @@ import java.time.Instant;
 
 public record SessionStatus(
         boolean connected,
+        boolean loggingOn,
         boolean loggedOn,
         String senderCompId,
         String targetCompId,
@@ -16,7 +17,11 @@ public record SessionStatus(
         String lastError,
         int suggestedSeqNum
 ) {
+    public static SessionStatus disconnected(String lastError) {
+        return new SessionStatus(false, false, false, "", "", "", 0, null, 0, 0, 0, lastError, 0);
+    }
+
     public static SessionStatus disconnected() {
-        return new SessionStatus(false, false, "", "", "", 0, null, 0, 0, 0, "", 0);
+        return disconnected("");
     }
 }

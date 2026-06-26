@@ -28,6 +28,7 @@ public class SessionHandler {
         SessionStatus status = fixEngine.getStatus();
         Map<String, Object> body = new java.util.LinkedHashMap<>();
         body.put("connected",         status.connected());
+        body.put("loggingOn",         status.loggingOn());
         body.put("loggedOn",          status.loggedOn());
         body.put("senderCompId",      status.senderCompId());
         body.put("targetCompId",      status.targetCompId());

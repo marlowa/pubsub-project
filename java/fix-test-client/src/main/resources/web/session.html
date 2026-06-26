@@ -49,6 +49,7 @@
         <div class="form-row" style="margin-top:10px;">
             <label></label>
             <button id="logon-btn" onclick="doLogon()" disabled>Log On</button>
+            <button id="cancel-btn" onclick="doCancel()" style="display:none; margin-left:8px;">Cancel</button>
         </div>
         <div id="logon-error" style="display:none; color:#c00; margin-top:8px;"></div>
     </div>
@@ -83,6 +84,10 @@ function toggleSeqInput() {
 function updateLogonButton() {
     const password = document.getElementById('password').value;
     document.getElementById('logon-btn').disabled = !password;
+}
+
+async function doCancel() {
+    await apiPost('/api/session/logout', {});
 }
 
 async function doLogon() {
@@ -171,8 +176,23 @@ function renderNotLoggedOn(status) {
     clearInterval(durationTimer);
     logonEpochMs = null;
 
-    // Reset the Log On button, re-enabling only if a password is present.
-    const btn = document.getElementById('logon-btn');
+    const btn       = document.getElementById('logon-btn');
+    const cancelBtn = document.getElementById('cancel-btn');
+
+    if (status.loggingOn) {
+        // Mid-attempt: keep the logon button disabled, show Cancel.
+        if (btn) {
+            btn.textContent = 'Connecting…';
+            btn.disabled = true;
+        }
+        if (cancelBtn) cancelBtn.style.display = '';
+        const errEl = document.getElementById('logon-error');
+        if (errEl) errEl.style.display = 'none';
+        return;
+    }
+
+    // Not connecting — re-enable Log On, hide Cancel.
+    if (cancelBtn) cancelBtn.style.display = 'none';
     if (btn) {
         btn.textContent = 'Log On';
         const password = document.getElementById('password');

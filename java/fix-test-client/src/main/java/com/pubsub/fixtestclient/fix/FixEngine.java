@@ -17,6 +17,7 @@ import java.time.Instant;
 public class FixEngine {
 
     private static final Logger log = LoggerFactory.getLogger(FixEngine.class);
+    private static final int CONNECT_TIMEOUT_SECONDS = 10;
 
     private final Config config;
     private final FixApplication fixApplication;
@@ -26,6 +27,9 @@ public class FixEngine {
     private volatile Instant logonTime;
     private volatile int startingSeqNum;
     private volatile Integer overrideSeqNum;
+    private volatile boolean loggingOn;
+    private volatile Instant connectDeadline;
+    private volatile String connectError;
 
     public FixEngine(Config config, FixApplication fixApplication) {
         this.config = config;
@@ -36,6 +40,7 @@ public class FixEngine {
 
     public synchronized void logon(String compId, String password, boolean useTls, LogonMode logonMode)
             throws ConfigError, IOException {
+        connectError = null;
         stopInitiator();
 
         fixApplication.clearSuggestedSeqNum();
@@ -56,6 +61,8 @@ public class FixEngine {
             sessionId = sid;
             break;
         }
+        loggingOn = true;
+        connectDeadline = Instant.now().plusSeconds(CONNECT_TIMEOUT_SECONDS);
         log.info("FIX initiator started, session: {}", sessionId);
 
         Session session = getSession();
@@ -122,9 +129,15 @@ public class FixEngine {
     }
 
     public SessionStatus getStatus() {
+        if (loggingOn && connectDeadline != null && Instant.now().isAfter(connectDeadline)) {
+            connectError = "Connection timed out — check gateway host and port";
+            stopInitiator();
+            return SessionStatus.disconnected(connectError);
+        }
+
         Session session = getSession();
         if (session == null) {
-            return SessionStatus.disconnected();
+            return SessionStatus.disconnected(connectError != null ? connectError : "");
         }
 
         String senderCompId = "";
@@ -153,8 +166,10 @@ public class FixEngine {
         } catch (Exception ignored) {
         }
 
+        String lastError = connectError != null ? connectError : fixApplication.getLastLogoutReason();
         return new SessionStatus(
                 true,
+                loggingOn,
                 session.isLoggedOn(),
                 senderCompId,
                 targetCompId,
@@ -164,7 +179,7 @@ public class FixEngine {
                 startingSeqNum,
                 nextOut,
                 nextIn,
-                fixApplication.getLastLogoutReason(),
+                lastError,
                 fixApplication.getSuggestedSeqNum()
         );
     }
@@ -181,6 +196,8 @@ public class FixEngine {
     }
 
     private void handleLogon() {
+        loggingOn = false;
+        connectError = null;
         logonTime = Instant.now();
         fixApplication.setPendingPassword(null);
         Session session = getSession();
@@ -198,6 +215,7 @@ public class FixEngine {
     }
 
     private synchronized void stopInitiator() {
+        loggingOn = false;
         if (initiator != null) {
             initiator.stop();
             initiator = null;

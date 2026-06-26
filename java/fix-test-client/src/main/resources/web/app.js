@@ -46,6 +46,10 @@ function updateStatusStrip(status) {
             + status.senderCompId + ' → ' + status.targetCompId
             + '   out: ' + status.nextOutgoingSeqNum
             + '   in: '  + status.nextIncomingSeqNum;
+    } else if (status.loggingOn) {
+        dot.textContent = '○';
+        dot.style.color = '';
+        text.textContent = 'CONNECTING…';
     } else {
         dot.textContent = '○';
         dot.style.color = '';
