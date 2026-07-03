@@ -150,6 +150,7 @@ ha_only = false
 # production machine.  Set to true only if CPU 0 is not isolated on your
 # hardware.
 reactor_cpu_pinning_reserve_cpu0   = false
+reactor_cpu_registry_shm_path  = "/dev/shm/pubsub_cpu_registry"
 reactor_cpu_registry_lock_file = "/dev/shm/pubsub_cpu_registry.lock"
 
 [witness]

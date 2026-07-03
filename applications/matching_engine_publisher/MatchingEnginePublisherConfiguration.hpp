@@ -108,6 +108,7 @@ struct MatchingEnginePublisherConfiguration {
 
     bool cpu_pinning_enabled{false};
     bool cpu_pinning_reserve_cpu0{false};
+    std::string cpu_registry_shm_path;
     std::string cpu_registry_lock_file;
     std::chrono::milliseconds connect_retry_warning_interval{std::chrono::minutes(15)};
 

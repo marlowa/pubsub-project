@@ -215,6 +215,7 @@ ha_only = false
 
 [shared]
 reactor_cpu_pinning_reserve_cpu0   = true
+reactor_cpu_registry_shm_path  = "/dev/shm/pubsub_cpu_registry"
 reactor_cpu_registry_lock_file = "/dev/shm/pubsub_cpu_registry.lock"
 
 [witness]

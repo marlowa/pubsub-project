@@ -119,6 +119,7 @@ struct ArbiterConfiguration {
     bool cpu_pinning_reserve_cpu0;
 
     /** @brief Path to the flock file used to serialise cross-process CPU registry access. */
+    std::string cpu_registry_shm_path;
     std::string cpu_registry_lock_file;
 
     /** @brief How long to wait between "still disconnected" log warnings during outbound retry. */

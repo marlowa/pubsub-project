@@ -83,6 +83,7 @@ struct AuthenticationServiceConfiguration {
     /** @brief Path to the flock file used to serialise cross-process CPU registry access.
      *  Prefer /dev/shm/ so the file is cleared on reboot.
      *  Mandatory: must be set explicitly in the TOML configuration file. */
+    std::string cpu_registry_shm_path;
     std::string cpu_registry_lock_file;
 
     /** @brief How long to wait between "still disconnected" log warnings during outbound retry. */

@@ -46,6 +46,7 @@ WitnessConfiguration WitnessConfigurationLoader::load(const std::string& file_pa
 
         toml.get_required_except("reactor.cpu_pinning_enabled", config.cpu_pinning_enabled);
         toml.get_required_except("reactor.cpu_pinning_reserve_cpu0", config.cpu_pinning_reserve_cpu0);
+        toml.get_required_except("reactor.cpu_registry_shm_path",  config.cpu_registry_shm_path);
         toml.get_required_except("reactor.cpu_registry_lock_file", config.cpu_registry_lock_file);
         toml.get_required_except("reactor.connect_retry_warning_interval", config.connect_retry_warning_interval);
 
