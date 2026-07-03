@@ -63,6 +63,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message) override;
     void on_timer_event(const std::string& name) override;
     void on_itc_message(const pubsub_itc_fw::EventMessage& message) override;
+    bool prioritise_data_over_timers() const override { return true; }
 
   private:
     const SequencerConfiguration& config_;

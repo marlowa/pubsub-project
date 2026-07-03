@@ -1198,3 +1198,123 @@ TEST_F(ApplicationThreadTest, DefaultHandlersAreCallableAndNoop) {
     t->on_pubsub_message(EventMessage::create_pubsub_message(nullptr, 0));
     t->on_raw_socket_message(EventMessage::create_raw_socket_message(ConnectionID{}, nullptr, 0, 0, {}));
 }
+
+// ============================================================
+// Timer-deferral ordering tests (prioritise_data_over_timers)
+// ============================================================
+
+namespace {
+
+// Thread that arms a short timer in on_initial_event(), then blocks waiting
+// for the test to enqueue an ITC event and signal "go".  Records every Timer
+// and ITC event in arrival order so tests can assert processing sequence.
+// Thread that arms a short timer in on_app_ready_event(), then blocks waiting
+// for the test to enqueue an ITC event and signal "go".  Blocking in
+// on_app_ready_event() (not on_initial_event()) is important: the reactor sets
+// ThreadLifecycleState::Operational AFTER on_app_ready_event() returns, so the
+// ITC message must arrive in the queue AFTER on_app_ready_event() unblocks to
+// avoid the "non-reactor event before Operational" precondition check.
+class TimerPriorityThread : public ApplicationThread {
+  public:
+    explicit TimerPriorityThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, const std::string& name, ThreadID id,
+                                 const QueueConfiguration& queue_config, const AllocatorConfiguration& allocator_config, bool prioritise)
+        : ApplicationThread(token, logger, reactor, name, id, queue_config, allocator_config, ApplicationThreadConfiguration{})
+        , prioritise_(prioritise) {}
+
+    bool prioritise_data_over_timers() const override { return prioritise_; }
+
+    void on_app_ready_event() override {
+        // Arm a short timer then block.  The test waits for ready_future_, sleeps
+        // to let the timer fire, enqueues an ITC, then signals go_promise_.
+        // Both Timer and ITC land in the queue while the thread is blocked here.
+        // When go_future_ returns, on_app_ready_event() returns, the reactor sets
+        // Operational, and the drain loop finds Timer + ITC in the queue.
+        start_one_off_timer("test_timer", std::chrono::milliseconds(10));
+        ready_promise_.set_value();
+        go_future_.wait();
+    }
+
+    void on_timer_event([[maybe_unused]] const std::string& name) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        events_.push_back(EventType(EventType::Timer));
+        done_.fetch_add(1, std::memory_order_release);
+    }
+
+    void on_itc_message([[maybe_unused]] const EventMessage& msg) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        events_.push_back(EventType(EventType::InterthreadCommunication));
+        done_.fetch_add(1, std::memory_order_release);
+    }
+
+    std::vector<EventType> recorded_events() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return events_;
+    }
+
+    std::atomic<int> done_{0};
+    std::promise<void> go_promise_;
+    std::future<void>  go_future_{go_promise_.get_future()};
+    std::promise<void> ready_promise_;
+    std::future<void>  ready_future_{ready_promise_.get_future()};
+
+  private:
+    bool prioritise_;
+    std::mutex mutex_;
+    std::vector<EventType> events_;
+};
+
+} // namespaces
+
+// What: With prioritise_data_over_timers()=true, an ITC event enqueued AFTER
+//       a Timer event is processed BEFORE the Timer within the same drain cycle.
+// Why:  Proves that SequencerThread (which overrides to return true) will always
+//       handle WalAck/ER PDUs before heartbeat or snapshot timers that happened
+//       to land in the same epoll_wait wakeup, removing timer-induced jitter
+//       from the WAL acknowledgement path.
+// How:  Block the thread in on_initial_event() after arming a 10ms timer.
+//       Wait 30ms (timer fires, reactor enqueues Timer event).
+//       Enqueue an ITC event (arrives after Timer in queue).
+//       Release the thread - it drains both from the queue.
+//       Assert ITC is recorded before Timer.
+TEST_F(ApplicationThreadTest, PrioritisesDataOverTimers) {
+    auto thread = ApplicationThread::create<TimerPriorityThread>(logger_with_sink_.logger, *reactor_, "PriorityThread", ThreadID(1), make_queue_config(),
+                                                                  make_allocator_config(), true);
+    reactor_->register_thread(thread);
+    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>([this] { reactor_->run(); });
+
+    // Wait until on_app_ready_event() has armed the timer and is blocking.
+    thread->ready_future_.wait();
+
+    // Sleep long enough for the reactor to fire the timerfd and enqueue the Timer event.
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+
+    // Enqueue an ITC event - arrives AFTER the Timer event in the queue.
+    thread->enqueue(EventMessage::create_itc_message(ThreadID(99), nullptr, 0));
+
+    // Unblock on_initial_event(); thread will now drain both events.
+    thread->go_promise_.set_value();
+
+    // Wait for both events to be processed.
+    for (int i = 0; i < 2000 && thread->done_.load(std::memory_order_acquire) < 2; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    reactor_->shutdown("done");
+    join_reactor_or_die(std::chrono::seconds(2));
+
+    auto events = thread->recorded_events();
+    ASSERT_GE(static_cast<int>(events.size()), 2) << "Expected at least Timer and ITC events";
+
+    auto itc_pos   = std::find(events.begin(), events.end(), EventType(EventType::InterthreadCommunication));
+    auto timer_pos = std::find(events.begin(), events.end(), EventType(EventType::Timer));
+    ASSERT_NE(itc_pos,   events.end()) << "ITC event was never processed";
+    ASSERT_NE(timer_pos, events.end()) << "Timer event was never processed";
+    EXPECT_LT(itc_pos, timer_pos) << "Expected ITC (data) to be processed before Timer when prioritise_data_over_timers=true";
+}
+
+// Note: a companion test verifying FIFO ordering without prioritisation was
+// considered but is inherently racy. Whether the Timer event arrives in the
+// queue before the ITC event depends on how quickly the reactor processes the
+// AddTimer command, which is not deterministic under scheduler load. The
+// positive PrioritisesDataOverTimers test above is sufficient to prove the
+// deferral mechanism works.

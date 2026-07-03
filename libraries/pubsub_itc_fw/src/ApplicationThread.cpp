@@ -24,6 +24,7 @@
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/EventType.hpp>
+#include <vector>
 #include <pubsub_itc_fw/HighResolutionClock.hpp>
 #include <pubsub_itc_fw/LockFreeMessageQueue.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
@@ -322,6 +323,9 @@ void ApplicationThread::run_internal() {
     watch.data.fd = notify_fd_;
     ::epoll_ctl(ep, EPOLL_CTL_ADD, notify_fd_, &watch);
 
+    const bool prioritise = prioritise_data_over_timers();
+    std::vector<EventMessage> deferred_timers;
+
     bool keep_running = true;
     while (keep_running) {
         if (is_paused_.load(std::memory_order_relaxed)) {
@@ -344,6 +348,8 @@ void ApplicationThread::run_internal() {
         }
 
         // Drain all available messages before potentially blocking.
+        // When prioritise_data_over_timers() is true, Timer events are buffered
+        // and processed after all data events in this drain cycle have been handled.
         bool any_processed = false;
         while (keep_running) {
             auto maybe_msg = message_queue_->dequeue();
@@ -352,11 +358,25 @@ void ApplicationThread::run_internal() {
             }
             any_processed = true;
             EventMessage msg = std::move(*maybe_msg);
-            process_message(msg);
+            if (prioritise && msg.type().as_tag() == EventType::Timer) {
+                deferred_timers.push_back(std::move(msg));
+            } else {
+                process_message(msg);
+                if (get_lifecycle_state().as_tag() == ThreadLifecycleState::Terminated) {
+                    keep_running = false;
+                }
+            }
+        }
+
+        // Process deferred Timer events now that the data queue is exhausted.
+        for (auto& timer_msg : deferred_timers) {
+            if (!keep_running) { break; }
+            process_message(timer_msg);
             if (get_lifecycle_state().as_tag() == ThreadLifecycleState::Terminated) {
                 keep_running = false;
             }
         }
+        deferred_timers.clear();
 
         if (keep_running && !any_processed) {
             // Queue empty: block until a producer signals notify_fd_.  The 1-second

@@ -661,6 +661,18 @@ class ApplicationThread {
 
     virtual void on_timer_event([[maybe_unused]] const std::string& name) {}
 
+    /**
+     * @brief Controls timer event deferral in the drain loop.
+     *
+     * When this returns true, Timer events encountered during a queue drain are
+     * buffered and processed only after all non-timer events in the same drain
+     * cycle have been handled.  This prevents a heartbeat or snapshot timer from
+     * adding latency before a WalAck (or any other data event) that arrived in
+     * the same wakeup.  Subclasses that require this behaviour override to return
+     * true; all other threads use the default FIFO ordering.
+     */
+    virtual bool prioritise_data_over_timers() const { return false; }
+
     virtual void on_pubsub_message([[maybe_unused]] const EventMessage& msg) {}
 
     virtual void on_raw_socket_message([[maybe_unused]] const EventMessage& msg) {}
