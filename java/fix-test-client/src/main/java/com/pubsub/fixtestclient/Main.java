@@ -45,7 +45,7 @@ public class Main {
         FixHelper fixHelper = new FixHelper();
         ScriptRunner scriptRunner = new ScriptRunner(sessionBinding, fixHelper, messageCapture);
 
-        SessionHandler sessionHandler = new SessionHandler(fixEngine);
+        SessionHandler sessionHandler = new SessionHandler(fixEngine, config.gatewayPort(), config.tlsGatewayPort(), config.tlsEnabled());
         ScriptHandler scriptHandler = new ScriptHandler(scriptRunner, config.scriptsDir());
         MessagesHandler messagesHandler = new MessagesHandler(fixEngine, blotterStore);
         ConfigHandler configHandler = new ConfigHandler(configPath);
@@ -60,6 +60,7 @@ public class Main {
         });
 
         app.get("/api/session",            sessionHandler::getStatus);
+        app.get("/api/session/ports",      sessionHandler::getPorts);
         app.post("/api/session/logon",     sessionHandler::logon);
         app.post("/api/session/logout",    sessionHandler::logout);
         app.get("/api/session/last",       sessionHandler::getLastSession);

@@ -17,11 +17,21 @@ public class SessionHandler {
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneOffset.UTC);
 
     private final FixEngine fixEngine;
+    private final int plainPort;
+    private final int tlsPort;
+    private final boolean tlsEnabled;
 
     private volatile LastSession lastSession;
 
-    public SessionHandler(FixEngine fixEngine) {
-        this.fixEngine = fixEngine;
+    public SessionHandler(FixEngine fixEngine, int plainPort, int tlsPort, boolean tlsEnabled) {
+        this.fixEngine  = fixEngine;
+        this.plainPort  = plainPort;
+        this.tlsPort    = tlsPort;
+        this.tlsEnabled = tlsEnabled;
+    }
+
+    public void getPorts(Context ctx) {
+        ctx.json(Map.of("plainPort", plainPort, "tlsPort", tlsPort, "tlsEnabled", tlsEnabled));
     }
 
     public void getStatus(Context ctx) {

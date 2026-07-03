@@ -40,19 +40,20 @@ OrderGateway::OrderGateway(const OrderGatewayConfiguration& config, std::unique_
 
     reactor_ = std::make_unique<pubsub_itc_fw::Reactor>(reactor_configuration_, service_registry_, *logger_);
 
-    // Inbound FIX client listener: TLS when configured, plain TCP otherwise.
+    // Plain TCP FIX listener - always registered.
+    reactor_->register_inbound_listener(
+        pubsub_itc_fw::NetworkEndpointConfiguration{config_.listen_host, config_.listen_port},
+        pubsub_itc_fw::ThreadID{1},
+        pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::RawBytes}, config_.raw_buffer_capacity);
+
+    // TLS FIX listener - registered in addition to the plain listener when configured.
     if (config_.fix_tls_enabled) {
         pubsub_itc_fw::TlsListenerConfiguration tls_config;
         tls_config.certificate_path = config_.fix_tls_cert_path;
         tls_config.private_key_path = config_.fix_tls_key_path;
         reactor_->register_inbound_tls_listener(
-            pubsub_itc_fw::NetworkEndpointConfiguration{config_.listen_host, config_.listen_port},
+            pubsub_itc_fw::NetworkEndpointConfiguration{config_.listen_host, config_.tls_listen_port},
             pubsub_itc_fw::ThreadID{1}, config_.raw_buffer_capacity, tls_config);
-    } else {
-        reactor_->register_inbound_listener(
-            pubsub_itc_fw::NetworkEndpointConfiguration{config_.listen_host, config_.listen_port},
-            pubsub_itc_fw::ThreadID{1},
-            pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::RawBytes}, config_.raw_buffer_capacity);
     }
 
     // Inbound PDU listener for ExecutionReport PDUs from the matching engine.
@@ -88,7 +89,10 @@ OrderGateway::OrderGateway(const OrderGatewayConfiguration& config, std::unique_
                               pubsub_itc_fw::NetworkEndpointConfiguration{});
     }
 
-    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "OrderGateway: FIX listener on {}:{}", config_.listen_host, config_.listen_port);
+    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "OrderGateway: FIX plain listener on {}:{}", config_.listen_host, config_.listen_port);
+    if (config_.fix_tls_enabled) {
+        PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "OrderGateway: FIX TLS listener on {}:{}", config_.listen_host, config_.tls_listen_port);
+    }
     PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "OrderGateway: ER listener on {}:{}", config_.er_listen_host, config_.er_listen_port);
     if (config_.ha_enabled) {
         PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "OrderGateway: authentication service primary={}:{} secondary={}:{} (HA enabled)",

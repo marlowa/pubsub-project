@@ -48,6 +48,15 @@ public class FixEngine {
         fixApplication.setPendingSeqNumOverride(overrideSeqNum);
         overrideSeqNum = null;
 
+        if (useTls) {
+            java.io.File trustStore = new java.io.File(config.trustStorePath());
+            if (!trustStore.exists() || !trustStore.isFile()) {
+                throw new IOException("TLS requested but trust store not found: "
+                        + trustStore.getAbsolutePath()
+                        + " — either provide the trust store or set useTls=false");
+            }
+        }
+
         SessionSettings settings = buildSettings(compId, useTls, logonMode);
         fixApplication.setPendingPassword(password);
 
@@ -243,7 +252,7 @@ public class FixEngine {
         SessionID sid = new SessionID("FIXT.1.1", compId, config.targetCompId());
         settings.setString(sid, "BeginString",       "FIXT.1.1");
         settings.setString(sid, "SocketConnectHost", config.gatewayHost());
-        settings.setString(sid, "SocketConnectPort", String.valueOf(config.gatewayPort()));
+        settings.setString(sid, "SocketConnectPort", String.valueOf(useTls ? config.tlsGatewayPort() : config.gatewayPort()));
 
         if (useTls) {
             settings.setString(sid, "SocketUseSSL",            "Y");

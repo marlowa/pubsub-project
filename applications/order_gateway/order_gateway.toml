@@ -1,6 +1,7 @@
 [network]
 listen_host         = "${order_gateway_network_listen_host}"
 listen_port         = ${order_gateway_network_listen_port}
+tls_listen_port     = ${order_gateway_network_tls_listen_port}
 raw_buffer_capacity = 16777216 # for TCP buffering; 16 MiB per FIX session.
                               # At ~175 bytes/NOS, 16 MiB holds ~71,900 messages at the 75%
                               # high-water mark — above the 50,000 NOS per session sent by the

@@ -33,8 +33,11 @@ struct OrderGatewayConfiguration {
     /** @brief Host address on which the gateway listens for FIX client connections. */
     std::string listen_host{"127.0.0.1"};
 
-    /** @brief TCP port on which the gateway listens for FIX client connections. */
+    /** @brief Plain TCP port on which the gateway listens for FIX client connections. */
     uint16_t listen_port{9879};
+
+    /** @brief TLS port for FIX client connections (only used when fix_tls_enabled=true). */
+    uint16_t tls_listen_port{9880};
 
     /** @brief Size in bytes of the per-connection raw receive buffer. */
     int64_t raw_buffer_capacity{65536};

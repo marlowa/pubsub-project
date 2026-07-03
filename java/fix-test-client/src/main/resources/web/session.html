@@ -34,7 +34,8 @@
         </div>
         <div class="form-row">
             <label>Use TLS</label>
-            <input type="checkbox" id="use-tls" checked>
+            <input type="checkbox" id="use-tls" checked onchange="updatePortDisplay()">
+            <span id="port-display" style="margin-left:10px; color:#555; font-size:0.9em;"></span>
         </div>
         <div class="form-row">
             <label>Proprietary logon</label>
@@ -233,8 +234,36 @@ async function loadLastSession() {
 }
 
 let prevLoggedOn = null;
+let ports = { plainPort: null, tlsPort: null };
+
+function updatePortDisplay() {
+    const useTls = document.getElementById('use-tls').checked;
+    const port = useTls ? ports.tlsPort : ports.plainPort;
+    const el = document.getElementById('port-display');
+    if (el) {
+        el.textContent = port != null ? '→ port ' + port : '';
+    }
+}
+
+async function loadPorts() {
+    const data = await apiGet('/api/session/ports');
+    ports = data;
+    const tlsCheckbox = document.getElementById('use-tls');
+    if (tlsCheckbox) {
+        if (!data.tlsEnabled) {
+            tlsCheckbox.checked   = false;
+            tlsCheckbox.disabled  = true;
+            tlsCheckbox.title     = 'TLS is not configured on the gateway';
+        } else {
+            tlsCheckbox.disabled  = false;
+            tlsCheckbox.title     = '';
+        }
+    }
+    updatePortDisplay();
+}
 
 function pageInit() {
+    loadPorts();
     loadLastSession();
 
     const originalPoll = window._sessionStatusCallback;

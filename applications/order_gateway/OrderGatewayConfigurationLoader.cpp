@@ -57,6 +57,7 @@ OrderGatewayConfigurationLoader::load_and_init_logging(const std::string& file_p
 
         toml.get_required_except("network.listen_port", listen_port);
         toml.get_required_except("network.er_listen_port", er_listen_port);
+
         toml.get_required_except("network.raw_buffer_capacity", raw_buffer_capacity);
         toml.get_required_except("sequencer.primary_port", primary_port);
         toml.get_required_except("authentication_service.port", authentication_service_port);
@@ -150,6 +151,10 @@ OrderGatewayConfigurationLoader::load_and_init_logging(const std::string& file_p
             if (config.fix_tls_key_path.empty()) {
                 throw pubsub_itc_fw::ConfigurationException("OrderGatewayConfigurationLoader: fix_tls.key must not be empty when fix_tls.enabled=true");
             }
+            int32_t tls_listen_port = 0;
+            toml.get_required_except("network.tls_listen_port", tls_listen_port);
+            validate_port(tls_listen_port, "network.tls_listen_port");
+            config.tls_listen_port = static_cast<uint16_t>(tls_listen_port);
         }
 
         toml.get_required_except("fix_capture.enabled", config.fix_capture_enabled);

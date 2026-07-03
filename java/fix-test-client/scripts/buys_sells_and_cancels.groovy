@@ -1,25 +1,37 @@
 // Place 1000 buy orders and 1000 sell orders, then cancel the first 250 of each.
 //
-// Phase 1 — 1000 buys  (ClOrdID: BUY-00001 … BUY-01000)
-// Phase 2 — 1000 sells (ClOrdID: SELL-00001 … SELL-01000)
-// Phase 3 — 250 buy cancels  (cancels BUY-00001 … BUY-00250)
-// Phase 4 — 250 sell cancels (cancels SELL-00001 … SELL-00250)
+// Phase 1 — 1000 buys
+// Phase 2 — 1000 sells
+// Phase 3 — 250 buy cancels
+// Phase 4 — 250 sell cancels
 //
 // Buy price (100.00) is below sell price (105.00) so orders do not cross —
 // all rest on the book and generate New ERs only, no fills.
+//
+// fix.uniqueId() is used for all ClOrdIDs so the script is safe to re-run
+// without generating duplicate IDs.
 
 session.logon("APM001", "stubpassword", true)
-sleep(2000)
 
-def symbol   = "AAPL"
-def qty      = 100
-def buyPrice = 100.00
+def deadline = System.currentTimeMillis() + 5000
+while (!session.isLoggedOn() && System.currentTimeMillis() < deadline) {
+    sleep(200)
+}
+if (!session.isLoggedOn()) {
+    out.println "ERROR: logon did not complete within 5 seconds"
+    return
+}
+out.println "Logged on"
+
+def symbol    = "AAPL"
+def qty       = 100
+def buyPrice  = 100.00
 def sellPrice = 105.00
 
 // ----------------------------------------------------------------
 // Phase 1: 1000 buy orders
 // ----------------------------------------------------------------
-def buyIds = (1..1000).collect { String.format("BUY-%05d", it) }
+def buyIds = (1..1000).collect { fix.uniqueId() }
 
 buyIds.each { id ->
     def nos = fix.newOrderSingle()
@@ -37,7 +49,7 @@ sleep(500)
 // ----------------------------------------------------------------
 // Phase 2: 1000 sell orders
 // ----------------------------------------------------------------
-def sellIds = (1..1000).collect { String.format("SELL-%05d", it) }
+def sellIds = (1..1000).collect { fix.uniqueId() }
 
 sellIds.each { id ->
     def nos = fix.newOrderSingle()
@@ -56,9 +68,8 @@ sleep(500)
 // Phase 3: cancel first 250 buy orders
 // ----------------------------------------------------------------
 buyIds.take(250).eachWithIndex { origId, i ->
-    def cancelId = String.format("CXL-BUY-%05d", i + 1)
     def ocr = fix.orderCancelRequest()
-    ocr.set(new quickfix.field.ClOrdID(cancelId))
+    ocr.set(new quickfix.field.ClOrdID(fix.uniqueId()))
     ocr.set(new quickfix.field.OrigClOrdID(origId))
     ocr.set(new quickfix.field.Symbol(symbol))
     ocr.set(new quickfix.field.Side(quickfix.field.Side.BUY))
@@ -72,9 +83,8 @@ sleep(500)
 // Phase 4: cancel first 250 sell orders
 // ----------------------------------------------------------------
 sellIds.take(250).eachWithIndex { origId, i ->
-    def cancelId = String.format("CXL-SELL-%05d", i + 1)
     def ocr = fix.orderCancelRequest()
-    ocr.set(new quickfix.field.ClOrdID(cancelId))
+    ocr.set(new quickfix.field.ClOrdID(fix.uniqueId()))
     ocr.set(new quickfix.field.OrigClOrdID(origId))
     ocr.set(new quickfix.field.Symbol(symbol))
     ocr.set(new quickfix.field.Side(quickfix.field.Side.SELL))
