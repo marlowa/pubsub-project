@@ -175,4 +175,8 @@ The Python package is structured as:
 - \c dsl/generator_cpp.py -- C++17 code emitter
 - \c tools/generate_cpp_from_dsl.py -- command-line entry point
 
+\see docs/design/serialisation_dsl.md for the full narrative documentation including
+benchmark results, the list of DSL files in the project, and the BumpAllocator two-pass
+encode pattern.
+
 */
