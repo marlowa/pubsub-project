@@ -201,6 +201,30 @@ message WalSubscribeAck (id=106, version=1)
 end
 
 # ------------------------------------------------------------
+#  115 -- MePositionRequest
+#  Sent by a matching-engine instance to the sequencer when it
+#  begins WAL reconciliation (RECONCILING state).  It tells the
+#  sequencer the seq_no of the last record the ME has already
+#  applied (via book replication).  The sequencer then streams all
+#  WAL records after that point so the ME can catch up before it
+#  begins live processing as the new leader.
+# ------------------------------------------------------------
+message MePositionRequest (id=115, version=1)
+    i64 last_seq_no        # last seq_no the ME has already applied
+end
+
+# ------------------------------------------------------------
+#  116 -- MePositionAck
+#  Sent by the sequencer to the matching engine once WAL catch-up
+#  streaming is complete.  It carries the sequencer's current WAL
+#  head; on receipt the ME considers its book reconciled and
+#  transitions to LEADER state.
+# ------------------------------------------------------------
+message MePositionAck (id=116, version=1)
+    i64 last_seq_no        # sequencer's current WAL head at catch-up completion
+end
+
+# ------------------------------------------------------------
 #  200 — ArbitrationReport
 #  Sent by a component (sequencer or ME) to the active arbiter
 #  when arbitration is required (startup or after peer heartbeat

@@ -12,6 +12,12 @@ port = ${sequencer_secondary_gateway_port}
 host = "${sequencer_secondary_matching_engine_host}"
 port = ${sequencer_secondary_matching_engine_port}
 
+# Pre-warmed standby connection to ME-secondary (used on ME failover).
+# Required when ha.ha_enabled = true.
+[matching_engine_secondary]
+host = "${sequencer_secondary_matching_engine_secondary_host}"
+port = ${sequencer_secondary_matching_engine_secondary_port}
+
 [ha]
 ha_enabled                  = true
 instance_id                 = 2

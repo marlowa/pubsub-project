@@ -14,7 +14,7 @@ target_link_libraries(matching_engine PRIVATE
         tsl::robin_map
 )
 
-add_dependencies(matching_engine fix_equity_orders_generated matching_engine_replication_generated)
+add_dependencies(matching_engine fix_equity_orders_generated matching_engine_replication_generated leader_follower_generated)
 
 # Header files listed explicitly so CLion indexes them correctly.
 target_sources(matching_engine PRIVATE

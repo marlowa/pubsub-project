@@ -77,6 +77,13 @@ Sequencer::Sequencer(SequencerConfiguration config, std::unique_ptr<pubsub_itc_f
                           pubsub_itc_fw::NetworkEndpointConfiguration{});
     service_registry_.add("matching_engine", pubsub_itc_fw::NetworkEndpointConfiguration{config_.matching_engine_host, config_.matching_engine_port},
                           pubsub_itc_fw::NetworkEndpointConfiguration{});
+    if (config_.ha_enabled) {
+        // Pre-warmed standby connection to ME-secondary. Promoted to the active
+        // ME order connection when ME-secondary sends a MePositionRequest on failover.
+        service_registry_.add("matching_engine_secondary",
+                              pubsub_itc_fw::NetworkEndpointConfiguration{config_.matching_engine_secondary_host, config_.matching_engine_secondary_port},
+                              pubsub_itc_fw::NetworkEndpointConfiguration{});
+    }
     service_registry_.add("arbiter_primary", pubsub_itc_fw::NetworkEndpointConfiguration{config_.arbiter_primary_host, config_.arbiter_primary_port},
                           pubsub_itc_fw::NetworkEndpointConfiguration{});
     service_registry_.add("arbiter_secondary", pubsub_itc_fw::NetworkEndpointConfiguration{config_.arbiter_secondary_host, config_.arbiter_secondary_port},

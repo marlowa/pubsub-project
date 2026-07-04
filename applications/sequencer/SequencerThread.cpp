@@ -53,6 +53,8 @@ static constexpr int16_t pdu_wal_record = 103;
 static constexpr int16_t pdu_wal_ack = 104;
 static constexpr int16_t pdu_wal_subscribe_request = 105;
 static constexpr int16_t pdu_wal_subscribe_ack = 106;
+static constexpr int16_t pdu_me_position_request = 115;
+static constexpr int16_t pdu_me_position_ack = 116;
 static constexpr int16_t pdu_arbitration_report = 200;
 static constexpr int16_t pdu_arbitration_decision = 201;
 
@@ -147,6 +149,7 @@ void SequencerThread::on_app_ready_event() {
     connect_to_service("gateway");
     connect_to_service("matching_engine");
     if (config_.ha_enabled) {
+        connect_to_service("matching_engine_secondary");
         connect_to_service("arbiter_primary");
         connect_to_service("arbiter_secondary");
         connect_to_service("peer");
@@ -167,6 +170,10 @@ void SequencerThread::on_connection_established(pubsub_itc_fw::ConnectionID id) 
             replay_me_order_ready_ = true;
             try_dispatch_replay();
         }
+    } else if (svc == "matching_engine_secondary") {
+        me_secondary_standby_conn_id_ = id;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: ME-secondary standby connection {} established (pre-warmed for failover)", id.get_value());
     } else if (svc == "arbiter_primary") {
         const bool first_arbiter = !arbiter_primary_conn_id_.is_valid() && !arbiter_secondary_conn_id_.is_valid();
         arbiter_primary_conn_id_ = id;
@@ -213,7 +220,11 @@ void SequencerThread::on_connection_lost(const pubsub_itc_fw::ConnectionID &id, 
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: gateway connection {} lost: {}", id.get_value(), reason);
     } else if (id == me_outbound_order_conn_id_) {
         me_outbound_order_conn_id_ = pubsub_itc_fw::ConnectionID{};
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: matching engine order connection {} lost: {}", id.get_value(), reason);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "SequencerThread: matching engine order connection {} lost: {} -- ME-secondary may promote and reconnect", id.get_value(), reason);
+    } else if (id == me_secondary_standby_conn_id_) {
+        me_secondary_standby_conn_id_ = pubsub_itc_fw::ConnectionID{};
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: ME-secondary standby connection {} lost: {}", id.get_value(), reason);
     } else if (id == arbiter_primary_conn_id_) {
         arbiter_primary_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: arbiter-primary connection {} lost: {}", id.get_value(), reason);
@@ -262,6 +273,18 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
     // Arbiter PDUs: only ArbitrationDecision (pdu_id=201) is expected from either arbiter.
     if (conn_id == arbiter_primary_conn_id_ || conn_id == arbiter_secondary_conn_id_) {
         handle_arbitration_decision(message);
+        release_pdu_payload(message);
+        return;
+    }
+
+    // ME failover reconciliation (Slice D): a promoted ME-secondary sends
+    // MePositionRequest over the sequencer's connection to trigger WAL catch-up.
+    // In normal operation the request arrives on the pre-warmed standby
+    // connection (me_secondary_standby_conn_id_); accept it on either the active
+    // or standby ME connection for robustness.
+    if (message.pdu_id() == pdu_me_position_request &&
+        (conn_id == me_outbound_order_conn_id_ || conn_id == me_secondary_standby_conn_id_)) {
+        handle_me_position_request(conn_id, message);
         release_pdu_payload(message);
         return;
     }
@@ -1427,6 +1450,156 @@ void SequencerThread::stream_wal_record_to_external_subscribers(int64_t seq, int
     }
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: WalRecord seq={} pdu_id={} streamed to {} external subscriber(s)",
                seq, pdu_id, wal_subscriber_conn_ids_.size());
+}
+
+// ---------------------------------------------------------------------------
+// ME failover reconciliation (Slice D)
+// ---------------------------------------------------------------------------
+
+void SequencerThread::handle_me_position_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    arena.reset();
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw_app::MePositionRequestView view{};
+
+    if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode MePositionRequest -- dropping");
+        return;
+    }
+
+    const int64_t last_seq_no = view.last_seq_no;
+    const int64_t wal_head = wal_.last_seq_no();
+    me_catchup_conn_id_ = conn_id;
+
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "SequencerThread: MePositionRequest from connection {} last_seq_no={} -- streaming WAL catch-up up to head={}",
+               conn_id.get_value(), last_seq_no, wal_head);
+
+    // Walk the WAL from last_seq_no+1 to the head, unwrapping each stored record
+    // and streaming the underlying NOS/OCR PDU directly to the ME connection.
+    size_t streamed = 0;
+    [[maybe_unused]] auto end_pos = pubsub_itc_fw::WalReader::replay(config_.wal_directory, {0, 0},
+        [this, &conn_id, last_seq_no, &streamed](int64_t record_id, const void* payload, size_t size) {
+            if (record_id <= last_seq_no) {
+                return;
+            }
+            constexpr size_t header_size = sizeof(int64_t) + sizeof(int16_t);
+            if (size < header_size) {
+                return;
+            }
+            int64_t wall_time_ns{};
+            std::memcpy(&wall_time_ns, payload, sizeof(int64_t));
+            int16_t pdu_id{};
+            std::memcpy(&pdu_id, static_cast<const uint8_t*>(payload) + sizeof(int64_t), sizeof(int16_t));
+            const auto* pdu_payload = static_cast<const uint8_t*>(payload) + header_size;
+            const size_t pdu_size = size - header_size;
+            stream_wal_record_to_me(conn_id, record_id, pdu_id, pdu_payload, pdu_size, wall_time_ns);
+            ++streamed;
+        });
+
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "SequencerThread: WAL catch-up complete -- {} record(s) streamed to ME connection {}", streamed, conn_id.get_value());
+
+    // Signal completion. On receipt the ME cancels its book and becomes leader.
+    pubsub_itc_fw_app::MePositionAck ack{};
+    ack.last_seq_no = wal_head;
+    send_pdu(conn_id, pdu_me_position_ack, 0, ack);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: MePositionAck sent (last_seq_no={}) -- ME is now live", wal_head);
+
+    // Promote this connection to the active ME order connection so subsequent
+    // sequenced orders flow to the newly-promoted ME. If the request arrived on
+    // the standby connection (the normal failover case), this swaps the active
+    // ME from the dead primary to the caught-up secondary. The old standby slot
+    // is cleared; a future ME-primary restart would arrive on it again.
+    if (conn_id == me_secondary_standby_conn_id_) {
+        me_secondary_standby_conn_id_ = pubsub_itc_fw::ConnectionID{};
+    }
+    me_outbound_order_conn_id_ = conn_id;
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "SequencerThread: ME order connection promoted to {} -- sequenced orders now route to the caught-up ME", conn_id.get_value());
+
+    me_catchup_conn_id_ = pubsub_itc_fw::ConnectionID{};
+}
+
+void SequencerThread::stream_wal_record_to_me(const pubsub_itc_fw::ConnectionID& conn_id, int64_t record_id, int16_t pdu_id, const uint8_t* pdu_payload,
+                                              size_t pdu_size, int64_t wall_time_ns) {
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    arena.reset();
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+
+    if (pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::NewOrderSingle)) {
+        pubsub_itc_fw_app::NewOrderSingleView view{};
+        if (!pubsub_itc_fw_app::decode(view, pdu_payload, pdu_size, bytes_consumed, arena, arena_bytes_needed)) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: catch-up -- failed to decode NOS seq={} -- skipping", record_id);
+            return;
+        }
+        pubsub_itc_fw_app::NewOrderSingle nos{};
+        nos.cl_ord_id = view.cl_ord_id;
+        nos.side = view.side;
+        nos.symbol = view.symbol;
+        nos.ord_type = view.ord_type;
+        nos.transact_time = view.transact_time;
+        nos.order_qty = view.order_qty;
+        nos.has_price = view.has_price;
+        nos.price = view.price;
+        nos.has_stop_px = view.has_stop_px;
+        nos.stop_px = view.stop_px;
+        nos.has_time_in_force = view.has_time_in_force;
+        nos.time_in_force = view.time_in_force;
+        nos.has_account = view.has_account;
+        nos.account = view.account;
+        nos.has_ex_destination = view.has_ex_destination;
+        nos.ex_destination = view.ex_destination;
+        nos.has_exec_inst = view.has_exec_inst;
+        nos.exec_inst = view.exec_inst;
+        nos.has_min_qty = view.has_min_qty;
+        nos.min_qty = view.min_qty;
+        nos.has_max_floor = view.has_max_floor;
+        nos.max_floor = view.max_floor;
+        nos.has_expire_time = view.has_expire_time;
+        nos.expire_time = view.expire_time;
+        nos.has_text = view.has_text;
+        nos.text = view.text;
+        nos.has_sender_comp_id = view.has_sender_comp_id;
+        nos.sender_comp_id = view.sender_comp_id;
+        nos.has_gateway_session_conn_id = view.has_gateway_session_conn_id;
+        nos.gateway_session_conn_id = view.gateway_session_conn_id;
+        nos.has_sequenced_at = true;
+        nos.sequenced_at = wall_time_ns;
+        send_pdu(conn_id, pdu_id, record_id, nos);
+
+    } else if (pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::OrderCancelRequest)) {
+        pubsub_itc_fw_app::OrderCancelRequestView view{};
+        if (!pubsub_itc_fw_app::decode(view, pdu_payload, pdu_size, bytes_consumed, arena, arena_bytes_needed)) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: catch-up -- failed to decode OCR seq={} -- skipping", record_id);
+            return;
+        }
+        pubsub_itc_fw_app::OrderCancelRequest ocr{};
+        ocr.orig_cl_ord_id = view.orig_cl_ord_id;
+        ocr.cl_ord_id = view.cl_ord_id;
+        ocr.symbol = view.symbol;
+        ocr.side = view.side;
+        ocr.transact_time = view.transact_time;
+        ocr.order_qty = view.order_qty;
+        ocr.has_account = view.has_account;
+        ocr.account = view.account;
+        ocr.has_text = view.has_text;
+        ocr.text = view.text;
+        ocr.has_sender_comp_id = view.has_sender_comp_id;
+        ocr.sender_comp_id = view.sender_comp_id;
+        ocr.has_gateway_session_conn_id = view.has_gateway_session_conn_id;
+        ocr.gateway_session_conn_id = view.gateway_session_conn_id;
+        ocr.has_sequenced_at = true;
+        ocr.sequenced_at = wall_time_ns;
+        send_pdu(conn_id, pdu_id, record_id, ocr);
+
+    } else {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: catch-up -- unknown pdu_id={} seq={} -- skipping", pdu_id, record_id);
+    }
 }
 
 } // namespaces

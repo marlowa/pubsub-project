@@ -56,6 +56,12 @@ SequencerConfiguration SequencerConfigurationLoader::load(const std::string& fil
         config.matching_engine_port = static_cast<uint16_t>(matching_engine_port);
 
         if (config.ha_enabled) {
+            toml.get_required_except("matching_engine_secondary.host", config.matching_engine_secondary_host);
+            int32_t matching_engine_secondary_port = 0;
+            toml.get_required_except("matching_engine_secondary.port", matching_engine_secondary_port);
+            validate_port(matching_engine_secondary_port, "matching_engine_secondary.port");
+            config.matching_engine_secondary_port = static_cast<uint16_t>(matching_engine_secondary_port);
+
             toml.get_required_except("ha.arbiter_primary_host", config.arbiter_primary_host);
             int32_t arbiter_primary_port = 0;
             toml.get_required_except("ha.arbiter_primary_port", arbiter_primary_port);

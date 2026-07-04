@@ -125,6 +125,42 @@ struct MatchingEngineConfiguration {
     uint16_t    replication_listen_port{7026};
 
     // ----------------------------------------------------------------
+    // HA -- arbiter-mediated promotion and cancel-on-failover (Slice C+D)
+    //
+    // The secondary opens connections to the arbiter pool at startup and, on
+    // loss of the primary replication channel, arms a promotion timer.  When it
+    // fires it sends an ArbitrationReport to the arbiter and adopts leader or
+    // follower based on the ArbitrationDecision.  The primary heartbeats the
+    // arbiter to hold its lease.
+    // ----------------------------------------------------------------
+
+    /** @brief Unique instance identity within the ME pair (1 = primary, 2 = secondary). */
+    int32_t instance_id{1};
+
+    /** @brief Host address of the primary arbiter's component listener. */
+    std::string arbiter_primary_host{"127.0.0.1"};
+
+    /** @brief TCP port of the primary arbiter's component listener. */
+    uint16_t arbiter_primary_port{7200};
+
+    /** @brief Host address of the secondary arbiter's component listener. */
+    std::string arbiter_secondary_host{"127.0.0.1"};
+
+    /** @brief TCP port of the secondary arbiter's component listener. */
+    uint16_t arbiter_secondary_port{7200};
+
+    /** @brief Promotion timeout: how long the secondary waits after losing the primary
+     *  replication channel before requesting arbitration. Also the ceiling for
+     *  arbiter reachability during promotion. */
+    int32_t heartbeat_timeout_seconds{15};
+
+    /** @brief Interval at which the primary heartbeats the arbiter pool to renew its lease. */
+    int32_t heartbeat_interval_seconds{30};
+
+    /** @brief Path to the fence file written when this instance adopts the leader role. */
+    std::string fence_file_path{"/dev/shm/me_primary_fence"};
+
+    // ----------------------------------------------------------------
     // Order book
     // ----------------------------------------------------------------
 

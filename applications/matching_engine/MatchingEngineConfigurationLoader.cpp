@@ -31,8 +31,12 @@ MatchingEngineConfiguration MatchingEngineConfigurationLoader::load(const std::s
 
         const bool is_secondary = config.ha_enabled && config.ha_role == "secondary";
 
-        // Network/sequencer sections are not required for a secondary ME in Slice A+B.
-        if (!is_secondary) {
+        // Network/sequencer sections are required for both roles.
+        // The secondary needs them for pre-warmed connections (Slice C): it must
+        // register the same order listener and sequencer_er outbound services as
+        // the primary so that on promotion it can begin processing without a
+        // cold-connect delay.
+        {
             toml.get_required_except("network.listen_host", config.listen_host);
             toml.get_required_except("sequencer_er.host", config.sequencer_er_host);
             toml.get_required_except("sequencer_er_secondary.host", config.sequencer_er_secondary_host);
@@ -81,6 +85,33 @@ MatchingEngineConfiguration MatchingEngineConfigurationLoader::load(const std::s
                 toml.get_required_except("book_replication.listen_port", repl_listen_port);
                 validate_port(repl_listen_port, "book_replication.listen_port");
                 config.replication_listen_port = static_cast<uint16_t>(repl_listen_port);
+            }
+
+            // Arbiter-mediated promotion (Slice C+D). Required for both roles when HA is on.
+            toml.get_required_except("ha_instance.instance_id", config.instance_id);
+            toml.get_required_except("ha_instance.fence_file_path", config.fence_file_path);
+
+            toml.get_required_except("arbiter_primary.host", config.arbiter_primary_host);
+            int32_t arbiter_primary_port = 0;
+            toml.get_required_except("arbiter_primary.port", arbiter_primary_port);
+            validate_port(arbiter_primary_port, "arbiter_primary.port");
+            config.arbiter_primary_port = static_cast<uint16_t>(arbiter_primary_port);
+
+            toml.get_required_except("arbiter_secondary.host", config.arbiter_secondary_host);
+            int32_t arbiter_secondary_port = 0;
+            toml.get_required_except("arbiter_secondary.port", arbiter_secondary_port);
+            validate_port(arbiter_secondary_port, "arbiter_secondary.port");
+            config.arbiter_secondary_port = static_cast<uint16_t>(arbiter_secondary_port);
+
+            toml.get_required_except("ha_timing.heartbeat_timeout_seconds", config.heartbeat_timeout_seconds);
+            toml.get_required_except("ha_timing.heartbeat_interval_seconds", config.heartbeat_interval_seconds);
+            if (config.heartbeat_timeout_seconds < 1) {
+                throw pubsub_itc_fw::ConfigurationException("MatchingEngineConfigurationLoader: ha_timing.heartbeat_timeout_seconds must be >= 1, got " +
+                                                            std::to_string(config.heartbeat_timeout_seconds));
+            }
+            if (config.heartbeat_interval_seconds < 1) {
+                throw pubsub_itc_fw::ConfigurationException("MatchingEngineConfigurationLoader: ha_timing.heartbeat_interval_seconds must be >= 1, got " +
+                                                            std::to_string(config.heartbeat_interval_seconds));
             }
         }
 

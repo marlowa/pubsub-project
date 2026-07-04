@@ -271,10 +271,32 @@ sequencer_er_secondary_port   = 11022
 ha_enabled                    = true
 book_replication_host         = "127.0.0.1"
 book_replication_port         = 11026
+# HA arbiter-mediated promotion (Slice C+D).
+instance_id                   = 1
+arbiter_primary_host          = "127.0.0.1"
+arbiter_primary_port          = 11200
+arbiter_secondary_host        = "127.0.0.1"
+arbiter_secondary_port        = 11201
+fence_file_path               = "/dev/shm/me_primary_fence"
 
 [matching_engine_secondary]
 book_replication_listen_host  = "127.0.0.1"
 book_replication_listen_port  = 11026
+# Order listener (distinct port from the primary; both run on the same dev host).
+network_listen_host           = "127.0.0.1"
+network_listen_port           = 11023
+# ER outbound connections to the sequencer pair (same targets as the primary).
+sequencer_er_host             = "127.0.0.1"
+sequencer_er_port             = 11021
+sequencer_er_secondary_host   = "127.0.0.1"
+sequencer_er_secondary_port   = 11022
+# HA arbiter-mediated promotion (Slice C+D).
+instance_id                   = 2
+arbiter_primary_host          = "127.0.0.1"
+arbiter_primary_port          = 11200
+arbiter_secondary_host        = "127.0.0.1"
+arbiter_secondary_port        = 11201
+fence_file_path               = "/dev/shm/me_secondary_fence"
 
 [order_gateway]
 network_listen_host                   = "127.0.0.1"
@@ -310,6 +332,8 @@ gateway_host               = "127.0.0.1"
 gateway_port               = 11010
 matching_engine_host       = "127.0.0.1"
 matching_engine_port       = 11020
+matching_engine_secondary_host = "127.0.0.1"
+matching_engine_secondary_port = 11023
 ha_arbiter_primary_host    = "127.0.0.1"
 ha_arbiter_primary_port    = 11200
 ha_arbiter_secondary_host  = "127.0.0.1"
@@ -332,6 +356,8 @@ gateway_host               = "127.0.0.1"
 gateway_port               = 11010
 matching_engine_host       = "127.0.0.1"
 matching_engine_port       = 11020
+matching_engine_secondary_host = "127.0.0.1"
+matching_engine_secondary_port = 11023
 ha_arbiter_primary_host    = "127.0.0.1"
 ha_arbiter_primary_port    = 11200
 ha_arbiter_secondary_host  = "127.0.0.1"

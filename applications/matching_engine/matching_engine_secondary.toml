@@ -1,3 +1,17 @@
+[network]
+# Order listener. Pre-warmed so the sequencer's connection is already up when the
+# secondary is promoted (Slice C+D). Idle while in FOLLOWER mode (orders discarded).
+listen_host = "${matching_engine_secondary_network_listen_host}"
+listen_port = ${matching_engine_secondary_network_listen_port}
+
+[sequencer_er]
+host = "${matching_engine_secondary_sequencer_er_host}"
+port = ${matching_engine_secondary_sequencer_er_port}
+
+[sequencer_er_secondary]
+host = "${matching_engine_secondary_sequencer_er_secondary_host}"
+port = ${matching_engine_secondary_sequencer_er_secondary_port}
+
 [ha]
 enabled = true
 role    = "secondary"
@@ -6,6 +20,22 @@ role    = "secondary"
 # Inbound listener for book-update PDUs from ME-primary.
 listen_host = "${matching_engine_secondary_book_replication_listen_host}"
 listen_port = ${matching_engine_secondary_book_replication_listen_port}
+
+[ha_instance]
+instance_id = ${matching_engine_secondary_instance_id}
+fence_file_path = "${matching_engine_secondary_fence_file_path}"
+
+[arbiter_primary]
+host = "${matching_engine_secondary_arbiter_primary_host}"
+port = ${matching_engine_secondary_arbiter_primary_port}
+
+[arbiter_secondary]
+host = "${matching_engine_secondary_arbiter_secondary_host}"
+port = ${matching_engine_secondary_arbiter_secondary_port}
+
+[ha_timing]
+heartbeat_timeout_seconds  = 15
+heartbeat_interval_seconds = 30
 
 [logging]
 applog_level = "info"

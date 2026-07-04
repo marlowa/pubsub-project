@@ -17,11 +17,23 @@
 #include <pubsub_itc_fw/Reactor.hpp>
 
 #include <fix_equity_orders.hpp>
+#include <leader_follower.hpp>
 #include <matching_engine_replication.hpp>
 
 #include "MatchingEngineConfiguration.hpp"
 
 namespace matching_engine {
+
+/**
+ * @brief HA state for the matching-engine instance (Slice C+D).
+ *
+ * Unknown    -- HA disabled or not yet classified.
+ * Follower   -- passive replica: receives BookUpdate PDUs, discards order and ER PDUs.
+ * Reconciling-- promotion in progress: replaying WAL catch-up from the sequencer,
+ *               applying NOS/OCR to the book WITHOUT emitting ERs.
+ * Leader     -- active: processes orders and emits ERs normally.
+ */
+enum class MeRole { Unknown, Follower, Reconciling, Leader };
 
 /**
  * @brief ApplicationThread subclass implementing the matching engine stub.
@@ -111,6 +123,7 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // All string fields stored as fixed-size char arrays -- no heap allocation.
     struct OrderEntry {
         int64_t order_id_num{};  // counter value; formatted to "ME-ORD-N" on demand
+        int32_t gateway_session_conn_id{};  // originating FIX session; used to route cancel ERs on failover
         pubsub_itc_fw_app::Side side{};
         pubsub_itc_fw_app::OrdType ord_type{};
         bool has_price{false};
@@ -194,6 +207,49 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
 
     // Helper: apply a received BookUpdate PDU to the replica book (secondary only).
     void apply_book_update(const pubsub_itc_fw::EventMessage& message);
+
+    // ----------------------------------------------------------------
+    // HA state machine (Slice C+D)
+    // ----------------------------------------------------------------
+
+    // Current HA role. Unknown for a non-HA (single-instance) ME and for the
+    // primary before it adopts leadership; Follower for the passive secondary.
+    MeRole ha_role_state_{MeRole::Unknown};
+
+    // Secondary: true while the promotion-timeout timer is armed (primary
+    // replication connection has been lost and we are waiting to see if it
+    // reconnects before requesting arbitration).
+    bool promotion_pending_{false};
+
+    // Leadership generation. Adopted from ArbitrationDecision, or self-incremented
+    // on degraded self-promotion.
+    int32_t epoch_{0};
+
+    // Secondary: instance_id of the primary (peer). Fixed at 1 by convention.
+    static constexpr int64_t primary_instance_id = 1;
+
+    // Outbound connections to the arbiter pool (both roles when HA is enabled).
+    pubsub_itc_fw::ConnectionID arbiter_primary_conn_id_;
+    pubsub_itc_fw::ConnectionID arbiter_secondary_conn_id_;
+
+    // Secondary: the inbound order connection from the sequencer, established on
+    // the order listener. In RECONCILING state this is the connection over which
+    // WAL catch-up (MePositionRequest/Ack) and the reconciling NOS/OCR stream flow.
+    pubsub_itc_fw::ConnectionID sequencer_order_conn_id_;
+
+    // Arbiter-mediated promotion helpers.
+    void enter_follower_state();
+    void adopt_leader_role();
+    void send_arbitration_report();
+    void handle_arbitration_decision(const pubsub_itc_fw::EventMessage& message);
+    void send_arbiter_heartbeat();
+    void write_fence_file() const;
+
+    // WAL reconciliation (RECONCILING state).
+    void begin_reconciliation();
+    void send_me_position_request();
+    void handle_me_position_ack(const pubsub_itc_fw::EventMessage& message);
+    void cancel_all_orders_on_failover();
 };
 
 } // namespaces

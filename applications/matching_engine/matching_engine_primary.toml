@@ -19,6 +19,22 @@ role    = "primary"
 host = "${matching_engine_book_replication_host}"
 port = ${matching_engine_book_replication_port}
 
+[ha_instance]
+instance_id = ${matching_engine_instance_id}
+fence_file_path = "${matching_engine_fence_file_path}"
+
+[arbiter_primary]
+host = "${matching_engine_arbiter_primary_host}"
+port = ${matching_engine_arbiter_primary_port}
+
+[arbiter_secondary]
+host = "${matching_engine_arbiter_secondary_host}"
+port = ${matching_engine_arbiter_secondary_port}
+
+[ha_timing]
+heartbeat_timeout_seconds  = 15
+heartbeat_interval_seconds = 30
+
 [logging]
 applog_level = "info"
 syslog_level = "critical"

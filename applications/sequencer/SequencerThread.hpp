@@ -86,7 +86,16 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // The sequencer connects outbound to the ME's order listener on
     // matching_engine_port and forwards sequenced order PDUs over this
     // connection. Set when the outbound connection is established.
+    // Starts as the ME-primary connection; on ME failover it is swapped to
+    // point at ME-secondary once that instance has caught up (see
+    // handle_me_position_request).
     pubsub_itc_fw::ConnectionID me_outbound_order_conn_id_;
+
+    // Pre-warmed standby connection to ME-secondary (ha_enabled only). Kept open
+    // but not used for order forwarding until ME-secondary promotes itself and
+    // sends a MePositionRequest, at which point it is promoted to
+    // me_outbound_order_conn_id_.
+    pubsub_itc_fw::ConnectionID me_secondary_standby_conn_id_;
 
     // ConnectionIDs of the outbound peer and arbiter connections.
     pubsub_itc_fw::ConnectionID peer_conn_id_;
@@ -176,6 +185,20 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void handle_wal_subscribe_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     void handle_external_wal_ack(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     void stream_wal_record_to_external_subscribers(int64_t seq, int16_t pdu_id, const pubsub_itc_fw::EventMessage& message, int64_t wall_time_ns);
+
+    // ME failover reconciliation (Slice D).
+    //
+    // When a promoted ME-secondary sends MePositionRequest on its order connection,
+    // the sequencer walks the WAL from the ME's last-applied seq_no to the WAL head,
+    // streaming each NOS/OCR to that connection, then sends MePositionAck. After the
+    // ack the ME is live and new orders flow to it via me_outbound_order_conn_id_.
+    //
+    // me_catchup_conn_id_ tracks the connection currently in catch-up so the handler
+    // can stream to a specific ConnectionID rather than the buffered replay path.
+    pubsub_itc_fw::ConnectionID me_catchup_conn_id_;
+    void handle_me_position_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
+    void stream_wal_record_to_me(const pubsub_itc_fw::ConnectionID& conn_id, int64_t record_id, int16_t pdu_id, const uint8_t* pdu_payload, size_t pdu_size,
+                                 int64_t wall_time_ns);
 
     // seq_no -> gateway_session_conn_id of the originating FIX session.
     // Keyed by the sequence number assigned to each NOS/OCR (globally unique,

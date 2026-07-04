@@ -73,6 +73,19 @@ struct SequencerConfiguration {
     /** @brief TCP port of the matching engine order inbound listener. */
     uint16_t matching_engine_port{7020};
 
+    /**
+     * @brief Host address of the ME-secondary order inbound listener.
+     *
+     * Only used when ha_enabled=true. The sequencer keeps a pre-warmed standby
+     * connection to ME-secondary. On ME failover the secondary sends a
+     * MePositionRequest over this connection; the sequencer replays the WAL
+     * catch-up and then promotes the standby to the active ME order connection.
+     */
+    std::string matching_engine_secondary_host{"127.0.0.1"};
+
+    /** @brief TCP port of the ME-secondary order inbound listener (ha_enabled only). */
+    uint16_t matching_engine_secondary_port{7023};
+
     // ----------------------------------------------------------------
     // HA -- leader-follower via arbiter pool
     // ----------------------------------------------------------------
