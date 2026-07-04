@@ -225,6 +225,25 @@ struct OrderGatewayConfiguration {
      *  Defaults to SystemWallClock (real UTC wall time). Inject a ReplayClock
      *  to produce deterministic timestamps in tests. */
     std::shared_ptr<pubsub_itc_fw::WallClock> wall_clock{std::make_shared<pubsub_itc_fw::SystemWallClock>()};
+
+    // ----------------------------------------------------------------
+    // FIX field-length limits
+    // ----------------------------------------------------------------
+
+    // Runtime field-length limits for inbound FIX strings.
+    // Must be <= the compile-time hard ceilings in FixSession.hpp.
+    // Clients sending longer values receive a FIX BusinessReject (MsgType=j).
+    int32_t max_cl_ord_id_length{64};
+    int32_t max_symbol_length{32};
+    int32_t max_order_qty_length{24};
+
+    // ----------------------------------------------------------------
+    // Open-order pool
+    // ----------------------------------------------------------------
+
+    // Pool for open-order string storage.
+    int32_t open_order_pool_objects_per_pool{4096};
+    int32_t open_order_pool_initial_pools{1};
 };
 
 } // namespaces

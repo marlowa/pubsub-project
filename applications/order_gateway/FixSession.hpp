@@ -4,9 +4,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <cstdint> // IWYU pragma: keep
+#include <cstring>
 #include <string>
-#include <unordered_map>
+#include <string_view>
 #include <vector>
+
+#include <tsl/robin_map.h>
 
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
@@ -15,16 +18,65 @@
 
 namespace order_gateway {
 
+// ----------------------------------------------------------------
+// Hard structural ceilings for open-order string fields.
+//
+// These compile-time constants determine the size of the char arrays in
+// OpenOrderEntry. Runtime-configurable limits (from order_gateway.toml
+// [fix_limits] section) must be <= these values and are enforced at startup.
+// Clients sending fields longer than the configured runtime limit receive a
+// FIX BusinessReject (MsgType=j). The limits and the rationale for choosing
+// them are documented in docs/applications/order_gateway.md.
+//
+// Why fixed char arrays rather than std::string or a general pool:
+//   std::string causes one heap allocation per field per order, measured at
+//   1.21% of gateway CPU at 122K orders/second. A general variable-size pool
+//   with individual frees requires implementing boundary-tag coalescing --
+//   complexity comparable to ExpandablePoolAllocator, which itself was very
+//   hard to write correctly. Fixed char arrays with ExpandablePoolAllocator
+//   and tsl::robin_map eliminate all per-order heap allocation with a
+//   manageable implementation cost.
+// ----------------------------------------------------------------
+static constexpr size_t max_supported_cl_ord_id_length = 128;
+static constexpr size_t max_supported_symbol_length    = 64;
+static constexpr size_t max_supported_order_qty_length = 32;
+
 /**
- * @brief Fields from a NewOrderSingle that must be remembered so the gateway
- *        can send an OrderCancelRequest if the client disconnects before a
- *        terminal ExecutionReport is received.
+ * @brief Pool-allocated storage for a single open order's string fields.
+ *
+ * All string data is held inline in fixed char arrays -- no heap allocation
+ * per order. An OpenOrderEntry is allocated from OrderGatewayThread's
+ * open_order_pool_ when the ME sends a non-terminal ExecutionReport, and
+ * returned to the pool when a terminal ER is received or when
+ * drain_pending_cancels() sends the OrderCancelRequest on disconnect.
+ *
+ * The open_orders map in FixSession holds std::string_view keys that point
+ * directly into cl_ord_id[] here. The pool entry must therefore remain alive
+ * for the lifetime of the map entry.
  */
-struct OpenOrderInfo {
-    std::string symbol;
-    char side{};         // FIX Side field byte ('1'=Buy, '2'=Sell, etc.)
-    std::string order_qty;
+struct OpenOrderEntry {
+    char    cl_ord_id[max_supported_cl_ord_id_length + 1]{};
+    uint8_t cl_ord_id_len{0};
+    char    symbol[max_supported_symbol_length + 1]{};
+    uint8_t symbol_len{0};
+    char    order_qty[max_supported_order_qty_length + 1]{};
+    uint8_t order_qty_len{0};
+    char    side{0};
 };
+
+/**
+ * @brief Map type used for open orders within a session.
+ *
+ * Key: std::string_view pointing into the corresponding OpenOrderEntry::cl_ord_id[].
+ *      The view is stable for the lifetime of the pool entry.
+ * Value: non-owning pointer to the pool-allocated OpenOrderEntry.
+ *        The owning pool lives in OrderGatewayThread.
+ */
+using OpenOrderMap = tsl::robin_map<
+    std::string_view,
+    OpenOrderEntry*,
+    std::hash<std::string_view>,
+    std::equal_to<std::string_view>>;
 
 /**
  * @brief Holds the state for a single active FIX 5.0SP2 / FIXT 1.1 session.
@@ -159,7 +211,7 @@ struct FixSession {
      *        OrderCancelRequest is sent to the ME for each entry so that orders
      *        do not remain live on the book after the originating session is gone.
      */
-    std::unordered_map<std::string, OpenOrderInfo> open_orders;
+    OpenOrderMap open_orders;
 
     // ----------------------------------------------------------------
     // Raw-bytes commit bookkeeping

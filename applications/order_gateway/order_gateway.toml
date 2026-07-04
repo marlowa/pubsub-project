@@ -78,3 +78,19 @@ key      = "${order_gateway_fix_tls_key}"
 enabled     = false
 file        = "${order_gateway_fix_capture_file}"
 ring_bytes  = ${order_gateway_fix_capture_ring_bytes}
+
+[fix_limits]
+# Runtime field-length limits for inbound FIX strings (bytes, excluding NUL).
+# Clients sending longer values receive a FIX BusinessReject (MsgType=j).
+# Must be <= the compile-time hard ceilings: cl_ord_id=128, symbol=64, order_qty=32.
+# These limits must be documented in the gateway FIX connectivity specification.
+max_cl_ord_id_length = ${order_gateway_fix_limits_max_cl_ord_id_length}
+max_symbol_length    = ${order_gateway_fix_limits_max_symbol_length}
+max_order_qty_length = ${order_gateway_fix_limits_max_order_qty_length}
+
+[open_order_pool]
+# Pre-allocated pool for open-order string storage (ExpandablePoolAllocator).
+# objects_per_pool: how many OpenOrderEntry slots per pool slab.
+# Size to the maximum expected concurrent open orders with headroom.
+objects_per_pool = ${order_gateway_open_order_pool_objects_per_pool}
+initial_pools    = ${order_gateway_open_order_pool_initial_pools}

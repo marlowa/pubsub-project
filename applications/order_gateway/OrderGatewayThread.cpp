@@ -141,6 +141,20 @@ OrderGatewayThread::OrderGatewayThread(pubsub_itc_fw::ApplicationThread::Constru
 }
 
 void OrderGatewayThread::on_app_ready_event() {
+    // Initialise the open-order pool.
+    open_order_pool_ = std::make_unique<pubsub_itc_fw::ExpandablePoolAllocator<OpenOrderEntry>>(
+        "OpenOrderPool",
+        config_.open_order_pool_objects_per_pool,
+        config_.open_order_pool_initial_pools,
+        /*expansion_threshold_hint=*/0,
+        /*handler_for_pool_exhausted=*/[this](void* /*context*/, int objects_per_pool) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "OpenOrderPool exhausted: chaining new pool slab ({} objects)", objects_per_pool);
+        },
+        /*handler_for_invalid_free=*/nullptr,
+        /*handler_for_huge_pages_error=*/nullptr,
+        pubsub_itc_fw::UseHugePagesFlag{pubsub_itc_fw::UseHugePagesFlag::DoNotUseHugePages});
+
     connect_to_service("authentication_service_primary");
     if (config_.ha_enabled) {
         connect_to_service("authentication_service_secondary");
@@ -444,13 +458,34 @@ void OrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventMess
     // until release_pdu_payload() below, so copies are safe here.
     if (view.has_cl_ord_id) {
         if (is_terminal_ord_status(view.ord_status)) {
-            session.open_orders.erase(std::string(view.cl_ord_id));
+            // Erase without constructing a std::string -- string_view lookup
+            // compares contents so this finds the entry keyed by pool storage.
+            auto it = session.open_orders.find(std::string_view(view.cl_ord_id));
+            if (it != session.open_orders.end()) {
+                open_order_pool_->deallocate(it->second);
+                session.open_orders.erase(it);
+            }
         } else {
+            // Allocate a pool entry and copy all string fields inline.
+            OpenOrderEntry* entry = open_order_pool_->allocate();
+            const size_t clen = view.cl_ord_id.size();
+            const size_t slen = view.symbol.size();
+            const size_t qlen = view.has_order_qty ? view.order_qty.size() : 0;
+            std::memcpy(entry->cl_ord_id, view.cl_ord_id.data(), clen);
+            entry->cl_ord_id[clen] = '\0';
+            entry->cl_ord_id_len   = static_cast<uint8_t>(clen);
+            std::memcpy(entry->symbol, view.symbol.data(), slen);
+            entry->symbol[slen]  = '\0';
+            entry->symbol_len    = static_cast<uint8_t>(slen);
+            if (qlen > 0) {
+                std::memcpy(entry->order_qty, view.order_qty.data(), qlen);
+            }
+            entry->order_qty[qlen] = '\0';
+            entry->order_qty_len   = static_cast<uint8_t>(qlen);
+            entry->side            = static_cast<char>(view.side);
+            // Key is string_view into pool storage -- stable for entry lifetime.
             session.open_orders.insert_or_assign(
-                std::string(view.cl_ord_id),
-                OpenOrderInfo{std::string(view.symbol),
-                              static_cast<char>(view.side),
-                              view.has_order_qty ? std::string(view.order_qty) : std::string()});
+                std::string_view(entry->cl_ord_id, entry->cl_ord_id_len), entry);
         }
     }
 
@@ -801,6 +836,34 @@ void OrderGatewayThread::handle_new_order_single(FixSession& session, const Pars
         return;
     }
 
+    // Validate field lengths against runtime-configured limits.
+    // Fields exceeding the limit are rejected with a FIX BusinessReject (MsgType=j).
+    // The limits are documented in the gateway connectivity specification.
+    if (cl_ord_id.size() > static_cast<size_t>(config_.max_cl_ord_id_length)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "OrderGatewayThread: connection {} NOS ClOrdID length {} exceeds limit {} -- sending BusinessReject",
+                   session.conn_id.get_value(), cl_ord_id.size(), config_.max_cl_ord_id_length);
+        send_business_reject(session, msg, "ClOrdID exceeds maximum length of " +
+                             std::to_string(config_.max_cl_ord_id_length));
+        return;
+    }
+    if (symbol.size() > static_cast<size_t>(config_.max_symbol_length)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "OrderGatewayThread: connection {} NOS Symbol length {} exceeds limit {} -- sending BusinessReject",
+                   session.conn_id.get_value(), symbol.size(), config_.max_symbol_length);
+        send_business_reject(session, msg, "Symbol exceeds maximum length of " +
+                             std::to_string(config_.max_symbol_length));
+        return;
+    }
+    if (order_qty.size() > static_cast<size_t>(config_.max_order_qty_length)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "OrderGatewayThread: connection {} NOS OrderQty length {} exceeds limit {} -- sending BusinessReject",
+                   session.conn_id.get_value(), order_qty.size(), config_.max_order_qty_length);
+        send_business_reject(session, msg, "OrderQty exceeds maximum length of " +
+                             std::to_string(config_.max_order_qty_length));
+        return;
+    }
+
     // If no sequencer is connected, reject the order locally with an ExecutionReport
     // rather than silently dropping it. The client gets a definitive response per
     // order and the FIX session stays up so subsequent orders can be tried once
@@ -997,6 +1060,23 @@ void OrderGatewayThread::send_reject_execution_report(FixSession& session, const
     send_fix_to_session(session, er);
 }
 
+void OrderGatewayThread::send_business_reject(FixSession& session,
+                                               const ParsedFixMessage& inbound,
+                                               const std::string& reason) {
+    FixMessage bmr{};
+    bmr.set(Tag::MsgType,              std::string("j"));
+    bmr.set(Tag::RefSeqNum,            inbound.get(Tag::MsgSeqNum).empty()
+                                           ? std::string("0")
+                                           : std::string(inbound.get(Tag::MsgSeqNum)));
+    bmr.set(Tag::RefMsgType,           std::string(inbound.get(Tag::MsgType)));
+    bmr.set(Tag::BusinessRejectReason, std::string("0"));   // 0 = Other
+    bmr.set(Tag::Text,                 reason);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+               "OrderGatewayThread: connection {} BusinessReject: {}",
+               session.conn_id.get_value(), reason);
+    send_fix_to_session(session, bmr);
+}
+
 // -----------------------------------------------------------------------
 // PDU forwarding
 // -----------------------------------------------------------------------
@@ -1046,19 +1126,20 @@ void OrderGatewayThread::drain_pending_cancels() {
         }
 
         auto it = dead.open_orders.begin();
-        const std::string& orig_cl_ord_id = it->first;
-        const OpenOrderInfo& info         = it->second;
+        OpenOrderEntry* entry = it->second;
 
         const std::string cancel_cl_ord_id =
             "GW-CXL-" + std::to_string(dead.session_conn_id) + "-" + std::to_string(dead.cancel_id_counter++);
 
         pubsub_itc_fw_app::OrderCancelRequest ocr{};
-        ocr.orig_cl_ord_id = orig_cl_ord_id;
+        ocr.orig_cl_ord_id = std::string_view(entry->cl_ord_id, entry->cl_ord_id_len);
         ocr.cl_ord_id      = cancel_cl_ord_id;
-        ocr.symbol         = info.symbol;
-        ocr.side           = static_cast<pubsub_itc_fw_app::Side>(info.side);
+        ocr.symbol         = std::string_view(entry->symbol,   entry->symbol_len);
+        ocr.side           = static_cast<pubsub_itc_fw_app::Side>(entry->side);
         ocr.transact_time  = config_.wall_clock->now_ns();
-        ocr.order_qty      = info.order_qty;
+        if (entry->order_qty_len > 0) {
+            ocr.order_qty = std::string_view(entry->order_qty, entry->order_qty_len);
+        }
 
         if (!dead.client_comp_id.empty()) {
             ocr.has_sender_comp_id = true;
@@ -1069,6 +1150,7 @@ void OrderGatewayThread::drain_pending_cancels() {
 
         forward_pdu_to_sequencers(static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::OrderCancelRequest), ocr);
 
+        open_order_pool_->deallocate(entry);
         dead.open_orders.erase(it);
         ++sent;
     }

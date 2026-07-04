@@ -404,9 +404,19 @@ void ApplicationThread::process_message(const EventMessage& message) {
     auto state = get_lifecycle_state().as_tag();
 
     const bool is_reactor_event = (tag == EventType::Initial || tag == EventType::AppReady || tag == EventType::Timer || tag == EventType::Termination);
-    const bool is_operational = state == ThreadLifecycleState::Operational;
+    const bool is_operational   = state == ThreadLifecycleState::Operational;
+    const bool is_shutting_down = state == ThreadLifecycleState::ShuttingDown;
 
     if (!is_operational && !is_reactor_event) {
+        if (is_shutting_down) {
+            // Connection teardown and other application events can legitimately
+            // arrive while the thread is winding down. Drop them silently --
+            // the thread is about to exit and the callbacks are not meaningful.
+            PUBSUB_LOG(logger_, FwLogLevel::Debug,
+                       "Thread {}: dropping {} event during shutdown (expected during connection teardown)",
+                       thread_name_, type.as_string());
+            return;
+        }
         throw PreconditionAssertion("Non-reactor event received before thread is fully operational", __FILE__, __LINE__);
     }
 

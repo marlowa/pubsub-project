@@ -164,6 +164,9 @@ static constexpr int CxlRejReason = 102;
 static constexpr int OrdRejReason = 103;
 static constexpr int DefaultApplVerID = 1137;
 static constexpr int Password = 554;
+static constexpr int RefSeqNum = 45;
+static constexpr int RefMsgType = 372;
+static constexpr int BusinessRejectReason = 380;
 } // namespaces
 
 /**
