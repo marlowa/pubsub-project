@@ -64,7 +64,7 @@ FREQ             = 99      # perf sample frequency (Hz)
 # Processes to profile; set to None to profile all launched processes.
 # Profiling arbiters, the witness, and both sequencers with DWARF is expensive
 # and rarely useful; the hot path is gateway and ME.
-PERF_TARGETS     = {"order_gateway_primary", "matching_engine_primary"}
+PERF_TARGETS     = {"order_gateway", "matching_engine_primary"}
 SHUTDOWN_TIMEOUT = 5.0   # seconds to wait for each app to exit after SIGTERM
 MAX_ORDER_TIMEOUT = 120.0  # hard cap on order/ER completion wait (2 minutes)
 
@@ -527,9 +527,9 @@ def main() -> None:
     ts         = datetime.now().strftime("%Y%m%d_%H%M%S")
     perf_dir   = prefix / "perf" / ts
     me_log     = log_dir / "matching_engine_primary.log"
-    gw_log     = log_dir / "order_gateway_primary.log"
+    gw_log     = log_dir / "order_gateway.log"
 
-    gw_config = prefix / "etc" / "order_gateway" / "order_gateway_primary.toml"
+    gw_config = prefix / "etc" / "order_gateway" / "order_gateway.toml"
 
     preflight(prefix)
     log_dir.mkdir(parents=True, exist_ok=True)

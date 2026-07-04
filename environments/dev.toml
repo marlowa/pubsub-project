@@ -120,7 +120,7 @@ components = [
     "sequencer_secondary",
     "mep_primary",
     "mep_secondary",
-    "order_gateway_primary",
+    "order_gateway",
     "admin_service",
     "fix_test_client",
 ]
@@ -191,9 +191,9 @@ config  = "etc/matching_engine_publisher/matching_engine_publisher_secondary.tom
 workdir = "etc/matching_engine_publisher"
 ha_only = true
 
-[components.order_gateway_primary]
+[components.order_gateway]
 binary  = "bin/order_gateway"
-config  = "etc/order_gateway/order_gateway_primary.toml"
+config  = "etc/order_gateway/order_gateway.toml"
 workdir = "etc/order_gateway"
 ha_only = false
 
