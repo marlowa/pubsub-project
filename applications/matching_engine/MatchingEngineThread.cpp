@@ -141,7 +141,7 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
         // Secondary: inbound order connection from the sequencer. While in FOLLOWER
         // mode this is idle (order PDUs are discarded). If we are already RECONCILING
         // when the sequencer connects, begin WAL catch-up immediately.
-        sequencer_order_conn_id_ = id;
+        sequencer_order_conn_ids_.insert(id);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "MatchingEngineThread: secondary sequencer order connection {} established (state={})",
                    id.get_value(), static_cast<int>(ha_role_state_));
@@ -150,7 +150,7 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
         }
     } else {
         // Primary (or non-HA) inbound order connection from the sequencer.
-        sequencer_order_conn_id_ = id;
+        sequencer_order_conn_ids_.insert(id);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "MatchingEngineThread: inbound sequencer order connection {} established", id.get_value());
     }
@@ -196,8 +196,8 @@ void MatchingEngineThread::on_connection_lost(const pubsub_itc_fw::ConnectionID 
         if (!arbiter_primary_conn_id_.is_valid() && !arbiter_secondary_conn_id_.is_valid()) {
             cancel_timer(timer_arbiter_heartbeat);
         }
-    } else if (id == sequencer_order_conn_id_) {
-        sequencer_order_conn_id_ = pubsub_itc_fw::ConnectionID{};
+    } else if (sequencer_order_conn_ids_.count(id) > 0) {
+        sequencer_order_conn_ids_.erase(id);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "MatchingEngineThread: inbound sequencer order connection {} lost: {}", id.get_value(), reason);
     } else {
@@ -766,10 +766,11 @@ void MatchingEngineThread::begin_reconciliation() {
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "MatchingEngineThread: entering RECONCILING (last_replicated_seq_no={}, book_size={})", last_replicated_seq_no_, order_book_.size());
 
-    // The sequencer connects to our (now-listening) order port. If it is already
-    // connected, request WAL catch-up immediately; otherwise on_connection_established
-    // will call begin_reconciliation() again once the connection is up.
-    if (sequencer_order_conn_id_.is_valid()) {
+    // The sequencers connect to our (now-listening) order port. If at least one is
+    // already connected, request WAL catch-up immediately; otherwise
+    // on_connection_established will call begin_reconciliation() again once a
+    // connection is up.
+    if (!sequencer_order_conn_ids_.empty()) {
         send_me_position_request();
     } else {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
@@ -778,15 +779,22 @@ void MatchingEngineThread::begin_reconciliation() {
 }
 
 void MatchingEngineThread::send_me_position_request() {
-    if (!sequencer_order_conn_id_.is_valid()) {
+    if (sequencer_order_conn_ids_.empty()) {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                        "MatchingEngineThread: cannot send MePositionRequest -- no sequencer order connection");
         return;
     }
+    // Send to every sequencer order connection. Only the leader sequencer serves
+    // WAL catch-up and acks; followers re-point their own order connection without
+    // streaming, so the promoted ME receives exactly one catch-up stream and one
+    // ack regardless of which pre-warmed connection the current leader owns.
     pubsub_itc_fw_app::MePositionRequest request{};
     request.last_seq_no = last_replicated_seq_no_;
-    send_pdu(sequencer_order_conn_id_, pdu_me_position_request, 0, request);
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: MePositionRequest sent (last_seq_no={})", last_replicated_seq_no_);
+    for (const auto& conn_id : sequencer_order_conn_ids_) {
+        send_pdu(conn_id, pdu_me_position_request, 0, request);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "MatchingEngineThread: MePositionRequest sent to connection {} (last_seq_no={})", conn_id.get_value(), last_replicated_seq_no_);
+    }
 }
 
 void MatchingEngineThread::handle_me_position_ack(const pubsub_itc_fw::EventMessage& message) {
@@ -802,9 +810,13 @@ void MatchingEngineThread::handle_me_position_ack(const pubsub_itc_fw::EventMess
         return;
     }
 
+    // Reconcile on the first ack only. We fan MePositionRequest out to every
+    // sequencer order connection, so a straggler ack (e.g. from a sequencer that
+    // just won an election) can still arrive after we have promoted; ignore it
+    // rather than re-running cancel-on-failover.
     if (ha_role_state_ != MeRole::Reconciling) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "MatchingEngineThread: MePositionAck received but not RECONCILING (state={}) -- ignoring", static_cast<int>(ha_role_state_));
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "MatchingEngineThread: already promoted (state={}) -- ignoring duplicate MePositionAck", static_cast<int>(ha_role_state_));
         return;
     }
 

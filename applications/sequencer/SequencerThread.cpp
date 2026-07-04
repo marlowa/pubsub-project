@@ -1483,6 +1483,25 @@ void SequencerThread::handle_me_position_request(const pubsub_itc_fw::Connection
     }
 
     const int64_t last_seq_no = view.last_seq_no;
+
+    // Only the leader may serve WAL catch-up. The promoted ME asks every sequencer
+    // it holds a pre-warmed order connection to (it cannot tell which one is the
+    // leader); if a follower also streamed, the ME would replay the WAL twice and
+    // process the second replay as live traffic once promoted. The follower instead
+    // re-points its own ME order connection to the standby -- so that if it later
+    // wins a sequencer election it forwards to the promoted ME -- and drops the
+    // request without streaming or acking.
+    if (role_ != pubsub_itc_fw_app::Role::leader) {
+        if (conn_id == me_secondary_standby_conn_id_) {
+            me_secondary_standby_conn_id_ = pubsub_itc_fw::ConnectionID{};
+            me_outbound_order_conn_id_ = conn_id;
+        }
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: MePositionRequest on connection {} but I am follower -- re-pointed ME order connection, not serving catch-up",
+                   conn_id.get_value());
+        return;
+    }
+
     const int64_t wal_head = wal_.last_seq_no();
     me_catchup_conn_id_ = conn_id;
 

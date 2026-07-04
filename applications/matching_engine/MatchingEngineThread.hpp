@@ -7,6 +7,7 @@
 #include <charconv>
 #include <cstdint> // IWYU pragma: keep
 #include <cstring>
+#include <unordered_set>
 
 #include <tsl/robin_map.h>
 
@@ -232,10 +233,14 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     pubsub_itc_fw::ConnectionID arbiter_primary_conn_id_;
     pubsub_itc_fw::ConnectionID arbiter_secondary_conn_id_;
 
-    // Secondary: the inbound order connection from the sequencer, established on
-    // the order listener. In RECONCILING state this is the connection over which
-    // WAL catch-up (MePositionRequest/Ack) and the reconciling NOS/OCR stream flow.
-    pubsub_itc_fw::ConnectionID sequencer_order_conn_id_;
+    // Inbound order connections from the sequencers. Both the leader and follower
+    // sequencer open a (pre-warmed) order connection to this ME, so there may be
+    // more than one. On promotion we send MePositionRequest to every one of them:
+    // the ME cannot tell which sequencer is the leader, so it asks all and lets the
+    // leader serve WAL catch-up while followers re-point without streaming (see
+    // SequencerThread::handle_me_position_request). This guarantees the leader --
+    // whichever it is -- reconciles this ME and re-routes live orders here.
+    std::unordered_set<pubsub_itc_fw::ConnectionID> sequencer_order_conn_ids_;
 
     // Arbiter-mediated promotion helpers.
     void enter_follower_state();
