@@ -52,27 +52,48 @@ multiple logons are in progress concurrently.
 
 `FixCapture` records raw FIX bytes to a binary file for post-hoc analysis.
 
-Three capture points:
+**Three capture points:**
 - **Inbound** — after `parser.feed()`, captures consumed bytes of complete FIX messages.
 - **Outbound session messages** — after `FixSerialiser` serialises a session-level message.
 - **Outbound ERs** — after `FixErEncoder` encodes an execution report.
 
-The gateway thread calls `capture(Direction, data, size, timestamp_ns)` which enqueues a
-record onto a mutex-protected queue (short critical section, no file I/O on the hot path).
-A background `std::thread` drains the queue and writes to disk. When `capture_` is
-`nullptr` (capture disabled), all three call sites are guarded by
-`if (capture_ != nullptr)` — zero overhead.
+When `capture_` is `nullptr` (capture disabled, the default), all three call sites are
+guarded by `if (capture_ != nullptr)` — zero overhead when not in use.
 
-**Record format (little-endian):** `uint32_t payload_size | int64_t timestamp_ns |
-uint8_t direction (0=in, 1=out) | raw bytes`.
+**Hot-path design — SPSC ring buffer, no heap allocation:**
 
-**Config:** `[fix_capture] enabled` and `file` fields in `order_gateway.toml`. Disabled
-by default in `dev.toml`.
+`capture(Direction, data, size, timestamp_ns)` packs the record directly into a
+pre-allocated byte buffer using `memcpy`. There is no mutex, no heap allocation,
+and no file I/O on the gateway thread. A background writer thread drains the buffer and
+writes to disk.
 
-**Known limitation:** the current implementation uses a mutex and a heap-allocated
-`std::vector<uint8_t>` per record — a heap allocation on the gateway hot path whenever
-capture is enabled. The planned improvement is an SPSC lock-free queue backed by
-pre-allocated fixed-size slots using the framework's slab/pool infrastructure.
+The backing store is a `std::vector<uint8_t>` (`ring_` in `FixCapture.hpp`) sized to
+`ring_bytes` at construction and **never resized or reallocated**. The ring-buffer behaviour
+— wrap-around, concurrent access — is implemented on top of it via two cache-line-aligned
+atomics: `write_offset_` (written by the producer only) and `read_offset_` (written by the
+consumer only). Actual positions are `offset % capacity_`. This is classic SPSC lock-free
+synchronisation — no CAS, no contention.
+
+When a record would not fit contiguously before the end of the ring, a sentinel record
+(`payload_size = 0xFFFFFFFF`) is written at the current position and both pointers wrap
+to the start. This ensures records are always stored linearly and the writer can pass a
+direct pointer into the ring to `fwrite()` without copying.
+
+If the ring fills (writer thread falling behind), `capture()` drops the record and logs
+a Warning. The gateway thread is never blocked.
+
+**Record format (little-endian):**
+```
+uint32_t payload_size  -- byte count of raw FIX data
+int64_t  timestamp_ns  -- nanoseconds since Unix epoch (wall clock)
+uint8_t  direction     -- 0 = inbound, 1 = outbound
+uint8_t  data[...]     -- raw FIX wire bytes
+```
+Each record is padded to 4-byte alignment. The file format is identical to what was
+written when the ring-buffer implementation replaced the original mutex design.
+
+**Config:** `[fix_capture] enabled`, `file`, and `ring_bytes` in `order_gateway.toml`.
+Disabled by default in `dev.toml`.
 
 `read_fix_capture.py` is available for inspecting capture files in production.
 
@@ -89,6 +110,7 @@ Key `order_gateway.toml` sections:
 | `[network] auth_service_primary_*` | Authentication service primary endpoint (port 7070) |
 | `[network] auth_service_secondary_*` | Authentication service secondary endpoint (port 7071) |
 | `[fix_capture] enabled / file` | FIX capture on/off and output file path |
+| `[fix_capture] ring_bytes` | Ring buffer capacity in bytes (default 64 MB); increase if the writer thread falls behind under heavy load |
 | `ha_enabled` | When false, secondary sequencer connect is skipped |
 
 ## See Also
