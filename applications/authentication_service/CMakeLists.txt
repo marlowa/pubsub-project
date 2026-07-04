@@ -29,7 +29,7 @@ install(TARGETS authentication_service
 )
 
 install(FILES
-        ${CMAKE_CURRENT_SOURCE_DIR}/authentication_service.toml
+        ${CMAKE_CURRENT_SOURCE_DIR}/authentication_service_primary.toml
         ${CMAKE_CURRENT_SOURCE_DIR}/authentication_service_secondary.toml
         ${CMAKE_CURRENT_SOURCE_DIR}/credentials.toml
         ${CMAKE_CURRENT_SOURCE_DIR}/admin.crt

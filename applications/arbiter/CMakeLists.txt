@@ -28,7 +28,7 @@ install(TARGETS arbiter
 )
 
 install(FILES
-        ${CMAKE_CURRENT_SOURCE_DIR}/arbiter.toml
+        ${CMAKE_CURRENT_SOURCE_DIR}/arbiter_primary.toml
         ${CMAKE_CURRENT_SOURCE_DIR}/arbiter_secondary.toml
         DESTINATION etc/arbiter
 )

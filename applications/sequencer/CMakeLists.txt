@@ -28,7 +28,7 @@ install(TARGETS sequencer
 )
 
 install(FILES
-        ${CMAKE_CURRENT_SOURCE_DIR}/sequencer.toml
+        ${CMAKE_CURRENT_SOURCE_DIR}/sequencer_primary.toml
         ${CMAKE_CURRENT_SOURCE_DIR}/sequencer_secondary.toml
         DESTINATION etc/sequencer
 )

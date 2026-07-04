@@ -17,6 +17,7 @@
 #include <pubsub_itc_fw/Reactor.hpp>
 
 #include <fix_equity_orders.hpp>
+#include <matching_engine_replication.hpp>
 
 #include "MatchingEngineConfiguration.hpp"
 
@@ -155,20 +156,44 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
 
     const MatchingEngineConfiguration& config_;
 
+    // HA role flags (set from configuration at construction).
+    bool ha_enabled_{false};
+    bool is_primary_{true};
+
+    // Primary: outbound connection to ME-secondary's book replication listener.
+    pubsub_itc_fw::ConnectionID secondary_replication_conn_id_;
+
+    // Secondary: inbound replication connection from ME-primary.
+    // Any inbound connection on the secondary IS the replication channel
+    // (the secondary only has one inbound listener: the replication port).
+    pubsub_itc_fw::ConnectionID primary_replication_conn_id_;
+
+    // Secondary: seq_no of the most recently applied BookUpdate.
+    // Carried forward to WAL reconciliation at promotion time (Slice C).
+    int64_t last_replicated_seq_no_{0};
+
     // ConnectionIDs of the outbound connections to the sequencer ER inbound listeners.
     // ERs are sent to all valid connections. The leader routes them to the gateway;
     // the follower discards. This ensures ERs reach whichever sequencer is currently leader.
     pubsub_itc_fw::ConnectionID sequencer_er_conn_id_;
     pubsub_itc_fw::ConnectionID sequencer_er_secondary_conn_id_;
 
-    // Order book keyed by (session_id, cl_ord_id) -- scoped per FIX session so
-    // concurrent sessions can reuse the same ClOrdID sequence without collision,
-    // matching the FIX standard (ClOrdID unique per client session).
+    // Order book keyed by (session_id, cl_ord_id).
+    // Primary:   live orders currently on the book.
+    // Secondary: replica of the primary's book, maintained via BookUpdate PDUs.
     tsl::robin_map<OrderKey, OrderEntry, OrderKeyHash> order_book_;
 
-    // Monotonic counters for generated OrderID and ExecID values.
+    // Monotonic counters for generated OrderID and ExecID values (primary only).
     int64_t order_id_counter_{0};
     int64_t exec_id_counter_{0};
+
+    // Helper: send a BookUpdate PDU to ME-secondary (primary only).
+    void send_book_update(int64_t seq_no, pubsub_itc_fw_app::BookUpdateType update_type,
+                          int32_t session_id, std::string_view cl_ord_id,
+                          const OrderEntry* entry);   // nullptr for Remove updates
+
+    // Helper: apply a received BookUpdate PDU to the replica book (secondary only).
+    void apply_book_update(const pubsub_itc_fw::EventMessage& message);
 };
 
 } // namespaces

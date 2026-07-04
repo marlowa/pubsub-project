@@ -14,7 +14,7 @@ target_link_libraries(matching_engine PRIVATE
         tsl::robin_map
 )
 
-add_dependencies(matching_engine fix_equity_orders_generated)
+add_dependencies(matching_engine fix_equity_orders_generated matching_engine_replication_generated)
 
 # Header files listed explicitly so CLion indexes them correctly.
 target_sources(matching_engine PRIVATE
@@ -28,6 +28,8 @@ install(TARGETS matching_engine
         RUNTIME DESTINATION bin
 )
 
-install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/matching_engine.toml
+install(FILES
+        ${CMAKE_CURRENT_SOURCE_DIR}/matching_engine_primary.toml
+        ${CMAKE_CURRENT_SOURCE_DIR}/matching_engine_secondary.toml
         DESTINATION etc/matching_engine
 )

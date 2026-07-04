@@ -1,0 +1,44 @@
+[network]
+listen_host = "${matching_engine_network_listen_host}"
+listen_port = ${matching_engine_network_listen_port}
+
+[sequencer_er]
+host = "${matching_engine_sequencer_er_host}"
+port = ${matching_engine_sequencer_er_port}
+
+[sequencer_er_secondary]
+host = "${matching_engine_sequencer_er_secondary_host}"
+port = ${matching_engine_sequencer_er_secondary_port}
+
+[ha]
+enabled = ${matching_engine_ha_enabled}
+role    = "primary"
+
+[book_replication]
+# Outbound connection to ME-secondary's book replication listener.
+host = "${matching_engine_book_replication_host}"
+port = ${matching_engine_book_replication_port}
+
+[logging]
+applog_level = "info"
+syslog_level = "critical"
+
+[reactor]
+cpu_pinning_enabled    = true
+cpu_pinning_reserve_cpu0   = ${shared_reactor_cpu_pinning_reserve_cpu0}
+cpu_registry_shm_path  = "${shared_reactor_cpu_registry_shm_path}"
+cpu_registry_lock_file = "${shared_reactor_cpu_registry_lock_file}"
+connect_retry_warning_interval = "15m"
+
+[event_queue_pool]
+# Single pre-allocated pool sized for observed peak (50 clients, burst=10).
+objects_per_slab = 10240
+initial_slabs    = 1
+
+[order_book]
+# Pre-reserved capacity of the live-order hash map.
+initial_capacity = 262144
+
+[command_queue_pool]
+objects_per_slab = 500000
+initial_slabs    = 1

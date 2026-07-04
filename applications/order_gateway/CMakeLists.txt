@@ -39,7 +39,7 @@ install(TARGETS order_gateway
         RUNTIME DESTINATION bin
 )
 
-install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/order_gateway.toml
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/order_gateway_primary.toml
         DESTINATION etc/order_gateway
 )
 

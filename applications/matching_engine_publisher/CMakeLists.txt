@@ -31,7 +31,7 @@ install(TARGETS matching_engine_publisher
 )
 
 install(FILES
-        ${CMAKE_CURRENT_SOURCE_DIR}/matching_engine_publisher.toml
+        ${CMAKE_CURRENT_SOURCE_DIR}/matching_engine_publisher_primary.toml
         ${CMAKE_CURRENT_SOURCE_DIR}/matching_engine_publisher_secondary.toml
         DESTINATION etc/matching_engine_publisher
 )

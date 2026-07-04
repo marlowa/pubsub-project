@@ -64,7 +64,7 @@ FREQ             = 99      # perf sample frequency (Hz)
 # Processes to profile; set to None to profile all launched processes.
 # Profiling arbiters, the witness, and both sequencers with DWARF is expensive
 # and rarely useful; the hot path is gateway and ME.
-PERF_TARGETS     = {"order_gateway", "matching_engine"}
+PERF_TARGETS     = {"order_gateway_primary", "matching_engine_primary"}
 SHUTDOWN_TIMEOUT = 5.0   # seconds to wait for each app to exit after SIGTERM
 MAX_ORDER_TIMEOUT = 120.0  # hard cap on order/ER completion wait (2 minutes)
 
@@ -526,10 +526,10 @@ def main() -> None:
     log_dir    = prefix / "log"
     ts         = datetime.now().strftime("%Y%m%d_%H%M%S")
     perf_dir   = prefix / "perf" / ts
-    me_log     = log_dir / "matching_engine.log"
-    gw_log     = log_dir / "order_gateway.log"
+    me_log     = log_dir / "matching_engine_primary.log"
+    gw_log     = log_dir / "order_gateway_primary.log"
 
-    gw_config = prefix / "etc" / "order_gateway" / "order_gateway.toml"
+    gw_config = prefix / "etc" / "order_gateway" / "order_gateway_primary.toml"
 
     preflight(prefix)
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -580,13 +580,14 @@ def main() -> None:
     # Each tuple: (name, binary, config, optional_workdir).
     # auth services must start first; gateway connects to them on startup.
     steps = [
-        ("auth_service_primary",   "authentication_service", etc_dir / "authentication_service" / "authentication_service.toml",  etc_dir / "authentication_service"),
+        ("auth_service_primary",   "authentication_service", etc_dir / "authentication_service" / "authentication_service_primary.toml",  etc_dir / "authentication_service"),
         ("auth_service_secondary", "authentication_service", etc_dir / "authentication_service" / "authentication_service_secondary.toml", etc_dir / "authentication_service"),
         ("witness",                "witness",                etc_dir / "witness"               / "witness.toml",                  None),
-        ("arbiter_primary",        "arbiter",                etc_dir / "arbiter"               / "arbiter.toml",                  None),
+        ("arbiter_primary",        "arbiter",                etc_dir / "arbiter"               / "arbiter_primary.toml",                  None),
         ("arbiter_secondary",      "arbiter",                etc_dir / "arbiter"               / "arbiter_secondary.toml",        None),
-        ("matching_engine",        "matching_engine",        etc_dir / "matching_engine"       / "matching_engine.toml",          None),
-        ("sequencer_primary",      "sequencer",              etc_dir / "sequencer"             / "sequencer.toml",                None),
+        ("matching_engine_primary", "matching_engine",       etc_dir / "matching_engine"       / "matching_engine_primary.toml",  None),
+        ("matching_engine_secondary", "matching_engine",    etc_dir / "matching_engine"       / "matching_engine_secondary.toml",None),
+        ("sequencer_primary",      "sequencer",              etc_dir / "sequencer"             / "sequencer_primary.toml",                None),
         ("sequencer_secondary",    "sequencer",              etc_dir / "sequencer"             / "sequencer_secondary.toml",      None),
         ("order_gateway",          "order_gateway",          etc_dir / "order_gateway"         / "order_gateway.toml",            etc_dir / "order_gateway"),
     ]

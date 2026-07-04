@@ -100,6 +100,31 @@ struct MatchingEngineConfiguration {
     int32_t command_queue_pool_initial_slabs{1};
 
     // ----------------------------------------------------------------
+    // HA -- book replication (Slice A+B)
+    //
+    // When ha_enabled=true the ME runs as a primary/secondary pair.
+    // Primary: processes orders, sends ERs, streams BookUpdate PDUs to
+    //          the secondary over a dedicated outbound connection.
+    // Secondary: receives BookUpdate PDUs from the primary and maintains
+    //            a replica order book.  Does not process sequencer orders
+    //            or send ERs until promoted (Slice C).
+    // ----------------------------------------------------------------
+
+    /** @brief Enable HA book replication. Default false (single instance). */
+    bool ha_enabled{false};
+
+    /** @brief This instance's role: "primary" or "secondary". */
+    std::string ha_role{"primary"};
+
+    // Primary-side: outbound connection to secondary's replication listener.
+    std::string secondary_replication_host{"127.0.0.1"};
+    uint16_t    secondary_replication_port{7026};
+
+    // Secondary-side: inbound listener for book updates from primary.
+    std::string replication_listen_host{"127.0.0.1"};
+    uint16_t    replication_listen_port{7026};
+
+    // ----------------------------------------------------------------
     // Order book
     // ----------------------------------------------------------------
 

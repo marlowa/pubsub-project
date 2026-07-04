@@ -114,19 +114,20 @@ components = [
     "witness",
     "arbiter_primary",
     "arbiter_secondary",
-    "matching_engine",
+    "matching_engine_primary",
+    "matching_engine_secondary",
     "sequencer_primary",
     "sequencer_secondary",
     "mep_primary",
     "mep_secondary",
-    "order_gateway",
+    "order_gateway_primary",
     "admin_service",
     "fix_test_client",
 ]
 
 [components.auth_service_primary]
 binary  = "bin/authentication_service"
-config  = "etc/authentication_service/authentication_service.toml"
+config  = "etc/authentication_service/authentication_service_primary.toml"
 workdir = "etc/authentication_service"
 ha_only = false
 
@@ -144,7 +145,7 @@ ha_only = true
 
 [components.arbiter_primary]
 binary  = "bin/arbiter"
-config  = "etc/arbiter/arbiter.toml"
+config  = "etc/arbiter/arbiter_primary.toml"
 workdir = "etc/arbiter"
 ha_only = true
 
@@ -154,15 +155,21 @@ config  = "etc/arbiter/arbiter_secondary.toml"
 workdir = "etc/arbiter"
 ha_only = true
 
-[components.matching_engine]
+[components.matching_engine_primary]
 binary  = "bin/matching_engine"
-config  = "etc/matching_engine/matching_engine.toml"
+config  = "etc/matching_engine/matching_engine_primary.toml"
 workdir = "etc/matching_engine"
 ha_only = false
 
+[components.matching_engine_secondary]
+binary  = "bin/matching_engine"
+config  = "etc/matching_engine/matching_engine_secondary.toml"
+workdir = "etc/matching_engine"
+ha_only = true
+
 [components.sequencer_primary]
 binary  = "bin/sequencer"
-config  = "etc/sequencer/sequencer.toml"
+config  = "etc/sequencer/sequencer_primary.toml"
 workdir = "etc/sequencer"
 ha_only = false
 
@@ -174,7 +181,7 @@ ha_only = true
 
 [components.mep_primary]
 binary  = "bin/matching_engine_publisher"
-config  = "etc/matching_engine_publisher/matching_engine_publisher.toml"
+config  = "etc/matching_engine_publisher/matching_engine_publisher_primary.toml"
 workdir = "etc/matching_engine_publisher"
 ha_only = false
 
@@ -184,9 +191,9 @@ config  = "etc/matching_engine_publisher/matching_engine_publisher_secondary.tom
 workdir = "etc/matching_engine_publisher"
 ha_only = true
 
-[components.order_gateway]
+[components.order_gateway_primary]
 binary  = "bin/order_gateway"
-config  = "etc/order_gateway/order_gateway.toml"
+config  = "etc/order_gateway/order_gateway_primary.toml"
 workdir = "etc/order_gateway"
 ha_only = false
 
@@ -261,6 +268,13 @@ sequencer_er_host             = "127.0.0.1"
 sequencer_er_port             = 11021
 sequencer_er_secondary_host   = "127.0.0.1"
 sequencer_er_secondary_port   = 11022
+ha_enabled                    = true
+book_replication_host         = "127.0.0.1"
+book_replication_port         = 11026
+
+[matching_engine_secondary]
+book_replication_listen_host  = "127.0.0.1"
+book_replication_listen_port  = 11026
 
 [order_gateway]
 network_listen_host                   = "127.0.0.1"

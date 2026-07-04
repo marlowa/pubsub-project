@@ -19,32 +19,70 @@ MatchingEngineConfiguration MatchingEngineConfigurationLoader::load(const std::s
     MatchingEngineConfiguration config;
 
     try {
-        toml.get_required_except("network.listen_host", config.listen_host);
-        toml.get_required_except("sequencer_er.host", config.sequencer_er_host);
-        toml.get_required_except("sequencer_er_secondary.host", config.sequencer_er_secondary_host);
-
-        int32_t listen_port = 0;
-        int32_t sequencer_er_port = 0;
-        int32_t sequencer_er_secondary_port = 0;
-
-        toml.get_required_except("network.listen_port", listen_port);
-        toml.get_required_except("sequencer_er.port", sequencer_er_port);
-        toml.get_required_except("sequencer_er_secondary.port", sequencer_er_secondary_port);
-
-        auto validate_port = [&](int32_t port, const std::string& name) {
-            if (port < 1 || port > 65535) {
-                throw pubsub_itc_fw::ConfigurationException("MatchingEngineConfigurationLoader: " + name + " must be in range [1, 65535], got " +
-                                                            std::to_string(port));
+        // HA role must be read first -- it controls which other sections are required.
+        toml.get_required_except("ha.enabled", config.ha_enabled);
+        if (config.ha_enabled) {
+            toml.get_required_except("ha.role", config.ha_role);
+            if (config.ha_role != "primary" && config.ha_role != "secondary") {
+                throw pubsub_itc_fw::ConfigurationException(
+                    "MatchingEngineConfigurationLoader: ha.role must be 'primary' or 'secondary', got '" + config.ha_role + "'");
             }
-        };
+        }
 
-        validate_port(listen_port, "network.listen_port");
-        validate_port(sequencer_er_port, "sequencer_er.port");
-        validate_port(sequencer_er_secondary_port, "sequencer_er_secondary.port");
+        const bool is_secondary = config.ha_enabled && config.ha_role == "secondary";
 
-        config.listen_port = static_cast<uint16_t>(listen_port);
-        config.sequencer_er_port = static_cast<uint16_t>(sequencer_er_port);
-        config.sequencer_er_secondary_port = static_cast<uint16_t>(sequencer_er_secondary_port);
+        // Network/sequencer sections are not required for a secondary ME in Slice A+B.
+        if (!is_secondary) {
+            toml.get_required_except("network.listen_host", config.listen_host);
+            toml.get_required_except("sequencer_er.host", config.sequencer_er_host);
+            toml.get_required_except("sequencer_er_secondary.host", config.sequencer_er_secondary_host);
+
+            int32_t listen_port = 0;
+            int32_t sequencer_er_port = 0;
+            int32_t sequencer_er_secondary_port = 0;
+
+            toml.get_required_except("network.listen_port", listen_port);
+            toml.get_required_except("sequencer_er.port", sequencer_er_port);
+            toml.get_required_except("sequencer_er_secondary.port", sequencer_er_secondary_port);
+
+            auto validate_port = [&](int32_t port, const std::string& name) {
+                if (port < 1 || port > 65535) {
+                    throw pubsub_itc_fw::ConfigurationException("MatchingEngineConfigurationLoader: " + name + " must be in range [1, 65535], got " +
+                                                                std::to_string(port));
+                }
+            };
+
+            validate_port(listen_port, "network.listen_port");
+            validate_port(sequencer_er_port, "sequencer_er.port");
+            validate_port(sequencer_er_secondary_port, "sequencer_er_secondary.port");
+
+            config.listen_port = static_cast<uint16_t>(listen_port);
+            config.sequencer_er_port = static_cast<uint16_t>(sequencer_er_port);
+            config.sequencer_er_secondary_port = static_cast<uint16_t>(sequencer_er_secondary_port);
+        }
+
+        // Book replication configuration (required when ha_enabled).
+        if (config.ha_enabled) {
+            auto validate_port = [&](int32_t port, const std::string& name) {
+                if (port < 1 || port > 65535) {
+                    throw pubsub_itc_fw::ConfigurationException("MatchingEngineConfigurationLoader: " + name + " must be in range [1, 65535], got " +
+                                                                std::to_string(port));
+                }
+            };
+            if (!is_secondary) {
+                toml.get_required_except("book_replication.host", config.secondary_replication_host);
+                int32_t repl_port = 0;
+                toml.get_required_except("book_replication.port", repl_port);
+                validate_port(repl_port, "book_replication.port");
+                config.secondary_replication_port = static_cast<uint16_t>(repl_port);
+            } else {
+                toml.get_required_except("book_replication.listen_host", config.replication_listen_host);
+                int32_t repl_listen_port = 0;
+                toml.get_required_except("book_replication.listen_port", repl_listen_port);
+                validate_port(repl_listen_port, "book_replication.listen_port");
+                config.replication_listen_port = static_cast<uint16_t>(repl_listen_port);
+            }
+        }
 
         std::string applog_level_str;
         std::string syslog_level_str;

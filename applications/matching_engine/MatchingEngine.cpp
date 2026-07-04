@@ -41,27 +41,54 @@ MatchingEngine::MatchingEngine(MatchingEngineConfiguration config, std::unique_p
 
     reactor_ = std::make_unique<pubsub_itc_fw::Reactor>(reactor_configuration_, service_registry_, *logger_);
 
-    // Inbound PDU listener for SequencedMessage PDUs from the sequencer.
-    reactor_->register_inbound_listener(pubsub_itc_fw::NetworkEndpointConfiguration{config_.listen_host, config_.listen_port}, pubsub_itc_fw::ThreadID{1},
-                                        pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::FrameworkPdu}, 0);
+    const bool is_secondary = config_.ha_enabled && config_.ha_role == "secondary";
+
+    if (!is_secondary) {
+        // Primary: listen for sequenced order PDUs from the sequencer.
+        reactor_->register_inbound_listener(pubsub_itc_fw::NetworkEndpointConfiguration{config_.listen_host, config_.listen_port},
+                                            pubsub_itc_fw::ThreadID{1},
+                                            pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::FrameworkPdu}, 0);
+    } else {
+        // Secondary: listen for book-update PDUs from ME-primary.
+        reactor_->register_inbound_listener(pubsub_itc_fw::NetworkEndpointConfiguration{config_.replication_listen_host, config_.replication_listen_port},
+                                            pubsub_itc_fw::ThreadID{1},
+                                            pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::FrameworkPdu}, 0);
+    }
 
     matching_engine_thread_ = pubsub_itc_fw::ApplicationThread::create<MatchingEngineThread>(*logger_, *reactor_, config_);
 
     reactor_->register_thread(matching_engine_thread_);
 
-    // Outbound PDU connections to both sequencer ER inbound listeners.
-    // ERs are sent to both; the leader routes them to the gateway, the follower discards.
-    service_registry_.add("sequencer_er", pubsub_itc_fw::NetworkEndpointConfiguration{config_.sequencer_er_host, config_.sequencer_er_port},
-                          pubsub_itc_fw::NetworkEndpointConfiguration{});
-    service_registry_.add("sequencer_er_secondary",
-                          pubsub_itc_fw::NetworkEndpointConfiguration{config_.sequencer_er_secondary_host, config_.sequencer_er_secondary_port},
-                          pubsub_itc_fw::NetworkEndpointConfiguration{});
+    if (!is_secondary) {
+        // Primary: outbound ER connections to sequencer.
+        service_registry_.add("sequencer_er",
+                              pubsub_itc_fw::NetworkEndpointConfiguration{config_.sequencer_er_host, config_.sequencer_er_port},
+                              pubsub_itc_fw::NetworkEndpointConfiguration{});
+        service_registry_.add("sequencer_er_secondary",
+                              pubsub_itc_fw::NetworkEndpointConfiguration{config_.sequencer_er_secondary_host, config_.sequencer_er_secondary_port},
+                              pubsub_itc_fw::NetworkEndpointConfiguration{});
 
-    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngine: listening for sequenced PDUs on {}:{}", config_.listen_host, config_.listen_port);
-    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngine: primary ER connection to sequencer at {}:{}", config_.sequencer_er_host,
-               config_.sequencer_er_port);
-    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngine: secondary ER connection to sequencer at {}:{}",
-               config_.sequencer_er_secondary_host, config_.sequencer_er_secondary_port);
+        if (config_.ha_enabled) {
+            // Primary with HA: also connect outbound to secondary's replication listener.
+            service_registry_.add("me_secondary_replication",
+                                  pubsub_itc_fw::NetworkEndpointConfiguration{config_.secondary_replication_host, config_.secondary_replication_port},
+                                  pubsub_itc_fw::NetworkEndpointConfiguration{});
+        }
+
+        PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngine: listening for sequenced PDUs on {}:{}",
+                   config_.listen_host, config_.listen_port);
+        PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngine: primary ER connection to sequencer at {}:{}", config_.sequencer_er_host,
+                   config_.sequencer_er_port);
+        PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngine: secondary ER connection to sequencer at {}:{}",
+                   config_.sequencer_er_secondary_host, config_.sequencer_er_secondary_port);
+        if (config_.ha_enabled) {
+            PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngine: HA primary -- book replication outbound to ME-secondary at {}:{}",
+                       config_.secondary_replication_host, config_.secondary_replication_port);
+        }
+    } else {
+        PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngine: HA secondary -- listening for book updates from ME-primary on {}:{}",
+                   config_.replication_listen_host, config_.replication_listen_port);
+    }
 }
 
 int MatchingEngine::run() {

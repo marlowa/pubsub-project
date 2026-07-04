@@ -197,9 +197,6 @@ void SequencerThread::on_connection_established(pubsub_itc_fw::ConnectionID id) 
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "SequencerThread: external WAL subscriber connection {} established -- awaiting WalSubscribeRequest", id.get_value());
     } else {
-        // Inbound connection identified by listener port:
-        //   inbound:7001 / inbound:7002 -- gateway sending order PDUs
-        //   inbound:7021 / inbound:7022 -- matching engine sending ER PDUs
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: inbound connection {} established ({})", id.get_value(), svc);
         if (config_.replay_mode && svc == er_inbound_svc_) {
             // The ME has connected to our ER port and can now receive ER PDUs

@@ -282,6 +282,25 @@ add_custom_target(authentication_generated ALL
     DEPENDS "${AUTH_DSL_GENERATED_HPP}"
 )
 
+# Matching engine book replication protocol PDU header (IDs 600-619).
+set(ME_REPL_DSL_SOURCE "${CMAKE_SOURCE_DIR}/applications/matching_engine/matching_engine_replication.dsl")
+set(ME_REPL_DSL_GENERATED_HPP "${FIX_DSL_INCLUDE_DIR}/matching_engine_replication.hpp")
+
+add_custom_command(
+    OUTPUT "${ME_REPL_DSL_GENERATED_HPP}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${FIX_DSL_INCLUDE_DIR}"
+    COMMAND ${Python3_EXECUTABLE} "${FIX_DSL_GENERATOR}"
+            --namespace pubsub_itc_fw_app
+            "${ME_REPL_DSL_SOURCE}"
+            --cpp "${ME_REPL_DSL_GENERATED_HPP}"
+    DEPENDS "${ME_REPL_DSL_SOURCE}" "${FIX_DSL_GENERATOR}"
+    COMMENT "Generating matching_engine_replication.hpp from matching_engine_replication.dsl"
+    VERBATIM
+)
+add_custom_target(matching_engine_replication_generated ALL
+    DEPENDS "${ME_REPL_DSL_GENERATED_HPP}"
+)
+
 # Topic pub/sub protocol PDU header (plain integer IDs 107-111; no --topics).
 set(TOPICS_DSL_SOURCE "${CMAKE_SOURCE_DIR}/applications/topics.dsl")
 set(TOPICS_DSL_GENERATED_HPP "${FIX_DSL_INCLUDE_DIR}/topics.hpp")
