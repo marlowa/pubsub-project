@@ -225,8 +225,12 @@ SETTLE_AFTER_RESTART  = 2.0    # seconds after a sequencer restart before procee
 # retries after 2 s.  Only once this connection is up can the sequencer forward
 # sequenced orders to ME.  Waiting for "sequencer order connection established"
 # ensures both directions are ready before Phase 5 sends recovery orders.
+# The ME logs its inbound order connection as "inbound sequencer order connection
+# N established" (primary/non-HA) or "secondary sequencer order connection N
+# established" (HA secondary); match the common "sequencer order connection" +
+# "established" substrings so both forms are recognised.
 _ME_READY_MARKERS = (
-    "MatchingEngineThread: sequencer order connection",
+    "sequencer order connection",
     "established",
 )
 _ME_READY_TIMEOUT = 15.0  # seconds
@@ -1461,25 +1465,32 @@ def run_scenario(scenario: Scenario, args) -> bool:
              etc_dir / "matching_engine"        / "matching_engine_secondary.toml"),
         ]
     else:
+        # Single-ME topology for the sequencer/arbiter/witness/ME-restart
+        # scenarios.  Uses the current _primary config set (the pre-rename
+        # arbiter.toml / sequencer.toml / matching_engine.toml are orphaned and
+        # rejected by today's binaries).  Only one matching engine runs -- named
+        # "matching_engine" (log matching_engine.log) so the existing scenario
+        # references and the ME-restart steps are unchanged; its _primary config
+        # harmlessly retries the (absent) book-replication link to a secondary.
         launch_table = [
             ("witness",                          "witness",
              etc_dir / "witness"                / "witness.toml"),
             ("arbiter_primary",                  "arbiter",
-             etc_dir / "arbiter"                / "arbiter.toml"),
+             etc_dir / "arbiter"                / "arbiter_primary.toml"),
             ("arbiter_secondary",                "arbiter",
              etc_dir / "arbiter"                / "arbiter_secondary.toml"),
             ("authentication_service_primary",   "authentication_service",
-             etc_dir / "authentication_service" / "authentication_service.toml"),
+             etc_dir / "authentication_service" / "authentication_service_primary.toml"),
             ("authentication_service_secondary", "authentication_service",
              etc_dir / "authentication_service" / "authentication_service_secondary.toml"),
             ("order_gateway",           "order_gateway",
              etc_dir / "order_gateway" / "order_gateway.toml"),
             ("sequencer_primary",                "sequencer",
-             etc_dir / "sequencer"              / "sequencer.toml"),
+             etc_dir / "sequencer"              / "sequencer_primary.toml"),
             ("sequencer_secondary",              "sequencer",
              etc_dir / "sequencer"              / "sequencer_secondary.toml"),
             ("matching_engine",                  "matching_engine",
-             etc_dir / "matching_engine"        / "matching_engine.toml"),
+             etc_dir / "matching_engine"        / "matching_engine_primary.toml"),
         ]
 
     app_procs:       list[tuple[str, subprocess.Popen]] = []
