@@ -28,14 +28,25 @@ Output directory:
 """
 
 import argparse
+import hashlib
+import hmac as _hmac
 import os
 import re
+import secrets
 import signal
 import subprocess
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
+
+# ── fix8 authentication ───────────────────────────────────────────────────────
+# fix8's f8test never sends tag 554 (Password), so it authenticates with an
+# empty password.  FIX8_COMP_ID is the SenderCompID in myfix_gateway_client.xml.
+# ensure_fix8_credentials() rewrites the credential in credentials.toml before
+# the auth service starts, bypassing whatever the database holds.
+FIX8_COMP_ID = "CLIENT"
+FIX8_PASSWORD = ""       # empty: f8test sends no Password tag
 
 # ── tunables ──────────────────────────────────────────────────────────────────
 STARTUP_DELAY   = 1.0    # seconds between app launches
@@ -55,6 +66,7 @@ FREQ             = 99      # perf sample frequency (Hz)
 # and rarely useful; the hot path is gateway and ME.
 PERF_TARGETS     = {"order_gateway", "matching_engine"}
 SHUTDOWN_TIMEOUT = 5.0   # seconds to wait for each app to exit after SIGTERM
+MAX_ORDER_TIMEOUT = 120.0  # hard cap on order/ER completion wait (2 minutes)
 
 FIX8_DIR  = Path("/home/marlowa/mystuff/fix8_install")
 FIX8_BIN  = FIX8_DIR / "bin" / "f8test"
@@ -70,6 +82,46 @@ def log(msg: str) -> None:
 def die(msg: str) -> None:
     log(f"ERROR: {msg}")
     sys.exit(1)
+
+
+def ensure_fix8_credentials(creds_file: Path, comp_id: str, password: str,
+                             logon_mode: str) -> None:
+    """Rewrite the SCRAM credential for comp_id in credentials.toml.
+
+    Called after export_credentials.py so the perf test always authenticates
+    successfully regardless of what the database holds for the fix8 comp_id.
+    Skipped when logon_mode == 'proprietary' (no SCRAM involved).
+    """
+    if logon_mode == "proprietary":
+        log(f"  proprietary logon mode -- skipping SCRAM credential rewrite for '{comp_id}'")
+        return
+
+    salt = secrets.token_bytes(16)
+    pwd_bytes = password.encode("utf-8")
+    salted = hashlib.pbkdf2_hmac("sha256", pwd_bytes, salt, 4096)
+    client_key = _hmac.new(salted, b"Client Key", hashlib.sha256).digest()
+    stored_key = hashlib.sha256(client_key).digest()
+    server_key = _hmac.new(salted, b"Server Key", hashlib.sha256).digest()
+
+    new_block = (
+        f"[[credential]]\n"
+        f"comp_id    = \"{comp_id}\"\n"
+        f"stored_key = \"{stored_key.hex()}\"\n"
+        f"server_key = \"{server_key.hex()}\"\n"
+        f"salt       = \"{salt.hex()}\"\n"
+        f"iterations = 4096\n"
+    )
+
+    existing = creds_file.read_text() if creds_file.is_file() else ""
+    # Split on [[credential]] blocks; drop any existing block for this comp_id.
+    blocks = re.split(r"\[\[credential\]\]", existing)
+    header = blocks[0]
+    kept = [b for b in blocks[1:]
+            if f'comp_id    = "{comp_id}"' not in b and
+               f'comp_id = "{comp_id}"' not in b]
+    result = header + "".join(f"[[credential]]{b}" for b in kept) + new_block
+    creds_file.write_text(result)
+    log(f"  SCRAM credential for '{comp_id}' (password={password!r}) written to {creds_file.name}")
 
 
 def set_fix_capture_enabled(config_path: Path, enabled: bool) -> None:
@@ -400,8 +452,6 @@ def run_fix8_session(me_log: Path, gw_log: Path, burst: int, clients: int) -> No
         except BrokenPipeError:
             die(f"f8test client {i + 1} stdin pipe broke before T commands were sent")
 
-    # Scale the timeout proportionally to total_orders, but cap at 10 minutes.
-    MAX_ORDER_TIMEOUT = 600.0
     timeout = min(ORDER_TIMEOUT * max(1, burst * clients), MAX_ORDER_TIMEOUT)
 
     # Phase 1: ME intake.  This is a progress indicator only — the ME processes
@@ -456,6 +506,11 @@ def main() -> None:
                         help="Number of concurrent fix8 sessions. Default: 1")
     parser.add_argument("--capture", action="store_true", default=False,
                         help="Enable FIX capture (writes all wire bytes to fix_capture.bin).")
+    parser.add_argument("--logon-mode", choices=["scram", "proprietary"], default="scram",
+                        help="Authentication mode for fix8 clients.  'scram' (default): "
+                             "standard SCRAM-SHA-256 with an empty password (fix8 sends no "
+                             "tag 554).  'proprietary': skip SCRAM credential rewrite, used "
+                             "when testing on RHEL8 with the proprietary logon path.")
     args = parser.parse_args()
     if args.burst < 1:
         parser.error("--burst must be >= 1")
@@ -501,6 +556,7 @@ def main() -> None:
     log(f"  clients        : {args.clients}")
     log(f"  burst          : {args.burst}  ({args.clients * args.burst * 1000} orders total)")
     log(f"  FIX capture    : {'enabled' if args.capture else 'disabled'}")
+    log(f"  logon mode     : {args.logon_mode}")
 
     # -- export SCRAM credentials from the database before starting the auth service
     log("Exporting credentials ...")
@@ -518,6 +574,7 @@ def main() -> None:
     if result.returncode != 0:
         die(f"export_credentials.py failed:\n{result.stderr.strip()}")
     log("  credentials exported")
+    ensure_fix8_credentials(creds_file, FIX8_COMP_ID, FIX8_PASSWORD, args.logon_mode)
 
     # -- launch applications in dependency order (mirrors dev.toml startup_order)
     # Each tuple: (name, binary, config, optional_workdir).
@@ -531,7 +588,7 @@ def main() -> None:
         ("matching_engine",        "matching_engine",        etc_dir / "matching_engine"       / "matching_engine.toml",          None),
         ("sequencer_primary",      "sequencer",              etc_dir / "sequencer"             / "sequencer.toml",                None),
         ("sequencer_secondary",    "sequencer",              etc_dir / "sequencer"             / "sequencer_secondary.toml",      None),
-        ("order_gateway",          "order_gateway",          etc_dir / "order_gateway"         / "order_gateway.toml",            None),
+        ("order_gateway",          "order_gateway",          etc_dir / "order_gateway"         / "order_gateway.toml",            etc_dir / "order_gateway"),
     ]
 
     app_procs:  list[tuple[str, subprocess.Popen]] = []
@@ -580,6 +637,14 @@ def main() -> None:
         if args.capture:
             set_fix_capture_enabled(gw_config, False)
         sys.exit(130)
+    except BaseException:
+        # Covers die() → sys.exit(), broken-pipe errors, and any other
+        # unexpected exception.  Always clean up running processes so that
+        # a failed run does not leave orphaned binaries behind.
+        log("Failure — shutting down all running processes ...")
+        shutdown_processes(app_procs)
+        stop_perf_procs(perf_procs)
+        raise
     finally:
         if args.capture:
             set_fix_capture_enabled(gw_config, False)

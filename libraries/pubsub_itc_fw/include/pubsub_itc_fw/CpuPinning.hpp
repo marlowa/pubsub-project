@@ -24,10 +24,39 @@ namespace pubsub_itc_fw {
 /// Type-safe CPU identifier. Signed int to align with Linux system call APIs.
 using CpuId = WrappedInteger<struct CpuIdTag, int>;
 
-/// A CPU with its associated NUMA node, as returned by discovery and claim functions.
+/**
+ * @brief Distinguishes Intel hybrid core types detected via sysfs cpu_capacity.
+ *
+ * P-cores (Performance) have higher clock speed, out-of-order execution, and
+ * hyperthreading.  E-cores (Efficiency) have lower clock speed and simpler
+ * in-order pipelines.  Unknown is used when the file is absent (non-hybrid
+ * architecture or older kernel) and is treated as P-core for scheduling.
+ *
+ * Detection: /sys/devices/system/cpu/cpuN/cpu_capacity
+ *   1024 => P-core (maximum normalised capacity, as used by Linux EAS)
+ *   < 1024 => E-core (lower relative capacity, e.g. 355 on Alder Lake)
+ *   absent => Unknown (treat as P-core; safe fallback for uniform architectures)
+ */
+enum class CoreType {
+    P_core,   ///< Performance core
+    E_core,   ///< Efficiency core -- latency-sensitive threads should avoid these
+    Unknown   ///< Not detectable; treated as P-core for scheduling purposes
+};
+
+/// Returns a short human-readable label for logging.
+inline const char* core_type_name(CoreType t) {
+    switch (t) {
+        case CoreType::P_core: return "P-core";
+        case CoreType::E_core: return "E-core";
+        default:               return "unknown-core-type";
+    }
+}
+
+/// A CPU with its associated NUMA node and core type, as returned by discovery functions.
 struct CpuAssignment {
-    CpuId cpu_id;
-    int numa_node_id{-1};
+    CpuId    cpu_id;
+    int      numa_node_id{-1};
+    CoreType core_type{CoreType::Unknown};
 };
 
 /// Flat vector of CPU assignments returned by discovery and claim functions.
@@ -56,6 +85,88 @@ struct SharedCoreRegistryLayout {
 };
 
 namespace detail {
+
+/**
+ * @brief Detect whether a CPU is a P-core or E-core from sysfs.
+ *
+ * Two detection mechanisms are tried in order:
+ *
+ * 1. /sys/devices/system/cpu/cpuN/cpu_capacity (Linux EAS, value 1024 = P-core)
+ *    Present on kernels with Energy Aware Scheduling support.
+ *
+ * 2. /sys/devices/system/cpu/cpuN/acpi_cppc/highest_perf (ACPI CPPC)
+ *    Present on Intel hybrid machines even without EAS.  The value is not
+ *    normalised, so a threshold is not fixed.  The caller must pass the
+ *    system-wide maximum highest_perf observed across all CPUs; a CPU whose
+ *    highest_perf is less than (max * cppc_p_core_threshold_pct / 100) is
+ *    classified as an E-core.  Pass max_cppc_perf == 0 to skip this method.
+ *
+ * Returns Unknown when neither source is available (treated as P-core by callers).
+ */
+inline CoreType read_core_type(CpuId cpu_id, int max_cppc_perf = 0) {
+    // Method 1: cpu_capacity (EAS)
+    const std::filesystem::path cap_path{
+        "/sys/devices/system/cpu/cpu" + std::to_string(cpu_id.get_value()) + "/cpu_capacity"};
+    if (std::filesystem::exists(cap_path)) {
+        std::ifstream f(cap_path);
+        int capacity = 0;
+        if (f >> capacity) {
+            // 1024 is the maximum normalised capacity value used by the Linux EAS scheduler.
+            return (capacity >= 1024) ? CoreType::P_core : CoreType::E_core;
+        }
+    }
+
+    // Method 2: acpi_cppc/highest_perf
+    if (max_cppc_perf > 0) {
+        const std::filesystem::path cppc_path{
+            "/sys/devices/system/cpu/cpu" + std::to_string(cpu_id.get_value()) + "/acpi_cppc/highest_perf"};
+        if (std::filesystem::exists(cppc_path)) {
+            std::ifstream f(cppc_path);
+            int perf = 0;
+            if (f >> perf) {
+                // CPUs whose highest_perf is below 80% of the system maximum are E-cores.
+                return (perf * 100 >= max_cppc_perf * 80) ? CoreType::P_core : CoreType::E_core;
+            }
+        }
+    }
+
+    return CoreType::Unknown;
+}
+
+/**
+ * @brief Read the system-wide maximum acpi_cppc/highest_perf across all online CPUs.
+ *
+ * Returns 0 if the file is absent (no ACPI CPPC support or uniform architecture).
+ * Used as the reference value for read_core_type() method 2.
+ */
+inline int read_max_cppc_perf() {
+    int max_perf = 0;
+    const std::filesystem::path cpu_base{"/sys/devices/system/cpu"};
+    if (!std::filesystem::exists(cpu_base)) {
+        return 0;
+    }
+    for (const auto& entry : std::filesystem::directory_iterator(cpu_base)) {
+        const std::string name = entry.path().filename().string();
+        // Match "cpuN" directories (digits only after "cpu").
+        if (name.size() <= 3 || name.substr(0, 3) != "cpu") {
+            continue;
+        }
+        bool all_digits = true;
+        for (size_t i = 3; i < name.size(); ++i) {
+            if (name[i] < '0' || name[i] > '9') { all_digits = false; break; }
+        }
+        if (!all_digits) { continue; }
+
+        const std::filesystem::path cppc_path = entry.path() / "acpi_cppc" / "highest_perf";
+        if (!std::filesystem::exists(cppc_path)) { continue; }
+        std::ifstream f(cppc_path);
+        int perf = 0;
+        if (f >> perf && perf > max_perf) {
+            max_perf = perf;
+        }
+    }
+    return max_perf;
+}
 
 /// Parses a kernel CPU-list string such as "0-3,8-11" into a flat CpuId vector.
 inline std::vector<CpuId> parse_cpu_list(const std::string& input) {
@@ -98,16 +209,24 @@ inline std::vector<CpuId> parse_cpu_list(const std::string& input) {
 /**
  * @brief Discover CPUs available for pinning from the kernel sysfs topology.
  *
- * Iterates NUMA nodes in order (Node 0, Node 1, ...) to produce a list that
- * favours NUMA-local allocation. For each candidate CPU, the cross-process
- * registry is consulted: cores owned by live processes are excluded.
+ * Iterates NUMA nodes in order (Node 0, Node 1, ...) to discover available
+ * CPUs, then sorts the result by preference:
+ *
+ *   1. P-cores (and Unknown, treated as P-core) on lower NUMA nodes first.
+ *   2. E-cores on lower NUMA nodes first.
+ *
+ * This means callers that take the first N CPUs automatically prefer P-cores
+ * and fall back to E-cores only when all P-cores are already claimed.
  *
  * @param reserve_cpu0  When true, CPU 0 is excluded (reserved for OS use).
- * @param registry     Cross-process shared registry of currently claimed cores.
- * @return Flat list of available CPU IDs in NUMA-near order.
+ * @param registry      Cross-process shared registry of currently claimed cores.
+ * @return Available CPUs in P-core-first, NUMA-near order.
  */
 inline AvailableCpuVector get_available_cpu_ids(bool reserve_cpu0, const SharedCoreRegistryLayout& registry) {
     AvailableCpuVector candidates;
+
+    // Read once; passed to read_core_type() for ACPI CPPC fallback detection.
+    const int max_cppc_perf = detail::read_max_cppc_perf();
 
     const std::filesystem::path node_base{"/sys/devices/system/node"};
 
@@ -124,7 +243,7 @@ inline AvailableCpuVector get_available_cpu_ids(bool reserve_cpu0, const SharedC
                     if (reserve_cpu0 && cpu_id.get_value() == 0) {
                         continue;
                     }
-                    candidates.push_back({cpu_id, 0});
+                    candidates.push_back({cpu_id, 0, detail::read_core_type(cpu_id, max_cppc_perf)});
                 }
             }
         } else if (!reserve_cpu0) {
@@ -197,10 +316,22 @@ inline AvailableCpuVector get_available_cpu_ids(bool reserve_cpu0, const SharedC
             }
 
             if (!busy) {
-                candidates.push_back({cpu_id, numa_node});
+                candidates.push_back({cpu_id, numa_node, detail::read_core_type(cpu_id, max_cppc_perf)});
             }
         }
     }
+
+    // Sort: P-cores (and Unknown) before E-cores; within each tier, lower NUMA
+    // node first.  stable_sort preserves the existing NUMA order among ties.
+    std::stable_sort(candidates.begin(), candidates.end(),
+                     [](const CpuAssignment& a, const CpuAssignment& b) {
+                         const int a_rank = (a.core_type == CoreType::E_core) ? 1 : 0;
+                         const int b_rank = (b.core_type == CoreType::E_core) ? 1 : 0;
+                         if (a_rank != b_rank) {
+                             return a_rank < b_rank;
+                         }
+                         return a.numa_node_id < b.numa_node_id;
+                     });
 
     return candidates;
 }
