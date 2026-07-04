@@ -116,6 +116,18 @@ Scenarios
        protocol rather than the self-promotion fallback.
        Expected: all four PDU-exchange markers seen; recovery orders flow.
 
+ 16  Primary matching-engine death (ME HA failover)
+       Runs the full ME-HA topology (matching_engine_primary + _secondary,
+       _primary/_secondary configs).  Baseline orders are confirmed on
+       matching_engine_primary; then matching_engine_primary is SIGKILLed.
+       The secondary detects the lost replication connection, waits out the
+       ~15 s promotion timeout, requests arbitration, adopts LEADER, and
+       reconciles against the sequencer WAL.  The leader sequencer promotes its
+       standby connection so recovery orders route to the promoted secondary,
+       which processes them.
+       Expected: matching_engine_secondary adopts LEADER; recovery orders
+       confirmed on matching_engine_secondary.log.
+
 Options:
     --scenario N|all      Scenario number, or 'all' to run every scenario in
                           order (required).  All scenarios must pass for the
@@ -152,8 +164,11 @@ Failover timing:
 """
 
 import argparse
+import hashlib
+import hmac as _hmac
 import os
 import re
+import secrets
 import signal
 import subprocess
 import sys
@@ -173,6 +188,12 @@ SETTLE_AFTER_KILL      = 1.0   # seconds after a kill where no failover is expec
 FIX8_DIR = Path("/home/marlowa/mystuff/fix8_install")
 FIX8_BIN = FIX8_DIR / "bin" / "f8test"
 FIX8_CFG = "myfix_gateway_client.xml"
+# f8test authenticates as SenderCompID CLIENT with an empty password.  The
+# database-exported CLIENT credential may hold a different (non-empty) password,
+# so we rewrite its SCRAM keys for the empty password before starting the auth
+# service (mirrors perf_run.py::ensure_fix8_credentials).
+FIX8_COMP_ID  = "CLIENT"
+FIX8_PASSWORD = ""
 # ──────────────────────────────────────────────────────────────────────────────
 
 # Gateway log substrings for FIX logon outcome detection.
@@ -234,6 +255,11 @@ class KillStep(NamedTuple):
     role_prefix: str | None
     settle_secs: float
     failover_to: str | None = None
+    # When set, poll for a line containing ALL of these markers instead of the
+    # default (role_prefix, _TO_LEADER).  Used for components whose promotion log
+    # line does not follow the "role transition ... -> leader" format, e.g. the
+    # matching engine's "MatchingEngineThread: adopting LEADER role".
+    leader_markers: tuple | None = None
 
 
 class RestartStep(NamedTuple):
@@ -300,6 +326,17 @@ class Scenario(NamedTuple):
     extra_steps: list = []   # list[KillStep|RestartStep|InterimOrdersStep]
                              # When non-empty, replaces steps+restart_steps in
                              # Phase 4 and suppresses orders_during sending.
+    # When True, run against the full matching-engine HA topology (ME primary +
+    # secondary, _primary/_secondary configs).  Baseline orders are confirmed on
+    # matching_engine_primary.log; recovery orders (after the primary ME is
+    # killed and the secondary promotes) are confirmed on
+    # matching_engine_secondary.log.  Leaves all non-me_ha scenarios untouched.
+    me_ha: bool = False
+    # Override args.orders_during for this scenario (None = use the CLI value).
+    # The ME-HA scenario sets 0 for a deterministic recovery count on the
+    # promoted secondary (in-flight orders would advance the secondary's
+    # order_id_counter_ silently during reconciliation).
+    orders_during_override: int | None = None
 
 
 # ── helpers shared by scenario definitions ────────────────────────────────────
@@ -848,6 +885,34 @@ _SCENARIOS: list[Scenario] = [
             ),
         ],
     ),
+
+    # 16 — primary matching-engine death: expect matching_engine_secondary to
+    # promote via the arbiter and recovery orders to flow to it.
+    Scenario(
+        number=16,
+        short_name="primary_me_death",
+        description="Death of primary matching engine (ME HA failover)",
+        expected_outcome=(
+            "matching_engine_secondary detects primary loss, promotes via the "
+            "arbiter (adopts LEADER) after the ~15 s promotion timeout, "
+            "reconciles against the sequencer WAL, and processes recovery orders"
+        ),
+        me_ha=True,
+        # In-flight orders would advance the promoted secondary's
+        # order_id_counter_ silently during reconciliation; suppress them so the
+        # recovery count on the secondary is deterministic.
+        orders_during_override=0,
+        steps=[
+            KillStep(
+                proc_name="matching_engine_primary",
+                secondary_log_name="matching_engine_secondary.log",
+                role_prefix=None,
+                settle_secs=SETTLE_AFTER_FAILOVER,
+                failover_to="matching_engine_secondary",
+                leader_markers=("MatchingEngineThread:", "adopting LEADER role"),
+            ),
+        ],
+    ),
 ]
 
 _SCENARIO_MAP: dict[int, Scenario] = {s.number: s for s in _SCENARIOS}
@@ -1020,15 +1085,81 @@ def launch_app(name: str, bin_name: str, config: Path,
                bin_dir: Path, log_dir: Path) -> subprocess.Popen:
     if not config.is_file():
         die(f"config not found: {config}")
+    # Run each process from its config directory (etc/<component>), matching
+    # devenv's per-component workdir.  Config-relative paths — notably the
+    # gateway's fix_gateway.crt — resolve against this dir.  Log and config are
+    # passed as absolute paths, so they are unaffected by the cwd.
     with open(log_dir / f"{name}.stdout", "w") as stdout_fh:
         proc = subprocess.Popen(
             [str(bin_dir / bin_name), str(log_dir / f"{name}.log"), str(config)],
-            cwd=str(log_dir),
+            cwd=str(config.parent),
             stdout=stdout_fh,
             stderr=subprocess.STDOUT,
         )
     log(f"  {name} — PID {proc.pid}")
     return proc
+
+
+def ensure_fix8_credentials(creds_file: Path, comp_id: str, password: str) -> None:
+    """Rewrite the SCRAM credential for comp_id in credentials.toml.
+
+    Called after export_credentials.py so the fix8 test client always
+    authenticates successfully regardless of what the database holds for the
+    fix8 comp_id (f8test sends an empty password).  Mirrors the identical
+    helper in perf_run.py.
+    """
+    salt = secrets.token_bytes(16)
+    salted = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 4096)
+    client_key = _hmac.new(salted, b"Client Key", hashlib.sha256).digest()
+    stored_key = hashlib.sha256(client_key).digest()
+    server_key = _hmac.new(salted, b"Server Key", hashlib.sha256).digest()
+
+    new_block = (
+        f"[[credential]]\n"
+        f"comp_id    = \"{comp_id}\"\n"
+        f"stored_key = \"{stored_key.hex()}\"\n"
+        f"server_key = \"{server_key.hex()}\"\n"
+        f"salt       = \"{salt.hex()}\"\n"
+        f"iterations = 4096\n"
+    )
+
+    existing = creds_file.read_text() if creds_file.is_file() else ""
+    blocks = re.split(r"\[\[credential\]\]", existing)
+    header = blocks[0]
+    kept = [b for b in blocks[1:]
+            if f'comp_id    = "{comp_id}"' not in b and
+               f'comp_id = "{comp_id}"' not in b]
+    result = header + "".join(f"[[credential]]{b}" for b in kept) + new_block
+    creds_file.write_text(result)
+    log(f"  SCRAM credential for '{comp_id}' (empty password) written to {creds_file.name}")
+
+
+def wait_for_accepted_count(me_log: Path, count: int,
+                            timeout: float, from_byte: int = 0) -> tuple[bool, float, int]:
+    """
+    Wait until `count` live NOS acceptances ("accepted NOS OrderID=ME-ORD-")
+    appear in me_log from from_byte.  Unlike wait_for_me_ord this counts
+    occurrences rather than matching an absolute ME-ORD-N, so it is robust to
+    the promoted ME's order_id_counter_ being advanced silently during WAL
+    reconciliation (RECONCILING applies NOS to the book without logging an
+    accept line).  Returns (found, elapsed_seconds, new_file_position).
+    """
+    needle    = "accepted NOS OrderID=ME-ORD-"
+    deadline  = time.monotonic() + timeout
+    pos       = from_byte
+    seen      = 0
+    t0        = time.monotonic()
+    while time.monotonic() < deadline:
+        if me_log.is_file():
+            with open(me_log, "r", errors="replace") as fh:
+                fh.seek(pos)
+                chunk = fh.read()
+                pos   = fh.tell()
+            seen += chunk.count(needle)
+            if seen >= count:
+                return True, time.monotonic() - t0, pos
+        time.sleep(LOG_POLL_INTERVAL)
+    return False, time.monotonic() - t0, pos
 
 
 def send_burst(count: int, gw_log: Path) -> subprocess.Popen:
@@ -1129,13 +1260,14 @@ def do_kill_step(
     )
     secondary_log  = log_dir / step.secondary_log_name
 
+    markers = step.leader_markers if step.leader_markers else (step.role_prefix, _TO_LEADER)
     log(
         f"  Watching {step.secondary_log_name} for "
-        f"'{step.role_prefix}' ... '{_TO_LEADER}' "
+        f"{' ... '.join(repr(m) for m in markers)} "
         f"(timeout {failover_timeout:.0f}s) ..."
     )
     found, elapsed, _ = poll_log_for(
-        secondary_log, step.role_prefix, _TO_LEADER,
+        secondary_log, *markers,
         timeout=failover_timeout,
         from_byte=secondary_log_pos,
     )
@@ -1234,23 +1366,36 @@ def run_scenario(scenario: Scenario, args) -> bool:
     etc_dir = prefix / "etc"
     log_dir = prefix / "log"
 
-    me_log                     = log_dir / "matching_engine.log"
+    # The ME-HA topology uses the _primary/_secondary config set: baseline
+    # orders flow to matching_engine_primary; after the primary is killed the
+    # promoted matching_engine_secondary becomes the active ME.  All other
+    # scenarios keep the single-ME topology unchanged.
+    if scenario.me_ha:
+        me_log                 = log_dir / "matching_engine_primary.log"
+        me_secondary_log       = log_dir / "matching_engine_secondary.log"
+        gw_log                 = log_dir / "order_gateway.log"
+    else:
+        me_log                 = log_dir / "matching_engine.log"
+        me_secondary_log       = None
+        gw_log                 = log_dir / "order_gateway.log"
     seq_primary_log            = log_dir / "sequencer_primary.log"
     seq_secondary_log          = log_dir / "sequencer_secondary.log"
     arb_primary_log            = log_dir / "arbiter_primary.log"
     arb_secondary_log          = log_dir / "arbiter_secondary.log"
     auth_primary_log           = log_dir / "authentication_service_primary.log"
     auth_secondary_log         = log_dir / "authentication_service_secondary.log"
-    gw_log                     = log_dir / "order_gateway.log"
 
     log_dir.mkdir(parents=True, exist_ok=True)
 
     # Delete stale log files so all polling begins at byte 0.  Processes
     # overwrite (not append) their logs on each start, so any pre-existing EOF
     # offset would skip past content written by the new run.
-    for stale in (seq_primary_log, seq_secondary_log,
+    stale_logs = [seq_primary_log, seq_secondary_log,
                   arb_primary_log, arb_secondary_log, me_log,
-                  auth_primary_log, auth_secondary_log):
+                  auth_primary_log, auth_secondary_log]
+    if me_secondary_log is not None:
+        stale_logs.append(me_secondary_log)
+    for stale in stale_logs:
         stale.unlink(missing_ok=True)
 
     # ── header ────────────────────────────────────────────────────────────────
@@ -1268,6 +1413,11 @@ def run_scenario(scenario: Scenario, args) -> bool:
     effective_steps = scenario.extra_steps or (list(scenario.steps) + list(scenario.restart_steps))
     kill_seq = " → ".join(_step_label(s) for s in effective_steps) if effective_steps else "(none)"
 
+    # Per-scenario override of the in-flight order count (None = use the CLI value).
+    orders_during = (scenario.orders_during_override
+                     if scenario.orders_during_override is not None
+                     else args.orders_during)
+
     log("=" * 60)
     log(f"  ha_test  —  Scenario {scenario.number}: {scenario.description}")
     log("=" * 60)
@@ -1275,7 +1425,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
     log(f"  kill sequence    : {kill_seq}")
     log(f"  expected outcome : {scenario.expected_outcome}")
     log(f"  orders before    : {args.orders_before * 1000}")
-    log(f"  orders during    : {args.orders_during * 1000}  (in flight during kill)")
+    log(f"  orders during    : {orders_during * 1000}  (in flight during kill)")
     log(f"  orders after     : {args.orders_after * 1000}")
     log(f"  ready timeout    : {args.ready_timeout:.0f}s")
     log(f"  failover timeout : {args.failover_timeout:.0f}s  (per step)")
@@ -1284,27 +1434,53 @@ def run_scenario(scenario: Scenario, args) -> bool:
 
     # Process launch table (name, binary, config).
     # Authentication services start before the gateway so the gateway can connect
-    # to them immediately on startup.
-    launch_table = [
-        ("witness",                          "witness",
-         etc_dir / "witness"                / "witness.toml"),
-        ("arbiter_primary",                  "arbiter",
-         etc_dir / "arbiter"                / "arbiter.toml"),
-        ("arbiter_secondary",                "arbiter",
-         etc_dir / "arbiter"                / "arbiter_secondary.toml"),
-        ("authentication_service_primary",   "authentication_service",
-         etc_dir / "authentication_service" / "authentication_service.toml"),
-        ("authentication_service_secondary", "authentication_service",
-         etc_dir / "authentication_service" / "authentication_service_secondary.toml"),
-        ("order_gateway",           "order_gateway",
-         etc_dir / "order_gateway" / "order_gateway.toml"),
-        ("sequencer_primary",                "sequencer",
-         etc_dir / "sequencer"              / "sequencer.toml"),
-        ("sequencer_secondary",              "sequencer",
-         etc_dir / "sequencer"              / "sequencer_secondary.toml"),
-        ("matching_engine",                  "matching_engine",
-         etc_dir / "matching_engine"        / "matching_engine.toml"),
-    ]
+    # to them immediately on startup.  The ME-HA topology uses the
+    # _primary/_secondary config set and adds a second matching engine so the
+    # secondary can promote when the primary is killed.
+    if scenario.me_ha:
+        launch_table = [
+            ("witness",                          "witness",
+             etc_dir / "witness"                / "witness.toml"),
+            ("arbiter_primary",                  "arbiter",
+             etc_dir / "arbiter"                / "arbiter_primary.toml"),
+            ("arbiter_secondary",                "arbiter",
+             etc_dir / "arbiter"                / "arbiter_secondary.toml"),
+            ("authentication_service_primary",   "authentication_service",
+             etc_dir / "authentication_service" / "authentication_service_primary.toml"),
+            ("authentication_service_secondary", "authentication_service",
+             etc_dir / "authentication_service" / "authentication_service_secondary.toml"),
+            ("order_gateway",                    "order_gateway",
+             etc_dir / "order_gateway"          / "order_gateway.toml"),
+            ("sequencer_primary",                "sequencer",
+             etc_dir / "sequencer"              / "sequencer_primary.toml"),
+            ("sequencer_secondary",              "sequencer",
+             etc_dir / "sequencer"              / "sequencer_secondary.toml"),
+            ("matching_engine_primary",          "matching_engine",
+             etc_dir / "matching_engine"        / "matching_engine_primary.toml"),
+            ("matching_engine_secondary",        "matching_engine",
+             etc_dir / "matching_engine"        / "matching_engine_secondary.toml"),
+        ]
+    else:
+        launch_table = [
+            ("witness",                          "witness",
+             etc_dir / "witness"                / "witness.toml"),
+            ("arbiter_primary",                  "arbiter",
+             etc_dir / "arbiter"                / "arbiter.toml"),
+            ("arbiter_secondary",                "arbiter",
+             etc_dir / "arbiter"                / "arbiter_secondary.toml"),
+            ("authentication_service_primary",   "authentication_service",
+             etc_dir / "authentication_service" / "authentication_service.toml"),
+            ("authentication_service_secondary", "authentication_service",
+             etc_dir / "authentication_service" / "authentication_service_secondary.toml"),
+            ("order_gateway",           "order_gateway",
+             etc_dir / "order_gateway" / "order_gateway.toml"),
+            ("sequencer_primary",                "sequencer",
+             etc_dir / "sequencer"              / "sequencer.toml"),
+            ("sequencer_secondary",              "sequencer",
+             etc_dir / "sequencer"              / "sequencer_secondary.toml"),
+            ("matching_engine",                  "matching_engine",
+             etc_dir / "matching_engine"        / "matching_engine.toml"),
+        ]
 
     app_procs:       list[tuple[str, subprocess.Popen]] = []
     proc_by_name:    dict[str, subprocess.Popen]        = {}
@@ -1339,6 +1515,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 f"{export_result.stderr.strip()}"
             )
         log(f"  credentials written to {creds_file}")
+        ensure_fix8_credentials(creds_file, FIX8_COMP_ID, FIX8_PASSWORD)
         log("")
 
         # ── Phase 1: start all processes ──────────────────────────────────────
@@ -1390,6 +1567,27 @@ def run_scenario(scenario: Scenario, args) -> bool:
             )
         log("")
 
+        # For the ME-HA topology, wait until the primary→secondary book
+        # replication connection is established before proceeding.  The secondary
+        # detects the primary's death only as the replication TCP EOF; killing the
+        # primary before that connection is up (the primary retries every 2 s
+        # against the secondary's listener) would leave the secondary unaware and
+        # no promotion would ever fire.
+        if scenario.me_ha:
+            log("  Polling matching_engine_secondary.log for ME-primary replication connection ...")
+            found, elapsed, _ = poll_log_for(
+                me_secondary_log,
+                "ME-primary replication connection", "established",
+                timeout=args.ready_timeout, from_byte=0,
+            )
+            if not found:
+                die(
+                    "ME-primary → secondary replication connection not established "
+                    f"within {args.ready_timeout:.0f}s — cannot test ME failover"
+                )
+            log(f"  ME replication connection established ({elapsed:.1f}s)")
+            log("")
+
         # ── Phase 3: baseline orders + in-flight orders ───────────────────────
         before_total = args.orders_before * 1000
         log(f"=== Phase 3: {before_total} baseline orders ===")
@@ -1409,12 +1607,12 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # during Phase 4 so the kill happens while the system is under load.
         # Suppressed for extra_steps scenarios (e.g. WAL recovery) where
         # precise control of order counts between steps is required.
-        if args.orders_during > 0 and not scenario.extra_steps:
+        if orders_during > 0 and not scenario.extra_steps:
             log(
-                f"  Sending {args.orders_during * 1000} in-flight orders "
+                f"  Sending {orders_during * 1000} in-flight orders "
                 f"(will span Phase 4 kill) ..."
             )
-            for _ in range(args.orders_during):
+            for _ in range(orders_during):
                 f8proc.stdin.write(b"T\n")
             f8proc.stdin.flush()
         log("")
@@ -1519,10 +1717,25 @@ def run_scenario(scenario: Scenario, args) -> bool:
             for s in effective_steps
         )
         after_total  = args.orders_after * 1000
-        if me_restarted:
+
+        if scenario.me_ha:
+            # Recovery orders flow to the PROMOTED secondary ME.  Count live NOS
+            # accepts on its log from the current EOF: WAL reconciliation logs no
+            # accept line (it applies NOS to the book silently), so the count is
+            # exactly the recovery orders regardless of how far the secondary's
+            # order_id_counter_ was advanced during catch-up.
+            recovery_log = me_secondary_log
+            me_log_from  = file_end(me_secondary_log)
+            count_based  = True
+            after_target = after_total
+        elif me_restarted:
+            recovery_log = me_log
+            count_based  = False
             after_target = after_total
             me_log_from  = 0
-        elif args.orders_during > 0 or scenario.extra_steps:
+        elif orders_during > 0 or scenario.extra_steps:
+            recovery_log = me_log
+            count_based  = False
             # If all during-orders were discarded by the follower (correct HA
             # behaviour), find_last_me_ord returns 0.  Fall back to
             # running_me_total so the target stays ahead of running_me_pos.
@@ -1530,20 +1743,21 @@ def run_scenario(scenario: Scenario, args) -> bool:
             after_target   = current_me_ord + after_total
             me_log_from    = running_me_pos
         else:
+            recovery_log = me_log
+            count_based  = False
             after_target = running_me_total + after_total
             me_log_from  = running_me_pos
 
-        log(
-            f"=== Phase 5: {after_total} recovery orders "
-            f"(ME-ORD target: {after_target}) ==="
-        )
+        target_desc = (f"{after_total} accepted NOS on {recovery_log.name}"
+                       if count_based else f"ME-ORD target: {after_target}")
+        log(f"=== Phase 5: {after_total} recovery orders ({target_desc}) ===")
 
         # When ME was restarted while orders were in flight (scenario 10-style),
         # the old f8test session is blocked waiting for ERs from the orders the
         # sequencer dropped while ME was disconnected.  Those ERs will never
         # arrive, so Phase 5 T commands written to the old stdin would just queue
         # behind them.  Start a fresh FIX session to unblock.
-        if me_restarted and args.orders_during > 0 and not scenario.extra_steps:
+        if me_restarted and orders_during > 0 and not scenario.extra_steps:
             log("  Restarting FIX session (old session blocked on dropped in-flight orders) ...")
             stop_f8test(f8proc)
             f8proc = send_burst(0, gw_log)
@@ -1553,18 +1767,26 @@ def run_scenario(scenario: Scenario, args) -> bool:
             f8proc.stdin.write(b"T\n")
         f8proc.stdin.flush()
 
-        log(f"  Waiting for ME-ORD-{after_target} ...")
-        found, elapsed, _ = wait_for_me_ord(
-            me_log, after_target,
-            timeout=args.recovery_timeout,
-            from_byte=me_log_from,
-        )
+        if count_based:
+            log(f"  Waiting for {after_total} accepted NOS in {recovery_log.name} ...")
+            found, elapsed, _ = wait_for_accepted_count(
+                recovery_log, after_total,
+                timeout=args.recovery_timeout,
+                from_byte=me_log_from,
+            )
+        else:
+            log(f"  Waiting for ME-ORD-{after_target} ...")
+            found, elapsed, _ = wait_for_me_ord(
+                recovery_log, after_target,
+                timeout=args.recovery_timeout,
+                from_byte=me_log_from,
+            )
         if not found:
             die(
                 f"recovery orders did not appear within {args.recovery_timeout:.0f}s"
             )
         log(f"  {after_total} recovery orders confirmed ({elapsed:.1f}s)")
-        ok, violations = check_me_seq_monotonic(me_log)
+        ok, violations = check_me_seq_monotonic(recovery_log)
         if not ok:
             for idx, prev_seq, bad_seq in violations[:3]:
                 log(f"  seq non-monotonic at position {idx}: {prev_seq} -> {bad_seq}")
