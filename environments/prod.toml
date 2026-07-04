@@ -260,7 +260,9 @@ wal_subscriber_listen_port = 11031
 # db_url must reference the same host/port/name as the [db] section above.
 
 [admin_service]
-db_url                  = "jdbc:postgresql://db.exchange.internal:5432/pubsub"  # REPLACE
-auth_service_host       = "auth-primary.exchange.internal"  # REPLACE
-auth_service_admin_port = 11072
-server_port             = 8080
+db_url                            = "jdbc:postgresql://db.exchange.internal:5432/pubsub"  # REPLACE
+auth_service_host                 = "auth-primary.exchange.internal"  # REPLACE
+auth_service_admin_port           = 11072
+auth_service_secondary_host       = "auth-secondary.exchange.internal"  # REPLACE
+auth_service_secondary_admin_port = 11073
+server_port                       = 8080

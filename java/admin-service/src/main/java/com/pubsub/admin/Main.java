@@ -26,6 +26,8 @@ import org.slf4j.LoggerFactory;
 
 import javax.sql.DataSource;
 import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 public class Main {
@@ -39,9 +41,21 @@ public class Main {
         GatewayPermissionDao gatewayPermissionDao =
                 new GatewayPermissionDao(dataSource, config.tablePrefix());
 
-        AuthServiceClient authServiceClient = config.authServiceEnabled()
-                ? new AuthServiceClient(config.authServiceHost(), config.authServiceAdminPort())
-                : null;
+        AuthServiceClient authServiceClient = null;
+        if (config.authServiceEnabled()) {
+            // Fan credential updates out to both auth instances (active/active) so
+            // each keeps its in-memory credential cache current; the secondary is
+            // optional (omitted when its host is blank).
+            List<AuthServiceClient.Endpoint> authEndpoints = new ArrayList<>();
+            authEndpoints.add(new AuthServiceClient.Endpoint(
+                    config.authServiceHost(), config.authServiceAdminPort()));
+            if (config.authServiceSecondaryHost() != null
+                    && !config.authServiceSecondaryHost().isBlank()) {
+                authEndpoints.add(new AuthServiceClient.Endpoint(
+                        config.authServiceSecondaryHost(), config.authServiceSecondaryAdminPort()));
+            }
+            authServiceClient = new AuthServiceClient(authEndpoints);
+        }
 
         AdminUserStore adminUserStore = new AdminUserStore(Paths.get(config.adminUsersFile()));
 
