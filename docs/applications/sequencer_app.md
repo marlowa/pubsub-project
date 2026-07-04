@@ -74,7 +74,7 @@ follower is paired in by the arbiter.
 | 5 | `(SenderCompID, TargetCompID)` routing map stamped on every forwarded ER | Done |
 | 6 | Leader-follower state machine (`Role::unknown/leader/follower`, epoch, arbiter contact) | Done |
 | 7 | Network WAL replication; `pending_er_` buffer; WalAck-gated ER emission | Done |
-| 8 | Arbiter PSA+witness topology | Not yet implemented |
+| 8 | Arbiter PSA+witness topology | Done |
 
 ## Port Allocation
 

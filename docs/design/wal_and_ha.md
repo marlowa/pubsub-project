@@ -479,13 +479,13 @@ framework relies on it being present but does not implement PTP itself.
 | Multi-instrument scaling (sharded sequencer?) | Not in scope; deferred |
 | Sequencer-to-gateway connection direction (who initiates?) | Currently sequencer initiates; may need reversing for multi-gateway deployments |
 | Market data integration mechanism | Pending conversation with maintainer of the existing market data system |
-| Arbiter PSA+witness internal protocol detail | Designed in principle; not yet implemented; slice 8 |
+| Arbiter PSA+witness internal protocol detail | **Done** — implemented in `applications/arbiter/` and `applications/witness/` |
 
 ---
 
 ## Implementation Status
 
-The WAL and HA design is staged into vertical slices. Slices 1–6 are implemented:
+The WAL and HA design is staged into vertical slices. All slices are now implemented:
 
 | Slice | Description | Status |
 |-------|-------------|--------|
@@ -496,12 +496,14 @@ The WAL and HA design is staged into vertical slices. Slices 1–6 are implement
 | 5 | `cl_ord_id → SenderCompID` routing map in sequencer | Done |
 | 6 | Leader-follower HA state machine | Done |
 | 7 | WAL replication to follower + two-tier commit | Done |
-| 8 | Arbiter (PSA+witness) | Not yet implemented |
+| 8 | Arbiter PSA+witness topology | Done |
 
 ---
 
 ## See Also
 
 - [Architecture](../architecture.md) — component topology and order flow
+- [Arbiter](../applications/arbiter.md) — the arbiter application (PSA active/passive + replication)
+- [Witness](../applications/witness.md) — the witness application (tiebreaker)
 - [Reactor](reactor.md) — the event loop that drives the replication and heartbeat paths
 - [Sequencer](../applications/sequencer_app.md) — the sequencer application

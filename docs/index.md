@@ -23,6 +23,8 @@
 - [Order Gateway](applications/order_gateway.md)
 - [Matching Engine](applications/matching_engine.md)
 - [Sequencer Application](applications/sequencer_app.md)
+- [Arbiter](applications/arbiter.md)
+- [Witness](applications/witness.md)
 - [Admin Service](applications/admin_service.md)
 - [FIX Test Client](applications/fix_test_client.md)
 
