@@ -451,6 +451,7 @@ void MatchingEnginePublisherThread::send_peer_heartbeat() {
     pubsub_itc_fw_app::Heartbeat hb{};
     hb.instance_id = static_cast<int64_t>(config_.instance_id);
     hb.epoch = epoch_;
+    hb.group = pubsub_itc_fw_app::ComponentGroup::matching_engine_publisher;
     send_pdu(target, pdu_heartbeat, 0, hb);
 }
 
@@ -458,6 +459,7 @@ void MatchingEnginePublisherThread::send_arbiter_heartbeat() {
     pubsub_itc_fw_app::Heartbeat hb{};
     hb.instance_id = static_cast<int64_t>(config_.instance_id);
     hb.epoch = epoch_;
+    hb.group = pubsub_itc_fw_app::ComponentGroup::matching_engine_publisher;
     if (arbiter_primary_conn_id_.is_valid()) {
         send_pdu(arbiter_primary_conn_id_, pdu_heartbeat, 0, hb);
     }
@@ -472,6 +474,7 @@ void MatchingEnginePublisherThread::send_arbitration_report() {
     report.peer_instance_id = peer_instance_id_;
     report.epoch            = epoch_;
     report.proposed_role    = pubsub_itc_fw_app::Role::leader;
+    report.group            = pubsub_itc_fw_app::ComponentGroup::matching_engine_publisher;
     if (arbiter_primary_conn_id_.is_valid()) {
         send_pdu(arbiter_primary_conn_id_, pdu_arbitration_report, 0, report);
     }
@@ -571,7 +574,6 @@ void MatchingEnginePublisherThread::handle_peer_pdu(
 }
 
 void MatchingEnginePublisherThread::handle_arbitration_decision(const pubsub_itc_fw::EventMessage& message) {
-    cancel_timer("arbitration_timeout");
     auto& arena_buf = decode_arena_buffer();
     pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
     arena.reset();
@@ -584,6 +586,17 @@ void MatchingEnginePublisherThread::handle_arbitration_decision(const pubsub_itc
                        "MepThread: failed to decode ArbitrationDecision -- dropping");
         return;
     }
+
+    // Defence in depth: reject any decision not addressed to the
+    // matching_engine_publisher group before touching state or our timer.
+    if (decision.group != pubsub_itc_fw_app::ComponentGroup::matching_engine_publisher) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "MepThread: ArbitrationDecision addressed to group={} (not matching_engine_publisher) -- ignoring",
+                   pubsub_itc_fw_app::to_string(decision.group));
+        return;
+    }
+
+    cancel_timer("arbitration_timeout");
     epoch_ = decision.epoch;
     if (decision.leader_instance_id == static_cast<int64_t>(config_.instance_id)) {
         adopt_role(pubsub_itc_fw_app::Role::leader);

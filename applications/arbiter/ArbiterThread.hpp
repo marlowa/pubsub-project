@@ -70,24 +70,41 @@ class ArbiterThread : public pubsub_itc_fw::ApplicationThread {
     // Witness connection (outbound).
     pubsub_itc_fw::ConnectionID witness_conn_id_;
 
-    // Leadership-state map: component_instance_id -> leader_instance_id.
-    // Also tracks the epoch for each component pair's last decision.
+    // A component is identified by (group, instance_id). The arbiter pool is
+    // shared by several independent HA pairs (sequencer, matching_engine, ...),
+    // each numbering its members instance_id 1/2; the group disambiguates them so
+    // one pair's election cannot contaminate another's leadership state.
+    struct ComponentKey {
+        pubsub_itc_fw_app::ComponentGroup group{pubsub_itc_fw_app::ComponentGroup::unknown};
+        int64_t instance_id{0};
+        bool operator==(const ComponentKey& other) const {
+            return group == other.group && instance_id == other.instance_id;
+        }
+    };
+    struct ComponentKeyHash {
+        size_t operator()(const ComponentKey& key) const {
+            return (static_cast<size_t>(key.group) * 1099511628211ULL) ^ static_cast<size_t>(key.instance_id);
+        }
+    };
+
+    // Leadership-state map: (group, instance_id) -> assigned leader/follower/epoch.
+    // Tracks the epoch for each component pair's last decision.
     struct ComponentState {
         int64_t leader_instance_id{0};
         int64_t follower_instance_id{0};
         int32_t epoch{0};
     };
-    std::unordered_map<int64_t, ComponentState> leadership_state_;
+    std::unordered_map<ComponentKey, ComponentState, ComponentKeyHash> leadership_state_;
 
-    // Pending arbitration requests: component_instance_id -> conn_id of requestor.
+    // Pending arbitration requests: (group, instance_id) -> conn_id of requestor.
     // Held until we can send ArbitrationDecision.
-    std::unordered_map<int64_t, pubsub_itc_fw::ConnectionID> pending_requests_;
+    std::unordered_map<ComponentKey, pubsub_itc_fw::ConnectionID, ComponentKeyHash> pending_requests_;
 
-    // Track all connected component instances: instance_id -> ConnectionID.
-    std::unordered_map<int64_t, pubsub_itc_fw::ConnectionID> component_connections_;
+    // Track all connected component instances: (group, instance_id) -> ConnectionID.
+    std::unordered_map<ComponentKey, pubsub_itc_fw::ConnectionID, ComponentKeyHash> component_connections_;
 
-    // Reverse map: connection value -> component instance_id (populated on Heartbeat).
-    std::unordered_map<int32_t, int64_t> conn_to_component_instance_;
+    // Reverse map: connection value -> (group, instance_id) (populated on Heartbeat).
+    std::unordered_map<int32_t, ComponentKey> conn_to_component_instance_;
 
     // Arbiter peer helpers (mirror sequencer peer protocol).
     pubsub_itc_fw::ConnectionID peer_active_conn() const;
@@ -116,9 +133,11 @@ class ArbiterThread : public pubsub_itc_fw::ApplicationThread {
     void handle_arbitration_report(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
 
     // Decision helpers.
-    void decide_and_broadcast(int64_t self_instance_id, int64_t peer_instance_id, int32_t epoch, const pubsub_itc_fw::ConnectionID& requester_conn_id);
-    void send_arbitration_decision(const pubsub_itc_fw::ConnectionID& conn_id, int64_t leader_id, int64_t follower_id, int32_t epoch);
-    void replicate_state_to_peer(int64_t component_instance_id, int64_t leader_id, int32_t epoch);
+    void decide_and_broadcast(pubsub_itc_fw_app::ComponentGroup group, int64_t self_instance_id, int64_t peer_instance_id, int32_t epoch,
+                              const pubsub_itc_fw::ConnectionID& requester_conn_id);
+    void send_arbitration_decision(const pubsub_itc_fw::ConnectionID& conn_id, pubsub_itc_fw_app::ComponentGroup group, int64_t leader_id, int64_t follower_id,
+                                   int32_t epoch);
+    void replicate_state_to_peer(pubsub_itc_fw_app::ComponentGroup group, int64_t component_instance_id, int64_t leader_id, int32_t epoch);
 };
 
 } // namespaces

@@ -74,6 +74,26 @@ enum Role : i32 {
 }
 
 # ------------------------------------------------------------
+#  ComponentGroup
+#  Identifies which HA pair a component belongs to. The arbiter
+#  pool is shared by several independent HA pairs (the sequencer
+#  pair, the matching-engine pair, ...), each of which numbers its
+#  own members instance_id 1 (primary) and 2 (secondary). Without
+#  a group the two pairs alias onto the same {1,2} slots and one
+#  pair's election contaminates the other's leadership state. The
+#  arbiter keys its leadership-state and connection maps by
+#  (group, instance_id); components stamp every ArbitrationReport,
+#  ArbitrationDecision, Heartbeat and ArbiterStateRecord with their
+#  group and reject decisions addressed to a different group.
+# ------------------------------------------------------------
+enum ComponentGroup : i32 {
+    unknown                   = 0
+    sequencer                 = 1
+    matching_engine           = 2
+    matching_engine_publisher = 3
+}
+
+# ------------------------------------------------------------
 #  100 — StatusQuery
 #  Sent A ↔ B immediately after TCP connect.
 #  Purpose:
@@ -126,6 +146,7 @@ end
 message Heartbeat (id=102, version=1)
     i64 instance_id        # sender identity
     i32 epoch              # sender's current epoch
+    ComponentGroup group   # HA pair this sender belongs to (arbiter registration)
 end
 
 # ------------------------------------------------------------
@@ -239,6 +260,7 @@ message ArbitrationReport (id=200, version=1)
     i64 peer_instance_id   # identity of the other node
     i32 epoch              # sender's current epoch
     Role proposed_role     # leader or follower based on lowest-id rule
+    ComponentGroup group   # HA pair this report belongs to
 end
 
 # ------------------------------------------------------------
@@ -258,6 +280,7 @@ message ArbitrationDecision (id=201, version=1)
     i64 leader_instance_id     # node chosen as leader
     i64 follower_instance_id   # node chosen as follower
     i32 epoch                  # arbiter-assigned epoch for this generation
+    ComponentGroup group       # HA pair this decision is addressed to
 end
 
 # ------------------------------------------------------------
@@ -308,6 +331,7 @@ message ArbiterStateRecord (id=400, version=1)
     i64 component_instance_id    # which component's leader was assigned
     i64 leader_instance_id       # assigned leader for that component pair
     i32 epoch                    # leadership epoch for this component
+    ComponentGroup group         # HA pair this record belongs to
 end
 
 # ------------------------------------------------------------
@@ -318,4 +342,5 @@ end
 message ArbiterStateAck (id=401, version=1)
     i64 component_instance_id    # echoed from the record being acknowledged
     i32 epoch                    # echoed epoch
+    ComponentGroup group         # echoed HA pair
 end

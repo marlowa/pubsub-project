@@ -652,6 +652,7 @@ void MatchingEngineThread::send_arbitration_report() {
     report.peer_instance_id = primary_instance_id;
     report.epoch = epoch_;
     report.proposed_role = pubsub_itc_fw_app::Role::leader;
+    report.group = pubsub_itc_fw_app::ComponentGroup::matching_engine;
     if (arbiter_primary_conn_id_.is_valid()) {
         send_pdu(arbiter_primary_conn_id_, pdu_arbitration_report, 0, report);
     }
@@ -684,8 +685,16 @@ void MatchingEngineThread::handle_arbitration_decision(const pubsub_itc_fw::Even
         return;
     }
 
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: ArbitrationDecision received (leader={} follower={} epoch={})",
-               decision.leader_instance_id, decision.follower_instance_id, decision.epoch);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: ArbitrationDecision received (group={} leader={} follower={} epoch={})",
+               pubsub_itc_fw_app::to_string(decision.group), decision.leader_instance_id, decision.follower_instance_id, decision.epoch);
+
+    // Defence in depth: reject any decision not addressed to the matching_engine
+    // group so a routing mistake can never drive a spurious ME promotion.
+    if (decision.group != pubsub_itc_fw_app::ComponentGroup::matching_engine) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "MatchingEngineThread: ArbitrationDecision addressed to group={} (not matching_engine) -- ignoring", pubsub_itc_fw_app::to_string(decision.group));
+        return;
+    }
 
     // The ME sends ArbitrationReport to both arbiters, so both may reply. Ignore a
     // duplicate decision once we are already promoting (Reconciling) or promoted
@@ -722,6 +731,7 @@ void MatchingEngineThread::send_arbiter_heartbeat() {
     pubsub_itc_fw_app::Heartbeat hb{};
     hb.instance_id = static_cast<int64_t>(config_.instance_id);
     hb.epoch = epoch_;
+    hb.group = pubsub_itc_fw_app::ComponentGroup::matching_engine;
     if (arbiter_primary_conn_id_.is_valid()) {
         send_pdu(arbiter_primary_conn_id_, pdu_heartbeat, 0, hb);
     }

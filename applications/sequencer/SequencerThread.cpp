@@ -825,6 +825,7 @@ void SequencerThread::send_peer_heartbeat() {
     pubsub_itc_fw_app::Heartbeat hb{};
     hb.instance_id = static_cast<int64_t>(config_.instance_id);
     hb.epoch = epoch_;
+    hb.group = pubsub_itc_fw_app::ComponentGroup::sequencer;
     send_pdu(target, pdu_heartbeat, 0, hb);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: Heartbeat sent to peer (epoch={})", epoch_);
 }
@@ -833,6 +834,7 @@ void SequencerThread::send_arbiter_heartbeat() {
     pubsub_itc_fw_app::Heartbeat hb{};
     hb.instance_id = static_cast<int64_t>(config_.instance_id);
     hb.epoch = epoch_;
+    hb.group = pubsub_itc_fw_app::ComponentGroup::sequencer;
     if (arbiter_primary_conn_id_.is_valid()) {
         send_pdu(arbiter_primary_conn_id_, pdu_heartbeat, 0, hb);
     }
@@ -848,6 +850,7 @@ void SequencerThread::send_arbitration_report() {
     report.peer_instance_id = peer_instance_id_;
     report.epoch = epoch_;
     report.proposed_role = pubsub_itc_fw_app::Role::leader;
+    report.group = pubsub_itc_fw_app::ComponentGroup::sequencer;
     if (arbiter_primary_conn_id_.is_valid()) {
         send_pdu(arbiter_primary_conn_id_, pdu_arbitration_report, 0, report);
     }
@@ -860,8 +863,6 @@ void SequencerThread::send_arbitration_report() {
 }
 
 void SequencerThread::handle_arbitration_decision(const pubsub_itc_fw::EventMessage& message) {
-    cancel_timer("arbitration_timeout");
-
     auto& arena_buf = decode_arena_buffer();
     pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
     arena.reset();
@@ -874,8 +875,20 @@ void SequencerThread::handle_arbitration_decision(const pubsub_itc_fw::EventMess
         return;
     }
 
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: ArbitrationDecision received (leader={} follower={} epoch={})",
-               decision.leader_instance_id, decision.follower_instance_id, decision.epoch);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: ArbitrationDecision received (group={} leader={} follower={} epoch={})",
+               pubsub_itc_fw_app::to_string(decision.group), decision.leader_instance_id, decision.follower_instance_id, decision.epoch);
+
+    // Defence in depth: the arbiter keys decisions by (group, instance_id), but
+    // reject any decision not addressed to the sequencer group so a routing
+    // mistake can never drive a spurious sequencer promotion or cancel our own
+    // arbitration timeout. Validate before touching any state.
+    if (decision.group != pubsub_itc_fw_app::ComponentGroup::sequencer) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "SequencerThread: ArbitrationDecision addressed to group={} (not sequencer) -- ignoring", pubsub_itc_fw_app::to_string(decision.group));
+        return;
+    }
+
+    cancel_timer("arbitration_timeout");
 
     epoch_ = decision.epoch;
 

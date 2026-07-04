@@ -111,11 +111,12 @@ void ArbiterThread::on_connection_lost(const pubsub_itc_fw::ConnectionID &id, co
         // Component connection lost -- remove from tracking maps.
         const auto conn_it = conn_to_component_instance_.find(id.get_value());
         if (conn_it != conn_to_component_instance_.end()) {
-            const int64_t instance_id = conn_it->second;
-            component_connections_.erase(instance_id);
+            const ComponentKey key = conn_it->second;
+            component_connections_.erase(key);
             conn_to_component_instance_.erase(conn_it);
-            pending_requests_.erase(instance_id);
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: component instance_id={} disconnected", instance_id);
+            pending_requests_.erase(key);
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: component group={} instance_id={} disconnected",
+                       pubsub_itc_fw_app::to_string(key.group), key.instance_id);
         } else {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: inbound connection {} lost: {}", id.get_value(), reason);
         }
@@ -446,10 +447,11 @@ void ArbiterThread::handle_arbiter_state_record(const pubsub_itc_fw::EventMessag
         return;
     }
 
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: ArbiterStateRecord received (component={} leader={} epoch={})",
-               record.component_instance_id, record.leader_instance_id, record.epoch);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: ArbiterStateRecord received (group={} component={} leader={} epoch={})",
+               pubsub_itc_fw_app::to_string(record.group), record.component_instance_id, record.leader_instance_id, record.epoch);
 
-    leadership_state_[record.component_instance_id] = ComponentState{record.leader_instance_id, 0, record.epoch};
+    const ComponentKey key{record.group, record.component_instance_id};
+    leadership_state_[key] = ComponentState{record.leader_instance_id, 0, record.epoch};
 
     // Acknowledge the replication record.
     const pubsub_itc_fw::ConnectionID peer = peer_active_conn();
@@ -457,6 +459,7 @@ void ArbiterThread::handle_arbiter_state_record(const pubsub_itc_fw::EventMessag
         pubsub_itc_fw_app::ArbiterStateAck ack{};
         ack.component_instance_id = record.component_instance_id;
         ack.epoch = record.epoch;
+        ack.group = record.group;
         send_pdu(peer, pdu_arbiter_state_ack, 0, ack);
     }
 }
@@ -474,8 +477,8 @@ void ArbiterThread::handle_arbiter_state_ack(const pubsub_itc_fw::EventMessage& 
         return;
     }
 
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "ArbiterThread: ArbiterStateAck received (component={} epoch={})", ack.component_instance_id,
-               ack.epoch);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "ArbiterThread: ArbiterStateAck received (group={} component={} epoch={})",
+               pubsub_itc_fw_app::to_string(ack.group), ack.component_instance_id, ack.epoch);
 }
 
 // ---------------------------------------------------------------------------
@@ -526,24 +529,25 @@ void ArbiterThread::handle_component_heartbeat(const pubsub_itc_fw::ConnectionID
         return;
     }
 
+    const ComponentKey key{hb.group, hb.instance_id};
     const bool already_known = conn_to_component_instance_.count(conn_id.get_value()) > 0;
-    conn_to_component_instance_[conn_id.get_value()] = hb.instance_id;
-    component_connections_[hb.instance_id] = conn_id;
+    conn_to_component_instance_[conn_id.get_value()] = key;
+    component_connections_[key] = conn_id;
 
     if (!already_known) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: component instance_id={} registered on connection {} (epoch={})",
-                   hb.instance_id, conn_id.get_value(), hb.epoch);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: component group={} instance_id={} registered on connection {} (epoch={})",
+                   pubsub_itc_fw_app::to_string(hb.group), hb.instance_id, conn_id.get_value(), hb.epoch);
 
         // If we already have a decision for this component, send it now so it doesn't
         // have to wait for the peer to also connect before getting its role.
-        const auto it = leadership_state_.find(hb.instance_id);
+        const auto it = leadership_state_.find(key);
         if (it != leadership_state_.end() && role_ == pubsub_itc_fw_app::Role::leader) {
             const ComponentState& state = it->second;
-            send_arbitration_decision(conn_id, state.leader_instance_id, state.follower_instance_id, state.epoch);
+            send_arbitration_decision(conn_id, hb.group, state.leader_instance_id, state.follower_instance_id, state.epoch);
         }
     } else {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "ArbiterThread: component Heartbeat from instance_id={} (epoch={})", hb.instance_id,
-                   hb.epoch);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "ArbiterThread: component Heartbeat from group={} instance_id={} (epoch={})",
+                   pubsub_itc_fw_app::to_string(hb.group), hb.instance_id, hb.epoch);
     }
 }
 
@@ -561,8 +565,8 @@ void ArbiterThread::handle_arbitration_report(const pubsub_itc_fw::ConnectionID&
     }
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "ArbiterThread: ArbitrationReport from component instance_id={} (peer={} epoch={} proposed_role={})", report.self_instance_id,
-               report.peer_instance_id, report.epoch, pubsub_itc_fw_app::to_string(report.proposed_role));
+               "ArbiterThread: ArbitrationReport from group={} instance_id={} (peer={} epoch={} proposed_role={})", pubsub_itc_fw_app::to_string(report.group),
+               report.self_instance_id, report.peer_instance_id, report.epoch, pubsub_itc_fw_app::to_string(report.proposed_role));
 
     if (role_ != pubsub_itc_fw_app::Role::leader) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
@@ -571,50 +575,54 @@ void ArbiterThread::handle_arbitration_report(const pubsub_itc_fw::ConnectionID&
         return;
     }
 
-    decide_and_broadcast(report.self_instance_id, report.peer_instance_id, report.epoch, conn_id);
+    decide_and_broadcast(report.group, report.self_instance_id, report.peer_instance_id, report.epoch, conn_id);
 }
 
 // ---------------------------------------------------------------------------
 // Decision helpers
 // ---------------------------------------------------------------------------
 
-void ArbiterThread::decide_and_broadcast(int64_t self_instance_id, int64_t peer_instance_id, int32_t epoch,
+void ArbiterThread::decide_and_broadcast(pubsub_itc_fw_app::ComponentGroup group, int64_t self_instance_id, int64_t peer_instance_id, int32_t epoch,
                                          const pubsub_itc_fw::ConnectionID& requester_conn_id) {
-    const bool peer_connected = component_connections_.count(peer_instance_id) > 0;
+    const ComponentKey self_key{group, self_instance_id};
+    const ComponentKey peer_key{group, peer_instance_id};
+    const bool peer_connected = component_connections_.count(peer_key) > 0;
     const int64_t leader_id = peer_connected ? std::min(self_instance_id, peer_instance_id) : self_instance_id;
     const int64_t follower_id = (leader_id == self_instance_id) ? peer_instance_id : self_instance_id;
     const int32_t new_epoch = epoch + 1;
 
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: decision: leader={} follower={} epoch={} (peer_connected={})", leader_id,
-               follower_id, new_epoch, peer_connected);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: decision: group={} leader={} follower={} epoch={} (peer_connected={})",
+               pubsub_itc_fw_app::to_string(group), leader_id, follower_id, new_epoch, peer_connected);
 
     // Store in leadership-state map.
-    leadership_state_[self_instance_id] = ComponentState{leader_id, follower_id, new_epoch};
+    leadership_state_[self_key] = ComponentState{leader_id, follower_id, new_epoch};
 
     // Send to the requesting component.
-    send_arbitration_decision(requester_conn_id, leader_id, follower_id, new_epoch);
+    send_arbitration_decision(requester_conn_id, group, leader_id, follower_id, new_epoch);
 
     // Send to the peer if it is connected.
-    const auto peer_it = component_connections_.find(peer_instance_id);
+    const auto peer_it = component_connections_.find(peer_key);
     if (peer_it != component_connections_.end()) {
-        send_arbitration_decision(peer_it->second, leader_id, follower_id, new_epoch);
+        send_arbitration_decision(peer_it->second, group, leader_id, follower_id, new_epoch);
     }
 
     // Replicate to passive arbiter.
-    replicate_state_to_peer(self_instance_id, leader_id, new_epoch);
+    replicate_state_to_peer(group, self_instance_id, leader_id, new_epoch);
 }
 
-void ArbiterThread::send_arbitration_decision(const pubsub_itc_fw::ConnectionID& conn_id, int64_t leader_id, int64_t follower_id, int32_t epoch) {
+void ArbiterThread::send_arbitration_decision(const pubsub_itc_fw::ConnectionID& conn_id, pubsub_itc_fw_app::ComponentGroup group, int64_t leader_id,
+                                              int64_t follower_id, int32_t epoch) {
     pubsub_itc_fw_app::ArbitrationDecision decision{};
     decision.leader_instance_id = leader_id;
     decision.follower_instance_id = follower_id;
     decision.epoch = epoch;
+    decision.group = group;
     send_pdu(conn_id, pdu_arbitration_decision, 0, decision);
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: ArbitrationDecision sent to connection {} (leader={} follower={} epoch={})",
-               conn_id.get_value(), leader_id, follower_id, epoch);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: ArbitrationDecision sent to connection {} (group={} leader={} follower={} epoch={})",
+               conn_id.get_value(), pubsub_itc_fw_app::to_string(group), leader_id, follower_id, epoch);
 }
 
-void ArbiterThread::replicate_state_to_peer(int64_t component_instance_id, int64_t leader_id, int32_t epoch) {
+void ArbiterThread::replicate_state_to_peer(pubsub_itc_fw_app::ComponentGroup group, int64_t component_instance_id, int64_t leader_id, int32_t epoch) {
     const pubsub_itc_fw::ConnectionID peer = peer_active_conn();
     if (!peer.is_valid()) {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "ArbiterThread: no peer connection -- skipping state replication");
@@ -624,9 +632,10 @@ void ArbiterThread::replicate_state_to_peer(int64_t component_instance_id, int64
     record.component_instance_id = component_instance_id;
     record.leader_instance_id = leader_id;
     record.epoch = epoch;
+    record.group = group;
     send_pdu(peer, pdu_arbiter_state_record, 0, record);
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "ArbiterThread: ArbiterStateRecord replicated to peer (component={} leader={} epoch={})",
-               component_instance_id, leader_id, epoch);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "ArbiterThread: ArbiterStateRecord replicated to peer (group={} component={} leader={} epoch={})",
+               pubsub_itc_fw_app::to_string(group), component_instance_id, leader_id, epoch);
 }
 
 } // namespaces
