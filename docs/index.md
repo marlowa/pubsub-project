@@ -25,6 +25,7 @@
 - [Sequencer Application](applications/sequencer_app.md)
 - [Arbiter](applications/arbiter.md)
 - [Witness](applications/witness.md)
+- [Authentication Service](applications/authentication_service.md)
 - [Admin Service](applications/admin_service.md)
 - [FIX Test Client](applications/fix_test_client.md)
 
