@@ -197,7 +197,7 @@ def main() -> None:
     # Tuple: (name, bin_name, log_name, config_path, workdir)
     # workdir=None means use log_dir (default for C++ apps that write their own logs).
     cpp_steps = [
-        ("auth_service_primary",  "authentication_service", "auth_service_primary.log",
+        ("auth_service_a",  "authentication_service", "auth_service_a.log",
          etc_dir / "authentication_service" / "authentication_service.toml",
          etc_dir / "authentication_service"),
         ("witness",               "witness",                "witness.log",

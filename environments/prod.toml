@@ -49,12 +49,12 @@ enabled = true
 # Set ca to the path of your CA certificate to enable client certificate
 # verification on the admin channel.
 
-[tls.auth_service_primary]
+[tls.auth_service_a]
 cert = "admin.crt"  # REPLACE with CA-signed cert
 key  = "admin.key"  # REPLACE with private key
 ca   = "ca.crt"     # REPLACE with CA cert, or "" to skip client cert verification
 
-[tls.auth_service_secondary]
+[tls.auth_service_b]
 cert = "admin.crt"
 key  = "admin.key"
 ca   = "ca.crt"
@@ -64,8 +64,8 @@ ca   = "ca.crt"
 
 [startup_order]
 components = [
-    "auth_service_primary",
-    "auth_service_secondary",
+    "auth_service_a",
+    "auth_service_b",
     "witness",
     "arbiter_primary",
     "arbiter_secondary",
@@ -76,15 +76,15 @@ components = [
     "admin_service",
 ]
 
-[components.auth_service_primary]
+[components.auth_service_a]
 binary  = "bin/authentication_service"
-config  = "etc/authentication_service/authentication_service.toml"
+config  = "etc/authentication_service/authentication_service_a.toml"
 workdir = "etc/authentication_service"
 ha_only = false
 
-[components.auth_service_secondary]
+[components.auth_service_b]
 binary  = "bin/authentication_service"
-config  = "etc/authentication_service/authentication_service_secondary.toml"
+config  = "etc/authentication_service/authentication_service_b.toml"
 workdir = "etc/authentication_service"
 ha_only = true
 
@@ -179,12 +179,12 @@ peer_fence_file_path = "/dev/shm/arbiter_secondary_fence"
 witness_host         = "witness.exchange.internal"            # REPLACE
 witness_port         = 11100
 
-[auth_service_primary]
+[auth_service_a]
 network_listen_host  = "0.0.0.0"
 network_listen_port  = 11070
 admin_listen_port    = 11072
 
-[auth_service_secondary]
+[auth_service_b]
 network_listen_host  = "0.0.0.0"
 network_listen_port  = 11071
 admin_listen_port    = 11073
@@ -256,7 +256,7 @@ wal_subscriber_listen_host = "0.0.0.0"
 wal_subscriber_listen_port = 11031
 
 # ── Admin service ──────────────────────────────────────────────────────────────
-# auth_service_admin_port must match auth_service_primary.admin_listen_port above.
+# auth_service_admin_port must match auth_service_a.admin_listen_port above.
 # db_url must reference the same host/port/name as the [db] section above.
 
 [admin_service]

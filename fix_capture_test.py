@@ -2,7 +2,7 @@
 """
 fix_capture_test.py — Integration test for FIX message capture.
 
-Starts auth_service_primary and order_gateway with fix_capture.enabled=true,
+Starts auth_service_a and order_gateway with fix_capture.enabled=true,
 sends a small FIX session (Logon, 3 x NewOrderSingle, Logout) using a minimal
 built-in FIX client, shuts down, then reads and validates the capture file.
 

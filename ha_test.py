@@ -148,8 +148,8 @@ Startup order (mirrors start_fix_seq_system.py):
   1. witness                          -- arbiters connect outbound to it (port 7100)
   2. arbiter_primary                  -- component listener 7200, peer listener 7203
   3. arbiter_secondary                -- component listener 7201, peer listener 7204
-  4. authentication_service_primary   -- listens on port 7070
-  5. authentication_service_secondary -- listens on port 7071
+  4. authentication_service_a   -- listens on port 7070
+  5. authentication_service_b -- listens on port 7071
   6. order_gateway           -- FIX client port 9879, ER inbound port 7010
   7. sequencer_primary                -- listens on port 7001
   8. sequencer_secondary              -- listens on port 7002
@@ -1386,8 +1386,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
     seq_secondary_log          = log_dir / "sequencer_secondary.log"
     arb_primary_log            = log_dir / "arbiter_primary.log"
     arb_secondary_log          = log_dir / "arbiter_secondary.log"
-    auth_primary_log           = log_dir / "authentication_service_primary.log"
-    auth_secondary_log         = log_dir / "authentication_service_secondary.log"
+    auth_primary_log           = log_dir / "authentication_service_a.log"
+    auth_secondary_log         = log_dir / "authentication_service_b.log"
 
     log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1449,10 +1449,10 @@ def run_scenario(scenario: Scenario, args) -> bool:
              etc_dir / "arbiter"                / "arbiter_primary.toml"),
             ("arbiter_secondary",                "arbiter",
              etc_dir / "arbiter"                / "arbiter_secondary.toml"),
-            ("authentication_service_primary",   "authentication_service",
-             etc_dir / "authentication_service" / "authentication_service_primary.toml"),
-            ("authentication_service_secondary", "authentication_service",
-             etc_dir / "authentication_service" / "authentication_service_secondary.toml"),
+            ("authentication_service_a",   "authentication_service",
+             etc_dir / "authentication_service" / "authentication_service_a.toml"),
+            ("authentication_service_b", "authentication_service",
+             etc_dir / "authentication_service" / "authentication_service_b.toml"),
             ("order_gateway",                    "order_gateway",
              etc_dir / "order_gateway"          / "order_gateway.toml"),
             ("sequencer_primary",                "sequencer",
@@ -1479,10 +1479,10 @@ def run_scenario(scenario: Scenario, args) -> bool:
              etc_dir / "arbiter"                / "arbiter_primary.toml"),
             ("arbiter_secondary",                "arbiter",
              etc_dir / "arbiter"                / "arbiter_secondary.toml"),
-            ("authentication_service_primary",   "authentication_service",
-             etc_dir / "authentication_service" / "authentication_service_primary.toml"),
-            ("authentication_service_secondary", "authentication_service",
-             etc_dir / "authentication_service" / "authentication_service_secondary.toml"),
+            ("authentication_service_a",   "authentication_service",
+             etc_dir / "authentication_service" / "authentication_service_a.toml"),
+            ("authentication_service_b", "authentication_service",
+             etc_dir / "authentication_service" / "authentication_service_b.toml"),
             ("order_gateway",           "order_gateway",
              etc_dir / "order_gateway" / "order_gateway.toml"),
             ("sequencer_primary",                "sequencer",

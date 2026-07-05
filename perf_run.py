@@ -580,8 +580,8 @@ def main() -> None:
     # Each tuple: (name, binary, config, optional_workdir).
     # auth services must start first; gateway connects to them on startup.
     steps = [
-        ("auth_service_primary",   "authentication_service", etc_dir / "authentication_service" / "authentication_service_primary.toml",  etc_dir / "authentication_service"),
-        ("auth_service_secondary", "authentication_service", etc_dir / "authentication_service" / "authentication_service_secondary.toml", etc_dir / "authentication_service"),
+        ("auth_service_a",   "authentication_service", etc_dir / "authentication_service" / "authentication_service_a.toml",  etc_dir / "authentication_service"),
+        ("auth_service_b", "authentication_service", etc_dir / "authentication_service" / "authentication_service_b.toml", etc_dir / "authentication_service"),
         ("witness",                "witness",                etc_dir / "witness"               / "witness.toml",                  None),
         ("arbiter_primary",        "arbiter",                etc_dir / "arbiter"               / "arbiter_primary.toml",                  None),
         ("arbiter_secondary",      "arbiter",                etc_dir / "arbiter"               / "arbiter_secondary.toml",        None),

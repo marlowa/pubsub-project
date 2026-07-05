@@ -107,8 +107,8 @@ Key `order_gateway.toml` sections:
 | `[network] sequencer_primary_*` | Host/port for sequencer primary order channel (port 7001) |
 | `[network] sequencer_secondary_*` | Host/port for sequencer secondary (port 7002; used when `ha_enabled=true`) |
 | `[network] er_listener_port` | Inbound ER port from sequencer (default 7010) |
-| `[network] auth_service_primary_*` | Authentication service primary endpoint (port 7070) |
-| `[network] auth_service_secondary_*` | Authentication service secondary endpoint (port 7071) |
+| `[network] auth_service_a_*` | Authentication service endpoint A (port 7070) |
+| `[network] auth_service_b_*` | Authentication service endpoint B (port 7071) |
 | `[fix_capture] enabled / file` | FIX capture on/off and output file path |
 | `[fix_capture] ring_bytes` | Ring buffer capacity in bytes (default 64 MB); increase if the writer thread falls behind under heavy load |
 | `ha_enabled` | When false, secondary sequencer connect is skipped |
