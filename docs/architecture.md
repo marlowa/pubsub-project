@@ -12,7 +12,9 @@ that the framework's latency and correctness properties hold under load.
 - Inter-process communication (IPC) via unicast TCP with zero-copy PDU paths
 - Lock-free pool, bump, and slab allocators — no heap allocation on any hot path
 - Timers via `timerfd` and `epoll`
-- High availability via primary/secondary instance pairs with external arbiter pool
+- High availability, composed per component (no single generic mechanism): arbiter-elected
+  leader/follower + WAL for the sequencer and matching engine; active/active for auth; pooled
+  redundancy for the gateway (see [WAL and HA](design/wal_and_ha.md#ha-is-component-specific))
 - Binary serialisation DSL (Python code generator → C++17 headers; sub-100ns encode/decode)
 
 **Sample applications** (framework validation, not production code):

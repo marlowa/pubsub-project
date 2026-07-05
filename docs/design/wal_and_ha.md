@@ -11,6 +11,46 @@ must never leak into each other.
 
 ---
 
+## HA Is Component-Specific
+
+There is **no single, generic HA mechanism** in this framework. Each component has a
+different failure model, so each composes HA differently. The framework provides
+reusable *primitives* — the WAL data structure, the point-to-point replication
+channel, the arbiter-client protocol, and epoch/fencing discipline — but a component
+uses only the primitives its failure model needs. In particular, **the WAL is
+central to the sequencer and matching engine but is not used by the gateway or the
+authentication service at all.**
+
+| Component | HA model | Elected leader? | Uses the WAL? | Failover trigger | Client-visible impact |
+|-----------|----------|:---------------:|:-------------:|------------------|----------------------|
+| **Sequencer** | Arbiter-elected leader/follower | Yes (arbiter grant) | Yes — owns the authoritative WAL | Peer-heartbeat loss → arbiter grant | Brief cutover; gateway buffers orders across it |
+| **Matching engine** | Arbiter-elected leader/follower | Yes (arbiter grant) | No WAL of its own; **reconciles from the sequencer's WAL** on promotion | Replication-channel TCP EOF → promotion timer → arbiter grant | Cancel-on-failover: outstanding orders cancelled; client resubmits |
+| **Arbiter** | Primary/secondary + witness (PSA quorum) | Yes (witness vote) | No (small replicated leadership cell) | Active-arbiter heartbeat loss + witness confirm | None — off the data path |
+| **Order gateway** | N-way pooled redundancy | No | No | FIX client reconnects to another pool member | FIX reconnect (seconds); FIX resend covers the gap |
+| **Authentication service** | Active/active, caller-selected | No | No — the database is the source of truth | Caller (gateway) falls to the other endpoint | None — the surviving instance is already current |
+
+Reading the table by column makes the point precise:
+
+- **Only three components elect a leader** (sequencer, ME, arbiter). They are the
+  ones with single-writer state whose hand-off must be atomic, so they connect to
+  the arbiter pool. The gateway and auth service elect nothing.
+- **Only the sequencer and ME are on the WAL path.** The sequencer owns it; the ME
+  has no WAL and reconciles from the sequencer's. The gateway is near-stateless (its
+  routing state lives in the sequencer's WAL); the auth service's state lives in the
+  database, synced by the admin service, not by a WAL.
+- **The failover *trigger* and the *client impact* both differ per component.** A
+  sequencer failover is a brief invisible cutover; an ME failover cancels outstanding
+  orders; a gateway failover is a client-driven FIX reconnect; an auth failover is
+  invisible.
+
+The rest of this document covers each component's model in turn. The
+`primary`/`secondary` and `leader`/`follower` glossary below applies **only** to the
+arbiter-elected components. The gateway (a singleton per FIX endpoint, named
+`order_gateway` with no suffix) and the auth service (active/active instances named
+`a`/`b`) deliberately do not use those terms — see their sections.
+
+---
+
 ## Glossary
 
 Two pairs of terms with strict, non-overlapping meanings. Confusing them is a recognised
@@ -320,6 +360,36 @@ If the failure event takes out both ME-primary and a sequencer simultaneously, M
 waits for sequencer failover to complete first. The cancel-on-failover latency is bounded
 by the sum of both failover times.
 
+### Orders In Flight During ME Failover
+
+A `kill -9` of the leader ME gives no clean shutdown; the only signal is the replication TCP
+connection dropping. Between that moment and the promoted ME going live there is a
+**promotion-timeout window** (`heartbeat_timeout_seconds`, ~15 s by default) during which no
+ME is processing orders. What happens to orders the gateway is still sending during that
+window is a common question, and the answer is that **none are lost**:
+
+1. The leader sequencer **WAL-commits every order before it checks the ME connection.**
+   Committing is unconditional for the leader; forwarding is what depends on a live ME.
+2. With no ME connected, the sequencer logs *"no matching engine connected — order seq=N
+   WAL-committed, forward deferred …"* and skips the forward. This is a **deferred forward,
+   not a dropped order** — the record is already durable in the WAL. (The message was
+   historically worded "dropping order PDU", which wrongly read as data loss; it was
+   reworded for exactly this reason.)
+3. On promotion, the ME's WAL reconciliation replays the whole gap — from the ME's
+   last-applied seqNo to the current WAL head — so every order sequenced during the window is
+   applied to the promoted book.
+4. Cancel-on-failover then cancels whatever is genuinely outstanding on the reconciled book,
+   the gap orders included.
+
+**Client experience.** For an order sent during the gap the client gets **no immediate ER**
+(no live ME), then — after promotion and reconciliation — a **Cancel ER with no preceding New
+ER**, and resubmits. This is the cancel-on-failover contract: a FIX client must tolerate a
+cancel for an order it never saw acknowledged. Nothing is silently lost; the cost is the
+~15 s window of order-processing unavailability plus the cancel-and-resubmit.
+
+*Verified directly:* a failover under a continuous ~1000 orders/sec stream WAL-committed
+15,000 orders during the 15 s gap and replayed all 15,000 to the promoted ME — none dropped.
+
 ---
 
 ## Gateway Pool
@@ -337,6 +407,51 @@ The gateway pool is **N-way pooled redundancy**, not primary/secondary HA. Failu
 
 The user-visible interruption is the FIX reconnect latency — typically seconds, not
 transparent.
+
+---
+
+## Authentication Service HA
+
+The authentication service is **active/active, caller-selected** — not an arbiter-elected
+pair. Two instances, named `a` and `b`, both run and both serve the gateway; neither is a
+leader and neither is promoted. This is the correct model because the auth instances are
+*not* the writer of the state they hold — they are reflectors of an upstream single writer.
+
+### What state auth holds, and who writes it
+
+Auth validates FIX logons against a compID credential set using SCRAM. That set is mutable at
+runtime (compIDs are added and removed), so it **is** shared state — but the **admin service
+is its single writer.** The admin service writes the database (the durable source of truth)
+and then fans the credential change out to **both** auth instances
+(`SetCredential`/`RemoveCredential` PDUs) so each keeps its in-memory copy current. Two
+reflectors fed the same changes never diverge, so there is no write-contention to arbitrate
+and therefore no election.
+
+Consequently auth uses **none** of the leader-follower machinery: no arbiter, no WAL, no
+epoch/fencing, no promotion. It also has no failover *window* — because both instances are
+always live and current, there is no leader to lose.
+
+### Failover
+
+Failover is **caller-driven.** The gateway holds a connection to both auth instances and has
+a try-first/backup preference. That preference is a *caller* concept — like a DNS
+primary/secondary resolver — and does **not** imply an election among the auth instances.
+When the preferred instance dies, the gateway detects the dropped connection and
+authenticates the next logon against the surviving instance. An already-established FIX
+session is unaffected (it does not re-authenticate); only new logons exercise the failover.
+
+### Invariants the model depends on
+
+1. **The admin fan-out reaches both instances** on every credential change, so a later
+   failover target is current. Implemented in the admin service's `AuthServiceClient`,
+   best-effort: the operation succeeds if at least one endpoint applies it, and an endpoint
+   that missed a change reconciles from the database on its next start.
+2. **Each instance loads the credential set from the database export on startup**, so a
+   restarted instance is current as of that export.
+
+*Verified:* a live compID create and delete each reach both instances (both log
+`SetCredential`/`RemoveCredential … Success`), and killing instance `a` leaves a fresh FIX
+logon authenticated by instance `b` (`ha_test.py` scenario 17).
 
 ---
 
@@ -417,6 +532,7 @@ specific use case, and correctness is verifiable from first principles.
 | Sequencer leader → follower | Sub-second; tens of milliseconds aspirational | Drives lease length (~200–500 ms) and heartbeat interval (~50–100 ms) |
 | ME crash | Cancel-on-failover; latency = sequencer failover + book reconciliation | Seamless (lockstep) failover is a future aspiration |
 | Gateway machine failure | Seconds (FIX reconnect to another pool member) | Inherent to gateway-pool design; FIX resend covers the gap |
+| Auth instance failure | Transparent for established sessions; next logon uses the surviving instance | Active/active; caller-selected; no promotion |
 | Arbiter primary failure | Tolerated for the lease window | Secondary takes over via internal arbiter HA if witness is reachable |
 | WAL disk full | Immediate halt | No "best effort" continuation |
 
@@ -485,7 +601,9 @@ framework relies on it being present but does not implement PTP itself.
 
 ## Implementation Status
 
-The WAL and HA design is staged into vertical slices. All slices are now implemented:
+The WAL and HA design is staged into vertical slices.
+
+**Sequencer / arbiter WAL+HA:**
 
 | Slice | Description | Status |
 |-------|-------------|--------|
@@ -498,6 +616,22 @@ The WAL and HA design is staged into vertical slices. All slices are now impleme
 | 7 | WAL replication to follower + two-tier commit | Done |
 | 8 | Arbiter PSA+witness topology | Done |
 
+**Matching-engine HA (slices A–D):**
+
+| Slice | Description | Status |
+|-------|-------------|--------|
+| A | Role config + second ME instance | Done |
+| B | Book-replication channel (ME-leader → ME-follower) | Done |
+| C | Arbiter-mediated promotion | Done |
+| D | WAL reconciliation + cancel-on-failover; sequencer re-routes to the promoted ME | Done |
+
+**Cross-cutting HA fixes:**
+
+| Item | Description | Status |
+|------|-------------|--------|
+| Arbiter component-group keying | Arbiter keys leadership state by `(component-group, instance_id)` so the sequencer/ME/MEP pairs don't alias onto shared `{1,2}` slots | Done |
+| Auth active/active fan-out | Admin service fans credential updates to **both** auth instances so a failover target is current | Done |
+
 ---
 
 ## See Also
@@ -507,3 +641,4 @@ The WAL and HA design is staged into vertical slices. All slices are now impleme
 - [Witness](../applications/witness.md) — the witness application (tiebreaker)
 - [Reactor](reactor.md) — the event loop that drives the replication and heartbeat paths
 - [Sequencer](../applications/sequencer_app.md) — the sequencer application
+- [Secure Comms](secure_comms.md) — the authentication service (active/active) and TLS

@@ -176,9 +176,16 @@ service is genuine.
 ### Architecture
 
 A standalone application (`applications/authentication_service/`) handles all
-authentication. Two instances run for HA (primary port 7070, secondary port 7071). They
-share no state and require no synchronisation — each SCRAM exchange is stateless and
-self-contained within four PDU messages.
+authentication. Two instances run **active/active** for HA — `a` (port 7070) and `b`
+(port 7071); both serve the gateway, and the gateway falls over to the other instance if one
+dies. Each SCRAM *exchange* is stateless and self-contained within four PDU messages — but
+the credential set the instances validate against **is** mutable shared state. The admin
+service is its single writer: it updates the database and fans every credential change out to
+both instances (`SetCredential`/`RemoveCredential` PDUs) so their in-memory copies stay in
+sync. So the instances *do* require synchronisation — via the admin fan-out — even though no
+individual auth exchange carries state. See
+[WAL and High Availability → Authentication Service HA](wal_and_ha.md#authentication-service-ha)
+for the full model.
 
 ### PDU Protocol
 
