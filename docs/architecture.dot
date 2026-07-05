@@ -1,0 +1,64 @@
+digraph architecture {
+    // pubsub_itc_fw component topology -- a clickable navigation map.
+    //
+    // Each box links to that component's documentation via URL="\ref <page-label>".
+    // Doxygen resolves the \ref when this file is embedded with \dotfile, turning the
+    // rendered PNG into a client-side image map.
+    //
+    // Edge conventions:
+    //   solid  = order / execution-report data path
+    //   dashed = control plane (HA election, credential CRUD, WAL fanout) -- never on
+    //            the latency-critical order/ER path.
+
+    rankdir = TB;
+    bgcolor = "transparent";
+    node [shape=box, style="rounded,filled", fillcolor="#eef4fb", color="#3b6ea5",
+          fontname="Helvetica", fontsize=11, margin="0.18,0.10"];
+    edge [fontname="Helvetica", fontsize=9, color="#555555"];
+
+    // --- components (each links to its documentation page) ---
+    fix_test_client [label="FIX Test Client\n(Java harness, Groovy scripting)",
+                     URL="\ref md_docs_2applications_2fix__test__client"];
+    order_gateway   [label="Order Gateway\n(FIX 5.0 SP2, SCRAM; client pool)",
+                     URL="\ref md_docs_2applications_2order__gateway"];
+    sequencer       [label="Sequencer\n(total order + WAL; leader / follower)",
+                     URL="\ref md_docs_2applications_2sequencer__app"];
+    matching_engine [label="Matching Engine\n(order book; leader / follower)",
+                     URL="\ref md_docs_2applications_2matching__engine"];
+    mep             [label="Matching Engine Publisher\n(WAL follower, topic fanout -- planned)",
+                     style="rounded,filled,dashed", fillcolor="#f4f0e6",
+                     URL="\ref md_docs_2design_2mep__tap"];
+    authentication  [label="Authentication Service\n(SCRAM store; active/active a + b)",
+                     fillcolor="#eaf5ea",
+                     URL="\ref md_docs_2applications_2authentication__service"];
+    admin_service   [label="Admin Service\n(Java web UI; credential CRUD)",
+                     fillcolor="#eaf5ea",
+                     URL="\ref md_docs_2applications_2admin__service"];
+    arbiter         [label="Arbiter Pool\n(leader election; lease + epoch)",
+                     fillcolor="#fbeeee",
+                     URL="\ref md_docs_2applications_2arbiter"];
+    witness         [label="Witness\n(quorum tie-break vote)",
+                     fillcolor="#fbeeee",
+                     URL="\ref md_docs_2applications_2witness"];
+
+    // --- order / ER data path (solid) ---
+    fix_test_client -> order_gateway   [label="FIX wire", dir=both];
+    order_gateway   -> sequencer       [label="orders -> leader"];
+    sequencer       -> order_gateway   [label="ERs <- leader"];
+    sequencer       -> matching_engine [label="sequenced orders"];
+    matching_engine -> sequencer       [label="ERs"];
+
+    // --- credential / auth control plane (dashed) ---
+    order_gateway -> authentication [label="SCRAM auth", style=dashed];
+    admin_service -> authentication [label="credential CRUD (fan-out a + b)", style=dashed];
+
+    // --- WAL fanout (dashed, planned) ---
+    sequencer -> mep [label="WAL follower", style=dashed];
+
+    // --- HA election control plane (dashed, never on the data path) ---
+    sequencer       -> arbiter [label="election control", style=dashed];
+    matching_engine -> arbiter [label="election control", style=dashed];
+    arbiter         -> witness [label="quorum vote", style=dashed];
+
+    { rank=same; arbiter; witness; }
+}

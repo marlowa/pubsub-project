@@ -1,0 +1,17 @@
+/*! \page architecture_map System Architecture Map
+
+\brief A clickable map of the deployable components and how they connect.
+
+The diagram below is a navigation aid: **click any box to open that component's
+documentation**. Solid edges are the order / execution-report data path; dashed edges are
+the control plane (HA election, credential management, WAL fanout) and never sit on the
+latency-critical path.
+
+\dotfile architecture.dot "pubsub_itc_fw component topology (click a box to open its docs)"
+
+For the narrative version of this topology -- the port allocation, the happy-path order
+flow, and the channel summary -- see the \ref md_docs_2architecture "Architecture" page. For
+the high-availability model that the dashed control-plane edges implement, see
+\ref md_docs_2design_2wal__and__ha "WAL and High Availability".
+
+*/

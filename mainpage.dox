@@ -12,6 +12,20 @@ The framework's architecture centres on a single-threaded, non-blocking event lo
 exclusively by the Reactor thread. Application logic runs in ApplicationThread subclasses,
 which receive events via a high-performance Dmitry Vyukov MPSC lock-free queue.
 
+@section architecture_sec System Architecture
+
+The framework (@c libraries/pubsub_itc_fw/) provides the infrastructure -- the Reactor,
+the allocators, the ITC queues, and the serialisation DSL -- while the deployable
+components under @c applications/ use it to form an order-processing pipeline: FIX clients
+connect to the order gateway, which feeds the sequencer (the sole writer and WAL owner),
+which drives the matching engine, with an arbiter pool and witness providing leader
+election off the data path.
+
+- \subpage architecture_map -- a clickable, top-down map of those components. Click any box
+  to jump straight to that component's documentation.
+- \subpage architecture_map_howto -- how that diagram is generated and how to maintain it,
+  including adding a new component or renaming an existing one.
+
 @section key_classes_sec Key Classes
 
 @subsection reactor_subsystem_sec Reactor Subsystem

@@ -663,7 +663,26 @@ The burst test is a natural companion to item 15 (fix-test-client smoke test): t
 
 19. ~~**Matching Engine HA wiring.**~~ — DONE (2026-07-05, session HA work). Implemented as four slices: (A) role config + second ME instance; (B) book-replication channel (ME-primary streams `BookUpdate` PDUs to ME-secondary); (C) arbiter-mediated promotion (`ArbitrationReport`/`ArbitrationDecision`, `group=matching_engine`); (D) WAL reconciliation (`MePositionRequest`/`MePositionAck`) + cancel-on-failover, with the leader sequencer promoting its standby connection to re-route sequenced orders to the promoted ME. All three of the original requirements — (a) book-update tailing, (b) arbiter-mediated promotion, (c) WAL reconciliation before cancel ERs (the correctness rule) — are met. Commits: `c7f8b9d` (A+B), `dbbb91b` (C+D), plus `dddb415` (arbiter keyed by `(component-group, instance_id)` so the sequencer/ME/MEP pairs don't alias onto shared `{1,2}` slots) and `b6451d8` (catch-up served by the leader sequencer, not a follower). Verified: `ha_test.py` scenario 16 PASS, a live perf run through a failover, and an orders-in-flight-during-the-gap run (15,000 orders WAL-committed during the ~15 s gap and all replayed to the promoted ME — none dropped). Docs updated: `docs/applications/matching_engine.md`, `docs/design/wal_and_ha.md`. Halt-on-failure remains the fallback for irreconcilable failure modes.
 
-18. **Doxygen navigation layer — clickable architecture maps.**
+18. ~~**Doxygen navigation layer — clickable architecture maps.**~~ — DONE (2026-07-05).
+Implemented with the Graphviz DOT approach chosen below. `docs/architecture.dot` is a
+component-topology digraph in which each node carries `URL="\ref <page-label>"`; Doxygen
+rewrites the `\ref` into a real link when the graph is embedded via `\dotfile` in
+`docs/architecture_map.dox`, producing a clickable client-side image map over the rendered
+PNG — click any component box to open that component's documentation. The map links
+**directly to the existing markdown docs** via their Doxygen-generated page labels
+(e.g. `md_docs_2applications_2matching__engine`), so no per-component stub pages were needed
+and the markdown stays pristine for GitHub. Wired in with `DOTFILE_DIRS = docs` in the
+`Doxyfile` and a dedicated **System Architecture** section on the mainpage linking both the
+map (`\ref architecture_map`) and a maintenance guide (`\ref architecture_map_howto`) that
+documents the `URL="\ref …"` mechanism, the label-encoding rule, and an "adding a new
+component" recipe. As part of this the docs were made to build cleanly under the existing
+`WARN_AS_ERROR = FAIL_ON_WARNINGS`: four pre-existing/introduced warnings were fixed (two
+unresolved `#anchor` links in `authentication_service.md`, a `DESIGN.md` link outside the
+Doxygen input in `fix_test_client.md`, and an undocumented `logger` constructor parameter in
+`TlsRawBytesProtocolHandler.hpp`). Verified: `doxygen Doxyfile` exits 0 with 0 warnings, all
+nine component boxes resolve to real doc pages, and both mainpage links render. Sub-maps for
+complex components (Reactor, Sequencer) remain an optional future extension. The design
+rationale and tool trade-off analysis below are retained for reference.
 
 **Documentation restructure (markdown docs/) — DONE 2026-07-03.** A `docs/` hierarchy was
 created and fully populated as a human-navigable alternative to this summary file. Entry

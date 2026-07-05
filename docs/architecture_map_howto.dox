@@ -1,0 +1,75 @@
+/*! \page architecture_map_howto Maintaining the Architecture Map
+
+\brief How the \ref architecture_map diagram is generated, and how to keep it current when
+components are added, renamed, or moved.
+
+\section amh_how How it is built
+
+The map is a single Graphviz digraph rendered by Doxygen. Three pieces cooperate:
+
+- \c docs/architecture.dot -- the graph. Each component is a node; the order / execution-
+  report data path is drawn with solid edges and the control plane (HA election, credential
+  CRUD, WAL fanout) with dashed edges.
+- \c docs/architecture_map.dox -- a page that embeds the graph with the \c \\dotfile
+  command. This is what makes Doxygen render the PNG and build the clickable image map.
+- The \c Doxyfile -- \c HAVE_DOT=YES lets Doxygen invoke Graphviz \c dot, and
+  \c DOTFILE_DIRS=docs tells \c \\dotfile where to find \c architecture.dot.
+
+\section amh_links What makes the boxes clickable
+
+Each node carries a \c URL attribute of this form:
+
+\verbatim
+matching_engine [label="Matching Engine",
+                 URL="\ref md_docs_2applications_2matching__engine"];
+\endverbatim
+
+Graphviz stores the string verbatim, but Doxygen rewrites any \c \\ref inside a node \c URL
+into a real link to that page before it emits the HTML image map. So the box ends up
+pointing at the component's own documentation page -- with no hand-written HTML and no
+hard-coded output paths.
+
+\section amh_labels The page labels
+
+The target labels such as \c md_docs_2applications_2matching__engine are \e auto-generated
+by Doxygen from each markdown file's path, using this encoding:
+
+- start with \c md_
+- append the path relative to the project root, with each \c / replaced by \c 2
+- replace every \c _ in a directory or file name with \c __
+- drop the \c .md extension
+
+So \c docs/applications/order_gateway.md becomes \c md_docs_2applications_2order__gateway,
+and \c docs/design/wal_and_ha.md becomes \c md_docs_2design_2wal__and__ha. If you are ever
+unsure of a label, build the docs once and grep \c build/docs/html/pages.html -- every page
+is listed there with its generated name.
+
+\section amh_add Adding a new component
+
+1. Write the component's documentation as usual, e.g. \c docs/applications/foo_service.md.
+2. Add a node to \c docs/architecture.dot, deriving its \c URL label with the encoding
+   above (note \c foo_service becomes \c foo__service):
+\verbatim
+foo_service [label="Foo Service\n(what it does)",
+             URL="\ref md_docs_2applications_2foo__service"];
+\endverbatim
+3. Add the edges to and from it. Use \c style=dashed for anything that is \e not on the
+   order / execution-report data path.
+4. Rebuild the docs: \c doxygen \c Doxyfile, or the \c doxygen_docs CMake target.
+
+\section amh_safety Why a broken link cannot slip through
+
+The build sets \c WARN_AS_ERROR=FAIL_ON_WARNINGS. If a \c \\ref names a page that does not
+exist -- a typo in a label, or a doc that was renamed or moved -- Doxygen emits a warning
+and the build \e fails. A dead box in the map is therefore caught at build time, not
+discovered later by a reader clicking a broken link. When you rename or move a component
+doc, the map's \c URL will fail the build until you update it, which is exactly the reminder
+you want.
+
+\section amh_see See also
+
+- \ref architecture_map -- the diagram this page describes.
+- \ref md_docs_2architecture "Architecture" -- the narrative topology, port allocation, and
+  order flow.
+
+*/

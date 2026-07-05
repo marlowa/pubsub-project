@@ -101,6 +101,6 @@ Opens on `http://localhost:8081`.
 
 ## See Also
 
-- [FIX Test Client detailed design](../../java/fix-test-client/DESIGN.md)
+- FIX Test Client detailed design — see `java/fix-test-client/DESIGN.md` in the source tree
 - [Secure Communications](../design/secure_comms.md) — TLS 1.2 cap and its cause
 - [Order Gateway](order_gateway.md) — the gateway this client connects to

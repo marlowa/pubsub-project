@@ -70,6 +70,7 @@ public:
      *                            Must outlive this object.
      * @param[in] is_server       True for server-side (SSL_accept path), false for
      *                            client-side (SSL_connect path).
+     * @param[in] logger          QuillLogger used for TLS diagnostics. Must outlive this object.
      */
     TlsRawBytesProtocolHandler(ConnectionID connection_id, TcpSocket& socket, ApplicationThread& target_thread,
                                int64_t buffer_capacity, TlsContext& tls_context, bool is_server,

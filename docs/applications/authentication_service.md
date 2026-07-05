@@ -9,11 +9,11 @@ admits the session only on a `Granted` result.
 
 It is a small, single-threaded C++ reactor application. It holds one piece of state: an
 in-memory map of `comp_id → SCRAM credential`, loaded at startup and mutated at runtime by the
-admin service (see [Credential Management](#credential-management)).
+admin service (see the **Credential Management** section below).
 
 It runs as an **active/active pair** for HA — instances `a` and `b`, both serving the gateway
-at once. It is *not* an arbiter-elected leader/follower pair; see
-[HA and Failover](#ha-and-failover).
+at once. It is *not* an arbiter-elected leader/follower pair; see the **HA and Failover**
+section below.
 
 ## PDU Protocol
 
