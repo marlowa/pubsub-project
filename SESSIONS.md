@@ -17,9 +17,76 @@ This project has been developed incrementally across a series of numbered work s
 
 ## Session Accomplishments
 
-### Session 26 (current)
+### Session 27 (current)
 
-**MEP and TAP — design session. Full design in `docs/mep_tap_design.md`.**
+**Catch-up entry covering all work since the MEP/TAP design session (26).** This spans the
+completion of the Matching Engine HA work, the HA naming/architecture corrections and auth
+fan-out fix, two Python test drivers, the Doxygen clickable architecture map, and the start
+of a requirements-first pass on pub/sub. `pubsub_itc_fw_summary.md` holds the authoritative
+per-item detail; this entry is the narrative index.
+
+**Matching Engine HA (summary item 19) — DONE and verified.** Implemented as four slices:
+role config + second ME instance; a book-replication channel (ME-primary streams `BookUpdate`
+PDUs to ME-secondary); arbiter-mediated promotion; and WAL reconciliation
+(`MePositionRequest`/`MePositionAck`) followed by cancel-on-failover, with the leader
+sequencer promoting its standby connection so sequenced orders re-route to the promoted ME.
+Two coupling bugs were fixed along the way: the arbiter is now keyed by
+`(component-group, instance_id)` so the sequencer/ME/MEP pairs no longer alias onto shared
+`{1,2}` slots (`dddb415`), and catch-up is served only by the leader sequencer, not a
+follower (`b6451d8`). Verified by `ha_test.py` scenario 16, a live perf run through a
+failover, and an orders-in-flight-during-the-gap run (~15,000 orders WAL-committed during the
+gap and all replayed to the promoted ME — none dropped). Halt-on-failure remains the fallback
+for irreconcilable failure modes.
+
+**HA naming / architecture corrections.** Established the convention that `_primary/_secondary`
+applies only to arbiter-elected components; `_a/_b` to active/active caller-selected
+components; and no suffix to singletons. Applied it: the gateway became `order_gateway` (a
+singleton — external FIX clients connect by unicast, so it cannot be a leader/follower pair),
+and the authentication service became an active/active `_a`/`_b` pair. Fixed a real gap where
+the admin service only notified one auth instance: `AuthServiceClient` now fans
+credential updates to both instances best-effort (`171fac7`), live-verified (both auths logged
+Set/RemoveCredential success for a test compID), and `ha_test.py` gained scenario 17
+(auth-instance failover). Also reworded a misleading sequencer log line: an order with no ME
+connected is WAL-committed with forwarding deferred, not "dropped" (`6fb31d8`).
+
+**Python test drivers (summary items 15 and 17) — DONE.** `fix_client_smoke_test.py` drives
+the fix-test-client REST API through a NOS/cancel/settle sequence and validates the blotter
+(stdlib-only, pylint 10/10). `fix_client_burst_test.py` runs a large burst with WAL
+replication active and scans the sequencer logs for distress — verified 50,000 orders at
+~34,500 orders/s with zero drops and no slab exhaustion.
+
+**Doxygen clickable architecture map (summary item 18) — DONE, committed `f01fc7d`.** Added
+a clickable component-topology map to the Doxygen HTML: `docs/architecture.dot` is a digraph
+whose nodes carry `URL="\ref <page-label>"`, embedded via `\dotfile` in
+`docs/architecture_map.dox`, producing a client-side image map over the rendered PNG — click
+any component box to open that component's documentation. The map links **directly to the
+existing markdown docs** via their Doxygen-generated page labels
+(e.g. `md_docs_2applications_2matching__engine`), so no per-component stub pages were needed
+and the markdown stays pristine for GitHub. A new **System Architecture** section on the
+mainpage links the map and a maintenance guide (`docs/architecture_map_howto.dox`) that
+documents the `URL="\ref"` mechanism, the label-encoding rule, and an "adding a new component"
+recipe. Four Doxygen warnings were fixed so the docs build cleanly under the existing
+`WARN_AS_ERROR = FAIL_ON_WARNINGS` (setting unchanged): two unresolved `#anchor` links in
+`authentication_service.md`, a `DESIGN.md` link outside the Doxygen input in
+`fix_test_client.md`, and an undocumented `logger` constructor parameter in
+`TlsRawBytesProtocolHandler.hpp`. Verified: `doxygen Doxyfile` exits 0 with 0 warnings.
+
+**Pub/sub (summary item 7) — requirements-first pass started, no code.** Chosen as the next
+long-pole item ahead of Prometheus. The existing `docs/design/mep_tap.md` (from session 26) is
+a *solution* document; it is being treated as a **draft to challenge, not a settled baseline**.
+The requirements are to be grounded in the user's work system (a production pub/sub that has
+known problems and sub-optimal solutions but works, so it provides real requirements guidance).
+Started `docs/design/pubsub_requirements.md` — a requirements note kept separate from the
+solution doc — scaffolded with the framing and six open questions: (1) what's published and at
+what granularity; (2) delivery & ordering guarantees; (3) durability & replay; (4) fanout &
+backpressure; (5) failover semantics; (6) subscriber lifecycle & identity. Next session
+resumes by capturing how the work system's publisher (the MEP analog) works.
+
+---
+
+### Session 26
+
+**MEP and TAP — design session. Full design in `docs/design/mep_tap.md`.**
 
 Two new application components designed. No code was written this session; the entire output is the design document and the decisions recorded here.
 
