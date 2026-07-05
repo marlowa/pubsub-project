@@ -338,7 +338,15 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         }
 
         if (!me_outbound_order_conn_id_.is_valid()) {
-            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: matching engine not connected -- dropping order PDU");
+            // The order is already durably WAL-committed above; we simply cannot
+            // forward it right now because no matching engine is connected (e.g.
+            // during ME failover, before the promoted secondary reconnects). The
+            // forward is deferred, NOT the order lost: on promotion the ME replays
+            // the WAL from its last-applied seq up to the head, so this order is
+            // recovered. Hence Info, not an alarming "dropped".
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                       "SequencerThread: no matching engine connected -- order seq={} WAL-committed, forward deferred until an ME reconnects (recovered via WAL replay on ME promotion)",
+                       seq);
             release_pdu_payload(message);
             return;
         }
