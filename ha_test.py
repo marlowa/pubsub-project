@@ -128,6 +128,17 @@ Scenarios
        Expected: matching_engine_secondary adopts LEADER; recovery orders
        confirmed on matching_engine_secondary.log.
 
+ 17  Authentication service A death (auth failover)
+       The auth service is active/active, caller-selected -- both instances serve
+       the gateway, neither is elected.  Baseline orders authenticate a FIX
+       session via auth-A; then authentication_service_a is SIGKILLed.  No role
+       transition occurs.  Phase 5 opens a FRESH FIX session: since an
+       established session does not re-authenticate, the new logon must be
+       authenticated by the surviving auth-B for it (and the recovery orders it
+       carries) to succeed.
+       Expected: no promotion; fresh logon authenticated by auth-B; recovery
+       orders flow.
+
 Options:
     --scenario N|all      Scenario number, or 'all' to run every scenario in
                           order (required).  All scenarios must pass for the
@@ -341,6 +352,11 @@ class Scenario(NamedTuple):
     # promoted secondary (in-flight orders would advance the secondary's
     # order_id_counter_ silently during reconciliation).
     orders_during_override: int | None = None
+    # When True, Phase 5 tears down the baseline FIX session and opens a fresh one
+    # before sending recovery orders. An already-established session does not
+    # re-authenticate, so this is required to exercise auth failover: the fresh
+    # logon must be authenticated by whichever auth instance is still alive.
+    fresh_logon_in_recovery: bool = False
 
 
 # ── helpers shared by scenario definitions ────────────────────────────────────
@@ -914,6 +930,32 @@ _SCENARIOS: list[Scenario] = [
                 settle_secs=SETTLE_AFTER_FAILOVER,
                 failover_to="matching_engine_secondary",
                 leader_markers=("MatchingEngineThread:", "adopting LEADER role"),
+            ),
+        ],
+    ),
+
+    # 17 — auth service A death: no election (active/active); the gateway fails
+    # over to auth B, which authenticates a fresh FIX logon.
+    Scenario(
+        number=17,
+        short_name="auth_a_death",
+        description="Death of authentication service A (auth failover on fresh logon)",
+        expected_outcome=(
+            "no role transition (auth is active/active, caller-selected); the "
+            "gateway detects auth-A loss, and a fresh FIX logon is authenticated "
+            "by auth-B so recovery orders flow"
+        ),
+        # In-flight orders would ride the already-authenticated baseline session
+        # (unaffected by the auth kill) and only add noise; the point is the fresh
+        # logon in Phase 5.
+        orders_during_override=0,
+        fresh_logon_in_recovery=True,
+        steps=[
+            KillStep(
+                proc_name="authentication_service_a",
+                secondary_log_name=None,   # active/active — no promotion to await
+                role_prefix=None,
+                settle_secs=SETTLE_AFTER_FAILOVER,
             ),
         ],
     ),
@@ -1770,6 +1812,14 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # behind them.  Start a fresh FIX session to unblock.
         if me_restarted and orders_during > 0 and not scenario.extra_steps:
             log("  Restarting FIX session (old session blocked on dropped in-flight orders) ...")
+            stop_f8test(f8proc)
+            f8proc = send_burst(0, gw_log)
+
+        # Auth-failover scenarios: an established session does not re-authenticate,
+        # so force a fresh logon. With the preferred auth instance dead, send_burst
+        # only completes if the surviving auth instance authenticates the logon.
+        if scenario.fresh_logon_in_recovery:
+            log("  Opening a fresh FIX session (fresh logon must authenticate via the surviving auth) ...")
             stop_f8test(f8proc)
             f8proc = send_burst(0, gw_log)
 
