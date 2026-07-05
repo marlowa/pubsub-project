@@ -56,9 +56,15 @@ The ME participates in leader-follower HA via the cancel-on-failover policy:
 See [WAL and High Availability](../design/wal_and_ha.md) for the full cancel-on-failover
 correctness rule and the 7-step promotion sequence.
 
-**Current status:** ME HA wiring is planned but not yet implemented. The ME currently runs
-as a single instance. The cancel-on-failover design is agreed; implementation is deferred
-until sequencer HA slices 8+ land.
+**Current status:** Implemented (slices A–D) and verified. On ME-primary loss the secondary
+detects the dropped book-replication channel, waits out the promotion timeout, requests
+arbitration, reconciles its replicated book against the sequencer's WAL
+(`MePositionRequest`/`MePositionAck`), issues cancel ERs for genuinely-outstanding orders,
+and adopts leader; the leader sequencer promotes its standby connection so sequenced orders
+route to the promoted ME. Verified by `ha_test.py` scenario 16 (ME failover), a live perf run
+through a failover, and an orders-in-flight-during-the-gap run (gap orders are WAL-committed
+and recovered — none dropped). Halt-on-failure remains the fallback for irreconcilable
+failure modes (WAL corruption, arbiter unreachable).
 
 ## Configuration
 
