@@ -21,7 +21,15 @@ case "${PLATFORM_ID}" in
         export ROBINMAP_VERSION=1.4.1
         ;;
     rocky8*|rhel8*|centos8*)
-        export THIRDPARTY_DIR=/workspace/thirdparty
+        # Third-party libraries live at different paths on the real RHEL8 build
+        # hosts vs. the Rocky 8 build container (which mounts them at
+        # /workspace/thirdparty -- see README). Only RHEL8 uses /development/3rdparty;
+        # Rocky and CentOS stay on /workspace/thirdparty.
+        if [ "${ID:-}" = "rhel" ]; then
+            export THIRDPARTY_DIR=/development/3rdparty
+        else
+            export THIRDPARTY_DIR=/workspace/thirdparty
+        fi
         export FMT_VERSION=11.0.2
         export QUILL_VERSION=11.0.2
         export ARGPARSE_VERSION=3.2

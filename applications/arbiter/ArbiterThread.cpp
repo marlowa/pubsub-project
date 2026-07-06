@@ -618,8 +618,9 @@ void ArbiterThread::send_arbitration_decision(const pubsub_itc_fw::ConnectionID&
     decision.epoch = epoch;
     decision.group = group;
     send_pdu(conn_id, pdu_arbitration_decision, 0, decision);
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: ArbitrationDecision sent to connection {} (group={} leader={} follower={} epoch={})",
-               conn_id.get_value(), pubsub_itc_fw_app::to_string(group), leader_id, follower_id, epoch);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "ArbiterThread: ArbitrationDecision sent to connection {} (group={} leader={} follower={} epoch={})", conn_id.get_value(),
+               pubsub_itc_fw_app::to_string(group), leader_id, follower_id, epoch);
 }
 
 void ArbiterThread::replicate_state_to_peer(pubsub_itc_fw_app::ComponentGroup group, int64_t component_instance_id, int64_t leader_id, int32_t epoch) {
@@ -634,8 +635,9 @@ void ArbiterThread::replicate_state_to_peer(pubsub_itc_fw_app::ComponentGroup gr
     record.epoch = epoch;
     record.group = group;
     send_pdu(peer, pdu_arbiter_state_record, 0, record);
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "ArbiterThread: ArbiterStateRecord replicated to peer (group={} component={} leader={} epoch={})",
-               pubsub_itc_fw_app::to_string(group), component_instance_id, leader_id, epoch);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
+               "ArbiterThread: ArbiterStateRecord replicated to peer (group={} component={} leader={} epoch={})", pubsub_itc_fw_app::to_string(group),
+               component_instance_id, leader_id, epoch);
 }
 
 } // namespaces

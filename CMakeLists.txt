@@ -99,6 +99,22 @@ find_package(Python3 REQUIRED COMPONENTS Interpreter)
 message(STATUS "Python3: ${Python3_EXECUTABLE}")
 
 # ------------------------------------------------------------
+# C++ coding-standards gate
+# ------------------------------------------------------------
+# Runs on EVERY build regardless of entry point -- build.sh/build.py, a bare
+# `cmake --build`, or an IDE. check_standards.py scans the C++ sources (line
+# length, naming, nullptr, etc.) and returns non-zero on any violation, which
+# fails the build. build.py also runs it as a fast pre-flight, but wiring it
+# into CMake here is what guarantees an IDE or direct cmake build cannot bypass
+# the checks -- which is how over-length lines had slipped into the tree.
+add_custom_target(check_standards ALL
+    COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/check_standards.py"
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    COMMENT "Checking C++ coding standards (check_standards.py)"
+    VERBATIM
+)
+
+# ------------------------------------------------------------
 # Third-party discovery
 # ------------------------------------------------------------
 if(NOT DEFINED ENV{THIRDPARTY_DIR})
@@ -249,6 +265,9 @@ add_custom_command(
 add_custom_target(fix_equity_orders_generated ALL
     DEPENDS "${FIX_DSL_GENERATED_HPP}"
 )
+# Run the coding-standards gate before code generation / compilation so a
+# violation fails the build early rather than after a long C++ build.
+add_dependencies(fix_equity_orders_generated check_standards)
 
 # Leader-follower protocol PDU header (no --topics: uses plain integer IDs 100-201).
 set(LF_DSL_SOURCE "${CMAKE_SOURCE_DIR}/libraries/pubsub_itc_fw/include/pubsub_itc_fw/leader_follower.dsl")

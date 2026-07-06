@@ -692,7 +692,8 @@ void MatchingEngineThread::handle_arbitration_decision(const pubsub_itc_fw::Even
     // group so a routing mistake can never drive a spurious ME promotion.
     if (decision.group != pubsub_itc_fw_app::ComponentGroup::matching_engine) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "MatchingEngineThread: ArbitrationDecision addressed to group={} (not matching_engine) -- ignoring", pubsub_itc_fw_app::to_string(decision.group));
+                   "MatchingEngineThread: ArbitrationDecision addressed to group={} (not matching_engine) -- ignoring",
+                   pubsub_itc_fw_app::to_string(decision.group));
         return;
     }
 
