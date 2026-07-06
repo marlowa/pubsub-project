@@ -1,4 +1,4 @@
-# Architecture
+# Architecture {#architecture}
 
 ## What It Is
 

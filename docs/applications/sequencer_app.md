@@ -1,4 +1,4 @@
-# Sequencer Application
+# Sequencer Application {#sequencer_app}
 
 ## Role
 

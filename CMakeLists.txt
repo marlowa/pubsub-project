@@ -172,6 +172,12 @@ if(DOXYGEN_FOUND AND ENABLE_DOXYGEN)
     add_custom_target(doxygen_docs
         COMMAND ${CMAKE_COMMAND} -E make_directory "${DOXYGEN_OUTPUT_DIR}"
         COMMAND ${DOXYGEN_EXECUTABLE} "${CMAKE_SOURCE_DIR}/Doxyfile"
+        # Fail the build if any architecture-map box points at a bare directory.
+        # doxygen 1.8.14 (RHEL8) does not fail on an unresolved \ref inside a dot
+        # URL, so this catches dead map links that WARN_AS_ERROR would miss there.
+        COMMAND ${Python3_EXECUTABLE}
+                "${CMAKE_SOURCE_DIR}/scripts/check_architecture_map.py"
+                "${DOXYGEN_OUTPUT_DIR}/html"
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
         COMMENT "Generating API documentation with Doxygen"
         VERBATIM

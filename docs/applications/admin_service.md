@@ -1,4 +1,4 @@
-# Admin Service
+# Admin Service {#admin_service}
 
 ## Role
 

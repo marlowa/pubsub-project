@@ -1,4 +1,4 @@
-# Authentication Service
+# Authentication Service {#authentication_service}
 
 ## Role
 

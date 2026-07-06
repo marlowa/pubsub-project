@@ -1,4 +1,4 @@
-# Order Gateway
+# Order Gateway {#order_gateway}
 
 ## Role
 

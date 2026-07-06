@@ -10,8 +10,8 @@ latency-critical path.
 \dotfile architecture.dot "pubsub_itc_fw component topology (click a box to open its docs)"
 
 For the narrative version of this topology -- the port allocation, the happy-path order
-flow, and the channel summary -- see the \ref md_docs_2architecture "Architecture" page. For
+flow, and the channel summary -- see the \ref architecture "Architecture" page. For
 the high-availability model that the dashed control-plane edges implement, see
-\ref md_docs_2design_2wal__and__ha "WAL and High Availability".
+\ref wal_and_ha "WAL and High Availability".
 
 */

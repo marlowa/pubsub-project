@@ -1,4 +1,4 @@
-# WAL and High Availability
+# WAL and High Availability {#wal_and_ha}
 
 ## Design Philosophy
 

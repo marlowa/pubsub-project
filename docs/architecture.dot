@@ -18,28 +18,28 @@ digraph architecture {
 
     // --- components (each links to its documentation page) ---
     fix_test_client [label="FIX Test Client\n(Java harness, Groovy scripting)",
-                     URL="\ref md_docs_2applications_2fix__test__client"];
+                     URL="\ref fix_test_client"];
     order_gateway   [label="Order Gateway\n(FIX 5.0 SP2, SCRAM; client pool)",
-                     URL="\ref md_docs_2applications_2order__gateway"];
+                     URL="\ref order_gateway"];
     sequencer       [label="Sequencer\n(total order + WAL; leader / follower)",
-                     URL="\ref md_docs_2applications_2sequencer__app"];
+                     URL="\ref sequencer_app"];
     matching_engine [label="Matching Engine\n(order book; leader / follower)",
-                     URL="\ref md_docs_2applications_2matching__engine"];
+                     URL="\ref matching_engine"];
     mep             [label="Matching Engine Publisher\n(WAL follower, topic fanout -- planned)",
                      style="rounded,filled,dashed", fillcolor="#f4f0e6",
-                     URL="\ref md_docs_2design_2mep__tap"];
+                     URL="\ref mep_tap"];
     authentication  [label="Authentication Service\n(SCRAM store; active/active a + b)",
                      fillcolor="#eaf5ea",
-                     URL="\ref md_docs_2applications_2authentication__service"];
+                     URL="\ref authentication_service"];
     admin_service   [label="Admin Service\n(Java web UI; credential CRUD)",
                      fillcolor="#eaf5ea",
-                     URL="\ref md_docs_2applications_2admin__service"];
+                     URL="\ref admin_service"];
     arbiter         [label="Arbiter Pool\n(leader election; lease + epoch)",
                      fillcolor="#fbeeee",
-                     URL="\ref md_docs_2applications_2arbiter"];
+                     URL="\ref arbiter"];
     witness         [label="Witness\n(quorum tie-break vote)",
                      fillcolor="#fbeeee",
-                     URL="\ref md_docs_2applications_2witness"];
+                     URL="\ref witness"];
 
     // --- order / ER data path (solid) ---
     fix_test_client -> order_gateway   [label="FIX wire", dir=both];

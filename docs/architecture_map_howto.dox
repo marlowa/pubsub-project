@@ -21,7 +21,7 @@ Each node carries a \c URL attribute of this form:
 
 \verbatim
 matching_engine [label="Matching Engine",
-                 URL="\ref md_docs_2applications_2matching__engine"];
+                 URL="\ref matching_engine"];
 \endverbatim
 
 Graphviz stores the string verbatim, but Doxygen rewrites any \c \\ref inside a node \c URL
@@ -31,27 +31,38 @@ hard-coded output paths.
 
 \section amh_labels The page labels
 
-The target labels such as \c md_docs_2applications_2matching__engine are \e auto-generated
-by Doxygen from each markdown file's path, using this encoding:
+Each component doc declares an \e explicit page label on its top-level heading, using
+Doxygen's \c {\#label} syntax. The label is simply the markdown file's basename without the
+\c .md extension:
 
-- start with \c md_
-- append the path relative to the project root, with each \c / replaced by \c 2
-- replace every \c _ in a directory or file name with \c __
-- drop the \c .md extension
+\verbatim
+# Matching Engine {#matching_engine}
+\endverbatim
 
-So \c docs/applications/order_gateway.md becomes \c md_docs_2applications_2order__gateway,
-and \c docs/design/wal_and_ha.md becomes \c md_docs_2design_2wal__and__ha. If you are ever
-unsure of a label, build the docs once and grep \c build/docs/html/pages.html -- every page
-is listed there with its generated name.
+So \c docs/applications/order_gateway.md carries \c {\#order_gateway} and
+\c docs/design/wal_and_ha.md carries \c {\#wal_and_ha}; the map then refers to those with a
+plain \c "\\ref order_gateway".
+
+\par Why explicit labels and not Doxygen's auto-generated names
+Older Doxygen releases -- notably 1.8.14, which is the newest packaged for our RHEL8 build
+hosts -- mangle a markdown file's \e auto label differently from the 1.9.x line used on
+dev machines (the \c md_docs_2applications_2... form). A map built against an auto label
+therefore resolves on one machine and silently breaks on the other: the unresolved \c \\ref
+collapses to \c href="../../" (a bare directory), which a browser opens as a directory
+listing -- or, on Windows, a file-chooser dialog -- instead of the doc. An explicit
+\c {\#label} is identical on every Doxygen version, so the map is portable across them.
 
 \section amh_add Adding a new component
 
-1. Write the component's documentation as usual, e.g. \c docs/applications/foo_service.md.
-2. Add a node to \c docs/architecture.dot, deriving its \c URL label with the encoding
-   above (note \c foo_service becomes \c foo__service):
+1. Write the component's documentation as usual, e.g. \c docs/applications/foo_service.md,
+   and give its top-level heading an explicit label matching the file's basename:
+\verbatim
+# Foo Service {#foo_service}
+\endverbatim
+2. Add a node to \c docs/architecture.dot whose \c URL is a plain \c \\ref to that label:
 \verbatim
 foo_service [label="Foo Service\n(what it does)",
-             URL="\ref md_docs_2applications_2foo__service"];
+             URL="\ref foo_service"];
 \endverbatim
 3. Add the edges to and from it. Use \c style=dashed for anything that is \e not on the
    order / execution-report data path.
@@ -59,17 +70,22 @@ foo_service [label="Foo Service\n(what it does)",
 
 \section amh_safety Why a broken link cannot slip through
 
-The build sets \c WARN_AS_ERROR=FAIL_ON_WARNINGS. If a \c \\ref names a page that does not
-exist -- a typo in a label, or a doc that was renamed or moved -- Doxygen emits a warning
-and the build \e fails. A dead box in the map is therefore caught at build time, not
-discovered later by a reader clicking a broken link. When you rename or move a component
-doc, the map's \c URL will fail the build until you update it, which is exactly the reminder
-you want.
+Two layers guard against a dead box:
+
+- \b WARN_AS_ERROR. The build sets \c WARN_AS_ERROR=FAIL_ON_WARNINGS, so a \c \\ref that
+  names a missing page -- a typo, or a doc that was renamed or moved -- fails the build on
+  recent Doxygen. Rename a component doc and the map's \c URL fails the build until you
+  update it, which is exactly the reminder you want.
+- \b A \b post-build \b check. Doxygen 1.8.14 (our RHEL8 hosts) does \e not fail the build
+  on an unresolved \c \\ref inside a node \c URL; it silently emits \c href="../../". So the
+  docs build also runs \c scripts/check_architecture_map.py, which greps the generated image
+  map for \c href="../../" and fails if any box points at a bare directory. This catches the
+  one case \c WARN_AS_ERROR misses on the older toolchain.
 
 \section amh_see See also
 
 - \ref architecture_map -- the diagram this page describes.
-- \ref md_docs_2architecture "Architecture" -- the narrative topology, port allocation, and
+- \ref architecture "Architecture" -- the narrative topology, port allocation, and
   order flow.
 
 */
