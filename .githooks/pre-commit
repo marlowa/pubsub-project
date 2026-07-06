@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+#
+# Pre-commit hook: verify that staged C/C++ changes conform to .clang-format.
+#
+# It uses `git clang-format`, which only looks at the lines this commit touches,
+# so the existing tree does NOT have to be fully clang-formatted first -- new and
+# edited code stays clean while untouched code is left alone.
+#
+# Enable this hook once per clone with:  scripts/install-git-hooks.sh
+#
+# The clang-format binary is resolved in this order:
+#   1. $CLANG_FORMAT
+#   2. `git config clangFormat.binary`
+#   3. `clang-format` on PATH (the pinned pip clang-format when the venv is active)
+#
+# Pin/install the matching version with:  pip install -e python[dev]
+#
+set -euo pipefail
+
+clang_format_bin="${CLANG_FORMAT:-$(git config clangFormat.binary 2>/dev/null || true)}"
+clang_format_bin="${clang_format_bin:-clang-format}"
+
+if ! command -v "$clang_format_bin" >/dev/null 2>&1; then
+    echo "pre-commit: clang-format ('$clang_format_bin') not found." >&2
+    echo "            Install the pinned version:  pip install -e python[dev]" >&2
+    echo "            (or set CLANG_FORMAT / git config clangFormat.binary)" >&2
+    exit 1
+fi
+
+# git-clang-format is the LLVM driver script (separate from the clang-format
+# binary). Fail closed if it is missing so the check can never silently pass.
+if ! command -v git-clang-format >/dev/null 2>&1; then
+    echo "pre-commit: 'git-clang-format' not found (ships with LLVM/clang tools)." >&2
+    echo "            Install clang tools, or bypass once with 'git commit --no-verify'." >&2
+    exit 1
+fi
+
+# Only C/C++ files; nothing staged of that kind means nothing to check.
+mapfile -t staged < <(git diff --cached --name-only --diff-filter=ACM \
+                      | grep -E '\.(c|cc|cpp|cxx|h|hpp|hxx)$' || true)
+if [ "${#staged[@]}" -eq 0 ]; then
+    exit 0
+fi
+
+# Ask git clang-format what it WOULD change in the staged lines (no edits made).
+diff_output="$(git clang-format --staged --diff \
+                 --binary "$clang_format_bin" \
+                 --extensions c,cc,cpp,cxx,h,hpp,hxx \
+                 -- "${staged[@]}" 2>/dev/null || true)"
+
+case "$diff_output" in
+    "" | *"no modified files to format"* | *"did not modify any files"* | *"clang-format did not modify"*)
+        exit 0
+        ;;
+esac
+
+echo "pre-commit: staged C/C++ changes are not clang-format clean:" >&2
+echo >&2
+echo "$diff_output" >&2
+echo >&2
+echo "Apply the formatting to the staged lines, then re-stage and commit:" >&2
+echo "  git clang-format --staged --binary $clang_format_bin && git add -u" >&2
+exit 1

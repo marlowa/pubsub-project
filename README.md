@@ -67,6 +67,21 @@ python3 devenv.py start
 
 `devsetup.sh` sets the required environment variables (third-party library paths and versions) and forwards all arguments to `devsetup.py`. Any flag accepted by the build or deploy steps can be passed through — see `./devsetup.sh --help`.
 
+## Code formatting (clang-format)
+
+C++ is formatted with `clang-format` per the root `.clang-format`. A pinned version is installed with the Python dev extras so every machine (dev and RHEL 8) formats identically, regardless of the OS-provided clang-format:
+
+```bash
+pip install -e python[dev]          # provides the pinned clang-format
+scripts/install-git-hooks.sh        # enable the pre-commit hook (once per clone)
+```
+
+The pre-commit hook (`.githooks/pre-commit`) checks **only the lines each commit touches** via `git clang-format`, so the existing tree does not need to be fully reformatted first. If a staged change is not clean, the commit is blocked with the exact diff and this fix:
+
+```bash
+git clang-format --staged && git add -u
+```
+
 ## Building (`build.py` / `build.sh`)
 
 ```bash
