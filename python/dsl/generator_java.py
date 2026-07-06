@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from datetime import datetime
 from typing import Dict, List, Set
 
@@ -44,6 +44,12 @@ class JavaGenerator:
     class_name: str
     package_name: str = ""
 
+    # Per-emit enum lookup tables, populated at the start of emit(). Declared as
+    # non-init fields (not constructor arguments) so they are proper instance
+    # attributes threaded through the emit helpers as pass context.
+    _enum_names: Set[str] = dataclass_field(default_factory=set, init=False, repr=False)
+    _enum_decls: Dict[str, EnumDecl] = dataclass_field(default_factory=dict, init=False, repr=False)
+
     # ------------------------------------------------------------------
     # Public entry point
     # ------------------------------------------------------------------
@@ -64,8 +70,8 @@ class JavaGenerator:
         w(f"public final class {self.class_name} {{")
         w("")
 
-        enum_names: Set[str] = {d.name for d in ast.declarations if isinstance(d, EnumDecl)}
-        enum_decls: Dict[str, EnumDecl] = {
+        self._enum_names = {d.name for d in ast.declarations if isinstance(d, EnumDecl)}
+        self._enum_decls = {
             d.name: d for d in ast.declarations if isinstance(d, EnumDecl)
         }
 
@@ -81,7 +87,7 @@ class JavaGenerator:
 
         for decl in ast.declarations:
             if isinstance(decl, MessageDecl):
-                self._emit_message(decl, w, enum_names, enum_decls)
+                self._emit_message(decl, w)
                 w("")
 
         w(f"}} // class {self.class_name}")
@@ -170,7 +176,7 @@ class JavaGenerator:
     # Message class
     # ------------------------------------------------------------------
 
-    def _emit_message(self, msg: MessageDecl, w, enum_names: Set[str], enum_decls: Dict[str, EnumDecl]) -> None:
+    def _emit_message(self, msg: MessageDecl, w) -> None:
         w(f"    public static final class {msg.name} {{")
         if "id" in msg.metadata:
             w(f"        public static final int PDU_ID = {msg.metadata['id']};")
@@ -181,42 +187,42 @@ class JavaGenerator:
         for field in msg.fields:
             if field.optional:
                 w(f"        public boolean has_{field.name} = false;")
-            java_type = self._java_type(field.type, enum_names)
-            default = self._java_default(field.type, enum_names)
+            java_type = self._java_type(field.type)
+            default = self._java_default(field.type)
             w(f"        public {java_type} {field.name} = {default};")
         w("")
-        self._emit_encoded_size(msg, w, enum_names, enum_decls)
+        self._emit_encoded_size(msg, w)
         w("")
-        self._emit_encode(msg, w, enum_names, enum_decls)
+        self._emit_encode(msg, w)
         w("")
         self._emit_decode_public(msg, w)
         w("")
-        self._emit_decode_fields(msg, w, enum_names, enum_decls)
+        self._emit_decode_fields(msg, w)
         w("    }")
 
     # ------------------------------------------------------------------
     # encodedSize
     # ------------------------------------------------------------------
 
-    def _emit_encoded_size(self, msg: MessageDecl, w, enum_names: Set[str], enum_decls: Dict[str, EnumDecl]) -> None:
+    def _emit_encoded_size(self, msg: MessageDecl, w) -> None:
         w(f"        public static int encodedSize({msg.name} msg) {{")
         w("            int total = 0;")
         for field in msg.fields:
-            self._emit_size_for_field(field, w, enum_names, enum_decls, "            ")
+            self._emit_size_for_field(field, w, "            ")
         w("            return total;")
         w("        }")
 
-    def _emit_size_for_field(self, field: Field, w, enum_names: Set[str], enum_decls: Dict[str, EnumDecl], indent: str) -> None:  # pylint: disable=too-many-arguments
+    def _emit_size_for_field(self, field: Field, w, indent: str) -> None:  # pylint: disable=too-many-arguments
         name = field.name
         if field.optional:
             w(f"{indent}total += 1;")
             w(f"{indent}if (msg.has_{name}) {{")
-            self._emit_size_for_type(field.type, f"msg.{name}", w, enum_names, enum_decls, indent + "    ")
+            self._emit_size_for_type(field.type, f"msg.{name}", w, indent + "    ")
             w(f"{indent}}}")
         else:
-            self._emit_size_for_type(field.type, f"msg.{name}", w, enum_names, enum_decls, indent)
+            self._emit_size_for_type(field.type, f"msg.{name}", w, indent)
 
-    def _emit_size_for_type(self, type_node, expr: str, w, enum_names: Set[str], enum_decls: Dict[str, EnumDecl], indent: str) -> None:  # pylint: disable=too-many-arguments
+    def _emit_size_for_type(self, type_node, expr: str, w, indent: str) -> None:  # pylint: disable=too-many-arguments
         if isinstance(type_node, PrimitiveType):
             w(f"{indent}total += {self._primitive_wire_size(type_node.name)};")
         elif isinstance(type_node, StringType):
@@ -227,10 +233,10 @@ class JavaGenerator:
             elem_size = self._primitive_wire_size(type_node.element_type.name)
             w(f"{indent}total += {elem_size} * {type_node.length};")
         elif isinstance(type_node, ListType):
-            self._emit_size_for_list(type_node, expr, w, enum_names, enum_decls, indent)
+            self._emit_size_for_list(type_node, expr, w, indent=indent)
         elif isinstance(type_node, ReferenceType):
-            if type_node.name in enum_names:
-                wire_size = self._primitive_wire_size(enum_decls[type_node.name].underlying_type)
+            if type_node.name in self._enum_names:
+                wire_size = self._primitive_wire_size(self._enum_decls[type_node.name].underlying_type)
                 w(f"{indent}total += {wire_size};")
             else:
                 w(f"{indent}total += {type_node.name}.encodedSize({expr});")
@@ -238,8 +244,7 @@ class JavaGenerator:
             raise RuntimeError(f"Unknown type in Java encodedSize: {type_node}")
 
     def _emit_size_for_list(  # pylint: disable=too-many-arguments
-            self, list_type: ListType, expr: str, w,
-            enum_names: Set[str], enum_decls: Dict[str, EnumDecl],
+            self, list_type: ListType, expr: str, w, *,
             indent: str, loop_var: str = "i") -> None:
         next_var = chr(ord(loop_var) + 1) if loop_var < "z" else loop_var + "_"
         inner = indent + "    "
@@ -256,8 +261,8 @@ class JavaGenerator:
             w(f"{inner}total += 4 + {expr}[{loop_var}].length;")
             w(f"{indent}}}")
         elif isinstance(elem_type, ReferenceType):
-            if elem_type.name in enum_names:
-                wire_size = self._primitive_wire_size(enum_decls[elem_type.name].underlying_type)
+            if elem_type.name in self._enum_names:
+                wire_size = self._primitive_wire_size(self._enum_decls[elem_type.name].underlying_type)
                 w(f"{indent}total += {wire_size} * {expr}.length;")
             else:
                 w(f"{indent}for (int {loop_var} = 0; {loop_var} < {expr}.length; {loop_var}++) {{")
@@ -265,7 +270,7 @@ class JavaGenerator:
                 w(f"{indent}}}")
         elif isinstance(elem_type, ListType):
             w(f"{indent}for (int {loop_var} = 0; {loop_var} < {expr}.length; {loop_var}++) {{")
-            self._emit_size_for_list(elem_type, f"{expr}[{loop_var}]", w, enum_names, enum_decls, inner, next_var)
+            self._emit_size_for_list(elem_type, f"{expr}[{loop_var}]", w, indent=inner, loop_var=next_var)
             w(f"{indent}}}")
         else:
             raise RuntimeError(f"Unknown list element type in Java size: {elem_type}")
@@ -274,28 +279,28 @@ class JavaGenerator:
     # encode
     # ------------------------------------------------------------------
 
-    def _emit_encode(self, msg: MessageDecl, w, enum_names: Set[str], enum_decls: Dict[str, EnumDecl]) -> None:
+    def _emit_encode(self, msg: MessageDecl, w) -> None:
         w(f"        public static int encode({msg.name} msg, ByteBuffer buf) {{")
         w("            buf.order(ByteOrder.LITTLE_ENDIAN);")
         w("            int needed = encodedSize(msg);")
         w("            if (buf.remaining() < needed) return -1;")
         w("            int startPos = buf.position();")
         for field in msg.fields:
-            self._emit_encode_field(field, w, enum_names, enum_decls, "            ")
+            self._emit_encode_field(field, w, "            ")
         w("            return buf.position() - startPos;")
         w("        }")
 
-    def _emit_encode_field(self, field: Field, w, enum_names: Set[str], enum_decls: Dict[str, EnumDecl], indent: str) -> None:  # pylint: disable=too-many-arguments
+    def _emit_encode_field(self, field: Field, w, indent: str) -> None:  # pylint: disable=too-many-arguments
         name = field.name
         if field.optional:
             w(f"{indent}buf.put(msg.has_{name} ? (byte) 1 : (byte) 0);")
             w(f"{indent}if (msg.has_{name}) {{")
-            self._emit_encode_type(field.type, f"msg.{name}", w, enum_names, enum_decls, indent + "    ")
+            self._emit_encode_type(field.type, f"msg.{name}", w, indent + "    ")
             w(f"{indent}}}")
         else:
-            self._emit_encode_type(field.type, f"msg.{name}", w, enum_names, enum_decls, indent)
+            self._emit_encode_type(field.type, f"msg.{name}", w, indent)
 
-    def _emit_encode_type(self, type_node, expr: str, w, enum_names: Set[str], enum_decls: Dict[str, EnumDecl], indent: str) -> None:  # pylint: disable=too-many-arguments
+    def _emit_encode_type(self, type_node, expr: str, w, indent: str) -> None:  # pylint: disable=too-many-arguments
         if isinstance(type_node, PrimitiveType):
             w(f"{indent}{self._emit_buf_put(type_node.name, expr)};")
         elif isinstance(type_node, StringType):
@@ -314,10 +319,10 @@ class JavaGenerator:
             w(f"{indent}    {self._emit_buf_put(elem_name, expr + '[_i]')};")
             w(f"{indent}}}")
         elif isinstance(type_node, ListType):
-            self._emit_encode_list(type_node, expr, w, enum_names, enum_decls, indent)
+            self._emit_encode_list(type_node, expr, w, indent=indent)
         elif isinstance(type_node, ReferenceType):
-            if type_node.name in enum_names:
-                underlying = enum_decls[type_node.name].underlying_type
+            if type_node.name in self._enum_names:
+                underlying = self._enum_decls[type_node.name].underlying_type
                 w(f"{indent}{self._emit_buf_put_enum(underlying, expr)};")
             else:
                 w(f"{indent}{type_node.name}.encode({expr}, buf);")
@@ -325,8 +330,7 @@ class JavaGenerator:
             raise RuntimeError(f"Unknown type in Java encode: {type_node}")
 
     def _emit_encode_list(  # pylint: disable=too-many-arguments
-            self, list_type: ListType, expr: str, w,
-            enum_names: Set[str], enum_decls: Dict[str, EnumDecl],
+            self, list_type: ListType, expr: str, w, *,
             indent: str, loop_var: str = "i") -> None:
         next_var = chr(ord(loop_var) + 1) if loop_var < "z" else loop_var + "_"
         inner = indent + "    "
@@ -349,8 +353,8 @@ class JavaGenerator:
             w(f"{inner}buf.put({expr}[{loop_var}]);")
             w(f"{indent}}}")
         elif isinstance(elem_type, ReferenceType):
-            if elem_type.name in enum_names:
-                underlying = enum_decls[elem_type.name].underlying_type
+            if elem_type.name in self._enum_names:
+                underlying = self._enum_decls[elem_type.name].underlying_type
                 w(f"{indent}for (int {loop_var} = 0; {loop_var} < {expr}.length; {loop_var}++) {{")
                 w(f"{inner}{self._emit_buf_put_enum(underlying, f'{expr}[{loop_var}]')};")
                 w(f"{indent}}}")
@@ -360,7 +364,7 @@ class JavaGenerator:
                 w(f"{indent}}}")
         elif isinstance(elem_type, ListType):
             w(f"{indent}for (int {loop_var} = 0; {loop_var} < {expr}.length; {loop_var}++) {{")
-            self._emit_encode_list(elem_type, f"{expr}[{loop_var}]", w, enum_names, enum_decls, inner, next_var)
+            self._emit_encode_list(elem_type, f"{expr}[{loop_var}]", w, indent=inner, loop_var=next_var)
             w(f"{indent}}}")
         else:
             raise RuntimeError(f"Unknown list element type in Java encode: {elem_type}")
@@ -382,26 +386,26 @@ class JavaGenerator:
         w("            }")
         w("        }")
 
-    def _emit_decode_fields(self, msg: MessageDecl, w, enum_names: Set[str], enum_decls: Dict[str, EnumDecl]) -> None:
+    def _emit_decode_fields(self, msg: MessageDecl, w) -> None:
         name = msg.name
         w(f"        static {name} _decodeFields(ByteBuffer buf) {{")
         w(f"            {name} out = new {name}();")
         for field in msg.fields:
-            self._emit_decode_field(field, w, enum_names, enum_decls, "            ")
+            self._emit_decode_field(field, w, "            ")
         w("            return out;")
         w("        }")
 
-    def _emit_decode_field(self, field: Field, w, enum_names: Set[str], enum_decls: Dict[str, EnumDecl], indent: str) -> None:  # pylint: disable=too-many-arguments
+    def _emit_decode_field(self, field: Field, w, indent: str) -> None:  # pylint: disable=too-many-arguments
         name = field.name
         if field.optional:
             w(f"{indent}out.has_{name} = (buf.get() != 0);")
             w(f"{indent}if (out.has_{name}) {{")
-            self._emit_decode_type(field.type, f"out.{name}", w, enum_names, enum_decls, indent + "    ")
+            self._emit_decode_type(field.type, f"out.{name}", w, indent=indent + "    ")
             w(f"{indent}}}")
         else:
-            self._emit_decode_type(field.type, f"out.{name}", w, enum_names, enum_decls, indent)
+            self._emit_decode_type(field.type, f"out.{name}", w, indent=indent)
 
-    def _emit_decode_type(self, type_node, target: str, w, enum_names: Set[str], enum_decls: Dict[str, EnumDecl], indent: str, loop_var: str = "i") -> None:  # pylint: disable=too-many-arguments
+    def _emit_decode_type(self, type_node, target: str, w, *, indent: str, loop_var: str = "i") -> None:  # pylint: disable=too-many-arguments
         if isinstance(type_node, PrimitiveType):
             w(f"{indent}{target} = {self._emit_buf_get(type_node.name)};")
         elif isinstance(type_node, StringType):
@@ -427,10 +431,10 @@ class JavaGenerator:
             w(f"{indent}    {target}[_i] = {self._emit_buf_get(elem_name)};")
             w(f"{indent}}}")
         elif isinstance(type_node, ListType):
-            self._emit_decode_list(type_node, target, w, enum_names, enum_decls, indent, loop_var)
+            self._emit_decode_list(type_node, target, w, indent=indent, loop_var=loop_var)
         elif isinstance(type_node, ReferenceType):
-            if type_node.name in enum_names:
-                underlying = enum_decls[type_node.name].underlying_type
+            if type_node.name in self._enum_names:
+                underlying = self._enum_decls[type_node.name].underlying_type
                 w(f"{indent}{target} = {type_node.name}.fromValue({self._emit_buf_get_enum(underlying)});")
             else:
                 w(f"{indent}{target} = {type_node.name}._decodeFields(buf);")
@@ -438,14 +442,13 @@ class JavaGenerator:
             raise RuntimeError(f"Unknown type in Java decode: {type_node}")
 
     def _emit_decode_list(  # pylint: disable=too-many-arguments
-            self, list_type: ListType, target: str, w,
-            enum_names: Set[str], enum_decls: Dict[str, EnumDecl],
+            self, list_type: ListType, target: str, w, *,
             indent: str, loop_var: str = "i") -> None:
         next_var = chr(ord(loop_var) + 1) if loop_var < "z" else loop_var + "_"
         inner = indent + "    "
         count_var = f"count_{loop_var}"
         elem_type = list_type.element_type
-        elem_java_type = self._java_type(elem_type, enum_names)
+        elem_java_type = self._java_type(elem_type)
         w(f"{indent}{{")
         w(f"{inner}int {count_var} = buf.getInt();")
         w(f"{inner}{target} = {self._java_new_array(elem_java_type, count_var)};")
@@ -469,8 +472,8 @@ class JavaGenerator:
             w(f"{inner}    buf.get({target}[{loop_var}]);")
             w(f"{inner}}}")
         elif isinstance(elem_type, ReferenceType):
-            if elem_type.name in enum_names:
-                underlying = enum_decls[elem_type.name].underlying_type
+            if elem_type.name in self._enum_names:
+                underlying = self._enum_decls[elem_type.name].underlying_type
                 w(f"{inner}for (int {loop_var} = 0; {loop_var} < {count_var}; {loop_var}++) {{")
                 w(f"{inner}    {target}[{loop_var}] = {elem_type.name}.fromValue({self._emit_buf_get_enum(underlying)});")
                 w(f"{inner}}}")
@@ -480,7 +483,7 @@ class JavaGenerator:
                 w(f"{inner}}}")
         elif isinstance(elem_type, ListType):
             w(f"{inner}for (int {loop_var} = 0; {loop_var} < {count_var}; {loop_var}++) {{")
-            self._emit_decode_list(elem_type, f"{target}[{loop_var}]", w, enum_names, enum_decls, inner + "    ", next_var)
+            self._emit_decode_list(elem_type, f"{target}[{loop_var}]", w, indent=inner + "    ", loop_var=next_var)
             w(f"{inner}}}")
         else:
             raise RuntimeError(f"Unknown list element type in Java decode: {elem_type}")
@@ -501,7 +504,7 @@ class JavaGenerator:
             "datetime_ns": "long",
         }[name]
 
-    def _java_type(self, type_node, enum_names: Set[str]) -> str:
+    def _java_type(self, type_node) -> str:
         if isinstance(type_node, PrimitiveType):
             return self._java_primitive(type_node.name)
         if isinstance(type_node, StringType):
@@ -509,14 +512,14 @@ class JavaGenerator:
         if isinstance(type_node, BytesType):
             return "byte[]"
         if isinstance(type_node, ListType):
-            return self._java_type(type_node.element_type, enum_names) + "[]"
+            return self._java_type(type_node.element_type) + "[]"
         if isinstance(type_node, ArrayType):
             return self._java_primitive(type_node.element_type.name) + "[]"
         if isinstance(type_node, ReferenceType):
             return type_node.name
         raise RuntimeError(f"Unknown type in Java type mapping: {type_node}")
 
-    def _java_default(self, type_node, enum_names: Set[str]) -> str:
+    def _java_default(self, type_node) -> str:
         if isinstance(type_node, PrimitiveType):
             return {
                 "i8":          "(byte) 0",
@@ -535,7 +538,7 @@ class JavaGenerator:
             java_elem = self._java_primitive(type_node.element_type.name)
             return f"new {java_elem}[{type_node.length}]"
         if isinstance(type_node, ListType):
-            elem_type_str = self._java_type(type_node.element_type, enum_names)
+            elem_type_str = self._java_type(type_node.element_type)
             return self._java_new_array(elem_type_str, "0")
         if isinstance(type_node, ReferenceType):
             return "null"

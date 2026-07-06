@@ -607,7 +607,7 @@ class CppGenerator:
         else:
             raise RuntimeError(f"Unknown field type in size: {type_node}")
 
-    def _emit_size_for_list(self, list_type: ListType, expr: str, w, indent: str, loop_var: str = "i"):  # pylint: disable=too-many-arguments
+    def _emit_size_for_list(self, list_type: ListType, expr: str, w, indent: str, *, loop_var: str = "i"):  # pylint: disable=too-many-arguments
         next_var = chr(ord(loop_var) + 1) if loop_var < "z" else loop_var + "_"
         inner_indent = indent + "    "
         w(f"{indent}total_bytes += sizeof(std::uint32_t);")
@@ -629,7 +629,7 @@ class CppGenerator:
             w(f"{indent}}}")
         elif isinstance(element_type, ListType):
             w(f"{indent}for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
-            self._emit_size_for_list(element_type, f"{expr}.data[{loop_var}]", w, inner_indent, next_var)
+            self._emit_size_for_list(element_type, f"{expr}.data[{loop_var}]", w, inner_indent, loop_var=next_var)
             w(f"{indent}}}")
         else:
             raise RuntimeError(f"Unsupported list element type in size: {element_type}")
@@ -710,7 +710,7 @@ class CppGenerator:
         elif isinstance(type_node, ArrayType):
             self._emit_encode_array(type_node, name, w)
         elif isinstance(type_node, ListType):
-            self._emit_encode_list(type_node, f"message.{name}", name, w, "    ")
+            self._emit_encode_list(type_node, f"message.{name}", name, w, indent="    ")
         elif isinstance(type_node, ReferenceType):
             w("    {")
             w("        std::size_t element_bytes_written = 0;")
@@ -742,7 +742,7 @@ class CppGenerator:
             w(f"        bytes_remaining -= {width};")
             w("    }")
 
-    def _emit_encode_list(self, list_type: ListType, expr: str, suffix: str, w, indent: str, loop_var: str = "i"):  # pylint: disable=too-many-arguments,too-many-statements
+    def _emit_encode_list(self, list_type: ListType, expr: str, suffix: str, w, *, indent: str, loop_var: str = "i"):  # pylint: disable=too-many-arguments,too-many-statements
         next_var = chr(ord(loop_var) + 1) if loop_var < "z" else loop_var + "_"
         inner_indent = indent + "    "
         w(f"{indent}if (bytes_remaining < sizeof(std::uint32_t)) return false;")
@@ -790,7 +790,7 @@ class CppGenerator:
             w(f"{indent}}}")
         elif isinstance(element_type, ListType):
             w(f"{indent}for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
-            self._emit_encode_list(element_type, f"{expr}.data[{loop_var}]", f"{suffix}_{loop_var}", w, inner_indent, next_var)
+            self._emit_encode_list(element_type, f"{expr}.data[{loop_var}]", f"{suffix}_{loop_var}", w, indent=inner_indent, loop_var=next_var)
             w(f"{indent}}}")
         else:
             raise RuntimeError(f"Unsupported list element type in encode: {element_type}")
@@ -857,7 +857,7 @@ class CppGenerator:
             width = self._primitive_wire_size(type_node.name)
             cpp = self._cpp_primitive_type(type_node.name)
             w(f"    if (bytes_remaining < {width}) return false;")
-            self._emit_read_primitive(type_node.name, cpp, f"out.{fname}", "    ", w)
+            self._emit_read_primitive(type_node.name, cpp, f"out.{fname}", w, indent="    ")
             w(f"    read_cursor += {width};")
             w(f"    bytes_remaining -= {width};")
         elif isinstance(type_node, StringType):
@@ -885,7 +885,7 @@ class CppGenerator:
         elif isinstance(type_node, ArrayType):
             self._emit_decode_array(type_node, fname, w)
         elif isinstance(type_node, ListType):
-            self._emit_decode_list(type_node, f"out.{fname}", fname, w, "    ")
+            self._emit_decode_list(type_node, f"out.{fname}", fname, w, indent="    ")
         elif isinstance(type_node, ReferenceType):
             w(f"    if (!decode_{type_node.name}(out.{fname}, read_cursor, bytes_remaining, decode_arena, arena_bytes_needed)) return false;")
         else:
@@ -901,12 +901,12 @@ class CppGenerator:
         w(f"    for (std::size_t i = 0; i < {length}; ++i) {{")
         width = self._primitive_wire_size(element_name)
         w(f"        if (bytes_remaining < {width}) return false;")
-        self._emit_read_primitive(element_name, element_cpp, f"out.{field_name}[i]", "        ", w)
+        self._emit_read_primitive(element_name, element_cpp, f"out.{field_name}[i]", w, indent="        ")
         w(f"        read_cursor += {width};")
         w(f"        bytes_remaining -= {width};")
         w("    }")
 
-    def _emit_decode_list(self, list_type: ListType, expr: str, suffix: str, w, indent: str, loop_var: str = "i"):  # pylint: disable=too-many-arguments,too-many-statements
+    def _emit_decode_list(self, list_type: ListType, expr: str, suffix: str, w, *, indent: str, loop_var: str = "i"):  # pylint: disable=too-many-arguments,too-many-statements
         next_var = chr(ord(loop_var) + 1) if loop_var < "z" else loop_var + "_"
         inner_indent = indent + "    "
         w(f"{indent}if (bytes_remaining < sizeof(std::uint32_t)) return false;")
@@ -938,7 +938,7 @@ class CppGenerator:
             w(f"{inner_indent}    for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
             w(f"{inner_indent}        if (bytes_remaining < {width}) return false;")
             w(f"{inner_indent}        {element_cpp}& primitive_element_{suffix} = arena_exhausted ? dummy_primitive_{suffix} : {expr}.data[{loop_var}];")
-            self._emit_read_primitive(element_type.name, element_cpp, f"primitive_element_{suffix}", inner_indent + "        ", w)
+            self._emit_read_primitive(element_type.name, element_cpp, f"primitive_element_{suffix}", w, indent=inner_indent + "        ")
             w(f"{inner_indent}        read_cursor += {width};")
             w(f"{inner_indent}        bytes_remaining -= {width};")
             w(f"{inner_indent}    }}")
@@ -1019,7 +1019,7 @@ class CppGenerator:
             w(f"{inner_indent}    for (std::size_t {loop_var} = 0; {loop_var} < {expr}.size; ++{loop_var}) {{")
             w(f"{inner_indent}        {inner_element_cpp}& element_{suffix} = arena_exhausted ? dummy_{suffix} : {expr}.data[{loop_var}];")
             w(f"{inner_indent}        element_{suffix} = {inner_element_cpp}{{}};")
-            self._emit_decode_list(element_type, f"element_{suffix}", f"{suffix}_{loop_var}", w, inner_indent + "        ", next_var)
+            self._emit_decode_list(element_type, f"element_{suffix}", f"{suffix}_{loop_var}", w, indent=inner_indent + "        ", loop_var=next_var)
             w(f"{inner_indent}    }}")
             w(f"{inner_indent}}}")
         else:
@@ -1176,7 +1176,7 @@ class CppGenerator:
         w("    return total;")
         w("}")
 
-    def _emit_decode_arena_size_for_field(self, type_node, total_var: str, w, indent: str, max_depth: int):  # pylint: disable=too-many-arguments
+    def _emit_decode_arena_size_for_field(self, type_node, total_var: str, w, indent: str, *, max_depth: int):  # pylint: disable=too-many-arguments
         if max_depth == 0:
             return
         if isinstance(type_node, ListType):
@@ -1194,7 +1194,7 @@ class CppGenerator:
             elif isinstance(element_type, ListType):
                 inner_cpp = self._cpp_type_view(element_type)
                 w(f"{indent}{total_var} += sizeof(ListView<{inner_cpp}>) * max_elements_per_list;")
-                self._emit_decode_arena_size_for_field(element_type, total_var, w, indent, max_depth - 1)
+                self._emit_decode_arena_size_for_field(element_type, total_var, w, indent, max_depth=max_depth - 1)
         elif isinstance(type_node, ReferenceType):
             w(f"{indent}{total_var} += max_decode_arena_bytes_{type_node.name}(max_elements_per_list);")
 
@@ -1206,7 +1206,7 @@ class CppGenerator:
         w("    return total;")
         w("}")
 
-    def _emit_encode_arena_size_for_field(self, type_node, total_var: str, w, indent: str, max_depth: int):  # pylint: disable=too-many-arguments
+    def _emit_encode_arena_size_for_field(self, type_node, total_var: str, w, indent: str, *, max_depth: int):  # pylint: disable=too-many-arguments
         if max_depth == 0:
             return
         if isinstance(type_node, ListType):
@@ -1224,7 +1224,7 @@ class CppGenerator:
             elif isinstance(element_type, ListType):
                 inner_cpp = self._cpp_type_owning(element_type)
                 w(f"{indent}{total_var} += sizeof(ListView<{inner_cpp}>) * max_elements_per_list;")
-                self._emit_encode_arena_size_for_field(element_type, total_var, w, indent, max_depth - 1)
+                self._emit_encode_arena_size_for_field(element_type, total_var, w, indent, max_depth=max_depth - 1)
         elif isinstance(type_node, ReferenceType):
             w(f"{indent}{total_var} += max_encode_arena_bytes_{type_node.name}(max_elements_per_list);")
 
@@ -1258,7 +1258,7 @@ class CppGenerator:
         else:
             raise RuntimeError(f"Unsupported primitive type in write: {primitive_name}")
 
-    def _emit_read_primitive(self, primitive_name: str, cpp_type: str, target: str, indent: str, w):  # pylint: disable=too-many-arguments
+    def _emit_read_primitive(self, primitive_name: str, cpp_type: str, target: str, w, *, indent: str):  # pylint: disable=too-many-arguments
         if primitive_name == "i8":
             w(f"{indent}{target} = static_cast<{cpp_type}>(*read_cursor);")
         elif primitive_name == "char":
