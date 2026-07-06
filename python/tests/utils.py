@@ -44,11 +44,26 @@ def compile_and_load(dsl_text: str, namespace: str = "ns"):
         (tmp / "bindings.cpp").write_text(bindings_code)
         (tmp / "CMakeLists.txt").write_text(_cmakelists())
 
-        subprocess.check_call(
-            ["cmake", "-S", str(tmp), "-B", str(tmp / "build")],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
+        configure_cmd = ["cmake", "-S", str(tmp), "-B", str(tmp / "build")]
+        # Help cmake find pybind11 when it is pip-installed (e.g. a RHEL8 venv)
+        # rather than provided as a system cmake package (as on the dev box,
+        # where the pybind11 Python module is absent but /usr/lib/cmake/pybind11
+        # exists). When importable, point find_package straight at its cmake dir;
+        # otherwise fall back to cmake's default search.
+        try:
+            import pybind11
+            configure_cmd.append(f"-Dpybind11_DIR={pybind11.get_cmake_dir()}")
+        except Exception:
+            pass
+
+        configure_result = subprocess.run(
+            configure_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
         )
+        if configure_result.returncode != 0:
+            raise RuntimeError(f"cmake configure failed:\n{configure_result.stdout}")
 
         build_result = subprocess.run(
             ["cmake", "--build", str(tmp / "build")],
