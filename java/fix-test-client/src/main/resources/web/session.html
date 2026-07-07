@@ -39,7 +39,7 @@
         </div>
         <div class="form-row">
             <label>Proprietary logon</label>
-            <input type="checkbox" id="proprietary-logon">
+            <input type="checkbox" id="proprietary-logon" onchange="onProprietaryChange()">
         </div>
         <div class="form-row">
             <label>Starting seq num</label>
@@ -234,30 +234,66 @@ async function loadLastSession() {
 }
 
 let prevLoggedOn = null;
-let ports = { plainPort: null, tlsPort: null };
+let ports = { plainPort: null, tlsPort: null, proprietaryPort: null };
+let tlsConfigured = false;
 
 function updatePortDisplay() {
+    const proprietary = document.getElementById('proprietary-logon').checked;
     const useTls = document.getElementById('use-tls').checked;
-    const port = useTls ? ports.tlsPort : ports.plainPort;
+    let port;
+    if (proprietary) {
+        port = ports.proprietaryPort;
+    } else {
+        port = useTls ? ports.tlsPort : ports.plainPort;
+    }
     const el = document.getElementById('port-display');
     if (el) {
         el.textContent = port != null ? '→ port ' + port : '';
     }
 }
 
+// Proprietary logon does not and cannot use TLS. While proprietary is ticked,
+// force TLS off and grey it out; restore its configured state when unticked.
+function onProprietaryChange() {
+    const proprietary = document.getElementById('proprietary-logon').checked;
+    const tlsCheckbox = document.getElementById('use-tls');
+    if (tlsCheckbox) {
+        if (proprietary) {
+            tlsCheckbox.checked  = false;
+            tlsCheckbox.disabled = true;
+            tlsCheckbox.title    = 'Proprietary logon does not use TLS';
+        } else {
+            applyTlsAvailability();
+        }
+    }
+    updatePortDisplay();
+}
+
+function applyTlsAvailability() {
+    const tlsCheckbox = document.getElementById('use-tls');
+    if (!tlsCheckbox) {
+        return;
+    }
+    if (!tlsConfigured) {
+        tlsCheckbox.checked  = false;
+        tlsCheckbox.disabled = true;
+        tlsCheckbox.title    = 'TLS is not configured on the gateway';
+    } else {
+        tlsCheckbox.checked  = true;
+        tlsCheckbox.disabled = false;
+        tlsCheckbox.title    = '';
+    }
+}
+
 async function loadPorts() {
     const data = await apiGet('/api/session/ports');
     ports = data;
-    const tlsCheckbox = document.getElementById('use-tls');
-    if (tlsCheckbox) {
-        if (!data.tlsEnabled) {
-            tlsCheckbox.checked   = false;
-            tlsCheckbox.disabled  = true;
-            tlsCheckbox.title     = 'TLS is not configured on the gateway';
-        } else {
-            tlsCheckbox.disabled  = false;
-            tlsCheckbox.title     = '';
-        }
+    tlsConfigured = !!data.tlsEnabled;
+    // Proprietary takes precedence: if it is ticked, keep TLS greyed out.
+    if (document.getElementById('proprietary-logon').checked) {
+        onProprietaryChange();
+    } else {
+        applyTlsAvailability();
     }
     updatePortDisplay();
 }

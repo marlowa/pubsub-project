@@ -10,6 +10,7 @@ import com.pubsub.fixtestclient.script.FixSessionBinding;
 import com.pubsub.fixtestclient.script.ScriptRunner;
 import com.pubsub.fixtestclient.web.ConfigHandler;
 import com.pubsub.fixtestclient.web.LogHandler;
+import com.pubsub.fixtestclient.web.LogoHandler;
 import com.pubsub.fixtestclient.web.MessagesHandler;
 import com.pubsub.fixtestclient.web.ScriptHandler;
 import com.pubsub.fixtestclient.web.SessionHandler;
@@ -45,11 +46,13 @@ public class Main {
         FixHelper fixHelper = new FixHelper();
         ScriptRunner scriptRunner = new ScriptRunner(sessionBinding, fixHelper, messageCapture);
 
-        SessionHandler sessionHandler = new SessionHandler(fixEngine, config.gatewayPort(), config.tlsGatewayPort(), config.tlsEnabled());
+        SessionHandler sessionHandler = new SessionHandler(fixEngine, config.gatewayPort(), config.tlsGatewayPort(),
+                config.proprietaryGatewayPort(), config.tlsEnabled());
         ScriptHandler scriptHandler = new ScriptHandler(scriptRunner, config.scriptsDir());
         MessagesHandler messagesHandler = new MessagesHandler(fixEngine, blotterStore);
         ConfigHandler configHandler = new ConfigHandler(configPath);
         LogHandler logHandler = new LogHandler(logBuffer);
+        LogoHandler logoHandler = new LogoHandler(config.logoPath());
 
         Javalin app = Javalin.create(cfg -> {
             cfg.staticFiles.add(conf -> {
@@ -82,6 +85,9 @@ public class Main {
 
         app.get("/api/logs",               logHandler::getSnapshot);
         app.sse("/api/logs/stream",        logHandler::stream);
+
+        // Overrides the bundled /web/logo.png static asset when [web] logo_path is set.
+        app.get("/logo.png",               logoHandler::getLogo);
 
         app.exception(IllegalArgumentException.class, (e, ctx) ->
                 ctx.status(400).json(java.util.Map.of("error", e.getMessage())));

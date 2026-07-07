@@ -19,19 +19,21 @@ public class SessionHandler {
     private final FixEngine fixEngine;
     private final int plainPort;
     private final int tlsPort;
+    private final int proprietaryPort;
     private final boolean tlsEnabled;
 
     private volatile LastSession lastSession;
 
-    public SessionHandler(FixEngine fixEngine, int plainPort, int tlsPort, boolean tlsEnabled) {
-        this.fixEngine  = fixEngine;
-        this.plainPort  = plainPort;
-        this.tlsPort    = tlsPort;
-        this.tlsEnabled = tlsEnabled;
+    public SessionHandler(FixEngine fixEngine, int plainPort, int tlsPort, int proprietaryPort, boolean tlsEnabled) {
+        this.fixEngine       = fixEngine;
+        this.plainPort       = plainPort;
+        this.tlsPort         = tlsPort;
+        this.proprietaryPort = proprietaryPort;
+        this.tlsEnabled      = tlsEnabled;
     }
 
     public void getPorts(Context ctx) {
-        ctx.json(Map.of("plainPort", plainPort, "tlsPort", tlsPort, "tlsEnabled", tlsEnabled));
+        ctx.json(Map.of("plainPort", plainPort, "tlsPort", tlsPort, "proprietaryPort", proprietaryPort, "tlsEnabled", tlsEnabled));
     }
 
     public void getStatus(Context ctx) {
@@ -60,6 +62,11 @@ public class SessionHandler {
         LogonMode logonMode = "true".equals(ctx.formParam("proprietaryLogon"))
                 ? LogonMode.PROPRIETARY
                 : LogonMode.STANDARD;
+
+        if (logonMode == LogonMode.PROPRIETARY && useTls) {
+            ctx.status(400).json(Map.of("ok", false, "error", "Proprietary logon cannot use TLS"));
+            return;
+        }
 
         if (password == null || password.isEmpty()) {
             ctx.status(400).json(Map.of("ok", false, "error", "Password is required"));

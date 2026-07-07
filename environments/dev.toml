@@ -416,6 +416,7 @@ ha_fence_file_path                   = "/dev/shm/mep_secondary_fence"
 server_port      = 8081
 fix_gateway_port     = 9879
 fix_tls_gateway_port = 9880
+fix_proprietary_gateway_port = 30994
 fix_tls_enabled      = true
 
 # ── Admin service ──────────────────────────────────────────────────────────────

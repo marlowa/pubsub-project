@@ -169,7 +169,7 @@ button:disabled {
     padding: 2px 8px;
 }
 
-/* Row background colours applied to tr so that the sticky last-child
+/* Row background colours applied to tr so that the sticky first-child
    column can use background: inherit and always match the row. */
 #blotter thead tr        { background: #ccc; }
 #blotter tbody tr        { background: white; }
@@ -177,14 +177,14 @@ button:disabled {
 #blotter tr.er-cancelled { background: #fce8e8; }
 #blotter tr.er-error     { background: #f08080; }
 
-/* Sticky action column — always visible at the right edge.
+/* Sticky action column — always visible at the left edge.
    background: inherit picks up the tr colour set above. */
-#blotter th:last-child,
-#blotter td:last-child {
+#blotter th:first-child,
+#blotter td:first-child {
     position: sticky;
-    right: 0;
+    left: 0;
     background: inherit;
-    border-left: 1px solid #aaa;
+    border-right: 1px solid #aaa;
 }
 
 /* ── Script editor ────────────────────────────────────────────── */
@@ -257,3 +257,18 @@ button:disabled {
 .state-running   { color: #0a0; }
 .state-completed { color: #060; }
 .state-failed    { color: #c00; }
+
+/* ── Company logo ─────────────────────────────────────────────── */
+
+/* Pinned to the bottom-right corner of every page. PNG so a logo with
+   transparency alpha-blends over whatever is behind it. */
+#company-logo {
+    position: fixed;
+    right: 12px;
+    bottom: 12px;
+    max-width: 180px;
+    max-height: 54px;
+    height: auto;
+    pointer-events: none;
+    z-index: 100;
+}

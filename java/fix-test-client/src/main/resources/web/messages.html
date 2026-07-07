@@ -60,6 +60,7 @@
         <table id="blotter">
             <thead>
                 <tr>
+                    <th></th>
                     <th>Time</th>
                     <th>Dir</th>
                     <th>Seq</th>
@@ -77,7 +78,6 @@
                     <th>OrdType</th>
                     <th>CumQty</th>
                     <th>LeavesQty</th>
-                    <th></th>
                 </tr>
             </thead>
             <tbody id="blotter-body"></tbody>
@@ -164,6 +164,15 @@ function renderBlotter(rows) {
             }
         }
 
+        const actionTd = document.createElement('td');
+        if (row.direction === 'OUT' && !row.origClOrdId && !isOrderTerminal(rows, row.clOrdId)) {
+            const btn = document.createElement('button');
+            btn.textContent = 'Cancel';
+            btn.onclick = () => prefillCancel(row.clOrdId, row.symbol, row.side, row.ordQty);
+            actionTd.appendChild(btn);
+        }
+        tr.appendChild(actionTd);
+
         const cells = [
             row.time, row.direction, row.seqNum,
             row.clOrdId, row.origClOrdId, row.orderId, row.execId,
@@ -180,14 +189,6 @@ function renderBlotter(rows) {
             tr.appendChild(td);
         }
 
-        const actionTd = document.createElement('td');
-        if (row.direction === 'OUT' && !row.origClOrdId && !isOrderTerminal(rows, row.clOrdId)) {
-            const btn = document.createElement('button');
-            btn.textContent = 'Cancel';
-            btn.onclick = () => prefillCancel(row.clOrdId, row.symbol, row.side, row.ordQty);
-            actionTd.appendChild(btn);
-        }
-        tr.appendChild(actionTd);
         tbody.appendChild(tr);
     }
 

@@ -249,10 +249,19 @@ public class FixEngine {
         settings.setString("StartTime",               "00:00:00");
         settings.setString("EndTime",                 "00:00:00");
 
+        int connectPort;
+        if (logonMode == LogonMode.PROPRIETARY) {
+            connectPort = config.proprietaryGatewayPort();
+        } else if (useTls) {
+            connectPort = config.tlsGatewayPort();
+        } else {
+            connectPort = config.gatewayPort();
+        }
+
         SessionID sid = new SessionID("FIXT.1.1", compId, config.targetCompId());
         settings.setString(sid, "BeginString",       "FIXT.1.1");
         settings.setString(sid, "SocketConnectHost", config.gatewayHost());
-        settings.setString(sid, "SocketConnectPort", String.valueOf(useTls ? config.tlsGatewayPort() : config.gatewayPort()));
+        settings.setString(sid, "SocketConnectPort", String.valueOf(connectPort));
 
         if (useTls) {
             settings.setString(sid, "SocketUseSSL",            "Y");

@@ -31,6 +31,15 @@ function buildChrome() {
     chrome.appendChild(navRow);
     chrome.appendChild(statusRow);
     document.body.insertBefore(chrome, document.body.firstChild);
+
+    // Company logo, pinned to the bottom-right corner of every page. Ships with a
+    // default placeholder at /logo.png; replace that file to brand the client.
+    // A PNG is used so a logo with transparency alpha-blends over the page.
+    const logo = document.createElement('img');
+    logo.id = 'company-logo';
+    logo.src = '/logo.png';
+    logo.alt = 'Company logo';
+    document.body.appendChild(logo);
 }
 
 function updateStatusStrip(status) {

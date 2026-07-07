@@ -10,6 +10,10 @@ scripts_dir = "test-scripts"
 [fix]
 gateway_host = "192.168.1.1"
 gateway_port = 7777
+proprietary_gateway_port = 8888
 target_comp_id = "TEST_GW"
 trust_store_path = "certs/test.jks"
 trust_store_password = "test_pass"
+
+[web]
+logo_path = "certs/test-logo.png"

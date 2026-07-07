@@ -11,10 +11,12 @@ public record Config(
         String gatewayHost,
         int gatewayPort,
         int tlsGatewayPort,
+        int proprietaryGatewayPort,
         boolean tlsEnabled,
         String targetCompId,
         String trustStorePath,
-        String trustStorePassword
+        String trustStorePassword,
+        String logoPath
 ) {
     public static Config load(String path) {
         Toml toml = new Toml().read(new File(path));
@@ -26,10 +28,12 @@ public record Config(
                 toml.getString("fix.gateway_host", "127.0.0.1"),
                 gatewayPort,
                 toml.getLong("fix.tls_gateway_port", (long) gatewayPort).intValue(),
+                toml.getLong("fix.proprietary_gateway_port", 30994L).intValue(),
                 toml.getBoolean("fix.tls_enabled", false),
                 toml.getString("fix.target_comp_id", "GATEWAY"),
                 toml.getString("fix.trust_store_path", "config/fix_gateway_trust.jks"),
-                toml.getString("fix.trust_store_password", "pubsub_dev")
+                toml.getString("fix.trust_store_password", "pubsub_dev"),
+                toml.getString("web.logo_path", "")
         );
     }
 }

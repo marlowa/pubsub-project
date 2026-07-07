@@ -5,6 +5,7 @@ port = ${fix_test_client_server_port}
 gateway_host         = "127.0.0.1"
 gateway_port         = ${fix_test_client_fix_gateway_port}
 tls_gateway_port     = ${fix_test_client_fix_tls_gateway_port}
+proprietary_gateway_port = ${fix_test_client_fix_proprietary_gateway_port}
 tls_enabled          = ${fix_test_client_fix_tls_enabled}
 target_comp_id       = "GATEWAY"
 trust_store_path     = "config/fix_gateway_trust.jks"
@@ -15,3 +16,9 @@ output_dir = "output"
 
 [scripts]
 scripts_dir = "scripts"
+
+[web]
+# Company logo shown in the bottom-right corner of every page. Point this at a
+# file on disk (PNG recommended so transparency alpha-blends over the page).
+# Leave empty to use the bundled default logo.
+logo_path = ""
