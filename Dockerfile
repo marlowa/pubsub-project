@@ -44,7 +44,7 @@ RUN dnf install -y maven \
 # Python tooling for the DSL test suite and linting
 RUN dnf install -y python3-pip \
     && dnf clean all \
-    && pip3 install pytest pylint tomli
+    && pip3 install pytest pylint tomli gcovr
 
 # Liquibase — copied from the host installation in docker-deps/ (no internet required)
 COPY docker-deps/liquibase /opt/liquibase

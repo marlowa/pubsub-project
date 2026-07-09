@@ -9,6 +9,7 @@ import subprocess
 import sys
 import os
 import platform
+import re
 import shutil
 from pathlib import Path
 
@@ -60,53 +61,50 @@ def run_pytest(source_dir):
 
 
 def generate_coverage_report(build_dir, source_dir):
-    """Generate LCOV + genhtml coverage report"""
+    """Generate an HTML coverage report with gcovr.
+
+    Replaces the earlier lcov/genhtml pipeline. RHEL8/Rocky 8 ship lcov 1.14,
+    which rejects the lcov 2.x options that pipeline relied on
+    (--ignore-errors mismatch, --omit-lines, --erase-functions) and left an empty
+    report with the project's own code filtered out. gcovr is pip-installable (no
+    root, no CPAN), reads the same --coverage instrumentation the CMake build
+    already emits, and writes its own HTML, so it works uniformly on the RHEL8
+    target and on modern dev machines.
+    """
     print("\n============================================================")
-    print("Generating code coverage report")
+    print("Generating code coverage report (gcovr)")
     print("============================================================")
 
-    raw_info = build_dir / "coverage.raw.info"
-    filtered_info = build_dir / "coverage.info"
     html_dir = build_dir / "coverage_html"
+    html_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. Capture coverage
-    run_command([
-        "lcov",
-        "--capture",
-        "--directory", str(build_dir),
-        "--output-file", str(raw_info),
-        "--rc", "geninfo_unexecuted_blocks=1",
-        "--ignore-errors", "mismatch"
-    ], description="Capturing coverage data")
+    # Keep hand-written project source; drop system headers, third-party code,
+    # tests, test helpers, and generated code. Rooting at the source tree keeps
+    # /usr headers out automatically; every generated source lives physically
+    # under the build directory, so exclude that whole subtree.
+    excludes = [
+        re.escape(str(build_dir.resolve())),
+        r".*/thirdparty/.*",
+        r".*/tests/.*",
+        r".*/tests_common/.*",
+        r".*/integration_tests/.*",
+    ]
 
-    # 2. Filter out system, thirdparty, tests, test helpers, and generated code
-    run_command([
-        "lcov",
-        "--remove", str(raw_info),
-        "/usr/*",
-        "*/thirdparty/*",
-        "*/tests/*",
-        "*/tests_common/*",
-        "*/integration_tests/*",
-        "*/build/libraries/pubsub_itc_fw/dsl/*",
-        "*/build/libraries/pubsub_itc_fw/pubsub_itc_fw/*",
-        "*/build/generated_dsl/*",
-        "--output-file", str(filtered_info),
-        "--ignore-errors", "mismatch,unused",
-        "--omit-lines", "PUBSUB_LOG|^\\s+\"[^\"]*\"",
-        "--erase-functions", "FMT_COMPILE_STRING"
-    ], description="Filtering coverage data")
+    cmd = [
+        sys.executable, "-m", "gcovr",
+        "--root", str(source_dir),
+        str(build_dir),
+        # Match the old lcov --omit-lines: drop log macros and bare string lines.
+        "--exclude-lines-by-pattern", r'PUBSUB_LOG|^\s+"[^"]*"',
+        "--exclude-throw-branches",
+        "--exclude-unreachable-branches",
+        "--print-summary",
+        "--html-details", "-o", str(html_dir / "index.html"),
+    ]
+    for pattern in excludes:
+        cmd += ["--exclude", pattern]
 
-    # 3. Generate HTML
-    run_command([
-        "genhtml",
-        str(filtered_info),
-        "--output-directory", str(html_dir),
-        "--legend",
-        "--title", "pubsub_itc_fw Code Coverage",
-        "--show-details",
-        "--ignore-errors", "mismatch"
-    ], description="Generating HTML coverage report")
+    run_command(cmd, description="Generating coverage report with gcovr")
 
     print("\n✓ Coverage report generated:")
     print(f"  {html_dir}/index.html")
