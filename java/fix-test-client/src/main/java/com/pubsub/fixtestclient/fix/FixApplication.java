@@ -35,6 +35,7 @@ public class FixApplication implements Application {
     private static final Pattern EXPECTING_SEQ_NUM = Pattern.compile("(?i)expecting\\s+(\\d+)");
 
     private static final int TAG_SENDING_TIME          = 52;
+    private static final int TAG_TRANSACT_TIME         = 60;
     private static final int TAG_RESET_SEQ_NUM_FLAG    = 141;
     private static final int TAG_PASSWORD              = 554;
     private static final int TAG_NEXT_EXPECTED_SEQ_NUM = 789;
@@ -178,6 +179,13 @@ public class FixApplication implements Application {
 
     @Override
     public void toApp(Message message, SessionID sessionId) throws DoNotSend {
+        // The proprietary gateway requires nanosecond precision on every UTCTimestamp
+        // field. Orders and cancels (from the web UI and from scripts) set TransactTime
+        // at QuickFIX/J's millisecond precision; rewrite it to nanoseconds here for the
+        // proprietary session only. The project gateway keeps the millisecond value.
+        if (logonMode == LogonMode.PROPRIETARY && message.isSetField(TAG_TRANSACT_TIME)) {
+            message.setString(TAG_TRANSACT_TIME, NANO_SENDING_TIME.format(Instant.now()));
+        }
     }
 
     @Override

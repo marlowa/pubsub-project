@@ -249,6 +249,15 @@ public class FixEngine {
         settings.setString("StartTime",               "00:00:00");
         settings.setString("EndTime",                 "00:00:00");
 
+        if (logonMode == LogonMode.PROPRIETARY) {
+            // The proprietary gateway requires nanosecond precision on every
+            // UTCTimestamp field and rejects milliseconds on non-logon messages
+            // (orders, logout). This makes engine-generated timestamps (SendingTime)
+            // nanosecond; TransactTime is rewritten in FixApplication.toApp. The
+            // project gateway keeps QuickFIX/J's millisecond default.
+            settings.setString("TimestampPrecision", "NANOS");
+        }
+
         int connectPort;
         if (logonMode == LogonMode.PROPRIETARY) {
             connectPort = config.proprietaryGatewayPort();
