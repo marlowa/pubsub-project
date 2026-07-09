@@ -60,6 +60,9 @@ Near-term tasks not tied to a specific slice.
 - **Doxygen navigation layer — clickable architecture maps** (item 18).  
   Hierarchy of SVG architecture maps embedded in Doxygen HTML. Each component is a clickable region linking to a curated `.dox` landing page. Tool: Graphviz/DOT (`URL` attribute → native SVG `<a>` elements, no JavaScript). See the full discussion in `pubsub_itc_fw_summary.md` under item 18.
 
+- **Adopt Conan for C++ dependency management** (build tooling).  
+  Replace the current `THIRDPARTY_DIR` + `*_VERSION` env-var scheme with a Conan `conanfile.py` pinning the C++ third-party deps (fmt, quill, argparse, tsl-robin-map, googletest — all in ConanCenter) plus a gcc / `cppstd=17` profile. Low-churn fit: the build already uses config-mode `find_package(<pkg> CONFIG)`, so Conan's `CMakeDeps` / `CMakeToolchain` generators slot in with minimal `CMakeLists` change. Conan is pip-installable, so no root needed on RHEL8. **Must be designed first:** the Docker build is deliberately offline/air-gapped (deps prebuilt, liquibase copied from host), whereas Conan defaults to fetching from ConanCenter — so it needs a local Conan remote or a pre-seeded cache baked into the image. Approach when picked up: spike on a branch, validate the offline path in the Rocky 8 container. Deferred for now — the current env-var scheme works; not urgent.
+
 ### Known Issues
 
 - **Shutdown timeout errors** — after the timer SEGV fix, "did not stop within shutdown_timeout" and "failed to join within shutdown_timeout" errors still appear in timer test logs. Root cause not yet identified.
