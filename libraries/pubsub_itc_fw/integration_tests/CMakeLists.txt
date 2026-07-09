@@ -30,7 +30,6 @@ target_link_libraries(pubsub_itc_fw_integration_tests PRIVATE
     pubsub_itc_fw
     pubsub_itc_fw_test_helpers
     GTest::gtest_main
-    Boost::filesystem
 )
 
 target_include_directories(pubsub_itc_fw_integration_tests PRIVATE

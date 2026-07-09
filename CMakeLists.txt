@@ -163,7 +163,6 @@ message(STATUS "argparse_DIR:     ${argparse_DIR}")
 message(STATUS "GTest_DIR:        ${GTest_DIR}")
 message(STATUS "tsl-robin-map_DIR: ${tsl-robin-map_DIR}")
 
-find_package(Boost REQUIRED COMPONENTS system filesystem)
 find_package(fmt REQUIRED CONFIG)
 find_package(quill REQUIRED CONFIG)
 find_package(argparse REQUIRED CONFIG)

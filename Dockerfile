@@ -8,9 +8,6 @@ RUN dnf install -y \
     cmake \
     make \
     python38 \
-    boost-devel \
-    boost-filesystem \
-    boost-system \
     findutils \
     wget \
     tar \

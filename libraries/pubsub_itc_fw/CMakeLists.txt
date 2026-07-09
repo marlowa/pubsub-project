@@ -106,7 +106,6 @@ target_include_directories(pubsub_itc_fw SYSTEM PRIVATE
 # Link dependencies
 # ------------------------------------------------------------
 target_link_libraries(pubsub_itc_fw PUBLIC
-        Boost::boost
         fmt::fmt
         quill::quill
         argparse::argparse
@@ -114,6 +113,15 @@ target_link_libraries(pubsub_itc_fw PUBLIC
         ssl
         crypto
 )
+
+# std::filesystem (used by CpuPinning and several tests) needs libstdc++fs on
+# GCC < 9 (RHEL 8 / Rocky 8 ship GCC 8.5); on GCC 9+ (e.g. Mint 22.1) it is part
+# of libstdc++ and this is a no-op. PUBLIC so tests, integration tests, and
+# applications linking this library inherit the flag. Directory creation still
+# goes through the POSIX FileSystemUtils wrapper and does not rely on this.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9)
+    target_link_libraries(pubsub_itc_fw PUBLIC stdc++fs)
+endif()
 
 # ------------------------------------------------------------
 # Coverage instantiation TU
