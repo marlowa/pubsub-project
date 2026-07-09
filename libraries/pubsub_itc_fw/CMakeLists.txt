@@ -74,6 +74,7 @@ set(PUBSUB_ITC_FW_SRC
         src/TlsContext.cpp
         src/TlsState.cpp
         src/TlsRawBytesProtocolHandler.cpp
+        src/ConsoleCapture.cpp
 )
 
 # ------------------------------------------------------------

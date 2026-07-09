@@ -61,33 +61,42 @@ def run_pytest(source_dir):
 
 
 def generate_coverage_report(build_dir, source_dir):
-    """Generate an HTML coverage report with gcovr.
+    """Generate an HTML coverage report: gcovr captures, genhtml renders.
 
-    Replaces the earlier lcov/genhtml pipeline. RHEL8/Rocky 8 ship lcov 1.14,
-    which rejects the lcov 2.x options that pipeline relied on
-    (--ignore-errors mismatch, --omit-lines, --erase-functions) and left an empty
-    report with the project's own code filtered out. gcovr is pip-installable (no
-    root, no CPAN), reads the same --coverage instrumentation the CMake build
-    already emits, and writes its own HTML, so it works uniformly on the RHEL8
-    target and on modern dev machines.
+    RHEL8/Rocky 8 ship lcov 1.14, whose capture step (geninfo) rejects the
+    lcov 2.x options the original pipeline used and produced an empty report.
+    gcovr does the capture instead (pip-installable, no root, reads the same
+    --coverage instrumentation) and emits an lcov tracefile; genhtml renders it.
+    genhtml's rendering works fine on lcov 1.14 and gives the sortable, per-file
+    "rich" HTML that gcovr's own HTML lacks -- the 1.14 limitation was only in
+    capture, not rendering.
+
+    gcovr embeds a per-line source checksum (third DA field) and a VER line that
+    lcov 1.14's genhtml recomputes differently and rejects, so those are stripped
+    before rendering.
     """
     print("\n============================================================")
-    print("Generating code coverage report (gcovr)")
+    print("Generating code coverage report (gcovr capture + genhtml)")
     print("============================================================")
 
+    raw_info = build_dir / "coverage.raw.info"
+    clean_info = build_dir / "coverage.info"
     html_dir = build_dir / "coverage_html"
     html_dir.mkdir(parents=True, exist_ok=True)
 
-    # Keep hand-written project source; drop system headers, third-party code,
-    # tests, test helpers, and generated code. Rooting at the source tree keeps
-    # /usr headers out automatically; every generated source lives physically
-    # under the build directory, so exclude that whole subtree.
+    # Coverage focus is the libraries. Drop third-party code, the applications
+    # (examples, tested ad-hoc), tests, test helpers, and generated code under the
+    # build directory. gcovr matches --exclude against the path relative to --root
+    # (gcovr 8.6+), so a leading ".*/" misses a top-level directory like
+    # applications/; "(.*/)?NAME/.*" matches whether the directory is at the root,
+    # nested, or given as an absolute path (older gcovr matched absolute).
     excludes = [
-        re.escape(str(build_dir.resolve())),
-        r".*/thirdparty/.*",
-        r".*/tests/.*",
-        r".*/tests_common/.*",
-        r".*/integration_tests/.*",
+        r"(.*/)?" + re.escape(build_dir.name) + r"/.*",
+        r"(.*/)?thirdparty/.*",
+        r"(.*/)?applications/.*",
+        r"(.*/)?tests/.*",
+        r"(.*/)?tests_common/.*",
+        r"(.*/)?integration_tests/.*",
     ]
 
     cmd = [
@@ -99,12 +108,35 @@ def generate_coverage_report(build_dir, source_dir):
         "--exclude-throw-branches",
         "--exclude-unreachable-branches",
         "--print-summary",
-        "--html-details", "-o", str(html_dir / "index.html"),
+        "--lcov", str(raw_info),
     ]
     for pattern in excludes:
         cmd += ["--exclude", pattern]
 
-    run_command(cmd, description="Generating coverage report with gcovr")
+    run_command(cmd, description="Capturing coverage with gcovr")
+
+    # Strip gcovr's per-line source checksums and VER line so lcov 1.14's genhtml
+    # does not abort on a checksum it recomputes differently.
+    da_line = re.compile(r'^(DA:\d+,\d+),.*$')
+    cleaned = []
+    for line in raw_info.read_text(encoding="utf-8").splitlines(keepends=True):
+        if line.startswith("VER:"):
+            continue
+        cleaned.append(da_line.sub(r'\1', line))
+    clean_info.write_text("".join(cleaned), encoding="utf-8")
+
+    run_command(
+        [
+            "genhtml", str(clean_info),
+            "--output-directory", str(html_dir),
+            "--legend",
+            # Strip the repo root so genhtml groups by libraries/... instead of
+            # rendering divergent trees (e.g. scram_crypto) from the filesystem root.
+            "--prefix", str(source_dir),
+            "--title", "pubsub_itc_fw Code Coverage",
+        ],
+        description="Rendering HTML with genhtml",
+    )
 
     print("\n✓ Coverage report generated:")
     print(f"  {html_dir}/index.html")

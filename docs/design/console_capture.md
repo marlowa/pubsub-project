@@ -35,7 +35,7 @@ The one place all console output converges — regardless of language or API —
 | Consumer | **one reader thread** → Quill wrapper | Splits the byte stream into line records, logs each |
 | Activation | **opt-in**, installed in application `main()` | Zero cost when unused; keeps unit-test console backend unaffected |
 | Quill sinks | **file-only, no console sink** while active | Avoids an infinite feedback loop |
-| Saturation | **block + large pipe** (configurable) | Never lose diagnostics; stall only under pathological spew |
+| Saturation | **block + large pipe** | Never lose diagnostics; a stall needs pathological spew, which is itself a bug |
 | Crash handling | terminate handler + fatal-signal handlers with a final synchronous drain | Capture the last, most valuable message before the process dies |
 | Bootstrap errors | saved `dup` of original fd 2 | The one message allowed on the real console |
 
@@ -109,9 +109,10 @@ drains into Quill's async queue, so the pipe normally stays near-empty. Under a
 pathological sustained spew the pipe fills and, with a **blocking** write end,
 the writer stalls until the reader catches up. That is the safe default — we
 never drop diagnostics — and the stall only occurs under abuse that is itself a
-bug. A **non-blocking / drop-with-counter** policy is available for callers who
-must never stall (e.g. if console output could ever land near a hot path); it
-trades lost lines for guaranteed non-blocking. Configurable; default **block**.
+bug. A non-blocking, drop-under-pressure policy was considered and rejected: the one
+outcome we most want to avoid is losing the error or crash line, and console
+output should never sit near a latency-critical path — if it did, that is the bug
+to fix. The write end is therefore left **blocking**.
 
 ## Crash & terminate handling (the hard part)
 
@@ -167,9 +168,7 @@ backtrace trigger (or the capture level reconsidered).
 ```cpp
 class ConsoleCapture {                       // name provisional
 public:
-    enum class Saturation { block, drop };
     struct Options {
-        Saturation   saturation      = Saturation::block;
         std::size_t  pipe_capacity   = 1u << 20;   // 1 MiB
         std::size_t  max_line_length = 8u << 10;   // force-flush cap
         LogLevel     level           = LogLevel::error;  // any console write is a defect
