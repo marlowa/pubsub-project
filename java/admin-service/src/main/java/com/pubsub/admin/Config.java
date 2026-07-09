@@ -41,7 +41,7 @@ public record Config(
                 Integer.parseInt(props.getProperty("auth-service.admin-port", "7072")),
                 props.getProperty("auth-service.secondary-host", ""),
                 Integer.parseInt(props.getProperty("auth-service.secondary-admin-port", "0")),
-                Integer.parseInt(props.getProperty("server.port", "8080")),
+                Integer.parseInt(props.getProperty("server.port", "8082")),
                 props.getProperty("admin.users-file", "admin_users.toml"),
                 props.getProperty("brand.name", "PubSub Admin"),
                 props.getProperty("brand.logo-url", ""),

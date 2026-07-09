@@ -249,4 +249,4 @@ auth_service_host                 = "auth-primary.test-1.exchange.internal"  # R
 auth_service_admin_port           = 11072
 auth_service_secondary_host       = "auth-secondary.test-1.exchange.internal"  # REPLACE
 auth_service_secondary_admin_port = 11073
-server_port                       = 8080
+server_port                       = 8082
