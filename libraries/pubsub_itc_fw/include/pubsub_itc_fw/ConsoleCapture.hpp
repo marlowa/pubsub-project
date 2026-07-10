@@ -51,6 +51,8 @@ class QuillLogger;
  * writing the dump to the process's original stderr.
  */
 class ConsoleCapture : public ConsoleCaptureInterface {
+    class Impl; // implementation detail; defined in ConsoleCapture.cpp
+
   public:
     struct Options {
         size_t pipe_capacity_bytes = 1U << 20;  //!< Requested pipe size (best effort).
@@ -93,6 +95,48 @@ class ConsoleCapture : public ConsoleCaptureInterface {
     /// Overload using default Options (block, ERROR level, terminate handler on).
     [[nodiscard]] static std::unique_ptr<ConsoleCapture> install(QuillLogger& logger);
 
+    /**
+     * @brief RAII handle for a capture engine installed via install_engine().
+     *
+     * Restores the console (fds 1 and 2, handlers) when destroyed, exactly as the
+     * ConsoleCapture destructor does. Returned by value and consumed in place, so
+     * it is neither copyable nor movable.
+     */
+    class EngineHandle {
+      public:
+        ~EngineHandle();
+
+        EngineHandle(const EngineHandle&) = delete;
+        EngineHandle& operator=(const EngineHandle&) = delete;
+
+        /// True if the capture engine was installed (setup succeeded).
+        [[nodiscard]] bool installed() const {
+            return impl_ != nullptr;
+        }
+
+      private:
+        friend class ConsoleCapture;
+        explicit EngineHandle(std::unique_ptr<Impl> impl);
+
+        std::unique_ptr<Impl> impl_;
+    };
+
+    /**
+     * @brief Installs the capture engine feeding a custom sink instead of a Quill
+     *        logger.
+     *
+     * Uses the same file-descriptor, pipe, reader-thread and handler machinery as
+     * install(); only the record destination differs -- completed records go to
+     * @p sink.log_line() rather than through Quill.
+     *
+     * @param[in] sink    Receives each completed record; must outlive the handle.
+     * @param[in] options Tuning. `level` and `line_prefix` are ignored -- the sink
+     *                    decides what to do with each record.
+     * @return A handle whose installed() is true on success. The console is
+     *         restored when it is destroyed.
+     */
+    [[nodiscard]] static EngineHandle install_engine(ConsoleCaptureInterface& sink, const Options& options);
+
     /// Restores fds 1 and 2, stops the reader thread after a final drain, and
     /// removes any handlers this instance installed.
     ~ConsoleCapture();
@@ -103,12 +147,16 @@ class ConsoleCapture : public ConsoleCaptureInterface {
     ConsoleCapture& operator=(ConsoleCapture&&) = delete;
 
   private:
-    class Impl;
-    explicit ConsoleCapture(std::unique_ptr<Impl> impl);
+    ConsoleCapture(QuillLogger& logger, const Options& options);
 
     void log_line(const std::string& line) override;
 
-    std::unique_ptr<Impl> impl_;
+    static std::unique_ptr<Impl> create_engine(ConsoleCaptureInterface& sink, const Options& options);
+
+    QuillLogger& logger_;
+    FwLogLevel level_;
+    std::string line_prefix_;
+    std::unique_ptr<Impl> impl_{};
 };
 
 } // namespaces

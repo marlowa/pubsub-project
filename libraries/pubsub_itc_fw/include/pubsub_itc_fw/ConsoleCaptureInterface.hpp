@@ -25,6 +25,18 @@ class ConsoleCaptureInterface {
   public:
     virtual ~ConsoleCaptureInterface() = default;
 
+    /**
+     * @brief Reads @p read_fd until end of stream, emitting records as they complete.
+     *
+     * Loops read() into feed_bytes() until read() returns 0 (EOF) or an
+     * unrecoverable error, then flushes any trailing partial line. This is the
+     * reader-thread body, exposed so it can be driven directly against a plain
+     * pipe in tests.
+     *
+     * @param[in] read_fd Readable file descriptor drained until EOF.
+     */
+    void drain_fd_until_eof(int read_fd);
+
   protected:
     /**
      * @param[in] max_line_length Force-flush a newline-less run as one record once

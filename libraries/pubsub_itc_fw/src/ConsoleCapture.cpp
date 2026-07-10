@@ -68,12 +68,10 @@ void drain_pipe_to_fd(int pipe_read_fd, int dest_fd) {
 // handlers (static members below) can reach them.
 class ConsoleCapture::Impl {
   public:
-    Impl(QuillLogger& logger_reference, const Options& options_value) : logger(logger_reference), options(options_value) {}
+    explicit Impl(ConsoleCaptureInterface& sink_reference) : sink(sink_reference) {}
     ~Impl();
 
-    QuillLogger& logger;
-    Options options;
-    ConsoleCapture* owner = nullptr; //!< Set before the reader thread starts; receives the captured bytes.
+    ConsoleCaptureInterface& sink; //!< Receives the captured bytes via the reader thread.
 
     int pipe_read_fd = -1;
     int saved_stdout_fd = -1;
@@ -98,25 +96,14 @@ class ConsoleCapture::Impl {
 std::atomic<ConsoleCapture::Impl*> ConsoleCapture::Impl::active_instance{nullptr};
 
 void ConsoleCapture::log_line(const std::string& line) {
-    const std::string message = impl_->options.line_prefix + line;
-    PUBSUB_LOG_STR(impl_->logger, impl_->options.level, message);
+    const std::string message = line_prefix_ + line;
+    PUBSUB_LOG_STR(logger_, level_, message);
 }
 
 void ConsoleCapture::Impl::run_reader() {
-    std::vector<char> buffer(4096);
-
-    while (true) {
-        const ssize_t n = ::read(pipe_read_fd, buffer.data(), buffer.size());
-        if (n > 0) {
-            owner->feed_bytes(buffer.data(), static_cast<size_t>(n));
-        } else if (n == 0) {
-            break; // all write references to the pipe are gone (fds 1/2 restored)
-        } else if (errno != EINTR) {
-            break;
-        }
-    }
-
-    owner->flush_pending(); // emit any trailing partial line
+    // The reader loop lives on the interface so it can be tested against a plain
+    // pipe. It returns when fds 1/2 are restored (pipe write end closed -> EOF).
+    sink.drain_fd_until_eof(pipe_read_fd);
 }
 
 // The terminate handler runs in a normal (non-signal) context, but it still
@@ -209,17 +196,16 @@ ConsoleCapture::Impl::~Impl() {
     active_instance.compare_exchange_strong(expected, nullptr);
 }
 
-std::unique_ptr<ConsoleCapture> ConsoleCapture::install(QuillLogger& logger) {
-    return install(logger, Options{});
-}
-
-std::unique_ptr<ConsoleCapture> ConsoleCapture::install(QuillLogger& logger, const Options& options) {
+// Sets up the pipe, redirects fds 1/2, starts the reader thread feeding `sink`,
+// and installs the requested handlers. Shared by the Quill install() and the
+// custom-sink install_engine(). Returns nullptr (self-cleaning) on any failure.
+std::unique_ptr<ConsoleCapture::Impl> ConsoleCapture::create_engine(ConsoleCaptureInterface& sink, const Options& options) {
     // Only one instance may own the console at a time.
     if (Impl::active_instance.load() != nullptr) {
         return nullptr;
     }
 
-    auto impl = std::make_unique<Impl>(logger, options);
+    auto impl = std::make_unique<Impl>(sink);
 
     // Read end is close-on-exec (children must not inherit it); the write end is
     // deliberately NOT, so exec'd children keep writing to the captured fds 1/2.
@@ -271,16 +257,10 @@ std::unique_ptr<ConsoleCapture> ConsoleCapture::install(QuillLogger& logger, con
     // Publish before installing handlers / starting the reader so they can find us.
     Impl::active_instance.store(raw);
 
-    // The ConsoleCapture must exist before the reader thread starts: the thread
-    // feeds captured bytes back into it (line assembly and log_line live on the
-    // object, not on Impl).
-    auto capture = std::unique_ptr<ConsoleCapture>(new ConsoleCapture(std::move(impl)));
-    raw->owner = capture.get();
-
     try {
         raw->reader_thread.start([raw]() { raw->run_reader(); });
     } catch (...) {
-        return nullptr; // capture's destructor restores fds, clears active_instance, closes fds
+        return nullptr; // impl destructor restores fds, clears active_instance, closes fds
     }
 
     if (options.install_terminate_handler) {
@@ -299,10 +279,34 @@ std::unique_ptr<ConsoleCapture> ConsoleCapture::install(QuillLogger& logger, con
         raw->fatal_signal_handlers_installed = true;
     }
 
+    return impl;
+}
+
+std::unique_ptr<ConsoleCapture> ConsoleCapture::install(QuillLogger& logger) {
+    return install(logger, Options{});
+}
+
+std::unique_ptr<ConsoleCapture> ConsoleCapture::install(QuillLogger& logger, const Options& options) {
+    // The ConsoleCapture is the sink, so it must exist before the engine (whose
+    // reader thread feeds it) starts.
+    auto capture = std::unique_ptr<ConsoleCapture>(new ConsoleCapture(logger, options));
+    capture->impl_ = create_engine(*capture, options);
+    if (capture->impl_ == nullptr) {
+        return nullptr;
+    }
     return capture;
 }
 
-ConsoleCapture::ConsoleCapture(std::unique_ptr<Impl> impl) : ConsoleCaptureInterface(impl->options.max_line_length), impl_(std::move(impl)) {}
+ConsoleCapture::EngineHandle ConsoleCapture::install_engine(ConsoleCaptureInterface& sink, const Options& options) {
+    return EngineHandle(create_engine(sink, options));
+}
+
+ConsoleCapture::EngineHandle::EngineHandle(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
+
+ConsoleCapture::EngineHandle::~EngineHandle() = default; // Impl destructor performs the teardown
+
+ConsoleCapture::ConsoleCapture(QuillLogger& logger, const Options& options)
+    : ConsoleCaptureInterface(options.max_line_length), logger_(logger), level_(options.level), line_prefix_(options.line_prefix) {}
 
 ConsoleCapture::~ConsoleCapture() = default; // Impl destructor performs the teardown
 
