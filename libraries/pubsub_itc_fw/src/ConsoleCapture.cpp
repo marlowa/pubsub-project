@@ -17,6 +17,7 @@
 #include <unistd.h>
 
 #include <pubsub_itc_fw/ConsoleCapture.hpp>
+#include <pubsub_itc_fw/ConsoleCaptureCrashDump.hpp>
 #include <pubsub_itc_fw/ConsoleCaptureInterface.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
@@ -28,7 +29,10 @@ namespace {
 
 constexpr int fatal_signals[] = {SIGSEGV, SIGABRT, SIGBUS, SIGFPE};
 
-/// Async-signal-safe write of an entire buffer (retries short writes and EINTR).
+} // namespaces
+
+namespace console_capture_detail {
+
 void write_all_raw(int fd, const char* data, size_t length) {
     size_t written = 0;
     while (written < length) {
@@ -43,10 +47,6 @@ void write_all_raw(int fd, const char* data, size_t length) {
     }
 }
 
-/// Async-signal-safe: copy whatever is currently buffered in the pipe to dest_fd
-/// without blocking. Used by both crash handlers so the last console output still
-/// reaches disk without going through Quill (whose flush is async and unreliable
-/// at crash time -- see QuillLogger.hpp).
 void drain_pipe_to_fd(int pipe_read_fd, int dest_fd) {
     if (pipe_read_fd < 0 || dest_fd < 0) {
         return;
@@ -60,6 +60,36 @@ void drain_pipe_to_fd(int pipe_read_fd, int dest_fd) {
     while ((n = ::read(pipe_read_fd, buffer, sizeof(buffer))) > 0) {
         write_all_raw(dest_fd, buffer, static_cast<size_t>(n));
     }
+}
+
+void write_terminate_crash_dump(int crash_dump_fd, int pipe_read_fd) {
+    static const char marker[] = "\nERROR [console-crash] std::terminate: ";
+    write_all_raw(crash_dump_fd, marker, sizeof(marker) - 1);
+
+    std::exception_ptr active = std::current_exception();
+    if (active) {
+        try {
+            std::rethrow_exception(active);
+        } catch (const std::exception& ex) {
+            const char* what = ex.what();
+            write_all_raw(crash_dump_fd, what, std::strlen(what));
+        } catch (...) {
+            static const char msg[] = "unhandled non-standard exception";
+            write_all_raw(crash_dump_fd, msg, sizeof(msg) - 1);
+        }
+    } else {
+        static const char msg[] = "no active exception";
+        write_all_raw(crash_dump_fd, msg, sizeof(msg) - 1);
+    }
+    write_all_raw(crash_dump_fd, "\n", 1);
+
+    drain_pipe_to_fd(pipe_read_fd, crash_dump_fd);
+}
+
+void write_signal_crash_dump(int crash_dump_fd, int pipe_read_fd) {
+    static const char marker[] = "\nERROR [console-crash] fatal signal captured\n";
+    write_all_raw(crash_dump_fd, marker, sizeof(marker) - 1);
+    drain_pipe_to_fd(pipe_read_fd, crash_dump_fd);
 }
 
 } // namespaces
@@ -108,31 +138,12 @@ void ConsoleCapture::Impl::run_reader() {
 
 // The terminate handler runs in a normal (non-signal) context, but it still
 // bypasses Quill and writes raw, because Quill's flush is async and unreliable at
-// process-death time (QuillLogger.hpp, Concern 2).
+// process-death time (QuillLogger.hpp, Concern 2). The dump itself lives in a
+// separately-testable helper (see ConsoleCaptureCrashDump.hpp).
 void ConsoleCapture::Impl::terminate_handler() {
     Impl* self = active_instance.load();
     if (self != nullptr && self->crash_dump_fd >= 0) {
-        static const char marker[] = "\nERROR [console-crash] std::terminate: ";
-        write_all_raw(self->crash_dump_fd, marker, sizeof(marker) - 1);
-
-        std::exception_ptr active = std::current_exception();
-        if (active) {
-            try {
-                std::rethrow_exception(active);
-            } catch (const std::exception& ex) {
-                const char* what = ex.what();
-                write_all_raw(self->crash_dump_fd, what, std::strlen(what));
-            } catch (...) {
-                static const char msg[] = "unhandled non-standard exception";
-                write_all_raw(self->crash_dump_fd, msg, sizeof(msg) - 1);
-            }
-        } else {
-            static const char msg[] = "no active exception";
-            write_all_raw(self->crash_dump_fd, msg, sizeof(msg) - 1);
-        }
-        write_all_raw(self->crash_dump_fd, "\n", 1);
-
-        drain_pipe_to_fd(self->pipe_read_fd, self->crash_dump_fd);
+        console_capture_detail::write_terminate_crash_dump(self->crash_dump_fd, self->pipe_read_fd);
     }
 
     if (self != nullptr && self->previous_terminate_handler != nullptr) {
@@ -144,9 +155,7 @@ void ConsoleCapture::Impl::terminate_handler() {
 void ConsoleCapture::Impl::signal_handler(int signal_number) {
     Impl* self = active_instance.load();
     if (self != nullptr && self->crash_dump_fd >= 0) {
-        static const char marker[] = "\nERROR [console-crash] fatal signal captured\n";
-        write_all_raw(self->crash_dump_fd, marker, sizeof(marker) - 1);
-        drain_pipe_to_fd(self->pipe_read_fd, self->crash_dump_fd);
+        console_capture_detail::write_signal_crash_dump(self->crash_dump_fd, self->pipe_read_fd);
     }
     // Re-raise with the default disposition so the real crash still happens.
     ::signal(signal_number, SIG_DFL);

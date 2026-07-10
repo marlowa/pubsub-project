@@ -104,8 +104,13 @@ def generate_coverage_report(build_dir, source_dir):
         r"(.*/)?LoggingMacros\.hpp",
     ]
 
-    cmd = [
-        sys.executable, "-m", "gcovr",
+    # Prefer the gcovr executable on PATH (e.g. a pipx/user install) so the report
+    # does not depend on gcovr being importable by whichever Python runs build.py.
+    # Fall back to `python -m gcovr` only when no executable is found.
+    gcovr_executable = shutil.which("gcovr")
+    gcovr_command = [gcovr_executable] if gcovr_executable is not None else [sys.executable, "-m", "gcovr"]
+
+    cmd = gcovr_command + [
         "--root", str(source_dir),
         str(build_dir),
         # Match the old lcov --omit-lines: drop log macros and bare string lines.

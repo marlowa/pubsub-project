@@ -4,6 +4,8 @@ add_executable(pubsub_itc_fw_tests
     ApplicationAnnouncerTest.cpp
     ApplicationThreadTest.cpp
     BumpAllocatorTest.cpp
+    ConsoleCaptureCrashDumpTest.cpp
+    ConsoleCaptureDeathTest.cpp
     ConsoleCaptureInterfaceTest.cpp
     ConsoleCaptureInstallTest.cpp
     ExternalWalSubscriberRegistryTest.cpp
