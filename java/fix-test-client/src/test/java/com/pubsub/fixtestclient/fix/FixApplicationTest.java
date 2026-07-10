@@ -2,6 +2,7 @@ package com.pubsub.fixtestclient.fix;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import quickfix.DoNotSend;
 import quickfix.FieldNotFound;
 import quickfix.Message;
 import quickfix.Session;
@@ -9,7 +10,9 @@ import quickfix.SessionID;
 import quickfix.field.MsgSeqNum;
 import quickfix.field.MsgType;
 import quickfix.field.Password;
+import quickfix.field.SendingTime;
 import quickfix.field.Text;
+import quickfix.field.TransactTime;
 
 import java.io.IOException;
 
@@ -24,6 +27,9 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
 class FixApplicationTest {
+
+    private static final String NANO_TIMESTAMP = "\\d{8}-\\d{2}:\\d{2}:\\d{2}\\.\\d{9}";
+    private static final String MILLI_TIMESTAMP = "20260101-00:00:00.123";
 
     private FixApplication fixApplication;
     private Session mockSession;
@@ -125,6 +131,72 @@ class FixApplicationTest {
         fixApplication.toAdmin(message, sessionId);
 
         assertEquals(7, message.getHeader().getInt(MsgSeqNum.FIELD));
+    }
+
+    // ── proprietary nanosecond timestamps ─────────────────────────────────────
+
+    @Test
+    void toAdmin_proprietaryLogon_stampsNanosecondSendingTime() throws FieldNotFound {
+        fixApplication.setLogonMode(LogonMode.PROPRIETARY);
+        Message message = logonMessage();
+        message.getHeader().setString(SendingTime.FIELD, MILLI_TIMESTAMP);
+
+        fixApplication.toAdmin(message, sessionId);
+
+        assertTrue(message.getHeader().getString(SendingTime.FIELD).matches(NANO_TIMESTAMP),
+                "proprietary logon SendingTime must have nanosecond (9-digit) granularity");
+    }
+
+    @Test
+    void toAdmin_standardLogon_leavesMillisecondSendingTimeUntouched() throws FieldNotFound {
+        Message message = logonMessage();
+        message.getHeader().setString(SendingTime.FIELD, MILLI_TIMESTAMP);
+
+        fixApplication.toAdmin(message, sessionId);
+
+        assertEquals(MILLI_TIMESTAMP, message.getHeader().getString(SendingTime.FIELD),
+                "standard logon must not rewrite SendingTime to nanoseconds");
+    }
+
+    @Test
+    void toAdmin_proprietaryNonLogon_stampsNanosecondSendingTime() throws FieldNotFound {
+        fixApplication.setLogonMode(LogonMode.PROPRIETARY);
+        Message heartbeat = new Message();
+        heartbeat.getHeader().setString(MsgType.FIELD, MsgType.HEARTBEAT);
+        heartbeat.getHeader().setString(SendingTime.FIELD, MILLI_TIMESTAMP);
+
+        fixApplication.toAdmin(heartbeat, sessionId);
+
+        assertTrue(heartbeat.getHeader().getString(SendingTime.FIELD).matches(NANO_TIMESTAMP),
+                "proprietary admin messages must carry nanosecond SendingTime");
+    }
+
+    @Test
+    void toApp_proprietary_rewritesSendingTimeAndTransactTimeToNanoseconds() throws FieldNotFound, DoNotSend {
+        fixApplication.setLogonMode(LogonMode.PROPRIETARY);
+        Message order = new Message();
+        order.getHeader().setString(MsgType.FIELD, MsgType.ORDER_SINGLE);
+        order.getHeader().setString(SendingTime.FIELD, MILLI_TIMESTAMP);
+        order.setString(TransactTime.FIELD, MILLI_TIMESTAMP);
+
+        fixApplication.toApp(order, sessionId);
+
+        assertTrue(order.getHeader().getString(SendingTime.FIELD).matches(NANO_TIMESTAMP),
+                "proprietary order SendingTime must have nanosecond granularity");
+        assertTrue(order.getString(TransactTime.FIELD).matches(NANO_TIMESTAMP),
+                "proprietary order TransactTime must have nanosecond granularity");
+    }
+
+    @Test
+    void toApp_standard_leavesTransactTimeUntouched() throws FieldNotFound, DoNotSend {
+        Message order = new Message();
+        order.getHeader().setString(MsgType.FIELD, MsgType.ORDER_SINGLE);
+        order.setString(TransactTime.FIELD, MILLI_TIMESTAMP);
+
+        fixApplication.toApp(order, sessionId);
+
+        assertEquals(MILLI_TIMESTAMP, order.getString(TransactTime.FIELD),
+                "standard order TransactTime must keep millisecond precision");
     }
 
     // ── fromAdmin ─────────────────────────────────────────────────────────────

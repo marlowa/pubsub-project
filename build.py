@@ -382,16 +382,30 @@ def check_mvn():
         sys.exit(1)
 
 
-def build_java_service(source_dir: Path, install_dir: Path, skip_tests: bool, clean: bool):
+def maven_goals(clean: bool, generate_coverage: bool):
+    """Return the Maven goal list. JaCoCo binds its report goal to the verify phase,
+    so a coverage build runs `verify` rather than `package`; otherwise `package`.
+    """
+    goal = "verify" if generate_coverage else "package"
+    return ["clean", goal] if clean else [goal]
+
+
+def build_java_service(source_dir: Path, install_dir: Path, skip_tests: bool, clean: bool, coverage: bool = False):
     """Build the Java admin service fat JAR and copy it to install_dir/lib/."""
     check_mvn()
 
     java_dir = source_dir / "java" / "admin-service"
-    mvn_cmd = ["mvn"] + (["clean", "package"] if clean else ["package"])
+    # Coverage needs the tests to run, so it is only produced when tests are enabled.
+    generate_coverage = coverage and not skip_tests
+    mvn_cmd = ["mvn"] + maven_goals(clean, generate_coverage)
     if skip_tests:
         mvn_cmd.append("-DskipTests")
 
     run_command(mvn_cmd, cwd=java_dir, description="Building Java admin service")
+
+    if generate_coverage:
+        print(f"✓ Java coverage report (admin-service): "
+              f"{java_dir / 'target' / 'site' / 'jacoco' / 'index.html'}")
 
     target_dir = java_dir / "target"
     candidates = [
@@ -410,7 +424,7 @@ def build_java_service(source_dir: Path, install_dir: Path, skip_tests: bool, cl
     print(f"\n✓ Java admin service installed: {jar_dst}")
 
 
-def build_fix_test_client(source_dir: Path, install_dir: Path, skip_tests: bool, clean: bool):
+def build_fix_test_client(source_dir: Path, install_dir: Path, skip_tests: bool, clean: bool, coverage: bool = False):
     """Build the fix-test-client fat JAR, install it and its config into the staging tree.
 
     The JAR is copied to install_dir/lib/fix-test-client.jar.
@@ -422,11 +436,17 @@ def build_fix_test_client(source_dir: Path, install_dir: Path, skip_tests: bool,
     check_mvn()
 
     java_dir = source_dir / "java" / "fix-test-client"
-    mvn_cmd = ["mvn"] + (["clean", "package"] if clean else ["package"])
+    # Coverage needs the tests to run, so it is only produced when tests are enabled.
+    generate_coverage = coverage and not skip_tests
+    mvn_cmd = ["mvn"] + maven_goals(clean, generate_coverage)
     if skip_tests:
         mvn_cmd.append("-DskipTests")
 
     run_command(mvn_cmd, cwd=java_dir, description="Building fix-test-client")
+
+    if generate_coverage:
+        print(f"✓ Java coverage report (fix-test-client): "
+              f"{java_dir / 'target' / 'site' / 'jacoco' / 'index.html'}")
 
     target_dir = java_dir / "target"
     candidates = [
@@ -533,7 +553,12 @@ Examples:
         help='Build with GCC/Clang code coverage instrumentation')
 
     parser.add_argument('--coverage-report', action='store_true',
-        help='Generate LCOV + genhtml coverage report after running tests')
+        help='Generate coverage reports after running tests: LCOV + genhtml for C++, '
+             'and JaCoCo HTML for the Java modules (admin-service, fix-test-client)')
+
+    parser.add_argument('--java-coverage', action='store_true',
+        help='Generate the JaCoCo HTML coverage report for the Java modules only '
+             '(admin-service, fix-test-client); does not run the C++ coverage report')
 
     parser.add_argument('--asan', action='store_true',
         help='Build with AddressSanitizer (cannot be combined with --tsan or --valgrind)'
@@ -638,10 +663,13 @@ Examples:
 
     # ── Java build ────────────────────────────────────────────────────────────
     if not args.no_java:
+        java_coverage = args.coverage_report or args.java_coverage
         build_java_service(source_dir, staging_dir,
-                           skip_tests=skip_java_tests, clean=args.clean)
+                           skip_tests=skip_java_tests, clean=args.clean,
+                           coverage=java_coverage)
         build_fix_test_client(source_dir, staging_dir,
-                              skip_tests=skip_java_tests, clean=args.clean)
+                              skip_tests=skip_java_tests, clean=args.clean,
+                              coverage=java_coverage)
 
 
     print("\n" + "="*60)

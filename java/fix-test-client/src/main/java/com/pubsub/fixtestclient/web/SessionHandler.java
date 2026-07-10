@@ -57,6 +57,7 @@ public class SessionHandler {
 
     public void logon(Context ctx) {
         String senderCompId = ctx.formParam("senderCompId");
+        String targetCompId = ctx.formParam("targetCompId");
         String password     = ctx.formParam("password");
         boolean useTls             = "true".equals(ctx.formParam("useTls"));
         LogonMode logonMode = "true".equals(ctx.formParam("proprietaryLogon"))
@@ -83,7 +84,7 @@ public class SessionHandler {
         }
 
         try {
-            fixEngine.logon(senderCompId, password, useTls, logonMode);
+            fixEngine.logon(senderCompId, targetCompId, password, useTls, logonMode);
         } catch (Exception e) {
             ctx.status(500).json(Map.of("ok", false, "error", e.getMessage()));
             return;

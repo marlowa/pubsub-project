@@ -13,8 +13,26 @@ public class FixSessionBinding {
     }
 
     public void logon(String compId, String password, boolean useTls) {
+        logon(compId, null, password, useTls);
+    }
+
+    public void logon(String compId, String targetCompId, String password, boolean useTls) {
+        doLogon(compId, targetCompId, password, useTls, LogonMode.STANDARD);
+    }
+
+    public void logonProprietary(String compId, String password) {
+        logonProprietary(compId, null, password);
+    }
+
+    public void logonProprietary(String compId, String targetCompId, String password) {
+        // The proprietary gateway path is plaintext only -- TLS is rejected for
+        // proprietary logon -- so no useTls argument is exposed to scripts.
+        doLogon(compId, targetCompId, password, false, LogonMode.PROPRIETARY);
+    }
+
+    private void doLogon(String compId, String targetCompId, String password, boolean useTls, LogonMode logonMode) {
         try {
-            fixEngine.logon(compId, password, useTls, LogonMode.STANDARD);
+            fixEngine.logon(compId, targetCompId, password, useTls, logonMode);
         } catch (Exception e) {
             throw new RuntimeException("Logon failed: " + e.getMessage(), e);
         }

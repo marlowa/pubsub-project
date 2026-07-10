@@ -38,8 +38,15 @@ public class FixEngine {
         fixApplication.setOnLogout(this::handleLogout);
     }
 
-    public synchronized void logon(String compId, String password, boolean useTls, LogonMode logonMode)
+    public synchronized void logon(String compId, String targetCompId, String password, boolean useTls, LogonMode logonMode)
             throws ConfigError, IOException {
+        // Proprietary logon is plaintext only; the proprietary gateway does not
+        // accept a TLS handshake. Enforce it here so every caller (web form and
+        // scripting API) is held to the same invariant.
+        if (logonMode == LogonMode.PROPRIETARY && useTls) {
+            throw new IllegalArgumentException("Proprietary logon is incompatible with TLS");
+        }
+
         connectError = null;
         stopInitiator();
 
@@ -57,7 +64,7 @@ public class FixEngine {
             }
         }
 
-        SessionSettings settings = buildSettings(compId, useTls, logonMode);
+        SessionSettings settings = buildSettings(compId, targetCompId, useTls, logonMode);
         fixApplication.setPendingPassword(password);
 
         var storeFactory   = new quickfix.FileStoreFactory(settings);
@@ -232,13 +239,20 @@ public class FixEngine {
         }
     }
 
-    private SessionSettings buildSettings(String compId, boolean useTls, LogonMode logonMode) {
+    private SessionSettings buildSettings(String compId, String targetCompId, boolean useTls, LogonMode logonMode) {
         SessionSettings settings = new SessionSettings();
+
+        // The login screen may override the target comp ID; fall back to the
+        // configured default (config.targetCompId(), e.g. GATEWAY) when the caller
+        // supplies nothing.
+        String effectiveTargetCompId = (targetCompId == null || targetCompId.isBlank())
+                ? config.targetCompId()
+                : targetCompId.trim();
 
         settings.setString("ConnectionType",          "initiator");
         settings.setString("HeartBtInt",              "10");
         settings.setString("SenderCompID",            compId);
-        settings.setString("TargetCompID",            config.targetCompId());
+        settings.setString("TargetCompID",            effectiveTargetCompId);
         settings.setString("TransportDataDictionary", "FIXT11.xml");
         settings.setString("AppDataDictionary",       "FIX50SP2.xml");
         settings.setString("DefaultApplVerID",        "FIX.5.0SP2");
@@ -250,11 +264,12 @@ public class FixEngine {
         settings.setString("EndTime",                 "00:00:00");
 
         if (logonMode == LogonMode.PROPRIETARY) {
-            // The proprietary gateway requires nanosecond precision on every
-            // UTCTimestamp field and rejects milliseconds on non-logon messages
-            // (orders, logout). This makes engine-generated timestamps (SendingTime)
-            // nanosecond; TransactTime is rewritten in FixApplication.toApp. The
-            // project gateway keeps QuickFIX/J's millisecond default.
+            // Defensive default only: FixApplication stamps every outbound SendingTime
+            // and TransactTime from its JDK-independent NanoClock, so correctness does
+            // not depend on this setting. It is kept so that any message path not routed
+            // through toAdmin/toApp still emits a nanosecond-width UTCTimestamp rather
+            // than a millisecond one the proprietary gateway would reject. The project
+            // gateway keeps QuickFIX/J's millisecond default.
             settings.setString("TimestampPrecision", "NANOS");
         }
 
@@ -267,7 +282,7 @@ public class FixEngine {
             connectPort = config.gatewayPort();
         }
 
-        SessionID sid = new SessionID("FIXT.1.1", compId, config.targetCompId());
+        SessionID sid = new SessionID("FIXT.1.1", compId, effectiveTargetCompId);
         settings.setString(sid, "BeginString",       "FIXT.1.1");
         settings.setString(sid, "SocketConnectHost", config.gatewayHost());
         settings.setString(sid, "SocketConnectPort", String.valueOf(connectPort));

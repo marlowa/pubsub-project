@@ -15,7 +15,6 @@ import quickfix.field.Password;
 import quickfix.field.Text;
 
 import java.io.IOException;
-import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.concurrent.BlockingQueue;
@@ -31,6 +30,8 @@ public class FixApplication implements Application {
 
     private static final DateTimeFormatter NANO_SENDING_TIME =
             DateTimeFormatter.ofPattern("yyyyMMdd-HH:mm:ss.SSSSSSSSS").withZone(ZoneOffset.UTC);
+
+    private final NanoClock nanoClock = new NanoClock();
 
     private static final Pattern EXPECTING_SEQ_NUM = Pattern.compile("(?i)expecting\\s+(\\d+)");
 
@@ -82,6 +83,13 @@ public class FixApplication implements Application {
     public void toAdmin(Message message, SessionID sessionId) {
         try {
             if (!MsgType.LOGON.equals(message.getHeader().getString(MsgType.FIELD))) {
+                // The proprietary gateway requires nanosecond SendingTime on every
+                // message, including the admin messages the engine generates itself
+                // (logout, heartbeat, test request). Stamp it from the NanoClock so the
+                // value never depends on the platform Instant clock's resolution.
+                if (logonMode == LogonMode.PROPRIETARY) {
+                    message.getHeader().setString(TAG_SENDING_TIME, NANO_SENDING_TIME.format(nanoClock.now()));
+                }
                 return;
             }
             if (logonMode == LogonMode.PROPRIETARY) {
@@ -94,7 +102,7 @@ public class FixApplication implements Application {
     }
 
     private void applyProprietaryLogon(Message message, SessionID sessionId) {
-        message.getHeader().setString(TAG_SENDING_TIME, NANO_SENDING_TIME.format(Instant.now()));
+        message.getHeader().setString(TAG_SENDING_TIME, NANO_SENDING_TIME.format(nanoClock.now()));
 
         // TODO: tag 1402 requires an encryption step before the password is placed here.
         //       For now the plaintext password is sent as-is to satisfy the gateway in dev mode.
@@ -180,11 +188,16 @@ public class FixApplication implements Application {
     @Override
     public void toApp(Message message, SessionID sessionId) throws DoNotSend {
         // The proprietary gateway requires nanosecond precision on every UTCTimestamp
-        // field. Orders and cancels (from the web UI and from scripts) set TransactTime
-        // at QuickFIX/J's millisecond precision; rewrite it to nanoseconds here for the
-        // proprietary session only. The project gateway keeps the millisecond value.
-        if (logonMode == LogonMode.PROPRIETARY && message.isSetField(TAG_TRANSACT_TIME)) {
-            message.setString(TAG_TRANSACT_TIME, NANO_SENDING_TIME.format(Instant.now()));
+        // field. Orders and cancels (from the web UI and from scripts) carry SendingTime
+        // and TransactTime at QuickFIX/J's millisecond precision; rewrite both from the
+        // JDK-independent NanoClock for the proprietary session only, so neither value
+        // depends on the platform Instant clock's resolution. The project gateway keeps
+        // QuickFIX/J's millisecond default.
+        if (logonMode == LogonMode.PROPRIETARY) {
+            message.getHeader().setString(TAG_SENDING_TIME, NANO_SENDING_TIME.format(nanoClock.now()));
+            if (message.isSetField(TAG_TRANSACT_TIME)) {
+                message.setString(TAG_TRANSACT_TIME, NANO_SENDING_TIME.format(nanoClock.now()));
+            }
         }
     }
 

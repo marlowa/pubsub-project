@@ -29,6 +29,10 @@
             <input type="text" id="sender-comp-id" value="APM001">
         </div>
         <div class="form-row">
+            <label>TargetCompID</label>
+            <input type="text" id="target-comp-id" value="GATEWAY">
+        </div>
+        <div class="form-row">
             <label>Password</label>
             <input type="password" id="password" oninput="updateLogonButton()">
         </div>
@@ -98,6 +102,7 @@ async function doLogon() {
 
     const params = {
         senderCompId:     document.getElementById('sender-comp-id').value,
+        targetCompId:     document.getElementById('target-comp-id').value,
         password:         document.getElementById('password').value,
         useTls:           document.getElementById('use-tls').checked,
         proprietaryLogon: document.getElementById('proprietary-logon').checked,

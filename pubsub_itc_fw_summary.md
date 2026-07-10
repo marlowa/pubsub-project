@@ -782,14 +782,17 @@ Doxygen mainpage
 
 ## Immediate Next Task
 
-**Item 18 — Doxygen navigation layer (clickable architecture maps).** The markdown `docs/`
-restructure is complete (2026-07-03); see `docs/index.md`. What remains of item 18 is
-the Graphviz DOT clickable maps in Doxygen. See the full discussion under item 18 in "What
-Is Not Yet Done" above. Implementation starts with `docs/architecture.dot` and a set of
-`.dox` stub pages, one per major component. The four design questions are already answered:
-(1) clickable regions via DOT `URL` attribute; (2) auto-layout by Graphviz; (3) SVG
-preserves hyperlinks as native `<a>` elements; (4) Doxygen preserves them via `\dotfile`.
-The implementation work is writing the `.dot` file and the `.dox` stub pages.
+**Item 18 — Doxygen navigation layer (clickable architecture maps) is DONE (2026-07-05).**
+The Graphviz DOT clickable maps are implemented: `docs/architecture.dot` (component-topology
+digraph with `URL="\ref <page-label>"` nodes) is embedded via `\dotfile` in
+`docs/architecture_map.dox`, producing a clickable client-side image map that links directly
+to the existing markdown docs. `doxygen Doxyfile` builds clean (0 warnings under
+`WARN_AS_ERROR = FAIL_ON_WARNINGS`). See item 18 in "What Is Not Yet Done" for the full record.
+
+**Library unit test coverage** is the current next task. Coverage is only ~74.4% lines /
+50.3% functions (gcovr → strip → genhtml pipeline from the console-capture/coverage branch,
+committed at de34e46). The goal is to raise it by adding unit tests for the framework library.
+Orient on the project before writing code.
 
 ## RT scheduling and CPU isolation: machine assessment guide
 
