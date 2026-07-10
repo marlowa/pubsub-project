@@ -8,6 +8,8 @@ add_executable(pubsub_itc_fw_tests
     ConsoleCaptureDeathTest.cpp
     ConsoleCaptureInterfaceTest.cpp
     ConsoleCaptureInstallTest.cpp
+    CpuPinningTest.cpp
+    CpuRegistryTest.cpp
     ExternalWalSubscriberRegistryTest.cpp
     Crc32Test.cpp
     EmptySlabQueueTest.cpp
