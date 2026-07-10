@@ -1,6 +1,13 @@
 # Ticket: cover ConsoleCapture's crash-handler paths
 
-**Status:** Open · **Component:** `libraries/pubsub_itc_fw` (ConsoleCapture) · **Type:** test coverage
+**Status:** Done (commit 5d86196) · **Component:** `libraries/pubsub_itc_fw` (ConsoleCapture) · **Type:** test coverage
+
+**Outcome:** implemented as planned — crash-dump helpers extracted into
+`console_capture_detail` (`ConsoleCaptureCrashDump.hpp`) and covered directly by
+`ConsoleCaptureCrashDumpTest`; `ConsoleCaptureDeathTest` verifies the terminate (thread-
+escaping exception) and signal (`::raise(SIGSEGV)`) paths end to end. `ConsoleCapture.cpp`
+rose to 80.4% line coverage; only the handler shells' final `abort()`/`raise()` remain
+uncovered, as anticipated. The detail below is retained as the design record.
 
 ## Problem
 
