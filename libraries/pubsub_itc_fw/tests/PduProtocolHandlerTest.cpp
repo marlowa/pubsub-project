@@ -362,4 +362,9 @@ TEST_F(PduProtocolHandlerTest, DeallocatePendingSendReleasesChunk) {
     drain_raw(total_bytes);
 }
 
+TEST_F(PduProtocolHandlerTest, ExposesNonNullParserAndFramer) {
+    EXPECT_NE(handler_->parser(), nullptr);
+    EXPECT_NE(handler_->framer(), nullptr);
+}
+
 } // namespaces

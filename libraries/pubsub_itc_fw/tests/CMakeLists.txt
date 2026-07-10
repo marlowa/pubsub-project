@@ -28,6 +28,7 @@ add_executable(pubsub_itc_fw_tests
     PduFramerParserTest.cpp
     PduParserTest.cpp
     PduProtocolHandlerTest.cpp
+    ProtocolHandlerInterfaceTest.cpp
     QuillLoggerTest.cpp
     ReactorTest.cpp
     ServiceRegistryTest.cpp
