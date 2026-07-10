@@ -17,6 +17,7 @@
 #include <unistd.h>
 
 #include <pubsub_itc_fw/ConsoleCapture.hpp>
+#include <pubsub_itc_fw/ConsoleCaptureInterface.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/ThreadWithJoinTimeout.hpp>
@@ -61,7 +62,7 @@ void drain_pipe_to_fd(int pipe_read_fd, int dest_fd) {
     }
 }
 
-} // namespace
+} // namespaces
 
 // Internal state. Members are public so the process-global terminate/signal
 // handlers (static members below) can reach them.
@@ -72,6 +73,7 @@ class ConsoleCapture::Impl {
 
     QuillLogger& logger;
     Options options;
+    ConsoleCapture* owner = nullptr; //!< Set before the reader thread starts; receives the captured bytes.
 
     int pipe_read_fd = -1;
     int saved_stdout_fd = -1;
@@ -85,7 +87,6 @@ class ConsoleCapture::Impl {
     bool fatal_signal_handlers_installed = false;
 
     void run_reader();
-    void log_line(const std::string& line);
 
     /// The single active instance; the handlers below have no parameter of their own.
     static std::atomic<Impl*> active_instance;
@@ -96,31 +97,18 @@ class ConsoleCapture::Impl {
 
 std::atomic<ConsoleCapture::Impl*> ConsoleCapture::Impl::active_instance{nullptr};
 
-void ConsoleCapture::Impl::log_line(const std::string& line) {
-    const std::string message = options.line_prefix + line;
-    PUBSUB_LOG_STR(logger, options.level, message);
+void ConsoleCapture::log_line(const std::string& line) {
+    const std::string message = impl_->options.line_prefix + line;
+    PUBSUB_LOG_STR(impl_->logger, impl_->options.level, message);
 }
 
 void ConsoleCapture::Impl::run_reader() {
-    std::string pending;
     std::vector<char> buffer(4096);
 
     while (true) {
         const ssize_t n = ::read(pipe_read_fd, buffer.data(), buffer.size());
         if (n > 0) {
-            for (ssize_t i = 0; i < n; ++i) {
-                const char ch = buffer[static_cast<size_t>(i)];
-                if (ch == '\n') {
-                    log_line(pending);
-                    pending.clear();
-                } else {
-                    pending.push_back(ch);
-                    if (pending.size() >= options.max_line_length) {
-                        log_line(pending); // force-flush a newline-less spewer
-                        pending.clear();
-                    }
-                }
-            }
+            owner->feed_bytes(buffer.data(), static_cast<size_t>(n));
         } else if (n == 0) {
             break; // all write references to the pipe are gone (fds 1/2 restored)
         } else if (errno != EINTR) {
@@ -128,9 +116,7 @@ void ConsoleCapture::Impl::run_reader() {
         }
     }
 
-    if (!pending.empty()) {
-        log_line(pending); // trailing partial line
-    }
+    owner->flush_pending(); // emit any trailing partial line
 }
 
 // The terminate handler runs in a normal (non-signal) context, but it still
@@ -280,19 +266,26 @@ std::unique_ptr<ConsoleCapture> ConsoleCapture::install(QuillLogger& logger, con
         }
     }
 
-    // Publish before installing handlers / starting the reader so they can find us.
-    Impl::active_instance.store(impl.get());
-
     Impl* raw = impl.get();
+
+    // Publish before installing handlers / starting the reader so they can find us.
+    Impl::active_instance.store(raw);
+
+    // The ConsoleCapture must exist before the reader thread starts: the thread
+    // feeds captured bytes back into it (line assembly and log_line live on the
+    // object, not on Impl).
+    auto capture = std::unique_ptr<ConsoleCapture>(new ConsoleCapture(std::move(impl)));
+    raw->owner = capture.get();
+
     try {
-        impl->reader_thread.start([raw]() { raw->run_reader(); });
+        raw->reader_thread.start([raw]() { raw->run_reader(); });
     } catch (...) {
-        return nullptr; // impl destructor restores fds, clears active_instance, closes fds
+        return nullptr; // capture's destructor restores fds, clears active_instance, closes fds
     }
 
     if (options.install_terminate_handler) {
-        impl->previous_terminate_handler = std::set_terminate(&Impl::terminate_handler);
-        impl->terminate_handler_installed = true;
+        raw->previous_terminate_handler = std::set_terminate(&Impl::terminate_handler);
+        raw->terminate_handler_installed = true;
     }
 
     if (options.install_fatal_signal_handlers) {
@@ -303,14 +296,14 @@ std::unique_ptr<ConsoleCapture> ConsoleCapture::install(QuillLogger& logger, con
         for (const int signal_number : fatal_signals) {
             ::sigaction(signal_number, &action, nullptr);
         }
-        impl->fatal_signal_handlers_installed = true;
+        raw->fatal_signal_handlers_installed = true;
     }
 
-    return std::unique_ptr<ConsoleCapture>(new ConsoleCapture(std::move(impl)));
+    return capture;
 }
 
-ConsoleCapture::ConsoleCapture(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
+ConsoleCapture::ConsoleCapture(std::unique_ptr<Impl> impl) : ConsoleCaptureInterface(impl->options.max_line_length), impl_(std::move(impl)) {}
 
 ConsoleCapture::~ConsoleCapture() = default; // Impl destructor performs the teardown
 
-} // namespace pubsub_itc_fw
+} // namespaces

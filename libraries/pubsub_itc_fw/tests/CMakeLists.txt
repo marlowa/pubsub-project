@@ -1,8 +1,10 @@
 # CMakeLists.txt for pubsub_itc_fw library unit tests
 
 add_executable(pubsub_itc_fw_tests
+    ApplicationAnnouncerTest.cpp
     ApplicationThreadTest.cpp
     BumpAllocatorTest.cpp
+    ConsoleCaptureInterfaceTest.cpp
     ExternalWalSubscriberRegistryTest.cpp
     Crc32Test.cpp
     EmptySlabQueueTest.cpp
@@ -10,6 +12,7 @@ add_executable(pubsub_itc_fw_tests
     ExpandablePoolAllocatorTest.cpp
     ExpandableSlabAllocatorTest.cpp
     FixedSizeMemoryPoolTest.cpp
+    FwLogLevelTest.cpp
     HighResolutionClockTest.cpp
     InetAddressTest.cpp
     LockFreeMessageQueueTest.cpp
@@ -35,6 +38,7 @@ add_executable(pubsub_itc_fw_tests
     TomlConfigurationTest.cpp
     WalTest.cpp
     WalWriterReaderTest.cpp
+    WallClockTest.cpp
 )
 
 target_link_libraries(pubsub_itc_fw_tests PRIVATE

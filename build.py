@@ -97,6 +97,11 @@ def generate_coverage_report(build_dir, source_dir):
         r"(.*/)?tests/.*",
         r"(.*/)?tests_common/.*",
         r"(.*/)?integration_tests/.*",
+        # Pure Quill wrapper macros/templates: every logging call instantiates
+        # hundreds of template functions here that gcovr counts as uncovered
+        # "functions", crushing the function-coverage figure. It carries no
+        # testable logic of its own, so exclude it from the denominator.
+        r"(.*/)?LoggingMacros\.hpp",
     ]
 
     cmd = [

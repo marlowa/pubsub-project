@@ -7,6 +7,7 @@
 #include <memory>
 #include <string>
 
+#include <pubsub_itc_fw/ConsoleCaptureInterface.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 
 namespace pubsub_itc_fw {
@@ -39,8 +40,17 @@ class QuillLogger;
  *
  * Single-instance: owns process-global state (fds 1/2, the terminate handler and,
  * if enabled, fatal-signal handlers), so at most one may exist at a time.
+ *
+ * The crash-dump file: when the terminate handler or the optional fatal-signal
+ * handlers are enabled, the last bytes still buffered in the capture pipe are
+ * written, as raw async-signal-safe output, to a dedicated crash-dump file the
+ * moment the process is dying. That path never goes through Quill, whose flush is
+ * asynchronous and unreliable at crash time (see QuillLogger.hpp), so the console
+ * output that immediately preceded a crash still reaches disk. The file is named
+ * by Options::crash_dump_file_path; when that is empty the handlers fall back to
+ * writing the dump to the process's original stderr.
  */
-class ConsoleCapture {
+class ConsoleCapture : public ConsoleCaptureInterface {
   public:
     struct Options {
         size_t pipe_capacity_bytes = 1U << 20;  //!< Requested pipe size (best effort).
@@ -59,8 +69,12 @@ class ConsoleCapture {
         //! approach avoids that, but stays opt-in.
         bool install_fatal_signal_handlers = false;
 
-        //! Destination for the fatal-signal raw dump (only used when the above is
-        //! true). Opened append-only at install time and held for the handler.
+        //! Path of the crash-dump file (see the class overview): the plain file the
+        //! terminate and fatal-signal handlers write the pipe's final buffered bytes
+        //! to, as raw output, while the process is dying. Only consulted when a
+        //! terminate or fatal-signal handler is installed. Opened append-only at
+        //! install time and held open for the handlers. When empty, the handlers fall
+        //! back to the process's original stderr.
         std::string crash_dump_file_path;
     };
 
@@ -92,7 +106,9 @@ class ConsoleCapture {
     class Impl;
     explicit ConsoleCapture(std::unique_ptr<Impl> impl);
 
+    void log_line(const std::string& line) override;
+
     std::unique_ptr<Impl> impl_;
 };
 
-} // namespace pubsub_itc_fw
+} // namespaces
