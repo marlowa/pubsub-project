@@ -14,11 +14,13 @@ add_executable(pubsub_itc_fw_tests
     EventMessageTest.cpp
     ExpandablePoolAllocatorTest.cpp
     ExpandableSlabAllocatorTest.cpp
+    FileLockTest.cpp
     FixedSizeMemoryPoolTest.cpp
     FwLogLevelTest.cpp
     HighResolutionClockTest.cpp
     InetAddressTest.cpp
     LockFreeMessageQueueTest.cpp
+    LoggingConfigurationLoaderTest.cpp
     MillisecondClockTest.cpp
     MirroredBufferTest.cpp
     NumaAwarePoolAllocatorTest.cpp
