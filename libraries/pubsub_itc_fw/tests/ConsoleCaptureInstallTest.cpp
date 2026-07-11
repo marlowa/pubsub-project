@@ -89,8 +89,8 @@ TEST(ConsoleCaptureInstallTest, InstallEngineCapturesStdoutAndStderr) {
 
         const char out[] = "line on stdout\n";
         const char err[] = "line on stderr\n";
-        ::write(STDOUT_FILENO, out, sizeof(out) - 1);
-        ::write(STDERR_FILENO, err, sizeof(err) - 1);
+        ASSERT_EQ(::write(STDOUT_FILENO, out, sizeof(out) - 1), static_cast<ssize_t>(sizeof(out) - 1));
+        ASSERT_EQ(::write(STDERR_FILENO, err, sizeof(err) - 1), static_cast<ssize_t>(sizeof(err) - 1));
         // Leaving this scope destroys the handle: fds restored, reader drained and joined.
     }
 
@@ -139,7 +139,7 @@ TEST(ConsoleCaptureInstallTest, QuillInstallPathCapturesWithoutReadingTheLog) {
         ASSERT_NE(capture, nullptr);
 
         const char line[] = "captured through the quill path\n";
-        ::write(STDOUT_FILENO, line, sizeof(line) - 1);
+        ASSERT_EQ(::write(STDOUT_FILENO, line, sizeof(line) - 1), static_cast<ssize_t>(sizeof(line) - 1));
         // Leaving this scope drains and logs via Quill (file sink), then destroys the
         // logger. The log is never read back, so no Quill flush is involved.
     }
