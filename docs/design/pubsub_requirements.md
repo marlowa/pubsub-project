@@ -144,20 +144,26 @@ have provisional positions below.
   per-topic **policy** value (R3), hand-written TOML validated against the generated
   registry. Its value feeds D4 (a subscriber that falls outside the window cannot replay).
 
-### D4 — Fanout & backpressure (provisional: tolerate transient slowness; act past a threshold)
+### D4 — Fanout & backpressure (DECIDED 2026-07-11 — see pubsub_flow_control.md)
+
+Superseding the earlier ack-paced sketch. Full design in
+[pubsub_flow_control.md](pubsub_flow_control.md); summary:
 
 - One publisher fans a topic out to **multiple** subscribers (TAP now; market-data later),
-  each with its own cursor and replay position.
-- The publisher must **never block** on a slow subscriber (that would couple every consumer,
-  and the publisher, to the slowest — a classic wart to avoid). A briefly-slow subscriber is
-  fine and expected.
-- Flow control uses the application-level **TopicAck** (see the box below), not TCP's window:
-  the publisher paces the next page on the subscriber's *processing* progress.
-- **Open:** what happens when a subscriber falls too far behind — is it disconnected past a
-  **lag threshold** (a per-topic policy value), or does it simply fall outside the retention
-  window and get an unrecoverable gap it must recover from (re-request from oldest)? "A bit
-  slow from time to time is fine" says the threshold is generous, not aggressive; the exact
-  policy is unresolved.
+  each with its own cursor.
+- The publisher must **never block** on a slow subscriber. **Delivery is streamed and paced by
+  the TCP socket, not by acks** (F1): send until `EAGAIN`, resume on `EPOLLOUT`, next record read
+  straight from the WAL. The WAL is the backlog, so a lagging subscriber costs a cursor, not RAM.
+  Per-page acks are rejected (a round-trip of latency per page, double the volume, no benefit).
+- `TopicAck` is **demoted to a periodic truncation cursor** (F2), not a per-page pacing signal.
+- A subscriber that lags past a **lag threshold** (before its next record is truncated) is
+  **terminated** with explicit, recoverable notice (F3): a best-effort `TopicLagged` plus the
+  reliable **gap-on-resubscribe** signal — never silent loss.
+- Prompt signalling uses a **separate control channel** — a second TCP connection to the *same*
+  port, classified by a new `role ∈ {Data, Control}` field on `TopicSubscribeRequest`,
+  correlated by `subscriber_id`, **bidirectional** (F4).
+- **Still open:** exact lag-threshold semantics; whether to add a soft warning stage;
+  control-channel arrival timeout. (Listed in pubsub_flow_control.md.)
 
 ### D5 — Failover semantics (OPEN — flagged, not decided)
 
@@ -193,16 +199,16 @@ This caused confusion, so stated plainly:
   has **processed** a page. That is different information from "the bytes arrived": TCP tells
   you bytes reached the peer's *kernel*; it cannot tell you the subscriber *read, decoded and
   acted on* them. "Processed" is an application fact, above TCP.
-- **Why it exists on top of reliable TCP — two jobs TCP cannot do:**
-  1. **Pacing / backpressure (D4).** The publisher sends the next page *after* the `TopicAck`
-     for the current one (the catch-up path), pacing to the subscriber's *processing* speed,
-     not just its socket-drain speed.
-  2. **WAL truncation (D3).** The publisher only reclaims a WAL segment once *every* connected
-     subscriber has processed past it. "Bytes delivered to the socket" does not tell the
-     publisher "no one needs to replay this anymore"; the app-level ack does.
-- **At the failover seam** `TopicAck`'s role is only *indirect*: it lets the *publisher* pace
-  and truncate. Resume *correctness* is owned by the *subscriber's* own cursor (P6), because
-  the publisher's ack-tracked cursor is lost with the old leader.
+- **What it is for — one job, given the D4 decision (F1/F2, pubsub_flow_control.md):**
+  **WAL truncation (D3).** The publisher only reclaims a WAL segment once *every* connected
+  subscriber has processed past it. "Bytes delivered to the socket" does not tell the publisher
+  "no one needs to replay this anymore"; the app-level cursor does. So `TopicAck` is now a
+  **periodic truncation cursor**, sent coarsely (every N records / every T), NOT per page.
+  - *(Superseded: earlier this doc had `TopicAck` also *pace* delivery per page. That was
+    dropped — delivery is paced by the TCP socket + WAL, see D4/F1. No per-page acks.)*
+- **At the failover seam** `TopicAck`'s role is only *indirect*: it lets the *publisher* truncate.
+  Resume *correctness* is owned by the *subscriber's* own cursor (P6), because the publisher's
+  ack-tracked cursor is lost with the old leader.
 
 ## Requirements (decided so far)
 
