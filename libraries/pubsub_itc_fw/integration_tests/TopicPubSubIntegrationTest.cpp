@@ -85,14 +85,17 @@ class TopicPublisherThread : public ApplicationThread, public TopicPublisherHost
     // records (seq_no 1..N, pdu_id NOS) once that many subscribers have subscribed --
     // used to exercise the live fanout path. Left at 0, the thread only replays the WAL.
     TopicPublisherThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, std::string wal_dir, int publish_after_subscribers = 0,
-                         int live_record_count = 0, bool lag_on_control_subscribe = false)
+                         int live_record_count = 0, bool lag_on_control_subscribe = false, int64_t max_lag_records = 0, int startup_records = 0,
+                         int records_after_both_channels = 0)
         : ApplicationThread(token, logger, reactor, "TopicPublisherThread", ThreadID{2}, make_queue_config(), make_allocator_config("TopicPubPool"),
                             ApplicationThreadConfiguration{})
         , publish_after_subscribers_(publish_after_subscribers)
         , live_record_count_(live_record_count)
         , lag_on_control_subscribe_(lag_on_control_subscribe)
+        , startup_records_(startup_records)
+        , records_after_both_channels_(records_after_both_channels)
         , wal_directory_(wal_dir)
-        , publisher_(*this, "orders", [](int16_t pdu_id) { return pdu_id == pdu_id_nos || pdu_id == pdu_id_ocr; }, std::move(wal_dir)) {}
+        , publisher_(*this, "orders", [](int16_t pdu_id) { return pdu_id == pdu_id_nos || pdu_id == pdu_id_ocr; }, std::move(wal_dir), max_lag_records) {}
 
     // TopicPublisherHost
     void topic_send_subscribe_ack(ConnectionID connection_id, const pubsub_itc_fw_app::TopicSubscribeAck& ack) override {
@@ -118,9 +121,13 @@ class TopicPublisherThread : public ApplicationThread, public TopicPublisherHost
 
   protected:
     void on_initial_event() override {
-        // Only the live-fanout test writes records; it needs an open WAL to append to.
-        if (publish_after_subscribers_ > 0) {
+        // Any test that writes records needs an open WAL to append to.
+        if (publish_after_subscribers_ > 0 || startup_records_ > 0 || records_after_both_channels_ > 0) {
             wal_.open(wal_directory_, wal_segment_size);
+        }
+        // Records appended before any subscriber connects (drives gap-on-resubscribe).
+        for (int i = 1; i <= startup_records_; ++i) {
+            append_and_notify(i);
         }
     }
 
@@ -148,9 +155,22 @@ class TopicPublisherThread : public ApplicationThread, public TopicPublisherHost
             publisher_.on_subscribe_request(connection_id, view);
             maybe_publish_live_batch();
             // Demonstrate the control channel: once the control channel is up, send a
-            // TopicLagged on it (step 4 will decide *when* from the lag policy).
+            // TopicLagged on it (step 4 decides *when* from the lag policy; this is a demo).
             if (lag_on_control_subscribe_ && view.role == pubsub_itc_fw_app::TopicChannelRole::Control) {
                 publisher_.notify_lagged(std::string(view.subscriber_id), "too far behind", 42);
+            }
+            // Once BOTH channels are up, append a batch (drives the lag-out policy while
+            // the control channel is available to carry the TopicLagged).
+            if (view.role == pubsub_itc_fw_app::TopicChannelRole::Control) {
+                control_subscribed_ = true;
+            } else {
+                data_subscribed_ = true;
+            }
+            if (data_subscribed_ && control_subscribed_ && !appended_after_both_ && records_after_both_channels_ > 0) {
+                appended_after_both_ = true;
+                for (int i = 1; i <= records_after_both_channels_; ++i) {
+                    append_and_notify(i);
+                }
             }
         } else if (message.pdu_id() == pdu_id_topic_ack) {
             pubsub_itc_fw_app::TopicAckView view{};
@@ -176,18 +196,28 @@ class TopicPublisherThread : public ApplicationThread, public TopicPublisherHost
         }
         published_live_ = true;
         for (int i = 1; i <= live_record_count_; ++i) {
-            const uint32_t value = static_cast<uint32_t>(i * 100);
-            uint8_t payload[sizeof(uint32_t)];
-            std::memcpy(payload, &value, sizeof(value));
-            wal_.append(static_cast<int64_t>(i), pdu_id_nos, payload, static_cast<int>(sizeof(payload)), static_cast<int64_t>(i) * 1000);
-            publisher_.notify_record_appended(pdu_id_nos);
+            append_and_notify(i);
         }
+    }
+
+    // Append a record (seq_no i, pdu_id NOS) to the WAL and tell the publisher.
+    void append_and_notify(int i) {
+        const uint32_t value = static_cast<uint32_t>(i * 100);
+        uint8_t payload[sizeof(uint32_t)];
+        std::memcpy(payload, &value, sizeof(value));
+        wal_.append(static_cast<int64_t>(i), pdu_id_nos, payload, static_cast<int>(sizeof(payload)), static_cast<int64_t>(i) * 1000);
+        publisher_.notify_record_appended(static_cast<int64_t>(i), pdu_id_nos);
     }
 
     int publish_after_subscribers_;
     int live_record_count_;
     bool lag_on_control_subscribe_;
+    int startup_records_;
+    int records_after_both_channels_;
     bool published_live_ = false;
+    bool data_subscribed_ = false;
+    bool control_subscribed_ = false;
+    bool appended_after_both_ = false;
     std::string wal_directory_;
     Wal wal_;
     TopicPublisher publisher_;
@@ -296,16 +326,21 @@ class DualChannelSubscriberThread : public ApplicationThread, public TopicSubscr
     std::atomic<bool> all_records_received{false};
     std::atomic<bool> lagged_received{false};
     std::atomic<bool> control_channel_lost{false};
+    std::atomic<bool> data_channel_lost{false};
     std::vector<ReceivedRecord> received_records;
     std::vector<ReceivedLagged> received_lagged;
 
+    // subscriber_from_seq_no is the cursor requested on the data channel. suppress_ack
+    // makes the subscriber receive records but never ack (a slow/stalled consumer, for
+    // the lag policy).
     DualChannelSubscriberThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, std::string subscriber_id, int expected_record_count,
-                                bool disconnect_data_when_done = false)
+                                bool disconnect_data_when_done = false, bool suppress_ack = false, int64_t subscriber_from_seq_no = 0)
         : ApplicationThread(token, logger, reactor, "DualChannelSubscriberThread", ThreadID{1}, make_queue_config(), make_allocator_config("DualSubPool"),
                             ApplicationThreadConfiguration{})
         , expected_record_count_(expected_record_count)
         , disconnect_data_when_done_(disconnect_data_when_done)
-        , data_channel_(*this, subscriber_id, "orders", 0,
+        , suppress_ack_(suppress_ack)
+        , data_channel_(*this, subscriber_id, "orders", subscriber_from_seq_no,
                         [this](int64_t seq_no, int16_t pdu_id, const uint8_t*, size_t) {
                             received_records.push_back({seq_no, pdu_id});
                             if (static_cast<int>(received_records.size()) == expected_record_count_) {
@@ -327,11 +362,19 @@ class DualChannelSubscriberThread : public ApplicationThread, public TopicSubscr
         send_pdu(connection_id, pdu_id_topic_subscribe_request, 0, request);
     }
     void topic_send_ack(ConnectionID connection_id, const pubsub_itc_fw_app::TopicAck& ack) override {
+        if (suppress_ack_) {
+            return; // simulate a stalled consumer that never advances its ack cursor
+        }
         send_pdu(connection_id, pdu_id_topic_ack, 0, ack);
     }
     // TopicControlChannelHost (control)
     void topic_control_send_subscribe_request(ConnectionID connection_id, const pubsub_itc_fw_app::TopicSubscribeRequest& request) override {
         send_pdu(connection_id, pdu_id_topic_subscribe_request, 0, request);
+    }
+
+    /// The accepted_from_seq_no the data channel received (for gap-on-resubscribe assertions).
+    [[nodiscard]] int64_t data_accepted_from_seq_no() const {
+        return data_channel_.accepted_from_seq_no();
     }
 
   protected:
@@ -357,6 +400,8 @@ class DualChannelSubscriberThread : public ApplicationThread, public TopicSubscr
     void on_connection_lost(const ConnectionID& id, const std::string&) override {
         if (id == control_connection_id_) {
             control_channel_lost.store(true, std::memory_order_release);
+        } else if (id == data_connection_id_) {
+            data_channel_lost.store(true, std::memory_order_release);
         }
     }
 
@@ -393,6 +438,7 @@ class DualChannelSubscriberThread : public ApplicationThread, public TopicSubscr
   private:
     int expected_record_count_;
     bool disconnect_data_when_done_;
+    bool suppress_ack_;
     ConnectionID data_connection_id_;
     ConnectionID control_connection_id_;
     TopicSubscriberChannel data_channel_;
@@ -815,6 +861,106 @@ TEST_F(TopicPubSubTest, DroppingDataChannelTearsDownControlChannel) {
     // The publisher tears down the pair, so the subscriber's control connection is closed.
     EXPECT_TRUE(wait_for([&]() { return subscriber_thread->control_channel_lost.load(std::memory_order_acquire); }))
         << "control channel was not torn down when the data channel dropped";
+
+    subscriber_reactor->shutdown("test complete");
+    publisher_reactor->shutdown("test complete");
+    if (subscriber_reactor_thread.joinable()) {
+        subscriber_reactor_thread.join();
+    }
+    if (publisher_reactor_thread.joinable()) {
+        publisher_reactor_thread.join();
+    }
+}
+
+// ============================================================
+// Test 7: gap-on-resubscribe -- a request for a cursor older than
+// the retention window is clamped forward, and accepted_from_seq_no
+// tells the subscriber where the stream now starts.
+// ============================================================
+TEST_F(TopicPubSubTest, GapOnResubscribeClampsTooOldCursor) {
+    static constexpr int64_t max_lag = 3;
+
+    // --- Publisher appends 10 records at startup; retention window keeps the last 3 ---
+    const ServiceRegistry publisher_registry;
+    auto publisher_reactor = std::make_unique<Reactor>(make_reactor_config(), publisher_registry, logger_->logger);
+    publisher_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
+    auto publisher_thread = ApplicationThread::create<TopicPublisherThread>(logger_->logger, *publisher_reactor, wal_dir_, 0, 0, false, max_lag,
+                                                                            /*startup_records=*/10);
+    publisher_reactor->register_thread(publisher_thread);
+    ThreadWithJoinTimeout publisher_reactor_thread([&]() { publisher_reactor->run(); });
+    ASSERT_TRUE(wait_for([&]() { return publisher_reactor->is_initialized(); })) << "Publisher reactor did not initialize";
+    const uint16_t listen_port = publisher_reactor->get_inbound_listener_port(0);
+    ASSERT_NE(listen_port, 0U);
+
+    // --- Subscriber asks for cursor 0 (everything) but the oldest retained is 7 ---
+    ServiceRegistry subscriber_registry;
+    subscriber_registry.add("publisher_data", NetworkEndpointConfiguration{"127.0.0.1", listen_port}, NetworkEndpointConfiguration{});
+    subscriber_registry.add("publisher_control", NetworkEndpointConfiguration{"127.0.0.1", listen_port}, NetworkEndpointConfiguration{});
+    auto subscriber_reactor = std::make_unique<Reactor>(make_reactor_config(), subscriber_registry, logger_->logger);
+    auto subscriber_thread = ApplicationThread::create<DualChannelSubscriberThread>(logger_->logger, *subscriber_reactor, "gapper", /*expected=*/3);
+    subscriber_reactor->register_thread(subscriber_thread);
+    ThreadWithJoinTimeout subscriber_reactor_thread([&]() { subscriber_reactor->run(); });
+
+    EXPECT_TRUE(wait_for([&]() { return subscriber_thread->all_records_received.load(std::memory_order_acquire); })) << "records not received";
+
+    // The subscriber was told it has a gap: accepted = 7 (not the requested 0), and it
+    // received records 8, 9, 10 -- the window, not the full history.
+    EXPECT_EQ(subscriber_thread->data_accepted_from_seq_no(), 7);
+    ASSERT_EQ(static_cast<int>(subscriber_thread->received_records.size()), 3);
+    EXPECT_EQ(subscriber_thread->received_records[0].seq_no, 8);
+    EXPECT_EQ(subscriber_thread->received_records[1].seq_no, 9);
+    EXPECT_EQ(subscriber_thread->received_records[2].seq_no, 10);
+
+    subscriber_reactor->shutdown("test complete");
+    publisher_reactor->shutdown("test complete");
+    if (subscriber_reactor_thread.joinable()) {
+        subscriber_reactor_thread.join();
+    }
+    if (publisher_reactor_thread.joinable()) {
+        publisher_reactor_thread.join();
+    }
+}
+
+// ============================================================
+// Test 8: a subscriber whose ack cursor falls out of the retention
+// window is dropped with a best-effort TopicLagged, and its pair
+// (data + control) is torn down.
+// ============================================================
+TEST_F(TopicPubSubTest, SlowSubscriberIsLaggedOutAndDropped) {
+    static constexpr int64_t max_lag = 3;
+
+    // --- Publisher: once both channels are up, append 6 records without the subscriber
+    //     ever acking -- so it falls out of the 3-record window and is dropped. ---
+    const ServiceRegistry publisher_registry;
+    auto publisher_reactor = std::make_unique<Reactor>(make_reactor_config(), publisher_registry, logger_->logger);
+    publisher_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
+    auto publisher_thread = ApplicationThread::create<TopicPublisherThread>(logger_->logger, *publisher_reactor, wal_dir_, 0, 0, false, max_lag,
+                                                                            /*startup_records=*/0, /*records_after_both_channels=*/6);
+    publisher_reactor->register_thread(publisher_thread);
+    ThreadWithJoinTimeout publisher_reactor_thread([&]() { publisher_reactor->run(); });
+    ASSERT_TRUE(wait_for([&]() { return publisher_reactor->is_initialized(); })) << "Publisher reactor did not initialize";
+    const uint16_t listen_port = publisher_reactor->get_inbound_listener_port(0);
+    ASSERT_NE(listen_port, 0U);
+
+    ServiceRegistry subscriber_registry;
+    subscriber_registry.add("publisher_data", NetworkEndpointConfiguration{"127.0.0.1", listen_port}, NetworkEndpointConfiguration{});
+    subscriber_registry.add("publisher_control", NetworkEndpointConfiguration{"127.0.0.1", listen_port}, NetworkEndpointConfiguration{});
+    auto subscriber_reactor = std::make_unique<Reactor>(make_reactor_config(), subscriber_registry, logger_->logger);
+    // expected count is high (never reached); suppress_ack = true -> a stalled consumer.
+    auto subscriber_thread = ApplicationThread::create<DualChannelSubscriberThread>(logger_->logger, *subscriber_reactor, "slowpoke", /*expected=*/1000,
+                                                                                    /*disconnect_data_when_done=*/false, /*suppress_ack=*/true);
+    subscriber_reactor->register_thread(subscriber_thread);
+    ThreadWithJoinTimeout subscriber_reactor_thread([&]() { subscriber_reactor->run(); });
+
+    // The lagging subscriber receives a TopicLagged on its control channel and is dropped.
+    EXPECT_TRUE(wait_for([&]() { return subscriber_thread->lagged_received.load(std::memory_order_acquire); })) << "TopicLagged not received";
+    EXPECT_TRUE(wait_for([&]() {
+        return subscriber_thread->control_channel_lost.load(std::memory_order_acquire) && subscriber_thread->data_channel_lost.load(std::memory_order_acquire);
+    })) << "the lagging subscriber's connections were not torn down";
+
+    ASSERT_FALSE(subscriber_thread->received_lagged.empty());
+    EXPECT_EQ(subscriber_thread->received_lagged[0].reason, "subscriber too far behind the retention window");
+    EXPECT_EQ(subscriber_thread->received_lagged[0].oldest_retained_seq_no, 1); // head 4 - window 3
 
     subscriber_reactor->shutdown("test complete");
     publisher_reactor->shutdown("test complete");

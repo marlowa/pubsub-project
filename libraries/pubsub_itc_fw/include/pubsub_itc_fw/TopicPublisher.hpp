@@ -3,6 +3,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -10,6 +11,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/ExternalWalSubscriberRegistry.hpp>
@@ -71,8 +73,16 @@ class TopicPublisher {
 
     static constexpr size_t wal_record_header_size = sizeof(int64_t) + sizeof(int16_t);
 
-    TopicPublisher(TopicPublisherHost& host, std::string topic_name, MembershipPredicate is_member, std::string wal_directory)
-        : host_(host), topic_name_(std::move(topic_name)), is_member_(std::move(is_member)), wal_directory_(std::move(wal_directory)) {}
+    // max_lag_records is the per-topic retention window (F3/R3 policy): the publisher
+    // serves at most this many records behind the WAL head, and a subscriber whose ack
+    // cursor falls out of the window is dropped with a TopicLagged. 0 disables the
+    // policy (unbounded retention; no subscriber is ever dropped for lag).
+    TopicPublisher(TopicPublisherHost& host, std::string topic_name, MembershipPredicate is_member, std::string wal_directory, int64_t max_lag_records = 0)
+        : host_(host)
+        , topic_name_(std::move(topic_name))
+        , is_member_(std::move(is_member))
+        , wal_directory_(std::move(wal_directory))
+        , max_lag_records_(max_lag_records) {}
 
     void set_leader(bool is_leader) {
         is_leader_ = is_leader;
@@ -109,9 +119,16 @@ class TopicPublisher {
         }
     }
 
-    /// Advance a subscriber's ack cursor (for WAL truncation) on TopicAck (data channel).
+    /// Advance a subscriber's ack cursor (for WAL truncation + lag) on TopicAck (data channel).
     void on_ack(ConnectionID connection_id, const pubsub_itc_fw_app::TopicAckView& view) {
         registry_.update_cursor(connection_id, view.last_seq_no);
+        auto conn_it = connection_to_subscriber_id_.find(connection_id);
+        if (conn_it != connection_to_subscriber_id_.end()) {
+            auto sub_it = subscribers_.find(conn_it->second);
+            if (sub_it != subscribers_.end()) {
+                sub_it->second.acked_cursor = view.last_seq_no;
+            }
+        }
     }
 
     /// Connection lost: tear down the whole logical subscriber (disconnect the pair).
@@ -159,20 +176,42 @@ class TopicPublisher {
     }
 
     /**
-     * @brief A record of pdu_id was appended to the WAL: wake idle subscribers.
+     * @brief A record was appended to the WAL: advance the head, wake idle subscribers,
+     *        and drop any subscriber that has fallen out of the retention window.
      *
-     * The record must already be in the WAL. Idle (caught-up) subscribers are
-     * pumped so their cursor reads and streams it.
+     * The record must already be in the WAL. seq_no is the record's (authoritative)
+     * sequence number, tracked as the WAL head for the lag policy.
      */
-    void notify_record_appended(int16_t pdu_id) {
+    void notify_record_appended(int64_t seq_no, int16_t pdu_id) {
+        if (seq_no > head_seq_no_) {
+            head_seq_no_ = seq_no;
+        }
         if (!is_leader_ || !is_member_(pdu_id)) {
             return;
         }
+
+        // Wake idle subscribers so their cursor streams the new record.
         for (auto& entry : subscribers_) {
             const SubscriberStream* stream = entry.second.stream.get();
             if (stream != nullptr && stream->idle && entry.second.data_connection_id.is_valid()) {
                 pump_data(entry.first);
             }
+        }
+
+        // Drop subscribers whose ack cursor has fallen out of the retention window.
+        if (max_lag_records_ <= 0) {
+            return;
+        }
+        const int64_t oldest_retained = oldest_retained_seq_no();
+        std::vector<std::string> lagged_out;
+        for (const auto& entry : subscribers_) {
+            if (entry.second.stream && entry.second.acked_cursor < oldest_retained) {
+                lagged_out.push_back(entry.first);
+            }
+        }
+        for (const std::string& subscriber_id : lagged_out) {
+            notify_lagged(subscriber_id, "subscriber too far behind the retention window", oldest_retained);
+            tear_down(subscriber_id);
         }
     }
 
@@ -204,6 +243,7 @@ class TopicPublisher {
         ConnectionID data_connection_id;
         ConnectionID control_connection_id;
         std::unique_ptr<SubscriberStream> stream; // present once the data channel has subscribed
+        int64_t acked_cursor = 0;                 // last seq_no the subscriber acked; drives the lag policy
     };
 
     void handle_data_subscribe(ConnectionID connection_id, const std::string& subscriber_id, int64_t from_seq_no) {
@@ -217,18 +257,23 @@ class TopicPublisher {
             host_.topic_disconnect(stale);
         }
 
+        // Gap-on-resubscribe: a request for a cursor older than the oldest retained
+        // record is clamped forward. accepted_from_seq_no > requested tells the
+        // subscriber it has a gap and where the stream now starts (F3, the reliable signal).
+        const int64_t effective_from = std::max(from_seq_no, oldest_retained_seq_no());
+
         subscriber.data_connection_id = connection_id;
+        subscriber.acked_cursor = effective_from;
         connection_to_subscriber_id_[connection_id] = subscriber_id;
-        registry_.register_subscriber(connection_id, subscriber_id, from_seq_no);
+        registry_.register_subscriber(connection_id, subscriber_id, effective_from);
 
         subscriber.stream = std::make_unique<SubscriberStream>();
-        subscriber.stream->from_seq_no = from_seq_no;
+        subscriber.stream->from_seq_no = effective_from;
         subscriber.stream->cursor.open(wal_directory_, WalPosition{0, 0});
 
-        // NB: the "-1 == from head" convention is deferred; the tests use a concrete
-        // cursor (0 == oldest). accepted_from_seq_no echoes the request.
+        // NB: the "-1 == from head" convention is deferred; the tests use a concrete cursor.
         pubsub_itc_fw_app::TopicSubscribeAck ack{};
-        ack.accepted_from_seq_no = from_seq_no;
+        ack.accepted_from_seq_no = effective_from;
         host_.topic_send_subscribe_ack(connection_id, ack);
 
         pump_data(subscriber_id); // send the first record (if any) and arm
@@ -246,6 +291,32 @@ class TopicPublisher {
         subscriber.control_connection_id = connection_id;
         connection_to_subscriber_id_[connection_id] = subscriber_id;
         // The control channel neither acks nor streams; it just carries out-of-band signals.
+    }
+
+    // The oldest seq_no the publisher will still serve: head - retention window.
+    // 0 (serve everything) when the policy is disabled or the head is within the window.
+    [[nodiscard]] int64_t oldest_retained_seq_no() const {
+        return (max_lag_records_ > 0 && head_seq_no_ > max_lag_records_) ? (head_seq_no_ - max_lag_records_) : 0;
+    }
+
+    // Tear down a whole logical subscriber, disconnecting both of its connections.
+    void tear_down(const std::string& subscriber_id) {
+        auto it = subscribers_.find(subscriber_id);
+        if (it == subscribers_.end()) {
+            return;
+        }
+        const ConnectionID data_connection_id = it->second.data_connection_id;
+        const ConnectionID control_connection_id = it->second.control_connection_id;
+        subscribers_.erase(it);
+        connection_to_subscriber_id_.erase(data_connection_id);
+        connection_to_subscriber_id_.erase(control_connection_id);
+        registry_.remove_subscriber(data_connection_id);
+        if (data_connection_id.is_valid()) {
+            host_.topic_disconnect(data_connection_id);
+        }
+        if (control_connection_id.is_valid()) {
+            host_.topic_disconnect(control_connection_id);
+        }
     }
 
     void send_page(ConnectionID connection_id, int64_t seq_no, int16_t pdu_id, int64_t wall_time_ns, const uint8_t* payload, size_t payload_size) {
@@ -317,6 +388,8 @@ class TopicPublisher {
     std::string topic_name_;
     MembershipPredicate is_member_;
     std::string wal_directory_;
+    int64_t max_lag_records_ = 0; // retention window; 0 disables the lag policy
+    int64_t head_seq_no_ = 0;     // highest seq_no appended to the WAL
     bool is_leader_ = true;
     ExternalWalSubscriberRegistry registry_;
     std::unordered_map<std::string, LogicalSubscriber> subscribers_;            // subscriber_id -> pair + stream
