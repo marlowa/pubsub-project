@@ -75,9 +75,15 @@ static constexpr size_t wal_segment_size = 4096;
 // ============================================================
 class TopicPublisherThread : public ApplicationThread, public TopicPublisherHost {
   public:
-    TopicPublisherThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, std::string wal_dir)
+    // publish_after_subscribers > 0 arms a one-shot live publish of live_record_count
+    // records (seq_no 1..N, pdu_id NOS) once that many subscribers have subscribed --
+    // used to exercise the live fanout path. Left at 0, the thread only replays the WAL.
+    TopicPublisherThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, std::string wal_dir, int publish_after_subscribers = 0,
+                         int live_record_count = 0)
         : ApplicationThread(token, logger, reactor, "TopicPublisherThread", ThreadID{2}, make_queue_config(), make_allocator_config("TopicPubPool"),
                             ApplicationThreadConfiguration{})
+        , publish_after_subscribers_(publish_after_subscribers)
+        , live_record_count_(live_record_count)
         , publisher_(*this, "orders", [](int16_t pdu_id) { return pdu_id == pdu_id_nos || pdu_id == pdu_id_ocr; }, std::move(wal_dir)) {}
 
     // TopicPublisherHost
@@ -115,6 +121,7 @@ class TopicPublisherThread : public ApplicationThread, public TopicPublisherHost
                 return;
             }
             publisher_.on_subscribe_request(connection_id, view);
+            maybe_publish_live_batch();
         } else if (message.pdu_id() == pdu_id_topic_ack) {
             pubsub_itc_fw_app::TopicAckView view{};
             if (!pubsub_itc_fw_app::decode(view, payload, size, consumed, arena, arena_needed)) {
@@ -127,6 +134,27 @@ class TopicPublisherThread : public ApplicationThread, public TopicPublisherHost
     void on_itc_message(const EventMessage&) override {}
 
   private:
+    // Once publish_after_subscribers_ subscribers are connected, publish the live
+    // batch exactly once, fanning each record out to every current subscriber.
+    void maybe_publish_live_batch() {
+        if (publish_after_subscribers_ <= 0 || published_live_) {
+            return;
+        }
+        if (static_cast<int>(publisher_.subscriber_count()) < publish_after_subscribers_) {
+            return;
+        }
+        published_live_ = true;
+        for (int i = 1; i <= live_record_count_; ++i) {
+            const uint32_t value = static_cast<uint32_t>(i * 100);
+            uint8_t payload[sizeof(uint32_t)];
+            std::memcpy(payload, &value, sizeof(value));
+            publisher_.publish(i, pdu_id_nos, static_cast<int64_t>(i) * 1000, payload, sizeof(payload));
+        }
+    }
+
+    int publish_after_subscribers_;
+    int live_record_count_;
+    bool published_live_ = false;
     TopicPublisher publisher_;
 };
 
@@ -146,11 +174,12 @@ class TopicSubscriberThread : public ApplicationThread, public TopicSubscriberCh
     std::atomic<int> records_received{0};
     std::vector<ReceivedRecord> received_records;
 
-    TopicSubscriberThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, int expected_record_count)
+    TopicSubscriberThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, int expected_record_count,
+                          std::string subscriber_id = "test_subscriber", int64_t from_seq_no = 0)
         : ApplicationThread(token, logger, reactor, "TopicSubscriberThread", ThreadID{1}, make_queue_config(), make_allocator_config("TopicSubPool"),
                             ApplicationThreadConfiguration{})
         , expected_record_count_(expected_record_count)
-        , channel_(*this, "test_subscriber", "orders", 0, [this](int64_t seq_no, int16_t pdu_id, const uint8_t* payload, size_t payload_size) {
+        , channel_(*this, std::move(subscriber_id), "orders", from_seq_no, [this](int64_t seq_no, int16_t pdu_id, const uint8_t* payload, size_t payload_size) {
             received_records.push_back({seq_no, pdu_id, {payload, payload + payload_size}});
             const int count = records_received.fetch_add(1, std::memory_order_acq_rel) + 1;
             if (count == expected_record_count_) {
@@ -326,6 +355,133 @@ TEST_F(TopicPubSubTest, SingleSubscriberReceivesReplayedRecordsInOrder) {
 
     if (subscriber_reactor_thread.joinable()) {
         subscriber_reactor_thread.join();
+    }
+    if (publisher_reactor_thread.joinable()) {
+        publisher_reactor_thread.join();
+    }
+}
+
+// ============================================================
+// Test 2: two subscribers both receive every live-published
+// record (fanout via TopicPublisher::publish()).
+// ============================================================
+TEST_F(TopicPubSubTest, TwoSubscribersReceiveLiveFanout) {
+    static constexpr int record_count = 3;
+    write_topic_wal_records(0); // valid but empty WAL; the records arrive live
+
+    // --- Publisher: publish the batch once both subscribers have subscribed ---
+    const ServiceRegistry publisher_registry;
+    auto publisher_reactor = std::make_unique<Reactor>(make_reactor_config(), publisher_registry, logger_->logger);
+    publisher_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
+    auto publisher_thread = ApplicationThread::create<TopicPublisherThread>(logger_->logger, *publisher_reactor, wal_dir_, 2, record_count);
+    publisher_reactor->register_thread(publisher_thread);
+    std::thread publisher_reactor_thread([&]() { publisher_reactor->run(); });
+    ASSERT_TRUE(wait_for([&]() { return publisher_reactor->is_initialized(); })) << "Publisher reactor did not initialize";
+    const uint16_t listen_port = publisher_reactor->get_inbound_listener_port(0);
+    ASSERT_NE(listen_port, 0U);
+
+    // --- Two subscribers with distinct ids. Distinct ids matter: the registry's
+    //     orphan pre-emption would otherwise make one displace the other. ---
+    ServiceRegistry registry_a;
+    registry_a.add("publisher", NetworkEndpointConfiguration{"127.0.0.1", listen_port}, NetworkEndpointConfiguration{});
+    auto reactor_a = std::make_unique<Reactor>(make_reactor_config(), registry_a, logger_->logger);
+    auto sub_a = ApplicationThread::create<TopicSubscriberThread>(logger_->logger, *reactor_a, record_count, "sub_a", 0);
+    reactor_a->register_thread(sub_a);
+    std::thread reactor_a_thread([&]() { reactor_a->run(); });
+
+    ServiceRegistry registry_b;
+    registry_b.add("publisher", NetworkEndpointConfiguration{"127.0.0.1", listen_port}, NetworkEndpointConfiguration{});
+    auto reactor_b = std::make_unique<Reactor>(make_reactor_config(), registry_b, logger_->logger);
+    auto sub_b = ApplicationThread::create<TopicSubscriberThread>(logger_->logger, *reactor_b, record_count, "sub_b", 0);
+    reactor_b->register_thread(sub_b);
+    std::thread reactor_b_thread([&]() { reactor_b->run(); });
+
+    EXPECT_TRUE(wait_for([&]() { return sub_a->all_records_received.load(std::memory_order_acquire); })) << "sub_a incomplete";
+    EXPECT_TRUE(wait_for([&]() { return sub_b->all_records_received.load(std::memory_order_acquire); })) << "sub_b incomplete";
+
+    // --- Both subscribers saw every live record, in order ---
+    for (auto* subscriber : {sub_a.get(), sub_b.get()}) {
+        ASSERT_EQ(static_cast<int>(subscriber->received_records.size()), record_count);
+        for (int i = 0; i < record_count; ++i) {
+            const auto& rec = subscriber->received_records[static_cast<size_t>(i)];
+            EXPECT_EQ(rec.seq_no, i + 1);
+            EXPECT_EQ(rec.pdu_id, pdu_id_nos);
+            ASSERT_EQ(rec.payload.size(), sizeof(uint32_t));
+            uint32_t value{};
+            std::memcpy(&value, rec.payload.data(), sizeof(value));
+            EXPECT_EQ(value, static_cast<uint32_t>((i + 1) * 100));
+        }
+    }
+
+    reactor_a->shutdown("test complete");
+    reactor_b->shutdown("test complete");
+    publisher_reactor->shutdown("test complete");
+    if (reactor_a_thread.joinable()) {
+        reactor_a_thread.join();
+    }
+    if (reactor_b_thread.joinable()) {
+        reactor_b_thread.join();
+    }
+    if (publisher_reactor_thread.joinable()) {
+        publisher_reactor_thread.join();
+    }
+}
+
+// ============================================================
+// Test 3: two subscribers subscribing from different cursors get
+// different replay sets -- each subscriber's cursor is independent.
+// ============================================================
+TEST_F(TopicPubSubTest, TwoSubscribersHaveIndependentCursors) {
+    write_topic_wal_records(3); // records with seq_no 1, 2, 3
+
+    // --- Publisher (replay only; no live publish) ---
+    const ServiceRegistry publisher_registry;
+    auto publisher_reactor = std::make_unique<Reactor>(make_reactor_config(), publisher_registry, logger_->logger);
+    publisher_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
+    auto publisher_thread = ApplicationThread::create<TopicPublisherThread>(logger_->logger, *publisher_reactor, wal_dir_);
+    publisher_reactor->register_thread(publisher_thread);
+    std::thread publisher_reactor_thread([&]() { publisher_reactor->run(); });
+    ASSERT_TRUE(wait_for([&]() { return publisher_reactor->is_initialized(); })) << "Publisher reactor did not initialize";
+    const uint16_t listen_port = publisher_reactor->get_inbound_listener_port(0);
+    ASSERT_NE(listen_port, 0U);
+
+    // --- sub_a subscribes from 0 (expects 1,2,3); sub_b from 1 (expects 2,3) ---
+    ServiceRegistry registry_a;
+    registry_a.add("publisher", NetworkEndpointConfiguration{"127.0.0.1", listen_port}, NetworkEndpointConfiguration{});
+    auto reactor_a = std::make_unique<Reactor>(make_reactor_config(), registry_a, logger_->logger);
+    auto sub_a = ApplicationThread::create<TopicSubscriberThread>(logger_->logger, *reactor_a, 3, "sub_a", 0);
+    reactor_a->register_thread(sub_a);
+    std::thread reactor_a_thread([&]() { reactor_a->run(); });
+
+    ServiceRegistry registry_b;
+    registry_b.add("publisher", NetworkEndpointConfiguration{"127.0.0.1", listen_port}, NetworkEndpointConfiguration{});
+    auto reactor_b = std::make_unique<Reactor>(make_reactor_config(), registry_b, logger_->logger);
+    auto sub_b = ApplicationThread::create<TopicSubscriberThread>(logger_->logger, *reactor_b, 2, "sub_b", 1);
+    reactor_b->register_thread(sub_b);
+    std::thread reactor_b_thread([&]() { reactor_b->run(); });
+
+    EXPECT_TRUE(wait_for([&]() { return sub_a->all_records_received.load(std::memory_order_acquire); })) << "sub_a incomplete";
+    EXPECT_TRUE(wait_for([&]() { return sub_b->all_records_received.load(std::memory_order_acquire); })) << "sub_b incomplete";
+
+    // sub_a from cursor 0 -> seq_nos 1, 2, 3
+    ASSERT_EQ(static_cast<int>(sub_a->received_records.size()), 3);
+    EXPECT_EQ(sub_a->received_records[0].seq_no, 1);
+    EXPECT_EQ(sub_a->received_records[1].seq_no, 2);
+    EXPECT_EQ(sub_a->received_records[2].seq_no, 3);
+
+    // sub_b from cursor 1 -> seq_nos 2, 3 only
+    ASSERT_EQ(static_cast<int>(sub_b->received_records.size()), 2);
+    EXPECT_EQ(sub_b->received_records[0].seq_no, 2);
+    EXPECT_EQ(sub_b->received_records[1].seq_no, 3);
+
+    reactor_a->shutdown("test complete");
+    reactor_b->shutdown("test complete");
+    publisher_reactor->shutdown("test complete");
+    if (reactor_a_thread.joinable()) {
+        reactor_a_thread.join();
+    }
+    if (reactor_b_thread.joinable()) {
+        reactor_b_thread.join();
     }
     if (publisher_reactor_thread.joinable()) {
         publisher_reactor_thread.join();
