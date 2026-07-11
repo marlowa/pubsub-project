@@ -11,6 +11,8 @@
 #include <thread>
 #include <utility>
 
+#include <pthread.h>
+
 #include <gtest/gtest.h>
 
 #include <quill/Frontend.h>
@@ -19,6 +21,7 @@
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
 #include <pubsub_itc_fw/BackoffWithYield.hpp>
+#include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/EventType.hpp>
 #include <pubsub_itc_fw/HighResolutionClock.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
@@ -215,6 +218,33 @@ class TestThreadCancelTimer : public TestThread {
 
     void on_itc_message([[maybe_unused]] const EventMessage& msg) override {
         cancel_timer("tick");
+    }
+};
+
+// Exposes ApplicationThread's protected base methods so their default
+// (non-overridden) implementations can be exercised directly.
+class BaseCallbackThread : public TestThread {
+  public:
+    using TestThread::TestThread;
+
+    void invoke_on_connection_established(ConnectionID id) {
+        ApplicationThread::on_connection_established(id);
+    }
+
+    void invoke_on_connection_failed(const std::string& reason) {
+        ApplicationThread::on_connection_failed(reason);
+    }
+
+    void invoke_on_connection_lost(const ConnectionID& id, const std::string& reason) {
+        ApplicationThread::on_connection_lost(id, reason);
+    }
+
+    void invoke_on_framework_pdu_message(const EventMessage& msg) {
+        ApplicationThread::on_framework_pdu_message(msg);
+    }
+
+    void invoke_register_extra_thread(pthread_t id, const std::string& name) {
+        register_extra_thread(id, name);
     }
 };
 
@@ -1318,3 +1348,55 @@ TEST_F(ApplicationThreadTest, PrioritisesDataOverTimers) {
 // AddTimer command, which is not deterministic under scheduler load. The
 // positive PrioritisesDataOverTimers test above is sufficient to prove the
 // deferral mechanism works.
+
+// ------------------------------------------------------------
+// Base-class default methods (exercised without a running thread)
+// ------------------------------------------------------------
+
+TEST_F(ApplicationThreadTest, BaseConnectionCallbacksAreSafeNoOps) {
+    auto thread = ApplicationThread::create<BaseCallbackThread>(logger_with_sink_.logger, *reactor_, "BaseCallbacks", ThreadID(60), make_queue_config(),
+                                                                make_allocator_config());
+
+    thread->invoke_on_connection_established(ConnectionID{7, "svc"});
+    thread->invoke_on_connection_failed("connect refused");
+    thread->invoke_on_connection_lost(ConnectionID{7, "svc"}, "peer closed");
+    thread->invoke_on_framework_pdu_message(EventMessage::create_reactor_event(EventType(EventType::FrameworkPdu)));
+
+    SUCCEED();
+}
+
+TEST_F(ApplicationThreadTest, GetLoggerReturnsTheConstructionLogger) {
+    auto thread = ApplicationThread::create<BaseCallbackThread>(logger_with_sink_.logger, *reactor_, "GetLogger", ThreadID(61), make_queue_config(),
+                                                                make_allocator_config());
+
+    EXPECT_EQ(&thread->get_logger(), &logger_with_sink_.logger);
+}
+
+TEST_F(ApplicationThreadTest, RegisterExtraThreadAppendsToExtraThreads) {
+    auto thread = ApplicationThread::create<BaseCallbackThread>(logger_with_sink_.logger, *reactor_, "ExtraThreads", ThreadID(62), make_queue_config(),
+                                                                make_allocator_config());
+
+    EXPECT_TRUE(thread->get_extra_threads().empty());
+
+    thread->invoke_register_extra_thread(::pthread_self(), "aux");
+
+    EXPECT_EQ(thread->get_extra_threads().size(), static_cast<size_t>(1));
+}
+
+TEST_F(ApplicationThreadTest, GetPthreadIdBeforeStartThrows) {
+    auto thread = ApplicationThread::create<BaseCallbackThread>(logger_with_sink_.logger, *reactor_, "PthreadId", ThreadID(63), make_queue_config(),
+                                                                make_allocator_config());
+
+    EXPECT_THROW({ [[maybe_unused]] const pthread_t id = thread->get_pthread_id(); }, PreconditionAssertion);
+}
+
+TEST_F(ApplicationThreadTest, InstallInlinePduHandlerEnqueuesControlCommand) {
+    auto thread = ApplicationThread::create<BaseCallbackThread>(logger_with_sink_.logger, *reactor_, "InlineHandler", ThreadID(64), make_queue_config(),
+                                                                make_allocator_config());
+
+    // Enqueues an InstallInlinePduHandler command onto the reactor; this does not
+    // require the reactor to be running.
+    thread->install_inline_pdu_handler(ConnectionID{9, "svc"}, [](PduParser*, PduFramer*) {});
+
+    SUCCEED();
+}
