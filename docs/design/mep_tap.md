@@ -59,6 +59,13 @@ TAP and should be scheduled as a standalone DSL improvement session when time pe
 
 ## 3. New File: `topics.dsl`
 
+> **Superseded in part (2026-07-11).** This document treats `topic_name` as a free,
+> unvalidated string. That decision is revised: topic names are a **recognised catalog
+> generated from the DSL** (a `topic` grouping construct), validated on subscribe. See
+> [dsl_topic_catalog.md](dsl_topic_catalog.md) and `pubsub_requirements.md` (R1–R3). The
+> `topics.dsl` wire protocol below (the PDUs) is unaffected; only how topic *names* are
+> defined and validated changes.
+
 Location: `applications/topics.dsl`
 Namespace: `pubsub_itc_fw_app`
 Generated header: `build/generated_dsl/topics.hpp`
