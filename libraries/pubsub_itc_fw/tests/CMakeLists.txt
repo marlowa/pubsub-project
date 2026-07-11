@@ -44,6 +44,7 @@ add_executable(pubsub_itc_fw_tests
     ThreadWithJoinTimeoutTest.cpp
     TimerTest.cpp
     TomlConfigurationTest.cpp
+    WalCursorTest.cpp
     WalTest.cpp
     WalWriterReaderTest.cpp
     WallClockTest.cpp

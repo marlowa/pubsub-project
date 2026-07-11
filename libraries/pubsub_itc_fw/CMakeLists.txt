@@ -71,6 +71,7 @@ set(PUBSUB_ITC_FW_SRC
         src/Wal.cpp
         src/WalWriter.cpp
         src/WalReader.cpp
+        src/WalCursor.cpp
         src/TlsContext.cpp
         src/TlsState.cpp
         src/TlsRawBytesProtocolHandler.cpp
