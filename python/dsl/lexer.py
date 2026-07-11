@@ -24,6 +24,7 @@ class Lexer:  # pylint: disable=too-few-public-methods
     KEYWORDS = {
         "enum",
         "framing",
+        "include",
         "message",
         "optional",
         "list",
@@ -97,6 +98,9 @@ class Lexer:  # pylint: disable=too-few-public-methods
             if ch == "'":
                 return self._lex_char_lit()
 
+            if ch == '"':
+                return self._lex_string_lit()
+
             if ch.isalpha() or ch == "_":
                 return self._lex_ident()
 
@@ -137,6 +141,26 @@ class Lexer:  # pylint: disable=too-few-public-methods
             )
         self._advance()  # consume closing quote
         return Token("CHAR_LIT", str(ord(ch)), line, col)
+
+    def _lex_string_lit(self) -> Token:
+        """Lex a double-quoted string literal e.g. "path/to/file.dsl".
+
+        Used for `include` directives. No escape sequences are supported: a
+        string is a run of characters between the quotes on a single line.
+        """
+        line, col = self.line, self.col
+        self._advance()  # consume opening quote
+        start = self.pos
+        while True:
+            ch = self._peek()
+            if ch in ("", "\n"):
+                raise LexError(f"Unterminated string literal at {line}:{col}")
+            if ch == '"':
+                break
+            self._advance()
+        value = self.text[start:self.pos]
+        self._advance()  # consume closing quote
+        return Token("STRING", value, line, col)
 
     def _lex_ident(self) -> Token:
         line, col = self.line, self.col

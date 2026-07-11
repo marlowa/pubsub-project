@@ -10,8 +10,9 @@ sys.path.insert(0, PROJECT_PYTHON_DIR)
 import argparse
 from pathlib import Path
 
-from dsl.parser import Parser
-from dsl.validator import Validator, ValidationError
+from dsl.loader import load
+from dsl.errors import DslError
+from dsl.validator import Validator
 from dsl.generator_cpp import CppGenerator
 from dsl.generator_java import JavaGenerator
 
@@ -53,12 +54,11 @@ def main():
         ap.error("--package is only valid with --java")
 
     input_path = Path(args.input)
-    text = input_path.read_text()
 
     try:
-        ast = Parser(text).parse()
+        ast = load(input_path)
         Validator(ast).validate(pdu_id_enum=bool(args.pdu_id_enum))
-    except ValidationError as error:
+    except DslError as error:
         print(f"{input_path}: {error}", file=sys.stderr)
         sys.exit(1)
 

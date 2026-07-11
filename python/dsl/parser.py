@@ -8,6 +8,7 @@ from .errors import ParseError
 from .ast import (
     DslFile,
     Declaration,
+    IncludeDecl,
     EnumDecl,
     EnumEntry,
     EnumRef,
@@ -79,6 +80,9 @@ class Parser:  # pylint: disable=too-few-public-methods
     # -----------------------------
 
     def _parse_declaration(self) -> Declaration:
+        if self.current.kind == "KEYWORD" and self.current.value == "include":
+            return self._parse_include()
+
         if self.current.kind == "KEYWORD" and self.current.value == "enum":
             return self._parse_enum()
 
@@ -92,6 +96,19 @@ class Parser:  # pylint: disable=too-few-public-methods
             f"Unexpected token '{self.current.value}' at "
             f"{self.current.line}:{self.current.column}"
         )
+
+    # -----------------------------
+    # Include
+    # -----------------------------
+
+    def _parse_include(self) -> IncludeDecl:
+        line = self._expect_keyword("include")
+        path_tok = self._eat("STRING")
+        if not path_tok.value:
+            raise ParseError(
+                f"Empty include path at {path_tok.line}:{path_tok.column}"
+            )
+        return IncludeDecl(path=path_tok.value, line=line)
 
     # -----------------------------
     # Framing

@@ -1,7 +1,8 @@
 # DSL topic catalog + include mechanism — design & plan {#dsl_topic_catalog}
 
-**Status:** Decided 2026-07-11. **Step 1 (rename) DONE** (commit `d0ecfca`). Resume at
-**step 2 (include loader)** in the Implementation Plan below.
+**Status:** Decided 2026-07-11. **Step 1 (rename) DONE** (commit `d0ecfca`).
+**Step 2 (include loader) DONE** (uncommitted at time of writing). Resume at
+**step 3 (`topic` construct)** in the Implementation Plan below.
 
 ## Context — why this exists
 
@@ -67,11 +68,17 @@ owns the pdu ids).
    the `ref.enum_name == "Topics"` check), `generator_cpp._emit_topics_enum_class` + the
    `decl.name == "Topics"` guard, and rename the `--topics` flag (+ the CMake invocation).
    Keep the pytest round-trip suite green.
-2. **Include loader.** Lexer `STRING` token; parse `include "path"` as a declaration-level
-   form; new loader resolving includes transitively (dedup by `realpath`; cycle detection via
-   a "currently loading" stack + a "fully loaded" set, erroring with the cycle path); merge
-   into one `DslFile`; validator/generator unchanged. pytest: nested include, diamond dedup,
-   self-cycle, mutual cycle, missing file, path relative to the including file.
+2. **[DONE] Include loader.** Lexer `STRING` token (`_lex_string_lit`) + `include` keyword;
+   `IncludeDecl(path, line)` AST node; parser `_parse_include` at declaration level; new
+   `python/dsl/loader.py` (`Loader` / `load()`) resolving includes transitively (paths relative
+   to the *including* file's dir; dedup by `Path.resolve()` real path; cycle detection via a
+   "currently loading" DFS stack + a "fully loaded" set, erroring with the `a -> b -> a` chain);
+   merges into one `DslFile`; validator/generator unchanged. Both CLI wrappers
+   (`generate_cpp_from_dsl.py`, `generate_java_from_dsl.py`) now call `load()` and catch the
+   `DslError` base. `python/tests/test_include.py` covers: STRING token, unterminated string,
+   include-decl parse, empty path, no-include passthrough, single/nested/diamond include,
+   relative-path resolution, missing include, missing root, self-cycle, mutual cycle, cycle
+   chain text, duplicate-id-across-includes (validator), valid-across-includes. 220 pytest pass.
 3. **`topic` construct.** Lexer `topic` keyword; `TopicDecl(name, members)` AST node; parse
    `topic NAME { Msg, ... }`; validate (members are known messages; names unique; multi-topic
    allowed); generator emits `topics_registry.hpp` (a `Topic` enum + the `pdu_id → topic`

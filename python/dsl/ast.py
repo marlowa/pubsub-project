@@ -17,6 +17,19 @@ class Declaration:  # pylint: disable=too-few-public-methods
 
 
 @dataclass
+class IncludeDecl(Declaration):
+    """An `include "path"` directive.
+
+    Resolved (and removed) by the loader before validation: the loader replaces
+    each IncludeDecl with the declarations of the included file. IncludeDecl nodes
+    therefore never reach the validator or a generator.
+    """
+
+    path: str
+    line: int = 0
+
+
+@dataclass
 class EnumEntry:
     """A single name/value pair within an enum declaration."""
 
