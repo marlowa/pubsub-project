@@ -9,6 +9,7 @@
 
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
+#include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/ServiceEndpoints.hpp>
 #include <pubsub_itc_fw/TcpSocket.hpp>
 #include <pubsub_itc_fw/TlsContext.hpp>
@@ -34,7 +35,7 @@ OutboundConnection::OutboundConnection(ConnectionID id, ThreadID requesting_thre
         const TlsClientConfiguration& tls_config = *endpoints_.tls;
         auto [ctx, ctx_error] = TlsContext::create_client(tls_config.ca_path, tls_config.certificate_path, tls_config.private_key_path);
         if (!ctx) {
-            throw PreconditionAssertion("OutboundConnection: TlsContext::create_client failed: " + ctx_error, __FILE__, __LINE__);
+            throw PubSubItcException("OutboundConnection: TlsContext::create_client failed: " + ctx_error);
         }
         tls_context_ = std::move(ctx);
     }

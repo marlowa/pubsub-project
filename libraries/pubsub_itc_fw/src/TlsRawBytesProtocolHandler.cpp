@@ -23,6 +23,7 @@
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/MirroredBuffer.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
+#include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/StringUtils.hpp>
 #include <pubsub_itc_fw/TcpSocket.hpp>
@@ -55,14 +56,14 @@ TlsRawBytesProtocolHandler::TlsRawBytesProtocolHandler(ConnectionID connection_i
       plaintext_buffer_(std::make_shared<MirroredBuffer>(buffer_capacity)) {
     tls_state_.rbio = BIO_new(BIO_s_mem());
     if (tls_state_.rbio == nullptr) {
-        throw PreconditionAssertion("TlsRawBytesProtocolHandler: BIO_new for rbio failed", __FILE__, __LINE__);
+        throw PubSubItcException("TlsRawBytesProtocolHandler: BIO_new for rbio failed");
     }
 
     tls_state_.wbio = BIO_new(BIO_s_mem());
     if (tls_state_.wbio == nullptr) {
         BIO_free(tls_state_.rbio);
         tls_state_.rbio = nullptr;
-        throw PreconditionAssertion("TlsRawBytesProtocolHandler: BIO_new for wbio failed", __FILE__, __LINE__);
+        throw PubSubItcException("TlsRawBytesProtocolHandler: BIO_new for wbio failed");
     }
 
     tls_state_.ssl = SSL_new(tls_context.get());
@@ -71,7 +72,7 @@ TlsRawBytesProtocolHandler::TlsRawBytesProtocolHandler(ConnectionID connection_i
         BIO_free(tls_state_.wbio);
         tls_state_.rbio = nullptr;
         tls_state_.wbio = nullptr;
-        throw PreconditionAssertion("TlsRawBytesProtocolHandler: SSL_new failed", __FILE__, __LINE__);
+        throw PubSubItcException("TlsRawBytesProtocolHandler: SSL_new failed");
     }
 
     // SSL_set_bio transfers ownership of both BIOs to the SSL object.
