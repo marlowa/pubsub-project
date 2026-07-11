@@ -46,6 +46,8 @@
 #include <pubsub_itc_fw/ThreadID.hpp>
 #include <pubsub_itc_fw/TopicPublisher.hpp>
 #include <pubsub_itc_fw/TopicSubscriberChannel.hpp>
+#include <pubsub_itc_fw/WalPosition.hpp>
+#include <pubsub_itc_fw/WalReader.hpp>
 #include <pubsub_itc_fw/WalWriter.hpp>
 
 #include <pubsub_itc_fw/tests_common/LoggerWithSink.hpp>
@@ -279,19 +281,36 @@ class TopicPubSubTest : public ::testing::Test {
         return cfg;
     }
 
-    // Write `count` WAL records for the "orders" topic, in the on-disk framing the
-    // publisher expects: [wall_time_ns : int64][pdu_id : int16][payload : uint32].
+    // One WAL record for the "orders" topic, in the on-disk framing the publisher
+    // expects: [wall_time_ns : int64][pdu_id : int16][payload : uint32].
+    static std::vector<uint8_t> encode_wal_record(int i) {
+        std::vector<uint8_t> buffer(TopicPublisher::wal_record_header_size + sizeof(uint32_t));
+        const int64_t wall_time_ns = static_cast<int64_t>(i) * 1000;
+        const int16_t pdu_id = pdu_id_nos;
+        const uint32_t payload = static_cast<uint32_t>(i * 100);
+        std::memcpy(buffer.data(), &wall_time_ns, sizeof(wall_time_ns));
+        std::memcpy(buffer.data() + sizeof(int64_t), &pdu_id, sizeof(pdu_id));
+        std::memcpy(buffer.data() + TopicPublisher::wal_record_header_size, &payload, sizeof(payload));
+        return buffer;
+    }
+
+    // Create/overwrite the WAL with records seq_no 1..count.
     void write_topic_wal_records(int count) {
         WalWriter writer;
         writer.open(wal_dir_, wal_segment_size, {0, 0});
         for (int i = 1; i <= count; ++i) {
-            std::vector<uint8_t> buffer(TopicPublisher::wal_record_header_size + sizeof(uint32_t));
-            const int64_t wall_time_ns = static_cast<int64_t>(i) * 1000;
-            const int16_t pdu_id = pdu_id_nos;
-            const uint32_t payload = static_cast<uint32_t>(i * 100);
-            std::memcpy(buffer.data(), &wall_time_ns, sizeof(wall_time_ns));
-            std::memcpy(buffer.data() + sizeof(int64_t), &pdu_id, sizeof(pdu_id));
-            std::memcpy(buffer.data() + TopicPublisher::wal_record_header_size, &payload, sizeof(payload));
+            const std::vector<uint8_t> buffer = encode_wal_record(i);
+            writer.append(static_cast<int64_t>(i), buffer.data(), buffer.size());
+        }
+    }
+
+    // Append records seq_no first..last to the existing WAL, continuing from its end.
+    void append_topic_wal_records(int first, int last) {
+        const WalPosition end = WalReader::replay(wal_dir_, {0, 0}, [](int64_t, const void*, size_t) {});
+        WalWriter writer;
+        writer.open(wal_dir_, wal_segment_size, end);
+        for (int i = first; i <= last; ++i) {
+            const std::vector<uint8_t> buffer = encode_wal_record(i);
             writer.append(static_cast<int64_t>(i), buffer.data(), buffer.size());
         }
     }
@@ -483,6 +502,74 @@ TEST_F(TopicPubSubTest, TwoSubscribersHaveIndependentCursors) {
     if (reactor_b_thread.joinable()) {
         reactor_b_thread.join();
     }
+    if (publisher_reactor_thread.joinable()) {
+        publisher_reactor_thread.join();
+    }
+}
+
+// ============================================================
+// Test 4: a subscriber that disconnects mid-stream and reconnects
+// resumes exactly at its cursor -- no gap and no duplicate at the seam.
+// Same subscriber_id across both sessions (one logical subscriber).
+// ============================================================
+TEST_F(TopicPubSubTest, SubscriberReconnectResumesFromCursorWithoutGap) {
+    // Two records exist when session 1 runs; three more are appended before the
+    // reconnect. (Replay currently bursts all matching records, so each session
+    // must consume exactly what its cursor makes available -- hence appending the
+    // new records only after session 1 has finished.)
+    write_topic_wal_records(2); // records with seq_no 1, 2
+
+    // --- Publisher stays up across both subscriber sessions ---
+    const ServiceRegistry publisher_registry;
+    auto publisher_reactor = std::make_unique<Reactor>(make_reactor_config(), publisher_registry, logger_->logger);
+    publisher_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
+    auto publisher_thread = ApplicationThread::create<TopicPublisherThread>(logger_->logger, *publisher_reactor, wal_dir_);
+    publisher_reactor->register_thread(publisher_thread);
+    std::thread publisher_reactor_thread([&]() { publisher_reactor->run(); });
+    ASSERT_TRUE(wait_for([&]() { return publisher_reactor->is_initialized(); })) << "Publisher reactor did not initialize";
+    const uint16_t listen_port = publisher_reactor->get_inbound_listener_port(0);
+    ASSERT_NE(listen_port, 0U);
+
+    ServiceRegistry subscriber_registry;
+    subscriber_registry.add("publisher", NetworkEndpointConfiguration{"127.0.0.1", listen_port}, NetworkEndpointConfiguration{});
+
+    // --- Session 1: subscribe from 0, take 2 records, then disconnect ---
+    auto reactor_1 = std::make_unique<Reactor>(make_reactor_config(), subscriber_registry, logger_->logger);
+    auto session_1 = ApplicationThread::create<TopicSubscriberThread>(logger_->logger, *reactor_1, 2, "sub", 0);
+    reactor_1->register_thread(session_1);
+    std::thread reactor_1_thread([&]() { reactor_1->run(); });
+    EXPECT_TRUE(wait_for([&]() { return session_1->all_records_received.load(std::memory_order_acquire); })) << "session 1 incomplete";
+    reactor_1->shutdown("session 1 complete");
+    if (reactor_1_thread.joinable()) {
+        reactor_1_thread.join();
+    }
+
+    ASSERT_EQ(static_cast<int>(session_1->received_records.size()), 2);
+    const int64_t resume_cursor = session_1->received_records.back().seq_no; // the cursor a real client would persist (== 2)
+
+    // --- New records arrive while the subscriber is away ---
+    append_topic_wal_records(3, 5); // WAL now has seq_no 1..5
+
+    // --- Session 2: same subscriber id, resume from the cursor, take the rest ---
+    auto reactor_2 = std::make_unique<Reactor>(make_reactor_config(), subscriber_registry, logger_->logger);
+    auto session_2 = ApplicationThread::create<TopicSubscriberThread>(logger_->logger, *reactor_2, 3, "sub", resume_cursor);
+    reactor_2->register_thread(session_2);
+    std::thread reactor_2_thread([&]() { reactor_2->run(); });
+    EXPECT_TRUE(wait_for([&]() { return session_2->all_records_received.load(std::memory_order_acquire); })) << "session 2 incomplete";
+    reactor_2->shutdown("session 2 complete");
+    if (reactor_2_thread.joinable()) {
+        reactor_2_thread.join();
+    }
+
+    // Session 1 saw 1,2; session 2 resumes at 3 -- no gap, and record 2 is not re-delivered.
+    EXPECT_EQ(session_1->received_records[0].seq_no, 1);
+    EXPECT_EQ(session_1->received_records[1].seq_no, 2);
+    ASSERT_EQ(static_cast<int>(session_2->received_records.size()), 3);
+    EXPECT_EQ(session_2->received_records[0].seq_no, 3);
+    EXPECT_EQ(session_2->received_records[1].seq_no, 4);
+    EXPECT_EQ(session_2->received_records[2].seq_no, 5);
+
+    publisher_reactor->shutdown("test complete");
     if (publisher_reactor_thread.joinable()) {
         publisher_reactor_thread.join();
     }
