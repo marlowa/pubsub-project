@@ -40,6 +40,7 @@
 #include <pubsub_itc_fw/ReactorConfiguration.hpp>
 #include <pubsub_itc_fw/ServiceRegistry.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
+#include <pubsub_itc_fw/ThreadWithJoinTimeout.hpp>
 
 #include <pubsub_itc_fw/tests_common/LoggerWithSink.hpp>
 #include <pubsub_itc_fw/tests_common/TestConfigurations.hpp>
@@ -190,7 +191,7 @@ TEST_F(WritableNotificationTest, PacedStreamDeliversAllRecordsInOrder) {
     sender_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
     auto sender_thread = ApplicationThread::create<StreamingSenderThread>(logger_->logger, *sender_reactor, record_count);
     sender_reactor->register_thread(sender_thread);
-    std::thread sender_reactor_thread([&]() { sender_reactor->run(); });
+    ThreadWithJoinTimeout sender_reactor_thread([&]() { sender_reactor->run(); });
     ASSERT_TRUE(wait_for([&]() { return sender_reactor->is_initialized(); })) << "Sender reactor did not initialize";
     const uint16_t listen_port = sender_reactor->get_inbound_listener_port(0);
     ASSERT_NE(listen_port, 0U);
@@ -201,7 +202,7 @@ TEST_F(WritableNotificationTest, PacedStreamDeliversAllRecordsInOrder) {
     auto receiver_reactor = std::make_unique<Reactor>(make_reactor_config(), receiver_registry, logger_->logger);
     auto receiver_thread = ApplicationThread::create<SlowReceiverThread>(logger_->logger, *receiver_reactor, record_count);
     receiver_reactor->register_thread(receiver_thread);
-    std::thread receiver_reactor_thread([&]() { receiver_reactor->run(); });
+    ThreadWithJoinTimeout receiver_reactor_thread([&]() { receiver_reactor->run(); });
 
     EXPECT_TRUE(wait_for([&]() { return receiver_thread->all_received.load(std::memory_order_acquire); })) << "Receiver did not receive all records";
 

@@ -44,6 +44,7 @@
 #include <pubsub_itc_fw/ReactorControlCommand.hpp>
 #include <pubsub_itc_fw/ServiceRegistry.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
+#include <pubsub_itc_fw/ThreadWithJoinTimeout.hpp>
 #include <pubsub_itc_fw/TopicControlChannel.hpp>
 #include <pubsub_itc_fw/TopicPublisher.hpp>
 #include <pubsub_itc_fw/TopicSubscriberChannel.hpp>
@@ -489,7 +490,7 @@ TEST_F(TopicPubSubTest, SingleSubscriberReceivesReplayedRecordsInOrder) {
     auto publisher_thread = ApplicationThread::create<TopicPublisherThread>(logger_->logger, *publisher_reactor, wal_dir_);
     publisher_reactor->register_thread(publisher_thread);
 
-    std::thread publisher_reactor_thread([&]() { publisher_reactor->run(); });
+    ThreadWithJoinTimeout publisher_reactor_thread([&]() { publisher_reactor->run(); });
 
     ASSERT_TRUE(wait_for([&]() { return publisher_reactor->is_initialized(); })) << "Publisher reactor did not initialize";
 
@@ -504,7 +505,7 @@ TEST_F(TopicPubSubTest, SingleSubscriberReceivesReplayedRecordsInOrder) {
     auto subscriber_thread = ApplicationThread::create<TopicSubscriberThread>(logger_->logger, *subscriber_reactor, record_count);
     subscriber_reactor->register_thread(subscriber_thread);
 
-    std::thread subscriber_reactor_thread([&]() { subscriber_reactor->run(); });
+    ThreadWithJoinTimeout subscriber_reactor_thread([&]() { subscriber_reactor->run(); });
 
     // --- Wait for all records to arrive ---
     EXPECT_TRUE(wait_for([&]() { return subscriber_thread->all_records_received.load(std::memory_order_acquire); }))
@@ -549,7 +550,7 @@ TEST_F(TopicPubSubTest, TwoSubscribersReceiveLiveFanout) {
     publisher_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
     auto publisher_thread = ApplicationThread::create<TopicPublisherThread>(logger_->logger, *publisher_reactor, wal_dir_, 2, record_count);
     publisher_reactor->register_thread(publisher_thread);
-    std::thread publisher_reactor_thread([&]() { publisher_reactor->run(); });
+    ThreadWithJoinTimeout publisher_reactor_thread([&]() { publisher_reactor->run(); });
     ASSERT_TRUE(wait_for([&]() { return publisher_reactor->is_initialized(); })) << "Publisher reactor did not initialize";
     const uint16_t listen_port = publisher_reactor->get_inbound_listener_port(0);
     ASSERT_NE(listen_port, 0U);
@@ -561,14 +562,14 @@ TEST_F(TopicPubSubTest, TwoSubscribersReceiveLiveFanout) {
     auto reactor_a = std::make_unique<Reactor>(make_reactor_config(), registry_a, logger_->logger);
     auto sub_a = ApplicationThread::create<TopicSubscriberThread>(logger_->logger, *reactor_a, record_count, "sub_a", 0);
     reactor_a->register_thread(sub_a);
-    std::thread reactor_a_thread([&]() { reactor_a->run(); });
+    ThreadWithJoinTimeout reactor_a_thread([&]() { reactor_a->run(); });
 
     ServiceRegistry registry_b;
     registry_b.add("publisher", NetworkEndpointConfiguration{"127.0.0.1", listen_port}, NetworkEndpointConfiguration{});
     auto reactor_b = std::make_unique<Reactor>(make_reactor_config(), registry_b, logger_->logger);
     auto sub_b = ApplicationThread::create<TopicSubscriberThread>(logger_->logger, *reactor_b, record_count, "sub_b", 0);
     reactor_b->register_thread(sub_b);
-    std::thread reactor_b_thread([&]() { reactor_b->run(); });
+    ThreadWithJoinTimeout reactor_b_thread([&]() { reactor_b->run(); });
 
     EXPECT_TRUE(wait_for([&]() { return sub_a->all_records_received.load(std::memory_order_acquire); })) << "sub_a incomplete";
     EXPECT_TRUE(wait_for([&]() { return sub_b->all_records_received.load(std::memory_order_acquire); })) << "sub_b incomplete";
@@ -614,7 +615,7 @@ TEST_F(TopicPubSubTest, TwoSubscribersHaveIndependentCursors) {
     publisher_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
     auto publisher_thread = ApplicationThread::create<TopicPublisherThread>(logger_->logger, *publisher_reactor, wal_dir_);
     publisher_reactor->register_thread(publisher_thread);
-    std::thread publisher_reactor_thread([&]() { publisher_reactor->run(); });
+    ThreadWithJoinTimeout publisher_reactor_thread([&]() { publisher_reactor->run(); });
     ASSERT_TRUE(wait_for([&]() { return publisher_reactor->is_initialized(); })) << "Publisher reactor did not initialize";
     const uint16_t listen_port = publisher_reactor->get_inbound_listener_port(0);
     ASSERT_NE(listen_port, 0U);
@@ -625,14 +626,14 @@ TEST_F(TopicPubSubTest, TwoSubscribersHaveIndependentCursors) {
     auto reactor_a = std::make_unique<Reactor>(make_reactor_config(), registry_a, logger_->logger);
     auto sub_a = ApplicationThread::create<TopicSubscriberThread>(logger_->logger, *reactor_a, 3, "sub_a", 0);
     reactor_a->register_thread(sub_a);
-    std::thread reactor_a_thread([&]() { reactor_a->run(); });
+    ThreadWithJoinTimeout reactor_a_thread([&]() { reactor_a->run(); });
 
     ServiceRegistry registry_b;
     registry_b.add("publisher", NetworkEndpointConfiguration{"127.0.0.1", listen_port}, NetworkEndpointConfiguration{});
     auto reactor_b = std::make_unique<Reactor>(make_reactor_config(), registry_b, logger_->logger);
     auto sub_b = ApplicationThread::create<TopicSubscriberThread>(logger_->logger, *reactor_b, 2, "sub_b", 1);
     reactor_b->register_thread(sub_b);
-    std::thread reactor_b_thread([&]() { reactor_b->run(); });
+    ThreadWithJoinTimeout reactor_b_thread([&]() { reactor_b->run(); });
 
     EXPECT_TRUE(wait_for([&]() { return sub_a->all_records_received.load(std::memory_order_acquire); })) << "sub_a incomplete";
     EXPECT_TRUE(wait_for([&]() { return sub_b->all_records_received.load(std::memory_order_acquire); })) << "sub_b incomplete";
@@ -680,7 +681,7 @@ TEST_F(TopicPubSubTest, SubscriberReconnectResumesFromCursorWithoutGap) {
     publisher_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
     auto publisher_thread = ApplicationThread::create<TopicPublisherThread>(logger_->logger, *publisher_reactor, wal_dir_);
     publisher_reactor->register_thread(publisher_thread);
-    std::thread publisher_reactor_thread([&]() { publisher_reactor->run(); });
+    ThreadWithJoinTimeout publisher_reactor_thread([&]() { publisher_reactor->run(); });
     ASSERT_TRUE(wait_for([&]() { return publisher_reactor->is_initialized(); })) << "Publisher reactor did not initialize";
     const uint16_t listen_port = publisher_reactor->get_inbound_listener_port(0);
     ASSERT_NE(listen_port, 0U);
@@ -692,7 +693,7 @@ TEST_F(TopicPubSubTest, SubscriberReconnectResumesFromCursorWithoutGap) {
     auto reactor_1 = std::make_unique<Reactor>(make_reactor_config(), subscriber_registry, logger_->logger);
     auto session_1 = ApplicationThread::create<TopicSubscriberThread>(logger_->logger, *reactor_1, 2, "sub", 0);
     reactor_1->register_thread(session_1);
-    std::thread reactor_1_thread([&]() { reactor_1->run(); });
+    ThreadWithJoinTimeout reactor_1_thread([&]() { reactor_1->run(); });
     EXPECT_TRUE(wait_for([&]() { return session_1->all_records_received.load(std::memory_order_acquire); })) << "session 1 incomplete";
     reactor_1->shutdown("session 1 complete");
     if (reactor_1_thread.joinable()) {
@@ -709,7 +710,7 @@ TEST_F(TopicPubSubTest, SubscriberReconnectResumesFromCursorWithoutGap) {
     auto reactor_2 = std::make_unique<Reactor>(make_reactor_config(), subscriber_registry, logger_->logger);
     auto session_2 = ApplicationThread::create<TopicSubscriberThread>(logger_->logger, *reactor_2, 3, "sub", resume_cursor);
     reactor_2->register_thread(session_2);
-    std::thread reactor_2_thread([&]() { reactor_2->run(); });
+    ThreadWithJoinTimeout reactor_2_thread([&]() { reactor_2->run(); });
     EXPECT_TRUE(wait_for([&]() { return session_2->all_records_received.load(std::memory_order_acquire); })) << "session 2 incomplete";
     reactor_2->shutdown("session 2 complete");
     if (reactor_2_thread.joinable()) {
@@ -745,7 +746,7 @@ TEST_F(TopicPubSubTest, DualChannelStreamsDataAndDeliversControlSignal) {
     auto publisher_thread =
         ApplicationThread::create<TopicPublisherThread>(logger_->logger, *publisher_reactor, wal_dir_, 0, 0, /*lag_on_control_subscribe=*/true);
     publisher_reactor->register_thread(publisher_thread);
-    std::thread publisher_reactor_thread([&]() { publisher_reactor->run(); });
+    ThreadWithJoinTimeout publisher_reactor_thread([&]() { publisher_reactor->run(); });
     ASSERT_TRUE(wait_for([&]() { return publisher_reactor->is_initialized(); })) << "Publisher reactor did not initialize";
     const uint16_t listen_port = publisher_reactor->get_inbound_listener_port(0);
     ASSERT_NE(listen_port, 0U);
@@ -757,7 +758,7 @@ TEST_F(TopicPubSubTest, DualChannelStreamsDataAndDeliversControlSignal) {
     auto subscriber_reactor = std::make_unique<Reactor>(make_reactor_config(), subscriber_registry, logger_->logger);
     auto subscriber_thread = ApplicationThread::create<DualChannelSubscriberThread>(logger_->logger, *subscriber_reactor, "dual", record_count);
     subscriber_reactor->register_thread(subscriber_thread);
-    std::thread subscriber_reactor_thread([&]() { subscriber_reactor->run(); });
+    ThreadWithJoinTimeout subscriber_reactor_thread([&]() { subscriber_reactor->run(); });
 
     EXPECT_TRUE(wait_for([&]() { return subscriber_thread->all_records_received.load(std::memory_order_acquire); })) << "data records not received";
     EXPECT_TRUE(wait_for([&]() { return subscriber_thread->lagged_received.load(std::memory_order_acquire); }))
@@ -796,7 +797,7 @@ TEST_F(TopicPubSubTest, DroppingDataChannelTearsDownControlChannel) {
     publisher_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
     auto publisher_thread = ApplicationThread::create<TopicPublisherThread>(logger_->logger, *publisher_reactor, wal_dir_);
     publisher_reactor->register_thread(publisher_thread);
-    std::thread publisher_reactor_thread([&]() { publisher_reactor->run(); });
+    ThreadWithJoinTimeout publisher_reactor_thread([&]() { publisher_reactor->run(); });
     ASSERT_TRUE(wait_for([&]() { return publisher_reactor->is_initialized(); })) << "Publisher reactor did not initialize";
     const uint16_t listen_port = publisher_reactor->get_inbound_listener_port(0);
     ASSERT_NE(listen_port, 0U);
@@ -809,7 +810,7 @@ TEST_F(TopicPubSubTest, DroppingDataChannelTearsDownControlChannel) {
     auto subscriber_thread =
         ApplicationThread::create<DualChannelSubscriberThread>(logger_->logger, *subscriber_reactor, "dual", record_count, /*disconnect_data_when_done=*/true);
     subscriber_reactor->register_thread(subscriber_thread);
-    std::thread subscriber_reactor_thread([&]() { subscriber_reactor->run(); });
+    ThreadWithJoinTimeout subscriber_reactor_thread([&]() { subscriber_reactor->run(); });
 
     // The publisher tears down the pair, so the subscriber's control connection is closed.
     EXPECT_TRUE(wait_for([&]() { return subscriber_thread->control_channel_lost.load(std::memory_order_acquire); }))
