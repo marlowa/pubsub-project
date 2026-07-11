@@ -16,6 +16,7 @@ add_executable(pubsub_itc_fw_integration_tests
     StatusQueryResponseTest.cpp
     TlsOutboundIntegrationTest.cpp
     TlsProtocolHandlerIntegrationTest.cpp
+    TopicPubSubIntegrationTest.cpp
     VariableLengthPduTest.cpp
     WalExternalSubscriberIntegrationTest.cpp
 )
@@ -24,6 +25,7 @@ add_dependencies(pubsub_itc_fw_integration_tests
     pubsub_itc_fw_dsl
     fix_equity_orders_generated
     leader_follower_generated
+    topics_generated
 )
 
 target_link_libraries(pubsub_itc_fw_integration_tests PRIVATE
@@ -52,6 +54,7 @@ message(STATUS "  Added integration test: RawBytesProtocolHandlerIntegrationTest
 message(STATUS "  Added integration test: TlsOutboundIntegrationTest")
 message(STATUS "  Added integration test: TlsProtocolHandlerIntegrationTest")
 message(STATUS "  Added integration test: WalExternalSubscriberIntegrationTest")
+message(STATUS "  Added integration test: TopicPubSubIntegrationTest")
 
 # Install integration test executable -> bin
 install(TARGETS pubsub_itc_fw_integration_tests
