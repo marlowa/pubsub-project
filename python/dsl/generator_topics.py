@@ -106,6 +106,18 @@ class TopicsGenerator:
         w("}};")
         w("")
 
+        # Membership predicate: is this pdu id a member of this topic?
+        w("// Return true if the given pdu id belongs to the given topic.")
+        w("inline constexpr bool pdu_in_topic(std::int64_t pdu_id, Topic topic) {")
+        w("    for (const TopicMember& member : topic_members) {")
+        w("        if (member.pdu_id == pdu_id && member.topic == topic) {")
+        w("            return true;")
+        w("        }")
+        w("    }")
+        w("    return false;")
+        w("}")
+        w("")
+
         w(f"}} // namespace {self.namespace}")
         w("")
         return "\n".join(lines)

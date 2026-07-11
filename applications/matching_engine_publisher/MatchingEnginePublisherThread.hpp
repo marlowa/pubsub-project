@@ -17,6 +17,7 @@
 #include <pubsub_itc_fw/Wal.hpp>
 
 #include <leader_follower.hpp>
+#include <topics_registry.hpp>
 
 #include "MatchingEnginePublisherConfiguration.hpp"
 
@@ -102,8 +103,8 @@ class MatchingEnginePublisherThread : public pubsub_itc_fw::ApplicationThread {
     std::unordered_set<pubsub_itc_fw::ConnectionID> orders_live_conn_ids_;
     std::unordered_set<pubsub_itc_fw::ConnectionID> er_live_conn_ids_;
 
-    // Per-subscriber topic name (for ConnectionLost routing).
-    std::unordered_map<pubsub_itc_fw::ConnectionID, std::string> conn_to_topic_;
+    // Per-subscriber topic (for ConnectionLost / TopicAck routing).
+    std::unordered_map<pubsub_itc_fw::ConnectionID, pubsub_itc_fw_app::Topic> conn_to_topic_;
 
     // ----------------------------------------------------------------
     // HA helpers (same state machine as the sequencer)

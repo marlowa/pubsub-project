@@ -1,9 +1,10 @@
 # DSL topic catalog + include mechanism — design & plan {#dsl_topic_catalog}
 
-**Status:** Decided 2026-07-11. **Step 1 (rename) DONE** (commit `d0ecfca`).
-**Step 2 (include loader) DONE** (commit `9282946`). **Step 3 (`topic` construct)
-DONE** (uncommitted at time of writing). Resume at **step 4 (wire-up)** in the
-Implementation Plan below.
+**Status:** Decided 2026-07-11. **All four steps DONE.** Step 1 (rename) `d0ecfca`;
+step 2 (include loader) `9282946`; step 3 (`topic` construct) `7a0a636`; step 4
+(wire-up) uncommitted at time of writing. What remains is under "Deferred / later"
+below (per-topic policy TOML; reconciling the MEP's port-per-topic model) and the
+open requirement dimensions 2–5 in `pubsub_requirements.md`.
 
 ## Context — why this exists
 
@@ -94,10 +95,19 @@ owns the pdu ids).
    lexer/parser/validator/both generators, including multi-membership and resolved ids.
    NB the "pdu_id → topic map" from the Decisions is realised as this membership *table* because
    decision 4 allows a pdu in multiple topics (a plain one-to-one map cannot express that).
-4. **Wire-up.** Author an index `pubsub.dsl` (includes + `topic` blocks); make the generated
-   output depend on **all** transitively-included `.dsl` files in CMake (depfile or explicit
-   list); regenerate; point MEP at the generated registry instead of free strings, and have
-   MEP validate a subscribe's `topic_name` against the registry.
+4. **[DONE] Wire-up.** Authored index `applications/pubsub.dsl` (`include "fix_equity_orders.dsl"`
+   + the `orders` / `execution_reports` `topic` blocks). Top-level `CMakeLists.txt` gained a
+   `topics_registry_generated` target: a custom command runs the generator with
+   `--topics-registry`/`--topics-catalog`, its `DEPENDS` listing **both** `pubsub.dsl` and the
+   transitively-included `fix_equity_orders.dsl`, emitting `build/generated_dsl/topics_registry.hpp`
+   and `build/generated_docs/topics_catalog.md`. MEP now `#include <topics_registry.hpp>` and is
+   fully off free strings/magic ids: `handle_topic_subscribe` validates via `topic_from_name`;
+   `conn_to_topic_` stores `Topic` (not `std::string`); live-publish and WAL-replay routing use
+   the generated `pdu_in_topic(pdu_id, Topic)` predicate; the old `pdu_id_nos/ocr/er` and
+   `topic_orders/..._execution_reports` string constants are deleted. Added `pdu_in_topic` to the
+   step-3 generator (constexpr; static_assert-verified). Verified: 237 pytest pass;
+   `check_standards.py` clean on the changed C++; `matching_engine_publisher` **configures,
+   compiles and links** against the generated header.
 
 ## Deferred / later
 

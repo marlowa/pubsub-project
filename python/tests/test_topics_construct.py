@@ -156,6 +156,11 @@ def test_registry_emits_membership_table_with_resolved_ids():
     assert "TopicMember{1002, Topic::execution_reports}," in code
 
 
+def test_registry_emits_pdu_in_topic_predicate():
+    code = _registry(TWO_TOPICS)
+    assert "inline constexpr bool pdu_in_topic(std::int64_t pdu_id, Topic topic) {" in code
+
+
 def test_registry_reflects_multi_membership():
     # NewOrderSingle appears in both topics -> two rows for pdu 1000.
     code = _registry(BASE_MESSAGES + """

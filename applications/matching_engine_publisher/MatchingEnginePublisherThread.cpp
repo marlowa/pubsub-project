@@ -18,6 +18,7 @@
 #include <pubsub_itc_fw/WalReader.hpp>
 
 #include <topics.hpp>
+#include <topics_registry.hpp>
 
 namespace matching_engine_publisher {
 
@@ -40,13 +41,10 @@ static constexpr int16_t pdu_topic_not_leader       = 111;
 static constexpr int16_t pdu_arbitration_report     = 200;
 static constexpr int16_t pdu_arbitration_decision   = 201;
 
-// Application pdu_ids carried inside WalRecord payloads.
-static constexpr int16_t pdu_id_nos = 1000;
-static constexpr int16_t pdu_id_ocr = 1001;
-static constexpr int16_t pdu_id_er  = 1002;
-
-static constexpr const char* topic_orders            = "orders";
-static constexpr const char* topic_execution_reports = "execution_reports";
+// Recognised topics and the pdu ids that belong to each are owned by the generated
+// registry (topics_registry.hpp, from pubsub.dsl): pubsub_itc_fw_app::Topic,
+// topic_from_name(), pdu_in_topic(). No topic names or application pdu ids are
+// hardcoded here.
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -228,8 +226,8 @@ void MatchingEnginePublisherThread::on_connection_lost(const pubsub_itc_fw::Conn
         // Topic subscriber connection lost.
         const auto it = conn_to_topic_.find(id);
         if (it != conn_to_topic_.end()) {
-            const std::string& topic = it->second;
-            if (topic == topic_orders) {
+            const pubsub_itc_fw_app::Topic topic = it->second;
+            if (topic == pubsub_itc_fw_app::Topic::orders) {
                 orders_live_conn_ids_.erase(id);
                 orders_registry_.remove_subscriber(id);
             } else {
@@ -237,8 +235,8 @@ void MatchingEnginePublisherThread::on_connection_lost(const pubsub_itc_fw::Conn
                 er_registry_.remove_subscriber(id);
             }
             conn_to_topic_.erase(it);
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                       "MepThread: topic subscriber connection {} ({}) lost: {}", id.get_value(), topic, reason);
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MepThread: topic subscriber connection {} ({}) lost: {}", id.get_value(),
+                       pubsub_itc_fw_app::to_string(topic), reason);
         } else {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                        "MepThread: connection {} lost: {}", id.get_value(), reason);
@@ -700,8 +698,14 @@ void MatchingEnginePublisherThread::handle_topic_subscribe_request(
         return;
     }
 
-    const bool is_orders = (topic_name == topic_orders);
-    const bool is_er     = (topic_name == topic_execution_reports);
+    // Validate the requested topic name against the generated registry, then
+    // route by the resolved Topic. is_orders/is_er select this MEP's per-topic
+    // registry and live-set; a recognised topic this MEP does not serve, or an
+    // unrecognised name, both fall through to the disconnect below.
+    pubsub_itc_fw_app::Topic topic{};
+    const bool recognised = pubsub_itc_fw_app::topic_from_name(topic_name, topic);
+    const bool is_orders = recognised && topic == pubsub_itc_fw_app::Topic::orders;
+    const bool is_er = recognised && topic == pubsub_itc_fw_app::Topic::execution_reports;
     if (!is_orders && !is_er) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                    "MepThread: unknown topic '{}' from subscriber {} -- disconnecting", topic_name, subscriber_id);
@@ -727,7 +731,7 @@ void MatchingEnginePublisherThread::handle_topic_subscribe_request(
     }
 
     live_set.insert(conn_id);
-    conn_to_topic_[conn_id] = topic_name;
+    conn_to_topic_[conn_id] = topic;
 
     const int64_t accepted = (from_seq_no == -1) ? wal_.last_seq_no() : from_seq_no;
     pubsub_itc_fw_app::TopicSubscribeAck ack{};
@@ -763,7 +767,7 @@ void MatchingEnginePublisherThread::handle_topic_ack(
     if (it == conn_to_topic_.end()) {
         return;
     }
-    if (it->second == topic_orders) {
+    if (it->second == pubsub_itc_fw_app::Topic::orders) {
         orders_registry_.update_cursor(conn_id, view.last_seq_no);
     } else {
         er_registry_.update_cursor(conn_id, view.last_seq_no);
@@ -781,9 +785,9 @@ void MatchingEnginePublisherThread::stream_wal_record_to_topic_subscribers(
     }
 
     std::unordered_set<pubsub_itc_fw::ConnectionID>* live_set = nullptr;
-    if (pdu_id == pdu_id_nos || pdu_id == pdu_id_ocr) {
+    if (pubsub_itc_fw_app::pdu_in_topic(pdu_id, pubsub_itc_fw_app::Topic::orders)) {
         live_set = &orders_live_conn_ids_;
-    } else if (pdu_id == pdu_id_er) {
+    } else if (pubsub_itc_fw_app::pdu_in_topic(pdu_id, pubsub_itc_fw_app::Topic::execution_reports)) {
         live_set = &er_live_conn_ids_;
     } else {
         return;
@@ -820,11 +824,10 @@ void MatchingEnginePublisherThread::send_topic_page(
 
 void MatchingEnginePublisherThread::replay_wal_for_subscriber(
         const pubsub_itc_fw::ConnectionID& conn_id, int64_t from_seq_no, bool is_orders_topic) {
+    const pubsub_itc_fw_app::Topic subscribed_topic = is_orders_topic ? pubsub_itc_fw_app::Topic::orders : pubsub_itc_fw_app::Topic::execution_reports;
     int64_t records_sent = 0;
     [[maybe_unused]] auto end_pos = pubsub_itc_fw::WalReader::replay(
-        config_.wal_directory, {0, 0},
-        [this, &conn_id, from_seq_no, is_orders_topic, &records_sent](
-                int64_t record_id, const void* payload, size_t size) {
+        config_.wal_directory, {0, 0}, [this, &conn_id, from_seq_no, subscribed_topic, &records_sent](int64_t record_id, const void* payload, size_t size) {
             if (record_id <= from_seq_no) {
                 return;
             }
@@ -837,12 +840,8 @@ void MatchingEnginePublisherThread::replay_wal_for_subscriber(
             std::memcpy(&wall_time_ns, payload, sizeof(int64_t));
             std::memcpy(&pdu_id, static_cast<const uint8_t*>(payload) + sizeof(int64_t), sizeof(int16_t));
 
-            const bool is_orders_pdu = (pdu_id == pdu_id_nos || pdu_id == pdu_id_ocr);
-            const bool is_er_pdu     = (pdu_id == pdu_id_er);
-            if (is_orders_topic && !is_orders_pdu) {
-                return;
-            }
-            if (!is_orders_topic && !is_er_pdu) {
+            // Skip records whose pdu id is not a member of the subscribed topic.
+            if (!pubsub_itc_fw_app::pdu_in_topic(pdu_id, subscribed_topic)) {
                 return;
             }
 
@@ -852,10 +851,8 @@ void MatchingEnginePublisherThread::replay_wal_for_subscriber(
             ++records_sent;
         });
 
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "MepThread: WAL replay complete for conn={} topic={} records_sent={}",
-               conn_id.get_value(), is_orders_topic ? topic_orders : topic_execution_reports,
-               records_sent);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MepThread: WAL replay complete for conn={} topic={} records_sent={}", conn_id.get_value(),
+               pubsub_itc_fw_app::to_string(subscribed_topic), records_sent);
 }
 
 void MatchingEnginePublisherThread::disconnect_all_topic_subscribers() {

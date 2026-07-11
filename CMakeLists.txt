@@ -344,6 +344,33 @@ add_custom_target(topics_generated ALL
     DEPENDS "${TOPICS_DSL_GENERATED_HPP}"
 )
 
+# Pub/sub topic catalog: the generated Topic enum + pdu-id/topic membership table
+# (topics_registry.hpp) and the human-readable catalog (topics_catalog.md). Both
+# are generated from the index applications/pubsub.dsl, which `include`s
+# fix_equity_orders.dsl for the message/pdu-id definitions -- so the command
+# depends on BOTH the index and every file it transitively includes.
+set(PUBSUB_DSL_SOURCE "${CMAKE_SOURCE_DIR}/applications/pubsub.dsl")
+set(PUBSUB_TOPICS_REGISTRY_HPP "${FIX_DSL_INCLUDE_DIR}/topics_registry.hpp")
+set(PUBSUB_TOPICS_CATALOG_DIR "${CMAKE_BINARY_DIR}/generated_docs")
+set(PUBSUB_TOPICS_CATALOG_MD "${PUBSUB_TOPICS_CATALOG_DIR}/topics_catalog.md")
+
+add_custom_command(
+    OUTPUT "${PUBSUB_TOPICS_REGISTRY_HPP}" "${PUBSUB_TOPICS_CATALOG_MD}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${FIX_DSL_INCLUDE_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${PUBSUB_TOPICS_CATALOG_DIR}"
+    COMMAND ${Python3_EXECUTABLE} "${FIX_DSL_GENERATOR}"
+            --namespace pubsub_itc_fw_app
+            "${PUBSUB_DSL_SOURCE}"
+            --topics-registry "${PUBSUB_TOPICS_REGISTRY_HPP}"
+            --topics-catalog "${PUBSUB_TOPICS_CATALOG_MD}"
+    DEPENDS "${PUBSUB_DSL_SOURCE}" "${FIX_DSL_SOURCE}" "${FIX_DSL_GENERATOR}"
+    COMMENT "Generating topics_registry.hpp + topics_catalog.md from pubsub.dsl"
+    VERBATIM
+)
+add_custom_target(topics_registry_generated ALL
+    DEPENDS "${PUBSUB_TOPICS_REGISTRY_HPP}"
+)
+
 # ------------------------------------------------------------
 # Build info generation (version, git SHA/branch, build datetime)
 # ------------------------------------------------------------

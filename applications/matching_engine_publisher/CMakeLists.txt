@@ -16,6 +16,7 @@ target_link_libraries(matching_engine_publisher PRIVATE
 add_dependencies(matching_engine_publisher
         leader_follower_generated
         topics_generated
+        topics_registry_generated
 )
 
 # Header files listed explicitly so CLion indexes them correctly.
