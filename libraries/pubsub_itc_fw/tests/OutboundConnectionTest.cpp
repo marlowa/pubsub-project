@@ -103,6 +103,7 @@
 #include <pubsub_itc_fw/OutboundConnectionManager.hpp>
 #include <pubsub_itc_fw/PduHeader.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
+#include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/QueueConfiguration.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
@@ -113,6 +114,7 @@
 #include <pubsub_itc_fw/TcpConnector.hpp>
 #include <pubsub_itc_fw/TcpSocket.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
+#include <pubsub_itc_fw/TlsClientConfiguration.hpp>
 
 #include <pubsub_itc_fw/tests_common/LoggerWithSink.hpp>
 #include <pubsub_itc_fw/tests_common/TestConfigurations.hpp>
@@ -409,6 +411,19 @@ TEST_F(OutboundConnectionPreconditionTest, OnConnectedRejectsWhenNotConnecting) 
 TEST_F(OutboundConnectionPreconditionTest, RetryWithSecondaryRejectsNullConnector) {
     auto conn = make_connection();
     EXPECT_THROW(conn->retry_with_secondary(nullptr), PreconditionAssertion);
+}
+
+TEST_F(OutboundConnectionPreconditionTest, ConstructorThrowsPubSubItcExceptionOnTlsSetupFailure) {
+    // A TLS config whose CA path does not exist makes TlsContext::create_client fail.
+    // The constructor surfaces that as a PubSubItcException (an unexpected library
+    // failure the caller did not cause), not a PreconditionAssertion.
+    TlsClientConfiguration tls_config;
+    tls_config.ca_path = "/nonexistent_directory_zzz/bad_ca.pem";
+    ServiceEndpoints endpoints{NetworkEndpointConfiguration{"127.0.0.1", 9999}, NetworkEndpointConfiguration{}, tls_config};
+    auto connector = std::make_unique<TcpConnector>();
+
+    EXPECT_THROW(OutboundConnection(ConnectionID{1}, ThreadID{1}, "dummy_service", endpoints, std::move(connector), *allocator_, *thread_, logger_->logger),
+                 PubSubItcException);
 }
 
 TEST_F(OutboundConnectionPreconditionTest, SetAndClearPendingSend) {
