@@ -46,6 +46,7 @@
 #include <pubsub_itc_fw/ThreadID.hpp>
 #include <pubsub_itc_fw/TopicPublisher.hpp>
 #include <pubsub_itc_fw/TopicSubscriberChannel.hpp>
+#include <pubsub_itc_fw/Wal.hpp>
 #include <pubsub_itc_fw/WalPosition.hpp>
 #include <pubsub_itc_fw/WalReader.hpp>
 #include <pubsub_itc_fw/WalWriter.hpp>
@@ -86,6 +87,7 @@ class TopicPublisherThread : public ApplicationThread, public TopicPublisherHost
                             ApplicationThreadConfiguration{})
         , publish_after_subscribers_(publish_after_subscribers)
         , live_record_count_(live_record_count)
+        , wal_directory_(wal_dir)
         , publisher_(*this, "orders", [](int16_t pdu_id) { return pdu_id == pdu_id_nos || pdu_id == pdu_id_ocr; }, std::move(wal_dir)) {}
 
     // TopicPublisherHost
@@ -103,8 +105,22 @@ class TopicPublisherThread : public ApplicationThread, public TopicPublisherHost
         cmd.connection_id_ = connection_id;
         get_reactor().enqueue_control_command(cmd);
     }
+    void topic_request_writable_notification(ConnectionID connection_id) override {
+        request_writable_notification(connection_id);
+    }
 
   protected:
+    void on_initial_event() override {
+        // Only the live-fanout test writes records; it needs an open WAL to append to.
+        if (publish_after_subscribers_ > 0) {
+            wal_.open(wal_directory_, wal_segment_size);
+        }
+    }
+
+    void on_connection_writable(ConnectionID id) override {
+        publisher_.on_connection_writable(id);
+    }
+
     void on_connection_lost(const ConnectionID& id, const std::string&) override {
         publisher_.on_connection_lost(id);
     }
@@ -136,8 +152,9 @@ class TopicPublisherThread : public ApplicationThread, public TopicPublisherHost
     void on_itc_message(const EventMessage&) override {}
 
   private:
-    // Once publish_after_subscribers_ subscribers are connected, publish the live
-    // batch exactly once, fanning each record out to every current subscriber.
+    // Once publish_after_subscribers_ subscribers are connected, append the live
+    // batch to the WAL (exactly once) and wake subscribers to stream it. Records must
+    // be in the WAL before notify_record_appended() -- delivery is cursor-based.
     void maybe_publish_live_batch() {
         if (publish_after_subscribers_ <= 0 || published_live_) {
             return;
@@ -150,13 +167,16 @@ class TopicPublisherThread : public ApplicationThread, public TopicPublisherHost
             const uint32_t value = static_cast<uint32_t>(i * 100);
             uint8_t payload[sizeof(uint32_t)];
             std::memcpy(payload, &value, sizeof(value));
-            publisher_.publish(i, pdu_id_nos, static_cast<int64_t>(i) * 1000, payload, sizeof(payload));
+            wal_.append(static_cast<int64_t>(i), pdu_id_nos, payload, static_cast<int>(sizeof(payload)), static_cast<int64_t>(i) * 1000);
+            publisher_.notify_record_appended(pdu_id_nos);
         }
     }
 
     int publish_after_subscribers_;
     int live_record_count_;
     bool published_live_ = false;
+    std::string wal_directory_;
+    Wal wal_;
     TopicPublisher publisher_;
 };
 
@@ -386,7 +406,8 @@ TEST_F(TopicPubSubTest, SingleSubscriberReceivesReplayedRecordsInOrder) {
 // ============================================================
 TEST_F(TopicPubSubTest, TwoSubscribersReceiveLiveFanout) {
     static constexpr int record_count = 3;
-    write_topic_wal_records(0); // valid but empty WAL; the records arrive live
+    // No pre-populated WAL: the publisher opens its own Wal and appends the records
+    // live once both subscribers are connected.
 
     // --- Publisher: publish the batch once both subscribers have subscribed ---
     const ServiceRegistry publisher_registry;

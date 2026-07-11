@@ -7,12 +7,14 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <memory>
 #include <string>
-#include <unordered_set>
+#include <unordered_map>
 
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/ExternalWalSubscriberRegistry.hpp>
-#include <pubsub_itc_fw/WalReader.hpp>
+#include <pubsub_itc_fw/WalCursor.hpp>
+#include <pubsub_itc_fw/WalPosition.hpp>
 
 #include <topics.hpp>
 
@@ -22,10 +24,11 @@ namespace pubsub_itc_fw {
  * @brief What TopicPublisher needs its owning ApplicationThread to do.
  *
  * TopicPublisher is transport-agnostic: it decides *what* to send and *to whom*,
- * and defers the actual send/disconnect to its host. The owning ApplicationThread
- * implements these by forwarding to its (protected) send_pdu and the reactor. This
- * keeps TopicPublisher independent of ApplicationThread internals and lets it be
- * exercised from a plain test thread without going through the MEP application.
+ * and defers the actual send/disconnect/pace to its host. The owning
+ * ApplicationThread implements these by forwarding to its (protected) send_pdu,
+ * request_writable_notification, and the reactor. This keeps TopicPublisher
+ * independent of ApplicationThread internals and lets it be exercised from a plain
+ * test thread without going through the MEP application.
  */
 class TopicPublisherHost {
   public:
@@ -35,6 +38,9 @@ class TopicPublisherHost {
     virtual void topic_send_page(ConnectionID connection_id, int64_t seq_no, const pubsub_itc_fw_app::TopicPage& page) = 0;
     virtual void topic_send_not_leader(ConnectionID connection_id, const pubsub_itc_fw_app::TopicNotLeader& not_leader) = 0;
     virtual void topic_disconnect(ConnectionID connection_id) = 0;
+
+    /// Arm a one-shot on_connection_writable() for this connection (send pacing).
+    virtual void topic_request_writable_notification(ConnectionID connection_id) = 0;
 };
 
 /**
@@ -45,13 +51,20 @@ class TopicPublisherHost {
  * logic trapped inside one application. A publisher that serves several topics owns
  * one TopicPublisher per topic.
  *
- * Responsibilities: accept a TopicSubscribeRequest for its topic, register the
- * subscriber and reply with TopicSubscribeAck, replay matching WAL records from the
- * requested cursor, fan out live records (publish()), track per-subscriber cursors
- * (TopicAck), and drop subscribers on connection loss. Non-leaders reply
- * TopicNotLeader and disconnect.
+ * Delivery is streamed straight from the WAL and paced by the TCP socket, not by
+ * acks (see docs/design/pubsub_flow_control.md). Each subscriber has its own
+ * WalCursor. On subscribe -- and again each time the socket becomes writable
+ * (on_connection_writable) -- the publisher reads the next matching record after
+ * the subscriber's position and sends it as a one-record TopicPage, then re-arms
+ * the writable notification. When the subscriber catches up to the WAL head it goes
+ * idle; a later notify_record_appended() wakes it to stream the new records. The
+ * backlog for a slow subscriber therefore lives in the WAL (a cursor position), not
+ * in memory.
  *
- * WAL record framing (on disk and as replayed): [wall_time_ns : int64][pdu_id : int16][payload...].
+ * Both catch-up (history) and live records flow through the same cursor path, so a
+ * live record must be in the WAL *before* notify_record_appended() is called.
+ *
+ * WAL record framing (on disk): [wall_time_ns : int64][pdu_id : int16][payload...].
  *
  * Not thread-safe: all calls must come from the owning ApplicationThread.
  */
@@ -70,11 +83,11 @@ class TopicPublisher {
     }
 
     [[nodiscard]] size_t subscriber_count() const {
-        return live_connection_ids_.size();
+        return subscribers_.size();
     }
 
     /**
-     * @brief Handle a TopicSubscribeRequest: register, ack, and replay.
+     * @brief Handle a TopicSubscribeRequest: register, ack, and start streaming.
      *
      * A non-leader replies TopicNotLeader and disconnects. A request for a
      * different topic is rejected by disconnect.
@@ -98,42 +111,65 @@ class TopicPublisher {
 
         const ConnectionID orphan = registry_.register_subscriber(connection_id, subscriber_id, from_seq_no);
         if (orphan.is_valid()) {
-            live_connection_ids_.erase(orphan);
+            subscribers_.erase(orphan);
             host_.topic_disconnect(orphan);
         }
-        live_connection_ids_.insert(connection_id);
 
-        // NB: the "-1 == from head" convention is deferred; the first test uses a
-        // concrete cursor (0 == oldest). accepted_from_seq_no echoes the request.
+        auto stream = std::make_unique<SubscriberStream>();
+        stream->from_seq_no = from_seq_no;
+        stream->cursor.open(wal_directory_, WalPosition{0, 0});
+        subscribers_[connection_id] = std::move(stream);
+
+        // NB: the "-1 == from head" convention is deferred; the tests use a concrete
+        // cursor (0 == oldest). accepted_from_seq_no echoes the request.
         pubsub_itc_fw_app::TopicSubscribeAck ack{};
         ack.accepted_from_seq_no = from_seq_no;
         host_.topic_send_subscribe_ack(connection_id, ack);
 
-        replay(connection_id, from_seq_no);
+        pump(connection_id); // send the first record (if any) and arm
     }
 
-    /// Advance a subscriber's cursor on TopicAck.
+    /// Advance a subscriber's ack cursor (for WAL truncation) on TopicAck.
     void on_ack(ConnectionID connection_id, const pubsub_itc_fw_app::TopicAckView& view) {
         registry_.update_cursor(connection_id, view.last_seq_no);
     }
 
     /// Drop a subscriber when its connection is lost.
     void on_connection_lost(ConnectionID connection_id) {
-        live_connection_ids_.erase(connection_id);
+        subscribers_.erase(connection_id);
         registry_.remove_subscriber(connection_id);
     }
 
-    /// Fan a freshly-sequenced WAL record out to live subscribers of this topic.
-    void publish(int64_t seq_no, int16_t pdu_id, int64_t wall_time_ns, const uint8_t* payload, size_t payload_size) {
-        if (!is_leader_ || !is_member_(pdu_id) || live_connection_ids_.empty()) {
+    /// The socket can accept another frame: stream the subscriber's next record.
+    void on_connection_writable(ConnectionID connection_id) {
+        pump(connection_id);
+    }
+
+    /**
+     * @brief A record of pdu_id was appended to the WAL: wake idle subscribers.
+     *
+     * The record must already be in the WAL. Idle (caught-up) subscribers are
+     * pumped so their cursor reads and streams it; subscribers still mid-stream
+     * pick it up when they reach the head and re-scan.
+     */
+    void notify_record_appended(int16_t pdu_id) {
+        if (!is_leader_ || !is_member_(pdu_id)) {
             return;
         }
-        for (const ConnectionID& connection_id : live_connection_ids_) {
-            send_page(connection_id, seq_no, pdu_id, wall_time_ns, payload, payload_size);
+        for (auto& entry : subscribers_) {
+            if (entry.second->idle) {
+                pump(entry.first);
+            }
         }
     }
 
   private:
+    struct SubscriberStream {
+        WalCursor cursor;
+        int64_t from_seq_no = 0; // records with record_id <= this are skipped
+        bool idle = true;        // true == caught up to the WAL head, waiting for a wakeup
+    };
+
     void send_page(ConnectionID connection_id, int64_t seq_no, int16_t pdu_id, int64_t wall_time_ns, const uint8_t* payload, size_t payload_size) {
         pubsub_itc_fw_app::TopicRecord record{};
         record.seq_no = seq_no;
@@ -152,25 +188,50 @@ class TopicPublisher {
         host_.topic_send_page(connection_id, seq_no, page);
     }
 
-    void replay(ConnectionID connection_id, int64_t from_seq_no) {
-        [[maybe_unused]] auto end_position =
-            WalReader::replay(wal_directory_, {0, 0}, [this, connection_id, from_seq_no](int64_t record_id, const void* data, size_t size) {
-                if (record_id <= from_seq_no) {
-                    return;
+    // Send at most one record to a subscriber and re-arm its writable notification;
+    // or mark it idle if it has caught up to the WAL head.
+    void pump(ConnectionID connection_id) {
+        auto it = subscribers_.find(connection_id);
+        if (it == subscribers_.end()) {
+            return;
+        }
+        SubscriberStream& stream = *it->second;
+
+        bool reopened = false;
+        int64_t record_id = 0;
+        const uint8_t* data = nullptr;
+        size_t size = 0;
+        for (;;) {
+            if (!stream.cursor.read_next(record_id, data, size)) {
+                if (!reopened) {
+                    // A record may have been appended since the cursor's snapshot;
+                    // re-discover from the current position before declaring idle.
+                    stream.cursor.open(wal_directory_, stream.cursor.position());
+                    reopened = true;
+                    continue;
                 }
-                if (size < wal_record_header_size) {
-                    return;
-                }
-                int64_t wall_time_ns{};
-                int16_t pdu_id{};
-                std::memcpy(&wall_time_ns, data, sizeof(int64_t));
-                std::memcpy(&pdu_id, static_cast<const uint8_t*>(data) + sizeof(int64_t), sizeof(int16_t));
-                if (!is_member_(pdu_id)) {
-                    return;
-                }
-                const uint8_t* pdu_payload = static_cast<const uint8_t*>(data) + wal_record_header_size;
-                send_page(connection_id, record_id, pdu_id, wall_time_ns, pdu_payload, size - wal_record_header_size);
-            });
+                stream.idle = true;
+                return;
+            }
+            reopened = false;
+
+            if (size < wal_record_header_size) {
+                continue; // malformed record; skip
+            }
+            int64_t wall_time_ns = 0;
+            int16_t pdu_id = 0;
+            std::memcpy(&wall_time_ns, data, sizeof(int64_t));
+            std::memcpy(&pdu_id, data + sizeof(int64_t), sizeof(int16_t));
+            if (record_id <= stream.from_seq_no || !is_member_(pdu_id)) {
+                continue; // already past, or not this topic; skip
+            }
+
+            const uint8_t* pdu_payload = data + wal_record_header_size;
+            send_page(connection_id, record_id, pdu_id, wall_time_ns, pdu_payload, size - wal_record_header_size);
+            host_.topic_request_writable_notification(connection_id);
+            stream.idle = false;
+            return;
+        }
     }
 
     TopicPublisherHost& host_;
@@ -179,7 +240,7 @@ class TopicPublisher {
     std::string wal_directory_;
     bool is_leader_ = true;
     ExternalWalSubscriberRegistry registry_;
-    std::unordered_set<ConnectionID> live_connection_ids_;
+    std::unordered_map<ConnectionID, std::unique_ptr<SubscriberStream>> subscribers_;
 };
 
 } // namespaces
