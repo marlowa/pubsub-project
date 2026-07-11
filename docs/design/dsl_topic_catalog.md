@@ -1,7 +1,7 @@
 # DSL topic catalog + include mechanism — design & plan {#dsl_topic_catalog}
 
-**Status:** Decided 2026-07-11. Not yet implemented. This is a resumable record — if
-work is interrupted, start from the Implementation Plan below.
+**Status:** Decided 2026-07-11. **Step 1 (rename) DONE** (commit `d0ecfca`). Resume at
+**step 2 (include loader)** in the Implementation Plan below.
 
 ## Context — why this exists
 
@@ -62,7 +62,7 @@ owns the pdu ids).
 
 ## Implementation plan (landable steps)
 
-1. **Rename `Topics` → `PduId`.** `fix_equity_orders.dsl` (enum name + every `id=Topics.X`
+1. **[DONE — `d0ecfca`] Rename `Topics` → `PduId`.** `fix_equity_orders.dsl` (enum name + every `id=Topics.X`
    → `id=PduId.X`), the validator's `Topics` special-casing + error text (`_validate_topics`,
    the `ref.enum_name == "Topics"` check), `generator_cpp._emit_topics_enum_class` + the
    `decl.name == "Topics"` guard, and rename the `--topics` flag (+ the CMake invocation).
