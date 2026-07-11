@@ -30,6 +30,21 @@ class IncludeDecl(Declaration):
 
 
 @dataclass
+class TopicDecl(Declaration):
+    """A `topic NAME { Msg, ... }` grouping: a named stream of member messages.
+
+    Topics are the pub/sub catalog layer over the message schema. A message may
+    belong to more than one topic; topic names are unique. Members are recorded
+    as message names and resolved to their pdu ids by the topics generator (which
+    runs after validation, so the referenced messages' ids are already integers).
+    """
+
+    name: str
+    members: List[str]
+    line: int = 0
+
+
+@dataclass
 class EnumEntry:
     """A single name/value pair within an enum declaration."""
 

@@ -1,8 +1,9 @@
 # DSL topic catalog + include mechanism — design & plan {#dsl_topic_catalog}
 
 **Status:** Decided 2026-07-11. **Step 1 (rename) DONE** (commit `d0ecfca`).
-**Step 2 (include loader) DONE** (uncommitted at time of writing). Resume at
-**step 3 (`topic` construct)** in the Implementation Plan below.
+**Step 2 (include loader) DONE** (commit `9282946`). **Step 3 (`topic` construct)
+DONE** (uncommitted at time of writing). Resume at **step 4 (wire-up)** in the
+Implementation Plan below.
 
 ## Context — why this exists
 
@@ -79,10 +80,20 @@ owns the pdu ids).
    include-decl parse, empty path, no-include passthrough, single/nested/diamond include,
    relative-path resolution, missing include, missing root, self-cycle, mutual cycle, cycle
    chain text, duplicate-id-across-includes (validator), valid-across-includes. 220 pytest pass.
-3. **`topic` construct.** Lexer `topic` keyword; `TopicDecl(name, members)` AST node; parse
-   `topic NAME { Msg, ... }`; validate (members are known messages; names unique; multi-topic
-   allowed); generator emits `topics_registry.hpp` (a `Topic` enum + the `pdu_id → topic`
-   map) and `topics_catalog.md`, both banner'd. pytest for each.
+3. **[DONE] `topic` construct.** Lexer `topic` keyword; `TopicDecl(name, members)` AST node;
+   parser `_parse_topic` for `topic NAME { Msg, ... }` (trailing comma tolerated; empty topic is
+   a parse error); validator `_validate_topics` (members are known messages, not enums; topic
+   names unique in their own namespace; a message may join multiple topics; no duplicate member
+   within one topic). New `python/dsl/generator_topics.py` (`TopicsGenerator`) emits, from the
+   *validated* AST (ids already integers): `topics_registry.hpp` — `enum class Topic`, `topic_count`,
+   `to_string(Topic)`, `topic_from_name(name, out)`, and a **flat `TopicMember{pdu_id, Topic}`
+   membership table** (one row per membership, so multi-membership is faithfully represented) —
+   and `topics_catalog.md`, both DO-NOT-EDIT banner'd. CLI wrapper gains `--topics-registry` /
+   `--topics-catalog` (registry needs `--namespace`; errors if no `topic` decls). Registry
+   compiles under `g++ -std=c++17`. `python/tests/test_topics_construct.py` (16 cases) covers
+   lexer/parser/validator/both generators, including multi-membership and resolved ids.
+   NB the "pdu_id → topic map" from the Decisions is realised as this membership *table* because
+   decision 4 allows a pdu in multiple topics (a plain one-to-one map cannot express that).
 4. **Wire-up.** Author an index `pubsub.dsl` (includes + `topic` blocks); make the generated
    output depend on **all** transitively-included `.dsl` files in CMake (depfile or explicit
    list); regenerate; point MEP at the generated registry instead of free strings, and have

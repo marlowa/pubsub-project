@@ -9,6 +9,7 @@ from .ast import (
     DslFile,
     Declaration,
     IncludeDecl,
+    TopicDecl,
     EnumDecl,
     EnumEntry,
     EnumRef,
@@ -92,6 +93,9 @@ class Parser:  # pylint: disable=too-few-public-methods
         if self.current.kind == "KEYWORD" and self.current.value == "message":
             return self._parse_message()
 
+        if self.current.kind == "KEYWORD" and self.current.value == "topic":
+            return self._parse_topic()
+
         raise ParseError(
             f"Unexpected token '{self.current.value}' at "
             f"{self.current.line}:{self.current.column}"
@@ -109,6 +113,31 @@ class Parser:  # pylint: disable=too-few-public-methods
                 f"Empty include path at {path_tok.line}:{path_tok.column}"
             )
         return IncludeDecl(path=path_tok.value, line=line)
+
+    # -----------------------------
+    # Topic
+    # -----------------------------
+
+    def _parse_topic(self) -> TopicDecl:
+        line = self._expect_keyword("topic")
+        name_tok = self._eat("IDENT")
+        self._eat("LBRACE")
+
+        members: List[str] = []
+        while self.current.kind == "IDENT":
+            members.append(self._eat("IDENT").value)
+            if not self._accept("COMMA"):
+                break  # no separator -> members list ends (trailing comma tolerated)
+
+        self._eat("RBRACE")
+
+        if not members:
+            raise ParseError(
+                f"topic '{name_tok.value}' at line {line} has no members; "
+                f"a topic must list at least one message"
+            )
+
+        return TopicDecl(name=name_tok.value, members=members, line=line)
 
     # -----------------------------
     # Framing

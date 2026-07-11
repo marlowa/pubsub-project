@@ -10,6 +10,7 @@ from .ast import (
     EnumRef,
     FramingDecl,
     MessageDecl,
+    TopicDecl,
     Field,
     PrimitiveType,
     StringType,
@@ -26,6 +27,7 @@ class Validator:  # pylint: disable=too-few-public-methods
         self.ast = ast
         self.enums: Dict[str, EnumDecl] = {}
         self.messages: Dict[str, MessageDecl] = {}
+        self.topics: Dict[str, TopicDecl] = {}
         self._pdu_id_ref_messages: Set[str] = set()  # messages whose id was PduId.X
 
     # -----------------------------
@@ -38,6 +40,7 @@ class Validator:  # pylint: disable=too-few-public-methods
         self._validate_enums()
         self._validate_messages()
         self._validate_no_cycles()
+        self._validate_topics()
         if pdu_id_enum:
             self._validate_pdu_id_enum()
 
@@ -63,6 +66,15 @@ class Validator:  # pylint: disable=too-few-public-methods
                         f"line {decl.line}: duplicate declaration name '{decl.name}'"
                     )
                 self.messages[decl.name] = decl
+
+            elif isinstance(decl, TopicDecl):
+                # Topics live in their own namespace (a topic may legitimately share
+                # a name with a message), so uniqueness is checked among topics only.
+                if decl.name in self.topics:
+                    raise ValidationError(
+                        f"line {decl.line}: duplicate topic name '{decl.name}'"
+                    )
+                self.topics[decl.name] = decl
 
             else:
                 raise ValidationError(f"Unknown declaration type: {decl}")
@@ -183,6 +195,37 @@ class Validator:  # pylint: disable=too-few-public-methods
             f"line {field.line}: in message '{message_name}', "
             f"field '{field.name}': unknown type node {type_node}"
         )
+
+    # -----------------------------
+    # Topic validation
+    # -----------------------------
+
+    def _validate_topics(self):
+        """Validate topic groupings.
+
+        Each member must name a known message (not an enum). A message may belong
+        to several topics, but must not be listed twice within the same topic.
+        """
+        for topic in self.topics.values():
+            seen_members: Set[str] = set()
+            for member in topic.members:
+                if member in seen_members:
+                    raise ValidationError(
+                        f"line {topic.line}: topic '{topic.name}' lists member "
+                        f"'{member}' more than once"
+                    )
+                seen_members.add(member)
+
+                if member not in self.messages:
+                    if member in self.enums:
+                        raise ValidationError(
+                            f"line {topic.line}: topic '{topic.name}' member "
+                            f"'{member}' is an enum, not a message"
+                        )
+                    raise ValidationError(
+                        f"line {topic.line}: topic '{topic.name}' references "
+                        f"unknown message '{member}'"
+                    )
 
     # -----------------------------
     # PduId-enum validation

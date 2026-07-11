@@ -26,6 +26,7 @@ class Lexer:  # pylint: disable=too-few-public-methods
         "framing",
         "include",
         "message",
+        "topic",
         "optional",
         "list",
         "string",
