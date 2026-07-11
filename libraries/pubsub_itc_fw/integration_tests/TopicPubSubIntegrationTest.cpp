@@ -44,6 +44,7 @@
 #include <pubsub_itc_fw/ReactorControlCommand.hpp>
 #include <pubsub_itc_fw/ServiceRegistry.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
+#include <pubsub_itc_fw/TopicControlChannel.hpp>
 #include <pubsub_itc_fw/TopicPublisher.hpp>
 #include <pubsub_itc_fw/TopicSubscriberChannel.hpp>
 #include <pubsub_itc_fw/Wal.hpp>
@@ -66,6 +67,7 @@ static constexpr int16_t pdu_id_topic_subscribe_ack = 108;
 static constexpr int16_t pdu_id_topic_page = 109;
 static constexpr int16_t pdu_id_topic_ack = 110;
 static constexpr int16_t pdu_id_topic_not_leader = 111;
+static constexpr int16_t pdu_id_topic_lagged = 112;
 
 static constexpr int16_t pdu_id_nos = 1000; // NewOrderSingle -> topic "orders"
 static constexpr int16_t pdu_id_ocr = 1001; // OrderCancelRequest -> topic "orders"
@@ -82,11 +84,12 @@ class TopicPublisherThread : public ApplicationThread, public TopicPublisherHost
     // records (seq_no 1..N, pdu_id NOS) once that many subscribers have subscribed --
     // used to exercise the live fanout path. Left at 0, the thread only replays the WAL.
     TopicPublisherThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, std::string wal_dir, int publish_after_subscribers = 0,
-                         int live_record_count = 0)
+                         int live_record_count = 0, bool lag_on_control_subscribe = false)
         : ApplicationThread(token, logger, reactor, "TopicPublisherThread", ThreadID{2}, make_queue_config(), make_allocator_config("TopicPubPool"),
                             ApplicationThreadConfiguration{})
         , publish_after_subscribers_(publish_after_subscribers)
         , live_record_count_(live_record_count)
+        , lag_on_control_subscribe_(lag_on_control_subscribe)
         , wal_directory_(wal_dir)
         , publisher_(*this, "orders", [](int16_t pdu_id) { return pdu_id == pdu_id_nos || pdu_id == pdu_id_ocr; }, std::move(wal_dir)) {}
 
@@ -99,6 +102,9 @@ class TopicPublisherThread : public ApplicationThread, public TopicPublisherHost
     }
     void topic_send_not_leader(ConnectionID connection_id, const pubsub_itc_fw_app::TopicNotLeader& not_leader) override {
         send_pdu(connection_id, pdu_id_topic_not_leader, 0, not_leader);
+    }
+    void topic_send_lagged(ConnectionID control_connection_id, const pubsub_itc_fw_app::TopicLagged& lagged) override {
+        send_pdu(control_connection_id, pdu_id_topic_lagged, 0, lagged);
     }
     void topic_disconnect(ConnectionID connection_id) override {
         ReactorControlCommand cmd(ReactorControlCommand::CommandTag::Disconnect);
@@ -140,6 +146,11 @@ class TopicPublisherThread : public ApplicationThread, public TopicPublisherHost
             }
             publisher_.on_subscribe_request(connection_id, view);
             maybe_publish_live_batch();
+            // Demonstrate the control channel: once the control channel is up, send a
+            // TopicLagged on it (step 4 will decide *when* from the lag policy).
+            if (lag_on_control_subscribe_ && view.role == pubsub_itc_fw_app::TopicChannelRole::Control) {
+                publisher_.notify_lagged(std::string(view.subscriber_id), "too far behind", 42);
+            }
         } else if (message.pdu_id() == pdu_id_topic_ack) {
             pubsub_itc_fw_app::TopicAckView view{};
             if (!pubsub_itc_fw_app::decode(view, payload, size, consumed, arena, arena_needed)) {
@@ -174,6 +185,7 @@ class TopicPublisherThread : public ApplicationThread, public TopicPublisherHost
 
     int publish_after_subscribers_;
     int live_record_count_;
+    bool lag_on_control_subscribe_;
     bool published_live_ = false;
     std::string wal_directory_;
     Wal wal_;
@@ -262,6 +274,128 @@ class TopicSubscriberThread : public ApplicationThread, public TopicSubscriberCh
     int expected_record_count_;
     ConnectionID connection_id_;
     TopicSubscriberChannel channel_;
+};
+
+// ============================================================
+// A subscriber that opens BOTH the data and control channels --
+// two connections to the publisher's single port, distinguished
+// by role -- and records data records + control (TopicLagged) signals.
+// ============================================================
+class DualChannelSubscriberThread : public ApplicationThread, public TopicSubscriberChannelHost, public TopicControlChannelHost {
+  public:
+    struct ReceivedRecord {
+        int64_t seq_no;
+        int16_t pdu_id;
+    };
+    struct ReceivedLagged {
+        std::string reason;
+        int64_t oldest_retained_seq_no;
+    };
+
+    std::atomic<bool> all_records_received{false};
+    std::atomic<bool> lagged_received{false};
+    std::atomic<bool> control_channel_lost{false};
+    std::vector<ReceivedRecord> received_records;
+    std::vector<ReceivedLagged> received_lagged;
+
+    DualChannelSubscriberThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, std::string subscriber_id, int expected_record_count,
+                                bool disconnect_data_when_done = false)
+        : ApplicationThread(token, logger, reactor, "DualChannelSubscriberThread", ThreadID{1}, make_queue_config(), make_allocator_config("DualSubPool"),
+                            ApplicationThreadConfiguration{})
+        , expected_record_count_(expected_record_count)
+        , disconnect_data_when_done_(disconnect_data_when_done)
+        , data_channel_(*this, subscriber_id, "orders", 0,
+                        [this](int64_t seq_no, int16_t pdu_id, const uint8_t*, size_t) {
+                            received_records.push_back({seq_no, pdu_id});
+                            if (static_cast<int>(received_records.size()) == expected_record_count_) {
+                                all_records_received.store(true, std::memory_order_release);
+                                if (disconnect_data_when_done_) {
+                                    ReactorControlCommand cmd(ReactorControlCommand::CommandTag::Disconnect);
+                                    cmd.connection_id_ = data_connection_id_;
+                                    get_reactor().enqueue_control_command(cmd);
+                                }
+                            }
+                        })
+        , control_channel_(*this, subscriber_id, "orders", [this](const std::string& reason, int64_t oldest_retained_seq_no) {
+            received_lagged.push_back({reason, oldest_retained_seq_no});
+            lagged_received.store(true, std::memory_order_release);
+        }) {}
+
+    // TopicSubscriberChannelHost (data)
+    void topic_send_subscribe_request(ConnectionID connection_id, const pubsub_itc_fw_app::TopicSubscribeRequest& request) override {
+        send_pdu(connection_id, pdu_id_topic_subscribe_request, 0, request);
+    }
+    void topic_send_ack(ConnectionID connection_id, const pubsub_itc_fw_app::TopicAck& ack) override {
+        send_pdu(connection_id, pdu_id_topic_ack, 0, ack);
+    }
+    // TopicControlChannelHost (control)
+    void topic_control_send_subscribe_request(ConnectionID connection_id, const pubsub_itc_fw_app::TopicSubscribeRequest& request) override {
+        send_pdu(connection_id, pdu_id_topic_subscribe_request, 0, request);
+    }
+
+  protected:
+    void on_initial_event() override {
+        connect_to_service("publisher_data");
+        connect_to_service("publisher_control");
+    }
+
+    void on_connection_established(ConnectionID id) override {
+        if (id.service_name() == "publisher_control") {
+            control_connection_id_ = id;
+            control_channel_.on_connected(id);
+        } else {
+            data_connection_id_ = id;
+            data_channel_.on_connected(id);
+        }
+    }
+
+    void on_connection_failed(const std::string& reason) override {
+        shutdown("connection failed: " + reason);
+    }
+
+    void on_connection_lost(const ConnectionID& id, const std::string&) override {
+        if (id == control_connection_id_) {
+            control_channel_lost.store(true, std::memory_order_release);
+        }
+    }
+
+    void on_framework_pdu_message(const EventMessage& message) override {
+        const ConnectionID connection_id = message.connection_id();
+        const uint8_t* payload = message.payload();
+        const size_t size = static_cast<size_t>(message.payload_size());
+        BumpAllocator arena(decode_arena_buffer().data(), decode_arena_buffer().capacity());
+        size_t consumed = 0;
+        size_t arena_needed = 0;
+
+        if (connection_id == control_connection_id_) {
+            if (message.pdu_id() == pdu_id_topic_lagged) {
+                pubsub_itc_fw_app::TopicLaggedView view{};
+                if (pubsub_itc_fw_app::decode(view, payload, size, consumed, arena, arena_needed)) {
+                    control_channel_.on_lagged(view);
+                }
+            }
+            return;
+        }
+
+        if (message.pdu_id() == pdu_id_topic_subscribe_ack) {
+            pubsub_itc_fw_app::TopicSubscribeAckView view{};
+            if (pubsub_itc_fw_app::decode(view, payload, size, consumed, arena, arena_needed)) {
+                data_channel_.on_subscribe_ack(view);
+            }
+        } else if (message.pdu_id() == pdu_id_topic_page) {
+            data_channel_.on_page(payload, size, arena);
+        }
+    }
+
+    void on_itc_message(const EventMessage&) override {}
+
+  private:
+    int expected_record_count_;
+    bool disconnect_data_when_done_;
+    ConnectionID data_connection_id_;
+    ConnectionID control_connection_id_;
+    TopicSubscriberChannel data_channel_;
+    TopicControlChannel control_channel_;
 };
 
 // ============================================================
@@ -591,6 +725,101 @@ TEST_F(TopicPubSubTest, SubscriberReconnectResumesFromCursorWithoutGap) {
     EXPECT_EQ(session_2->received_records[2].seq_no, 5);
 
     publisher_reactor->shutdown("test complete");
+    if (publisher_reactor_thread.joinable()) {
+        publisher_reactor_thread.join();
+    }
+}
+
+// ============================================================
+// Test 5: a subscriber's data channel streams records while its
+// control channel receives an out-of-band TopicLagged signal.
+// ============================================================
+TEST_F(TopicPubSubTest, DualChannelStreamsDataAndDeliversControlSignal) {
+    static constexpr int record_count = 3;
+    write_topic_wal_records(record_count);
+
+    // --- Publisher: send a TopicLagged on the control channel once it is up ---
+    const ServiceRegistry publisher_registry;
+    auto publisher_reactor = std::make_unique<Reactor>(make_reactor_config(), publisher_registry, logger_->logger);
+    publisher_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
+    auto publisher_thread =
+        ApplicationThread::create<TopicPublisherThread>(logger_->logger, *publisher_reactor, wal_dir_, 0, 0, /*lag_on_control_subscribe=*/true);
+    publisher_reactor->register_thread(publisher_thread);
+    std::thread publisher_reactor_thread([&]() { publisher_reactor->run(); });
+    ASSERT_TRUE(wait_for([&]() { return publisher_reactor->is_initialized(); })) << "Publisher reactor did not initialize";
+    const uint16_t listen_port = publisher_reactor->get_inbound_listener_port(0);
+    ASSERT_NE(listen_port, 0U);
+
+    // --- Subscriber: both channels point at the publisher's single port ---
+    ServiceRegistry subscriber_registry;
+    subscriber_registry.add("publisher_data", NetworkEndpointConfiguration{"127.0.0.1", listen_port}, NetworkEndpointConfiguration{});
+    subscriber_registry.add("publisher_control", NetworkEndpointConfiguration{"127.0.0.1", listen_port}, NetworkEndpointConfiguration{});
+    auto subscriber_reactor = std::make_unique<Reactor>(make_reactor_config(), subscriber_registry, logger_->logger);
+    auto subscriber_thread = ApplicationThread::create<DualChannelSubscriberThread>(logger_->logger, *subscriber_reactor, "dual", record_count);
+    subscriber_reactor->register_thread(subscriber_thread);
+    std::thread subscriber_reactor_thread([&]() { subscriber_reactor->run(); });
+
+    EXPECT_TRUE(wait_for([&]() { return subscriber_thread->all_records_received.load(std::memory_order_acquire); })) << "data records not received";
+    EXPECT_TRUE(wait_for([&]() { return subscriber_thread->lagged_received.load(std::memory_order_acquire); }))
+        << "TopicLagged not received on the control channel";
+
+    // Data arrived on the data channel, in order.
+    ASSERT_EQ(static_cast<int>(subscriber_thread->received_records.size()), record_count);
+    for (int i = 0; i < record_count; ++i) {
+        EXPECT_EQ(subscriber_thread->received_records[static_cast<size_t>(i)].seq_no, i + 1);
+    }
+    // The control signal arrived on the control channel with the right fields.
+    ASSERT_EQ(subscriber_thread->received_lagged.size(), 1U);
+    EXPECT_EQ(subscriber_thread->received_lagged[0].reason, "too far behind");
+    EXPECT_EQ(subscriber_thread->received_lagged[0].oldest_retained_seq_no, 42);
+
+    subscriber_reactor->shutdown("test complete");
+    publisher_reactor->shutdown("test complete");
+    if (subscriber_reactor_thread.joinable()) {
+        subscriber_reactor_thread.join();
+    }
+    if (publisher_reactor_thread.joinable()) {
+        publisher_reactor_thread.join();
+    }
+}
+
+// ============================================================
+// Test 6: the two connections are one logical subscription --
+// dropping the data channel tears down the control channel.
+// ============================================================
+TEST_F(TopicPubSubTest, DroppingDataChannelTearsDownControlChannel) {
+    static constexpr int record_count = 3;
+    write_topic_wal_records(record_count);
+
+    const ServiceRegistry publisher_registry;
+    auto publisher_reactor = std::make_unique<Reactor>(make_reactor_config(), publisher_registry, logger_->logger);
+    publisher_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
+    auto publisher_thread = ApplicationThread::create<TopicPublisherThread>(logger_->logger, *publisher_reactor, wal_dir_);
+    publisher_reactor->register_thread(publisher_thread);
+    std::thread publisher_reactor_thread([&]() { publisher_reactor->run(); });
+    ASSERT_TRUE(wait_for([&]() { return publisher_reactor->is_initialized(); })) << "Publisher reactor did not initialize";
+    const uint16_t listen_port = publisher_reactor->get_inbound_listener_port(0);
+    ASSERT_NE(listen_port, 0U);
+
+    ServiceRegistry subscriber_registry;
+    subscriber_registry.add("publisher_data", NetworkEndpointConfiguration{"127.0.0.1", listen_port}, NetworkEndpointConfiguration{});
+    subscriber_registry.add("publisher_control", NetworkEndpointConfiguration{"127.0.0.1", listen_port}, NetworkEndpointConfiguration{});
+    auto subscriber_reactor = std::make_unique<Reactor>(make_reactor_config(), subscriber_registry, logger_->logger);
+    // Disconnect the data channel once all records are in.
+    auto subscriber_thread =
+        ApplicationThread::create<DualChannelSubscriberThread>(logger_->logger, *subscriber_reactor, "dual", record_count, /*disconnect_data_when_done=*/true);
+    subscriber_reactor->register_thread(subscriber_thread);
+    std::thread subscriber_reactor_thread([&]() { subscriber_reactor->run(); });
+
+    // The publisher tears down the pair, so the subscriber's control connection is closed.
+    EXPECT_TRUE(wait_for([&]() { return subscriber_thread->control_channel_lost.load(std::memory_order_acquire); }))
+        << "control channel was not torn down when the data channel dropped";
+
+    subscriber_reactor->shutdown("test complete");
+    publisher_reactor->shutdown("test complete");
+    if (subscriber_reactor_thread.joinable()) {
+        subscriber_reactor_thread.join();
+    }
     if (publisher_reactor_thread.joinable()) {
         publisher_reactor_thread.join();
     }

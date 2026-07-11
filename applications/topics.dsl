@@ -165,3 +165,24 @@ end
 # ------------------------------------------------------------
 message TopicNotLeader (id=111, version=1)
 end
+
+# ------------------------------------------------------------
+#  112 -- TopicLagged
+#  Sent by the publisher on a subscriber's CONTROL channel when
+#  the subscriber has fallen too far behind (its next record is
+#  about to be truncated from the WAL). Best-effort courtesy: it
+#  is delivered on the separate control connection, which is kept
+#  nearly empty, so it arrives promptly even when the subscriber's
+#  data connection is backed up. The authoritative signal is the
+#  gap the subscriber detects when it resubscribes.
+#
+#  reason:                  human-readable reason for logging.
+#  oldest_retained_seq_no:  the oldest seq_no the publisher still
+#                           holds; the subscriber has a gap below
+#                           this and could resume from here.
+#  See docs/design/pubsub_flow_control.md (F3, F4).
+# ------------------------------------------------------------
+message TopicLagged (id=112, version=1)
+    string reason
+    i64    oldest_retained_seq_no
+end
