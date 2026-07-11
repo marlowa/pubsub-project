@@ -28,10 +28,11 @@ def main():
                            help="Output .hpp file to write")
     cpp_group.add_argument("--namespace",
                            help="C++ namespace for generated code (required with --cpp)")
-    cpp_group.add_argument("--topics", action="store_true",
-                           help="Topic registry mode: enforce that a 'Topics' enum exists and "
-                                "every message id references it via Topics.EntryName syntax. "
-                                "Generates the Topics enum as a framework enum class.")
+    cpp_group.add_argument("--pdu-id-enum", action="store_true",
+                           help="Pdu-id-enum mode: enforce that a 'PduId' enum exists and "
+                                "every message id references it via PduId.EntryName syntax. "
+                                "Generates the PduId enum as a framework enum class. (This is "
+                                "the pdu-id registry, not the pub/sub topic catalog.)")
 
     java_group = ap.add_argument_group("Java output")
     java_group.add_argument("--java", metavar="OUTPUT",
@@ -46,8 +47,8 @@ def main():
         ap.error("at least one of --cpp or --java must be specified")
     if args.cpp and not args.namespace:
         ap.error("--namespace is required when --cpp is specified")
-    if args.topics and not args.cpp:
-        ap.error("--topics is only valid with --cpp")
+    if args.pdu_id_enum and not args.cpp:
+        ap.error("--pdu-id-enum is only valid with --cpp")
     if args.package and not args.java:
         ap.error("--package is only valid with --java")
 
@@ -56,14 +57,14 @@ def main():
 
     try:
         ast = Parser(text).parse()
-        Validator(ast).validate(topics=bool(args.topics))
+        Validator(ast).validate(pdu_id_enum=bool(args.pdu_id_enum))
     except ValidationError as error:
         print(f"{input_path}: {error}", file=sys.stderr)
         sys.exit(1)
 
     if args.cpp:
         gen = CppGenerator(namespace=args.namespace)
-        code = gen.emit(ast, topics=args.topics)
+        code = gen.emit(ast, pdu_id_enum=args.pdu_id_enum)
         cpp_path = Path(args.cpp)
         cpp_path.parent.mkdir(parents=True, exist_ok=True)
         cpp_path.write_text(code)

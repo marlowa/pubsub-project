@@ -228,7 +228,7 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
         release_pdu_payload(message);
         return;
     }
-    if (pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::ExecutionReport)) {
+    if (pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport)) {
         // ERs may arrive on the ME's ER connections (the sequencer streams them).
         // The ME is the source of ERs, not a consumer -- discard.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
@@ -239,8 +239,8 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
     }
 
     // ---- Order PDU gating by HA state -------------------------------------
-    const bool is_order_pdu = (pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::NewOrderSingle))
-                           || (pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::OrderCancelRequest));
+    const bool is_order_pdu = (pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle)) ||
+                              (pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest));
 
     if (is_order_pdu && ha_role_state_ == MeRole::Follower) {
         // Passive follower: order PDUs from the sequencer are discarded (the primary
@@ -251,7 +251,7 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
         return;
     }
 
-    if (pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::NewOrderSingle)) {
+    if (pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle)) {
         auto& arena_buf = decode_arena_buffer();
         pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
         arena.reset();
@@ -266,7 +266,7 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
         }
         handle_new_order_single(view, message.seq_no());
 
-    } else if (pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::OrderCancelRequest)) {
+    } else if (pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest)) {
         auto& arena_buf = decode_arena_buffer();
         pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
         arena.reset();
@@ -507,7 +507,7 @@ void MatchingEngineThread::handle_order_cancel_request(const pubsub_itc_fw_app::
 }
 
 void MatchingEngineThread::send_er_to_sequencer(const pubsub_itc_fw_app::ExecutionReport& er, int64_t seq_no) {
-    constexpr auto er_pdu_id = static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::ExecutionReport);
+    constexpr auto er_pdu_id = static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport);
     if (sequencer_er_conn_id_.is_valid()) {
         send_pdu(sequencer_er_conn_id_, er_pdu_id, seq_no, er);
     }

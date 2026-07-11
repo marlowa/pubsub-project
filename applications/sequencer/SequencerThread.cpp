@@ -358,7 +358,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         const auto pdu_id = message.pdu_id();
         bool forwarded_to_me = false;
 
-        if (pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::NewOrderSingle)) {
+        if (pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle)) {
             auto& arena_buf = decode_arena_buffer();
             pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
             arena.reset();
@@ -437,7 +437,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             send_pdu(me_outbound_order_conn_id_, pdu_id, seq, nos);
             forwarded_to_me = true;
 
-        } else if (pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::OrderCancelRequest)) {
+        } else if (pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest)) {
             auto& arena_buf = decode_arena_buffer();
             pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
             arena.reset();
@@ -1054,7 +1054,7 @@ void SequencerThread::dispatch_replay_records() {
         size_t arena_bytes_needed = 0;
         size_t bytes_consumed = 0;
 
-        if (record.pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::NewOrderSingle)) {
+        if (record.pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle)) {
             pubsub_itc_fw_app::NewOrderSingleView view{};
             if (!pubsub_itc_fw_app::decode(view, record.payload.data(), record.payload.size(), bytes_consumed, arena, arena_bytes_needed)) {
                 PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: replay -- failed to decode NOS seq={} -- skipping",
@@ -1099,7 +1099,7 @@ void SequencerThread::dispatch_replay_records() {
 
             send_pdu(me_outbound_order_conn_id_, record.pdu_id, record.seq_no, nos);
 
-        } else if (record.pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::OrderCancelRequest)) {
+        } else if (record.pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest)) {
             pubsub_itc_fw_app::OrderCancelRequestView view{};
             if (!pubsub_itc_fw_app::decode(view, record.payload.data(), record.payload.size(), bytes_consumed, arena, arena_bytes_needed)) {
                 PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: replay -- failed to decode OCR seq={} -- skipping",
@@ -1572,7 +1572,7 @@ void SequencerThread::stream_wal_record_to_me(const pubsub_itc_fw::ConnectionID&
     size_t arena_bytes_needed = 0;
     size_t bytes_consumed = 0;
 
-    if (pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::NewOrderSingle)) {
+    if (pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle)) {
         pubsub_itc_fw_app::NewOrderSingleView view{};
         if (!pubsub_itc_fw_app::decode(view, pdu_payload, pdu_size, bytes_consumed, arena, arena_bytes_needed)) {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: catch-up -- failed to decode NOS seq={} -- skipping", record_id);
@@ -1613,7 +1613,7 @@ void SequencerThread::stream_wal_record_to_me(const pubsub_itc_fw::ConnectionID&
         nos.sequenced_at = wall_time_ns;
         send_pdu(conn_id, pdu_id, record_id, nos);
 
-    } else if (pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::OrderCancelRequest)) {
+    } else if (pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest)) {
         pubsub_itc_fw_app::OrderCancelRequestView view{};
         if (!pubsub_itc_fw_app::decode(view, pdu_payload, pdu_size, bytes_consumed, arena, arena_bytes_needed)) {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: catch-up -- failed to decode OCR seq={} -- skipping", record_id);

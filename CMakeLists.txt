@@ -253,7 +253,7 @@ add_custom_command(
     OUTPUT "${FIX_DSL_GENERATED_HPP}"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${FIX_DSL_INCLUDE_DIR}"
     COMMAND ${Python3_EXECUTABLE} "${FIX_DSL_GENERATOR}"
-            --topics
+            --pdu-id-enum
             --namespace pubsub_itc_fw_app
             "${FIX_DSL_SOURCE}"
             --cpp "${FIX_DSL_GENERATED_HPP}"
@@ -268,7 +268,7 @@ add_custom_target(fix_equity_orders_generated ALL
 # violation fails the build early rather than after a long C++ build.
 add_dependencies(fix_equity_orders_generated check_standards)
 
-# Leader-follower protocol PDU header (no --topics: uses plain integer IDs 100-201).
+# Leader-follower protocol PDU header (no --pdu-id-enum: uses plain integer IDs 100-201).
 set(LF_DSL_SOURCE "${CMAKE_SOURCE_DIR}/libraries/pubsub_itc_fw/include/pubsub_itc_fw/leader_follower.dsl")
 set(LF_DSL_GENERATED_HPP "${FIX_DSL_INCLUDE_DIR}/leader_follower.hpp")
 
@@ -287,7 +287,7 @@ add_custom_target(leader_follower_generated ALL
     DEPENDS "${LF_DSL_GENERATED_HPP}"
 )
 
-# Authentication service protocol PDU header (plain integer IDs 500-503; no --topics).
+# Authentication service protocol PDU header (plain integer IDs 500-503; no --pdu-id-enum).
 set(AUTH_DSL_SOURCE "${CMAKE_SOURCE_DIR}/applications/authentication.dsl")
 set(AUTH_DSL_GENERATED_HPP "${FIX_DSL_INCLUDE_DIR}/authentication.hpp")
 
@@ -325,7 +325,7 @@ add_custom_target(matching_engine_replication_generated ALL
     DEPENDS "${ME_REPL_DSL_GENERATED_HPP}"
 )
 
-# Topic pub/sub protocol PDU header (plain integer IDs 107-111; no --topics).
+# Topic pub/sub protocol PDU header (plain integer IDs 107-111; no --pdu-id-enum).
 set(TOPICS_DSL_SOURCE "${CMAKE_SOURCE_DIR}/applications/topics.dsl")
 set(TOPICS_DSL_GENERATED_HPP "${FIX_DSL_INCLUDE_DIR}/topics.hpp")
 

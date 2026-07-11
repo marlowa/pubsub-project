@@ -40,7 +40,7 @@ class CppGenerator:
     # Public entry point
     # ------------------------------------------------------------------
 
-    def emit(self, ast: DslFile, topics: bool = False) -> str:
+    def emit(self, ast: DslFile, pdu_id_enum: bool = False) -> str:
         """Generate and return the complete C++ header as a string."""
         lines: List[str] = []
         w = lines.append
@@ -74,8 +74,8 @@ class CppGenerator:
 
         for decl in ast.declarations:
             if isinstance(decl, EnumDecl):
-                if topics and decl.name == "Topics":
-                    self._emit_topics_enum_class(decl, w)
+                if pdu_id_enum and decl.name == "PduId":
+                    self._emit_pdu_id_enum_class(decl, w)
                 else:
                     self._emit_enum(decl, w)
                     w("")
@@ -222,11 +222,11 @@ class CppGenerator:
         w("}")
 
     # ------------------------------------------------------------------
-    # Topics enum class (framework enum pattern)
+    # PduId enum class (framework enum pattern)
     # ------------------------------------------------------------------
 
-    def _emit_topics_enum_class(self, enum: EnumDecl, w):
-        """Emit the Topics enum as a framework enum class.
+    def _emit_pdu_id_enum_class(self, enum: EnumDecl, w):
+        """Emit the PduId enum as a framework enum class.
 
         Follows the project's enum pattern: a class containing a C-style
         Tag enum, an explicit single-argument constructor, as_tag(),
@@ -251,7 +251,7 @@ class CppGenerator:
         w("        switch (tag_) {")
         for entry in enum.entries:
             w(f"        case {entry.name}: return \"{entry.name}\";")
-        w("        default: return \"<unknown Topics: \" + std::to_string(static_cast<int>(tag_)) + \">\";")
+        w(f'        default: return "<unknown {enum.name}: " + std::to_string(static_cast<int>(tag_)) + ">";')
         w("        }")
         w("    }")
         w("")

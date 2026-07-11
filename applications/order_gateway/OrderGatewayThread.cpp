@@ -410,7 +410,7 @@ void OrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventMess
         return;
     }
 
-    if (pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::ExecutionReport)) {
+    if (pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport)) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "OrderGatewayThread: unsupported PDU id {} on connection {} -- dropping", pdu_id,
                    message.connection_id().get_value());
         release_pdu_payload(message);
@@ -914,7 +914,7 @@ void OrderGatewayThread::handle_new_order_single(FixSession& session, const Pars
 
     // Forward the encoded PDU to both sequencer instances.
     // The sequencer will wrap it in a SequencedMessage envelope.
-    forward_pdu_to_sequencers(static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::NewOrderSingle), nos);
+    forward_pdu_to_sequencers(static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle), nos);
 
     // Do NOT record the order here. We record it when the ME sends back a
     // non-terminal ExecutionReport (OrdStatus=New), which confirms the order
@@ -973,7 +973,7 @@ void OrderGatewayThread::handle_order_cancel_request(FixSession& session, const 
     ocr.has_gateway_session_conn_id = true;
     ocr.gateway_session_conn_id = session.conn_id.get_value();
 
-    forward_pdu_to_sequencers(static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::OrderCancelRequest), ocr);
+    forward_pdu_to_sequencers(static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest), ocr);
 }
 
 // -----------------------------------------------------------------------
@@ -1148,7 +1148,7 @@ void OrderGatewayThread::drain_pending_cancels() {
         ocr.has_gateway_session_conn_id = true;
         ocr.gateway_session_conn_id     = dead.session_conn_id;
 
-        forward_pdu_to_sequencers(static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::OrderCancelRequest), ocr);
+        forward_pdu_to_sequencers(static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest), ocr);
 
         open_order_pool_->deallocate(entry);
         dead.open_orders.erase(it);

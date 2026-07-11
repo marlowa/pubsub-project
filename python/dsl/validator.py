@@ -26,20 +26,20 @@ class Validator:  # pylint: disable=too-few-public-methods
         self.ast = ast
         self.enums: Dict[str, EnumDecl] = {}
         self.messages: Dict[str, MessageDecl] = {}
-        self._topic_ref_messages: Set[str] = set()  # messages whose id was Topics.X
+        self._pdu_id_ref_messages: Set[str] = set()  # messages whose id was PduId.X
 
     # -----------------------------
     # Entry point
     # -----------------------------
 
-    def validate(self, topics: bool = False):
+    def validate(self, pdu_id_enum: bool = False):
         """Run all validation checks. Raises ValidationError on any violation."""
         self._collect_declarations()
         self._validate_enums()
         self._validate_messages()
         self._validate_no_cycles()
-        if topics:
-            self._validate_topics()
+        if pdu_id_enum:
+            self._validate_pdu_id_enum()
 
     # -----------------------------
     # Collect declarations
@@ -122,8 +122,8 @@ class Validator:  # pylint: disable=too-few-public-methods
                             f"line {ref.line}: in message '{msg.name}' metadata '{key}': "
                             f"enum '{ref.enum_name}' has no entry '{ref.entry_name}'"
                         )
-                    if key == "id" and ref.enum_name == "Topics":
-                        self._topic_ref_messages.add(msg.name)
+                    if key == "id" and ref.enum_name == "PduId":
+                        self._pdu_id_ref_messages.add(msg.name)
                     msg.metadata[key] = entry.value
 
             message_id = msg.metadata["id"]
@@ -185,27 +185,27 @@ class Validator:  # pylint: disable=too-few-public-methods
         )
 
     # -----------------------------
-    # Topics validation
+    # PduId-enum validation
     # -----------------------------
 
-    def _validate_topics(self):
-        """Validate topic registry constraints when --topics is active.
+    def _validate_pdu_id_enum(self):
+        """Validate PduId-registry constraints when --pdu-id-enum is active.
 
         Requires:
-          - A 'Topics' enum must be present in the file.
+          - A 'PduId' enum must be present in the file.
           - Every message 'id' metadata value must be an EnumRef referencing
-            the 'Topics' enum. Bare integers are rejected.
+            the 'PduId' enum. Bare integers are rejected.
         """
-        if "Topics" not in self.enums:
+        if "PduId" not in self.enums:
             raise ValidationError(
-                "topics mode requires a 'Topics' enum declaration in the DSL file"
+                "pdu-id-enum mode requires a 'PduId' enum declaration in the DSL file"
             )
 
         for msg in self.messages.values():
-            if msg.name not in self._topic_ref_messages:
+            if msg.name not in self._pdu_id_ref_messages:
                 raise ValidationError(
-                    f"line {msg.line}: in topics mode, message '{msg.name}' id "
-                    f"must reference the Topics enum (e.g. id=Topics.{msg.name}); "
+                    f"line {msg.line}: in pdu-id-enum mode, message '{msg.name}' id "
+                    f"must reference the PduId enum (e.g. id=PduId.{msg.name}); "
                     f"bare integers are not allowed"
                 )
 

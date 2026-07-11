@@ -23,11 +23,12 @@
 # -----------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# Topics enum -- one entry per pub/sub topic.
-# The validator requires id=Topics.X in topics mode.
+# PduId enum -- one symbolic id per message (a pdu-id registry). NOTE: this is NOT
+# the pub/sub topic catalog; topics are a separate DSL construct that group messages.
+# The validator requires id=PduId.X in pdu-id-enum mode.
 # ---------------------------------------------------------------------------
 
-enum Topics : i16 {
+enum PduId : i16 {
     NewOrderSingle     = 1000
     OrderCancelRequest = 1001
     ExecutionReport    = 1002
@@ -250,7 +251,7 @@ enum CxlRejReason : i32 {
 #   Text (58)          -- free text
 # ---------------------------------------------------------------------------
 
-message NewOrderSingle (id=Topics.NewOrderSingle)
+message NewOrderSingle (id=PduId.NewOrderSingle)
     string cl_ord_id
     Side side
     string symbol
@@ -283,7 +284,7 @@ end
 #   Account (1), Text (58)
 # ---------------------------------------------------------------------------
 
-message OrderCancelRequest (id=Topics.OrderCancelRequest)
+message OrderCancelRequest (id=PduId.OrderCancelRequest)
     string orig_cl_ord_id
     string cl_ord_id
     Side side
@@ -328,7 +329,7 @@ end
 #   ExpireTime (126)
 # ---------------------------------------------------------------------------
 
-message ExecutionReport (id=Topics.ExecutionReport)
+message ExecutionReport (id=PduId.ExecutionReport)
     string order_id
     string exec_id
     ExecType exec_type

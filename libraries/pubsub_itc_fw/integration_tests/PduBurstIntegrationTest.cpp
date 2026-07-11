@@ -223,7 +223,7 @@ class SenderThread : public ApplicationThread {
             encoded.resize(bytes_written);
             sent_payloads_.push_back(std::move(encoded));
 
-            constexpr auto pdu_id = static_cast<int16_t>(pubsub_itc_fw_app::Topics::TopicsTag::ExecutionReport);
+            constexpr auto pdu_id = static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport);
             const auto seq_no = static_cast<int64_t>(i);
             send_pdu(conn_id_, pdu_id, seq_no, er);
         }
