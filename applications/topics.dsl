@@ -5,7 +5,7 @@
 #  GLOSSARY
 #  --------
 #  cursor: a sequence number marking how far a subscriber has consumed
-#  the event stream. A subscriber presenting cursor N has already
+#  the published records. A subscriber presenting cursor N has already
 #  received and processed all records with seq_no <= N and wishes to
 #  receive records with seq_no > N next. The publisher uses each
 #  subscriber's cursor to decide which old WAL segments are safe to
@@ -80,12 +80,12 @@ end
 # ------------------------------------------------------------
 #  108 -- TopicSubscribeAck
 #  Sent by the publisher to the subscriber after
-#  TopicSubscribeRequest. Streaming of TopicPage PDUs begins
+#  TopicSubscribeRequest. Delivery of TopicPage PDUs begins
 #  immediately after this PDU is sent.
 #
 #  accepted_from_seq_no may differ from the requested cursor
 #  if the request predates the publisher's oldest retained
-#  record; in that case streaming starts from the oldest
+#  record; in that case delivery starts from the oldest
 #  available record and a warning is logged.
 # ------------------------------------------------------------
 message TopicSubscribeAck (id=108, version=1)

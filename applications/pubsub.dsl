@@ -21,13 +21,13 @@
 
 include "fix_equity_orders.dsl"
 
-# The "orders" stream: buy-side order flow (NewOrderSingle + OrderCancelRequest).
+# The "orders" topic: buy-side order flow (NewOrderSingle + OrderCancelRequest).
 topic orders {
     NewOrderSingle,
     OrderCancelRequest,
 }
 
-# The "execution_reports" stream: sell-side execution reports.
+# The "execution_reports" topic: sell-side execution reports.
 topic execution_reports {
     ExecutionReport,
 }

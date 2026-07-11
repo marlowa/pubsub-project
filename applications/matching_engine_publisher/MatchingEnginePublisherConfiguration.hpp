@@ -24,7 +24,7 @@ namespace matching_engine_publisher {
  *   "execution_reports"  -- pdu_id 1002 (ER)
  *
  * HA: primary/secondary pair managed by the arbiter pool.
- * Only the leader streams topic records; the secondary replies with
+ * Only the leader publishes topic records; the secondary replies with
  * TopicNotLeader to any TopicSubscribeRequest.
  */
 struct MatchingEnginePublisherConfiguration {
@@ -38,7 +38,7 @@ struct MatchingEnginePublisherConfiguration {
     // ----------------------------------------------------------------
     // Sequencer WAL follower connections
     //   MEP connects outbound to both sequencer instances and keeps
-    //   both connections warm. Only the sequencer leader streams records.
+    //   both connections warm. Only the sequencer leader sends records.
     // ----------------------------------------------------------------
 
     std::string sequencer_wal_host{"127.0.0.1"};

@@ -38,12 +38,12 @@ namespace matching_engine_publisher {
  *   Listens on two ports -- one for the "orders" topic (NOS/OCR) and
  *   one for "execution_reports" (ER). On TopicSubscribeRequest, if the
  *   instance is the leader it replays WAL records from the subscriber's
- *   cursor, then streams live records as TopicPage PDUs. If the instance
+ *   cursor, then publishes live records as TopicPage PDUs. If the instance
  *   is the follower it immediately replies with TopicNotLeader.
  *
  * HA:
  *   Same arbiter-mediated leader-follower state machine as the sequencer.
- *   Only the leader streams topic records; the follower holds topic
+ *   Only the leader publishes topic records; the follower holds topic
  *   subscriber connections warm and sends TopicNotLeader on any new
  *   TopicSubscribeRequest.
  */
@@ -135,8 +135,7 @@ class MatchingEnginePublisherThread : public pubsub_itc_fw::ApplicationThread {
     // ----------------------------------------------------------------
     void handle_topic_subscribe_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     void handle_topic_ack(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
-    void stream_wal_record_to_topic_subscribers(int64_t seq_no, int16_t pdu_id, int64_t wall_time_ns,
-                                                 const uint8_t* pdu_payload, size_t pdu_size);
+    void publish_wal_record_to_topic_subscribers(int64_t seq_no, int16_t pdu_id, int64_t wall_time_ns, const uint8_t* pdu_payload, size_t pdu_size);
     void send_topic_page(const pubsub_itc_fw::ConnectionID& conn_id, int64_t seq_no, int16_t pdu_id,
                          int64_t wall_time_ns, const uint8_t* pdu_payload, size_t pdu_size);
     void replay_wal_for_subscriber(const pubsub_itc_fw::ConnectionID& conn_id, int64_t from_seq_no,

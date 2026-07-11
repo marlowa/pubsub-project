@@ -36,7 +36,7 @@ owns the pdu ids).
    grouping construct. The `--topics` generator flag (which really means "emit the id
    enum") is renamed to match.
 4. **New `topic` grouping construct:** `topic orders { NewOrderSingle, OrderCancelRequest }`
-   — a named stream listing member messages. A message may belong to **multiple** topics.
+   — a named grouping listing member messages. A message may belong to **multiple** topics.
    Topic names are unique.
 5. **DSL `include` mechanism:** transitive (any file may include any file, nesting allowed),
    at declaration-level position, with **dedup** (by canonical path) and **cycle detection**.

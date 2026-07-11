@@ -654,8 +654,7 @@ void MatchingEnginePublisherThread::handle_wal_record_from_sequencer(
                view.seq_no, view.pdu_id);
 
     // Fan out to live topic subscribers.
-    stream_wal_record_to_topic_subscribers(view.seq_no, view.pdu_id, view.wall_time_ns,
-                                           view.payload.data, view.payload.size);
+    publish_wal_record_to_topic_subscribers(view.seq_no, view.pdu_id, view.wall_time_ns, view.payload.data, view.payload.size);
 }
 
 // ---------------------------------------------------------------------------
@@ -776,10 +775,9 @@ void MatchingEnginePublisherThread::handle_topic_ack(
                "MepThread: TopicAck conn={} last_seq_no={}", conn_id.get_value(), view.last_seq_no);
 }
 
-void MatchingEnginePublisherThread::stream_wal_record_to_topic_subscribers(
-        int64_t seq_no, int16_t pdu_id, int64_t wall_time_ns,
-        const uint8_t* pdu_payload, size_t pdu_size) {
-    // Only the leader streams live records.
+void MatchingEnginePublisherThread::publish_wal_record_to_topic_subscribers(int64_t seq_no, int16_t pdu_id, int64_t wall_time_ns, const uint8_t* pdu_payload,
+                                                                            size_t pdu_size) {
+    // Only the leader publishes live records.
     if (role_ != pubsub_itc_fw_app::Role::leader) {
         return;
     }

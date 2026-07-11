@@ -31,7 +31,7 @@ class IncludeDecl(Declaration):
 
 @dataclass
 class TopicDecl(Declaration):
-    """A `topic NAME { Msg, ... }` grouping: a named stream of member messages.
+    """A `topic NAME { Msg, ... }` grouping: a named set of member messages.
 
     Topics are the pub/sub catalog layer over the message schema. A message may
     belong to more than one topic; topic names are unique. Members are recorded
