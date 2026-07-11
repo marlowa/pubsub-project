@@ -258,6 +258,19 @@ class EventMessage {
     [[nodiscard]] static EventMessage create_connection_lost_event(const ConnectionID& connection_id, const std::string& reason);
 
     /**
+     * @brief Factory method for a connection-writable event.
+     *
+     * Delivered to the ApplicationThread that called request_writable_notification()
+     * for a connection, once that connection can accept another outbound frame. Lets
+     * an application pace its own sends (e.g. streaming records from a WAL) instead of
+     * queueing everything at once.
+     *
+     * @param[in] connection_id The ConnectionID that can accept another frame.
+     * @return EventMessage instance.
+     */
+    [[nodiscard]] static EventMessage create_connection_writable_event(const ConnectionID& connection_id);
+
+    /**
      * @brief Gets the MirroredBuffer tail position at enqueue time.
      *
      * Valid only for RawSocketCommunication events. The ApplicationThread

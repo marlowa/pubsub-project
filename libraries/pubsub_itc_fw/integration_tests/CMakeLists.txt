@@ -19,6 +19,7 @@ add_executable(pubsub_itc_fw_integration_tests
     TopicPubSubIntegrationTest.cpp
     VariableLengthPduTest.cpp
     WalExternalSubscriberIntegrationTest.cpp
+    WritableNotificationIntegrationTest.cpp
 )
 
 add_dependencies(pubsub_itc_fw_integration_tests
@@ -55,6 +56,7 @@ message(STATUS "  Added integration test: TlsOutboundIntegrationTest")
 message(STATUS "  Added integration test: TlsProtocolHandlerIntegrationTest")
 message(STATUS "  Added integration test: WalExternalSubscriberIntegrationTest")
 message(STATUS "  Added integration test: TopicPubSubIntegrationTest")
+message(STATUS "  Added integration test: WritableNotificationIntegrationTest")
 
 # Install integration test executable -> bin
 install(TARGETS pubsub_itc_fw_integration_tests

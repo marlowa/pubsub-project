@@ -231,6 +231,18 @@ void ApplicationThread::commit_raw_bytes(const ConnectionID& conn_id, int64_t by
     reactor_.enqueue_control_command(command);
 }
 
+void ApplicationThread::request_writable_notification(const ConnectionID& conn_id) {
+    if (active_connection_ids_.find(conn_id) == active_connection_ids_.end()) {
+        throw PreconditionAssertion(fmt::format("ApplicationThread::request_writable_notification: ConnectionID {} "
+                                                "does not belong to this thread",
+                                                conn_id.get_value()),
+                                    __FILE__, __LINE__);
+    }
+    ReactorControlCommand command(ReactorControlCommand::CommandTag::RequestWritableNotification);
+    command.connection_id_ = conn_id;
+    reactor_.enqueue_control_command(command);
+}
+
 void ApplicationThread::send_raw(const ConnectionID& conn_id, const void* data, uint32_t size) {
     if (active_connection_ids_.find(conn_id) == active_connection_ids_.end()) {
         throw PreconditionAssertion(fmt::format("ApplicationThread::send_raw: ConnectionID {} "
@@ -509,6 +521,11 @@ void ApplicationThread::process_message(const EventMessage& message) {
             PUBSUB_LOG(logger_, FwLogLevel::Info, "Thread {}: Received connection lost message", thread_name_);
             active_connection_ids_.erase(message.connection_id());
             on_connection_lost(message.connection_id(), message.reason());
+            break;
+        }
+
+        case EventType::ConnectionWritable: {
+            on_connection_writable(message.connection_id());
             break;
         }
 

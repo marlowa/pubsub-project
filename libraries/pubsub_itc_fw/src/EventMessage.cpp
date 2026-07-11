@@ -68,6 +68,12 @@ EventMessage EventMessage::create_connection_established_event(const ConnectionI
     return msg;
 }
 
+EventMessage EventMessage::create_connection_writable_event(const ConnectionID& connection_id) {
+    EventMessage msg(EventType(EventType::ConnectionWritable), nullptr, 0);
+    msg.header_.connection_id = connection_id;
+    return msg;
+}
+
 EventMessage EventMessage::create_connection_failed_event(const std::string& reason) {
     EventMessage msg(EventType(EventType::ConnectionFailed), nullptr, 0);
     msg.header_.reason = reason;

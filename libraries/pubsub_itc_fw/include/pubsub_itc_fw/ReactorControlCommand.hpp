@@ -58,14 +58,16 @@ class ReactorControlCommand {
     enum CommandTag {
         AddTimer,
         CancelTimer,
-        Connect,                  ///< Request the reactor to establish an outbound TCP connection.
-        Disconnect,               ///< Request the reactor to close an established connection.
-        SendPdu,                  ///< Request the reactor to send a framed PDU on a PDU connection.
-        SendRaw,                  ///< Request the reactor to send raw bytes on a raw-bytes connection.
-        CommitRawBytes,           ///< Notify the reactor that the application has consumed N bytes from
-                                  ///< the MirroredBuffer of a RawBytesProtocolHandler connection.
-        InstallInlinePduHandler   ///< Install a reactor-thread inline PDU handler on a connection's
-                                  ///< PduParser, bypassing the ITC dispatch path for matching PDUs.
+        Connect,                    ///< Request the reactor to establish an outbound TCP connection.
+        Disconnect,                 ///< Request the reactor to close an established connection.
+        SendPdu,                    ///< Request the reactor to send a framed PDU on a PDU connection.
+        SendRaw,                    ///< Request the reactor to send raw bytes on a raw-bytes connection.
+        CommitRawBytes,             ///< Notify the reactor that the application has consumed N bytes from
+                                    ///< the MirroredBuffer of a RawBytesProtocolHandler connection.
+        InstallInlinePduHandler,    ///< Install a reactor-thread inline PDU handler on a connection's
+                                    ///< PduParser, bypassing the ITC dispatch path for matching PDUs.
+        RequestWritableNotification ///< Request a one-shot ConnectionWritable event when the connection
+                                    ///< can accept another outbound frame (connection_id_).
     };
 
   public:
@@ -99,6 +101,9 @@ class ReactorControlCommand {
         }
         if (tag_ == InstallInlinePduHandler) {
             return "InstallInlinePduHandler";
+        }
+        if (tag_ == RequestWritableNotification) {
+            return "RequestWritableNotification";
         }
         return fmt::format("unknown ({})", static_cast<int>(tag_));
     }

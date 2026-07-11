@@ -408,6 +408,23 @@ class ApplicationThread {
     void send_raw(const ConnectionID& conn_id, const void* data, uint32_t size);
 
     /**
+     * @brief Requests a one-shot on_connection_writable() callback for a connection.
+     *
+     * Lets an application pace its own outbound sends instead of queueing everything
+     * at once. After sending a frame, call this to be notified -- via
+     * on_connection_writable() -- when the connection can accept the next frame
+     * (immediately if the last send completed, or once the socket drains after a
+     * partial send). The notification is one-shot: re-arm it each time there is more
+     * to send, and stop arming when done. A streaming publisher uses this to keep its
+     * backlog in the WAL (a cursor) rather than in the outbound queue (RAM).
+     *
+     * Must be called from within the owning ApplicationThread's callback context.
+     *
+     * @param[in] conn_id The ConnectionID to be notified about. Must belong to this thread.
+     */
+    void request_writable_notification(const ConnectionID& conn_id);
+
+    /**
      * @brief Installs a reactor-thread inline PDU handler on the PduParser of an
      *        established connection.
      *
@@ -717,6 +734,17 @@ class ApplicationThread {
      * @param[in] reason Human-readable description of why the connection was lost.
      */
     virtual void on_connection_lost([[maybe_unused]] const ConnectionID &id, [[maybe_unused]] const std::string& reason) {}
+
+    /**
+     * @brief Called when a connection can accept another outbound frame.
+     *
+     * Delivered once per request_writable_notification() call (one-shot). The
+     * application typically sends its next frame here and re-arms with
+     * request_writable_notification() if it has more to send.
+     *
+     * @param[in] id The ConnectionID that can accept another frame.
+     */
+    virtual void on_connection_writable([[maybe_unused]] ConnectionID id) {}
 
   private:
     QuillLogger& logger_;

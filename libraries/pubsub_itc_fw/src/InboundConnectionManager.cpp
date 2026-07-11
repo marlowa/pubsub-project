@@ -348,6 +348,22 @@ void InboundConnectionManager::check_for_inactive_connections() {
     }
 }
 
+bool InboundConnectionManager::process_writable_notification_command(const ReactorControlCommand& command) {
+    const ConnectionID cid = command.connection_id_;
+
+    auto it = connections_.find(cid);
+    if (it == connections_.end()) {
+        return false;
+    }
+
+    InboundConnection& conn = *it->second;
+    auto* thread = thread_lookup_.get_fast_path_thread(conn.target_thread_id());
+    if (thread != nullptr) {
+        thread->enqueue(EventMessage::create_connection_writable_event(cid));
+    }
+    return true;
+}
+
 bool InboundConnectionManager::process_send_pdu_command(const ReactorControlCommand& command) {
     const ConnectionID cid = command.connection_id_;
 

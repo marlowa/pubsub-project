@@ -30,7 +30,8 @@ class EventType {
         FrameworkPdu,
         ConnectionEstablished, ///< Outbound TCP connection is ready; carries ConnectionID.
         ConnectionFailed,      ///< Outbound TCP connection attempt failed; carries reason string.
-        ConnectionLost         ///< Existing connection dropped unexpectedly; carries ConnectionID and reason.
+        ConnectionLost,        ///< Existing connection dropped unexpectedly; carries ConnectionID and reason.
+        ConnectionWritable     ///< A connection whose writable notification was requested can accept another frame; carries ConnectionID.
     };
 
   public:
@@ -82,6 +83,9 @@ class EventType {
         }
         if (event_type_ == ConnectionLost) {
             return "ConnectionLost";
+        }
+        if (event_type_ == ConnectionWritable) {
+            return "ConnectionWritable";
         }
         return fmt::format("unknown ({})", static_cast<int>(event_type_));
     }

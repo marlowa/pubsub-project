@@ -923,6 +923,17 @@ void Reactor::process_control_commands() {
                 break;
             }
 
+            case ReactorControlCommand::RequestWritableNotification: {
+                const ConnectionID cid = command.connection_id_;
+                if (!outbound_manager_.process_writable_notification_command(command)) {
+                    if (!inbound_manager_.process_writable_notification_command(command)) {
+                        PUBSUB_LOG(logger_, FwLogLevel::Warning, "Reactor::process_control_commands: unknown connection id {} for RequestWritableNotification",
+                                   cid.get_value());
+                    }
+                }
+                break;
+            }
+
             case ReactorControlCommand::SendPdu: {
                 if (!outbound_manager_.process_send_pdu_command(command)) {
                     if (!inbound_manager_.process_send_pdu_command(command)) {

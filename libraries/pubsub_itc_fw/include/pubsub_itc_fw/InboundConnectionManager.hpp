@@ -188,6 +188,18 @@ class InboundConnectionManager {
     [[nodiscard]] bool process_send_pdu_command(const ReactorControlCommand& command);
 
     /**
+     * @brief Attempts to satisfy a RequestWritableNotification for an inbound connection.
+     *
+     * If the ConnectionID belongs to an inbound connection, enqueues a
+     * ConnectionWritable event to its owning ApplicationThread. Reached (per the
+     * reactor's command loop) only when the connection can accept another frame.
+     *
+     * @param[in] command The RequestWritableNotification command.
+     * @return true if the ConnectionID belongs to an inbound connection, false if not.
+     */
+    [[nodiscard]] bool process_writable_notification_command(const ReactorControlCommand& command);
+
+    /**
      * @brief Attempts to dispatch a SendRaw command to an inbound connection.
      *
      * @param[in] command The SendRaw command to process.

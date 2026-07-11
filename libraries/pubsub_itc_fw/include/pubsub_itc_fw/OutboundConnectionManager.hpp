@@ -128,6 +128,18 @@ class OutboundConnectionManager {
     [[nodiscard]] bool process_send_pdu_command(const ReactorControlCommand& command);
 
     /**
+     * @brief Attempts to satisfy a RequestWritableNotification for an outbound connection.
+     *
+     * If the ConnectionID belongs to an outbound connection, enqueues a
+     * ConnectionWritable event to the requesting ApplicationThread. Reached (per the
+     * reactor's command loop) only when the connection can accept another frame.
+     *
+     * @param[in] command The RequestWritableNotification command.
+     * @return true if the ConnectionID belongs to an outbound connection, false if not.
+     */
+    [[nodiscard]] bool process_writable_notification_command(const ReactorControlCommand& command);
+
+    /**
      * @brief Attempts to dispatch a SendRaw command to an outbound connection.
      *
      * OutboundConnection uses PduProtocolHandler and does not support raw-bytes
