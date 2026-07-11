@@ -58,7 +58,16 @@ class TopicsGenerator:
         w(f"namespace {self.namespace} {{")
         w("")
 
-        # Topic enum (0-based, declaration order).
+        self._emit_topic_enum(w, topics)
+        self._emit_name_lookups(w, topics)
+        self._emit_membership(w, topics, messages)
+
+        w(f"}} // namespace {self.namespace}")
+        w("")
+        return "\n".join(lines)
+
+    def _emit_topic_enum(self, w, topics):
+        """Emit the Topic enum (0-based, declaration order) and topic_count."""
         w("enum class Topic : std::uint16_t {")
         for index, topic in enumerate(topics):
             w(f"    {topic.name} = {index},")
@@ -67,7 +76,8 @@ class TopicsGenerator:
         w(f"inline constexpr std::size_t topic_count = {len(topics)};")
         w("")
 
-        # to_string
+    def _emit_name_lookups(self, w, topics):
+        """Emit to_string(Topic) and topic_from_name(name, out)."""
         w("inline constexpr std::string_view to_string(Topic topic) {")
         w("    switch (topic) {")
         for topic in topics:
@@ -87,7 +97,9 @@ class TopicsGenerator:
         w("}")
         w("")
 
-        # Flat membership table: one (pdu_id, topic) row per membership.
+    def _emit_membership(self, w, topics, messages):
+        """Emit the flat TopicMember table and the pdu_in_topic predicate."""
+        # One (pdu_id, topic) row per membership.
         rows = [
             (messages[member].metadata["id"], topic.name, member)
             for topic in topics
@@ -117,10 +129,6 @@ class TopicsGenerator:
         w("    return false;")
         w("}")
         w("")
-
-        w(f"}} // namespace {self.namespace}")
-        w("")
-        return "\n".join(lines)
 
     # ------------------------------------------------------------------
     # Markdown catalog

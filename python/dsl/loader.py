@@ -22,7 +22,7 @@ from .errors import ParseError
 from .ast import DslFile, Declaration, IncludeDecl
 
 
-class Loader:
+class Loader:  # pylint: disable=too-few-public-methods
     """Resolves the transitive include closure of a root DSL file into one AST."""
 
     def __init__(self):
