@@ -58,6 +58,20 @@ message TopicRecord (id=0, version=1)
 end
 
 # ------------------------------------------------------------
+#  TopicChannelRole -- which of a subscriber's two connections
+#  this is. A subscriber opens two connections to the publisher's
+#  single port: a Data channel (bulk record delivery) and a
+#  Control channel (rare out-of-band signals: lag warnings,
+#  termination, the periodic truncation cursor, heartbeat). Both
+#  connections carry the same subscriber_id so the publisher can
+#  correlate the pair. See docs/design/pubsub_flow_control.md.
+# ------------------------------------------------------------
+enum TopicChannelRole : i8 {
+    Data    = 0
+    Control = 1
+}
+
+# ------------------------------------------------------------
 #  107 -- TopicSubscribeRequest
 #  Sent by a subscriber to the publisher immediately after the
 #  TCP connection is established.
@@ -70,11 +84,14 @@ end
 #    0  = start from publisher's oldest retained WAL record.
 #   -1  = start from publisher's current WAL head.
 #    N  = resume from seq_no N (reconnect after disconnect).
+#  role:           Data or Control (see TopicChannelRole). The
+#                  publisher correlates the two by subscriber_id.
 # ------------------------------------------------------------
 message TopicSubscribeRequest (id=107, version=1)
-    string subscriber_id
-    string topic_name
-    i64    from_seq_no
+    string           subscriber_id
+    string           topic_name
+    i64              from_seq_no
+    TopicChannelRole role
 end
 
 # ------------------------------------------------------------

@@ -73,6 +73,7 @@ class TopicSubscriberChannel {
         request.subscriber_id = subscriber_id_;
         request.topic_name = topic_name_;
         request.from_seq_no = from_seq_no_;
+        request.role = pubsub_itc_fw_app::TopicChannelRole::Data; // control channel arrives in a later step
         host_.topic_send_subscribe_request(connection_id, request);
     }
 
