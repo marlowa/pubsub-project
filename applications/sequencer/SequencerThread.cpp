@@ -512,8 +512,10 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             return;
         }
 
-        // Sequence the ER into the WAL so it replicates to WAL followers -- notably the MEP,
-        // which publishes it on the execution_reports topic. Each ER gets its OWN seq_no (an
+        // Sequence the ER into the WAL and deliver it the same three ways an order is (append,
+        // replicate to the peer follower, stream to external subscribers) so the MEP -- an
+        // external WAL subscriber -- publishes it on the execution_reports topic. Each ER gets
+        // its OWN seq_no (an
         // order can emit several ERs -- New, Fill, Canceled -- so they cannot share the
         // order's seq). Leader-only (followers returned above); the follower receives the ER
         // as a WalRecord below and keeps its WAL byte-identical. Replay ignores ER records
@@ -525,6 +527,9 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         const int64_t er_wall_time_ns = config_.wall_clock->now_ns();
         wal_.append(er_wal_seq, message.pdu_id(), message.payload(), message.payload_size(), er_wall_time_ns);
         send_wal_record(er_wal_seq, message.pdu_id(), message, er_wall_time_ns);
+        // send_wal_record only replicates to the peer follower sequencer; the MEP is an EXTERNAL
+        // WAL subscriber and must be pushed to separately, exactly as the order path does above.
+        stream_wal_record_to_external_subscribers(er_wal_seq, message.pdu_id(), message, er_wall_time_ns);
 
         // Re-encode into an owning struct and forward to the gateway.
         // String fields are std::string_view assigned directly from the
