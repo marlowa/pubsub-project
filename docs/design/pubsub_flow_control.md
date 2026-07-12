@@ -36,6 +36,18 @@ absorbs slack; consumers do not positively-ack every message.
 > reactor's outbound-flush / backpressure API (see `RawBytesBackPressureIntegrationTest` and the
 > earlier TLS EPOLLOUT fix). Confirm that API at implementation time.
 
+> **Page batching (perf, 2026-07-12).** The first cut sent exactly one record per
+> `on_connection_writable()`, so throughput was bounded by one epoll writable round-trip *per
+> record* -- `topic_pubsub_bench` measured ~120 K records/sec regardless of payload size (the cost
+> was the round-trip, not bandwidth). `TopicPublisher::pump_data` now batches up to
+> `max_records_per_page` records (default 256) into a single `TopicPage` per writable, bounded by
+> an encoded-payload budget kept well under the 64 KiB outbound slab / decode arena. Still one page
+> per writable, so it stays socket-paced; the round-trip is just amortised over the batch. Measured
+> lift: ~120 K -> ~5.7 M records/sec (~47x), ~8.2 us -> ~0.18 us per record. When only one record is
+> available (the live 1-at-a-time path) a page carries one, so batching never adds latency. The
+> `TopicPage` wire format already carried a record *list* plus `page_number`/`total_pages`, so this
+> was a `pump_data` change only, no protocol change.
+
 ### F2 — `TopicAck` demoted to a periodic truncation cursor.
 
 The one thing the publisher still needs from a subscriber is **how far it has consumed**, so it

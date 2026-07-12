@@ -34,7 +34,36 @@ endif()
 
 message(STATUS "  Added performance harness: fixed_pool_bench")
 
-# Install performance harness -> bin
-install(TARGETS fixed_pool_bench
+# -----------------------------------------------------------------------------
+# topic_pubsub_bench: end-to-end topic pub/sub throughput + latency harness
+# -----------------------------------------------------------------------------
+add_executable(topic_pubsub_bench
+    src/TopicPubSubBench.cpp
+)
+
+add_dependencies(topic_pubsub_bench
+    topics_generated
+)
+
+target_link_libraries(topic_pubsub_bench PRIVATE
+    pubsub_itc_fw
+    pthread
+)
+
+target_include_directories(topic_pubsub_bench PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include
+    ${FIX_DSL_INCLUDE_DIR}
+)
+
+target_compile_options(topic_pubsub_bench PRIVATE
+    -O3
+    -g
+    -fno-omit-frame-pointer
+)
+
+message(STATUS "  Added performance harness: topic_pubsub_bench")
+
+# Install performance harnesses -> bin
+install(TARGETS fixed_pool_bench topic_pubsub_bench
     RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
 )

@@ -86,7 +86,8 @@ class TopicPublisherThread : public ApplicationThread, public TopicPublisherHost
     // used to exercise the live fanout path. Left at 0, the thread only replays the WAL.
     TopicPublisherThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, std::string wal_dir, int publish_after_subscribers = 0,
                          int live_record_count = 0, bool lag_on_control_subscribe = false, int64_t max_lag_records = 0, int startup_records = 0,
-                         int records_after_both_channels = 0, size_t segment_size = wal_segment_size)
+                         int records_after_both_channels = 0, size_t segment_size = wal_segment_size,
+                         size_t max_records_per_page = TopicPublisher::default_max_records_per_page)
         : ApplicationThread(token, logger, reactor, "TopicPublisherThread", ThreadID{2}, make_queue_config(), make_allocator_config("TopicPubPool"),
                             ApplicationThreadConfiguration{})
         , publish_after_subscribers_(publish_after_subscribers)
@@ -96,7 +97,9 @@ class TopicPublisherThread : public ApplicationThread, public TopicPublisherHost
         , records_after_both_channels_(records_after_both_channels)
         , segment_size_(segment_size)
         , wal_directory_(wal_dir)
-        , publisher_(*this, "orders", [](int16_t pdu_id) { return pdu_id == pdu_id_nos || pdu_id == pdu_id_ocr; }, std::move(wal_dir), max_lag_records) {}
+        , publisher_(
+              *this, "orders", [](int16_t pdu_id) { return pdu_id == pdu_id_nos || pdu_id == pdu_id_ocr; }, std::move(wal_dir), max_lag_records,
+              max_records_per_page) {}
 
     // TopicPublisherHost
     void topic_send_subscribe_ack(ConnectionID connection_id, const pubsub_itc_fw_app::TopicSubscribeAck& ack) override {
@@ -244,21 +247,30 @@ class TopicSubscriberThread : public ApplicationThread, public TopicSubscriberCh
 
     std::atomic<bool> all_records_received{false};
     std::atomic<int> records_received{0};
+    std::atomic<int> pages_received{0}; // number of TopicPage PDUs seen (batching observable)
     std::vector<ReceivedRecord> received_records;
 
+    // disconnect_when_done: tear the data connection down as soon as the expected count
+    // arrives. Left true for tests that just want a clean end. A test that needs the
+    // subscriber's final TopicAck to reach the publisher (e.g. F2 WAL truncation) must
+    // pass false: with page batching the last records and the completion can land in one
+    // reactor turn, and a self-disconnect there would race ahead of the ack send.
     TopicSubscriberThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, int expected_record_count,
-                          std::string subscriber_id = "test_subscriber", int64_t from_seq_no = 0)
+                          std::string subscriber_id = "test_subscriber", int64_t from_seq_no = 0, bool disconnect_when_done = true)
         : ApplicationThread(token, logger, reactor, "TopicSubscriberThread", ThreadID{1}, make_queue_config(), make_allocator_config("TopicSubPool"),
                             ApplicationThreadConfiguration{})
         , expected_record_count_(expected_record_count)
+        , disconnect_when_done_(disconnect_when_done)
         , channel_(*this, std::move(subscriber_id), "orders", from_seq_no, [this](int64_t seq_no, int16_t pdu_id, const uint8_t* payload, size_t payload_size) {
             received_records.push_back({seq_no, pdu_id, {payload, payload + payload_size}});
             const int count = records_received.fetch_add(1, std::memory_order_acq_rel) + 1;
             if (count == expected_record_count_) {
                 all_records_received.store(true, std::memory_order_release);
-                ReactorControlCommand cmd(ReactorControlCommand::CommandTag::Disconnect);
-                cmd.connection_id_ = connection_id_;
-                get_reactor().enqueue_control_command(cmd);
+                if (disconnect_when_done_) {
+                    ReactorControlCommand cmd(ReactorControlCommand::CommandTag::Disconnect);
+                    cmd.connection_id_ = connection_id_;
+                    get_reactor().enqueue_control_command(cmd);
+                }
             }
         }) {}
 
@@ -302,6 +314,7 @@ class TopicSubscriberThread : public ApplicationThread, public TopicSubscriberCh
             }
             channel_.on_subscribe_ack(view);
         } else if (message.pdu_id() == pdu_id_topic_page) {
+            pages_received.fetch_add(1, std::memory_order_acq_rel);
             channel_.on_page(payload, size, arena);
         }
     }
@@ -310,6 +323,7 @@ class TopicSubscriberThread : public ApplicationThread, public TopicSubscriberCh
 
   private:
     int expected_record_count_;
+    bool disconnect_when_done_;
     ConnectionID connection_id_;
     TopicSubscriberChannel channel_;
 };
@@ -1006,7 +1020,10 @@ TEST_F(TopicPubSubTest, SubscriberAcksReclaimConsumedWalSegments) {
     ServiceRegistry subscriber_registry;
     subscriber_registry.add("publisher", NetworkEndpointConfiguration{"127.0.0.1", listen_port}, NetworkEndpointConfiguration{});
     auto subscriber_reactor = std::make_unique<Reactor>(make_reactor_config(), subscriber_registry, logger_->logger);
-    auto subscriber_thread = ApplicationThread::create<TopicSubscriberThread>(logger_->logger, *subscriber_reactor, record_count);
+    // disconnect_when_done = false: keep the connection open so the final TopicAck reaches
+    // the publisher and drives truncation (with batching, all records + completion can land
+    // in one reactor turn, so a self-disconnect would race ahead of the ack).
+    auto subscriber_thread = ApplicationThread::create<TopicSubscriberThread>(logger_->logger, *subscriber_reactor, record_count, "test_subscriber", 0, false);
     subscriber_reactor->register_thread(subscriber_thread);
     ThreadWithJoinTimeout subscriber_reactor_thread([&]() { subscriber_reactor->run(); });
 
@@ -1015,9 +1032,112 @@ TEST_F(TopicPubSubTest, SubscriberAcksReclaimConsumedWalSegments) {
     // ...and its ack lets the publisher reclaim the oldest (consumed) segment from disk.
     EXPECT_TRUE(wait_for([&]() { return !std::filesystem::exists(wal_dir_ + "/wal_000000.log"); })) << "consumed WAL segment was not reclaimed";
 
+    // The small backlog (default page cap 256 > record_count) arrives as ONE batched page;
+    // its single mid/end-of-stream ack is what drives the truncation checked above. The
+    // multi-page counterpart is MultiplePagesDeliverInOrderAndTruncateProgressively.
+    EXPECT_EQ(subscriber_thread->pages_received.load(), 1) << "small backlog should arrive as one batched page";
     ASSERT_EQ(static_cast<int>(subscriber_thread->received_records.size()), record_count);
     for (int i = 0; i < record_count; ++i) {
         EXPECT_EQ(subscriber_thread->received_records[static_cast<size_t>(i)].seq_no, i + 1) << "wrong record at " << i;
+    }
+
+    subscriber_reactor->shutdown("test complete");
+    publisher_reactor->shutdown("test complete");
+    if (subscriber_reactor_thread.joinable()) {
+        subscriber_reactor_thread.join();
+    }
+    if (publisher_reactor_thread.joinable()) {
+        publisher_reactor_thread.join();
+    }
+}
+
+// ============================================================
+// Test 10 (batching): when many records are already in the WAL, the
+// publisher packs them into a SINGLE TopicPage (one page per writable),
+// so the subscriber sees exactly one page carrying every record.
+// ============================================================
+TEST_F(TopicPubSubTest, AllAvailableRecordsArriveInOneBatchedPage) {
+    static constexpr int record_count = 20;
+    write_topic_wal_records(record_count);
+
+    const ServiceRegistry publisher_registry;
+    auto publisher_reactor = std::make_unique<Reactor>(make_reactor_config(), publisher_registry, logger_->logger);
+    publisher_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
+    auto publisher_thread = ApplicationThread::create<TopicPublisherThread>(logger_->logger, *publisher_reactor, wal_dir_);
+    publisher_reactor->register_thread(publisher_thread);
+    ThreadWithJoinTimeout publisher_reactor_thread([&]() { publisher_reactor->run(); });
+    ASSERT_TRUE(wait_for([&]() { return publisher_reactor->is_initialized(); })) << "Publisher reactor did not initialize";
+    const uint16_t listen_port = publisher_reactor->get_inbound_listener_port(0);
+    ASSERT_NE(listen_port, 0U);
+
+    ServiceRegistry subscriber_registry;
+    subscriber_registry.add("publisher", NetworkEndpointConfiguration{"127.0.0.1", listen_port}, NetworkEndpointConfiguration{});
+    auto subscriber_reactor = std::make_unique<Reactor>(make_reactor_config(), subscriber_registry, logger_->logger);
+    auto subscriber_thread = ApplicationThread::create<TopicSubscriberThread>(logger_->logger, *subscriber_reactor, record_count);
+    subscriber_reactor->register_thread(subscriber_thread);
+    ThreadWithJoinTimeout subscriber_reactor_thread([&]() { subscriber_reactor->run(); });
+
+    EXPECT_TRUE(wait_for([&]() { return subscriber_thread->all_records_received.load(std::memory_order_acquire); })) << "records not received";
+
+    // Default page cap (256) exceeds record_count, so all 20 records arrive in ONE page.
+    EXPECT_EQ(subscriber_thread->pages_received.load(), 1) << "records were not batched into a single page";
+    ASSERT_EQ(static_cast<int>(subscriber_thread->received_records.size()), record_count);
+    for (int i = 0; i < record_count; ++i) {
+        EXPECT_EQ(subscriber_thread->received_records[static_cast<size_t>(i)].seq_no, i + 1) << "wrong/out-of-order record at " << i;
+    }
+
+    subscriber_reactor->shutdown("test complete");
+    publisher_reactor->shutdown("test complete");
+    if (subscriber_reactor_thread.joinable()) {
+        subscriber_reactor_thread.join();
+    }
+    if (publisher_reactor_thread.joinable()) {
+        publisher_reactor_thread.join();
+    }
+}
+
+// ============================================================
+// Test 11 (batching + F2): with a small per-page cap the records span
+// MANY pages. The subscriber acks part-way through the stream (every
+// ack_interval records -- well before the last page, so the ack does
+// not race any self-disconnect), which reclaims already-consumed WAL
+// segments while later pages are still arriving. Exercises both cursor
+// resume across page boundaries and progressive mid-stream truncation.
+// ============================================================
+TEST_F(TopicPubSubTest, MultiplePagesDeliverInOrderAndTruncateProgressively) {
+    static constexpr int record_count = 12;
+    static constexpr size_t small_segment = 128;      // ~3 records/segment -> several segments
+    static constexpr size_t max_records_per_page = 3; // force the 12 records across several pages
+
+    const ServiceRegistry publisher_registry;
+    auto publisher_reactor = std::make_unique<Reactor>(make_reactor_config(), publisher_registry, logger_->logger);
+    publisher_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
+    auto publisher_thread = ApplicationThread::create<TopicPublisherThread>(logger_->logger, *publisher_reactor, wal_dir_, 0, 0, false, 0,
+                                                                            /*startup_records=*/record_count, /*records_after_both_channels=*/0,
+                                                                            /*segment_size=*/small_segment, /*max_records_per_page=*/max_records_per_page);
+    publisher_reactor->register_thread(publisher_thread);
+    ThreadWithJoinTimeout publisher_reactor_thread([&]() { publisher_reactor->run(); });
+    ASSERT_TRUE(wait_for([&]() { return publisher_reactor->is_initialized(); })) << "Publisher reactor did not initialize";
+    const uint16_t listen_port = publisher_reactor->get_inbound_listener_port(0);
+    ASSERT_NE(listen_port, 0U);
+    ASSERT_TRUE(std::filesystem::exists(wal_dir_ + "/wal_000000.log"));
+
+    ServiceRegistry subscriber_registry;
+    subscriber_registry.add("publisher", NetworkEndpointConfiguration{"127.0.0.1", listen_port}, NetworkEndpointConfiguration{});
+    auto subscriber_reactor = std::make_unique<Reactor>(make_reactor_config(), subscriber_registry, logger_->logger);
+    auto subscriber_thread = ApplicationThread::create<TopicSubscriberThread>(logger_->logger, *subscriber_reactor, record_count);
+    subscriber_reactor->register_thread(subscriber_thread);
+    ThreadWithJoinTimeout subscriber_reactor_thread([&]() { subscriber_reactor->run(); });
+
+    EXPECT_TRUE(wait_for([&]() { return subscriber_thread->all_records_received.load(std::memory_order_acquire); })) << "records not received";
+    // A mid-stream ack reclaims the oldest consumed segment even though delivery continues.
+    EXPECT_TRUE(wait_for([&]() { return !std::filesystem::exists(wal_dir_ + "/wal_000000.log"); })) << "consumed WAL segment was not reclaimed";
+
+    // The records genuinely spanned multiple pages (ceil(record_count / max_records_per_page)).
+    EXPECT_GT(subscriber_thread->pages_received.load(), 1) << "records did not span multiple pages";
+    ASSERT_EQ(static_cast<int>(subscriber_thread->received_records.size()), record_count);
+    for (int i = 0; i < record_count; ++i) {
+        EXPECT_EQ(subscriber_thread->received_records[static_cast<size_t>(i)].seq_no, i + 1) << "wrong/out-of-order record at " << i;
     }
 
     subscriber_reactor->shutdown("test complete");

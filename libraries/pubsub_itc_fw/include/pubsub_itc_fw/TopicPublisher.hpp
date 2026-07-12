@@ -60,10 +60,14 @@ class TopicPublisherHost {
  *
  * Data delivery is streamed straight from the WAL and paced by the TCP socket, not
  * by acks (see docs/design/pubsub_flow_control.md): each subscriber has its own
- * WalCursor and receives one record per on_connection_writable(). Catch-up and live
- * records flow through the same cursor path, so a live record must be in the WAL
- * before notify_record_appended(). The backlog for a slow subscriber lives in the
- * WAL (a cursor position), not in memory.
+ * WalCursor and receives one TopicPage per on_connection_writable(). A page batches
+ * up to max_records_per_page records (bounded also by an encoded-payload budget that
+ * stays well under the outbound slab / decode arena), which amortises the epoll
+ * writable round-trip over many records -- the dominant throughput cost. When only
+ * one record is available (the live 1-at-a-time case) a page simply carries one, so
+ * batching never adds latency. Catch-up and live records flow through the same cursor
+ * path, so a live record must be in the WAL before notify_record_appended(). The
+ * backlog for a slow subscriber lives in the WAL (a cursor position), not in memory.
  *
  * WAL record framing (on disk): [wall_time_ns : int64][pdu_id : int16][payload...].
  *
@@ -76,16 +80,26 @@ class TopicPublisher {
 
     static constexpr size_t wal_record_header_size = sizeof(int64_t) + sizeof(int16_t);
 
+    // A page batches at most this many records (also bounded by max_batch_payload_bytes).
+    static constexpr size_t default_max_records_per_page = 256;
+    // ...and at most this many payload bytes, kept well under the 64 KiB outbound slab /
+    // decode arena so a batched page can never overflow either.
+    static constexpr size_t max_batch_payload_bytes = 32UL * 1024UL;
+
     // max_lag_records is the per-topic retention window (F3/R3 policy): the publisher
     // serves at most this many records behind the WAL head, and a subscriber whose ack
     // cursor falls out of the window is dropped with a TopicLagged. 0 disables the
     // policy (unbounded retention; no subscriber is ever dropped for lag).
-    TopicPublisher(TopicPublisherHost& host, std::string topic_name, MembershipPredicate is_member, std::string wal_directory, int64_t max_lag_records = 0)
+    // max_records_per_page caps how many records a single TopicPage carries (1 restores
+    // the old one-record-per-writable behaviour).
+    TopicPublisher(TopicPublisherHost& host, std::string topic_name, MembershipPredicate is_member, std::string wal_directory, int64_t max_lag_records = 0,
+                   size_t max_records_per_page = default_max_records_per_page)
         : host_(host)
         , topic_name_(std::move(topic_name))
         , is_member_(std::move(is_member))
         , wal_directory_(std::move(wal_directory))
-        , max_lag_records_(max_lag_records) {}
+        , max_lag_records_(max_lag_records)
+        , max_records_per_page_(max_records_per_page == 0 ? 1 : max_records_per_page) {}
 
     void set_leader(bool is_leader) {
         is_leader_ = is_leader;
@@ -331,26 +345,12 @@ class TopicPublisher {
         }
     }
 
-    void send_page(ConnectionID connection_id, int64_t seq_no, int16_t pdu_id, int64_t wall_time_ns, const uint8_t* payload, size_t payload_size) {
-        pubsub_itc_fw_app::TopicRecord record{};
-        record.seq_no = seq_no;
-        record.pdu_id = pdu_id;
-        record.wall_time_ns = wall_time_ns;
-        record.payload.data = payload;
-        record.payload.size = payload_size;
-
-        pubsub_itc_fw_app::TopicPage page{};
-        page.record_count = 1;
-        page.page_number = 1;
-        page.total_pages = 1;
-        page.records.data = &record;
-        page.records.size = 1;
-
-        host_.topic_send_page(connection_id, seq_no, page);
-    }
-
-    // Send at most one record on a subscriber's data channel and re-arm its writable
-    // notification; or mark it idle if it has caught up to the WAL head.
+    // Stream one TopicPage -- a batch of up to max_records_per_page_ records (also
+    // bounded by max_batch_payload_bytes) -- on a subscriber's data channel and re-arm
+    // its writable notification; or mark it idle if it has caught up to the WAL head.
+    // One page per writable keeps delivery socket-paced while amortising the epoll
+    // round-trip over the whole batch. Payloads are copied into a reused scratch buffer
+    // so they stay valid regardless of the cursor's WAL segment mapping.
     void pump_data(const std::string& subscriber_id) {
         auto it = subscribers_.find(subscriber_id);
         if (it == subscribers_.end() || !it->second.stream || !it->second.data_connection_id.is_valid()) {
@@ -359,10 +359,15 @@ class TopicPublisher {
         SubscriberStream& stream = *it->second.stream;
         const ConnectionID data_connection_id = it->second.data_connection_id;
 
+        batch_scratch_.clear();
+        batch_records_.clear();
+        batch_offsets_.clear();
+
         bool reopened = false;
         int64_t record_id = 0;
         const uint8_t* data = nullptr;
         size_t size = 0;
+        int64_t last_batched_seq_no = 0;
         for (;;) {
             if (!stream.cursor.read_next(record_id, data, size)) {
                 if (!reopened) {
@@ -372,8 +377,7 @@ class TopicPublisher {
                     reopened = true;
                     continue;
                 }
-                stream.idle = true;
-                return;
+                break; // genuinely caught up to the WAL head
             }
             reopened = false;
 
@@ -389,21 +393,62 @@ class TopicPublisher {
             }
 
             const uint8_t* pdu_payload = data + wal_record_header_size;
-            send_page(data_connection_id, record_id, pdu_id, wall_time_ns, pdu_payload, size - wal_record_header_size);
-            host_.topic_request_writable_notification(data_connection_id);
-            stream.idle = false;
+            const size_t pdu_payload_size = size - wal_record_header_size;
+
+            const size_t offset = batch_scratch_.size();
+            batch_scratch_.insert(batch_scratch_.end(), pdu_payload, pdu_payload + pdu_payload_size);
+            batch_offsets_.push_back(offset);
+
+            pubsub_itc_fw_app::TopicRecord record{};
+            record.seq_no = record_id;
+            record.pdu_id = pdu_id;
+            record.wall_time_ns = wall_time_ns;
+            record.payload.data = nullptr; // fixed up below, once the scratch buffer is final
+            record.payload.size = pdu_payload_size;
+            batch_records_.push_back(record);
+            last_batched_seq_no = record_id;
+
+            // The cursor is now positioned at the next unread record, so stopping here
+            // resumes cleanly on the next writable.
+            if (batch_records_.size() >= max_records_per_page_ || batch_scratch_.size() >= max_batch_payload_bytes) {
+                break;
+            }
+        }
+
+        if (batch_records_.empty()) {
+            stream.idle = true;
             return;
         }
+
+        // The scratch buffer will not move again: point each record at its bytes.
+        for (size_t i = 0; i < batch_records_.size(); ++i) {
+            batch_records_[i].payload.data = batch_scratch_.data() + batch_offsets_[i];
+        }
+
+        pubsub_itc_fw_app::TopicPage page{};
+        page.record_count = static_cast<int16_t>(batch_records_.size());
+        page.page_number = 1;
+        page.total_pages = 1;
+        page.records.data = batch_records_.data();
+        page.records.size = batch_records_.size();
+
+        host_.topic_send_page(data_connection_id, last_batched_seq_no, page);
+        host_.topic_request_writable_notification(data_connection_id);
+        stream.idle = false;
     }
 
     TopicPublisherHost& host_;
     std::string topic_name_;
     MembershipPredicate is_member_;
     std::string wal_directory_;
-    int64_t max_lag_records_ = 0;       // retention window; 0 disables the lag policy
-    int64_t head_seq_no_ = 0;           // highest seq_no appended to the WAL
-    int64_t last_truncation_floor_ = 0; // highest safe floor already truncated to
+    int64_t max_lag_records_ = 0;                                // retention window; 0 disables the lag policy
+    size_t max_records_per_page_ = default_max_records_per_page; // batch cap per TopicPage
+    int64_t head_seq_no_ = 0;                                    // highest seq_no appended to the WAL
+    int64_t last_truncation_floor_ = 0;                          // highest safe floor already truncated to
     bool is_leader_ = true;
+    std::vector<uint8_t> batch_scratch_;                        // reused per-page payload copy buffer
+    std::vector<pubsub_itc_fw_app::TopicRecord> batch_records_; // reused per-page record list
+    std::vector<size_t> batch_offsets_;                         // payload offsets into batch_scratch_
     ExternalWalSubscriberRegistry registry_;
     std::unordered_map<std::string, LogicalSubscriber> subscribers_;            // subscriber_id -> pair + stream
     std::unordered_map<ConnectionID, std::string> connection_to_subscriber_id_; // either connection -> subscriber_id
