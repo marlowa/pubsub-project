@@ -74,10 +74,14 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     void on_itc_message(const pubsub_itc_fw::EventMessage& message) override;
 
   private:
-    // Maximum character lengths for fixed-size fields. FIX spec allows up to
-    // 20 chars for ClOrdID; 32 provides headroom. Symbol max ~12; 16 is ample.
-    // Quantities and prices are decimal strings; 24 covers any realistic value.
-    static constexpr size_t max_cl_ord_id_length = 32;
+    // Maximum character lengths for fixed-size fields. ClOrdID MUST be at least the
+    // order gateway's accepted maximum (OrderGatewayConfiguration::max_cl_ord_id_length,
+    // default 64). The book key is (session_id, ClOrdID) and OrderKey::make() copies at
+    // most this many bytes: if it is smaller than what the gateway admits, two distinct
+    // ClOrdIDs sharing a prefix are SILENTLY TRUNCATED to the same key and collide --
+    // which surfaces as spurious duplicate-order rejects and UnknownOrder cancel rejects.
+    // Symbol max ~12; 16 is ample. Quantities and prices are decimal strings; 24 covers any realistic value.
+    static constexpr size_t max_cl_ord_id_length = 64;
     static constexpr size_t max_symbol_length = 16;
     static constexpr size_t max_qty_length = 24;
 
