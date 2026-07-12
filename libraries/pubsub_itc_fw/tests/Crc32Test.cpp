@@ -11,9 +11,7 @@
 
 using pubsub_itc_fw::Crc32;
 
-// ---------------------------------------------------------------------------
 // Known-good test vectors (CRC-32/ISO-HDLC, IEEE polynomial 0xEDB88320)
-// ---------------------------------------------------------------------------
 
 TEST(Crc32Test, EmptyInputGivesZero) {
     EXPECT_EQ(Crc32::compute(nullptr, 0), 0x00000000u);
@@ -35,9 +33,7 @@ TEST(Crc32Test, StandardCheckVector123456789) {
     EXPECT_EQ(Crc32::compute(data, 9), 0xCBF43926u);
 }
 
-// ---------------------------------------------------------------------------
 // Incremental feed produces same result as single-pass compute
-// ---------------------------------------------------------------------------
 
 TEST(Crc32Test, IncrementalFeedMatchesCompute) {
     const char part1[] = "Hello, ";
@@ -66,9 +62,7 @@ TEST(Crc32Test, ByteByByteMatchesCompute) {
     EXPECT_EQ(crc.finalize(), Crc32::compute(data.data(), data.size()));
 }
 
-// ---------------------------------------------------------------------------
 // finalize() resets state -- can be reused
-// ---------------------------------------------------------------------------
 
 TEST(Crc32Test, FinalizeResetsState) {
     const char data[] = "abc";
@@ -88,9 +82,7 @@ TEST(Crc32Test, FinalizeOnFreshObjectGivesZero) {
     EXPECT_EQ(crc.finalize(), 0x00000000u);
 }
 
-// ---------------------------------------------------------------------------
 // Order sensitivity -- different orderings give different results
-// ---------------------------------------------------------------------------
 
 TEST(Crc32Test, OrderMatters) {
     const char ab[] = "ab";
@@ -98,9 +90,7 @@ TEST(Crc32Test, OrderMatters) {
     EXPECT_NE(Crc32::compute(ab, 2), Crc32::compute(ba, 2));
 }
 
-// ---------------------------------------------------------------------------
 // Distinct inputs give distinct checksums
-// ---------------------------------------------------------------------------
 
 TEST(Crc32Test, DifferentInputsGiveDifferentChecksums) {
     EXPECT_NE(Crc32::compute("foo", 3), Crc32::compute("bar", 3));

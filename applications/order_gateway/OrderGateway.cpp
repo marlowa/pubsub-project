@@ -14,9 +14,9 @@
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/NetworkEndpointConfiguration.hpp>
 #include <pubsub_itc_fw/ProtocolType.hpp>
-#include <pubsub_itc_fw/TlsListenerConfiguration.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
+#include <pubsub_itc_fw/TlsListenerConfiguration.hpp>
 
 namespace order_gateway {
 
@@ -28,7 +28,7 @@ OrderGateway::OrderGateway(const OrderGatewayConfiguration& config, std::unique_
     reactor_configuration_.shutdown_timeout_ = std::chrono::seconds{2};
     reactor_configuration_.cpu_pinning_enabled = config_.cpu_pinning_enabled;
     reactor_configuration_.cpu_pinning_reserve_cpu0 = config_.cpu_pinning_reserve_cpu0;
-    reactor_configuration_.cpu_registry_shm_path  = config_.cpu_registry_shm_path;
+    reactor_configuration_.cpu_registry_shm_path = config_.cpu_registry_shm_path;
     reactor_configuration_.cpu_registry_lock_file = config_.cpu_registry_lock_file;
     reactor_configuration_.connect_retry_warning_interval_ = config_.connect_retry_warning_interval;
     reactor_configuration_.command_allocator_configuration_.pool_name = "OrderGatewayCommandPool";
@@ -41,19 +41,16 @@ OrderGateway::OrderGateway(const OrderGatewayConfiguration& config, std::unique_
     reactor_ = std::make_unique<pubsub_itc_fw::Reactor>(reactor_configuration_, service_registry_, *logger_);
 
     // Plain TCP FIX listener - always registered.
-    reactor_->register_inbound_listener(
-        pubsub_itc_fw::NetworkEndpointConfiguration{config_.listen_host, config_.listen_port},
-        pubsub_itc_fw::ThreadID{1},
-        pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::RawBytes}, config_.raw_buffer_capacity);
+    reactor_->register_inbound_listener(pubsub_itc_fw::NetworkEndpointConfiguration{config_.listen_host, config_.listen_port}, pubsub_itc_fw::ThreadID{1},
+                                        pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::RawBytes}, config_.raw_buffer_capacity);
 
     // TLS FIX listener - registered in addition to the plain listener when configured.
     if (config_.fix_tls_enabled) {
         pubsub_itc_fw::TlsListenerConfiguration tls_config;
         tls_config.certificate_path = config_.fix_tls_cert_path;
         tls_config.private_key_path = config_.fix_tls_key_path;
-        reactor_->register_inbound_tls_listener(
-            pubsub_itc_fw::NetworkEndpointConfiguration{config_.listen_host, config_.tls_listen_port},
-            pubsub_itc_fw::ThreadID{1}, config_.raw_buffer_capacity, tls_config);
+        reactor_->register_inbound_tls_listener(pubsub_itc_fw::NetworkEndpointConfiguration{config_.listen_host, config_.tls_listen_port},
+                                                pubsub_itc_fw::ThreadID{1}, config_.raw_buffer_capacity, tls_config);
     }
 
     // Inbound PDU listener for ExecutionReport PDUs from the matching engine.
@@ -117,10 +114,6 @@ int OrderGateway::run() {
 }
 
 } // namespaces
-
-// ============================================================
-// main
-// ============================================================
 
 int main(int argc, char* argv[]) {
     if (argc != 3) {

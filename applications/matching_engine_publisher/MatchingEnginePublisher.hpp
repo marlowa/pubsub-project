@@ -25,8 +25,7 @@ namespace matching_engine_publisher {
  */
 class MatchingEnginePublisher {
   public:
-    explicit MatchingEnginePublisher(MatchingEnginePublisherConfiguration config,
-                                     std::unique_ptr<pubsub_itc_fw::QuillLogger> logger);
+    explicit MatchingEnginePublisher(MatchingEnginePublisherConfiguration config, std::unique_ptr<pubsub_itc_fw::QuillLogger> logger);
 
     int run() const;
 

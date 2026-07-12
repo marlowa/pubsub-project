@@ -51,9 +51,7 @@ std::unique_ptr<TcpAcceptor> make_acceptor() {
 
 } // un-named namespace
 
-// ============================================================
 // Test: move constructor transfers p_impl_ ownership.
-// ============================================================
 TEST(TcpAcceptorTest, MoveConstructorTransfersOwnership) {
     auto original = make_acceptor();
     ASSERT_NE(original, nullptr);
@@ -71,9 +69,7 @@ TEST(TcpAcceptorTest, MoveConstructorTransfersOwnership) {
     EXPECT_EQ(original->get_listening_file_descriptor(), -1);
 }
 
-// ============================================================
 // Test: move assignment transfers p_impl_ ownership.
-// ============================================================
 TEST(TcpAcceptorTest, MoveAssignmentTransfersOwnership) {
     auto source = make_acceptor();
     ASSERT_NE(source, nullptr);

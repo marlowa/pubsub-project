@@ -33,9 +33,7 @@ struct WitnessConfiguration {
     /** @brief Minimum severity written to syslog. */
     pubsub_itc_fw::FwLogLevel syslog_level{pubsub_itc_fw::FwLogLevel::Info};
 
-    // ----------------------------------------------------------------
     // Reactor
-    // ----------------------------------------------------------------
 
     /** @brief Enable CPU core pinning for registered application threads.
      *  Mandatory: must be set explicitly in the TOML configuration file. */
@@ -54,9 +52,7 @@ struct WitnessConfiguration {
     /** @brief How long to wait between "still disconnected" log warnings during outbound retry. */
     std::chrono::milliseconds connect_retry_warning_interval;
 
-    // ----------------------------------------------------------------
     // Event queue pool  (ApplicationThread inbound EventMessage queue)
-    // ----------------------------------------------------------------
 
     /** @brief Number of objects in each fixed-size memory pool slab.
      *  Increase if event-queue pool-exhaustion warnings appear in the log. */
@@ -65,9 +61,7 @@ struct WitnessConfiguration {
     /** @brief Number of event queue pool slabs pre-allocated at startup. */
     int32_t event_queue_pool_initial_slabs{1};
 
-    // ----------------------------------------------------------------
     // Command queue pool  (Reactor ReactorControlCommand outbound queue)
-    // ----------------------------------------------------------------
 
     /** @brief Number of objects in each fixed-size memory pool slab.
      *  Increase if command-queue pool-exhaustion warnings appear in the log. */

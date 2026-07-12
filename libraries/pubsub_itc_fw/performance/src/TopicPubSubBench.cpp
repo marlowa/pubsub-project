@@ -143,11 +143,9 @@ bool wait_for(const std::function<bool()>& pred, int timeout_ms = 60000) {
     return true;
 }
 
-// ============================================================
 // Publisher: owns a Wal + TopicPublisher for topic "orders".
 // Throughput mode pre-appends record_count records at startup.
 // Latency mode starts empty and publishes one record per ack.
-// ============================================================
 class BenchPublisherThread : public ApplicationThread, public TopicPublisherHost {
   public:
     BenchPublisherThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, BenchMode mode, std::string wal_dir, int record_count, int payload_size,
@@ -268,10 +266,8 @@ class BenchPublisherThread : public ApplicationThread, public TopicPublisherHost
     TopicPublisher publisher_;
 };
 
-// ============================================================
 // Subscriber: owns a TopicSubscriberChannel and either counts
 // records (throughput) or records per-record latency (latency).
-// ============================================================
 class BenchSubscriberThread : public ApplicationThread, public TopicSubscriberChannelHost {
   public:
     std::atomic<bool> done{false};

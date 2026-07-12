@@ -29,7 +29,7 @@ MatchingEngine::MatchingEngine(MatchingEngineConfiguration config, std::unique_p
     reactor_configuration_.shutdown_timeout_ = std::chrono::seconds{2};
     reactor_configuration_.cpu_pinning_enabled = config_.cpu_pinning_enabled;
     reactor_configuration_.cpu_pinning_reserve_cpu0 = config_.cpu_pinning_reserve_cpu0;
-    reactor_configuration_.cpu_registry_shm_path  = config_.cpu_registry_shm_path;
+    reactor_configuration_.cpu_registry_shm_path = config_.cpu_registry_shm_path;
     reactor_configuration_.cpu_registry_lock_file = config_.cpu_registry_lock_file;
     reactor_configuration_.connect_retry_warning_interval_ = config_.connect_retry_warning_interval;
     reactor_configuration_.command_allocator_configuration_.pool_name = "MatchingEngineCommandPool";
@@ -48,15 +48,13 @@ MatchingEngine::MatchingEngine(MatchingEngineConfiguration config, std::unique_p
     // mode and only begins processing once promoted (Slice C+D). Pre-warming this
     // listener means the sequencer's connection is already established when the
     // secondary is promoted, so WAL reconciliation can begin without a connect delay.
-    reactor_->register_inbound_listener(pubsub_itc_fw::NetworkEndpointConfiguration{config_.listen_host, config_.listen_port},
-                                        pubsub_itc_fw::ThreadID{1},
+    reactor_->register_inbound_listener(pubsub_itc_fw::NetworkEndpointConfiguration{config_.listen_host, config_.listen_port}, pubsub_itc_fw::ThreadID{1},
                                         pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::FrameworkPdu}, 0);
 
     if (is_secondary) {
         // Secondary: additionally listen for book-update PDUs from ME-primary.
         reactor_->register_inbound_listener(pubsub_itc_fw::NetworkEndpointConfiguration{config_.replication_listen_host, config_.replication_listen_port},
-                                            pubsub_itc_fw::ThreadID{1},
-                                            pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::FrameworkPdu}, 0);
+                                            pubsub_itc_fw::ThreadID{1}, pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::FrameworkPdu}, 0);
     }
 
     matching_engine_thread_ = pubsub_itc_fw::ApplicationThread::create<MatchingEngineThread>(*logger_, *reactor_, config_);
@@ -66,8 +64,7 @@ MatchingEngine::MatchingEngine(MatchingEngineConfiguration config, std::unique_p
     // Both roles connect outbound to the sequencer ER listeners. The primary uses
     // them to send ERs; the secondary pre-warms them so ERs (including the
     // cancel-on-failover burst) flow immediately upon promotion.
-    service_registry_.add("sequencer_er",
-                          pubsub_itc_fw::NetworkEndpointConfiguration{config_.sequencer_er_host, config_.sequencer_er_port},
+    service_registry_.add("sequencer_er", pubsub_itc_fw::NetworkEndpointConfiguration{config_.sequencer_er_host, config_.sequencer_er_port},
                           pubsub_itc_fw::NetworkEndpointConfiguration{});
     service_registry_.add("sequencer_er_secondary",
                           pubsub_itc_fw::NetworkEndpointConfiguration{config_.sequencer_er_secondary_host, config_.sequencer_er_secondary_port},
@@ -84,16 +81,13 @@ MatchingEngine::MatchingEngine(MatchingEngineConfiguration config, std::unique_p
         // Both roles connect to the arbiter pool. The primary heartbeats the
         // arbiter to hold its lease; the secondary uses these connections to
         // request arbitration on primary loss.
-        service_registry_.add("arbiter_primary",
-                              pubsub_itc_fw::NetworkEndpointConfiguration{config_.arbiter_primary_host, config_.arbiter_primary_port},
+        service_registry_.add("arbiter_primary", pubsub_itc_fw::NetworkEndpointConfiguration{config_.arbiter_primary_host, config_.arbiter_primary_port},
                               pubsub_itc_fw::NetworkEndpointConfiguration{});
-        service_registry_.add("arbiter_secondary",
-                              pubsub_itc_fw::NetworkEndpointConfiguration{config_.arbiter_secondary_host, config_.arbiter_secondary_port},
+        service_registry_.add("arbiter_secondary", pubsub_itc_fw::NetworkEndpointConfiguration{config_.arbiter_secondary_host, config_.arbiter_secondary_port},
                               pubsub_itc_fw::NetworkEndpointConfiguration{});
     }
 
-    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngine: listening for sequenced PDUs on {}:{}",
-               config_.listen_host, config_.listen_port);
+    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngine: listening for sequenced PDUs on {}:{}", config_.listen_host, config_.listen_port);
     PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngine: primary ER connection to sequencer at {}:{}", config_.sequencer_er_host,
                config_.sequencer_er_port);
     PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngine: secondary ER connection to sequencer at {}:{}",
@@ -118,10 +112,6 @@ int MatchingEngine::run() {
 }
 
 } // namespaces
-
-// ============================================================
-// main
-// ============================================================
 
 int main(int argc, char* argv[]) {
     if (argc != 3) {

@@ -94,9 +94,7 @@
 
 namespace pubsub_itc_fw::tests {
 
-// ============================================================
 // Test protocol constants
-// ============================================================
 
 static const std::string tls_request_payload = "HELLO_TLS_SERVER";
 static const std::string tls_response_payload = "HELLO_TLS_CLIENT";
@@ -104,9 +102,7 @@ static const std::string tls_response_payload = "HELLO_TLS_CLIENT";
 static constexpr int64_t tls_raw_buffer_capacity = 65536;
 static constexpr size_t tls_length_prefix_size = sizeof(uint32_t);
 
-// ============================================================
 // Framing helpers (shared between server-side decode and client-side send)
-// ============================================================
 
 namespace {
 
@@ -135,9 +131,7 @@ std::string try_decode_tls_framed(const uint8_t* data, int available, int64_t& b
     return payload;
 }
 
-// ============================================================
 // Certificate generation helpers
-// ============================================================
 
 EVP_PKEY* generate_ec_key() {
     EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_EC, nullptr);
@@ -161,9 +155,7 @@ EVP_PKEY* generate_ec_key() {
 // OpenSSL 3.0 chain verification requires basicConstraints: CA:TRUE on any cert
 // used as a trust anchor. Without it, SSL_connect fails with unknown_ca.
 void add_basic_constraints(X509* x509, bool is_ca) {
-    X509_EXTENSION* extension = X509V3_EXT_conf_nid(
-        nullptr, nullptr, NID_basic_constraints,
-        is_ca ? "critical,CA:TRUE" : "critical,CA:FALSE");
+    X509_EXTENSION* extension = X509V3_EXT_conf_nid(nullptr, nullptr, NID_basic_constraints, is_ca ? "critical,CA:TRUE" : "critical,CA:FALSE");
     if (extension) {
         X509_add_ext(x509, extension, -1);
         X509_EXTENSION_free(extension);
@@ -181,8 +173,7 @@ X509* create_self_signed_cert(EVP_PKEY* key, const char* cn, long serial) {
     X509_gmtime_adj(X509_get_notAfter(x509), 86400L);
     X509_set_pubkey(x509, key);
     X509_NAME* name = X509_get_subject_name(x509);
-    X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
-                                reinterpret_cast<const unsigned char*>(cn), -1, -1, 0);
+    X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, reinterpret_cast<const unsigned char*>(cn), -1, -1, 0);
     X509_set_issuer_name(x509, name);
     add_basic_constraints(x509, true);
     if (X509_sign(x509, key, EVP_sha256()) <= 0) {
@@ -192,8 +183,7 @@ X509* create_self_signed_cert(EVP_PKEY* key, const char* cn, long serial) {
     return x509;
 }
 
-X509* create_signed_cert(EVP_PKEY* subject_key, const char* cn, long serial,
-                          X509* issuer_cert, EVP_PKEY* issuer_key) {
+X509* create_signed_cert(EVP_PKEY* subject_key, const char* cn, long serial, X509* issuer_cert, EVP_PKEY* issuer_key) {
     X509* x509 = X509_new();
     if (!x509) {
         return nullptr;
@@ -204,8 +194,7 @@ X509* create_signed_cert(EVP_PKEY* subject_key, const char* cn, long serial,
     X509_gmtime_adj(X509_get_notAfter(x509), 86400L);
     X509_set_pubkey(x509, subject_key);
     X509_NAME* subject_name = X509_get_subject_name(x509);
-    X509_NAME_add_entry_by_txt(subject_name, "CN", MBSTRING_ASC,
-                                reinterpret_cast<const unsigned char*>(cn), -1, -1, 0);
+    X509_NAME_add_entry_by_txt(subject_name, "CN", MBSTRING_ASC, reinterpret_cast<const unsigned char*>(cn), -1, -1, 0);
     X509_set_issuer_name(x509, X509_get_subject_name(issuer_cert));
     add_basic_constraints(x509, false);
     if (X509_sign(x509, issuer_key, EVP_sha256()) <= 0) {
@@ -281,19 +270,28 @@ class TlsCertDirectory {
             client_cert_path = directory_ + "/client.crt";
             client_key_path = directory_ + "/client.key";
 
-            valid = write_cert_pem(ca_cert_path, ca_cert)
-                 && write_cert_pem(server_cert_path, server_cert)
-                 && write_key_pem(server_key_path, server_key)
-                 && write_cert_pem(client_cert_path, client_cert)
-                 && write_key_pem(client_key_path, client_key);
+            valid = write_cert_pem(ca_cert_path, ca_cert) && write_cert_pem(server_cert_path, server_cert) && write_key_pem(server_key_path, server_key) &&
+                    write_cert_pem(client_cert_path, client_cert) && write_key_pem(client_key_path, client_key);
         }
 
-        if (client_cert) { X509_free(client_cert); }
-        if (client_key) { EVP_PKEY_free(client_key); }
-        if (server_cert) { X509_free(server_cert); }
-        if (server_key) { EVP_PKEY_free(server_key); }
-        if (ca_cert) { X509_free(ca_cert); }
-        if (ca_key) { EVP_PKEY_free(ca_key); }
+        if (client_cert) {
+            X509_free(client_cert);
+        }
+        if (client_key) {
+            EVP_PKEY_free(client_key);
+        }
+        if (server_cert) {
+            X509_free(server_cert);
+        }
+        if (server_key) {
+            EVP_PKEY_free(server_key);
+        }
+        if (ca_cert) {
+            X509_free(ca_cert);
+        }
+        if (ca_key) {
+            EVP_PKEY_free(ca_key);
+        }
     }
 
     ~TlsCertDirectory() {
@@ -314,9 +312,7 @@ class TlsCertDirectory {
     std::string directory_;
 };
 
-// ============================================================
 // TLS client connection
-// ============================================================
 
 /**
  * @brief RAII wrapper for a blocking OpenSSL TLS client connection.
@@ -332,8 +328,7 @@ struct TlsClientConnection {
 
     TlsClientConnection() = default;
 
-    TlsClientConnection(TlsClientConnection&& other)
-        : fd(other.fd), ctx(other.ctx), ssl(other.ssl) {
+    TlsClientConnection(TlsClientConnection&& other) : fd(other.fd), ctx(other.ctx), ssl(other.ssl) {
         other.fd = -1;
         other.ctx = nullptr;
         other.ssl = nullptr;
@@ -359,7 +354,9 @@ struct TlsClientConnection {
         }
     }
 
-    [[nodiscard]] bool connected() const { return ssl != nullptr; }
+    [[nodiscard]] bool connected() const {
+        return ssl != nullptr;
+    }
 
     TlsClientConnection(const TlsClientConnection&) = delete;
     TlsClientConnection& operator=(const TlsClientConnection&) = delete;
@@ -378,9 +375,7 @@ struct TlsClientConnection {
  */
 namespace {
 
-TlsClientConnection connect_tls(uint16_t port, const std::string& ca_path,
-                                 const std::string& client_cert_path = {},
-                                 const std::string& client_key_path = {}) {
+TlsClientConnection connect_tls(uint16_t port, const std::string& ca_path, const std::string& client_cert_path = {}, const std::string& client_key_path = {}) {
     TlsClientConnection conn;
 
     conn.ctx = SSL_CTX_new(TLS_client_method());
@@ -472,9 +467,7 @@ std::string tls_recv_framed(SSL* ssl) {
     return payload;
 }
 
-// ============================================================
 // Reactor configuration helpers
-// ============================================================
 
 ReactorConfiguration make_tls_reactor_config() {
     ReactorConfiguration cfg{};
@@ -487,15 +480,12 @@ ReactorConfiguration make_tls_reactor_config() {
 
 } // un-named namespace
 
-// ============================================================
 // Listener thread: decodes one framed message then replies via send_raw().
 // Used by TlsHandshakeAndRoundTrip, FragmentedCiphertextDelivery, MutualTlsHandshake.
-// ============================================================
 class TlsListenerThread : public ApplicationThread {
   public:
     TlsListenerThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
-        : ApplicationThread(token, logger, reactor, "TlsListenerThread", ThreadID{2},
-                            make_queue_config(), make_allocator_config("TlsListenerPool"),
+        : ApplicationThread(token, logger, reactor, "TlsListenerThread", ThreadID{2}, make_queue_config(), make_allocator_config("TlsListenerPool"),
                             ApplicationThreadConfiguration{}) {}
 
     std::atomic<bool> connection_established{false};
@@ -559,16 +549,13 @@ class TlsListenerThread : public ApplicationThread {
     int last_available_{0};
 };
 
-// ============================================================
 // Passive listener thread: tracks connection events only.
 // Used by PeerDisconnect and HandshakeFailure.
-// ============================================================
 class TlsPassiveListenerThread : public ApplicationThread {
   public:
     TlsPassiveListenerThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
-        : ApplicationThread(token, logger, reactor, "TlsPassiveListenerThread", ThreadID{2},
-                            make_queue_config(), make_allocator_config("TlsPassiveListenerPool"),
-                            ApplicationThreadConfiguration{}) {}
+        : ApplicationThread(token, logger, reactor, "TlsPassiveListenerThread", ThreadID{2}, make_queue_config(),
+                            make_allocator_config("TlsPassiveListenerPool"), ApplicationThreadConfiguration{}) {}
 
     std::atomic<bool> connection_established{false};
     std::atomic<bool> connection_lost{false};
@@ -589,7 +576,6 @@ class TlsPassiveListenerThread : public ApplicationThread {
     void on_itc_message([[maybe_unused]] const EventMessage& msg) override {}
 };
 
-// ============================================================
 // Backpressure server thread: receives plaintext but defers committing.
 //
 // On the first on_raw_socket_message callback a 100ms one-shot timer is
@@ -605,13 +591,11 @@ class TlsPassiveListenerThread : public ApplicationThread {
 //     advances the tail below the low-water mark and returns true, causing
 //     the reactor to re-register EPOLLIN.
 //     This exercises lines 279-286 of TlsRawBytesProtocolHandler.cpp.
-// ============================================================
 class TlsBackpressureServerThread : public ApplicationThread {
   public:
     TlsBackpressureServerThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
-        : ApplicationThread(token, logger, reactor, "TlsBackpressureServerThread", ThreadID{2},
-                            make_queue_config(), make_allocator_config("TlsBackpressurePool"),
-                            ApplicationThreadConfiguration{}) {}
+        : ApplicationThread(token, logger, reactor, "TlsBackpressureServerThread", ThreadID{2}, make_queue_config(),
+                            make_allocator_config("TlsBackpressurePool"), ApplicationThreadConfiguration{}) {}
 
     std::atomic<bool> connection_established{false};
     std::atomic<bool> connection_lost{false};
@@ -658,9 +642,7 @@ class TlsBackpressureServerThread : public ApplicationThread {
     bool timer_armed_{false};
 };
 
-// ============================================================
 // Test fixture
-// ============================================================
 class TlsProtocolHandlerIntegrationTest : public ::testing::Test {
   protected:
     void SetUp() override {
@@ -703,15 +685,13 @@ class TlsProtocolHandlerIntegrationTest : public ::testing::Test {
     }
 
     uint16_t start_listener_reactor(Reactor& reactor) {
-        EXPECT_TRUE(wait_for([&]() { return reactor.is_initialized(); }))
-            << "Listener reactor did not initialise within timeout";
+        EXPECT_TRUE(wait_for([&]() { return reactor.is_initialized(); })) << "Listener reactor did not initialise within timeout";
         const uint16_t port = reactor.get_inbound_listener_port(0);
         EXPECT_NE(port, 0U) << "OS did not assign a valid listening port";
         return port;
     }
 
-    static void shutdown_and_join(Reactor& reactor, std::thread& reactor_thread,
-                                   const std::string& reason = "test complete") {
+    static void shutdown_and_join(Reactor& reactor, std::thread& reactor_thread, const std::string& reason = "test complete") {
         reactor.shutdown(reason);
         if (reactor_thread.joinable()) {
             reactor_thread.join();
@@ -724,9 +704,7 @@ class TlsProtocolHandlerIntegrationTest : public ::testing::Test {
     bool reactor_died_{false};
 };
 
-// ============================================================
 // Test: happy-path TLS round trip
-// ============================================================
 TEST_F(TlsProtocolHandlerIntegrationTest, TlsHandshakeAndRoundTrip) {
     const ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(make_tls_reactor_config(), listener_registry, logger_->logger);
@@ -736,8 +714,7 @@ TEST_F(TlsProtocolHandlerIntegrationTest, TlsHandshakeAndRoundTrip) {
     tls_config.certificate_path = certs_->server_cert_path;
     tls_config.private_key_path = certs_->server_key_path;
 
-    listener_reactor->register_inbound_tls_listener(
-        NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2}, tls_raw_buffer_capacity, tls_config);
+    listener_reactor->register_inbound_tls_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2}, tls_raw_buffer_capacity, tls_config);
 
     auto listener_thread = ApplicationThread::create<TlsListenerThread>(logger_->logger, *listener_reactor);
     listener_reactor->register_thread(listener_thread);
@@ -769,9 +746,7 @@ TEST_F(TlsProtocolHandlerIntegrationTest, TlsHandshakeAndRoundTrip) {
     shutdown_and_join(*listener_reactor, listener_reactor_thread);
 }
 
-// ============================================================
 // Test: two TLS records per on_data_ready call (fragmented plaintext accumulation)
-// ============================================================
 TEST_F(TlsProtocolHandlerIntegrationTest, FragmentedCiphertextDelivery) {
     const ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(make_tls_reactor_config(), listener_registry, logger_->logger);
@@ -781,8 +756,7 @@ TEST_F(TlsProtocolHandlerIntegrationTest, FragmentedCiphertextDelivery) {
     tls_config.certificate_path = certs_->server_cert_path;
     tls_config.private_key_path = certs_->server_key_path;
 
-    listener_reactor->register_inbound_tls_listener(
-        NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2}, tls_raw_buffer_capacity, tls_config);
+    listener_reactor->register_inbound_tls_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2}, tls_raw_buffer_capacity, tls_config);
 
     auto listener_thread = ApplicationThread::create<TlsListenerThread>(logger_->logger, *listener_reactor);
     listener_reactor->register_thread(listener_thread);
@@ -806,8 +780,7 @@ TEST_F(TlsProtocolHandlerIntegrationTest, FragmentedCiphertextDelivery) {
 
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
 
-    ASSERT_TRUE(tls_send_all(client.ssl, tls_request_payload.data(), tls_request_payload.size()))
-        << "Failed to send TLS payload";
+    ASSERT_TRUE(tls_send_all(client.ssl, tls_request_payload.data(), tls_request_payload.size())) << "Failed to send TLS payload";
 
     EXPECT_TRUE(wait_for([&]() { return listener_thread->message_received.load(std::memory_order_acquire); }))
         << "Listener: complete message not received after fragmented TLS send: " << last_wait_failure_description();
@@ -827,9 +800,7 @@ TEST_F(TlsProtocolHandlerIntegrationTest, FragmentedCiphertextDelivery) {
     shutdown_and_join(*listener_reactor, listener_reactor_thread);
 }
 
-// ============================================================
 // Test: graceful TLS close delivers ConnectionLost
-// ============================================================
 TEST_F(TlsProtocolHandlerIntegrationTest, PeerDisconnect) {
     const ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(make_tls_reactor_config(), listener_registry, logger_->logger);
@@ -839,8 +810,7 @@ TEST_F(TlsProtocolHandlerIntegrationTest, PeerDisconnect) {
     tls_config.certificate_path = certs_->server_cert_path;
     tls_config.private_key_path = certs_->server_key_path;
 
-    listener_reactor->register_inbound_tls_listener(
-        NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2}, tls_raw_buffer_capacity, tls_config);
+    listener_reactor->register_inbound_tls_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2}, tls_raw_buffer_capacity, tls_config);
 
     auto listener_thread = ApplicationThread::create<TlsPassiveListenerThread>(logger_->logger, *listener_reactor);
     listener_reactor->register_thread(listener_thread);
@@ -863,9 +833,7 @@ TEST_F(TlsProtocolHandlerIntegrationTest, PeerDisconnect) {
     shutdown_and_join(*listener_reactor, listener_reactor_thread);
 }
 
-// ============================================================
 // Test: mutual TLS -- both sides present certificates
-// ============================================================
 TEST_F(TlsProtocolHandlerIntegrationTest, MutualTlsHandshake) {
     const ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(make_tls_reactor_config(), listener_registry, logger_->logger);
@@ -877,8 +845,7 @@ TEST_F(TlsProtocolHandlerIntegrationTest, MutualTlsHandshake) {
     tls_config.ca_path = certs_->ca_cert_path;
     tls_config.require_client_certificate = true;
 
-    listener_reactor->register_inbound_tls_listener(
-        NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2}, tls_raw_buffer_capacity, tls_config);
+    listener_reactor->register_inbound_tls_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2}, tls_raw_buffer_capacity, tls_config);
 
     auto listener_thread = ApplicationThread::create<TlsListenerThread>(logger_->logger, *listener_reactor);
     listener_reactor->register_thread(listener_thread);
@@ -887,16 +854,14 @@ TEST_F(TlsProtocolHandlerIntegrationTest, MutualTlsHandshake) {
     const uint16_t listen_port = start_listener_reactor(*listener_reactor);
 
     // Client presents its certificate -- required by the server.
-    TlsClientConnection client = connect_tls(listen_port, certs_->ca_cert_path,
-                                              certs_->client_cert_path, certs_->client_key_path);
+    TlsClientConnection client = connect_tls(listen_port, certs_->ca_cert_path, certs_->client_cert_path, certs_->client_key_path);
     ASSERT_TRUE(client.connected()) << "Mutual TLS handshake failed";
 
     EXPECT_TRUE(wait_for([&]() { return listener_thread->connection_established.load(std::memory_order_acquire); }))
         << "Listener: ConnectionEstablished not received: " << last_wait_failure_description();
 
     const std::string frame = make_tls_framed(tls_request_payload);
-    ASSERT_TRUE(tls_send_all(client.ssl, frame.data(), frame.size()))
-        << "Failed to send framed request over mutual TLS";
+    ASSERT_TRUE(tls_send_all(client.ssl, frame.data(), frame.size())) << "Failed to send framed request over mutual TLS";
 
     EXPECT_TRUE(wait_for([&]() { return listener_thread->reply_sent.load(std::memory_order_acquire); }))
         << "Listener: reply not sent: " << last_wait_failure_description();
@@ -913,7 +878,6 @@ TEST_F(TlsProtocolHandlerIntegrationTest, MutualTlsHandshake) {
     shutdown_and_join(*listener_reactor, listener_reactor_thread);
 }
 
-// ============================================================
 // Test: TLS handshake failure -- client rejects server certificate
 //
 // The client is constructed with no trusted CA. OpenSSL certificate
@@ -921,7 +885,6 @@ TEST_F(TlsProtocolHandlerIntegrationTest, MutualTlsHandshake) {
 // tears down the connection. ConnectionEstablished is delivered (at
 // TCP-accept time) before the TLS handshake is attempted; ConnectionLost
 // follows when the alert is processed.
-// ============================================================
 TEST_F(TlsProtocolHandlerIntegrationTest, HandshakeFailure) {
     const ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(make_tls_reactor_config(), listener_registry, logger_->logger);
@@ -931,8 +894,7 @@ TEST_F(TlsProtocolHandlerIntegrationTest, HandshakeFailure) {
     tls_config.certificate_path = certs_->server_cert_path;
     tls_config.private_key_path = certs_->server_key_path;
 
-    listener_reactor->register_inbound_tls_listener(
-        NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2}, tls_raw_buffer_capacity, tls_config);
+    listener_reactor->register_inbound_tls_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2}, tls_raw_buffer_capacity, tls_config);
 
     auto listener_thread = ApplicationThread::create<TlsPassiveListenerThread>(logger_->logger, *listener_reactor);
     listener_reactor->register_thread(listener_thread);
@@ -948,7 +910,10 @@ TEST_F(TlsProtocolHandlerIntegrationTest, HandshakeFailure) {
 
     std::thread client_thread([&]() {
         SSL_CTX* ctx = SSL_CTX_new(TLS_client_method());
-        if (!ctx) { client_thread_done.store(true, std::memory_order_release); return; }
+        if (!ctx) {
+            client_thread_done.store(true, std::memory_order_release);
+            return;
+        }
 
         // Deliberately do NOT load any CA cert. SSL_VERIFY_PEER with no trusted
         // roots causes SSL_connect to fail when the server presents its certificate.
@@ -990,8 +955,7 @@ TEST_F(TlsProtocolHandlerIntegrationTest, HandshakeFailure) {
     EXPECT_TRUE(wait_for([&]() { return listener_thread->connection_lost.load(std::memory_order_acquire); }))
         << "Listener: ConnectionLost not received after handshake failure: " << last_wait_failure_description();
 
-    EXPECT_TRUE(wait_for([&]() { return client_thread_done.load(std::memory_order_acquire); }))
-        << "Client thread did not complete within timeout";
+    EXPECT_TRUE(wait_for([&]() { return client_thread_done.load(std::memory_order_acquire); })) << "Client thread did not complete within timeout";
 
     EXPECT_TRUE(ssl_connect_failed.load(std::memory_order_acquire)) << "SSL_connect should have failed (no trusted CA)";
 
@@ -999,7 +963,6 @@ TEST_F(TlsProtocolHandlerIntegrationTest, HandshakeFailure) {
     shutdown_and_join(*listener_reactor, listener_reactor_thread);
 }
 
-// ============================================================
 // Test: plaintext buffer high-water and low-water marks.
 //
 // A small plaintext buffer (2048 bytes) is used so that sending 1700 bytes
@@ -1009,7 +972,6 @@ TEST_F(TlsProtocolHandlerIntegrationTest, HandshakeFailure) {
 // reads_paused_=true (lines 179-180). When the timer fires and commit is
 // called, fill drops below 50% and commit_bytes() returns true (lines
 // 279-286), causing the reactor to re-register EPOLLIN.
-// ============================================================
 TEST_F(TlsProtocolHandlerIntegrationTest, TlsBackpressureHighAndLowWatermark) {
     // 2048-byte plaintext buffer: high-water at 75%=1536, low-water at 50%=1024.
     static constexpr int64_t small_buffer = 2048;
@@ -1024,8 +986,7 @@ TEST_F(TlsProtocolHandlerIntegrationTest, TlsBackpressureHighAndLowWatermark) {
     tls_config.certificate_path = certs_->server_cert_path;
     tls_config.private_key_path = certs_->server_key_path;
 
-    listener_reactor->register_inbound_tls_listener(
-        NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2}, small_buffer, tls_config);
+    listener_reactor->register_inbound_tls_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2}, small_buffer, tls_config);
 
     auto server_thread = ApplicationThread::create<TlsBackpressureServerThread>(logger_->logger, *listener_reactor);
     listener_reactor->register_thread(server_thread);
@@ -1047,14 +1008,12 @@ TEST_F(TlsProtocolHandlerIntegrationTest, TlsBackpressureHighAndLowWatermark) {
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
     });
 
-    EXPECT_TRUE(wait_for([&]() {
-        return server_thread->bytes_received_head.load(std::memory_order_acquire) >= payload_bytes;
-    }, 5000)) << "Server did not receive expected bytes: " << last_wait_failure_description();
+    EXPECT_TRUE(wait_for([&]() { return server_thread->bytes_received_head.load(std::memory_order_acquire) >= payload_bytes; }, 5000))
+        << "Server did not receive expected bytes: " << last_wait_failure_description();
 
     // The timer commits all received bytes. Wait for that to happen.
-    EXPECT_TRUE(wait_for([&]() {
-        return server_thread->bytes_committed.load(std::memory_order_acquire) >= payload_bytes;
-    }, 2000)) << "Server did not commit received bytes after timer: " << last_wait_failure_description();
+    EXPECT_TRUE(wait_for([&]() { return server_thread->bytes_committed.load(std::memory_order_acquire) >= payload_bytes; }, 2000))
+        << "Server did not commit received bytes after timer: " << last_wait_failure_description();
 
     EXPECT_FALSE(server_thread->connection_lost.load(std::memory_order_acquire))
         << "Connection was torn down; backpressure should have paused reads, not disconnected";

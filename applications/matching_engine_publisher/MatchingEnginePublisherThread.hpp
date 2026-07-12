@@ -53,10 +53,8 @@ class MatchingEnginePublisherThread : public pubsub_itc_fw::ApplicationThread, p
     MatchingEnginePublisherThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger, pubsub_itc_fw::Reactor& reactor,
                                   const MatchingEnginePublisherConfiguration& config);
 
-    // ----------------------------------------------------------------
     // TopicPublisherHost -- each publisher decides what to send and to
     // whom; this thread performs the send/disconnect/pace on the reactor.
-    // ----------------------------------------------------------------
     void topic_send_subscribe_ack(pubsub_itc_fw::ConnectionID connection_id, const pubsub_itc_fw_app::TopicSubscribeAck& ack) override;
     void topic_send_page(pubsub_itc_fw::ConnectionID connection_id, int64_t seq_no, const pubsub_itc_fw_app::TopicPage& page) override;
     void topic_send_not_leader(pubsub_itc_fw::ConnectionID connection_id, const pubsub_itc_fw_app::TopicNotLeader& not_leader) override;
@@ -108,9 +106,7 @@ class MatchingEnginePublisherThread : public pubsub_itc_fw::ApplicationThread, p
     pubsub_itc_fw::TopicPublisher orders_publisher_;
     pubsub_itc_fw::TopicPublisher er_publisher_;
 
-    // ----------------------------------------------------------------
     // HA helpers (same state machine as the sequencer)
-    // ----------------------------------------------------------------
     pubsub_itc_fw::ConnectionID peer_active_conn() const;
     void adopt_role(pubsub_itc_fw_app::Role new_role);
     void elect_role(int64_t peer_instance_id, int32_t peer_epoch, pubsub_itc_fw_app::Role peer_current_role);
@@ -126,15 +122,10 @@ class MatchingEnginePublisherThread : public pubsub_itc_fw::ApplicationThread, p
     void handle_peer_heartbeat(const pubsub_itc_fw::EventMessage& message);
     void handle_arbitration_decision(const pubsub_itc_fw::EventMessage& message);
 
-    // ----------------------------------------------------------------
-    // WAL follower helpers
-    // ----------------------------------------------------------------
     void handle_wal_subscribe_ack(const pubsub_itc_fw::EventMessage& message);
     void handle_wal_record_from_sequencer(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
 
-    // ----------------------------------------------------------------
     // Topic publisher helpers -- decode + route to the owning publisher
-    // ----------------------------------------------------------------
     void handle_topic_subscribe_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     void handle_topic_ack(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     void set_publishers_leader(bool is_leader);

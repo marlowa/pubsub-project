@@ -57,9 +57,7 @@ class WalTest : public ::testing::Test {
     std::string dir_;
 };
 
-// ---------------------------------------------------------------------------
 // WalWriter: construction and basic state
-// ---------------------------------------------------------------------------
 
 TEST_F(WalTest, NotOpenByDefault) {
     WalWriter w;
@@ -122,9 +120,7 @@ TEST_F(WalTest, OversizedPayloadThrows) {
     EXPECT_THROW(w.append(1, big.data(), big.size()), pubsub_itc_fw::PreconditionAssertion);
 }
 
-// ---------------------------------------------------------------------------
 // WalReader: empty / missing directory
-// ---------------------------------------------------------------------------
 
 TEST_F(WalTest, ReplayMissingDirectoryReturnsFrom) {
     const WalPosition from{0, 0};
@@ -150,9 +146,7 @@ TEST_F(WalTest, ReplayNullCallbackDoesNotCrash) {
     EXPECT_GT(end.offset, 0u);
 }
 
-// ---------------------------------------------------------------------------
 // Round-trip: write then replay
-// ---------------------------------------------------------------------------
 
 TEST_F(WalTest, SingleRecordRoundTrip) {
     const uint32_t val = 0xCAFEBABEu;
@@ -258,9 +252,7 @@ TEST_F(WalTest, ResumeWritingFromReplayPosition) {
     EXPECT_GT(final_end.offset, mid.offset);
 }
 
-// ---------------------------------------------------------------------------
 // Segment rollover
-// ---------------------------------------------------------------------------
 
 TEST_F(WalTest, SegmentRolloverCreatesSecondFile) {
     // small_segment_size=128 holds exactly 4 entries of 32 bytes each.
@@ -304,9 +296,7 @@ TEST_F(WalTest, SegmentRolloverWriterPositionIsOnSecondSegment) {
     EXPECT_EQ(w.current_position().segment, 1u);
 }
 
-// ---------------------------------------------------------------------------
 // Replay from a non-zero anchor
-// ---------------------------------------------------------------------------
 
 TEST_F(WalTest, ReplayFromAnchorSkipsEarlierRecords) {
     // Write 5 records, snapshot the position after record 3, replay from there.
@@ -344,9 +334,7 @@ TEST_F(WalTest, ReplayFromEndPositionYieldsNoEntries) {
     EXPECT_EQ(end2.offset, end.offset);
 }
 
-// ---------------------------------------------------------------------------
 // CRC corruption
-// ---------------------------------------------------------------------------
 
 TEST_F(WalTest, CrcCorruptionStopsReplay) {
     // Write records 1 and 2. Corrupt a payload byte in record 2.
@@ -380,9 +368,7 @@ TEST_F(WalTest, CrcCorruptionStopsReplay) {
     EXPECT_EQ(end.offset, pos_after_first.offset);
 }
 
-// ---------------------------------------------------------------------------
 // Determinism
-// ---------------------------------------------------------------------------
 
 TEST_F(WalTest, ReplayIsDeterministic) {
     {

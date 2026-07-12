@@ -34,9 +34,7 @@
 
 namespace pubsub_itc_fw {
 
-// ============================================================
 // Stub ByteStreamInterface
-// ============================================================
 
 /*
  * StubStream lets tests inject bytes to be "received" and inspect bytes that
@@ -154,9 +152,7 @@ class StubStream : public ByteStreamInterface {
     }
 };
 
-// ============================================================
 // Minimal ApplicationThread stub for PduParser tests
-// ============================================================
 
 class StubApplicationThread : public ApplicationThread {
   public:
@@ -184,9 +180,7 @@ class StubApplicationThread : public ApplicationThread {
     }
 };
 
-// ============================================================
 // Test fixture
-// ============================================================
 
 class PduFramerParserTest : public ::testing::Test {
   protected:
@@ -206,9 +200,7 @@ class PduFramerParserTest : public ::testing::Test {
     ExpandableSlabAllocator slab_allocator_{4096};
 };
 
-// ============================================================
 // PduFramer tests
-// ============================================================
 
 TEST_F(PduFramerParserTest, SendWritesHeaderAndPayload) {
     PduFramer framer(stream_);
@@ -320,9 +312,7 @@ TEST_F(PduFramerParserTest, NoPendingDataInitially) {
     EXPECT_FALSE(framer.has_pending_data());
 }
 
-// ============================================================
 // PduFramer::send_prebuilt() tests
-// ============================================================
 
 // Helper: build a complete frame (PduHeader + payload) into a buffer,
 // exactly as an application thread would before enqueuing a SendPdu command.
@@ -470,9 +460,7 @@ TEST_F(PduFramerParserTest, SendPrebuiltDoesNotCopyPayload) {
     EXPECT_EQ(stream_.sent_bytes[sizeof(PduHeader)], 0xFF);
 }
 
-// ============================================================
 // PduParser tests
-// ============================================================
 
 TEST_F(PduFramerParserTest, ParseSingleCompletePdu) {
     bool disconnected = false;
@@ -590,9 +578,7 @@ TEST_F(PduFramerParserTest, ParseEagainWithNoDataReturnsOk) {
     EXPECT_TRUE(thread_->get_queue().empty());
 }
 
-// ============================================================
 // Round-trip: framer -> parser
-// ============================================================
 
 TEST_F(PduFramerParserTest, RoundTripFramerToParser) {
     // Wire the framer's output directly into the parser's input.

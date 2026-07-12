@@ -54,14 +54,10 @@ namespace pubsub_itc_fw {
  *   shuts down immediately.
  */
 struct InboundListener {
-    // ----------------------------------------------------------------
     // Static configuration -- set once at registration, never changes.
-    // ----------------------------------------------------------------
     InboundListenerConfiguration configuration;
 
-    // ----------------------------------------------------------------
     // Runtime state -- managed exclusively by the Reactor.
-    // ----------------------------------------------------------------
 
     /**
      * @brief The TcpAcceptor bound to configuration.address.

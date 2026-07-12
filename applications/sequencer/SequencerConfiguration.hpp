@@ -30,9 +30,7 @@ namespace sequencer {
  * See pubsub_itc_fw_topology.puml for the authoritative topology.
  */
 struct SequencerConfiguration {
-    // ----------------------------------------------------------------
     // Inbound -- gateway order PDUs
-    // ----------------------------------------------------------------
 
     /** @brief Host address on which the sequencer listens for gateway PDUs. */
     std::string listen_host{"127.0.0.1"};
@@ -40,9 +38,7 @@ struct SequencerConfiguration {
     /** @brief TCP port on which the sequencer listens for gateway PDUs. */
     uint16_t listen_port{7001};
 
-    // ----------------------------------------------------------------
     // Inbound -- ExecutionReport PDUs from the matching engine
-    // ----------------------------------------------------------------
 
     /** @brief Host address on which the sequencer listens for ER PDUs from the ME. */
     std::string er_listen_host{"127.0.0.1"};
@@ -50,9 +46,7 @@ struct SequencerConfiguration {
     /** @brief TCP port on which the sequencer listens for ER PDUs from the ME. */
     uint16_t er_listen_port{7021};
 
-    // ----------------------------------------------------------------
     // Outbound -- gateway ER forwarding
-    // ----------------------------------------------------------------
 
     /** @brief Host address of the gateway ER inbound listener. */
     std::string gateway_host{"127.0.0.1"};
@@ -60,12 +54,10 @@ struct SequencerConfiguration {
     /** @brief TCP port of the gateway ER inbound listener. */
     uint16_t gateway_port{7010};
 
-    // ----------------------------------------------------------------
     // Outbound -- matching engine order forwarding
     //
     // The sequencer connects outbound to the ME's order listener and
     // forwards sequenced order PDUs over that connection.
-    // ----------------------------------------------------------------
 
     /** @brief Host address of the matching engine order inbound listener. */
     std::string matching_engine_host{"127.0.0.1"};
@@ -86,9 +78,7 @@ struct SequencerConfiguration {
     /** @brief TCP port of the ME-secondary order inbound listener (ha_enabled only). */
     uint16_t matching_engine_secondary_port{7023};
 
-    // ----------------------------------------------------------------
     // HA -- leader-follower via arbiter pool
-    // ----------------------------------------------------------------
 
     /** @brief Unique integer identifier for this sequencer instance. Lowest wins. */
     int32_t instance_id{1};
@@ -112,11 +102,9 @@ struct SequencerConfiguration {
      */
     int32_t arbitration_timeout_seconds{3};
 
-    // ----------------------------------------------------------------
     // HA mode -- when false, the sequencer starts as leader immediately
     // with no peer election. Set to true only when running a paired
     // primary + secondary deployment.
-    // ----------------------------------------------------------------
 
     /**
      * @brief Enable leader-follower HA. When false (default), the sequencer
@@ -126,7 +114,6 @@ struct SequencerConfiguration {
      */
     bool ha_enabled{false};
 
-    // ----------------------------------------------------------------
     // Peer -- sequencer-to-sequencer leader-follower protocol (slice 6)
     //
     // Each sequencer binds a dedicated listener for peer PDUs and connects
@@ -134,7 +121,6 @@ struct SequencerConfiguration {
     // 7003 and connects to 7004; secondary listens on 7004 and connects to
     // 7003. The heartbeat mechanism is used for liveness detection and
     // leader election.
-    // ----------------------------------------------------------------
 
     /** @brief Host address on which the peer PDU listener binds. */
     std::string peer_listen_host{"127.0.0.1"};
@@ -169,9 +155,7 @@ struct SequencerConfiguration {
     /** @brief Path to the file written when this node promotes itself to leader. */
     std::string fence_file_path{"/dev/shm/sequencer_fence"};
 
-    // ----------------------------------------------------------------
     // WAL -- mmap'd on-disk write-ahead log
-    // ----------------------------------------------------------------
 
     /** @brief Directory in which WAL segment files are created. */
     std::string wal_directory{"/var/tmp/pubsub/sequencer_wal"};
@@ -182,9 +166,7 @@ struct SequencerConfiguration {
     /** @brief How often the WAL snapshot is taken, in seconds. */
     int32_t snapshot_interval_seconds{30};
 
-    // ----------------------------------------------------------------
     // External WAL subscriber listener (MEP primary and secondary connect here)
-    // ----------------------------------------------------------------
 
     /** @brief Host address on which the external WAL subscriber listener binds. */
     std::string wal_subscriber_listen_host{"127.0.0.1"};
@@ -198,9 +180,7 @@ struct SequencerConfiguration {
     /** @brief Minimum severity written to syslog. */
     pubsub_itc_fw::FwLogLevel syslog_level{pubsub_itc_fw::FwLogLevel::Info};
 
-    // ----------------------------------------------------------------
     // Reactor
-    // ----------------------------------------------------------------
 
     /** @brief Enable CPU core pinning for registered application threads.
      *  Mandatory: must be set explicitly in the TOML configuration file. */
@@ -219,9 +199,7 @@ struct SequencerConfiguration {
     /** @brief How long to wait between "still disconnected" log warnings during outbound retry. */
     std::chrono::milliseconds connect_retry_warning_interval;
 
-    // ----------------------------------------------------------------
     // Event queue pool  (ApplicationThread inbound EventMessage queue)
-    // ----------------------------------------------------------------
 
     /** @brief Number of objects in each fixed-size memory pool slab.
      *  Increase if event-queue pool-exhaustion warnings appear in the log. */
@@ -230,9 +208,7 @@ struct SequencerConfiguration {
     /** @brief Number of event queue pool slabs pre-allocated at startup. */
     int32_t event_queue_pool_initial_slabs{1};
 
-    // ----------------------------------------------------------------
     // Command queue pool  (Reactor ReactorControlCommand outbound queue)
-    // ----------------------------------------------------------------
 
     /** @brief Number of objects in each fixed-size memory pool slab.
      *  Increase if command-queue pool-exhaustion warnings appear in the log. */
@@ -241,18 +217,14 @@ struct SequencerConfiguration {
     /** @brief Number of command queue pool slabs pre-allocated at startup. */
     int32_t command_queue_pool_initial_slabs{1};
 
-    // ----------------------------------------------------------------
     // Wall clock
-    // ----------------------------------------------------------------
 
     /** @brief Clock used to stamp sequenced_at on outbound NOS and OCR PDUs.
      *  Defaults to SystemWallClock (real UTC wall time). Inject a ReplayClock
      *  to drive timestamps from WAL records during replay. */
     std::shared_ptr<pubsub_itc_fw::WallClock> wall_clock{std::make_shared<pubsub_itc_fw::SystemWallClock>()};
 
-    // ----------------------------------------------------------------
     // Replay mode  (set by the --replay command-line flag)
-    // ----------------------------------------------------------------
 
     /** @brief When true, the sequencer reads the WAL and replays all records
      *  to the matching engine instead of accepting live gateway connections.

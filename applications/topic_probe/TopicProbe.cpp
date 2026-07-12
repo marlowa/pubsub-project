@@ -113,9 +113,7 @@ void print_record(const std::string& topic_name, int64_t seq_no, int16_t pdu_id,
     std::fflush(stdout);
 }
 
-// ============================================================
 // Subscriber thread: one data-channel subscription to one topic.
-// ============================================================
 class ProbeThread : public pubsub_itc_fw::ApplicationThread, public pubsub_itc_fw::TopicSubscriberChannelHost {
   public:
     ProbeThread(ConstructorToken token, pubsub_itc_fw::QuillLogger& logger, pubsub_itc_fw::Reactor& reactor, std::string topic_name, int64_t from_seq_no)

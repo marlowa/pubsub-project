@@ -14,9 +14,7 @@
 
 using namespace pubsub_itc_fw;
 
-// =============================================================================
 // Test fixture
-// =============================================================================
 
 /* QuillLoggerTest
  *
@@ -47,9 +45,7 @@ class QuillLoggerTest : public ::testing::Test {
     std::unique_ptr<QuillLogger> logger_;
 };
 
-// =============================================================================
 // Basic logging tests
-// =============================================================================
 
 TEST_F(QuillLoggerTest, LogsDebugMessage) {
     PUBSUB_LOG_STR(*logger_, FwLogLevel::Debug, "Debug message");
@@ -93,9 +89,7 @@ TEST_F(QuillLoggerTest, LogsAlertMessage) {
     EXPECT_TRUE(contains_message("Alert message"));
 }
 
-// =============================================================================
 // Formatted message tests
-// =============================================================================
 
 TEST_F(QuillLoggerTest, LogsFormattedMessageWithInteger) {
     [[maybe_unused]] const int value = 42;
@@ -129,9 +123,7 @@ TEST_F(QuillLoggerTest, LogsStringWithPubSubLogStr) {
     EXPECT_TRUE(contains_message("Simple string message"));
 }
 
-// =============================================================================
 // Log level filtering tests
-// =============================================================================
 
 TEST_F(QuillLoggerTest, FiltersDebugWhenLevelIsInfo) {
     logger_->set_log_level(FwLogLevel::Info);
@@ -191,9 +183,7 @@ TEST_F(QuillLoggerTest, SuppressedMessageProducesNoCallback) {
     EXPECT_EQ(records_.size(), 0u);
 }
 
-// =============================================================================
 // Dynamic log level change tests
-// =============================================================================
 
 TEST_F(QuillLoggerTest, ChangesLogLevelDynamically) {
     logger_->set_log_level(FwLogLevel::Info);
@@ -213,9 +203,7 @@ TEST_F(QuillLoggerTest, ChangesLogLevelDynamically) {
     EXPECT_FALSE(contains_message("Debug 1"));
 }
 
-// =============================================================================
 // Multiple messages tests
-// =============================================================================
 
 TEST_F(QuillLoggerTest, LogsMultipleMessagesInSequence) {
     logger_->set_log_level(FwLogLevel::Info);
@@ -230,9 +218,7 @@ TEST_F(QuillLoggerTest, LogsMultipleMessagesInSequence) {
     EXPECT_TRUE(records_[2].find("Message 3") != std::string::npos);
 }
 
-// =============================================================================
 // Log level getter tests
-// =============================================================================
 
 TEST_F(QuillLoggerTest, ReturnsCorrectLogLevel) {
     logger_->set_log_level(FwLogLevel::Warning);
@@ -247,9 +233,7 @@ TEST_F(QuillLoggerTest, ReturnsUpdatedLogLevelAfterChange) {
     EXPECT_EQ(logger_->log_level(), FwLogLevel::Error);
 }
 
-// =============================================================================
 // Logger isolation tests
-// =============================================================================
 
 TEST(QuillLoggerIsolationTest, TwoLoggersDoNotCrossTalk) {
     std::vector<std::string> records1;
@@ -280,9 +264,7 @@ TEST(QuillLoggerIsolationTest, LevelChangeOnOneLoggerDoesNotAffectOther) {
     EXPECT_EQ(logger2.log_level(), FwLogLevel::Debug);
 }
 
-// =============================================================================
 // Format string mismatch detection test
-// =============================================================================
 
 // Verifies that a mismatch between the format string and the argument list is
 // detected by the Quill backend and reported as a log record containing
@@ -316,17 +298,13 @@ TEST_F(QuillLoggerTest, DISABLED_FormatMismatchIsReportedAsLogRecord) {
 #endif
 }
 
-// =============================================================================
 // Signal safety test
-// =============================================================================
 
 TEST(QuillLoggerSignalTest, BlockSignalsBeforeConstructionDoesNotThrow) {
     EXPECT_NO_THROW(QuillLogger::block_signals_before_construction());
 }
 
-// =============================================================================
 // ensure_log_file_writable
-// =============================================================================
 
 TEST(QuillLoggerEnsureWritableTest, WritablePathReturnsEmpty) {
     const std::string path = "/dev/shm/quill_writable_test.log";
@@ -336,7 +314,7 @@ TEST(QuillLoggerEnsureWritableTest, WritablePathReturnsEmpty) {
 }
 
 TEST(QuillLoggerEnsureWritableTest, CreatesNonExistentParentDirectory) {
-    const std::string dir  = "/dev/shm/quill_ensure_test_dir";
+    const std::string dir = "/dev/shm/quill_ensure_test_dir";
     const std::string path = dir + "/log.txt";
     ::rmdir(dir.c_str());
     const std::string err = QuillLogger::ensure_log_file_writable(path);
@@ -349,7 +327,7 @@ TEST(QuillLoggerEnsureWritableTest, UnwritablePathReturnsError) {
     if (::getuid() == 0) {
         GTEST_SKIP() << "Skipped: root bypasses file permission checks";
     }
-    const std::string dir  = "/dev/shm/quill_nowrite_test";
+    const std::string dir = "/dev/shm/quill_nowrite_test";
     const std::string path = dir + "/log.txt";
     ::rmdir(dir.c_str());
     ::mkdir(dir.c_str(), 0555);
@@ -358,40 +336,29 @@ TEST(QuillLoggerEnsureWritableTest, UnwritablePathReturnsError) {
     ::rmdir(dir.c_str());
 }
 
-// =============================================================================
 // File-based logger constructors (rolling logfile configuration)
-// =============================================================================
 
 TEST(QuillLoggerRollingTest, SizeBasedRollingConstructorDoesNotThrow) {
     RollingLogfileConfiguration cfg{RollingLogfileConfiguration::Mode::Size};
     cfg.max_file_size = 1024 * 1024;
     cfg.max_backup_files = 3;
     const std::string path = "/dev/shm/quill_size_rolling_test.log";
-    EXPECT_NO_THROW({
-        QuillLogger logger(path, FileOpenMode{FileOpenMode::Truncate},
-                           FwLogLevel::Info, FwLogLevel::Critical, cfg);
-    });
+    EXPECT_NO_THROW({ QuillLogger logger(path, FileOpenMode{FileOpenMode::Truncate}, FwLogLevel::Info, FwLogLevel::Critical, cfg); });
     ::unlink(path.c_str());
 }
 
 TEST(QuillLoggerRollingTest, DailyRollingConstructorDoesNotThrow) {
     const RollingLogfileConfiguration cfg = RollingLogfileConfiguration::daily("00:00");
     const std::string path = "/dev/shm/quill_daily_rolling_test.log";
-    EXPECT_NO_THROW({
-        QuillLogger logger(path, FileOpenMode{FileOpenMode::Truncate},
-                           FwLogLevel::Info, FwLogLevel::Critical, cfg);
-    });
+    EXPECT_NO_THROW({ QuillLogger logger(path, FileOpenMode{FileOpenMode::Truncate}, FwLogLevel::Info, FwLogLevel::Critical, cfg); });
     ::unlink(path.c_str());
 }
 
-// =============================================================================
 // set_syslog_level
-// =============================================================================
 
 TEST(QuillLoggerSyslogTest, SetSyslogLevelDoesNotThrow) {
     const std::string path = "/dev/shm/quill_syslog_level_test.log";
-    QuillLogger logger(path, FileOpenMode{FileOpenMode::Truncate},
-                       FwLogLevel::Debug, FwLogLevel::Info);
+    QuillLogger logger(path, FileOpenMode{FileOpenMode::Truncate}, FwLogLevel::Debug, FwLogLevel::Info);
     EXPECT_NO_THROW(logger.set_syslog_level(FwLogLevel::Warning));
     EXPECT_NO_THROW(logger.set_syslog_level(FwLogLevel::Error));
     ::unlink(path.c_str());
@@ -399,8 +366,7 @@ TEST(QuillLoggerSyslogTest, SetSyslogLevelDoesNotThrow) {
 
 TEST(QuillLoggerSyslogTest, SetSyslogLevelUpdatesGateLevelToMin) {
     const std::string path = "/dev/shm/quill_syslog_gate_test.log";
-    QuillLogger logger(path, FileOpenMode{FileOpenMode::Truncate},
-                       FwLogLevel::Warning, FwLogLevel::Critical);
+    QuillLogger logger(path, FileOpenMode{FileOpenMode::Truncate}, FwLogLevel::Warning, FwLogLevel::Critical);
     // Lowering syslog to Debug should pull the gate down to Warning
     // (min of Warning and Debug is Debug, but applog is Warning so gate=Warning).
     EXPECT_NO_THROW(logger.set_syslog_level(FwLogLevel::Debug));

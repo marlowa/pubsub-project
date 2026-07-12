@@ -54,22 +54,14 @@
 
 namespace pubsub_itc_fw::tests {
 
-// ============================================================
 // PDU IDs matching the variable-length test protocol DSL
-// ============================================================
 static constexpr int16_t pdu_id_data_query = 300;
 static constexpr int16_t pdu_id_data_response = 301;
 
-// ============================================================
-// Helpers
-// ============================================================
-
-// ============================================================
 // Connector-side ApplicationThread.
 // Sends DataQuery on ConnectionEstablished.
 // Decodes DataResponse and verifies field values.
 // Disconnects cleanly.
-// ============================================================
 class ConnectorThread : public ApplicationThread {
   public:
     ConnectorThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
@@ -139,11 +131,9 @@ class ConnectorThread : public ApplicationThread {
     void on_itc_message([[maybe_unused]] const EventMessage& msg) override {}
 };
 
-// ============================================================
 // Listener-side ApplicationThread.
 // Decodes DataQuery, replies with DataResponse containing
 // a list of result strings.
-// ============================================================
 class ListenerThread : public ApplicationThread {
   public:
     ListenerThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
@@ -207,9 +197,7 @@ class ListenerThread : public ApplicationThread {
     void on_itc_message([[maybe_unused]] const EventMessage& msg) override {}
 };
 
-// ============================================================
 // Test fixture
-// ============================================================
 class VariableLengthPduTest : public ::testing::Test {
   protected:
     void SetUp() override {
@@ -243,9 +231,7 @@ class VariableLengthPduTest : public ::testing::Test {
     std::unique_ptr<LoggerWithSink> logger_;
 };
 
-// ============================================================
 // Test: full DataQuery / DataResponse round-trip over loopback
-// ============================================================
 TEST_F(VariableLengthPduTest, DataQueryResponseRoundTrip) {
     // --- Listener side ---
     const ServiceRegistry listener_registry;

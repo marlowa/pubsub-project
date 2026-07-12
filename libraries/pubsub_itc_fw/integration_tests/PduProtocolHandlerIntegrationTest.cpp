@@ -98,10 +98,6 @@ static constexpr size_t large_response_string_bytes = 2 * 1024 * 1024;
 // Outbound slab on the listener for the large-response test.
 static constexpr size_t listener_outbound_slab_size = 4 * 1024 * 1024;
 
-// ============================================================
-// Helpers
-// ============================================================
-
 namespace {
 
 ApplicationThreadConfiguration make_connector_thread_config() {
@@ -119,10 +115,8 @@ ApplicationThreadConfiguration make_listener_thread_config() {
 
 } // un-named namespace
 
-// ============================================================
 // Connector thread: sends a 2 MB DataQuery, decodes the response,
 // then disconnects.
-// ============================================================
 class PduProtocolHandlerConnectorThread : public ApplicationThread {
   public:
     PduProtocolHandlerConnectorThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
@@ -189,10 +183,8 @@ class PduProtocolHandlerConnectorThread : public ApplicationThread {
     std::string large_query_name_;
 };
 
-// ============================================================
 // Listener thread: decodes the large DataQuery, verifies its content,
 // and replies with a small DataResponse.
-// ============================================================
 class PduProtocolHandlerListenerThread : public ApplicationThread {
   public:
     PduProtocolHandlerListenerThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
@@ -258,10 +250,8 @@ class PduProtocolHandlerListenerThread : public ApplicationThread {
     void on_itc_message([[maybe_unused]] const EventMessage& msg) override {}
 };
 
-// ============================================================
 // Listener thread: sends a 2 MB DataResponse to force continue_send()
 // on the listener's outbound socket.
-// ============================================================
 class LargeResponseListenerThread : public ApplicationThread {
   public:
     LargeResponseListenerThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
@@ -323,10 +313,8 @@ class LargeResponseListenerThread : public ApplicationThread {
     std::string large_result_;
 };
 
-// ============================================================
 // Connector thread: sends a small DataQuery, receives a large DataResponse,
 // then disconnects.
-// ============================================================
 class SmallQueryConnectorThread : public ApplicationThread {
   public:
     SmallQueryConnectorThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
@@ -400,9 +388,7 @@ class SmallQueryConnectorThread : public ApplicationThread {
     }
 };
 
-// ============================================================
 // Test fixture
-// ============================================================
 class PduProtocolHandlerIntegrationTest : public ::testing::Test {
   protected:
     void SetUp() override {
@@ -477,10 +463,8 @@ class PduProtocolHandlerIntegrationTest : public ::testing::Test {
     std::unique_ptr<LoggerWithSink> logger_;
 };
 
-// ============================================================
 // Test: connector sends a 2 MB DataQuery; listener reassembles it
 // and verifies content.
-// ============================================================
 TEST_F(PduProtocolHandlerIntegrationTest, LargeQueryNameForcesPartialsend) {
     const ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(make_listener_reactor_config(), listener_registry, logger_->logger);
@@ -543,10 +527,8 @@ TEST_F(PduProtocolHandlerIntegrationTest, LargeQueryNameForcesPartialsend) {
     }
 }
 
-// ============================================================
 // Test: listener sends a 2 MB DataResponse with a small send buffer,
 // exercising PduProtocolHandler::continue_send().
-// ============================================================
 TEST_F(PduProtocolHandlerIntegrationTest, LargeResponseForcesPartialSend) {
     const ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(make_small_sndbuf_listener_reactor_config(), listener_registry, logger_->logger);
@@ -605,10 +587,8 @@ TEST_F(PduProtocolHandlerIntegrationTest, LargeResponseForcesPartialSend) {
     }
 }
 
-// ============================================================
 // Test: connector sends a 2 MB DataQuery with a small send buffer,
 // exercising OutboundConnectionManager::on_write_ready().
-// ============================================================
 TEST_F(PduProtocolHandlerIntegrationTest, LargeQueryNameForcesOutboundWriteReady) {
     const ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(make_listener_reactor_config(), listener_registry, logger_->logger);
@@ -673,10 +653,8 @@ TEST_F(PduProtocolHandlerIntegrationTest, LargeQueryNameForcesOutboundWriteReady
     }
 }
 
-// ============================================================
 // Listener thread: disconnects immediately on receiving a query
 // without sending any response. Used by ListenerClosesConnection.
-// ============================================================
 class DisconnectingListenerThread : public ApplicationThread {
   public:
     DisconnectingListenerThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
@@ -711,11 +689,9 @@ class DisconnectingListenerThread : public ApplicationThread {
     void on_itc_message([[maybe_unused]] const EventMessage& msg) override {}
 };
 
-// ============================================================
 // Test: listener closes the connection after receiving a query,
 // exercising OutboundConnectionManager::on_data_ready peer-closed path
 // and the disconnect handler lambda in on_connect_ready.
-// ============================================================
 TEST_F(PduProtocolHandlerIntegrationTest, ListenerClosesConnection) {
     const ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(make_listener_reactor_config(), listener_registry, logger_->logger);
@@ -771,7 +747,6 @@ TEST_F(PduProtocolHandlerIntegrationTest, ListenerClosesConnection) {
     }
 }
 
-// ============================================================
 // Connector thread: sends two large PDUs back-to-back in
 // on_connection_established, before the reactor has processed either.
 // This guarantees:
@@ -781,7 +756,6 @@ TEST_F(PduProtocolHandlerIntegrationTest, ListenerClosesConnection) {
 //      blocked, and stashes it into pending_send_ -- pending_send_.has_value()
 //      is true.
 // Used by DoubleSendThenTeardown.
-// ============================================================
 class DoubleSendConnectorThread : public ApplicationThread {
   public:
     DoubleSendConnectorThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
@@ -854,7 +828,6 @@ class DoubleSendConnectorThread : public ApplicationThread {
     std::string second_payload_;
 };
 
-// ============================================================
 // Test: connector sends two large PDUs back-to-back with a small send
 // buffer, then the listener closes immediately on receiving the first.
 // This covers:
@@ -863,7 +836,6 @@ class DoubleSendConnectorThread : public ApplicationThread {
 //   - OutboundConnectionManager: pending_send_.has_value() branch in
 //     teardown_connection (lines 457-459)
 //   - OutboundConnectionManager: drain_pending_send body (lines 364-375)
-// ============================================================
 TEST_F(PduProtocolHandlerIntegrationTest, DoubleSendThenTeardown) {
     // Listener closes the connection immediately on receiving any PDU.
     const ServiceRegistry listener_registry;

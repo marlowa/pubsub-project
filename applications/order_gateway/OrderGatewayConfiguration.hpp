@@ -26,9 +26,7 @@ namespace order_gateway {
  * All fields have sensible defaults suitable for local development.
  */
 struct OrderGatewayConfiguration {
-    // ----------------------------------------------------------------
     // Inbound FIX listener
-    // ----------------------------------------------------------------
 
     /** @brief Host address on which the gateway listens for FIX client connections. */
     std::string listen_host{"127.0.0.1"};
@@ -42,14 +40,12 @@ struct OrderGatewayConfiguration {
     /** @brief Size in bytes of the per-connection raw receive buffer. */
     int64_t raw_buffer_capacity{65536};
 
-    // ----------------------------------------------------------------
     // Sequencer outbound connection
     //
     // The gateway maintains an outbound TCP PDU connection to the primary
     // sequencer instance. The fan-out path to a follower is part of the
     // leader-follower protocol and not yet implemented; until that lands,
     // only the primary sequencer is configured here.
-    // ----------------------------------------------------------------
 
     /**
      * @brief Enable HA dual-publish to a secondary sequencer. When false (default),
@@ -70,13 +66,11 @@ struct OrderGatewayConfiguration {
     /** @brief TCP port of the secondary (follower) sequencer. Only used when ha_enabled=true. */
     uint16_t sequencer_secondary_port{7002};
 
-    // ----------------------------------------------------------------
     // Matching engine inbound ER connection
     //
     // The matching engine sends ExecutionReport PDUs back to the gateway
     // over a direct TCP PDU connection. This is a stub for the future
     // pub/sub fanout path.
-    // ----------------------------------------------------------------
 
     /** @brief Host address on which the gateway listens for ER PDUs from the ME. */
     std::string er_listen_host{"127.0.0.1"};
@@ -84,14 +78,12 @@ struct OrderGatewayConfiguration {
     /** @brief TCP port on which the gateway listens for ER PDUs from the ME. */
     uint16_t er_listen_port{7010};
 
-    // ----------------------------------------------------------------
     // Authentication service outbound connection
     //
     // The gateway connects to the authentication service as a plain TCP PDU
     // client. Each FIX Logon triggers a SCRAM-SHA-256 exchange; the gateway
     // only completes the FIX session once the exchange returns Granted and the
     // ServerSignature is verified.
-    // ----------------------------------------------------------------
 
     /** @brief Host address of the primary authentication service. */
     std::string authentication_service_host{"127.0.0.1"};
@@ -105,7 +97,6 @@ struct OrderGatewayConfiguration {
     /** @brief TCP port of the secondary authentication service. Only used when ha_enabled=true. */
     uint16_t authentication_service_secondary_port{7071};
 
-    // ----------------------------------------------------------------
     // FIX listener TLS
     //
     // When fix_tls_enabled is true the FIX listener uses TLS (ProtocolType::TlsRawBytes).
@@ -113,7 +104,6 @@ struct OrderGatewayConfiguration {
     // working directory (the component's etc/<name>/ directory in the install
     // tree).  Client certificate verification is not required: FIX clients
     // authenticate via SCRAM-SHA-256 in the application layer.
-    // ----------------------------------------------------------------
 
     /** @brief Enable TLS on the inbound FIX listener. */
     bool fix_tls_enabled{false};
@@ -124,9 +114,7 @@ struct OrderGatewayConfiguration {
     /** @brief Path to the PEM private key for the FIX TLS listener. */
     std::string fix_tls_key_path;
 
-    // ----------------------------------------------------------------
     // FIX session identity
-    // ----------------------------------------------------------------
 
     /** @brief SenderCompID used in all outbound FIX messages. */
     std::string sender_comp_id{"GATEWAY"};
@@ -134,9 +122,7 @@ struct OrderGatewayConfiguration {
     /** @brief Default TargetCompID used before a Logon has been received. */
     std::string default_target_comp_id{"CLIENT"};
 
-    // ----------------------------------------------------------------
     // Timeouts
-    // ----------------------------------------------------------------
 
     /** @brief Maximum time allowed for a newly connected FIX client to send a Logon. */
     std::chrono::seconds logon_timeout{30};
@@ -153,9 +139,7 @@ struct OrderGatewayConfiguration {
     /** @brief Rolling parameters for the applog */
     pubsub_itc_fw::RollingLogfileConfiguration rolling_logfile_configuration;
 
-    // ----------------------------------------------------------------
     // Reactor
-    // ----------------------------------------------------------------
 
     /** @brief Enable CPU core pinning for registered application threads.
      *  Mandatory: must be set explicitly in the TOML configuration file. */
@@ -174,9 +158,7 @@ struct OrderGatewayConfiguration {
     /** @brief How long to wait between "still disconnected" log warnings during outbound retry. */
     std::chrono::milliseconds connect_retry_warning_interval;
 
-    // ----------------------------------------------------------------
     // Event queue pool  (ApplicationThread inbound EventMessage queue)
-    // ----------------------------------------------------------------
 
     /** @brief Number of objects in each fixed-size memory pool slab.
      *  Increase if event-queue pool-exhaustion warnings appear in the log. */
@@ -185,9 +167,7 @@ struct OrderGatewayConfiguration {
     /** @brief Number of event queue pool slabs pre-allocated at startup. */
     int32_t event_queue_pool_initial_slabs{1};
 
-    // ----------------------------------------------------------------
     // Command queue pool  (Reactor ReactorControlCommand outbound queue)
-    // ----------------------------------------------------------------
 
     /** @brief Number of objects in each fixed-size memory pool slab.
      *  Increase if command-queue pool-exhaustion warnings appear in the log. */
@@ -196,9 +176,7 @@ struct OrderGatewayConfiguration {
     /** @brief Number of command queue pool slabs pre-allocated at startup. */
     int32_t command_queue_pool_initial_slabs{1};
 
-    // ----------------------------------------------------------------
     // FIX capture
-    // ----------------------------------------------------------------
 
     /** @brief Whether to capture all inbound and outbound FIX wire bytes to a file.
      *  Mandatory: must be set explicitly in the TOML configuration file. */
@@ -217,18 +195,14 @@ struct OrderGatewayConfiguration {
      *  Mandatory: must be set explicitly in the TOML configuration file. */
     int64_t fix_capture_ring_bytes{67108864};
 
-    // ----------------------------------------------------------------
     // Wall clock
-    // ----------------------------------------------------------------
 
     /** @brief Clock used to generate SendingTime (tag 52) in all outbound FIX messages.
      *  Defaults to SystemWallClock (real UTC wall time). Inject a ReplayClock
      *  to produce deterministic timestamps in tests. */
     std::shared_ptr<pubsub_itc_fw::WallClock> wall_clock{std::make_shared<pubsub_itc_fw::SystemWallClock>()};
 
-    // ----------------------------------------------------------------
     // FIX field-length limits
-    // ----------------------------------------------------------------
 
     // Runtime field-length limits for inbound FIX strings.
     // Must be <= the compile-time hard ceilings in FixSession.hpp.
@@ -237,9 +211,7 @@ struct OrderGatewayConfiguration {
     int32_t max_symbol_length{32};
     int32_t max_order_qty_length{24};
 
-    // ----------------------------------------------------------------
     // Open-order pool
-    // ----------------------------------------------------------------
 
     // Pool for open-order string storage.
     int32_t open_order_pool_objects_per_pool{4096};

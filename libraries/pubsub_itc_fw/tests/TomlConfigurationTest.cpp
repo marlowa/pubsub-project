@@ -33,9 +33,7 @@ class TomlConfigurationTest : public ::testing::Test {
     TomlConfiguration config;
 };
 
-// ============================================================
 // load_string
-// ============================================================
 
 TEST_F(TomlConfigurationTest, LoadStringValidToml) {
     auto [ok, err] = config.load_string(R"(
@@ -76,9 +74,7 @@ TEST_F(TomlConfigurationTest, LoadStringLeavesConfigUnchangedOnFailure) {
     EXPECT_EQ(name, "original");
 }
 
-// ============================================================
 // load_file
-// ============================================================
 
 TEST_F(TomlConfigurationTest, LoadFileNonExistentFileReturnsFalse) {
     auto [ok, err] = config.load_file("/dev/shm/does_not_exist_12345.toml");
@@ -86,9 +82,7 @@ TEST_F(TomlConfigurationTest, LoadFileNonExistentFileReturnsFalse) {
     EXPECT_FALSE(err.empty());
 }
 
-// ============================================================
 // set / get_required: std::string
-// ============================================================
 
 TEST_F(TomlConfigurationTest, SetAndGetString) {
     config.set("name", std::string{"hello"});
@@ -114,9 +108,7 @@ TEST_F(TomlConfigurationTest, GetStringWrongTypeReturnsFalse) {
     EXPECT_FALSE(err.empty());
 }
 
-// ============================================================
 // set / get_required: bool
-// ============================================================
 
 TEST_F(TomlConfigurationTest, SetAndGetBoolTrue) {
     config.set("flag", true);
@@ -141,9 +133,7 @@ TEST_F(TomlConfigurationTest, GetBoolWrongTypeReturnsFalse) {
     EXPECT_FALSE(ok);
 }
 
-// ============================================================
 // set / get_required: int32_t
-// ============================================================
 
 TEST_F(TomlConfigurationTest, SetAndGetInt32) {
     config.set("port", int32_t{9878});
@@ -162,9 +152,7 @@ TEST_F(TomlConfigurationTest, GetInt32OutOfRangeReturnsFalse) {
     EXPECT_NE(err.find("range"), std::string::npos);
 }
 
-// ============================================================
 // set / get_required: int64_t
-// ============================================================
 
 TEST_F(TomlConfigurationTest, SetAndGetInt64) {
     config.set("big", int64_t{3'000'000'000LL});
@@ -174,9 +162,7 @@ TEST_F(TomlConfigurationTest, SetAndGetInt64) {
     EXPECT_EQ(value, 3'000'000'000LL);
 }
 
-// ============================================================
 // set / get_required: double
-// ============================================================
 
 TEST_F(TomlConfigurationTest, SetAndGetDouble) {
     config.set("ratio", 3.14);
@@ -186,9 +172,7 @@ TEST_F(TomlConfigurationTest, SetAndGetDouble) {
     EXPECT_DOUBLE_EQ(value, 3.14);
 }
 
-// ============================================================
 // Nested key access
-// ============================================================
 
 TEST_F(TomlConfigurationTest, SetAndGetNestedKey) {
     config.set("gateway.sender_comp_id", std::string{"GATEWAY"});
@@ -224,9 +208,7 @@ TEST_F(TomlConfigurationTest, LoadStringNestedKey) {
     EXPECT_EQ(port, 9878);
 }
 
-// ============================================================
 // Duration: set and get same type
-// ============================================================
 
 TEST_F(TomlConfigurationTest, SetAndGetSeconds) {
     config.set("timeout", std::chrono::seconds{30});
@@ -276,9 +258,7 @@ TEST_F(TomlConfigurationTest, SetAndGetHours) {
     EXPECT_EQ(value, std::chrono::hours{8});
 }
 
-// ============================================================
 // Duration: lossless conversion (coarse to fine)
-// ============================================================
 
 TEST_F(TomlConfigurationTest, SecondsConvertedToMilliseconds) {
     config.set("timeout", std::chrono::seconds{30});
@@ -304,9 +284,7 @@ TEST_F(TomlConfigurationTest, MillisecondsConvertedToMicroseconds) {
     EXPECT_EQ(value, std::chrono::microseconds{5'000});
 }
 
-// ============================================================
 // Duration: lossless conversion (fine to coarse, exact)
-// ============================================================
 
 TEST_F(TomlConfigurationTest, ExactMillisecondsConvertedToSeconds) {
     config.set("timeout", std::chrono::milliseconds{1000});
@@ -324,9 +302,7 @@ TEST_F(TomlConfigurationTest, ExactMicrosecondsConvertedToMilliseconds) {
     EXPECT_EQ(value, std::chrono::milliseconds{2});
 }
 
-// ============================================================
 // Duration: lossy conversion (fine to coarse, not exact)
-// ============================================================
 
 TEST_F(TomlConfigurationTest, LossyMillisecondsToSecondsReturnsFalse) {
     config.set("timeout", std::chrono::milliseconds{500});
@@ -343,9 +319,7 @@ TEST_F(TomlConfigurationTest, LossyMicrosecondsToMillisecondsReturnsFalse) {
     EXPECT_FALSE(ok);
 }
 
-// ============================================================
 // Duration: load_string with suffix
-// ============================================================
 
 TEST_F(TomlConfigurationTest, LoadStringDurationSeconds) {
     auto [ok, err] = config.load_string(R"(logon_timeout = "30s")");
@@ -400,9 +374,7 @@ TEST_F(TomlConfigurationTest, LoadStringDurationMalformedReturnsFalse) {
     EXPECT_FALSE(ok2);
 }
 
-// ============================================================
 // get_required_except: throws ConfigurationException
-// ============================================================
 
 TEST_F(TomlConfigurationTest, GetRequiredExceptThrowsOnMissingKey) {
     std::string value;
@@ -472,12 +444,10 @@ TEST_F(TomlConfigurationTest, GetRequiredExceptFirstFailureAbortsTryBlock) {
     EXPECT_EQ(port, 0);           // second fetch never completed
 }
 
-// ============================================================
 // get_required_except: one happy-path test per uncovered overload.
 // The error path (throws ConfigurationException) is already covered
 // by GetRequiredExceptThrowsOnMissingKey above -- these tests exist
 // solely to ensure each overload's function body is entered.
-// ============================================================
 
 TEST_F(TomlConfigurationTest, GetRequiredExceptBool) {
     config.set("flag", true);
@@ -535,9 +505,7 @@ TEST_F(TomlConfigurationTest, GetRequiredExceptHours) {
     EXPECT_EQ(value, std::chrono::hours{4});
 }
 
-// ============================================================
 // array_size and array-of-tables iteration
-// ============================================================
 
 TEST_F(TomlConfigurationTest, ArraySizeMissingKeyReturnsZero) {
     EXPECT_EQ(config.array_size("credential"), size_t{0});
@@ -633,18 +601,19 @@ TEST_F(TomlConfigurationTest, ArrayOfTablesGetRequiredExceptIteration) {
     const size_t count = config.array_size("credential");
     ASSERT_EQ(count, size_t{2});
 
-    struct Entry { std::string comp_id; int32_t iterations{}; bool locked{}; };
+    struct Entry {
+        std::string comp_id;
+        int32_t iterations{};
+        bool locked{};
+    };
     std::vector<Entry> entries;
 
     for (size_t i = 0; i < count; ++i) {
         Entry entry;
         EXPECT_NO_THROW({
-            config.get_required_except(
-                fmt::format("credential[{}].comp_id", i), entry.comp_id);
-            config.get_required_except(
-                fmt::format("credential[{}].iterations", i), entry.iterations);
-            config.get_required_except(
-                fmt::format("credential[{}].locked", i), entry.locked);
+            config.get_required_except(fmt::format("credential[{}].comp_id", i), entry.comp_id);
+            config.get_required_except(fmt::format("credential[{}].iterations", i), entry.iterations);
+            config.get_required_except(fmt::format("credential[{}].locked", i), entry.locked);
         });
         entries.push_back(entry);
     }

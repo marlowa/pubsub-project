@@ -77,10 +77,8 @@
 
 namespace pubsub_itc_fw::tests {
 
-// ============================================================
 // Minimal ApplicationThread subclass.
 // Implements all pure virtuals as no-ops. Never started.
-// ============================================================
 class StubApplicationThread : public ApplicationThread {
   public:
     StubApplicationThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
@@ -107,9 +105,7 @@ class StubApplicationThread : public ApplicationThread {
     }
 };
 
-// ============================================================
 // Test fixture
-// ============================================================
 class PduProtocolHandlerTest : public ::testing::Test {
   protected:
     void SetUp() override {
@@ -231,9 +227,7 @@ class PduProtocolHandlerTest : public ::testing::Test {
     bool disconnect_called_{false};
 };
 
-// ============================================================
 // Test: send completes immediately when the kernel buffer has room.
-// ============================================================
 TEST_F(PduProtocolHandlerTest, SendPrebuiltCompletesImmediately) {
     // Use a small payload that fits easily in the kernel send buffer.
     constexpr size_t payload_size = 128;
@@ -260,10 +254,8 @@ TEST_F(PduProtocolHandlerTest, SendPrebuiltCompletesImmediately) {
     EXPECT_EQ(total_read, total_bytes);
 }
 
-// ============================================================
 // Test: send blocks when the kernel buffer is full; continue_send
 // drains the remainder after the raw end is read.
-// ============================================================
 TEST_F(PduProtocolHandlerTest, SendPrebuiltProducesPartialSend) {
     // Fill the kernel send buffer with a large frame. A socketpair on Linux
     // has a default buffer of 212992 bytes per direction. A 512 KB payload
@@ -297,9 +289,7 @@ TEST_F(PduProtocolHandlerTest, SendPrebuiltProducesPartialSend) {
     drain_raw(total_bytes);
 }
 
-// ============================================================
 // Test: continue_send releases the slab chunk on completion.
-// ============================================================
 TEST_F(PduProtocolHandlerTest, ContinueSendReleasesChunkOnCompletion) {
     constexpr size_t payload_size = 512 * 1024;
 
@@ -334,9 +324,7 @@ TEST_F(PduProtocolHandlerTest, ContinueSendReleasesChunkOnCompletion) {
     drain_raw(total_bytes);
 }
 
-// ============================================================
 // Test: deallocate_pending_send releases the chunk during teardown.
-// ============================================================
 TEST_F(PduProtocolHandlerTest, DeallocatePendingSendReleasesChunk) {
     constexpr size_t payload_size = 512 * 1024;
 

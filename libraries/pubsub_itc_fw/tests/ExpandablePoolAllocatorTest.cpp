@@ -37,9 +37,7 @@ struct TestObject;
 }
 
 namespace {
-// ---------------------------------------------------------------------------
 // Helper: verify all pointers are unique and non-null
-// ---------------------------------------------------------------------------
 void expect_unique_non_null(const std::vector<pubsub_itc_fw::tests::TestObject*>& ptrs, const char* context) {
     for (size_t i = 0; i < ptrs.size(); ++i) {
         ASSERT_NE(ptrs[i], nullptr) << context << ": nullptr at index " << i;
@@ -2064,7 +2062,6 @@ TEST_F(ExpandablePoolAllocatorTest, OobScribbleBeforeObjectFragilityProbe) {
     }
 }
 
-// ============================================================================
 // Canary corruption tests
 //
 // These tests verify the behaviour of the allocator when a T object writes
@@ -2074,7 +2071,6 @@ TEST_F(ExpandablePoolAllocatorTest, OobScribbleBeforeObjectFragilityProbe) {
 // All three tests are skipped under ASAN and Valgrind because the
 // deliberate out-of-bounds write is what those tools are designed to catch --
 // they would abort the process before the canary logic even runs.
-// ============================================================================
 
 TEST_F(ExpandablePoolAllocatorTest, CanaryCorruptionDeallocateCallsHandler) {
 #ifdef USING_VALGRIND

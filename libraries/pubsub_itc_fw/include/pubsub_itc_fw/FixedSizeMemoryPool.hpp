@@ -476,9 +476,7 @@ namespace pubsub_itc_fw {
 
 template <typename T> struct SlotStorage; // forward declaration
 
-// ============================================================
 // Slot<T> -- one allocator slot: [is_constructed][canary][storage]
-// ============================================================
 
 /**
  * @brief One slot in the pool.
@@ -538,9 +536,7 @@ template <typename T> struct Slot {
     SlotStorage<T> storage;
 };
 
-// ============================================================
 // SlotStorage<T> -- raw storage helper for allocator slots
-// ============================================================
 
 template <typename T> struct SlotStorage {
     alignas(T) std::byte storage[sizeof(T)];
@@ -554,9 +550,7 @@ template <typename T> struct SlotStorage {
     }
 };
 
-// ============================================================
 // FixedSizeMemoryPool<T>
-// ============================================================
 
 /**
  * @brief A lock-free, fixed-size memory pool for fast object allocation.
@@ -1086,9 +1080,7 @@ template <typename T> typename FixedSizeMemoryPool<T>::SlotType* FixedSizeMemory
 
 #endif
 
-// ============================================================
 // Implementations common to both build paths
-// ============================================================
 
 namespace pubsub_itc_fw {
 

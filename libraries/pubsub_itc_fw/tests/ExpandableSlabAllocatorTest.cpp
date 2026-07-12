@@ -36,9 +36,7 @@
 
 namespace pubsub_itc_fw::tests {
 
-// ============================================================
 // Fixture
-// ============================================================
 
 class ExpandableSlabAllocatorTest : public ::testing::Test {
   protected:
@@ -49,9 +47,7 @@ class ExpandableSlabAllocatorTest : public ::testing::Test {
     static constexpr size_t large_slab = 65536;
 };
 
-// ============================================================
 // Construction
-// ============================================================
 
 TEST_F(ExpandableSlabAllocatorTest, ConstructionZeroSizeThrows) {
     EXPECT_THROW(ExpandableSlabAllocator{0}, PreconditionAssertion);
@@ -63,9 +59,7 @@ TEST_F(ExpandableSlabAllocatorTest, ConstructionCreatesOneSlab) {
     EXPECT_EQ(alloc.slab_size(), large_slab);
 }
 
-// ============================================================
 // Basic allocation
-// ============================================================
 
 TEST_F(ExpandableSlabAllocatorTest, AllocateReturnsNonNullPointer) {
     ExpandableSlabAllocator alloc{large_slab};
@@ -131,9 +125,7 @@ TEST_F(ExpandableSlabAllocatorTest, AllocatedMemoryIsWritable) {
     alloc.deallocate(slab_id, ptr);
 }
 
-// ============================================================
 // Slab chaining
-// ============================================================
 
 TEST_F(ExpandableSlabAllocatorTest, SlabChainsWhenCurrentIsFull) {
     // Each allocation is small_slab bytes, so the first allocation fills
@@ -175,9 +167,7 @@ TEST_F(ExpandableSlabAllocatorTest, SlabCountMonotonicallyIncreasesUnderLoad) {
     }
 }
 
-// ============================================================
 // Slab reclamation
-// ============================================================
 
 TEST_F(ExpandableSlabAllocatorTest, CurrentSlabIsResetWhenAllChunksFreed) {
     // Fill slab 0 completely, then free all chunks.
@@ -271,9 +261,7 @@ TEST_F(ExpandableSlabAllocatorTest, OldSlabIsDestroyedAfterChaining) {
     alloc.deallocate(slab_id_3, ptr_3);
 }
 
-// ============================================================
 // Deallocation precondition violations
-// ============================================================
 
 TEST_F(ExpandableSlabAllocatorTest, DeallocateNullPtrThrows) {
     ExpandableSlabAllocator alloc{large_slab};
@@ -328,9 +316,7 @@ TEST_F(ExpandableSlabAllocatorTest, DeallocateDestroyedSlabThrows) {
     alloc.deallocate(slab_id_3, ptr_3);
 }
 
-// ============================================================
 // Concurrent deallocation
-// ============================================================
 
 TEST_F(ExpandableSlabAllocatorTest, ConcurrentDeallocationsAreSafe) {
     // Allocate a large number of chunks from the reactor thread (this thread),
@@ -419,9 +405,7 @@ TEST_F(ExpandableSlabAllocatorTest, ConcurrentDeallocationsFromManySlabs) {
     alloc.deallocate(slab_id_new, ptr_new);
 }
 
-// ============================================================
 // Stress: allocate/deallocate cycling
-// ============================================================
 
 TEST_F(ExpandableSlabAllocatorTest, StressAllocateDeallocateCycle) {
     // Repeatedly fill and drain the allocator to verify reclamation and
@@ -555,7 +539,6 @@ TEST_F(ExpandableSlabAllocatorTest, RepeatedSingleChunkAllocDeallocOfCurrentSlab
     EXPECT_TRUE(workload.get()) << "allocate() returned nullptr unexpectedly during the workload";
 }
 
-// =============================================================================
 // Stress workload helpers (used by ConcurrentAllocateAndDeallocateMakesProgress
 // and ConcurrentSmallSlabHighChurn below).
 //
@@ -576,7 +559,6 @@ TEST_F(ExpandableSlabAllocatorTest, RepeatedSingleChunkAllocDeallocOfCurrentSlab
 // Recommended invocation: build under Valgrind (USING_VALGRIND defined) and
 // run with --gtest_repeat=50 (or more) to amplify the chance of catching
 // timing-sensitive races.
-// =============================================================================
 
 namespace {
 
@@ -985,14 +967,12 @@ TEST_F(ExpandableSlabAllocatorTest, NoStarvationUnderSustainedLoad) {
     EXPECT_EQ(errors.load(), 0) << "allocator returned nullptr under sustained load";
 }
 
-// =============================================================================
 // Tests imported from the original SlabAllocatorTest.cpp's
 // ExpandableSlabAllocatorTest section.
 //
 // References to that file's fixture constant `slab_size = 4096` have been
 // replaced with large_slab (= 65536) from this fixture; both are simply
 // "generic large slab" sizes and the tests do not depend on the exact value.
-// =============================================================================
 
 TEST_F(ExpandableSlabAllocatorTest, BasicAllocation) {
     ExpandableSlabAllocator allocator(large_slab);

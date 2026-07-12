@@ -35,9 +35,7 @@ constexpr int wait_milliseconds = 3000;
 
 } // namespaces
 
-// ---------------------------------------------------------------------------
 // Fixture
-// ---------------------------------------------------------------------------
 
 class TimerTest : public ::testing::Test {
   protected:
@@ -83,9 +81,7 @@ class TimerTest : public ::testing::Test {
     std::thread reactor_thread_;
 };
 
-// ---------------------------------------------------------------------------
 // OneOffTimerThread -- starts a single one-off timer in on_app_ready_event
-// ---------------------------------------------------------------------------
 
 class OneOffTimerThread : public ApplicationThread {
   public:
@@ -137,9 +133,7 @@ TEST_F(TimerTest, OneOffTimerDeliversCorrectNameToCallback) {
     EXPECT_EQ(t->fired_names[0], "one-off");
 }
 
-// ---------------------------------------------------------------------------
 // RecurringTimerThread -- starts a recurring timer; self-cancels at cancel_after
-// ---------------------------------------------------------------------------
 
 class RecurringTimerThread : public ApplicationThread {
   public:
@@ -190,9 +184,7 @@ TEST_F(TimerTest, RecurringTimerStopsFiringAfterCancel) {
     EXPECT_EQ(t->fire_count.load(std::memory_order_acquire), stable_count) << "Recurring timer continued to fire after cancel";
 }
 
-// ---------------------------------------------------------------------------
 // CancelBeforeExpiryThread -- starts a one-off and cancels it immediately
-// ---------------------------------------------------------------------------
 
 class CancelBeforeExpiryThread : public ApplicationThread {
   public:
@@ -228,9 +220,7 @@ TEST_F(TimerTest, CancelledOneOffTimerNeverFires) {
     EXPECT_EQ(t->fire_count.load(std::memory_order_acquire), 0) << "Cancelled timer fired";
 }
 
-// ---------------------------------------------------------------------------
 // TwoTimersThread -- two independent one-off timers with different names
-// ---------------------------------------------------------------------------
 
 class TwoTimersThread : public ApplicationThread {
   public:
@@ -271,9 +261,7 @@ TEST_F(TimerTest, TwoIndependentTimersEachFireOnce) {
     EXPECT_EQ(t->beta_count.load(std::memory_order_acquire), 1) << "'beta' fired more than once";
 }
 
-// ---------------------------------------------------------------------------
 // RescheduleTimerThread -- rescheduling a timer by reusing its name
-// ---------------------------------------------------------------------------
 
 class RescheduleTimerThread : public ApplicationThread {
   public:

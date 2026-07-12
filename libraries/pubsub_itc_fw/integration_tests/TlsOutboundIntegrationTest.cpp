@@ -96,9 +96,7 @@
 
 namespace pubsub_itc_fw::tests {
 
-// ============================================================
 // Test protocol constants
-// ============================================================
 
 static const std::string outbound_request_payload = "HELLO_OUTBOUND_SERVER";
 static const std::string outbound_response_payload = "HELLO_OUTBOUND_CLIENT";
@@ -108,9 +106,7 @@ static constexpr size_t outbound_length_prefix_size = sizeof(uint32_t);
 
 static const std::string outbound_service_name = "auth_service";
 
-// ============================================================
 // Framing helpers
-// ============================================================
 
 namespace {
 
@@ -139,9 +135,7 @@ std::string try_decode_outbound_framed(const uint8_t* data, int available, int64
     return payload;
 }
 
-// ============================================================
 // Certificate generation helpers
-// ============================================================
 
 EVP_PKEY* generate_outbound_ec_key() {
     EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_EC, nullptr);
@@ -163,9 +157,7 @@ EVP_PKEY* generate_outbound_ec_key() {
 }
 
 void add_outbound_basic_constraints(X509* x509, bool is_ca) {
-    X509_EXTENSION* extension = X509V3_EXT_conf_nid(
-        nullptr, nullptr, NID_basic_constraints,
-        is_ca ? "critical,CA:TRUE" : "critical,CA:FALSE");
+    X509_EXTENSION* extension = X509V3_EXT_conf_nid(nullptr, nullptr, NID_basic_constraints, is_ca ? "critical,CA:TRUE" : "critical,CA:FALSE");
     if (extension) {
         X509_add_ext(x509, extension, -1);
         X509_EXTENSION_free(extension);
@@ -183,8 +175,7 @@ X509* create_outbound_self_signed_cert(EVP_PKEY* key, const char* cn, long seria
     X509_gmtime_adj(X509_get_notAfter(x509), 86400L);
     X509_set_pubkey(x509, key);
     X509_NAME* name = X509_get_subject_name(x509);
-    X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
-                                reinterpret_cast<const unsigned char*>(cn), -1, -1, 0);
+    X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, reinterpret_cast<const unsigned char*>(cn), -1, -1, 0);
     X509_set_issuer_name(x509, name);
     add_outbound_basic_constraints(x509, true);
     if (X509_sign(x509, key, EVP_sha256()) <= 0) {
@@ -194,8 +185,7 @@ X509* create_outbound_self_signed_cert(EVP_PKEY* key, const char* cn, long seria
     return x509;
 }
 
-X509* create_outbound_signed_cert(EVP_PKEY* subject_key, const char* cn, long serial,
-                                   X509* issuer_cert, EVP_PKEY* issuer_key) {
+X509* create_outbound_signed_cert(EVP_PKEY* subject_key, const char* cn, long serial, X509* issuer_cert, EVP_PKEY* issuer_key) {
     X509* x509 = X509_new();
     if (!x509) {
         return nullptr;
@@ -206,8 +196,7 @@ X509* create_outbound_signed_cert(EVP_PKEY* subject_key, const char* cn, long se
     X509_gmtime_adj(X509_get_notAfter(x509), 86400L);
     X509_set_pubkey(x509, subject_key);
     X509_NAME* subject_name = X509_get_subject_name(x509);
-    X509_NAME_add_entry_by_txt(subject_name, "CN", MBSTRING_ASC,
-                                reinterpret_cast<const unsigned char*>(cn), -1, -1, 0);
+    X509_NAME_add_entry_by_txt(subject_name, "CN", MBSTRING_ASC, reinterpret_cast<const unsigned char*>(cn), -1, -1, 0);
     X509_set_issuer_name(x509, X509_get_subject_name(issuer_cert));
     add_outbound_basic_constraints(x509, false);
     if (X509_sign(x509, issuer_key, EVP_sha256()) <= 0) {
@@ -289,22 +278,35 @@ class TlsOutboundCertDirectory {
             client_key_path = directory_ + "/client.key";
             second_ca_cert_path = directory_ + "/second_ca.crt";
 
-            valid = write_outbound_cert_pem(ca_cert_path, ca_cert)
-                 && write_outbound_cert_pem(server_cert_path, server_cert)
-                 && write_outbound_key_pem(server_key_path, server_key)
-                 && write_outbound_cert_pem(client_cert_path, client_cert)
-                 && write_outbound_key_pem(client_key_path, client_key)
-                 && write_outbound_cert_pem(second_ca_cert_path, second_ca_cert);
+            valid = write_outbound_cert_pem(ca_cert_path, ca_cert) && write_outbound_cert_pem(server_cert_path, server_cert) &&
+                    write_outbound_key_pem(server_key_path, server_key) && write_outbound_cert_pem(client_cert_path, client_cert) &&
+                    write_outbound_key_pem(client_key_path, client_key) && write_outbound_cert_pem(second_ca_cert_path, second_ca_cert);
         }
 
-        if (second_ca_cert) { X509_free(second_ca_cert); }
-        if (second_ca_key) { EVP_PKEY_free(second_ca_key); }
-        if (client_cert) { X509_free(client_cert); }
-        if (client_key) { EVP_PKEY_free(client_key); }
-        if (server_cert) { X509_free(server_cert); }
-        if (server_key) { EVP_PKEY_free(server_key); }
-        if (ca_cert) { X509_free(ca_cert); }
-        if (ca_key) { EVP_PKEY_free(ca_key); }
+        if (second_ca_cert) {
+            X509_free(second_ca_cert);
+        }
+        if (second_ca_key) {
+            EVP_PKEY_free(second_ca_key);
+        }
+        if (client_cert) {
+            X509_free(client_cert);
+        }
+        if (client_key) {
+            EVP_PKEY_free(client_key);
+        }
+        if (server_cert) {
+            X509_free(server_cert);
+        }
+        if (server_key) {
+            EVP_PKEY_free(server_key);
+        }
+        if (ca_cert) {
+            X509_free(ca_cert);
+        }
+        if (ca_key) {
+            EVP_PKEY_free(ca_key);
+        }
     }
 
     ~TlsOutboundCertDirectory() {
@@ -326,9 +328,7 @@ class TlsOutboundCertDirectory {
     std::string directory_;
 };
 
-// ============================================================
 // BlockingTlsServer
-// ============================================================
 
 /**
  * @brief A blocking TLS server that listens on a random port.
@@ -347,8 +347,8 @@ class BlockingTlsServer {
      *                                    Pass empty string if client certs are not required.
      * @param[in] require_client_cert     Pass true to enable mutual TLS.
      */
-    BlockingTlsServer(const std::string& server_cert_path, const std::string& server_key_path,
-                      const std::string& ca_path = {}, bool require_client_cert = false) {
+    BlockingTlsServer(const std::string& server_cert_path, const std::string& server_key_path, const std::string& ca_path = {},
+                      bool require_client_cert = false) {
         ctx_ = SSL_CTX_new(TLS_server_method());
         if (!ctx_) {
             return;
@@ -404,15 +404,21 @@ class BlockingTlsServer {
     BlockingTlsServer(const BlockingTlsServer&) = delete;
     BlockingTlsServer& operator=(const BlockingTlsServer&) = delete;
 
-    [[nodiscard]] bool is_ready() const { return ready_; }
-    [[nodiscard]] uint16_t port() const { return port_; }
+    [[nodiscard]] bool is_ready() const {
+        return ready_;
+    }
+    [[nodiscard]] uint16_t port() const {
+        return port_;
+    }
 
     /**
      * @brief Waits up to 5 seconds for a client, then performs SSL_accept.
      * @return true if the handshake completed successfully.
      */
     bool accept_client() {
-        struct pollfd pfd{listen_fd_, POLLIN, 0};
+        struct pollfd pfd {
+            listen_fd_, POLLIN, 0
+        };
         if (::poll(&pfd, 1, 5000) <= 0) {
             return false;
         }
@@ -529,9 +535,7 @@ class BlockingTlsServer {
     bool ready_{false};
 };
 
-// ============================================================
 // Reactor configuration
-// ============================================================
 
 namespace {
 
@@ -546,16 +550,13 @@ ReactorConfiguration make_outbound_reactor_config() {
 
 } // un-named namespace
 
-// ============================================================
 // Connector thread: sends one framed request then decodes the reply.
 // Used by OutboundTlsHandshakeAndRoundTrip and OutboundMutualTls.
-// ============================================================
 class TlsOutboundConnectorThread : public ApplicationThread {
   public:
     TlsOutboundConnectorThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
-        : ApplicationThread(token, logger, reactor, "TlsOutboundConnectorThread", ThreadID{1},
-                            make_queue_config(), make_allocator_config("TlsOutboundConnectorPool"),
-                            ApplicationThreadConfiguration{}) {}
+        : ApplicationThread(token, logger, reactor, "TlsOutboundConnectorThread", ThreadID{1}, make_queue_config(),
+                            make_allocator_config("TlsOutboundConnectorPool"), ApplicationThreadConfiguration{}) {}
 
     std::atomic<bool> connection_established{false};
     std::atomic<bool> message_received{false};
@@ -618,16 +619,13 @@ class TlsOutboundConnectorThread : public ApplicationThread {
     int last_available_{0};
 };
 
-// ============================================================
 // Passive connector thread: tracks connection events only.
 // Used by OutboundTlsServerDisconnect and OutboundTlsHandshakeFailure.
-// ============================================================
 class TlsOutboundPassiveConnectorThread : public ApplicationThread {
   public:
     TlsOutboundPassiveConnectorThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
-        : ApplicationThread(token, logger, reactor, "TlsOutboundPassiveConnectorThread", ThreadID{1},
-                            make_queue_config(), make_allocator_config("TlsOutboundPassivePool"),
-                            ApplicationThreadConfiguration{}) {}
+        : ApplicationThread(token, logger, reactor, "TlsOutboundPassiveConnectorThread", ThreadID{1}, make_queue_config(),
+                            make_allocator_config("TlsOutboundPassivePool"), ApplicationThreadConfiguration{}) {}
 
     std::atomic<bool> connection_established{false};
     std::atomic<bool> connection_lost{false};
@@ -652,9 +650,7 @@ class TlsOutboundPassiveConnectorThread : public ApplicationThread {
     void on_itc_message([[maybe_unused]] const EventMessage& msg) override {}
 };
 
-// ============================================================
 // Test fixture
-// ============================================================
 class TlsOutboundIntegrationTest : public ::testing::Test {
   protected:
     void SetUp() override {
@@ -696,8 +692,7 @@ class TlsOutboundIntegrationTest : public ::testing::Test {
         return "predicate did not become true within timeout";
     }
 
-    static void shutdown_and_join(Reactor& reactor, std::thread& reactor_thread,
-                                   const std::string& reason = "test complete") {
+    static void shutdown_and_join(Reactor& reactor, std::thread& reactor_thread, const std::string& reason = "test complete") {
         reactor.shutdown(reason);
         if (reactor_thread.joinable()) {
             reactor_thread.join();
@@ -710,9 +705,7 @@ class TlsOutboundIntegrationTest : public ::testing::Test {
     bool reactor_died_{false};
 };
 
-// ============================================================
 // Test: happy-path outbound TLS round trip
-// ============================================================
 TEST_F(TlsOutboundIntegrationTest, OutboundTlsHandshakeAndRoundTrip) {
     BlockingTlsServer server(certs_->server_cert_path, certs_->server_key_path);
     ASSERT_TRUE(server.is_ready()) << "BlockingTlsServer failed to bind";
@@ -721,10 +714,7 @@ TEST_F(TlsOutboundIntegrationTest, OutboundTlsHandshakeAndRoundTrip) {
     TlsClientConfiguration tls_config;
     tls_config.ca_path = certs_->ca_cert_path;
     tls_config.raw_buffer_capacity = outbound_tls_buffer_capacity;
-    registry.add_tls(outbound_service_name,
-                     NetworkEndpointConfiguration{"127.0.0.1", server.port()},
-                     NetworkEndpointConfiguration{},
-                     tls_config);
+    registry.add_tls(outbound_service_name, NetworkEndpointConfiguration{"127.0.0.1", server.port()}, NetworkEndpointConfiguration{}, tls_config);
 
     auto reactor = std::make_unique<Reactor>(make_outbound_reactor_config(), registry, logger_->logger);
     set_current_reactor(*reactor);
@@ -761,12 +751,9 @@ TEST_F(TlsOutboundIntegrationTest, OutboundTlsHandshakeAndRoundTrip) {
     shutdown_and_join(*reactor, reactor_thread);
 }
 
-// ============================================================
 // Test: mutual TLS -- connector presents a client certificate
-// ============================================================
 TEST_F(TlsOutboundIntegrationTest, OutboundMutualTls) {
-    BlockingTlsServer server(certs_->server_cert_path, certs_->server_key_path,
-                              certs_->ca_cert_path, /*require_client_cert=*/true);
+    BlockingTlsServer server(certs_->server_cert_path, certs_->server_key_path, certs_->ca_cert_path, /*require_client_cert=*/true);
     ASSERT_TRUE(server.is_ready()) << "BlockingTlsServer failed to bind";
 
     ServiceRegistry registry;
@@ -775,10 +762,7 @@ TEST_F(TlsOutboundIntegrationTest, OutboundMutualTls) {
     tls_config.certificate_path = certs_->client_cert_path;
     tls_config.private_key_path = certs_->client_key_path;
     tls_config.raw_buffer_capacity = outbound_tls_buffer_capacity;
-    registry.add_tls(outbound_service_name,
-                     NetworkEndpointConfiguration{"127.0.0.1", server.port()},
-                     NetworkEndpointConfiguration{},
-                     tls_config);
+    registry.add_tls(outbound_service_name, NetworkEndpointConfiguration{"127.0.0.1", server.port()}, NetworkEndpointConfiguration{}, tls_config);
 
     auto reactor = std::make_unique<Reactor>(make_outbound_reactor_config(), registry, logger_->logger);
     set_current_reactor(*reactor);
@@ -815,9 +799,7 @@ TEST_F(TlsOutboundIntegrationTest, OutboundMutualTls) {
     shutdown_and_join(*reactor, reactor_thread);
 }
 
-// ============================================================
 // Test: server closes after TLS handshake -- ConnectionLost is delivered
-// ============================================================
 TEST_F(TlsOutboundIntegrationTest, OutboundTlsServerDisconnect) {
     BlockingTlsServer server(certs_->server_cert_path, certs_->server_key_path);
     ASSERT_TRUE(server.is_ready()) << "BlockingTlsServer failed to bind";
@@ -826,10 +808,7 @@ TEST_F(TlsOutboundIntegrationTest, OutboundTlsServerDisconnect) {
     TlsClientConfiguration tls_config;
     tls_config.ca_path = certs_->ca_cert_path;
     tls_config.raw_buffer_capacity = outbound_tls_buffer_capacity;
-    registry.add_tls(outbound_service_name,
-                     NetworkEndpointConfiguration{"127.0.0.1", server.port()},
-                     NetworkEndpointConfiguration{},
-                     tls_config);
+    registry.add_tls(outbound_service_name, NetworkEndpointConfiguration{"127.0.0.1", server.port()}, NetworkEndpointConfiguration{}, tls_config);
 
     auto reactor = std::make_unique<Reactor>(make_outbound_reactor_config(), registry, logger_->logger);
     set_current_reactor(*reactor);
@@ -861,9 +840,7 @@ TEST_F(TlsOutboundIntegrationTest, OutboundTlsServerDisconnect) {
     shutdown_and_join(*reactor, reactor_thread);
 }
 
-// ============================================================
 // Test: TLS handshake failure -- wrong CA, ConnectionEstablished never delivered
-// ============================================================
 TEST_F(TlsOutboundIntegrationTest, OutboundTlsHandshakeFailureNoConnectionEstablished) {
     BlockingTlsServer server(certs_->server_cert_path, certs_->server_key_path);
     ASSERT_TRUE(server.is_ready()) << "BlockingTlsServer failed to bind";
@@ -874,10 +851,7 @@ TEST_F(TlsOutboundIntegrationTest, OutboundTlsHandshakeFailureNoConnectionEstabl
     // so TLS certificate verification fails and the handshake is aborted.
     tls_config.ca_path = certs_->second_ca_cert_path;
     tls_config.raw_buffer_capacity = outbound_tls_buffer_capacity;
-    registry.add_tls(outbound_service_name,
-                     NetworkEndpointConfiguration{"127.0.0.1", server.port()},
-                     NetworkEndpointConfiguration{},
-                     tls_config);
+    registry.add_tls(outbound_service_name, NetworkEndpointConfiguration{"127.0.0.1", server.port()}, NetworkEndpointConfiguration{}, tls_config);
 
     auto reactor = std::make_unique<Reactor>(make_outbound_reactor_config(), registry, logger_->logger);
     set_current_reactor(*reactor);
@@ -899,8 +873,7 @@ TEST_F(TlsOutboundIntegrationTest, OutboundTlsHandshakeFailureNoConnectionEstabl
     EXPECT_FALSE(connector->connection_established.load(std::memory_order_acquire))
         << "ConnectionEstablished must NOT be delivered when TLS cert verification fails";
 
-    EXPECT_FALSE(reactor->is_finished())
-        << "Reactor must remain alive after a TLS handshake failure (retries silently)";
+    EXPECT_FALSE(reactor->is_finished()) << "Reactor must remain alive after a TLS handshake failure (retries silently)";
 
     if (server_thread.joinable()) {
         server_thread.join();

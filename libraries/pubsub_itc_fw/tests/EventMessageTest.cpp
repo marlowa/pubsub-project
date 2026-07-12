@@ -23,9 +23,7 @@ class EventMessageTest : public ::testing::Test {
 
 } // un-named namespace
 
-// -----------------------------------------------------------------------------
 // TEST 1: Reactor event creation
-// -----------------------------------------------------------------------------
 TEST_F(EventMessageTest, ReactorEventCreation) {
     const EventMessage m = EventMessage::create_reactor_event(EventType(EventType::Initial));
 
@@ -37,9 +35,7 @@ TEST_F(EventMessageTest, ReactorEventCreation) {
     EXPECT_EQ(m.payload(), nullptr);
 }
 
-// -----------------------------------------------------------------------------
 // TEST 2: ITC message creation with payload
-// -----------------------------------------------------------------------------
 TEST_F(EventMessageTest, ItcMessageWithPayload) {
     const ThreadID origin(42);
     const uint8_t payload[4] = {10, 20, 30, 40};
@@ -58,9 +54,7 @@ TEST_F(EventMessageTest, ItcMessageWithPayload) {
     EXPECT_EQ(p[3], 40);
 }
 
-// -----------------------------------------------------------------------------
 // TEST 3: ITC message with zero-length payload
-// -----------------------------------------------------------------------------
 TEST_F(EventMessageTest, ItcMessageZeroLengthPayload) {
     const ThreadID origin(7);
 
@@ -73,9 +67,7 @@ TEST_F(EventMessageTest, ItcMessageZeroLengthPayload) {
     EXPECT_EQ(msg.payload(), nullptr);
 }
 
-// -----------------------------------------------------------------------------
 // TEST 4: Timer event creation
-// -----------------------------------------------------------------------------
 TEST_F(EventMessageTest, TimerEventCreation) {
     const TimerID tid(12345);
 
@@ -88,9 +80,7 @@ TEST_F(EventMessageTest, TimerEventCreation) {
     EXPECT_EQ(msg.payload(), nullptr);
 }
 
-// -----------------------------------------------------------------------------
 // TEST 5: Termination event creation + reason()
-// -----------------------------------------------------------------------------
 TEST_F(EventMessageTest, TerminationEventReason) {
     const EventMessage msg = EventMessage::create_termination_event("catastrophic failure");
 
@@ -102,9 +92,7 @@ TEST_F(EventMessageTest, TerminationEventReason) {
     EXPECT_EQ(msg.payload(), nullptr);
 }
 
-// -----------------------------------------------------------------------------
 // TEST 6: Move semantics
-// -----------------------------------------------------------------------------
 TEST_F(EventMessageTest, MoveSemantics) {
     const ThreadID origin(11);
     const uint8_t payload[2] = {9, 8};
@@ -121,9 +109,7 @@ TEST_F(EventMessageTest, MoveSemantics) {
     EXPECT_EQ(p[1], 8);
 }
 
-// -----------------------------------------------------------------------------
 // TEST 8: EventType stringification
-// -----------------------------------------------------------------------------
 TEST_F(EventMessageTest, EventTypeToString) {
     EXPECT_EQ(EventType(EventType::Initial).as_string(), "Initial");
     EXPECT_EQ(EventType(EventType::AppReady).as_string(), "AppReady");

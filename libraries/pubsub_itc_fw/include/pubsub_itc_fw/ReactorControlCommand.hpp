@@ -113,9 +113,7 @@ class ReactorControlCommand {
     }
 
   public:
-    // ----------------------------------------------------------------
     // AddTimer / CancelTimer payload fields
-    // ----------------------------------------------------------------
 
     ThreadID owner_thread_id_{};
     TimerID timer_id_{};
@@ -123,9 +121,7 @@ class ReactorControlCommand {
     std::chrono::microseconds interval_{0};
     TimerType timer_type_{TimerType::SingleShot};
 
-    // ----------------------------------------------------------------
     // Connect payload fields
-    // ----------------------------------------------------------------
 
     /**
      * @brief The thread to notify with ConnectionEstablished or ConnectionFailed.
@@ -145,9 +141,7 @@ class ReactorControlCommand {
      */
     std::string service_name_;
 
-    // ----------------------------------------------------------------
     // Disconnect / SendPdu / SendRaw / CommitRawBytes payload fields
-    // ----------------------------------------------------------------
 
     /**
      * @brief Identifies the target connection.
@@ -158,9 +152,7 @@ class ReactorControlCommand {
      */
     ConnectionID connection_id_{};
 
-    // ----------------------------------------------------------------
     // SendPdu payload fields
-    // ----------------------------------------------------------------
 
     /**
      * @brief Pointer to the ExpandableSlabAllocator that owns the PDU or raw chunk.
@@ -205,9 +197,7 @@ class ReactorControlCommand {
      */
     uint32_t pdu_byte_count_{0};
 
-    // ----------------------------------------------------------------
     // SendRaw payload fields
-    // ----------------------------------------------------------------
 
     /**
      * @brief Pointer to the start of the raw outbound bytes in the slab chunk.
@@ -233,9 +223,7 @@ class ReactorControlCommand {
      */
     uint32_t raw_byte_count_{0};
 
-    // ----------------------------------------------------------------
     // CommitRawBytes payload fields
-    // ----------------------------------------------------------------
 
     /**
      * @brief Number of bytes the application has finished processing.
@@ -247,9 +235,7 @@ class ReactorControlCommand {
      */
     int64_t bytes_consumed_{0};
 
-    // ----------------------------------------------------------------
     // InstallInlinePduHandler payload fields
-    // ----------------------------------------------------------------
 
     /**
      * @brief Installer called by the reactor with (PduParser*, PduFramer*) for the

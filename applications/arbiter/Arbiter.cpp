@@ -22,15 +22,14 @@
 
 namespace arbiter {
 
-Arbiter::Arbiter(const ArbiterConfiguration& config, std::unique_ptr<pubsub_itc_fw::QuillLogger> logger)
-    : config_(config), logger_(std::move(logger)) {
+Arbiter::Arbiter(const ArbiterConfiguration& config, std::unique_ptr<pubsub_itc_fw::QuillLogger> logger) : config_(config), logger_(std::move(logger)) {
     reactor_configuration_.connect_timeout = std::chrono::seconds{5};
     reactor_configuration_.socket_maximum_inactivity_interval_ = std::chrono::seconds{600};
     reactor_configuration_.inactivity_check_interval_ = std::chrono::milliseconds{500};
     reactor_configuration_.shutdown_timeout_ = std::chrono::seconds{2};
     reactor_configuration_.cpu_pinning_enabled = config_.cpu_pinning_enabled;
     reactor_configuration_.cpu_pinning_reserve_cpu0 = config_.cpu_pinning_reserve_cpu0;
-    reactor_configuration_.cpu_registry_shm_path  = config_.cpu_registry_shm_path;
+    reactor_configuration_.cpu_registry_shm_path = config_.cpu_registry_shm_path;
     reactor_configuration_.cpu_registry_lock_file = config_.cpu_registry_lock_file;
     reactor_configuration_.connect_retry_warning_interval_ = config_.connect_retry_warning_interval;
     reactor_configuration_.command_allocator_configuration_.pool_name = "ArbiterCommandPool";
@@ -59,9 +58,8 @@ Arbiter::Arbiter(const ArbiterConfiguration& config, std::unique_ptr<pubsub_itc_
     service_registry_.add("witness", pubsub_itc_fw::NetworkEndpointConfiguration{config_.witness_host, config_.witness_port},
                           pubsub_itc_fw::NetworkEndpointConfiguration{});
 
-    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info,
-               "Arbiter: component listener on {}:{} peer listener on {}:{} instance_id={}", config_.listen_host, config_.listen_port,
-               config_.peer_listen_host, config_.peer_listen_port, config_.instance_id);
+    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "Arbiter: component listener on {}:{} peer listener on {}:{} instance_id={}", config_.listen_host,
+               config_.listen_port, config_.peer_listen_host, config_.peer_listen_port, config_.instance_id);
     PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "Arbiter: peer={}:{} witness={}:{}", config_.peer_host, config_.peer_port, config_.witness_host,
                config_.witness_port);
 }
@@ -72,10 +70,6 @@ int Arbiter::run() const {
 }
 
 } // namespaces
-
-// ============================================================
-// main
-// ============================================================
 
 int main(int argc, char* argv[]) {
     if (argc != 3) {

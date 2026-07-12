@@ -25,6 +25,7 @@ Checks implemented:
   19. @throws in Doxygen comments (pubsub_itc_fw only)
   20. Missing #pragma once in .hpp files
   21. Template keyword on its own line before <
+  22. Banner / divider comment lines (rows of - or =)
 """
 
 import argparse
@@ -508,6 +509,22 @@ def check_template_on_own_line(path: Path, lines: list[str], stripped: list[str]
     return violations
 
 
+# ── Check 22: banner / divider comment lines ────────────────────────────────
+
+# A comment whose entire body is a run of - or = (optionally spaced): a decorative
+# divider. Banned by the coding rules ("no banner blocks / divider lines").
+_BANNER_DIVIDER_RE = re.compile(r'^\s*//\s*[-=]{4,}\s*$')
+
+def check_banner_dividers(path: Path, lines: list[str], stripped: list[str]) -> list[Violation]:
+    violations = []
+    for i, line in enumerate(lines, 1):
+        if _BANNER_DIVIDER_RE.match(line):
+            violations.append(Violation(path, i,
+                "banner / divider comment (row of - or =); delete it -- comments must not "
+                "decorate or restate the code (see coding rules: no banner blocks)"))
+    return violations
+
+
 # ── Registry ─────────────────────────────────────────────────────────────────
 
 _CHECKS = [
@@ -532,6 +549,7 @@ _CHECKS = [
     check_doxygen_throws,
     check_pragma_once,
     check_template_on_own_line,
+    check_banner_dividers,
 ]
 
 

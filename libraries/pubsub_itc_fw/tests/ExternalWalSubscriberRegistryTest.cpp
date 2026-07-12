@@ -33,9 +33,7 @@ class ExternalWalSubscriberRegistryTest : public ::testing::Test {
     ExternalWalSubscriberRegistry registry_;
 };
 
-// ---------------------------------------------------------------------------
 // Empty registry
-// ---------------------------------------------------------------------------
 
 TEST_F(ExternalWalSubscriberRegistryTest, EmptyRegistryReturnsNoConstraint) {
     EXPECT_EQ(registry_.min_cursor(), ExternalWalSubscriberRegistry::no_constraint);
@@ -45,9 +43,7 @@ TEST_F(ExternalWalSubscriberRegistryTest, EmptyRegistryHasZeroSubscribers) {
     EXPECT_EQ(registry_.subscriber_count(), 0u);
 }
 
-// ---------------------------------------------------------------------------
 // Single subscriber
-// ---------------------------------------------------------------------------
 
 TEST_F(ExternalWalSubscriberRegistryTest, SingleSubscriberMinCursorIsThatCursor) {
     registry_.register_subscriber(ConnectionID{1}, "mep_primary", 50);
@@ -64,9 +60,7 @@ TEST_F(ExternalWalSubscriberRegistryTest, NewSubscriberIdReturnsInvalidOrphan) {
     EXPECT_FALSE(orphan.is_valid());
 }
 
-// ---------------------------------------------------------------------------
 // Two subscribers
-// ---------------------------------------------------------------------------
 
 TEST_F(ExternalWalSubscriberRegistryTest, TwoSubscribersMinCursorIsLower) {
     registry_.register_subscriber(ConnectionID{1}, "mep_primary", 50);
@@ -80,9 +74,7 @@ TEST_F(ExternalWalSubscriberRegistryTest, TwoSubscribersCountIsTwo) {
     EXPECT_EQ(registry_.subscriber_count(), 2u);
 }
 
-// ---------------------------------------------------------------------------
 // Updating cursors
-// ---------------------------------------------------------------------------
 
 TEST_F(ExternalWalSubscriberRegistryTest, UpdatingMinimumSubscriberRecomputesMinimum) {
     // A=50, B=80 -> min=50. Advance A to 90 -> min is now B at 80.
@@ -101,9 +93,7 @@ TEST_F(ExternalWalSubscriberRegistryTest, UpdateCursorReturnsFalseForUnknownConn
     EXPECT_FALSE(registry_.update_cursor(ConnectionID{99}, 60));
 }
 
-// ---------------------------------------------------------------------------
 // Removing subscribers
-// ---------------------------------------------------------------------------
 
 TEST_F(ExternalWalSubscriberRegistryTest, RemovingMinimumSubscriberRecomputesMinimum) {
     // A=50 is the minimum. Remove A -> min is now B at 80.
@@ -134,9 +124,7 @@ TEST_F(ExternalWalSubscriberRegistryTest, RemovingUnknownConnectionIsNoop) {
     EXPECT_EQ(registry_.min_cursor(), 50);
 }
 
-// ---------------------------------------------------------------------------
 // Three subscribers
-// ---------------------------------------------------------------------------
 
 TEST_F(ExternalWalSubscriberRegistryTest, ThreeSubscribersMinIsLowest) {
     registry_.register_subscriber(ConnectionID{1}, "sub_a", 100);
@@ -153,9 +141,7 @@ TEST_F(ExternalWalSubscriberRegistryTest, RemovingLowestOfThreeGivesNextLowest) 
     EXPECT_EQ(registry_.min_cursor(), 150);
 }
 
-// ---------------------------------------------------------------------------
 // Orphan detection: reconnect before old TCP socket is torn down
-// ---------------------------------------------------------------------------
 
 TEST_F(ExternalWalSubscriberRegistryTest, DuplicateSubscriberIdReturnsOrphanedConnectionId) {
     // Connection 1 registers as mep_primary. Before it is torn down, connection 2

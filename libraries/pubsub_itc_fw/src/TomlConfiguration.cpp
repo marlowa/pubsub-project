@@ -17,9 +17,7 @@
 
 namespace pubsub_itc_fw {
 
-// ============================================================
 // Duration suffix constants
-// ============================================================
 
 namespace {
 constexpr std::string_view suffix_ns = "ns";
@@ -30,16 +28,12 @@ constexpr std::string_view suffix_m = "m";
 constexpr std::string_view suffix_h = "h";
 } // namespaces
 
-// ============================================================
 // Pimpl
-// ============================================================
 
 struct TomlConfiguration::Impl {
     toml::table table;
 
-    // ----------------------------------------------------------------
     // Helpers for set() with dotted keys
-    // ----------------------------------------------------------------
 
     /**
      * Splits a dotted key like "gateway.listen_port" into a vector of
@@ -87,9 +81,7 @@ struct TomlConfiguration::Impl {
         return {current, parts.back()};
     }
 
-    // ----------------------------------------------------------------
     // Duration helpers
-    // ----------------------------------------------------------------
 
     /**
      * Formats a duration value as a string with the given suffix.
@@ -186,9 +178,7 @@ struct TomlConfiguration::Impl {
         return true;
     }
 
-    // ----------------------------------------------------------------
     // Node lookup
-    // ----------------------------------------------------------------
 
     /**
      * Looks up a node by dotted key path using toml::at_path.
@@ -218,9 +208,7 @@ struct TomlConfiguration::Impl {
     }
 };
 
-// ============================================================
 // TomlConfiguration
-// ============================================================
 
 TomlConfiguration::TomlConfiguration() : impl_(new Impl{}) {}
 
@@ -228,9 +216,7 @@ TomlConfiguration::~TomlConfiguration() {
     delete impl_;
 }
 
-// ----------------------------------------------------------------
 // Population
-// ----------------------------------------------------------------
 
 std::tuple<bool, std::string> TomlConfiguration::load_file(std::string_view path) {
     try {
@@ -256,9 +242,7 @@ std::tuple<bool, std::string> TomlConfiguration::load_string(std::string_view to
     }
 }
 
-// ----------------------------------------------------------------
 // set() overloads
-// ----------------------------------------------------------------
 
 void TomlConfiguration::set(std::string_view key, const std::string& value) {
     auto [parent, leaf] = impl_->navigate_to_parent(key);
@@ -337,9 +321,7 @@ void TomlConfiguration::set(std::string_view key, std::chrono::hours value) {
     }
 }
 
-// ----------------------------------------------------------------
 // array_size
-// ----------------------------------------------------------------
 
 size_t TomlConfiguration::array_size(std::string_view key) const {
     const auto* node = impl_->find_node(key);
@@ -353,9 +335,7 @@ size_t TomlConfiguration::array_size(std::string_view key) const {
     return array->size();
 }
 
-// ----------------------------------------------------------------
 // get_required() helpers
-// ----------------------------------------------------------------
 
 namespace {
 
@@ -369,9 +349,7 @@ std::string wrong_type_error(std::string_view key, std::string_view expected_typ
 
 } // un-named namespace
 
-// ----------------------------------------------------------------
 // get_required() overloads
-// ----------------------------------------------------------------
 
 std::tuple<bool, std::string> TomlConfiguration::get_required(std::string_view key, std::string& value) const {
     const auto* node = impl_->find_node(key);
@@ -523,9 +501,7 @@ std::tuple<bool, std::string> TomlConfiguration::get_required(std::string_view k
     return Impl::ns_to_duration(ns, str, value, err) ? std::make_tuple(true, std::string{}) : std::make_tuple(false, fmt::format("key '{}': {}", key, err));
 }
 
-// ----------------------------------------------------------------
 // get_required_except() overloads -- delegate to get_required()
-// ----------------------------------------------------------------
 
 void TomlConfiguration::get_required_except(std::string_view key, std::string& value) const {
     auto [ok, err] = get_required(key, value);

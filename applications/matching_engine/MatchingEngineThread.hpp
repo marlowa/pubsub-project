@@ -68,7 +68,7 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
   protected:
     void on_app_ready_event() override;
     void on_connection_established(pubsub_itc_fw::ConnectionID id) override;
-    void on_connection_lost(const pubsub_itc_fw::ConnectionID &id, const std::string& reason) override;
+    void on_connection_lost(const pubsub_itc_fw::ConnectionID& id, const std::string& reason) override;
     void on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message) override;
     void on_timer_event(const std::string& name) override;
     void on_itc_message(const pubsub_itc_fw::EventMessage& message) override;
@@ -78,8 +78,8 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // 20 chars for ClOrdID; 32 provides headroom. Symbol max ~12; 16 is ample.
     // Quantities and prices are decimal strings; 24 covers any realistic value.
     static constexpr size_t max_cl_ord_id_length = 32;
-    static constexpr size_t max_symbol_length    = 16;
-    static constexpr size_t max_qty_length       = 24;
+    static constexpr size_t max_symbol_length = 16;
+    static constexpr size_t max_qty_length = 24;
 
     // Composite order book key: FIX session + ClOrdID.
     // Fixed-size struct -- no heap allocation per lookup.
@@ -97,9 +97,8 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
         }
 
         bool operator==(const OrderKey& other) const {
-            return session_id == other.session_id
-                && cl_ord_id_len == other.cl_ord_id_len
-                && std::memcmp(cl_ord_id.data(), other.cl_ord_id.data(), cl_ord_id_len) == 0;
+            return session_id == other.session_id && cl_ord_id_len == other.cl_ord_id_len &&
+                   std::memcmp(cl_ord_id.data(), other.cl_ord_id.data(), cl_ord_id_len) == 0;
         }
     };
 
@@ -123,8 +122,8 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // Live order stored in the order book from NOS acceptance until cancel.
     // All string fields stored as fixed-size char arrays -- no heap allocation.
     struct OrderEntry {
-        int64_t order_id_num{};  // counter value; formatted to "ME-ORD-N" on demand
-        int32_t gateway_session_conn_id{};  // originating FIX session; used to route cancel ERs on failover
+        int64_t order_id_num{};            // counter value; formatted to "ME-ORD-N" on demand
+        int32_t gateway_session_conn_id{}; // originating FIX session; used to route cancel ERs on failover
         pubsub_itc_fw_app::Side side{};
         pubsub_itc_fw_app::OrdType ord_type{};
         bool has_price{false};
@@ -132,8 +131,8 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
         uint8_t order_qty_len{};
         uint8_t price_len{};
         std::array<char, max_symbol_length> symbol{};
-        std::array<char, max_qty_length>    order_qty{};
-        std::array<char, max_qty_length>    price{};
+        std::array<char, max_qty_length> order_qty{};
+        std::array<char, max_qty_length> price{};
 
         void set_symbol(std::string_view sv) {
             symbol_len = static_cast<uint8_t>(std::min(sv.size(), max_symbol_length));
@@ -148,17 +147,20 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
             std::memcpy(price.data(), sv.data(), price_len);
         }
 
-        [[nodiscard]] std::string_view get_symbol()    const { return {symbol.data(),    symbol_len};    }
-        [[nodiscard]] std::string_view get_order_qty() const { return {order_qty.data(), order_qty_len}; }
-        [[nodiscard]] std::string_view get_price()     const { return {price.data(),     price_len};     }
+        [[nodiscard]] std::string_view get_symbol() const {
+            return {symbol.data(), symbol_len};
+        }
+        [[nodiscard]] std::string_view get_order_qty() const {
+            return {order_qty.data(), order_qty_len};
+        }
+        [[nodiscard]] std::string_view get_price() const {
+            return {price.data(), price_len};
+        }
     };
 
     // Helper: format "ME-ORD-N" or "ME-EXEC-N" into a caller-provided stack buffer.
     // Returns string_view into that buffer. Buffer must outlive the view.
-    template <size_t N>
-    static std::string_view format_id(std::array<char, N>& buf,
-                                      const char* prefix, size_t prefix_len,
-                                      int64_t counter) {
+    template <size_t N> static std::string_view format_id(std::array<char, N>& buf, const char* prefix, size_t prefix_len, int64_t counter) {
         std::memcpy(buf.data(), prefix, prefix_len);
         auto [end, ec] = std::to_chars(buf.data() + prefix_len, buf.data() + N, counter);
         return {buf.data(), static_cast<size_t>(end - buf.data())};
@@ -202,16 +204,13 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     int64_t exec_id_counter_{0};
 
     // Helper: send a BookUpdate PDU to ME-secondary (primary only).
-    void send_book_update(int64_t seq_no, pubsub_itc_fw_app::BookUpdateType update_type,
-                          int32_t session_id, std::string_view cl_ord_id,
-                          const OrderEntry* entry);   // nullptr for Remove updates
+    void send_book_update(int64_t seq_no, pubsub_itc_fw_app::BookUpdateType update_type, int32_t session_id, std::string_view cl_ord_id,
+                          const OrderEntry* entry); // nullptr for Remove updates
 
     // Helper: apply a received BookUpdate PDU to the replica book (secondary only).
     void apply_book_update(const pubsub_itc_fw::EventMessage& message);
 
-    // ----------------------------------------------------------------
     // HA state machine (Slice C+D)
-    // ----------------------------------------------------------------
 
     // Current HA role. Unknown for a non-HA (single-instance) ME and for the
     // primary before it adopts leadership; Follower for the passive secondary.

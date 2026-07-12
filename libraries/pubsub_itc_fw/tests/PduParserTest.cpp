@@ -40,12 +40,10 @@
 
 namespace pubsub_itc_fw {
 
-// ============================================================
 // Stream stub: pending bytes are delivered first; once exhausted,
 // recv_disconnect fires next, then recv_error_code, then EAGAIN.
 // This ordering lets tests inject errors at the payload phase
 // by queuing header bytes first and then setting recv_error_code.
-// ============================================================
 
 class PduParserTestStream : public ByteStreamInterface {
   public:
@@ -102,9 +100,7 @@ class PduParserTestStream : public ByteStreamInterface {
     }
 };
 
-// ============================================================
 // Minimal ApplicationThread for PduParser tests
-// ============================================================
 
 class PduParserTestThread : public ApplicationThread {
   public:
@@ -131,9 +127,7 @@ class PduParserTestThread : public ApplicationThread {
     }
 };
 
-// ============================================================
 // Test fixture
-// ============================================================
 
 class PduParserErrorTest : public ::testing::Test {
   protected:
@@ -151,9 +145,7 @@ class PduParserErrorTest : public ::testing::Test {
     ExpandableSlabAllocator slab_{4096};
 };
 
-// ============================================================
 // Tests
-// ============================================================
 
 TEST_F(PduParserErrorTest, ZeroLengthPayloadReturnsError) {
     PduParser parser(stream_, *thread_, slab_, logger_->logger, nullptr, ConnectionID{});

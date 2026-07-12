@@ -121,10 +121,6 @@
 
 namespace pubsub_itc_fw::tests {
 
-// ============================================================
-// Helpers
-// ============================================================
-
 /*
  * Creates a POSIX listening socket on 127.0.0.1:0.
  * Returns {fd, port}. The caller owns the fd and must ::close() it.
@@ -157,9 +153,7 @@ static std::pair<int, uint16_t> make_listener() {
     return {fd, ntohs(bound.sin_port)};
 }
 
-// ============================================================
 // Application thread that tracks connection outcomes
-// ============================================================
 class OutboundTestThread : public ApplicationThread {
   public:
     OutboundTestThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, const std::string& service_name)
@@ -201,9 +195,7 @@ class OutboundTestThread : public ApplicationThread {
     std::string service_name_;
 };
 
-// ============================================================
 // Integration test fixture
-// ============================================================
 class OutboundConnectionTest : public ::testing::Test {
   protected:
     void SetUp() override {
@@ -235,9 +227,7 @@ class OutboundConnectionTest : public ::testing::Test {
     std::unique_ptr<LoggerWithSink> logger_;
 };
 
-// ============================================================
 // Test: connect timeout
-// ============================================================
 TEST_F(OutboundConnectionTest, ConnectTimeout) {
     ReactorConfiguration cfg{};
     cfg.inactivity_check_interval_ = std::chrono::milliseconds(50);
@@ -264,9 +254,7 @@ TEST_F(OutboundConnectionTest, ConnectTimeout) {
     shutdown_and_join(*reactor, reactor_thread);
 }
 
-// ============================================================
 // Test: secondary endpoint retry
-// ============================================================
 TEST_F(OutboundConnectionTest, SecondaryEndpointRetry) {
     auto [listen_fd, listen_port] = make_listener();
     ASSERT_NE(listen_fd, -1) << "Failed to create listening socket";
@@ -316,9 +304,7 @@ TEST_F(OutboundConnectionTest, SecondaryEndpointRetry) {
     shutdown_and_join(*reactor, reactor_thread);
 }
 
-// ============================================================
 // Test: unknown service name delivers ConnectionFailed immediately
-// ============================================================
 TEST_F(OutboundConnectionTest, UnknownServiceFails) {
     ReactorConfiguration cfg{};
     cfg.inactivity_check_interval_ = std::chrono::milliseconds(100);
@@ -342,9 +328,7 @@ TEST_F(OutboundConnectionTest, UnknownServiceFails) {
     shutdown_and_join(*reactor, reactor_thread);
 }
 
-// ============================================================
 // Unit test fixture: OutboundConnection preconditions and state.
-// ============================================================
 class OutboundConnectionPreconditionTest : public ::testing::Test {
   protected:
     void SetUp() override {
@@ -460,7 +444,6 @@ TEST_F(OutboundConnectionPreconditionTest, SetPendingSendRejectsNullChunkPtr) {
     EXPECT_THROW(conn->set_pending_send(allocator_.get(), 0, nullptr, 64), PreconditionAssertion);
 }
 
-// ============================================================
 // Fixture for OutboundConnectionManager pending-send path tests.
 //
 // Uses the Reactor::outbound_manager() test seam to drive the manager
@@ -469,7 +452,6 @@ TEST_F(OutboundConnectionPreconditionTest, SetPendingSendRejectsNullChunkPtr) {
 // constructed but never run -- we call process_connect_command and
 // on_connect_ready directly on the manager to transition the connection
 // to established phase under full test control.
-// ============================================================
 class OutboundConnectionManagerTest : public ::testing::Test {
   protected:
     void SetUp() override {
@@ -577,11 +559,9 @@ class OutboundConnectionManagerTest : public ::testing::Test {
     int peer_fd_{-1};
 };
 
-// ============================================================
 // Test: teardown_connection frees the in-flight slab chunk when
 // conn.has_pending_send() is true (covers lines 451-452 in
 // OutboundConnectionManager::teardown_connection).
-// ============================================================
 TEST_F(OutboundConnectionManagerTest, TeardownWithPendingSendFreesChunk) {
     const uint16_t port = start_listener_and_accept();
     ASSERT_NE(port, 0u) << "Failed to start listener";
@@ -622,7 +602,6 @@ TEST_F(OutboundConnectionManagerTest, TeardownWithPendingSendFreesChunk) {
     outbound_allocator_->deallocate(slab_id2, chunk2);
 }
 
-// ============================================================
 // Test: drain_pending_send dispatches the stashed command (covers
 // lines 364-375 in OutboundConnectionManager::drain_pending_send).
 //
@@ -636,7 +615,6 @@ TEST_F(OutboundConnectionManagerTest, TeardownWithPendingSendFreesChunk) {
 //      completes and conn.has_pending_send() becomes false.
 //   5. Call drain_pending_send() -- it must process the stashed second command,
 //      covering the body of drain_pending_send (lines 364-375).
-// ============================================================
 TEST_F(OutboundConnectionManagerTest, DrainPendingSendDispatchesStashedCommand) {
     const uint16_t port = start_listener_and_accept();
     ASSERT_NE(port, 0u) << "Failed to start listener";
@@ -705,8 +683,7 @@ TEST_F(OutboundConnectionManagerTest, DrainPendingSendDispatchesStashedCommand) 
                 // has not yet forwarded data to the receive buffer (observable on
                 // RHEL8 and other systems with smaller loopback socket buffers).
                 // Any other errno is a genuine failure.
-                ASSERT_TRUE(errno == EAGAIN || errno == EWOULDBLOCK)
-                    << "read on peer_fd_ failed unexpectedly: " << strerror(errno);
+                ASSERT_TRUE(errno == EAGAIN || errno == EWOULDBLOCK) << "read on peer_fd_ failed unexpectedly: " << strerror(errno);
             }
             mgr.on_write_ready(*conn);
         }
@@ -727,7 +704,6 @@ TEST_F(OutboundConnectionManagerTest, DrainPendingSendDispatchesStashedCommand) 
     mgr.teardown_connection(conn_id, "test complete", DeliverLostEventFlag{DeliverLostEventFlag::SuppressLostEvent});
 }
 
-// ============================================================
 // OutboundConnectionManager: additional coverage tests
 //
 // RetryFailedConnectionsNoOpWhenEmpty
@@ -755,7 +731,6 @@ TEST_F(OutboundConnectionManagerTest, DrainPendingSendDispatchesStashedCommand) 
 //   When the peer sends a frame with a bad canary, on_data_ready detects
 //   the parse error and tears down the connection. find_by_id returns nullptr
 //   after the call.
-// ============================================================
 
 TEST_F(OutboundConnectionManagerTest, RetryFailedConnectionsNoOpWhenEmpty) {
     int calls = 0;

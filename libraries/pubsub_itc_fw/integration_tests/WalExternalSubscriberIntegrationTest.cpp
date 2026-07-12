@@ -78,20 +78,16 @@ static constexpr int16_t pdu_id_wal_subscribe_ack = 106;
 
 static constexpr size_t wal_segment_size = 4096;
 
-// ============================================================
 // Publisher-side ApplicationThread.
 //
 // Listens for external WAL subscriber connections.
 // On WalSubscribeRequest: replies with WalSubscribeAck, then
 // replays wal_dir_ and sends each entry as a WalRecord PDU.
 // On WalAck: updates ExternalWalSubscriberRegistry.
-// ============================================================
 class WalPublisherThread : public ApplicationThread {
   public:
-    WalPublisherThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor,
-                       std::string wal_dir)
-        : ApplicationThread(token, logger, reactor, "WalPublisherThread", ThreadID{2},
-                            make_queue_config(), make_allocator_config("PublisherPool"),
+    WalPublisherThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, std::string wal_dir)
+        : ApplicationThread(token, logger, reactor, "WalPublisherThread", ThreadID{2}, make_queue_config(), make_allocator_config("PublisherPool"),
                             ApplicationThreadConfiguration{})
         , wal_dir_(std::move(wal_dir)) {}
 
@@ -136,16 +132,15 @@ class WalPublisherThread : public ApplicationThread {
             subscribe_ack_sent.store(true, std::memory_order_release);
 
             // Replay existing WAL records and stream each as a WalRecord PDU.
-            [[maybe_unused]] auto end_position = WalReader::replay(wal_dir_, {0, 0},
-                [this](int64_t id, const void* data, size_t record_size) {
-                    WalRecord record{};
-                    record.seq_no = id;
-                    record.pdu_id = 1000;
-                    record.payload.data = static_cast<const uint8_t*>(data);
-                    record.payload.size = record_size;
-                    record.wall_time_ns = 0;
-                    send_pdu(subscriber_conn_id_, pdu_id_wal_record, id, record);
-                });
+            [[maybe_unused]] auto end_position = WalReader::replay(wal_dir_, {0, 0}, [this](int64_t id, const void* data, size_t record_size) {
+                WalRecord record{};
+                record.seq_no = id;
+                record.pdu_id = 1000;
+                record.payload.data = static_cast<const uint8_t*>(data);
+                record.payload.size = record_size;
+                record.wall_time_ns = 0;
+                send_pdu(subscriber_conn_id_, pdu_id_wal_record, id, record);
+            });
 
             all_records_streamed.store(true, std::memory_order_release);
         } else if (msg.pdu_id() == pdu_id_wal_ack) {
@@ -167,20 +162,16 @@ class WalPublisherThread : public ApplicationThread {
     ExternalWalSubscriberRegistry registry_;
 };
 
-// ============================================================
 // Subscriber-side ApplicationThread.
 //
 // Connects to the publisher. Sends WalSubscribeRequest on
 // ConnectionEstablished. Receives WalSubscribeAck and WalRecord
 // PDUs. Sends WalAck after each WalRecord. Disconnects once
 // expected_record_count records have been received.
-// ============================================================
 class WalSubscriberThread : public ApplicationThread {
   public:
-    WalSubscriberThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor,
-                        int expected_record_count)
-        : ApplicationThread(token, logger, reactor, "WalSubscriberThread", ThreadID{1},
-                            make_queue_config(), make_allocator_config("SubscriberPool"),
+    WalSubscriberThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, int expected_record_count)
+        : ApplicationThread(token, logger, reactor, "WalSubscriberThread", ThreadID{1}, make_queue_config(), make_allocator_config("SubscriberPool"),
                             ApplicationThreadConfiguration{})
         , expected_record_count_(expected_record_count) {}
 
@@ -241,11 +232,7 @@ class WalSubscriberThread : public ApplicationThread {
                 return;
             }
             const uint8_t* pdata = record_view.payload.data;
-            received_records.push_back({
-                record_view.seq_no,
-                record_view.pdu_id,
-                {pdata, pdata + record_view.payload.size}
-            });
+            received_records.push_back({record_view.seq_no, record_view.pdu_id, {pdata, pdata + record_view.payload.size}});
             const int count = records_received.fetch_add(1, std::memory_order_acq_rel) + 1;
 
             WalAck ack{};
@@ -268,9 +255,7 @@ class WalSubscriberThread : public ApplicationThread {
     ConnectionID conn_id_;
 };
 
-// ============================================================
 // Test fixture
-// ============================================================
 class WalExternalSubscriberTest : public ::testing::Test {
   protected:
     void SetUp() override {
@@ -318,37 +303,30 @@ class WalExternalSubscriberTest : public ::testing::Test {
     std::string wal_dir_;
 };
 
-// ============================================================
 // Test 1: WalSubscribeRequest / WalSubscribeAck handshake only.
 // No WAL records exist; verifies the handshake fields.
-// ============================================================
 TEST_F(WalExternalSubscriberTest, WalSubscribeHandshake) {
     // --- Publisher side ---
     const ServiceRegistry publisher_registry;
     auto publisher_reactor = std::make_unique<Reactor>(make_reactor_config(), publisher_registry, logger_->logger);
     publisher_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
 
-    auto publisher_thread = ApplicationThread::create<WalPublisherThread>(
-        logger_->logger, *publisher_reactor, wal_dir_);
+    auto publisher_thread = ApplicationThread::create<WalPublisherThread>(logger_->logger, *publisher_reactor, wal_dir_);
     publisher_reactor->register_thread(publisher_thread);
 
     std::thread publisher_reactor_thread([&]() { publisher_reactor->run(); });
 
-    ASSERT_TRUE(wait_for([&]() { return publisher_reactor->is_initialized(); }))
-        << "Publisher reactor did not initialize";
+    ASSERT_TRUE(wait_for([&]() { return publisher_reactor->is_initialized(); })) << "Publisher reactor did not initialize";
 
     const uint16_t listen_port = publisher_reactor->get_inbound_listener_port(0);
     ASSERT_NE(listen_port, 0U);
 
     // --- Subscriber side ---
     ServiceRegistry subscriber_registry;
-    subscriber_registry.add("publisher",
-        NetworkEndpointConfiguration{"127.0.0.1", listen_port},
-        NetworkEndpointConfiguration{});
+    subscriber_registry.add("publisher", NetworkEndpointConfiguration{"127.0.0.1", listen_port}, NetworkEndpointConfiguration{});
 
     auto subscriber_reactor = std::make_unique<Reactor>(make_reactor_config(), subscriber_registry, logger_->logger);
-    auto subscriber_thread = ApplicationThread::create<WalSubscriberThread>(
-        logger_->logger, *subscriber_reactor, 0);
+    auto subscriber_thread = ApplicationThread::create<WalSubscriberThread>(logger_->logger, *subscriber_reactor, 0);
     subscriber_reactor->register_thread(subscriber_thread);
 
     std::thread subscriber_reactor_thread([&]() { subscriber_reactor->run(); });
@@ -376,12 +354,10 @@ TEST_F(WalExternalSubscriberTest, WalSubscribeHandshake) {
     }
 }
 
-// ============================================================
 // Test 2: WAL records streamed and acked after subscribe.
 // Publisher pre-populates WAL with 3 records. Subscriber
 // receives all three in order and acks each. Verifies payload
 // values and that publisher cursor advances to seq_no 3.
-// ============================================================
 TEST_F(WalExternalSubscriberTest, WalSubscribeAndStreamRecords) {
     static constexpr int record_count = 3;
     write_wal_records(record_count);
@@ -391,27 +367,22 @@ TEST_F(WalExternalSubscriberTest, WalSubscribeAndStreamRecords) {
     auto publisher_reactor = std::make_unique<Reactor>(make_reactor_config(), publisher_registry, logger_->logger);
     publisher_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
 
-    auto publisher_thread = ApplicationThread::create<WalPublisherThread>(
-        logger_->logger, *publisher_reactor, wal_dir_);
+    auto publisher_thread = ApplicationThread::create<WalPublisherThread>(logger_->logger, *publisher_reactor, wal_dir_);
     publisher_reactor->register_thread(publisher_thread);
 
     std::thread publisher_reactor_thread([&]() { publisher_reactor->run(); });
 
-    ASSERT_TRUE(wait_for([&]() { return publisher_reactor->is_initialized(); }))
-        << "Publisher reactor did not initialize";
+    ASSERT_TRUE(wait_for([&]() { return publisher_reactor->is_initialized(); })) << "Publisher reactor did not initialize";
 
     const uint16_t listen_port = publisher_reactor->get_inbound_listener_port(0);
     ASSERT_NE(listen_port, 0U);
 
     // --- Subscriber side ---
     ServiceRegistry subscriber_registry;
-    subscriber_registry.add("publisher",
-        NetworkEndpointConfiguration{"127.0.0.1", listen_port},
-        NetworkEndpointConfiguration{});
+    subscriber_registry.add("publisher", NetworkEndpointConfiguration{"127.0.0.1", listen_port}, NetworkEndpointConfiguration{});
 
     auto subscriber_reactor = std::make_unique<Reactor>(make_reactor_config(), subscriber_registry, logger_->logger);
-    auto subscriber_thread = ApplicationThread::create<WalSubscriberThread>(
-        logger_->logger, *subscriber_reactor, record_count);
+    auto subscriber_thread = ApplicationThread::create<WalSubscriberThread>(logger_->logger, *subscriber_reactor, record_count);
     subscriber_reactor->register_thread(subscriber_thread);
 
     std::thread subscriber_reactor_thread([&]() { subscriber_reactor->run(); });
@@ -420,9 +391,8 @@ TEST_F(WalExternalSubscriberTest, WalSubscribeAndStreamRecords) {
     EXPECT_TRUE(wait_for([&]() { return subscriber_thread->all_records_received.load(std::memory_order_acquire); }))
         << "Subscriber: did not receive all WalRecord PDUs";
 
-    EXPECT_TRUE(wait_for([&]() {
-        return publisher_thread->wal_acks_received.load(std::memory_order_acquire) == record_count;
-    })) << "Publisher: did not receive all WalAck PDUs";
+    EXPECT_TRUE(wait_for([&]() { return publisher_thread->wal_acks_received.load(std::memory_order_acquire) == record_count; }))
+        << "Publisher: did not receive all WalAck PDUs";
 
     // --- Verify records received in order with correct field values ---
     ASSERT_EQ(static_cast<int>(subscriber_thread->received_records.size()), record_count);

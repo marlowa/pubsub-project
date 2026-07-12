@@ -1,9 +1,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-// ============================================================================
 // LockFreeMessageQueue Test Suite
-// ============================================================================
 //
 // This file contains a comprehensive set of Google Tests for validating the
 // correctness, performance, and concurrency behaviour of the LockFreeMessageQueue class.
@@ -59,7 +57,6 @@
 // Each test includes a comment block describing its purpose and the specific
 // failure modes it is intended to detect.
 //
-// ============================================================================
 
 // include the gtest header first avoid spurious cyclic include warning from clang-tidy
 #include <gtest/gtest.h>
@@ -70,17 +67,17 @@
 #include <thread>
 #include <vector>
 
+#include <fcntl.h> // for F_SETFL
 #include <pthread.h>
 #include <sched.h>
 #include <sys/epoll.h>
-#include <fcntl.h> // for F_SETFL
 
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/BackoffWithYield.hpp>
 #include <pubsub_itc_fw/LockFreeMessageQueue.hpp>
 #include <pubsub_itc_fw/QueueConfiguration.hpp>
-#include <pubsub_itc_fw/UseHugePagesFlag.hpp>
 #include <pubsub_itc_fw/ThreadWithJoinTimeout.hpp>
+#include <pubsub_itc_fw/UseHugePagesFlag.hpp>
 #include <pubsub_itc_fw/tests_common/LatencyRecorder.hpp>
 
 using namespace pubsub_itc_fw;
@@ -129,12 +126,10 @@ QueueConfiguration make_default_queue_config() {
 
 } // namespaces
 
-// ------------------------------------------------------------
 // Basic sanity check: verifies FIFO ordering and that enqueue()
 // and dequeue() work correctly in the simplest single-threaded
 // scenario. This ensures the fundamental queue mechanics behave
 // as expected before layering on concurrency tests.
-// ------------------------------------------------------------
 TEST(LockFreeMessageQueueTest, BasicEnqueueDequeue) {
     const QueueConfiguration queue_config = make_default_queue_config();
     const AllocatorConfiguration allocator_config = make_default_allocator_config();
@@ -163,13 +158,11 @@ TEST(LockFreeMessageQueueTest, BasicEnqueueDequeue) {
     EXPECT_TRUE(queue.empty());
 }
 
-// ------------------------------------------------------------
 // Multi-producer correctness test: launches several producers
 // concurrently and ensures that all messages are eventually
 // consumed with no loss, corruption, or duplication. This
 // validates the lock-free multi-producer logic under moderate
 // contention.
-// ------------------------------------------------------------
 TEST(LockFreeMessageQueueTest, MultiProducerSingleConsumer) {
     const QueueConfiguration queue_config = make_default_queue_config();
     const AllocatorConfiguration allocator_config = make_default_allocator_config();
@@ -215,12 +208,10 @@ TEST(LockFreeMessageQueueTest, MultiProducerSingleConsumer) {
     EXPECT_TRUE(queue.empty());
 }
 
-// ------------------------------------------------------------
 // Watermark transition correctness: verifies that the high and
 // low watermark handlers fire exactly once when crossing their
 // respective thresholds. Ensures hysteresis logic is correct
 // and handlers do not storm or double-fire.
-// ------------------------------------------------------------
 TEST(LockFreeMessageQueueTest, WatermarkHandlersFireOnce) {
     std::atomic<int> high_calls{0};
     std::atomic<int> low_calls{0};
@@ -252,12 +243,10 @@ TEST(LockFreeMessageQueueTest, WatermarkHandlersFireOnce) {
     EXPECT_EQ(low_calls.load(), 1);
 }
 
-// ------------------------------------------------------------
 // Shutdown behavior: verifies that enqueue() after shutdown()
 // does not crash, corrupt memory, or accept new messages.
 // Ensures shutdown flag is respected and the queue enters a
 // safe, inert state.
-// ------------------------------------------------------------
 TEST(LockFreeMessageQueueTest, EnqueueAfterShutdownIsDropped) {
     const QueueConfiguration queue_config = make_default_queue_config();
     const AllocatorConfiguration allocator_config = make_default_allocator_config();
@@ -279,12 +268,10 @@ TEST(LockFreeMessageQueueTest, EnqueueAfterShutdownIsDropped) {
     SUCCEED();
 }
 
-// ------------------------------------------------------------
 // Destructor behavior: ensures that destroying the queue drains
 // all remaining messages safely without leaks, corruption, or
 // undefined behavior. Validates that the destructor correctly
 // invokes shutdown semantics.
-// ------------------------------------------------------------
 TEST(LockFreeMessageQueueTest, DestructorDrainsQueue) {
     const QueueConfiguration queue_config = make_default_queue_config();
     const AllocatorConfiguration allocator_config = make_default_allocator_config();
@@ -300,13 +287,11 @@ TEST(LockFreeMessageQueueTest, DestructorDrainsQueue) {
     SUCCEED();
 }
 
-// ------------------------------------------------------------
 // Heavy multi-producer stress test: pushes the queue with a
 // large number of concurrent producers and verifies that all
 // messages are delivered. This exposes timing races, atomic
 // ordering issues, and pointer-linking bugs under sustained
 // contention.
-// ------------------------------------------------------------
 TEST(LockFreeMessageQueueTest, HeavyMultiProducerStress) {
     const QueueConfiguration queue_config = make_default_queue_config();
     const AllocatorConfiguration allocator_config = make_default_allocator_config();
@@ -361,12 +346,10 @@ TEST(LockFreeMessageQueueTest, HeavyMultiProducerStress) {
     EXPECT_TRUE(queue.empty());
 }
 
-// ------------------------------------------------------------
 // CPU affinity test: pins producer and consumer threads to
 // separate physical cores to simulate real-world deployment
 // conditions. Ensures the queue behaves correctly when threads
 // do not migrate and memory access patterns are stable.
-// ------------------------------------------------------------
 TEST(LockFreeMessageQueueTest, ProducerConsumerPinnedToSeparateCores) {
     const QueueConfiguration queue_config = make_default_queue_config();
     const AllocatorConfiguration allocator_config = make_default_allocator_config();
@@ -416,12 +399,10 @@ TEST(LockFreeMessageQueueTest, ProducerConsumerPinnedToSeparateCores) {
     EXPECT_TRUE(queue.empty());
 }
 
-// ------------------------------------------------------------
 // Large-scale soak test: pushes tens of millions of messages
 // through the queue to expose rare timing bugs, ABA-like
 // behavior, allocator churn issues, and long-term stability
 // problems. This is a high-confidence stress test.
-// ------------------------------------------------------------
 #ifdef ENABLE_PERFORMANCE_TESTS
 TEST(LockFreeMessageQueueTest, SoakTestMillionsOfMessages) {
     const QueueConfiguration queue_config = make_default_queue_config();
@@ -477,13 +458,11 @@ TEST(LockFreeMessageQueueTest, SoakTestMillionsOfMessages) {
 }
 #endif
 
-// ------------------------------------------------------------
 // False sharing detection: producer and consumer are pinned to
 // separate cores and run at high speed. If any shared cache
 // lines are incorrectly laid out, performance collapses or
 // behavior becomes unstable. This test helps detect structural
 // layout issues.
-// ------------------------------------------------------------
 TEST(LockFreeMessageQueueTest, FalseSharingDetection) {
     const QueueConfiguration queue_config = make_default_queue_config();
     const AllocatorConfiguration allocator_config = make_default_allocator_config();
@@ -532,12 +511,10 @@ TEST(LockFreeMessageQueueTest, FalseSharingDetection) {
     EXPECT_TRUE(queue.empty());
 }
 
-// ------------------------------------------------------------
 // ABA-resistance stress test: forces rapid allocation and
 // deallocation of nodes by generating many small bursts. This
 // exposes pointer reuse hazards, stale-next-pointer races, and
 // other ABA-adjacent failure modes in the linked-list structure.
-// ------------------------------------------------------------
 TEST(LockFreeMessageQueueTest, AbaResistanceStress) {
     const QueueConfiguration queue_config = make_default_queue_config();
     const AllocatorConfiguration allocator_config = make_default_allocator_config();
@@ -597,12 +574,10 @@ TEST(LockFreeMessageQueueTest, AbaResistanceStress) {
     EXPECT_TRUE(queue.empty());
 }
 
-// ------------------------------------------------------------
 // Watermark storm test: repeatedly oscillates the queue size
 // above and below the high/low watermarks thousands of times.
 // Ensures each transition fires exactly once per crossing and
 // that hysteresis logic remains stable under extreme churn.
-// ------------------------------------------------------------
 TEST(LockFreeMessageQueueTest, WatermarkStormTest) {
     std::atomic<int> high_calls{0};
     std::atomic<int> low_calls{0};
@@ -643,12 +618,10 @@ TEST(LockFreeMessageQueueTest, WatermarkStormTest) {
     EXPECT_TRUE(queue.empty());
 }
 
-// ------------------------------------------------------------
 // Shutdown race test: triggers shutdown while producers are
 // still actively enqueueing. Ensures that enqueue() safely
 // drops messages after shutdown, that no corruption occurs,
 // and that the queue drains cleanly without undefined behavior.
-// ------------------------------------------------------------
 TEST(LockFreeMessageQueueTest, ShutdownRaceTest) {
     const QueueConfiguration queue_config = make_default_queue_config();
     const AllocatorConfiguration allocator_config = make_default_allocator_config();
@@ -715,12 +688,10 @@ TEST(LockFreeMessageQueueTest, ShutdownRaceTest) {
     EXPECT_TRUE(queue.empty());
 }
 
-// ------------------------------------------------------------
 // Low-watermark storm test: mirror image of the high-watermark
 // storm test. Repeatedly crosses the low watermark boundary to
 // ensure the low handler fires exactly once per downward
 // transition and remains stable under oscillation.
-// ------------------------------------------------------------
 TEST(LockFreeMessageQueueTest, LowWatermarkStormTest) {
     std::atomic<int> high_calls{0};
     std::atomic<int> low_calls{0};
@@ -762,12 +733,10 @@ TEST(LockFreeMessageQueueTest, LowWatermarkStormTest) {
     EXPECT_TRUE(queue.empty());
 }
 
-// ------------------------------------------------------------
 // Throughput benchmark: measures messages-per-second under
 // multi-producer load. This is not a correctness test but a
 // performance regression guard to ensure the queue remains
 // efficient over time.
-// ------------------------------------------------------------
 #ifdef ENABLE_PERFORMANCE_TESTS
 TEST(LockFreeMessageQueueTest, ThroughputBenchmark) {
     const QueueConfiguration queue_config = make_default_queue_config();
@@ -836,12 +805,10 @@ TEST(LockFreeMessageQueueTest, ThroughputBenchmark) {
 }
 #endif
 
-// ------------------------------------------------------------
 // Mixed-rate jitter soak test: producers and consumer run with
 // realistic micro-jitter (cache misses, allocator stalls,
 // NUMA-like delays). This simulates real-world timing noise and
 // exposes subtle races that fixed-rate tests cannot detect.
-// ------------------------------------------------------------
 TEST(LockFreeMessageQueueTest, MixedRateJitterSoakTest) {
     const QueueConfiguration queue_config = make_default_queue_config();
     const AllocatorConfiguration allocator_config = make_default_allocator_config();
@@ -947,12 +914,10 @@ TEST(LockFreeMessageQueueTest, MixedRateJitterSoakTest) {
     EXPECT_TRUE(queue.empty());
 }
 
-// ------------------------------------------------------------
 // Memory-pressure burstn test: producers generate rapid bursts
 // of allocations followed by forced pauses, simulating allocator
 // slow paths and fragmentation. This stresses pointer linking,
 // node reuse, and memory-ordering under high churn.
-// ------------------------------------------------------------
 TEST(LockFreeMessageQueueTest, MemoryPressureBurstTest) {
     const QueueConfiguration queue_config = make_default_queue_config();
     const AllocatorConfiguration allocator_config = make_default_allocator_config();
@@ -1029,7 +994,6 @@ TEST(LockFreeMessageQueueTest, MemoryPressureBurstTest) {
     EXPECT_TRUE(queue.empty());
 }
 
-// ------------------------------------------------------------
 // Queue-depth histogram test: tracks queue depth over time under
 // jittery load and records a histogram of observed depths. This
 // is a behavioral profiling test that ensures the queue does not
@@ -1051,7 +1015,6 @@ TEST(LockFreeMessageQueueTest, MemoryPressureBurstTest) {
 //     Python plotting script.
 //   - The maximum observed depth must not exceed the pool size,
 //     confirming the queue did not accumulate an unbounded backlog.
-// ------------------------------------------------------------
 TEST(LockFreeMessageQueueTest, QueueDepthHistogramTest) {
     const QueueConfiguration queue_config = make_default_queue_config();
     const AllocatorConfiguration allocator_config = make_default_allocator_config();
@@ -1301,7 +1264,7 @@ struct TestOrder {
 // A highly stripped-down mock of how an event loop Reactor processes
 // internal queues and external descriptor events.
 class MockReactor {
-public:
+  public:
     MockReactor() {
         epoll_fd_ = epoll_create1(0);
         // Create a dummy pipe just so epoll has a valid descriptor to wait on
@@ -1322,9 +1285,7 @@ public:
     }
 
     // Simulates one tick of your framework's dispatch loop
-    bool run_once(pubsub_itc_fw::LockFreeMessageQueue<TestOrder>& queue,
-                  std::vector<TestOrder>& processed_orders)
-    {
+    bool run_once(pubsub_itc_fw::LockFreeMessageQueue<TestOrder>& queue, std::vector<TestOrder>& processed_orders) {
         bool handled_work = false;
 
         // 1. Process Internal Commands (Simulating Reactor::process_control_commands)
@@ -1348,7 +1309,7 @@ public:
         return handled_work;
     }
 
-private:
+  private:
     int epoll_fd_{-1};
     int pipe_fds_[2]{-1, -1};
 };
@@ -1412,15 +1373,14 @@ TEST(LockFreeMessageQueueEdgeCaseTest, ExposeStrandedOrdersInReactorLoop) {
     producer_a.join();
 
     // --- REGRESSION GATE VERIFICATION ---
-// --- REGRESSION GATE VERIFICATION ---
+    // --- REGRESSION GATE VERIFICATION ---
     // Both orders (101 and 102) are structurally inside the queue memory space.
     // However, because Producer A was stalled mid-link, the consumer encountered
     // an unlinked gap and correctly returned std::nullopt to prevent corrupted reads.
     //
     // This confirms that the Reactor saw an empty state and bypassed the queue
     // during this tick, meaning it would fall into a blocking sleep in production.
-    EXPECT_TRUE(processed_orders.empty())
-        << "Regression: The queue layout changed, breaking the Dmitry gap detection!";
+    EXPECT_TRUE(processed_orders.empty()) << "Regression: The queue layout changed, breaking the Dmitry gap detection!";
 
     // Un-stall Producer A now so it can finish its linkage and link the broken chain
     allow_producer_a_to_finish.store(true, std::memory_order_release);

@@ -130,9 +130,7 @@
 
 namespace pubsub_itc_fw::tests {
 
-// ============================================================
 // Test protocol constants
-// ============================================================
 
 static const std::string request_payload = "HELLO_RAW_SERVER";
 static const std::string response_payload = "HELLO_RAW_CLIENT";
@@ -140,9 +138,7 @@ static const std::string response_payload = "HELLO_RAW_CLIENT";
 static constexpr int64_t raw_buffer_capacity = 65536;
 static constexpr size_t length_prefix_size = sizeof(uint32_t);
 
-// ============================================================
 // Raw POSIX socket helpers
-// ============================================================
 
 namespace {
 
@@ -218,9 +214,7 @@ int connect_raw_socket(uint16_t port) {
     return fd;
 }
 
-// ============================================================
 // Test protocol decode helpers
-// ============================================================
 
 std::string try_decode_framed(const uint8_t* data, int available, int64_t& bytes_consumed) {
     bytes_consumed = 0;
@@ -259,9 +253,7 @@ int decode_all_framed(const uint8_t* data, int available, std::vector<std::strin
     return count;
 }
 
-// ============================================================
 // Application thread helpers
-// ============================================================
 
 ReactorConfiguration make_reactor_config() {
     ReactorConfiguration cfg{};
@@ -281,10 +273,8 @@ ReactorConfiguration make_short_idle_reactor_config() {
 
 } // un-named namespace
 
-// ============================================================
 // Listener thread: decodes one complete message then replies via send_raw().
 // Used by RawByteRoundTrip and FragmentedDelivery.
-// ============================================================
 class RawListenerThread : public ApplicationThread {
   public:
     RawListenerThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
@@ -357,10 +347,8 @@ class RawListenerThread : public ApplicationThread {
     int last_available_{0};
 };
 
-// ============================================================
 // Listener thread: decodes multiple messages from a burst.
 // Used by BurstDelivery.
-// ============================================================
 class BurstListenerThread : public ApplicationThread {
   public:
     BurstListenerThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, int expected_count)
@@ -439,10 +427,8 @@ class BurstListenerThread : public ApplicationThread {
     int64_t last_tail_{-1};
 };
 
-// ============================================================
 // Listener thread: tracks connection events only, does not consume bytes.
 // Used by PeerDisconnect, MultipleConnectionsAccepted, and IdleTimeout.
-// ============================================================
 class PassiveListenerThread : public ApplicationThread {
   public:
     PassiveListenerThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
@@ -471,9 +457,7 @@ class PassiveListenerThread : public ApplicationThread {
     void on_itc_message([[maybe_unused]] const EventMessage& msg) override {}
 };
 
-// ============================================================
 // Test fixture
-// ============================================================
 class RawBytesProtocolHandlerIntegrationTest : public ::testing::Test {
   protected:
     void SetUp() override {
@@ -556,9 +540,7 @@ class RawBytesProtocolHandlerIntegrationTest : public ::testing::Test {
     bool reactor_died_{false};
 };
 
-// ============================================================
 // Test: happy-path round-trip
-// ============================================================
 TEST_F(RawBytesProtocolHandlerIntegrationTest, RawByteRoundTrip) {
     const ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(make_reactor_config(), listener_registry, logger_->logger);
@@ -597,9 +579,7 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, RawByteRoundTrip) {
     shutdown_and_join(*listener_reactor, listener_reactor_thread);
 }
 
-// ============================================================
 // Test: fragmented delivery
-// ============================================================
 TEST_F(RawBytesProtocolHandlerIntegrationTest, FragmentedDelivery) {
     const ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(make_reactor_config(), listener_registry, logger_->logger);
@@ -648,9 +628,7 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, FragmentedDelivery) {
     shutdown_and_join(*listener_reactor, listener_reactor_thread);
 }
 
-// ============================================================
 // Test: burst delivery
-// ============================================================
 TEST_F(RawBytesProtocolHandlerIntegrationTest, BurstDelivery) {
     const std::vector<std::string> burst_payloads = {"MESSAGE_ONE", "MESSAGE_TWO", "MESSAGE_THREE", "MESSAGE_FOUR", "MESSAGE_FIVE"};
     const int expected_count = static_cast<int>(burst_payloads.size());
@@ -691,9 +669,7 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, BurstDelivery) {
     shutdown_and_join(*listener_reactor, listener_reactor_thread);
 }
 
-// ============================================================
 // Test: peer disconnect detected by listener (exercises recv==0 path)
-// ============================================================
 TEST_F(RawBytesProtocolHandlerIntegrationTest, PeerDisconnect) {
     const ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(make_reactor_config(), listener_registry, logger_->logger);
@@ -722,7 +698,6 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, PeerDisconnect) {
     shutdown_and_join(*listener_reactor, listener_reactor_thread);
 }
 
-// ============================================================
 // Test: FrameworkPdu listener accepts multiple concurrent connections.
 //
 // Previously the framework enforced a one-connection-per-listener rule for
@@ -731,7 +706,6 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, PeerDisconnect) {
 // by connecting two clients to a FrameworkPdu listener and confirming that
 // both receive ConnectionEstablished and that the first is not disturbed by
 // the second.
-// ============================================================
 TEST_F(RawBytesProtocolHandlerIntegrationTest, MultipleConnectionsAccepted) {
     const ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(make_reactor_config(), listener_registry, logger_->logger);
@@ -766,9 +740,7 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, MultipleConnectionsAccepted) {
     shutdown_and_join(*listener_reactor, listener_reactor_thread);
 }
 
-// ============================================================
 // Test: idle timeout teardown
-// ============================================================
 TEST_F(RawBytesProtocolHandlerIntegrationTest, IdleTimeout) {
     const ServiceRegistry listener_registry;
     auto listener_reactor = std::make_unique<Reactor>(make_short_idle_reactor_config(), listener_registry, logger_->logger);
@@ -796,11 +768,9 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, IdleTimeout) {
     shutdown_and_join(*listener_reactor, listener_reactor_thread);
 }
 
-// ============================================================
 // Listener thread: on receiving any message sends a large reply
 // (512 KB) to force a partial send. Used by LargeReplyContinueSend
 // and TeardownWhilePendingSendFreesChunk.
-// ============================================================
 
 static constexpr size_t large_reply_payload_size = 512 * 1024;
 static constexpr int tiny_rcvbuf_size = 4096;
@@ -858,9 +828,7 @@ class LargeReplyListenerThread : public ApplicationThread {
     std::string large_reply_;
 };
 
-// ============================================================
 // Test: large reply forces partial send, exercising continue_send().
-// ============================================================
 TEST_F(RawBytesProtocolHandlerIntegrationTest, LargeReplyContinueSend) {
     const ServiceRegistry listener_registry;
 
@@ -914,10 +882,8 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, LargeReplyContinueSend) {
     shutdown_and_join(*listener_reactor, listener_reactor_thread);
 }
 
-// ============================================================
 // Test: peer closes while partial send is in flight, exercising
 // deallocate_pending_send() via teardown_connection.
-// ============================================================
 TEST_F(RawBytesProtocolHandlerIntegrationTest, TeardownWhilePendingSendFreesChunk) {
     const ServiceRegistry listener_registry;
 

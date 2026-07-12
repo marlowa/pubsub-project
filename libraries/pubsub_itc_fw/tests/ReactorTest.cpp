@@ -38,19 +38,15 @@
 #include <pubsub_itc_fw/tests_common/LoggerWithSink.hpp>
 #include <pubsub_itc_fw/tests_common/MisbehavingThreads.hpp>
 
-// -----------------------------------------------------------------------------
 // Reactor initialization timeout test
-// -----------------------------------------------------------------------------
 
 using namespace pubsub_itc_fw;
 using namespace test_support;
 
 namespace {
 
-// ------------------------------------------------------------
 // Helpers: QueueConfiguration, AllocatorConfiguration
 // Note: the parameter values here are different from the helpers in TestConfigurations
-// ------------------------------------------------------------
 pubsub_itc_fw::QueueConfiguration make_queue_config() {
     pubsub_itc_fw::QueueConfiguration cfg{};
     cfg.low_watermark = 1;
@@ -164,9 +160,7 @@ class CooperativeShutdownThread : public ApplicationThread {
     }
 };
 
-// -----------------------------------------------------------------------------
 // A test ApplicationThread that records Init and AppReady events.
-// -----------------------------------------------------------------------------
 class TestApplicationThread : public ApplicationThread {
   public:
     TestApplicationThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, const std::string& name, ThreadID id,
@@ -271,9 +265,7 @@ TEST_F(ReactorTest, AllThreadsReceiveInitThenAppReady) {
     cfg.init_phase_timeout_ = std::chrono::milliseconds(2000);
     reactor_ = std::make_unique<Reactor>(cfg, service_registry_, logger_with_sink_.logger);
 
-    // -------------------------------------------------------------------------
     // Create two test threads
-    // -------------------------------------------------------------------------
     auto thread1 = ApplicationThread::create<TestApplicationThread>(logger_with_sink_.logger, *reactor_, "thread1", ThreadID{1}, make_queue_config(),
                                                                     make_allocator_config());
     auto thread2 = ApplicationThread::create<TestApplicationThread>(logger_with_sink_.logger, *reactor_, "thread2", ThreadID{2}, make_queue_config(),
@@ -289,9 +281,7 @@ TEST_F(ReactorTest, AllThreadsReceiveInitThenAppReady) {
         backoff.pause();
     }
 
-    // -------------------------------------------------------------------------
     // Wait until both threads have seen their Initial event.
-    // -------------------------------------------------------------------------
     backoff.reset();
     while (reactor_->is_running() &&
            (!thread1->saw_initial_event.load(std::memory_order_acquire) || !thread2->saw_initial_event.load(std::memory_order_acquire))) {
@@ -300,9 +290,7 @@ TEST_F(ReactorTest, AllThreadsReceiveInitThenAppReady) {
 
     EXPECT_TRUE(reactor_->is_running());
 
-    // -------------------------------------------------------------------------
     // Now wait until both threads have seen their AppReady event.
-    // -------------------------------------------------------------------------
     backoff.reset();
     while (reactor_->is_running() &&
            (!thread1->saw_app_ready_event.load(std::memory_order_acquire) || !thread2->saw_app_ready_event.load(std::memory_order_acquire))) {
@@ -310,18 +298,14 @@ TEST_F(ReactorTest, AllThreadsReceiveInitThenAppReady) {
     }
 
     EXPECT_TRUE(reactor_->is_running());
-    // -------------------------------------------------------------------------
     // Final assertions
-    // -------------------------------------------------------------------------
     EXPECT_TRUE(thread1->saw_initial_event.load());
     EXPECT_TRUE(thread2->saw_initial_event.load());
     EXPECT_TRUE(thread1->saw_app_ready_event.load());
     EXPECT_TRUE(thread2->saw_app_ready_event.load());
 }
 
-// -----------------------------------------------------------------------------
 // Reactor shutdown test: cooperative thread receives Termination event
-// -----------------------------------------------------------------------------
 
 TEST_F(ReactorTest, ShutdownBroadcastsTerminationAndThreadExits) {
     auto thread = ApplicationThread::create<CooperativeShutdownThread>(logger_with_sink_.logger, *reactor_, "ShutdownThread", ThreadID{123},
@@ -351,9 +335,7 @@ TEST_F(ReactorTest, ShutdownBroadcastsTerminationAndThreadExits) {
     EXPECT_FALSE(thread->is_running());
 }
 
-// -----------------------------------------------------------------------------
 // Reactor shutdown test: thread ignores Termination and never exits
-// -----------------------------------------------------------------------------
 
 TEST_F(ReactorTest, RogueThreadBlocksInITCMessageReactorStillShutsDown) {
     auto rogue = ApplicationThread::create<RogueITCThread>(logger_with_sink_.logger, *reactor_, "RogueThread", ThreadID{777}, make_queue_config(),
@@ -422,9 +404,7 @@ TEST_F(ReactorTest, ThreadThrowsDuringTerminationReactorStillShutsDown) {
     EXPECT_FALSE(bad_thread->is_running()); // Thread must have been shut down
 }
 
-// -----------------------------------------------------------------------------
 // Reactor shutdown test: thread throws during normal message processing
-// -----------------------------------------------------------------------------
 
 TEST_F(ReactorTest, ThreadThrowsDuringRunLoopReactorShutsDown) {
     auto bad_thread = ApplicationThread::create<ThrowingDuringRunThread>(logger_with_sink_.logger, *reactor_, "ThrowingRunLoopThread", ThreadID{999},

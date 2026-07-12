@@ -55,10 +55,8 @@ namespace pubsub_itc_fw {
 // Any PDU id both sides agree on; the record just carries a sequence number.
 static constexpr int16_t pdu_id_stream_record = 104;
 
-// ============================================================
 // Sender: listens for a connection, then streams record_count
 // WalAck PDUs, paced entirely by on_connection_writable().
-// ============================================================
 class StreamingSenderThread : public ApplicationThread {
   public:
     std::atomic<bool> all_sent{false};
@@ -101,11 +99,9 @@ class StreamingSenderThread : public ApplicationThread {
     ConnectionID connection_id_;
 };
 
-// ============================================================
 // Receiver: connects to the sender and consumes records, but
 // dawdles per record so the sender's socket fills (forcing the
 // EPOLLOUT path of the writable notification).
-// ============================================================
 class SlowReceiverThread : public ApplicationThread {
   public:
     std::atomic<bool> all_received{false};
@@ -178,10 +174,8 @@ class WritableNotificationTest : public ::testing::Test {
     std::unique_ptr<LoggerWithSink> logger_;
 };
 
-// ============================================================
 // Streaming a lot to a slow reader delivers everything in order,
 // driven by the writable notification.
-// ============================================================
 TEST_F(WritableNotificationTest, PacedStreamDeliversAllRecordsInOrder) {
     static constexpr int record_count = 100;
 

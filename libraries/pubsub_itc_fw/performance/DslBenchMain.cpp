@@ -8,9 +8,7 @@
 
 using namespace pubsub_itc_fw;
 
-// ------------------------------------------------------------
 // Timing helper
-// ------------------------------------------------------------
 template <typename F> long long measure_avg_ns(F&& fn, int iterations, long long& min_ns, long long& max_ns) {
     for (int i = 0; i < 100; ++i) {
         fn();
@@ -34,9 +32,7 @@ template <typename F> long long measure_avg_ns(F&& fn, int iterations, long long
     return total / iterations;
 }
 
-// ------------------------------------------------------------
 // Benchmark runner for a single encode/decode pair
-// ------------------------------------------------------------
 template <typename OwningMsg, typename ViewMsg> void benchmark_message(const char* name, OwningMsg& msg, int iterations) {
     uint8_t buffer[65536];
     size_t written = 0;
@@ -67,24 +63,18 @@ template <typename OwningMsg, typename ViewMsg> void benchmark_message(const cha
     std::cout << "  Decode avg: " << avg_dec << " ns  [min=" << min_dec << ", max=" << max_dec << "]\n";
 }
 
-// ------------------------------------------------------------
 // Main
-// ------------------------------------------------------------
 int main() {
     constexpr int iterations = 2000;
 
-    // ------------------------------------------------------------
     // SmallMessage
-    // ------------------------------------------------------------
     SmallMessage small{};
     small.name = "example-name";
     small.value = 12345;
 
     benchmark_message<SmallMessage, SmallMessageView>("SmallMessage", small, iterations);
 
-    // ------------------------------------------------------------
     // MediumMessage
-    // ------------------------------------------------------------
     MediumMessage medium{};
 
     static std::string_view tags[] = {"alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota", "kappa"};
@@ -95,9 +85,7 @@ int main() {
 
     benchmark_message<MediumMessage, MediumMessageView>("MediumMessage", medium, iterations);
 
-    // ------------------------------------------------------------
     // LargeMessage (list<list<string>>)
-    // ------------------------------------------------------------
     LargeMessage large{};
 
     static std::string_view group1[] = {"a", "b", "c"};

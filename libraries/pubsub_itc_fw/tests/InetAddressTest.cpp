@@ -26,9 +26,7 @@ namespace {
 
 class InetAddressTest : public ::testing::Test {};
 
-// ============================================================
 // create(string, port) -- IPv4 happy path
-// ============================================================
 
 TEST_F(InetAddressTest, CreateFromIpv4StringSucceeds) {
     auto [addr, error] = InetAddress::create("127.0.0.1", 8080);
@@ -63,9 +61,7 @@ TEST_F(InetAddressTest, CreateFromAllZerosAddressSucceeds) {
     EXPECT_TRUE(error.empty());
 }
 
-// ============================================================
 // create(string, port) -- IPv6 happy path
-// ============================================================
 
 TEST_F(InetAddressTest, CreateFromIpv6StringSucceeds) {
     auto [addr, error] = InetAddress::create("::1", 8080);
@@ -97,9 +93,7 @@ TEST_F(InetAddressTest, Ipv6GetPortReturnsCorrectValue) {
     EXPECT_EQ(addr->get_port(), 5555);
 }
 
-// ============================================================
 // create(string, port) -- error path
-// ============================================================
 
 TEST_F(InetAddressTest, CreateFromInvalidHostnameReturnsError) {
     auto [addr, error] = InetAddress::create("this.hostname.does.not.exist.invalid", 80);
@@ -107,9 +101,7 @@ TEST_F(InetAddressTest, CreateFromInvalidHostnameReturnsError) {
     EXPECT_FALSE(error.empty());
 }
 
-// ============================================================
 // create(sockaddr*, socklen_t) -- happy path
-// ============================================================
 
 TEST_F(InetAddressTest, CreateFromSockaddrIpv4Succeeds) {
     sockaddr_in sa{};
@@ -140,9 +132,7 @@ TEST_F(InetAddressTest, CreateFromSockaddrIpv6Succeeds) {
     EXPECT_EQ(addr->get_port(), 4444);
 }
 
-// ============================================================
 // create(sockaddr*, socklen_t) -- error paths
-// ============================================================
 
 TEST_F(InetAddressTest, CreateFromNullSockaddrReturnsError) {
     auto [addr, error] = InetAddress::create(nullptr, sizeof(sockaddr_in));
@@ -164,9 +154,7 @@ TEST_F(InetAddressTest, CreateFromOversizedSockaddrReturnsError) {
     EXPECT_FALSE(error.empty());
 }
 
-// ============================================================
 // is_equal
-// ============================================================
 
 TEST_F(InetAddressTest, EqualAddressesCompareEqual) {
     auto [a, e1] = InetAddress::create("127.0.0.1", 9000);
@@ -217,9 +205,7 @@ TEST_F(InetAddressTest, DifferentIpv6AddressesCompareNotEqual) {
     EXPECT_FALSE(a->is_equal(*b));
 }
 
-// ============================================================
 // is_less_than
-// ============================================================
 
 TEST_F(InetAddressTest, LowerPortIsLessThan) {
     auto [a, e1] = InetAddress::create("127.0.0.1", 1000);

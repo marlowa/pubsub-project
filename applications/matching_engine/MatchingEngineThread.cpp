@@ -3,8 +3,8 @@
 
 #include "MatchingEngineThread.hpp"
 
-#include <chrono>
 #include <cerrno>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 
@@ -106,8 +106,7 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
     } else if (svc == "me_secondary_replication") {
         // Primary: outbound connection to ME-secondary's replication listener established.
         secondary_replication_conn_id_ = id;
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "MatchingEngineThread: ME-secondary replication connection {} established", id.get_value());
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: ME-secondary replication connection {} established", id.get_value());
     } else if (svc == "arbiter_primary") {
         const bool first_arbiter = !arbiter_primary_conn_id_.is_valid() && !arbiter_secondary_conn_id_.is_valid();
         arbiter_primary_conn_id_ = id;
@@ -127,8 +126,7 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
         // Secondary: inbound connection from ME-primary (book replication channel).
         primary_replication_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "MatchingEngineThread: ME-primary replication connection {} established -- replica book will be updated",
-                   id.get_value());
+                   "MatchingEngineThread: ME-primary replication connection {} established -- replica book will be updated", id.get_value());
         // Slice C: if a promotion was pending (primary had dropped and we armed
         // the timeout), the primary has reconnected first -- cancel the promotion.
         if (promotion_pending_) {
@@ -142,8 +140,7 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
         // mode this is idle (order PDUs are discarded). If we are already RECONCILING
         // when the sequencer connects, begin WAL catch-up immediately.
         sequencer_order_conn_ids_.insert(id);
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "MatchingEngineThread: secondary sequencer order connection {} established (state={})",
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: secondary sequencer order connection {} established (state={})",
                    id.get_value(), static_cast<int>(ha_role_state_));
         if (ha_role_state_ == MeRole::Reconciling) {
             begin_reconciliation();
@@ -151,30 +148,29 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
     } else {
         // Primary (or non-HA) inbound order connection from the sequencer.
         sequencer_order_conn_ids_.insert(id);
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "MatchingEngineThread: inbound sequencer order connection {} established", id.get_value());
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: inbound sequencer order connection {} established", id.get_value());
     }
 }
 
-void MatchingEngineThread::on_connection_lost(const pubsub_itc_fw::ConnectionID &id, const std::string& reason) {
+void MatchingEngineThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, const std::string& reason) {
     if (id == sequencer_er_conn_id_) {
         sequencer_er_conn_id_ = pubsub_itc_fw::ConnectionID{};
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "MatchingEngineThread: primary sequencer ER connection {} lost: {}", id.get_value(), reason);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: primary sequencer ER connection {} lost: {}", id.get_value(),
+                   reason);
     } else if (id == sequencer_er_secondary_conn_id_) {
         sequencer_er_secondary_conn_id_ = pubsub_itc_fw::ConnectionID{};
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "MatchingEngineThread: secondary sequencer ER connection {} lost: {}", id.get_value(), reason);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: secondary sequencer ER connection {} lost: {}", id.get_value(),
+                   reason);
     } else if (id == secondary_replication_conn_id_) {
         secondary_replication_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "MatchingEngineThread: ME-secondary replication connection {} lost: {} -- book updates paused until secondary reconnects",
-                   id.get_value(), reason);
+                   "MatchingEngineThread: ME-secondary replication connection {} lost: {} -- book updates paused until secondary reconnects", id.get_value(),
+                   reason);
     } else if (id == primary_replication_conn_id_) {
         primary_replication_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "MatchingEngineThread: ME-primary replication connection {} lost: {} -- replica book is now stale (last seq={})",
-                   id.get_value(), reason, last_replicated_seq_no_);
+                   "MatchingEngineThread: ME-primary replication connection {} lost: {} -- replica book is now stale (last seq={})", id.get_value(), reason,
+                   last_replicated_seq_no_);
         // Slice C: primary loss on the follower triggers arbiter-mediated promotion.
         // Arm the promotion timer; if the primary reconnects before it fires we cancel it.
         if (ha_role_state_ == MeRole::Follower) {
@@ -198,11 +194,10 @@ void MatchingEngineThread::on_connection_lost(const pubsub_itc_fw::ConnectionID 
         }
     } else if (sequencer_order_conn_ids_.count(id) > 0) {
         sequencer_order_conn_ids_.erase(id);
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "MatchingEngineThread: inbound sequencer order connection {} lost: {}", id.get_value(), reason);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: inbound sequencer order connection {} lost: {}", id.get_value(),
+                   reason);
     } else {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "MatchingEngineThread: inbound connection {} lost: {}", id.get_value(), reason);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: inbound connection {} lost: {}", id.get_value(), reason);
     }
 }
 
@@ -245,8 +240,8 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
     if (is_order_pdu && ha_role_state_ == MeRole::Follower) {
         // Passive follower: order PDUs from the sequencer are discarded (the primary
         // is authoritative; the follower's book is maintained via BookUpdate replication).
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
-                   "MatchingEngineThread: FOLLOWER -- discarding order PDU pdu_id={} on connection {}", pdu_id, message.connection_id().get_value());
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MatchingEngineThread: FOLLOWER -- discarding order PDU pdu_id={} on connection {}", pdu_id,
+                   message.connection_id().get_value());
         release_pdu_payload(message);
         return;
     }
@@ -284,7 +279,7 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
     } else if (pdu_id == pdu_book_update) {
         // BookUpdate from ME-primary -- secondary updates its replica book.
         apply_book_update(message);
-        return;  // apply_book_update calls release_pdu_payload internally.
+        return; // apply_book_update calls release_pdu_payload internally.
     } else {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: unsupported sequenced PDU id {} -- dropping", pdu_id);
     }
@@ -300,7 +295,7 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
         const int32_t recon_session_id = view.has_gateway_session_conn_id ? view.gateway_session_conn_id : 0;
         const OrderKey recon_key = OrderKey::make(recon_session_id, view.cl_ord_id);
         if (order_book_.count(recon_key)) {
-            return;  // duplicate during replay -- ignore
+            return; // duplicate during replay -- ignore
         }
         OrderEntry recon_entry{};
         recon_entry.order_id_num = ++order_id_counter_;
@@ -314,8 +309,8 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
         }
         recon_entry.gateway_session_conn_id = recon_session_id;
         order_book_.emplace(recon_key, recon_entry);
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
-                   "MatchingEngineThread: RECONCILING apply NOS seq={} cl_ord_id={} book_size={}", sequence_number, view.cl_ord_id, order_book_.size());
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MatchingEngineThread: RECONCILING apply NOS seq={} cl_ord_id={} book_size={}",
+                   sequence_number, view.cl_ord_id, order_book_.size());
         return;
     }
 
@@ -379,8 +374,7 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
     order_book_.emplace(order_key, entry);
 
     // Replicate the new entry to ME-secondary.
-    send_book_update(sequence_number, pubsub_itc_fw_app::BookUpdateType::Add,
-                     session_id, view.cl_ord_id, &entry);
+    send_book_update(sequence_number, pubsub_itc_fw_app::BookUpdateType::Add, session_id, view.cl_ord_id, &entry);
 
     pubsub_itc_fw_app::ExecutionReport er{};
     er.order_id = order_id;
@@ -415,8 +409,7 @@ void MatchingEngineThread::handle_order_cancel_request(const pubsub_itc_fw_app::
         const int32_t recon_session_id = view.has_gateway_session_conn_id ? view.gateway_session_conn_id : 0;
         const OrderKey recon_key = OrderKey::make(recon_session_id, view.orig_cl_ord_id);
         order_book_.erase(recon_key);
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
-                   "MatchingEngineThread: RECONCILING apply OCR seq={} orig_cl_ord_id={} book_size={}",
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MatchingEngineThread: RECONCILING apply OCR seq={} orig_cl_ord_id={} book_size={}",
                    sequence_number, view.orig_cl_ord_id, order_book_.size());
         return;
     }
@@ -469,8 +462,7 @@ void MatchingEngineThread::handle_order_cancel_request(const pubsub_itc_fw_app::
     order_book_.erase(it);
 
     // Replicate the removal to ME-secondary.
-    send_book_update(sequence_number, pubsub_itc_fw_app::BookUpdateType::Remove,
-                     session_id, view.orig_cl_ord_id, nullptr);
+    send_book_update(sequence_number, pubsub_itc_fw_app::BookUpdateType::Remove, session_id, view.orig_cl_ord_id, nullptr);
 
     // Format order_id from the stored counter value.
     std::array<char, 32> order_id_buf{};
@@ -521,7 +513,7 @@ void MatchingEngineThread::on_timer_event(const std::string& name) {
         // Slice C: the primary did not reconnect in time. Request arbitration.
         promotion_pending_ = false;
         if (ha_role_state_ != MeRole::Follower) {
-            return;  // state changed (e.g. primary reconnected) -- nothing to do
+            return; // state changed (e.g. primary reconnected) -- nothing to do
         }
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                        "MatchingEngineThread: promotion timeout fired -- requesting arbitration from arbiter pool");
@@ -537,37 +529,33 @@ void MatchingEngineThread::on_timer_event(const std::string& name) {
 
 void MatchingEngineThread::on_itc_message([[maybe_unused]] const pubsub_itc_fw::EventMessage& message) {}
 
-void MatchingEngineThread::send_book_update(int64_t seq_no,
-                                             pubsub_itc_fw_app::BookUpdateType update_type,
-                                             int32_t session_id,
-                                             std::string_view cl_ord_id,
-                                             const OrderEntry* entry) {
+void MatchingEngineThread::send_book_update(int64_t seq_no, pubsub_itc_fw_app::BookUpdateType update_type, int32_t session_id, std::string_view cl_ord_id,
+                                            const OrderEntry* entry) {
     if (!ha_enabled_ || !is_primary_ || !secondary_replication_conn_id_.is_valid()) {
         return;
     }
 
     pubsub_itc_fw_app::BookUpdate upd{};
-    upd.seq_no      = seq_no;
+    upd.seq_no = seq_no;
     upd.update_type = static_cast<int8_t>(update_type);
-    upd.session_id  = session_id;
-    upd.cl_ord_id   = cl_ord_id;
+    upd.session_id = session_id;
+    upd.cl_ord_id = cl_ord_id;
 
     if (entry != nullptr) {
         upd.order_id_num = entry->order_id_num;
-        upd.side         = static_cast<int8_t>(entry->side);
-        upd.ord_type     = static_cast<int8_t>(entry->ord_type);
-        upd.symbol       = entry->get_symbol();
-        upd.order_qty    = entry->get_order_qty();
+        upd.side = static_cast<int8_t>(entry->side);
+        upd.ord_type = static_cast<int8_t>(entry->ord_type);
+        upd.symbol = entry->get_symbol();
+        upd.order_qty = entry->get_order_qty();
         if (entry->has_price) {
             upd.has_price = true;
-            upd.price     = entry->get_price();
+            upd.price = entry->get_price();
         }
     }
 
     send_pdu(secondary_replication_conn_id_, pdu_book_update, seq_no, upd);
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
-               "MatchingEngineThread: BookUpdate sent seq={} type={} session={} cl_ord_id={}",
-               seq_no, static_cast<int>(update_type), session_id, cl_ord_id);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MatchingEngineThread: BookUpdate sent seq={} type={} session={} cl_ord_id={}", seq_no,
+               static_cast<int>(update_type), session_id, cl_ord_id);
 }
 
 void MatchingEngineThread::apply_book_update(const pubsub_itc_fw::EventMessage& message) {
@@ -578,10 +566,8 @@ void MatchingEngineThread::apply_book_update(const pubsub_itc_fw::EventMessage& 
     size_t bytes_consumed = 0;
     pubsub_itc_fw_app::BookUpdateView view{};
 
-    if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()),
-                                    bytes_consumed, arena, arena_bytes_needed)) {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                       "MatchingEngineThread: failed to decode BookUpdate -- dropping");
+    if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode BookUpdate -- dropping");
         release_pdu_payload(message);
         return;
     }
@@ -593,8 +579,8 @@ void MatchingEngineThread::apply_book_update(const pubsub_itc_fw::EventMessage& 
         OrderEntry entry{};
         entry.order_id_num = view.order_id_num;
         entry.gateway_session_conn_id = view.session_id;
-        entry.side         = static_cast<pubsub_itc_fw_app::Side>(view.side);
-        entry.ord_type     = static_cast<pubsub_itc_fw_app::OrdType>(view.ord_type);
+        entry.side = static_cast<pubsub_itc_fw_app::Side>(view.side);
+        entry.ord_type = static_cast<pubsub_itc_fw_app::OrdType>(view.ord_type);
         entry.set_symbol(view.symbol);
         entry.set_order_qty(view.order_qty);
         entry.has_price = view.has_price;
@@ -602,17 +588,14 @@ void MatchingEngineThread::apply_book_update(const pubsub_itc_fw::EventMessage& 
             entry.set_price(view.price);
         }
         order_book_.insert_or_assign(key, entry);
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
-                   "MatchingEngineThread: replica Add seq={} cl_ord_id={} book_size={}",
-                   view.seq_no, view.cl_ord_id, order_book_.size());
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MatchingEngineThread: replica Add seq={} cl_ord_id={} book_size={}", view.seq_no,
+                   view.cl_ord_id, order_book_.size());
     } else if (update_type == pubsub_itc_fw_app::BookUpdateType::Remove) {
         order_book_.erase(key);
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
-                   "MatchingEngineThread: replica Remove seq={} cl_ord_id={} book_size={}",
-                   view.seq_no, view.cl_ord_id, order_book_.size());
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MatchingEngineThread: replica Remove seq={} cl_ord_id={} book_size={}", view.seq_no,
+                   view.cl_ord_id, order_book_.size());
     } else {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "MatchingEngineThread: unknown BookUpdate type {} -- dropping", view.update_type);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: unknown BookUpdate type {} -- dropping", view.update_type);
     }
 
     const int64_t prev_seq = last_replicated_seq_no_;
@@ -621,16 +604,13 @@ void MatchingEngineThread::apply_book_update(const pubsub_itc_fw::EventMessage& 
     // Log the first update and every 10,000 seq_nos so progress is visible
     // without flooding the log at Info level.
     if (prev_seq == 0 || view.seq_no % 10000 == 0) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "MatchingEngineThread: replica book seq={} size={}", view.seq_no, order_book_.size());
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: replica book seq={} size={}", view.seq_no, order_book_.size());
     }
 
     release_pdu_payload(message);
 }
 
-// ---------------------------------------------------------------------------
 // HA state machine (Slice C+D)
-// ---------------------------------------------------------------------------
 
 void MatchingEngineThread::adopt_leader_role() {
     if (ha_role_state_ == MeRole::Leader) {
@@ -667,8 +647,7 @@ void MatchingEngineThread::send_arbitration_report() {
         begin_reconciliation();
         return;
     }
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "MatchingEngineThread: ArbitrationReport sent (self_instance_id={} peer_instance_id={} epoch={})",
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: ArbitrationReport sent (self_instance_id={} peer_instance_id={} epoch={})",
                report.self_instance_id, report.peer_instance_id, report.epoch);
 }
 
@@ -702,8 +681,7 @@ void MatchingEngineThread::handle_arbitration_decision(const pubsub_itc_fw::Even
     // (Leader): re-running reconciliation would wrongly cancel orders accepted
     // after the first promotion completed.
     if (ha_role_state_ == MeRole::Reconciling || ha_role_state_ == MeRole::Leader) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "MatchingEngineThread: already {} -- ignoring duplicate ArbitrationDecision",
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: already {} -- ignoring duplicate ArbitrationDecision",
                    ha_role_state_ == MeRole::Leader ? "LEADER" : "RECONCILING");
         return;
     }
@@ -756,16 +734,14 @@ void MatchingEngineThread::write_fence_file() const {
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: fence file written: {}", path);
 }
 
-// ---------------------------------------------------------------------------
 // WAL reconciliation (Slice D)
-// ---------------------------------------------------------------------------
 
 void MatchingEngineThread::begin_reconciliation() {
     // Cancel the promotion timer (it fired or arbitration is complete).
     cancel_timer(timer_promotion_timeout);
     ha_role_state_ = MeRole::Reconciling;
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "MatchingEngineThread: entering RECONCILING (last_replicated_seq_no={}, book_size={})", last_replicated_seq_no_, order_book_.size());
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: entering RECONCILING (last_replicated_seq_no={}, book_size={})",
+               last_replicated_seq_no_, order_book_.size());
 
     // The sequencers connect to our (now-listening) order port. If at least one is
     // already connected, request WAL catch-up immediately; otherwise
@@ -793,8 +769,8 @@ void MatchingEngineThread::send_me_position_request() {
     request.last_seq_no = last_replicated_seq_no_;
     for (const auto& conn_id : sequencer_order_conn_ids_) {
         send_pdu(conn_id, pdu_me_position_request, 0, request);
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "MatchingEngineThread: MePositionRequest sent to connection {} (last_seq_no={})", conn_id.get_value(), last_replicated_seq_no_);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: MePositionRequest sent to connection {} (last_seq_no={})",
+                   conn_id.get_value(), last_replicated_seq_no_);
     }
 }
 
@@ -816,26 +792,25 @@ void MatchingEngineThread::handle_me_position_ack(const pubsub_itc_fw::EventMess
     // just won an election) can still arrive after we have promoted; ignore it
     // rather than re-running cancel-on-failover.
     if (ha_role_state_ != MeRole::Reconciling) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "MatchingEngineThread: already promoted (state={}) -- ignoring duplicate MePositionAck", static_cast<int>(ha_role_state_));
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: already promoted (state={}) -- ignoring duplicate MePositionAck",
+                   static_cast<int>(ha_role_state_));
         return;
     }
 
     last_replicated_seq_no_ = ack.last_seq_no;
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "MatchingEngineThread: MePositionAck received -- book reconciled to seq_no={} (book_size={})", ack.last_seq_no, order_book_.size());
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: MePositionAck received -- book reconciled to seq_no={} (book_size={})",
+               ack.last_seq_no, order_book_.size());
 
     // Cancel-on-failover: cancel every live order before resuming as leader.
     cancel_all_orders_on_failover();
 
     // Transition to LEADER -- normal processing begins.
-    ha_role_state_ = MeRole::Unknown;  // clear reconciling so adopt_leader_role proceeds
+    ha_role_state_ = MeRole::Unknown; // clear reconciling so adopt_leader_role proceeds
     adopt_leader_role();
 }
 
 void MatchingEngineThread::cancel_all_orders_on_failover() {
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "MatchingEngineThread: cancel-on-failover -- cancelling {} live order(s)", order_book_.size());
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: cancel-on-failover -- cancelling {} live order(s)", order_book_.size());
 
     const int64_t now_ns = config_.wall_clock->now_ns();
     size_t cancelled = 0;
@@ -881,8 +856,8 @@ void MatchingEngineThread::cancel_all_orders_on_failover() {
     }
 
     order_book_.clear();
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "MatchingEngineThread: cancel-on-failover complete -- {} cancel ER(s) sent, book cleared", cancelled);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: cancel-on-failover complete -- {} cancel ER(s) sent, book cleared",
+               cancelled);
 }
 
 } // namespaces

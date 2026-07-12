@@ -21,10 +21,6 @@
 
 namespace matching_engine_publisher {
 
-// ---------------------------------------------------------------------------
-// PDU ID constants
-// ---------------------------------------------------------------------------
-
 static constexpr int16_t pdu_status_query = 100;
 static constexpr int16_t pdu_status_response = 101;
 static constexpr int16_t pdu_heartbeat = 102;
@@ -45,10 +41,6 @@ static constexpr int16_t pdu_arbitration_decision = 201;
 // registry (topics_registry.hpp, from pubsub.dsl): pubsub_itc_fw_app::Topic,
 // topic_from_name(), pdu_in_topic(). No topic names or application pdu ids are
 // hardcoded here.
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 namespace {
 
@@ -72,10 +64,6 @@ pubsub_itc_fw::AllocatorConfiguration make_allocator_config(const MatchingEngine
 
 } // namespaces
 
-// ---------------------------------------------------------------------------
-// Constructor
-// ---------------------------------------------------------------------------
-
 MatchingEnginePublisherThread::MatchingEnginePublisherThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger,
                                                              pubsub_itc_fw::Reactor& reactor, const MatchingEnginePublisherConfiguration& config)
     : ApplicationThread(token, logger, reactor, "MepThread", pubsub_itc_fw::ThreadID{1}, make_queue_config(), make_allocator_config(config, logger),
@@ -91,10 +79,6 @@ MatchingEnginePublisherThread::MatchingEnginePublisherThread(pubsub_itc_fw::Appl
     , er_publisher_(
           *this, std::string(pubsub_itc_fw_app::to_string(pubsub_itc_fw_app::Topic::execution_reports)),
           [](int16_t pdu_id) { return pubsub_itc_fw_app::pdu_in_topic(pdu_id, pubsub_itc_fw_app::Topic::execution_reports); }, config.wal_directory) {}
-
-// ---------------------------------------------------------------------------
-// Lifecycle
-// ---------------------------------------------------------------------------
 
 void MatchingEnginePublisherThread::on_initial_event() {
     const int64_t recovered_seq = wal_.open(config_.wal_directory, config_.wal_segment_size, nullptr);
@@ -131,10 +115,6 @@ void MatchingEnginePublisherThread::on_app_ready_event() {
         connect_to_service("peer");
     }
 }
-
-// ---------------------------------------------------------------------------
-// Connection events
-// ---------------------------------------------------------------------------
 
 void MatchingEnginePublisherThread::on_connection_established(pubsub_itc_fw::ConnectionID id) {
     const std::string& svc = id.service_name();
@@ -223,10 +203,6 @@ void MatchingEnginePublisherThread::on_connection_writable(pubsub_itc_fw::Connec
     er_publisher_.on_connection_writable(id);
 }
 
-// ---------------------------------------------------------------------------
-// PDU dispatch
-// ---------------------------------------------------------------------------
-
 void MatchingEnginePublisherThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message) {
     const pubsub_itc_fw::ConnectionID& conn_id = message.connection_id();
     const std::string& svc = conn_id.service_name();
@@ -276,10 +252,6 @@ void MatchingEnginePublisherThread::on_framework_pdu_message(const pubsub_itc_fw
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: PDU on unrecognised connection {} ({}) -- dropping", conn_id.get_value(), svc);
     release_pdu_payload(message);
 }
-
-// ---------------------------------------------------------------------------
-// Timer events
-// ---------------------------------------------------------------------------
 
 void MatchingEnginePublisherThread::on_timer_event(const std::string& name) {
     if (name == "wal_snapshot") {
@@ -331,9 +303,7 @@ void MatchingEnginePublisherThread::on_timer_event(const std::string& name) {
 
 void MatchingEnginePublisherThread::on_itc_message([[maybe_unused]] const pubsub_itc_fw::EventMessage& message) {}
 
-// ---------------------------------------------------------------------------
 // HA state machine (same pattern as SequencerThread)
-// ---------------------------------------------------------------------------
 
 pubsub_itc_fw::ConnectionID MatchingEnginePublisherThread::peer_active_conn() const {
     return peer_conn_id_.is_valid() ? peer_conn_id_ : peer_inbound_conn_id_;
@@ -552,10 +522,6 @@ void MatchingEnginePublisherThread::handle_arbitration_decision(const pubsub_itc
     }
 }
 
-// ---------------------------------------------------------------------------
-// WAL follower helpers
-// ---------------------------------------------------------------------------
-
 void MatchingEnginePublisherThread::handle_wal_subscribe_ack(const pubsub_itc_fw::EventMessage& message) {
     auto& arena_buf = decode_arena_buffer();
     pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
@@ -598,10 +564,6 @@ void MatchingEnginePublisherThread::handle_wal_record_from_sequencer(const pubsu
     orders_publisher_.notify_record_appended(view.seq_no, view.pdu_id);
     er_publisher_.notify_record_appended(view.seq_no, view.pdu_id);
 }
-
-// ---------------------------------------------------------------------------
-// Topic publisher helpers
-// ---------------------------------------------------------------------------
 
 void MatchingEnginePublisherThread::handle_topic_subscribe_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
     auto& arena_buf = decode_arena_buffer();
@@ -664,9 +626,7 @@ void MatchingEnginePublisherThread::set_publishers_leader(bool is_leader) {
     er_publisher_.set_leader(is_leader);
 }
 
-// ---------------------------------------------------------------------------
 // TopicPublisherHost -- each publisher decides what to send; this thread does it
-// ---------------------------------------------------------------------------
 
 void MatchingEnginePublisherThread::topic_send_subscribe_ack(pubsub_itc_fw::ConnectionID connection_id, const pubsub_itc_fw_app::TopicSubscribeAck& ack) {
     send_pdu(connection_id, pdu_topic_subscribe_ack, 0, ack);

@@ -60,9 +60,7 @@ class FixedSizeMemoryPoolTest : public ::testing::Test {
     }
 };
 
-// ------------------------------------------------------------
 // Basic allocate/deallocate and capacity behaviour
-// ------------------------------------------------------------
 
 TEST_F(FixedSizeMemoryPoolTest, BasicAllocateDeallocate) {
     const int capacity = 16;
@@ -93,9 +91,7 @@ TEST_F(FixedSizeMemoryPoolTest, BasicAllocateDeallocate) {
     EXPECT_EQ(pool.get_number_of_available_objects(), capacity);
 }
 
-// ------------------------------------------------------------
 // Randomised allocation/deallocation order, reuse of all slots
-// ------------------------------------------------------------
 
 TEST_F(FixedSizeMemoryPoolTest, RandomisedReuse) {
     const int capacity = 32;
@@ -135,9 +131,7 @@ TEST_F(FixedSizeMemoryPoolTest, RandomisedReuse) {
     }
 }
 
-// ------------------------------------------------------------
 // contains() correctness and boundary conditions
-// ------------------------------------------------------------
 
 TEST_F(FixedSizeMemoryPoolTest, ContainsCorrectness) {
     const int capacity = 8;
@@ -174,9 +168,7 @@ TEST_F(FixedSizeMemoryPoolTest, ContainsCorrectness) {
     }
 }
 
-// ------------------------------------------------------------
 // Slot layout invariants: slot_from_object / object_from_slot
-// ------------------------------------------------------------
 
 TEST_F(FixedSizeMemoryPoolTest, SlotLayoutRoundTrip) {
     const int capacity = 4;
@@ -316,9 +308,7 @@ TEST_F(FixedSizeMemoryPoolTest, DirectAbaStress) {
     }
 }
 
-// ------------------------------------------------------------
 // Huge pages behaviour: handler is called on fallback (best-effort)
-// ------------------------------------------------------------
 
 TEST_F(FixedSizeMemoryPoolTest, HugePagesHandlerIsCallable) {
     const int capacity = 4;

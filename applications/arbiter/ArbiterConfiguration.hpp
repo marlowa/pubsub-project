@@ -28,9 +28,7 @@ namespace arbiter {
  * See pubsub_itc_fw_topology.puml for the authoritative topology.
  */
 struct ArbiterConfiguration {
-    // ----------------------------------------------------------------
     // Inbound -- component connections (sequencer pair, ME pair)
-    // ----------------------------------------------------------------
 
     /** @brief Host address on which the arbiter listens for component connections. */
     std::string listen_host{"127.0.0.1"};
@@ -38,9 +36,7 @@ struct ArbiterConfiguration {
     /** @brief TCP port on which the arbiter listens for component connections. */
     uint16_t listen_port{7200};
 
-    // ----------------------------------------------------------------
     // HA -- arbiter identity and peer arbiter connection
-    // ----------------------------------------------------------------
 
     /** @brief Unique integer identifier for this arbiter instance. Lowest wins active role. */
     int32_t instance_id{1};
@@ -57,9 +53,7 @@ struct ArbiterConfiguration {
     /** @brief TCP port of the peer arbiter's peer listener (7204 primary, 7203 secondary). */
     uint16_t peer_port{7204};
 
-    // ----------------------------------------------------------------
     // Witness -- for arbiter-vs-arbiter tie-breaking
-    // ----------------------------------------------------------------
 
     /** @brief Host address of the witness process. */
     std::string witness_host{"127.0.0.1"};
@@ -67,9 +61,7 @@ struct ArbiterConfiguration {
     /** @brief TCP port of the witness process. */
     uint16_t witness_port{7100};
 
-    // ----------------------------------------------------------------
     // Timing
-    // ----------------------------------------------------------------
 
     /** @brief How often this arbiter sends Heartbeat PDUs to the peer, in seconds. */
     int32_t heartbeat_interval_seconds{5};
@@ -98,9 +90,7 @@ struct ArbiterConfiguration {
     /** @brief Path to the file written when this arbiter promotes itself to active. */
     std::string fence_file_path{"/dev/shm/arbiter_fence"};
 
-    // ----------------------------------------------------------------
     // Logging
-    // ----------------------------------------------------------------
 
     /** @brief Minimum severity written to the application log file. */
     pubsub_itc_fw::FwLogLevel applog_level{pubsub_itc_fw::FwLogLevel::Info};
@@ -108,9 +98,7 @@ struct ArbiterConfiguration {
     /** @brief Minimum severity written to syslog. */
     pubsub_itc_fw::FwLogLevel syslog_level{pubsub_itc_fw::FwLogLevel::Info};
 
-    // ----------------------------------------------------------------
     // Reactor
-    // ----------------------------------------------------------------
 
     /** @brief Enable CPU core pinning for registered application threads. */
     bool cpu_pinning_enabled;
@@ -125,9 +113,7 @@ struct ArbiterConfiguration {
     /** @brief How long to wait between "still disconnected" log warnings during outbound retry. */
     std::chrono::milliseconds connect_retry_warning_interval;
 
-    // ----------------------------------------------------------------
     // Event queue pool  (ApplicationThread inbound EventMessage queue)
-    // ----------------------------------------------------------------
 
     /** @brief Number of objects in each fixed-size memory pool slab. */
     int32_t event_queue_pool_objects_per_slab{64};
@@ -135,9 +121,7 @@ struct ArbiterConfiguration {
     /** @brief Number of event queue pool slabs pre-allocated at startup. */
     int32_t event_queue_pool_initial_slabs{1};
 
-    // ----------------------------------------------------------------
     // Command queue pool  (Reactor ReactorControlCommand outbound queue)
-    // ----------------------------------------------------------------
 
     /** @brief Number of objects in each fixed-size memory pool slab. */
     int32_t command_queue_pool_objects_per_slab{64};

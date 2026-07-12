@@ -75,10 +75,8 @@ static constexpr int16_t pdu_id_ocr = 1001; // OrderCancelRequest -> topic "orde
 
 static constexpr size_t wal_segment_size = 4096;
 
-// ============================================================
 // Publisher-side ApplicationThread: owns a TopicPublisher for
 // the "orders" topic and forwards the topic protocol to it.
-// ============================================================
 class TopicPublisherThread : public ApplicationThread, public TopicPublisherHost {
   public:
     // publish_after_subscribers > 0 arms a one-shot live publish of live_record_count
@@ -233,10 +231,8 @@ class TopicPublisherThread : public ApplicationThread, public TopicPublisherHost
     TopicPublisher publisher_;
 };
 
-// ============================================================
 // Subscriber-side ApplicationThread: owns a TopicSubscriberChannel
 // and delivers received records into a vector for the test to check.
-// ============================================================
 class TopicSubscriberThread : public ApplicationThread, public TopicSubscriberChannelHost {
   public:
     struct ReceivedRecord {
@@ -328,11 +324,9 @@ class TopicSubscriberThread : public ApplicationThread, public TopicSubscriberCh
     TopicSubscriberChannel channel_;
 };
 
-// ============================================================
 // A subscriber that opens BOTH the data and control channels --
 // two connections to the publisher's single port, distinguished
 // by role -- and records data records + control (TopicLagged) signals.
-// ============================================================
 class DualChannelSubscriberThread : public ApplicationThread, public TopicSubscriberChannelHost, public TopicControlChannelHost {
   public:
     struct ReceivedRecord {
@@ -466,9 +460,7 @@ class DualChannelSubscriberThread : public ApplicationThread, public TopicSubscr
     TopicControlChannel control_channel_;
 };
 
-// ============================================================
 // Test fixture
-// ============================================================
 class TopicPubSubTest : public ::testing::Test {
   protected:
     void SetUp() override {
@@ -541,10 +533,8 @@ class TopicPubSubTest : public ::testing::Test {
     std::string wal_dir_;
 };
 
-// ============================================================
 // Test 1: one publisher, one subscriber, three replayed records
 // received in seq_no order with correct payloads.
-// ============================================================
 TEST_F(TopicPubSubTest, SingleSubscriberReceivesReplayedRecordsInOrder) {
     static constexpr int record_count = 3;
     write_topic_wal_records(record_count);
@@ -602,10 +592,8 @@ TEST_F(TopicPubSubTest, SingleSubscriberReceivesReplayedRecordsInOrder) {
     }
 }
 
-// ============================================================
 // Test 2: two subscribers both receive every live-published
 // record (fanout via TopicPublisher::publish()).
-// ============================================================
 TEST_F(TopicPubSubTest, TwoSubscribersReceiveLiveFanout) {
     static constexpr int record_count = 3;
     // No pre-populated WAL: the publisher opens its own Wal and appends the records
@@ -669,10 +657,8 @@ TEST_F(TopicPubSubTest, TwoSubscribersReceiveLiveFanout) {
     }
 }
 
-// ============================================================
 // Test 3: two subscribers subscribing from different cursors get
 // different replay sets -- each subscriber's cursor is independent.
-// ============================================================
 TEST_F(TopicPubSubTest, TwoSubscribersHaveIndependentCursors) {
     write_topic_wal_records(3); // records with seq_no 1, 2, 3
 
@@ -730,11 +716,9 @@ TEST_F(TopicPubSubTest, TwoSubscribersHaveIndependentCursors) {
     }
 }
 
-// ============================================================
 // Test 4: a subscriber that disconnects mid-stream and reconnects
 // resumes exactly at its cursor -- no gap and no duplicate at the seam.
 // Same subscriber_id across both sessions (one logical subscriber).
-// ============================================================
 TEST_F(TopicPubSubTest, SubscriberReconnectResumesFromCursorWithoutGap) {
     // Two records exist when session 1 runs; three more are appended before the
     // reconnect. (Replay currently bursts all matching records, so each session
@@ -798,10 +782,8 @@ TEST_F(TopicPubSubTest, SubscriberReconnectResumesFromCursorWithoutGap) {
     }
 }
 
-// ============================================================
 // Test 5: a subscriber's data channel streams records while its
 // control channel receives an out-of-band TopicLagged signal.
-// ============================================================
 TEST_F(TopicPubSubTest, DualChannelStreamsDataAndDeliversControlSignal) {
     static constexpr int record_count = 3;
     write_topic_wal_records(record_count);
@@ -851,10 +833,8 @@ TEST_F(TopicPubSubTest, DualChannelStreamsDataAndDeliversControlSignal) {
     }
 }
 
-// ============================================================
 // Test 6: the two connections are one logical subscription --
 // dropping the data channel tears down the control channel.
-// ============================================================
 TEST_F(TopicPubSubTest, DroppingDataChannelTearsDownControlChannel) {
     static constexpr int record_count = 3;
     write_topic_wal_records(record_count);
@@ -893,11 +873,9 @@ TEST_F(TopicPubSubTest, DroppingDataChannelTearsDownControlChannel) {
     }
 }
 
-// ============================================================
 // Test 7: gap-on-resubscribe -- a request for a cursor older than
 // the retention window is clamped forward, and accepted_from_seq_no
 // tells the subscriber where the stream now starts.
-// ============================================================
 TEST_F(TopicPubSubTest, GapOnResubscribeClampsTooOldCursor) {
     static constexpr int64_t max_lag = 3;
 
@@ -942,11 +920,9 @@ TEST_F(TopicPubSubTest, GapOnResubscribeClampsTooOldCursor) {
     }
 }
 
-// ============================================================
 // Test 8: a subscriber whose ack cursor falls out of the retention
 // window is dropped with a best-effort TopicLagged, and its pair
 // (data + control) is torn down.
-// ============================================================
 TEST_F(TopicPubSubTest, SlowSubscriberIsLaggedOutAndDropped) {
     static constexpr int64_t max_lag = 3;
 
@@ -993,11 +969,9 @@ TEST_F(TopicPubSubTest, SlowSubscriberIsLaggedOutAndDropped) {
     }
 }
 
-// ============================================================
 // Test 9 (F2): a subscriber's periodic TopicAck is a truncation
 // cursor -- once it has consumed past a segment, the publisher
 // reclaims that segment from disk.
-// ============================================================
 TEST_F(TopicPubSubTest, SubscriberAcksReclaimConsumedWalSegments) {
     static constexpr int record_count = 12;
     static constexpr size_t small_segment = 128; // ~3 records/segment -> several segments
@@ -1051,11 +1025,9 @@ TEST_F(TopicPubSubTest, SubscriberAcksReclaimConsumedWalSegments) {
     }
 }
 
-// ============================================================
 // Test 10 (batching): when many records are already in the WAL, the
 // publisher packs them into a SINGLE TopicPage (one page per writable),
 // so the subscriber sees exactly one page carrying every record.
-// ============================================================
 TEST_F(TopicPubSubTest, AllAvailableRecordsArriveInOneBatchedPage) {
     static constexpr int record_count = 20;
     write_topic_wal_records(record_count);
@@ -1096,14 +1068,12 @@ TEST_F(TopicPubSubTest, AllAvailableRecordsArriveInOneBatchedPage) {
     }
 }
 
-// ============================================================
 // Test 11 (batching + F2): with a small per-page cap the records span
 // MANY pages. The subscriber acks part-way through the stream (every
 // ack_interval records -- well before the last page, so the ack does
 // not race any self-disconnect), which reclaims already-consumed WAL
 // segments while later pages are still arriving. Exercises both cursor
 // resume across page boundaries and progressive mid-stream truncation.
-// ============================================================
 TEST_F(TopicPubSubTest, MultiplePagesDeliverInOrderAndTruncateProgressively) {
     static constexpr int record_count = 12;
     static constexpr size_t small_segment = 128;      // ~3 records/segment -> several segments

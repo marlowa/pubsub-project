@@ -41,10 +41,8 @@ using namespace pubsub_itc_fw;
 
 namespace {
 
-// ------------------------------------------------------------
 // Helpers: QueueConfiguration, AllocatorConfiguration
 // Note: the parameter values here are different from the helpers in TestConfigurations
-// ------------------------------------------------------------
 QueueConfiguration make_queue_config() {
     QueueConfiguration cfg{};
     cfg.low_watermark = 1;
@@ -128,9 +126,7 @@ class ApplicationThreadTest : public ::testing::Test {
     std::unique_ptr<ThreadWithJoinTimeout> reactor_thread_;
 };
 
-// ------------------------------------------------------------
 // Test subclass of ApplicationThread
-// ------------------------------------------------------------
 class TestThread : public ApplicationThread {
   public:
     ~TestThread() override = default;
@@ -310,9 +306,7 @@ TEST_F(ApplicationThreadTest, ThreadIDOfZeroReserved) {
         PreconditionAssertion); // NOLINT(cppcoreguidelines-avoid-goto,hicpp-avoid-goto)
 }
 
-// ------------------------------------------------------------
 // TEST 1: Start and shutdown
-// ------------------------------------------------------------
 // What: Verifies that the thread transitions to running and then cleanly
 //       shuts down via ApplicationThread::shutdown.
 // Why:  Confirms the basic lifecycle wiring (start + shutdown) is correct.
@@ -334,9 +328,7 @@ TEST_F(ApplicationThreadTest, StartAndShutdown) {
     EXPECT_FALSE(thread->is_running());
 }
 
-// ------------------------------------------------------------
 // TEST 2: Message processing
-// ------------------------------------------------------------
 // What: Ensures that messages enqueued to the thread's queue are eventually
 //       processed by process_message.
 // Why:  Validates the basic producer/consumer path and that the internal
@@ -361,9 +353,7 @@ TEST_F(ApplicationThreadTest, MessageProcessing) {
     EXPECT_GE(thread->processed_count.load(), 2); // init and appReady
 }
 
-// ------------------------------------------------------------
 // TEST 3: Pause/resume
-// ------------------------------------------------------------
 // What: Verifies that pausing the thread prevents message processing until
 //       resume is called.
 // Why:  Confirms that the pause flag is honored by the run loop and that
@@ -399,9 +389,7 @@ TEST_F(ApplicationThreadTest, PauseResume) {
     thread->shutdown("done");
 }
 
-// ------------------------------------------------------------
 // TEST 4: Exception triggers Reactor shutdown
-// ------------------------------------------------------------
 // What: Ensures that an exception thrown from process_message causes the
 //       Reactor to be shut down and the thread to stop running.
 // Why:  This is the fatal-path contract: unhandled exceptions in the
@@ -442,9 +430,7 @@ TEST_F(ApplicationThreadTest, ExceptionTriggersShutdown) {
     join_reactor_or_die(std::chrono::milliseconds(500));
 }
 
-// ------------------------------------------------------------
 // TEST 5: Queue shutdown behavior
-// ------------------------------------------------------------
 // What: Verifies that once the queue is shut down, further messages are
 //       dropped and not processed.
 // Why:  Confirms the shutdown semantics of LockFreeMessageQueue and the
@@ -475,9 +461,7 @@ TEST_F(ApplicationThreadTest, QueueShutdownDropsMessages) {
     EXPECT_EQ(thread->processed_count.load(), 2); // init and appReady counts only
 }
 
-// ------------------------------------------------------------
 // TEST 6: Timestamp semantics
-// ------------------------------------------------------------
 // What: Checks that the timestamp setters/getters on ApplicationThread
 //       behave as simple value holders.
 // Why:  These timestamps are used for latency measurement; correctness
@@ -498,9 +482,7 @@ TEST_F(ApplicationThreadTest, TimestampSemantics) {
     EXPECT_EQ(thread->get_time_event_finished(), after);
 }
 
-// ------------------------------------------------------------
 // TEST 7: Logging verification
-// ------------------------------------------------------------
 // What: Ensures that the ApplicationThread emits at least one log message
 //       during its lifecycle (start/shutdown path).
 // Why:  Confirms that the logger wiring is live and that logs are routed
@@ -527,9 +509,7 @@ TEST_F(ApplicationThreadTest, LoggingVerification) {
     EXPECT_TRUE(logger_with_sink_.contains_message("shutdown log test"));
 }
 
-// ------------------------------------------------------------
 // TEST 8: Pause/resume under load
-// ------------------------------------------------------------
 // What: Stress-tests pause/resume semantics under a burst of messages.
 // Why:  Ensures that pausing under load does not lose messages and that
 //       they are processed once the thread is resumed.
@@ -568,9 +548,7 @@ TEST_F(ApplicationThreadTest, PauseResumeUnderLoad) {
     EXPECT_GT(thread->processed_count.load(), 2);
 }
 
-// ------------------------------------------------------------
 // TEST 9: Watermark transitions
-// ------------------------------------------------------------
 // What: Verifies that the high/low watermark handlers are invoked exactly
 //       once when the queue crosses the configured thresholds.
 // Why:  Confirms the hysteresis semantics of LockFreeMessageQueue and that
@@ -578,9 +556,7 @@ TEST_F(ApplicationThreadTest, PauseResumeUnderLoad) {
 // How:  Install handlers that bump atomics, push enough messages to cross
 //       the high watermark, then drain via shutdown and assert each handler
 //       fired exactly once.
-// ------------------------------------------------------------
 // TEST 9: Watermark transitions
-// ------------------------------------------------------------
 // What: Verifies that the high/low watermark handlers are invoked exactly
 //       once when the queue crosses the configured thresholds.
 // Why:  Confirms the hysteresis semantics of LockFreeMessageQueue and that
@@ -666,9 +642,7 @@ TEST_F(ApplicationThreadTest, WatermarkTransitions) {
     EXPECT_EQ(low_triggered.load(), 1);
 }
 
-// ------------------------------------------------------------
 // TEST 10: Exception logging contains thread metadata
-// ------------------------------------------------------------
 // What: Ensures that when an exception occurs in the thread, the log
 //       message includes both the thread name and thread ID.
 // Why:  This is critical for diagnosing failures in production; logs
@@ -722,9 +696,7 @@ TEST_F(ApplicationThreadTest, ExceptionLoggingContainsThreadMetadata) {
     EXPECT_TRUE(found) << "No log record contained both thread name and ID";
 }
 
-// ------------------------------------------------------------
 // TEST 11: Message ordering preserved
-// ------------------------------------------------------------
 // What: Checks that messages are processed in FIFO order by the thread's
 //       queue and run loop.
 // Why:  Ordering guarantees are important for many application-level
@@ -762,9 +734,7 @@ TEST_F(ApplicationThreadTest, MessageOrderingPreserved) {
 
 #if 0
 // We might have to remove this test, quill seems too sensitive.
-// ------------------------------------------------------------
 // TEST 12: Logger isolation across threads
-// ------------------------------------------------------------
 // What: Ensures that two ApplicationThread instances using different
 //       QuillLogger instances do not leak logs into each other's sinks.
 // Why:  Confirms logger isolation and that the logging backend respects
@@ -1229,9 +1199,7 @@ TEST_F(ApplicationThreadTest, DefaultHandlersAreCallableAndNoop) {
     t->on_raw_socket_message(EventMessage::create_raw_socket_message(ConnectionID{}, nullptr, 0, 0, {}));
 }
 
-// ============================================================
 // Timer-deferral ordering tests (prioritise_data_over_timers)
-// ============================================================
 
 namespace {
 
@@ -1248,10 +1216,11 @@ class TimerPriorityThread : public ApplicationThread {
   public:
     explicit TimerPriorityThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, const std::string& name, ThreadID id,
                                  const QueueConfiguration& queue_config, const AllocatorConfiguration& allocator_config, bool prioritise)
-        : ApplicationThread(token, logger, reactor, name, id, queue_config, allocator_config, ApplicationThreadConfiguration{})
-        , prioritise_(prioritise) {}
+        : ApplicationThread(token, logger, reactor, name, id, queue_config, allocator_config, ApplicationThreadConfiguration{}), prioritise_(prioritise) {}
 
-    bool prioritise_data_over_timers() const override { return prioritise_; }
+    bool prioritise_data_over_timers() const override {
+        return prioritise_;
+    }
 
     void on_app_ready_event() override {
         // Arm a short timer then block.  The test waits for ready_future_, sleeps
@@ -1283,9 +1252,9 @@ class TimerPriorityThread : public ApplicationThread {
 
     std::atomic<int> done_{0};
     std::promise<void> go_promise_;
-    std::future<void>  go_future_{go_promise_.get_future()};
+    std::future<void> go_future_{go_promise_.get_future()};
     std::promise<void> ready_promise_;
-    std::future<void>  ready_future_{ready_promise_.get_future()};
+    std::future<void> ready_future_{ready_promise_.get_future()};
 
   private:
     bool prioritise_;
@@ -1308,7 +1277,7 @@ class TimerPriorityThread : public ApplicationThread {
 //       Assert ITC is recorded before Timer.
 TEST_F(ApplicationThreadTest, PrioritisesDataOverTimers) {
     auto thread = ApplicationThread::create<TimerPriorityThread>(logger_with_sink_.logger, *reactor_, "PriorityThread", ThreadID(1), make_queue_config(),
-                                                                  make_allocator_config(), true);
+                                                                 make_allocator_config(), true);
     reactor_->register_thread(thread);
     reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>([this] { reactor_->run(); });
 
@@ -1335,9 +1304,9 @@ TEST_F(ApplicationThreadTest, PrioritisesDataOverTimers) {
     auto events = thread->recorded_events();
     ASSERT_GE(static_cast<int>(events.size()), 2) << "Expected at least Timer and ITC events";
 
-    auto itc_pos   = std::find(events.begin(), events.end(), EventType(EventType::InterthreadCommunication));
+    auto itc_pos = std::find(events.begin(), events.end(), EventType(EventType::InterthreadCommunication));
     auto timer_pos = std::find(events.begin(), events.end(), EventType(EventType::Timer));
-    ASSERT_NE(itc_pos,   events.end()) << "ITC event was never processed";
+    ASSERT_NE(itc_pos, events.end()) << "ITC event was never processed";
     ASSERT_NE(timer_pos, events.end()) << "Timer event was never processed";
     EXPECT_LT(itc_pos, timer_pos) << "Expected ITC (data) to be processed before Timer when prioritise_data_over_timers=true";
 }
@@ -1349,9 +1318,7 @@ TEST_F(ApplicationThreadTest, PrioritisesDataOverTimers) {
 // positive PrioritisesDataOverTimers test above is sufficient to prove the
 // deferral mechanism works.
 
-// ------------------------------------------------------------
 // Base-class default methods (exercised without a running thread)
-// ------------------------------------------------------------
 
 TEST_F(ApplicationThreadTest, BaseConnectionCallbacksAreSafeNoOps) {
     auto thread = ApplicationThread::create<BaseCallbackThread>(logger_with_sink_.logger, *reactor_, "BaseCallbacks", ThreadID(60), make_queue_config(),

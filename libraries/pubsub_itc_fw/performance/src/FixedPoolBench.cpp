@@ -6,7 +6,6 @@ Here is some information on how to run this performance program using perf.
 
 perf stat ./build/libraries/pubsub_itc_fw/performance/fixed_pool_bench
 
-
 If you get the error below, the remedy follows:
 
 Error:
@@ -101,9 +100,7 @@ install imagemagick to be able to convert svg files to jpg.
 
 namespace {
 
-// -----------------------------------------------------------------------------
 // CPU pinning helper
-// -----------------------------------------------------------------------------
 bool PinToCpu(int cpu) {
     cpu_set_t set;
     CPU_ZERO(&set);
@@ -111,9 +108,7 @@ bool PinToCpu(int cpu) {
     return pthread_setaffinity_np(pthread_self(), sizeof(set), &set) == 0;
 }
 
-// -----------------------------------------------------------------------------
 // Optional huge-page error handler (no-op for this bench)
-// -----------------------------------------------------------------------------
 std::function<void(void*, size_t)> MakeHugePageErrorHandler() {
     return [](void*, size_t) {
         // Intentionally no-op: we just want the production path,
@@ -123,17 +118,13 @@ std::function<void(void*, size_t)> MakeHugePageErrorHandler() {
 
 } // un-named namespace
 
-// -----------------------------------------------------------------------------
 // Simple test object
-// -----------------------------------------------------------------------------
 struct TestObject {
     int id_{0};
     std::array<std::byte, 64> padding_{}; // Fixes C-style array and missing member init warnings
 };
 
-// -----------------------------------------------------------------------------
 // Single-producer / single-consumer ring buffer of pointers
-// -----------------------------------------------------------------------------
 template <typename T> class SpscRing {
   public:
     explicit SpscRing(size_t capacity) : capacity_(capacity), mask_(capacity - 1), buffer_(capacity) {
@@ -172,18 +163,9 @@ template <typename T> class SpscRing {
 
 namespace {
 
-// -----------------------------------------------------------------------------
 // Decoupled execution loops to resolve cognitive complexity rules
-// -----------------------------------------------------------------------------
-void RunProducer(
-    int cpu,
-    size_t iterations,
-    std::atomic<bool>& start_flag,
-    std::atomic<bool>& done_flag,
-    std::atomic<size_t>& produced,
-    pubsub_itc_fw::FixedSizeMemoryPool<TestObject>& pool,
-    SpscRing<TestObject>& ring)
-{
+void RunProducer(int cpu, size_t iterations, std::atomic<bool>& start_flag, std::atomic<bool>& done_flag, std::atomic<size_t>& produced,
+                 pubsub_itc_fw::FixedSizeMemoryPool<TestObject>& pool, SpscRing<TestObject>& ring) {
     if (!PinToCpu(cpu)) {
         std::cerr << "Producer: failed to pin to CPU " << cpu << "\n";
     }
@@ -211,17 +193,9 @@ void RunProducer(
     done_flag.store(true, std::memory_order_release);
 }
 
-void RunConsumer(
-    int cpu,
-    bool simulate_slow_consumer,
-    int busy_work_iters,
-    std::atomic<bool>& start_flag,
-    const std::atomic<bool>& done_flag,
-    const std::atomic<size_t>& produced,
-    std::atomic<size_t>& consumed,
-    pubsub_itc_fw::FixedSizeMemoryPool<TestObject>& pool,
-    SpscRing<TestObject>& ring)
-{
+void RunConsumer(int cpu, bool simulate_slow_consumer, int busy_work_iters, std::atomic<bool>& start_flag, const std::atomic<bool>& done_flag,
+                 const std::atomic<size_t>& produced, std::atomic<size_t>& consumed, pubsub_itc_fw::FixedSizeMemoryPool<TestObject>& pool,
+                 SpscRing<TestObject>& ring) {
     if (!PinToCpu(cpu)) {
         std::cerr << "Consumer: failed to pin to CPU " << cpu << "\n";
     }
@@ -247,8 +221,7 @@ void RunConsumer(
 
             consumed.fetch_add(1, std::memory_order_relaxed);
         } else {
-            if (done_flag.load(std::memory_order_acquire) &&
-                consumed.load(std::memory_order_relaxed) >= produced.load(std::memory_order_relaxed)) {
+            if (done_flag.load(std::memory_order_acquire) && consumed.load(std::memory_order_relaxed) >= produced.load(std::memory_order_relaxed)) {
                 break;
             }
             std::this_thread::yield();
@@ -258,27 +231,21 @@ void RunConsumer(
 
 } // un-named namespace
 
-// -----------------------------------------------------------------------------
 // Main benchmark
-// -----------------------------------------------------------------------------
 int main() {
     using pubsub_itc_fw::FixedSizeMemoryPool;
     using pubsub_itc_fw::UseHugePagesFlag;
 
     // Tunables: adjust for your machine / perf session
-    const int pool_capacity = 1024;        // number of slots in pool
-    const size_t ring_capacity = 1024;     // must be power of two
+    const int pool_capacity = 1024;       // number of slots in pool
+    const size_t ring_capacity = 1024;    // must be power of two
     const size_t iterations = 50'000'000; // producer iterations
-    const int producer_cpu = 2;            // adjust as needed
-    const int consumer_cpu = 3;            // adjust as needed
+    const int producer_cpu = 2;           // adjust as needed
+    const int consumer_cpu = 3;           // adjust as needed
     const bool simulate_slow_consumer = true;
     const int consumer_busy_work_iters = 50; // small spin to lag consumer
 
-    FixedSizeMemoryPool<TestObject> pool(
-        pool_capacity,
-        UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages),
-        MakeHugePageErrorHandler()
-    );
+    FixedSizeMemoryPool<TestObject> pool(pool_capacity, UseHugePagesFlag(UseHugePagesFlag::DoNotUseHugePages), MakeHugePageErrorHandler());
 
     SpscRing<TestObject> ring(ring_capacity);
 
@@ -287,13 +254,10 @@ int main() {
     std::atomic<size_t> produced{0};
     std::atomic<size_t> consumed{0};
 
-    std::thread producer([&]() {
-        RunProducer(producer_cpu, iterations, start_flag, done_flag, produced, pool, ring);
-    });
+    std::thread producer([&]() { RunProducer(producer_cpu, iterations, start_flag, done_flag, produced, pool, ring); });
 
-    std::thread consumer([&]() {
-        RunConsumer(consumer_cpu, simulate_slow_consumer, consumer_busy_work_iters, start_flag, done_flag, produced, consumed, pool, ring);
-    });
+    std::thread consumer(
+        [&]() { RunConsumer(consumer_cpu, simulate_slow_consumer, consumer_busy_work_iters, start_flag, done_flag, produced, consumed, pool, ring); });
 
     start_flag.store(true, std::memory_order_release);
 

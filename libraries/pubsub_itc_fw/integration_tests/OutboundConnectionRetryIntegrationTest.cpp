@@ -40,10 +40,8 @@ using pubsub_itc_fw::tests::make_queue_config;
 
 namespace pubsub_itc_fw {
 
-// ============================================================
 // Application thread that counts connection failures without
 // shutting down the reactor, so the retry path can fire.
-// ============================================================
 class RetryCountingThread : public ApplicationThread {
   public:
     RetryCountingThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, const std::string& service_name)
@@ -69,9 +67,7 @@ class RetryCountingThread : public ApplicationThread {
     std::string service_name_;
 };
 
-// ============================================================
 // Test
-// ============================================================
 
 TEST(OutboundConnectionRetryIntegrationTest, RetryFailedConnectionsReissuesConnectAfterInterval) {
     ReactorConfiguration cfg{};

@@ -78,10 +78,6 @@
 
 namespace pubsub_itc_fw::tests {
 
-// ============================================================
-// Helpers
-// ============================================================
-
 /*
  * Creates a listening TCP socket on 127.0.0.1:0.
  * Returns {fd, port}. Caller owns fd and must ::close() it.
@@ -141,18 +137,14 @@ static std::pair<int, uint16_t> make_ipv6_listener() {
     return {fd, ntohs(bound.sin6_port)};
 }
 
-// ============================================================
 // Test fixture
-// ============================================================
 class TcpSocketTest : public ::testing::Test {
   protected:
     void SetUp() override {}
     void TearDown() override {}
 };
 
-// ============================================================
 // Test: get_peer_address() on a connected IPv4 socket
-// ============================================================
 TEST_F(TcpSocketTest, GetPeerAddressIPv4) {
     auto [listen_fd, listen_port] = make_ipv4_listener();
     ASSERT_NE(listen_fd, -1);
@@ -184,9 +176,7 @@ TEST_F(TcpSocketTest, GetPeerAddressIPv4) {
     ::close(listen_fd);
 }
 
-// ============================================================
 // Test: get_local_address() on a bound socket
-// ============================================================
 TEST_F(TcpSocketTest, GetLocalAddressIPv4) {
     auto [listen_fd, listen_port] = make_ipv4_listener();
     ASSERT_NE(listen_fd, -1);
@@ -203,9 +193,7 @@ TEST_F(TcpSocketTest, GetLocalAddressIPv4) {
     // socket owns listen_fd now, no need to close separately
 }
 
-// ============================================================
 // Test: get_peer_address() on a connected IPv6 socket
-// ============================================================
 TEST_F(TcpSocketTest, GetPeerAddressIPv6) {
     auto [listen_fd, listen_port] = make_ipv6_listener();
     if (listen_fd == -1) {
@@ -237,9 +225,7 @@ TEST_F(TcpSocketTest, GetPeerAddressIPv6) {
     ::close(listen_fd);
 }
 
-// ============================================================
 // Test: get_local_address() on a bound IPv6 socket
-// ============================================================
 TEST_F(TcpSocketTest, GetLocalAddressIPv6) {
     auto [listen_fd, listen_port] = make_ipv6_listener();
     if (listen_fd == -1) {
@@ -257,9 +243,7 @@ TEST_F(TcpSocketTest, GetLocalAddressIPv6) {
     }
 }
 
-// ============================================================
 // Test: shutdown(SHUT_WR) on a connected socket
-// ============================================================
 TEST_F(TcpSocketTest, ShutdownHalfClose) {
     auto [listen_fd, listen_port] = make_ipv4_listener();
     ASSERT_NE(listen_fd, -1);
@@ -284,9 +268,7 @@ TEST_F(TcpSocketTest, ShutdownHalfClose) {
     ::close(listen_fd);
 }
 
-// ============================================================
 // Test: shutdown(SHUT_RDWR) on a connected socket
-// ============================================================
 TEST_F(TcpSocketTest, ShutdownBothDirections) {
     auto [listen_fd, listen_port] = make_ipv4_listener();
     ASSERT_NE(listen_fd, -1);
@@ -311,9 +293,7 @@ TEST_F(TcpSocketTest, ShutdownBothDirections) {
     ::close(listen_fd);
 }
 
-// ============================================================
 // Test: shutdown() on a closed socket returns false with error
-// ============================================================
 TEST_F(TcpSocketTest, ShutdownOnClosedSocket) {
     auto [socket, err] = TcpSocket::create(AF_INET);
     ASSERT_NE(socket, nullptr) << err;
@@ -324,9 +304,7 @@ TEST_F(TcpSocketTest, ShutdownOnClosedSocket) {
     EXPECT_FALSE(shutdown_err.empty());
 }
 
-// ============================================================
 // Test: send() on a closed socket returns error
-// ============================================================
 TEST_F(TcpSocketTest, SendOnClosedSocket) {
     auto [socket, err] = TcpSocket::create(AF_INET);
     ASSERT_NE(socket, nullptr) << err;
@@ -338,9 +316,7 @@ TEST_F(TcpSocketTest, SendOnClosedSocket) {
     EXPECT_FALSE(send_err.empty());
 }
 
-// ============================================================
 // Test: send() with empty span returns 0 immediately
-// ============================================================
 TEST_F(TcpSocketTest, SendEmptyData) {
     auto [socket, err] = TcpSocket::create(AF_INET);
     ASSERT_NE(socket, nullptr) << err;
@@ -351,9 +327,7 @@ TEST_F(TcpSocketTest, SendEmptyData) {
     EXPECT_TRUE(send_err.empty());
 }
 
-// ============================================================
 // Test: receive() on a closed socket returns error
-// ============================================================
 TEST_F(TcpSocketTest, ReceiveOnClosedSocket) {
     auto [socket, err] = TcpSocket::create(AF_INET);
     ASSERT_NE(socket, nullptr) << err;
@@ -365,9 +339,7 @@ TEST_F(TcpSocketTest, ReceiveOnClosedSocket) {
     EXPECT_FALSE(recv_err.empty());
 }
 
-// ============================================================
 // Test: receive() with empty buffer returns 0 immediately
-// ============================================================
 TEST_F(TcpSocketTest, ReceiveEmptyBuffer) {
     auto [socket, err] = TcpSocket::create(AF_INET);
     ASSERT_NE(socket, nullptr) << err;
@@ -378,18 +350,14 @@ TEST_F(TcpSocketTest, ReceiveEmptyBuffer) {
     EXPECT_TRUE(recv_err.empty());
 }
 
-// ============================================================
 // Test: adopt(-1) returns nullptr with error
-// ============================================================
 TEST_F(TcpSocketTest, AdoptInvalidFd) {
     auto [socket, err] = TcpSocket::adopt(-1);
     EXPECT_EQ(socket, nullptr);
     EXPECT_FALSE(err.empty());
 }
 
-// ============================================================
 // Test: get_peer_address() on a closed socket returns nullptr
-// ============================================================
 TEST_F(TcpSocketTest, GetPeerAddressOnClosedSocket) {
     auto [socket, err] = TcpSocket::create(AF_INET);
     ASSERT_NE(socket, nullptr) << err;
@@ -400,9 +368,7 @@ TEST_F(TcpSocketTest, GetPeerAddressOnClosedSocket) {
     EXPECT_FALSE(peer_err.empty());
 }
 
-// ============================================================
 // Test: get_local_address() on a closed socket returns nullptr
-// ============================================================
 TEST_F(TcpSocketTest, GetLocalAddressOnClosedSocket) {
     auto [socket, err] = TcpSocket::create(AF_INET);
     ASSERT_NE(socket, nullptr) << err;
@@ -413,10 +379,8 @@ TEST_F(TcpSocketTest, GetLocalAddressOnClosedSocket) {
     EXPECT_FALSE(local_err.empty());
 }
 
-// ============================================================
 // Test: connect to a listening loopback socket completes
 // (exercises non-EINPROGRESS path on Linux loopback)
-// ============================================================
 TEST_F(TcpSocketTest, ConnectImmediateLoopback) {
     auto [listen_fd, listen_port] = make_ipv4_listener();
     ASSERT_NE(listen_fd, -1);

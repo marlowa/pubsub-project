@@ -19,8 +19,8 @@ MatchingEnginePublisherConfiguration MatchingEnginePublisherConfigurationLoader:
 
     auto validate_port = [&](int32_t port, const std::string& name) {
         if (port < 1 || port > 65535) {
-            throw pubsub_itc_fw::ConfigurationException(
-                "MatchingEnginePublisherConfigurationLoader: " + name + " must be in range [1, 65535], got " + std::to_string(port));
+            throw pubsub_itc_fw::ConfigurationException("MatchingEnginePublisherConfigurationLoader: " + name + " must be in range [1, 65535], got " +
+                                                        std::to_string(port));
         }
     };
 
@@ -35,7 +35,7 @@ MatchingEnginePublisherConfiguration MatchingEnginePublisherConfigurationLoader:
         toml.get_required_except("sequencer_wal_secondary.port", sequencer_wal_secondary_port);
         validate_port(sequencer_wal_port, "sequencer_wal.port");
         validate_port(sequencer_wal_secondary_port, "sequencer_wal_secondary.port");
-        config.sequencer_wal_port           = static_cast<uint16_t>(sequencer_wal_port);
+        config.sequencer_wal_port = static_cast<uint16_t>(sequencer_wal_port);
         config.sequencer_wal_secondary_port = static_cast<uint16_t>(sequencer_wal_secondary_port);
 
         int32_t orders_listen_port = 0;
@@ -45,7 +45,7 @@ MatchingEnginePublisherConfiguration MatchingEnginePublisherConfigurationLoader:
         validate_port(orders_listen_port, "topics.orders.listen_port");
         validate_port(er_listen_port, "topics.execution_reports.listen_port");
         config.orders_listen_port = static_cast<uint16_t>(orders_listen_port);
-        config.er_listen_port     = static_cast<uint16_t>(er_listen_port);
+        config.er_listen_port = static_cast<uint16_t>(er_listen_port);
 
         toml.get_required_except("wal.directory", config.wal_directory);
         int64_t wal_segment_size = 0;
@@ -80,8 +80,7 @@ MatchingEnginePublisherConfiguration MatchingEnginePublisherConfigurationLoader:
             int32_t arbitration_timeout_seconds = 0;
             toml.get_required_except("ha.arbitration_timeout_seconds", arbitration_timeout_seconds);
             if (arbitration_timeout_seconds <= 0) {
-                throw pubsub_itc_fw::ConfigurationException(
-                    "MatchingEnginePublisherConfigurationLoader: ha.arbitration_timeout_seconds must be positive");
+                throw pubsub_itc_fw::ConfigurationException("MatchingEnginePublisherConfigurationLoader: ha.arbitration_timeout_seconds must be positive");
             }
             config.arbitration_timeout_seconds = arbitration_timeout_seconds;
 
@@ -102,17 +101,15 @@ MatchingEnginePublisherConfiguration MatchingEnginePublisherConfigurationLoader:
             validate_port(peer_listen_port, "ha.peer_listen_port");
             validate_port(peer_port, "ha.peer_port");
             if (heartbeat_interval_seconds <= 0) {
-                throw pubsub_itc_fw::ConfigurationException(
-                    "MatchingEnginePublisherConfigurationLoader: ha.heartbeat_interval_seconds must be positive");
+                throw pubsub_itc_fw::ConfigurationException("MatchingEnginePublisherConfigurationLoader: ha.heartbeat_interval_seconds must be positive");
             }
             if (heartbeat_timeout_seconds <= 0) {
-                throw pubsub_itc_fw::ConfigurationException(
-                    "MatchingEnginePublisherConfigurationLoader: ha.heartbeat_timeout_seconds must be positive");
+                throw pubsub_itc_fw::ConfigurationException("MatchingEnginePublisherConfigurationLoader: ha.heartbeat_timeout_seconds must be positive");
             }
-            config.peer_listen_port                = static_cast<uint16_t>(peer_listen_port);
-            config.peer_port                       = static_cast<uint16_t>(peer_port);
-            config.heartbeat_interval_seconds      = heartbeat_interval_seconds;
-            config.heartbeat_timeout_seconds       = heartbeat_timeout_seconds;
+            config.peer_listen_port = static_cast<uint16_t>(peer_listen_port);
+            config.peer_port = static_cast<uint16_t>(peer_port);
+            config.heartbeat_interval_seconds = heartbeat_interval_seconds;
+            config.heartbeat_timeout_seconds = heartbeat_timeout_seconds;
             if (startup_election_timeout_seconds > 0) {
                 config.startup_election_timeout_seconds = startup_election_timeout_seconds;
             }
@@ -121,8 +118,7 @@ MatchingEnginePublisherConfiguration MatchingEnginePublisherConfigurationLoader:
         int64_t max_lag_records = 0;
         toml.get_required_except("subscriber_lag.default_max_lag_records", max_lag_records);
         if (max_lag_records <= 0) {
-            throw pubsub_itc_fw::ConfigurationException(
-                "MatchingEnginePublisherConfigurationLoader: subscriber_lag.default_max_lag_records must be positive");
+            throw pubsub_itc_fw::ConfigurationException("MatchingEnginePublisherConfigurationLoader: subscriber_lag.default_max_lag_records must be positive");
         }
         config.max_lag_records = max_lag_records;
 
@@ -131,17 +127,17 @@ MatchingEnginePublisherConfiguration MatchingEnginePublisherConfigurationLoader:
         toml.get_required_except("logging.applog_level", applog_level_str);
         toml.get_required_except("logging.syslog_level", syslog_level_str);
         if (!pubsub_itc_fw::FwLogLevel::from_string(applog_level_str, config.applog_level)) {
-            throw pubsub_itc_fw::ConfigurationException(
-                "MatchingEnginePublisherConfigurationLoader: logging.applog_level '" + applog_level_str + "' unrecognised");
+            throw pubsub_itc_fw::ConfigurationException("MatchingEnginePublisherConfigurationLoader: logging.applog_level '" + applog_level_str +
+                                                        "' unrecognised");
         }
         if (!pubsub_itc_fw::FwLogLevel::from_string(syslog_level_str, config.syslog_level)) {
-            throw pubsub_itc_fw::ConfigurationException(
-                "MatchingEnginePublisherConfigurationLoader: logging.syslog_level '" + syslog_level_str + "' unrecognised");
+            throw pubsub_itc_fw::ConfigurationException("MatchingEnginePublisherConfigurationLoader: logging.syslog_level '" + syslog_level_str +
+                                                        "' unrecognised");
         }
 
         toml.get_required_except("reactor.cpu_pinning_enabled", config.cpu_pinning_enabled);
         toml.get_required_except("reactor.cpu_pinning_reserve_cpu0", config.cpu_pinning_reserve_cpu0);
-        toml.get_required_except("reactor.cpu_registry_shm_path",  config.cpu_registry_shm_path);
+        toml.get_required_except("reactor.cpu_registry_shm_path", config.cpu_registry_shm_path);
         toml.get_required_except("reactor.cpu_registry_lock_file", config.cpu_registry_lock_file);
         toml.get_required_except("reactor.connect_retry_warning_interval", config.connect_retry_warning_interval);
 

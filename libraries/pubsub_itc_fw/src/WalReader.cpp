@@ -39,9 +39,7 @@ std::string segment_path(const std::string& directory, uint64_t seg_num) {
 
 } // un-named namespace
 
-// ---------------------------------------------------------------------------
 // replay_segment() -- scan one segment file; returns bytes consumed
-// ---------------------------------------------------------------------------
 
 size_t WalReader::replay_segment(const std::string& path, size_t start_offset, const EntryCallback& cb) {
     const int fd = ::open(path.c_str(), O_RDONLY);
@@ -109,9 +107,7 @@ size_t WalReader::replay_segment(const std::string& path, size_t start_offset, c
     return bytes_consumed;
 }
 
-// ---------------------------------------------------------------------------
 // replay() -- discover segments, replay from anchor, return end position
-// ---------------------------------------------------------------------------
 
 WalPosition WalReader::replay(const std::string& directory, WalPosition from, const EntryCallback& cb) {
     // Discover segment files in the directory.

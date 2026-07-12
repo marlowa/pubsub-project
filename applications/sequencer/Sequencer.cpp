@@ -29,7 +29,7 @@ Sequencer::Sequencer(SequencerConfiguration config, std::unique_ptr<pubsub_itc_f
     reactor_configuration_.shutdown_timeout_ = std::chrono::seconds{2};
     reactor_configuration_.cpu_pinning_enabled = config_.cpu_pinning_enabled;
     reactor_configuration_.cpu_pinning_reserve_cpu0 = config_.cpu_pinning_reserve_cpu0;
-    reactor_configuration_.cpu_registry_shm_path  = config_.cpu_registry_shm_path;
+    reactor_configuration_.cpu_registry_shm_path = config_.cpu_registry_shm_path;
     reactor_configuration_.cpu_registry_lock_file = config_.cpu_registry_lock_file;
     reactor_configuration_.connect_retry_warning_interval_ = config_.connect_retry_warning_interval;
     reactor_configuration_.command_allocator_configuration_.pool_name = "SequencerCommandPool";
@@ -91,10 +91,9 @@ Sequencer::Sequencer(SequencerConfiguration config, std::unique_ptr<pubsub_itc_f
     service_registry_.add("peer", pubsub_itc_fw::NetworkEndpointConfiguration{config_.peer_host, config_.peer_port},
                           pubsub_itc_fw::NetworkEndpointConfiguration{});
 
-    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info,
-               "Sequencer: order={}:{} er={}:{} wal_subscriber={}:{} instance_id={}",
-               config_.listen_host, config_.listen_port, config_.er_listen_host, config_.er_listen_port,
-               config_.wal_subscriber_listen_host, config_.wal_subscriber_listen_port, config_.instance_id);
+    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "Sequencer: order={}:{} er={}:{} wal_subscriber={}:{} instance_id={}", config_.listen_host,
+               config_.listen_port, config_.er_listen_host, config_.er_listen_port, config_.wal_subscriber_listen_host, config_.wal_subscriber_listen_port,
+               config_.instance_id);
     PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info,
                "Sequencer: gateway={}:{} matching_engine={}:{} arbiter_primary={}:{} arbiter_secondary={}:{} peer_listen={}:{} peer={}:{}",
                config_.gateway_host, config_.gateway_port, config_.matching_engine_host, config_.matching_engine_port, config_.arbiter_primary_host,
@@ -108,10 +107,6 @@ int Sequencer::run() const {
 }
 
 } // namespaces
-
-// ============================================================
-// main
-// ============================================================
 
 int main(int argc, char* argv[]) {
     if (argc < 3 || argc > 4) {

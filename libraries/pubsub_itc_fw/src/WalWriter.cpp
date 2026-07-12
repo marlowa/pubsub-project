@@ -35,25 +35,15 @@ static_assert(sizeof(WalEntryHeader) == 24, "WalEntryHeader must be 24 bytes");
 
 } // un-named namespace
 
-// ---------------------------------------------------------------------------
-// Destructor
-// ---------------------------------------------------------------------------
-
 WalWriter::~WalWriter() {
     close_segment();
 }
 
-// ---------------------------------------------------------------------------
 // Path helper
-// ---------------------------------------------------------------------------
 
 std::string WalWriter::segment_path(uint64_t seg_num) const {
     return fmt::format("{}/wal_{:06}.log", directory_, seg_num);
 }
-
-// ---------------------------------------------------------------------------
-// open()
-// ---------------------------------------------------------------------------
 
 void WalWriter::open(const std::string& directory, size_t segment_size, WalPosition start) {
     if (segment_size < min_entry_bytes * 2) {
@@ -74,9 +64,7 @@ void WalWriter::open(const std::string& directory, size_t segment_size, WalPosit
     open_segment(current_segment_);
 }
 
-// ---------------------------------------------------------------------------
 // open_segment() -- open or create a segment for writing
-// ---------------------------------------------------------------------------
 
 void WalWriter::open_segment(uint64_t seg_num) {
     close_segment();
@@ -112,10 +100,6 @@ void WalWriter::open_segment(uint64_t seg_num) {
     current_segment_ = seg_num;
 }
 
-// ---------------------------------------------------------------------------
-// close_segment()
-// ---------------------------------------------------------------------------
-
 void WalWriter::close_segment() {
     if (mmap_ptr_ != nullptr) {
         ::munmap(mmap_ptr_, segment_size_);
@@ -127,9 +111,7 @@ void WalWriter::close_segment() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // ensure_capacity() -- roll to next segment if needed
-// ---------------------------------------------------------------------------
 
 void WalWriter::ensure_capacity(size_t bytes_needed) {
     if (bytes_needed > segment_size_) {
@@ -141,9 +123,7 @@ void WalWriter::ensure_capacity(size_t bytes_needed) {
     }
 }
 
-// ---------------------------------------------------------------------------
 // append() -- the commit act
-// ---------------------------------------------------------------------------
 
 void WalWriter::append(int64_t record_id, const void* payload, size_t size) {
     const size_t total = sizeof(WalEntryHeader) + size + sizeof(uint32_t);

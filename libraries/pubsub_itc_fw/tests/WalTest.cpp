@@ -82,9 +82,7 @@ class WalClassTest : public ::testing::Test {
     std::string dir_;
 };
 
-// ---------------------------------------------------------------------------
 // Construction and initial state
-// ---------------------------------------------------------------------------
 
 TEST_F(WalClassTest, NotOpenByDefault) {
     Wal wal;
@@ -115,9 +113,7 @@ TEST_F(WalClassTest, FreshOpenHasZeroLastSeqNo) {
     EXPECT_EQ(wal.last_seq_no(), 0);
 }
 
-// ---------------------------------------------------------------------------
 // Single record round-trip
-// ---------------------------------------------------------------------------
 
 TEST_F(WalClassTest, SingleRecordReplaySeqNo) {
     {
@@ -179,9 +175,7 @@ TEST_F(WalClassTest, SingleRecordReplayWallTimeNs) {
     EXPECT_EQ(records[0].wall_time_ns, 1234567890LL);
 }
 
-// ---------------------------------------------------------------------------
 // Counters and last_seq_no
-// ---------------------------------------------------------------------------
 
 TEST_F(WalClassTest, OpenReturnsLastSeqNo) {
     {
@@ -214,9 +208,7 @@ TEST_F(WalClassTest, RecordCountAfterReplay) {
     EXPECT_EQ(wal.last_seq_no(), 5);
 }
 
-// ---------------------------------------------------------------------------
 // Multiple records: ordering
-// ---------------------------------------------------------------------------
 
 TEST_F(WalClassTest, MultipleRecordsReplayedInOrder) {
     {
@@ -224,8 +216,7 @@ TEST_F(WalClassTest, MultipleRecordsReplayedInOrder) {
         wal.open(dir_, segment_size);
         for (int i = 1; i <= 4; ++i) {
             const uint8_t payload = static_cast<uint8_t>(i * 10);
-            wal.append(static_cast<int64_t>(i), static_cast<int16_t>(1000 + i), &payload, 1,
-                       static_cast<int64_t>(i) * 100);
+            wal.append(static_cast<int64_t>(i), static_cast<int16_t>(1000 + i), &payload, 1, static_cast<int64_t>(i) * 100);
         }
     }
 
@@ -240,9 +231,7 @@ TEST_F(WalClassTest, MultipleRecordsReplayedInOrder) {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Null callback
-// ---------------------------------------------------------------------------
 
 TEST_F(WalClassTest, NullCallbackDoesNotCrash) {
     {
@@ -257,9 +246,7 @@ TEST_F(WalClassTest, NullCallbackDoesNotCrash) {
     EXPECT_EQ(wal.record_count(), 1u);
 }
 
-// ---------------------------------------------------------------------------
 // Snapshot: creation
-// ---------------------------------------------------------------------------
 
 TEST_F(WalClassTest, TakeSnapshotCreatesFile) {
     Wal wal;
@@ -270,9 +257,7 @@ TEST_F(WalClassTest, TakeSnapshotCreatesFile) {
     EXPECT_TRUE(std::filesystem::exists(snapshot_path()));
 }
 
-// ---------------------------------------------------------------------------
 // Snapshot: UseSnapshot replay semantics
-// ---------------------------------------------------------------------------
 
 TEST_F(WalClassTest, UseSnapshotSkipsPreSnapshotRecords) {
     // Append records 1-3, take snapshot, then append 4-5.
@@ -332,9 +317,7 @@ TEST_F(WalClassTest, UseSnapshotWithNoSnapshotFileReplaysAll) {
     EXPECT_EQ(records.size(), 3u);
 }
 
-// ---------------------------------------------------------------------------
 // Snapshot: IgnoreSnapshot replay semantics
-// ---------------------------------------------------------------------------
 
 TEST_F(WalClassTest, IgnoreSnapshotReplaysAllRecords) {
     {
@@ -359,9 +342,7 @@ TEST_F(WalClassTest, IgnoreSnapshotReplaysAllRecords) {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Snapshot: CRC integrity
-// ---------------------------------------------------------------------------
 
 TEST_F(WalClassTest, CorruptedSnapshotFallsBackToFullReplay) {
     {
@@ -385,9 +366,7 @@ TEST_F(WalClassTest, CorruptedSnapshotFallsBackToFullReplay) {
     EXPECT_EQ(records.size(), 5u);
 }
 
-// ---------------------------------------------------------------------------
 // Resume writing after reopen
-// ---------------------------------------------------------------------------
 
 TEST_F(WalClassTest, ResumeWritingAfterReopenNoGap) {
     // Write 1-3, close, reopen, write 4-5, close, verify full replay gives 1-5.
@@ -417,21 +396,16 @@ TEST_F(WalClassTest, ResumeWritingAfterReopenNoGap) {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Oversized payload
-// ---------------------------------------------------------------------------
 
 TEST_F(WalClassTest, OversizedPayloadThrows) {
     Wal wal;
     wal.open(dir_, segment_size);
     std::vector<uint8_t> big(segment_size + 1, 0xCC);
-    EXPECT_THROW(wal.append(1, 1000, big.data(), static_cast<int>(big.size()), 0),
-                 pubsub_itc_fw::PreconditionAssertion);
+    EXPECT_THROW(wal.append(1, 1000, big.data(), static_cast<int>(big.size()), 0), pubsub_itc_fw::PreconditionAssertion);
 }
 
-// ---------------------------------------------------------------------------
 // Segment deletion after snapshot
-// ---------------------------------------------------------------------------
 
 TEST_F(WalClassTest, SnapshotDeletesOldSegments) {
     // Each Wal entry with a 1-byte PDU payload occupies:
@@ -449,10 +423,8 @@ TEST_F(WalClassTest, SnapshotDeletesOldSegments) {
         wal.take_snapshot();
     }
 
-    EXPECT_FALSE(std::filesystem::exists(dir_ + "/wal_000000.log"))
-        << "Segment 0 should have been deleted by take_snapshot()";
-    EXPECT_TRUE(std::filesystem::exists(dir_ + "/wal_000001.log"))
-        << "Segment 1 (current write segment) must still exist";
+    EXPECT_FALSE(std::filesystem::exists(dir_ + "/wal_000000.log")) << "Segment 0 should have been deleted by take_snapshot()";
+    EXPECT_TRUE(std::filesystem::exists(dir_ + "/wal_000001.log")) << "Segment 1 (current write segment) must still exist";
 }
 
 TEST_F(WalClassTest, SnapshotDeletesOldSegmentsAndReopenWorks) {
@@ -477,9 +449,7 @@ TEST_F(WalClassTest, SnapshotDeletesOldSegmentsAndReopenWorks) {
     EXPECT_EQ(records[0].seq_no, 5);
 }
 
-// ---------------------------------------------------------------------------
 // Snapshot format errors: truncated file and wrong header fields
-// ---------------------------------------------------------------------------
 
 TEST_F(WalClassTest, TruncatedSnapshotFallsBackToFullReplay) {
     {
@@ -520,8 +490,7 @@ TEST_F(WalClassTest, WrongMagicSnapshotFallsBackToFullReplay) {
         const int fd = ::open(snapshot_path().c_str(), O_RDWR);
         ASSERT_GE(fd, 0);
         const uint32_t bad_magic = 0xDEADBEEFU;
-        ASSERT_EQ(::pwrite(fd, &bad_magic, sizeof(bad_magic), 0),
-                  static_cast<ssize_t>(sizeof(bad_magic)));
+        ASSERT_EQ(::pwrite(fd, &bad_magic, sizeof(bad_magic), 0), static_cast<ssize_t>(sizeof(bad_magic)));
         ::close(fd);
     }
 
@@ -546,8 +515,7 @@ TEST_F(WalClassTest, WrongVersionSnapshotFallsBackToFullReplay) {
         const int fd = ::open(snapshot_path().c_str(), O_RDWR);
         ASSERT_GE(fd, 0);
         const uint32_t bad_version = 0xFFFFFFFFU;
-        ASSERT_EQ(::pwrite(fd, &bad_version, sizeof(bad_version), 4),
-                  static_cast<ssize_t>(sizeof(bad_version)));
+        ASSERT_EQ(::pwrite(fd, &bad_version, sizeof(bad_version), 4), static_cast<ssize_t>(sizeof(bad_version)));
         ::close(fd);
     }
 
@@ -557,9 +525,7 @@ TEST_F(WalClassTest, WrongVersionSnapshotFallsBackToFullReplay) {
     EXPECT_EQ(records.size(), 3u) << "Wrong version must be ignored; all records replayed";
 }
 
-// ---------------------------------------------------------------------------
 // Malformed WAL entry: payload too small to contain the Wal header prefix
-// ---------------------------------------------------------------------------
 
 TEST_F(WalClassTest, MalformedWalEntryIsSkipped) {
     // Write a raw WalWriter entry whose payload is smaller than the Wal
@@ -578,10 +544,6 @@ TEST_F(WalClassTest, MalformedWalEntryIsSkipped) {
     EXPECT_EQ(records.size(), 0u) << "Malformed entry must be silently skipped";
     EXPECT_EQ(wal.record_count(), 0u);
 }
-
-// ---------------------------------------------------------------------------
-// truncate_below()
-// ---------------------------------------------------------------------------
 
 TEST_F(WalClassTest, TruncateBelowDeletesConsumedSegmentsAndKeepsTheRest) {
     constexpr size_t small_segment = 128; // a few records per segment -> several segments

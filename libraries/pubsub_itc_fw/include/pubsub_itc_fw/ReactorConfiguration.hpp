@@ -202,9 +202,7 @@ struct ReactorConfiguration {
      */
     AllocatorConfiguration command_allocator_configuration_;
 
-    // -------------------------------------------------------------------------
     // CPU pinning
-    // -------------------------------------------------------------------------
 
     /**
      * @brief Enable automatic CPU affinity pinning of registered ApplicationThreads.

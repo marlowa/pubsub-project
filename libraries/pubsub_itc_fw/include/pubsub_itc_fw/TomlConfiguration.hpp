@@ -107,9 +107,7 @@ class TomlConfiguration {
     TomlConfiguration(const TomlConfiguration&) = delete;
     TomlConfiguration& operator=(const TomlConfiguration&) = delete;
 
-    // ----------------------------------------------------------------
     // Population
-    // ----------------------------------------------------------------
 
     /**
      * @brief Parses a TOML file from disk and replaces the current contents.
@@ -157,9 +155,7 @@ class TomlConfiguration {
     void set(std::string_view key, std::chrono::minutes value);
     void set(std::string_view key, std::chrono::hours value);
 
-    // ----------------------------------------------------------------
     // Array-of-tables
-    // ----------------------------------------------------------------
 
     /**
      * @brief Returns the number of entries in a TOML array-of-tables.
@@ -177,9 +173,7 @@ class TomlConfiguration {
      */
     [[nodiscard]] size_t array_size(std::string_view key) const;
 
-    // ----------------------------------------------------------------
     // Error-returning accessors
-    // ----------------------------------------------------------------
 
     [[nodiscard]] std::tuple<bool, std::string> get_required(std::string_view key, std::string& value) const;
     [[nodiscard]] std::tuple<bool, std::string> get_required(std::string_view key, bool& value) const;
@@ -193,9 +187,7 @@ class TomlConfiguration {
     [[nodiscard]] std::tuple<bool, std::string> get_required(std::string_view key, std::chrono::minutes& value) const;
     [[nodiscard]] std::tuple<bool, std::string> get_required(std::string_view key, std::chrono::hours& value) const;
 
-    // ----------------------------------------------------------------
     // Exception-throwing accessors
-    // ----------------------------------------------------------------
 
     void get_required_except(std::string_view key, std::string& value) const;
     void get_required_except(std::string_view key, bool& value) const;

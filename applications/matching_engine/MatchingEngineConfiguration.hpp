@@ -21,9 +21,7 @@ namespace matching_engine {
  * All traffic flows through the sequencer in both directions.
  */
 struct MatchingEngineConfiguration {
-    // ----------------------------------------------------------------
     // Inbound -- sequenced order PDUs from the sequencer
-    // ----------------------------------------------------------------
 
     /** @brief Host address on which the ME listens for PDUs from the sequencer. */
     std::string listen_host{"127.0.0.1"};
@@ -31,12 +29,10 @@ struct MatchingEngineConfiguration {
     /** @brief TCP port on which the ME listens for PDUs from the sequencer. */
     uint16_t listen_port{7020};
 
-    // ----------------------------------------------------------------
     // Outbound -- ExecutionReport PDUs back to the sequencer
     //
     // The ME connects outbound to the sequencer's ER inbound listener.
     // The sequencer then forwards ERs to the appropriate gateway.
-    // ----------------------------------------------------------------
 
     /** @brief Host address of the primary sequencer's ER inbound listener. */
     std::string sequencer_er_host{"127.0.0.1"};
@@ -56,9 +52,7 @@ struct MatchingEngineConfiguration {
     /** @brief Minimum severity written to syslog. */
     pubsub_itc_fw::FwLogLevel syslog_level{pubsub_itc_fw::FwLogLevel::Info};
 
-    // ----------------------------------------------------------------
     // Reactor
-    // ----------------------------------------------------------------
 
     /** @brief Enable CPU core pinning for registered application threads.
      *  Mandatory: must be set explicitly in the TOML configuration file. */
@@ -77,9 +71,7 @@ struct MatchingEngineConfiguration {
     /** @brief How long to wait between "still disconnected" log warnings during outbound retry. */
     std::chrono::milliseconds connect_retry_warning_interval;
 
-    // ----------------------------------------------------------------
     // Event queue pool  (ApplicationThread inbound EventMessage queue)
-    // ----------------------------------------------------------------
 
     /** @brief Number of objects in each fixed-size memory pool slab.
      *  Increase if event-queue pool-exhaustion warnings appear in the log. */
@@ -88,9 +80,7 @@ struct MatchingEngineConfiguration {
     /** @brief Number of event queue pool slabs pre-allocated at startup. */
     int32_t event_queue_pool_initial_slabs{1};
 
-    // ----------------------------------------------------------------
     // Command queue pool  (Reactor ReactorControlCommand outbound queue)
-    // ----------------------------------------------------------------
 
     /** @brief Number of objects in each fixed-size memory pool slab.
      *  Increase if command-queue pool-exhaustion warnings appear in the log. */
@@ -99,7 +89,6 @@ struct MatchingEngineConfiguration {
     /** @brief Number of command queue pool slabs pre-allocated at startup. */
     int32_t command_queue_pool_initial_slabs{1};
 
-    // ----------------------------------------------------------------
     // HA -- book replication (Slice A+B)
     //
     // When ha_enabled=true the ME runs as a primary/secondary pair.
@@ -108,7 +97,6 @@ struct MatchingEngineConfiguration {
     // Secondary: receives BookUpdate PDUs from the primary and maintains
     //            a replica order book.  Does not process sequencer orders
     //            or send ERs until promoted (Slice C).
-    // ----------------------------------------------------------------
 
     /** @brief Enable HA book replication. Default false (single instance). */
     bool ha_enabled{false};
@@ -118,13 +106,12 @@ struct MatchingEngineConfiguration {
 
     // Primary-side: outbound connection to secondary's replication listener.
     std::string secondary_replication_host{"127.0.0.1"};
-    uint16_t    secondary_replication_port{7026};
+    uint16_t secondary_replication_port{7026};
 
     // Secondary-side: inbound listener for book updates from primary.
     std::string replication_listen_host{"127.0.0.1"};
-    uint16_t    replication_listen_port{7026};
+    uint16_t replication_listen_port{7026};
 
-    // ----------------------------------------------------------------
     // HA -- arbiter-mediated promotion and cancel-on-failover (Slice C+D)
     //
     // The secondary opens connections to the arbiter pool at startup and, on
@@ -132,7 +119,6 @@ struct MatchingEngineConfiguration {
     // fires it sends an ArbitrationReport to the arbiter and adopts leader or
     // follower based on the ArbitrationDecision.  The primary heartbeats the
     // arbiter to hold its lease.
-    // ----------------------------------------------------------------
 
     /** @brief Unique instance identity within the ME pair (1 = primary, 2 = secondary). */
     int32_t instance_id{1};
@@ -160,9 +146,7 @@ struct MatchingEngineConfiguration {
     /** @brief Path to the fence file written when this instance adopts the leader role. */
     std::string fence_file_path{"/dev/shm/me_primary_fence"};
 
-    // ----------------------------------------------------------------
     // Order book
-    // ----------------------------------------------------------------
 
     /** @brief Number of elements to pre-reserve in the order book hash map.
      *  Sets the bucket count via unordered_map::reserve() at startup so that
@@ -171,9 +155,7 @@ struct MatchingEngineConfiguration {
      *  orders.  Increase for load-test environments. */
     int32_t order_book_initial_capacity{1024};
 
-    // ----------------------------------------------------------------
     // Wall clock
-    // ----------------------------------------------------------------
 
     /** @brief Clock used to generate transact_time on ExecutionReports when the
      *  inbound PDU does not carry a sequenced_at timestamp.

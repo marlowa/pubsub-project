@@ -60,15 +60,9 @@ using pubsub_itc_fw_app::StatusQueryView;
 using pubsub_itc_fw_app::StatusResponse;
 using pubsub_itc_fw_app::StatusResponseView;
 
-// ============================================================
 // PDU IDs matching the leader-follower protocol DSL
-// ============================================================
 static constexpr int16_t pdu_id_status_query = 100;
 static constexpr int16_t pdu_id_status_response = 101;
-
-// ============================================================
-// Helpers
-// ============================================================
 
 namespace {
 
@@ -80,12 +74,10 @@ void enqueue_disconnect(Reactor& reactor, ConnectionID conn_id) {
 
 } // un-named namespace
 
-// ============================================================
 // Connector-side ApplicationThread.
 // Sends Connect on initial event.
 // Sends StatusQuery on ConnectionEstablished.
 // Decodes StatusResponse and disconnects.
-// ============================================================
 class ConnectorThread : public ApplicationThread {
   public:
     ConnectorThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
@@ -144,11 +136,9 @@ class ConnectorThread : public ApplicationThread {
     void on_itc_message([[maybe_unused]] const EventMessage& msg) override {}
 };
 
-// ============================================================
 // Listener-side ApplicationThread.
 // Decodes StatusQuery, replies with StatusResponse.
 // Shuts down when connection is lost.
-// ============================================================
 class ListenerThread : public ApplicationThread {
   public:
     ListenerThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
@@ -198,9 +188,7 @@ class ListenerThread : public ApplicationThread {
     void on_itc_message([[maybe_unused]] const EventMessage& msg) override {}
 };
 
-// ============================================================
 // Test fixture
-// ============================================================
 class StatusQueryResponseTest : public ::testing::Test {
   protected:
     void SetUp() override {
@@ -234,9 +222,7 @@ class StatusQueryResponseTest : public ::testing::Test {
     std::unique_ptr<LoggerWithSink> logger_;
 };
 
-// ============================================================
 // Test: full StatusQuery / StatusResponse round-trip over loopback
-// ============================================================
 TEST_F(StatusQueryResponseTest, StatusQueryResponseRoundTrip) {
     // --- Listener side ---
     const ServiceRegistry listener_registry; // no outbound connections needed

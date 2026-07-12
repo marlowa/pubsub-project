@@ -21,10 +21,6 @@
 
 namespace pubsub_itc_fw {
 
-// ---------------------------------------------------------------------------
-// Path helpers
-// ---------------------------------------------------------------------------
-
 std::string Wal::snapshot_path() const {
     return directory_ + "/snapshot.bin";
 }
@@ -34,10 +30,6 @@ std::string Wal::segment_path_for_delete(uint64_t seg_num) const {
     std::snprintf(buf, sizeof(buf), "/wal_%06" PRIu64 ".log", seg_num);
     return directory_ + buf;
 }
-
-// ---------------------------------------------------------------------------
-// open()
-// ---------------------------------------------------------------------------
 
 int64_t Wal::open(const std::string& directory, size_t segment_size, ReplayCallback replay_cb, WalOpenMode open_mode) {
     directory_ = directory;
@@ -84,10 +76,6 @@ int64_t Wal::open(const std::string& directory, size_t segment_size, ReplayCallb
     return last_seq_no_;
 }
 
-// ---------------------------------------------------------------------------
-// load_snapshot()
-// ---------------------------------------------------------------------------
-
 bool Wal::load_snapshot(WalPosition& out_pos) {
     const std::string path = snapshot_path();
 
@@ -121,10 +109,6 @@ bool Wal::load_snapshot(WalPosition& out_pos) {
     out_pos = {hdr.wal_segment, hdr.wal_offset};
     return true;
 }
-
-// ---------------------------------------------------------------------------
-// take_snapshot()
-// ---------------------------------------------------------------------------
 
 void Wal::take_snapshot() {
     const WalPosition pos = writer_.current_position();
@@ -164,10 +148,6 @@ void Wal::take_snapshot() {
     delete_segments_before(pos.segment);
 }
 
-// ---------------------------------------------------------------------------
-// append()
-// ---------------------------------------------------------------------------
-
 void Wal::append(int64_t seq_no, int16_t pdu_id, const uint8_t* payload, int size, int64_t wall_time_ns) {
     constexpr int stack_buffer_size = 512;
     uint8_t stack_buffer[stack_buffer_size];
@@ -192,10 +172,6 @@ void Wal::append(int64_t seq_no, int16_t pdu_id, const uint8_t* payload, int siz
     ++record_count_;
 }
 
-// ---------------------------------------------------------------------------
-// truncate_below()
-// ---------------------------------------------------------------------------
-
 void Wal::truncate_below(int64_t safe_seq_no) {
     // Find the segment holding the first record at/after safe_seq_no; every segment
     // before it contains only already-consumed records and can be deleted.
@@ -215,10 +191,6 @@ void Wal::truncate_below(int64_t safe_seq_no) {
     // No record at/after safe_seq_no: everything is consumed but nothing is safe to
     // reclaim yet (the current segment is still being written), so leave it.
 }
-
-// ---------------------------------------------------------------------------
-// delete_segments_before()
-// ---------------------------------------------------------------------------
 
 void Wal::delete_segments_before(uint64_t seg_num) const {
     for (uint64_t i = 0; i < seg_num; ++i) {

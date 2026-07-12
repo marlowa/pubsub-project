@@ -49,9 +49,7 @@ class TlsStateTest : public ::testing::Test {
     SSL_CTX* ctx_{nullptr};
 };
 
-// ---------------------------------------------------------------------------
 // Default construction
-// ---------------------------------------------------------------------------
 
 TEST_F(TlsStateTest, DefaultConstructedIsEmpty) {
     TlsState state;
@@ -63,9 +61,7 @@ TEST_F(TlsStateTest, DefaultConstructedIsEmpty) {
     EXPECT_EQ(state.pending_outbound_offset, 0u);
 }
 
-// ---------------------------------------------------------------------------
 // Destructor: else branch - ssl==nullptr, BIOs allocated independently
-// ---------------------------------------------------------------------------
 
 TEST_F(TlsStateTest, DestructorFreesOrphanedBios) {
     // Allocate BIOs without ever calling SSL_set_bio(). On destruction the
@@ -102,9 +98,7 @@ TEST_F(TlsStateTest, DestructorEmptyStateIsNoop) {
     { TlsState state; }
 }
 
-// ---------------------------------------------------------------------------
 // Move constructor
-// ---------------------------------------------------------------------------
 
 TEST_F(TlsStateTest, MoveConstructorTransfersFields) {
     TlsState source;
@@ -153,9 +147,7 @@ TEST_F(TlsStateTest, MoveConstructorFromEmptyState) {
     EXPECT_EQ(dest.wbio, nullptr);
 }
 
-// ---------------------------------------------------------------------------
 // Move assignment
-// ---------------------------------------------------------------------------
 
 TEST_F(TlsStateTest, MoveAssignmentTransfersFields) {
     TlsState source;
@@ -233,9 +225,7 @@ TEST_F(TlsStateTest, MoveAssignmentSelfAssignmentIsNoop) {
     EXPECT_EQ(state.ssl, original);
 }
 
-// ---------------------------------------------------------------------------
 // has_pending_outbound and clear_pending_outbound
-// ---------------------------------------------------------------------------
 
 TEST_F(TlsStateTest, HasPendingOutboundFalseWhenEmpty) {
     TlsState state;

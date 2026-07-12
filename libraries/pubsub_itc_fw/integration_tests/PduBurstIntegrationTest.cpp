@@ -100,18 +100,14 @@
 
 namespace pubsub_itc_fw::tests {
 
-// ============================================================
 // Test constants
-// ============================================================
 
 static constexpr int burst_size = 100;
 static constexpr int64_t raw_buffer_capacity = 65536;
 static const std::string receiver_service = "receiver";
 static constexpr uint16_t any_os_assigned_port = 0;
 
-// ============================================================
 // Reactor / thread configuration helpers
-// ============================================================
 
 namespace {
 
@@ -126,9 +122,7 @@ ReactorConfiguration make_reactor_config() {
 
 } // un-named namespace
 
-// ============================================================
 // SenderThread
-// ============================================================
 //
 // Plays the part of the sequencer in the real deployment: connects outbound to
 // the named "receiver" service, then on connection_established sends a burst
@@ -244,9 +238,7 @@ class SenderThread : public ApplicationThread {
     std::vector<std::string> cl_ord_id_storage_;
 };
 
-// ============================================================
 // ReceiverThread
-// ============================================================
 //
 // Plays the part of the gateway in the real deployment: receives ER PDUs on
 // an inbound framework-PDU listener, captures the raw payload bytes and the
@@ -356,9 +348,7 @@ class ReceiverThread : public ApplicationThread {
     int64_t total_bytes_committed_{0};
 };
 
-// ============================================================
 // Fixture
-// ============================================================
 //
 // Mirrors the reactor-liveness pattern of RawBytesProtocolHandlerIntegrationTest.
 // Two reactors are watched simultaneously; wait_for() reports if either dies.
@@ -426,9 +416,7 @@ class FrameworkPduBurstIntegrationTest : public ::testing::Test {
     std::string died_reactor_name_;
 };
 
-// ============================================================
 // Test: burst of N framework-PDU ExecutionReports flows intact
-// ============================================================
 
 TEST_F(FrameworkPduBurstIntegrationTest, ExecutionReportBurstSurvivesEndToEnd) {
     // ----- Receiver -----
@@ -505,9 +493,7 @@ TEST_F(FrameworkPduBurstIntegrationTest, ExecutionReportBurstSurvivesEndToEnd) {
     }
 }
 
-// ============================================================
 // Raw-stream test helpers
-// ============================================================
 //
 // Used only by ExecutionReportBurstUnderConcurrentRawPressure. A small
 // background thread connects to the receiver's raw-bytes listener and pumps
@@ -554,9 +540,7 @@ bool send_all(int fd, const void* data, size_t size) {
 
 } // un-named namespace
 
-// ============================================================
 // Test: burst of N PDUs survives concurrent raw-stream pressure
-// ============================================================
 
 TEST_F(FrameworkPduBurstIntegrationTest, ExecutionReportBurstUnderConcurrentRawPressure) {
     // ----- Receiver: framework PDU listener (port A) + raw bytes listener (port B) -----

@@ -17,9 +17,7 @@
 
 namespace pubsub_itc_fw::test_support {
 
-// ============================================================================
 // A thread that never reaches Started (blocks forever in on_initial_event).
-// ============================================================================
 class NeverStartingThread : public ApplicationThread {
   public:
     NeverStartingThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, const std::string& thread_name, ThreadID thread_id,
@@ -36,9 +34,7 @@ class NeverStartingThread : public ApplicationThread {
     void on_itc_message(const EventMessage&) override {}
 };
 
-// ============================================================================
 // Throws during Initial processing.
-// ============================================================================
 class ThrowingInitialThread : public ApplicationThread {
   public:
     ThrowingInitialThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, const std::string& thread_name, ThreadID thread_id,
@@ -53,9 +49,7 @@ class ThrowingInitialThread : public ApplicationThread {
     void on_itc_message(const EventMessage&) override {}
 };
 
-// ============================================================================
 // Throws during AppReady processing.
-// ============================================================================
 class ThrowingAppReadyThread : public ApplicationThread {
   public:
     ThrowingAppReadyThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, const std::string& thread_name, ThreadID thread_id,
@@ -72,9 +66,7 @@ class ThrowingAppReadyThread : public ApplicationThread {
     void on_itc_message(const EventMessage&) override {}
 };
 
-// ============================================================================
 // Throws during normal ITC message processing (run loop).
-// ============================================================================
 class ThrowingDuringRunThread : public ApplicationThread {
   public:
     ThrowingDuringRunThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, const std::string& thread_name, ThreadID thread_id,
@@ -90,9 +82,7 @@ class ThrowingDuringRunThread : public ApplicationThread {
     }
 };
 
-// ============================================================================
 // Throws during Termination event.
-// ============================================================================
 class ThrowingTerminationThread : public ApplicationThread {
   public:
     ThrowingTerminationThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, const std::string& thread_name, ThreadID thread_id,
@@ -110,9 +100,7 @@ class ThrowingTerminationThread : public ApplicationThread {
     void on_itc_message(const EventMessage&) override {}
 };
 
-// ============================================================================
 // Blocks forever in ITC message processing.
-// ============================================================================
 class RogueITCThread : public ApplicationThread {
   public:
     RogueITCThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, const std::string& thread_name, ThreadID thread_id,

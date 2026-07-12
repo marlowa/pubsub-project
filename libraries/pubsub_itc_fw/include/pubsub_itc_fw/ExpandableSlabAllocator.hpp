@@ -181,7 +181,6 @@ class ExpandableSlabAllocator {
     [[nodiscard]] size_t slab_size() const;
 
   private:
-    // =======================================================================
     // Segmented slab registry
     //
     // Slab IDs are assigned monotonically starting from 0. The registry is a
@@ -201,7 +200,6 @@ class ExpandableSlabAllocator {
     //     pointer with acquire -- both are stable once written.
     //   - The reactor writes page pointers and slab pointers with release so
     //     workers see a consistent view.
-    // =======================================================================
 
     // 256 slots per page (page_bits=8 -> page_size=256).
     // 1024 pages max -> 262,144 distinct slab IDs before capacity exhaustion.

@@ -63,9 +63,7 @@ static std::pair<int, uint16_t> make_listener() {
 
 class TcpConnectorTest : public ::testing::Test {};
 
-// ============================================================
 // Initial state
-// ============================================================
 
 TEST_F(TcpConnectorTest, DefaultStateIsNotConnecting) {
     TcpConnector connector;
@@ -92,9 +90,7 @@ TEST_F(TcpConnectorTest, CancelOnIdleConnectorIsNoop) {
     EXPECT_EQ(connector.get_fd(), -1);
 }
 
-// ============================================================
 // connect() to a non-existent address fails cleanly
-// ============================================================
 
 TEST_F(TcpConnectorTest, ConnectToRefusedPortReturnsError) {
     // Port 1 is privileged and almost certainly not listening.
@@ -114,9 +110,7 @@ TEST_F(TcpConnectorTest, ConnectToRefusedPortReturnsError) {
     // If error is empty the OS started a non-blocking connect; that is also valid.
 }
 
-// ============================================================
 // connect() to a valid listener
-// ============================================================
 
 TEST_F(TcpConnectorTest, ConnectToListeningSocketSucceeds) {
     auto [listen_fd, listen_port] = make_listener();
@@ -174,9 +168,7 @@ TEST_F(TcpConnectorTest, ConnectToListeningSocketSucceeds) {
     ::close(listen_fd);
 }
 
-// ============================================================
 // get_connected_socket() returns null when still connecting
-// ============================================================
 
 TEST_F(TcpConnectorTest, GetConnectedSocketReturnsNullWhileStillConnecting) {
     auto [listen_fd, listen_port] = make_listener();
@@ -199,9 +191,7 @@ TEST_F(TcpConnectorTest, GetConnectedSocketReturnsNullWhileStillConnecting) {
     ::close(listen_fd);
 }
 
-// ============================================================
 // cancel() during an active connect attempt
-// ============================================================
 
 TEST_F(TcpConnectorTest, CancelDuringConnectResetsState) {
     auto [listen_fd, listen_port] = make_listener();
@@ -223,9 +213,7 @@ TEST_F(TcpConnectorTest, CancelDuringConnectResetsState) {
     ::close(listen_fd);
 }
 
-// ============================================================
 // move semantics
-// ============================================================
 
 TEST_F(TcpConnectorTest, MoveConstructedConnectorIsValid) {
     TcpConnector original;
@@ -244,9 +232,7 @@ TEST_F(TcpConnectorTest, MoveAssignedConnectorIsValid) {
     EXPECT_EQ(b.get_fd(), -1);
 }
 
-// ============================================================
 // second connect() on same connector resets state cleanly
-// ============================================================
 
 TEST_F(TcpConnectorTest, SecondConnectCallCancelsFirstAndRetries) {
     auto [listen_fd, listen_port] = make_listener();

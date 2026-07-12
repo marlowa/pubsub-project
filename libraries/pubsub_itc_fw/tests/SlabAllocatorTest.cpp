@@ -185,9 +185,7 @@ TEST_F(SlabAllocatorTest, CrossThreadDeallocation) {
     EXPECT_EQ(slab_id, 0);
 }
 
-// =====================
 // Ex-adversarial tests (previously in SlabAllocatorAdversarialTest fixture).
-// =====================
 
 // Allocation of exactly slab_size bytes must succeed and leave the slab full.
 TEST_F(SlabAllocatorTest, AllocateExactlySlabSize) {

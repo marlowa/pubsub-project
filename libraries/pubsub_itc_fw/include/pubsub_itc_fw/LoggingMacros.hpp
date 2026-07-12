@@ -12,9 +12,7 @@
 
 /** @ingroup logging_subsystem */
 
-// =============================================================================
 // Format string safety
-// =============================================================================
 //
 // The fmt argument to PUBSUB_LOG must always be a string literal, for example:
 //
@@ -31,7 +29,6 @@
 // callback is NOT invoked for format errors in Quill 11.0.2 -- it is only used
 // for queue failures and backend exceptions.
 //
-// =============================================================================
 
 namespace pubsub_itc_fw::logging_help {
 

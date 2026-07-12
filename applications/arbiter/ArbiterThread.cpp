@@ -96,7 +96,7 @@ void ArbiterThread::on_connection_established(pubsub_itc_fw::ConnectionID id) {
     }
 }
 
-void ArbiterThread::on_connection_lost(const pubsub_itc_fw::ConnectionID &id, const std::string& reason) {
+void ArbiterThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, const std::string& reason) {
     if (id == peer_conn_id_) {
         peer_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "ArbiterThread: outbound peer connection {} lost: {}", id.get_value(), reason);
@@ -197,9 +197,7 @@ void ArbiterThread::on_timer_event(const std::string& name) {
 
 void ArbiterThread::on_itc_message([[maybe_unused]] const pubsub_itc_fw::EventMessage& message) {}
 
-// ---------------------------------------------------------------------------
 // Arbiter-pair election helpers (mirror sequencer peer protocol)
-// ---------------------------------------------------------------------------
 
 pubsub_itc_fw::ConnectionID ArbiterThread::peer_active_conn() const {
     if (peer_conn_id_.is_valid()) {
@@ -213,9 +211,7 @@ void ArbiterThread::adopt_role(pubsub_itc_fw_app::Role new_role) {
         return;
     }
 
-    const auto transition_level = (role_ == pubsub_itc_fw_app::Role::unknown)
-                                      ? pubsub_itc_fw::FwLogLevel::Info
-                                      : pubsub_itc_fw::FwLogLevel::Warning;
+    const auto transition_level = (role_ == pubsub_itc_fw_app::Role::unknown) ? pubsub_itc_fw::FwLogLevel::Info : pubsub_itc_fw::FwLogLevel::Warning;
     PUBSUB_LOG(get_logger(), transition_level, "ArbiterThread: role transition {} -> {} (epoch={})", pubsub_itc_fw_app::to_string(role_),
                pubsub_itc_fw_app::to_string(new_role), epoch_);
 
@@ -343,9 +339,7 @@ void ArbiterThread::write_fence_file() const {
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: fence file written: {}", path);
 }
 
-// ---------------------------------------------------------------------------
 // Peer PDU handlers
-// ---------------------------------------------------------------------------
 
 void ArbiterThread::handle_peer_pdu(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
     const auto pdu_id = message.pdu_id();
@@ -481,9 +475,7 @@ void ArbiterThread::handle_arbiter_state_ack(const pubsub_itc_fw::EventMessage& 
                pubsub_itc_fw_app::to_string(ack.group), ack.component_instance_id, ack.epoch);
 }
 
-// ---------------------------------------------------------------------------
 // Witness PDU handlers
-// ---------------------------------------------------------------------------
 
 void ArbiterThread::handle_arbiter_vote_response(const pubsub_itc_fw::EventMessage& message) {
     cancel_timer("vote_timeout");
@@ -512,9 +504,7 @@ void ArbiterThread::handle_arbiter_vote_response(const pubsub_itc_fw::EventMessa
     }
 }
 
-// ---------------------------------------------------------------------------
 // Component PDU handlers
-// ---------------------------------------------------------------------------
 
 void ArbiterThread::handle_component_heartbeat(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
     auto& arena_buf = decode_arena_buffer();
@@ -578,9 +568,7 @@ void ArbiterThread::handle_arbitration_report(const pubsub_itc_fw::ConnectionID&
     decide_and_broadcast(report.group, report.self_instance_id, report.peer_instance_id, report.epoch, conn_id);
 }
 
-// ---------------------------------------------------------------------------
 // Decision helpers
-// ---------------------------------------------------------------------------
 
 void ArbiterThread::decide_and_broadcast(pubsub_itc_fw_app::ComponentGroup group, int64_t self_instance_id, int64_t peer_instance_id, int32_t epoch,
                                          const pubsub_itc_fw::ConnectionID& requester_conn_id) {

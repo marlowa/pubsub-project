@@ -144,9 +144,7 @@ constexpr int eagain_timeout_ms = 5000;
 // re-open the window once EPOLLIN is re-registered.
 constexpr int resume_timeout_ms = 5000;
 
-// ============================================================
 // Raw POSIX socket helpers
-// ============================================================
 
 int connect_nonblocking_socket(uint16_t port) {
     const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
@@ -190,9 +188,7 @@ ssize_t try_send_chunk(int sock_fd, const void* data, size_t size) {
     return ::send(sock_fd, data, size, MSG_NOSIGNAL);
 }
 
-// ============================================================
 // Listener thread: tracks bytes received and commits only when allowed.
-// ============================================================
 //
 // The drain mode is controlled via std::atomic<bool>. When false (the default)
 // the listener counts bytes but does not call commit_raw_bytes(). This causes
@@ -287,9 +283,7 @@ ReactorConfiguration make_backpressure_reactor_config() {
 
 } // namespaces
 
-// ============================================================
 // Test fixture
-// ============================================================
 class RawBytesBackpressureIntegrationTest : public ::testing::Test {
   protected:
     void SetUp() override {
@@ -384,9 +378,7 @@ class RawBytesBackpressureIntegrationTest : public ::testing::Test {
     bool reactor_died_{false};
 };
 
-// ============================================================
 // Test: backpressure engages when the application stops draining.
-// ============================================================
 //
 // The peer pushes chunks until either send() returns EAGAIN (which is what
 // we want -- the kernel TCP window has closed because the listener stopped
@@ -460,9 +452,7 @@ TEST_F(RawBytesBackpressureIntegrationTest, BackpressureEngagesWhenApplicationIs
     shutdown_and_join(*listener_reactor, listener_reactor_thread);
 }
 
-// ============================================================
 // Test: backpressure releases after the application drains the buffer.
-// ============================================================
 //
 // First drive backpressure as in the previous test, then enable drain. The
 // peer's send() must start succeeding again within a bounded time, and all
@@ -535,10 +525,12 @@ TEST_F(RawBytesBackpressureIntegrationTest, BackpressureReleasesAfterCommitsDrai
     // to zero before EPOLLIN was deregistered (a race where the peer saw EAGAIN
     // from a delayed ACK rather than from a full buffer), there is always data
     // in flight once the window reopens.
-    EXPECT_TRUE(wait_for([&]() {
-        try_send_chunk(sock_fd, chunk.data(), chunk.size());
-        return listener_thread->total_bytes_seen.load(std::memory_order_acquire) > bytes_seen_before_drain;
-    }, resume_timeout_ms))
+    EXPECT_TRUE(wait_for(
+        [&]() {
+            try_send_chunk(sock_fd, chunk.data(), chunk.size());
+            return listener_thread->total_bytes_seen.load(std::memory_order_acquire) > bytes_seen_before_drain;
+        },
+        resume_timeout_ms))
         << "Listener never saw more bytes after drain was enabled; backpressure release "
         << "did not happen. bytes_seen_before_drain=" << bytes_seen_before_drain << "; " << last_wait_failure_description();
 
@@ -570,9 +562,7 @@ TEST_F(RawBytesBackpressureIntegrationTest, BackpressureReleasesAfterCommitsDrai
     shutdown_and_join(*listener_reactor, listener_reactor_thread);
 }
 
-// ============================================================
 // Test: sustained load through many backpressure cycles.
-// ============================================================
 //
 // The peer pushes bytes continuously in a non-blocking loop. The test
 // toggles the listener's drain mode several times. Each toggle should

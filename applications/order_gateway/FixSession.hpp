@@ -18,7 +18,6 @@
 
 namespace order_gateway {
 
-// ----------------------------------------------------------------
 // Hard structural ceilings for open-order string fields.
 //
 // These compile-time constants determine the size of the char arrays in
@@ -36,9 +35,8 @@ namespace order_gateway {
 //   hard to write correctly. Fixed char arrays with ExpandablePoolAllocator
 //   and tsl::robin_map eliminate all per-order heap allocation with a
 //   manageable implementation cost.
-// ----------------------------------------------------------------
 static constexpr size_t max_supported_cl_ord_id_length = 128;
-static constexpr size_t max_supported_symbol_length    = 64;
+static constexpr size_t max_supported_symbol_length = 64;
 static constexpr size_t max_supported_order_qty_length = 32;
 
 /**
@@ -55,13 +53,13 @@ static constexpr size_t max_supported_order_qty_length = 32;
  * for the lifetime of the map entry.
  */
 struct OpenOrderEntry {
-    char    cl_ord_id[max_supported_cl_ord_id_length + 1]{};
+    char cl_ord_id[max_supported_cl_ord_id_length + 1]{};
     uint8_t cl_ord_id_len{0};
-    char    symbol[max_supported_symbol_length + 1]{};
+    char symbol[max_supported_symbol_length + 1]{};
     uint8_t symbol_len{0};
-    char    order_qty[max_supported_order_qty_length + 1]{};
+    char order_qty[max_supported_order_qty_length + 1]{};
     uint8_t order_qty_len{0};
-    char    side{0};
+    char side{0};
 };
 
 /**
@@ -72,11 +70,7 @@ struct OpenOrderEntry {
  * Value: non-owning pointer to the pool-allocated OpenOrderEntry.
  *        The owning pool lives in OrderGatewayThread.
  */
-using OpenOrderMap = tsl::robin_map<
-    std::string_view,
-    OpenOrderEntry*,
-    std::hash<std::string_view>,
-    std::equal_to<std::string_view>>;
+using OpenOrderMap = tsl::robin_map<std::string_view, OpenOrderEntry*, std::hash<std::string_view>, std::equal_to<std::string_view>>;
 
 /**
  * @brief Holds the state for a single active FIX 5.0SP2 / FIXT 1.1 session.
@@ -112,13 +106,10 @@ struct FixSession {
     FixSession(FixSession&&) = default;
     FixSession& operator=(FixSession&&) = default;
 
-    // ----------------------------------------------------------------
     // Identity
-    // ----------------------------------------------------------------
 
     pubsub_itc_fw::ConnectionID conn_id;
 
-    // ----------------------------------------------------------------
     // Parser -- one per connection.
     //
     // The parser itself is stateless (no internal accumulation buffer).
@@ -126,13 +117,10 @@ struct FixSession {
     // committing only fully consumed bytes after each call to feed(). A separate
     // parser per connection is still required because each connection has its own
     // MirroredBuffer and its own in-flight partial message state.
-    // ----------------------------------------------------------------
 
     FixParser parser;
 
-    // ----------------------------------------------------------------
     // Session state
-    // ----------------------------------------------------------------
 
     /**
      * @brief True once the inbound byte stream has been verified to start
@@ -213,9 +201,7 @@ struct FixSession {
      */
     OpenOrderMap open_orders;
 
-    // ----------------------------------------------------------------
     // Raw-bytes commit bookkeeping
-    // ----------------------------------------------------------------
     //
     // Each on_raw_socket_message event carries:
     //   - payload() and payload_size() -- the bytes currently visible in

@@ -12,10 +12,10 @@
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
 #include <pubsub_itc_fw/BumpAllocator.hpp>
-#include <pubsub_itc_fw/PduFramer.hpp>
-#include <pubsub_itc_fw/PduParser.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
+#include <pubsub_itc_fw/PduFramer.hpp>
+#include <pubsub_itc_fw/PduParser.hpp>
 #include <pubsub_itc_fw/QueueConfiguration.hpp>
 #include <pubsub_itc_fw/ReactorControlCommand.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
@@ -172,8 +172,8 @@ void SequencerThread::on_connection_established(pubsub_itc_fw::ConnectionID id) 
         }
     } else if (svc == "matching_engine_secondary") {
         me_secondary_standby_conn_id_ = id;
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "SequencerThread: ME-secondary standby connection {} established (pre-warmed for failover)", id.get_value());
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: ME-secondary standby connection {} established (pre-warmed for failover)",
+                   id.get_value());
     } else if (svc == "arbiter_primary") {
         const bool first_arbiter = !arbiter_primary_conn_id_.is_valid() && !arbiter_secondary_conn_id_.is_valid();
         arbiter_primary_conn_id_ = id;
@@ -214,7 +214,7 @@ void SequencerThread::on_connection_established(pubsub_itc_fw::ConnectionID id) 
     }
 }
 
-void SequencerThread::on_connection_lost(const pubsub_itc_fw::ConnectionID &id, const std::string& reason) {
+void SequencerThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, const std::string& reason) {
     if (id == gateway_conn_id_) {
         gateway_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: gateway connection {} lost: {}", id.get_value(), reason);
@@ -282,8 +282,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
     // In normal operation the request arrives on the pre-warmed standby
     // connection (me_secondary_standby_conn_id_); accept it on either the active
     // or standby ME connection for robustness.
-    if (message.pdu_id() == pdu_me_position_request &&
-        (conn_id == me_outbound_order_conn_id_ || conn_id == me_secondary_standby_conn_id_)) {
+    if (message.pdu_id() == pdu_me_position_request && (conn_id == me_outbound_order_conn_id_ || conn_id == me_secondary_standby_conn_id_)) {
         handle_me_position_request(conn_id, message);
         release_pdu_payload(message);
         return;
@@ -297,8 +296,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             handle_external_wal_ack(conn_id, message);
         } else {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                       "SequencerThread: unexpected PDU {} on external WAL subscriber connection {} -- dropping",
-                       message.pdu_id(), conn_id.get_value());
+                       "SequencerThread: unexpected PDU {} on external WAL subscriber connection {} -- dropping", message.pdu_id(), conn_id.get_value());
         }
         release_pdu_payload(message);
         return;
@@ -723,10 +721,7 @@ void SequencerThread::on_timer_event(const std::string& name) {
 
 void SequencerThread::on_itc_message([[maybe_unused]] const pubsub_itc_fw::EventMessage& message) {}
 
-// ---------------------------------------------------------------------------
 // Leader-follower state machine helpers
-// ---------------------------------------------------------------------------
-
 
 pubsub_itc_fw::ConnectionID SequencerThread::peer_active_conn() const {
     if (peer_conn_id_.is_valid()) {
@@ -740,9 +735,7 @@ void SequencerThread::adopt_role(pubsub_itc_fw_app::Role new_role) {
         return;
     }
 
-    const auto transition_level = (role_ == pubsub_itc_fw_app::Role::unknown)
-                                      ? pubsub_itc_fw::FwLogLevel::Info
-                                      : pubsub_itc_fw::FwLogLevel::Warning;
+    const auto transition_level = (role_ == pubsub_itc_fw_app::Role::unknown) ? pubsub_itc_fw::FwLogLevel::Info : pubsub_itc_fw::FwLogLevel::Warning;
     PUBSUB_LOG(get_logger(), transition_level, "SequencerThread: role transition {} -> {} (epoch={})", pubsub_itc_fw_app::to_string(role_),
                pubsub_itc_fw_app::to_string(new_role), epoch_);
 
@@ -892,8 +885,8 @@ void SequencerThread::handle_arbitration_decision(const pubsub_itc_fw::EventMess
     // mistake can never drive a spurious sequencer promotion or cancel our own
     // arbitration timeout. Validate before touching any state.
     if (decision.group != pubsub_itc_fw_app::ComponentGroup::sequencer) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "SequencerThread: ArbitrationDecision addressed to group={} (not sequencer) -- ignoring", pubsub_itc_fw_app::to_string(decision.group));
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: ArbitrationDecision addressed to group={} (not sequencer) -- ignoring",
+                   pubsub_itc_fw_app::to_string(decision.group));
         return;
     }
 
@@ -1032,9 +1025,7 @@ void SequencerThread::handle_peer_pdu(const pubsub_itc_fw::ConnectionID& conn_id
     }
 }
 
-// ---------------------------------------------------------------------------
 // Replay mode dispatch
-// ---------------------------------------------------------------------------
 
 void SequencerThread::try_dispatch_replay() {
     if (replay_me_order_ready_ && replay_me_er_ready_) {
@@ -1142,9 +1133,7 @@ void SequencerThread::dispatch_replay_records() {
     replay_buffer_.shrink_to_fit();
 }
 
-// ---------------------------------------------------------------------------
 // WAL replication helpers (Slice 7)
-// ---------------------------------------------------------------------------
 
 bool SequencerThread::needs_wal_ack() const {
     return config_.ha_enabled && peer_active_conn().is_valid();
@@ -1218,51 +1207,46 @@ void SequencerThread::install_peer_wal_inline_handler(const pubsub_itc_fw::Conne
         return;
     }
 
-    install_inline_pdu_handler(conn_id,
-        [this](pubsub_itc_fw::PduParser* parser, pubsub_itc_fw::PduFramer* framer) {
-            parser->set_inline_handler(
-                [this, framer](int16_t pdu_id, int64_t /*seq_no*/, const uint8_t* payload, size_t size) -> bool {
-                    if (pdu_id != pdu_wal_record) {
-                        return false;
-                    }
-                    if (framer->has_pending_data()) {
-                        return false;
-                    }
+    install_inline_pdu_handler(conn_id, [this](pubsub_itc_fw::PduParser* parser, pubsub_itc_fw::PduFramer* framer) {
+        parser->set_inline_handler([this, framer](int16_t pdu_id, int64_t /*seq_no*/, const uint8_t* payload, size_t size) -> bool {
+            if (pdu_id != pdu_wal_record) {
+                return false;
+            }
+            if (framer->has_pending_data()) {
+                return false;
+            }
 
-                    std::array<uint8_t, 4096> arena_buffer;
-                    pubsub_itc_fw::BumpAllocator arena(arena_buffer.data(), arena_buffer.size());
-                    size_t arena_bytes_needed = 0;
-                    size_t bytes_consumed = 0;
-                    pubsub_itc_fw_app::WalRecordView view{};
+            std::array<uint8_t, 4096> arena_buffer;
+            pubsub_itc_fw::BumpAllocator arena(arena_buffer.data(), arena_buffer.size());
+            size_t arena_bytes_needed = 0;
+            size_t bytes_consumed = 0;
+            pubsub_itc_fw_app::WalRecordView view{};
 
-                    if (!pubsub_itc_fw_app::decode(view, payload, size, bytes_consumed, arena, arena_bytes_needed)) {
-                        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                                       "SequencerThread (inline): failed to decode WalRecord -- falling back to ITC");
-                        return false;
-                    }
+            if (!pubsub_itc_fw_app::decode(view, payload, size, bytes_consumed, arena, arena_bytes_needed)) {
+                PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread (inline): failed to decode WalRecord -- falling back to ITC");
+                return false;
+            }
 
-                    wal_.append(view.seq_no, view.pdu_id, view.payload.data, static_cast<int>(view.payload.size), view.wall_time_ns);
+            wal_.append(view.seq_no, view.pdu_id, view.payload.data, static_cast<int>(view.payload.size), view.wall_time_ns);
 
-                    pubsub_itc_fw_app::WalAck wal_ack{};
-                    wal_ack.seq_no = view.seq_no;
-                    std::array<uint8_t, 8> ack_buffer;
-                    pubsub_itc_fw_app::encode_fast(wal_ack, ack_buffer.data());
+            pubsub_itc_fw_app::WalAck wal_ack{};
+            wal_ack.seq_no = view.seq_no;
+            std::array<uint8_t, 8> ack_buffer;
+            pubsub_itc_fw_app::encode_fast(wal_ack, ack_buffer.data());
 
-                    auto [ok, err] = framer->send(pdu_wal_ack, 0, 0, ack_buffer.data(), static_cast<uint32_t>(ack_buffer.size()));
-                    if (!ok) {
-                        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                                   "SequencerThread (inline): WalAck send failed for seq={}: {}", view.seq_no, err);
-                    } else {
-                        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
-                                   "SequencerThread (inline): WalRecord seq={} written and WalAck sent", view.seq_no);
-                    }
+            auto [ok, err] = framer->send(pdu_wal_ack, 0, 0, ack_buffer.data(), static_cast<uint32_t>(ack_buffer.size()));
+            if (!ok) {
+                PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread (inline): WalAck send failed for seq={}: {}", view.seq_no, err);
+            } else {
+                PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread (inline): WalRecord seq={} written and WalAck sent", view.seq_no);
+            }
 
-                    return true;
-                });
+            return true;
         });
+    });
 
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "SequencerThread: WAL inline handler installation requested for peer connection {}", conn_id.get_value());
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: WAL inline handler installation requested for peer connection {}",
+               conn_id.get_value());
 }
 
 void SequencerThread::flush_pending_er() {
@@ -1362,9 +1346,7 @@ void SequencerThread::forward_pending_er(const PendingEr& pending) {
     }
 }
 
-// ---------------------------------------------------------------------------
 // External WAL subscriber helpers
-// ---------------------------------------------------------------------------
 
 void SequencerThread::handle_wal_subscribe_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
     auto& arena_buf = decode_arena_buffer();
@@ -1382,8 +1364,8 @@ void SequencerThread::handle_wal_subscribe_request(const pubsub_itc_fw::Connecti
     const std::string subscriber_id(view.subscriber_id);
     const int64_t from_seq_no = view.from_seq_no;
 
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: WalSubscribeRequest subscriber_id={} from_seq_no={} conn={}",
-               subscriber_id, from_seq_no, conn_id.get_value());
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: WalSubscribeRequest subscriber_id={} from_seq_no={} conn={}", subscriber_id,
+               from_seq_no, conn_id.get_value());
 
     const pubsub_itc_fw::ConnectionID orphan = external_wal_subscriber_registry_.register_subscriber(conn_id, subscriber_id, from_seq_no);
     if (orphan.is_valid()) {
@@ -1403,16 +1385,16 @@ void SequencerThread::handle_wal_subscribe_request(const pubsub_itc_fw::Connecti
     ack.accepted_from_seq_no = accepted_from_seq_no;
     send_pdu(conn_id, pdu_wal_subscribe_ack, 0, ack);
 
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: WalSubscribeAck sent subscriber_id={} accepted_from_seq_no={}",
-               subscriber_id, accepted_from_seq_no);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: WalSubscribeAck sent subscriber_id={} accepted_from_seq_no={}", subscriber_id,
+               accepted_from_seq_no);
 
     if (from_seq_no == -1) {
         return;
     }
 
     // Replay WAL records with seq_no > from_seq_no, unwrapping the payload format.
-    [[maybe_unused]] auto end_pos = pubsub_itc_fw::WalReader::replay(config_.wal_directory, {0, 0},
-        [this, &conn_id, from_seq_no](int64_t record_id, const void* payload, size_t size) {
+    [[maybe_unused]] auto end_pos =
+        pubsub_itc_fw::WalReader::replay(config_.wal_directory, {0, 0}, [this, &conn_id, from_seq_no](int64_t record_id, const void* payload, size_t size) {
             if (record_id <= from_seq_no) {
                 return;
             }
@@ -1453,8 +1435,8 @@ void SequencerThread::handle_external_wal_ack(const pubsub_itc_fw::ConnectionID&
     }
 
     external_wal_subscriber_registry_.update_cursor(conn_id, view.seq_no);
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: external WalAck conn={} seq={} min_cursor={}",
-               conn_id.get_value(), view.seq_no, external_wal_subscriber_registry_.min_cursor());
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: external WalAck conn={} seq={} min_cursor={}", conn_id.get_value(),
+               view.seq_no, external_wal_subscriber_registry_.min_cursor());
 }
 
 void SequencerThread::stream_wal_record_to_external_subscribers(int64_t seq, int16_t pdu_id, const pubsub_itc_fw::EventMessage& message, int64_t wall_time_ns) {
@@ -1470,13 +1452,11 @@ void SequencerThread::stream_wal_record_to_external_subscribers(int64_t seq, int
     for (const auto& subscriber_conn_id : wal_subscriber_conn_ids_) {
         send_pdu(subscriber_conn_id, pdu_wal_record, seq, wal_record);
     }
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: WalRecord seq={} pdu_id={} streamed to {} external subscriber(s)",
-               seq, pdu_id, wal_subscriber_conn_ids_.size());
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: WalRecord seq={} pdu_id={} streamed to {} external subscriber(s)", seq, pdu_id,
+               wal_subscriber_conn_ids_.size());
 }
 
-// ---------------------------------------------------------------------------
 // ME failover reconciliation (Slice D)
-// ---------------------------------------------------------------------------
 
 void SequencerThread::handle_me_position_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
     auto& arena_buf = decode_arena_buffer();
@@ -1515,14 +1495,14 @@ void SequencerThread::handle_me_position_request(const pubsub_itc_fw::Connection
     me_catchup_conn_id_ = conn_id;
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "SequencerThread: MePositionRequest from connection {} last_seq_no={} -- streaming WAL catch-up up to head={}",
-               conn_id.get_value(), last_seq_no, wal_head);
+               "SequencerThread: MePositionRequest from connection {} last_seq_no={} -- streaming WAL catch-up up to head={}", conn_id.get_value(), last_seq_no,
+               wal_head);
 
     // Walk the WAL from last_seq_no+1 to the head, unwrapping each stored record
     // and streaming the underlying NOS/OCR PDU directly to the ME connection.
     size_t streamed = 0;
-    [[maybe_unused]] auto end_pos = pubsub_itc_fw::WalReader::replay(config_.wal_directory, {0, 0},
-        [this, &conn_id, last_seq_no, &streamed](int64_t record_id, const void* payload, size_t size) {
+    [[maybe_unused]] auto end_pos = pubsub_itc_fw::WalReader::replay(
+        config_.wal_directory, {0, 0}, [this, &conn_id, last_seq_no, &streamed](int64_t record_id, const void* payload, size_t size) {
             if (record_id <= last_seq_no) {
                 return;
             }
@@ -1540,8 +1520,8 @@ void SequencerThread::handle_me_position_request(const pubsub_itc_fw::Connection
             ++streamed;
         });
 
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "SequencerThread: WAL catch-up complete -- {} record(s) streamed to ME connection {}", streamed, conn_id.get_value());
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: WAL catch-up complete -- {} record(s) streamed to ME connection {}", streamed,
+               conn_id.get_value());
 
     // Signal completion. On receipt the ME cancels its book and becomes leader.
     pubsub_itc_fw_app::MePositionAck ack{};
@@ -1644,4 +1624,3 @@ void SequencerThread::stream_wal_record_to_me(const pubsub_itc_fw::ConnectionID&
 }
 
 } // namespaces
-

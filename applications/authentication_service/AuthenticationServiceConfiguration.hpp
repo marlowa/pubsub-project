@@ -24,9 +24,7 @@ namespace authentication_service {
  *     and stores only the SCRAM-SHA-256 values.
  */
 struct AuthenticationServiceConfiguration {
-    // ----------------------------------------------------------------
     // Network -- PDU listener (gateway authentication exchanges)
-    // ----------------------------------------------------------------
 
     /** @brief Host address on which the service listens for inbound connections. */
     std::string listen_host{"127.0.0.1"};
@@ -34,9 +32,7 @@ struct AuthenticationServiceConfiguration {
     /** @brief TCP port on which the service listens for inbound PDU connections. */
     uint16_t listen_port{7070};
 
-    // ----------------------------------------------------------------
     // Network -- TLS admin listener (credential management)
-    // ----------------------------------------------------------------
 
     /** @brief TCP port on which the service listens for TLS admin connections. */
     uint16_t admin_listen_port{7072};
@@ -55,9 +51,7 @@ struct AuthenticationServiceConfiguration {
      *  Ignored when admin_tls_ca_path is empty. */
     bool admin_tls_require_client_certificate{false};
 
-    // ----------------------------------------------------------------
     // Logging
-    // ----------------------------------------------------------------
 
     /** @brief Minimum severity written to the application log file. */
     pubsub_itc_fw::FwLogLevel applog_level{pubsub_itc_fw::FwLogLevel::Info};
@@ -68,9 +62,7 @@ struct AuthenticationServiceConfiguration {
     /** @brief Rolling parameters for the application log. */
     pubsub_itc_fw::RollingLogfileConfiguration rolling_logfile_configuration;
 
-    // ----------------------------------------------------------------
     // Reactor
-    // ----------------------------------------------------------------
 
     /** @brief Enable CPU core pinning for registered application threads.
      *  Mandatory: must be set explicitly in the TOML configuration file. */
@@ -89,9 +81,7 @@ struct AuthenticationServiceConfiguration {
     /** @brief How long to wait between "still disconnected" log warnings during outbound retry. */
     std::chrono::milliseconds connect_retry_warning_interval;
 
-    // ----------------------------------------------------------------
     // Event queue pool  (ApplicationThread inbound EventMessage queue)
-    // ----------------------------------------------------------------
 
     /** @brief Number of objects in each fixed-size memory pool slab. */
     int32_t event_queue_pool_objects_per_slab{64};
@@ -99,9 +89,7 @@ struct AuthenticationServiceConfiguration {
     /** @brief Number of event queue pool slabs pre-allocated at startup. */
     int32_t event_queue_pool_initial_slabs{1};
 
-    // ----------------------------------------------------------------
     // Command queue pool  (Reactor ReactorControlCommand outbound queue)
-    // ----------------------------------------------------------------
 
     /** @brief Number of objects in each fixed-size memory pool slab. */
     int32_t command_queue_pool_objects_per_slab{64};
@@ -109,9 +97,7 @@ struct AuthenticationServiceConfiguration {
     /** @brief Number of command queue pool slabs pre-allocated at startup. */
     int32_t command_queue_pool_initial_slabs{1};
 
-    // ----------------------------------------------------------------
     // Credentials
-    // ----------------------------------------------------------------
 
     /** @brief Path to the TOML file containing per-comp_id SCRAM-SHA-256 credentials. */
     std::string credentials_file;

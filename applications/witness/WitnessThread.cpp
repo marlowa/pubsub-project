@@ -55,7 +55,7 @@ void WitnessThread::on_connection_established(pubsub_itc_fw::ConnectionID id) {
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "WitnessThread: arbiter connection {} established", id.get_value());
 }
 
-void WitnessThread::on_connection_lost(const pubsub_itc_fw::ConnectionID &id, const std::string& reason) {
+void WitnessThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, const std::string& reason) {
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "WitnessThread: arbiter connection {} lost: {}", id.get_value(), reason);
 
     const auto conn_it = conn_to_instance_id_.find(id.get_value());
@@ -87,9 +87,7 @@ void WitnessThread::on_timer_event([[maybe_unused]] const std::string& name) {}
 
 void WitnessThread::on_itc_message([[maybe_unused]] const pubsub_itc_fw::EventMessage& message) {}
 
-// ---------------------------------------------------------------------------
 // Protocol handlers
-// ---------------------------------------------------------------------------
 
 void WitnessThread::handle_arbiter_heartbeat(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
     auto& arena_buf = decode_arena_buffer();
