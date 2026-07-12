@@ -5,18 +5,17 @@
 
 #include <cstdint>
 #include <string>
-#include <unordered_map>
-#include <unordered_set>
 
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
-#include <pubsub_itc_fw/ExternalWalSubscriberRegistry.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
+#include <pubsub_itc_fw/TopicPublisher.hpp>
 #include <pubsub_itc_fw/Wal.hpp>
 
 #include <leader_follower.hpp>
+#include <topics.hpp>
 #include <topics_registry.hpp>
 
 #include "MatchingEnginePublisherConfiguration.hpp"
@@ -31,34 +30,47 @@ namespace matching_engine_publisher {
  * WAL follower (inbound from sequencer):
  *   Connects outbound to both sequencer WAL subscriber listeners. On
  *   connection, sends WalSubscribeRequest. Receives WalRecord PDUs,
- *   appends each to its own WAL, and sends WalAck. Routes records to
- *   live topic subscribers based on pdu_id.
+ *   appends each to its own WAL, and notifies the topic publishers.
  *
  * Topic publisher (inbound from topic subscribers):
- *   Listens on two ports -- one for the "orders" topic (NOS/OCR) and
- *   one for "execution_reports" (ER). On TopicSubscribeRequest, if the
- *   instance is the leader it replays WAL records from the subscriber's
- *   cursor, then publishes live records as TopicPage PDUs. If the instance
- *   is the follower it immediately replies with TopicNotLeader.
+ *   Listens on two ports -- one for the "orders" topic (NOS/OCR) and one
+ *   for "execution_reports" (ER). The reusable pubsub_itc_fw::TopicPublisher
+ *   does the work per topic: it owns the subscribe handshake, socket-paced
+ *   streaming straight from the WAL (batched TopicPages, one per writable),
+ *   the optional control channel, and the slow-consumer policy. This thread
+ *   is the TopicPublisherHost: it decodes inbound PDUs, routes them to the
+ *   matching publisher, and performs the actual sends. Both publishers share
+ *   this MEP's single WAL.
  *
  * HA:
  *   Same arbiter-mediated leader-follower state machine as the sequencer.
- *   Only the leader publishes topic records; the follower holds topic
- *   subscriber connections warm and sends TopicNotLeader on any new
- *   TopicSubscribeRequest.
+ *   Only the leader publishes: on loss of leadership both publishers are set
+ *   non-leader (new TopicSubscribeRequests get TopicNotLeader) and all current
+ *   subscribers are dropped so they rediscover the new leader.
  */
-class MatchingEnginePublisherThread : public pubsub_itc_fw::ApplicationThread {
+class MatchingEnginePublisherThread : public pubsub_itc_fw::ApplicationThread, public pubsub_itc_fw::TopicPublisherHost {
   public:
-    MatchingEnginePublisherThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token,
-                                  pubsub_itc_fw::QuillLogger& logger,
-                                  pubsub_itc_fw::Reactor& reactor,
+    MatchingEnginePublisherThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger, pubsub_itc_fw::Reactor& reactor,
                                   const MatchingEnginePublisherConfiguration& config);
+
+    // ----------------------------------------------------------------
+    // TopicPublisherHost -- each publisher decides what to send and to
+    // whom; this thread performs the send/disconnect/pace on the reactor.
+    // ----------------------------------------------------------------
+    void topic_send_subscribe_ack(pubsub_itc_fw::ConnectionID connection_id, const pubsub_itc_fw_app::TopicSubscribeAck& ack) override;
+    void topic_send_page(pubsub_itc_fw::ConnectionID connection_id, int64_t seq_no, const pubsub_itc_fw_app::TopicPage& page) override;
+    void topic_send_not_leader(pubsub_itc_fw::ConnectionID connection_id, const pubsub_itc_fw_app::TopicNotLeader& not_leader) override;
+    void topic_send_lagged(pubsub_itc_fw::ConnectionID control_connection_id, const pubsub_itc_fw_app::TopicLagged& lagged) override;
+    void topic_disconnect(pubsub_itc_fw::ConnectionID connection_id) override;
+    void topic_request_writable_notification(pubsub_itc_fw::ConnectionID connection_id) override;
+    void topic_truncate_wal(int64_t safe_seq_no) override;
 
   protected:
     void on_initial_event() override;
     void on_app_ready_event() override;
     void on_connection_established(pubsub_itc_fw::ConnectionID id) override;
     void on_connection_lost(const pubsub_itc_fw::ConnectionID& id, const std::string& reason) override;
+    void on_connection_writable(pubsub_itc_fw::ConnectionID id) override;
     void on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message) override;
     void on_timer_event(const std::string& name) override;
     void on_itc_message(const pubsub_itc_fw::EventMessage& message) override;
@@ -92,19 +104,9 @@ class MatchingEnginePublisherThread : public pubsub_itc_fw::ApplicationThread {
     pubsub_itc_fw::ConnectionID arbiter_primary_conn_id_;
     pubsub_itc_fw::ConnectionID arbiter_secondary_conn_id_;
 
-    // Topic subscriber state.
-    // Two separate registries track WAL cursors per topic so MEP can
-    // compute independent truncation floors for each topic's subscriber set.
-    pubsub_itc_fw::ExternalWalSubscriberRegistry orders_registry_;
-    pubsub_itc_fw::ExternalWalSubscriberRegistry er_registry_;
-
-    // Connections that have completed the TopicSubscribeRequest handshake
-    // and are receiving live TopicPage PDUs.
-    std::unordered_set<pubsub_itc_fw::ConnectionID> orders_live_conn_ids_;
-    std::unordered_set<pubsub_itc_fw::ConnectionID> er_live_conn_ids_;
-
-    // Per-subscriber topic (for ConnectionLost / TopicAck routing).
-    std::unordered_map<pubsub_itc_fw::ConnectionID, pubsub_itc_fw_app::Topic> conn_to_topic_;
+    // Reusable publisher per topic, both streaming from this MEP's shared WAL.
+    pubsub_itc_fw::TopicPublisher orders_publisher_;
+    pubsub_itc_fw::TopicPublisher er_publisher_;
 
     // ----------------------------------------------------------------
     // HA helpers (same state machine as the sequencer)
@@ -131,16 +133,11 @@ class MatchingEnginePublisherThread : public pubsub_itc_fw::ApplicationThread {
     void handle_wal_record_from_sequencer(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
 
     // ----------------------------------------------------------------
-    // Topic publisher helpers
+    // Topic publisher helpers -- decode + route to the owning publisher
     // ----------------------------------------------------------------
     void handle_topic_subscribe_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     void handle_topic_ack(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
-    void publish_wal_record_to_topic_subscribers(int64_t seq_no, int16_t pdu_id, int64_t wall_time_ns, const uint8_t* pdu_payload, size_t pdu_size);
-    void send_topic_page(const pubsub_itc_fw::ConnectionID& conn_id, int64_t seq_no, int16_t pdu_id,
-                         int64_t wall_time_ns, const uint8_t* pdu_payload, size_t pdu_size);
-    void replay_wal_for_subscriber(const pubsub_itc_fw::ConnectionID& conn_id, int64_t from_seq_no,
-                                    bool is_orders_topic);
-    void disconnect_all_topic_subscribers();
+    void set_publishers_leader(bool is_leader);
 };
 
 } // namespaces

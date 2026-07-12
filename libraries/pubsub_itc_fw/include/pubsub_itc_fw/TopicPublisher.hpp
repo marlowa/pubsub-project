@@ -110,6 +110,26 @@ class TopicPublisher {
         return subscribers_.size();
     }
 
+    /// Tear down every logical subscriber (disconnecting both connections of each) and
+    /// forget all subscriber state. Used on loss of leadership so subscribers reconnect
+    /// and rediscover the new leader. The WAL head and topic identity are unaffected.
+    void drop_all_subscribers() {
+        for (auto& entry : subscribers_) {
+            const ConnectionID data_connection_id = entry.second.data_connection_id;
+            const ConnectionID control_connection_id = entry.second.control_connection_id;
+            if (data_connection_id.is_valid()) {
+                host_.topic_disconnect(data_connection_id);
+            }
+            if (control_connection_id.is_valid()) {
+                host_.topic_disconnect(control_connection_id);
+            }
+        }
+        subscribers_.clear();
+        connection_to_subscriber_id_.clear();
+        registry_ = ExternalWalSubscriberRegistry{};
+        last_truncation_floor_ = 0;
+    }
+
     /**
      * @brief Handle a TopicSubscribeRequest on the data or control channel.
      *
@@ -137,14 +157,18 @@ class TopicPublisher {
     }
 
     /// Advance a subscriber's ack cursor (for WAL truncation + lag) on TopicAck (data channel).
+    /// A no-op for a connection this publisher does not own, so a host serving several
+    /// publishers (e.g. the MEP, one publisher per topic over a shared WAL) may fan an ack
+    /// to all of them and let the owning one act.
     void on_ack(ConnectionID connection_id, const pubsub_itc_fw_app::TopicAckView& view) {
-        registry_.update_cursor(connection_id, view.last_seq_no);
         auto conn_it = connection_to_subscriber_id_.find(connection_id);
-        if (conn_it != connection_to_subscriber_id_.end()) {
-            auto sub_it = subscribers_.find(conn_it->second);
-            if (sub_it != subscribers_.end()) {
-                sub_it->second.acked_cursor = view.last_seq_no;
-            }
+        if (conn_it == connection_to_subscriber_id_.end()) {
+            return;
+        }
+        registry_.update_cursor(connection_id, view.last_seq_no);
+        auto sub_it = subscribers_.find(conn_it->second);
+        if (sub_it != subscribers_.end()) {
+            sub_it->second.acked_cursor = view.last_seq_no;
         }
 
         // The ack is a truncation cursor (F2): once every subscriber has consumed past a

@@ -1,10 +1,32 @@
 # Next pub/sub work: rewire the MEP onto TopicPublisher, and build TAP {#pubsub_mep_rewire_and_tap}
 
-**Status:** Planned (note captured 2026-07-12). Not started. The reusable pub/sub components
-(`TopicPublisher`, `TopicSubscriberChannel`, `TopicControlChannel`) and the flow-control design
-(F1–F4, `docs/design/pubsub_flow_control.md`) are done and tested; these two pieces consume them.
+**Status (2026-07-12):** Part 1 (MEP rewire) **DONE**. Part 2 (TAP) still planned. The reusable
+pub/sub components (`TopicPublisher`, `TopicSubscriberChannel`, `TopicControlChannel`) and the
+flow-control design (F1–F4, `docs/design/pubsub_flow_control.md`) are done and tested.
 
-## 1. Rewire the MEP onto `TopicPublisher`
+## 1. Rewire the MEP onto `TopicPublisher` — DONE
+
+Done as described below. Notes on how each point/wrinkle was resolved:
+- The MEP now owns `orders_publisher_` and `er_publisher_` (one `TopicPublisher` each, topic name
+  taken from `to_string(Topic::...)`, membership from `pdu_in_topic`, both over the shared `wal_`).
+  It implements `TopicPublisherHost`. Inbound `TopicSubscribeRequest` is routed by `topic_name`;
+  `on_ack` / `on_connection_writable` / `on_connection_lost` are fanned to both publishers (each
+  no-ops on a connection it does not own — `on_ack` was made no-op-on-unknown for this). Live
+  records call `notify_record_appended` on both. `on_connection_writable` was added.
+- HA: `set_publishers_leader(true/false)` on role change; publishers start non-leader until leader
+  is adopted; on leader→follower both `drop_all_subscribers()` (new `TopicPublisher` method).
+- **Wrinkle A** resolved conservatively: `topic_truncate_wal` is a **no-op**. The MEP's WAL is
+  shared by both topics and its retention is governed by the existing `wal_snapshot` (durability)
+  timer, not by topic acks, so this is a no-behaviour-change choice. Proper ack-driven reclamation
+  would need to truncate to the global min across BOTH publishers' subscribers — deferred.
+- **Wrinkle B**: kept the two ports (orders / execution_reports). Routing is by `topic_name`, so
+  the ports are effectively redundant now but harmless; no config change.
+- Deleted the inline machinery (`publish_wal_record_to_topic_subscribers`, `send_topic_page`,
+  `replay_wal_for_subscriber`, `disconnect_all_topic_subscribers`, the two registries, live-conn
+  sets, `conn_to_topic_`). Verified: full unit (671) + integration (45) suites pass; MEP builds
+  clean. NOT yet live-smoke-tested with a real subscriber (see below).
+
+### Original plan (for reference)
 
 The MEP (`applications/matching_engine_publisher/`) still has its own **inline** topic-publish
 logic (`handle_topic_subscribe_request`, `handle_topic_ack`,
