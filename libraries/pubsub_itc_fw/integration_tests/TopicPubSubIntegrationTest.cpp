@@ -56,22 +56,13 @@
 #include <pubsub_itc_fw/tests_common/LoggerWithSink.hpp>
 #include <pubsub_itc_fw/tests_common/TestConfigurations.hpp>
 
+#include <fix_equity_orders.hpp>
 #include <topics.hpp>
 
 using pubsub_itc_fw::tests::make_allocator_config;
 using pubsub_itc_fw::tests::make_queue_config;
 
 namespace pubsub_itc_fw {
-
-static constexpr int16_t pdu_id_topic_subscribe_request = 107;
-static constexpr int16_t pdu_id_topic_subscribe_ack = 108;
-static constexpr int16_t pdu_id_topic_page = 109;
-static constexpr int16_t pdu_id_topic_ack = 110;
-static constexpr int16_t pdu_id_topic_not_leader = 111;
-static constexpr int16_t pdu_id_topic_lagged = 112;
-
-static constexpr int16_t pdu_id_nos = 1000; // NewOrderSingle -> topic "orders"
-static constexpr int16_t pdu_id_ocr = 1001; // OrderCancelRequest -> topic "orders"
 
 static constexpr size_t wal_segment_size = 4096;
 
@@ -96,21 +87,24 @@ class TopicPublisherThread : public ApplicationThread, public TopicPublisherHost
         , segment_size_(segment_size)
         , wal_directory_(wal_dir)
         , publisher_(
-              *this, "orders", [](int16_t pdu_id) { return pdu_id == pdu_id_nos || pdu_id == pdu_id_ocr; }, std::move(wal_dir), max_lag_records,
-              max_records_per_page) {}
+              *this, "orders",
+              [](int16_t pdu_id) {
+                  return pdu_id == pubsub_itc_fw_app::NewOrderSingle::message_pdu_id || pdu_id == pubsub_itc_fw_app::OrderCancelRequest::message_pdu_id;
+              },
+              std::move(wal_dir), max_lag_records, max_records_per_page) {}
 
     // TopicPublisherHost
     void topic_send_subscribe_ack(ConnectionID connection_id, const pubsub_itc_fw_app::TopicSubscribeAck& ack) override {
-        send_pdu(connection_id, pdu_id_topic_subscribe_ack, 0, ack);
+        send_pdu(connection_id, pubsub_itc_fw_app::TopicSubscribeAck::message_pdu_id, 0, ack);
     }
     void topic_send_page(ConnectionID connection_id, int64_t seq_no, const pubsub_itc_fw_app::TopicPage& page) override {
-        send_pdu(connection_id, pdu_id_topic_page, seq_no, page);
+        send_pdu(connection_id, pubsub_itc_fw_app::TopicPage::message_pdu_id, seq_no, page);
     }
     void topic_send_not_leader(ConnectionID connection_id, const pubsub_itc_fw_app::TopicNotLeader& not_leader) override {
-        send_pdu(connection_id, pdu_id_topic_not_leader, 0, not_leader);
+        send_pdu(connection_id, pubsub_itc_fw_app::TopicNotLeader::message_pdu_id, 0, not_leader);
     }
     void topic_send_lagged(ConnectionID control_connection_id, const pubsub_itc_fw_app::TopicLagged& lagged) override {
-        send_pdu(control_connection_id, pdu_id_topic_lagged, 0, lagged);
+        send_pdu(control_connection_id, pubsub_itc_fw_app::TopicLagged::message_pdu_id, 0, lagged);
     }
     void topic_disconnect(ConnectionID connection_id) override {
         ReactorControlCommand cmd(ReactorControlCommand::CommandTag::Disconnect);
@@ -154,7 +148,7 @@ class TopicPublisherThread : public ApplicationThread, public TopicPublisherHost
         size_t consumed = 0;
         size_t arena_needed = 0;
 
-        if (message.pdu_id() == pdu_id_topic_subscribe_request) {
+        if (message.pdu_id() == pubsub_itc_fw_app::TopicSubscribeRequest::message_pdu_id) {
             pubsub_itc_fw_app::TopicSubscribeRequestView view{};
             if (!pubsub_itc_fw_app::decode(view, payload, size, consumed, arena, arena_needed)) {
                 return;
@@ -179,7 +173,7 @@ class TopicPublisherThread : public ApplicationThread, public TopicPublisherHost
                     append_and_notify(i);
                 }
             }
-        } else if (message.pdu_id() == pdu_id_topic_ack) {
+        } else if (message.pdu_id() == pubsub_itc_fw_app::TopicAck::message_pdu_id) {
             pubsub_itc_fw_app::TopicAckView view{};
             if (!pubsub_itc_fw_app::decode(view, payload, size, consumed, arena, arena_needed)) {
                 return;
@@ -212,8 +206,9 @@ class TopicPublisherThread : public ApplicationThread, public TopicPublisherHost
         const uint32_t value = static_cast<uint32_t>(i * 100);
         uint8_t payload[sizeof(uint32_t)];
         std::memcpy(payload, &value, sizeof(value));
-        wal_.append(static_cast<int64_t>(i), pdu_id_nos, payload, static_cast<int>(sizeof(payload)), static_cast<int64_t>(i) * 1000);
-        publisher_.notify_record_appended(static_cast<int64_t>(i), pdu_id_nos);
+        wal_.append(static_cast<int64_t>(i), pubsub_itc_fw_app::NewOrderSingle::message_pdu_id, payload, static_cast<int>(sizeof(payload)),
+                    static_cast<int64_t>(i) * 1000);
+        publisher_.notify_record_appended(static_cast<int64_t>(i), pubsub_itc_fw_app::NewOrderSingle::message_pdu_id);
     }
 
     int publish_after_subscribers_;
@@ -272,10 +267,10 @@ class TopicSubscriberThread : public ApplicationThread, public TopicSubscriberCh
 
     // TopicSubscriberChannelHost
     void topic_send_subscribe_request(ConnectionID connection_id, const pubsub_itc_fw_app::TopicSubscribeRequest& request) override {
-        send_pdu(connection_id, pdu_id_topic_subscribe_request, 0, request);
+        send_pdu(connection_id, pubsub_itc_fw_app::TopicSubscribeRequest::message_pdu_id, 0, request);
     }
     void topic_send_ack(ConnectionID connection_id, const pubsub_itc_fw_app::TopicAck& ack) override {
-        send_pdu(connection_id, pdu_id_topic_ack, 0, ack);
+        send_pdu(connection_id, pubsub_itc_fw_app::TopicAck::message_pdu_id, 0, ack);
     }
 
   protected:
@@ -303,13 +298,13 @@ class TopicSubscriberThread : public ApplicationThread, public TopicSubscriberCh
         size_t consumed = 0;
         size_t arena_needed = 0;
 
-        if (message.pdu_id() == pdu_id_topic_subscribe_ack) {
+        if (message.pdu_id() == pubsub_itc_fw_app::TopicSubscribeAck::message_pdu_id) {
             pubsub_itc_fw_app::TopicSubscribeAckView view{};
             if (!pubsub_itc_fw_app::decode(view, payload, size, consumed, arena, arena_needed)) {
                 return;
             }
             channel_.on_subscribe_ack(view);
-        } else if (message.pdu_id() == pdu_id_topic_page) {
+        } else if (message.pdu_id() == pubsub_itc_fw_app::TopicPage::message_pdu_id) {
             pages_received.fetch_add(1, std::memory_order_acq_rel);
             channel_.on_page(payload, size, arena);
         }
@@ -374,17 +369,17 @@ class DualChannelSubscriberThread : public ApplicationThread, public TopicSubscr
 
     // TopicSubscriberChannelHost (data)
     void topic_send_subscribe_request(ConnectionID connection_id, const pubsub_itc_fw_app::TopicSubscribeRequest& request) override {
-        send_pdu(connection_id, pdu_id_topic_subscribe_request, 0, request);
+        send_pdu(connection_id, pubsub_itc_fw_app::TopicSubscribeRequest::message_pdu_id, 0, request);
     }
     void topic_send_ack(ConnectionID connection_id, const pubsub_itc_fw_app::TopicAck& ack) override {
         if (suppress_ack_) {
             return; // simulate a stalled consumer that never advances its ack cursor
         }
-        send_pdu(connection_id, pdu_id_topic_ack, 0, ack);
+        send_pdu(connection_id, pubsub_itc_fw_app::TopicAck::message_pdu_id, 0, ack);
     }
     // TopicControlChannelHost (control)
     void topic_control_send_subscribe_request(ConnectionID connection_id, const pubsub_itc_fw_app::TopicSubscribeRequest& request) override {
-        send_pdu(connection_id, pdu_id_topic_subscribe_request, 0, request);
+        send_pdu(connection_id, pubsub_itc_fw_app::TopicSubscribeRequest::message_pdu_id, 0, request);
     }
 
     /// The accepted_from_seq_no the data channel received (for gap-on-resubscribe assertions).
@@ -429,7 +424,7 @@ class DualChannelSubscriberThread : public ApplicationThread, public TopicSubscr
         size_t arena_needed = 0;
 
         if (connection_id == control_connection_id_) {
-            if (message.pdu_id() == pdu_id_topic_lagged) {
+            if (message.pdu_id() == pubsub_itc_fw_app::TopicLagged::message_pdu_id) {
                 pubsub_itc_fw_app::TopicLaggedView view{};
                 if (pubsub_itc_fw_app::decode(view, payload, size, consumed, arena, arena_needed)) {
                     control_channel_.on_lagged(view);
@@ -438,12 +433,12 @@ class DualChannelSubscriberThread : public ApplicationThread, public TopicSubscr
             return;
         }
 
-        if (message.pdu_id() == pdu_id_topic_subscribe_ack) {
+        if (message.pdu_id() == pubsub_itc_fw_app::TopicSubscribeAck::message_pdu_id) {
             pubsub_itc_fw_app::TopicSubscribeAckView view{};
             if (pubsub_itc_fw_app::decode(view, payload, size, consumed, arena, arena_needed)) {
                 data_channel_.on_subscribe_ack(view);
             }
-        } else if (message.pdu_id() == pdu_id_topic_page) {
+        } else if (message.pdu_id() == pubsub_itc_fw_app::TopicPage::message_pdu_id) {
             data_channel_.on_page(payload, size, arena);
         }
     }
@@ -500,7 +495,7 @@ class TopicPubSubTest : public ::testing::Test {
     static std::vector<uint8_t> encode_wal_record(int i) {
         std::vector<uint8_t> buffer(TopicPublisher::wal_record_header_size + sizeof(uint32_t));
         const int64_t wall_time_ns = static_cast<int64_t>(i) * 1000;
-        const int16_t pdu_id = pdu_id_nos;
+        const int16_t pdu_id = pubsub_itc_fw_app::NewOrderSingle::message_pdu_id;
         const uint32_t payload = static_cast<uint32_t>(i * 100);
         std::memcpy(buffer.data(), &wall_time_ns, sizeof(wall_time_ns));
         std::memcpy(buffer.data() + sizeof(int64_t), &pdu_id, sizeof(pdu_id));
@@ -573,7 +568,7 @@ TEST_F(TopicPubSubTest, SingleSubscriberReceivesReplayedRecordsInOrder) {
     for (int i = 0; i < record_count; ++i) {
         const auto& rec = subscriber_thread->received_records[static_cast<size_t>(i)];
         EXPECT_EQ(rec.seq_no, i + 1) << "Wrong seq_no at index " << i;
-        EXPECT_EQ(rec.pdu_id, pdu_id_nos) << "Wrong pdu_id at index " << i;
+        EXPECT_EQ(rec.pdu_id, pubsub_itc_fw_app::NewOrderSingle::message_pdu_id) << "Wrong pdu_id at index " << i;
         ASSERT_EQ(rec.payload.size(), sizeof(uint32_t));
         uint32_t value{};
         std::memcpy(&value, rec.payload.data(), sizeof(value));
@@ -635,7 +630,7 @@ TEST_F(TopicPubSubTest, TwoSubscribersReceiveLiveFanout) {
         for (int i = 0; i < record_count; ++i) {
             const auto& rec = subscriber->received_records[static_cast<size_t>(i)];
             EXPECT_EQ(rec.seq_no, i + 1);
-            EXPECT_EQ(rec.pdu_id, pdu_id_nos);
+            EXPECT_EQ(rec.pdu_id, pubsub_itc_fw_app::NewOrderSingle::message_pdu_id);
             ASSERT_EQ(rec.payload.size(), sizeof(uint32_t));
             uint32_t value{};
             std::memcpy(&value, rec.payload.data(), sizeof(value));

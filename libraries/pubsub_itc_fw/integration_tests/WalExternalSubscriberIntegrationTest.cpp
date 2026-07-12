@@ -71,11 +71,6 @@ using pubsub_itc_fw_app::WalSubscribeAckView;
 using pubsub_itc_fw_app::WalSubscribeRequest;
 using pubsub_itc_fw_app::WalSubscribeRequestView;
 
-static constexpr int16_t pdu_id_wal_record = 103;
-static constexpr int16_t pdu_id_wal_ack = 104;
-static constexpr int16_t pdu_id_wal_subscribe_request = 105;
-static constexpr int16_t pdu_id_wal_subscribe_ack = 106;
-
 static constexpr size_t wal_segment_size = 4096;
 
 // Publisher-side ApplicationThread.
@@ -118,7 +113,7 @@ class WalPublisherThread : public ApplicationThread {
         size_t consumed = 0;
         size_t arena_needed = 0;
 
-        if (msg.pdu_id() == pdu_id_wal_subscribe_request) {
+        if (msg.pdu_id() == pubsub_itc_fw_app::WalSubscribeRequest::message_pdu_id) {
             WalSubscribeRequestView req_view{};
             if (!decode(req_view, payload, size, consumed, arena, arena_needed)) {
                 return;
@@ -128,7 +123,7 @@ class WalPublisherThread : public ApplicationThread {
             WalSubscribeAck ack{};
             ack.accepted_from_seq_no = req_view.from_seq_no;
             accepted_from_seq_no = req_view.from_seq_no;
-            send_pdu(subscriber_conn_id_, pdu_id_wal_subscribe_ack, 0, ack);
+            send_pdu(subscriber_conn_id_, pubsub_itc_fw_app::WalSubscribeAck::message_pdu_id, 0, ack);
             subscribe_ack_sent.store(true, std::memory_order_release);
 
             // Replay existing WAL records and stream each as a WalRecord PDU.
@@ -139,11 +134,11 @@ class WalPublisherThread : public ApplicationThread {
                 record.payload.data = static_cast<const uint8_t*>(data);
                 record.payload.size = record_size;
                 record.wall_time_ns = 0;
-                send_pdu(subscriber_conn_id_, pdu_id_wal_record, id, record);
+                send_pdu(subscriber_conn_id_, pubsub_itc_fw_app::WalRecord::message_pdu_id, id, record);
             });
 
             all_records_streamed.store(true, std::memory_order_release);
-        } else if (msg.pdu_id() == pdu_id_wal_ack) {
+        } else if (msg.pdu_id() == pubsub_itc_fw_app::WalAck::message_pdu_id) {
             WalAckView ack_view{};
             if (!decode(ack_view, payload, size, consumed, arena, arena_needed)) {
                 return;
@@ -201,7 +196,7 @@ class WalSubscriberThread : public ApplicationThread {
         WalSubscribeRequest req{};
         req.subscriber_id = sub_id;
         req.from_seq_no = 0;
-        send_pdu(id, pdu_id_wal_subscribe_request, 0, req);
+        send_pdu(id, pubsub_itc_fw_app::WalSubscribeRequest::message_pdu_id, 0, req);
     }
 
     void on_connection_failed(const std::string& reason) override {
@@ -219,14 +214,14 @@ class WalSubscriberThread : public ApplicationThread {
         size_t consumed = 0;
         size_t arena_needed = 0;
 
-        if (msg.pdu_id() == pdu_id_wal_subscribe_ack) {
+        if (msg.pdu_id() == pubsub_itc_fw_app::WalSubscribeAck::message_pdu_id) {
             WalSubscribeAckView ack_view{};
             if (!decode(ack_view, payload, size, consumed, arena, arena_needed)) {
                 return;
             }
             accepted_from_seq_no.store(ack_view.accepted_from_seq_no, std::memory_order_release);
             subscribe_ack_received.store(true, std::memory_order_release);
-        } else if (msg.pdu_id() == pdu_id_wal_record) {
+        } else if (msg.pdu_id() == pubsub_itc_fw_app::WalRecord::message_pdu_id) {
             WalRecordView record_view{};
             if (!decode(record_view, payload, size, consumed, arena, arena_needed)) {
                 return;
@@ -237,7 +232,7 @@ class WalSubscriberThread : public ApplicationThread {
 
             WalAck ack{};
             ack.seq_no = record_view.seq_no;
-            send_pdu(conn_id_, pdu_id_wal_ack, 0, ack);
+            send_pdu(conn_id_, pubsub_itc_fw_app::WalAck::message_pdu_id, 0, ack);
 
             if (count == expected_record_count_) {
                 all_records_received.store(true, std::memory_order_release);

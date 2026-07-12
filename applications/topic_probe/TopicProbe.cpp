@@ -57,13 +57,6 @@ TopicNotLeader; point the probe at the leader instance's port instead.
 namespace topic_probe {
 namespace {
 
-// Topic protocol pdu ids (mirrors topics.dsl / the MEP).
-constexpr int16_t pdu_id_topic_subscribe_request = 107;
-constexpr int16_t pdu_id_topic_subscribe_ack = 108;
-constexpr int16_t pdu_id_topic_page = 109;
-constexpr int16_t pdu_id_topic_ack = 110;
-constexpr int16_t pdu_id_topic_not_leader = 111;
-
 pubsub_itc_fw::QueueConfiguration make_queue_config() {
     pubsub_itc_fw::QueueConfiguration cfg{};
     cfg.low_watermark = 1;
@@ -129,10 +122,10 @@ class ProbeThread : public pubsub_itc_fw::ApplicationThread, public pubsub_itc_f
 
     // TopicSubscriberChannelHost
     void topic_send_subscribe_request(pubsub_itc_fw::ConnectionID connection_id, const pubsub_itc_fw_app::TopicSubscribeRequest& request) override {
-        send_pdu(connection_id, pdu_id_topic_subscribe_request, 0, request);
+        send_pdu(connection_id, pubsub_itc_fw_app::TopicSubscribeRequest::message_pdu_id, 0, request);
     }
     void topic_send_ack(pubsub_itc_fw::ConnectionID connection_id, const pubsub_itc_fw_app::TopicAck& ack) override {
-        send_pdu(connection_id, pdu_id_topic_ack, 0, ack);
+        send_pdu(connection_id, pubsub_itc_fw_app::TopicAck::message_pdu_id, 0, ack);
     }
 
   protected:
@@ -164,16 +157,16 @@ class ProbeThread : public pubsub_itc_fw::ApplicationThread, public pubsub_itc_f
         size_t consumed = 0;
         size_t arena_needed = 0;
 
-        if (message.pdu_id() == pdu_id_topic_subscribe_ack) {
+        if (message.pdu_id() == pubsub_itc_fw_app::TopicSubscribeAck::message_pdu_id) {
             pubsub_itc_fw_app::TopicSubscribeAckView view{};
             if (pubsub_itc_fw_app::decode(view, payload, size, consumed, arena, arena_needed)) {
                 channel_.on_subscribe_ack(view);
                 std::printf("--- subscribe accepted from seq_no=%lld\n", static_cast<long long>(view.accepted_from_seq_no));
                 std::fflush(stdout);
             }
-        } else if (message.pdu_id() == pdu_id_topic_page) {
+        } else if (message.pdu_id() == pubsub_itc_fw_app::TopicPage::message_pdu_id) {
             channel_.on_page(payload, size, arena);
-        } else if (message.pdu_id() == pdu_id_topic_not_leader) {
+        } else if (message.pdu_id() == pubsub_itc_fw_app::TopicNotLeader::message_pdu_id) {
             std::printf("--- TopicNotLeader: this publisher instance is a follower; point the probe at the leader's port\n");
             std::fflush(stdout);
         }

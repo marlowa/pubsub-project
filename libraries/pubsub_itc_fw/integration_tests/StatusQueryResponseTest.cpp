@@ -61,8 +61,6 @@ using pubsub_itc_fw_app::StatusResponse;
 using pubsub_itc_fw_app::StatusResponseView;
 
 // PDU IDs matching the leader-follower protocol DSL
-static constexpr int16_t pdu_id_status_query = 100;
-static constexpr int16_t pdu_id_status_response = 101;
 
 namespace {
 
@@ -105,7 +103,7 @@ class ConnectorThread : public ApplicationThread {
         query.instance_id = 42;
         query.epoch = 7;
 
-        send_pdu(id, pdu_id_status_query, 0, query);
+        send_pdu(id, pubsub_itc_fw_app::StatusQuery::message_pdu_id, 0, query);
         query_sent.store(true, std::memory_order_release);
     }
 
@@ -180,7 +178,7 @@ class ListenerThread : public ApplicationThread {
             response.epoch = received_query.epoch;
             response.next_sequence_number = 1001;
 
-            send_pdu(conn_id, pdu_id_status_response, 0, response);
+            send_pdu(conn_id, pubsub_itc_fw_app::StatusResponse::message_pdu_id, 0, response);
             response_sent.store(true, std::memory_order_release);
         }
     }

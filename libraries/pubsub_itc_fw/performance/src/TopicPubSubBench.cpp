@@ -76,19 +76,11 @@ in FixedPoolBench.cpp (perf_event_paranoid).
 #include <pubsub_itc_fw/TopicSubscriberChannel.hpp>
 #include <pubsub_itc_fw/Wal.hpp>
 
+#include <fix_equity_orders.hpp>
 #include <topics.hpp>
 
 namespace pubsub_itc_fw {
 namespace {
-
-// Topic protocol pdu ids (mirrors topics.dsl / the integration test).
-constexpr int16_t pdu_id_topic_subscribe_request = 107;
-constexpr int16_t pdu_id_topic_subscribe_ack = 108;
-constexpr int16_t pdu_id_topic_page = 109;
-constexpr int16_t pdu_id_topic_ack = 110;
-constexpr int16_t pdu_id_topic_not_leader = 111;
-constexpr int16_t pdu_id_topic_lagged = 112;
-constexpr int16_t pdu_id_nos = 1000; // NewOrderSingle -> topic "orders"
 
 constexpr size_t wal_segment_size = 64UL * 1024UL * 1024UL; // one large segment: keep rollover out of the measurement
 constexpr int never_ack = 1 << 30;                          // ack interval so large the subscriber never acks
@@ -156,20 +148,22 @@ class BenchPublisherThread : public ApplicationThread, public TopicPublisherHost
         , record_count_(record_count)
         , payload_size_(payload_size)
         , wal_directory_(wal_dir)
-        , publisher_(*this, "orders", [](int16_t pdu_id) { return pdu_id == pdu_id_nos; }, std::move(wal_dir), 0, static_cast<size_t>(max_records_per_page)) {}
+        , publisher_(
+              *this, "orders", [](int16_t pdu_id) { return pdu_id == pubsub_itc_fw_app::NewOrderSingle::message_pdu_id; }, std::move(wal_dir), 0,
+              static_cast<size_t>(max_records_per_page)) {}
 
     // TopicPublisherHost
     void topic_send_subscribe_ack(ConnectionID connection_id, const pubsub_itc_fw_app::TopicSubscribeAck& ack) override {
-        send_pdu(connection_id, pdu_id_topic_subscribe_ack, 0, ack);
+        send_pdu(connection_id, pubsub_itc_fw_app::TopicSubscribeAck::message_pdu_id, 0, ack);
     }
     void topic_send_page(ConnectionID connection_id, int64_t seq_no, const pubsub_itc_fw_app::TopicPage& page) override {
-        send_pdu(connection_id, pdu_id_topic_page, seq_no, page);
+        send_pdu(connection_id, pubsub_itc_fw_app::TopicPage::message_pdu_id, seq_no, page);
     }
     void topic_send_not_leader(ConnectionID connection_id, const pubsub_itc_fw_app::TopicNotLeader& not_leader) override {
-        send_pdu(connection_id, pdu_id_topic_not_leader, 0, not_leader);
+        send_pdu(connection_id, pubsub_itc_fw_app::TopicNotLeader::message_pdu_id, 0, not_leader);
     }
     void topic_send_lagged(ConnectionID control_connection_id, const pubsub_itc_fw_app::TopicLagged& lagged) override {
-        send_pdu(control_connection_id, pdu_id_topic_lagged, 0, lagged);
+        send_pdu(control_connection_id, pubsub_itc_fw_app::TopicLagged::message_pdu_id, 0, lagged);
     }
     void topic_disconnect(ConnectionID connection_id) override {
         ReactorControlCommand cmd(ReactorControlCommand::CommandTag::Disconnect);
@@ -214,7 +208,7 @@ class BenchPublisherThread : public ApplicationThread, public TopicPublisherHost
         size_t consumed = 0;
         size_t arena_needed = 0;
 
-        if (message.pdu_id() == pdu_id_topic_subscribe_request) {
+        if (message.pdu_id() == pubsub_itc_fw_app::TopicSubscribeRequest::message_pdu_id) {
             pubsub_itc_fw_app::TopicSubscribeRequestView view{};
             if (!pubsub_itc_fw_app::decode(view, payload, size, consumed, arena, arena_needed)) {
                 return;
@@ -224,7 +218,7 @@ class BenchPublisherThread : public ApplicationThread, public TopicPublisherHost
                 latency_started_ = true;
                 publish_next_ping();
             }
-        } else if (message.pdu_id() == pdu_id_topic_ack) {
+        } else if (message.pdu_id() == pubsub_itc_fw_app::TopicAck::message_pdu_id) {
             pubsub_itc_fw_app::TopicAckView view{};
             if (!pubsub_itc_fw_app::decode(view, payload, size, consumed, arena, arena_needed)) {
                 return;
@@ -251,8 +245,8 @@ class BenchPublisherThread : public ApplicationThread, public TopicPublisherHost
     void append_and_notify(int seq) {
         const int64_t send_ns = steady_now_ns();
         std::memcpy(payload_buffer_.data(), &send_ns, sizeof(send_ns));
-        wal_.append(static_cast<int64_t>(seq), pdu_id_nos, payload_buffer_.data(), payload_size_, send_ns);
-        publisher_.notify_record_appended(static_cast<int64_t>(seq), pdu_id_nos);
+        wal_.append(static_cast<int64_t>(seq), pubsub_itc_fw_app::NewOrderSingle::message_pdu_id, payload_buffer_.data(), payload_size_, send_ns);
+        publisher_.notify_record_appended(static_cast<int64_t>(seq), pubsub_itc_fw_app::NewOrderSingle::message_pdu_id);
     }
 
     BenchMode mode_;
@@ -291,10 +285,10 @@ class BenchSubscriberThread : public ApplicationThread, public TopicSubscriberCh
 
     // TopicSubscriberChannelHost
     void topic_send_subscribe_request(ConnectionID connection_id, const pubsub_itc_fw_app::TopicSubscribeRequest& request) override {
-        send_pdu(connection_id, pdu_id_topic_subscribe_request, 0, request);
+        send_pdu(connection_id, pubsub_itc_fw_app::TopicSubscribeRequest::message_pdu_id, 0, request);
     }
     void topic_send_ack(ConnectionID connection_id, const pubsub_itc_fw_app::TopicAck& ack) override {
-        send_pdu(connection_id, pdu_id_topic_ack, 0, ack);
+        send_pdu(connection_id, pubsub_itc_fw_app::TopicAck::message_pdu_id, 0, ack);
     }
 
   protected:
@@ -320,13 +314,13 @@ class BenchSubscriberThread : public ApplicationThread, public TopicSubscriberCh
         size_t consumed = 0;
         size_t arena_needed = 0;
 
-        if (message.pdu_id() == pdu_id_topic_subscribe_ack) {
+        if (message.pdu_id() == pubsub_itc_fw_app::TopicSubscribeAck::message_pdu_id) {
             pubsub_itc_fw_app::TopicSubscribeAckView view{};
             if (!pubsub_itc_fw_app::decode(view, payload, size, consumed, arena, arena_needed)) {
                 return;
             }
             channel_.on_subscribe_ack(view);
-        } else if (message.pdu_id() == pdu_id_topic_page) {
+        } else if (message.pdu_id() == pubsub_itc_fw_app::TopicPage::message_pdu_id) {
             channel_.on_page(payload, size, arena);
         }
     }
