@@ -17,3 +17,6 @@ docker-deps/
 
 # Admin service user store — created automatically on first run; contains hashed passwords
 admin_users.toml
+
+# Obsidian vault config (editor state; appears wherever docs are opened as a vault)
+.obsidian/
