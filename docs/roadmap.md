@@ -129,7 +129,7 @@ Key architectural decisions and the reasoning behind them.
 
 - **Sequencer-to-gateway connection direction.** Currently the sequencer initiates outbound connections to gateways (unusual direction). The reverse (gateway connects to sequencer) is more conventional and easier to scale horizontally. Open until a multi-gateway deployment scenario forces the choice.
 
-- **Market data integration mechanism.** Depends on requirements from the market data system. Possibilities: another WAL follower, topic-based pubsub, or bespoke mechanism. Under investigation.
+- **Market data integration mechanism.** Depends on requirements from the downstream market data consumer. Possibilities: another WAL follower, topic-based pubsub, or bespoke mechanism. Under investigation.
 
 - **DR site topology.** Second site, cross-site replication, separate arbiter pair. Out of scope until main-site design is implemented.
 

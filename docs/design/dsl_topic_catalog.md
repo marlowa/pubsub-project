@@ -13,7 +13,7 @@ as **free, unvalidated strings**, with two hardwired topics (`orders`, `executio
 on two ports. Per the requirements-first stance in `pubsub_requirements.md`, that is a
 "draft to challenge."
 
-The work system settles the requirement: it keeps an **ASCII file listing all recognised
+The reference system settles the requirement: it keeps an **ASCII file listing all recognised
 topic names**. So topics are a *recognised catalog*, not free-form. To avoid the catalog
 drifting from the PDU ids, the catalog is **generated from the DSL** (the schema already
 owns the pdu ids).

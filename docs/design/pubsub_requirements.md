@@ -20,9 +20,10 @@ kept separate. The solution doc is treated as a **draft to challenge, not a sett
 baseline** — where these requirements contradict it, the requirements win and the solution
 doc gets revised.
 
-Requirements are grounded in the **work system** — the production pub/sub in use at work.
-It has known problems and sub-optimal solutions, but it holds together and works, so it is a
-real source of requirements guidance. The warts are often where the real requirements hide.
+Requirements are grounded in a **reference system** — a production pub/sub system the author
+has operated. It has known problems and sub-optimal solutions, but it holds together and
+works, so it is a real source of requirements guidance. The warts are often where the real
+requirements hide.
 
 ## Terminology (settled 2026-07-11)
 
@@ -36,9 +37,9 @@ do not fit this model):
 The domain unit is a **message** (e.g. an `addOrder`). At the wire/WAL level the carried
 payload is a **record** (`TopicRecord`). Never "stream".
 
-## The reference system (what "pub/sub" means at work)
+## The reference system (what "pub/sub" means here)
 
-- The work system is **reliable UDP multicast plus a broker**. "Reliable" is a *transport*
+- The reference system is **reliable UDP multicast plus a broker**. "Reliable" is a *transport*
   guarantee: no reordering, no drops, no duplicates — the application treats the multicast
   fabric as being as trustworthy as TCP; it is just configured with multicast group
   addresses instead of unicast peers.
@@ -131,7 +132,7 @@ have provisional positions below.
   would need the publisher pair to share each subscriber's exact progress — the centralised
   coordination P1 forbids — so we push dedup to the receiver. This is idiomatic to reliable
   multicast, where receivers recover/dedup by sequence number as a matter of course.
-- **Open:** does the work system genuinely hand consumers a no-duplicates guarantee, or do
+- **Open:** does the reference system genuinely hand consumers a no-duplicates guarantee, or do
   its receivers dedup by sequence number and *treat* that as exactly-once? That answer decides
   whether we owe machinery or just a documented "dedup by seq_no" contract.
 
@@ -212,10 +213,10 @@ This caused confusion, so stated plainly:
 
 ## Requirements (decided so far)
 
-Each traces back to a work-system observation or an explicit decision.
+Each traces back to a reference-system observation or an explicit decision.
 
 - **R1 — Recognised topics.** Subscribing to an unknown topic is rejected with a clear
-  error; the set of topics is a known catalog, not an open string API. (From the work
+  error; the set of topics is a known catalog, not an open string API. (From the reference
   system's ASCII topic-name file.)
 - **R2 — Catalog generated from the schema.** The topic catalog (name + which pdu_ids each
   topic carries) is **generated from the DSL**, so it cannot drift from the PDU ids. Topic

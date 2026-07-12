@@ -1088,7 +1088,7 @@ What is decided, what is leaning, what is open.
 - DR site topology. Currently the design is main-site only. DR will require additional design work (a separate site, separate machines, presumably its own arbiter pair, its own sequencer pair, and a cross-site replication strategy). Out of scope until the main-site design is implemented.
 - Multi-instrument scaling. A real exchange runs hundreds to thousands of instruments. Single sequencer for everything, sharded sequencer per instrument group, or sequencer per instrument? Each has different failover and replay implications. Not in the immediate slicing plan.
 - Sequencer-to-gateway connection direction. The framework currently has the sequencer initiating the outbound connection to the gateway's ER inbound listener (a session-13 finding documented elsewhere in this summary). This is the unusual direction; conventional FIX architectures have the gateway as a client of the core. The trade-off: as designed, the sequencer's configuration must list every gateway address, and adding a gateway requires updating the sequencer configuration. The reverse direction (gateway connects outbound to the sequencer for both order send and ER receive) makes the core "anonymous" and easier to scale horizontally, but requires the sequencer to route ERs by lookup against currently-connected gateway sessions rather than by initiating connections. For the framework's current single-instrument scale this is an acceptable operational cost; for production multi-gateway deployments it likely needs reversing. Open until a deployment scenario forces the choice.
-- Market data integration mechanism. The work system at present has a market data system that consumes data published by the order placement system. The exact mechanism and the exact data are not yet known to this project; a conversation with the maintainer of that system is pending. Until that information is available, the framework-side mechanism for delivering equivalent data cannot be decided. Possibilities range from "another WAL follower" (analogous to the Kafka publisher) to "a topic-based pubsub primitive" (if multi-subscriber fanout is genuinely needed) to "a bespoke market-data-specific mechanism". Tracked in the "Open Questions and Items to Investigate" section.
+- Market data integration mechanism. The reference system has a downstream market data consumer that consumes data published by the order placement system. The exact mechanism and the exact data are not yet settled for this project; the requirements for that consumer are still pending. Until that information is available, the framework-side mechanism for delivering equivalent data cannot be decided. Possibilities range from "another WAL follower" (analogous to the Kafka publisher) to "a topic-based pubsub primitive" (if multi-subscriber fanout is genuinely needed) to "a bespoke market-data-specific mechanism". Tracked in the "Open Questions and Items to Investigate" section.
 
 The detailed design — architecture, authority and roles, WAL format and segmentation,
 commit semantics, epoch propagation, per-connection isolation, replication channel,
@@ -1106,14 +1106,14 @@ Each item names what is unknown, what would change once the answer is known, and
 
 ### Market data integration mechanism
 
-**What is unknown:** Exactly what the market data system at the work site consumes from the order placement system. Specifically: what data fields, at what frequency, with what delivery semantics (per-event, batched, snapshot-plus-deltas), with what subscriber count and how subscribers identify themselves, with what gap/reconnection handling, with what regulatory constraints on the delivery path.
+**What is unknown:** Exactly what the downstream market data consumer consumes from the order placement system. Specifically: what data fields, at what frequency, with what delivery semantics (per-event, batched, snapshot-plus-deltas), with what subscriber count and how subscribers identify themselves, with what gap/reconnection handling, with what regulatory constraints on the delivery path.
 
 **What changes once known:** The framework-side mechanism for delivering equivalent data. Three candidate shapes:
-- WAL follower: market data system becomes another consumer of the sequencer's WAL, analogous to the Kafka publisher.
+- WAL follower: the market data consumer becomes another consumer of the sequencer's WAL, analogous to the Kafka publisher.
 - Topic-based pubsub primitive: justified if the market data side has multiple downstream subscribers with fanout-and-replay semantics that don't fit cleanly as WAL followers.
-- Bespoke mechanism: if the market data system has specific requirements that don't fit either of the above.
+- Bespoke mechanism: if the market data consumer has specific requirements that don't fit either of the above.
 
-**Plan:** A conversation with the maintainer of the market data system at work, who has the deepest understanding of what that system does. Communication may proceed through written follow-ups (email or chat) to allow careful confirmation of technical points.
+**Plan:** Gather the requirements for the downstream market data consumer, from whoever has the deepest understanding of what that consumer does. Communication may proceed through written follow-ups to allow careful confirmation of technical points.
 
 **When needed:** Before slice 12+ designs market data delivery. Slice 11 (Kafka publisher) is unaffected. Earlier slices are unaffected.
 

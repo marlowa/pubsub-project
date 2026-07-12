@@ -746,7 +746,7 @@ TAP subscribes to both MEP topics:
 - TAP does not remove an order from the L3 book until it receives confirmation from both:
   (a) the enterprise bus that it has acknowledged the published event; and
   (b) the ER confirming the order is fully terminal (filled or cancelled).
-- This mirrors the behaviour of the equivalent component at the work system.
+- This mirrors the behaviour of the equivalent component in the reference system.
 
 **Execution reports topic (ER):**
 - On ER with a terminal status (Filled, Canceled, Rejected): mark the corresponding order

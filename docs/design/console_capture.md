@@ -1,6 +1,6 @@
 # Console Capture → Quill
 
-**Status:** design (not yet implemented) · **Target:** pubsub now, work project later
+**Status:** design (not yet implemented) · **Target:** pubsub now, the target production environment later
 
 ## Purpose
 
@@ -15,13 +15,14 @@ Cases that must be captured:
 - rogue `printf` / `fprintf(stderr, …)` (libc `FILE*` → fd, not a C++ stream);
 - an escaped exception → the runtime's `std::terminate` message, written by libc
   straight to fd 2;
-- a library — notably the C-coded HK framework at work — writing at the fd level.
+- a library — notably a C-coded closed-source framework — writing at the fd level.
 
 pubsub itself is disciplined and rarely writes to the console, so here this is
-mainly **crash insurance**. The real driver is the work project, whose
-environment is adversarial: no `main`-level exception wrapper, rogue non-stream
-output, and C code. That rules out any C++ `streambuf`/`rdbuf` scheme (e.g. the
-KEW approach), because those layers are bypassed by libc- and fd-level writers.
+mainly **crash insurance**. The real driver is the target production
+environment, which is adversarial: no `main`-level exception wrapper, rogue
+non-stream output, and C code. That rules out any C++ `streambuf`/`rdbuf` scheme
+(e.g. an in-process stream-interception approach), because those layers are
+bypassed by libc- and fd-level writers.
 The one place all console output converges — regardless of language or API — is
 **file descriptors 1 and 2**. We capture there.
 
@@ -93,8 +94,8 @@ code, and `std::cout`.
 Blocking `read()` on the pipe into a scratch buffer; accumulate into a line
 assembler that emits a Quill record on each `'\n'`, carrying a partial line
 across reads, and force-flushing an over-long line at a cap (e.g. 8 KiB) so a
-newline-less spewer cannot grow the buffer unbounded. This is KEW's
-`PrefixStreambuf` record logic, reused. Each record is logged at severity
+newline-less spewer cannot grow the buffer unbounded. This is the same
+prefix-streambuf line-record logic pattern, reused. Each record is logged at severity
 **ERROR** through a dedicated Quill logger named `console`. ERROR because, by
 policy, *any* console write is a defect — including a leftover debug trace — and
 support staff filter on ERROR; a lower severity would hide these records from

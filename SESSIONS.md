@@ -74,13 +74,14 @@ recipe. Four Doxygen warnings were fixed so the docs build cleanly under the exi
 **Pub/sub (summary item 7) — requirements-first pass started, no code.** Chosen as the next
 long-pole item ahead of Prometheus. The existing `docs/design/mep_tap.md` (from session 26) is
 a *solution* document; it is being treated as a **draft to challenge, not a settled baseline**.
-The requirements are to be grounded in the user's work system (a production pub/sub that has
-known problems and sub-optimal solutions but works, so it provides real requirements guidance).
+The requirements are to be grounded in a reference system (a production pub/sub the author has
+operated, with known problems and sub-optimal solutions but which works, so it provides real
+requirements guidance).
 Started `docs/design/pubsub_requirements.md` — a requirements note kept separate from the
 solution doc — scaffolded with the framing and six open questions: (1) what's published and at
 what granularity; (2) delivery & ordering guarantees; (3) durability & replay; (4) fanout &
 backpressure; (5) failover semantics; (6) subscriber lifecycle & identity. Next session
-resumes by capturing how the work system's publisher (the MEP analog) works.
+resumes by capturing how the reference system's publisher (the MEP analog) works.
 
 ---
 
@@ -121,7 +122,7 @@ The framework provides two subscriber-side components in `libraries/pubsub_itc_f
 
 **TAP (Trade Activity Publisher) — `applications/tap/`.**
 
-TAP subscribes to **both** MEP topics. It maintains an L3 order book (all live orders tracked individually) and publishes order events to an enterprise bus. TAP does NOT publish ERs to the enterprise bus; it uses ERs internally to know when an order is filled, so it can remove it from the L3 book after the enterprise bus acknowledges receipt of the corresponding order event. This mirrors the behaviour of the equivalent component at the work system.
+TAP subscribes to **both** MEP topics. It maintains an L3 order book (all live orders tracked individually) and publishes order events to an enterprise bus. TAP does NOT publish ERs to the enterprise bus; it uses ERs internally to know when an order is filled, so it can remove it from the L3 book after the enterprise bus acknowledges receipt of the corresponding order event. This mirrors the behaviour of the equivalent component in the reference system.
 
 The enterprise bus is abstracted behind a `BusPublisher` pure virtual interface. `StubBusPublisher` (used for framework validation) logs and counts. `KafkaBusPublisher` and `PulsarBusPublisher` are concrete implementations compiled in when `USE_KAFKA=ON` or `USE_PULSAR=ON` respectively; the enterprise bus has not been decided. TAP persists its cursor for each topic in a small local file so restarts and failovers are gap-free.
 

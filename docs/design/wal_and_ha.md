@@ -594,7 +594,7 @@ framework relies on it being present but does not implement PTP itself.
 | Sub-second sequencer failover tuning | Lease/heartbeat intervals should be configurable via `ReactorConfiguration` |
 | Multi-instrument scaling (sharded sequencer?) | Not in scope; deferred |
 | Sequencer-to-gateway connection direction (who initiates?) | Currently sequencer initiates; may need reversing for multi-gateway deployments |
-| Market data integration mechanism | Pending conversation with maintainer of the existing market data system |
+| Market data integration mechanism | Pending requirements for the downstream market data consumer |
 | Arbiter PSA+witness internal protocol detail | **Done** — implemented in `applications/arbiter/` and `applications/witness/` |
 
 ---
