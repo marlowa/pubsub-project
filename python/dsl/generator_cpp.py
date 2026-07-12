@@ -277,6 +277,10 @@ class CppGenerator:
         name = msg.name
 
         w(f"struct {name} {{")
+        # The message's DSL pdu id, exposed so application code never hardcodes it. Named
+        # message_pdu_id (not pdu_id) to avoid clashing with pdu_id *fields* on wrapper
+        # messages like TopicRecord / WalRecord.
+        w(f"    static constexpr int16_t message_pdu_id = {msg.metadata['id']};")
         for field in msg.fields:
             if field.optional:
                 w(f"    bool has_{field.name} = false;")
