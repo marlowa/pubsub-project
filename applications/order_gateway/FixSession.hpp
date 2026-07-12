@@ -14,18 +14,17 @@
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 
+#include "FixOrderLimits.hpp"
 #include "FixParser.hpp"
 
 namespace order_gateway {
 
-// Hard structural ceilings for open-order string fields.
-//
-// These compile-time constants determine the size of the char arrays in
-// OpenOrderEntry. Runtime-configurable limits (from order_gateway.toml
-// [fix_limits] section) must be <= these values and are enforced at startup.
-// Clients sending fields longer than the configured runtime limit receive a
-// FIX BusinessReject (MsgType=j). The limits and the rationale for choosing
-// them are documented in docs/applications/order_gateway.md.
+// Hard structural ceilings for the symbol/qty open-order string fields (compile-time
+// char-array sizes in OpenOrderEntry). Runtime-configurable [fix_limits] limits must be
+// <= these and are enforced at startup; over-length symbol/qty get a FIX BusinessReject.
+// ClOrdID instead uses the single shared fix_order_limits::max_cl_ord_id_length -- validated
+// at ingress with an ExecutionReport rejection -- so the gateway pool and the matching-engine
+// book key stay on one value. See docs/applications/order_gateway.md.
 //
 // Why fixed char arrays rather than std::string or a general pool:
 //   std::string causes one heap allocation per field per order, measured at
@@ -35,7 +34,6 @@ namespace order_gateway {
 //   hard to write correctly. Fixed char arrays with ExpandablePoolAllocator
 //   and tsl::robin_map eliminate all per-order heap allocation with a
 //   manageable implementation cost.
-static constexpr size_t max_supported_cl_ord_id_length = 128;
 static constexpr size_t max_supported_symbol_length = 64;
 static constexpr size_t max_supported_order_qty_length = 32;
 
@@ -53,7 +51,7 @@ static constexpr size_t max_supported_order_qty_length = 32;
  * for the lifetime of the map entry.
  */
 struct OpenOrderEntry {
-    char cl_ord_id[max_supported_cl_ord_id_length + 1]{};
+    char cl_ord_id[fix_order_limits::max_cl_ord_id_length + 1]{};
     uint8_t cl_ord_id_len{0};
     char symbol[max_supported_symbol_length + 1]{};
     uint8_t symbol_len{0};

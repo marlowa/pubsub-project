@@ -116,7 +116,7 @@ OrderGatewayConfigurationLoader::load_and_init_logging(const std::string& file_p
 
         toml.get_required_except("reactor.cpu_pinning_enabled", config.cpu_pinning_enabled);
         toml.get_required_except("reactor.cpu_pinning_reserve_cpu0", config.cpu_pinning_reserve_cpu0);
-        toml.get_required_except("reactor.cpu_registry_shm_path",  config.cpu_registry_shm_path);
+        toml.get_required_except("reactor.cpu_registry_shm_path", config.cpu_registry_shm_path);
         toml.get_required_except("reactor.cpu_registry_lock_file", config.cpu_registry_lock_file);
         toml.get_required_except("reactor.connect_retry_warning_interval", config.connect_retry_warning_interval);
 
@@ -169,33 +169,25 @@ OrderGatewayConfigurationLoader::load_and_init_logging(const std::string& file_p
                                                         std::to_string(config.fix_capture_ring_bytes));
         }
 
-        int32_t max_cl_ord_id_length = 0;
-        int32_t max_symbol_length    = 0;
+        // ClOrdID length is fixed by fix_order_limits::max_cl_ord_id_length (a hard compile-time
+        // bound shared with the matching engine), so it is not configurable here.
+        int32_t max_symbol_length = 0;
         int32_t max_order_qty_length = 0;
-        toml.get_required_except("fix_limits.max_cl_ord_id_length", max_cl_ord_id_length);
-        toml.get_required_except("fix_limits.max_symbol_length",    max_symbol_length);
+        toml.get_required_except("fix_limits.max_symbol_length", max_symbol_length);
         toml.get_required_except("fix_limits.max_order_qty_length", max_order_qty_length);
-        if (max_cl_ord_id_length < 1 || static_cast<size_t>(max_cl_ord_id_length) > max_supported_cl_ord_id_length) {
-            throw pubsub_itc_fw::ConfigurationException("OrderGatewayConfigurationLoader: fix_limits.max_cl_ord_id_length must be in [1, " +
-                                                        std::to_string(max_supported_cl_ord_id_length) + "], got " +
-                                                        std::to_string(max_cl_ord_id_length));
-        }
         if (max_symbol_length < 1 || static_cast<size_t>(max_symbol_length) > max_supported_symbol_length) {
             throw pubsub_itc_fw::ConfigurationException("OrderGatewayConfigurationLoader: fix_limits.max_symbol_length must be in [1, " +
-                                                        std::to_string(max_supported_symbol_length) + "], got " +
-                                                        std::to_string(max_symbol_length));
+                                                        std::to_string(max_supported_symbol_length) + "], got " + std::to_string(max_symbol_length));
         }
         if (max_order_qty_length < 1 || static_cast<size_t>(max_order_qty_length) > max_supported_order_qty_length) {
             throw pubsub_itc_fw::ConfigurationException("OrderGatewayConfigurationLoader: fix_limits.max_order_qty_length must be in [1, " +
-                                                        std::to_string(max_supported_order_qty_length) + "], got " +
-                                                        std::to_string(max_order_qty_length));
+                                                        std::to_string(max_supported_order_qty_length) + "], got " + std::to_string(max_order_qty_length));
         }
-        config.max_cl_ord_id_length = max_cl_ord_id_length;
-        config.max_symbol_length    = max_symbol_length;
+        config.max_symbol_length = max_symbol_length;
         config.max_order_qty_length = max_order_qty_length;
 
         toml.get_required_except("open_order_pool.objects_per_pool", config.open_order_pool_objects_per_pool);
-        toml.get_required_except("open_order_pool.initial_pools",    config.open_order_pool_initial_pools);
+        toml.get_required_except("open_order_pool.initial_pools", config.open_order_pool_initial_pools);
         if (config.open_order_pool_objects_per_pool < 1) {
             throw pubsub_itc_fw::ConfigurationException("OrderGatewayConfigurationLoader: open_order_pool.objects_per_pool must be >= 1");
         }

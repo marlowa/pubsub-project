@@ -204,10 +204,9 @@ struct OrderGatewayConfiguration {
 
     // FIX field-length limits
 
-    // Runtime field-length limits for inbound FIX strings.
-    // Must be <= the compile-time hard ceilings in FixSession.hpp.
-    // Clients sending longer values receive a FIX BusinessReject (MsgType=j).
-    int32_t max_cl_ord_id_length{64};
+    // Runtime field-length limits for inbound FIX strings (symbol, qty). Must be <= the
+    // compile-time hard ceilings in FixSession.hpp; over-length values get a FIX BusinessReject.
+    // ClOrdID is NOT here: it is the shared compile-time fix_order_limits::max_cl_ord_id_length.
     int32_t max_symbol_length{32};
     int32_t max_order_qty_length{24};
 

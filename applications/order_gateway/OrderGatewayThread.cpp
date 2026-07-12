@@ -823,13 +823,15 @@ void OrderGatewayThread::handle_new_order_single(FixSession& session, const Pars
     }
 
     // Validate field lengths against runtime-configured limits.
-    // Fields exceeding the limit are rejected with a FIX BusinessReject (MsgType=j).
-    // The limits are documented in the gateway connectivity specification.
-    if (cl_ord_id.size() > static_cast<size_t>(config_.max_cl_ord_id_length)) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "OrderGatewayThread: connection {} NOS ClOrdID length {} exceeds limit {} -- sending BusinessReject", session.conn_id.get_value(),
-                   cl_ord_id.size(), config_.max_cl_ord_id_length);
-        send_business_reject(session, msg, "ClOrdID exceeds maximum length of " + std::to_string(config_.max_cl_ord_id_length));
+    // An over-length ClOrdID is rejected with an ExecutionReport (Rejected); it is checked
+    // against the single shared bound (fix_order_limits::max_cl_ord_id_length) that also sizes
+    // the open-order pool entry and the matching-engine book key. Over-length symbol/qty below
+    // keep their FIX BusinessReject. Limits are documented in the gateway connectivity spec.
+    if (cl_ord_id.size() > fix_order_limits::max_cl_ord_id_length) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "OrderGatewayThread: connection {} NOS ClOrdID length {} exceeds limit {} -- rejecting",
+                   session.conn_id.get_value(), cl_ord_id.size(), fix_order_limits::max_cl_ord_id_length);
+        send_reject_execution_report(session, msg, "ClOrdID exceeds maximum length of " + std::to_string(fix_order_limits::max_cl_ord_id_length),
+                                     /*is_cancel=*/false);
         return;
     }
     if (symbol.size() > static_cast<size_t>(config_.max_symbol_length)) {
@@ -924,6 +926,17 @@ void OrderGatewayThread::handle_order_cancel_request(FixSession& session, const 
                    "OrderGatewayThread: connection {} OrderCancelRequest missing required "
                    "fields -- dropping",
                    session.conn_id.get_value());
+        return;
+    }
+
+    // Both ClOrdID and OrigClOrdID come from outside; reject an over-length one with an ER
+    // (the same shared bound the matching-engine book key uses -- see fix_order_limits).
+    if (cl_ord_id.size() > fix_order_limits::max_cl_ord_id_length || orig_cl_ord_id.size() > fix_order_limits::max_cl_ord_id_length) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "OrderGatewayThread: connection {} OrderCancelRequest ClOrdID/OrigClOrdID exceeds limit {} -- rejecting", session.conn_id.get_value(),
+                   fix_order_limits::max_cl_ord_id_length);
+        send_reject_execution_report(session, msg, "ClOrdID exceeds maximum length of " + std::to_string(fix_order_limits::max_cl_ord_id_length),
+                                     /*is_cancel=*/true);
         return;
     }
 

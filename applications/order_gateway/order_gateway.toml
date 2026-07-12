@@ -84,7 +84,6 @@ ring_bytes  = ${order_gateway_fix_capture_ring_bytes}
 # Clients sending longer values receive a FIX BusinessReject (MsgType=j).
 # Must be <= the compile-time hard ceilings: cl_ord_id=128, symbol=64, order_qty=32.
 # These limits must be documented in the gateway FIX connectivity specification.
-max_cl_ord_id_length = ${order_gateway_fix_limits_max_cl_ord_id_length}
 max_symbol_length    = ${order_gateway_fix_limits_max_symbol_length}
 max_order_qty_length = ${order_gateway_fix_limits_max_order_qty_length}
 

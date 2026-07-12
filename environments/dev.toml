@@ -313,7 +313,6 @@ fix_tls_cert                          = "fix_gateway.crt"
 fix_tls_key                           = "fix_gateway.key"
 fix_capture_file                      = "fix_capture.bin"
 fix_capture_ring_bytes                = 67108864
-fix_limits_max_cl_ord_id_length       = 64
 fix_limits_max_symbol_length          = 32
 fix_limits_max_order_qty_length       = 24
 open_order_pool_objects_per_pool      = 4096

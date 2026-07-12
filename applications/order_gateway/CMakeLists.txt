@@ -10,6 +10,7 @@ add_executable(order_gateway
 
 target_include_directories(order_gateway PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/../fix_common
         ${FIX_DSL_INCLUDE_DIR}
 )
 
