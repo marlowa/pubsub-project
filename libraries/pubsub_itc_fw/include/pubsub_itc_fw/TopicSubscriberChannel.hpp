@@ -48,13 +48,19 @@ class TopicSubscriberChannel {
     // Delivered for each fresh (non-duplicate) record: (seq_no, pdu_id, payload, size).
     using RecordSink = std::function<void(int64_t seq_no, int16_t pdu_id, const uint8_t* payload, size_t payload_size)>;
 
-    TopicSubscriberChannel(TopicSubscriberChannelHost& host, std::string subscriber_id, std::string topic_name, int64_t from_seq_no, RecordSink sink)
+    // Records applied between TopicAcks. The ack is a coarse truncation cursor (F2),
+    // not a per-page or flow-control signal, so it is sent every N records, not per page.
+    static constexpr int default_ack_interval = 8;
+
+    TopicSubscriberChannel(TopicSubscriberChannelHost& host, std::string subscriber_id, std::string topic_name, int64_t from_seq_no, RecordSink sink,
+                           int ack_interval = default_ack_interval)
         : host_(host)
         , subscriber_id_(std::move(subscriber_id))
         , topic_name_(std::move(topic_name))
         , from_seq_no_(from_seq_no)
         , last_applied_seq_no_(from_seq_no)
-        , sink_(std::move(sink)) {}
+        , sink_(std::move(sink))
+        , ack_interval_(ack_interval) {}
 
     [[nodiscard]] bool subscribe_ack_received() const {
         return subscribe_ack_received_;
@@ -83,7 +89,10 @@ class TopicSubscriberChannel {
     }
 
     /**
-     * @brief Decode a TopicPage, deliver fresh records, and ack the page.
+     * @brief Decode a TopicPage, deliver fresh records, and periodically ack.
+     *
+     * The TopicAck is a coarse truncation cursor (F2): it is sent once every
+     * ack_interval fresh records, not per page, and does not pace delivery.
      *
      * @param payload  the TopicPage PDU payload bytes.
      * @param size     length of @p payload.
@@ -97,7 +106,6 @@ class TopicSubscriberChannel {
             return;
         }
 
-        int64_t ack_seq_no = last_applied_seq_no_;
         for (size_t index = 0; index < page.records.size; ++index) {
             const auto& record = page.records.data[index];
             if (record.seq_no <= last_applied_seq_no_) {
@@ -105,12 +113,15 @@ class TopicSubscriberChannel {
             }
             sink_(record.seq_no, record.pdu_id, record.payload.data, record.payload.size);
             last_applied_seq_no_ = record.seq_no;
-            ack_seq_no = record.seq_no;
+            ++records_since_ack_;
         }
 
-        pubsub_itc_fw_app::TopicAck ack{};
-        ack.last_seq_no = ack_seq_no;
-        host_.topic_send_ack(connection_id_, ack);
+        if (records_since_ack_ >= ack_interval_) {
+            pubsub_itc_fw_app::TopicAck ack{};
+            ack.last_seq_no = last_applied_seq_no_;
+            host_.topic_send_ack(connection_id_, ack);
+            records_since_ack_ = 0;
+        }
     }
 
   private:
@@ -122,6 +133,8 @@ class TopicSubscriberChannel {
     int64_t accepted_from_seq_no_ = -1;
     bool subscribe_ack_received_ = false;
     RecordSink sink_;
+    int ack_interval_;
+    int records_since_ack_ = 0;
     ConnectionID connection_id_;
 };
 

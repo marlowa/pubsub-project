@@ -16,6 +16,7 @@
 #include <pubsub_itc_fw/Crc32.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/StringUtils.hpp>
+#include <pubsub_itc_fw/WalCursor.hpp>
 #include <pubsub_itc_fw/WalReader.hpp>
 
 namespace pubsub_itc_fw {
@@ -189,6 +190,30 @@ void Wal::append(int64_t seq_no, int16_t pdu_id, const uint8_t* payload, int siz
 
     last_seq_no_ = seq_no;
     ++record_count_;
+}
+
+// ---------------------------------------------------------------------------
+// truncate_below()
+// ---------------------------------------------------------------------------
+
+void Wal::truncate_below(int64_t safe_seq_no) {
+    // Find the segment holding the first record at/after safe_seq_no; every segment
+    // before it contains only already-consumed records and can be deleted.
+    WalCursor cursor;
+    cursor.open(directory_, WalPosition{0, 0});
+    int64_t record_id = 0;
+    const uint8_t* payload = nullptr;
+    size_t size = 0;
+    while (cursor.read_next(record_id, payload, size)) {
+        if (record_id >= safe_seq_no) {
+            // position().segment is the segment this record lives in (the offset has
+            // advanced past the record but not yet rolled to the next segment).
+            delete_segments_before(cursor.position().segment);
+            return;
+        }
+    }
+    // No record at/after safe_seq_no: everything is consumed but nothing is safe to
+    // reclaim yet (the current segment is still being written), so leave it.
 }
 
 // ---------------------------------------------------------------------------

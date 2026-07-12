@@ -157,6 +157,22 @@ class Wal {
      */
     void take_snapshot();
 
+    /**
+     * @brief Reclaim disk by deleting WAL segments fully consumed by all subscribers.
+     *
+     * Deletes every segment that contains only records with seq_no < safe_seq_no --
+     * i.e. records every subscriber has already acknowledged. The segment holding the
+     * first record at/after safe_seq_no, and everything after it, is kept. A no-op if
+     * nothing can be reclaimed.
+     *
+     * Safe to call while subscribers are streaming: their read cursors are at or above
+     * safe_seq_no, so no segment they still need is removed (and an unlink of a segment
+     * a cursor still has mmap'd is harmless -- the mapping stays valid until unmapped).
+     *
+     * @param[in] safe_seq_no The lowest seq_no any subscriber still needs.
+     */
+    void truncate_below(int64_t safe_seq_no);
+
     [[nodiscard]] size_t record_count() const {
         return record_count_;
     }

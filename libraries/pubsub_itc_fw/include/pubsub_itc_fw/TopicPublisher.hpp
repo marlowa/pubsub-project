@@ -42,6 +42,9 @@ class TopicPublisherHost {
 
     /// Arm a one-shot on_connection_writable() for this connection (send pacing).
     virtual void topic_request_writable_notification(ConnectionID connection_id) = 0;
+
+    /// Reclaim WAL disk below safe_seq_no (records every subscriber has consumed).
+    virtual void topic_truncate_wal(int64_t safe_seq_no) = 0;
 };
 
 /**
@@ -128,6 +131,15 @@ class TopicPublisher {
             if (sub_it != subscribers_.end()) {
                 sub_it->second.acked_cursor = view.last_seq_no;
             }
+        }
+
+        // The ack is a truncation cursor (F2): once every subscriber has consumed past a
+        // seq_no, the publisher can reclaim the WAL below it. Truncate only when the
+        // safe floor actually advances.
+        const int64_t safe_floor = registry_.min_cursor();
+        if (safe_floor != ExternalWalSubscriberRegistry::no_constraint && safe_floor > last_truncation_floor_) {
+            last_truncation_floor_ = safe_floor;
+            host_.topic_truncate_wal(safe_floor);
         }
     }
 
@@ -388,8 +400,9 @@ class TopicPublisher {
     std::string topic_name_;
     MembershipPredicate is_member_;
     std::string wal_directory_;
-    int64_t max_lag_records_ = 0; // retention window; 0 disables the lag policy
-    int64_t head_seq_no_ = 0;     // highest seq_no appended to the WAL
+    int64_t max_lag_records_ = 0;       // retention window; 0 disables the lag policy
+    int64_t head_seq_no_ = 0;           // highest seq_no appended to the WAL
+    int64_t last_truncation_floor_ = 0; // highest safe floor already truncated to
     bool is_leader_ = true;
     ExternalWalSubscriberRegistry registry_;
     std::unordered_map<std::string, LogicalSubscriber> subscribers_;            // subscriber_id -> pair + stream

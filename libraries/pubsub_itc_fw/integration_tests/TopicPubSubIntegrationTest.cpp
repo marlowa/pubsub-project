@@ -86,7 +86,7 @@ class TopicPublisherThread : public ApplicationThread, public TopicPublisherHost
     // used to exercise the live fanout path. Left at 0, the thread only replays the WAL.
     TopicPublisherThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, std::string wal_dir, int publish_after_subscribers = 0,
                          int live_record_count = 0, bool lag_on_control_subscribe = false, int64_t max_lag_records = 0, int startup_records = 0,
-                         int records_after_both_channels = 0)
+                         int records_after_both_channels = 0, size_t segment_size = wal_segment_size)
         : ApplicationThread(token, logger, reactor, "TopicPublisherThread", ThreadID{2}, make_queue_config(), make_allocator_config("TopicPubPool"),
                             ApplicationThreadConfiguration{})
         , publish_after_subscribers_(publish_after_subscribers)
@@ -94,6 +94,7 @@ class TopicPublisherThread : public ApplicationThread, public TopicPublisherHost
         , lag_on_control_subscribe_(lag_on_control_subscribe)
         , startup_records_(startup_records)
         , records_after_both_channels_(records_after_both_channels)
+        , segment_size_(segment_size)
         , wal_directory_(wal_dir)
         , publisher_(*this, "orders", [](int16_t pdu_id) { return pdu_id == pdu_id_nos || pdu_id == pdu_id_ocr; }, std::move(wal_dir), max_lag_records) {}
 
@@ -118,12 +119,17 @@ class TopicPublisherThread : public ApplicationThread, public TopicPublisherHost
     void topic_request_writable_notification(ConnectionID connection_id) override {
         request_writable_notification(connection_id);
     }
+    void topic_truncate_wal(int64_t safe_seq_no) override {
+        if (wal_.is_open()) {
+            wal_.truncate_below(safe_seq_no);
+        }
+    }
 
   protected:
     void on_initial_event() override {
         // Any test that writes records needs an open WAL to append to.
         if (publish_after_subscribers_ > 0 || startup_records_ > 0 || records_after_both_channels_ > 0) {
-            wal_.open(wal_directory_, wal_segment_size);
+            wal_.open(wal_directory_, segment_size_);
         }
         // Records appended before any subscriber connects (drives gap-on-resubscribe).
         for (int i = 1; i <= startup_records_; ++i) {
@@ -214,6 +220,7 @@ class TopicPublisherThread : public ApplicationThread, public TopicPublisherHost
     bool lag_on_control_subscribe_;
     int startup_records_;
     int records_after_both_channels_;
+    size_t segment_size_;
     bool published_live_ = false;
     bool data_subscribed_ = false;
     bool control_subscribed_ = false;
@@ -961,6 +968,57 @@ TEST_F(TopicPubSubTest, SlowSubscriberIsLaggedOutAndDropped) {
     ASSERT_FALSE(subscriber_thread->received_lagged.empty());
     EXPECT_EQ(subscriber_thread->received_lagged[0].reason, "subscriber too far behind the retention window");
     EXPECT_EQ(subscriber_thread->received_lagged[0].oldest_retained_seq_no, 1); // head 4 - window 3
+
+    subscriber_reactor->shutdown("test complete");
+    publisher_reactor->shutdown("test complete");
+    if (subscriber_reactor_thread.joinable()) {
+        subscriber_reactor_thread.join();
+    }
+    if (publisher_reactor_thread.joinable()) {
+        publisher_reactor_thread.join();
+    }
+}
+
+// ============================================================
+// Test 9 (F2): a subscriber's periodic TopicAck is a truncation
+// cursor -- once it has consumed past a segment, the publisher
+// reclaims that segment from disk.
+// ============================================================
+TEST_F(TopicPubSubTest, SubscriberAcksReclaimConsumedWalSegments) {
+    static constexpr int record_count = 12;
+    static constexpr size_t small_segment = 128; // ~3 records/segment -> several segments
+
+    // --- Publisher appends 12 records to its own (small-segment) WAL at startup ---
+    const ServiceRegistry publisher_registry;
+    auto publisher_reactor = std::make_unique<Reactor>(make_reactor_config(), publisher_registry, logger_->logger);
+    publisher_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
+    auto publisher_thread = ApplicationThread::create<TopicPublisherThread>(logger_->logger, *publisher_reactor, wal_dir_, 0, 0, false, 0,
+                                                                            /*startup_records=*/record_count, /*records_after_both_channels=*/0,
+                                                                            /*segment_size=*/small_segment);
+    publisher_reactor->register_thread(publisher_thread);
+    ThreadWithJoinTimeout publisher_reactor_thread([&]() { publisher_reactor->run(); });
+    ASSERT_TRUE(wait_for([&]() { return publisher_reactor->is_initialized(); })) << "Publisher reactor did not initialize";
+    const uint16_t listen_port = publisher_reactor->get_inbound_listener_port(0);
+    ASSERT_NE(listen_port, 0U);
+    // The oldest segment exists before the subscriber consumes.
+    ASSERT_TRUE(std::filesystem::exists(wal_dir_ + "/wal_000000.log"));
+
+    ServiceRegistry subscriber_registry;
+    subscriber_registry.add("publisher", NetworkEndpointConfiguration{"127.0.0.1", listen_port}, NetworkEndpointConfiguration{});
+    auto subscriber_reactor = std::make_unique<Reactor>(make_reactor_config(), subscriber_registry, logger_->logger);
+    auto subscriber_thread = ApplicationThread::create<TopicSubscriberThread>(logger_->logger, *subscriber_reactor, record_count);
+    subscriber_reactor->register_thread(subscriber_thread);
+    ThreadWithJoinTimeout subscriber_reactor_thread([&]() { subscriber_reactor->run(); });
+
+    // The subscriber receives everything...
+    EXPECT_TRUE(wait_for([&]() { return subscriber_thread->all_records_received.load(std::memory_order_acquire); })) << "records not received";
+    // ...and its ack lets the publisher reclaim the oldest (consumed) segment from disk.
+    EXPECT_TRUE(wait_for([&]() { return !std::filesystem::exists(wal_dir_ + "/wal_000000.log"); })) << "consumed WAL segment was not reclaimed";
+
+    ASSERT_EQ(static_cast<int>(subscriber_thread->received_records.size()), record_count);
+    for (int i = 0; i < record_count; ++i) {
+        EXPECT_EQ(subscriber_thread->received_records[static_cast<size_t>(i)].seq_no, i + 1) << "wrong record at " << i;
+    }
 
     subscriber_reactor->shutdown("test complete");
     publisher_reactor->shutdown("test complete");

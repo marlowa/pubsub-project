@@ -12,6 +12,7 @@
  * all work correctly.
  */
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -576,6 +577,52 @@ TEST_F(WalClassTest, MalformedWalEntryIsSkipped) {
     wal.open(dir_, segment_size, capture(records));
     EXPECT_EQ(records.size(), 0u) << "Malformed entry must be silently skipped";
     EXPECT_EQ(wal.record_count(), 0u);
+}
+
+// ---------------------------------------------------------------------------
+// truncate_below()
+// ---------------------------------------------------------------------------
+
+TEST_F(WalClassTest, TruncateBelowDeletesConsumedSegmentsAndKeepsTheRest) {
+    constexpr size_t small_segment = 128; // a few records per segment -> several segments
+
+    {
+        Wal wal;
+        wal.open(dir_, small_segment);
+        for (int i = 1; i <= 10; ++i) {
+            uint8_t payload[sizeof(uint32_t)];
+            const uint32_t value = static_cast<uint32_t>(i * 100);
+            std::memcpy(payload, &value, sizeof(value));
+            wal.append(i, 1, payload, static_cast<int>(sizeof(payload)), static_cast<int64_t>(i) * 1000);
+        }
+        wal.truncate_below(7); // records every subscriber has consumed are 1..6
+    }
+
+    // Re-open and replay: everything at/after 7 is retained; the oldest records were reclaimed.
+    Wal wal;
+    std::vector<CapturedRecord> records;
+    wal.open(dir_, small_segment, capture(records));
+
+    std::vector<int64_t> seq_nos;
+    for (const auto& record : records) {
+        seq_nos.push_back(record.seq_no);
+    }
+    for (const int64_t retained : {7, 8, 9, 10}) {
+        EXPECT_NE(std::find(seq_nos.begin(), seq_nos.end(), retained), seq_nos.end()) << "record " << retained << " should be retained";
+    }
+    EXPECT_EQ(std::find(seq_nos.begin(), seq_nos.end(), int64_t{1}), seq_nos.end()) << "record 1 should have been truncated";
+    EXPECT_FALSE(std::filesystem::exists(dir_ + "/wal_000000.log")) << "the oldest segment should be deleted";
+}
+
+TEST_F(WalClassTest, TruncateBelowIsNoOpWhenNothingToReclaim) {
+    Wal wal;
+    wal.open(dir_, segment_size);
+    for (int i = 1; i <= 3; ++i) {
+        uint8_t payload[sizeof(uint32_t)]{};
+        wal.append(i, 1, payload, static_cast<int>(sizeof(payload)), 0);
+    }
+    wal.truncate_below(1); // nothing lives before the first record
+    EXPECT_TRUE(std::filesystem::exists(dir_ + "/wal_000000.log"));
 }
 
 } // namespaces
