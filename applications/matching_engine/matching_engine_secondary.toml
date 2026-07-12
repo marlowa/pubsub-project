@@ -23,7 +23,6 @@ listen_port = ${matching_engine_secondary_book_replication_listen_port}
 
 [ha_instance]
 instance_id = ${matching_engine_secondary_instance_id}
-fence_file_path = "${matching_engine_secondary_fence_file_path}"
 
 [arbiter_primary]
 host = "${matching_engine_secondary_arbiter_primary_host}"

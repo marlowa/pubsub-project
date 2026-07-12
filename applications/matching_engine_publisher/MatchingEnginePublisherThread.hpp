@@ -115,7 +115,6 @@ class MatchingEnginePublisherThread : public pubsub_itc_fw::ApplicationThread, p
     void send_peer_heartbeat();
     void send_arbiter_heartbeat();
     void send_arbitration_report();
-    void write_fence_file() const;
     void handle_peer_pdu(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     void handle_peer_status_query(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     void handle_peer_status_response(const pubsub_itc_fw::EventMessage& message);

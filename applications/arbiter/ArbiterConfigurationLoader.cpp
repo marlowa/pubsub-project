@@ -46,8 +46,6 @@ ArbiterConfiguration ArbiterConfigurationLoader::load(const std::string& file_pa
         validate_port(peer_port, "peer.port");
         config.peer_port = static_cast<uint16_t>(peer_port);
 
-        toml.get_required_except("peer.fence_file_path", config.fence_file_path);
-
         int32_t heartbeat_interval_seconds = 0;
         int32_t heartbeat_timeout_seconds = 0;
         int32_t startup_election_timeout_seconds = 0;

@@ -247,7 +247,6 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     void send_arbitration_report();
     void handle_arbitration_decision(const pubsub_itc_fw::EventMessage& message);
     void send_arbiter_heartbeat();
-    void write_fence_file() const;
 
     // WAL reconciliation (RECONCILING state).
     void begin_reconciliation();

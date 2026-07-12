@@ -3,8 +3,6 @@
 
 #include "SequencerThread.hpp"
 
-#include <cerrno>
-#include <cstdio>
 #include <cstring>
 
 #include <array>
@@ -742,7 +740,6 @@ void SequencerThread::adopt_role(pubsub_itc_fw_app::Role new_role) {
     role_ = new_role;
 
     if (new_role == pubsub_itc_fw_app::Role::leader) {
-        write_fence_file();
         cancel_timer("peer_heartbeat_timeout");
         start_recurring_timer("peer_heartbeat", std::chrono::seconds(config_.heartbeat_interval_seconds));
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: now LEADER -- heartbeat timer started ({}s interval)",
@@ -902,19 +899,6 @@ void SequencerThread::handle_arbitration_decision(const pubsub_itc_fw::EventMess
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                    "SequencerThread: ArbitrationDecision does not mention this instance (instance_id={}) -- ignoring", config_.instance_id);
     }
-}
-
-void SequencerThread::write_fence_file() const {
-    const std::string& path = config_.fence_file_path;
-    const std::string content = std::to_string(config_.instance_id) + "\n";
-    FILE* f = std::fopen(path.c_str(), "w");
-    if (!f) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to write fence file '{}': {}", path, std::strerror(errno));
-        return;
-    }
-    std::fputs(content.c_str(), f);
-    std::fclose(f);
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: fence file written: {}", path);
 }
 
 void SequencerThread::handle_peer_status_query(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {

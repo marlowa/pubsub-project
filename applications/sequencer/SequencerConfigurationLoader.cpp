@@ -83,7 +83,6 @@ SequencerConfiguration SequencerConfigurationLoader::load(const std::string& fil
 
             toml.get_required_except("peer.listen_host", config.peer_listen_host);
             toml.get_required_except("peer.host", config.peer_host);
-            toml.get_required_except("peer.fence_file_path", config.fence_file_path);
 
             int32_t peer_listen_port = 0;
             int32_t peer_port = 0;

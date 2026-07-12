@@ -152,9 +152,6 @@ struct SequencerConfiguration {
     /** @brief How long without a Heartbeat before the follower promotes itself, in seconds. */
     int32_t heartbeat_timeout_seconds{15};
 
-    /** @brief Path to the file written when this node promotes itself to leader. */
-    std::string fence_file_path{"/dev/shm/sequencer_fence"};
-
     // WAL -- mmap'd on-disk write-ahead log
 
     /** @brief Directory in which WAL segment files are created. */

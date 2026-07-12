@@ -77,8 +77,6 @@ struct MatchingEnginePublisherConfiguration {
     int32_t heartbeat_timeout_seconds{15};
     int32_t startup_election_timeout_seconds{3};
 
-    std::string fence_file_path{"/dev/shm/mep_fence"};
-
     // Subscriber flow control
 
     int64_t max_lag_records{100000};

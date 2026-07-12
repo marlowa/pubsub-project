@@ -234,6 +234,44 @@ On heartbeat loss:
 
 ---
 
+### Fencing
+
+*Fencing* means stopping a deposed or partitioned old leader from continuing to act after a new
+leader is elected. This system fences **cooperatively, using the epoch as a fencing token**. It does
+**not** do power fencing (STONITH), and there is deliberately no fence file.
+
+**How the epoch fences.** Every promotion increments a monotonic `epoch` granted by the arbiter (see
+*Epoch Semantics* above). A node stands down the moment it observes a higher epoch, and a leader
+ignores any heartbeat carrying an epoch lower than its own. Combined with the single-writer sequencer
+and monotonic `seq_no`, a stale leader cannot corrupt the record stream: followers and WAL consumers
+skip anything at or below what they have already applied.
+
+**The honest limitation.** This is *cooperative* fencing: a deposed leader stops only once it
+**observes** the newer epoch — via a heartbeat, an arbitration decision, or a reconnect. A leader
+that is hung, or partitioned away from both its peer and the arbiter, may keep serving its existing
+clients until it regains contact, at which point the higher epoch forces it to follower. The design
+bounds the damage rather than making it impossible: the arbiter grants the next epoch to exactly one
+node (so there is never a second *authoritative* writer), and the single-writer WAL + `seq_no`
+ordering mean a stale leader's late writes are rejected downstream, not merged. For the scale this
+framework targets, that trade-off is deliberate and sufficient.
+
+**Why not STONITH / power fencing.** True power fencing forcibly removes a suspect node —
+independently of its OS — via managed PDUs, a BMC/IPMI channel (iLO, DRAC), or SCSI-3 persistent
+reservations on shared storage. It guarantees the old leader is gone, but it needs specific hardware
+and an out-of-band control path, adds significant operational complexity, and is a production-cluster
+concern (Pacemaker/Corosync territory). It is out of scope for this project, whose goal is framework
+validation and which runs its HA pairs cooperatively rather than over managed power hardware.
+
+**If stronger fencing were ever wanted** without STONITH hardware, the natural step is a
+**self-fencing watchdog**: a leader that cannot renew its arbiter lease within the takeover timeout
+stops serving (or restarts) itself, closing the hung/partitioned-old-leader gap above. It would be
+built from a watchdog timer plus the existing epoch/lease — not from a marker file. (An earlier
+write-only `fence_file`, written by every HA component on promotion but never read by anything,
+contributed nothing to correctness and was removed to avoid implying a guarantee the system does not
+make.)
+
+---
+
 ## Sequencer HA
 
 The sequencer has the richest HA state: order log, FIX session map, per-gateway delivery

@@ -10,7 +10,6 @@ listen_host                      = "${arbiter_primary_peer_listen_host}"
 listen_port                      = ${arbiter_primary_peer_listen_port}
 host                             = "${arbiter_primary_peer_host}"
 port                             = ${arbiter_primary_peer_port}
-fence_file_path                  = "${arbiter_primary_peer_fence_file_path}"
 heartbeat_interval_seconds       = 2
 heartbeat_timeout_seconds        = 6
 startup_election_timeout_seconds = 20

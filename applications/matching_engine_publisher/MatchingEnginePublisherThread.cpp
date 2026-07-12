@@ -3,10 +3,6 @@
 
 #include "MatchingEnginePublisherThread.hpp"
 
-#include <cerrno>
-#include <cstdio>
-#include <cstring>
-
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
 #include <pubsub_itc_fw/BumpAllocator.hpp>
@@ -319,7 +315,6 @@ void MatchingEnginePublisherThread::adopt_role(pubsub_itc_fw_app::Role new_role)
     role_ = new_role;
 
     if (new_role == pubsub_itc_fw_app::Role::leader) {
-        write_fence_file();
         cancel_timer("peer_heartbeat_timeout");
         start_recurring_timer("peer_heartbeat", std::chrono::seconds(config_.heartbeat_interval_seconds));
         set_publishers_leader(true);
@@ -412,18 +407,6 @@ void MatchingEnginePublisherThread::send_arbitration_report() {
     if (arbiter_secondary_conn_id_.is_valid()) {
         send_pdu(arbiter_secondary_conn_id_, pdu_arbitration_report, 0, report);
     }
-}
-
-void MatchingEnginePublisherThread::write_fence_file() const {
-    const std::string content = std::to_string(config_.instance_id) + "\n";
-    FILE* f = std::fopen(config_.fence_file_path.c_str(), "w");
-    if (!f) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: failed to write fence file '{}': {}", config_.fence_file_path,
-                   std::strerror(errno));
-        return;
-    }
-    std::fputs(content.c_str(), f);
-    std::fclose(f);
 }
 
 void MatchingEnginePublisherThread::handle_peer_status_query(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {

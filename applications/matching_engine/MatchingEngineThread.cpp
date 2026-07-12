@@ -3,10 +3,7 @@
 
 #include "MatchingEngineThread.hpp"
 
-#include <cerrno>
 #include <chrono>
-#include <cstdio>
-#include <cstring>
 
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
@@ -618,7 +615,6 @@ void MatchingEngineThread::adopt_leader_role() {
     }
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: adopting LEADER role (epoch={})", epoch_);
     ha_role_state_ = MeRole::Leader;
-    write_fence_file();
     // Renew the arbiter lease periodically for as long as we are leader.
     cancel_timer(timer_arbiter_heartbeat);
     start_recurring_timer(timer_arbiter_heartbeat, std::chrono::seconds(config_.heartbeat_interval_seconds));
@@ -719,19 +715,6 @@ void MatchingEngineThread::send_arbiter_heartbeat() {
     }
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MatchingEngineThread: arbiter heartbeat sent (instance_id={} epoch={})", hb.instance_id,
                hb.epoch);
-}
-
-void MatchingEngineThread::write_fence_file() const {
-    const std::string& path = config_.fence_file_path;
-    const std::string content = std::to_string(config_.instance_id) + "\n";
-    FILE* f = std::fopen(path.c_str(), "w");
-    if (f == nullptr) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to write fence file '{}': {}", path, std::strerror(errno));
-        return;
-    }
-    std::fputs(content.c_str(), f);
-    std::fclose(f);
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: fence file written: {}", path);
 }
 
 // WAL reconciliation (Slice D)

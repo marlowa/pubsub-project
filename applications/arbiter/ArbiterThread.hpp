@@ -115,7 +115,6 @@ class ArbiterThread : public pubsub_itc_fw::ApplicationThread {
     void send_peer_heartbeat();
     void send_witness_heartbeat();
     void request_witness_vote();
-    void write_fence_file() const;
 
     // Peer PDU handlers.
     void handle_peer_pdu(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);

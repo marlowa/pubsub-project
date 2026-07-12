@@ -236,7 +236,6 @@ peer_listen_host     = "127.0.0.1"
 peer_listen_port     = 11203
 peer_host            = "127.0.0.1"
 peer_port            = 11204
-peer_fence_file_path = "/dev/shm/arbiter_primary_fence"
 witness_host         = "127.0.0.1"
 witness_port         = 11100
 
@@ -247,7 +246,6 @@ peer_listen_host     = "127.0.0.1"
 peer_listen_port     = 11204
 peer_host            = "127.0.0.1"
 peer_port            = 11203
-peer_fence_file_path = "/dev/shm/arbiter_secondary_fence"
 witness_host         = "127.0.0.1"
 witness_port         = 11100
 
@@ -277,7 +275,6 @@ arbiter_primary_host          = "127.0.0.1"
 arbiter_primary_port          = 11200
 arbiter_secondary_host        = "127.0.0.1"
 arbiter_secondary_port        = 11201
-fence_file_path               = "/dev/shm/me_primary_fence"
 
 [matching_engine_secondary]
 book_replication_listen_host  = "127.0.0.1"
@@ -296,7 +293,6 @@ arbiter_primary_host          = "127.0.0.1"
 arbiter_primary_port          = 11200
 arbiter_secondary_host        = "127.0.0.1"
 arbiter_secondary_port        = 11201
-fence_file_path               = "/dev/shm/me_secondary_fence"
 
 [order_gateway]
 network_listen_host                   = "127.0.0.1"
@@ -342,7 +338,6 @@ peer_listen_host           = "127.0.0.1"
 peer_listen_port           = 11003
 peer_host                  = "127.0.0.1"
 peer_port                  = 11004
-peer_fence_file_path       = "/dev/shm/sequencer_primary_fence"
 wal_directory              = "var/sequencer_wal"
 wal_subscriber_listen_host = "127.0.0.1"
 wal_subscriber_listen_port = 11030
@@ -366,7 +361,6 @@ peer_listen_host           = "127.0.0.1"
 peer_listen_port           = 11004
 peer_host                  = "127.0.0.1"
 peer_port                  = 11003
-peer_fence_file_path       = "/dev/shm/sequencer_secondary_fence"
 wal_directory              = "var/sequencer_secondary_wal"
 wal_subscriber_listen_host = "127.0.0.1"
 wal_subscriber_listen_port = 11031
@@ -388,7 +382,6 @@ ha_peer_listen_host                  = "127.0.0.1"
 ha_peer_listen_port                  = 11044
 ha_peer_host                         = "127.0.0.1"
 ha_peer_port                         = 11045
-ha_fence_file_path                   = "/dev/shm/mep_primary_fence"
 
 [matching_engine_publisher_secondary]
 network_listen_host                  = "127.0.0.1"
@@ -407,7 +400,6 @@ ha_peer_listen_host                  = "127.0.0.1"
 ha_peer_listen_port                  = 11045
 ha_peer_host                         = "127.0.0.1"
 ha_peer_port                         = 11044
-ha_fence_file_path                   = "/dev/shm/mep_secondary_fence"
 
 # ── Fix test client ────────────────────────────────────────────────────────────
 # fix_gateway_port must match order_gateway.network_listen_port above.

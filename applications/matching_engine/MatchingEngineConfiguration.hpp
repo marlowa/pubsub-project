@@ -143,9 +143,6 @@ struct MatchingEngineConfiguration {
     /** @brief Interval at which the primary heartbeats the arbiter pool to renew its lease. */
     int32_t heartbeat_interval_seconds{30};
 
-    /** @brief Path to the fence file written when this instance adopts the leader role. */
-    std::string fence_file_path{"/dev/shm/me_primary_fence"};
-
     // Order book
 
     /** @brief Number of elements to pre-reserve in the order book hash map.

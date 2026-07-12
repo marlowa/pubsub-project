@@ -86,12 +86,12 @@ can immediately serve the next `ArbitrationReport` without data loss.
 
 ---
 
-## Fence File
+## Fencing
 
-When the active arbiter promotes itself it writes a fence file
-(`fence_file_path` in config, e.g. `/dev/shm/arbiter_fence`). This provides an
-out-of-band indicator for monitoring and operator tooling. It does not affect protocol
-correctness.
+The arbiter fences a deposed leader via monotonic epoch generation (a higher epoch out-votes
+the old one). This system fences cooperatively and does **not** do power fencing (STONITH); it
+writes no fence file. See the **Fencing** section of
+[WAL and High Availability](../design/wal_and_ha.md) for the full picture.
 
 ---
 
@@ -119,7 +119,6 @@ Key `arbiter.toml` sections:
 | `[peer] heartbeat_interval_seconds` | How often to send `Heartbeat` to peer (default 2 s) |
 | `[peer] heartbeat_timeout_seconds` | Peer silence before promotion attempt (default 6 s) |
 | `[peer] startup_election_timeout_seconds` | How long to wait for peer before self-promoting at startup (default 20 s) |
-| `[peer] fence_file_path` | Path written on promotion |
 | `[witness] host / port` | Witness endpoint |
 | `[witness] vote_timeout_seconds` | How long to wait for witness vote before degraded self-promotion (default 3 s) |
 | `[witness] heartbeat_interval_seconds` | How often to send `ArbiterHeartbeat` to witness (default 30 s) |

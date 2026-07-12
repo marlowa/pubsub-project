@@ -35,7 +35,6 @@ port                             = ${sequencer_primary_peer_port}
 heartbeat_interval_seconds       = 2
 heartbeat_timeout_seconds        = 6
 startup_election_timeout_seconds = 20
-fence_file_path                  = "${sequencer_primary_peer_fence_file_path}"
 
 [wal_subscriber]
 listen_host = "${sequencer_primary_wal_subscriber_listen_host}"

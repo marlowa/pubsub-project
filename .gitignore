@@ -2,6 +2,9 @@ build/
 build/docs
 thirdparty/
 
+# Deploy/runtime artefact trees (produced by build.py install / devenv.py; never committed)
+installed/
+
 # Manually placed JDBC drivers (see db/create_db.py --help for options)
 db/drivers/
 

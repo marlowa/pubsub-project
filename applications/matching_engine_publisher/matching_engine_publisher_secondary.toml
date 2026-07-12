@@ -35,7 +35,6 @@ peer_port                       = ${matching_engine_publisher_secondary_ha_peer_
 heartbeat_interval_seconds      = 2
 heartbeat_timeout_seconds       = 6
 startup_election_timeout_seconds = 20
-fence_file_path                 = "${matching_engine_publisher_secondary_ha_fence_file_path}"
 
 [subscriber_lag]
 default_max_lag_records = 100000

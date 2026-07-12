@@ -87,9 +87,6 @@ struct ArbiterConfiguration {
     /** @brief How often this arbiter sends ArbiterHeartbeat PDUs to the witness, in seconds. */
     int32_t witness_heartbeat_interval_seconds{30};
 
-    /** @brief Path to the file written when this arbiter promotes itself to active. */
-    std::string fence_file_path{"/dev/shm/arbiter_fence"};
-
     // Logging
 
     /** @brief Minimum severity written to the application log file. */

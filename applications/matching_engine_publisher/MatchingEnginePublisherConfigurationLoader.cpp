@@ -86,7 +86,6 @@ MatchingEnginePublisherConfiguration MatchingEnginePublisherConfigurationLoader:
 
             toml.get_required_except("ha.peer_listen_host", config.peer_listen_host);
             toml.get_required_except("ha.peer_host", config.peer_host);
-            toml.get_required_except("ha.fence_file_path", config.fence_file_path);
 
             int32_t peer_listen_port = 0;
             int32_t peer_port = 0;
