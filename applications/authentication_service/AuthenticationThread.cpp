@@ -26,11 +26,6 @@ namespace authentication_service {
 
 namespace {
 
-constexpr int16_t pdu_id_authentication_request = 500;
-constexpr int16_t pdu_id_authentication_challenge = 501;
-constexpr int16_t pdu_id_authentication_proof = 502;
-constexpr int16_t pdu_id_authentication_result = 503;
-
 constexpr uint16_t pdu_id_set_credential_request = 510;
 constexpr uint16_t pdu_id_set_credential_result = 511;
 constexpr uint16_t pdu_id_remove_credential_request = 512;
@@ -75,7 +70,7 @@ void AuthenticationThread::on_connection_established(pubsub_itc_fw::ConnectionID
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "AuthenticationThread: connection established conn_id={}", id.get_value());
 }
 
-void AuthenticationThread::on_connection_lost(const pubsub_itc_fw::ConnectionID &id, const std::string& reason) {
+void AuthenticationThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, const std::string& reason) {
     if (admin_connections_.erase(id) > 0) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "AuthenticationThread: admin connection lost conn_id={} reason={}", id.get_value(), reason);
     } else {
@@ -90,9 +85,9 @@ void AuthenticationThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
     const auto pdu_id = msg.pdu_id();
     const pubsub_itc_fw::ConnectionID& conn_id = msg.connection_id();
 
-    if (pdu_id == pdu_id_authentication_request) {
+    if (pdu_id == pubsub_itc_fw_app::AuthenticationRequest::message_pdu_id) {
         handle_authentication_request(conn_id, msg);
-    } else if (pdu_id == pdu_id_authentication_proof) {
+    } else if (pdu_id == pubsub_itc_fw_app::AuthenticationProof::message_pdu_id) {
         handle_authentication_proof(conn_id, msg);
     } else {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "AuthenticationThread: unexpected pdu_id={} conn_id={} -- dropping", pdu_id,
@@ -142,7 +137,7 @@ void AuthenticationThread::handle_authentication_request(const pubsub_itc_fw::Co
         result.outcome = pubsub_itc_fw_app::AuthenticationOutcome::UnknownUser;
         result.server_signature = pubsub_itc_fw_app::BytesView{nullptr, 0};
         result.force_password_change = false;
-        send_pdu(conn_id, pdu_id_authentication_result, 0, result);
+        send_pdu(conn_id, pubsub_itc_fw_app::AuthenticationResult::message_pdu_id, 0, result);
         return;
     }
 
@@ -163,7 +158,7 @@ void AuthenticationThread::handle_authentication_request(const pubsub_itc_fw::Co
     challenge.server_nonce = pubsub_itc_fw_app::BytesView{server_nonce.data(), server_nonce.size()};
     challenge.salt = pubsub_itc_fw_app::BytesView{state.salt.data(), state.salt.size()};
     challenge.iterations = state.iterations;
-    send_pdu(conn_id, pdu_id_authentication_challenge, 0, challenge);
+    send_pdu(conn_id, pubsub_itc_fw_app::AuthenticationChallenge::message_pdu_id, 0, challenge);
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "AuthenticationThread: AuthenticationChallenge sent request_id={} comp_id={}", view.request_id,
                comp_id);
@@ -201,7 +196,7 @@ void AuthenticationThread::handle_authentication_proof(const pubsub_itc_fw::Conn
         result.outcome = outcome;
         result.server_signature = pubsub_itc_fw_app::BytesView{server_signature.empty() ? nullptr : server_signature.data(), server_signature.size()};
         result.force_password_change = false;
-        send_pdu(conn_id, pdu_id_authentication_result, 0, result);
+        send_pdu(conn_id, pubsub_itc_fw_app::AuthenticationResult::message_pdu_id, 0, result);
     };
 
     // Verify ClientProof:

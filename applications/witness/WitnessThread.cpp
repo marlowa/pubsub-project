@@ -17,10 +17,6 @@ namespace witness {
 
 namespace {
 
-constexpr int16_t pdu_arbiter_heartbeat = 300;
-constexpr int16_t pdu_arbiter_vote_request = 301;
-constexpr int16_t pdu_arbiter_vote_response = 302;
-
 pubsub_itc_fw::QueueConfiguration make_queue_config() {
     pubsub_itc_fw::QueueConfiguration queue_configuration{};
     queue_configuration.low_watermark = 1;
@@ -71,9 +67,9 @@ void WitnessThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& 
     const pubsub_itc_fw::ConnectionID& conn_id = message.connection_id();
     const auto pdu_id = message.pdu_id();
 
-    if (pdu_id == pdu_arbiter_heartbeat) {
+    if (pdu_id == pubsub_itc_fw_app::ArbiterHeartbeat::message_pdu_id) {
         handle_arbiter_heartbeat(conn_id, message);
-    } else if (pdu_id == pdu_arbiter_vote_request) {
+    } else if (pdu_id == pubsub_itc_fw_app::ArbiterVoteRequest::message_pdu_id) {
         handle_arbiter_vote_request(conn_id, message);
     } else {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
@@ -148,7 +144,7 @@ void WitnessThread::send_arbiter_vote_response(const pubsub_itc_fw::ConnectionID
     pubsub_itc_fw_app::ArbiterVoteResponse resp{};
     resp.granted_to_instance_id = granted_to_instance_id;
     resp.epoch = epoch;
-    send_pdu(conn_id, pdu_arbiter_vote_response, 0, resp);
+    send_pdu(conn_id, pubsub_itc_fw_app::ArbiterVoteResponse::message_pdu_id, 0, resp);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "WitnessThread: ArbiterVoteResponse sent to connection {} (granted_to={} epoch={})",
                conn_id.get_value(), granted_to_instance_id, epoch);
 }

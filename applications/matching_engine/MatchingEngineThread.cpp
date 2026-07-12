@@ -18,14 +18,8 @@ namespace matching_engine {
 namespace {
 
 // PDU id for BookUpdate messages (must match the id in matching_engine_replication.dsl).
-constexpr int16_t pdu_book_update = 600;
 
 // Leader-follower protocol PDU ids (must match leader_follower.dsl).
-constexpr int16_t pdu_heartbeat = 102;
-constexpr int16_t pdu_me_position_request = 115;
-constexpr int16_t pdu_me_position_ack = 116;
-constexpr int16_t pdu_arbitration_report = 200;
-constexpr int16_t pdu_arbitration_decision = 201;
 
 // Timer names.
 constexpr const char* timer_promotion_timeout = "me_promotion_timeout";
@@ -205,17 +199,17 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
                message.connection_id().get_value(), pdu_id);
 
     // ---- HA control PDUs (Slice C+D) --------------------------------------
-    if (pdu_id == pdu_arbitration_decision) {
+    if (pdu_id == pubsub_itc_fw_app::ArbitrationDecision::message_pdu_id) {
         handle_arbitration_decision(message);
         release_pdu_payload(message);
         return;
     }
-    if (pdu_id == pdu_me_position_ack) {
+    if (pdu_id == pubsub_itc_fw_app::MePositionAck::message_pdu_id) {
         handle_me_position_ack(message);
         release_pdu_payload(message);
         return;
     }
-    if (pdu_id == pdu_heartbeat) {
+    if (pdu_id == pubsub_itc_fw_app::Heartbeat::message_pdu_id) {
         // Heartbeat echoes from the arbiter -- liveness only, nothing to do.
         release_pdu_payload(message);
         return;
@@ -273,7 +267,7 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
         }
         handle_order_cancel_request(view, message.seq_no());
 
-    } else if (pdu_id == pdu_book_update) {
+    } else if (pdu_id == pubsub_itc_fw_app::BookUpdate::message_pdu_id) {
         // BookUpdate from ME-primary -- secondary updates its replica book.
         apply_book_update(message);
         return; // apply_book_update calls release_pdu_payload internally.
@@ -550,7 +544,7 @@ void MatchingEngineThread::send_book_update(int64_t seq_no, pubsub_itc_fw_app::B
         }
     }
 
-    send_pdu(secondary_replication_conn_id_, pdu_book_update, seq_no, upd);
+    send_pdu(secondary_replication_conn_id_, pubsub_itc_fw_app::BookUpdate::message_pdu_id, seq_no, upd);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MatchingEngineThread: BookUpdate sent seq={} type={} session={} cl_ord_id={}", seq_no,
                static_cast<int>(update_type), session_id, cl_ord_id);
 }
@@ -630,10 +624,10 @@ void MatchingEngineThread::send_arbitration_report() {
     report.proposed_role = pubsub_itc_fw_app::Role::leader;
     report.group = pubsub_itc_fw_app::ComponentGroup::matching_engine;
     if (arbiter_primary_conn_id_.is_valid()) {
-        send_pdu(arbiter_primary_conn_id_, pdu_arbitration_report, 0, report);
+        send_pdu(arbiter_primary_conn_id_, pubsub_itc_fw_app::ArbitrationReport::message_pdu_id, 0, report);
     }
     if (arbiter_secondary_conn_id_.is_valid()) {
-        send_pdu(arbiter_secondary_conn_id_, pdu_arbitration_report, 0, report);
+        send_pdu(arbiter_secondary_conn_id_, pubsub_itc_fw_app::ArbitrationReport::message_pdu_id, 0, report);
     }
     if (!arbiter_primary_conn_id_.is_valid() && !arbiter_secondary_conn_id_.is_valid()) {
         // No arbiter reachable -- degrade to the local instance-id rule and self-promote.
@@ -708,10 +702,10 @@ void MatchingEngineThread::send_arbiter_heartbeat() {
     hb.epoch = epoch_;
     hb.group = pubsub_itc_fw_app::ComponentGroup::matching_engine;
     if (arbiter_primary_conn_id_.is_valid()) {
-        send_pdu(arbiter_primary_conn_id_, pdu_heartbeat, 0, hb);
+        send_pdu(arbiter_primary_conn_id_, pubsub_itc_fw_app::Heartbeat::message_pdu_id, 0, hb);
     }
     if (arbiter_secondary_conn_id_.is_valid()) {
-        send_pdu(arbiter_secondary_conn_id_, pdu_heartbeat, 0, hb);
+        send_pdu(arbiter_secondary_conn_id_, pubsub_itc_fw_app::Heartbeat::message_pdu_id, 0, hb);
     }
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MatchingEngineThread: arbiter heartbeat sent (instance_id={} epoch={})", hb.instance_id,
                hb.epoch);
@@ -751,7 +745,7 @@ void MatchingEngineThread::send_me_position_request() {
     pubsub_itc_fw_app::MePositionRequest request{};
     request.last_seq_no = last_replicated_seq_no_;
     for (const auto& conn_id : sequencer_order_conn_ids_) {
-        send_pdu(conn_id, pdu_me_position_request, 0, request);
+        send_pdu(conn_id, pubsub_itc_fw_app::MePositionRequest::message_pdu_id, 0, request);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: MePositionRequest sent to connection {} (last_seq_no={})",
                    conn_id.get_value(), last_replicated_seq_no_);
     }

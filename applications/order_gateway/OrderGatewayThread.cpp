@@ -27,11 +27,6 @@ namespace order_gateway {
 
 namespace {
 
-constexpr int16_t pdu_id_authentication_request = 500;
-constexpr int16_t pdu_id_authentication_challenge = 501;
-constexpr int16_t pdu_id_authentication_proof = 502;
-constexpr int16_t pdu_id_authentication_result = 503;
-
 constexpr size_t scram_client_nonce_size = 16;
 
 pubsub_itc_fw::QueueConfiguration make_queue_config() {
@@ -390,9 +385,9 @@ void OrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventMess
     const bool from_auth_service =
         (message.connection_id() == auth_service_primary_conn_id_) || (config_.ha_enabled && message.connection_id() == auth_service_secondary_conn_id_);
     if (from_auth_service) {
-        if (pdu_id == pdu_id_authentication_challenge) {
+        if (pdu_id == pubsub_itc_fw_app::AuthenticationChallenge::message_pdu_id) {
             handle_authentication_challenge(message);
-        } else if (pdu_id == pdu_id_authentication_result) {
+        } else if (pdu_id == pubsub_itc_fw_app::AuthenticationResult::message_pdu_id) {
             handle_authentication_result(message);
         } else {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "OrderGatewayThread: unexpected PDU id {} from authentication service -- dropping",
@@ -608,7 +603,7 @@ void OrderGatewayThread::handle_authentication_challenge(const pubsub_itc_fw::Ev
     proof.request_id = view.request_id;
     proof.client_proof = pubsub_itc_fw_app::BytesView{client_proof.data(), client_proof.size()};
     // Send on the connection the challenge arrived on -- correct for both primary and secondary.
-    send_pdu(auth_service_conn_id, pdu_id_authentication_proof, 0, proof);
+    send_pdu(auth_service_conn_id, pubsub_itc_fw_app::AuthenticationProof::message_pdu_id, 0, proof);
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "OrderGatewayThread: connection {} AuthenticationProof sent request_id={}",
                session.conn_id.get_value(), view.request_id);
@@ -735,7 +730,7 @@ void OrderGatewayThread::handle_logon(FixSession& session, const ParsedFixMessag
     auth_request.request_id = static_cast<int64_t>(session.conn_id.get_value());
     auth_request.comp_id = session.client_comp_id;
     auth_request.client_nonce = pubsub_itc_fw_app::BytesView{session.scram_client_nonce.data(), session.scram_client_nonce.size()};
-    send_pdu(auth_conn_id, pdu_id_authentication_request, 0, auth_request);
+    send_pdu(auth_conn_id, pubsub_itc_fw_app::AuthenticationRequest::message_pdu_id, 0, auth_request);
 
     // Arm a timeout so the session is not left pending indefinitely if the
     // authentication service is slow or loses the request.

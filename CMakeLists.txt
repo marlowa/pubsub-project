@@ -248,6 +248,9 @@ set(FIX_DSL_SOURCE "${CMAKE_SOURCE_DIR}/applications/fix_equity_orders.dsl")
 set(FIX_DSL_INCLUDE_DIR "${CMAKE_BINARY_DIR}/generated_dsl" CACHE INTERNAL "Where fix_equity_orders.hpp lives")
 set(FIX_DSL_GENERATED_HPP "${FIX_DSL_INCLUDE_DIR}/fix_equity_orders.hpp")
 set(FIX_DSL_GENERATOR "${CMAKE_SOURCE_DIR}/python/tools/generate_cpp_from_dsl.py")
+# The tool imports the python/dsl package; depend on those modules too so that a
+# generator change (not just a .dsl change) regenerates the headers.
+file(GLOB FIX_DSL_GENERATOR_MODULES "${CMAKE_SOURCE_DIR}/python/dsl/*.py")
 
 add_custom_command(
     OUTPUT "${FIX_DSL_GENERATED_HPP}"
@@ -257,7 +260,7 @@ add_custom_command(
             --namespace pubsub_itc_fw_app
             "${FIX_DSL_SOURCE}"
             --cpp "${FIX_DSL_GENERATED_HPP}"
-    DEPENDS "${FIX_DSL_SOURCE}" "${FIX_DSL_GENERATOR}"
+    DEPENDS "${FIX_DSL_SOURCE}" "${FIX_DSL_GENERATOR}" ${FIX_DSL_GENERATOR_MODULES}
     COMMENT "Generating fix_equity_orders.hpp from fix_equity_orders.dsl"
     VERBATIM
 )
@@ -279,7 +282,7 @@ add_custom_command(
             --namespace pubsub_itc_fw_app
             "${LF_DSL_SOURCE}"
             --cpp "${LF_DSL_GENERATED_HPP}"
-    DEPENDS "${LF_DSL_SOURCE}" "${FIX_DSL_GENERATOR}"
+    DEPENDS "${LF_DSL_SOURCE}" "${FIX_DSL_GENERATOR}" ${FIX_DSL_GENERATOR_MODULES}
     COMMENT "Generating leader_follower.hpp from leader_follower.dsl"
     VERBATIM
 )
@@ -298,7 +301,7 @@ add_custom_command(
             --namespace pubsub_itc_fw_app
             "${AUTH_DSL_SOURCE}"
             --cpp "${AUTH_DSL_GENERATED_HPP}"
-    DEPENDS "${AUTH_DSL_SOURCE}" "${FIX_DSL_GENERATOR}"
+    DEPENDS "${AUTH_DSL_SOURCE}" "${FIX_DSL_GENERATOR}" ${FIX_DSL_GENERATOR_MODULES}
     COMMENT "Generating authentication.hpp from authentication.dsl"
     VERBATIM
 )
@@ -317,7 +320,7 @@ add_custom_command(
             --namespace pubsub_itc_fw_app
             "${ME_REPL_DSL_SOURCE}"
             --cpp "${ME_REPL_DSL_GENERATED_HPP}"
-    DEPENDS "${ME_REPL_DSL_SOURCE}" "${FIX_DSL_GENERATOR}"
+    DEPENDS "${ME_REPL_DSL_SOURCE}" "${FIX_DSL_GENERATOR}" ${FIX_DSL_GENERATOR_MODULES}
     COMMENT "Generating matching_engine_replication.hpp from matching_engine_replication.dsl"
     VERBATIM
 )
@@ -336,7 +339,7 @@ add_custom_command(
             --namespace pubsub_itc_fw_app
             "${TOPICS_DSL_SOURCE}"
             --cpp "${TOPICS_DSL_GENERATED_HPP}"
-    DEPENDS "${TOPICS_DSL_SOURCE}" "${FIX_DSL_GENERATOR}"
+    DEPENDS "${TOPICS_DSL_SOURCE}" "${FIX_DSL_GENERATOR}" ${FIX_DSL_GENERATOR_MODULES}
     COMMENT "Generating topics.hpp from topics.dsl"
     VERBATIM
 )
@@ -363,7 +366,7 @@ add_custom_command(
             "${PUBSUB_DSL_SOURCE}"
             --topics-registry "${PUBSUB_TOPICS_REGISTRY_HPP}"
             --topics-catalog "${PUBSUB_TOPICS_CATALOG_MD}"
-    DEPENDS "${PUBSUB_DSL_SOURCE}" "${FIX_DSL_SOURCE}" "${FIX_DSL_GENERATOR}"
+    DEPENDS "${PUBSUB_DSL_SOURCE}" "${FIX_DSL_SOURCE}" "${FIX_DSL_GENERATOR}" ${FIX_DSL_GENERATOR_MODULES}
     COMMENT "Generating topics_registry.hpp + topics_catalog.md from pubsub.dsl"
     VERBATIM
 )

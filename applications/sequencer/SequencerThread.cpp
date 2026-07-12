@@ -44,17 +44,6 @@ pubsub_itc_fw::AllocatorConfiguration make_allocator_config(const SequencerConfi
 } // namespaces
 
 // PDU IDs for the leader-follower and external WAL subscriber protocols.
-static constexpr int16_t pdu_status_query = 100;
-static constexpr int16_t pdu_status_response = 101;
-static constexpr int16_t pdu_heartbeat = 102;
-static constexpr int16_t pdu_wal_record = 103;
-static constexpr int16_t pdu_wal_ack = 104;
-static constexpr int16_t pdu_wal_subscribe_request = 105;
-static constexpr int16_t pdu_wal_subscribe_ack = 106;
-static constexpr int16_t pdu_me_position_request = 115;
-static constexpr int16_t pdu_me_position_ack = 116;
-static constexpr int16_t pdu_arbitration_report = 200;
-static constexpr int16_t pdu_arbitration_decision = 201;
 
 SequencerThread::SequencerThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger, pubsub_itc_fw::Reactor& reactor,
                                  const SequencerConfiguration& config)
@@ -280,7 +269,8 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
     // In normal operation the request arrives on the pre-warmed standby
     // connection (me_secondary_standby_conn_id_); accept it on either the active
     // or standby ME connection for robustness.
-    if (message.pdu_id() == pdu_me_position_request && (conn_id == me_outbound_order_conn_id_ || conn_id == me_secondary_standby_conn_id_)) {
+    if (message.pdu_id() == pubsub_itc_fw_app::MePositionRequest::message_pdu_id &&
+        (conn_id == me_outbound_order_conn_id_ || conn_id == me_secondary_standby_conn_id_)) {
         handle_me_position_request(conn_id, message);
         release_pdu_payload(message);
         return;
@@ -288,9 +278,9 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
 
     // External WAL subscriber PDUs (WalSubscribeRequest and WalAck from MEP).
     if (svc == wal_subscriber_inbound_svc_) {
-        if (message.pdu_id() == pdu_wal_subscribe_request) {
+        if (message.pdu_id() == pubsub_itc_fw_app::WalSubscribeRequest::message_pdu_id) {
             handle_wal_subscribe_request(conn_id, message);
-        } else if (message.pdu_id() == pdu_wal_ack) {
+        } else if (message.pdu_id() == pubsub_itc_fw_app::WalAck::message_pdu_id) {
             handle_external_wal_ack(conn_id, message);
         } else {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
@@ -812,7 +802,7 @@ void SequencerThread::send_status_query(const pubsub_itc_fw::ConnectionID& conn_
     pubsub_itc_fw_app::StatusQuery sq{};
     sq.instance_id = static_cast<int64_t>(config_.instance_id);
     sq.epoch = epoch_;
-    send_pdu(conn_id, pdu_status_query, 0, sq);
+    send_pdu(conn_id, pubsub_itc_fw_app::StatusQuery::message_pdu_id, 0, sq);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: StatusQuery sent on connection {} (instance_id={} epoch={})",
                conn_id.get_value(), sq.instance_id, sq.epoch);
 }
@@ -824,7 +814,7 @@ void SequencerThread::send_status_response(const pubsub_itc_fw::ConnectionID& co
     sr.epoch = epoch_;
     sr.current_role = role_;
     sr.next_sequence_number = next_sequence_number_;
-    send_pdu(conn_id, pdu_status_response, 0, sr);
+    send_pdu(conn_id, pubsub_itc_fw_app::StatusResponse::message_pdu_id, 0, sr);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: StatusResponse sent on connection {} (role={} epoch={} next_seq={})",
                conn_id.get_value(), pubsub_itc_fw_app::to_string(role_), epoch_, next_sequence_number_);
 }
@@ -839,7 +829,7 @@ void SequencerThread::send_peer_heartbeat() {
     hb.instance_id = static_cast<int64_t>(config_.instance_id);
     hb.epoch = epoch_;
     hb.group = pubsub_itc_fw_app::ComponentGroup::sequencer;
-    send_pdu(target, pdu_heartbeat, 0, hb);
+    send_pdu(target, pubsub_itc_fw_app::Heartbeat::message_pdu_id, 0, hb);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: Heartbeat sent to peer (epoch={})", epoch_);
 }
 
@@ -849,10 +839,10 @@ void SequencerThread::send_arbiter_heartbeat() {
     hb.epoch = epoch_;
     hb.group = pubsub_itc_fw_app::ComponentGroup::sequencer;
     if (arbiter_primary_conn_id_.is_valid()) {
-        send_pdu(arbiter_primary_conn_id_, pdu_heartbeat, 0, hb);
+        send_pdu(arbiter_primary_conn_id_, pubsub_itc_fw_app::Heartbeat::message_pdu_id, 0, hb);
     }
     if (arbiter_secondary_conn_id_.is_valid()) {
-        send_pdu(arbiter_secondary_conn_id_, pdu_heartbeat, 0, hb);
+        send_pdu(arbiter_secondary_conn_id_, pubsub_itc_fw_app::Heartbeat::message_pdu_id, 0, hb);
     }
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: arbiter heartbeat sent (instance_id={} epoch={})", hb.instance_id, hb.epoch);
 }
@@ -865,10 +855,10 @@ void SequencerThread::send_arbitration_report() {
     report.proposed_role = pubsub_itc_fw_app::Role::leader;
     report.group = pubsub_itc_fw_app::ComponentGroup::sequencer;
     if (arbiter_primary_conn_id_.is_valid()) {
-        send_pdu(arbiter_primary_conn_id_, pdu_arbitration_report, 0, report);
+        send_pdu(arbiter_primary_conn_id_, pubsub_itc_fw_app::ArbitrationReport::message_pdu_id, 0, report);
     }
     if (arbiter_secondary_conn_id_.is_valid()) {
-        send_pdu(arbiter_secondary_conn_id_, pdu_arbitration_report, 0, report);
+        send_pdu(arbiter_secondary_conn_id_, pubsub_itc_fw_app::ArbitrationReport::message_pdu_id, 0, report);
     }
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "SequencerThread: ArbitrationReport sent to arbiter pool (self_instance_id={} peer_instance_id={} epoch={})", report.self_instance_id,
@@ -1004,17 +994,17 @@ void SequencerThread::handle_peer_heartbeat(const pubsub_itc_fw::EventMessage& m
 void SequencerThread::handle_peer_pdu(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
     const auto pdu_id = static_cast<int16_t>(message.pdu_id());
 
-    if (pdu_id == pdu_status_query) {
+    if (pdu_id == pubsub_itc_fw_app::StatusQuery::message_pdu_id) {
         handle_peer_status_query(conn_id, message);
-    } else if (pdu_id == pdu_status_response) {
+    } else if (pdu_id == pubsub_itc_fw_app::StatusResponse::message_pdu_id) {
         handle_peer_status_response(message);
-    } else if (pdu_id == pdu_heartbeat) {
+    } else if (pdu_id == pubsub_itc_fw_app::Heartbeat::message_pdu_id) {
         handle_peer_heartbeat(message);
-    } else if (pdu_id == pdu_wal_record) {
+    } else if (pdu_id == pubsub_itc_fw_app::WalRecord::message_pdu_id) {
         handle_wal_record(conn_id, message);
-    } else if (pdu_id == pdu_wal_ack) {
+    } else if (pdu_id == pubsub_itc_fw_app::WalAck::message_pdu_id) {
         handle_wal_ack(message);
-    } else if (pdu_id == pdu_arbitration_decision) {
+    } else if (pdu_id == pubsub_itc_fw_app::ArbitrationDecision::message_pdu_id) {
         // Should not arrive on the peer channel -- decisions come from the arbiter.
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                        "SequencerThread: ArbitrationDecision received on peer channel (unexpected) -- dropping");
@@ -1148,7 +1138,7 @@ void SequencerThread::send_wal_record(int64_t seq, int16_t wal_pdu_id, const pub
     wal_record.payload.data = message.payload();
     wal_record.payload.size = static_cast<size_t>(message.payload_size());
     wal_record.wall_time_ns = wall_time_ns;
-    send_pdu(target, pdu_wal_record, seq, wal_record);
+    send_pdu(target, pubsub_itc_fw_app::WalRecord::message_pdu_id, seq, wal_record);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: WalRecord sent to follower seq={} pdu_id={}", seq, wal_pdu_id);
 }
 
@@ -1172,7 +1162,7 @@ void SequencerThread::handle_wal_record(const pubsub_itc_fw::ConnectionID& conn_
 
     pubsub_itc_fw_app::WalAck wal_ack{};
     wal_ack.seq_no = view.seq_no;
-    send_pdu(conn_id, pdu_wal_ack, 0, wal_ack);
+    send_pdu(conn_id, pubsub_itc_fw_app::WalAck::message_pdu_id, 0, wal_ack);
 }
 
 void SequencerThread::handle_wal_ack(const pubsub_itc_fw::EventMessage& message) {
@@ -1207,7 +1197,7 @@ void SequencerThread::install_peer_wal_inline_handler(const pubsub_itc_fw::Conne
 
     install_inline_pdu_handler(conn_id, [this](pubsub_itc_fw::PduParser* parser, pubsub_itc_fw::PduFramer* framer) {
         parser->set_inline_handler([this, framer](int16_t pdu_id, int64_t /*seq_no*/, const uint8_t* payload, size_t size) -> bool {
-            if (pdu_id != pdu_wal_record) {
+            if (pdu_id != pubsub_itc_fw_app::WalRecord::message_pdu_id) {
                 return false;
             }
             if (framer->has_pending_data()) {
@@ -1232,7 +1222,7 @@ void SequencerThread::install_peer_wal_inline_handler(const pubsub_itc_fw::Conne
             std::array<uint8_t, 8> ack_buffer;
             pubsub_itc_fw_app::encode_fast(wal_ack, ack_buffer.data());
 
-            auto [ok, err] = framer->send(pdu_wal_ack, 0, 0, ack_buffer.data(), static_cast<uint32_t>(ack_buffer.size()));
+            auto [ok, err] = framer->send(pubsub_itc_fw_app::WalAck::message_pdu_id, 0, 0, ack_buffer.data(), static_cast<uint32_t>(ack_buffer.size()));
             if (!ok) {
                 PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread (inline): WalAck send failed for seq={}: {}", view.seq_no, err);
             } else {
@@ -1381,7 +1371,7 @@ void SequencerThread::handle_wal_subscribe_request(const pubsub_itc_fw::Connecti
 
     pubsub_itc_fw_app::WalSubscribeAck ack{};
     ack.accepted_from_seq_no = accepted_from_seq_no;
-    send_pdu(conn_id, pdu_wal_subscribe_ack, 0, ack);
+    send_pdu(conn_id, pubsub_itc_fw_app::WalSubscribeAck::message_pdu_id, 0, ack);
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: WalSubscribeAck sent subscriber_id={} accepted_from_seq_no={}", subscriber_id,
                accepted_from_seq_no);
@@ -1413,7 +1403,7 @@ void SequencerThread::handle_wal_subscribe_request(const pubsub_itc_fw::Connecti
             wal_record.payload.data = pdu_payload;
             wal_record.payload.size = pdu_size;
             wal_record.wall_time_ns = wall_time_ns;
-            send_pdu(conn_id, pdu_wal_record, record_id, wal_record);
+            send_pdu(conn_id, pubsub_itc_fw_app::WalRecord::message_pdu_id, record_id, wal_record);
         });
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: WAL replay complete for subscriber_id={}", subscriber_id);
@@ -1448,7 +1438,7 @@ void SequencerThread::stream_wal_record_to_external_subscribers(int64_t seq, int
     wal_record.payload.size = static_cast<size_t>(message.payload_size());
     wal_record.wall_time_ns = wall_time_ns;
     for (const auto& subscriber_conn_id : wal_subscriber_conn_ids_) {
-        send_pdu(subscriber_conn_id, pdu_wal_record, seq, wal_record);
+        send_pdu(subscriber_conn_id, pubsub_itc_fw_app::WalRecord::message_pdu_id, seq, wal_record);
     }
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: WalRecord seq={} pdu_id={} streamed to {} external subscriber(s)", seq, pdu_id,
                wal_subscriber_conn_ids_.size());
@@ -1524,7 +1514,7 @@ void SequencerThread::handle_me_position_request(const pubsub_itc_fw::Connection
     // Signal completion. On receipt the ME cancels its book and becomes leader.
     pubsub_itc_fw_app::MePositionAck ack{};
     ack.last_seq_no = wal_head;
-    send_pdu(conn_id, pdu_me_position_ack, 0, ack);
+    send_pdu(conn_id, pubsub_itc_fw_app::MePositionAck::message_pdu_id, 0, ack);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: MePositionAck sent (last_seq_no={}) -- ME is now live", wal_head);
 
     // Promote this connection to the active ME order connection so subsequent

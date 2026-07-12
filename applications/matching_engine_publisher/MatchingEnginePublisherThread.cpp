@@ -17,22 +17,6 @@
 
 namespace matching_engine_publisher {
 
-static constexpr int16_t pdu_status_query = 100;
-static constexpr int16_t pdu_status_response = 101;
-static constexpr int16_t pdu_heartbeat = 102;
-static constexpr int16_t pdu_wal_record = 103;
-static constexpr int16_t pdu_wal_ack = 104;
-static constexpr int16_t pdu_wal_subscribe_request = 105;
-static constexpr int16_t pdu_wal_subscribe_ack = 106;
-static constexpr int16_t pdu_topic_subscribe_request = 107;
-static constexpr int16_t pdu_topic_subscribe_ack = 108;
-static constexpr int16_t pdu_topic_page = 109;
-static constexpr int16_t pdu_topic_ack = 110;
-static constexpr int16_t pdu_topic_not_leader = 111;
-static constexpr int16_t pdu_topic_lagged = 112;
-static constexpr int16_t pdu_arbitration_report = 200;
-static constexpr int16_t pdu_arbitration_decision = 201;
-
 // Recognised topics and the pdu ids that belong to each are owned by the generated
 // registry (topics_registry.hpp, from pubsub.dsl): pubsub_itc_fw_app::Topic,
 // topic_from_name(), pdu_in_topic(). No topic names or application pdu ids are
@@ -122,7 +106,7 @@ void MatchingEnginePublisherThread::on_connection_established(pubsub_itc_fw::Con
         pubsub_itc_fw_app::WalSubscribeRequest req{};
         req.subscriber_id = wal_subscriber_id_;
         req.from_seq_no = sequencer_cursor_;
-        send_pdu(id, pdu_wal_subscribe_request, 0, req);
+        send_pdu(id, pubsub_itc_fw_app::WalSubscribeRequest::message_pdu_id, 0, req);
     } else if (svc == "sequencer_secondary") {
         sequencer_secondary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MepThread: sequencer (secondary) connection {} established -- sending WalSubscribeRequest",
@@ -130,7 +114,7 @@ void MatchingEnginePublisherThread::on_connection_established(pubsub_itc_fw::Con
         pubsub_itc_fw_app::WalSubscribeRequest req{};
         req.subscriber_id = wal_subscriber_id_;
         req.from_seq_no = sequencer_cursor_;
-        send_pdu(id, pdu_wal_subscribe_request, 0, req);
+        send_pdu(id, pubsub_itc_fw_app::WalSubscribeRequest::message_pdu_id, 0, req);
     } else if (svc == "arbiter_primary") {
         const bool first = !arbiter_primary_conn_id_.is_valid() && !arbiter_secondary_conn_id_.is_valid();
         arbiter_primary_conn_id_ = id;
@@ -219,9 +203,9 @@ void MatchingEnginePublisherThread::on_framework_pdu_message(const pubsub_itc_fw
 
     // Sequencer WAL follower PDUs.
     if (conn_id == sequencer_conn_id_ || conn_id == sequencer_secondary_conn_id_) {
-        if (message.pdu_id() == pdu_wal_record) {
+        if (message.pdu_id() == pubsub_itc_fw_app::WalRecord::message_pdu_id) {
             handle_wal_record_from_sequencer(conn_id, message);
-        } else if (message.pdu_id() == pdu_wal_subscribe_ack) {
+        } else if (message.pdu_id() == pubsub_itc_fw_app::WalSubscribeAck::message_pdu_id) {
             handle_wal_subscribe_ack(message);
         } else {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: unexpected PDU {} from sequencer connection {} -- dropping",
@@ -233,9 +217,9 @@ void MatchingEnginePublisherThread::on_framework_pdu_message(const pubsub_itc_fw
 
     // Topic subscriber PDUs.
     if (svc == orders_inbound_svc_ || svc == er_inbound_svc_) {
-        if (message.pdu_id() == pdu_topic_subscribe_request) {
+        if (message.pdu_id() == pubsub_itc_fw_app::TopicSubscribeRequest::message_pdu_id) {
             handle_topic_subscribe_request(conn_id, message);
-        } else if (message.pdu_id() == pdu_topic_ack) {
+        } else if (message.pdu_id() == pubsub_itc_fw_app::TopicAck::message_pdu_id) {
             handle_topic_ack(conn_id, message);
         } else {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: unexpected PDU {} from topic subscriber {} -- dropping", message.pdu_id(),
@@ -356,7 +340,7 @@ void MatchingEnginePublisherThread::send_status_query(const pubsub_itc_fw::Conne
     pubsub_itc_fw_app::StatusQuery sq{};
     sq.instance_id = static_cast<int64_t>(config_.instance_id);
     sq.epoch = epoch_;
-    send_pdu(conn_id, pdu_status_query, 0, sq);
+    send_pdu(conn_id, pubsub_itc_fw_app::StatusQuery::message_pdu_id, 0, sq);
 }
 
 void MatchingEnginePublisherThread::send_status_response(const pubsub_itc_fw::ConnectionID& conn_id) {
@@ -366,7 +350,7 @@ void MatchingEnginePublisherThread::send_status_response(const pubsub_itc_fw::Co
     sr.epoch = epoch_;
     sr.current_role = role_;
     sr.next_sequence_number = 0;
-    send_pdu(conn_id, pdu_status_response, 0, sr);
+    send_pdu(conn_id, pubsub_itc_fw_app::StatusResponse::message_pdu_id, 0, sr);
 }
 
 void MatchingEnginePublisherThread::send_peer_heartbeat() {
@@ -378,7 +362,7 @@ void MatchingEnginePublisherThread::send_peer_heartbeat() {
     hb.instance_id = static_cast<int64_t>(config_.instance_id);
     hb.epoch = epoch_;
     hb.group = pubsub_itc_fw_app::ComponentGroup::matching_engine_publisher;
-    send_pdu(target, pdu_heartbeat, 0, hb);
+    send_pdu(target, pubsub_itc_fw_app::Heartbeat::message_pdu_id, 0, hb);
 }
 
 void MatchingEnginePublisherThread::send_arbiter_heartbeat() {
@@ -387,10 +371,10 @@ void MatchingEnginePublisherThread::send_arbiter_heartbeat() {
     hb.epoch = epoch_;
     hb.group = pubsub_itc_fw_app::ComponentGroup::matching_engine_publisher;
     if (arbiter_primary_conn_id_.is_valid()) {
-        send_pdu(arbiter_primary_conn_id_, pdu_heartbeat, 0, hb);
+        send_pdu(arbiter_primary_conn_id_, pubsub_itc_fw_app::Heartbeat::message_pdu_id, 0, hb);
     }
     if (arbiter_secondary_conn_id_.is_valid()) {
-        send_pdu(arbiter_secondary_conn_id_, pdu_heartbeat, 0, hb);
+        send_pdu(arbiter_secondary_conn_id_, pubsub_itc_fw_app::Heartbeat::message_pdu_id, 0, hb);
     }
 }
 
@@ -402,10 +386,10 @@ void MatchingEnginePublisherThread::send_arbitration_report() {
     report.proposed_role = pubsub_itc_fw_app::Role::leader;
     report.group = pubsub_itc_fw_app::ComponentGroup::matching_engine_publisher;
     if (arbiter_primary_conn_id_.is_valid()) {
-        send_pdu(arbiter_primary_conn_id_, pdu_arbitration_report, 0, report);
+        send_pdu(arbiter_primary_conn_id_, pubsub_itc_fw_app::ArbitrationReport::message_pdu_id, 0, report);
     }
     if (arbiter_secondary_conn_id_.is_valid()) {
-        send_pdu(arbiter_secondary_conn_id_, pdu_arbitration_report, 0, report);
+        send_pdu(arbiter_secondary_conn_id_, pubsub_itc_fw_app::ArbitrationReport::message_pdu_id, 0, report);
     }
 }
 
@@ -462,13 +446,13 @@ void MatchingEnginePublisherThread::handle_peer_heartbeat(const pubsub_itc_fw::E
 
 void MatchingEnginePublisherThread::handle_peer_pdu(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
     const auto pdu_id = static_cast<int16_t>(message.pdu_id());
-    if (pdu_id == pdu_status_query) {
+    if (pdu_id == pubsub_itc_fw_app::StatusQuery::message_pdu_id) {
         handle_peer_status_query(conn_id, message);
-    } else if (pdu_id == pdu_status_response) {
+    } else if (pdu_id == pubsub_itc_fw_app::StatusResponse::message_pdu_id) {
         handle_peer_status_response(message);
-    } else if (pdu_id == pdu_heartbeat) {
+    } else if (pdu_id == pubsub_itc_fw_app::Heartbeat::message_pdu_id) {
         handle_peer_heartbeat(message);
-    } else if (pdu_id == pdu_arbitration_decision) {
+    } else if (pdu_id == pubsub_itc_fw_app::ArbitrationDecision::message_pdu_id) {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: ArbitrationDecision on peer channel (unexpected) -- dropping");
     } else {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: unknown peer PDU {} -- dropping", pdu_id);
@@ -537,7 +521,7 @@ void MatchingEnginePublisherThread::handle_wal_record_from_sequencer(const pubsu
     // Ack immediately.
     pubsub_itc_fw_app::WalAck ack{};
     ack.seq_no = view.seq_no;
-    send_pdu(conn_id, pdu_wal_ack, 0, ack);
+    send_pdu(conn_id, pubsub_itc_fw_app::WalAck::message_pdu_id, 0, ack);
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MepThread: WalRecord seq={} pdu_id={} written to MEP WAL, WalAck sent", view.seq_no,
                view.pdu_id);
@@ -612,19 +596,19 @@ void MatchingEnginePublisherThread::set_publishers_leader(bool is_leader) {
 // TopicPublisherHost -- each publisher decides what to send; this thread does it
 
 void MatchingEnginePublisherThread::topic_send_subscribe_ack(pubsub_itc_fw::ConnectionID connection_id, const pubsub_itc_fw_app::TopicSubscribeAck& ack) {
-    send_pdu(connection_id, pdu_topic_subscribe_ack, 0, ack);
+    send_pdu(connection_id, pubsub_itc_fw_app::TopicSubscribeAck::message_pdu_id, 0, ack);
 }
 
 void MatchingEnginePublisherThread::topic_send_page(pubsub_itc_fw::ConnectionID connection_id, int64_t seq_no, const pubsub_itc_fw_app::TopicPage& page) {
-    send_pdu(connection_id, pdu_topic_page, seq_no, page);
+    send_pdu(connection_id, pubsub_itc_fw_app::TopicPage::message_pdu_id, seq_no, page);
 }
 
 void MatchingEnginePublisherThread::topic_send_not_leader(pubsub_itc_fw::ConnectionID connection_id, const pubsub_itc_fw_app::TopicNotLeader& not_leader) {
-    send_pdu(connection_id, pdu_topic_not_leader, 0, not_leader);
+    send_pdu(connection_id, pubsub_itc_fw_app::TopicNotLeader::message_pdu_id, 0, not_leader);
 }
 
 void MatchingEnginePublisherThread::topic_send_lagged(pubsub_itc_fw::ConnectionID control_connection_id, const pubsub_itc_fw_app::TopicLagged& lagged) {
-    send_pdu(control_connection_id, pdu_topic_lagged, 0, lagged);
+    send_pdu(control_connection_id, pubsub_itc_fw_app::TopicLagged::message_pdu_id, 0, lagged);
 }
 
 void MatchingEnginePublisherThread::topic_disconnect(pubsub_itc_fw::ConnectionID connection_id) {
