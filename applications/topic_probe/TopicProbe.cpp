@@ -34,6 +34,8 @@ TopicNotLeader; point the probe at the leader instance's port instead.
 
 #include <unistd.h>
 
+#include <argparse/argparse.hpp>
+
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
@@ -200,20 +202,30 @@ int default_port_for_topic(const std::string& topic_name) {
 int main(int argc, char** argv) {
     using namespace topic_probe;
 
-    if (argc < 2) {
-        std::fprintf(stderr, "Usage: %s <topic_name> [host] [port] [from_seq_no]\n", argv[0]);
-        std::fprintf(stderr, "  e.g. %s orders            (127.0.0.1:11040)\n", argv[0]);
-        std::fprintf(stderr, "       %s execution_reports (127.0.0.1:11041)\n", argv[0]);
+    argparse::ArgumentParser program("topic_probe");
+    program.add_description("Subscribe to one topic on a publisher (e.g. the MEP) and print each record.");
+    program.add_argument("topic").help("topic name: orders | execution_reports (any recognised topic)");
+    program.add_argument("--host").default_value(std::string("127.0.0.1")).help("publisher host");
+    program.add_argument("--port").scan<'i', int>().help("publisher port (default by topic: orders=11040, execution_reports=11041)");
+    program.add_argument("--from-seq-no")
+        .scan<'i', long long>()
+        .default_value(0LL)
+        .help("start cursor; 0 (default) replays retained history then streams live; a higher value starts nearer the head");
+
+    try {
+        program.parse_args(argc, argv);
+    } catch (const std::exception& err) {
+        std::cerr << err.what() << "\n" << program;
         return 1;
     }
 
-    const std::string topic_name = argv[1];
-    const std::string host = argc > 2 ? argv[2] : "127.0.0.1";
-    const int port = argc > 3 ? std::atoi(argv[3]) : default_port_for_topic(topic_name);
-    const int64_t from_seq_no = argc > 4 ? static_cast<int64_t>(std::atoll(argv[4])) : 0;
+    const std::string topic_name = program.get<std::string>("topic");
+    const std::string host = program.get<std::string>("--host");
+    const int port = program.present<int>("--port").value_or(default_port_for_topic(topic_name));
+    const int64_t from_seq_no = static_cast<int64_t>(program.get<long long>("--from-seq-no"));
 
     if (port <= 0) {
-        std::fprintf(stderr, "topic_probe: no default port for topic '%s'; pass one explicitly.\n", topic_name.c_str());
+        std::cerr << "topic_probe: no default port for topic '" << topic_name << "'; pass --port explicitly.\n";
         return 1;
     }
 

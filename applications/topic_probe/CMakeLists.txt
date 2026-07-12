@@ -9,6 +9,7 @@ target_include_directories(topic_probe PRIVATE
 
 target_link_libraries(topic_probe PRIVATE
         pubsub_itc_fw
+        argparse::argparse
 )
 
 add_dependencies(topic_probe
