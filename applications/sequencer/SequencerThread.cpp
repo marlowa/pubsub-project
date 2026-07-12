@@ -522,6 +522,20 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             return;
         }
 
+        // Sequence the ER into the WAL so it replicates to WAL followers -- notably the MEP,
+        // which publishes it on the execution_reports topic. Each ER gets its OWN seq_no (an
+        // order can emit several ERs -- New, Fill, Canceled -- so they cannot share the
+        // order's seq). Leader-only (followers returned above); the follower receives the ER
+        // as a WalRecord below and keeps its WAL byte-identical. Replay ignores ER records
+        // (dispatch_replay_records only re-sends NOS/OCR). NOTE: the ER is forwarded to the
+        // gateway gated on the *order's* WalAck, not this ER record's own -- so at a failover
+        // instant a just-forwarded ER may be missing from the new leader's WAL (an
+        // execution_reports-topic gap at the seam). Full two-tier commit of ERs is a follow-up.
+        const int64_t er_wal_seq = next_sequence_number_++;
+        const int64_t er_wall_time_ns = config_.wall_clock->now_ns();
+        wal_.append(er_wal_seq, message.pdu_id(), message.payload(), message.payload_size(), er_wall_time_ns);
+        send_wal_record(er_wal_seq, message.pdu_id(), message, er_wall_time_ns);
+
         // Re-encode into an owning struct and forward to the gateway.
         // String fields are std::string_view assigned directly from the
         // view; the slab payload backing the view is alive until
