@@ -12,7 +12,9 @@ Checks implemented:
   6.  using namespace std
   7.  noexcept keyword
   8.  final keyword on classes or methods
-  9.  #include with double-quoted path (library code only; tests/integration_tests/performance exempted)
+  9.  #include with double quotes. Banned in library code (no exceptions). In application code,
+      double quotes are allowed only for the cpp's own same-directory headers (bare filename, no '/');
+      every other include still uses angle brackets. tests/integration_tests/performance exempted.
   10. Lines exceeding 160 characters
   11. Non-ASCII characters
   12. End-of-brace comments (} // ...), except '} // namespaces' and '} // un-named namespace'
@@ -274,11 +276,13 @@ def check_final(path: Path, lines: list[str], stripped: list[str]) -> list[Viola
 
 
 # ── Check 9: #include with double quotes ─────────────────────────────────────
-# Exempted: test, integration-test, and performance directories.
-# Application files (under 'applications/') may use double quotes for their own
-# local headers (bare filename, no '/') — those are app-internal includes.
-# Any double-quoted include that contains a '/' is a cross-library reference and
-# must use angle brackets regardless of where the including file lives.
+# The rule: includes use angle brackets, with one exception. Library code has no
+# exceptions -- every include uses angle brackets. Application code (under
+# 'applications/') uses double quotes only for the headers that sit alongside the
+# cpp (its own local headers, bare filename, no '/'); every other include, including
+# any header referenced by a path, still uses angle brackets. A double-quoted include
+# that contains a '/' is a cross-library reference and is always a violation.
+# Exempted entirely: test, integration-test, and performance directories.
 
 _INCLUDE_QUOTE_RE = re.compile(r'^\s*#\s*include\s+"([^"]*)"')
 _INCLUDE_QUOTE_EXEMPT_DIRS = frozenset({'tests', 'integration_tests', 'performance'})
@@ -525,6 +529,78 @@ def check_banner_dividers(path: Path, lines: list[str], stripped: list[str]) -> 
     return violations
 
 
+# ── Check 23: #include ordering (external before project) ────────────────────
+# The coding rule groups includes as: external headers (C++ standard, C / POSIX
+# / third-party), then the header matching the cpp, then other project headers.
+# This check enforces the coarse, unambiguous part every file follows: all
+# external headers must precede the project headers. It does not police the finer
+# sub-order (own header first, project headers alphabetical), which the codebase
+# does not apply uniformly and which would produce false positives.
+#
+# Classification: a project header is an angle include ending in .hpp whose top
+# path element is not a third-party library shipped as .hpp. Every other angle
+# include is external -- extension-less C++ standard headers, anything ending in
+# .h (C / POSIX / openssl / quill / fmt), and the third-party .hpp libraries.
+# Application-local headers are double-quoted (permitted by check 9), so they are
+# not matched here and their own convention is untouched.
+#
+# Two orderings are accepted for a .cpp: external headers first then project
+# headers, or the cpp's own matching header first (self-containment check) then
+# external then other project headers. A leading own header is therefore skipped.
+# For a FooTest.cpp the self-containment header is the header under test (Foo.hpp),
+# so that is skipped too. The failure this catches is external headers split
+# around the project headers, e.g. an external header left after a project header.
+
+_INCLUDE_ANGLE_RE = re.compile(r'^\s*#\s*include\s+<([^>]*)>')
+_NAMESPACE_START_RE = re.compile(r'^\s*namespace\b')
+_THIRD_PARTY_HPP_ROOTS = frozenset({'toml++', 'argparse'})
+
+def _include_is_project_header(included: str) -> bool:
+    base = included.rsplit('/', 1)[-1]
+    if not base.endswith('.hpp'):
+        return False
+    top = included.split('/', 1)[0]
+    return top not in _THIRD_PARTY_HPP_ROOTS
+
+def _leading_own_headers(path: Path) -> frozenset:
+    if path.suffix != '.cpp':
+        return frozenset()
+    stem = path.stem
+    headers = {stem + '.hpp'}
+    if stem.endswith('Test'):
+        headers.add(stem[:-len('Test')] + '.hpp')  # a FooTest.cpp may lead with the header under test
+    return frozenset(headers)
+
+def check_include_order(path: Path, lines: list[str], stripped: list[str]) -> list[Violation]:
+    own_headers = _leading_own_headers(path)
+    violations = []
+    seen_any_include = False
+    first_project_line = 0
+    first_project_name = ''
+    for i, line in enumerate(lines, 1):
+        if _NAMESPACE_START_RE.match(line):
+            break  # leading include region ends; later includes are conditional / mid-file
+        match = _INCLUDE_ANGLE_RE.match(line)
+        if match is None:
+            continue
+        included = match.group(1)
+        is_own = included.rsplit('/', 1)[-1] in own_headers
+        if not seen_any_include and is_own:
+            seen_any_include = True  # leading own header is allowed to precede the external block
+            continue
+        seen_any_include = True
+        if _include_is_project_header(included):
+            if first_project_line == 0:
+                first_project_line = i
+                first_project_name = included
+        elif first_project_line != 0:
+            violations.append(Violation(path, i,
+                f'#include <{included}> (an external header) is out of order; every system, standard, '
+                f'and third-party header must precede the project headers, but this one follows '
+                f'<{first_project_name}> included at line {first_project_line}'))
+    return violations
+
+
 # ── Registry ─────────────────────────────────────────────────────────────────
 
 _CHECKS = [
@@ -550,6 +626,7 @@ _CHECKS = [
     check_pragma_once,
     check_template_on_own_line,
     check_banner_dividers,
+    check_include_order,
 ]
 
 

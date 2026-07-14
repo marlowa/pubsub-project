@@ -100,7 +100,12 @@ the header that goes with the cpp
 any additional project headers required, in alphabetical order
 These sections/groupings need to be separated by a blank line
 
-#include statements must always use angled brackets, never double quotes.
+#include statements use angled brackets, not double quotes. There is one exception.
+Library code has no exceptions: every include uses angled brackets.
+Application code uses double quotes only for the headers that sit alongside the cpp file
+(its own local headers in the same directory); every other include, including any header
+referenced by a path, still uses angled brackets. Those quoted app-local headers come first,
+before the system headers, and are exempt from the system-first include order above.
 
 cpp files that have a direct dependency on a header should always explicitly include that header.
 They should not avoid the include statement based on assumptions of indirect inclusion.
