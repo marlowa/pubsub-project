@@ -449,6 +449,8 @@ Log levels: `FwLogLevel::Alert`, `Critical`, `Error`, `Warning`, `Notice`, `Info
 
 Any class that needs to log receives a `QuillLogger&` in its constructor and stores it as a member. The Reactor does not own all logging — each class logs for itself.
 
+**Console output (stdout/stderr).** There is no in-process console-capture facility. A `ConsoleCapture` class (fd-level `dup2` redirect into Quill with a signal-safe crash-drain path) once existed but was removed (commit `8609599`): it was never wired into any application, and it only earned its keep in a hostile target environment that masks fatal signals on its own threads. Console output is instead captured by the launcher scripts (`devenv.py`, `start_fix_seq_system.py`, `perf_run.py`), which redirect each component's stdout — with stderr merged — to a per-component `{name}.stdout` file in truncate mode, kept separate from the Quill `{name}.log`.
+
 ---
 
 ### 15. Database Access Design from C++ (discussed, not yet implemented)
