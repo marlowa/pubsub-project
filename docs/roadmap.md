@@ -71,8 +71,6 @@ Near-term tasks not tied to a specific slice.
 
 - **ResendRequest / SequenceReset-GapFill** — implemented, compiled, not yet tested under load.
 
-- **ConsoleCapture crash-handler coverage** — the terminate/signal handlers and their raw-write helpers (`write_all_raw`, `drain_pipe_to_fd`) are the uncovered remainder of `ConsoleCapture.cpp`; the handlers `abort()`/re-raise so gcov cannot record them. Plan: extract a testable crash-dump helper + add death tests. See [tickets/console_capture_crash_handler_coverage.md](tickets/console_capture_crash_handler_coverage.md).
-
 ---
 
 ## Decision Log
