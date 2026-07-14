@@ -48,6 +48,7 @@
 #include <pubsub_itc_fw/TopicControlChannel.hpp>
 #include <pubsub_itc_fw/TopicPublisher.hpp>
 #include <pubsub_itc_fw/TopicSubscriberChannel.hpp>
+#include <pubsub_itc_fw/TopicSubscriberThread.hpp>
 #include <pubsub_itc_fw/Wal.hpp>
 #include <pubsub_itc_fw/WalPosition.hpp>
 #include <pubsub_itc_fw/WalReader.hpp>
@@ -64,6 +65,80 @@ using pubsub_itc_fw::tests::make_queue_config;
 
 namespace pubsub_itc_fw {
 
+// Typed flags for the test publisher/subscriber toggles, so call sites read as a named
+// state instead of a bare true/false argument (following the UseHugePagesFlag pattern).
+class DisconnectWhenDoneFlag {
+  public:
+    enum DisconnectWhenDoneFlagTag { DoNotDisconnectWhenDone = 0, DoDisconnectWhenDone = 1 };
+
+    explicit DisconnectWhenDoneFlag(DisconnectWhenDoneFlagTag value) : value_{value} {}
+
+    [[nodiscard]] bool is_equal(const DisconnectWhenDoneFlagTag& rhs) const {
+        return value_ == rhs;
+    }
+
+  private:
+    DisconnectWhenDoneFlagTag value_;
+};
+
+inline bool operator==(const DisconnectWhenDoneFlag& lhs, const DisconnectWhenDoneFlag::DisconnectWhenDoneFlagTag& rhs) {
+    return lhs.is_equal(rhs);
+}
+
+class DisconnectDataWhenDoneFlag {
+  public:
+    enum DisconnectDataWhenDoneFlagTag { DoNotDisconnectDataWhenDone = 0, DoDisconnectDataWhenDone = 1 };
+
+    explicit DisconnectDataWhenDoneFlag(DisconnectDataWhenDoneFlagTag value) : value_{value} {}
+
+    [[nodiscard]] bool is_equal(const DisconnectDataWhenDoneFlagTag& rhs) const {
+        return value_ == rhs;
+    }
+
+  private:
+    DisconnectDataWhenDoneFlagTag value_;
+};
+
+inline bool operator==(const DisconnectDataWhenDoneFlag& lhs, const DisconnectDataWhenDoneFlag::DisconnectDataWhenDoneFlagTag& rhs) {
+    return lhs.is_equal(rhs);
+}
+
+class SuppressAckFlag {
+  public:
+    enum SuppressAckFlagTag { DoNotSuppressAck = 0, DoSuppressAck = 1 };
+
+    explicit SuppressAckFlag(SuppressAckFlagTag value) : value_{value} {}
+
+    [[nodiscard]] bool is_equal(const SuppressAckFlagTag& rhs) const {
+        return value_ == rhs;
+    }
+
+  private:
+    SuppressAckFlagTag value_;
+};
+
+inline bool operator==(const SuppressAckFlag& lhs, const SuppressAckFlag::SuppressAckFlagTag& rhs) {
+    return lhs.is_equal(rhs);
+}
+
+class LagOnControlSubscribeFlag {
+  public:
+    enum LagOnControlSubscribeFlagTag { DoNotLagOnControlSubscribe = 0, DoLagOnControlSubscribe = 1 };
+
+    explicit LagOnControlSubscribeFlag(LagOnControlSubscribeFlagTag value) : value_{value} {}
+
+    [[nodiscard]] bool is_equal(const LagOnControlSubscribeFlagTag& rhs) const {
+        return value_ == rhs;
+    }
+
+  private:
+    LagOnControlSubscribeFlagTag value_;
+};
+
+inline bool operator==(const LagOnControlSubscribeFlag& lhs, const LagOnControlSubscribeFlag::LagOnControlSubscribeFlagTag& rhs) {
+    return lhs.is_equal(rhs);
+}
+
 static constexpr size_t wal_segment_size = 4096;
 
 // Publisher-side ApplicationThread: owns a TopicPublisher for
@@ -74,8 +149,9 @@ class TopicPublisherThread : public ApplicationThread, public TopicPublisherHost
     // records (seq_no 1..N, pdu_id NOS) once that many subscribers have subscribed --
     // used to exercise the live fanout path. Left at 0, the thread only replays the WAL.
     TopicPublisherThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, std::string wal_dir, int publish_after_subscribers = 0,
-                         int live_record_count = 0, bool lag_on_control_subscribe = false, int64_t max_lag_records = 0, int startup_records = 0,
-                         int records_after_both_channels = 0, size_t segment_size = wal_segment_size,
+                         int live_record_count = 0,
+                         LagOnControlSubscribeFlag lag_on_control_subscribe = LagOnControlSubscribeFlag{LagOnControlSubscribeFlag::DoNotLagOnControlSubscribe},
+                         int64_t max_lag_records = 0, int startup_records = 0, int records_after_both_channels = 0, size_t segment_size = wal_segment_size,
                          size_t max_records_per_page = TopicPublisher::default_max_records_per_page)
         : ApplicationThread(token, logger, reactor, "TopicPublisherThread", ThreadID{2}, make_queue_config(), make_allocator_config("TopicPubPool"),
                             ApplicationThreadConfiguration{})
@@ -157,7 +233,7 @@ class TopicPublisherThread : public ApplicationThread, public TopicPublisherHost
             maybe_publish_live_batch();
             // Demonstrate the control channel: once the control channel is up, send a
             // TopicLagged on it (step 4 decides *when* from the lag policy; this is a demo).
-            if (lag_on_control_subscribe_ && view.role == pubsub_itc_fw_app::TopicChannelRole::Control) {
+            if (lag_on_control_subscribe_ == LagOnControlSubscribeFlag::DoLagOnControlSubscribe && view.role == pubsub_itc_fw_app::TopicChannelRole::Control) {
                 publisher_.notify_lagged(std::string(view.subscriber_id), "too far behind", 42);
             }
             // Once BOTH channels are up, append a batch (drives the lag-out policy while
@@ -213,7 +289,7 @@ class TopicPublisherThread : public ApplicationThread, public TopicPublisherHost
 
     int publish_after_subscribers_;
     int live_record_count_;
-    bool lag_on_control_subscribe_;
+    LagOnControlSubscribeFlag lag_on_control_subscribe_;
     int startup_records_;
     int records_after_both_channels_;
     size_t segment_size_;
@@ -228,7 +304,7 @@ class TopicPublisherThread : public ApplicationThread, public TopicPublisherHost
 
 // Subscriber-side ApplicationThread: owns a TopicSubscriberChannel
 // and delivers received records into a vector for the test to check.
-class TopicSubscriberThread : public ApplicationThread, public TopicSubscriberChannelHost {
+class ChannelSubscriberThread : public ApplicationThread, public TopicSubscriberChannelHost {
   public:
     struct ReceivedRecord {
         int64_t seq_no;
@@ -246,9 +322,10 @@ class TopicSubscriberThread : public ApplicationThread, public TopicSubscriberCh
     // subscriber's final TopicAck to reach the publisher (e.g. F2 WAL truncation) must
     // pass false: with page batching the last records and the completion can land in one
     // reactor turn, and a self-disconnect there would race ahead of the ack send.
-    TopicSubscriberThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, int expected_record_count,
-                          std::string subscriber_id = "test_subscriber", int64_t from_seq_no = 0, bool disconnect_when_done = true)
-        : ApplicationThread(token, logger, reactor, "TopicSubscriberThread", ThreadID{1}, make_queue_config(), make_allocator_config("TopicSubPool"),
+    ChannelSubscriberThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, int expected_record_count,
+                            std::string subscriber_id = "test_subscriber", int64_t from_seq_no = 0,
+                            DisconnectWhenDoneFlag disconnect_when_done = DisconnectWhenDoneFlag{DisconnectWhenDoneFlag::DoDisconnectWhenDone})
+        : ApplicationThread(token, logger, reactor, "ChannelSubscriberThread", ThreadID{1}, make_queue_config(), make_allocator_config("TopicSubPool"),
                             ApplicationThreadConfiguration{})
         , expected_record_count_(expected_record_count)
         , disconnect_when_done_(disconnect_when_done)
@@ -257,7 +334,7 @@ class TopicSubscriberThread : public ApplicationThread, public TopicSubscriberCh
             const int count = records_received.fetch_add(1, std::memory_order_acq_rel) + 1;
             if (count == expected_record_count_) {
                 all_records_received.store(true, std::memory_order_release);
-                if (disconnect_when_done_) {
+                if (disconnect_when_done_ == DisconnectWhenDoneFlag::DoDisconnectWhenDone) {
                     ReactorControlCommand cmd(ReactorControlCommand::CommandTag::Disconnect);
                     cmd.connection_id_ = connection_id_;
                     get_reactor().enqueue_control_command(cmd);
@@ -314,7 +391,7 @@ class TopicSubscriberThread : public ApplicationThread, public TopicSubscriberCh
 
   private:
     int expected_record_count_;
-    bool disconnect_when_done_;
+    DisconnectWhenDoneFlag disconnect_when_done_;
     ConnectionID connection_id_;
     TopicSubscriberChannel channel_;
 };
@@ -343,8 +420,10 @@ class DualChannelSubscriberThread : public ApplicationThread, public TopicSubscr
     // subscriber_from_seq_no is the cursor requested on the data channel. suppress_ack
     // makes the subscriber receive records but never ack (a slow/stalled consumer, for
     // the lag policy).
-    DualChannelSubscriberThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, std::string subscriber_id, int expected_record_count,
-                                bool disconnect_data_when_done = false, bool suppress_ack = false, int64_t subscriber_from_seq_no = 0)
+    DualChannelSubscriberThread(
+        ConstructorToken token, QuillLogger& logger, Reactor& reactor, std::string subscriber_id, int expected_record_count,
+        DisconnectDataWhenDoneFlag disconnect_data_when_done = DisconnectDataWhenDoneFlag{DisconnectDataWhenDoneFlag::DoNotDisconnectDataWhenDone},
+        SuppressAckFlag suppress_ack = SuppressAckFlag{SuppressAckFlag::DoNotSuppressAck}, int64_t subscriber_from_seq_no = 0)
         : ApplicationThread(token, logger, reactor, "DualChannelSubscriberThread", ThreadID{1}, make_queue_config(), make_allocator_config("DualSubPool"),
                             ApplicationThreadConfiguration{})
         , expected_record_count_(expected_record_count)
@@ -355,7 +434,7 @@ class DualChannelSubscriberThread : public ApplicationThread, public TopicSubscr
                             received_records.push_back({seq_no, pdu_id});
                             if (static_cast<int>(received_records.size()) == expected_record_count_) {
                                 all_records_received.store(true, std::memory_order_release);
-                                if (disconnect_data_when_done_) {
+                                if (disconnect_data_when_done_ == DisconnectDataWhenDoneFlag::DoDisconnectDataWhenDone) {
                                     ReactorControlCommand cmd(ReactorControlCommand::CommandTag::Disconnect);
                                     cmd.connection_id_ = data_connection_id_;
                                     get_reactor().enqueue_control_command(cmd);
@@ -372,7 +451,7 @@ class DualChannelSubscriberThread : public ApplicationThread, public TopicSubscr
         send_pdu(connection_id, pubsub_itc_fw_app::TopicSubscribeRequest::message_pdu_id, 0, request);
     }
     void topic_send_ack(ConnectionID connection_id, const pubsub_itc_fw_app::TopicAck& ack) override {
-        if (suppress_ack_) {
+        if (suppress_ack_ == SuppressAckFlag::DoSuppressAck) {
             return; // simulate a stalled consumer that never advances its ack cursor
         }
         send_pdu(connection_id, pubsub_itc_fw_app::TopicAck::message_pdu_id, 0, ack);
@@ -447,12 +526,46 @@ class DualChannelSubscriberThread : public ApplicationThread, public TopicSubscr
 
   private:
     int expected_record_count_;
-    bool disconnect_data_when_done_;
-    bool suppress_ack_;
+    DisconnectDataWhenDoneFlag disconnect_data_when_done_;
+    SuppressAckFlag suppress_ack_;
     ConnectionID data_connection_id_;
     ConnectionID control_connection_id_;
     TopicSubscriberChannel data_channel_;
     TopicControlChannel control_channel_;
+};
+
+// Subscriber built on the framework's TopicSubscriberThread base. It overrides only
+// on_pubsub_message and captures each delivered record, proving records reach the
+// application through on_pubsub_message rather than a hand-written PDU handler.
+class CapturingSubscriberThread : public TopicSubscriberThread {
+  public:
+    struct ReceivedRecord {
+        int64_t seq_no;
+        int16_t pdu_id;
+        std::vector<uint8_t> payload;
+    };
+
+    std::atomic<bool> all_records_received{false};
+    std::atomic<int> records_received{0};
+    std::vector<ReceivedRecord> received_records;
+
+    CapturingSubscriberThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, int expected_record_count, std::string subscriber_id = "capturing",
+                              int64_t from_seq_no = 0)
+        : TopicSubscriberThread(token, logger, reactor, "CapturingSubscriberThread", ThreadID{1}, make_queue_config(), make_allocator_config("CapSubPool"),
+                                ApplicationThreadConfiguration{}, "publisher", std::move(subscriber_id), "orders", from_seq_no)
+        , expected_record_count_(expected_record_count) {}
+
+  protected:
+    void on_pubsub_message(const EventMessage& message) override {
+        received_records.push_back({message.seq_no(), message.pdu_id(), {message.payload(), message.payload() + message.payload_size()}});
+        const int count = records_received.fetch_add(1, std::memory_order_acq_rel) + 1;
+        if (count == expected_record_count_) {
+            all_records_received.store(true, std::memory_order_release);
+        }
+    }
+
+  private:
+    int expected_record_count_;
 };
 
 // Test fixture
@@ -554,7 +667,7 @@ TEST_F(TopicPubSubTest, SingleSubscriberReceivesReplayedRecordsInOrder) {
     subscriber_registry.add("publisher", NetworkEndpointConfiguration{"127.0.0.1", listen_port}, NetworkEndpointConfiguration{});
 
     auto subscriber_reactor = std::make_unique<Reactor>(make_reactor_config(), subscriber_registry, logger_->logger);
-    auto subscriber_thread = ApplicationThread::create<TopicSubscriberThread>(logger_->logger, *subscriber_reactor, record_count);
+    auto subscriber_thread = ApplicationThread::create<ChannelSubscriberThread>(logger_->logger, *subscriber_reactor, record_count);
     subscriber_reactor->register_thread(subscriber_thread);
 
     ThreadWithJoinTimeout subscriber_reactor_thread([&]() { subscriber_reactor->run(); });
@@ -610,14 +723,14 @@ TEST_F(TopicPubSubTest, TwoSubscribersReceiveLiveFanout) {
     ServiceRegistry registry_a;
     registry_a.add("publisher", NetworkEndpointConfiguration{"127.0.0.1", listen_port}, NetworkEndpointConfiguration{});
     auto reactor_a = std::make_unique<Reactor>(make_reactor_config(), registry_a, logger_->logger);
-    auto sub_a = ApplicationThread::create<TopicSubscriberThread>(logger_->logger, *reactor_a, record_count, "sub_a", 0);
+    auto sub_a = ApplicationThread::create<ChannelSubscriberThread>(logger_->logger, *reactor_a, record_count, "sub_a", 0);
     reactor_a->register_thread(sub_a);
     ThreadWithJoinTimeout reactor_a_thread([&]() { reactor_a->run(); });
 
     ServiceRegistry registry_b;
     registry_b.add("publisher", NetworkEndpointConfiguration{"127.0.0.1", listen_port}, NetworkEndpointConfiguration{});
     auto reactor_b = std::make_unique<Reactor>(make_reactor_config(), registry_b, logger_->logger);
-    auto sub_b = ApplicationThread::create<TopicSubscriberThread>(logger_->logger, *reactor_b, record_count, "sub_b", 0);
+    auto sub_b = ApplicationThread::create<ChannelSubscriberThread>(logger_->logger, *reactor_b, record_count, "sub_b", 0);
     reactor_b->register_thread(sub_b);
     ThreadWithJoinTimeout reactor_b_thread([&]() { reactor_b->run(); });
 
@@ -672,14 +785,14 @@ TEST_F(TopicPubSubTest, TwoSubscribersHaveIndependentCursors) {
     ServiceRegistry registry_a;
     registry_a.add("publisher", NetworkEndpointConfiguration{"127.0.0.1", listen_port}, NetworkEndpointConfiguration{});
     auto reactor_a = std::make_unique<Reactor>(make_reactor_config(), registry_a, logger_->logger);
-    auto sub_a = ApplicationThread::create<TopicSubscriberThread>(logger_->logger, *reactor_a, 3, "sub_a", 0);
+    auto sub_a = ApplicationThread::create<ChannelSubscriberThread>(logger_->logger, *reactor_a, 3, "sub_a", 0);
     reactor_a->register_thread(sub_a);
     ThreadWithJoinTimeout reactor_a_thread([&]() { reactor_a->run(); });
 
     ServiceRegistry registry_b;
     registry_b.add("publisher", NetworkEndpointConfiguration{"127.0.0.1", listen_port}, NetworkEndpointConfiguration{});
     auto reactor_b = std::make_unique<Reactor>(make_reactor_config(), registry_b, logger_->logger);
-    auto sub_b = ApplicationThread::create<TopicSubscriberThread>(logger_->logger, *reactor_b, 2, "sub_b", 1);
+    auto sub_b = ApplicationThread::create<ChannelSubscriberThread>(logger_->logger, *reactor_b, 2, "sub_b", 1);
     reactor_b->register_thread(sub_b);
     ThreadWithJoinTimeout reactor_b_thread([&]() { reactor_b->run(); });
 
@@ -737,7 +850,7 @@ TEST_F(TopicPubSubTest, SubscriberReconnectResumesFromCursorWithoutGap) {
 
     // --- Session 1: subscribe from 0, take 2 records, then disconnect ---
     auto reactor_1 = std::make_unique<Reactor>(make_reactor_config(), subscriber_registry, logger_->logger);
-    auto session_1 = ApplicationThread::create<TopicSubscriberThread>(logger_->logger, *reactor_1, 2, "sub", 0);
+    auto session_1 = ApplicationThread::create<ChannelSubscriberThread>(logger_->logger, *reactor_1, 2, "sub", 0);
     reactor_1->register_thread(session_1);
     ThreadWithJoinTimeout reactor_1_thread([&]() { reactor_1->run(); });
     EXPECT_TRUE(wait_for([&]() { return session_1->all_records_received.load(std::memory_order_acquire); })) << "session 1 incomplete";
@@ -754,7 +867,7 @@ TEST_F(TopicPubSubTest, SubscriberReconnectResumesFromCursorWithoutGap) {
 
     // --- Session 2: same subscriber id, resume from the cursor, take the rest ---
     auto reactor_2 = std::make_unique<Reactor>(make_reactor_config(), subscriber_registry, logger_->logger);
-    auto session_2 = ApplicationThread::create<TopicSubscriberThread>(logger_->logger, *reactor_2, 3, "sub", resume_cursor);
+    auto session_2 = ApplicationThread::create<ChannelSubscriberThread>(logger_->logger, *reactor_2, 3, "sub", resume_cursor);
     reactor_2->register_thread(session_2);
     ThreadWithJoinTimeout reactor_2_thread([&]() { reactor_2->run(); });
     EXPECT_TRUE(wait_for([&]() { return session_2->all_records_received.load(std::memory_order_acquire); })) << "session 2 incomplete";
@@ -787,8 +900,8 @@ TEST_F(TopicPubSubTest, DualChannelStreamsDataAndDeliversControlSignal) {
     const ServiceRegistry publisher_registry;
     auto publisher_reactor = std::make_unique<Reactor>(make_reactor_config(), publisher_registry, logger_->logger);
     publisher_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
-    auto publisher_thread =
-        ApplicationThread::create<TopicPublisherThread>(logger_->logger, *publisher_reactor, wal_dir_, 0, 0, /*lag_on_control_subscribe=*/true);
+    auto publisher_thread = ApplicationThread::create<TopicPublisherThread>(logger_->logger, *publisher_reactor, wal_dir_, 0, 0,
+                                                                            LagOnControlSubscribeFlag{LagOnControlSubscribeFlag::DoLagOnControlSubscribe});
     publisher_reactor->register_thread(publisher_thread);
     ThreadWithJoinTimeout publisher_reactor_thread([&]() { publisher_reactor->run(); });
     ASSERT_TRUE(wait_for([&]() { return publisher_reactor->is_initialized(); })) << "Publisher reactor did not initialize";
@@ -849,8 +962,8 @@ TEST_F(TopicPubSubTest, DroppingDataChannelTearsDownControlChannel) {
     subscriber_registry.add("publisher_control", NetworkEndpointConfiguration{"127.0.0.1", listen_port}, NetworkEndpointConfiguration{});
     auto subscriber_reactor = std::make_unique<Reactor>(make_reactor_config(), subscriber_registry, logger_->logger);
     // Disconnect the data channel once all records are in.
-    auto subscriber_thread =
-        ApplicationThread::create<DualChannelSubscriberThread>(logger_->logger, *subscriber_reactor, "dual", record_count, /*disconnect_data_when_done=*/true);
+    auto subscriber_thread = ApplicationThread::create<DualChannelSubscriberThread>(
+        logger_->logger, *subscriber_reactor, "dual", record_count, DisconnectDataWhenDoneFlag{DisconnectDataWhenDoneFlag::DoDisconnectDataWhenDone});
     subscriber_reactor->register_thread(subscriber_thread);
     ThreadWithJoinTimeout subscriber_reactor_thread([&]() { subscriber_reactor->run(); });
 
@@ -878,8 +991,9 @@ TEST_F(TopicPubSubTest, GapOnResubscribeClampsTooOldCursor) {
     const ServiceRegistry publisher_registry;
     auto publisher_reactor = std::make_unique<Reactor>(make_reactor_config(), publisher_registry, logger_->logger);
     publisher_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
-    auto publisher_thread = ApplicationThread::create<TopicPublisherThread>(logger_->logger, *publisher_reactor, wal_dir_, 0, 0, false, max_lag,
-                                                                            /*startup_records=*/10);
+    auto publisher_thread = ApplicationThread::create<TopicPublisherThread>(
+        logger_->logger, *publisher_reactor, wal_dir_, 0, 0, LagOnControlSubscribeFlag{LagOnControlSubscribeFlag::DoNotLagOnControlSubscribe}, max_lag,
+        /*startup_records=*/10);
     publisher_reactor->register_thread(publisher_thread);
     ThreadWithJoinTimeout publisher_reactor_thread([&]() { publisher_reactor->run(); });
     ASSERT_TRUE(wait_for([&]() { return publisher_reactor->is_initialized(); })) << "Publisher reactor did not initialize";
@@ -926,8 +1040,9 @@ TEST_F(TopicPubSubTest, SlowSubscriberIsLaggedOutAndDropped) {
     const ServiceRegistry publisher_registry;
     auto publisher_reactor = std::make_unique<Reactor>(make_reactor_config(), publisher_registry, logger_->logger);
     publisher_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
-    auto publisher_thread = ApplicationThread::create<TopicPublisherThread>(logger_->logger, *publisher_reactor, wal_dir_, 0, 0, false, max_lag,
-                                                                            /*startup_records=*/0, /*records_after_both_channels=*/6);
+    auto publisher_thread = ApplicationThread::create<TopicPublisherThread>(
+        logger_->logger, *publisher_reactor, wal_dir_, 0, 0, LagOnControlSubscribeFlag{LagOnControlSubscribeFlag::DoNotLagOnControlSubscribe}, max_lag,
+        /*startup_records=*/0, /*records_after_both_channels=*/6);
     publisher_reactor->register_thread(publisher_thread);
     ThreadWithJoinTimeout publisher_reactor_thread([&]() { publisher_reactor->run(); });
     ASSERT_TRUE(wait_for([&]() { return publisher_reactor->is_initialized(); })) << "Publisher reactor did not initialize";
@@ -939,8 +1054,9 @@ TEST_F(TopicPubSubTest, SlowSubscriberIsLaggedOutAndDropped) {
     subscriber_registry.add("publisher_control", NetworkEndpointConfiguration{"127.0.0.1", listen_port}, NetworkEndpointConfiguration{});
     auto subscriber_reactor = std::make_unique<Reactor>(make_reactor_config(), subscriber_registry, logger_->logger);
     // expected count is high (never reached); suppress_ack = true -> a stalled consumer.
-    auto subscriber_thread = ApplicationThread::create<DualChannelSubscriberThread>(logger_->logger, *subscriber_reactor, "slowpoke", /*expected=*/1000,
-                                                                                    /*disconnect_data_when_done=*/false, /*suppress_ack=*/true);
+    auto subscriber_thread = ApplicationThread::create<DualChannelSubscriberThread>(
+        logger_->logger, *subscriber_reactor, "slowpoke", /*expected=*/1000,
+        DisconnectDataWhenDoneFlag{DisconnectDataWhenDoneFlag::DoNotDisconnectDataWhenDone}, SuppressAckFlag{SuppressAckFlag::DoSuppressAck});
     subscriber_reactor->register_thread(subscriber_thread);
     ThreadWithJoinTimeout subscriber_reactor_thread([&]() { subscriber_reactor->run(); });
 
@@ -975,7 +1091,8 @@ TEST_F(TopicPubSubTest, SubscriberAcksReclaimConsumedWalSegments) {
     const ServiceRegistry publisher_registry;
     auto publisher_reactor = std::make_unique<Reactor>(make_reactor_config(), publisher_registry, logger_->logger);
     publisher_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
-    auto publisher_thread = ApplicationThread::create<TopicPublisherThread>(logger_->logger, *publisher_reactor, wal_dir_, 0, 0, false, 0,
+    auto publisher_thread = ApplicationThread::create<TopicPublisherThread>(logger_->logger, *publisher_reactor, wal_dir_, 0, 0,
+                                                                            LagOnControlSubscribeFlag{LagOnControlSubscribeFlag::DoNotLagOnControlSubscribe}, 0,
                                                                             /*startup_records=*/record_count, /*records_after_both_channels=*/0,
                                                                             /*segment_size=*/small_segment);
     publisher_reactor->register_thread(publisher_thread);
@@ -992,7 +1109,8 @@ TEST_F(TopicPubSubTest, SubscriberAcksReclaimConsumedWalSegments) {
     // disconnect_when_done = false: keep the connection open so the final TopicAck reaches
     // the publisher and drives truncation (with batching, all records + completion can land
     // in one reactor turn, so a self-disconnect would race ahead of the ack).
-    auto subscriber_thread = ApplicationThread::create<TopicSubscriberThread>(logger_->logger, *subscriber_reactor, record_count, "test_subscriber", 0, false);
+    auto subscriber_thread = ApplicationThread::create<ChannelSubscriberThread>(logger_->logger, *subscriber_reactor, record_count, "test_subscriber", 0,
+                                                                                DisconnectWhenDoneFlag{DisconnectWhenDoneFlag::DoNotDisconnectWhenDone});
     subscriber_reactor->register_thread(subscriber_thread);
     ThreadWithJoinTimeout subscriber_reactor_thread([&]() { subscriber_reactor->run(); });
 
@@ -1040,7 +1158,7 @@ TEST_F(TopicPubSubTest, AllAvailableRecordsArriveInOneBatchedPage) {
     ServiceRegistry subscriber_registry;
     subscriber_registry.add("publisher", NetworkEndpointConfiguration{"127.0.0.1", listen_port}, NetworkEndpointConfiguration{});
     auto subscriber_reactor = std::make_unique<Reactor>(make_reactor_config(), subscriber_registry, logger_->logger);
-    auto subscriber_thread = ApplicationThread::create<TopicSubscriberThread>(logger_->logger, *subscriber_reactor, record_count);
+    auto subscriber_thread = ApplicationThread::create<ChannelSubscriberThread>(logger_->logger, *subscriber_reactor, record_count);
     subscriber_reactor->register_thread(subscriber_thread);
     ThreadWithJoinTimeout subscriber_reactor_thread([&]() { subscriber_reactor->run(); });
 
@@ -1077,7 +1195,8 @@ TEST_F(TopicPubSubTest, MultiplePagesDeliverInOrderAndTruncateProgressively) {
     const ServiceRegistry publisher_registry;
     auto publisher_reactor = std::make_unique<Reactor>(make_reactor_config(), publisher_registry, logger_->logger);
     publisher_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
-    auto publisher_thread = ApplicationThread::create<TopicPublisherThread>(logger_->logger, *publisher_reactor, wal_dir_, 0, 0, false, 0,
+    auto publisher_thread = ApplicationThread::create<TopicPublisherThread>(logger_->logger, *publisher_reactor, wal_dir_, 0, 0,
+                                                                            LagOnControlSubscribeFlag{LagOnControlSubscribeFlag::DoNotLagOnControlSubscribe}, 0,
                                                                             /*startup_records=*/record_count, /*records_after_both_channels=*/0,
                                                                             /*segment_size=*/small_segment, /*max_records_per_page=*/max_records_per_page);
     publisher_reactor->register_thread(publisher_thread);
@@ -1090,7 +1209,7 @@ TEST_F(TopicPubSubTest, MultiplePagesDeliverInOrderAndTruncateProgressively) {
     ServiceRegistry subscriber_registry;
     subscriber_registry.add("publisher", NetworkEndpointConfiguration{"127.0.0.1", listen_port}, NetworkEndpointConfiguration{});
     auto subscriber_reactor = std::make_unique<Reactor>(make_reactor_config(), subscriber_registry, logger_->logger);
-    auto subscriber_thread = ApplicationThread::create<TopicSubscriberThread>(logger_->logger, *subscriber_reactor, record_count);
+    auto subscriber_thread = ApplicationThread::create<ChannelSubscriberThread>(logger_->logger, *subscriber_reactor, record_count);
     subscriber_reactor->register_thread(subscriber_thread);
     ThreadWithJoinTimeout subscriber_reactor_thread([&]() { subscriber_reactor->run(); });
 
@@ -1103,6 +1222,54 @@ TEST_F(TopicPubSubTest, MultiplePagesDeliverInOrderAndTruncateProgressively) {
     ASSERT_EQ(static_cast<int>(subscriber_thread->received_records.size()), record_count);
     for (int i = 0; i < record_count; ++i) {
         EXPECT_EQ(subscriber_thread->received_records[static_cast<size_t>(i)].seq_no, i + 1) << "wrong/out-of-order record at " << i;
+    }
+
+    subscriber_reactor->shutdown("test complete");
+    publisher_reactor->shutdown("test complete");
+    if (subscriber_reactor_thread.joinable()) {
+        subscriber_reactor_thread.join();
+    }
+    if (publisher_reactor_thread.joinable()) {
+        publisher_reactor_thread.join();
+    }
+}
+
+// Test 12: a subscriber built on the framework TopicSubscriberThread base receives
+// replayed records through on_pubsub_message() -- the intended delivery path, with the
+// application overriding on_pubsub_message only and handling no PDUs or connections.
+TEST_F(TopicPubSubTest, FrameworkSubscriberThreadDeliversRecordsViaOnPubsubMessage) {
+    static constexpr int record_count = 3;
+    write_topic_wal_records(record_count);
+
+    const ServiceRegistry publisher_registry;
+    auto publisher_reactor = std::make_unique<Reactor>(make_reactor_config(), publisher_registry, logger_->logger);
+    publisher_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
+    auto publisher_thread = ApplicationThread::create<TopicPublisherThread>(logger_->logger, *publisher_reactor, wal_dir_);
+    publisher_reactor->register_thread(publisher_thread);
+    ThreadWithJoinTimeout publisher_reactor_thread([&]() { publisher_reactor->run(); });
+    ASSERT_TRUE(wait_for([&]() { return publisher_reactor->is_initialized(); })) << "Publisher reactor did not initialize";
+    const uint16_t listen_port = publisher_reactor->get_inbound_listener_port(0);
+    ASSERT_NE(listen_port, 0U);
+
+    ServiceRegistry subscriber_registry;
+    subscriber_registry.add("publisher", NetworkEndpointConfiguration{"127.0.0.1", listen_port}, NetworkEndpointConfiguration{});
+    auto subscriber_reactor = std::make_unique<Reactor>(make_reactor_config(), subscriber_registry, logger_->logger);
+    auto subscriber_thread = ApplicationThread::create<CapturingSubscriberThread>(logger_->logger, *subscriber_reactor, record_count);
+    subscriber_reactor->register_thread(subscriber_thread);
+    ThreadWithJoinTimeout subscriber_reactor_thread([&]() { subscriber_reactor->run(); });
+
+    EXPECT_TRUE(wait_for([&]() { return subscriber_thread->all_records_received.load(std::memory_order_acquire); }))
+        << "records were not delivered via on_pubsub_message";
+
+    ASSERT_EQ(static_cast<int>(subscriber_thread->received_records.size()), record_count);
+    for (int i = 0; i < record_count; ++i) {
+        const auto& rec = subscriber_thread->received_records[static_cast<size_t>(i)];
+        EXPECT_EQ(rec.seq_no, i + 1) << "wrong seq_no at " << i;
+        EXPECT_EQ(rec.pdu_id, pubsub_itc_fw_app::NewOrderSingle::message_pdu_id) << "wrong pdu_id at " << i;
+        ASSERT_EQ(rec.payload.size(), sizeof(uint32_t));
+        uint32_t value{};
+        std::memcpy(&value, rec.payload.data(), sizeof(value));
+        EXPECT_EQ(value, static_cast<uint32_t>((i + 1) * 100)) << "wrong payload at " << i;
     }
 
     subscriber_reactor->shutdown("test complete");

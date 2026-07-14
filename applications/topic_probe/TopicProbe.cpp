@@ -5,7 +5,7 @@
 topic_probe -- a tiny diagnostic topic subscriber (a minimal stand-in for TAP).
 
 It connects to a publisher's topic port (e.g. the MEP), subscribes to one topic
-over the data channel using the reusable pubsub_itc_fw::TopicSubscriberChannel,
+over the data channel using the reusable pubsub_itc_fw::TopicSubscriberThread,
 and prints each record it receives to stdout. Use it to watch orders / execution
 reports stream out of the MEP live while driving the Java fix-test-client.
 
@@ -39,7 +39,6 @@ TopicNotLeader; point the probe at the leader instance's port instead.
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
-#include <pubsub_itc_fw/BumpAllocator.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
@@ -50,9 +49,7 @@ TopicNotLeader; point the probe at the leader instance's port instead.
 #include <pubsub_itc_fw/ReactorConfiguration.hpp>
 #include <pubsub_itc_fw/ServiceRegistry.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
-#include <pubsub_itc_fw/TopicSubscriberChannel.hpp>
-
-#include <topics.hpp>
+#include <pubsub_itc_fw/TopicSubscriberThread.hpp>
 
 namespace topic_probe {
 namespace {
@@ -109,74 +106,29 @@ void print_record(const std::string& topic_name, int64_t seq_no, int16_t pdu_id,
 }
 
 // Subscriber thread: one data-channel subscription to one topic.
-class ProbeThread : public pubsub_itc_fw::ApplicationThread, public pubsub_itc_fw::TopicSubscriberChannelHost {
+class ProbeThread : public pubsub_itc_fw::TopicSubscriberThread {
   public:
     ProbeThread(ConstructorToken token, pubsub_itc_fw::QuillLogger& logger, pubsub_itc_fw::Reactor& reactor, std::string topic_name, int64_t from_seq_no)
-        : ApplicationThread(token, logger, reactor, "ProbeThread", pubsub_itc_fw::ThreadID{1}, make_queue_config(), make_allocator_config(),
-                            pubsub_itc_fw::ApplicationThreadConfiguration{})
-        , topic_name_(std::move(topic_name))
-        , channel_(*this, "probe-" + topic_name_ + "-" + std::to_string(::getpid()), topic_name_, from_seq_no,
-                   [this](int64_t seq_no, int16_t pdu_id, const uint8_t* payload, size_t payload_size) {
-                       print_record(topic_name_, seq_no, pdu_id, payload, payload_size);
-                   }) {}
-
-    // TopicSubscriberChannelHost
-    void topic_send_subscribe_request(pubsub_itc_fw::ConnectionID connection_id, const pubsub_itc_fw_app::TopicSubscribeRequest& request) override {
-        send_pdu(connection_id, pubsub_itc_fw_app::TopicSubscribeRequest::message_pdu_id, 0, request);
-    }
-    void topic_send_ack(pubsub_itc_fw::ConnectionID connection_id, const pubsub_itc_fw_app::TopicAck& ack) override {
-        send_pdu(connection_id, pubsub_itc_fw_app::TopicAck::message_pdu_id, 0, ack);
-    }
+        : TopicSubscriberThread(token, logger, reactor, "ProbeThread", pubsub_itc_fw::ThreadID{1}, make_queue_config(), make_allocator_config(),
+                                pubsub_itc_fw::ApplicationThreadConfiguration{}, "publisher", "probe-" + topic_name + "-" + std::to_string(::getpid()),
+                                topic_name, from_seq_no) {}
 
   protected:
-    void on_initial_event() override {
-        connect_to_service("publisher");
+    void on_pubsub_message(const pubsub_itc_fw::EventMessage& message) override {
+        print_record(topic_name(), message.seq_no(), message.pdu_id(), message.payload(), static_cast<size_t>(message.payload_size()));
     }
 
     void on_connection_established(pubsub_itc_fw::ConnectionID id) override {
-        std::printf("--- connected; subscribing to topic '%s'\n", topic_name_.c_str());
+        std::printf("--- connected; subscribing to topic '%s'\n", topic_name().c_str());
         std::fflush(stdout);
-        channel_.on_connected(id);
+        TopicSubscriberThread::on_connection_established(id);
     }
 
-    void on_connection_failed(const std::string& reason) override {
-        std::printf("--- connect failed: %s (the reactor will keep retrying)\n", reason.c_str());
-        std::fflush(stdout);
-    }
-
-    void on_connection_lost(const pubsub_itc_fw::ConnectionID&, const std::string& reason) override {
+    void on_connection_lost(const pubsub_itc_fw::ConnectionID& id, const std::string& reason) override {
         std::printf("--- connection lost: %s\n", reason.c_str());
         std::fflush(stdout);
+        TopicSubscriberThread::on_connection_lost(id, reason);
     }
-
-    void on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message) override {
-        const uint8_t* payload = message.payload();
-        const size_t size = static_cast<size_t>(message.payload_size());
-        auto& arena_buf = decode_arena_buffer();
-        pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.capacity());
-        size_t consumed = 0;
-        size_t arena_needed = 0;
-
-        if (message.pdu_id() == pubsub_itc_fw_app::TopicSubscribeAck::message_pdu_id) {
-            pubsub_itc_fw_app::TopicSubscribeAckView view{};
-            if (pubsub_itc_fw_app::decode(view, payload, size, consumed, arena, arena_needed)) {
-                channel_.on_subscribe_ack(view);
-                std::printf("--- subscribe accepted from seq_no=%lld\n", static_cast<long long>(view.accepted_from_seq_no));
-                std::fflush(stdout);
-            }
-        } else if (message.pdu_id() == pubsub_itc_fw_app::TopicPage::message_pdu_id) {
-            channel_.on_page(payload, size, arena);
-        } else if (message.pdu_id() == pubsub_itc_fw_app::TopicNotLeader::message_pdu_id) {
-            std::printf("--- TopicNotLeader: this publisher instance is a follower; point the probe at the leader's port\n");
-            std::fflush(stdout);
-        }
-    }
-
-    void on_itc_message(const pubsub_itc_fw::EventMessage&) override {}
-
-  private:
-    std::string topic_name_;
-    pubsub_itc_fw::TopicSubscriberChannel channel_;
 };
 
 int default_port_for_topic(const std::string& topic_name) {

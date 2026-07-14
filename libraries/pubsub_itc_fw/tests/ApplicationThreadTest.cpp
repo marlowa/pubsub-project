@@ -1195,7 +1195,7 @@ TEST_F(ApplicationThreadTest, DefaultHandlersAreCallableAndNoop) {
     t->on_app_ready_event();
     t->on_termination_event("reason");
     t->on_timer_event("timer");
-    t->on_pubsub_message(EventMessage::create_pubsub_message(nullptr, 0));
+    t->on_pubsub_message(EventMessage::create_pubsub_message(nullptr, 0, 0, 0));
     t->on_raw_socket_message(EventMessage::create_raw_socket_message(ConnectionID{}, nullptr, 0, 0, {}));
 }
 

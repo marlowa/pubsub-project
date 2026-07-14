@@ -473,12 +473,6 @@ void ApplicationThread::process_message(const EventMessage& message) {
             break;
         }
 
-        case EventType::PubSubCommunication: {
-            PUBSUB_LOG(logger_, FwLogLevel::Debug, "Thread {}: Received pubsub message", thread_name_);
-            on_pubsub_message(message);
-            break;
-        }
-
         case EventType::RawSocketCommunication: {
             PUBSUB_LOG(logger_, FwLogLevel::Debug, "Thread {}: Received raw socket message", thread_name_);
             on_raw_socket_message(message);

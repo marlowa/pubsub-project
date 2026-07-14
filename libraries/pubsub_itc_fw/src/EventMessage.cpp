@@ -32,8 +32,10 @@ EventMessage EventMessage::create_termination_event(const std::string& reason) {
     return msg;
 }
 
-EventMessage EventMessage::create_pubsub_message(const uint8_t* data, int size) {
+EventMessage EventMessage::create_pubsub_message(const uint8_t* data, int size, int16_t pdu_id, int64_t seq_no) {
     EventMessage msg(EventType(EventType::PubSubCommunication), data, size);
+    msg.pdu_id_ = pdu_id;
+    msg.seq_no_ = seq_no;
     return msg;
 }
 

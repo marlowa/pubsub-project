@@ -26,9 +26,7 @@ class MirroredBuffer;
  * ensure consistent state and initialisation.
  *
  * Payload ownership:
- *   The payload applies to ITC messages and FrameworkPdu messages, not to system
- *   event messages such as INIT or TERM. In those system event cases the payload
- *   pointer is nullptr.
+ *   For system event messages such as INIT or TERM the payload pointer is nullptr.
  *
  *   For FrameworkPdu messages, the payload points into a slab chunk allocated by
  *   the reactor's inbound slab allocator. The slab_id() accessor returns the
@@ -36,9 +34,16 @@ class MirroredBuffer;
  *   release_pdu_payload() (or deallocate directly) after processing the payload.
  *   Failure to do so leaks the slab chunk.
  *
- *   For all other messages with a non-null payload, the buffer is managed by the
- *   allocator of the receiving component. The receiving thread is responsible
- *   for freeing it.
+ *   For PubSubCommunication messages the payload is a borrowed zero-copy view. It
+ *   points into the slab chunk of the FrameworkPdu (a TopicPage) being decoded, and
+ *   the record metadata into that page's decode arena; it is valid only for the
+ *   duration of the on_pubsub_message() call. The receiver must not free it -- the
+ *   framework owns the slab and releases it once the page is fully delivered -- and
+ *   must copy anything it needs beyond the call, since the arena is reused on the
+ *   next inbound event.
+ *
+ *   For InterthreadCommunication messages with a non-null payload, the buffer is
+ *   managed by the receiving component's allocator and the receiving thread frees it.
  *
  * Type safety:
  *   This class relies on explicit type checking and casting. The get_as()
@@ -109,7 +114,7 @@ class EventMessage {
     /**
      * @brief Gets the PDU message identifier.
      *
-     * Meaningful only when the event type is EventType::FrameworkPdu. Identifies
+     * Meaningful for EventType::FrameworkPdu and EventType::PubSubCommunication. Identifies
      * the specific PDU type as defined by the DSL-generated message ID constants.
      * The ApplicationThread uses this value to select the correct decode function
      * for the incoming PDU payload.
@@ -123,9 +128,9 @@ class EventMessage {
     /**
      * @brief Gets the sequencer-assigned sequence number.
      *
-     * Meaningful only when the event type is EventType::FrameworkPdu. Carries
-     * the monotonic sequence number stamped by the sequencer when the PDU was
-     * forwarded to downstream consumers. Returns 0 for PDUs that have not yet
+     * Meaningful for EventType::FrameworkPdu and EventType::PubSubCommunication.
+     * Carries the monotonic sequence number stamped by the sequencer when the PDU
+     * was forwarded to downstream consumers. Returns 0 for PDUs that have not yet
      * been stamped (e.g. inbound order PDUs received by the sequencer itself
      * from a gateway).
      *
@@ -157,12 +162,19 @@ class EventMessage {
     [[nodiscard]] static EventMessage create_termination_event(const std::string& reason);
 
     /**
-     * @brief Factory method for pub/sub communication messages.
-     * @param[in] data Raw pointer to the protocol packet data.
-     * @param[in] size Size of the data in bytes.
+     * @brief Factory method for a pub/sub topic record delivered to on_pubsub_message().
+     *
+     * The payload is a borrowed zero-copy view valid only for the duration of the
+     * on_pubsub_message() call (see the payload-ownership note above). seq_no and
+     * pdu_id carry the record's sequencer sequence number and DSL message id.
+     *
+     * @param[in] data   Borrowed pointer to the record payload bytes.
+     * @param[in] size   Size of the payload in bytes.
+     * @param[in] pdu_id DSL message id of the record (e.g. NewOrderSingle).
+     * @param[in] seq_no Sequencer-assigned sequence number of the record.
      * @return EventMessage instance.
      */
-    [[nodiscard]] static EventMessage create_pubsub_message(const uint8_t* data, int size);
+    [[nodiscard]] static EventMessage create_pubsub_message(const uint8_t* data, int size, int16_t pdu_id, int64_t seq_no);
 
     /**
      * @brief Factory method for inter-thread communication messages.

@@ -92,9 +92,11 @@ Target environment is **low-latency** (sub-100ns encode/decode). Heap allocation
 - `on_initial_event()`, `on_app_ready_event()`, `on_termination_event(reason)`
 - `on_itc_message(msg)` — pure virtual
 - `on_timer_event(name)`
-- `on_pubsub_message(msg)`, `on_raw_socket_message(msg)`
+- `on_pubsub_message(msg)` — topic records are delivered here (see "Topic pub/sub delivery" below), `on_raw_socket_message(msg)`
 - `on_framework_pdu_message(msg)` — **caller must call `allocator.deallocate(msg.slab_id(), msg.payload())` after processing**
 - `on_connection_established(id)`, `on_connection_failed(reason)`, `on_connection_lost(id, reason)`
+
+**Topic pub/sub delivery.** A subscriber receives topic records through `on_pubsub_message(msg)`. The reusable header-only `TopicSubscriberThread` base owns the connect/subscribe handshake and inbound topic-PDU routing (delegating to `TopicSubscriberChannel`: dedup by seq_no, periodic truncation ack), decodes each `TopicPage`, and calls `on_pubsub_message` once per fresh record — so a concrete subscriber (`topic_probe`, later TAP) overrides `on_pubsub_message` only and handles no PDUs itself. The delivered `EventMessage` carries `seq_no()` and `pdu_id()`; its `payload()` is a **borrowed zero-copy view valid only for the duration of the call** — the framework owns and releases the underlying inbound slab once the page is delivered, so a subscriber that needs the bytes must copy them. Delivery is synchronous; the record is not re-enqueued as a `PubSubCommunication` reactor event.
 
 ---
 
