@@ -1,11 +1,14 @@
 #pragma once
+
+#include <cstring>
+#include <string>
+
+#include <unistd.h>
+
 #include <pubsub_itc_fw/BuildInfo.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
-#include <unistd.h>
-#include <cstring>
-#include <string>
 
 namespace pubsub_itc_fw {
 

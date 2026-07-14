@@ -9,6 +9,7 @@
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include <pthread.h>
 #include <sys/epoll.h>
@@ -24,17 +25,16 @@
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/EventType.hpp>
-#include <vector>
 #include <pubsub_itc_fw/HighResolutionClock.hpp>
 #include <pubsub_itc_fw/LockFreeMessageQueue.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
+#include <pubsub_itc_fw/PduFramer.hpp>
+#include <pubsub_itc_fw/PduParser.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/QueueConfiguration.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
-#include <pubsub_itc_fw/PduFramer.hpp>
-#include <pubsub_itc_fw/PduParser.hpp>
 #include <pubsub_itc_fw/ReactorControlCommand.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 #include <pubsub_itc_fw/ThreadLifecycleState.hpp>

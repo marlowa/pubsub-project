@@ -3,6 +3,9 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <chrono>
+#include <thread>
+
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
@@ -11,9 +14,6 @@
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
-
-#include <chrono>
-#include <thread>
 
 namespace pubsub_itc_fw::test_support {
 

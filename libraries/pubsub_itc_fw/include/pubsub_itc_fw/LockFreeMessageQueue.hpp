@@ -8,6 +8,7 @@
 #include <functional>
 #include <optional>
 #include <type_traits>
+#include <utility>
 
 /** @ingroup queue_subsystem */
 
@@ -19,7 +20,6 @@
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ExpandablePoolAllocator.hpp>
 #include <pubsub_itc_fw/QueueConfiguration.hpp>
-#include <utility>
 
 namespace pubsub_itc_fw {
 

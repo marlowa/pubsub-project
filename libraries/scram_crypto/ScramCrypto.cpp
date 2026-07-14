@@ -5,10 +5,10 @@
 #include <openssl/hmac.h>
 #include <openssl/sha.h>
 
-#include <scram_crypto/ScramCrypto.hpp>
-
 #include <stdexcept>
 #include <string>
+
+#include <scram_crypto/ScramCrypto.hpp>
 
 namespace scram_crypto {
 

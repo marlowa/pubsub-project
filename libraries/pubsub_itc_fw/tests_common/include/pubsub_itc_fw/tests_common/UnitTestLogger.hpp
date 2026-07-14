@@ -3,9 +3,10 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <vector>
+
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
-#include <vector>
 
 namespace pubsub_itc_fw::tests_common {
 

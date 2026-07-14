@@ -3,13 +3,13 @@
 
 #include <openssl/rand.h>
 
-#include <AuthenticationThread.hpp>
-
 #include <cstdint>
 #include <cstring>
 #include <fstream>
 #include <stdexcept>
 #include <string>
+
+#include <AuthenticationThread.hpp>
 
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>

@@ -8,6 +8,7 @@
 
 #include <chrono>
 #include <iostream>
+#include <utility>
 
 #include <pubsub_itc_fw/ApplicationAnnouncer.hpp>
 #include <pubsub_itc_fw/ConfigurationException.hpp>
@@ -18,7 +19,6 @@
 #include <pubsub_itc_fw/ProtocolType.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
-#include <utility>
 
 namespace arbiter {
 

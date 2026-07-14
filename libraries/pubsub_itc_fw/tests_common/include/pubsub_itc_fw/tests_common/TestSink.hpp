@@ -11,10 +11,10 @@
 #include <string>
 #include <vector>
 
-#include <pubsub_itc_fw/PubSubItcException.hpp>
-
 #include <quill/core/LogLevel.h>
 #include <quill/sinks/Sink.h>
+
+#include <pubsub_itc_fw/PubSubItcException.hpp>
 
 namespace pubsub_itc_fw {
 
