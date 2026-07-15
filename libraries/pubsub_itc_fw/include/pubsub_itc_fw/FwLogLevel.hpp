@@ -22,6 +22,7 @@ class FwLogLevel {
   public:
     enum LogLevelTag { Trace = 0, Debug = 1, Info = 2, Notice = 3, Warning = 4, Error = 5, Critical = 6, Alert = 7 };
 
+    // implicit-ctor-ok -- FwLogLevel is a value wrapper meant to convert seamlessly from its tag
     FwLogLevel(LogLevelTag log_level) : log_level_(log_level) {}
 
     /**

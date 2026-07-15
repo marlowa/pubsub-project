@@ -272,7 +272,7 @@ class TcpSocket : public ByteStreamInterface {
      * This ensures that `TcpSocket` instances are only created via `create()` or `adopt()`.
      * @param[in] socket_fd The socket file descriptor to manage.
      */
-    TcpSocket(int socket_fd);
+    explicit TcpSocket(int socket_fd);
 
     /**
      * @brief The Pimpl pointer to the implementation details of TcpSocket.

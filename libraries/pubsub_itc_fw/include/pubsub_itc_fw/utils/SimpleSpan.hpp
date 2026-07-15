@@ -66,11 +66,13 @@ template <typename T> class SimpleSpan {
     /**
      * @brief Construct from std::vector (non-const)
      */
+    // implicit-ctor-ok -- deliberate std::span-style implicit conversion from a vector
     template <typename Allocator> SimpleSpan(std::vector<value_type, Allocator>& vec) : data_(vec.data()), size_(vec.size()) {}
 
     /**
      * @brief Construct from std::vector (const) - only for const T
      */
+    // implicit-ctor-ok -- deliberate std::span-style implicit conversion from a const vector
     template <typename Allocator> SimpleSpan(const std::vector<value_type, Allocator>& vec) : data_(vec.data()), size_(vec.size()) {
         static_assert(std::is_const_v<T>, "Cannot create non-const span from const vector");
     }
@@ -78,6 +80,7 @@ template <typename T> class SimpleSpan {
     /**
      * @brief Construct from C-style array
      */
+    // implicit-ctor-ok -- deliberate std::span-style implicit conversion from a C array
     template <size_type N> constexpr SimpleSpan(T (&array)[N]) : data_(array), size_(N) {}
 
     // Copy constructor and assignment (default is fine)

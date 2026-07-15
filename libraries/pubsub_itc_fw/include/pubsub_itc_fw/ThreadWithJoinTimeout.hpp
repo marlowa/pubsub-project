@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <chrono>
+#include <memory>
 #include <pthread.h>
 #include <stdexcept>
 #include <time.h>
@@ -93,22 +94,22 @@ class ThreadWithJoinTimeout {
         }
 
         using Functor = std::decay_t<Callable>;
-        auto* heap_func = new Functor(std::forward<Callable>(func));
+        std::unique_ptr<Functor> functor = std::make_unique<Functor>(std::forward<Callable>(func));
 
         int rc = pthread_create(
             &thread_, nullptr,
             [](void* arg) -> void* {
-                const std::unique_ptr<Functor> f(static_cast<Functor*>(arg));
-                (*f)();
+                const std::unique_ptr<Functor> owned_functor(static_cast<Functor*>(arg));
+                (*owned_functor)();
                 return nullptr;
             },
-            heap_func);
+            functor.get());
 
         if (rc != 0) {
-            delete heap_func;
             throw PubSubItcException("pthread_create failed");
         }
 
+        functor.release();
         has_thread_ = true;
     }
 

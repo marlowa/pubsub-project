@@ -28,9 +28,12 @@ Checks implemented:
   20. Missing #pragma once in .hpp files
   21. Template keyword on its own line before <
   22. Banner / divider comment lines (rows of - or =)
+  23. #include ordering: external / third-party headers before project headers
+  24. Single-argument constructor not declared explicit
 """
 
 import argparse
+import bisect
 import re
 import sys
 from pathlib import Path
@@ -601,6 +604,106 @@ def check_include_order(path: Path, lines: list[str], stripped: list[str]) -> li
     return violations
 
 
+# ── Check 24: single-argument constructor not declared explicit ──────────────
+# A constructor callable with exactly one argument must be explicit so it cannot
+# act as an implicit conversion. Copy and move constructors (single parameter of
+# the class's own type taken by reference) are exempt: they convert nothing and
+# must not be explicit. Defaulted and deleted constructors are skipped. Only
+# in-class declarations are inspected; an out-of-line definition (Type::Type(...))
+# never carries the explicit keyword and so never matches.
+
+# A deliberately implicit converting constructor opts out of the explicit rule by
+# carrying this marker on its declaration line or the line directly above it.
+_IMPLICIT_CTOR_OK = 'implicit-ctor-ok'
+
+# An optional alignas(...) specifier may sit between the class/struct keyword and
+# the type name (struct alignas(64) Slot { ... }); skip it so the name is captured,
+# not the specifier.
+_CLASS_NAME_RE = re.compile(r'\b(enum\s+)?(?:class|struct)\s+(?:alignas\s*\([^)]*\)\s*)?(\w+)')
+
+def _constructible_type_names(stripped_text: str) -> set:
+    names = set()
+    for match in _CLASS_NAME_RE.finditer(stripped_text):
+        if match.group(1) is not None:
+            continue  # enum class / enum struct is not a constructible type
+        names.add(match.group(2))
+    return names
+
+def _has_top_level_comma(parameters: str) -> bool:
+    depth = 0
+    for character in parameters:
+        if character in '([{<':
+            depth += 1
+        elif character in ')]}>':
+            depth -= 1
+        elif character == ',' and depth == 0:
+            return True
+    return False
+
+def check_explicit_single_arg_ctor(path: Path, lines: list[str], stripped: list[str]) -> list[Violation]:
+    stripped_text = ''.join(stripped)
+    type_names = _constructible_type_names(stripped_text)
+    if not type_names:
+        return []
+
+    line_starts = []
+    offset = 0
+    for line in stripped:
+        line_starts.append(offset)
+        offset += len(line)
+
+    names_pattern = '|'.join(re.escape(name) for name in sorted(type_names, key=len, reverse=True))
+    ctor_re = re.compile(
+        r'(?m)^[ \t]*(?:template\s*<[^;{}]*>\s*)?'
+        r'((?:(?:explicit|constexpr|consteval|inline)\s+)*)'
+        r'(' + names_pattern + r')\s*\(')
+
+    violations = []
+    for match in ctor_re.finditer(stripped_text):
+        specifiers = match.group(1)
+        if 'explicit' in specifiers:
+            continue  # already explicit
+        type_name = match.group(2)
+        open_paren = match.end() - 1
+        depth = 0
+        close_paren = -1
+        for index in range(open_paren, len(stripped_text)):
+            character = stripped_text[index]
+            if character == '(':
+                depth += 1
+            elif character == ')':
+                depth -= 1
+                if depth == 0:
+                    close_paren = index
+                    break
+        if close_paren < 0:
+            continue
+
+        parameters = stripped_text[open_paren + 1:close_paren]
+        if parameters.strip() == '' or _has_top_level_comma(parameters):
+            continue  # default constructor or more than one parameter
+
+        tail = stripped_text[close_paren + 1:close_paren + 40]
+        if re.match(r'\s*=\s*(default|delete)', tail):
+            continue
+        if re.match(r'\s*->', tail):
+            continue  # class template argument deduction guide, not a constructor
+
+        is_copy_or_move = re.search(r'\b' + re.escape(type_name) + r'\b', parameters) is not None and '&' in parameters
+        if is_copy_or_move:
+            continue
+
+        line_number = bisect.bisect_right(line_starts, match.start())
+        if _IMPLICIT_CTOR_OK in lines[line_number - 1] or (line_number >= 2 and _IMPLICIT_CTOR_OK in lines[line_number - 2]):
+            continue  # opted out: a deliberately implicit converting constructor
+
+        violations.append(Violation(path, line_number,
+            "single-argument constructor is not declared explicit; add explicit "
+            "to prevent unintended implicit conversions (copy / move constructors are exempt). "
+            f"If the implicit conversion is deliberate, mark it with a {_IMPLICIT_CTOR_OK} comment"))
+    return violations
+
+
 # ── Registry ─────────────────────────────────────────────────────────────────
 
 _CHECKS = [
@@ -627,6 +730,7 @@ _CHECKS = [
     check_template_on_own_line,
     check_banner_dividers,
     check_include_order,
+    check_explicit_single_arg_ctor,
 ]
 
 

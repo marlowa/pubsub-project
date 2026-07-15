@@ -66,6 +66,13 @@ where there are multiple ctors give them sorted by simplicity with the simpler o
 Use = default for trivial special members
 Prefer brace initialisation in the member declaration to using an initialiser list
 prefer initialiser list to assignment statements inside ctor body
+Any constructor that can be called with a single argument must be declared explicit, so that it
+cannot be used as an implicit conversion. This is enforced by check_standards.py. Copy and move
+constructors (a single parameter of the class's own type taken by reference) are the exception:
+they convert nothing and must not be explicit. Where an implicit converting constructor is
+deliberate (for example a std::span-style wrapper that is meant to convert from a contiguous
+range), opt it out with an "implicit-ctor-ok" comment on the constructor's line or the line
+directly above it; the checker then leaves it alone.
 
 Comments and Documentation
 
