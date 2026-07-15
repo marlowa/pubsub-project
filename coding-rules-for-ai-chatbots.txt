@@ -151,6 +151,9 @@ The class provides is_equal(), value(), and free operator== overloads so the fla
 Boolean function parameters (bool in the signature) are therefore banned when the call site would have to pass a literal true or false.
 A bool return value, a bool local variable, or a bool struct field are all fine; the restriction applies only to function parameters
 whose call sites would otherwise be burdened with unexplained true/false literals.
+This is enforced by check_standards.py: it flags a bare true/false passed to a project function that declares a bool parameter
+(standard/library calls such as an atomic store or make_tuple are not project functions and are not flagged). A genuinely
+unavoidable case can opt out with a "bool-arg-ok" comment on the call line.
 
 FIX Protocol Version
 

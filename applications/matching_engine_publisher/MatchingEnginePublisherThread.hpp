@@ -127,7 +127,7 @@ class MatchingEnginePublisherThread : public pubsub_itc_fw::ApplicationThread, p
     // Topic publisher helpers -- decode + route to the owning publisher
     void handle_topic_subscribe_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     void handle_topic_ack(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
-    void set_publishers_leader(bool is_leader);
+    void set_publisher_role(pubsub_itc_fw_app::Role role);
 };
 
 } // namespaces

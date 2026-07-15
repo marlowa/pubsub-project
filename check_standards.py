@@ -30,6 +30,7 @@ Checks implemented:
   22. Banner / divider comment lines (rows of - or =)
   23. #include ordering: external / third-party headers before project headers
   24. Single-argument constructor not declared explicit
+  25. Bare true / false literal passed as a function argument
 """
 
 import argparse
@@ -704,6 +705,132 @@ def check_explicit_single_arg_ctor(path: Path, lines: list[str], stripped: list[
     return violations
 
 
+# ── Check 25: bare bool literal passed to a project function ──────────────────
+# The coding rules ban passing a bare true / false at a call site when the callee
+# is a project function that declares a bool parameter: the reader cannot tell
+# what the flag means without opening the signature. Use a typed flag class (see
+# UseHugePagesFlag) instead. The check fires only when the callee is a function
+# defined in this project whose signature takes a bool -- so standard/library
+# calls (an atomic store, make_tuple, a third-party setter) are never flagged,
+# because they are not project functions and are not in the collected set. A
+# literal counts only when it is a whole argument, delimited by ( or , on the
+# left and ) or , on the right, so operands such as (x == true) are left alone. A
+# bool return, local, or struct field is fine -- only flag arguments are policed.
+# Test, integration-test and performance code is exempt. A genuinely unavoidable
+# case can opt out with a bool-arg-ok comment on the call line.
+
+_BOOL_LITERAL_RE = re.compile(r'\b(?:true|false)\b')
+_BOOL_ARG_OK = 'bool-arg-ok'
+_BOOL_LITERAL_EXEMPT_DIRS = frozenset({'tests', 'integration_tests', 'performance', 'tests_common'})
+_NON_CALL_CALLEES = frozenset({
+    'if', 'while', 'for', 'switch', 'catch', 'return',
+    'assert', 'static_assert', 'sizeof', 'decltype', 'alignof', 'noexcept',
+})
+# A function signature that declares at least one bool parameter: an identifier,
+# then a parenthesised list (no nested parens, no ; { }) containing a bare bool
+# token. Call sites never match, since a bool argument is a value, not the type
+# token bool. Populated across the whole project before the per-file checks run.
+_BOOL_PARAM_FUNCTION_RE = re.compile(r'\b(\w+)\s*\(([^;{}()]*\bbool\b[^;{}()]*)\)')
+_PROJECT_BOOL_PARAM_FUNCTIONS: set = set()
+
+def _collect_bool_param_functions(files: list[Path]) -> set:
+    names = set()
+    for path in files:
+        try:
+            text = path.read_text(encoding='utf-8', errors='replace')
+        except OSError:
+            continue
+        stripped_text = strip_comments_and_strings(text)
+        for match in _BOOL_PARAM_FUNCTION_RE.finditer(stripped_text):
+            name = match.group(1)
+            if name not in _NON_CALL_CALLEES:
+                names.add(name)
+    return names
+
+def _preceding_identifier(text: str, index: int) -> str:
+    j = index - 1
+    while j >= 0 and text[j] in ' \t\n':
+        j -= 1
+    if j >= 0 and text[j] == '>':  # step over a trailing template argument list: foo<...>(
+        depth = 0
+        while j >= 0:
+            if text[j] == '>':
+                depth += 1
+            elif text[j] == '<':
+                depth -= 1
+                if depth == 0:
+                    j -= 1
+                    break
+            j -= 1
+        while j >= 0 and text[j] in ' \t\n':
+            j -= 1
+    end = j + 1
+    while j >= 0 and (text[j].isalnum() or text[j] == '_'):
+        j -= 1
+    return text[j + 1:end]
+
+def check_bool_literal_argument(path: Path, lines: list[str], stripped: list[str]) -> list[Violation]:
+    if _BOOL_LITERAL_EXEMPT_DIRS & set(path.parts):
+        return []
+    stripped_text = ''.join(stripped)
+    length = len(stripped_text)
+
+    line_starts = []
+    offset = 0
+    for line in stripped:
+        line_starts.append(offset)
+        offset += len(line)
+
+    violations = []
+    for match in _BOOL_LITERAL_RE.finditer(stripped_text):
+        start = match.start()
+        stop = match.end()
+
+        left = start - 1
+        while left >= 0 and stripped_text[left] in ' \t\n':
+            left -= 1
+        if left < 0 or stripped_text[left] not in '(,':
+            continue  # not the first token of an argument
+
+        right = stop
+        while right < length and stripped_text[right] in ' \t\n':
+            right += 1
+        if right >= length or stripped_text[right] not in ',)':
+            continue  # literal is part of a larger expression, not a bare argument
+
+        depth = 0
+        enclosing = ''
+        enclosing_pos = -1
+        scan = start - 1
+        while scan >= 0:
+            character = stripped_text[scan]
+            if character in ')]}':
+                depth += 1
+            elif character in '([{':
+                if depth == 0:
+                    enclosing = character
+                    enclosing_pos = scan
+                    break
+                depth -= 1
+            scan -= 1
+        if enclosing != '(':
+            continue  # brace / bracket initialisation, not a call
+
+        callee = _preceding_identifier(stripped_text, enclosing_pos)
+        if callee not in _PROJECT_BOOL_PARAM_FUNCTIONS:
+            continue  # not a project function that declares a bool parameter
+
+        line_number = bisect.bisect_right(line_starts, start)
+        if _BOOL_ARG_OK in lines[line_number - 1]:
+            continue  # opted out: a genuinely unavoidable bool literal
+
+        violations.append(Violation(path, line_number,
+            f"bare '{match.group(0)}' passed to project function '{callee}(...)' which takes a bool "
+            f"parameter; the call site cannot convey what it means -- give the parameter a typed flag "
+            f"class (see UseHugePagesFlag), or mark a genuinely unavoidable case with a {_BOOL_ARG_OK} comment"))
+    return violations
+
+
 # ── Registry ─────────────────────────────────────────────────────────────────
 
 _CHECKS = [
@@ -731,6 +858,7 @@ _CHECKS = [
     check_banner_dividers,
     check_include_order,
     check_explicit_single_arg_ctor,
+    check_bool_literal_argument,
 ]
 
 
@@ -781,6 +909,12 @@ def main() -> int:
     if not files:
         print("No C++ files found.", file=sys.stderr)
         return 1
+
+    # Collect project functions declaring a bool parameter from the whole tree,
+    # not just the files being checked, so check 25 resolves callees correctly
+    # even when a single file is passed on the command line.
+    global _PROJECT_BOOL_PARAM_FUNCTIONS
+    _PROJECT_BOOL_PARAM_FUNCTIONS = _collect_bool_param_functions(find_cpp_files(args.root))
 
     total = 0
     for path in files:

@@ -73,7 +73,7 @@ void MatchingEnginePublisherThread::on_initial_event() {
     start_recurring_timer("wal_snapshot", std::chrono::seconds(config_.snapshot_interval_seconds));
 
     // Publish nothing until this instance actually becomes leader (adopt_role flips this).
-    set_publishers_leader(false);
+    set_publisher_role(pubsub_itc_fw_app::Role::unknown);
 
     if (!config_.ha_enabled) {
         ++epoch_;
@@ -301,14 +301,14 @@ void MatchingEnginePublisherThread::adopt_role(pubsub_itc_fw_app::Role new_role)
     if (new_role == pubsub_itc_fw_app::Role::leader) {
         cancel_timer("peer_heartbeat_timeout");
         start_recurring_timer("peer_heartbeat", std::chrono::seconds(config_.heartbeat_interval_seconds));
-        set_publishers_leader(true);
+        set_publisher_role(new_role);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MepThread: now LEADER -- heartbeat timer started ({}s)", config_.heartbeat_interval_seconds);
     } else if (new_role == pubsub_itc_fw_app::Role::follower) {
         start_recurring_timer("peer_heartbeat", std::chrono::seconds(config_.heartbeat_interval_seconds));
         cancel_timer("peer_heartbeat_timeout");
         start_one_off_timer("peer_heartbeat_timeout", std::chrono::seconds(config_.heartbeat_timeout_seconds));
         // Stop publishing and drop all topic subscribers so they rediscover the new leader.
-        set_publishers_leader(false);
+        set_publisher_role(new_role);
         orders_publisher_.drop_all_subscribers();
         er_publisher_.drop_all_subscribers();
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MepThread: now FOLLOWER -- heartbeat timer started, timeout armed ({}s)",
@@ -588,7 +588,8 @@ void MatchingEnginePublisherThread::handle_topic_ack(const pubsub_itc_fw::Connec
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MepThread: TopicAck conn={} last_seq_no={}", conn_id.get_value(), view.last_seq_no);
 }
 
-void MatchingEnginePublisherThread::set_publishers_leader(bool is_leader) {
+void MatchingEnginePublisherThread::set_publisher_role(pubsub_itc_fw_app::Role role) {
+    const bool is_leader = (role == pubsub_itc_fw_app::Role::leader);
     orders_publisher_.set_leader(is_leader);
     er_publisher_.set_leader(is_leader);
 }

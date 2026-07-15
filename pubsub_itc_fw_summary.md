@@ -793,10 +793,12 @@ digraph with `URL="\ref <page-label>"` nodes) is embedded via `\dotfile` in
 to the existing markdown docs. `doxygen Doxyfile` builds clean (0 warnings under
 `WARN_AS_ERROR = FAIL_ON_WARNINGS`). See item 18 in "What Is Not Yet Done" for the full record.
 
-**Library unit test coverage** is the current next task. Coverage is only ~74.4% lines /
-50.3% functions (gcovr → strip → genhtml pipeline from the console-capture/coverage branch,
-committed at de34e46). The goal is to raise it by adding unit tests for the framework library.
-Orient on the project before writing code.
+**Library unit test coverage is adequate and is NOT a pending task** (confirmed 2026-07-15).
+The current LCOV report for `libraries/pubsub_itc_fw/src` shows 80.8% lines (3424/4239) and
+72.7% functions (408/561). Some individual files remain low (e.g. `OutboundConnectionManager.cpp`,
+`TimerHandler.cpp`, `Reactor.cpp`), but overall coverage is considered sufficient. (An earlier
+draft of this section cited 74.4% / 50.3% from 2026-07-09 and named coverage as the next task;
+that is superseded.)
 
 ## RT scheduling and CPU isolation: machine assessment guide
 
