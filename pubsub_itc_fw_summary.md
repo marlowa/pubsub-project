@@ -537,6 +537,33 @@ All certificates generated programmatically in tests via OpenSSL C API (EC prime
 
 ---
 
+### 17. FIX Codec Library (`fix_codec`)
+
+An **application-tier** FIX codec library (`libraries/fix_codec/`), added 2026-07-17. It sits *above* pubsub, parallel to `scram_crypto`, and is never part of `pubsub_itc_fw` — the framework stays protocol-agnostic (it only mentions FIX in comments as an example "alien protocol"); FIX belongs at the application level. It is the first of a likely small family of exchange-protocol codecs (a binary protocol built on the PDU framing work is intended later as a sibling).
+
+The design borrows the ideas of the hffix library (zero-copy, no heap allocation on any path, field/tag metadata generated from the FIX data dictionary) **without depending on it** — hffix is 12+ years old, has a Haskell code generator, and pulls in Boost. Notably hffix's own generator was Python before 2018, so a pure-Python generator is faithful to its history and fits this project's Python-for-scripts, pylint-10/10 conventions.
+
+**Two parts:**
+
+1. **Generated dictionary header** — a pure-Python generator (`python/tools/generate_fix_dictionary.py` plus the `python/fix_dictionary/` package: `model.py`, `parser.py`, `emitter.py`) parses the QuickFIX-style FIX XML dictionaries (`libraries/fix_codec/data_dictionary/FIXT11.xml` for the session/transport layer and `FIX50SP2.xml` for application messages), merges them by tag number, and emits `fix_dictionary.hpp` (namespace `fix_codec`):
+   - `namespace tag` — every field as `inline constexpr int` keyed by canonical FIX name.
+   - `namespace msg_type` — message types as `std::string_view` (multi-character msgtypes exist).
+   - `namespace enum_values` — enumerated field values grouped by field.
+   - `tag_name(int)` — constexpr binary-search tag→name lookup for diagnostics.
+   - `is_data_length_tag(int)` / `data_field_for_length_tag(int)` — the DATA↔LENGTH pairing, derived **by name** (`RawData`↔`RawDataLength`, `Signature`↔`SignatureLength` — numeric adjacency fails for Signature, tags 89/93). A FIX parser uses this so a binary DATA field, whose bytes may contain the SOH delimiter, is read by exact length rather than by scanning for SOH.
+
+   The header is generated into the build tree (`${CMAKE_BINARY_DIR}/generated_fix/fix_codec/`) by the `fix_dictionary_generated` target (which depends on `check_standards`), never written into the source tree. Output is deterministic (no embedded timestamp).
+
+2. **Hand-written zero-copy runtime** (header-only `INTERFACE` library):
+   - `FixField` — one parsed field (tag + `string_view` value) with lazy typed accessors mirroring hffix's `field_value`: `as_int`/`as_int64`/`as_uint`, `as_char`, `as_bool`, `as_decimal` (mantissa/exponent — no float), and `as_utc_timestamp_ns` (Howard Hinnant's days-from-civil algorithm, no `timegm`). All via `std::from_chars`; no allocation, no locale.
+   - `FixMessageReader` — constructed over a borrowed `(const char*, size_t)` window (the same shape `FixParser::feed` receives from a `MirroredBuffer`, so a later gateway migration is a drop-in). Frames one message via BodyLength (never scans for the checksum tag), reports a `Status` (`Valid`/`Incomplete`/`Malformed`/`ChecksumError`), and exposes the fields as a forward range of `FixField` with a `find(tag)` / `find(tag, hint)` (hffix's `find_with_hint`). The iterator honours the generated data-length tags so DATA values may contain SOH. Checksum validation is allocation-free.
+   - `FixMessageWriter` — builds a message directly into a caller buffer (e.g. a slab chunk) with no intermediate `std::string`: body fields first, then the tag 8/9 header written backward into a reserved prefix and the tag 10 checksum appended, computing BodyLength and CheckSum in place (hffix's `push_back_header`/`push_back_trailer`).
+   - `FixChecksum` — allocation-free `compute_checksum` and `checksum_matches` (parses the received three digits with `from_chars` and compares numerically).
+
+**Status.** Library, generator, and tests are complete and green: 21 GoogleTest cases (`libraries/fix_codec/tests/`) and 6 pytest cases (`python/tests/test_fix_dictionary.py`) pass; `fix_codec_tests` is wired into `build.py`'s C++ test run; the `fix_dictionary` package is in the pylint gate (10.00/10); `check_standards` and clang-format are clean. **The `order_gateway` FIX code is intentionally not yet migrated** — that is a later pass which will replace the gateway's hand-maintained `FixMessage`/`FixParser`/`FixSerialiser` and `Tag::`/`MsgType::` tables with this library (and, in doing so, remove the per-message `std::string` allocation the current `FixParser::validate_checksum` still incurs).
+
+---
+
 ## Memory Model Summary
 
 | Allocator | Used for | Thread-safe | Reclamation |

@@ -392,10 +392,45 @@ add_custom_target(build_info_generated ALL
 )
 
 # ------------------------------------------------------------
+# FIX dictionary header generation (tag numbers, message types, enumerated
+# values, tag->name table, and DATA/LENGTH field pairing) for the fix_codec
+# library. Generated from the QuickFIX-style FIX XML dictionaries by the
+# pure-Python generator; the header lands in the build tree under a fix_codec/
+# subdir so consumers include it as <fix_codec/fix_dictionary.hpp>, matching the
+# library's hand-written headers. Never written into the source tree.
+# ------------------------------------------------------------
+set(FIX_DICT_INCLUDE_DIR "${CMAKE_BINARY_DIR}/generated_fix" CACHE INTERNAL "Where fix_dictionary.hpp lives")
+set(FIX_DICT_GENERATED_HPP "${FIX_DICT_INCLUDE_DIR}/fix_codec/fix_dictionary.hpp")
+set(FIX_DICT_GENERATOR "${CMAKE_SOURCE_DIR}/python/tools/generate_fix_dictionary.py")
+set(FIX_DICT_SOURCES
+    "${CMAKE_SOURCE_DIR}/libraries/fix_codec/data_dictionary/FIXT11.xml"
+    "${CMAKE_SOURCE_DIR}/libraries/fix_codec/data_dictionary/FIX50SP2.xml")
+# Regenerate when the generator package modules change, not just the XML.
+file(GLOB FIX_DICT_GENERATOR_MODULES "${CMAKE_SOURCE_DIR}/python/fix_dictionary/*.py")
+
+add_custom_command(
+    OUTPUT "${FIX_DICT_GENERATED_HPP}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${FIX_DICT_INCLUDE_DIR}/fix_codec"
+    COMMAND ${Python3_EXECUTABLE} "${FIX_DICT_GENERATOR}"
+            ${FIX_DICT_SOURCES}
+            --namespace fix_codec
+            --output "${FIX_DICT_GENERATED_HPP}"
+    DEPENDS ${FIX_DICT_SOURCES} "${FIX_DICT_GENERATOR}" ${FIX_DICT_GENERATOR_MODULES}
+    COMMENT "Generating fix_dictionary.hpp from FIX XML data dictionaries"
+    VERBATIM
+)
+add_custom_target(fix_dictionary_generated ALL
+    DEPENDS "${FIX_DICT_GENERATED_HPP}"
+)
+# Run the coding-standards gate before generation so a violation fails early.
+add_dependencies(fix_dictionary_generated check_standards)
+
+# ------------------------------------------------------------
 # Add the libraries
 # ------------------------------------------------------------
 add_subdirectory(libraries/pubsub_itc_fw)
 add_subdirectory(libraries/scram_crypto)
+add_subdirectory(libraries/fix_codec)
 
 # ------------------------------------------------------------
 # Tests and performance harnesses
