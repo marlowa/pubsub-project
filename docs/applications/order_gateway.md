@@ -30,6 +30,71 @@ the primary and secondary sequencer connections when `ha_enabled = true`. With
 `ha_enabled = false` (the default for single-instance dev runs) only the primary connection
 is used.
 
+## Planned Migration to `fix_codec` (not yet done)
+
+The gateway currently carries its own hand-written FIX layer: `FixMessage.hpp` (which also
+holds the `Tag::` and `MsgType::` tables), `FixParser`, `FixSerialiser`, and `FixErEncoder`.
+The [FIX Codec](../design/fix_codec.md) library exists to replace these with a generated
+dictionary plus a zero-copy reader/writer. This is a deliberate later pass; the codec is
+tested and ready, the gateway is not yet rewired.
+
+**Migration outline:**
+
+1. Replace `Tag::`/`MsgType::` in `FixMessage.hpp` with the generated `fix_codec::tag` /
+   `fix_codec::msg_type` constants — deleting the hand-maintained tables, not translating them.
+2. Replace `FixParser` with `fix_codec::FixMessageReader` over the same
+   `on_raw_socket_message()` byte window (the reader was deliberately given the shape
+   `FixParser::feed` already receives, so this is close to a drop-in).
+3. Replace `FixSerialiser` / `FixErEncoder` with `fix_codec::FixMessageWriter` writing into
+   the existing fixed-size ER buffer. This removes the per-message `std::string` allocation
+   the current `validate_checksum` path incurs.
+4. Keep `FixSession` and `FixCapture` as they are — neither is a codec concern.
+
+### Impact on large, complex messages (NewOrderSingle)
+
+This is the concern worth stating plainly, because it is easy to over- or under-estimate what
+the codec buys.
+
+**What `fix_codec` changes.** Its generated dictionary covers the *entire* FIX 5.0 SP2 field
+set, so the gateway is no longer limited by which tags someone remembered to hand-add to
+`FixMessage.hpp`. Reading a further NewOrderSingle field becomes a one-liner
+(`reader.find(fix_codec::tag::MinQty)`) rather than a table edit, and the read is zero-copy.
+For a large message like a NOS — many optional, conditionally-required fields — this makes
+*fuller* coverage cheap where it was previously fiddly.
+
+**What it does not change.** The codec is only the mechanism. Whether a given NOS field flows
+end to end is still a three-layer decision, and the codec touches only the first:
+
+1. **Gateway** — parse, validate, and map the field into the order PDU (the `fix_codec` work).
+2. **DSL topic** — the `NewOrderSingle` message in `fix_equity_orders.dsl` must carry the
+   field. It already carries most of them: `price`, `stop_px`, `time_in_force`, `account`,
+   `ex_destination`, `exec_inst`, `min_qty`, `max_floor`, `expire_time`, `text`. So for those,
+   only steps 1 and 3 remain.
+3. **A producer** — something must actually set the field for a test to exercise it.
+
+**Impact on the blotter entry screen.** The [FIX Test Client](fix_test_client.md) is
+Java/QuickFIX and does **not** use `fix_codec` (a C++ library), so the migration does not
+touch the entry screen directly. The effect is indirect but real: by making richer NOS
+handling cheap on the gateway side, the migration shifts the limiting factor onto the entry
+form. Today the NOS send form exposes only **ClOrdID, Symbol, Side, OrdType, Qty, Price** —
+a small subset of what the topic already carries. Once the gateway can accept the fuller NOS,
+that simple form becomes the thing that can no longer drive it. The recommended response,
+tracked as a follow-up to the migration rather than part of it:
+
+- Keep the six-field form as the default fast path for the common order.
+- Add an **Advanced fields** collapsible section exposing the optional tags
+  (`TimeInForce`, `Account`, `ExDestination`, `StopPx`, `ExpireTime`, `ExecInst`, `MinQty`,
+  `MaxFloor`, `Text`) for interactive testing.
+- Lean on the form's existing **raw-FIX** escape hatch and Groovy scripting for exhaustive or
+  malformed-input coverage, so the UI does not have to grow a control for every tag.
+
+This form change is sketched in
+[FIX Test Client → Proposed: Advanced NOS Fields](fix_test_client.md#proposed-advanced-nos-fields-not-yet-built).
+
+The sequencing that falls out of this: migrate the gateway to `fix_codec` first (mechanism and
+full-dictionary access), then widen NOS field coverage as a coordinated change across the
+gateway map, the DSL topic (where a field is not already present), and the entry form.
+
 ## Authentication Flow
 
 SCRAM-SHA-256 authentication is triggered on each FIX Logon:
@@ -115,6 +180,8 @@ Key `order_gateway.toml` sections:
 
 ## See Also
 
+- [FIX Codec](../design/fix_codec.md) — the library this gateway's FIX layer will migrate onto
+- [FIX Test Client](fix_test_client.md) — the NOS entry form / blotter driven against this gateway
 - [Secure Communications](../design/secure_comms.md) — SCRAM-SHA-256 protocol detail
 - [Socket Communications](../design/socket_comms.md) — `RawBytesProtocolHandler`, `PduFramer`/`PduParser`
 - [WAL and High Availability](../design/wal_and_ha.md) — gateway pool design and sequencer reconnection

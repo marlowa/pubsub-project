@@ -15,6 +15,7 @@
 - [Secure Communications — TLS and SCRAM](design/secure_comms.md)
 - [WAL and High Availability](design/wal_and_ha.md)
 - [Serialisation DSL](design/serialisation_dsl.md)
+- [FIX Codec](design/fix_codec.md)
 - [Sequencer](design/sequencer.md)
 - [MEP and TAP](design/mep_tap.md)
 
