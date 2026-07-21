@@ -34,21 +34,81 @@ is used.
 
 The gateway currently carries its own hand-written FIX layer: `FixMessage.hpp` (which also
 holds the `Tag::` and `MsgType::` tables), `FixParser`, `FixSerialiser`, and `FixErEncoder`.
-The [FIX Codec](../design/fix_codec.md) library exists to replace these with a generated
-dictionary plus a zero-copy reader/writer. This is a deliberate later pass; the codec is
-tested and ready, the gateway is not yet rewired.
+The [FIX Codec](../design/fix_codec.md) library replaces the **inbound** half of this with a
+generated dictionary, a zero-copy reader, and a dictionary-driven validator
+(`FixMessageReader` + `FixMessageValidator`, added 2026-07-21).
 
-**Migration outline:**
+**Scope of this pass — inbound parse + validate only.** The outbound `FixSerialiser` /
+`FixErEncoder` stay as they are; this pass replaces `FixParser` and adds validation.
+Validation **enforces immediately** — a non-conforming inbound message is rejected, not
+logged-and-accepted — which the capture-driven reconciliation below confirms is safe for the
+current test client. `FixSession` and `FixCapture` are untouched (neither is a codec concern).
 
-1. Replace `Tag::`/`MsgType::` in `FixMessage.hpp` with the generated `fix_codec::tag` /
-   `fix_codec::msg_type` constants — deleting the hand-maintained tables, not translating them.
-2. Replace `FixParser` with `fix_codec::FixMessageReader` over the same
-   `on_raw_socket_message()` byte window (the reader was deliberately given the shape
-   `FixParser::feed` already receives, so this is close to a drop-in).
-3. Replace `FixSerialiser` / `FixErEncoder` with `fix_codec::FixMessageWriter` writing into
-   the existing fixed-size ER buffer. This removes the per-message `std::string` allocation
-   the current `validate_checksum` path incurs.
-4. Keep `FixSession` and `FixCapture` as they are — neither is a codec concern.
+**Staged plan (each stage builds and tests independently):**
+
+- **Stage 0 — wiring.** Add `fix_codec` to the gateway's includes and a
+  `fix_dictionary_generated` build dependency in `applications/order_gateway/CMakeLists.txt`.
+  No code change.
+- **Stage 1 — tag tables.** Replace the hand-written `Tag::`/`MsgType::` in `FixMessage.hpp`
+  with the generated `fix_codec::tag` / `fix_codec::msg_type`, deleting the tables rather than
+  translating them. Mechanical; no behaviour change.
+- **Stage 3 — inbound framing.** Replace `FixParser` with a stream driver around
+  `fix_codec::FixMessageReader` (see *Framing* below), producing the same `ParsedFixMessage`
+  so the `handle_*` dispatch (`OrderGatewayThread.cpp` msg-type switch) is untouched.
+  Behaviour-preserving; framing/checksum/resync parity must be proven against `FixParser`'s
+  current test cases.
+- **Stage 4 — validation.** Run `fix_codec::FixMessageValidator` at the dispatch point, before
+  any `handle_*`. On a `FixReject`, respond per the reject map below and skip dispatch. This is
+  the behaviour change.
+
+Stage 2 (outbound writer swap) and Stage 5 (deleting `FixSerialiser`/`FixErEncoder`) are
+deliberately out of scope for this pass.
+
+### Framing: from `FixParser` to a stream driver
+
+`FixParser::feed` extracts *every* complete message from the MirroredBuffer window and
+resynchronises byte-by-byte past garbage; `FixMessageReader` frames *one* message at the
+window start and reports `Malformed` / `Incomplete`. The migration keeps the loop and resync
+in a thin driver:
+
+- Loop: construct a `FixMessageReader` at the cursor; on `Valid`/`ChecksumError` advance by
+  `message_size()`; on `Incomplete` stop (leave the partial bytes for the next `recv`); on
+  `Malformed` skip one byte and retry — reproducing `FixParser`'s current resync.
+- Return the total consumed byte count for the `commit_raw_bytes` contract exactly as today.
+- `FixMessageReader::error()` supplies a specific per-cause reason for the `Malformed` log
+  line, replacing today's hand-written warnings.
+
+### Validation layer and reject mapping
+
+Protocol validation (fix_codec) sits in front of the gateway's existing business validation:
+
+| Layer | Checks | Response |
+|---|---|---|
+| `FixMessageValidator` (new, pre-dispatch) | InvalidTagNumber (0), RequiredTagMissing (1), TagNotDefinedForThisMessage (2), ValueIsIncorrect (5), IncorrectDataFormat (6), TagAppearsMoreThanOnce (13) | FIX **Reject (35=3)** built from the `FixReject`: `373`=reason, `371`=`ref_tag`, `372`=`ref_msg_type`, `45`=RefSeqNum, `58`=`describe()` text. Session stays up; the message is not dispatched. |
+| existing `handle_*` (unchanged) | symbol/qty length, ClOrdID limit, sequencer availability, risk | existing `ExecutionReport(Rejected)` / `BusinessReject` |
+
+The gateway *gains* a small `35=3` builder and stops silently dropping malformed inbound
+messages. Session-level messages (Logon) keep their current disconnect-on-failure semantics
+rather than emitting `35=3`.
+
+### Capture-driven reconciliation (why enforce-immediately is safe)
+
+Before committing to enforce-immediately, the current test client's real traffic was validated
+against the generated dictionary. A live NOS round-trip (client `APM001` → gateway → matching
+engine → ExecutionReport back) was captured and every field checked:
+
+```
+8=FIXT.1.1 9=131 35=D 34=5 49=APM001 52=20260721-...218 56=GATEWAY
+11=LIVECAP-1 21=1 38=100 40=2 44=100 54=1 55=AAPL 60=20260721-...217 10=124
+```
+
+Result: **no rejects** under all six rules for Logon (A), NewOrderSingle (D), and
+OrderCancelRequest (F). In particular the DD-required NOS tags the gateway does not read today
+— notably `TransactTime` (60) — *are* sent by the client (QuickFIX plus `FixHelper` /
+`MessagesHandler`), and QuickFIX renders `OrderQty`/`Price` as plain integers (`38=100`,
+`44=100`) which pass the decimal-format check. Enforcing immediately therefore does not reject
+the existing client. This reconciliation must be re-run if the client's field set or the
+dictionary changes.
 
 ### Impact on large, complex messages (NewOrderSingle)
 
