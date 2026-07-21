@@ -15,6 +15,8 @@ add_executable(fix_codec_tests
         tests/FixChecksumTest.cpp
         tests/FixFieldTest.cpp
         tests/FixMessageReaderTest.cpp
+        tests/FixMessageReaderAdversarialTest.cpp
+        tests/FixMessageValidatorTest.cpp
         tests/FixMessageWriterTest.cpp
 )
 
@@ -34,5 +36,20 @@ else()
 endif()
 
 install(TARGETS fix_codec_tests
+        RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+)
+
+# ── Performance benchmark ─────────────────────────────────────────────────────
+# Measures NewOrderSingle parse vs parse+full-validate. A tight, long-running loop
+# so it can be profiled directly under perf; installs to bin.
+add_executable(fix_codec_bench
+        performance/FixCodecBenchMain.cpp
+)
+
+target_link_libraries(fix_codec_bench PRIVATE fix_codec)
+
+add_dependencies(fix_codec_bench fix_dictionary_generated)
+
+install(TARGETS fix_codec_bench
         RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
 )

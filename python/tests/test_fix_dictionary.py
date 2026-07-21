@@ -42,10 +42,80 @@ APP_XML = """<fix type='FIX' major='5' minor='0' servicepack='2'>
 """
 
 
+REQUIRED_XML = """<fix type='FIX' major='5' minor='0' servicepack='2'>
+ <header>
+  <field name='BeginString' required='Y' />
+  <field name='MsgType' required='Y' />
+ </header>
+ <trailer>
+  <field name='CheckSum' required='Y' />
+ </trailer>
+ <messages>
+  <message name='NewOrderSingle' msgtype='D' msgcat='app'>
+   <field name='ClOrdID' required='Y' />
+   <field name='Account' required='N' />
+   <component name='OrderQtyData' required='Y' />
+  </message>
+ </messages>
+ <components>
+  <component name='OrderQtyData'>
+   <field name='OrderQty' required='Y' />
+  </component>
+ </components>
+ <fields>
+  <field number='8' name='BeginString' type='STRING' />
+  <field number='35' name='MsgType' type='STRING' />
+  <field number='10' name='CheckSum' type='STRING' />
+  <field number='11' name='ClOrdID' type='STRING' />
+  <field number='1' name='Account' type='STRING' />
+  <field number='38' name='OrderQty' type='QTY' />
+  <field number='54' name='Side' type='CHAR'>
+   <value enum='1' description='BUY' />
+   <value enum='2' description='SELL' />
+  </field>
+ </fields>
+</fix>
+"""
+
+
 def _write(tmp_path, name, text):
     path = tmp_path / name
     path.write_text(text, encoding="utf-8")
     return path
+
+
+def test_required_tags_expand_header_trailer_and_components(tmp_path):
+    # Required = header (BeginString 8, MsgType 35) + trailer (CheckSum 10)
+    # + body required field (ClOrdID 11) + the required OrderQtyData component's
+    # required field (OrderQty 38). The optional Account (1) is excluded.
+    dictionary = parse_dictionaries([_write(tmp_path, "required.xml", REQUIRED_XML)])
+    assert dictionary.required_tags("D") == [8, 10, 11, 35, 38]
+    assert dictionary.required_tags("unknown") == []
+
+
+def test_permitted_tags_include_optional_and_group_tags(tmp_path):
+    # Permitted = header (8, 35) + trailer (10) + body: ClOrdID (11), the optional
+    # Account (1), and OrderQtyData's OrderQty (38). Side (54) is defined in the
+    # dictionary but not referenced by the message, so it is not permitted.
+    dictionary = parse_dictionaries([_write(tmp_path, "required.xml", REQUIRED_XML)])
+    assert dictionary.permitted_tags("D") == [1, 8, 10, 11, 35, 38]
+    assert 54 not in dictionary.permitted_tags("D")
+    assert dictionary.permitted_tags("unknown") == []
+
+
+def test_emitted_header_has_validation_symbols(tmp_path):
+    dictionary = parse_dictionaries([_write(tmp_path, "required.xml", REQUIRED_XML)])
+    header = emit_header(dictionary, namespace="fix_codec")
+    assert "enum class field_format {" in header
+    assert "inline constexpr field_format field_format_of(int field_tag)" in header
+    assert "inline constexpr tag_span required_tags(std::string_view msg_type)" in header
+    assert "inline constexpr bool has_enum_values(int field_tag)" in header
+    assert "inline constexpr bool is_defined_enum_value(int field_tag, std::string_view value)" in header
+    assert "inline constexpr int field_index(int field_tag)" in header
+    assert "inline constexpr bool is_tag_permitted(std::string_view msg_type, int field_tag)" in header
+    # OrderQty (QTY) maps to the decimal format; Side is enumerated.
+    assert "{38, field_format::fix_decimal}," in header
+    assert '{54, "1"},' in header
 
 
 def test_parse_single_dictionary(tmp_path):

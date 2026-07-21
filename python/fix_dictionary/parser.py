@@ -6,7 +6,7 @@ from pathlib import Path
 from xml.etree import ElementTree
 from typing import Iterable, List
 
-from .model import Dictionary, FieldDef, FieldValue, MessageDef
+from .model import Dictionary, FieldDef, FieldValue, MemberRef, MessageDef
 
 
 class DictionaryError(Exception):
@@ -37,6 +37,79 @@ def _merge_file(merged: Dictionary, path: Path) -> None:
         _merge_field(merged, path, field_def)
     for message in _parse_messages(root):
         _merge_message(merged, path, message)
+    _merge_section(merged.header_members, _parse_member_list(root.find("header")))
+    _merge_section(merged.trailer_members, _parse_member_list(root.find("trailer")))
+    _merge_components(merged, root)
+    messages_container = root.find("messages")
+    if messages_container is not None:
+        for message_element in messages_container.findall("message"):
+            _register_nested_groups(merged, message_element)
+
+
+def _parse_member_list(element) -> List[MemberRef]:
+    """Return the field/component/group references directly under ``element``.
+
+    ``element`` may be ``None`` (a section absent from this dictionary), in which
+    case the result is empty. Only direct children are read; a group's own body is
+    followed later, when the group is expanded, via the components map.
+    """
+    members: List[MemberRef] = []
+    if element is None:
+        return members
+    for child in element:
+        if child.tag not in ("field", "component", "group"):
+            continue
+        name = child.get("name")
+        if name is None:
+            continue
+        members.append(MemberRef(kind=child.tag, name=name, required=child.get("required") == "Y"))
+    return members
+
+
+def _merge_section(existing: List[MemberRef], parsed: List[MemberRef]) -> None:
+    """Append newly seen member references from ``parsed`` into ``existing``.
+
+    The header and trailer are defined once (in FIXT11) but a later file may carry
+    an empty section; appending only unseen references keeps the merge idempotent.
+    """
+    seen = set(existing)
+    for member in parsed:
+        if member not in seen:
+            existing.append(member)
+            seen.add(member)
+
+
+def _merge_components(merged: Dictionary, root) -> None:
+    """Merge every ``<component>`` definition under ``<components>`` into ``merged``.
+
+    A component defines both a group counter and a body; its member list is the
+    references directly beneath it (including any nested ``<group>`` whose own body
+    is itself registered as a component-like entry keyed by the group name).
+    """
+    container = root.find("components")
+    if container is None:
+        return
+    for component in container.findall("component"):
+        name = component.get("name")
+        if name is None:
+            continue
+        merged.components.setdefault(name, _parse_member_list(component))
+        _register_nested_groups(merged, component)
+
+
+def _register_nested_groups(merged: Dictionary, element) -> None:
+    """Register each ``<group>`` body under its group name so it can be expanded.
+
+    A group is keyed like a component: its name (the NUMINGROUP counter field name)
+    maps to the references in its body. Groups nest inside messages, components, and
+    other groups, so recurse. Only the permitted-tag traversal follows these; the
+    required-tag traversal stops at a group's counter and never descends.
+    """
+    for group in element.findall("group"):
+        name = group.get("name")
+        if name is not None:
+            merged.components.setdefault(name, _parse_member_list(group))
+        _register_nested_groups(merged, group)
 
 
 def _parse_fields(path: Path, root: ElementTree.Element) -> List[FieldDef]:
@@ -73,7 +146,8 @@ def _parse_messages(root: ElementTree.Element) -> List[MessageDef]:
         msgtype = element.get("msgtype")
         if name is None or msgtype is None:
             continue
-        messages.append(MessageDef(name=name, msgtype=msgtype, category=element.get("msgcat", "")))
+        messages.append(MessageDef(name=name, msgtype=msgtype, category=element.get("msgcat", ""),
+                                   members=_parse_member_list(element)))
     return messages
 
 

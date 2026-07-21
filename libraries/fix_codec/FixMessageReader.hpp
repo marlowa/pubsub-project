@@ -4,6 +4,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <cstddef>
+#include <optional>
+#include <string>
 #include <string_view>
 
 #include <fix_codec/FixChecksum.hpp>
@@ -52,6 +54,23 @@ class FixMessageReader {
 
     [[nodiscard]] bool is_valid() const {
         return status_ == Status::Valid;
+    }
+
+    /**
+     * @brief A human-readable explanation of why framing did not yield a valid
+     *        message, or std::nullopt when the message is Valid.
+     *
+     * Different framing failures give different text -- a non-numeric BodyLength, a
+     * negative BodyLength, and a CheckSum tag at the wrong offset are each reported
+     * distinctly -- so a caller can log or reject with a specific reason rather than
+     * a bare Status. Framing itself stores only a static view and never allocates;
+     * the std::string is built here, on the error path only, when the caller asks.
+     */
+    [[nodiscard]] std::optional<std::string> error() const {
+        if (error_message_.empty()) {
+            return std::nullopt;
+        }
+        return std::string(error_message_);
     }
 
     /**
@@ -210,37 +229,43 @@ class FixMessageReader {
     void frame() {
         // Tag 8 (BeginString) must open the window.
         if (window_.size() < 2) {
-            status_ = Status::Incomplete;
+            fail(Status::Incomplete, "message truncated before the BeginString (tag 8) field");
             return;
         }
         if (window_.compare(0, 2, "8=") != 0) {
-            status_ = Status::Malformed;
+            fail(Status::Malformed, "message does not start with tag 8 (BeginString)");
             return;
         }
         const size_t begin_string_end = find_delimiter(window_, 0);
         if (begin_string_end == std::string_view::npos) {
-            status_ = Status::Incomplete;
+            fail(Status::Incomplete, "BeginString (tag 8) field is not terminated by SOH");
             return;
         }
         // Tag 9 (BodyLength) must be the second field.
         const size_t body_length_tag_start = begin_string_end + 1;
         if (window_.size() < body_length_tag_start + 2) {
-            status_ = Status::Incomplete;
+            fail(Status::Incomplete, "message truncated before the BodyLength (tag 9) field");
             return;
         }
         if (window_.compare(body_length_tag_start, 2, "9=") != 0) {
-            status_ = Status::Malformed;
+            fail(Status::Malformed, "tag 9 (BodyLength) must be the second field");
             return;
         }
         const size_t body_length_end = find_delimiter(window_, body_length_tag_start);
         if (body_length_end == std::string_view::npos) {
-            status_ = Status::Incomplete;
+            fail(Status::Incomplete, "BodyLength (tag 9) field is not terminated by SOH");
             return;
         }
         const std::string_view body_length_text = window_.substr(body_length_tag_start + 2, body_length_end - body_length_tag_start - 2);
+        // Two fallbacks distinguish a non-numeric BodyLength (parse fails, the two
+        // results differ) from a negative one (parse succeeds with a value <= 0).
         const int body_length = detail::parse_number<int>(body_length_text, -1);
+        if (body_length != detail::parse_number<int>(body_length_text, -2)) {
+            fail(Status::Malformed, "BodyLength (tag 9) is not a number");
+            return;
+        }
         if (body_length <= 0) {
-            status_ = Status::Malformed;
+            fail(Status::Malformed, "BodyLength (tag 9) must be a positive integer");
             return;
         }
         frame_checksum(body_length_end, static_cast<size_t>(body_length));
@@ -250,16 +275,16 @@ class FixMessageReader {
         // BodyLength counts from just after the tag 9 SOH to just before the tag 10 SOH.
         const size_t checksum_tag_start = body_length_end + 1 + body_length;
         if (window_.size() < checksum_tag_start + 3) {
-            status_ = Status::Incomplete;
+            fail(Status::Incomplete, "message truncated before the CheckSum (tag 10) field");
             return;
         }
         if (window_.compare(checksum_tag_start, 3, "10=") != 0) {
-            status_ = Status::Malformed;
+            fail(Status::Malformed, "tag 10 (CheckSum) is not at the offset BodyLength indicates");
             return;
         }
         const size_t checksum_end = find_delimiter(window_, checksum_tag_start);
         if (checksum_end == std::string_view::npos) {
-            status_ = Status::Incomplete;
+            fail(Status::Incomplete, "CheckSum (tag 10) field is not terminated by SOH");
             return;
         }
         message_bytes_ = window_.substr(0, checksum_end + 1);
@@ -268,7 +293,18 @@ class FixMessageReader {
 
         const std::string_view checksum_input = window_.substr(0, checksum_tag_start);
         const std::string_view received = window_.substr(checksum_tag_start + 3, checksum_end - checksum_tag_start - 3);
-        status_ = checksum_matches(checksum_input, received) ? Status::Valid : Status::ChecksumError;
+        if (checksum_matches(checksum_input, received)) {
+            status_ = Status::Valid;
+        } else {
+            fail(Status::ChecksumError, "CheckSum (tag 10) does not match the computed value");
+        }
+    }
+
+    // Records the framing outcome and its explanation. error_message_ is a static
+    // view, so this never allocates; the std::string is built only in error().
+    void fail(Status status, std::string_view explanation) {
+        status_ = status;
+        error_message_ = explanation;
     }
 
     std::string_view window_;
@@ -276,6 +312,7 @@ class FixMessageReader {
     const char* fields_begin_{nullptr};
     const char* fields_end_{nullptr};
     Status status_{Status::Incomplete};
+    std::string_view error_message_{};
 };
 
 } // namespaces

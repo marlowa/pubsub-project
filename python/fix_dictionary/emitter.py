@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Callable, Dict, List
 
 from .model import Dictionary, FieldDef
+from .mph import build_perfect_hash
 
 Writer = Callable[[str], None]
 
@@ -22,9 +23,36 @@ def emit_header(dictionary: Dictionary, namespace: str) -> str:
     _emit_enum_values(write, dictionary)
     _emit_lookup_tables(write, dictionary)
     _emit_lookup_functions(write)
+    _emit_perfect_hash(write, dictionary)
+    _emit_field_formats(write, dictionary)
+    _emit_required_tags(write, dictionary)
+    _emit_enum_membership(write, dictionary)
+    _emit_permitted_tags(write, dictionary)
     write(f"}}  // namespace {namespace}")
     write("")
     return "\n".join(lines)
+
+
+# The FIX field data type (the <field type=...> attribute) collapses to a small
+# set of validation formats. Anything unmapped -- STRING and the various free-text
+# and exotic date/time types -- carries no format constraint (fix_string).
+_FORMAT_BY_FIX_TYPE = {
+    "INT": "fix_int",
+    "SEQNUM": "fix_int",
+    "NUMINGROUP": "fix_int",
+    "LENGTH": "fix_int",
+    "TAGNUM": "fix_int",
+    "QTY": "fix_decimal",
+    "PRICE": "fix_decimal",
+    "FLOAT": "fix_decimal",
+    "AMT": "fix_decimal",
+    "PERCENTAGE": "fix_decimal",
+    "PRICEOFFSET": "fix_decimal",
+    "CHAR": "fix_char",
+    "BOOLEAN": "fix_boolean",
+    "UTCTIMESTAMP": "fix_utc_timestamp",
+    "DATA": "fix_data",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -44,6 +72,7 @@ def _emit_preamble(write: Writer) -> None:
     write("")
     write("#include <array>")
     write("#include <cstddef>")
+    write("#include <cstdint>")
     write("#include <string_view>")
     write("#include <utility>")
     write("")
@@ -172,6 +201,340 @@ def _emit_lookup_functions(write: Writer) -> None:
     write("    return data_field_for_length_tag(length_tag) != 0;")
     write("}")
     write("")
+
+
+def _emit_field_formats(write: Writer, dictionary: Dictionary) -> None:
+    """Emit the field-format enum plus a tag->format table and binary-search accessor.
+
+    A validator uses ``field_format_of`` to decide how to check a field's value:
+    an INT tag whose value is not an integer, or a QTY tag that is not a decimal,
+    is an IncorrectDataFormat error.
+    """
+    fields = dictionary.fields_sorted()
+    write("// The validation format of a field's value, derived from its FIX data type.")
+    write("enum class field_format {")
+    write("    fix_string,")
+    write("    fix_int,")
+    write("    fix_decimal,")
+    write("    fix_char,")
+    write("    fix_boolean,")
+    write("    fix_utc_timestamp,")
+    write("    fix_data,")
+    write("};")
+    write("")
+    write("namespace detail {")
+    write(f"inline constexpr std::array<std::pair<int, field_format>, {len(fields)}> field_format_table = {{{{")
+    for field_def in fields:
+        fmt = _FORMAT_BY_FIX_TYPE.get(field_def.type, "fix_string")
+        write(f"    {{{field_def.number}, field_format::{fmt}}},")
+    write("}};")
+    write("}  // namespace detail")
+    write("")
+    write("// Returns the validation format for a tag, or fix_string if the tag is unknown.")
+    write("inline constexpr field_format field_format_of(int field_tag) {")
+    write("    size_t low = 0;")
+    write("    size_t high = detail::field_format_table.size();")
+    write("    while (low < high) {")
+    write("        const size_t mid = low + (high - low) / 2;")
+    write("        if (detail::field_format_table[mid].first < field_tag) {")
+    write("            low = mid + 1;")
+    write("        } else {")
+    write("            high = mid;")
+    write("        }")
+    write("    }")
+    write("    if (low < detail::field_format_table.size() && detail::field_format_table[low].first == field_tag) {")
+    write("        return detail::field_format_table[low].second;")
+    write("    }")
+    write("    return field_format::fix_string;")
+    write("}")
+    write("")
+    write("// Field format by dense index (from field_index); the hot path avoids the tag search.")
+    write("inline constexpr field_format field_format_at(int dense_index) {")
+    write("    return detail::field_format_table[static_cast<size_t>(dense_index)].second;")
+    write("}")
+    write("")
+
+
+def _emit_required_tags(write: Writer, dictionary: Dictionary) -> None:
+    """Emit per-message required-tag arrays and a msg_type->span accessor.
+
+    ``required_tags(msg_type)`` returns the tags a conforming message must carry
+    (session header + body + trailer, with required components expanded). A
+    validator reports RequiredTagMissing for any of these absent from a message.
+    """
+    write("// A non-owning view of a contiguous run of tag numbers.")
+    write("struct tag_span {")
+    write("    const int* first{nullptr};")
+    write("    size_t length{0};")
+    write("    constexpr const int* begin() const { return first; }")
+    write("    constexpr const int* end() const { return first + length; }")
+    write("    constexpr size_t size() const { return length; }")
+    write("};")
+    write("")
+    write("namespace detail {")
+    entries = []
+    for index, message in enumerate(dictionary.messages_sorted()):
+        tags = dictionary.required_tags(message.msgtype)
+        if not tags:
+            entries.append((message.msgtype, None, 0))
+            continue
+        array_name = f"required_tags_{index}"
+        joined = ", ".join(str(tag) for tag in tags)
+        write(f"inline constexpr std::array<int, {len(tags)}> {array_name} = {{{{{joined}}}}};")
+        entries.append((message.msgtype, array_name, len(tags)))
+    write("")
+    write("struct required_entry {")
+    write("    std::string_view msg_type;")
+    write("    const int* tags;")
+    write("    size_t count;")
+    write("};")
+    write(f"inline constexpr std::array<required_entry, {len(entries)}> required_tags_table = {{{{")
+    for msgtype, array_name, count in entries:
+        pointer = f"{array_name}.data()" if array_name else "nullptr"
+        write(f"    {{{_string_literal(msgtype)}, {pointer}, {count}}},")
+    write("}};")
+    write("}  // namespace detail")
+    write("")
+    write("// Returns the required tags for a message type, or an empty span if unknown.")
+    write("inline constexpr tag_span required_tags(std::string_view msg_type) {")
+    write("    size_t low = 0;")
+    write("    size_t high = detail::required_tags_table.size();")
+    write("    while (low < high) {")
+    write("        const size_t mid = low + (high - low) / 2;")
+    write("        if (detail::required_tags_table[mid].msg_type < msg_type) {")
+    write("            low = mid + 1;")
+    write("        } else {")
+    write("            high = mid;")
+    write("        }")
+    write("    }")
+    write("    if (low < detail::required_tags_table.size() && detail::required_tags_table[low].msg_type == msg_type) {")
+    write("        return tag_span{detail::required_tags_table[low].tags, detail::required_tags_table[low].count};")
+    write("    }")
+    write("    return tag_span{};")
+    write("}")
+    write("")
+
+
+def _emit_enum_membership(write: Writer, dictionary: Dictionary) -> None:
+    """Emit an enumerated (tag, value) table with membership accessors.
+
+    ``has_enum_values`` tells a validator that a field is enumerated at all;
+    ``is_defined_enum_value`` reports whether a value is one the dictionary defines.
+    A value that fails the latter for an enumerated field is a ValueIsIncorrect
+    error.
+    """
+    pairs = []
+    ranges = []  # (start, count) into enum_value_table, one per dense field index
+    for field_def in dictionary.fields_sorted():
+        start = len(pairs)
+        for value in sorted({item.enum for item in field_def.values}):
+            pairs.append((field_def.number, value))
+        ranges.append((start, len(pairs) - start))
+    write("namespace detail {")
+    if pairs:
+        write(f"inline constexpr std::array<std::pair<int, std::string_view>, {len(pairs)}> enum_value_table = {{{{")
+        for tag, value in pairs:
+            write(f"    {{{tag}, {_string_literal(value)}}},")
+        write("}};")
+    else:
+        write("inline constexpr std::array<std::pair<int, std::string_view>, 0> enum_value_table = {};")
+    write("")
+    write(f"inline constexpr std::array<std::pair<uint32_t, uint32_t>, {len(ranges)}> enum_range_table = {{{{")
+    for start, count in ranges:
+        write(f"    {{{start}, {count}}},")
+    write("}};")
+    write("}  // namespace detail")
+    write("")
+    _emit_enum_accessors(write)
+
+
+def _emit_enum_accessors(write: Writer) -> None:
+    """Emit index-based enum membership plus tag-keyed wrappers that use field_index."""
+    write("// Whether the field at a dense index (from field_index) is enumerated.")
+    write("inline constexpr bool has_enum_values_at(int dense_index) {")
+    write("    return detail::enum_range_table[static_cast<size_t>(dense_index)].second != 0;")
+    write("}")
+    write("")
+    write("// Whether value is one of the values defined for the field at a dense index.")
+    write("inline constexpr bool is_defined_enum_value_at(int dense_index, std::string_view value) {")
+    write("    const std::pair<uint32_t, uint32_t> range = detail::enum_range_table[static_cast<size_t>(dense_index)];")
+    write("    for (uint32_t offset = 0; offset < range.second; ++offset) {")
+    write("        if (detail::enum_value_table[range.first + offset].second == value) {")
+    write("            return true;")
+    write("        }")
+    write("    }")
+    write("    return false;")
+    write("}")
+    write("")
+    write("// Tag-keyed wrappers (cold paths); the hot path uses the _at forms with field_index.")
+    write("inline constexpr bool has_enum_values(int field_tag) {")
+    write("    const int index = field_index(field_tag);")
+    write("    return index >= 0 && has_enum_values_at(index);")
+    write("}")
+    write("")
+    write("inline constexpr bool is_defined_enum_value(int field_tag, std::string_view value) {")
+    write("    const int index = field_index(field_tag);")
+    write("    return index >= 0 && is_defined_enum_value_at(index, value);")
+    write("}")
+    write("")
+
+
+def _emit_permitted_tags(write: Writer, dictionary: Dictionary) -> None:
+    """Emit a per-message permitted-tag bitset plus dense-index membership accessors.
+
+    Each field is given a dense index (its position in the sorted field list). Each
+    message carries a bitset over that index space marking the tags it may contain
+    (header + body with components and groups expanded + trailer). Membership is one
+    dense-index lookup (field_index) followed by one bit test, so a tag not defined
+    for a message type (FIX SessionRejectReason 2) is found in O(1) after the index.
+    """
+    fields = dictionary.fields_sorted()
+    index_of = {field_def.number: position for position, field_def in enumerate(fields)}
+    word_count = (len(fields) + 63) // 64
+    write("namespace detail {")
+    write(f"inline constexpr size_t permitted_word_count = {word_count};")
+    write("")
+    entries = []
+    for message_index, message in enumerate(dictionary.messages_sorted()):
+        words = [0] * word_count
+        for tag in dictionary.permitted_tags(message.msgtype):
+            dense_index = index_of.get(tag)
+            if dense_index is not None:
+                words[dense_index // 64] |= 1 << (dense_index % 64)
+        array_name = f"permitted_bits_{message_index}"
+        write(f"inline constexpr std::array<uint64_t, {word_count}> {array_name} = {{{{")
+        _emit_bitset_words(write, words)
+        write("}};")
+        entries.append((message.msgtype, array_name))
+    write("")
+    write("struct permitted_entry {")
+    write("    std::string_view msg_type;")
+    write("    const uint64_t* words;")
+    write("};")
+    write(f"inline constexpr std::array<permitted_entry, {len(entries)}> permitted_table = {{{{")
+    for msgtype, array_name in entries:
+        write(f"    {{{_string_literal(msgtype)}, {array_name}.data()}},")
+    write("}};")
+    write("}  // namespace detail")
+    write("")
+    _emit_permitted_accessors(write)
+
+
+def _emit_permitted_accessors(write: Writer) -> None:
+    """Emit the permitted-tag membership functions (bitset lookup by message type)."""
+    write("// The permitted-tag bitset for a message type, or nullptr if the type is unknown.")
+    write("inline constexpr const uint64_t* permitted_mask(std::string_view msg_type) {")
+    write("    size_t low = 0;")
+    write("    size_t high = detail::permitted_table.size();")
+    write("    while (low < high) {")
+    write("        const size_t mid = low + (high - low) / 2;")
+    write("        if (detail::permitted_table[mid].msg_type < msg_type) {")
+    write("            low = mid + 1;")
+    write("        } else {")
+    write("            high = mid;")
+    write("        }")
+    write("    }")
+    write("    if (low < detail::permitted_table.size() && detail::permitted_table[low].msg_type == msg_type) {")
+    write("        return detail::permitted_table[low].words;")
+    write("    }")
+    write("    return nullptr;")
+    write("}")
+    write("")
+    write("// True when a dense field index is set in a message's permitted-tag bitset.")
+    write("inline constexpr bool mask_has_index(const uint64_t* words, int dense_index) {")
+    write("    if (words == nullptr || dense_index < 0) {")
+    write("        return false;")
+    write("    }")
+    write("    const size_t position = static_cast<size_t>(dense_index);")
+    write("    return (words[position / 64] >> (position % 64)) & 1ULL;")
+    write("}")
+    write("")
+    write("// True when a tag is defined for a message type (or the type is unknown).")
+    write("inline constexpr bool is_tag_permitted(std::string_view msg_type, int field_tag) {")
+    write("    const uint64_t* words = permitted_mask(msg_type);")
+    write("    if (words == nullptr) {")
+    write("        return true;")
+    write("    }")
+    write("    return mask_has_index(words, field_index(field_tag));")
+    write("}")
+    write("")
+
+
+def _emit_perfect_hash(write: Writer, dictionary: Dictionary) -> None:
+    """Emit a perfect hash mapping a tag to its dense field index in O(1).
+
+    Replaces the binary search that field_index (and, through it, the format and
+    enum lookups) would otherwise do on every field. Slots are a power of two so
+    the hash reduces with a bitmask rather than a division. Unknown or non-positive
+    tags return -1: an empty slot verifies as a mismatch, so no false hit occurs.
+    """
+    fields = dictionary.fields_sorted()
+    index_of = {field_def.number: position for position, field_def in enumerate(fields)}
+    perfect_hash = build_perfect_hash([field_def.number for field_def in fields])
+    tag_by_slot = [0] * perfect_hash.size
+    index_by_slot = [0] * perfect_hash.size
+    for key, slot in perfect_hash.slot_of_key.items():
+        tag_by_slot[slot] = key
+        index_by_slot[slot] = index_of[key]
+
+    write("// Perfect hash of the ~6000 known tags -> dense field index (no collisions).")
+    write("inline constexpr uint32_t mph_bucket_seed = " + f"0x{perfect_hash.bucket_seed:08X}u;")
+    write(f"inline constexpr uint32_t mph_bucket_count = {perfect_hash.bucket_count}u;")
+    write(f"inline constexpr uint32_t mph_size = {perfect_hash.size}u;")
+    write("")
+    write("// 32-bit integer avalanche; mirrors fix_dictionary.mph.mix in the generator.")
+    write("inline constexpr uint32_t mph_mix(int key, uint32_t seed) {")
+    write("    uint32_t value = static_cast<uint32_t>(key) ^ (seed * 0x9E3779B1u);")
+    write("    value ^= value >> 16;")
+    write("    value *= 0x7FEB352Du;")
+    write("    value ^= value >> 15;")
+    write("    value *= 0x846CA68Bu;")
+    write("    value ^= value >> 16;")
+    write("    return value;")
+    write("}")
+    write("")
+    write("namespace detail {")
+    _emit_int_array(write, "uint32_t", "mph_displacements", perfect_hash.displacements)
+    _emit_int_array(write, "int", "mph_tag_by_slot", tag_by_slot)
+    _emit_int_array(write, "int", "mph_index_by_slot", index_by_slot)
+    write("}  // namespace detail")
+    write("")
+    write("// Dense index of a tag (its position in the sorted field set), or -1 if unknown.")
+    write("inline constexpr int field_index(int field_tag) {")
+    write("    if (field_tag <= 0) {")
+    write("        return -1;")
+    write("    }")
+    write("    const uint32_t bucket = mph_mix(field_tag, mph_bucket_seed) & (mph_bucket_count - 1);")
+    write("    const uint32_t slot = mph_mix(field_tag, detail::mph_displacements[bucket]) & (mph_size - 1);")
+    write("    if (detail::mph_tag_by_slot[slot] == field_tag) {")
+    write("        return detail::mph_index_by_slot[slot];")
+    write("    }")
+    write("    return -1;")
+    write("}")
+    write("")
+
+
+def _emit_int_array(write: Writer, element_type: str, name: str, values: List[int]) -> None:
+    """Emit ``inline constexpr std::array<element_type, N> name`` wrapped within 160 columns."""
+    suffix = "u" if element_type.startswith("uint") else ""
+    write(f"inline constexpr std::array<{element_type}, {len(values)}> {name} = {{{{")
+    per_line = 12
+    for start in range(0, len(values), per_line):
+        chunk = values[start:start + per_line]
+        rendered = ", ".join(f"{value}{suffix}" for value in chunk)
+        trailing = "," if start + per_line < len(values) else ""
+        write(f"    {rendered}{trailing}")
+    write("}};")
+
+
+def _emit_bitset_words(write: Writer, words: List[int]) -> None:
+    """Write bitset words as hex uint64 literals, wrapped to stay within 160 columns."""
+    per_line = 6
+    for start in range(0, len(words), per_line):
+        chunk = words[start:start + per_line]
+        rendered = ", ".join(f"0x{word:016x}ULL" for word in chunk)
+        suffix = "," if start + per_line < len(words) else ""
+        write(f"    {rendered}{suffix}")
 
 
 # ---------------------------------------------------------------------------
