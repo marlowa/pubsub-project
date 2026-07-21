@@ -209,7 +209,7 @@ and application field; the writer owns tags 8, 9, and 10.
 The mechanism is hffix's `push_back_header` / `push_back_trailer`: body fields
 are written first into a region that leaves a reserved prefix in front. `finish()`
 then writes the BeginString (tag 8) and BodyLength (tag 9) **backward into that
-prefix** so the header ends exactly where the body begins, appends the CheckSum
+prefix** so the header ends exactly where the body begins, appends the Checksum
 (tag 10), and returns a `string_view` over the whole wire message — computing
 both length and checksum in place. The default BeginString is `FIXT.1.1` (the
 required FIX 5.0 SP2 preamble). If any write would exceed the buffer capacity the

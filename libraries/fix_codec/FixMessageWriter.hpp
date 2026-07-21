@@ -19,7 +19,7 @@ namespace fix_codec {
  * buffer (for example a slab chunk) with no intermediate std::string and no
  * allocation. The body fields are written first; @ref finish then writes the
  * BeginString (tag 8) and BodyLength (tag 9) header into a reserved prefix in
- * front of the body and appends the CheckSum (tag 10), computing both length
+ * front of the body and appends the Checksum (tag 10), computing both length
  * and checksum in place -- the hffix push_back_header / push_back_trailer idea.
  *
  * The caller sets every session and application field except tags 8, 9 and 10,

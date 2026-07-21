@@ -59,13 +59,13 @@ TEST(FixMessageReaderAdversarialTest, NegativeBodyLengthIsMalformed) {
 }
 
 // An understated BodyLength puts the checksum tag where "10=" is not: Malformed,
-// and the reason points at the CheckSum tag, not at BodyLength.
+// and the reason points at the Checksum tag, not at BodyLength.
 TEST(FixMessageReaderAdversarialTest, UnderstatedBodyLengthMisalignsChecksumTag) {
     const FixMessageReader reader(understated_body_length);
     EXPECT_EQ(reader.status(), FixMessageReader::Status::Malformed);
     const std::optional<std::string> error = reader.error();
     ASSERT_TRUE(error.has_value());
-    EXPECT_NE(error->find("CheckSum"), std::string::npos);
+    EXPECT_NE(error->find("Checksum"), std::string::npos);
 }
 
 // The three framing faults above must each report a different explanation -- a
@@ -109,7 +109,7 @@ TEST(FixMessageReaderAdversarialTest, OverstatedDataLengthDoesNotOverRead) {
     ASSERT_FALSE(wire.empty());
 
     FixMessageReader reader(wire);
-    EXPECT_TRUE(reader.is_valid());           // framing (BodyLength + CheckSum) is self-consistent
+    EXPECT_TRUE(reader.is_valid());           // framing (BodyLength + Checksum) is self-consistent
     EXPECT_FALSE(reader.error().has_value()); // a valid message has no error text
     const FixField raw_field = reader.find(tag::RawData);
     EXPECT_EQ(raw_field.as_string_view(), "AB"); // truncated at the embedded SOH, not over-read

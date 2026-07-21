@@ -29,7 +29,7 @@ TEST(FixMessageWriterTest, WritesHeaderBodyAndTrailer) {
 
     ASSERT_FALSE(writer.overflowed());
     ASSERT_FALSE(wire.empty());
-    // The message opens with BeginString then BodyLength, and closes with CheckSum.
+    // The message opens with BeginString then BodyLength, and closes with Checksum.
     EXPECT_EQ(wire.substr(0, 13), std::string_view("8=FIXT.1.1\x01"
                                                    "9="));
     EXPECT_EQ(wire.substr(wire.size() - 1, 1), std::string_view("\x01"));
@@ -47,7 +47,7 @@ TEST(FixMessageWriterTest, ProducesAReadableSelfConsistentMessage) {
     writer.push_back_field(tag::Side, '2');
     const std::string_view wire = writer.finish();
 
-    // The reader accepts it: BodyLength and CheckSum were computed correctly.
+    // The reader accepts it: BodyLength and Checksum were computed correctly.
     FixMessageReader reader(wire);
     ASSERT_TRUE(reader.is_valid());
     EXPECT_EQ(reader.msg_type(), "D");

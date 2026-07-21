@@ -64,7 +64,7 @@ class Dictionary:
     session-layer definitions (FIXT11) and application definitions (FIX50SP2)
     combine into a single catalogue with duplicates collapsed. ``header_members``
     and ``trailer_members`` hold the session-level fields shared by every message
-    (BeginString, MsgType, CheckSum, and so on); ``components`` maps a component
+    (BeginString, MsgType, Checksum, and so on); ``components`` maps a component
     name to its member list so that a required component in a message can be
     expanded into the concrete tags it makes mandatory.
     """

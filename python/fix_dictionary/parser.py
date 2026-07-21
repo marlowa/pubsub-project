@@ -13,6 +13,18 @@ class DictionaryError(Exception):
     """Raised when a dictionary file is malformed or conflicts on merge."""
 
 
+# House spelling overrides for FIX field names. "checksum" is a single word, so the
+# FIX standard's "CheckSum" (tag 10) is normalised to "Checksum" everywhere -- the
+# generated identifier, the tag_name() diagnostic, and the required/permitted name
+# matching -- so one spelling is used throughout.
+_NAME_OVERRIDES = {"CheckSum": "Checksum"}
+
+
+def _normalize_name(name: str) -> str:
+    """Apply house-spelling overrides to a FIX field or member name."""
+    return _NAME_OVERRIDES.get(name, name)
+
+
 def parse_dictionaries(paths: Iterable[Path]) -> Dictionary:
     """Parse and merge every dictionary in ``paths`` into one :class:`Dictionary`.
 
@@ -62,7 +74,7 @@ def _parse_member_list(element) -> List[MemberRef]:
         name = child.get("name")
         if name is None:
             continue
-        members.append(MemberRef(kind=child.tag, name=name, required=child.get("required") == "Y"))
+        members.append(MemberRef(kind=child.tag, name=_normalize_name(name), required=child.get("required") == "Y"))
     return members
 
 
@@ -131,7 +143,7 @@ def _parse_fields(path: Path, root: ElementTree.Element) -> List[FieldDef]:
             FieldValue(enum=value.get("enum", ""), description=value.get("description", ""))
             for value in element.findall("value")
         ]
-        fields.append(FieldDef(number=number, name=name, type=element.get("type", "STRING"), values=values))
+        fields.append(FieldDef(number=number, name=_normalize_name(name), type=element.get("type", "STRING"), values=values))
     return fields
 
 

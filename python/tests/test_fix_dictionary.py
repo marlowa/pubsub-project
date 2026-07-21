@@ -177,6 +177,7 @@ def test_real_dictionaries_generate_cleanly():
     assert dictionary.fields[35].name == "MsgType"
     assert dictionary.fields[11].name == "ClOrdID"
     header = emit_header(dictionary, namespace="fix_codec")
-    assert "inline constexpr int CheckSum = 10;" in header
+    # "CheckSum" in the FIX dictionary is normalised to the single-word "Checksum".
+    assert "inline constexpr int Checksum = 10;" in header
     # RawDataLength (95) -> RawData (96) is one of the derived data-length pairs.
     assert "{95, 96}," in header

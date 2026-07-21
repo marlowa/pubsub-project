@@ -61,7 +61,7 @@ class FixMessageReader {
      *        message, or std::nullopt when the message is Valid.
      *
      * Different framing failures give different text -- a non-numeric BodyLength, a
-     * negative BodyLength, and a CheckSum tag at the wrong offset are each reported
+     * negative BodyLength, and a Checksum tag at the wrong offset are each reported
      * distinctly -- so a caller can log or reject with a specific reason rather than
      * a bare Status. Framing itself stores only a static view and never allocates;
      * the std::string is built here, on the error path only, when the caller asks.
@@ -275,16 +275,16 @@ class FixMessageReader {
         // BodyLength counts from just after the tag 9 SOH to just before the tag 10 SOH.
         const size_t checksum_tag_start = body_length_end + 1 + body_length;
         if (window_.size() < checksum_tag_start + 3) {
-            fail(Status::Incomplete, "message truncated before the CheckSum (tag 10) field");
+            fail(Status::Incomplete, "message truncated before the Checksum (tag 10) field");
             return;
         }
         if (window_.compare(checksum_tag_start, 3, "10=") != 0) {
-            fail(Status::Malformed, "tag 10 (CheckSum) is not at the offset BodyLength indicates");
+            fail(Status::Malformed, "tag 10 (Checksum) is not at the offset BodyLength indicates");
             return;
         }
         const size_t checksum_end = find_delimiter(window_, checksum_tag_start);
         if (checksum_end == std::string_view::npos) {
-            fail(Status::Incomplete, "CheckSum (tag 10) field is not terminated by SOH");
+            fail(Status::Incomplete, "Checksum (tag 10) field is not terminated by SOH");
             return;
         }
         message_bytes_ = window_.substr(0, checksum_end + 1);
@@ -296,7 +296,7 @@ class FixMessageReader {
         if (checksum_matches(checksum_input, received)) {
             status_ = Status::Valid;
         } else {
-            fail(Status::ChecksumError, "CheckSum (tag 10) does not match the computed value");
+            fail(Status::ChecksumError, "Checksum (tag 10) does not match the computed value");
         }
     }
 

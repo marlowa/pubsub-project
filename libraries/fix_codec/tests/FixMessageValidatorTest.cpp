@@ -30,7 +30,7 @@ namespace tag = fix_codec::tag;
 
 // Writes the mandatory fields of a conforming NewOrderSingle, optionally skipping
 // one tag (to build a message that is missing exactly one required field). The
-// writer adds BeginString/BodyLength/CheckSum itself, so this covers only the
+// writer adds BeginString/BodyLength/Checksum itself, so this covers only the
 // body and the settable header fields.
 void push_mandatory(FixMessageWriter& writer, int skip = 0) {
     if (skip != tag::MsgType) {

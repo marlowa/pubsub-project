@@ -69,7 +69,7 @@ TEST(FixMessageReaderTest, IteratesEveryFieldInOrder) {
     // 8, 9, 35, 49, 56, 34, 11, 55, 54, 38, 10 -> header + 8 body + trailer.
     EXPECT_EQ(count, 11);
     EXPECT_EQ(first_tag, tag::BeginString);
-    EXPECT_EQ(last_tag, tag::CheckSum);
+    EXPECT_EQ(last_tag, tag::Checksum);
 }
 
 TEST(FixMessageReaderTest, FindWithHintResumesFromPrevious) {
