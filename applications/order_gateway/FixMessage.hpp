@@ -8,6 +8,8 @@
 #include <string_view>
 #include <unordered_map>
 
+#include <fix_codec/fix_dictionary.hpp>
+
 namespace order_gateway {
 
 /**
@@ -115,59 +117,13 @@ class FixMessage {
     std::unordered_map<int, std::string> fields_;
 };
 
-// Commonly used MsgType values
-namespace MsgType {
-static const std::string Logon = "A";
-static const std::string Logout = "5";
-static const std::string Heartbeat = "0";
-static const std::string TestRequest = "1";
-static const std::string ResendRequest = "2";
-static const std::string Reject = "3";
-static const std::string SequenceReset = "4";
-static const std::string NewOrderSingle = "D";
-static const std::string OrderCancelRequest = "F";
-static const std::string ExecutionReport = "8";
-} // namespaces
-
-// Commonly used tag numbers
-namespace Tag {
-static constexpr int BeginString = 8;
-static constexpr int BodyLength = 9;
-static constexpr int MsgType = 35;
-static constexpr int SenderCompID = 49;
-static constexpr int TargetCompID = 56;
-static constexpr int MsgSeqNum = 34;
-static constexpr int SendingTime = 52;
-static constexpr int EncryptMethod = 98;
-static constexpr int HeartBtInt = 108;
-static constexpr int Checksum = 10;
-static constexpr int ClOrdID = 11;
-static constexpr int OrigClOrdID = 41;
-static constexpr int OrderID = 37;
-static constexpr int ExecID = 17;
-static constexpr int ExecType = 150;
-static constexpr int OrdStatus = 39;
-static constexpr int Symbol = 55;
-static constexpr int Side = 54;
-static constexpr int OrderQty = 38;
-static constexpr int Price = 44;
-static constexpr int OrdType = 40;
-static constexpr int TimeInForce = 59;
-static constexpr int CumQty = 14;
-static constexpr int LeavesQty = 151;
-static constexpr int BeginSeqNo = 7;
-static constexpr int EndSeqNo = 16;
-static constexpr int NewSeqNo = 36;
-static constexpr int GapFillFlag = 123;
-static constexpr int Text = 58;
-static constexpr int CxlRejReason = 102;
-static constexpr int OrdRejReason = 103;
-static constexpr int DefaultApplVerID = 1137;
-static constexpr int Password = 554;
-static constexpr int RefSeqNum = 45;
-static constexpr int RefMsgType = 372;
-static constexpr int BusinessRejectReason = 380;
-} // namespaces
+// Tag numbers and MsgType values are the generated FIX dictionary constants; the
+// hand-maintained tables were deleted in the fix_codec migration (stage 1). These
+// aliases keep the existing Tag::/MsgType:: call sites unchanged. Note that the
+// MsgType values are now std::string_view (not std::string) -- every use is a
+// comparison or FixMessage::set(int, std::string_view), both of which accept a view.
+namespace MsgType = fix_codec::msg_type;
+namespace Tag = fix_codec::tag;
 
 /**
  * @brief View-based representation of one complete inbound FIX message.
