@@ -124,20 +124,6 @@ class FixMessage {
         return fields_;
     }
 
-    /**
-     * @brief Clears all fields. Used to reset the message for reuse.
-     */
-    void clear() {
-        fields_.clear();
-    }
-
-    /**
-     * @brief Returns the number of fields in the message.
-     */
-    [[nodiscard]] int size() const {
-        return static_cast<int>(fields_.size());
-    }
-
   private:
     std::string& field_for(int tag) {
         for (Field& field : fields_) {
