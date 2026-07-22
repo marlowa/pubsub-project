@@ -22,6 +22,11 @@ namespace order_gateway {
  * so the caller can retain the partial bytes in the MirroredBuffer by
  * committing only that count.
  *
+ * Framing, checksum validation, and field extraction are delegated to
+ * fix_codec::FixMessageReader; FixParser is the thin stream driver that runs the
+ * reader across the window, dispatches each valid message, discards a bad-checksum
+ * message, and resynchronises past malformed input to the next message start.
+ *
  * The parser has no internal accumulation buffer. Partial-message bytes are
  * preserved automatically because the MirroredBuffer's read pointer advances
  * only by the consumed count. On the next call to feed() the window begins at
@@ -98,32 +103,6 @@ class FixParser {
     void reset();
 
   private:
-    /*
-     * Attempts to extract one complete FIX message from window starting at
-     * parse_cursor. If found: invokes on_message_, advances parse_cursor past
-     * the message, returns true. If the window contains no complete message:
-     * returns false, parse_cursor is unchanged (points to start of partial data).
-     */
-    bool try_extract_message(std::string_view window, size_t& parse_cursor);
-
-    /*
-     * Parses all tag=value fields from raw_message (a string_view into the
-     * MirroredBuffer window) into msg. Field values are string_views into the
-     * same window -- zero copy. Returns true if tag 35 (MsgType) is present.
-     */
-    static bool parse_fields(std::string_view raw_message, ParsedFixMessage& msg);
-
-    /*
-     * Returns true if the FIX checksum computed over message_bytes (bytes from
-     * tag 8 up to but not including the "10=" field) matches expected_checksum.
-     */
-    static bool validate_checksum(std::string_view message_bytes, std::string_view expected_checksum);
-
-    /*
-     * Formats a three-digit zero-padded checksum string from a byte sum.
-     */
-    static std::string format_checksum(int sum);
-
     MessageCallback on_message_;
     pubsub_itc_fw::QuillLogger& logger_;
 };

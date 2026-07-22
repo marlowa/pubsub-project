@@ -51,7 +51,9 @@ install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/order_gateway.toml
 # ── Unit tests ────────────────────────────────────────────────────────────────
 add_executable(order_gateway_tests
         tests/FixCaptureTest.cpp
+        tests/FixParserTest.cpp
         FixCapture.cpp
+        FixParser.cpp
 )
 
 target_include_directories(order_gateway_tests PRIVATE
@@ -61,8 +63,11 @@ target_include_directories(order_gateway_tests PRIVATE
 target_link_libraries(order_gateway_tests PRIVATE
         pubsub_itc_fw
         pubsub_itc_fw_test_helpers
+        fix_codec
         GTest::gtest_main
 )
+
+add_dependencies(order_gateway_tests fix_dictionary_generated)
 
 include(GoogleTest)
 if(ENABLE_TSAN)
