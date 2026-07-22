@@ -243,39 +243,62 @@ void OrderGatewayThread::on_raw_socket_message(const pubsub_itc_fw::EventMessage
 
     auto it = sessions_.find(conn_id);
     if (it == sessions_.end()) {
-        sessions_.emplace(std::piecewise_construct, std::forward_as_tuple(conn_id),
-                          std::forward_as_tuple(conn_id, get_logger(), [this, conn_id](const ParsedFixMessage& msg) {
-                              auto sit = sessions_.find(conn_id);
-                              if (sit == sessions_.end()) {
-                                  return;
-                              }
-                              FixSession& session = sit->second;
-                              const std::string_view type = msg.msg_type();
+        sessions_.emplace(
+            std::piecewise_construct, std::forward_as_tuple(conn_id),
+            std::forward_as_tuple(
+                conn_id, get_logger(),
+                [this, conn_id](const ParsedFixMessage& msg) {
+                    auto sit = sessions_.find(conn_id);
+                    if (sit == sessions_.end()) {
+                        return;
+                    }
+                    FixSession& session = sit->second;
+                    const std::string_view type = msg.msg_type();
 
-                              if (type == MsgType::Logon) {
-                                  handle_logon(session, msg);
-                              } else if (!session.session_established) {
-                                  PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                                             "OrderGatewayThread: connection {} ({}) MsgType='{}' before Logon -- disconnecting", conn_id.get_value(),
-                                             conn_id.service_name(), type);
-                                  disconnect_session(session, "first message was not Logon");
-                              } else if (type == MsgType::Heartbeat) {
-                                  handle_heartbeat(session, msg);
-                              } else if (type == MsgType::TestRequest) {
-                                  handle_test_request(session, msg);
-                              } else if (type == MsgType::Logout) {
-                                  handle_logout(session, msg);
-                              } else if (type == MsgType::ResendRequest) {
-                                  handle_resend_request(session, msg);
-                              } else if (type == MsgType::NewOrderSingle) {
-                                  handle_new_order_single(session, msg);
-                              } else if (type == MsgType::OrderCancelRequest) {
-                                  handle_order_cancel_request(session, msg);
-                              } else {
-                                  PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "OrderGatewayThread: connection {} ({}) ignoring MsgType='{}'",
-                                             conn_id.get_value(), conn_id.service_name(), type);
-                              }
-                          }));
+                    if (type == MsgType::Logon) {
+                        handle_logon(session, msg);
+                    } else if (!session.session_established) {
+                        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                                   "OrderGatewayThread: connection {} ({}) MsgType='{}' before Logon -- disconnecting", conn_id.get_value(),
+                                   conn_id.service_name(), type);
+                        disconnect_session(session, "first message was not Logon");
+                    } else if (type == MsgType::Heartbeat) {
+                        handle_heartbeat(session, msg);
+                    } else if (type == MsgType::TestRequest) {
+                        handle_test_request(session, msg);
+                    } else if (type == MsgType::Logout) {
+                        handle_logout(session, msg);
+                    } else if (type == MsgType::ResendRequest) {
+                        handle_resend_request(session, msg);
+                    } else if (type == MsgType::NewOrderSingle) {
+                        handle_new_order_single(session, msg);
+                    } else if (type == MsgType::OrderCancelRequest) {
+                        handle_order_cancel_request(session, msg);
+                    } else {
+                        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "OrderGatewayThread: connection {} ({}) ignoring MsgType='{}'",
+                                   conn_id.get_value(), conn_id.service_name(), type);
+                    }
+                },
+                [this, conn_id](const ParsedFixMessage& msg, const fix_codec::FixReject& reject) {
+                    auto sit = sessions_.find(conn_id);
+                    if (sit == sessions_.end()) {
+                        return;
+                    }
+                    FixSession& session = sit->second;
+                    char text[128];
+                    const std::string_view description = reject.describe(text, sizeof(text));
+                    // A message that fails validation before the session is established, or an
+                    // invalid Logon, cannot be handled -- disconnect. An established session
+                    // gets a FIX Reject (35=3).
+                    if (msg.msg_type() == MsgType::Logon || !session.session_established) {
+                        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                                   "OrderGatewayThread: connection {} MsgType='{}' failed FIX validation ({}) before session established -- disconnecting",
+                                   conn_id.get_value(), msg.msg_type(), description);
+                        disconnect_session(session, "message failed FIX validation");
+                    } else {
+                        send_fix_reject(session, msg, reject);
+                    }
+                }));
 
         start_one_off_timer(sessions_.at(conn_id).logon_timeout_timer_name(), config_.logon_timeout);
 
@@ -1055,6 +1078,22 @@ void OrderGatewayThread::send_business_reject(FixSession& session, const ParsedF
     bmr.set(Tag::Text, reason);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "OrderGatewayThread: connection {} BusinessReject: {}", session.conn_id.get_value(), reason);
     send_fix_to_session(session, bmr);
+}
+
+void OrderGatewayThread::send_fix_reject(FixSession& session, const ParsedFixMessage& inbound, const fix_codec::FixReject& reject) {
+    char text[128];
+    const std::string_view description = reject.describe(text, sizeof(text));
+
+    FixMessage response{};
+    response.set(Tag::MsgType, MsgType::Reject); // 35=3
+    response.set(Tag::RefSeqNum, inbound.get(Tag::MsgSeqNum).empty() ? std::string("0") : std::string(inbound.get(Tag::MsgSeqNum)));
+    response.set(Tag::RefTagID, reject.ref_tag);
+    response.set(Tag::RefMsgType, std::string(reject.ref_msg_type));
+    response.set(Tag::SessionRejectReason, static_cast<int>(reject.reason));
+    response.set(Tag::Text, std::string(description));
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "OrderGatewayThread: connection {} Reject (35=3): {}", session.conn_id.get_value(),
+               description);
+    send_fix_to_session(session, response);
 }
 
 // PDU forwarding

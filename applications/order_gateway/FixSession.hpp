@@ -89,12 +89,13 @@ struct FixSession {
     /**
      * @brief Constructs a FixSession for the given connection.
      *
-     * @param[in] id       The ConnectionID assigned by the reactor.
-     * @param[in] logger   Logger instance. Must outlive this object.
-     * @param[in] callback Called by the parser for each complete FIX message.
+     * @param[in] id         The ConnectionID assigned by the reactor.
+     * @param[in] logger     Logger instance. Must outlive this object.
+     * @param[in] on_message Called by the parser for each valid FIX message.
+     * @param[in] on_reject  Called for a well-framed message that fails validation.
      */
-    FixSession(pubsub_itc_fw::ConnectionID id, pubsub_itc_fw::QuillLogger& logger, FixParser::MessageCallback callback)
-        : conn_id(id), parser(logger, std::move(callback)) {}
+    FixSession(pubsub_itc_fw::ConnectionID id, pubsub_itc_fw::QuillLogger& logger, FixParser::MessageCallback on_message, FixParser::RejectCallback on_reject)
+        : conn_id(id), parser(logger, std::move(on_message), std::move(on_reject)) {}
 
     // Not copyable -- FixParser holds a std::function (non-copyable).
     FixSession(const FixSession&) = delete;

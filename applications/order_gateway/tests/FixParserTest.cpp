@@ -12,6 +12,7 @@
 #include <gtest/gtest.h>
 
 #include <fix_codec/FixMessageWriter.hpp>
+#include <fix_codec/FixReject.hpp>
 #include <fix_codec/fix_dictionary.hpp>
 #include <pubsub_itc_fw/tests_common/LoggerWithSink.hpp>
 
@@ -34,17 +35,27 @@ struct Captured {
     int field_count{0};
 };
 
-// Builds a complete, well-framed NewOrderSingle (correct BodyLength and Checksum).
-std::string build_message(std::string_view cl_ord_id) {
+// Builds a complete, well-framed, dictionary-valid NewOrderSingle -- correct
+// BodyLength and Checksum, and every tag NewOrderSingle requires (MsgType,
+// SenderCompID, TargetCompID, MsgSeqNum, SendingTime, ClOrdID, Side, OrdType,
+// TransactTime) so it passes FixMessageValidator. When @p include_ord_type is
+// false the (required) OrdType is omitted, producing a well-framed message that
+// fails validation with RequiredTagMissing.
+std::string build_message(std::string_view cl_ord_id, bool include_ord_type = true) {
     char buffer[256];
     fix_codec::FixMessageWriter writer(buffer, sizeof(buffer));
     writer.push_back_field(tag::MsgType, fix_codec::msg_type::NewOrderSingle);
     writer.push_back_field(tag::SenderCompID, std::string_view("CLIENT"));
     writer.push_back_field(tag::TargetCompID, std::string_view("GATEWAY"));
     writer.push_back_field(tag::MsgSeqNum, 1);
+    writer.push_back_field(tag::SendingTime, std::string_view("20260722-10:00:00"));
     writer.push_back_field(tag::ClOrdID, cl_ord_id);
     writer.push_back_field(tag::Symbol, std::string_view("AAPL"));
     writer.push_back_field(tag::Side, '1');
+    if (include_ord_type) {
+        writer.push_back_field(tag::OrdType, '2');
+    }
+    writer.push_back_field(tag::TransactTime, std::string_view("20260722-10:00:00"));
     return std::string(writer.finish());
 }
 
@@ -52,15 +63,27 @@ size_t feed(FixParser& parser, const std::string& bytes) {
     return parser.feed(reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size());
 }
 
+// One message that framed cleanly but failed dictionary validation.
+struct Rejected {
+    int reason{0};
+    int ref_tag{0};
+};
+
 class FixParserTest : public ::testing::Test {
   protected:
     pubsub_itc_fw::LoggerWithSink logger_;
     std::vector<Captured> captured_;
+    std::vector<Rejected> rejected_;
 
     FixParser make_parser() {
-        return FixParser(logger_.logger, [this](const ParsedFixMessage& message) {
-            captured_.push_back(Captured{std::string(message.msg_type()), std::string(message.get(tag::ClOrdID)), message.size()});
-        });
+        return FixParser(
+            logger_.logger,
+            [this](const ParsedFixMessage& message) {
+                captured_.push_back(Captured{std::string(message.msg_type()), std::string(message.get(tag::ClOrdID)), message.size()});
+            },
+            [this](const ParsedFixMessage&, const fix_codec::FixReject& reject) {
+                rejected_.push_back(Rejected{static_cast<int>(reject.reason), reject.ref_tag});
+            });
     }
 };
 
@@ -153,6 +176,34 @@ TEST_F(FixParserTest, SkipsLeadingGarbageBeforeAValidMessage) {
     EXPECT_EQ(consumed, wire.size());
     ASSERT_EQ(captured_.size(), 1U);
     EXPECT_EQ(captured_[0].cl_ord_id, "ORDER-3");
+}
+
+// A conforming message is dispatched and never reported as a reject.
+TEST_F(FixParserTest, DispatchesAValidMessageWithoutRejecting) {
+    FixParser parser = make_parser();
+    const std::string wire = build_message("ORDER-1");
+
+    const size_t consumed = feed(parser, wire);
+
+    EXPECT_EQ(consumed, wire.size());
+    EXPECT_EQ(captured_.size(), 1U);
+    EXPECT_TRUE(rejected_.empty());
+}
+
+// A message that frames cleanly (correct BodyLength and Checksum) but omits a
+// required tag is delivered to the reject path, not dispatched. It is consumed
+// wholly, and the reject names the specific missing tag.
+TEST_F(FixParserTest, RejectsAWellFramedMessageThatFailsValidation) {
+    FixParser parser = make_parser();
+    const std::string wire = build_message("ORDER-1", /*include_ord_type=*/false);
+
+    const size_t consumed = feed(parser, wire);
+
+    EXPECT_EQ(consumed, wire.size());
+    EXPECT_TRUE(captured_.empty());
+    ASSERT_EQ(rejected_.size(), 1U);
+    EXPECT_EQ(rejected_[0].reason, static_cast<int>(fix_codec::RejectReason::RequiredTagMissing));
+    EXPECT_EQ(rejected_[0].ref_tag, tag::OrdType);
 }
 
 } // namespaces

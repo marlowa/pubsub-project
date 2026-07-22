@@ -10,6 +10,8 @@
 
 #include <fix_codec/FixField.hpp>
 #include <fix_codec/FixMessageReader.hpp>
+#include <fix_codec/FixMessageValidator.hpp>
+#include <fix_codec/FixReject.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 
@@ -19,7 +21,8 @@ namespace {
 constexpr std::string_view begin_string_tag = "8=";
 } // namespaces
 
-FixParser::FixParser(pubsub_itc_fw::QuillLogger& logger, MessageCallback on_message) : on_message_(std::move(on_message)), logger_(logger) {}
+FixParser::FixParser(pubsub_itc_fw::QuillLogger& logger, MessageCallback on_message, RejectCallback on_reject)
+    : on_message_(std::move(on_message)), on_reject_(std::move(on_reject)), logger_(logger) {}
 
 size_t FixParser::feed(const uint8_t* data, size_t available) {
     // The double-mapping of MirroredBuffer guarantees this region is contiguous in
@@ -68,13 +71,21 @@ size_t FixParser::feed(const uint8_t* data, size_t available) {
 
             case fix_codec::FixMessageReader::Status::Valid: {
                 // Field values are string_views into the window -- zero copy, valid only
-                // for the duration of on_message_.
+                // for the duration of the callback.
                 ParsedFixMessage message;
                 for (const fix_codec::FixField& field : reader) {
                     message.set(field.tag, field.value);
                 }
+                // A well-framed message with no MsgType (tag 35) is garbled per FIX
+                // (MsgType must be the third field); discard it silently like a bad
+                // checksum -- do not validate or reject it.
                 if (message.has(Tag::MsgType)) {
-                    on_message_(message);
+                    const fix_codec::FixReject reject = fix_codec::FixMessageValidator(reader).validate();
+                    if (reject.ok()) {
+                        on_message_(message);
+                    } else {
+                        on_reject_(message, reject);
+                    }
                 }
                 committed = start + reader.message_size();
                 cursor = committed;

@@ -7,6 +7,7 @@
 #include <functional>
 #include <string_view>
 
+#include <fix_codec/FixReject.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 
 #include "FixMessage.hpp"
@@ -63,15 +64,23 @@ namespace order_gateway {
 class FixParser {
   public:
     using MessageCallback = std::function<void(const ParsedFixMessage&)>;
+    using RejectCallback = std::function<void(const ParsedFixMessage&, const fix_codec::FixReject&)>;
 
     /**
-     * @brief Constructs a FixParser with the given logger and message callback.
+     * @brief Constructs a FixParser with the given logger and callbacks.
+     *
+     * Each complete, well-framed message is validated against the FIX dictionary
+     * (fix_codec::FixMessageValidator). A conforming message is delivered to
+     * @p on_message; a well-formed message that fails validation is delivered to
+     * @p on_reject with the reason. Garbled input (bad checksum, malformed framing)
+     * is never validated and never reported as a reject -- per FIX it is silently
+     * discarded, so on_reject fires only for messages that framed cleanly.
      *
      * @param[in] logger     Logger instance. Must outlive this object.
-     * @param[in] on_message Called once for each complete, valid FIX message
-     *                       found in the window passed to feed().
+     * @param[in] on_message Called once for each complete, valid FIX message.
+     * @param[in] on_reject  Called for a well-framed message that fails validation.
      */
-    FixParser(pubsub_itc_fw::QuillLogger& logger, MessageCallback on_message);
+    FixParser(pubsub_itc_fw::QuillLogger& logger, MessageCallback on_message, RejectCallback on_reject);
 
     /**
      * @brief Parses FIX messages from a contiguous byte window.
@@ -104,6 +113,7 @@ class FixParser {
 
   private:
     MessageCallback on_message_;
+    RejectCallback on_reject_;
     pubsub_itc_fw::QuillLogger& logger_;
 };
 
