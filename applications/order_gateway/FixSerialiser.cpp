@@ -20,8 +20,7 @@ std::string FixSerialiser::serialise(const FixMessage& msg, int seq_num) const {
     return serialise(msg, seq_num, target_comp_id_);
 }
 
-std::string FixSerialiser::serialise(const FixMessage& msg, int seq_num,
-                                     const std::string& target_comp_id) const {
+std::string FixSerialiser::serialise(const FixMessage& msg, int seq_num, const std::string& target_comp_id) const {
     std::string body;
     append_field(body, Tag::MsgType, msg.msg_type());
     append_field(body, Tag::SenderCompID, sender_comp_id_);
@@ -35,8 +34,28 @@ std::string FixSerialiser::serialise(const FixMessage& msg, int seq_num,
     // to keep FixMessage's internals private. For this sample the set of
     // application tags is small and fixed.
     constexpr int app_tags[] = {
-        Tag::EncryptMethod, Tag::HeartBtInt, Tag::DefaultApplVerID, Tag::Text,  Tag::ClOrdID, Tag::OrderID, Tag::ExecID,    Tag::ExecType, Tag::OrdStatus,
-        Tag::Symbol,        Tag::Side,       Tag::OrderQty,         Tag::Price, Tag::OrdType, Tag::CumQty,  Tag::LeavesQty,
+        Tag::EncryptMethod,
+        Tag::HeartBtInt,
+        Tag::DefaultApplVerID,
+        // Reject (35=3) fields, ordered RefSeqNum, RefTagID, RefMsgType,
+        // SessionRejectReason, Text ahead of the order fields below.
+        Tag::RefSeqNum,
+        Tag::RefTagID,
+        Tag::RefMsgType,
+        Tag::SessionRejectReason,
+        Tag::Text,
+        Tag::ClOrdID,
+        Tag::OrderID,
+        Tag::ExecID,
+        Tag::ExecType,
+        Tag::OrdStatus,
+        Tag::Symbol,
+        Tag::Side,
+        Tag::OrderQty,
+        Tag::Price,
+        Tag::OrdType,
+        Tag::CumQty,
+        Tag::LeavesQty,
     };
 
     for (const int tag : app_tags) {
