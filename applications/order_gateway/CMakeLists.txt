@@ -52,8 +52,10 @@ install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/order_gateway.toml
 add_executable(order_gateway_tests
         tests/FixCaptureTest.cpp
         tests/FixParserTest.cpp
+        tests/FixSerialiserTest.cpp
         FixCapture.cpp
         FixParser.cpp
+        FixSerialiser.cpp
 )
 
 target_include_directories(order_gateway_tests PRIVATE
