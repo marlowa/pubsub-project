@@ -173,7 +173,13 @@ TEST_F(FixCaptureTest, AllRecordsFlushedBeforeDestructorReturns) {
     constexpr int record_count = 500;
 
     {
-        FixCapture capture(capture_file_, logger_.logger, record_count + 100);
+        // The third argument is the ring capacity in BYTES, not a record count.
+        // Size it to hold every record (13-byte header + ~7-byte payload each) so
+        // nothing is dropped during the writes -- this test exercises the
+        // destructor flush, not ring-full backpressure, and must not race the
+        // background writer thread.
+        const size_t ring_bytes = static_cast<size_t>(record_count) * 64;
+        FixCapture capture(capture_file_, logger_.logger, ring_bytes);
         for (int i = 0; i < record_count; ++i) {
             const std::string data = "msg_" + std::to_string(i);
             capture.capture(FixCapture::Direction::Outbound,
