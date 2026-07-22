@@ -16,15 +16,14 @@ namespace order_gateway {
 static constexpr size_t execution_report_buffer_size = 512;
 
 /**
- * Encodes an ExecutionReport directly into buf as FIX 5.0SP2 / FIXT 1.1
- * wire bytes. No heap allocation. All string_view fields from view are
- * written via memcpy; enum fields are cast to their single-char wire values.
+ * Encodes an ExecutionReport into output_buffer as FIX 5.0SP2 / FIXT 1.1 wire
+ * bytes using fix_codec::FixMessageWriter -- framing (BeginString, BodyLength,
+ * Checksum) and tag numbers come from the generated FIX dictionary. No heap
+ * allocation; enum fields are cast to their single-char wire values.
  *
- * The field order matches FixSerialiser so existing FIX parsers see the
- * same message layout.
- *
- * Returns the number of bytes written. Returns 0 if buf_size is too small,
- * which should never happen when buf_size >= execution_report_buffer_size.
+ * The returned view is the complete wire message. It does NOT start at
+ * output_buffer[0]: FixMessageWriter writes the header backward into a reserved
+ * prefix, so the caller must send view.data()/view.size(), not the buffer base.
  *
  * @param[in]  view            Decoded execution report fields (string_views into arena).
  * @param[in]  sender_comp_id  SenderCompID for the outbound FIX header.
@@ -33,10 +32,10 @@ static constexpr size_t execution_report_buffer_size = 512;
  * @param[in]  wall_clock      Clock used to generate SendingTime (tag 52).
  * @param[out] output_buffer        Caller-supplied output buffer.
  * @param[in]  output_buffer_size   Size of output_buffer in bytes.
- * @return Number of bytes written, or 0 on overflow.
+ * @return A view of the wire bytes within output_buffer; empty on overflow.
  */
-[[nodiscard]] size_t encode_execution_report(const pubsub_itc_fw_app::ExecutionReportView& view, std::string_view sender_comp_id,
-                                             std::string_view target_comp_id, int seq_num, const pubsub_itc_fw::WallClock& wall_clock, char* output_buffer,
-                                             size_t output_buffer_size);
+[[nodiscard]] std::string_view encode_execution_report(const pubsub_itc_fw_app::ExecutionReportView& view, std::string_view sender_comp_id,
+                                                       std::string_view target_comp_id, int seq_num, const pubsub_itc_fw::WallClock& wall_clock,
+                                                       char* output_buffer, size_t output_buffer_size);
 
 } // namespaces

@@ -6,7 +6,8 @@
 #include <array>
 #include <string>
 #include <string_view>
-#include <unordered_map>
+#include <utility>
+#include <vector>
 
 #include <fix_codec/fix_dictionary.hpp>
 
@@ -15,9 +16,10 @@ namespace order_gateway {
 /**
  * @brief A simple container for a single FIX message's tag/value pairs.
  *
- * FixMessage holds the fields of one complete FIX message as a map from
- * integer tag number to string value. It does not validate field presence
- * or types -- that is the responsibility of the code that consumes the message.
+ * FixMessage holds the fields of one complete FIX message as an ordered list of
+ * (tag number, string value) pairs -- insertion order is preserved so the
+ * serialiser can emit them in order. It does not validate field presence or types
+ * -- that is the responsibility of the code that consumes the message.
  *
  * This is intentionally minimal and scoped to the sample FIX gateway. It is
  * not a general-purpose FIX message implementation.
@@ -49,31 +51,37 @@ namespace order_gateway {
  */
 class FixMessage {
   public:
+    using Field = std::pair<int, std::string>;
+
     FixMessage() = default;
 
     /**
      * @brief Sets a field by tag number and string value.
+     *
+     * A tag set for the first time is appended; setting an existing tag overwrites
+     * its value in place. Insertion order is preserved so a serialiser can emit the
+     * fields in the order they were set, rather than from a hand-maintained list.
      */
     void set(int tag, const std::string& value) {
-        fields_[tag] = value;
+        field_for(tag) = value;
     }
 
     /**
-     * @brief Sets a field by tag number and string_view value (copies into the map).
+     * @brief Sets a field by tag number and string_view value (copies into storage).
      *
      * Provided so outbound FixMessage instances can be populated directly from
      * ParsedFixMessage::get() return values without an explicit conversion to
      * std::string at each call site.
      */
     void set(int tag, std::string_view value) {
-        fields_[tag] = std::string(value);
+        field_for(tag).assign(value.data(), value.size());
     }
 
     /**
      * @brief Sets a field by tag number and integer value.
      */
     void set(int tag, int value) {
-        fields_[tag] = std::to_string(value);
+        field_for(tag) = std::to_string(value);
     }
 
     /**
@@ -81,15 +89,24 @@ class FixMessage {
      */
     [[nodiscard]] const std::string& get(int tag) const {
         static const std::string empty;
-        auto it = fields_.find(tag);
-        return (it != fields_.end()) ? it->second : empty;
+        for (const Field& field : fields_) {
+            if (field.first == tag) {
+                return field.second;
+            }
+        }
+        return empty;
     }
 
     /**
      * @brief Returns true if the given tag is present in the message.
      */
     [[nodiscard]] bool has(int tag) const {
-        return fields_.count(tag) != 0;
+        for (const Field& field : fields_) {
+            if (field.first == tag) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -97,6 +114,14 @@ class FixMessage {
      */
     [[nodiscard]] const std::string& msg_type() const {
         return get(35);
+    }
+
+    /**
+     * @brief The fields in the order they were set. Used by the serialiser to emit
+     *        every field the caller supplied without a hand-maintained tag list.
+     */
+    [[nodiscard]] const std::vector<Field>& fields() const {
+        return fields_;
     }
 
     /**
@@ -114,7 +139,17 @@ class FixMessage {
     }
 
   private:
-    std::unordered_map<int, std::string> fields_;
+    std::string& field_for(int tag) {
+        for (Field& field : fields_) {
+            if (field.first == tag) {
+                return field.second;
+            }
+        }
+        fields_.emplace_back(tag, std::string());
+        return fields_.back().second;
+    }
+
+    std::vector<Field> fields_;
 };
 
 // Tag numbers and MsgType values are the generated FIX dictionary constants; the

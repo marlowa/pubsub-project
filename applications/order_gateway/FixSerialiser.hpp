@@ -5,8 +5,8 @@
 
 #include <string>
 
-#include <pubsub_itc_fw/WallClock.hpp>
 #include "FixMessage.hpp"
+#include <pubsub_itc_fw/WallClock.hpp>
 
 namespace order_gateway {
 
@@ -67,22 +67,9 @@ class FixSerialiser {
      * Used when the target is known per-session (e.g. the client's SenderCompID from its Logon)
      * rather than the configured default.
      */
-    [[nodiscard]] std::string serialise(const FixMessage& msg, int seq_num,
-                                        const std::string& target_comp_id) const;
+    [[nodiscard]] std::string serialise(const FixMessage& msg, int seq_num, const std::string& target_comp_id) const;
 
   private:
-    /*
-     * Appends a single tag=value<SOH> field to output.
-     */
-    static void append_field(std::string& output, int tag, const std::string& value);
-    static void append_field(std::string& output, int tag, int value);
-
-    /*
-     * Computes the FIX checksum of input -- sum of all bytes modulo 256,
-     * formatted as a zero-padded three-digit string.
-     */
-    static std::string compute_checksum(const std::string& input);
-
     /*
      * Returns the time from wall_clock_ formatted as YYYYMMDD-HH:MM:SS UTC.
      */

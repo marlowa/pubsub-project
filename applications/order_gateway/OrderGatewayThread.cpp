@@ -504,20 +504,22 @@ void OrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventMess
     // Encode the FIX ExecutionReport directly into a stack buffer.
     // No heap allocation: all string_view fields from view are memcpy'd
     // straight into the wire bytes; enum fields are cast to single chars.
+    // The returned view is the wire message inside wire_buffer; it does not begin
+    // at wire_buffer[0] because FixMessageWriter frames the header backward.
     char wire_buffer[execution_report_buffer_size];
-    const size_t wire_length = encode_execution_report(view, config_.sender_comp_id, session.client_comp_id, session.outbound_seq_num++, *config_.wall_clock,
-                                                       wire_buffer, sizeof(wire_buffer));
+    const std::string_view wire = encode_execution_report(view, config_.sender_comp_id, session.client_comp_id, session.outbound_seq_num++, *config_.wall_clock,
+                                                          wire_buffer, sizeof(wire_buffer));
     if (capture_ != nullptr) {
-        capture_->capture(FixCapture::Direction::Outbound, reinterpret_cast<const uint8_t*>(wire_buffer), wire_length, config_.wall_clock->now_ns());
+        capture_->capture(FixCapture::Direction::Outbound, reinterpret_cast<const uint8_t*>(wire.data()), wire.size(), config_.wall_clock->now_ns());
     }
-    std::string readable_er(wire_buffer, wire_length);
+    std::string readable_er(wire);
     for (char& c : readable_er) {
         if (c == '\x01')
             c = '|';
     }
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "OrderGatewayThread: connection {} FIX OUT ({} bytes): {}", session.conn_id.get_value(),
-               wire_length, readable_er);
-    send_raw(session.conn_id, wire_buffer, static_cast<uint32_t>(wire_length));
+               wire.size(), readable_er);
+    send_raw(session.conn_id, wire.data(), static_cast<uint32_t>(wire.size()));
     release_pdu_payload(message);
 }
 

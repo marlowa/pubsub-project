@@ -53,13 +53,16 @@ add_executable(order_gateway_tests
         tests/FixCaptureTest.cpp
         tests/FixParserTest.cpp
         tests/FixSerialiserTest.cpp
+        tests/FixErEncoderTest.cpp
         FixCapture.cpp
         FixParser.cpp
         FixSerialiser.cpp
+        FixErEncoder.cpp
 )
 
 target_include_directories(order_gateway_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
+        ${FIX_DSL_INCLUDE_DIR}
 )
 
 target_link_libraries(order_gateway_tests PRIVATE
@@ -69,7 +72,7 @@ target_link_libraries(order_gateway_tests PRIVATE
         GTest::gtest_main
 )
 
-add_dependencies(order_gateway_tests fix_dictionary_generated)
+add_dependencies(order_gateway_tests fix_dictionary_generated fix_equity_orders_generated)
 
 include(GoogleTest)
 if(ENABLE_TSAN)
