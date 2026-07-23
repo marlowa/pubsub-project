@@ -198,7 +198,46 @@ class JavaGenerator:
         self._emit_decode_public(msg, w)
         w("")
         self._emit_decode_fields(msg, w)
+        w("")
+        self._emit_message_to_string(msg, w)
         w("    }")
+
+    # ------------------------------------------------------------------
+    # toString (structured debug dump)
+    # ------------------------------------------------------------------
+
+    def _emit_message_to_string(self, msg: MessageDecl, w) -> None:
+        """Emit a toString() that dumps the message as a field=value string.
+
+        The generator knows every field, its type and its optionality, so the dump
+        stays in step with the DSL automatically. StringBuilder.append already
+        renders primitives, enums (their name) and nested messages (their
+        toString); only byte[] and arrays are special-cased.
+        """
+        w("        @Override")
+        w("        public String toString() {")
+        w(f'            StringBuilder sb = new StringBuilder("{msg.name}{{");')
+        for field in msg.fields:
+            indent = "            "
+            if field.optional:
+                w(f"            if (has_{field.name}) {{")
+                indent = "                "
+            self._emit_to_string_field(field, indent, w)
+            if field.optional:
+                w("            }")
+        w('            sb.append(" }");')
+        w("            return sb.toString();")
+        w("        }")
+
+    def _emit_to_string_field(self, field: Field, indent: str, w) -> None:
+        """Emit the StringBuilder append for one field, dispatched on its type."""
+        name = field.name
+        if isinstance(field.type, BytesType):
+            w(f'{indent}sb.append(" {name}=bytes(").append({name}.length).append(")");')
+        elif isinstance(field.type, (ListType, ArrayType)):
+            w(f'{indent}sb.append(" {name}=").append(java.util.Arrays.toString({name}));')
+        else:
+            w(f'{indent}sb.append(" {name}=").append({name});')
 
     # ------------------------------------------------------------------
     # encodedSize
