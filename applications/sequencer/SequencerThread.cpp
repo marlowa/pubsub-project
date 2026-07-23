@@ -294,27 +294,63 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
     const bool is_er_pdu = (svc == er_inbound_svc_);
 
     if (is_order_pdu) {
-        // Order PDU from a gateway instance. As leader, stamp a sequence number
-        // and forward to the matching engine.
+        // Order arrives from the gateway wrapped in a WalRecord envelope: the routing
+        // metadata (gateway_session_conn_id, sender_comp_id) rides on the envelope so
+        // the DD-derived FIX PDU stays pure. The FIX payload is opaque here -- no field
+        // hand-copy. Decode only the envelope, stamp seq_no + wall_time_ns, then
+        // persist / replicate / stream / forward the SAME stamped envelope.
         //
-        // seq_no is carried in the PDU transport header (third arg to send_pdu).
-        // The ME reads it via message.seq_no() and echoes it on the ER reply.
+        // seq_no is carried in the PDU transport header (third arg to send_pdu); the ME
+        // reads it via message.seq_no() and echoes it on the ER reply.
+        auto& arena_buf = decode_arena_buffer();
+        pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+        arena.reset();
+        size_t arena_bytes_needed = 0;
+        size_t bytes_consumed = 0;
+        pubsub_itc_fw_app::WalRecordView inbound{};
+        if (!pubsub_itc_fw_app::decode(inbound, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode order envelope -- dropping");
+            release_pdu_payload(message);
+            return;
+        }
+
+        const int16_t inner_pdu_id = inbound.pdu_id;
+        if (inner_pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle) &&
+            inner_pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest)) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: unknown order envelope pdu_id {} -- dropping", inner_pdu_id);
+            release_pdu_payload(message);
+            return;
+        }
+
         const int64_t seq = next_sequence_number_++;
         const int64_t wall_time_ns = config_.wall_clock->now_ns();
 
-        // WAL commit: only the leader appends from the direct gateway PDU.
-        // Followers write their WAL exclusively via WalRecord from the leader,
-        // which ensures WALs are identical byte-for-byte.  Unknown role (during
-        // election startup) appends locally because it may become the leader.
+        // Stamp the envelope with the assigned seq_no and sequencing wall time. The
+        // inner FIX payload (a BytesView into the inbound slab) stays valid until
+        // release_pdu_payload(message) below, after every send has copied it.
+        pubsub_itc_fw_app::WalRecord envelope{};
+        envelope.seq_no = seq;
+        envelope.pdu_id = inner_pdu_id;
+        envelope.payload = inbound.payload;
+        envelope.wall_time_ns = wall_time_ns;
+        envelope.has_gateway_session_conn_id = inbound.has_gateway_session_conn_id;
+        envelope.gateway_session_conn_id = inbound.gateway_session_conn_id;
+        envelope.has_sender_comp_id = inbound.has_sender_comp_id;
+        envelope.sender_comp_id = inbound.sender_comp_id;
+
+        // WAL commit: only the leader appends from the direct gateway PDU. Followers
+        // write their WAL exclusively via WalRecord from the leader, keeping WALs
+        // byte-identical. Unknown role (election startup) appends locally because it
+        // may become the leader.
         if (role_ != pubsub_itc_fw_app::Role::follower) {
-            wal_.append(seq, message.pdu_id(), message.payload(), message.payload_size(), wall_time_ns);
+            append_envelope_to_wal(envelope);
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
-                       "SequencerThread: order PDU on connection {} pdu_id={} seq={} -- WAL append ok (wal_size={}) role={}",
-                       message.connection_id().get_value(), message.pdu_id(), seq, wal_.record_count(), pubsub_itc_fw_app::to_string(role_));
+                       "SequencerThread: order envelope on connection {} inner_pdu_id={} seq={} -- WAL append ok (wal_size={}) role={}",
+                       message.connection_id().get_value(), inner_pdu_id, seq, wal_.record_count(), pubsub_itc_fw_app::to_string(role_));
         } else {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
-                       "SequencerThread: order PDU on connection {} pdu_id={} seq={} -- follower, WAL written via WalRecord",
-                       message.connection_id().get_value(), message.pdu_id(), seq);
+                       "SequencerThread: order envelope on connection {} inner_pdu_id={} seq={} -- follower, WAL written via WalRecord",
+                       message.connection_id().get_value(), inner_pdu_id, seq);
         }
 
         if (role_ != pubsub_itc_fw_app::Role::leader) {
@@ -338,145 +374,28 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             return;
         }
 
-        // Forward the raw PDU payload to the ME by re-encoding it.
-        // We use the pdu_id from the incoming message so the ME sees the
-        // correct topic tag (NewOrderSingle=1000, OrderCancelRequest=1001).
-        const auto pdu_id = message.pdu_id();
-        bool forwarded_to_me = false;
-
-        if (pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle)) {
-            auto& arena_buf = decode_arena_buffer();
-            pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
-            arena.reset();
-            size_t arena_bytes_needed = 0;
-            size_t bytes_consumed = 0;
-            pubsub_itc_fw_app::NewOrderSingleView view{};
-
-            if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
-                PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode NewOrderSingle -- dropping");
-                release_pdu_payload(message);
-                return;
-            }
-
-            // Re-encode into an owning struct and send to ME.
-            //
-            // The string fields below are std::string_view, not std::string.
-            // We assign view.X directly: those views point into the slab
-            // payload owned by the inbound EventMessage, which is alive until
-            // release_pdu_payload(message) is called below (after send_pdu
-            // returns). Wrapping the assignment in std::string(view.X) would
-            // create a temporary that dies at the semicolon, leaving the
-            // string_view dangling -- visible at runtime as small-string
-            // optimisation bookkeeping bytes leaking into the encoded wire
-            // payload (e.g. cl_ord_id encoded as 0x0F 0x00 0x00 0x00).
-            //
-            // Optional fields: every has_* flag is copied along with its
-            // value so anything the gateway populated reaches the ME.
-            pubsub_itc_fw_app::NewOrderSingle nos{};
-
-            // Required fields.
-            nos.cl_ord_id = view.cl_ord_id;
-            nos.side = view.side;
-            nos.symbol = view.symbol;
-            nos.ord_type = view.ord_type;
-            nos.transact_time = view.transact_time;
-            nos.order_qty = view.order_qty;
-
-            // Optional fields.
-            nos.has_price = view.has_price;
-            nos.price = view.price;
-            nos.has_stop_px = view.has_stop_px;
-            nos.stop_px = view.stop_px;
-            nos.has_time_in_force = view.has_time_in_force;
-            nos.time_in_force = view.time_in_force;
-            nos.has_account = view.has_account;
-            nos.account = view.account;
-            nos.has_ex_destination = view.has_ex_destination;
-            nos.ex_destination = view.ex_destination;
-            nos.has_exec_inst = view.has_exec_inst;
-            nos.exec_inst = view.exec_inst;
-            nos.has_min_qty = view.has_min_qty;
-            nos.min_qty = view.min_qty;
-            nos.has_max_floor = view.has_max_floor;
-            nos.max_floor = view.max_floor;
-            nos.has_expire_time = view.has_expire_time;
-            nos.expire_time = view.expire_time;
-            nos.has_text = view.has_text;
-            nos.text = view.text;
-            nos.has_sender_comp_id = view.has_sender_comp_id;
-            nos.sender_comp_id = view.sender_comp_id;
-            nos.has_gateway_session_conn_id = view.has_gateway_session_conn_id;
-            nos.gateway_session_conn_id = view.gateway_session_conn_id;
-
-            // Stamp wall time so the ME can use the original sequencing time
-            // for transact_time during replay instead of calling system_clock::now().
-            nos.has_sequenced_at = true;
-            nos.sequenced_at = wall_time_ns;
-
-            // Record seq_no -> gateway_session_conn_id for ER routing back to the
-            // exact FIX session.  seq_no is globally unique; gateway_session_conn_id
-            // identifies the specific connection within the gateway.
-            if (view.has_gateway_session_conn_id) {
-                seq_no_to_session_conn_id_[seq] = view.gateway_session_conn_id;
-            }
-
-            send_pdu(me_outbound_order_conn_id_, pdu_id, seq, nos);
-            forwarded_to_me = true;
-
-        } else if (pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest)) {
-            auto& arena_buf = decode_arena_buffer();
-            pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
-            arena.reset();
-            size_t arena_bytes_needed = 0;
-            size_t bytes_consumed = 0;
-            pubsub_itc_fw_app::OrderCancelRequestView view{};
-
-            if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
-                PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode OrderCancelRequest -- dropping");
-                release_pdu_payload(message);
-                return;
-            }
-
-            pubsub_itc_fw_app::OrderCancelRequest ocr{};
-            ocr.orig_cl_ord_id = view.orig_cl_ord_id;
-            ocr.cl_ord_id = view.cl_ord_id;
-            ocr.symbol = view.symbol;
-            ocr.side = view.side;
-            ocr.transact_time = view.transact_time;
-            ocr.order_qty = view.order_qty;
-            ocr.has_account = view.has_account;
-            ocr.account = view.account;
-            ocr.has_text = view.has_text;
-            ocr.text = view.text;
-            ocr.has_sender_comp_id = view.has_sender_comp_id;
-            ocr.sender_comp_id = view.sender_comp_id;
-            ocr.has_gateway_session_conn_id = view.has_gateway_session_conn_id;
-            ocr.gateway_session_conn_id = view.gateway_session_conn_id;
-
-            ocr.has_sequenced_at = true;
-            ocr.sequenced_at = wall_time_ns;
-
-            // Record seq_no -> gateway_session_conn_id for cancel-ER routing.
-            if (view.has_gateway_session_conn_id) {
-                seq_no_to_session_conn_id_[seq] = view.gateway_session_conn_id;
-            }
-
-            send_pdu(me_outbound_order_conn_id_, pdu_id, seq, ocr);
-            forwarded_to_me = true;
-
-        } else {
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: unknown order PDU id {} -- dropping", pdu_id);
+        // Record seq_no -> gateway_session_conn_id for ER routing back to the exact
+        // FIX session. seq_no is globally unique; gateway_session_conn_id identifies
+        // the specific connection within the gateway.
+        if (inbound.has_gateway_session_conn_id) {
+            seq_no_to_session_conn_id_[seq] = inbound.gateway_session_conn_id;
         }
 
-        // Replicate to peer follower before releasing the slab so the payload pointer stays valid.
-        if (forwarded_to_me && config_.ha_enabled) {
-            send_wal_record(seq, pdu_id, message, wall_time_ns);
+        // Forward the stamped envelope to the ME. The ME unwraps it, reads
+        // wall_time_ns as the sequencing time (transact_time during replay), and
+        // decodes the inner FIX PDU. The FIX payload is passed through opaque -- no
+        // field hand-copy.
+        send_pdu(me_outbound_order_conn_id_, pubsub_itc_fw_app::WalRecord::message_pdu_id, seq, envelope);
+
+        // Replicate to the peer follower before releasing the slab so the inner
+        // payload pointer stays valid.
+        if (config_.ha_enabled) {
+            send_wal_record(envelope);
         }
 
-        // Stream to external WAL subscribers (MEP primary and secondary).
-        if (forwarded_to_me) {
-            stream_wal_record_to_external_subscribers(seq, pdu_id, message, wall_time_ns);
-        }
+        // Stream to external WAL subscribers (MEP primary and secondary), which
+        // unwrap the envelope and publish the inner DD-derived PDU on its topic.
+        stream_wal_record_to_external_subscribers(envelope);
 
         release_pdu_payload(message);
 
@@ -498,7 +417,6 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             return;
         }
 
-        const auto pdu_id = message.pdu_id();
         auto& arena_buf = decode_arena_buffer();
         pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
         arena.reset();
@@ -506,111 +424,28 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         size_t bytes_consumed = 0;
         pubsub_itc_fw_app::ExecutionReportView view{};
 
+        // The ER decode is kept only to read ord_status (for routing-map eviction);
+        // the ER payload itself is forwarded opaque inside the envelope.
         if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
             PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode ExecutionReport -- dropping");
             release_pdu_payload(message);
             return;
         }
 
-        // Sequence the ER into the WAL and deliver it the same three ways an order is (append,
-        // replicate to the peer follower, stream to external subscribers) so the MEP -- an
-        // external WAL subscriber -- publishes it on the execution_reports topic. Each ER gets
-        // its OWN seq_no (an
-        // order can emit several ERs -- New, Fill, Canceled -- so they cannot share the
-        // order's seq). Leader-only (followers returned above); the follower receives the ER
-        // as a WalRecord below and keeps its WAL byte-identical. Replay ignores ER records
-        // (dispatch_replay_records only re-sends NOS/OCR). NOTE: the ER is forwarded to the
-        // gateway gated on the *order's* WalAck, not this ER record's own -- so at a failover
-        // instant a just-forwarded ER may be missing from the new leader's WAL (an
-        // execution_reports-topic gap at the seam). Full two-tier commit of ERs is a follow-up.
-        const int64_t er_wal_seq = next_sequence_number_++;
-        const int64_t er_wall_time_ns = config_.wall_clock->now_ns();
-        wal_.append(er_wal_seq, message.pdu_id(), message.payload(), message.payload_size(), er_wall_time_ns);
-        send_wal_record(er_wal_seq, message.pdu_id(), message, er_wall_time_ns);
-        // send_wal_record only replicates to the peer follower sequencer; the MEP is an EXTERNAL
-        // WAL subscriber and must be pushed to separately, exactly as the order path does above.
-        stream_wal_record_to_external_subscribers(er_wal_seq, message.pdu_id(), message, er_wall_time_ns);
-
-        // Re-encode into an owning struct and forward to the gateway.
-        // String fields are std::string_view assigned directly from the
-        // view; the slab payload backing the view is alive until
-        // release_pdu_payload(message) below.
-        //
-        // The ExecutionReport schema has many optional fields. Each is
-        // gated by a has_* flag; the value field is meaningful only when
-        // the flag is set. The forward-as-is policy is to copy every
-        // has_* flag from view to er, and copy each value unconditionally
-        // (when the flag is false the value is the schema default and the
-        // encoder will not emit the value field).
-        pubsub_itc_fw_app::ExecutionReport er{};
-
-        // Required fields.
-        er.order_id = view.order_id;
-        er.exec_id = view.exec_id;
-        er.exec_type = view.exec_type;
-        er.ord_status = view.ord_status;
-        er.symbol = view.symbol;
-        er.side = view.side;
-        er.leaves_qty = view.leaves_qty;
-        er.cum_qty = view.cum_qty;
-        er.avg_px = view.avg_px;
-        er.transact_time = view.transact_time;
-
-        // Optional fields -- copy has_* flag and value together.
-        er.has_cl_ord_id = view.has_cl_ord_id;
-        er.cl_ord_id = view.cl_ord_id;
-        er.has_orig_cl_ord_id = view.has_orig_cl_ord_id;
-        er.orig_cl_ord_id = view.orig_cl_ord_id;
-        er.has_ord_type = view.has_ord_type;
-        er.ord_type = view.ord_type;
-        er.has_price = view.has_price;
-        er.price = view.price;
-        er.has_stop_px = view.has_stop_px;
-        er.stop_px = view.stop_px;
-        er.has_order_qty = view.has_order_qty;
-        er.order_qty = view.order_qty;
-        er.has_time_in_force = view.has_time_in_force;
-        er.time_in_force = view.time_in_force;
-        er.has_account = view.has_account;
-        er.account = view.account;
-        er.has_ex_destination = view.has_ex_destination;
-        er.ex_destination = view.ex_destination;
-        er.has_exec_inst = view.has_exec_inst;
-        er.exec_inst = view.exec_inst;
-        er.has_last_qty = view.has_last_qty;
-        er.last_qty = view.last_qty;
-        er.has_last_px = view.has_last_px;
-        er.last_px = view.last_px;
-        er.has_trade_date = view.has_trade_date;
-        er.trade_date = view.trade_date;
-        er.has_exec_ref_id = view.has_exec_ref_id;
-        er.exec_ref_id = view.exec_ref_id;
-        er.has_ord_rej_reason = view.has_ord_rej_reason;
-        er.ord_rej_reason = view.ord_rej_reason;
-        er.has_cxl_rej_reason = view.has_cxl_rej_reason;
-        er.cxl_rej_reason = view.cxl_rej_reason;
-        er.has_text = view.has_text;
-        er.text = view.text;
-        er.has_min_qty = view.has_min_qty;
-        er.min_qty = view.min_qty;
-        er.has_max_floor = view.has_max_floor;
-        er.max_floor = view.max_floor;
-        er.has_expire_time = view.has_expire_time;
-        er.expire_time = view.expire_time;
-
-        // Look up the originating FIX session by the ER's seq_no.  The ME echoes
-        // the NOS's seq_no back in the ER transport envelope, so message.seq_no()
-        // here is the same value that was stored in seq_no_to_session_conn_id_
-        // when the NOS was forwarded.  seq_no is globally unique, eliminating the
-        // ClOrdID-collision problem that occurred when multiple FIX sessions
-        // submitted orders with identical ClOrdID sequences.
+        // Look up the originating FIX session by the ER's seq_no. The ME echoes the
+        // NOS's seq_no back in the ER transport header, so message.seq_no() here is the
+        // value stored in seq_no_to_session_conn_id_ when the NOS was forwarded. seq_no
+        // is globally unique, eliminating the ClOrdID-collision problem. The conn id
+        // rides on the envelope, not inside the DD-derived ER.
         const int64_t er_seq_no = message.seq_no();
+        bool has_routing_conn = false;
+        int32_t routing_conn_id = 0;
         bool erase_routing_entry = false;
         {
             auto it = seq_no_to_session_conn_id_.find(er_seq_no);
             if (it != seq_no_to_session_conn_id_.end()) {
-                er.has_gateway_session_conn_id = true;
-                er.gateway_session_conn_id = it->second;
+                has_routing_conn = true;
+                routing_conn_id = it->second;
 
                 switch (view.ord_status) {
                     case pubsub_itc_fw_app::OrdStatus::Filled:
@@ -630,8 +465,39 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             }
         }
 
+        // Sequence the ER into the WAL and deliver it the same three ways an order is
+        // (append, replicate to the peer follower, stream to external subscribers) so
+        // the MEP -- an external WAL subscriber -- publishes it on the execution_reports
+        // topic. Each ER gets its OWN seq_no (an order can emit several ERs -- New, Fill,
+        // Canceled -- so they cannot share the order's seq). The stored/replicated/streamed
+        // record is the WalRecord-wrapped ER; the routing conn id rides on the envelope
+        // (the MEP unwraps and publishes only the inner DD-derived ER). Replay skips ER
+        // records (dispatch_replay_records only re-sends NOS/OCR). NOTE: the ER is
+        // forwarded to the gateway gated on the *order's* WalAck, not this ER record's own
+        // -- so at a failover instant a just-forwarded ER may be missing from the new
+        // leader's WAL (an execution_reports-topic gap at the seam). Full two-tier commit
+        // of ERs is a follow-up.
+        const int64_t er_wal_seq = next_sequence_number_++;
+        const int64_t er_wall_time_ns = config_.wall_clock->now_ns();
+
+        pubsub_itc_fw_app::WalRecord envelope{};
+        envelope.seq_no = er_wal_seq;
+        envelope.pdu_id = message.pdu_id();
+        envelope.payload.data = message.payload();
+        envelope.payload.size = static_cast<size_t>(message.payload_size());
+        envelope.wall_time_ns = er_wall_time_ns;
+        envelope.has_gateway_session_conn_id = has_routing_conn;
+        envelope.gateway_session_conn_id = routing_conn_id;
+
+        append_envelope_to_wal(envelope);
+        send_wal_record(envelope);
+        stream_wal_record_to_external_subscribers(envelope);
+
+        // Forward the envelope-wrapped ER to the gateway, gated on the follower having
+        // durably committed the *order's* WAL entry (er_seq_no). The gateway unwraps the
+        // envelope, reads gateway_session_conn_id, and routes to the FIX session.
         if (!needs_wal_ack()) {
-            send_pdu(gateway_conn_id_, pdu_id, er_seq_no, er);
+            send_pdu(gateway_conn_id_, pubsub_itc_fw_app::WalRecord::message_pdu_id, er_seq_no, envelope);
             release_pdu_payload(message);
             if (erase_routing_entry) {
                 seq_no_to_session_conn_id_.erase(er_seq_no);
@@ -641,19 +507,19 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             if (acked_it != wal_acked_seq_nos_.end()) {
                 // Follower already acked this seq_no; forward immediately.
                 wal_acked_seq_nos_.erase(acked_it);
-                send_pdu(gateway_conn_id_, pdu_id, er_seq_no, er);
+                send_pdu(gateway_conn_id_, pubsub_itc_fw_app::WalRecord::message_pdu_id, er_seq_no, envelope);
                 release_pdu_payload(message);
                 if (erase_routing_entry) {
                     seq_no_to_session_conn_id_.erase(er_seq_no);
                 }
             } else {
-                // WalAck not yet received; buffer the ER until it arrives.
+                // WalAck not yet received; buffer the raw ER until it arrives.
                 PendingEr pending{};
-                pending.pdu_id = pdu_id;
+                pending.pdu_id = message.pdu_id();
                 pending.seq_no = er_seq_no;
                 pending.payload.assign(message.payload(), message.payload() + static_cast<size_t>(message.payload_size()));
-                pending.has_gateway_session_conn_id = er.has_gateway_session_conn_id;
-                pending.gateway_session_conn_id = er.gateway_session_conn_id;
+                pending.has_gateway_session_conn_id = has_routing_conn;
+                pending.gateway_session_conn_id = routing_conn_id;
                 pending.erase_routing_entry = erase_routing_entry;
                 PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: ER seq={} buffered -- awaiting WalAck from follower", er_seq_no);
                 pending_er_.emplace(er_seq_no, std::move(pending));
@@ -1032,90 +898,44 @@ void SequencerThread::dispatch_replay_records() {
 
     size_t dispatched = 0;
     for (const auto& record : replay_buffer_) {
+        // Each stored record is a WalRecord envelope (Option B). Decode it, then
+        // re-send the envelope to the ME for NOS/OCR (the ME unwraps it and reads
+        // wall_time_ns as the sequencing time); ER envelopes are outputs, not
+        // inputs, and are not replayed to the ME.
+        if (record.pdu_id != pubsub_itc_fw_app::WalRecord::message_pdu_id) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: replay -- record seq={} is not a WalRecord (pdu_id={}) -- skipping",
+                       record.seq_no, record.pdu_id);
+            continue;
+        }
+
         auto& arena_buf = decode_arena_buffer();
         pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
         arena.reset();
         size_t arena_bytes_needed = 0;
         size_t bytes_consumed = 0;
-
-        if (record.pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle)) {
-            pubsub_itc_fw_app::NewOrderSingleView view{};
-            if (!pubsub_itc_fw_app::decode(view, record.payload.data(), record.payload.size(), bytes_consumed, arena, arena_bytes_needed)) {
-                PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: replay -- failed to decode NOS seq={} -- skipping",
-                           record.seq_no);
-                continue;
-            }
-
-            pubsub_itc_fw_app::NewOrderSingle nos{};
-            nos.cl_ord_id = view.cl_ord_id;
-            nos.side = view.side;
-            nos.symbol = view.symbol;
-            nos.ord_type = view.ord_type;
-            nos.transact_time = view.transact_time;
-            nos.order_qty = view.order_qty;
-            nos.has_price = view.has_price;
-            nos.price = view.price;
-            nos.has_stop_px = view.has_stop_px;
-            nos.stop_px = view.stop_px;
-            nos.has_time_in_force = view.has_time_in_force;
-            nos.time_in_force = view.time_in_force;
-            nos.has_account = view.has_account;
-            nos.account = view.account;
-            nos.has_ex_destination = view.has_ex_destination;
-            nos.ex_destination = view.ex_destination;
-            nos.has_exec_inst = view.has_exec_inst;
-            nos.exec_inst = view.exec_inst;
-            nos.has_min_qty = view.has_min_qty;
-            nos.min_qty = view.min_qty;
-            nos.has_max_floor = view.has_max_floor;
-            nos.max_floor = view.max_floor;
-            nos.has_expire_time = view.has_expire_time;
-            nos.expire_time = view.expire_time;
-            nos.has_text = view.has_text;
-            nos.text = view.text;
-            nos.has_sender_comp_id = view.has_sender_comp_id;
-            nos.sender_comp_id = view.sender_comp_id;
-            nos.has_gateway_session_conn_id = view.has_gateway_session_conn_id;
-            nos.gateway_session_conn_id = view.gateway_session_conn_id;
-            // Stamp the original sequencing time so the ME uses it for transact_time.
-            nos.has_sequenced_at = true;
-            nos.sequenced_at = record.wall_time_ns;
-
-            send_pdu(me_outbound_order_conn_id_, record.pdu_id, record.seq_no, nos);
-
-        } else if (record.pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest)) {
-            pubsub_itc_fw_app::OrderCancelRequestView view{};
-            if (!pubsub_itc_fw_app::decode(view, record.payload.data(), record.payload.size(), bytes_consumed, arena, arena_bytes_needed)) {
-                PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: replay -- failed to decode OCR seq={} -- skipping",
-                           record.seq_no);
-                continue;
-            }
-
-            pubsub_itc_fw_app::OrderCancelRequest ocr{};
-            ocr.orig_cl_ord_id = view.orig_cl_ord_id;
-            ocr.cl_ord_id = view.cl_ord_id;
-            ocr.symbol = view.symbol;
-            ocr.side = view.side;
-            ocr.transact_time = view.transact_time;
-            ocr.order_qty = view.order_qty;
-            ocr.has_account = view.has_account;
-            ocr.account = view.account;
-            ocr.has_text = view.has_text;
-            ocr.text = view.text;
-            ocr.has_sender_comp_id = view.has_sender_comp_id;
-            ocr.sender_comp_id = view.sender_comp_id;
-            ocr.has_gateway_session_conn_id = view.has_gateway_session_conn_id;
-            ocr.gateway_session_conn_id = view.gateway_session_conn_id;
-            ocr.has_sequenced_at = true;
-            ocr.sequenced_at = record.wall_time_ns;
-
-            send_pdu(me_outbound_order_conn_id_, record.pdu_id, record.seq_no, ocr);
-
-        } else {
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: replay -- unknown pdu_id={} seq={} -- skipping", record.pdu_id,
+        pubsub_itc_fw_app::WalRecordView view{};
+        if (!pubsub_itc_fw_app::decode(view, record.payload.data(), record.payload.size(), bytes_consumed, arena, arena_bytes_needed)) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: replay -- failed to decode envelope seq={} -- skipping",
                        record.seq_no);
             continue;
         }
+
+        if (view.pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle) &&
+            view.pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest)) {
+            continue;
+        }
+
+        pubsub_itc_fw_app::WalRecord envelope{};
+        envelope.seq_no = view.seq_no;
+        envelope.pdu_id = view.pdu_id;
+        envelope.payload = view.payload;
+        envelope.wall_time_ns = view.wall_time_ns;
+        envelope.has_gateway_session_conn_id = view.has_gateway_session_conn_id;
+        envelope.gateway_session_conn_id = view.gateway_session_conn_id;
+        envelope.has_sender_comp_id = view.has_sender_comp_id;
+        envelope.sender_comp_id = view.sender_comp_id;
+
+        send_pdu(me_outbound_order_conn_id_, pubsub_itc_fw_app::WalRecord::message_pdu_id, record.seq_no, envelope);
         ++dispatched;
     }
 
@@ -1132,19 +952,31 @@ bool SequencerThread::needs_wal_ack() const {
     return config_.ha_enabled && peer_active_conn().is_valid();
 }
 
-void SequencerThread::send_wal_record(int64_t seq, int16_t wal_pdu_id, const pubsub_itc_fw::EventMessage& message, int64_t wall_time_ns) {
+void SequencerThread::append_envelope_to_wal(const pubsub_itc_fw_app::WalRecord& envelope) {
+    // Option B: the WAL stores the WalRecord envelope itself (record pdu_id =
+    // WalRecord), so the persisted bytes are byte-identical to the replication and
+    // external-subscriber streams. Encode the envelope into a scratch buffer, then
+    // hand it to the framework WAL under its own pdu_id.
+    constexpr size_t envelope_encode_capacity = 4096;
+    std::array<uint8_t, envelope_encode_capacity> encode_buffer;
+    size_t bytes_written = 0;
+    size_t bytes_needed = 0;
+    if (!pubsub_itc_fw_app::encode(envelope, encode_buffer.data(), encode_buffer.size(), bytes_written, bytes_needed)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                   "SequencerThread: envelope for seq={} too large to WAL ({} bytes needed) -- record NOT persisted", envelope.seq_no, bytes_needed);
+        return;
+    }
+    wal_.append(envelope.seq_no, pubsub_itc_fw_app::WalRecord::message_pdu_id, encode_buffer.data(), static_cast<int>(bytes_written), envelope.wall_time_ns);
+}
+
+void SequencerThread::send_wal_record(const pubsub_itc_fw_app::WalRecord& envelope) {
     const pubsub_itc_fw::ConnectionID target = peer_active_conn();
     if (!target.is_valid()) {
         return;
     }
-    pubsub_itc_fw_app::WalRecord wal_record{};
-    wal_record.seq_no = seq;
-    wal_record.pdu_id = wal_pdu_id;
-    wal_record.payload.data = message.payload();
-    wal_record.payload.size = static_cast<size_t>(message.payload_size());
-    wal_record.wall_time_ns = wall_time_ns;
-    send_pdu(target, pubsub_itc_fw_app::WalRecord::message_pdu_id, seq, wal_record);
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: WalRecord sent to follower seq={} pdu_id={}", seq, wal_pdu_id);
+    send_pdu(target, pubsub_itc_fw_app::WalRecord::message_pdu_id, envelope.seq_no, envelope);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: WalRecord sent to follower seq={} inner_pdu_id={}", envelope.seq_no,
+               envelope.pdu_id);
 }
 
 void SequencerThread::handle_wal_record(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
@@ -1160,9 +992,12 @@ void SequencerThread::handle_wal_record(const pubsub_itc_fw::ConnectionID& conn_
         return;
     }
 
-    wal_.append(view.seq_no, view.pdu_id, view.payload.data, static_cast<int>(view.payload.size), view.wall_time_ns);
+    // Option B: store the received WalRecord bytes verbatim under the WalRecord pdu
+    // so the follower WAL is byte-identical to the leader's. (view is decoded only to
+    // read seq_no + wall_time_ns for the append header and the WalAck.)
+    wal_.append(view.seq_no, pubsub_itc_fw_app::WalRecord::message_pdu_id, message.payload(), message.payload_size(), view.wall_time_ns);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
-               "SequencerThread: WalRecord seq={} pdu_id={} written to follower WAL (wal_size={}) -- sending WalAck", view.seq_no, view.pdu_id,
+               "SequencerThread: WalRecord seq={} inner_pdu_id={} written to follower WAL (wal_size={}) -- sending WalAck", view.seq_no, view.pdu_id,
                wal_.record_count());
 
     pubsub_itc_fw_app::WalAck wal_ack{};
@@ -1220,7 +1055,9 @@ void SequencerThread::install_peer_wal_inline_handler(const pubsub_itc_fw::Conne
                 return false;
             }
 
-            wal_.append(view.seq_no, view.pdu_id, view.payload.data, static_cast<int>(view.payload.size), view.wall_time_ns);
+            // Option B: persist the received WalRecord bytes verbatim (record pdu_id =
+            // WalRecord) so leader and follower WALs stay byte-identical.
+            wal_.append(view.seq_no, pubsub_itc_fw_app::WalRecord::message_pdu_id, payload, static_cast<int>(size), view.wall_time_ns);
 
             pubsub_itc_fw_app::WalAck wal_ack{};
             wal_ack.seq_no = view.seq_no;
@@ -1260,78 +1097,18 @@ void SequencerThread::forward_pending_er(const PendingEr& pending) {
         return;
     }
 
-    auto& arena_buf = decode_arena_buffer();
-    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
-    arena.reset();
-    size_t arena_bytes_needed = 0;
-    size_t bytes_consumed = 0;
-    pubsub_itc_fw_app::ExecutionReportView view{};
+    // Wrap the buffered raw ER in a WalRecord envelope carrying the routing conn id
+    // and forward it to the gateway, which unwraps and routes to the FIX session.
+    // pending.payload is alive for this call; the envelope's BytesView borrows it.
+    pubsub_itc_fw_app::WalRecord envelope{};
+    envelope.seq_no = pending.seq_no;
+    envelope.pdu_id = pending.pdu_id;
+    envelope.payload.data = pending.payload.data();
+    envelope.payload.size = pending.payload.size();
+    envelope.has_gateway_session_conn_id = pending.has_gateway_session_conn_id;
+    envelope.gateway_session_conn_id = pending.gateway_session_conn_id;
 
-    if (!pubsub_itc_fw_app::decode(view, pending.payload.data(), pending.payload.size(), bytes_consumed, arena, arena_bytes_needed)) {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode buffered ExecutionReport -- dropping");
-        return;
-    }
-
-    // pending.payload is alive for the lifetime of this call; string_view fields
-    // in both view and er borrow from it and remain valid through send_pdu.
-    pubsub_itc_fw_app::ExecutionReport er{};
-    er.order_id = view.order_id;
-    er.exec_id = view.exec_id;
-    er.exec_type = view.exec_type;
-    er.ord_status = view.ord_status;
-    er.symbol = view.symbol;
-    er.side = view.side;
-    er.leaves_qty = view.leaves_qty;
-    er.cum_qty = view.cum_qty;
-    er.avg_px = view.avg_px;
-    er.transact_time = view.transact_time;
-    er.has_cl_ord_id = view.has_cl_ord_id;
-    er.cl_ord_id = view.cl_ord_id;
-    er.has_orig_cl_ord_id = view.has_orig_cl_ord_id;
-    er.orig_cl_ord_id = view.orig_cl_ord_id;
-    er.has_ord_type = view.has_ord_type;
-    er.ord_type = view.ord_type;
-    er.has_price = view.has_price;
-    er.price = view.price;
-    er.has_stop_px = view.has_stop_px;
-    er.stop_px = view.stop_px;
-    er.has_order_qty = view.has_order_qty;
-    er.order_qty = view.order_qty;
-    er.has_time_in_force = view.has_time_in_force;
-    er.time_in_force = view.time_in_force;
-    er.has_account = view.has_account;
-    er.account = view.account;
-    er.has_ex_destination = view.has_ex_destination;
-    er.ex_destination = view.ex_destination;
-    er.has_exec_inst = view.has_exec_inst;
-    er.exec_inst = view.exec_inst;
-    er.has_last_qty = view.has_last_qty;
-    er.last_qty = view.last_qty;
-    er.has_last_px = view.has_last_px;
-    er.last_px = view.last_px;
-    er.has_trade_date = view.has_trade_date;
-    er.trade_date = view.trade_date;
-    er.has_exec_ref_id = view.has_exec_ref_id;
-    er.exec_ref_id = view.exec_ref_id;
-    er.has_ord_rej_reason = view.has_ord_rej_reason;
-    er.ord_rej_reason = view.ord_rej_reason;
-    er.has_cxl_rej_reason = view.has_cxl_rej_reason;
-    er.cxl_rej_reason = view.cxl_rej_reason;
-    er.has_text = view.has_text;
-    er.text = view.text;
-    er.has_min_qty = view.has_min_qty;
-    er.min_qty = view.min_qty;
-    er.has_max_floor = view.has_max_floor;
-    er.max_floor = view.max_floor;
-    er.has_expire_time = view.has_expire_time;
-    er.expire_time = view.expire_time;
-
-    if (pending.has_gateway_session_conn_id) {
-        er.has_gateway_session_conn_id = true;
-        er.gateway_session_conn_id = pending.gateway_session_conn_id;
-    }
-
-    send_pdu(gateway_conn_id_, pending.pdu_id, pending.seq_no, er);
+    send_pdu(gateway_conn_id_, pubsub_itc_fw_app::WalRecord::message_pdu_id, pending.seq_no, envelope);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: buffered ER seq={} forwarded to gateway", pending.seq_no);
 
     if (pending.erase_routing_entry) {
@@ -1432,21 +1209,15 @@ void SequencerThread::handle_external_wal_ack(const pubsub_itc_fw::ConnectionID&
                view.seq_no, external_wal_subscriber_registry_.min_cursor());
 }
 
-void SequencerThread::stream_wal_record_to_external_subscribers(int64_t seq, int16_t pdu_id, const pubsub_itc_fw::EventMessage& message, int64_t wall_time_ns) {
+void SequencerThread::stream_wal_record_to_external_subscribers(const pubsub_itc_fw_app::WalRecord& envelope) {
     if (wal_subscriber_conn_ids_.empty()) {
         return;
     }
-    pubsub_itc_fw_app::WalRecord wal_record{};
-    wal_record.seq_no = seq;
-    wal_record.pdu_id = pdu_id;
-    wal_record.payload.data = message.payload();
-    wal_record.payload.size = static_cast<size_t>(message.payload_size());
-    wal_record.wall_time_ns = wall_time_ns;
     for (const auto& subscriber_conn_id : wal_subscriber_conn_ids_) {
-        send_pdu(subscriber_conn_id, pubsub_itc_fw_app::WalRecord::message_pdu_id, seq, wal_record);
+        send_pdu(subscriber_conn_id, pubsub_itc_fw_app::WalRecord::message_pdu_id, envelope.seq_no, envelope);
     }
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: WalRecord seq={} pdu_id={} streamed to {} external subscriber(s)", seq, pdu_id,
-               wal_subscriber_conn_ids_.size());
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: WalRecord seq={} inner_pdu_id={} streamed to {} external subscriber(s)",
+               envelope.seq_no, envelope.pdu_id, wal_subscriber_conn_ids_.size());
 }
 
 // ME failover reconciliation (Slice D)
@@ -1539,81 +1310,44 @@ void SequencerThread::handle_me_position_request(const pubsub_itc_fw::Connection
 
 void SequencerThread::stream_wal_record_to_me(const pubsub_itc_fw::ConnectionID& conn_id, int64_t record_id, int16_t pdu_id, const uint8_t* pdu_payload,
                                               size_t pdu_size, int64_t wall_time_ns) {
+    // Each stored WAL record is a WalRecord envelope (Option B). Decode it and
+    // re-send the envelope to the ME for NOS/OCR (the ME unwraps it and reads
+    // wall_time_ns as the sequencing time); ER envelopes are outputs, not inputs,
+    // and are not streamed to the ME during catch-up.
+    if (pdu_id != pubsub_itc_fw_app::WalRecord::message_pdu_id) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: catch-up -- record seq={} is not a WalRecord (pdu_id={}) -- skipping",
+                   record_id, pdu_id);
+        return;
+    }
+
     auto& arena_buf = decode_arena_buffer();
     pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
     arena.reset();
     size_t arena_bytes_needed = 0;
     size_t bytes_consumed = 0;
-
-    if (pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle)) {
-        pubsub_itc_fw_app::NewOrderSingleView view{};
-        if (!pubsub_itc_fw_app::decode(view, pdu_payload, pdu_size, bytes_consumed, arena, arena_bytes_needed)) {
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: catch-up -- failed to decode NOS seq={} -- skipping", record_id);
-            return;
-        }
-        pubsub_itc_fw_app::NewOrderSingle nos{};
-        nos.cl_ord_id = view.cl_ord_id;
-        nos.side = view.side;
-        nos.symbol = view.symbol;
-        nos.ord_type = view.ord_type;
-        nos.transact_time = view.transact_time;
-        nos.order_qty = view.order_qty;
-        nos.has_price = view.has_price;
-        nos.price = view.price;
-        nos.has_stop_px = view.has_stop_px;
-        nos.stop_px = view.stop_px;
-        nos.has_time_in_force = view.has_time_in_force;
-        nos.time_in_force = view.time_in_force;
-        nos.has_account = view.has_account;
-        nos.account = view.account;
-        nos.has_ex_destination = view.has_ex_destination;
-        nos.ex_destination = view.ex_destination;
-        nos.has_exec_inst = view.has_exec_inst;
-        nos.exec_inst = view.exec_inst;
-        nos.has_min_qty = view.has_min_qty;
-        nos.min_qty = view.min_qty;
-        nos.has_max_floor = view.has_max_floor;
-        nos.max_floor = view.max_floor;
-        nos.has_expire_time = view.has_expire_time;
-        nos.expire_time = view.expire_time;
-        nos.has_text = view.has_text;
-        nos.text = view.text;
-        nos.has_sender_comp_id = view.has_sender_comp_id;
-        nos.sender_comp_id = view.sender_comp_id;
-        nos.has_gateway_session_conn_id = view.has_gateway_session_conn_id;
-        nos.gateway_session_conn_id = view.gateway_session_conn_id;
-        nos.has_sequenced_at = true;
-        nos.sequenced_at = wall_time_ns;
-        send_pdu(conn_id, pdu_id, record_id, nos);
-
-    } else if (pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest)) {
-        pubsub_itc_fw_app::OrderCancelRequestView view{};
-        if (!pubsub_itc_fw_app::decode(view, pdu_payload, pdu_size, bytes_consumed, arena, arena_bytes_needed)) {
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: catch-up -- failed to decode OCR seq={} -- skipping", record_id);
-            return;
-        }
-        pubsub_itc_fw_app::OrderCancelRequest ocr{};
-        ocr.orig_cl_ord_id = view.orig_cl_ord_id;
-        ocr.cl_ord_id = view.cl_ord_id;
-        ocr.symbol = view.symbol;
-        ocr.side = view.side;
-        ocr.transact_time = view.transact_time;
-        ocr.order_qty = view.order_qty;
-        ocr.has_account = view.has_account;
-        ocr.account = view.account;
-        ocr.has_text = view.has_text;
-        ocr.text = view.text;
-        ocr.has_sender_comp_id = view.has_sender_comp_id;
-        ocr.sender_comp_id = view.sender_comp_id;
-        ocr.has_gateway_session_conn_id = view.has_gateway_session_conn_id;
-        ocr.gateway_session_conn_id = view.gateway_session_conn_id;
-        ocr.has_sequenced_at = true;
-        ocr.sequenced_at = wall_time_ns;
-        send_pdu(conn_id, pdu_id, record_id, ocr);
-
-    } else {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: catch-up -- unknown pdu_id={} seq={} -- skipping", pdu_id, record_id);
+    pubsub_itc_fw_app::WalRecordView view{};
+    if (!pubsub_itc_fw_app::decode(view, pdu_payload, pdu_size, bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: catch-up -- failed to decode envelope seq={} -- skipping", record_id);
+        return;
     }
+
+    if (view.pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle) &&
+        view.pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest)) {
+        return;
+    }
+
+    pubsub_itc_fw_app::WalRecord envelope{};
+    envelope.seq_no = view.seq_no;
+    envelope.pdu_id = view.pdu_id;
+    envelope.payload = view.payload;
+    envelope.wall_time_ns = view.wall_time_ns;
+    envelope.has_gateway_session_conn_id = view.has_gateway_session_conn_id;
+    envelope.gateway_session_conn_id = view.gateway_session_conn_id;
+    envelope.has_sender_comp_id = view.has_sender_comp_id;
+    envelope.sender_comp_id = view.sender_comp_id;
+
+    send_pdu(conn_id, pubsub_itc_fw_app::WalRecord::message_pdu_id, record_id, envelope);
+    (void)wall_time_ns;
 }
 
 } // namespaces

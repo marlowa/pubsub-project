@@ -3,6 +3,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <array>
 #include <deque>
 #include <memory>
 #include <string>
@@ -26,6 +27,11 @@
 // authentication.hpp defines BytesView inside the PUBSUB_ITC_FW_APP_DSL_SHARED_HELPERS
 // guard block; fix_equity_orders.hpp sets the guard without providing BytesView.
 #include <authentication.hpp>
+
+// WalRecord doubles as the pipeline envelope carrying the routing metadata that
+// must not live inside the (DD-derived) FIX PDU. Included after authentication.hpp
+// so BytesView is already defined. See docs/design/fix_pdu_generation.md.
+#include <leader_follower.hpp>
 
 // Shared SCRAM-SHA-256 crypto primitives.
 #include <scram_crypto/ScramCrypto.hpp> // IWYU pragma: keep
@@ -166,6 +172,43 @@ class OrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
                                "OrderGatewayThread: secondary sequencer not connected -- PDU not forwarded to secondary");
             }
         }
+    }
+
+    // Upper bound on the encoded size of a single order PDU (NewOrderSingle /
+    // OrderCancelRequest) when wrapped in a WalRecord envelope. A full FIX NOS is
+    // ~1 KB; 2 KB leaves generous headroom for the largest DD-derived message.
+    static constexpr size_t order_envelope_payload_capacity = 2048;
+
+    // Wrap an order PDU in a WalRecord envelope and forward it to the sequencer(s).
+    // The routing metadata that must not live inside the (DD-derived) FIX PDU --
+    // the originating session's connection id (for ER routing) and its SenderCompID
+    // (for audit) -- rides on the envelope, not the PDU. The sequencer stamps seq_no
+    // and wall_time_ns; both are left zero here. See docs/design/fix_pdu_generation.md.
+    template <typename MsgT>
+    void forward_order_in_envelope(int16_t inner_pdu_id, const MsgT& msg, int32_t gateway_session_conn_id, std::string_view sender_comp_id) {
+        std::array<uint8_t, order_envelope_payload_capacity> inner_buffer;
+        size_t bytes_written = 0;
+        size_t bytes_needed = 0;
+        // Unqualified so ADL finds pubsub_itc_fw_app::encode for the concrete MsgT at
+        // instantiation (the overload is not visible at this template's definition point).
+        if (!encode(msg, inner_buffer.data(), inner_buffer.size(), bytes_written, bytes_needed)) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "OrderGatewayThread: order PDU {} too large to wrap ({} bytes needed) -- not forwarded", inner_pdu_id, bytes_needed);
+            return;
+        }
+
+        pubsub_itc_fw_app::WalRecord envelope{};
+        envelope.pdu_id = inner_pdu_id;
+        envelope.payload.data = inner_buffer.data();
+        envelope.payload.size = bytes_written;
+        envelope.has_gateway_session_conn_id = true;
+        envelope.gateway_session_conn_id = gateway_session_conn_id;
+        if (!sender_comp_id.empty()) {
+            envelope.has_sender_comp_id = true;
+            envelope.sender_comp_id = sender_comp_id;
+        }
+
+        forward_pdu_to_sequencers(pubsub_itc_fw_app::WalRecord::message_pdu_id, envelope);
     }
 
     const OrderGatewayConfiguration& config_;

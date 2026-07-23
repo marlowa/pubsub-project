@@ -152,6 +152,34 @@ wrap / sequencer passthrough (deleting the ~20-field hand-copy) / ME unwrap, the
 then MEP + topic_probe, then delete the three internal fields from the DD PDUs (1g), with a
 live NOS→ER→topic round-trip and a failover test as the acceptance gate.
 
+### Implemented: 1b–1f (Option B — WalRecord as the on-wire + on-disk envelope)
+
+Done as one coherent, build-green changeset (1g deferred). Decision: **Option B** — the WAL
+stores the WalRecord envelope itself (record `pdu_id = WalRecord`, payload = the wrapped FIX
+PDU + routing fields), so the persisted bytes are byte-identical to the follower-replication
+and external-subscriber (MEP) streams, and every reader decodes envelope-then-payload.
+
+- **Gateway** wraps each NOS/OCR in a `WalRecord` (`forward_order_in_envelope`), putting
+  `gateway_session_conn_id` + `sender_comp_id` on the envelope and leaving them **unset**
+  inside the FIX PDU; it unwraps the ER envelope to route by the envelope's conn id.
+- **Sequencer**: the order path decodes only the envelope (FIX payload opaque — the ~20-field
+  hand-copy is deleted), stamps `seq_no` + `wall_time_ns`, then `append_envelope_to_wal` +
+  `send_wal_record(envelope)` + `stream_wal_record_to_external_subscribers(envelope)` + forwards
+  the same stamped envelope to the ME. The ER path wraps the bare ME ER in an envelope carrying
+  the routing conn id (the ~40-field hand-copy is deleted). Replay, WAL catch-up
+  (`stream_wal_record_to_me`), and follower ingest (`handle_wal_record` + inline handler) all
+  store/forward the wrapped envelope.
+- **ME** unwraps the envelope, reads `wall_time_ns` as the sequencing time (passed into
+  `handle_new_order_single` / `handle_order_cancel_request` as `sequenced_at_ns`), and decodes
+  the inner FIX PDU.
+- **MEP / topic_probe** unchanged: the MEP already unwraps `WalRecord` and republishes the
+  inner (now pure) FIX PDU on its topic.
+
+The three internal fields remain **declared but unset** in `fix_equity_orders.dsl` (vestigial);
+1g deletes them. **Existing on-disk WALs are now format-incompatible → start from a clean WAL.**
+Build + all unit/integration tests green; the replay/failover acceptance gate (live HA +
+`ha_test.py`) is still to be run.
+
 ---
 
 ## 3. Web UI for a full NOS

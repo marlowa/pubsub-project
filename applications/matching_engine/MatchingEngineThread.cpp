@@ -214,71 +214,79 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
         release_pdu_payload(message);
         return;
     }
-    if (pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport)) {
-        // ERs may arrive on the ME's ER connections (the sequencer streams them).
-        // The ME is the source of ERs, not a consumer -- discard.
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
-                   "MatchingEngineThread: ExecutionReport received on connection {} -- discarding (ME does not consume ERs)",
-                   message.connection_id().get_value());
+    if (pdu_id == pubsub_itc_fw_app::BookUpdate::message_pdu_id) {
+        // BookUpdate from ME-primary -- secondary updates its replica book.
+        apply_book_update(message);
+        return; // apply_book_update calls release_pdu_payload internally.
+    }
+
+    if (pdu_id != pubsub_itc_fw_app::WalRecord::message_pdu_id) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: unsupported sequenced PDU id {} -- dropping", pdu_id);
         release_pdu_payload(message);
         return;
     }
 
-    // ---- Order PDU gating by HA state -------------------------------------
-    const bool is_order_pdu = (pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle)) ||
-                              (pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest));
+    // Orders arrive wrapped in a WalRecord envelope from the sequencer: the routing
+    // and sequencing metadata rides on the envelope, the DD-derived FIX PDU is the
+    // payload. Unwrap the envelope, then dispatch the inner NOS/OCR using the
+    // envelope's wall_time_ns as the sequencing time (transact_time during replay).
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    arena.reset();
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw_app::WalRecordView envelope{};
+    if (!pubsub_itc_fw_app::decode(envelope, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode order envelope -- dropping");
+        release_pdu_payload(message);
+        return;
+    }
 
+    const int16_t inner_pdu_id = envelope.pdu_id;
+    const bool is_order_pdu = (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle)) ||
+                              (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest));
+
+    // ---- Order PDU gating by HA state -------------------------------------
     if (is_order_pdu && ha_role_state_ == MeRole::Follower) {
         // Passive follower: order PDUs from the sequencer are discarded (the primary
         // is authoritative; the follower's book is maintained via BookUpdate replication).
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MatchingEngineThread: FOLLOWER -- discarding order PDU pdu_id={} on connection {}", pdu_id,
-                   message.connection_id().get_value());
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MatchingEngineThread: FOLLOWER -- discarding order PDU inner_pdu_id={} on connection {}",
+                   inner_pdu_id, message.connection_id().get_value());
         release_pdu_payload(message);
         return;
     }
 
-    if (pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle)) {
-        auto& arena_buf = decode_arena_buffer();
-        pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
-        arena.reset();
-        size_t arena_bytes_needed = 0;
-        size_t bytes_consumed = 0;
+    if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle)) {
         pubsub_itc_fw_app::NewOrderSingleView view{};
-
-        if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        if (!pubsub_itc_fw_app::decode(view, envelope.payload.data, envelope.payload.size, bytes_consumed, arena, arena_bytes_needed)) {
             PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode NewOrderSingle -- dropping");
             release_pdu_payload(message);
             return;
         }
-        handle_new_order_single(view, message.seq_no());
+        handle_new_order_single(view, message.seq_no(), envelope.wall_time_ns);
 
-    } else if (pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest)) {
-        auto& arena_buf = decode_arena_buffer();
-        pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
-        arena.reset();
-        size_t arena_bytes_needed = 0;
-        size_t bytes_consumed = 0;
+    } else if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest)) {
         pubsub_itc_fw_app::OrderCancelRequestView view{};
-
-        if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        if (!pubsub_itc_fw_app::decode(view, envelope.payload.data, envelope.payload.size, bytes_consumed, arena, arena_bytes_needed)) {
             PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode OrderCancelRequest -- dropping");
             release_pdu_payload(message);
             return;
         }
-        handle_order_cancel_request(view, message.seq_no());
+        handle_order_cancel_request(view, message.seq_no(), envelope.wall_time_ns);
 
-    } else if (pdu_id == pubsub_itc_fw_app::BookUpdate::message_pdu_id) {
-        // BookUpdate from ME-primary -- secondary updates its replica book.
-        apply_book_update(message);
-        return; // apply_book_update calls release_pdu_payload internally.
+    } else if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport)) {
+        // The ME is the source of ERs, not a consumer -- discard.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
+                   "MatchingEngineThread: ExecutionReport envelope on connection {} -- discarding (ME does not consume ERs)",
+                   message.connection_id().get_value());
     } else {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: unsupported sequenced PDU id {} -- dropping", pdu_id);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: unsupported envelope inner pdu_id {} -- dropping", inner_pdu_id);
     }
 
     release_pdu_payload(message);
 }
 
-void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number) {
+void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number, int64_t sequenced_at_ns) {
     // RECONCILING (Slice D): apply the WAL catch-up NOS to the book but do NOT
     // emit an ER and do NOT replicate. The gateway already saw ERs for these
     // orders from the failed primary; re-sending would duplicate them.
@@ -310,7 +318,7 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
         return;
     }
 
-    const int64_t now_ns = view.has_sequenced_at ? view.sequenced_at : config_.wall_clock->now_ns();
+    const int64_t now_ns = sequenced_at_ns != 0 ? sequenced_at_ns : config_.wall_clock->now_ns();
     const int32_t session_id = view.has_gateway_session_conn_id ? view.gateway_session_conn_id : 0;
     const OrderKey order_key = OrderKey::make(session_id, view.cl_ord_id);
 
@@ -394,7 +402,8 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
                exec_id, view.cl_ord_id, order_book_.size());
 }
 
-void MatchingEngineThread::handle_order_cancel_request(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t sequence_number) {
+void MatchingEngineThread::handle_order_cancel_request(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t sequence_number,
+                                                       int64_t sequenced_at_ns) {
     // RECONCILING (Slice D): apply the WAL catch-up OCR to the book but do NOT emit an ER.
     if (ha_role_state_ == MeRole::Reconciling) {
         const int32_t recon_session_id = view.has_gateway_session_conn_id ? view.gateway_session_conn_id : 0;
@@ -410,7 +419,7 @@ void MatchingEngineThread::handle_order_cancel_request(const pubsub_itc_fw_app::
         return;
     }
 
-    const int64_t now_ns = view.has_sequenced_at ? view.sequenced_at : config_.wall_clock->now_ns();
+    const int64_t now_ns = sequenced_at_ns != 0 ? sequenced_at_ns : config_.wall_clock->now_ns();
     const int32_t session_id = view.has_gateway_session_conn_id ? view.gateway_session_conn_id : 0;
     const OrderKey orig_key = OrderKey::make(session_id, view.orig_cl_ord_id);
 

@@ -420,7 +420,7 @@ void OrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventMess
         return;
     }
 
-    if (pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport)) {
+    if (pdu_id != pubsub_itc_fw_app::WalRecord::message_pdu_id) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "OrderGatewayThread: unsupported PDU id {} on connection {} -- dropping", pdu_id,
                    message.connection_id().get_value());
         release_pdu_payload(message);
@@ -432,31 +432,46 @@ void OrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventMess
     arena.reset();
     size_t arena_bytes_needed = 0;
     size_t bytes_consumed = 0;
-    pubsub_itc_fw_app::ExecutionReportView view{};
 
-    if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+    // The sequencer forwards the ExecutionReport wrapped in a WalRecord envelope;
+    // the routing metadata (gateway_session_conn_id) rides on the envelope, not
+    // inside the DD-derived PDU. Unwrap the envelope, then decode the inner ER.
+    pubsub_itc_fw_app::WalRecordView envelope{};
+    if (!pubsub_itc_fw_app::decode(envelope, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "OrderGatewayThread: failed to decode WalRecord envelope -- dropping");
+        release_pdu_payload(message);
+        return;
+    }
+    if (envelope.pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "OrderGatewayThread: envelope carries unexpected pdu_id {} -- dropping", envelope.pdu_id);
+        release_pdu_payload(message);
+        return;
+    }
+
+    pubsub_itc_fw_app::ExecutionReportView view{};
+    if (!pubsub_itc_fw_app::decode(view, envelope.payload.data, envelope.payload.size, bytes_consumed, arena, arena_bytes_needed)) {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "OrderGatewayThread: failed to decode ExecutionReport -- dropping");
         release_pdu_payload(message);
         return;
     }
 
     // Route to the exact FIX session identified by gateway_session_conn_id, which
-    // the gateway stamped on the original NOS and the sequencer echoes back here.
-    if (!view.has_gateway_session_conn_id) {
+    // the gateway stamped on the original NOS envelope and the sequencer echoes here.
+    if (!envelope.has_gateway_session_conn_id) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                    "OrderGatewayThread: ExecutionReport OrderID={} ExecID={} has no gateway_session_conn_id -- dropping", view.order_id, view.exec_id);
         release_pdu_payload(message);
         return;
     }
 
-    FixSession* session_ptr = find_session_by_conn_id(view.gateway_session_conn_id);
+    FixSession* session_ptr = find_session_by_conn_id(envelope.gateway_session_conn_id);
     if (!session_ptr) {
         // Expected after a client disconnect: in-flight ERs and cancel ACKs
         // arrive for sessions that are already gone.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "OrderGatewayThread: ExecutionReport gateway_session_conn_id={} -- "
                    "client already disconnected -- dropping",
-                   view.gateway_session_conn_id);
+                   envelope.gateway_session_conn_id);
         release_pdu_payload(message);
         return;
     }
@@ -499,7 +514,7 @@ void OrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventMess
     }
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "GW-ER-SENT connection={} OrderID={} ExecID={} gateway_session_conn_id={}",
-               session.conn_id.get_value(), view.order_id, view.exec_id, view.gateway_session_conn_id);
+               session.conn_id.get_value(), view.order_id, view.exec_id, envelope.gateway_session_conn_id);
 
     // Encode the FIX ExecutionReport directly into a stack buffer.
     // No heap allocation: all string_view fields from view are memcpy'd
@@ -960,22 +975,13 @@ void OrderGatewayThread::handle_new_order_single(FixSession& session, const Pars
         nos.text = text;
     }
 
-    // Retain SenderCompID for audit/logging in the sequencer WAL.
-    if (!session.client_comp_id.empty()) {
-        nos.has_sender_comp_id = true;
-        nos.sender_comp_id = session.client_comp_id;
-    }
-
-    // Stamp the internal connection ID so the sequencer can route the ER back
-    // to this exact FIX session.  This is unique per TCP connection and avoids
-    // the ClOrdID collision problem that arises when multiple sessions share a
-    // SenderCompID or reuse the same ClOrdID sequence.
-    nos.has_gateway_session_conn_id = true;
-    nos.gateway_session_conn_id = session.conn_id.get_value();
-
-    // Forward the encoded PDU to both sequencer instances.
-    // The sequencer will wrap it in a SequencedMessage envelope.
-    forward_pdu_to_sequencers(static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle), nos);
+    // The originating session's connection id (so the sequencer can route the ER
+    // back to this exact FIX session -- unique per TCP connection, avoiding the
+    // ClOrdID collision problem) and its SenderCompID (for audit) travel on the
+    // WalRecord envelope, not inside the DD-derived PDU. Forward the pure NOS
+    // wrapped in that envelope to both sequencer instances.
+    forward_order_in_envelope(static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle), nos, session.conn_id.get_value(),
+                              session.client_comp_id);
 
     // Do NOT record the order here. We record it when the ME sends back a
     // non-terminal ExecutionReport (OrdStatus=New), which confirms the order
@@ -1035,17 +1041,10 @@ void OrderGatewayThread::handle_order_cancel_request(FixSession& session, const 
     ocr.transact_time = parse_fix_utc_timestamp(msg.get(Tag::SendingTime));
     ocr.order_qty = order_qty;
 
-    // Retain SenderCompID for audit/logging.
-    if (!session.client_comp_id.empty()) {
-        ocr.has_sender_comp_id = true;
-        ocr.sender_comp_id = session.client_comp_id;
-    }
-
-    // Stamp the internal connection ID for cancel-ER routing (same mechanism as NOS).
-    ocr.has_gateway_session_conn_id = true;
-    ocr.gateway_session_conn_id = session.conn_id.get_value();
-
-    forward_pdu_to_sequencers(static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest), ocr);
+    // Connection id (cancel-ER routing) and SenderCompID (audit) ride on the
+    // WalRecord envelope, not inside the PDU (same mechanism as NOS).
+    forward_order_in_envelope(static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest), ocr, session.conn_id.get_value(),
+                              session.client_comp_id);
 }
 
 void OrderGatewayThread::disconnect_session(const FixSession& session, const std::string& reason) {
@@ -1213,14 +1212,8 @@ void OrderGatewayThread::drain_pending_cancels() {
             ocr.order_qty = std::string_view(entry->order_qty, entry->order_qty_len);
         }
 
-        if (!dead.client_comp_id.empty()) {
-            ocr.has_sender_comp_id = true;
-            ocr.sender_comp_id = dead.client_comp_id;
-        }
-        ocr.has_gateway_session_conn_id = true;
-        ocr.gateway_session_conn_id = dead.session_conn_id;
-
-        forward_pdu_to_sequencers(static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest), ocr);
+        // Connection id and SenderCompID for the dead session travel on the envelope.
+        forward_order_in_envelope(static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest), ocr, dead.session_conn_id, dead.client_comp_id);
 
         open_order_pool_->deallocate(entry);
         dead.open_orders.erase(it);

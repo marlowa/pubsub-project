@@ -171,9 +171,15 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void try_dispatch_replay();          // dispatches once both flags are set
     void dispatch_replay_records();
 
-    // WAL replication helpers (peer follower).
+    // WAL storage / replication helpers (peer follower).
+    //
+    // WalRecord doubles as the pipeline envelope (Option B): the WAL, the follower
+    // replication stream and the external-subscriber stream all carry the stamped
+    // WalRecord, so leader and follower WALs stay byte-identical and every reader
+    // decodes envelope-then-payload. See docs/design/fix_pdu_generation.md.
     [[nodiscard]] bool needs_wal_ack() const;
-    void send_wal_record(int64_t seq, int16_t pdu_id, const pubsub_itc_fw::EventMessage& message, int64_t wall_time_ns);
+    void append_envelope_to_wal(const pubsub_itc_fw_app::WalRecord& envelope);
+    void send_wal_record(const pubsub_itc_fw_app::WalRecord& envelope);
     void handle_wal_record(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     void handle_wal_ack(const pubsub_itc_fw::EventMessage& message);
     void install_peer_wal_inline_handler(const pubsub_itc_fw::ConnectionID& conn_id);
@@ -183,7 +189,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // External WAL subscriber helpers (MEP primary and secondary).
     void handle_wal_subscribe_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     void handle_external_wal_ack(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
-    void stream_wal_record_to_external_subscribers(int64_t seq, int16_t pdu_id, const pubsub_itc_fw::EventMessage& message, int64_t wall_time_ns);
+    void stream_wal_record_to_external_subscribers(const pubsub_itc_fw_app::WalRecord& envelope);
 
     // ME failover reconciliation (Slice D).
     //

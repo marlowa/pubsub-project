@@ -167,8 +167,10 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
         return {buf.data(), static_cast<size_t>(end - buf.data())};
     }
 
-    void handle_new_order_single(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t seq_no);
-    void handle_order_cancel_request(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t seq_no);
+    // sequenced_at_ns is the sequencer's wall time (from the WalRecord envelope) used
+    // as transact_time; 0 means "not stamped", falling back to the local wall clock.
+    void handle_new_order_single(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t seq_no, int64_t sequenced_at_ns);
+    void handle_order_cancel_request(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t seq_no, int64_t sequenced_at_ns);
     void send_er_to_sequencer(const pubsub_itc_fw_app::ExecutionReport& er, int64_t seq_no);
 
     const MatchingEngineConfiguration& config_;
