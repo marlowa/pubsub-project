@@ -162,6 +162,64 @@ class Dictionary:
         self._collect_permitted(self.trailer_members, visited, out)
         return sorted(out)
 
+    def _flatten_body(self, members: List[MemberRef], visited: Set[str]) -> List[Tuple[str, str, bool]]:
+        """Flatten a member list into ordered ``(kind, name, required)`` entries.
+
+        Components are inlined (their members spliced in place, recursively);
+        fields and groups are kept as-is. ``kind`` in the result is only ever
+        ``"field"`` or ``"group"``. ``visited`` guards against a component that
+        references itself directly or transitively.
+        """
+        out: List[Tuple[str, str, bool]] = []
+        for member in members:
+            if member.kind == "field":
+                out.append(("field", member.name, member.required))
+            elif member.kind == "group":
+                out.append(("group", member.name, member.required))
+            elif member.kind == "component":
+                if member.name in visited:
+                    continue
+                out.extend(self._flatten_body(self.components.get(member.name, []), visited | {member.name}))
+        return out
+
+    def repeating_groups(self) -> List[Tuple[int, int, List[Tuple[int, bool, int]]]]:
+        """Return the global repeating-group catalogue, keyed by counter tag.
+
+        A NUMINGROUP counter tag (for example NoUnderlyings=711) always introduces
+        the same group body wherever it appears, so groups are catalogued globally
+        rather than per message. Each entry is
+        ``(counter_tag, delimiter_tag, [(member_tag, required, nested_counter_tag), ...])``
+        where the members are the flattened group body in FIX order, the delimiter
+        is the first member's tag (the tag that marks each new instance), and
+        ``nested_counter_tag`` is the counter tag of a member that is itself a
+        repeating group (0 for a plain field). The result is sorted by counter tag
+        for deterministic output. Every group reachable from any message body
+        (through components and nested groups) is included.
+        """
+        groups: Dict[int, Tuple[int, List[Tuple[int, bool, int]]]] = {}
+
+        def discover(members: List[MemberRef]) -> None:
+            for kind, name, _required in self._flatten_body(members, set()):
+                if kind != "group":
+                    continue
+                counter_tag = self._tag_for_name(name)
+                if counter_tag == 0 or counter_tag in groups:
+                    continue
+                body = self._flatten_body(self.components.get(name, []), set())
+                member_entries: List[Tuple[int, bool, int]] = []
+                for member_kind, member_name, member_required in body:
+                    member_tag = self._tag_for_name(member_name)
+                    nested_counter = member_tag if member_kind == "group" else 0
+                    member_entries.append((member_tag, member_required, nested_counter))
+                delimiter_tag = member_entries[0][0] if member_entries else 0
+                groups[counter_tag] = (delimiter_tag, member_entries)
+                # Descend so nested groups are catalogued too.
+                discover(self.components.get(name, []))
+
+        for message in self.messages.values():
+            discover(message.members)
+        return [(counter_tag, groups[counter_tag][0], groups[counter_tag][1]) for counter_tag in sorted(groups)]
+
     def data_length_pairs(self) -> List[Tuple[int, int]]:
         """Return ``(length_tag, data_tag)`` pairs, sorted by length tag.
 

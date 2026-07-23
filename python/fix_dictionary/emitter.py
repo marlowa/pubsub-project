@@ -28,6 +28,7 @@ def emit_header(dictionary: Dictionary, namespace: str) -> str:
     _emit_required_tags(write, dictionary)
     _emit_enum_membership(write, dictionary)
     _emit_permitted_tags(write, dictionary)
+    _emit_group_structure(write, dictionary)
     write(f"}}  // namespace {namespace}")
     write("")
     return "\n".join(lines)
@@ -575,3 +576,84 @@ def _string_literal(value: str) -> str:
     """Render a string as a C++ string literal with escaping."""
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
+
+
+def _emit_group_structs(write: Writer) -> None:
+    """Emit the group_member and group_def struct declarations."""
+    write("// Repeating-group structure, catalogued globally by NUMINGROUP counter tag.")
+    write("struct group_member {")
+    write("    int tag;           // member field tag, or the counter tag of a nested group")
+    write("    bool required;     // required within this group's body")
+    write("    int nested_group;  // index into group_table for a nested group; -1 for a plain field")
+    write("};")
+    write("struct group_def {")
+    write("    int counter_tag;   // the NUMINGROUP field that introduces the group")
+    write("    int delimiter_tag; // first member tag; marks the start of each instance")
+    write("    const group_member* members;")
+    write("    size_t member_count;")
+    write("};")
+    write("")
+
+
+def _emit_group_tables(write: Writer, groups: List, index_by_counter: Dict[int, int]) -> None:
+    """Emit the per-group member arrays and the group_def table."""
+    write("namespace detail {")
+    for index, (_counter, _delimiter, members) in enumerate(groups):
+        parts = []
+        for member_tag, member_required, nested_counter in members:
+            nested_index = index_by_counter.get(nested_counter, -1) if nested_counter else -1
+            parts.append(f"{{{member_tag}, {'true' if member_required else 'false'}, {nested_index}}}")
+        joined = ", ".join(parts)
+        write(f"inline constexpr std::array<group_member, {len(members)}> group_members_{index} = {{{{{joined}}}}};")
+    write("")
+    write(f"inline constexpr std::array<group_def, {len(groups)}> group_table = {{{{")
+    for index, (counter, delimiter, members) in enumerate(groups):
+        write(f"    {{{counter}, {delimiter}, group_members_{index}.data(), {len(members)}}},")
+    write("}};")
+    write("}  // namespace detail")
+    write("")
+
+
+def _emit_group_lookup(write: Writer) -> None:
+    """Emit the counter-tag lookup accessors over the group table."""
+    write("// Returns the index of the group introduced by counter_tag, or -1 if the tag is")
+    write("// not a repeating-group counter. Binary search over the counter-tag-sorted table.")
+    write("inline constexpr int group_index_for_counter(int counter_tag) {")
+    write("    size_t low = 0;")
+    write("    size_t high = detail::group_table.size();")
+    write("    while (low < high) {")
+    write("        const size_t mid = low + (high - low) / 2;")
+    write("        const int probe = detail::group_table[mid].counter_tag;")
+    write("        if (probe == counter_tag) {")
+    write("            return static_cast<int>(mid);")
+    write("        }")
+    write("        if (probe < counter_tag) {")
+    write("            low = mid + 1;")
+    write("        } else {")
+    write("            high = mid;")
+    write("        }")
+    write("    }")
+    write("    return -1;")
+    write("}")
+    write("")
+    write("// Returns the group definition at a table index from group_index_for_counter.")
+    write("inline constexpr const group_def& group_at(int index) {")
+    write("    return detail::group_table[static_cast<size_t>(index)];")
+    write("}")
+
+
+def _emit_group_structure(write: Writer, dictionary: Dictionary) -> None:
+    """Emit the global repeating-group catalogue and its counter-tag lookup.
+
+    A NUMINGROUP counter tag always introduces the same group body, so the groups
+    are catalogued once, keyed by counter tag. The validator drives a structured,
+    scope-aware parse from this table: a counter tag opens a group, ``delimiter_tag``
+    marks each new instance, ``members`` lists the group body in FIX order, and
+    ``nested_group`` links a member that is itself a repeating group.
+    """
+    groups = dictionary.repeating_groups()
+    index_by_counter = {counter: index for index, (counter, _delim, _members) in enumerate(groups)}
+    _emit_group_structs(write)
+    _emit_group_tables(write, groups, index_by_counter)
+    _emit_group_lookup(write)
+    write("")

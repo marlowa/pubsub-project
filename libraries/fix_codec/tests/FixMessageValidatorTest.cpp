@@ -76,6 +76,86 @@ TEST(FixMessageValidatorTest, ConformingNewOrderSinglePasses) {
     EXPECT_TRUE(reject.ok()) << "unexpected reject reason " << static_cast<int>(reject.reason) << " on tag " << reject.ref_tag;
 }
 
+// ----- Repeating groups ---------------------------------------------------------
+
+// Appends the nested repeating-group payload the f8test client sends on a
+// NewOrderSingle: NoUnderlyings(711)=3 with UnderlyingSymbol(311) as the instance
+// delimiter, a nested NoUnderlyingSecurityAltID(457) group in the second instance,
+// and a nested NoUnderlyingStips(887) group in the third. Every recurring tag here
+// (311, 458, 888) is a legitimate group member, not a duplicate.
+void push_underlyings_group(FixMessageWriter& writer) {
+    writer.push_back_field(711, 3);                             // NoUnderlyings = 3
+    writer.push_back_field(311, std::string_view("BLAH"));      // UnderlyingSymbol (delimiter), instance 1
+    writer.push_back_field(879, std::string_view("20.0"));      // UnderlyingQty
+    writer.push_back_field(311, std::string_view("FOO"));       // instance 2
+    writer.push_back_field(457, 2);                             // NoUnderlyingSecurityAltID = 2 (nested)
+    writer.push_back_field(458, std::string_view("UnderBlah")); // UnderlyingSecurityAltID (delimiter)
+    writer.push_back_field(458, std::string_view("OverFoo"));
+    writer.push_back_field(311, std::string_view("BOOM"));     // instance 3
+    writer.push_back_field(887, 5);                            // NoUnderlyingStips = 5 (nested)
+    writer.push_back_field(888, std::string_view("Reverera")); // UnderlyingStipValue (delimiter)
+    writer.push_back_field(888, std::string_view("Orlanda"));
+    writer.push_back_field(888, std::string_view("Withroon"));
+    writer.push_back_field(888, std::string_view("Longweed"));
+    writer.push_back_field(888, std::string_view("Blechnod"));
+}
+
+// A NewOrderSingle carrying nested repeating groups (tags legitimately recurring
+// across instances) passes: the validator scopes duplicate detection per instance.
+TEST(FixMessageValidatorTest, NestedRepeatingGroupsPass) {
+    char buffer[512];
+    FixMessageWriter writer(buffer, sizeof(buffer));
+    push_mandatory(writer);
+    push_underlyings_group(writer);
+    const std::string_view wire = writer.finish();
+    ASSERT_FALSE(wire.empty());
+
+    FixMessageReader reader(wire);
+    ASSERT_TRUE(reader.is_valid());
+    const FixReject reject = FixMessageValidator(reader).validate();
+    EXPECT_TRUE(reject.ok()) << "unexpected reject reason " << static_cast<int>(reject.reason) << " on tag " << reject.ref_tag;
+}
+
+// A NUMINGROUP counter that disagrees with the instances present is rejected,
+// naming the counter tag.
+TEST(FixMessageValidatorTest, WrongNumInGroupCountIsRejected) {
+    char buffer[512];
+    FixMessageWriter writer(buffer, sizeof(buffer));
+    push_mandatory(writer);
+    writer.push_back_field(711, 2); // declares 2 underlyings...
+    writer.push_back_field(311, std::string_view("BLAH"));
+    writer.push_back_field(311, std::string_view("FOO"));
+    writer.push_back_field(311, std::string_view("BOOM")); // ...but three instances follow
+    const std::string_view wire = writer.finish();
+    ASSERT_FALSE(wire.empty());
+
+    FixMessageReader reader(wire);
+    ASSERT_TRUE(reader.is_valid());
+    const FixReject reject = FixMessageValidator(reader).validate();
+    EXPECT_EQ(reject.reason, RejectReason::IncorrectNumInGroupCount);
+    EXPECT_EQ(reject.ref_tag, 711);
+}
+
+// A member tag repeated within a single group instance (not across instances) is a
+// genuine duplicate and is rejected, naming that tag.
+TEST(FixMessageValidatorTest, DuplicateTagWithinGroupInstanceIsRejected) {
+    char buffer[512];
+    FixMessageWriter writer(buffer, sizeof(buffer));
+    push_mandatory(writer);
+    writer.push_back_field(711, 1);                        // one instance
+    writer.push_back_field(311, std::string_view("BLAH")); // UnderlyingSymbol (delimiter)
+    writer.push_back_field(879, std::string_view("20.0")); // UnderlyingQty
+    writer.push_back_field(879, std::string_view("30.0")); // duplicate within the same instance
+    const std::string_view wire = writer.finish();
+    ASSERT_FALSE(wire.empty());
+
+    FixMessageReader reader(wire);
+    ASSERT_TRUE(reader.is_valid());
+    const FixReject reject = FixMessageValidator(reader).validate();
+    EXPECT_EQ(reject.reason, RejectReason::TagAppearsMoreThanOnce);
+    EXPECT_EQ(reject.ref_tag, 879);
+}
+
 // ----- Missing required tag -----------------------------------------------------
 
 // Removing a required tag is reported as RequiredTagMissing naming that exact tag.

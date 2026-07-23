@@ -26,7 +26,8 @@ enum class RejectReason : int {
     TagNotDefinedForThisMessage = 2, ///< A defined tag not permitted in this message type.
     ValueIsIncorrect = 5,            ///< A value not defined for an enumerated field.
     IncorrectDataFormat = 6,         ///< A value whose text is not the field's FIX type.
-    TagAppearsMoreThanOnce = 13,     ///< A non-group tag repeated in the message.
+    TagAppearsMoreThanOnce = 13,     ///< A tag repeated where it may appear only once.
+    IncorrectNumInGroupCount = 16,   ///< A NUMINGROUP counter that does not match the instances present.
 };
 
 /** @brief The reason name, used in diagnostics (never allocates). */
@@ -46,6 +47,8 @@ inline constexpr std::string_view reason_text(RejectReason reason) {
             return "IncorrectDataFormat";
         case RejectReason::TagAppearsMoreThanOnce:
             return "TagAppearsMoreThanOnce";
+        case RejectReason::IncorrectNumInGroupCount:
+            return "IncorrectNumInGroupCount";
     }
     return "Unknown";
 }
