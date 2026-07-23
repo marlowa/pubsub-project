@@ -9,6 +9,15 @@ change in any release.
 
 ## [Unreleased]
 
+### Changed
+
+- Documentation: corrected the TLS status in `docs/design/secure_comms.md` — TLS is
+  implemented with OpenSSL and in use (the order gateway exposes an encrypted FIX
+  listener via `[fix_tls]`, and the authentication service listener is TLS-secured with
+  optional mutual TLS), superseding the earlier "ready to wire up" note. Added a Security
+  (TLS and SCRAM) section, version/license/C++ badges, and a current-version line to the
+  README.
+
 ## [0.1.0] - 2026-07-23
 
 First tagged release. `pubsub_itc_fw` is a low-latency, multi-threaded, event-driven

@@ -18,9 +18,13 @@ to the gateway listener they are complementary but not combined.
 
 ### Status
 
-Framework complete and tested. No application currently uses `TlsRawBytes` — the gateway's
-FIX listener uses plain `RawBytes` and the authentication service uses `FrameworkPdu`. TLS
-is ready to wire up when the gateway needs to expose an encrypted endpoint.
+Implemented with OpenSSL and in use. The order gateway registers an encrypted FIX listener
+(`TlsRawBytes`) *alongside* its plain listener, gated by the `[fix_tls]` config (`enabled`,
+`cert`, `key`, and `tls_listen_port`); it has been live-verified with a QuickFIX client
+speaking TLS. The authentication service listener is likewise TLS-secured
+(`tls_certificate_path` / `tls_private_key_path`, an optional CA path, and
+`tls_require_client_certificate` for mutual TLS), so the gateway-to-auth link is encrypted.
+The plain (non-TLS) listeners remain available for local and test deployments.
 
 ### Design Principle: Memory BIOs
 
