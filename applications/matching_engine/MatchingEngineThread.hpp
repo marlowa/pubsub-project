@@ -7,6 +7,7 @@
 #include <charconv>
 #include <cstdint> // IWYU pragma: keep
 #include <cstring>
+#include <optional>
 #include <unordered_set>
 
 #include <tsl/robin_map.h>
@@ -167,11 +168,21 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
         return {buf.data(), static_cast<size_t>(end - buf.data())};
     }
 
-    // sequenced_at_ns is the sequencer's wall time (from the WalRecord envelope) used
-    // as transact_time; 0 means "not stamped", falling back to the local wall clock.
-    void handle_new_order_single(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t seq_no, int64_t sequenced_at_ns);
-    void handle_order_cancel_request(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t seq_no, int64_t sequenced_at_ns);
-    void send_er_to_sequencer(const pubsub_itc_fw_app::ExecutionReport& er, int64_t seq_no);
+    // Both come from the WalRecord envelope, not the (DD-derived) FIX PDU:
+    // sequenced_at_ns is the sequencer's wall time used as transact_time (0 => not
+    // stamped, fall back to the local wall clock); gateway_session_conn_id is the
+    // originating FIX session's connection id, forming half of the order key (0 if absent).
+    void handle_new_order_single(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t seq_no, int64_t sequenced_at_ns, int32_t gateway_session_conn_id);
+    void handle_order_cancel_request(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t seq_no, int64_t sequenced_at_ns,
+                                     int32_t gateway_session_conn_id);
+    // Upper bound on an encoded ExecutionReport when wrapped in the WalRecord envelope.
+    static constexpr size_t er_envelope_payload_capacity = 2048;
+
+    // Wraps the ER in a WalRecord envelope and sends it to the sequencer(s). Routing
+    // metadata for ERs not tied to a sequenced order (the seq_no==0 cancel-on-failover
+    // ERs) rides on the envelope, so the ER PDU itself stays purely DD-derived. For
+    // ordinary ERs the sequencer routes by the echoed seq_no, so no conn id is supplied.
+    void send_er_to_sequencer(const pubsub_itc_fw_app::ExecutionReport& er, int64_t seq_no, std::optional<int32_t> gateway_session_conn_id = std::nullopt);
 
     const MatchingEngineConfiguration& config_;
 

@@ -258,9 +258,6 @@ message NewOrderSingle (id=PduId.NewOrderSingle)
     optional string max_floor  # tag 111 (MaxFloor)
     optional datetime_ns expire_time  # tag 126 (ExpireTime)
     optional string text  # tag 58 (Text)
-    optional string sender_comp_id  # SenderCompID retained for audit/logging in the sequencer WAL
-    optional i32 gateway_session_conn_id  # internal conn_id of the originating FIX session; used for ER routing
-    optional datetime_ns sequenced_at  # wall time stamped by sequencer when this PDU is sequenced; used by ME for transact_time during replay
 end
 
 message OrderCancelRequest (id=PduId.OrderCancelRequest)
@@ -272,9 +269,6 @@ message OrderCancelRequest (id=PduId.OrderCancelRequest)
     string order_qty  # tag 38 (OrderQty)
     optional string account  # tag 1 (Account)
     optional string text  # tag 58 (Text)
-    optional string sender_comp_id  # SenderCompID retained for audit/logging in the sequencer WAL
-    optional i32 gateway_session_conn_id  # internal conn_id of the originating FIX session; used for ER routing
-    optional datetime_ns sequenced_at  # wall time stamped by sequencer when this PDU is sequenced; used by ME for transact_time during replay
 end
 
 message ExecutionReport (id=PduId.ExecutionReport)
@@ -310,5 +304,4 @@ message ExecutionReport (id=PduId.ExecutionReport)
     optional string min_qty  # tag 110 (MinQty)
     optional string max_floor  # tag 111 (MaxFloor)
     optional datetime_ns expire_time  # tag 126 (ExpireTime)
-    optional i32 gateway_session_conn_id  # echoed from NOS; gateway routes ER to the exact originating FIX session
 end

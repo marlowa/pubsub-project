@@ -30,28 +30,15 @@ name = "NewOrderSingle"
 pdu_id = 1000
 required = ["ClOrdID", "Side", "Symbol", "OrdType", "TransactTime", "OrderQty"]
 optional = ["SecurityID", "SecurityIDSource", "Price", "StopPx", "TimeInForce", "Account", "ExDestination", "ExecInst", "MinQty", "MaxFloor", "ExpireTime", "Text"]
-extra = [
-    { name = "sender_comp_id", type = "string", comment = "SenderCompID retained for audit/logging in the sequencer WAL" },
-    { name = "gateway_session_conn_id", type = "i32", comment = "internal conn_id of the originating FIX session; used for ER routing" },
-    { name = "sequenced_at", type = "datetime_ns", comment = "wall time stamped by sequencer when this PDU is sequenced; used by ME for transact_time during replay" },
-]
 
 [[messages]]
 name = "OrderCancelRequest"
 pdu_id = 1001
 required = ["OrigClOrdID", "ClOrdID", "Side", "Symbol", "TransactTime", "OrderQty"]
 optional = ["Account", "Text"]
-extra = [
-    { name = "sender_comp_id", type = "string", comment = "SenderCompID retained for audit/logging in the sequencer WAL" },
-    { name = "gateway_session_conn_id", type = "i32", comment = "internal conn_id of the originating FIX session; used for ER routing" },
-    { name = "sequenced_at", type = "datetime_ns", comment = "wall time stamped by sequencer when this PDU is sequenced; used by ME for transact_time during replay" },
-]
 
 [[messages]]
 name = "ExecutionReport"
 pdu_id = 1002
 required = ["OrderID", "ExecID", "ExecType", "OrdStatus", "Symbol", "Side", "LeavesQty", "CumQty", "AvgPx", "TransactTime"]
 optional = ["SecurityID", "SecurityIDSource", "ClOrdID", "OrigClOrdID", "OrdType", "Price", "StopPx", "OrderQty", "TimeInForce", "Account", "ExDestination", "ExecInst", "LastQty", "LastPx", "TradeDate", "ExecRefID", "OrdRejReason", "CxlRejReason", "Text", "MinQty", "MaxFloor", "ExpireTime"]
-extra = [
-    { name = "gateway_session_conn_id", type = "i32", comment = "echoed from NOS; gateway routes ER to the exact originating FIX session" },
-]

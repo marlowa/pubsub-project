@@ -422,21 +422,33 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         arena.reset();
         size_t arena_bytes_needed = 0;
         size_t bytes_consumed = 0;
+        // The ER arrives wrapped in a WalRecord envelope from the ME. Unwrap it; the
+        // inner ER is decoded only to read ord_status (for routing-map eviction) -- its
+        // payload is forwarded opaque.
+        pubsub_itc_fw_app::WalRecordView inbound{};
+        if (!pubsub_itc_fw_app::decode(inbound, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode ER envelope -- dropping");
+            release_pdu_payload(message);
+            return;
+        }
+        if (inbound.pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport)) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: ER envelope carries unexpected pdu_id {} -- dropping",
+                       inbound.pdu_id);
+            release_pdu_payload(message);
+            return;
+        }
         pubsub_itc_fw_app::ExecutionReportView view{};
-
-        // The ER decode is kept only to read ord_status (for routing-map eviction);
-        // the ER payload itself is forwarded opaque inside the envelope.
-        if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        if (!pubsub_itc_fw_app::decode(view, inbound.payload.data, inbound.payload.size, bytes_consumed, arena, arena_bytes_needed)) {
             PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode ExecutionReport -- dropping");
             release_pdu_payload(message);
             return;
         }
 
-        // Look up the originating FIX session by the ER's seq_no. The ME echoes the
-        // NOS's seq_no back in the ER transport header, so message.seq_no() here is the
-        // value stored in seq_no_to_session_conn_id_ when the NOS was forwarded. seq_no
-        // is globally unique, eliminating the ClOrdID-collision problem. The conn id
-        // rides on the envelope, not inside the DD-derived ER.
+        // Route the ER back to the originating FIX session. The ME echoes the order's
+        // seq_no in the transport header, so message.seq_no() resolves via the map for
+        // ordinary ERs. ERs not tied to a sequenced order (the seq_no==0 cancel-on-failover
+        // ERs) instead carry the conn id on the inbound envelope. The conn id rides on the
+        // envelope, never inside the DD-derived ER.
         const int64_t er_seq_no = message.seq_no();
         bool has_routing_conn = false;
         int32_t routing_conn_id = 0;
@@ -459,9 +471,12 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
                     default:
                         break;
                 }
+            } else if (inbound.has_gateway_session_conn_id) {
+                has_routing_conn = true;
+                routing_conn_id = inbound.gateway_session_conn_id;
             } else {
                 PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                           "SequencerThread: ER seq_no={} not in routing map -- forwarding without gateway_session_conn_id", er_seq_no);
+                           "SequencerThread: ER seq_no={} not in routing map and no envelope conn id -- forwarding without gateway_session_conn_id", er_seq_no);
             }
         }
 
@@ -482,9 +497,8 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
 
         pubsub_itc_fw_app::WalRecord envelope{};
         envelope.seq_no = er_wal_seq;
-        envelope.pdu_id = message.pdu_id();
-        envelope.payload.data = message.payload();
-        envelope.payload.size = static_cast<size_t>(message.payload_size());
+        envelope.pdu_id = inbound.pdu_id;
+        envelope.payload = inbound.payload;
         envelope.wall_time_ns = er_wall_time_ns;
         envelope.has_gateway_session_conn_id = has_routing_conn;
         envelope.gateway_session_conn_id = routing_conn_id;
@@ -513,11 +527,11 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
                     seq_no_to_session_conn_id_.erase(er_seq_no);
                 }
             } else {
-                // WalAck not yet received; buffer the raw ER until it arrives.
+                // WalAck not yet received; buffer the inner (unwrapped) ER until it arrives.
                 PendingEr pending{};
-                pending.pdu_id = message.pdu_id();
+                pending.pdu_id = inbound.pdu_id;
                 pending.seq_no = er_seq_no;
-                pending.payload.assign(message.payload(), message.payload() + static_cast<size_t>(message.payload_size()));
+                pending.payload.assign(inbound.payload.data, inbound.payload.data + inbound.payload.size);
                 pending.has_gateway_session_conn_id = has_routing_conn;
                 pending.gateway_session_conn_id = routing_conn_id;
                 pending.erase_routing_entry = erase_routing_entry;
