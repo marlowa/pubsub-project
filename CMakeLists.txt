@@ -139,23 +139,35 @@ list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/googletest/${GOOGLETE
 list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/tomlplusplus/${TOMLPLUSPLUS_VERSION}")
 list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/tsl-robin-map/${ROBINMAP_VERSION}")
 
-if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-    set(LIB_SUFFIX "64")
-else()
-    set(LIB_SUFFIX "")
-endif()
+# Resolve each dependency's <pkg>_DIR robustly against install-tree layout
+# differences between build hosts. Two things vary in practice: the version
+# directory may be a bare <version> or a <name>-<version>, and the cmake package
+# dir may sit under lib64, lib, or share (GNUInstallDirs picks lib64 on some
+# 64-bit installs and lib on others; header-only packages install under share).
+# The config file itself is spelled either <name>Config.cmake or <name>-config.cmake.
+# Point <pkg>_DIR at the first candidate that actually holds the package config, so a
+# differently-laid-out third-party tree does not break configuration.
+function(resolve_thirdparty_config_dir out_var base name version cmake_name)
+    foreach(_version_dir "${base}/${version}" "${base}/${name}-${version}")
+        foreach(_lib_dir lib64 lib share)
+            set(_candidate "${_version_dir}/${_lib_dir}/cmake/${cmake_name}")
+            if(EXISTS "${_candidate}/${cmake_name}Config.cmake"
+               OR EXISTS "${_candidate}/${cmake_name}-config.cmake")
+                set(${out_var} "${_candidate}" PARENT_SCOPE)
+                return()
+            endif()
+        endforeach()
+    endforeach()
+    # Nothing matched: fall back to the conventional path so find_package reports a
+    # clear, actionable miss rather than acting on a silently-empty variable.
+    set(${out_var} "${base}/${version}/lib64/cmake/${cmake_name}" PARENT_SCOPE)
+endfunction()
 
-set(fmt_DIR
-    "${THIRDPARTY_DIR}/installed/fmt/${FMT_VERSION}/lib${LIB_SUFFIX}/cmake/fmt")
-set(quill_DIR
-    "${THIRDPARTY_DIR}/installed/quill/${QUILL_VERSION}/lib${LIB_SUFFIX}/cmake/quill")
-set(argparse_DIR
-    "${THIRDPARTY_DIR}/installed/argparse/${ARGPARSE_VERSION_FROM_ENV}/lib${LIB_SUFFIX}/cmake/argparse")
-set(GTest_DIR
-    "${THIRDPARTY_DIR}/installed/googletest/${GOOGLETEST_VERSION}/lib${LIB_SUFFIX}/cmake/GTest")
-# tsl-robin-map is header-only; cmake installs its config under share/cmake, not lib/cmake.
-set(tsl-robin-map_DIR
-    "${THIRDPARTY_DIR}/installed/tsl-robin-map/${ROBINMAP_VERSION}/share/cmake/tsl-robin-map")
+resolve_thirdparty_config_dir(fmt_DIR "${THIRDPARTY_DIR}/installed/fmt" fmt "${FMT_VERSION}" fmt)
+resolve_thirdparty_config_dir(quill_DIR "${THIRDPARTY_DIR}/installed/quill" quill "${QUILL_VERSION}" quill)
+resolve_thirdparty_config_dir(argparse_DIR "${THIRDPARTY_DIR}/installed/argparse" argparse "${ARGPARSE_VERSION_FROM_ENV}" argparse)
+resolve_thirdparty_config_dir(GTest_DIR "${THIRDPARTY_DIR}/installed/googletest" googletest "${GOOGLETEST_VERSION}" GTest)
+resolve_thirdparty_config_dir(tsl-robin-map_DIR "${THIRDPARTY_DIR}/installed/tsl-robin-map" tsl-robin-map "${ROBINMAP_VERSION}" tsl-robin-map)
 
 message(STATUS "fmt_DIR:          ${fmt_DIR}")
 message(STATUS "quill_DIR:        ${quill_DIR}")

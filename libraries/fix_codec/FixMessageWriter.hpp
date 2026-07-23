@@ -110,7 +110,15 @@ class FixMessageWriter {
             overflow_ = true;
             return;
         }
+        // gcc 8/9 emit a false-positive -Warray-bounds here: when a caller backs the
+        // writer with a small stack buffer and pushes a compile-time-constant oversized
+        // value, gcc propagates the constant length into this memcpy but does not model
+        // the guard above (which has already returned on overflow), so it reports a write
+        // past the destination that cannot occur at run time. Correct on gcc 10+ and clang.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Warray-bounds"
         std::memcpy(buffer_ + length_, value.data(), value.size());
+#pragma GCC diagnostic pop
         length_ += value.size();
     }
 
