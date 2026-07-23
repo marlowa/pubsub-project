@@ -91,9 +91,16 @@ Today the NOS/ER PDUs carry appended internal fields that are not FIX:
 These block "PDU is 100% from the DD". The fix: carry them in an **envelope** that wraps the
 DD-derived PDU, rather than inside it.
 
-The pipeline already wraps PDUs on the sequencer path (the "SequencedMessage envelope"
-referenced in the gateway). The proposal is to make that envelope the **single home** for
-routing/sequencing metadata:
+**The pattern already exists.** `WalRecord` (`leader_follower.dsl:161`) is already an
+envelope — `seq_no` + `pdu_id` + `bytes payload` + `wall_time_ns` (which *is* `sequenced_at`).
+The WAL/replication path already carries the PDU as an opaque payload with the sequenced time
+in the wrapper. The **only outlier is the live gateway→sequencer→ME path**, which is why the
+sequencer hand-copies ~20 PDU fields just to inject `sequenced_at`. So this work is *unifying
+the live path onto the existing wrapper*, plus adding the two routing fields — not inventing a
+new mechanism. Whether we **extend/reuse `WalRecord`** or add a **new peer envelope** is the
+one open refinement (see below).
+
+The proposal is to make one envelope the **single home** for routing/sequencing metadata:
 
 ```
 message PubSubEnvelope

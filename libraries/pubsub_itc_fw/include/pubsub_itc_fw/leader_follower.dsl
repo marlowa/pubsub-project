@@ -163,6 +163,11 @@ message WalRecord (id=103, version=1)
     i16 pdu_id           # PDU type tag (e.g. NewOrderSingle = 1000)
     bytes payload        # complete encoded PDU payload (as stored in the WAL)
     datetime_ns wall_time_ns  # wall time at which the leader sequenced this record; used for WAL replay clock
+    # WalRecord doubles as the pipeline envelope: the routing metadata that must not live
+    # inside the (DD-derived) FIX PDU rides here instead. Trailing + optional so existing
+    # WAL/replication records decode unchanged. See docs/design/fix_pdu_generation.md.
+    optional i32 gateway_session_conn_id  # originating FIX session; sequencer routes the ER back to it
+    optional string sender_comp_id        # originating client comp id, retained for audit
 end
 
 # ------------------------------------------------------------
