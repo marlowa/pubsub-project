@@ -36,9 +36,12 @@ TopicNotLeader; point the probe at the leader instance's port instead.
 
 #include <argparse/argparse.hpp>
 
+#include <fix_equity_orders.hpp>
+
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
+#include <pubsub_itc_fw/BumpAllocator.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
@@ -78,22 +81,39 @@ pubsub_itc_fw::ReactorConfiguration make_reactor_config() {
     return cfg;
 }
 
+namespace app = pubsub_itc_fw_app;
+
 const char* pdu_name(int16_t pdu_id) {
     switch (pdu_id) {
-        case 1000:
+        case app::NewOrderSingle::message_pdu_id:
             return "NewOrderSingle";
-        case 1001:
+        case app::OrderCancelRequest::message_pdu_id:
             return "OrderCancelRequest";
-        case 1002:
+        case app::ExecutionReport::message_pdu_id:
             return "ExecutionReport";
         default:
             return "pdu";
     }
 }
 
-void print_record(const std::string& topic_name, int64_t seq_no, int16_t pdu_id, const uint8_t* payload, size_t payload_size) {
-    std::printf(">>> [%s] seq=%lld pdu=%s(%d) size=%zu bytes:", topic_name.c_str(), static_cast<long long>(seq_no), pdu_name(pdu_id), static_cast<int>(pdu_id),
-                payload_size);
+// Decodes the payload as View and prints the generated structured dump. Returns
+// false (caller falls back to a hex preview) if the record does not decode.
+template <typename View> bool decode_and_dump(const uint8_t* payload, size_t payload_size) {
+    View view{};
+    uint8_t arena_buffer[8192];
+    pubsub_itc_fw::BumpAllocator arena(arena_buffer, sizeof(arena_buffer));
+    size_t bytes_consumed = 0;
+    size_t arena_bytes_needed = 0;
+    if (!app::decode(view, payload, payload_size, bytes_consumed, arena, arena_bytes_needed)) {
+        return false;
+    }
+    const std::string dump = app::to_string(view);
+    std::printf(" %s\n", dump.c_str());
+    return true;
+}
+
+void print_hex_preview(const uint8_t* payload, size_t payload_size) {
+    std::printf(" [hex]");
     const size_t preview = payload_size < 32 ? payload_size : 32;
     for (size_t i = 0; i < preview; ++i) {
         std::printf(" %02x", payload[i]);
@@ -102,6 +122,33 @@ void print_record(const std::string& topic_name, int64_t seq_no, int16_t pdu_id,
         std::printf(" ...");
     }
     std::printf("\n");
+}
+
+void print_record(const std::string& topic_name, int64_t seq_no, int16_t pdu_id, const uint8_t* payload, size_t payload_size) {
+    std::printf(">>> [%s] seq=%lld pdu=%s(%d) size=%zu:", topic_name.c_str(), static_cast<long long>(seq_no), pdu_name(pdu_id), static_cast<int>(pdu_id),
+                payload_size);
+
+    // Dispatch on the DSL pdu id to the matching generated view; the structured
+    // dump (field=value ...) comes from the generated to_string, so it stays in
+    // step with fix_equity_orders.dsl automatically. Unknown/undecodable records
+    // fall back to a hex preview.
+    bool decoded = false;
+    switch (pdu_id) {
+        case app::NewOrderSingle::message_pdu_id:
+            decoded = decode_and_dump<app::NewOrderSingleView>(payload, payload_size);
+            break;
+        case app::OrderCancelRequest::message_pdu_id:
+            decoded = decode_and_dump<app::OrderCancelRequestView>(payload, payload_size);
+            break;
+        case app::ExecutionReport::message_pdu_id:
+            decoded = decode_and_dump<app::ExecutionReportView>(payload, payload_size);
+            break;
+        default:
+            break;
+    }
+    if (!decoded) {
+        print_hex_preview(payload, payload_size);
+    }
     std::fflush(stdout);
 }
 
