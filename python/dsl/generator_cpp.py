@@ -46,16 +46,7 @@ class CppGenerator:
         w = lines.append
 
         self._emit_header_preamble(w)
-        w("#pragma once")
-        w("")
-        w("#include <array>")
-        w("#include <cstdint>")
-        w("#include <cstring>")
-        w("#include <string>")
-        w("#include <string_view>")
-        w("")
-        w("#include <pubsub_itc_fw/BumpAllocator.hpp>")
-        w("")
+        self._emit_includes(w)
         w(f"namespace {self.namespace} {{")
         w("")
         self._emit_endian_macros(w)
@@ -69,6 +60,8 @@ class CppGenerator:
         self._emit_list_view(w)
         w("")
         self._emit_bytes_view(w)
+        w("")
+        self._emit_dump_helpers(w)
         w("#endif // PUBSUB_ITC_FW_APP_DSL_SHARED_HELPERS_DEFINED")
         w("")
 
@@ -101,6 +94,8 @@ class CppGenerator:
                 self._emit_decode_wrapper(decl, w)
                 w("")
 
+        self._emit_view_to_strings([d for d in ast.declarations if isinstance(d, MessageDecl)], w, enum_names)
+
         w(f"}} // namespace {self.namespace}")
         w("")
         return "\n".join(lines)
@@ -108,6 +103,19 @@ class CppGenerator:
     # ------------------------------------------------------------------
     # Header preamble
     # ------------------------------------------------------------------
+
+    def _emit_includes(self, w):
+        """Emit the include guard and the fixed set of headers every DSL file needs."""
+        w("#pragma once")
+        w("")
+        w("#include <array>")
+        w("#include <cstdint>")
+        w("#include <cstring>")
+        w("#include <string>")
+        w("#include <string_view>")
+        w("")
+        w("#include <pubsub_itc_fw/BumpAllocator.hpp>")
+        w("")
 
     def _emit_header_preamble(self, w):
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -193,6 +201,83 @@ class CppGenerator:
         w("    const uint8_t* data = nullptr;")
         w("    std::size_t size = 0;")
         w("};")
+
+    def _emit_dump_helpers(self, w):
+        """Emit the shared helper used by the generated view to_string functions."""
+        w("inline void dsl_dump_append(std::string& out, std::string_view value) {")
+        w("    out.append(value.data(), value.size());")
+        w("}")
+
+    def _emit_view_to_strings(self, message_decls, w, enum_names):
+        """Emit forward declarations then definitions of every view to_string dump.
+
+        Forward-declared first so a nested message reference resolves regardless of
+        declaration order.
+        """
+        if not message_decls:
+            return
+        for decl in message_decls:
+            w(f"inline std::string to_string([[maybe_unused]] const {decl.name}View& view);")
+        w("")
+        for decl in message_decls:
+            self._emit_view_to_string(decl, w, enum_names)
+            w("")
+
+    def _emit_view_to_string(self, msg, w, enum_names=None):
+        """Emit std::string to_string(const <Msg>View&): a field=value debug dump.
+
+        The generator knows every field, its type and whether it is optional, so
+        the dump stays in step with the DSL automatically -- no hand-maintained
+        printer to drift. Enum fields use the generated to_string; optional fields
+        print only when their has_ flag is set.
+        """
+        name = msg.name
+        w(f"inline std::string to_string([[maybe_unused]] const {name}View& view) {{")
+        w(f'    std::string out = "{name}{{";')
+        for field in msg.fields:
+            indent = "    "
+            if field.optional:
+                w(f"    if (view.has_{field.name}) {{")
+                indent = "        "
+            w(f'{indent}out += " {field.name}=";')
+            self._emit_dump_value(field.type, f"view.{field.name}", "out", w, indent, enum_names, 0)
+            if field.optional:
+                w("    }")
+        w('    out += " }";')
+        w("    return out;")
+        w("}")
+
+    def _emit_dump_value(self, type_node, expr, out, w, indent, enum_names, depth):  # pylint: disable=too-many-arguments
+        """Emit code that appends the value of expr (of type type_node) to out."""
+        if isinstance(type_node, PrimitiveType):
+            if type_node.name == "bool":
+                w(f"{indent}{out} += ({expr} ? 'Y' : 'N');")
+            elif type_node.name == "char":
+                w(f"{indent}{out} += {expr};")
+            else:
+                w(f"{indent}{out} += std::to_string({expr});")
+        elif isinstance(type_node, StringType):
+            w(f"{indent}dsl_dump_append({out}, {expr});")
+        elif isinstance(type_node, BytesType):
+            w(f'{indent}{out} += "bytes(";')
+            w(f"{indent}{out} += std::to_string({expr}.size);")
+            w(f"{indent}{out} += ')';")
+        elif isinstance(type_node, ReferenceType):
+            if enum_names and type_node.name in enum_names:
+                w(f"{indent}dsl_dump_append({out}, to_string({expr}));")
+            else:
+                w(f"{indent}{out} += to_string({expr});")
+        elif isinstance(type_node, (ArrayType, ListType)):
+            loop_var = f"dump_i{depth}"
+            count = f"{expr}.size()" if isinstance(type_node, ArrayType) else f"{expr}.length()"
+            w(f'{indent}{out} += "[";')
+            w(f"{indent}for (std::size_t {loop_var} = 0; {loop_var} < {count}; ++{loop_var}) {{")
+            w(f'{indent}    if ({loop_var} != 0) {{ {out} += ", "; }}')
+            self._emit_dump_value(type_node.element_type, f"{expr}[{loop_var}]", out, w, indent + "    ", enum_names, depth + 1)
+            w(f"{indent}}}")
+            w(f'{indent}{out} += "]";')
+        else:
+            raise RuntimeError(f"Unsupported type in to_string: {type_node}")
 
     # ------------------------------------------------------------------
     # Enum
