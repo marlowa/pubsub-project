@@ -12,6 +12,8 @@ import quickfix.field.OrdType;
 import quickfix.field.OrderQty;
 import quickfix.field.OrigClOrdID;
 import quickfix.field.Price;
+import quickfix.field.SecurityID;
+import quickfix.field.SecurityIDSource;
 import quickfix.field.Side;
 import quickfix.field.Symbol;
 import quickfix.field.TransactTime;
@@ -49,6 +51,8 @@ public class MessagesHandler {
         String ordTypeStr = ctx.formParam("ordType");
         String qtyStr = ctx.formParam("qty");
         String priceStr = ctx.formParam("price");
+        String securityId = ctx.formParam("securityId");
+        String securityIdSource = ctx.formParam("securityIdSource");
 
         if (clOrdId == null || clOrdId.isBlank()) {
             ctx.status(400).json(Map.of("error", "ClOrdID is required"));
@@ -63,6 +67,15 @@ public class MessagesHandler {
             NewOrderSingle nos = new NewOrderSingle();
             nos.set(new ClOrdID(clOrdId.trim()));
             nos.set(new Symbol(symbol.trim()));
+            // Exchange instrument identification for venues (e.g. futures) that key on a numeric
+            // exchange instrument id rather than the Symbol alone: SecurityID (48) paired with
+            // SecurityIDSource (22). Only sent when a SecurityID is supplied, so the plain
+            // Symbol-only flow is unchanged. Default source is "8" (Exchange Symbol).
+            if (securityId != null && !securityId.isBlank()) {
+                nos.set(new SecurityID(securityId.trim()));
+                String idSource = (securityIdSource == null || securityIdSource.isBlank()) ? "8" : securityIdSource.trim();
+                nos.set(new SecurityIDSource(idSource));
+            }
             nos.set(new HandlInst(HandlInst.AUTOMATED_EXECUTION_ORDER_PRIVATE_NO_BROKER_INTERVENTION));
             nos.set(new TransactTime(LocalDateTime.now()));
 

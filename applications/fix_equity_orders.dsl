@@ -1,364 +1,314 @@
-    # -----------------------------------------------------------------------------
-#  fix_equity_orders.dsl
-#
-#  FIX 5.0 SP2 equity order topic registry for pubsub_itc_fw.
-#
-#  Three pub/sub topics are defined:
-#    NewOrderSingle     (FIX MsgType=D)  -- buy-side to sell-side
-#    OrderCancelRequest (FIX MsgType=F)  -- buy-side to sell-side
-#    ExecutionReport    (FIX MsgType=8)  -- sell-side to buy-side
-#
-#  Design notes:
-#    - Enum values use FIX character literals (e.g. '1', 'A') matching the
-#      FIX 5.0 SP2 specification exactly, making future validation against
-#      FIX50SP2.xml straightforward.
-#    - Prices and quantities are strings to avoid binary/decimal point
-#      representation issues. Callers may use fixed-point integers internally
-#      but the wire format remains format-agnostic.
-#    - TransactTime uses datetime_ns.
-#    - Optional fields are used for fields that are conditionally required
-#      by the FIX specification (e.g. Price only for limit orders).
-#    - Topic IDs start at 1000 to leave the 1-999 range for framework
-#      internal PDUs (leader-follower protocol uses 100-201).
-# -----------------------------------------------------------------------------
-
 # ---------------------------------------------------------------------------
-# PduId enum -- one symbolic id per message (a pdu-id registry). NOTE: this is NOT
-# the pub/sub topic catalog; topics are a separate DSL construct that group messages.
-# The validator requires id=PduId.X in pdu-id-enum mode.
+# GENERATED FILE -- do not edit by hand.
+# Produced by python/dd_to_dsl from a FIX data dictionary and a selection spec.
+# Field types and enum values come from the FIX DD; the field selection and
+# PDU ids come from the spec. Regenerate after changing either.
 # ---------------------------------------------------------------------------
 
 enum PduId : i16 {
-    NewOrderSingle     = 1000
+    NewOrderSingle = 1000
     OrderCancelRequest = 1001
-    ExecutionReport    = 1002
+    ExecutionReport = 1002
 }
 
-# ---------------------------------------------------------------------------
 # OrdType (tag 40)
-# Active FIX 5.0 SP2 values; deprecated on-close and forex variants omitted.
-# ---------------------------------------------------------------------------
-
 enum OrdType : char {
-    Market                     = '1'
-    Limit                      = '2'
-    Stop                       = '3'
-    StopLimit                  = '4'
-    WithOrWithout              = '6'
-    LimitOrBetter              = '7'
-    LimitWithOrWithout         = '8'
-    OnBasis                    = '9'
-    PreviouslyQuoted           = 'D'
-    PreviouslyIndicated        = 'E'
-    ForexSwap                  = 'G'
-    Funari                     = 'I'
-    MarketIfTouched            = 'J'
-    MarketWithLeftOverAsLimit  = 'K'
+    Market = '1'
+    Limit = '2'
+    Stop = '3'
+    StopLimit = '4'
+    MarketOnClose = '5'
+    WithOrWithout = '6'
+    LimitOrBetter = '7'
+    LimitWithOrWithout = '8'
+    OnBasis = '9'
+    OnClose = 'A'
+    LimitOnClose = 'B'
+    ForexMarket = 'C'
+    PreviouslyQuoted = 'D'
+    PreviouslyIndicated = 'E'
+    ForexLimit = 'F'
+    ForexSwap = 'G'
+    ForexPreviouslyQuoted = 'H'
+    Funari = 'I'
+    MarketIfTouched = 'J'
+    MarketWithLeftOverAsLimit = 'K'
     PreviousFundValuationPoint = 'L'
-    NextFundValuationPoint     = 'M'
-    Pegged                     = 'P'
-    CounterOrderSelection      = 'Q'
+    NextFundValuationPoint = 'M'
+    Pegged = 'P'
+    CounterOrderSelection = 'Q'
+    StopOnBidOrOffer = 'R'
+    StopLimitOnBidOrOffer = 'S'
 }
 
-# ---------------------------------------------------------------------------
 # Side (tag 54)
-# ---------------------------------------------------------------------------
-
 enum Side : char {
-    Buy              = '1'
-    Sell             = '2'
-    BuyMinus         = '3'
-    SellPlus         = '4'
-    SellShort        = '5'
-    SellShortExempt  = '6'
-    Undisclosed      = '7'
-    Cross            = '8'
-    CrossShort       = '9'
+    Buy = '1'
+    Sell = '2'
+    BuyMinus = '3'
+    SellPlus = '4'
+    SellShort = '5'
+    SellShortExempt = '6'
+    Undisclosed = '7'
+    Cross = '8'
+    CrossShort = '9'
     CrossShortExempt = 'A'
-    AsDefined        = 'B'
-    Opposite         = 'C'
-    Subscribe        = 'D'
-    Redeem           = 'E'
-    Lend             = 'F'
-    Borrow           = 'G'
+    AsDefined = 'B'
+    Opposite = 'C'
+    Subscribe = 'D'
+    Redeem = 'E'
+    Lend = 'F'
+    Borrow = 'G'
+    SellUndisclosed = 'H'
 }
 
-# ---------------------------------------------------------------------------
 # TimeInForce (tag 59)
-# ---------------------------------------------------------------------------
-
 enum TimeInForce : char {
-    Day                 = '0'
-    GoodTillCancel      = '1'
-    AtTheOpening        = '2'
-    ImmediateOrCancel   = '3'
-    FillOrKill          = '4'
-    GoodTillCrossing    = '5'
-    GoodTillDate        = '6'
-    AtTheClose          = '7'
+    Day = '0'
+    GoodTillCancel = '1'
+    AtTheOpening = '2'
+    ImmediateOrCancel = '3'
+    FillOrKill = '4'
+    GoodTillCrossing = '5'
+    GoodTillDate = '6'
+    AtTheClose = '7'
     GoodThroughCrossing = '8'
-    AtCrossing          = '9'
+    AtCrossing = '9'
+    GoodForTime = 'A'
+    GoodForAuction = 'B'
+    GoodForMonth = 'C'
 }
 
-# ---------------------------------------------------------------------------
 # OrdStatus (tag 39)
-# ---------------------------------------------------------------------------
-
 enum OrdStatus : char {
-    New                = '0'
-    PartiallyFilled    = '1'
-    Filled             = '2'
-    DoneForDay         = '3'
-    Canceled           = '4'
-    Replaced           = '5'
-    PendingCancel      = '6'
-    Stopped            = '7'
-    Rejected           = '8'
-    Suspended          = '9'
-    PendingNew         = 'A'
-    Calculated         = 'B'
-    Expired            = 'C'
+    New = '0'
+    PartiallyFilled = '1'
+    Filled = '2'
+    DoneForDay = '3'
+    Canceled = '4'
+    Replaced = '5'
+    PendingCancel = '6'
+    Stopped = '7'
+    Rejected = '8'
+    Suspended = '9'
+    PendingNew = 'A'
+    Calculated = 'B'
+    Expired = 'C'
     AcceptedForBidding = 'D'
-    PendingReplace     = 'E'
+    PendingReplace = 'E'
 }
 
-# ---------------------------------------------------------------------------
 # ExecType (tag 150)
-# ---------------------------------------------------------------------------
-
 enum ExecType : char {
-    New                     = '0'
-    DoneForDay              = '3'
-    Canceled                = '4'
-    Replaced                = '5'
-    PendingCancel           = '6'
-    Stopped                 = '7'
-    Rejected                = '8'
-    Suspended               = '9'
-    PendingNew              = 'A'
-    Calculated              = 'B'
-    Expired                 = 'C'
-    Restated                = 'D'
-    PendingReplace          = 'E'
-    Trade                   = 'F'
-    TradeCorrect            = 'G'
-    TradeCancel             = 'H'
-    OrderStatus             = 'I'
-    TradeInClearingHold     = 'J'
-    TradeReleasedToClearing = 'K'
-    TriggeredOrActivated    = 'L'
+    New = '0'
+    DoneForDay = '3'
+    Canceled = '4'
+    Replaced = '5'
+    PendingCancel = '6'
+    Stopped = '7'
+    Rejected = '8'
+    Suspended = '9'
+    PendingNew = 'A'
+    Calculated = 'B'
+    Expired = 'C'
+    Restated = 'D'
+    PendingReplace = 'E'
+    Trade = 'F'
+    TradeCorrect = 'G'
+    TradeCancel = 'H'
+    OrderStatus = 'I'
+    TradeInAClearingHold = 'J'
+    TradeHasBeenReleasedToClearing = 'K'
+    TriggeredOrActivatedBySystem = 'L'
+    Locked = 'M'
+    Released = 'N'
 }
 
-# ---------------------------------------------------------------------------
 # ExecInst (tag 18)
-# Single-valued use only; multi-instruction cases are out of scope.
-# ---------------------------------------------------------------------------
-
 enum ExecInst : char {
-    StayOnOfferSide              = '0'
-    NotHeld                      = '1'
-    Work                         = '2'
-    GoAlong                      = '3'
-    OverTheDay                   = '4'
-    Held                         = '5'
-    ParticipateDoNotInitiate     = '6'
-    StrictScale                  = '7'
-    TryToScale                   = '8'
-    StayOnBidSide                = '9'
-    NoCross                      = 'A'
-    OkToCross                    = 'B'
-    CallFirst                    = 'C'
-    PercentOfVolume              = 'D'
-    DoNotIncrease                = 'E'
-    DoNotReduce                  = 'F'
-    AllOrNone                    = 'G'
-    ReinstateOnSystemFailure     = 'H'
-    InstitutionsOnly             = 'I'
-    ReinstateOnTradingHalt       = 'J'
-    CancelOnTradingHalt          = 'K'
-    LastPeg                      = 'L'
-    MidPricePeg                  = 'M'
-    NonNegotiable                = 'N'
-    OpeningPeg                   = 'O'
-    MarketPeg                    = 'P'
-    CancelOnSystemFailure        = 'Q'
-    PrimaryPeg                   = 'R'
-    Suspend                      = 'S'
-    FixedPegToLocalBestBid       = 'T'
-    CustomerDisplayInstruction   = 'U'
-    Netting                      = 'V'
-    PegToVwap                    = 'W'
-    TradeAlong                   = 'X'
-    TryToStop                    = 'Y'
-    CancelIfNotBest              = 'Z'
+    StayOnOfferSide = '0'
+    NotHeld = '1'
+    Work = '2'
+    GoAlong = '3'
+    OverTheDay = '4'
+    Held = '5'
+    ParticipateDoNotInitiate = '6'
+    StrictScale = '7'
+    TryToScale = '8'
+    StayOnBidSide = '9'
+    NoCross = 'A'
+    OkToCross = 'B'
+    CallFirst = 'C'
+    PercentOfVolume = 'D'
+    DoNotIncrease = 'E'
+    DoNotReduce = 'F'
+    AllOrNone = 'G'
+    ReinstateOnSystemFailure = 'H'
+    InstitutionsOnly = 'I'
+    ReinstateOnTradingHalt = 'J'
+    CancelOnTradingHalt = 'K'
+    LastPeg = 'L'
+    MidPricePeg = 'M'
+    NonNegotiable = 'N'
+    OpeningPeg = 'O'
+    MarketPeg = 'P'
+    CancelOnSystemFailure = 'Q'
+    PrimaryPeg = 'R'
+    Suspend = 'S'
+    FixedPegToLocalBestBid = 'T'
+    CustomerDisplayInstruction = 'U'
+    Netting = 'V'
+    PegToVwap = 'W'
+    TradeAlong = 'X'
+    TryToStop = 'Y'
+    CancelIfNotBest = 'Z'
+    TrailingStopPeg = 'a'
+    StrictLimit = 'b'
+    IgnorePriceValidityChecks = 'c'
+    PegToLimitPrice = 'd'
+    WorkToTargetStrategy = 'e'
+    IntermarketSweep = 'f'
+    ExternalRoutingAllowed = 'g'
+    ExternalRoutingNotAllowed = 'h'
+    ImbalanceOnly = 'i'
+    SingleExecutionRequestedForBlockTrade = 'j'
+    BestExecution = 'k'
+    SuspendOnSystemFailure = 'l'
+    SuspendOnTradingHalt = 'm'
+    ReinstateOnConnectionLoss = 'n'
+    CancelOnConnectionLoss = 'o'
+    SuspendOnConnectionLoss = 'p'
+    Release = 'q'
+    ExecuteAsDeltaNeutral = 'r'
+    ExecuteAsDurationNeutral = 's'
+    ExecuteAsFxNeutral = 't'
+    MinGuaranteedFillEligible = 'u'
+    BypassNonDisplayLiquidity = 'v'
+    Lock = 'w'
+    IgnoreNotionalValueChecks = 'x'
+    TrdAtRefPx = 'y'
+    AllowFacilitation = 'z'
 }
 
-# ---------------------------------------------------------------------------
 # OrdRejReason (tag 103)
-# ---------------------------------------------------------------------------
-
 enum OrdRejReason : i32 {
-    BrokerOption                    = 0
-    UnknownSymbol                   = 1
-    ExchangeClosed                  = 2
-    OrderExceedsLimit               = 3
-    TooLateToEnter                  = 4
-    UnknownOrder                    = 5
-    DuplicateOrder                  = 6
-    DuplicateOfVerballyCommunicated = 7
-    StaleOrder                      = 8
-    TradeAlongRequired              = 9
-    InvalidInvestorId               = 10
-    UnsupportedOrderCharacteristic  = 11
-    SurveillanceOption              = 12
-    IncorrectQuantity               = 13
-    IncorrectAllocatedQuantity      = 14
-    UnknownAccount                  = 15
-    Other                           = 99
+    BrokerCredit = 0
+    UnknownSymbol = 1
+    ExchangeClosed = 2
+    OrderExceedsLimit = 3
+    TooLateToEnter = 4
+    UnknownOrder = 5
+    DuplicateOrder = 6
+    DuplicateOfAVerballyCommunicatedOrder = 7
+    StaleOrder = 8
+    TradeAlongRequired = 9
+    InvalidInvestorId = 10
+    UnsupportedOrderCharacteristic = 11
+    SurveillanceOption = 12
+    IncorrectQuantity = 13
+    IncorrectAllocatedQuantity = 14
+    UnknownAccount = 15
+    PriceExceedsCurrentPriceBand = 16
+    InvalidPriceIncrement = 18
+    ReferencePriceNotAvailable = 19
+    NotionalValueExceedsThreshold = 20
+    AlgorithmRiskThresholdBreached = 21
+    ShortSellNotPermitted = 22
+    ShortSellSecurityPreBorrowRestriction = 23
+    ShortSellAccountPreBorrowRestriction = 24
+    InsufficientCreditLimit = 25
+    ExceededClipSizeLimit = 26
+    ExceededMaxNotionalOrderAmt = 27
+    ExceededDv01Pv01Limit = 28
+    ExceededCs01Limit = 29
+    Other = 99
 }
 
-# ---------------------------------------------------------------------------
 # CxlRejReason (tag 102)
-# ---------------------------------------------------------------------------
-
 enum CxlRejReason : i32 {
-    TooLateToCancel                       = 0
-    UnknownOrder                          = 1
-    BrokerOption                          = 2
-    OrderAlreadyInPendingStatus           = 3
-    UnableToProcessOrderMassCancelRequest = 4
-    OrigClOrdIdMismatch                   = 5
-    DuplicateClOrdId                      = 6
+    TooLateToCancel = 0
+    UnknownOrder = 1
+    BrokerCredit = 2
+    OrderAlreadyInPendingStatus = 3
+    UnableToProcessOrderMassCancel = 4
+    OrigOrdModTime = 5
+    DuplicateClOrdId = 6
+    PriceExceedsCurrentPrice = 7
+    PriceExceedsCurrentPriceBand = 8
+    InvalidPriceIncrement = 18
+    Other = 99
 }
-
-# ---------------------------------------------------------------------------
-# NewOrderSingle (FIX MsgType=D, tag 35=D)
-#
-# Mandatory FIX fields:
-#   ClOrdID (11), Side (54), Symbol (55), OrdType (40),
-#   TransactTime (60), OrderQty (38)
-#
-# Optional fields (conditionally required per FIX spec):
-#   Price (44)         -- required for Limit, StopLimit
-#   StopPx (99)        -- required for Stop, StopLimit
-#   TimeInForce (59)   -- absence implies Day
-#   Account (1)        -- often required by venue
-#   ExDestination (100)-- routing destination
-#   ExecInst (18)      -- execution instructions (single-valued)
-#   MinQty (110)       -- minimum acceptable fill quantity
-#   MaxFloor (111)     -- iceberg display/reserve quantity
-#   ExpireTime (126)   -- required when TimeInForce=GoodTillDate
-#   Text (58)          -- free text
-# ---------------------------------------------------------------------------
 
 message NewOrderSingle (id=PduId.NewOrderSingle)
-    string cl_ord_id
-    Side side
-    string symbol
-    OrdType ord_type
-    datetime_ns transact_time
-    string order_qty
-    optional string price
-    optional string stop_px
-    optional TimeInForce time_in_force
-    optional string account
-    optional string ex_destination
-    optional ExecInst exec_inst
-    optional string min_qty
-    optional string max_floor
-    optional datetime_ns expire_time
-    optional string text
-    optional string sender_comp_id
+    string cl_ord_id  # tag 11 (ClOrdID)
+    Side side  # tag 54 (Side)
+    string symbol  # tag 55 (Symbol)
+    OrdType ord_type  # tag 40 (OrdType)
+    datetime_ns transact_time  # tag 60 (TransactTime)
+    string order_qty  # tag 38 (OrderQty)
+    optional string security_id  # tag 48 (SecurityID)
+    optional string security_id_source  # tag 22 (SecurityIDSource)
+    optional string price  # tag 44 (Price)
+    optional string stop_px  # tag 99 (StopPx)
+    optional TimeInForce time_in_force  # tag 59 (TimeInForce)
+    optional string account  # tag 1 (Account)
+    optional string ex_destination  # tag 100 (ExDestination)
+    optional ExecInst exec_inst  # tag 18 (ExecInst)
+    optional string min_qty  # tag 110 (MinQty)
+    optional string max_floor  # tag 111 (MaxFloor)
+    optional datetime_ns expire_time  # tag 126 (ExpireTime)
+    optional string text  # tag 58 (Text)
+    optional string sender_comp_id  # SenderCompID retained for audit/logging in the sequencer WAL
     optional i32 gateway_session_conn_id  # internal conn_id of the originating FIX session; used for ER routing
-    optional datetime_ns sequenced_at     # wall time stamped by sequencer when this PDU is sequenced; used by ME for transact_time during replay
+    optional datetime_ns sequenced_at  # wall time stamped by sequencer when this PDU is sequenced; used by ME for transact_time during replay
 end
-
-# ---------------------------------------------------------------------------
-# OrderCancelRequest (FIX MsgType=F, tag 35=F)
-#
-# Mandatory FIX fields:
-#   OrigClOrdID (41), ClOrdID (11), Side (54), Symbol (55),
-#   TransactTime (60), OrderQty (38)
-#
-# Optional:
-#   Account (1), Text (58)
-# ---------------------------------------------------------------------------
 
 message OrderCancelRequest (id=PduId.OrderCancelRequest)
-    string orig_cl_ord_id
-    string cl_ord_id
-    Side side
-    string symbol
-    datetime_ns transact_time
-    string order_qty
-    optional string account
-    optional string text
-    optional string sender_comp_id
+    string orig_cl_ord_id  # tag 41 (OrigClOrdID)
+    string cl_ord_id  # tag 11 (ClOrdID)
+    Side side  # tag 54 (Side)
+    string symbol  # tag 55 (Symbol)
+    datetime_ns transact_time  # tag 60 (TransactTime)
+    string order_qty  # tag 38 (OrderQty)
+    optional string account  # tag 1 (Account)
+    optional string text  # tag 58 (Text)
+    optional string sender_comp_id  # SenderCompID retained for audit/logging in the sequencer WAL
     optional i32 gateway_session_conn_id  # internal conn_id of the originating FIX session; used for ER routing
-    optional datetime_ns sequenced_at     # wall time stamped by sequencer when this PDU is sequenced; used by ME for transact_time during replay
+    optional datetime_ns sequenced_at  # wall time stamped by sequencer when this PDU is sequenced; used by ME for transact_time during replay
 end
 
-# ---------------------------------------------------------------------------
-# ExecutionReport (FIX MsgType=8, tag 35=8)
-#
-# Mandatory FIX fields:
-#   OrderID (37), ExecID (17), ExecType (150), OrdStatus (39),
-#   Symbol (55), Side (54), LeavesQty (151), CumQty (14),
-#   AvgPx (6), TransactTime (60)
-#
-# Optional fields (conditionally required or commonly present):
-#   ClOrdID (11)       -- echoed from order; absent on unsolicited reports
-#   OrigClOrdID (41)   -- echoed on cancel/replace confirms
-#   OrdType (40)       -- echoed from order
-#   Price (44)         -- echoed for limit orders
-#   StopPx (99)        -- echoed for stop orders
-#   OrderQty (38)      -- echoed from order
-#   TimeInForce (59)   -- echoed from order
-#   Account (1)        -- echoed from order
-#   ExDestination (100)
-#   ExecInst (18)
-#   LastQty (32)       -- fill qty on this execution; present on Trade reports
-#   LastPx (31)        -- fill price on this execution; present on Trade reports
-#   TradeDate (75)     -- date of execution; present on Trade reports
-#   ExecRefID (19)     -- present on TradeCorrect and TradeCancel
-#   OrdRejReason (103) -- present when OrdStatus=Rejected
-#   CxlRejReason (102) -- present when cancel was rejected inline
-#   Text (58)
-#   MinQty (110)
-#   MaxFloor (111)
-#   ExpireTime (126)
-# ---------------------------------------------------------------------------
-
 message ExecutionReport (id=PduId.ExecutionReport)
-    string order_id
-    string exec_id
-    ExecType exec_type
-    OrdStatus ord_status
-    string symbol
-    Side side
-    string leaves_qty
-    string cum_qty
-    string avg_px
-    datetime_ns transact_time
-    optional string cl_ord_id
-    optional string orig_cl_ord_id
-    optional OrdType ord_type
-    optional string price
-    optional string stop_px
-    optional string order_qty
-    optional TimeInForce time_in_force
-    optional string account
-    optional string ex_destination
-    optional ExecInst exec_inst
-    optional string last_qty
-    optional string last_px
-    optional datetime_ns trade_date
-    optional string exec_ref_id
-    optional OrdRejReason ord_rej_reason
-    optional CxlRejReason cxl_rej_reason
-    optional string text
-    optional string min_qty
-    optional string max_floor
-    optional datetime_ns expire_time
+    string order_id  # tag 37 (OrderID)
+    string exec_id  # tag 17 (ExecID)
+    ExecType exec_type  # tag 150 (ExecType)
+    OrdStatus ord_status  # tag 39 (OrdStatus)
+    string symbol  # tag 55 (Symbol)
+    Side side  # tag 54 (Side)
+    string leaves_qty  # tag 151 (LeavesQty)
+    string cum_qty  # tag 14 (CumQty)
+    string avg_px  # tag 6 (AvgPx)
+    datetime_ns transact_time  # tag 60 (TransactTime)
+    optional string security_id  # tag 48 (SecurityID)
+    optional string security_id_source  # tag 22 (SecurityIDSource)
+    optional string cl_ord_id  # tag 11 (ClOrdID)
+    optional string orig_cl_ord_id  # tag 41 (OrigClOrdID)
+    optional OrdType ord_type  # tag 40 (OrdType)
+    optional string price  # tag 44 (Price)
+    optional string stop_px  # tag 99 (StopPx)
+    optional string order_qty  # tag 38 (OrderQty)
+    optional TimeInForce time_in_force  # tag 59 (TimeInForce)
+    optional string account  # tag 1 (Account)
+    optional string ex_destination  # tag 100 (ExDestination)
+    optional ExecInst exec_inst  # tag 18 (ExecInst)
+    optional string last_qty  # tag 32 (LastQty)
+    optional string last_px  # tag 31 (LastPx)
+    optional datetime_ns trade_date  # tag 75 (TradeDate)
+    optional string exec_ref_id  # tag 19 (ExecRefID)
+    optional OrdRejReason ord_rej_reason  # tag 103 (OrdRejReason)
+    optional CxlRejReason cxl_rej_reason  # tag 102 (CxlRejReason)
+    optional string text  # tag 58 (Text)
+    optional string min_qty  # tag 110 (MinQty)
+    optional string max_floor  # tag 111 (MaxFloor)
+    optional datetime_ns expire_time  # tag 126 (ExpireTime)
     optional i32 gateway_session_conn_id  # echoed from NOS; gateway routes ER to the exact originating FIX session
 end

@@ -904,6 +904,62 @@ void OrderGatewayThread::handle_new_order_single(FixSession& session, const Pars
         nos.time_in_force = static_cast<pubsub_itc_fw_app::TimeInForce>(tif_str[0]);
     }
 
+    // Exchange instrument identification (tag 48 + tag 22): futures/derivatives venues key on a
+    // numeric exchange instrument id rather than Symbol alone. Carry both through so the ME can
+    // echo them on the ExecutionReport and downstream topic subscribers (e.g. topic_probe) see them.
+    const std::string_view security_id = msg.get(Tag::SecurityID);
+    if (!security_id.empty()) {
+        nos.has_security_id = true;
+        nos.security_id = security_id;
+    }
+    const std::string_view security_id_source = msg.get(Tag::SecurityIDSource);
+    if (!security_id_source.empty()) {
+        nos.has_security_id_source = true;
+        nos.security_id_source = security_id_source;
+    }
+
+    // Remaining optional order attributes, carried through so the ExecutionReport echoes them back.
+    const std::string_view stop_px = msg.get(Tag::StopPx);
+    if (!stop_px.empty()) {
+        nos.has_stop_px = true;
+        nos.stop_px = stop_px;
+    }
+    const std::string_view account = msg.get(Tag::Account);
+    if (!account.empty()) {
+        nos.has_account = true;
+        nos.account = account;
+    }
+    const std::string_view ex_destination = msg.get(Tag::ExDestination);
+    if (!ex_destination.empty()) {
+        nos.has_ex_destination = true;
+        nos.ex_destination = ex_destination;
+    }
+    const std::string_view exec_inst_str = msg.get(Tag::ExecInst);
+    if (!exec_inst_str.empty()) {
+        nos.has_exec_inst = true;
+        nos.exec_inst = static_cast<pubsub_itc_fw_app::ExecInst>(exec_inst_str[0]);
+    }
+    const std::string_view min_qty = msg.get(Tag::MinQty);
+    if (!min_qty.empty()) {
+        nos.has_min_qty = true;
+        nos.min_qty = min_qty;
+    }
+    const std::string_view max_floor = msg.get(Tag::MaxFloor);
+    if (!max_floor.empty()) {
+        nos.has_max_floor = true;
+        nos.max_floor = max_floor;
+    }
+    const std::string_view expire_time = msg.get(Tag::ExpireTime);
+    if (!expire_time.empty()) {
+        nos.has_expire_time = true;
+        nos.expire_time = parse_fix_utc_timestamp(expire_time);
+    }
+    const std::string_view text = msg.get(Tag::Text);
+    if (!text.empty()) {
+        nos.has_text = true;
+        nos.text = text;
+    }
+
     // Retain SenderCompID for audit/logging in the sequencer WAL.
     if (!session.client_comp_id.empty()) {
         nos.has_sender_comp_id = true;

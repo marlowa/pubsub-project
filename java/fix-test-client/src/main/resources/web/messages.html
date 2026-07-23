@@ -14,6 +14,15 @@
     <div style="display:flex; flex-wrap:wrap; gap:10px; align-items:flex-end; margin-bottom:14px;">
         <label>ClOrdID <input type="text" id="f-clordid" value="ORD-001" style="width:110px;"></label>
         <label>Symbol  <input type="text" id="f-symbol"  value="BHP"    style="width:80px;"></label>
+        <label>SecurityID <input type="text" id="f-securityid" placeholder="exchange instrument id" style="width:150px;"></label>
+        <label>ID Source
+            <select id="f-secidsrc" style="font-family:monospace; font-size:13px; padding:4px 6px; border:1px solid #aaa;">
+                <option value="8">8 — Exchange Symbol</option>
+                <option value="4">4 — ISIN</option>
+                <option value="1">1 — CUSIP</option>
+                <option value="5">5 — RIC</option>
+            </select>
+        </label>
         <label>Side
             <select id="f-side" style="font-family:monospace; font-size:13px; padding:4px 6px; border:1px solid #aaa;">
                 <option value="Buy">Buy</option>
@@ -118,12 +127,14 @@ async function doSend() {
     errEl.style.display = 'none';
 
     const params = {
-        clOrdId:  document.getElementById('f-clordid').value,
-        symbol:   document.getElementById('f-symbol').value,
-        side:     document.getElementById('f-side').value,
-        ordType:  document.getElementById('f-ordtype').value,
-        qty:      document.getElementById('f-qty').value,
-        price:    document.getElementById('f-price').value,
+        clOrdId:          document.getElementById('f-clordid').value,
+        symbol:           document.getElementById('f-symbol').value,
+        securityId:       document.getElementById('f-securityid').value,
+        securityIdSource: document.getElementById('f-secidsrc').value,
+        side:             document.getElementById('f-side').value,
+        ordType:          document.getElementById('f-ordtype').value,
+        qty:              document.getElementById('f-qty').value,
+        price:            document.getElementById('f-price').value,
     };
 
     const data = await apiPost('/api/messages/send', params);
