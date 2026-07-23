@@ -127,6 +127,31 @@ it removes every non-DD field from the generated PDUs.
 **Decided:** `bytes payload` + `pdu_id`. The envelope stays one static struct regardless of
 which PDU it carries (simple, matches the existing wrap). No DSL tagged-union support is added.
 
+### WAL storage format — the real blast radius (found during 1a)
+
+This is deeper than "rewire three components", and the next session must plan for it:
+
+- `wal_.append(seq, pdu_id, payload, size, wall_time)` (`Wal.hpp:149`) has **no routing
+  fields**. Today `gateway_session_conn_id` survives in the WAL *only because it sits inside
+  the NOS payload*. Moving it to the envelope means the WAL must instead store the **envelope**
+  (record `pdu_id = WalRecord`, payload = the wrapped FIX PDU) — a **WAL storage-format change**.
+- That cascades to everything that reads the WAL: **replay** (`SequencerThread` ~1050–1120),
+  **snapshot restore** (~1580–1620), the **leader→follower replication** path (already sends
+  `WalRecord`, `SequencerThread:1140`), the **MEP**, and **topic_probe** — all of which today
+  dispatch on the record's `pdu_id` and would move to decode-envelope-then-payload.
+- The ME decodes `NewOrderSingleView` **directly** from the payload (`MatchingEngineThread:246`);
+  it moves to decode-envelope-then-payload.
+- **Existing on-disk WALs become format-incompatible** → a clean WAL is required.
+- The **730 unit/integration tests will not fully exercise replay/failover with the new
+  format** — 1b–1g must be validated with the **live HA system + a failover test**
+  (`ha_test.py`), not just the build.
+
+Recommended landing order for the transplant: define the wire/format change with the WAL
+storing the envelope first, migrate replay + snapshot + replication together, then gateway
+wrap / sequencer passthrough (deleting the ~20-field hand-copy) / ME unwrap, then ER path,
+then MEP + topic_probe, then delete the three internal fields from the DD PDUs (1g), with a
+live NOS→ER→topic round-trip and a failover test as the acceptance gate.
+
 ---
 
 ## 3. Web UI for a full NOS
