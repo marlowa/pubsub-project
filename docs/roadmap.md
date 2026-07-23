@@ -2,7 +2,8 @@
 
 ## Slices
 
-Each slice leaves the system in a working state. Slices 1–7 are complete.
+Each slice leaves the system in a working state. Slices 1–8 and 10 are complete; slice 11
+(TAP) is the next planned application.
 
 | # | Description | Status |
 |---|-------------|--------|
@@ -13,9 +14,9 @@ Each slice leaves the system in a working state. Slices 1–7 are complete.
 | 5 | Move FixSession ↔ ClOrdID mapping into sequencer state | ✓ Done |
 | 6 | Single-host failover infrastructure (leader-follower state machine) | ✓ Done |
 | 7 | Network WAL replication (leader streams records; follower acks; ER gated on ack) | ✓ Done |
-| 8 | Arbiter implementation — replaces file-based fencing with real lease+epoch arbiter; PSA+witness topology | Not started |
+| 8 | Arbiter implementation — replaces file-based fencing with real lease+epoch arbiter; PSA+witness topology | ✓ Done |
 | 9 | Dual snapshots, snapshot validation, operational polish | Not started |
-| 10 | WAL multi-subscriber generalisation + MEP (MatchingEnginePublisher) | Not started |
+| 10 | WAL multi-subscriber generalisation + MEP (MatchingEnginePublisher); topic pub/sub over the WAL | ✓ Done |
 | 11 | TAP (Trade Activity Publisher) — topic subscriber to MEP; Kafka/Pulsar publisher | Not started |
 | 12+ | ME primary-secondary pair; gateway pool; market data; seamless ME failover; DR site; multi-instrument scaling | Forward-looking, not yet planned |
 
@@ -54,8 +55,10 @@ Near-term tasks not tied to a specific slice.
   Priority metrics: `order_latency_ns` histogram by phase (`gw_nos_received`, `seq_wal_roundtrip`, `me_roundtrip`, `gw_er_sent`); `seq_pending_er_count` gauge; `seq_wal_replication_lag_records` gauge; `seq_sequence_number` counter; queue depth gauges per `ApplicationThread`.  
   Hot-path instrumentation: `std::atomic` increments only — no locks, no allocation. Dedicated metrics-serving thread on a non-hot CPU.
 
-- **Pub/sub WAL** (item 7).  
-  Long-term replacement for direct TCP between components. Eliminates the rendezvous problem and the retry workaround. Covered by slice 10.
+- **Pub/sub WAL** (item 7) — **Done** (slice 10).  
+  Topic-based fan-out over the WAL, streamed and socket-paced, with replay from a cursor. See
+  [Pub/Sub](design/pubsub.md). The MEP is the reference publisher; `topic_probe` the reference
+  subscriber. TAP (slice 11) is the next consumer to build on it.
 
 - **Doxygen navigation layer — clickable architecture maps** (item 18).  
   Hierarchy of SVG architecture maps embedded in Doxygen HTML. Each component is a clickable region linking to a curated `.dox` landing page. Tool: Graphviz/DOT (`URL` attribute → native SVG `<a>` elements, no JavaScript). See the full discussion in `pubsub_itc_fw_summary.md` under item 18.
@@ -111,7 +114,7 @@ Key architectural decisions and the reasoning behind them.
 
 - **Prometheus for statistics.** Hot-path instrumentation via shared-memory atomic counter/gauge/histogram updates. Dedicated gatherer process per machine reads shared memory and exposes scrape endpoints.
 
-- **WAL-follower pattern for downstream consumers** (Kafka publisher, market data). Each consumer opens a connection to the sequencer leader with a position cursor and receives WAL records from cursor onward. Reuses the existing replication primitive. Topic-based pubsub may be added later if multi-subscriber fanout with replay semantics is genuinely needed.
+- **WAL-follower pattern for a single downstream consumer** (e.g. a Kafka publisher). The consumer opens a connection to the sequencer leader with a position cursor and receives WAL records from cursor onward, reusing the existing replication primitive. For multi-subscriber fan-out with replay, the framework now provides the [topic pub/sub primitive](design/pubsub.md) (slice 10) instead; the two coexist and are chosen per consumer.
 
 ### Leaning
 

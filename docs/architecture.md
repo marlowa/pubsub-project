@@ -186,7 +186,7 @@ state (routing tables, book replicas) is derived from the WAL and can be rebuilt
 | 7070 | gateway → authentication service primary |
 | 7071 | gateway → authentication service secondary |
 | 7100 | sequencer → arbiter |
-| 7030–7047 | MEP/TAP (planned; see [MEP and TAP design](design/mep_tap.md)) |
+| 7030–7047 | MEP topic ports (see [Pub/Sub](design/pubsub.md)) |
 
 ---
 

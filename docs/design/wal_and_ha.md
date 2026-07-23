@@ -72,25 +72,16 @@ an operational choice, not automatic.
 
 ## Write-Ahead Log (WAL)
 
-### Format
+The WAL data structure — its on-disk format, segmentation, single-writer rule, the
+scan-from-zero / stop-on-damage replay model, and the cursor abstraction — is described in
+its own document, **[Write-Ahead Log](wal.md)**. It is a shared primitive: the topic
+publisher builds pub/sub fan-out on the same structure (see [Pub/Sub](pubsub.md)).
 
-Each WAL entry is:
-```
-[ magic | length | seqNo | payload | checksum ]
-```
-
-Replay scans from offset 0; on any checksum or bounds failure it stops. Entries past the
-failure point are treated as "did not happen". Tail corruption is therefore identical in
-effect to a clean crash before commit of that entry. Mid-segment corruption halts the
-sequencer; the replica with a clean prefix is promoted.
-
-### Segmentation
-
-The WAL is segmented into fixed-size files (`wal_000001.log`, `wal_000002.log`, …). Each
-segment is independently checksummable and archivable. Segmentation simplifies truncation,
-localises corruption damage, and makes the disk-full scenario predictable.
-
-The WAL is **single-writer**: only the leader sequencer appends. No locks are needed.
+This section covers only what the *sequencer's* high availability adds on top of that
+primitive: how a commit is made durable across two machines, how records replicate to the
+follower, and how epochs fence stale writers. The sequencer is the WAL's single writer while
+it holds leadership; on mid-log corruption it halts and the replica with a clean prefix is
+promoted.
 
 ### Two-Tier Commit
 
@@ -674,6 +665,8 @@ The WAL and HA design is staged into vertical slices.
 
 ## See Also
 
+- [Write-Ahead Log](wal.md) — the WAL data structure this HA design builds on
+- [Pub/Sub](pubsub.md) — the topic publisher, which reuses the WAL as a fan-out backlog
 - [Architecture](../architecture.md) — component topology and order flow
 - [Arbiter](../applications/arbiter.md) — the arbiter application (PSA active/passive + replication)
 - [Witness](../applications/witness.md) — the witness application (tiebreaker)

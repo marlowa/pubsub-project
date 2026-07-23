@@ -24,9 +24,9 @@ A low-latency, multi-threaded, event-driven application framework using the **re
 - Inter-thread communication (ITC) via lock-free MPSC queues
 - Inter-process communication (IPC) via unicast TCP
 - Lock-free thread-safe pool allocators
-- Broadcast / fanout via WAL followers;
-a topic-based pubsub primitive may be added later if specific use cases require it
-(see "Downstream consumers and broadcast streams" in the WAL and HA Design section)
+- Topic-based publish/subscribe with fan-out and replay, backed by a per-publisher WAL
+(the MEP publishes topics; `topic_probe` and the `TopicSubscriberThread` base subscribe) —
+see [Pub/Sub](docs/design/pubsub.md)
 - Timers (timerfd, via epoll)
 - High availability via primary/secondary instance pairs with arbitration
 - A DSL-based binary serialisation layer replacing protobuf/SBE
@@ -1107,7 +1107,7 @@ What is decided, what is leaning, what is open.
 - Two distinct timer mechanisms, kept separate. Local OS `timerfd` for infrastructure timers (idle timeouts, connect retries, lease heartbeats, backstop, FIX logon timeout) -- these are not observable to matching logic, do not need replay determinism, and stay as `timerfd`. Sequencer-mediated timers for ME-domain timer events (GTD expiry, auction expiry, self-trade prevention windows when added) -- these are replay-critical and travel through the WAL alongside orders. See "Timer sourcing" section below.
 - Statistics via Prometheus, not via a Kafka publishing chain. Hot-path instrumentation is shared-memory atomic counter/gauge/histogram updates (nanosecond cost). A separate Prometheus gatherer process per machine reads the shared memory and exposes scrape or remote-write endpoints. Cumulative counters in shared memory satisfy the regulatory "no statistic ever gets dropped" requirement: the cumulative count is mathematically complete and durable across gatherer restarts; only fine-grained rate detail within a missed scrape window is lost, which is acceptable. See "Statistics and metrics" section below.
 - ME audit log via the existing Quill async logger. The matching engine logs order acceptance, ER emission, and other regulator-relevant events at PTP-disciplined `CLOCK_REALTIME` timestamps. Hot-path cost is sub-100ns per `PUBSUB_LOG` call. The ME audit log is best-effort crash-durable (Quill is async; in-flight records may be lost on a crash), but the WAL is the crash-durable record of order existence -- the ME log is supplementary timing detail. Per-statement synchronous flushing was considered and rejected on latency grounds. See "Statistics and metrics" section below.
-- Downstream consumers of order/trade events (Kafka publisher, future broadcast use cases) follow the **WAL-follower pattern**, not topic-based pubsub. Each consumer opens a connection to the sequencer leader, identifies a position cursor, and receives WAL records from cursor onward. The sequencer's WAL replication channel generalises from "one follower (the secondary sequencer)" to "N followers, each with their own cursor". This reuses the framework's existing replication primitive rather than introducing a new pubsub abstraction. A topic-based pubsub primitive may be added later if multiple downstream broadcast consumers with fanout-and-replay semantics emerge; for the current single named consumer (Kafka publisher) it is over-engineering. See "Downstream consumers and broadcast streams" section below.
+- Downstream consumers of order/trade events (Kafka publisher, future broadcast use cases) follow the **WAL-follower pattern**, not topic-based pubsub. Each consumer opens a connection to the sequencer leader, identifies a position cursor, and receives WAL records from cursor onward. The sequencer's WAL replication channel generalises from "one follower (the secondary sequencer)" to "N followers, each with their own cursor". This reuses the framework's existing replication primitive rather than introducing a new pubsub abstraction for a single named consumer. Where multiple downstream consumers with fan-out-and-replay semantics are needed, the framework now provides a **topic-based pub/sub primitive** built on the same WAL (the MEP publishes topics; see [Pub/Sub](docs/design/pubsub.md)) — the two patterns coexist, chosen per consumer.
 
 **Leaning:**
 

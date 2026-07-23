@@ -25,9 +25,9 @@ digraph architecture {
                      URL="\ref sequencer_app"];
     matching_engine [label="Matching Engine\n(order book; leader / follower)",
                      URL="\ref matching_engine"];
-    mep             [label="Matching Engine Publisher\n(WAL follower, topic fanout -- planned)",
-                     style="rounded,filled,dashed", fillcolor="#f4f0e6",
-                     URL="\ref mep_tap"];
+    mep             [label="Matching Engine Publisher\n(WAL-backed topic fanout)",
+                     style="rounded,filled", fillcolor="#f4f0e6",
+                     URL="\ref pubsub"];
     authentication  [label="Authentication Service\n(SCRAM store; active/active a + b)",
                      fillcolor="#eaf5ea",
                      URL="\ref authentication_service"];

@@ -305,7 +305,9 @@ Start at **[docs/index.md](docs/index.md)**. From there:
 - [Allocators](docs/design/allocators.md) — pool, bump, and slab allocators; no heap on hot paths
 - [Socket Communications](docs/design/socket_comms.md) — PDU framing, raw socket protocol handler, backpressure
 - [Secure Communications](docs/design/secure_comms.md) — TLS (OpenSSL memory BIOs), SCRAM-SHA-256
+- [Write-Ahead Log](docs/design/wal.md) — the append-only log primitive: format, segmentation, cursor/replay model
 - [WAL and High Availability](docs/design/wal_and_ha.md) — two-tier commit, replication, leader election, arbiter PSA topology
+- [Pub/Sub](docs/design/pubsub.md) — topic fan-out over the WAL; publishing (MEP) and subscribing (`topic_probe`) worked examples
 - [Serialisation DSL](docs/design/serialisation_dsl.md) — DSL syntax, generated C++ API, wire format, benchmarks
 - [Sequencer Design](docs/design/sequencer.md) — routing map, inline WAL handler, replay mode
 - [CPU Pinning](docs/design/cpu_pinning.md) — shared-memory CPU registry, RT scheduling
