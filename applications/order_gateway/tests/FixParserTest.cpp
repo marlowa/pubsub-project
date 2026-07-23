@@ -147,8 +147,28 @@ TEST_F(FixParserTest, ConsumesButDoesNotDispatchABadChecksumMessage) {
 
     const size_t consumed = feed(parser, wire);
 
-    EXPECT_EQ(consumed, wire.size()); // whole message skipped
-    EXPECT_TRUE(captured_.empty());   // not dispatched
+    EXPECT_EQ(consumed, wire.size());                                    // whole message skipped
+    EXPECT_TRUE(captured_.empty());                                      // not dispatched
+    EXPECT_TRUE(logger_.contains_message("discarding inbound message")); // logged at INFO, not silent
+}
+
+// A well-framed message with no MsgType (tag 35) is garbled per FIX: it is
+// discarded (not dispatched, not rejected) but must still be logged -- a received
+// message is never dropped without a trace for support.
+TEST_F(FixParserTest, DiscardsAndLogsAMessageWithNoMsgType) {
+    FixParser parser = make_parser();
+    char buffer[256];
+    fix_codec::FixMessageWriter writer(buffer, sizeof(buffer));
+    writer.push_back_field(tag::ClOrdID, std::string_view("ORDER-1")); // framed correctly, but no tag 35
+    const std::string wire(writer.finish());
+    ASSERT_FALSE(wire.empty());
+
+    const size_t consumed = feed(parser, wire);
+
+    EXPECT_EQ(consumed, wire.size());
+    EXPECT_TRUE(captured_.empty());
+    EXPECT_TRUE(rejected_.empty());
+    EXPECT_TRUE(logger_.contains_message("no MsgType"));
 }
 
 TEST_F(FixParserTest, ResyncsPastAMalformedStartToTheNextMessage) {

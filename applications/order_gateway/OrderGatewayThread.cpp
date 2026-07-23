@@ -291,7 +291,7 @@ void OrderGatewayThread::on_raw_socket_message(const pubsub_itc_fw::EventMessage
                     // invalid Logon, cannot be handled -- disconnect. An established session
                     // gets a FIX Reject (35=3).
                     if (msg.msg_type() == MsgType::Logon || !session.session_established) {
-                        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                                    "OrderGatewayThread: connection {} MsgType='{}' failed FIX validation ({}) before session established -- disconnecting",
                                    conn_id.get_value(), msg.msg_type(), description);
                         disconnect_session(session, "message failed FIX validation");
@@ -367,7 +367,7 @@ void OrderGatewayThread::on_raw_socket_message(const pubsub_itc_fw::EventMessage
         const size_t bytes_to_check = std::min(static_cast<size_t>(available), expected_preamble.size());
 
         if (std::memcmp(data, expected_preamble.data(), bytes_to_check) != 0) {
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "OrderGatewayThread: connection {} invalid FIX preamble -- disconnecting",
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "OrderGatewayThread: connection {} invalid FIX preamble -- disconnecting",
                        conn_id.get_value());
             disconnect_session(session, "invalid FIX preamble");
             // Commit only the new bytes so the buffer drains correctly.
@@ -835,7 +835,7 @@ void OrderGatewayThread::handle_new_order_single(FixSession& session, const Pars
 
     // Validate required fields.
     if (cl_ord_id.empty() || symbol.empty() || side_str.empty() || ord_type_str.empty() || order_qty.empty()) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "OrderGatewayThread: connection {} NewOrderSingle missing required fields"
                    " -- dropping",
                    session.conn_id.get_value());
@@ -848,21 +848,21 @@ void OrderGatewayThread::handle_new_order_single(FixSession& session, const Pars
     // the open-order pool entry and the matching-engine book key. Over-length symbol/qty below
     // keep their FIX BusinessReject. Limits are documented in the gateway connectivity spec.
     if (cl_ord_id.size() > fix_order_limits::max_cl_ord_id_length) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "OrderGatewayThread: connection {} NOS ClOrdID length {} exceeds limit {} -- rejecting",
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "OrderGatewayThread: connection {} NOS ClOrdID length {} exceeds limit {} -- rejecting",
                    session.conn_id.get_value(), cl_ord_id.size(), fix_order_limits::max_cl_ord_id_length);
         send_reject_execution_report(session, msg, "ClOrdID exceeds maximum length of " + std::to_string(fix_order_limits::max_cl_ord_id_length),
                                      /*is_cancel=*/false);
         return;
     }
     if (symbol.size() > static_cast<size_t>(config_.max_symbol_length)) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "OrderGatewayThread: connection {} NOS Symbol length {} exceeds limit {} -- sending BusinessReject", session.conn_id.get_value(),
                    symbol.size(), config_.max_symbol_length);
         send_business_reject(session, msg, "Symbol exceeds maximum length of " + std::to_string(config_.max_symbol_length));
         return;
     }
     if (order_qty.size() > static_cast<size_t>(config_.max_order_qty_length)) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "OrderGatewayThread: connection {} NOS OrderQty length {} exceeds limit {} -- sending BusinessReject", session.conn_id.get_value(),
                    order_qty.size(), config_.max_order_qty_length);
         send_business_reject(session, msg, "OrderQty exceeds maximum length of " + std::to_string(config_.max_order_qty_length));
@@ -1078,7 +1078,7 @@ void OrderGatewayThread::send_business_reject(FixSession& session, const ParsedF
     bmr.set(Tag::RefMsgType, std::string(inbound.get(Tag::MsgType)));
     bmr.set(Tag::BusinessRejectReason, std::string("0")); // 0 = Other
     bmr.set(Tag::Text, reason);
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "OrderGatewayThread: connection {} BusinessReject: {}", session.conn_id.get_value(), reason);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "OrderGatewayThread: connection {} BusinessReject: {}", session.conn_id.get_value(), reason);
     send_fix_to_session(session, bmr);
 }
 
@@ -1093,8 +1093,7 @@ void OrderGatewayThread::send_fix_reject(FixSession& session, const ParsedFixMes
     response.set(Tag::RefMsgType, std::string(reject.ref_msg_type));
     response.set(Tag::SessionRejectReason, static_cast<int>(reject.reason));
     response.set(Tag::Text, std::string(description));
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "OrderGatewayThread: connection {} Reject (35=3): {}", session.conn_id.get_value(),
-               description);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "OrderGatewayThread: connection {} Reject (35=3): {}", session.conn_id.get_value(), description);
     send_fix_to_session(session, response);
 }
 

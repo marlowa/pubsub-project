@@ -51,9 +51,12 @@ size_t FixParser::feed(const uint8_t* data, size_t available) {
                 return committed;
 
             case fix_codec::FixMessageReader::Status::Malformed: {
+                // Bad data from a client, handled correctly (resync) -- an INFO event
+                // so support can see it, not a Warning/Error (that is for our own
+                // software or config faults).
                 const std::optional<std::string> reason = reader.error();
-                PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
-                           "FixParser: malformed FIX message at window offset {} ({}) -- skipping one byte and resyncing", start,
+                PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info,
+                           "FixParser: malformed inbound FIX message at window offset {} ({}) -- skipping one byte and resyncing", start,
                            reason ? std::string_view(*reason) : std::string_view("unknown"));
                 committed = start + 1;
                 cursor = start + 1;
@@ -61,8 +64,10 @@ size_t FixParser::feed(const uint8_t* data, size_t available) {
             }
 
             case fix_codec::FixMessageReader::Status::ChecksumError: {
+                // Bad inbound data, handled correctly (discarded, no Reject per FIX):
+                // INFO, not Warning.
                 const std::optional<std::string> reason = reader.error();
-                PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning, "FixParser: {} -- discarding message of {} bytes",
+                PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info, "FixParser: {} -- discarding inbound message of {} bytes",
                            reason ? std::string_view(*reason) : std::string_view("bad checksum"), reader.message_size());
                 committed = start + reader.message_size();
                 cursor = committed;
@@ -77,8 +82,9 @@ size_t FixParser::feed(const uint8_t* data, size_t available) {
                     message.set(field.tag, field.value);
                 }
                 // A well-framed message with no MsgType (tag 35) is garbled per FIX
-                // (MsgType must be the third field); discard it silently like a bad
-                // checksum -- do not validate or reject it.
+                // (MsgType must be the third field); discard it without validating or
+                // rejecting, but log it at INFO -- a received message must never be
+                // dropped with no trace for support.
                 if (message.has(Tag::MsgType)) {
                     const fix_codec::FixReject reject = fix_codec::FixMessageValidator(reader).validate();
                     if (reject.ok()) {
@@ -86,6 +92,9 @@ size_t FixParser::feed(const uint8_t* data, size_t available) {
                     } else {
                         on_reject_(message, reject);
                     }
+                } else {
+                    PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info,
+                               "FixParser: discarding well-framed inbound message with no MsgType (tag 35) at window offset {} -- garbled per FIX", start);
                 }
                 committed = start + reader.message_size();
                 cursor = committed;
