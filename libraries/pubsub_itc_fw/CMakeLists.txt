@@ -111,8 +111,15 @@ target_link_libraries(pubsub_itc_fw PUBLIC
         quill::quill
         argparse::argparse
         atomic
-        ssl
-        crypto
+        # Use the imported targets from find_package(OpenSSL) (top-level CMakeLists)
+        # instead of the bare -lssl/-lcrypto names. The bare names let the linker pick
+        # up whatever libssl it finds first on the search path -- and because
+        # THIRDPARTY_DIR is prepended to CMAKE_PREFIX_PATH, a Rocky8 thirdparty OpenSSL
+        # 1.1 could win over the platform OpenSSL. The imported targets pin the link to
+        # the exact OpenSSL find_package resolved for this platform (3.x on Mint, 1.1 on
+        # RHEL8), baking the correct SONAME.
+        OpenSSL::SSL
+        OpenSSL::Crypto
 )
 
 # std::filesystem (used by CpuPinning and several tests) needs libstdc++fs on
