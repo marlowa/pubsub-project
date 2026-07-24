@@ -2,61 +2,162 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>FIX Test Client — Messages</title>
+    <!-- style.css first so the fixed chrome / blotter (id-scoped) keep their look;
+         Pico (classless) loads after to style the new order form's bare elements. -->
     <link rel="stylesheet" href="/style.css">
+    <link rel="stylesheet" href="/pico.classless.min.css">
+    <style>
+        /* The quick-order bar stays pinned just below the 62px fixed chrome so Send is
+           always reachable however far the rest of the form is scrolled. */
+        #quick-bar {
+            position: sticky;
+            top: 62px;
+            z-index: 50;
+            background: var(--pico-background-color, #fff);
+            border-bottom: 1px solid var(--pico-muted-border-color, #bbb);
+            padding: 0.5rem 0 0.7rem;
+            margin-bottom: 0.8rem;
+        }
+        #quick-bar .qrow { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: flex-end; }
+        /* Compact, label-on-top fields for the dense order form. */
+        .field { display: flex; flex-direction: column; gap: 2px; margin: 0; font-size: 0.8rem; }
+        .field input, .field select { margin: 0; }
+        #quick-bar .field input, #quick-bar .field select { width: 8.5rem; }
+        #quick-bar .field.narrow input { width: 5.5rem; }
+        #quick-bar button { align-self: flex-end; }
+        .more-grid { display: flex; flex-wrap: wrap; gap: 1rem; }
+        .more-grid fieldset { flex: 1 1 14rem; margin: 0; }
+        .group-table { font-size: 0.85rem; }
+        .group-table td, .group-table th { padding: 3px 6px; }
+        .group-table input, .group-table select { margin: 0; width: 100%; min-width: 7rem; }
+        details.panel { border: 1px solid var(--pico-muted-border-color, #ccc); border-radius: 6px; padding: 0 0.8rem; margin-bottom: 0.8rem; }
+        details.panel > summary { font-weight: bold; padding: 0.5rem 0; }
+        .row-count { font-weight: normal; color: var(--pico-muted-color, #777); font-size: 0.8rem; }
+        /* Keep the FIX blotter monospaced for column alignment even under Pico. */
+        #blotter { font-family: monospace; }
+    </style>
 </head>
 <body>
 <div id="content">
     <h1>Messages</h1>
-    <hr class="section-rule">
 
-    <div style="font-weight:bold; margin-bottom:6px;">New Order Single</div>
-    <div style="display:flex; flex-wrap:wrap; gap:10px; align-items:flex-end; margin-bottom:14px;">
-        <label>ClOrdID <input type="text" id="f-clordid" value="ORD-001" style="width:110px;"></label>
-        <label>Symbol  <input type="text" id="f-symbol"  value="BHP"    style="width:80px;"></label>
-        <label>SecurityID <input type="text" id="f-securityid" placeholder="exchange instrument id" style="width:150px;"></label>
-        <label>ID Source
-            <select id="f-secidsrc" style="font-family:monospace; font-size:13px; padding:4px 6px; border:1px solid #aaa;">
-                <option value="8">8 — Exchange Symbol</option>
-                <option value="4">4 — ISIN</option>
-                <option value="1">1 — CUSIP</option>
-                <option value="5">5 — RIC</option>
-            </select>
-        </label>
-        <label>Side
-            <select id="f-side" style="font-family:monospace; font-size:13px; padding:4px 6px; border:1px solid #aaa;">
-                <option value="Buy">Buy</option>
-                <option value="Sell">Sell</option>
-                <option value="Sell Short">Sell Short</option>
-            </select>
-        </label>
-        <label>OrdType
-            <select id="f-ordtype" style="font-family:monospace; font-size:13px; padding:4px 6px; border:1px solid #aaa;">
-                <option value="Limit">Limit</option>
-                <option value="Market">Market</option>
-            </select>
-        </label>
-        <label>Qty   <input type="number" id="f-qty"   value="100"   style="width:80px;"></label>
-        <label>Price <input type="number" id="f-price" value="10.50" step="0.01" style="width:90px;"></label>
-        <button id="btn-send" onclick="doSend()" disabled>Send</button>
-    </div>
+    <form id="nos-form" onsubmit="return false;">
+        <!-- Sticky quick-order bar: the everyday fields + an always-visible Send. -->
+        <div id="quick-bar">
+            <strong>New Order Single</strong>
+            <div class="qrow">
+                <label class="field">ClOrdID <input type="text" id="f-clordid" value="ORD-001"></label>
+                <label class="field">SecurityID <input type="text" id="f-securityid" placeholder="exchange id"></label>
+                <label class="field">ID Source
+                    <select id="f-secidsrc">
+                        <option value="8">8 — Exchange Symbol</option>
+                        <option value="4">4 — ISIN</option>
+                        <option value="1">1 — CUSIP</option>
+                        <option value="5">5 — RIC</option>
+                    </select>
+                </label>
+                <label class="field narrow">Symbol <input type="text" id="f-symbol" value="BHP"></label>
+                <label class="field">Side
+                    <select id="f-side">
+                        <option value="Buy">Buy</option>
+                        <option value="Sell">Sell</option>
+                        <option value="Sell Short">Sell Short</option>
+                    </select>
+                </label>
+                <label class="field">OrdType
+                    <select id="f-ordtype">
+                        <option value="Limit">Limit</option>
+                        <option value="Market">Market</option>
+                    </select>
+                </label>
+                <label class="field narrow">Qty <input type="number" id="f-qty" value="100"></label>
+                <label class="field narrow">Price <input type="number" id="f-price" value="10.50" step="0.01"></label>
+                <button id="btn-send" type="button" onclick="doSend()" disabled>Send</button>
+            </div>
+            <small id="send-error" style="color:var(--pico-del-color,#c00); display:none;"></small>
+        </div>
 
-    <div id="send-error" style="color:#c00; margin-bottom:8px; display:none;"></div>
+        <!-- Remaining scalar fields, collapsed by default and grouped by purpose. -->
+        <details class="panel" id="more-fields">
+            <summary>More fields</summary>
+            <div class="more-grid">
+                <fieldset>
+                    <legend>Pricing</legend>
+                    <label class="field">StopPx <input type="number" id="f-stoppx" step="0.01" placeholder="stop trigger"></label>
+                </fieldset>
+                <fieldset>
+                    <legend>Quantities</legend>
+                    <label class="field">MinQty <input type="number" id="f-minqty"></label>
+                    <label class="field">MaxFloor <input type="number" id="f-maxfloor"></label>
+                </fieldset>
+                <fieldset>
+                    <legend>Timing</legend>
+                    <label class="field">TimeInForce
+                        <select id="f-tif">
+                            <option value="">(default: Day)</option>
+                            <option value="0">0 — Day</option>
+                            <option value="1">1 — GTC</option>
+                            <option value="3">3 — IOC</option>
+                            <option value="4">4 — FOK</option>
+                            <option value="6">6 — GTD</option>
+                        </select>
+                    </label>
+                    <label class="field">ExpireTime (GTD) <input type="datetime-local" id="f-expiretime"></label>
+                </fieldset>
+                <fieldset>
+                    <legend>Routing</legend>
+                    <label class="field">Account <input type="text" id="f-account"></label>
+                    <label class="field">ExDestination <input type="text" id="f-exdest"></label>
+                    <label class="field">ExecInst <input type="text" id="f-execinst" placeholder="e.g. 1 G"></label>
+                </fieldset>
+                <fieldset>
+                    <legend>Misc</legend>
+                    <label class="field">Text <input type="text" id="f-text"></label>
+                </fieldset>
+            </div>
+        </details>
+
+        <!-- Repeating group: NoUnderlyings. Echoed onto the ExecutionReport. -->
+        <details class="panel" id="underlyings-panel">
+            <summary>Underlyings <span class="row-count" id="u-count"></span></summary>
+            <table class="group-table">
+                <thead>
+                    <tr><th>UnderlyingSymbol</th><th>UnderlyingSecurityID</th><th>UnderlyingQty</th><th></th></tr>
+                </thead>
+                <tbody id="u-body"></tbody>
+            </table>
+            <button type="button" class="secondary" onclick="addUnderlyingRow()">Add underlying</button>
+        </details>
+
+        <!-- Repeating group: NoPartyIDs. -->
+        <details class="panel" id="parties-panel">
+            <summary>Parties <span class="row-count" id="p-count"></span></summary>
+            <table class="group-table">
+                <thead>
+                    <tr><th>PartyID</th><th>PartyIDSource</th><th>PartyRole</th><th></th></tr>
+                </thead>
+                <tbody id="p-body"></tbody>
+            </table>
+            <button type="button" class="secondary" onclick="addPartyRow()">Add party</button>
+        </details>
+    </form>
 
     <hr class="section-rule">
     <div style="font-weight:bold; margin-bottom:6px;">Order Cancel Request</div>
     <div style="display:flex; flex-wrap:wrap; gap:10px; align-items:flex-end; margin-bottom:14px;">
-        <label>OrigClOrdID <input type="text" id="c-origclordid" style="width:130px;"></label>
-        <label>Symbol  <input type="text" id="c-symbol"    style="width:80px;"></label>
-        <label>Side
-            <select id="c-side" style="font-family:monospace; font-size:13px; padding:4px 6px; border:1px solid #aaa;">
+        <label class="field">OrigClOrdID <input type="text" id="c-origclordid"></label>
+        <label class="field narrow">Symbol <input type="text" id="c-symbol"></label>
+        <label class="field">Side
+            <select id="c-side">
                 <option value="Buy">Buy</option>
                 <option value="Sell">Sell</option>
                 <option value="Sell Short">Sell Short</option>
             </select>
         </label>
-        <label>Qty <input type="number" id="c-qty" style="width:80px;"></label>
-        <button id="btn-send-cancel" onclick="doCancel()" disabled>Send Cancel</button>
+        <label class="field narrow">Qty <input type="number" id="c-qty"></label>
+        <button id="btn-send-cancel" type="button" onclick="doCancel()" disabled>Send Cancel</button>
     </div>
     <div id="cancel-error" style="color:#c00; margin-bottom:8px; display:none;"></div>
 
@@ -70,23 +171,10 @@
             <thead>
                 <tr>
                     <th></th>
-                    <th>Time</th>
-                    <th>Dir</th>
-                    <th>Seq</th>
-                    <th>ClOrdID</th>
-                    <th>OrigClOrdID</th>
-                    <th>OrderID</th>
-                    <th>ExecID</th>
-                    <th>ExecType</th>
-                    <th>OrdStatus</th>
-                    <th>Reason</th>
-                    <th>Symbol</th>
-                    <th>Side</th>
-                    <th>OrdQty</th>
-                    <th>Price</th>
-                    <th>OrdType</th>
-                    <th>CumQty</th>
-                    <th>LeavesQty</th>
+                    <th>Time</th><th>Dir</th><th>Seq</th><th>ClOrdID</th><th>OrigClOrdID</th>
+                    <th>OrderID</th><th>ExecID</th><th>ExecType</th><th>OrdStatus</th><th>Reason</th>
+                    <th>Symbol</th><th>Side</th><th>OrdQty</th><th>Price</th><th>OrdType</th>
+                    <th>CumQty</th><th>LeavesQty</th>
                 </tr>
             </thead>
             <tbody id="blotter-body"></tbody>
@@ -122,11 +210,76 @@ function isOrderTerminal(rows, clOrdId) {
                          (r.clOrdId === clOrdId || r.origClOrdId === clOrdId));
 }
 
+// ── Repeating-group rows ─────────────────────────────────────────────────────
+
+// A group row is a <tr> of plain inputs plus a remove button. On send, each row's
+// cells are read positionally and appended as parallel repeated form params, so the
+// Java handler can pair them by index into QuickFIX group instances.
+function makeGroupRow(fields, onRemove) {
+    const tr = document.createElement('tr');
+    for (const f of fields) {
+        const td = document.createElement('td');
+        const input = document.createElement('input');
+        input.type = f.type || 'text';
+        if (f.placeholder) input.placeholder = f.placeholder;
+        if (f.step) input.step = f.step;
+        input.className = f.cls;
+        td.appendChild(input);
+        tr.appendChild(td);
+    }
+    const tdRemove = document.createElement('td');
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'secondary outline';
+    btn.textContent = '✕';
+    btn.onclick = () => { tr.remove(); onRemove(); };
+    tdRemove.appendChild(btn);
+    tr.appendChild(tdRemove);
+    return tr;
+}
+
+function refreshCounts() {
+    const u = document.querySelectorAll('#u-body tr').length;
+    const p = document.querySelectorAll('#p-body tr').length;
+    document.getElementById('u-count').textContent = u ? `(${u})` : '';
+    document.getElementById('p-count').textContent = p ? `(${p})` : '';
+}
+
+function addUnderlyingRow() {
+    const tr = makeGroupRow([
+        { cls: 'u-symbol', placeholder: 'e.g. BHP.AX' },
+        { cls: 'u-secid', placeholder: 'security id' },
+        { cls: 'u-qty', type: 'number' },
+    ], refreshCounts);
+    document.getElementById('u-body').appendChild(tr);
+    refreshCounts();
+}
+
+function addPartyRow() {
+    const tr = makeGroupRow([
+        { cls: 'p-id', placeholder: 'party id' },
+        { cls: 'p-src', placeholder: 'source (char, e.g. D)' },
+        { cls: 'p-role', type: 'number', placeholder: 'role (int, e.g. 1)' },
+    ], refreshCounts);
+    document.getElementById('p-body').appendChild(tr);
+    refreshCounts();
+}
+
+// Append parallel repeated params for one group; skips fully-empty rows so a blank
+// panel puts nothing on the wire.
+function appendGroupRows(params, bodyId, cols) {
+    for (const tr of document.querySelectorAll(`#${bodyId} tr`)) {
+        const values = cols.map(c => (tr.querySelector('.' + c.cls)?.value || '').trim());
+        if (values.every(v => v === '')) continue;
+        cols.forEach((c, i) => params.append(c.param, values[i]));
+    }
+}
+
 async function doSend() {
     const errEl = document.getElementById('send-error');
     errEl.style.display = 'none';
 
-    const params = {
+    const params = new URLSearchParams({
         clOrdId:          document.getElementById('f-clordid').value,
         symbol:           document.getElementById('f-symbol').value,
         securityId:       document.getElementById('f-securityid').value,
@@ -135,7 +288,27 @@ async function doSend() {
         ordType:          document.getElementById('f-ordtype').value,
         qty:              document.getElementById('f-qty').value,
         price:            document.getElementById('f-price').value,
-    };
+        stopPx:           document.getElementById('f-stoppx').value,
+        timeInForce:      document.getElementById('f-tif').value,
+        account:          document.getElementById('f-account').value,
+        exDestination:    document.getElementById('f-exdest').value,
+        execInst:         document.getElementById('f-execinst').value,
+        minQty:           document.getElementById('f-minqty').value,
+        maxFloor:         document.getElementById('f-maxfloor').value,
+        expireTime:       document.getElementById('f-expiretime').value,
+        text:             document.getElementById('f-text').value,
+    });
+
+    appendGroupRows(params, 'u-body', [
+        { cls: 'u-symbol', param: 'underlyingSymbol' },
+        { cls: 'u-secid', param: 'underlyingSecurityId' },
+        { cls: 'u-qty', param: 'underlyingQty' },
+    ]);
+    appendGroupRows(params, 'p-body', [
+        { cls: 'p-id', param: 'partyId' },
+        { cls: 'p-src', param: 'partyIdSource' },
+        { cls: 'p-role', param: 'partyRole' },
+    ]);
 
     const data = await apiPost('/api/messages/send', params);
     if (data.error) {
@@ -268,13 +441,11 @@ function setOrderControlsEnabled(loggedOn) {
 }
 
 function pageInit() {
-    // Apply current logon state immediately if the status poll has already run.
     const initial = window._lastSessionStatus;
     if (initial) {
         setOrderControlsEnabled(initial.loggedOn);
     }
 
-    // Keep buttons in sync with every subsequent status poll.
     const originalUpdate = window.updateStatusStrip || function() {};
     window.updateStatusStrip = function(status) {
         originalUpdate(status);

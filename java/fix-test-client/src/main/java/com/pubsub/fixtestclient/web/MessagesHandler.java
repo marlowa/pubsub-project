@@ -6,17 +6,32 @@ import com.pubsub.fixtestclient.fix.FixEngine;
 import io.javalin.http.Context;
 import quickfix.fix50sp2.NewOrderSingle;
 import quickfix.fix50sp2.OrderCancelRequest;
+import quickfix.field.Account;
 import quickfix.field.ClOrdID;
+import quickfix.field.ExDestination;
+import quickfix.field.ExecInst;
+import quickfix.field.ExpireTime;
 import quickfix.field.HandlInst;
+import quickfix.field.MaxFloor;
+import quickfix.field.MinQty;
 import quickfix.field.OrdType;
 import quickfix.field.OrderQty;
 import quickfix.field.OrigClOrdID;
+import quickfix.field.PartyID;
+import quickfix.field.PartyIDSource;
+import quickfix.field.PartyRole;
 import quickfix.field.Price;
 import quickfix.field.SecurityID;
 import quickfix.field.SecurityIDSource;
 import quickfix.field.Side;
+import quickfix.field.StopPx;
 import quickfix.field.Symbol;
+import quickfix.field.Text;
+import quickfix.field.TimeInForce;
 import quickfix.field.TransactTime;
+import quickfix.field.UnderlyingQty;
+import quickfix.field.UnderlyingSecurityID;
+import quickfix.field.UnderlyingSymbol;
 
 import quickfix.Message;
 
@@ -92,12 +107,110 @@ public class MessagesHandler {
                 nos.set(new Price(Double.parseDouble(priceStr.trim())));
             }
 
+            // Optional scalar fields from the collapsible "More fields" section -- each is
+            // only put on the wire when supplied, so a minimal order stays minimal.
+            String stopPxStr = ctx.formParam("stopPx");
+            if (stopPxStr != null && !stopPxStr.isBlank()) {
+                nos.set(new StopPx(Double.parseDouble(stopPxStr.trim())));
+            }
+            String minQtyStr = ctx.formParam("minQty");
+            if (minQtyStr != null && !minQtyStr.isBlank()) {
+                nos.set(new MinQty(Double.parseDouble(minQtyStr.trim())));
+            }
+            String maxFloorStr = ctx.formParam("maxFloor");
+            if (maxFloorStr != null && !maxFloorStr.isBlank()) {
+                nos.set(new MaxFloor(Double.parseDouble(maxFloorStr.trim())));
+            }
+            String tifStr = ctx.formParam("timeInForce");
+            if (tifStr != null && !tifStr.isBlank()) {
+                nos.set(new TimeInForce(tifStr.trim().charAt(0)));
+            }
+            String expireTimeStr = ctx.formParam("expireTime");
+            if (expireTimeStr != null && !expireTimeStr.isBlank()) {
+                // datetime-local supplies "yyyy-MM-ddTHH:mm" (ISO_LOCAL_DATE_TIME).
+                nos.set(new ExpireTime(LocalDateTime.parse(expireTimeStr.trim())));
+            }
+            String account = ctx.formParam("account");
+            if (account != null && !account.isBlank()) {
+                nos.set(new Account(account.trim()));
+            }
+            String exDestination = ctx.formParam("exDestination");
+            if (exDestination != null && !exDestination.isBlank()) {
+                nos.set(new ExDestination(exDestination.trim()));
+            }
+            String execInst = ctx.formParam("execInst");
+            if (execInst != null && !execInst.isBlank()) {
+                nos.set(new ExecInst(execInst.trim())); // MULTIPLECHARVALUE, e.g. "1 G"
+            }
+            String text = ctx.formParam("text");
+            if (text != null && !text.isBlank()) {
+                nos.set(new Text(text.trim()));
+            }
+
+            // Repeating groups: the form posts one value per row as parallel repeated
+            // params, paired here by index into QuickFIX group instances.
+            addUnderlyings(ctx, nos);
+            addParties(ctx, nos);
+
             fixEngine.send(nos);
             blotterStore.addOutbound(nos);
             ctx.json(Map.of("ok", true));
         } catch (Exception e) {
             ctx.status(400).json(Map.of("error", e.getMessage()));
         }
+    }
+
+    // The order form posts each repeating-group column as a parallel list of repeated
+    // form params (one entry per row). The three lists are the same length, so pair
+    // them by index into one QuickFIX group instance per row; blank cells are skipped.
+
+    private static void addUnderlyings(Context ctx, NewOrderSingle nos) {
+        List<String> symbols = ctx.formParams("underlyingSymbol");
+        List<String> securityIds = ctx.formParams("underlyingSecurityId");
+        List<String> qtys = ctx.formParams("underlyingQty");
+        for (int i = 0; i < symbols.size(); i++) {
+            NewOrderSingle.NoUnderlyings group = new NewOrderSingle.NoUnderlyings();
+            String symbol = at(symbols, i);
+            if (!symbol.isEmpty()) {
+                group.set(new UnderlyingSymbol(symbol));
+            }
+            String securityId = at(securityIds, i);
+            if (!securityId.isEmpty()) {
+                group.set(new UnderlyingSecurityID(securityId));
+            }
+            String qty = at(qtys, i);
+            if (!qty.isEmpty()) {
+                group.set(new UnderlyingQty(Double.parseDouble(qty)));
+            }
+            nos.addGroup(group);
+        }
+    }
+
+    private static void addParties(Context ctx, NewOrderSingle nos) {
+        List<String> ids = ctx.formParams("partyId");
+        List<String> sources = ctx.formParams("partyIdSource");
+        List<String> roles = ctx.formParams("partyRole");
+        for (int i = 0; i < ids.size(); i++) {
+            NewOrderSingle.NoPartyIDs group = new NewOrderSingle.NoPartyIDs();
+            String id = at(ids, i);
+            if (!id.isEmpty()) {
+                group.set(new PartyID(id));
+            }
+            String source = at(sources, i);
+            if (!source.isEmpty()) {
+                group.set(new PartyIDSource(source.charAt(0)));
+            }
+            String role = at(roles, i);
+            if (!role.isEmpty()) {
+                group.set(new PartyRole(Integer.parseInt(role)));
+            }
+            nos.addGroup(group);
+        }
+    }
+
+    /** @return the trimmed element at index i, or "" if absent. */
+    private static String at(List<String> values, int i) {
+        return (values != null && i < values.size() && values.get(i) != null) ? values.get(i).trim() : "";
     }
 
     public void cancel(Context ctx) {
