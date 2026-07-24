@@ -273,6 +273,42 @@ def patch_debug_logging(install_dir: Path) -> None:
             print(f"  debug logging enabled: {config_file.relative_to(install_dir)}")
 
 
+# Matches an unexpanded ${placeholder} (identifier only, mirroring deploy.py), so a
+# literal '$' in a value is not mistaken for one.
+_UNEXPANDED_PLACEHOLDER = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}")
+
+
+def check_configs_expanded(install_dir: Path) -> None:
+    """Abort if any installed config still holds an unexpanded ${placeholder}.
+
+    cmake --install copies the config TEMPLATES into installed/etc verbatim; deploy.py
+    is what expands them for the target environment. Starting the components against
+    un-expanded configs makes each one crash on parse -- which looks like a mysterious
+    total outage (e.g. "no ER comes back") rather than a config problem. Fail loudly
+    here, naming the offending files and the fix, instead of letting the pipeline die
+    silently. This commonly happens after a rebuild: cmake --install re-lays the
+    templates, so deploy.py must be re-run before start.
+    """
+    etc_dir = install_dir / "etc"
+    offenders: list[tuple[Path, list[str]]] = []
+    for toml_path in sorted(etc_dir.rglob("*.toml")):
+        try:
+            text = toml_path.read_text()
+        except OSError:
+            continue
+        placeholders = sorted(set(_UNEXPANDED_PLACEHOLDER.findall(text)))
+        if placeholders:
+            offenders.append((toml_path.relative_to(install_dir), placeholders))
+
+    if offenders:
+        print("error: installed configs still contain unexpanded ${placeholder}s "
+              "-- they have not been deployed:", file=sys.stderr)
+        for rel, placeholders in offenders:
+            print(f"  {rel}: {', '.join(placeholders)}", file=sys.stderr)
+        sys.exit("Run deploy.py to expand the configs for this environment before starting "
+                 "(cmake --install re-lays the templates unexpanded, so re-deploy after every build).")
+
+
 def cmd_start(
     env: dict, ha_enabled: bool, delay: float, debug: bool = False,
     component: str | None = None,
@@ -287,6 +323,10 @@ def cmd_start(
     install_dir, log_dir, run_dir = resolve_paths(env)
     run_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
+
+    # Refuse to start against un-deployed (still-templated) configs -- see the function
+    # docstring. Guards both the full-stack and single-component paths.
+    check_configs_expanded(install_dir)
 
     if component is not None:
         if component not in env["components"]:
@@ -372,6 +412,11 @@ def cmd_restart(
     install_dir, log_dir, run_dir = resolve_paths(env)
     run_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
+
+    # A single-component restart starts start_one directly (below), bypassing cmd_start,
+    # so guard the still-templated-config case here too (the full restart re-checks via
+    # cmd_start, which is a cheap no-op).
+    check_configs_expanded(install_dir)
 
     if component is not None:
         if component not in env["components"]:
