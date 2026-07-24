@@ -3,6 +3,7 @@
 
 #include "OrderGatewayThread.hpp"
 #include "FixErEncoder.hpp"
+#include "FixGroupExtractor.hpp"
 
 #include <openssl/rand.h>
 
@@ -247,7 +248,7 @@ void OrderGatewayThread::on_raw_socket_message(const pubsub_itc_fw::EventMessage
             std::piecewise_construct, std::forward_as_tuple(conn_id),
             std::forward_as_tuple(
                 conn_id, get_logger(),
-                [this, conn_id](const ParsedFixMessage& msg) {
+                [this, conn_id](const ParsedFixMessage& msg, const fix_codec::FixMessageReader& reader) {
                     auto sit = sessions_.find(conn_id);
                     if (sit == sessions_.end()) {
                         return;
@@ -271,7 +272,7 @@ void OrderGatewayThread::on_raw_socket_message(const pubsub_itc_fw::EventMessage
                     } else if (type == MsgType::ResendRequest) {
                         handle_resend_request(session, msg);
                     } else if (type == MsgType::NewOrderSingle) {
-                        handle_new_order_single(session, msg);
+                        handle_new_order_single(session, msg, reader);
                     } else if (type == MsgType::OrderCancelRequest) {
                         handle_order_cancel_request(session, msg);
                     } else {
@@ -835,7 +836,7 @@ void OrderGatewayThread::handle_resend_request(FixSession& session, const Parsed
     session.outbound_seq_num = next_seq;
 }
 
-void OrderGatewayThread::handle_new_order_single(FixSession& session, const ParsedFixMessage& msg) {
+void OrderGatewayThread::handle_new_order_single(FixSession& session, const ParsedFixMessage& msg, const fix_codec::FixMessageReader& reader) {
     PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "entered handle_new_order_single");
 
     const std::string_view cl_ord_id = msg.get(Tag::ClOrdID);
@@ -974,6 +975,15 @@ void OrderGatewayThread::handle_new_order_single(FixSession& session, const Pars
         nos.has_text = true;
         nos.text = text;
     }
+
+    // Repeating groups (NoUnderlyings, NoPartyIDs, nested NoPartySubIDs) cannot be
+    // represented by the flat ParsedFixMessage, so they are extracted straight from the
+    // framed FIX bytes into the NOS's ListViews. The element arrays live in this
+    // call-scoped arena and the string_views point into the reader's buffer; both stay
+    // valid through forward_order_in_envelope, which encodes synchronously.
+    std::array<uint8_t, 8192> group_arena_buffer;
+    pubsub_itc_fw::BumpAllocator group_arena(group_arena_buffer.data(), group_arena_buffer.size());
+    extract_new_order_single_groups(reader, group_arena, nos);
 
     // The originating session's connection id (so the sequencer can route the ER
     // back to this exact FIX session -- unique per TCP connection, avoiding the

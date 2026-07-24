@@ -7,6 +7,7 @@
 #include <functional>
 #include <string_view>
 
+#include <fix_codec/FixMessageReader.hpp>
 #include <fix_codec/FixReject.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 
@@ -63,7 +64,11 @@ namespace order_gateway {
  */
 class FixParser {
   public:
-    using MessageCallback = std::function<void(const ParsedFixMessage&)>;
+    // The reader is passed alongside the flat ParsedFixMessage so a handler that
+    // needs the repeating groups (which ParsedFixMessage cannot represent) can run a
+    // group-aware pass over the same framed bytes -- see FixGroupExtractor.hpp. The
+    // reader's field views are valid only for the duration of the callback.
+    using MessageCallback = std::function<void(const ParsedFixMessage&, const fix_codec::FixMessageReader&)>;
     using RejectCallback = std::function<void(const ParsedFixMessage&, const fix_codec::FixReject&)>;
 
     /**

@@ -78,7 +78,7 @@ class FixParserTest : public ::testing::Test {
     FixParser make_parser() {
         return FixParser(
             logger_.logger,
-            [this](const ParsedFixMessage& message) {
+            [this](const ParsedFixMessage& message, const fix_codec::FixMessageReader&) {
                 captured_.push_back(Captured{std::string(message.msg_type()), std::string(message.get(tag::ClOrdID)), message.size()});
             },
             [this](const ParsedFixMessage&, const fix_codec::FixReject& reject) {

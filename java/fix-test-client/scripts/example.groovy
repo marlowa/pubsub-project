@@ -1,4 +1,5 @@
-// Example: logon, send 5 limit buy orders, logout.
+// Example: logon, send 5 limit buy orders (each carrying three underlying
+// instruments), logout.
 //
 // clordId() wraps fix.uniqueId() with a realistic multi-component prefix so
 // that ClOrdIDs are well beyond the std::string SSO boundary (~16 bytes).
@@ -30,6 +31,19 @@ out.println "Logged on"
     nos.set(new quickfix.field.OrderQty(100))
     nos.set(new quickfix.field.Price(10.50))
     nos.set(new quickfix.field.OrdType(quickfix.field.OrdType.LIMIT))
+
+    // Attach a NoUnderlyings=3 repeating group. NoUnderlyings is a standard
+    // NewOrderSingle group in FIX 5.0 SP2; the gateway extracts it into the PDU,
+    // the matching engine echoes it on the ExecutionReport, and topic_probe prints
+    // it as no_underlyings=[...]. This exercises the full group round-trip end to end.
+    [["BHP.AX", "1934517"], ["RIO.AX", "1934518"], ["FMG.AX", "1934519"]].each { symbol, securityId ->
+        def leg = new quickfix.fix50sp2.NewOrderSingle.NoUnderlyings()
+        leg.set(new quickfix.field.UnderlyingSymbol(symbol))
+        leg.set(new quickfix.field.UnderlyingSecurityID(securityId))
+        leg.set(new quickfix.field.UnderlyingQty(50))
+        nos.addGroup(leg)
+    }
+
     session.send(nos)
     sleep(200)
 }

@@ -8,6 +8,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThread.hpp>
@@ -98,7 +99,7 @@ class OrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     void handle_test_request(FixSession& session, const ParsedFixMessage& msg);
     void handle_logout(FixSession& session, const ParsedFixMessage& msg);
     void handle_resend_request(FixSession& session, const ParsedFixMessage& msg);
-    void handle_new_order_single(FixSession& session, const ParsedFixMessage& msg);
+    void handle_new_order_single(FixSession& session, const ParsedFixMessage& msg, const fix_codec::FixMessageReader& reader);
     void handle_order_cancel_request(FixSession& session, const ParsedFixMessage& msg);
 
     void disconnect_session(const FixSession& session, const std::string& reason);
@@ -174,11 +175,6 @@ class OrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
         }
     }
 
-    // Upper bound on the encoded size of a single order PDU (NewOrderSingle /
-    // OrderCancelRequest) when wrapped in a WalRecord envelope. A full FIX NOS is
-    // ~1 KB; 2 KB leaves generous headroom for the largest DD-derived message.
-    static constexpr size_t order_envelope_payload_capacity = 2048;
-
     // Wrap an order PDU in a WalRecord envelope and forward it to the sequencer(s).
     // The routing metadata that must not live inside the (DD-derived) FIX PDU --
     // the originating session's connection id (for ER routing) and its SenderCompID
@@ -186,20 +182,27 @@ class OrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // and wall_time_ns; both are left zero here. See docs/design/fix_pdu_generation.md.
     template <typename MsgT>
     void forward_order_in_envelope(int16_t inner_pdu_id, const MsgT& msg, int32_t gateway_session_conn_id, std::string_view sender_comp_id) {
-        std::array<uint8_t, order_envelope_payload_capacity> inner_buffer;
         size_t bytes_written = 0;
         size_t bytes_needed = 0;
-        // Unqualified so ADL finds pubsub_itc_fw_app::encode for the concrete MsgT at
-        // instantiation (the overload is not visible at this template's definition point).
-        if (!encode(msg, inner_buffer.data(), inner_buffer.size(), bytes_written, bytes_needed)) {
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                       "OrderGatewayThread: order PDU {} too large to wrap ({} bytes needed) -- not forwarded", inner_pdu_id, bytes_needed);
+        // Measure then fit: a zero-size out buffer makes encode report bytes_needed
+        // without writing, then the reusable buffer is grown to hold it. This avoids a
+        // fixed-size cap that would silently drop an over-large order. The buffer grows
+        // once to the high-water mark and is reused, so there is no per-order allocation
+        // after warmup. Unqualified encode so ADL finds pubsub_itc_fw_app::encode for the
+        // concrete MsgT (the overload is not visible at this template's definition point).
+        [[maybe_unused]] const bool measured = encode(msg, nullptr, 0, bytes_written, bytes_needed);
+        if (order_encode_buffer_.size() < bytes_needed) {
+            order_encode_buffer_.resize(bytes_needed);
+        }
+        if (!encode(msg, order_encode_buffer_.data(), order_encode_buffer_.size(), bytes_written, bytes_needed)) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "OrderGatewayThread: failed to encode order PDU {} ({} bytes needed) -- not forwarded",
+                       inner_pdu_id, bytes_needed);
             return;
         }
 
         pubsub_itc_fw_app::WalRecord envelope{};
         envelope.pdu_id = inner_pdu_id;
-        envelope.payload.data = inner_buffer.data();
+        envelope.payload.data = order_encode_buffer_.data();
         envelope.payload.size = bytes_written;
         envelope.has_gateway_session_conn_id = true;
         envelope.gateway_session_conn_id = gateway_session_conn_id;
@@ -212,6 +215,12 @@ class OrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     }
 
     const OrderGatewayConfiguration& config_;
+
+    // Reusable scratch buffer for encoding an order PDU before wrapping it in a
+    // WalRecord envelope. Grown to the largest order seen (measure then fit in
+    // forward_order_in_envelope) and reused, so no per-order heap allocation after
+    // warmup and no fixed cap that could silently drop an over-large order.
+    std::vector<uint8_t> order_encode_buffer_;
 
     // Precomputed inbound service name for the sequencer ER listener port.
     const std::string er_inbound_svc_;

@@ -25,6 +25,36 @@ namespace {
 constexpr const char* timer_promotion_timeout = "me_promotion_timeout";
 constexpr const char* timer_arbiter_heartbeat = "me_arbiter_heartbeat";
 
+// Echo the NoUnderlyings repeating group from a decoded NewOrderSingle onto its
+// ExecutionReport. The decoded view carries UnderlyingsView elements; the ER expects
+// the (field-identical) Underlyings type, so each element is copied into an array
+// allocated from @p arena. The copied string_views still point into the NOS payload
+// buffer, which outlives the synchronous ER encode. @p arena and the NOS payload must
+// both stay alive until the ER has been encoded.
+void echo_underlyings(const pubsub_itc_fw_app::ListView<pubsub_itc_fw_app::UnderlyingsView>& source, pubsub_itc_fw::BumpAllocator& arena,
+                      pubsub_itc_fw_app::ListView<pubsub_itc_fw_app::Underlyings>& destination) {
+    if (source.size == 0) {
+        return;
+    }
+    auto* elements = arena.allocate<pubsub_itc_fw_app::Underlyings>(source.size);
+    if (elements == nullptr) {
+        return; // arena exhausted: leave the ER group empty rather than emit a partial one
+    }
+    for (size_t index = 0; index < source.size; ++index) {
+        const pubsub_itc_fw_app::UnderlyingsView& in = source.data[index];
+        pubsub_itc_fw_app::Underlyings& out = elements[index];
+        out = pubsub_itc_fw_app::Underlyings{};
+        out.has_underlying_symbol = in.has_underlying_symbol;
+        out.underlying_symbol = in.underlying_symbol;
+        out.has_underlying_security_id = in.has_underlying_security_id;
+        out.underlying_security_id = in.underlying_security_id;
+        out.has_underlying_qty = in.has_underlying_qty;
+        out.underlying_qty = in.underlying_qty;
+    }
+    destination.data = elements;
+    destination.size = source.size;
+}
+
 pubsub_itc_fw::QueueConfiguration make_queue_config() {
     pubsub_itc_fw::QueueConfiguration queue_configuration{};
     queue_configuration.low_watermark = 1;
@@ -398,6 +428,14 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
         er.price = view.price;
     }
 
+    // Echo the order's NoUnderlyings group back on the acknowledgement so downstream
+    // topic subscribers see the instrument legs the client sent. The element array lives
+    // in this call-scoped arena; its string_views point into the still-live NOS payload,
+    // and send_er_to_sequencer encodes synchronously below.
+    std::array<uint8_t, 4096> underlyings_arena_buffer;
+    pubsub_itc_fw::BumpAllocator underlyings_arena(underlyings_arena_buffer.data(), underlyings_arena_buffer.size());
+    echo_underlyings(view.no_underlyings, underlyings_arena, er.no_underlyings);
+
     send_er_to_sequencer(er, sequence_number);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: accepted NOS OrderID={} ExecID={} ClOrdID={} book_size={}", order_id,
                exec_id, view.cl_ord_id, order_book_.size());
@@ -504,11 +542,18 @@ void MatchingEngineThread::send_er_to_sequencer(const pubsub_itc_fw_app::Executi
     // the transport header (so the sequencer can route ordinary ERs via its seq->conn
     // map); the optional gateway_session_conn_id on the envelope routes ERs that are not
     // tied to a sequenced order (the seq_no==0 cancel-on-failover ERs).
-    std::array<uint8_t, er_envelope_payload_capacity> inner_buffer;
+    // Measure then fit: a zero-size out buffer makes encode report bytes_needed, then
+    // the reusable buffer is grown to hold it -- no fixed cap that could silently drop
+    // an over-large ER, and no per-ER allocation once the buffer reaches its high-water
+    // mark.
     size_t bytes_written = 0;
     size_t bytes_needed = 0;
-    if (!pubsub_itc_fw_app::encode(er, inner_buffer.data(), inner_buffer.size(), bytes_written, bytes_needed)) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: ExecutionReport too large to wrap ({} bytes) -- not sent",
+    [[maybe_unused]] const bool measured = pubsub_itc_fw_app::encode(er, nullptr, 0, bytes_written, bytes_needed);
+    if (er_encode_buffer_.size() < bytes_needed) {
+        er_encode_buffer_.resize(bytes_needed);
+    }
+    if (!pubsub_itc_fw_app::encode(er, er_encode_buffer_.data(), er_encode_buffer_.size(), bytes_written, bytes_needed)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "MatchingEngineThread: failed to encode ExecutionReport ({} bytes needed) -- not sent",
                    bytes_needed);
         return;
     }
@@ -516,7 +561,7 @@ void MatchingEngineThread::send_er_to_sequencer(const pubsub_itc_fw_app::Executi
     pubsub_itc_fw_app::WalRecord envelope{};
     envelope.seq_no = seq_no;
     envelope.pdu_id = static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport);
-    envelope.payload.data = inner_buffer.data();
+    envelope.payload.data = er_encode_buffer_.data();
     envelope.payload.size = bytes_written;
     envelope.has_gateway_session_conn_id = gateway_session_conn_id.has_value();
     envelope.gateway_session_conn_id = gateway_session_conn_id.value_or(0);

@@ -9,6 +9,7 @@
 #include <cstring>
 #include <optional>
 #include <unordered_set>
+#include <vector>
 
 #include <tsl/robin_map.h>
 
@@ -175,8 +176,10 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     void handle_new_order_single(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t seq_no, int64_t sequenced_at_ns, int32_t gateway_session_conn_id);
     void handle_order_cancel_request(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t seq_no, int64_t sequenced_at_ns,
                                      int32_t gateway_session_conn_id);
-    // Upper bound on an encoded ExecutionReport when wrapped in the WalRecord envelope.
-    static constexpr size_t er_envelope_payload_capacity = 2048;
+    // Reusable scratch buffer for encoding an ExecutionReport before wrapping it in a
+    // WalRecord envelope (send_er_to_sequencer). Grown to the largest ER seen and
+    // reused -- no fixed cap that could silently drop an ER, no per-ER allocation.
+    std::vector<uint8_t> er_encode_buffer_;
 
     // Wraps the ER in a WalRecord envelope and sends it to the sequencer(s). Routing
     // metadata for ERs not tied to a sequenced order (the seq_no==0 cancel-on-failover

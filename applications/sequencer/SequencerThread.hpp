@@ -59,11 +59,13 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void on_initial_event() override;
     void on_app_ready_event() override;
     void on_connection_established(pubsub_itc_fw::ConnectionID id) override;
-    void on_connection_lost(const pubsub_itc_fw::ConnectionID &id, const std::string& reason) override;
+    void on_connection_lost(const pubsub_itc_fw::ConnectionID& id, const std::string& reason) override;
     void on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message) override;
     void on_timer_event(const std::string& name) override;
     void on_itc_message(const pubsub_itc_fw::EventMessage& message) override;
-    bool prioritise_data_over_timers() const override { return true; }
+    bool prioritise_data_over_timers() const override {
+        return true;
+    }
 
   private:
     const SequencerConfiguration& config_;
@@ -130,14 +132,19 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     struct PendingEr {
         int16_t pdu_id{};
         int64_t seq_no{};
-        std::vector<uint8_t> payload;           // copy of the raw encoded ER from ME
+        std::vector<uint8_t> payload; // copy of the raw encoded ER from ME
         bool has_gateway_session_conn_id{false};
         int32_t gateway_session_conn_id{0};
         bool erase_routing_entry{false};
     };
 
-    std::unordered_map<int64_t, PendingEr> pending_er_;      // seq_no -> buffered ER
-    std::unordered_set<int64_t> wal_acked_seq_nos_;           // acked but ER not yet received
+    std::unordered_map<int64_t, PendingEr> pending_er_; // seq_no -> buffered ER
+    std::unordered_set<int64_t> wal_acked_seq_nos_;     // acked but ER not yet received
+
+    // Reusable scratch buffer for encoding the WalRecord envelope before appending it
+    // to the WAL (append_envelope_to_wal). Grown to the largest envelope seen and
+    // reused -- no fixed cap that could silently fail to persist, no per-record alloc.
+    std::vector<uint8_t> wal_encode_buffer_;
 
     // Leader-follower helpers.
     pubsub_itc_fw::ConnectionID peer_active_conn() const;
@@ -166,9 +173,9 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     };
 
     std::vector<ReplayRecord> replay_buffer_;
-    bool replay_me_order_ready_{false};  // outbound sequencer->ME order connection up
-    bool replay_me_er_ready_{false};     // inbound ME->sequencer ER connection up
-    void try_dispatch_replay();          // dispatches once both flags are set
+    bool replay_me_order_ready_{false}; // outbound sequencer->ME order connection up
+    bool replay_me_er_ready_{false};    // inbound ME->sequencer ER connection up
+    void try_dispatch_replay();         // dispatches once both flags are set
     void dispatch_replay_records();
 
     // WAL storage / replication helpers (peer follower).

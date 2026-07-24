@@ -85,7 +85,13 @@ ApplicationThread::ApplicationThread(ConstructorToken, QuillLogger& logger, Reac
         throw PreconditionAssertion("ThreadID of zero is reserved for the reactor", __FILE__, __LINE__);
     }
 
-    decode_arena_buffer_.reserve(thread_config.inbound_decode_arena_size);
+    // resize(), not reserve(): the buffer is a fixed scratch arena addressed via
+    // data()+size(), so size() must report the usable length. With reserve() the
+    // capacity is set but size() stays 0, and a BumpAllocator built from
+    // data()+size() lands in measuring mode -- it can allocate nothing, so decoding
+    // any message that populates a list<>/optional field fails. (The integration
+    // tests happened to build their arenas from capacity() and so never caught this.)
+    decode_arena_buffer_.resize(thread_config.inbound_decode_arena_size);
     message_queue_ = std::make_unique<LockFreeMessageQueue<EventMessage>>(queue_config, allocator_config);
 
     notify_fd_ = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
@@ -330,7 +336,7 @@ void ApplicationThread::run_internal() {
         set_lifecycle_state(ThreadLifecycleState::ShuttingDown);
         return;
     }
-    struct epoll_event watch{};
+    struct epoll_event watch {};
     watch.events = EPOLLIN;
     watch.data.fd = notify_fd_;
     ::epoll_ctl(ep, EPOLL_CTL_ADD, notify_fd_, &watch);
@@ -382,7 +388,9 @@ void ApplicationThread::run_internal() {
 
         // Process deferred Timer events now that the data queue is exhausted.
         for (auto& timer_msg : deferred_timers) {
-            if (!keep_running) { break; }
+            if (!keep_running) {
+                break;
+            }
             process_message(timer_msg);
             if (get_lifecycle_state().as_tag() == ThreadLifecycleState::Terminated) {
                 keep_running = false;
@@ -416,7 +424,7 @@ void ApplicationThread::process_message(const EventMessage& message) {
     auto state = get_lifecycle_state().as_tag();
 
     const bool is_reactor_event = (tag == EventType::Initial || tag == EventType::AppReady || tag == EventType::Timer || tag == EventType::Termination);
-    const bool is_operational   = state == ThreadLifecycleState::Operational;
+    const bool is_operational = state == ThreadLifecycleState::Operational;
     const bool is_shutting_down = state == ThreadLifecycleState::ShuttingDown;
 
     if (!is_operational && !is_reactor_event) {
@@ -424,9 +432,8 @@ void ApplicationThread::process_message(const EventMessage& message) {
             // Connection teardown and other application events can legitimately
             // arrive while the thread is winding down. Drop them silently --
             // the thread is about to exit and the callbacks are not meaningful.
-            PUBSUB_LOG(logger_, FwLogLevel::Debug,
-                       "Thread {}: dropping {} event during shutdown (expected during connection teardown)",
-                       thread_name_, type.as_string());
+            PUBSUB_LOG(logger_, FwLogLevel::Debug, "Thread {}: dropping {} event during shutdown (expected during connection teardown)", thread_name_,
+                       type.as_string());
             return;
         }
         throw PreconditionAssertion("Non-reactor event received before thread is fully operational", __FILE__, __LINE__);

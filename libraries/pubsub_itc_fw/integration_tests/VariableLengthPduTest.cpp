@@ -109,7 +109,13 @@ class ConnectorThread : public ApplicationThread {
         const uint8_t* payload = msg.payload();
         const size_t size = static_cast<size_t>(msg.payload_size());
 
-        BumpAllocator arena(decode_arena_buffer().data(), decode_arena_buffer().capacity());
+        // Build the arena from size(), matching how the production application threads
+        // (matching engine, sequencer, gateway) use decode_arena_buffer(). This is a
+        // regression guard: decode_arena_buffer_ must be resize()'d, not reserve()'d, so
+        // size() reports the usable length. If it regresses to reserve(), size() is 0,
+        // the arena is in measuring mode, and decoding this DataResponse -- which carries
+        // a populated list<string> that must be allocated -- fails, failing this test.
+        BumpAllocator arena(decode_arena_buffer().data(), decode_arena_buffer().size());
         size_t consumed = 0;
         size_t arena_needed = 0;
         if (decode(received_response, payload, size, consumed, arena, arena_needed)) {
@@ -166,7 +172,9 @@ class ListenerThread : public ApplicationThread {
         const uint8_t* payload = msg.payload();
         const size_t size = static_cast<size_t>(msg.payload_size());
 
-        BumpAllocator arena(decode_arena_buffer().data(), decode_arena_buffer().capacity());
+        // size(), matching the production application threads (see the client's decode
+        // above for why size() -- not capacity() -- is the accessor under test).
+        BumpAllocator arena(decode_arena_buffer().data(), decode_arena_buffer().size());
         size_t consumed = 0;
         size_t arena_needed = 0;
         if (decode(received_query, payload, size, consumed, arena, arena_needed)) {

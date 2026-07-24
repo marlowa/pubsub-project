@@ -970,17 +970,23 @@ void SequencerThread::append_envelope_to_wal(const pubsub_itc_fw_app::WalRecord&
     // Option B: the WAL stores the WalRecord envelope itself (record pdu_id =
     // WalRecord), so the persisted bytes are byte-identical to the replication and
     // external-subscriber streams. Encode the envelope into a scratch buffer, then
-    // hand it to the framework WAL under its own pdu_id.
-    constexpr size_t envelope_encode_capacity = 4096;
-    std::array<uint8_t, envelope_encode_capacity> encode_buffer;
+    // hand it to the framework WAL under its own pdu_id. Measure then fit: a zero-size
+    // out buffer makes encode report bytes_needed, then the reusable buffer is grown to
+    // hold it -- no fixed cap that could silently fail to persist an over-large record,
+    // and no per-record allocation after the buffer reaches its high-water mark.
     size_t bytes_written = 0;
     size_t bytes_needed = 0;
-    if (!pubsub_itc_fw_app::encode(envelope, encode_buffer.data(), encode_buffer.size(), bytes_written, bytes_needed)) {
+    [[maybe_unused]] const bool measured = pubsub_itc_fw_app::encode(envelope, nullptr, 0, bytes_written, bytes_needed);
+    if (wal_encode_buffer_.size() < bytes_needed) {
+        wal_encode_buffer_.resize(bytes_needed);
+    }
+    if (!pubsub_itc_fw_app::encode(envelope, wal_encode_buffer_.data(), wal_encode_buffer_.size(), bytes_written, bytes_needed)) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
-                   "SequencerThread: envelope for seq={} too large to WAL ({} bytes needed) -- record NOT persisted", envelope.seq_no, bytes_needed);
+                   "SequencerThread: failed to encode envelope for seq={} ({} bytes needed) -- record NOT persisted", envelope.seq_no, bytes_needed);
         return;
     }
-    wal_.append(envelope.seq_no, pubsub_itc_fw_app::WalRecord::message_pdu_id, encode_buffer.data(), static_cast<int>(bytes_written), envelope.wall_time_ns);
+    wal_.append(envelope.seq_no, pubsub_itc_fw_app::WalRecord::message_pdu_id, wal_encode_buffer_.data(), static_cast<int>(bytes_written),
+                envelope.wall_time_ns);
 }
 
 void SequencerThread::send_wal_record(const pubsub_itc_fw_app::WalRecord& envelope) {

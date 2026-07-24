@@ -614,6 +614,11 @@
           <field name="PartySubIDType" required="N"/>
         </group>
       </group>
+      <group name="NoUnderlyings" required="N">
+        <field name="UnderlyingSymbol" required="N"/>
+        <field name="UnderlyingSecurityID" required="N"/>
+        <field name="UnderlyingQty" required="N"/>
+      </group>
     </message>
   </messages>
 </fix>

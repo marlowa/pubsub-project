@@ -88,7 +88,7 @@ size_t FixParser::feed(const uint8_t* data, size_t available) {
                 if (message.has(Tag::MsgType)) {
                     const fix_codec::FixReject reject = fix_codec::FixMessageValidator(reader).validate();
                     if (reject.ok()) {
-                        on_message_(message);
+                        on_message_(message, reader);
                     } else {
                         on_reject_(message, reject);
                     }

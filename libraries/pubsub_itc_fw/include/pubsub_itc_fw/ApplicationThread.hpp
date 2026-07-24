@@ -579,13 +579,15 @@ class ApplicationThread {
      *
      * This buffer provides the backing store for a BumpAllocator used when decoding
      * variable-length inbound PDUs (those containing string, optional, or list fields).
-     * It is reserved once at construction to ApplicationThreadConfiguration::inbound_decode_arena_size
+     * It is sized once at construction (resize()) to ApplicationThreadConfiguration::inbound_decode_arena_size
      * bytes and reused for every inbound PDU callback - no heap allocation occurs on
-     * the message handling path.
+     * the message handling path. Because it is resized (not merely reserved), both
+     * size() and capacity() report the usable length, so a BumpAllocator built from
+     * either is correct.
      *
      * Usage in on_framework_pdu_message:
      * @code
-     *     BumpAllocator arena(decode_arena_buffer().data(), decode_arena_buffer().capacity());
+     *     BumpAllocator arena(decode_arena_buffer().data(), decode_arena_buffer().size());
      *     size_t consumed = 0;
      *     size_t arena_bytes_needed = 0;
      *     if (decode(view, payload, size, consumed, arena, arena_bytes_needed)) { ... }
@@ -688,7 +690,9 @@ class ApplicationThread {
      * the same wakeup.  Subclasses that require this behaviour override to return
      * true; all other threads use the default FIFO ordering.
      */
-    virtual bool prioritise_data_over_timers() const { return false; }
+    virtual bool prioritise_data_over_timers() const {
+        return false;
+    }
 
     virtual void on_pubsub_message([[maybe_unused]] const EventMessage& msg) {}
 
@@ -733,7 +737,7 @@ class ApplicationThread {
      * @param[in] id     The ConnectionID of the lost connection.
      * @param[in] reason Human-readable description of why the connection was lost.
      */
-    virtual void on_connection_lost([[maybe_unused]] const ConnectionID &id, [[maybe_unused]] const std::string& reason) {}
+    virtual void on_connection_lost([[maybe_unused]] const ConnectionID& id, [[maybe_unused]] const std::string& reason) {}
 
     /**
      * @brief Called when a connection can accept another outbound frame.
