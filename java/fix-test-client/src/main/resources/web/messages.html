@@ -172,7 +172,7 @@
             <thead>
                 <tr>
                     <th></th>
-                    <th>Time</th><th>Dir</th><th>Seq</th><th>ClOrdID</th><th>OrigClOrdID</th>
+                    <th>Time</th><th>Dir</th><th>Type</th><th>Seq</th><th>ClOrdID</th><th>OrigClOrdID</th>
                     <th>OrderID</th><th>ExecID</th><th>ExecType</th><th>OrdStatus</th><th>Reason</th>
                     <th>SecurityID</th><th>Symbol</th><th>Side</th><th>OrdQty</th><th>Price</th><th>OrdType</th>
                     <th>CumQty</th><th>LeavesQty</th><th>Parties</th><th>Underlyings</th>
@@ -188,6 +188,11 @@
 'use strict';
 
 let lastBlotterSize = 0;
+
+const MSG_TYPE_LABEL = {
+    'D': 'NewOrderSingle', 'F': 'OrderCancelRequest', '8': 'ExecutionReport',
+    '9': 'OrderCancelReject', 'G': 'OrderCancelReplace',
+};
 
 const EXEC_TYPE_LABEL = {
     '0': 'New', '3': 'DoneForDay', '4': 'Canceled', '5': 'Replaced',
@@ -359,7 +364,7 @@ function renderBlotter(rows) {
         tr.appendChild(actionTd);
 
         const cells = [
-            row.time, row.direction, row.seqNum,
+            row.time, row.direction, MSG_TYPE_LABEL[row.msgType] || row.msgType, row.seqNum,
             row.clOrdId, row.origClOrdId, row.orderId, row.execId,
             EXEC_TYPE_LABEL[row.execType] || row.execType,
             ORD_STATUS_LABEL[row.ordStatus] || row.ordStatus,

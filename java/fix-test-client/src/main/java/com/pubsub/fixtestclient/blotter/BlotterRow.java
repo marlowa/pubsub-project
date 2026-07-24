@@ -6,6 +6,7 @@ public record BlotterRow(
         long id,
         Instant time,
         String direction,
+        String msgType,
         int seqNum,
         String clOrdId,
         String origClOrdId,

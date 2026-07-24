@@ -10,6 +10,7 @@ import quickfix.field.ExecID;
 import quickfix.field.ExecType;
 import quickfix.field.LeavesQty;
 import quickfix.field.MsgSeqNum;
+import quickfix.field.MsgType;
 
 import quickfix.field.CxlRejReason;
 import quickfix.field.NoPartyIDs;
@@ -63,6 +64,7 @@ public class BlotterStore {
                 nextId.getAndIncrement(),
                 Instant.now(),
                 direction,
+                getMsgType(message),
                 getInt(message, MsgSeqNum.FIELD),
                 getString(message, ClOrdID.FIELD),
                 getString(message, OrigClOrdID.FIELD),
@@ -135,6 +137,15 @@ public class BlotterStore {
     private String getDecimal(FieldMap map, int tag) {
         try {
             return map.getDecimal(tag).toPlainString();
+        } catch (FieldNotFound e) {
+            return "";
+        }
+    }
+
+    /** @return the raw MsgType (tag 35) from the header, e.g. "D"/"F"/"8"; labelled client-side. */
+    private String getMsgType(Message message) {
+        try {
+            return message.getHeader().getString(MsgType.FIELD);
         } catch (FieldNotFound e) {
             return "";
         }

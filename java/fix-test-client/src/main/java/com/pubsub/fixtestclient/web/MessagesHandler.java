@@ -309,6 +309,7 @@ public class MessagesHandler {
             map.put("id", row.id());
             map.put("time", TIME_FORMAT.format(row.time()));
             map.put("direction", row.direction());
+            map.put("msgType", row.msgType());
             map.put("seqNum", row.seqNum());
             map.put("clOrdId", row.clOrdId());
             map.put("origClOrdId", row.origClOrdId());

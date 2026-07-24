@@ -8,6 +8,8 @@ input[type="button"],
 input[type="reset"] {
     width: auto;              /* content-width, not stretched to the container */
     margin-bottom: 0;
-    padding: 0.3rem 0.75rem;
-    font-size: 0.82rem;
+    padding: 0.15rem 0.55rem;
+    font-size: 0.78rem;
+    line-height: 1.3;
+    --pico-font-weight: 500;
 }
