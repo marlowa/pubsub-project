@@ -346,6 +346,13 @@ class Scenario(NamedTuple):
     # matching_engine_primary.log; recovery orders (after the primary ME is
     # killed and the secondary promotes) are confirmed on
     # matching_engine_secondary.log.  Leaves all non-me_ha scenarios untouched.
+    #
+    # me_ha scenarios also assert cancel-on-failover ER routing (Phase 5): the ME
+    # stub never matches, so every baseline order rests in the book and replicates
+    # to the secondary; on promotion the secondary cancels the whole book and emits
+    # seq_no=0 cancel ERs that must route to the client via the WalRecord envelope.
+    # The assertion checks a non-empty book was cancelled and no ER was dropped for
+    # a missing conn id.  See run_scenario's "ME-HA: cancel-on-failover" block.
     me_ha: bool = False
     # Override args.orders_during for this scenario (None = use the CLI value).
     # The ME-HA scenario sets 0 for a deterministic recovery count on the
@@ -1028,6 +1035,41 @@ def poll_log_for(log_path: Path, *markers: str,
     return False, time.monotonic() - t0, pos
 
 
+def me_cancel_on_failover_count(log_path: Path, from_byte: int = 0,
+                                timeout: float = 10.0) -> int:
+    """Return N from the ME's cancel-on-failover summary line, or -1 if absent.
+
+    On promotion the ME cancels its whole (replicated) order book and logs
+    "cancel-on-failover complete -- N cancel ER(s) sent, book cleared". N is the
+    number of resting orders that were cancelled. Only bytes beyond from_byte are
+    scanned (so we see this promotion, not a prior run). Polls up to `timeout`
+    because the logger is asynchronous and the line may lag the event slightly.
+    """
+    marker = "cancel-on-failover complete"
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if log_path.is_file():
+            with open(log_path, "r", errors="replace") as fh:
+                fh.seek(from_byte)
+                for line in fh.read().splitlines():
+                    if marker in line:
+                        try:
+                            return int(line.split("complete -- ", 1)[1].split()[0])
+                        except (IndexError, ValueError):
+                            return -1
+        time.sleep(LOG_POLL_INTERVAL)
+    return -1
+
+
+def count_log_marker(log_path: Path, marker: str, from_byte: int = 0) -> int:
+    """Count lines containing `marker` in log_path beyond from_byte (0 if absent)."""
+    if not log_path.is_file():
+        return 0
+    with open(log_path, "r", errors="replace") as fh:
+        fh.seek(from_byte)
+        return sum(1 for line in fh.read().splitlines() if marker in line)
+
+
 def wait_for_fix_logon(gw_log: Path, from_byte: int,
                        timeout: float) -> str:
     """
@@ -1679,6 +1721,12 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # sequencer_primary to re-establish its ME connection (see below).
         seq_primary_pos_pre_kill = file_end(seq_primary_log)
 
+        # For the ME-HA cancel-on-failover assertion after Phase 5: remember where
+        # the secondary ME log and the gateway log end before the kill, so we scan
+        # only what the promotion (and its cancel-ER burst) produces.
+        me_secondary_pos_pre_kill = file_end(me_secondary_log) if scenario.me_ha else 0
+        gw_pos_pre_kill = file_end(gw_log)
+
         log(f"=== Phase 4: {scenario.description} ===")
         for step in effective_steps:
             if isinstance(step, KillStep):
@@ -1857,6 +1905,37 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 "WAL recovery or peer seq-number sync failure suspected"
             )
         log("  seq monotonicity check: OK")
+
+        # ── ME-HA: cancel-on-failover ER routing ──────────────────────────────
+        # The matching engine is a stub with NO matching logic: every accepted
+        # NewOrderSingle is added to the book as OrdStatus=New and rests there until
+        # cancelled (see MatchingEngineThread::handle_new_order_single). So at the
+        # ME-primary kill the promoted secondary's replicated book is non-empty, and
+        # on promotion it cancels the whole book, emitting one cancel ExecutionReport
+        # per resting order with seq_no=0.
+        #
+        # Those cancel ERs are NOT tied to a sequenced order, so the sequencer cannot
+        # route them via its seq_no->conn map; the originating session's connection id
+        # rides on the WalRecord envelope instead (see commit 5cb18a6 and
+        # docs/design/fix_pdu_generation.md). A regression there is silent to the
+        # recovery-order check -- the cancels are simply dropped -- so assert directly:
+        #   * the secondary cancelled a non-empty book (N > 0), and
+        #   * the gateway dropped NO ER for a missing conn id (the regression's
+        #     signature is the gateway log line
+        #     "... has no gateway_session_conn_id -- dropping").
+        if scenario.me_ha:
+            cancel_count = me_cancel_on_failover_count(me_secondary_log, from_byte=me_secondary_pos_pre_kill)
+            if cancel_count <= 0:
+                die("ME-HA: promoted secondary did not cancel a non-empty book on failover "
+                    f"(cancel-on-failover count={cancel_count}) -- cancel-ER routing was not exercised")
+            log(f"  ME-HA: cancel-on-failover cancelled {cancel_count} resting order(s)")
+
+            dropped = count_log_marker(gw_log, "has no gateway_session_conn_id -- dropping", from_byte=gw_pos_pre_kill)
+            if dropped > 0:
+                die(f"ME-HA: gateway dropped {dropped} ExecutionReport(s) for a missing "
+                    "gateway_session_conn_id -- cancel-on-failover ER routing via the envelope is broken")
+            log("  ME-HA: cancel-on-failover ERs routed to the client (none dropped) -- OK")
+
         result_pass = True
         log("")
 
