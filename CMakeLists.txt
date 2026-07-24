@@ -256,9 +256,34 @@ install(CODE "
 # dependency on fix_equity_orders_generated and include FIX_DSL_INCLUDE_DIR.
 # Output lands in ${CMAKE_BINARY_DIR}/generated_dsl -- never in the source tree.
 # ------------------------------------------------------------
-set(FIX_DSL_SOURCE "${CMAKE_SOURCE_DIR}/applications/fix_equity_orders.dsl")
 set(FIX_DSL_INCLUDE_DIR "${CMAKE_BINARY_DIR}/generated_dsl" CACHE INTERNAL "Where fix_equity_orders.hpp lives")
 set(FIX_DSL_GENERATED_HPP "${FIX_DSL_INCLUDE_DIR}/fix_equity_orders.hpp")
+
+# The serialisation .dsl is itself generated -- it is a build artifact (git-ignored), not a
+# committed source file -- by expanding a curated FIX data dictionary. The committed inputs
+# are the DD XML and the message list below; regenerating is automatic on a DD change. It is
+# generated into the source tree (not build/) because applications/pubsub.dsl `include`s it
+# by a path relative to itself. See docs/design/fix_pdu_generation.md.
+set(FIX_DD_SOURCE "${CMAKE_SOURCE_DIR}/applications/fix_equity_orders.dd.xml")
+set(FIX_DSL_SOURCE "${CMAKE_SOURCE_DIR}/applications/fix_equity_orders.dsl")
+set(FIX_DD_GENERATOR "${CMAKE_SOURCE_DIR}/python/tools/generate_dd_to_dsl.py")
+file(GLOB FIX_DD_GENERATOR_MODULES
+    "${CMAKE_SOURCE_DIR}/python/dd_to_dsl/*.py"
+    "${CMAKE_SOURCE_DIR}/python/fix_dictionary/*.py")
+
+add_custom_command(
+    OUTPUT "${FIX_DSL_SOURCE}"
+    COMMAND ${Python3_EXECUTABLE} "${FIX_DD_GENERATOR}"
+            --dd "${FIX_DD_SOURCE}"
+            --message NewOrderSingle:1000
+            --message OrderCancelRequest:1001
+            --message ExecutionReport:1002
+            --output "${FIX_DSL_SOURCE}"
+    DEPENDS "${FIX_DD_SOURCE}" "${FIX_DD_GENERATOR}" ${FIX_DD_GENERATOR_MODULES}
+    COMMENT "Generating fix_equity_orders.dsl from the FIX data dictionary"
+    VERBATIM
+)
+
 set(FIX_DSL_GENERATOR "${CMAKE_SOURCE_DIR}/python/tools/generate_cpp_from_dsl.py")
 # The tool imports the python/dsl package; depend on those modules too so that a
 # generator change (not just a .dsl change) regenerates the headers.
