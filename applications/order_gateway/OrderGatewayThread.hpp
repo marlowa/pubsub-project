@@ -24,9 +24,9 @@
 #include "FixSession.hpp"
 #include "OrderGatewayConfiguration.hpp"
 
-// authentication.hpp must be included before fix_equity_orders.hpp because only
+// authentication.hpp must be included before fix_orders.hpp because only
 // authentication.hpp defines BytesView inside the PUBSUB_ITC_FW_APP_DSL_SHARED_HELPERS
-// guard block; fix_equity_orders.hpp sets the guard without providing BytesView.
+// guard block; fix_orders.hpp sets the guard without providing BytesView.
 #include <authentication.hpp>
 
 // WalRecord doubles as the pipeline envelope carrying the routing metadata that
@@ -54,10 +54,10 @@ namespace order_gateway {
  *   Logout (5)       -- responds with Logout and disconnects
  *
  * FIX application layer:
- *   NewOrderSingle (D)     -- encodes as fix_equity_orders PDU, sends to the
+ *   NewOrderSingle (D)     -- encodes as fix_orders PDU, sends to the
  *                             primary sequencer, records cl_ord_id -> session
  *                             mapping
- *   OrderCancelRequest (F) -- encodes as fix_equity_orders PDU, sends to the
+ *   OrderCancelRequest (F) -- encodes as fix_orders PDU, sends to the
  *                             primary sequencer
  *
  * ExecutionReport PDUs arriving from the sequencer on the ER inbound listener

@@ -126,7 +126,7 @@ For a large message like a NOS — many optional, conditionally-required fields 
 end to end is still a three-layer decision, and the codec touches only the first:
 
 1. **Gateway** — parse, validate, and map the field into the order PDU (the `fix_codec` work).
-2. **DSL topic** — the `NewOrderSingle` message in `fix_equity_orders.dsl` must carry the
+2. **DSL topic** — the `NewOrderSingle` message in `fix_orders.dsl` must carry the
    field. It already carries most of them: `price`, `stop_px`, `time_in_force`, `account`,
    `ex_destination`, `exec_inst`, `min_qty`, `max_floor`, `expire_time`, `text`. So for those,
    only steps 1 and 3 remain.

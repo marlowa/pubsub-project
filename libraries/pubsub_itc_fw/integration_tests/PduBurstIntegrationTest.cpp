@@ -96,7 +96,7 @@
 #include <pubsub_itc_fw/tests_common/LoggerWithSink.hpp>
 #include <pubsub_itc_fw/tests_common/TestConfigurations.hpp>
 
-#include <fix_equity_orders.hpp>
+#include <fix_orders.hpp>
 
 namespace pubsub_itc_fw::tests {
 

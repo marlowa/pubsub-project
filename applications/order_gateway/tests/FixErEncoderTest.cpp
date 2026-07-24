@@ -10,7 +10,7 @@
 
 #include <fix_codec/FixMessageReader.hpp>
 #include <fix_codec/fix_dictionary.hpp>
-#include <fix_equity_orders.hpp>
+#include <fix_orders.hpp>
 #include <pubsub_itc_fw/WallClock.hpp>
 
 // Guards the ExecutionReport encoder after its move onto fix_codec::FixMessageWriter.

@@ -15,7 +15,7 @@
 // The generated PDU structs (NewOrderSingle, Underlyings, PartyIDs, PartySubIDs and
 // ListView). Included, like FixErEncoder.hpp, after authentication.hpp has defined
 // BytesView -- so this header must be included after OrderGatewayThread.hpp.
-#include <fix_equity_orders.hpp>
+#include <fix_orders.hpp>
 
 namespace order_gateway {
 

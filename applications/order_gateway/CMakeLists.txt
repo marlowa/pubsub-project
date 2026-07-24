@@ -24,7 +24,7 @@ target_link_libraries(order_gateway PRIVATE
 # fix_codec is header-only; its generated dictionary header must exist before the
 # gateway compiles. The migration onto fix_codec (inbound parse + validate) is
 # documented in docs/applications/order_gateway.md.
-add_dependencies(order_gateway fix_equity_orders_generated authentication_generated fix_dictionary_generated)
+add_dependencies(order_gateway fix_orders_generated authentication_generated fix_dictionary_generated)
 
 # Header files listed explicitly so CLion indexes them correctly.
 target_sources(order_gateway PRIVATE
@@ -72,7 +72,7 @@ target_link_libraries(order_gateway_tests PRIVATE
         GTest::gtest_main
 )
 
-add_dependencies(order_gateway_tests fix_dictionary_generated fix_equity_orders_generated)
+add_dependencies(order_gateway_tests fix_dictionary_generated fix_orders_generated)
 
 include(GoogleTest)
 if(ENABLE_TSAN)

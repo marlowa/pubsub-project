@@ -19,7 +19,7 @@
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
 
-#include <fix_equity_orders.hpp>
+#include <fix_orders.hpp>
 #include <leader_follower.hpp>
 #include <matching_engine_replication.hpp>
 

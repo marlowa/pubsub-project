@@ -36,7 +36,7 @@ TopicNotLeader; point the probe at the leader instance's port instead.
 
 #include <argparse/argparse.hpp>
 
-#include <fix_equity_orders.hpp>
+#include <fix_orders.hpp>
 
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThread.hpp>
@@ -130,7 +130,7 @@ void print_record(const std::string& topic_name, int64_t seq_no, int16_t pdu_id,
 
     // Dispatch on the DSL pdu id to the matching generated view; the structured
     // dump (field=value ...) comes from the generated to_string, so it stays in
-    // step with fix_equity_orders.dsl automatically. Unknown/undecodable records
+    // step with fix_orders.dsl automatically. Unknown/undecodable records
     // fall back to a hex preview.
     bool decoded = false;
     switch (pdu_id) {

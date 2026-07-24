@@ -13,10 +13,10 @@ target_link_libraries(topic_probe PRIVATE
 )
 
 # topic_probe includes both the topic registry (topics_generated) and the
-# fix_equity_orders message views/decoders it dumps (fix_equity_orders_generated).
+# fix_orders message views/decoders it dumps (fix_orders_generated).
 add_dependencies(topic_probe
         topics_generated
-        fix_equity_orders_generated
+        fix_orders_generated
 )
 
 install(TARGETS topic_probe

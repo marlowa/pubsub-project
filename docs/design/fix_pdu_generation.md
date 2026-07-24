@@ -1,7 +1,7 @@
 # DD-driven PDU generation and the internal envelope — design (draft) {#fix_pdu_generation}
 
 **Status:** Draft for review. Supersedes the flat, spec-curated generator committed as a
-stepping stone (`python/dd_to_dsl` + `fix_equity_orders.spec.toml`). Not yet implemented.
+stepping stone (`python/dd_to_dsl` + `fix_orders.spec.toml`). Not yet implemented.
 
 ## Goal
 
@@ -29,7 +29,7 @@ spec**:
 ```
 dd_to_dsl --dd <dd.xml> [--dd <more.xml>] \
           --message NewOrderSingle --message OrderCancelRequest --message ExecutionReport \
-          --output <build>/fix_equity_orders.dsl
+          --output <build>/fix_orders.dsl
 ```
 
 Everything below is derived from the DD:
@@ -175,7 +175,7 @@ and external-subscriber (MEP) streams, and every reader decodes envelope-then-pa
 - **MEP / topic_probe** unchanged: the MEP already unwraps `WalRecord` and republishes the
   inner (now pure) FIX PDU on its topic.
 
-The three internal fields remain **declared but unset** in `fix_equity_orders.dsl` (vestigial);
+The three internal fields remain **declared but unset** in `fix_orders.dsl` (vestigial);
 1g deletes them. **Existing on-disk WALs are now format-incompatible → start from a clean WAL.**
 Build + all unit/integration tests green; the replay/failover acceptance gate (live HA +
 `ha_test.py`) is still to be run.

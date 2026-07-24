@@ -43,7 +43,7 @@ add_executable(topic_pubsub_bench
 
 add_dependencies(topic_pubsub_bench
     topics_generated
-    fix_equity_orders_generated  # TopicPubSubBench.cpp includes fix_equity_orders.hpp
+    fix_orders_generated  # TopicPubSubBench.cpp includes fix_orders.hpp
 )
 
 target_link_libraries(topic_pubsub_bench PRIVATE

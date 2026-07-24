@@ -13,7 +13,7 @@ target_link_libraries(sequencer PRIVATE
         pubsub_itc_fw
 )
 
-add_dependencies(sequencer fix_equity_orders_generated leader_follower_generated)
+add_dependencies(sequencer fix_orders_generated leader_follower_generated)
 
 # Header files listed explicitly so CLion indexes them correctly.
 target_sources(sequencer PRIVATE

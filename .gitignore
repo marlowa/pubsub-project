@@ -21,6 +21,6 @@ admin_users.toml
 # Obsidian vault config (editor state; appears wherever docs are opened as a vault)
 .obsidian/
 
-# fix_equity_orders.dsl is generated at build time from the FIX DD
-# (applications/fix_equity_orders.dd.xml); see CMakeLists.txt / docs/design/fix_pdu_generation.md.
-applications/fix_equity_orders.dsl
+# The FIX serialisation .dsl and .hpp are generated into the build tree
+# (build/generated_dsl/fix_orders.{dsl,hpp}) -- never the source tree -- so there is
+# nothing to ignore here. See CMakeLists.txt / docs/design/fix_pdu_generation.md.

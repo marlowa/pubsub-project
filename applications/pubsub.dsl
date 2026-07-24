@@ -15,11 +15,11 @@
 #  against the generated registry -- it is deliberately NOT here.
 #  See docs/design/dsl_topic_catalog.md.
 #
-#  The message definitions (and their pdu ids) come from fix_equity_orders.dsl,
+#  The message definitions (and their pdu ids) come from fix_orders.dsl,
 #  pulled in transitively so the topic members below resolve to real pdu ids.
 # -----------------------------------------------------------------------------
 
-include "fix_equity_orders.dsl"
+include "fix_orders.dsl"
 
 # The "orders" topic: buy-side order flow (NewOrderSingle + OrderCancelRequest).
 topic orders {

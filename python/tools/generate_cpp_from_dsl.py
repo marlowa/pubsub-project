@@ -52,6 +52,10 @@ def main():
     topics_group.add_argument("--topics-catalog", metavar="OUTPUT",
                               help="Output .md file for the human-readable topic catalog.")
 
+    ap.add_argument("--include-dir", action="append", default=[], dest="include_dirs", metavar="DIR",
+                    help="Extra directory searched when resolving `include` directives (repeatable). "
+                         "Lets a source .dsl include a .dsl generated into the build tree.")
+
     args = ap.parse_args()
 
     if not (args.cpp or args.java or args.topics_registry or args.topics_catalog):
@@ -69,7 +73,7 @@ def main():
     input_path = Path(args.input)
 
     try:
-        ast = load(input_path)
+        ast = load(input_path, include_dirs=args.include_dirs)
         Validator(ast).validate(pdu_id_enum=bool(args.pdu_id_enum))
     except DslError as error:
         print(f"{input_path}: {error}", file=sys.stderr)

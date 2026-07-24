@@ -253,34 +253,35 @@ install(CODE "
 # Lifted out of applications/CMakeLists.txt so that targets in libraries/
 # (such as the integration tests) can depend on the generated header in
 # addition to the sample applications. Both sets of consumers add a
-# dependency on fix_equity_orders_generated and include FIX_DSL_INCLUDE_DIR.
+# dependency on fix_orders_generated and include FIX_DSL_INCLUDE_DIR.
 # Output lands in ${CMAKE_BINARY_DIR}/generated_dsl -- never in the source tree.
 # ------------------------------------------------------------
-set(FIX_DSL_INCLUDE_DIR "${CMAKE_BINARY_DIR}/generated_dsl" CACHE INTERNAL "Where fix_equity_orders.hpp lives")
-set(FIX_DSL_GENERATED_HPP "${FIX_DSL_INCLUDE_DIR}/fix_equity_orders.hpp")
+set(FIX_DSL_INCLUDE_DIR "${CMAKE_BINARY_DIR}/generated_dsl" CACHE INTERNAL "Where fix_orders.hpp lives")
+set(FIX_DSL_GENERATED_HPP "${FIX_DSL_INCLUDE_DIR}/fix_orders.hpp")
 
-# The serialisation .dsl is itself generated -- it is a build artifact (git-ignored), not a
-# committed source file -- by expanding a curated FIX data dictionary. The committed inputs
-# are the DD XML and the message list below; regenerating is automatic on a DD change. It is
-# generated into the source tree (not build/) because applications/pubsub.dsl `include`s it
-# by a path relative to itself. See docs/design/fix_pdu_generation.md.
-set(FIX_DD_SOURCE "${CMAKE_SOURCE_DIR}/applications/fix_equity_orders.dd.xml")
-set(FIX_DSL_SOURCE "${CMAKE_SOURCE_DIR}/applications/fix_equity_orders.dsl")
+# The serialisation .dsl is itself generated -- a build artifact, never a source file -- by
+# expanding a curated FIX data dictionary. The committed inputs are the DD XML and the message
+# list below. It is generated into the build tree (${FIX_DSL_INCLUDE_DIR}); applications/pubsub.dsl
+# `include`s it by filename, resolved via the generator's --include-dir search path (below), so no
+# generated file lives in the source tree. See docs/design/fix_pdu_generation.md.
+set(FIX_DD_SOURCE "${CMAKE_SOURCE_DIR}/applications/fix_orders.dd.xml")
+set(FIX_DSL_GENERATED "${FIX_DSL_INCLUDE_DIR}/fix_orders.dsl")
 set(FIX_DD_GENERATOR "${CMAKE_SOURCE_DIR}/python/tools/generate_dd_to_dsl.py")
 file(GLOB FIX_DD_GENERATOR_MODULES
     "${CMAKE_SOURCE_DIR}/python/dd_to_dsl/*.py"
     "${CMAKE_SOURCE_DIR}/python/fix_dictionary/*.py")
 
 add_custom_command(
-    OUTPUT "${FIX_DSL_SOURCE}"
+    OUTPUT "${FIX_DSL_GENERATED}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${FIX_DSL_INCLUDE_DIR}"
     COMMAND ${Python3_EXECUTABLE} "${FIX_DD_GENERATOR}"
             --dd "${FIX_DD_SOURCE}"
             --message NewOrderSingle:1000
             --message OrderCancelRequest:1001
             --message ExecutionReport:1002
-            --output "${FIX_DSL_SOURCE}"
+            --output "${FIX_DSL_GENERATED}"
     DEPENDS "${FIX_DD_SOURCE}" "${FIX_DD_GENERATOR}" ${FIX_DD_GENERATOR_MODULES}
-    COMMENT "Generating fix_equity_orders.dsl from the FIX data dictionary"
+    COMMENT "Generating fix_orders.dsl from the FIX data dictionary"
     VERBATIM
 )
 
@@ -295,18 +296,18 @@ add_custom_command(
     COMMAND ${Python3_EXECUTABLE} "${FIX_DSL_GENERATOR}"
             --pdu-id-enum
             --namespace pubsub_itc_fw_app
-            "${FIX_DSL_SOURCE}"
+            "${FIX_DSL_GENERATED}"
             --cpp "${FIX_DSL_GENERATED_HPP}"
-    DEPENDS "${FIX_DSL_SOURCE}" "${FIX_DSL_GENERATOR}" ${FIX_DSL_GENERATOR_MODULES}
-    COMMENT "Generating fix_equity_orders.hpp from fix_equity_orders.dsl"
+    DEPENDS "${FIX_DSL_GENERATED}" "${FIX_DSL_GENERATOR}" ${FIX_DSL_GENERATOR_MODULES}
+    COMMENT "Generating fix_orders.hpp from fix_orders.dsl"
     VERBATIM
 )
-add_custom_target(fix_equity_orders_generated ALL
+add_custom_target(fix_orders_generated ALL
     DEPENDS "${FIX_DSL_GENERATED_HPP}"
 )
 # Run the coding-standards gate before code generation / compilation so a
 # violation fails the build early rather than after a long C++ build.
-add_dependencies(fix_equity_orders_generated check_standards)
+add_dependencies(fix_orders_generated check_standards)
 
 # Leader-follower protocol PDU header (no --pdu-id-enum: uses plain integer IDs 100-201).
 set(LF_DSL_SOURCE "${CMAKE_SOURCE_DIR}/libraries/pubsub_itc_fw/include/pubsub_itc_fw/leader_follower.dsl")
@@ -387,8 +388,9 @@ add_custom_target(topics_generated ALL
 # Pub/sub topic catalog: the generated Topic enum + pdu-id/topic membership table
 # (topics_registry.hpp) and the human-readable catalog (topics_catalog.md). Both
 # are generated from the index applications/pubsub.dsl, which `include`s
-# fix_equity_orders.dsl for the message/pdu-id definitions -- so the command
-# depends on BOTH the index and every file it transitively includes.
+# fix_orders.dsl for the message/pdu-id definitions. That include is resolved via
+# --include-dir ${FIX_DSL_INCLUDE_DIR} (fix_orders.dsl is generated into the build tree),
+# so the command depends on BOTH the index and the generated .dsl it includes.
 set(PUBSUB_DSL_SOURCE "${CMAKE_SOURCE_DIR}/applications/pubsub.dsl")
 set(PUBSUB_TOPICS_REGISTRY_HPP "${FIX_DSL_INCLUDE_DIR}/topics_registry.hpp")
 set(PUBSUB_TOPICS_CATALOG_DIR "${CMAKE_BINARY_DIR}/generated_docs")
@@ -400,10 +402,11 @@ add_custom_command(
     COMMAND ${CMAKE_COMMAND} -E make_directory "${PUBSUB_TOPICS_CATALOG_DIR}"
     COMMAND ${Python3_EXECUTABLE} "${FIX_DSL_GENERATOR}"
             --namespace pubsub_itc_fw_app
+            --include-dir "${FIX_DSL_INCLUDE_DIR}"
             "${PUBSUB_DSL_SOURCE}"
             --topics-registry "${PUBSUB_TOPICS_REGISTRY_HPP}"
             --topics-catalog "${PUBSUB_TOPICS_CATALOG_MD}"
-    DEPENDS "${PUBSUB_DSL_SOURCE}" "${FIX_DSL_SOURCE}" "${FIX_DSL_GENERATOR}" ${FIX_DSL_GENERATOR_MODULES}
+    DEPENDS "${PUBSUB_DSL_SOURCE}" "${FIX_DSL_GENERATED}" "${FIX_DSL_GENERATOR}" ${FIX_DSL_GENERATOR_MODULES}
     COMMENT "Generating topics_registry.hpp + topics_catalog.md from pubsub.dsl"
     VERBATIM
 )

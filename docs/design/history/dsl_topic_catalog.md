@@ -59,13 +59,13 @@ owns the pdu ids).
   duplicate pdu_ids** and has message-reference cycle detection. => merging included files
   into one `DslFile` makes every global check work **unchanged** — includes are a *loader*
   concern, not a validator rewrite.
-- Existing `Topics` enum is in `applications/fix_equity_orders.dsl`; `--topics` mode requires
+- Existing `Topics` enum is in `applications/fix_orders.dsl`; `--topics` mode requires
   every message `id` to be `Topics.X` and emits the enum via `_emit_topics_enum_class`.
   `applications/topics.dsl` (the wire protocol) uses bare ids (107–111), not the enum.
 
 ## Implementation plan (landable steps)
 
-1. **[DONE — `d0ecfca`] Rename `Topics` → `PduId`.** `fix_equity_orders.dsl` (enum name + every `id=Topics.X`
+1. **[DONE — `d0ecfca`] Rename `Topics` → `PduId`.** `fix_orders.dsl` (enum name + every `id=Topics.X`
    → `id=PduId.X`), the validator's `Topics` special-casing + error text (`_validate_topics`,
    the `ref.enum_name == "Topics"` check), `generator_cpp._emit_topics_enum_class` + the
    `decl.name == "Topics"` guard, and rename the `--topics` flag (+ the CMake invocation).
@@ -95,11 +95,11 @@ owns the pdu ids).
    lexer/parser/validator/both generators, including multi-membership and resolved ids.
    NB the "pdu_id → topic map" from the Decisions is realised as this membership *table* because
    decision 4 allows a pdu in multiple topics (a plain one-to-one map cannot express that).
-4. **[DONE] Wire-up.** Authored index `applications/pubsub.dsl` (`include "fix_equity_orders.dsl"`
+4. **[DONE] Wire-up.** Authored index `applications/pubsub.dsl` (`include "fix_orders.dsl"`
    + the `orders` / `execution_reports` `topic` blocks). Top-level `CMakeLists.txt` gained a
    `topics_registry_generated` target: a custom command runs the generator with
    `--topics-registry`/`--topics-catalog`, its `DEPENDS` listing **both** `pubsub.dsl` and the
-   transitively-included `fix_equity_orders.dsl`, emitting `build/generated_dsl/topics_registry.hpp`
+   transitively-included `fix_orders.dsl`, emitting `build/generated_dsl/topics_registry.hpp`
    and `build/generated_docs/topics_catalog.md`. MEP now `#include <topics_registry.hpp>` and is
    fully off free strings/magic ids: `handle_topic_subscribe` validates via `topic_from_name`;
    `conn_to_topic_` stores `Topic` (not `std::string`); live-publish and WAL-replay routing use

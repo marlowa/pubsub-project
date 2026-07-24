@@ -8,7 +8,7 @@ groups; each named message is expanded in full.
     # spec-less (preferred): DD + message list on the command line
     python -m dd_to_dsl --dd venue.xml \
         --message NewOrderSingle:1000 --message OrderCancelRequest:1001 \
-        --message ExecutionReport:1002 --output build/fix_equity_orders.dsl
+        --message ExecutionReport:1002 --output build/fix_orders.dsl
 
     python -m dd_to_dsl --dd venue.xml --all --output build/orders.dsl   # every message in the DD
     python -m dd_to_dsl --dd venue.xml --all --stdout                    # print, do not write

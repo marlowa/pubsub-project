@@ -230,7 +230,7 @@ tests) runs by default and can be suppressed with `--no-pytest`.
 | File | Namespace | Contents |
 |------|-----------|---------|
 | `libraries/pubsub_itc_fw/…/*.dsl` | `pubsub_itc_fw` | Framework-internal PDUs: command queue, events, internal protocols |
-| `applications/fix_equity_orders.dsl` | `pubsub_itc_fw_app` | `NewOrderSingle` (1000), `OrderCancelRequest` (1001), `ExecutionReport` (1002); prices/quantities as `string`; `TransactTime` as `datetime_ns`; conditionally-required fields as `optional` |
+| `applications/fix_orders.dsl` | `pubsub_itc_fw_app` | `NewOrderSingle` (1000), `OrderCancelRequest` (1001), `ExecutionReport` (1002); prices/quantities as `string`; `TransactTime` as `datetime_ns`; conditionally-required fields as `optional` |
 | `applications/authentication.dsl` | `pubsub_itc_fw_app` | SCRAM PDUs 500–503 (`AuthenticationRequest`, `AuthenticationChallenge`, `AuthenticationProof`, `AuthenticationResult`); plus `SetCredentialRequest/Result` (510/511), `RemoveCredentialRequest/Result` (512/513), `RestoreCredentialRequest/Result` (514/515) |
 | `applications/leader_follower.dsl` | `pubsub_itc_fw_app` | Leader-follower protocol PDUs: `StatusQuery` (100), `StatusResponse` (101), `Heartbeat` (102), `ArbitrationReport` (200), `ArbitrationDecision` (201); also `WalSubscribeRequest` (105), `WalSubscribeAck` (106) |
 | `applications/topics.dsl` | `pubsub_itc_fw_app` | Topic pub/sub protocol: `TopicSubscribeRequest` (107), `TopicSubscribeAck` (108), `TopicPage` (109), `TopicAck` (110), inner type `TopicRecord` |

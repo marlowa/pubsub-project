@@ -6,7 +6,7 @@
 #include <cstddef> // IWYU pragma: keep
 #include <string_view>
 
-#include <fix_equity_orders.hpp>
+#include <fix_orders.hpp>
 #include <pubsub_itc_fw/WallClock.hpp>
 
 namespace order_gateway {
