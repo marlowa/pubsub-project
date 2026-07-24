@@ -101,6 +101,53 @@ std::string_view encode_execution_report(const pubsub_itc_fw_app::ExecutionRepor
     writer.push_back_field(Tag::CumQty, view.cum_qty);
     writer.push_back_field(Tag::LeavesQty, view.leaves_qty);
 
+    // Repeating groups the matching engine echoed onto the ER (NoUnderlyings, NoPartyIDs
+    // with nested NoPartySubIDs). Emitted after the flat fields; each instance leads with
+    // its delimiter tag (UnderlyingSymbol / PartyID / PartySubID). Tag numbers come from
+    // the generated FIX dictionary. The gateway Tag enum only covers the flat ER fields.
+    if (view.no_underlyings.size > 0) {
+        writer.push_back_field(fix_codec::tag::NoUnderlyings, static_cast<int>(view.no_underlyings.size));
+        for (size_t i = 0; i < view.no_underlyings.size; ++i) {
+            const pubsub_itc_fw_app::UnderlyingsView& underlying = view.no_underlyings.data[i];
+            if (underlying.has_underlying_symbol) {
+                writer.push_back_field(fix_codec::tag::UnderlyingSymbol, underlying.underlying_symbol);
+            }
+            if (underlying.has_underlying_security_id) {
+                writer.push_back_field(fix_codec::tag::UnderlyingSecurityID, underlying.underlying_security_id);
+            }
+            if (underlying.has_underlying_qty) {
+                writer.push_back_field(fix_codec::tag::UnderlyingQty, underlying.underlying_qty);
+            }
+        }
+    }
+    if (view.no_party_i_ds.size > 0) {
+        writer.push_back_field(fix_codec::tag::NoPartyIDs, static_cast<int>(view.no_party_i_ds.size));
+        for (size_t i = 0; i < view.no_party_i_ds.size; ++i) {
+            const pubsub_itc_fw_app::PartyIDsView& party = view.no_party_i_ds.data[i];
+            if (party.has_party_id) {
+                writer.push_back_field(fix_codec::tag::PartyID, party.party_id);
+            }
+            if (party.has_party_id_source) {
+                writer.push_back_field(fix_codec::tag::PartyIDSource, static_cast<char>(party.party_id_source));
+            }
+            if (party.has_party_role) {
+                writer.push_back_field(fix_codec::tag::PartyRole, static_cast<int>(party.party_role));
+            }
+            if (party.no_party_sub_i_ds.size > 0) {
+                writer.push_back_field(fix_codec::tag::NoPartySubIDs, static_cast<int>(party.no_party_sub_i_ds.size));
+                for (size_t j = 0; j < party.no_party_sub_i_ds.size; ++j) {
+                    const pubsub_itc_fw_app::PartySubIDsView& sub = party.no_party_sub_i_ds.data[j];
+                    if (sub.has_party_sub_id) {
+                        writer.push_back_field(fix_codec::tag::PartySubID, sub.party_sub_id);
+                    }
+                    if (sub.has_party_sub_id_type) {
+                        writer.push_back_field(fix_codec::tag::PartySubIDType, static_cast<int>(sub.party_sub_id_type));
+                    }
+                }
+            }
+        }
+    }
+
     return writer.finish(); // empty view if the buffer overflowed
 }
 

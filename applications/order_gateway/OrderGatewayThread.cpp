@@ -132,6 +132,9 @@ OrderGatewayThread::OrderGatewayThread(pubsub_itc_fw::ApplicationThread::Constru
     if (capture_) {
         register_extra_thread(capture_->writer_pthread_id(), "FixCaptureWriter");
     }
+    // Start the reusable ER wire buffer at the common-case size; the ER send path grows
+    // it if a large ExecutionReport (many echoed group instances) needs more.
+    er_wire_buffer_.resize(execution_report_initial_buffer_size);
 }
 
 void OrderGatewayThread::on_app_ready_event() {
@@ -517,14 +520,27 @@ void OrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventMess
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "GW-ER-SENT connection={} OrderID={} ExecID={} gateway_session_conn_id={}",
                session.conn_id.get_value(), view.order_id, view.exec_id, envelope.gateway_session_conn_id);
 
-    // Encode the FIX ExecutionReport directly into a stack buffer.
-    // No heap allocation: all string_view fields from view are memcpy'd
-    // straight into the wire bytes; enum fields are cast to single chars.
-    // The returned view is the wire message inside wire_buffer; it does not begin
-    // at wire_buffer[0] because FixMessageWriter frames the header backward.
-    char wire_buffer[execution_report_buffer_size];
-    const std::string_view wire = encode_execution_report(view, config_.sender_comp_id, session.client_comp_id, session.outbound_seq_num++, *config_.wall_clock,
-                                                          wire_buffer, sizeof(wire_buffer));
+    // Encode the FIX ExecutionReport into a reusable, growable buffer. encode_execution_report
+    // returns an empty view if the buffer is too small (a large ER -- many echoed group
+    // instances -- can exceed the starting size), so grow and retry rather than cap the size
+    // and silently drop the ER. The buffer grows to the high-water mark and is reused, so no
+    // per-ER allocation after warmup. The wire view does not begin at the buffer start --
+    // FixMessageWriter frames the header backward.
+    std::string_view wire = encode_execution_report(view, config_.sender_comp_id, session.client_comp_id, session.outbound_seq_num, *config_.wall_clock,
+                                                    er_wire_buffer_.data(), er_wire_buffer_.size());
+    while (wire.empty() && er_wire_buffer_.size() < max_execution_report_buffer_size) {
+        er_wire_buffer_.resize(er_wire_buffer_.size() * 2);
+        wire = encode_execution_report(view, config_.sender_comp_id, session.client_comp_id, session.outbound_seq_num, *config_.wall_clock,
+                                       er_wire_buffer_.data(), er_wire_buffer_.size());
+    }
+    if (wire.empty()) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                   "OrderGatewayThread: connection {} ExecutionReport too large to encode (>{} bytes) -- not sent", session.conn_id.get_value(),
+                   er_wire_buffer_.size());
+        release_pdu_payload(message);
+        return;
+    }
+    ++session.outbound_seq_num;
     if (capture_ != nullptr) {
         capture_->capture(FixCapture::Direction::Outbound, reinterpret_cast<const uint8_t*>(wire.data()), wire.size(), config_.wall_clock->now_ns());
     }

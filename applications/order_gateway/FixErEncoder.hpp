@@ -11,9 +11,16 @@
 
 namespace order_gateway {
 
-// Generous upper bound for a fully-populated ExecutionReport wire message.
-// Actual size is ~290 bytes; 512 gives comfortable headroom on the stack.
-static constexpr size_t execution_report_buffer_size = 512;
+// Starting size for the ExecutionReport wire buffer -- NOT a hard cap. The flat fields
+// are ~290 bytes; the echoed NoUnderlyings/NoPartyIDs groups add a variable amount, so
+// the caller grows a reusable buffer and retries if encode_execution_report reports an
+// overflow (it returns an empty view when output_buffer is too small). This value just
+// avoids a resize for the common case.
+static constexpr size_t execution_report_initial_buffer_size = 512;
+
+// Sanity ceiling for the grow-and-retry loop: an ExecutionReport larger than this is a
+// bug, not a real message, so the caller gives up and logs rather than growing forever.
+static constexpr size_t max_execution_report_buffer_size = 64 * 1024;
 
 /**
  * Encodes an ExecutionReport into output_buffer as FIX 5.0SP2 / FIXT 1.1 wire

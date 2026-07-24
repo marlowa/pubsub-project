@@ -222,6 +222,12 @@ class OrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // warmup and no fixed cap that could silently drop an over-large order.
     std::vector<uint8_t> order_encode_buffer_;
 
+    // Reusable, growable buffer for the outbound FIX ExecutionReport wire bytes. Sized
+    // to execution_report_initial_buffer_size at construction and grown (grow-and-retry
+    // in the ER send path) to the largest ER seen -- no fixed cap that could silently
+    // drop an ER with many echoed group instances, no per-ER allocation after warmup.
+    std::vector<char> er_wire_buffer_;
+
     // Precomputed inbound service name for the sequencer ER listener port.
     const std::string er_inbound_svc_;
 
