@@ -12,10 +12,14 @@ target_link_libraries(topic_probe PRIVATE
         argparse::argparse
 )
 
-# topic_probe includes both the topic registry (topics_generated) and the
-# fix_orders message views/decoders it dumps (fix_orders_generated).
+# topic_probe includes:
+#   - the topic PDU views it dumps (topics.hpp, from topics_generated)
+#   - the topic registry: Topic enum, all_topics, topic_from_name (topics_registry.hpp,
+#     from topics_registry_generated)
+#   - the fix_orders message views/decoders it dumps (fix_orders.hpp, from fix_orders_generated)
 add_dependencies(topic_probe
         topics_generated
+        topics_registry_generated
         fix_orders_generated
 )
 

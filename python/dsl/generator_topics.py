@@ -75,6 +75,13 @@ class TopicsGenerator:
         w("")
         w(f"inline constexpr std::size_t topic_count = {len(topics)};")
         w("")
+        # all_topics lets callers iterate every topic by enum value (range-for), with no
+        # index arithmetic and no cast from an integer back to Topic.
+        w(f"inline constexpr std::array<Topic, {len(topics)}> all_topics{{{{")
+        for topic in topics:
+            w(f"    Topic::{topic.name},")
+        w("}};")
+        w("")
 
     def _emit_name_lookups(self, w, topics):
         """Emit to_string(Topic) and topic_from_name(name, out)."""

@@ -4,22 +4,23 @@
 /*
 topic_probe -- a tiny diagnostic topic subscriber (a minimal stand-in for TAP).
 
-It connects to a publisher's topic port (e.g. the MEP), subscribes to one topic
-over the data channel using the reusable pubsub_itc_fw::TopicSubscriberThread,
-and prints each record it receives to stdout. Use it to watch orders / execution
+It connects to a publisher (e.g. the MEP) and subscribes to one or more topics over
+the data channel using the reusable pubsub_itc_fw::TopicSubscriberThread -- one
+subscription per topic, each on that topic's port -- and prints each record it
+receives to stdout, tagged with its topic name. Use it to watch orders / execution
 reports stream out of the MEP live while driving the Java fix-test-client.
 
 Usage:
-  topic_probe <topic_name> [host] [port] [from_seq_no]
+  topic_probe [--topics=a,b,... | all] [--host H] [--from-seq-no N]
 
-  topic_name   orders | execution_reports (any recognised topic)
-  host         default 127.0.0.1
-  port         default by topic: orders -> 11040, execution_reports -> 11041
-               (the MEP primary's deployed ports; override for the secondary)
-  from_seq_no  default 0 -- replay everything the publisher still retains, then
-               stream live. Give a higher number to start nearer the head.
+  --topics      comma-separated topic names, or 'all' (the default) for every topic
+                the generated registry knows. Names: orders, execution_reports.
+  --host        default 127.0.0.1
+  --from-seq-no default 0 -- replay everything each publisher still retains, then
+                stream live. Give a higher number to start nearer the head.
 
-Stop with Ctrl-C. If the publisher instance is a follower it answers
+Ports are the MEP primary's deployed defaults (orders -> 11040, execution_reports ->
+11041). Stop with Ctrl-C. If the publisher instance is a follower it answers
 TopicNotLeader; point the probe at the leader instance's port instead.
 */
 
@@ -31,12 +32,14 @@ TopicNotLeader; point the probe at the leader instance's port instead.
 #include <iostream>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <unistd.h>
 
 #include <argparse/argparse.hpp>
 
 #include <fix_orders.hpp>
+#include <topics_registry.hpp>
 
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThread.hpp>
@@ -152,13 +155,16 @@ void print_record(const std::string& topic_name, int64_t seq_no, int16_t pdu_id,
     std::fflush(stdout);
 }
 
-// Subscriber thread: one data-channel subscription to one topic.
+// Subscriber thread: one data-channel subscription to one topic. Each probed topic gets
+// its own ProbeThread (distinct ThreadID) and its own service registry entry (keyed by the
+// topic name) pointing at that topic's port, so one probe can watch several topics at once.
 class ProbeThread : public pubsub_itc_fw::TopicSubscriberThread {
   public:
-    ProbeThread(ConstructorToken token, pubsub_itc_fw::QuillLogger& logger, pubsub_itc_fw::Reactor& reactor, std::string topic_name, int64_t from_seq_no)
-        : TopicSubscriberThread(token, logger, reactor, "ProbeThread", pubsub_itc_fw::ThreadID{1}, make_queue_config(), make_allocator_config(),
-                                pubsub_itc_fw::ApplicationThreadConfiguration{}, "publisher", "probe-" + topic_name + "-" + std::to_string(::getpid()),
-                                topic_name, from_seq_no) {}
+    ProbeThread(ConstructorToken token, pubsub_itc_fw::QuillLogger& logger, pubsub_itc_fw::Reactor& reactor, std::string topic_name,
+                pubsub_itc_fw::ThreadID thread_id, int64_t from_seq_no)
+        : TopicSubscriberThread(token, logger, reactor, "ProbeThread-" + topic_name, thread_id, make_queue_config(), make_allocator_config(),
+                                pubsub_itc_fw::ApplicationThreadConfiguration{}, topic_name /* service name = topic name */,
+                                "probe-" + topic_name + "-" + std::to_string(::getpid()), topic_name, from_seq_no) {}
 
   protected:
     void on_pubsub_message(const pubsub_itc_fw::EventMessage& message) override {
@@ -188,6 +194,46 @@ int default_port_for_topic(const std::string& topic_name) {
     return 0;
 }
 
+// Resolve the --topics value ("all" or a comma-separated list) to a list of topic names.
+// "all" expands to every topic in the generated registry, so new topics are covered
+// automatically. Unknown names are rejected. Returns an empty list on error (message
+// already printed).
+std::vector<std::string> resolve_topics(const std::string& topics_arg) {
+    std::vector<std::string> topics;
+    if (topics_arg == "all") {
+        for (const app::Topic topic : app::all_topics) {
+            topics.emplace_back(app::to_string(topic));
+        }
+        return topics;
+    }
+    size_t start = 0;
+    while (start <= topics_arg.size()) {
+        const size_t comma = topics_arg.find(',', start);
+        const size_t end = comma == std::string::npos ? topics_arg.size() : comma;
+        std::string name = topics_arg.substr(start, end - start);
+        // Trim surrounding whitespace so "orders, execution_reports" works.
+        const size_t first = name.find_first_not_of(" \t");
+        const size_t last = name.find_last_not_of(" \t");
+        name = first == std::string::npos ? std::string() : name.substr(first, last - first + 1);
+        if (!name.empty()) {
+            app::Topic topic{};
+            if (!app::topic_from_name(name, topic)) {
+                std::cerr << "topic_probe: unknown topic '" << name << "' (use --topics=all or a comma-separated list)\n";
+                return {};
+            }
+            topics.push_back(name);
+        }
+        if (comma == std::string::npos) {
+            break;
+        }
+        start = comma + 1;
+    }
+    if (topics.empty()) {
+        std::cerr << "topic_probe: no topics given in --topics\n";
+    }
+    return topics;
+}
+
 } // un-named namespace
 } // namespaces
 
@@ -195,10 +241,11 @@ int main(int argc, char** argv) {
     using namespace topic_probe;
 
     argparse::ArgumentParser program("topic_probe");
-    program.add_description("Subscribe to one topic on a publisher (e.g. the MEP) and print each record.");
-    program.add_argument("topic").help("topic name: orders | execution_reports (any recognised topic)");
+    program.add_description("Subscribe to one or more publisher topics (default: all) and print each record.");
+    program.add_argument("--topics")
+        .default_value(std::string("all"))
+        .help("comma-separated topic names, or 'all' (default) for every known topic: orders, execution_reports");
     program.add_argument("--host").default_value(std::string("127.0.0.1")).help("publisher host");
-    program.add_argument("--port").scan<'i', int>().help("publisher port (default by topic: orders=11040, execution_reports=11041)");
     program.add_argument("--from-seq-no")
         .scan<'i', long long>()
         .default_value(0LL)
@@ -211,29 +258,47 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    const std::string topic_name = program.get<std::string>("topic");
     const std::string host = program.get<std::string>("--host");
-    const int port = program.present<int>("--port").value_or(default_port_for_topic(topic_name));
     const int64_t from_seq_no = static_cast<int64_t>(program.get<long long>("--from-seq-no"));
 
-    if (port <= 0) {
-        std::cerr << "topic_probe: no default port for topic '" << topic_name << "'; pass --port explicitly.\n";
-        return 1;
+    const std::vector<std::string> topics = resolve_topics(program.get<std::string>("--topics"));
+    if (topics.empty()) {
+        return 1; // resolve_topics printed the reason
+    }
+    for (const std::string& topic_name : topics) {
+        if (default_port_for_topic(topic_name) <= 0) {
+            std::cerr << "topic_probe: no known port for topic '" << topic_name << "'.\n";
+            return 1;
+        }
     }
 
-    std::printf("topic_probe: subscribing to '%s' at %s:%d from seq_no=%lld (Ctrl-C to stop)\n", topic_name.c_str(), host.c_str(), port,
-                static_cast<long long>(from_seq_no));
+    // Report exactly which topics (and ports) this probe is subscribing to.
+    std::printf("topic_probe: subscribing to %zu topic(s) from seq_no=%lld (Ctrl-C to stop):\n", topics.size(), static_cast<long long>(from_seq_no));
+    for (const std::string& topic_name : topics) {
+        std::printf("  - %s (%s:%d)\n", topic_name.c_str(), host.c_str(), default_port_for_topic(topic_name));
+    }
     std::fflush(stdout);
 
     pubsub_itc_fw::QuillLogger::block_signals_before_construction();
     pubsub_itc_fw::QuillLogger logger(pubsub_itc_fw::FwLogLevel::Warning, [](const std::string&) {});
 
+    // One service registry entry and one ProbeThread per topic. The service is keyed by the
+    // topic name (each ProbeThread connects to its own), pointing at that topic's port.
     pubsub_itc_fw::ServiceRegistry registry;
-    registry.add("publisher", pubsub_itc_fw::NetworkEndpointConfiguration{host, static_cast<uint16_t>(port)}, pubsub_itc_fw::NetworkEndpointConfiguration{});
+    for (const std::string& topic_name : topics) {
+        registry.add(topic_name, pubsub_itc_fw::NetworkEndpointConfiguration{host, static_cast<uint16_t>(default_port_for_topic(topic_name))},
+                     pubsub_itc_fw::NetworkEndpointConfiguration{});
+    }
 
     pubsub_itc_fw::Reactor reactor(make_reactor_config(), registry, logger);
-    auto thread = pubsub_itc_fw::ApplicationThread::create<ProbeThread>(logger, reactor, topic_name, from_seq_no);
-    reactor.register_thread(thread);
+    std::vector<std::shared_ptr<ProbeThread>> threads;
+    int thread_number = pubsub_itc_fw::system_thread_id_value + 1; // thread ids start at 1 (0 is the system thread)
+    for (const std::string& topic_name : topics) {
+        auto thread = pubsub_itc_fw::ApplicationThread::create<ProbeThread>(logger, reactor, topic_name, pubsub_itc_fw::ThreadID{thread_number}, from_seq_no);
+        reactor.register_thread(thread);
+        threads.push_back(thread);
+        ++thread_number;
+    }
 
     return reactor.run();
 }

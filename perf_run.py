@@ -369,6 +369,7 @@ def generate_reports(app_names: list[str], perf_dir: Path) -> None:
                 ["perf", "report", "-i", str(data), "--stdio", "--no-children"],
                 capture_output=True, text=True,
             )
+
             print(result.stdout)
             report_fh.write(result.stdout + "\n")
 
