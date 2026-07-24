@@ -55,6 +55,52 @@ void echo_underlyings(const pubsub_itc_fw_app::ListView<pubsub_itc_fw_app::Under
     destination.size = source.size;
 }
 
+// Echo the NoPartyIDs group (with its nested NoPartySubIDs) from the decoded
+// NewOrderSingle onto its ExecutionReport, mirroring echo_underlyings. PartyIDs carries
+// a nested list, so the copy descends one level; all element arrays come from @p arena
+// and the string_views point into the NOS payload -- both must outlive the ER encode.
+void echo_parties(const pubsub_itc_fw_app::ListView<pubsub_itc_fw_app::PartyIDsView>& source, pubsub_itc_fw::BumpAllocator& arena,
+                  pubsub_itc_fw_app::ListView<pubsub_itc_fw_app::PartyIDs>& destination) {
+    if (source.size == 0) {
+        return;
+    }
+    auto* elements = arena.allocate<pubsub_itc_fw_app::PartyIDs>(source.size);
+    if (elements == nullptr) {
+        return; // arena exhausted: leave the ER group empty rather than emit a partial one
+    }
+    for (size_t index = 0; index < source.size; ++index) {
+        const pubsub_itc_fw_app::PartyIDsView& in = source.data[index];
+        pubsub_itc_fw_app::PartyIDs& out = elements[index];
+        out = pubsub_itc_fw_app::PartyIDs{};
+        out.has_party_id = in.has_party_id;
+        out.party_id = in.party_id;
+        out.has_party_id_source = in.has_party_id_source;
+        out.party_id_source = in.party_id_source;
+        out.has_party_role = in.has_party_role;
+        out.party_role = in.party_role;
+        if (in.no_party_sub_i_ds.size == 0) {
+            continue;
+        }
+        auto* sub_elements = arena.allocate<pubsub_itc_fw_app::PartySubIDs>(in.no_party_sub_i_ds.size);
+        if (sub_elements == nullptr) {
+            continue; // arena exhausted: emit the party without its sub-ids
+        }
+        for (size_t sub = 0; sub < in.no_party_sub_i_ds.size; ++sub) {
+            const pubsub_itc_fw_app::PartySubIDsView& sub_in = in.no_party_sub_i_ds.data[sub];
+            pubsub_itc_fw_app::PartySubIDs& sub_out = sub_elements[sub];
+            sub_out = pubsub_itc_fw_app::PartySubIDs{};
+            sub_out.has_party_sub_id = sub_in.has_party_sub_id;
+            sub_out.party_sub_id = sub_in.party_sub_id;
+            sub_out.has_party_sub_id_type = sub_in.has_party_sub_id_type;
+            sub_out.party_sub_id_type = sub_in.party_sub_id_type;
+        }
+        out.no_party_sub_i_ds.data = sub_elements;
+        out.no_party_sub_i_ds.size = in.no_party_sub_i_ds.size;
+    }
+    destination.data = elements;
+    destination.size = source.size;
+}
+
 pubsub_itc_fw::QueueConfiguration make_queue_config() {
     pubsub_itc_fw::QueueConfiguration queue_configuration{};
     queue_configuration.low_watermark = 1;
@@ -428,13 +474,14 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
         er.price = view.price;
     }
 
-    // Echo the order's NoUnderlyings group back on the acknowledgement so downstream
-    // topic subscribers see the instrument legs the client sent. The element array lives
-    // in this call-scoped arena; its string_views point into the still-live NOS payload,
-    // and send_er_to_sequencer encodes synchronously below.
-    std::array<uint8_t, 4096> underlyings_arena_buffer;
-    pubsub_itc_fw::BumpAllocator underlyings_arena(underlyings_arena_buffer.data(), underlyings_arena_buffer.size());
-    echo_underlyings(view.no_underlyings, underlyings_arena, er.no_underlyings);
+    // Echo the order's NoUnderlyings and NoPartyIDs groups back on the acknowledgement so
+    // downstream topic subscribers see the instrument legs and parties the client sent. The
+    // element arrays live in this call-scoped arena; their string_views point into the
+    // still-live NOS payload, and send_er_to_sequencer encodes synchronously below.
+    std::array<uint8_t, 4096> group_arena_buffer;
+    pubsub_itc_fw::BumpAllocator group_arena(group_arena_buffer.data(), group_arena_buffer.size());
+    echo_underlyings(view.no_underlyings, group_arena, er.no_underlyings);
+    echo_parties(view.no_party_i_ds, group_arena, er.no_party_i_ds);
 
     send_er_to_sequencer(er, sequence_number);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: accepted NOS OrderID={} ExecID={} ClOrdID={} book_size={}", order_id,
