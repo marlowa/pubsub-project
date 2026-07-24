@@ -8,6 +8,7 @@
          Pico (classless) loads after to style the new order form's bare elements. -->
     <link rel="stylesheet" href="/style.css">
     <link rel="stylesheet" href="/pico.classless.min.css">
+    <link rel="stylesheet" href="/overrides.css">
     <style>
         /* The quick-order bar stays pinned just below the 62px fixed chrome so Send is
            always reachable however far the rest of the form is scrolled. */
@@ -173,8 +174,8 @@
                     <th></th>
                     <th>Time</th><th>Dir</th><th>Seq</th><th>ClOrdID</th><th>OrigClOrdID</th>
                     <th>OrderID</th><th>ExecID</th><th>ExecType</th><th>OrdStatus</th><th>Reason</th>
-                    <th>Symbol</th><th>Side</th><th>OrdQty</th><th>Price</th><th>OrdType</th>
-                    <th>CumQty</th><th>LeavesQty</th>
+                    <th>SecurityID</th><th>Symbol</th><th>Side</th><th>OrdQty</th><th>Price</th><th>OrdType</th>
+                    <th>CumQty</th><th>LeavesQty</th><th>Parties</th><th>Underlyings</th>
                 </tr>
             </thead>
             <tbody id="blotter-body"></tbody>
@@ -363,9 +364,10 @@ function renderBlotter(rows) {
             EXEC_TYPE_LABEL[row.execType] || row.execType,
             ORD_STATUS_LABEL[row.ordStatus] || row.ordStatus,
             rejectionReason(row),
-            row.symbol, row.side,
+            row.securityId, row.symbol, row.side,
             row.ordQty, row.price, row.ordType,
             row.cumQty, row.leavesQty,
+            row.parties, row.underlyings,
         ];
         for (const val of cells) {
             const td = document.createElement('td');

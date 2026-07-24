@@ -318,6 +318,7 @@ public class MessagesHandler {
             map.put("ordStatus", row.ordStatus());
             map.put("ordRejReason", row.ordRejReason());
             map.put("cxlRejReason", row.cxlRejReason());
+            map.put("securityId", row.securityId());
             map.put("symbol", row.symbol());
             map.put("side", row.side());
             map.put("ordQty", row.ordQty());
@@ -325,6 +326,8 @@ public class MessagesHandler {
             map.put("ordType", row.ordType());
             map.put("cumQty", row.cumQty());
             map.put("leavesQty", row.leavesQty());
+            map.put("parties", row.parties());
+            map.put("underlyings", row.underlyings());
             result.add(map);
         }
         ctx.json(result);

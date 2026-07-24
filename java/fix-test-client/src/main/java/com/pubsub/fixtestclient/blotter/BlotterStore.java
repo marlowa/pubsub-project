@@ -1,6 +1,8 @@
 package com.pubsub.fixtestclient.blotter;
 
+import quickfix.FieldMap;
 import quickfix.FieldNotFound;
+import quickfix.Group;
 import quickfix.Message;
 import quickfix.field.ClOrdID;
 import quickfix.field.CumQty;
@@ -10,15 +12,24 @@ import quickfix.field.LeavesQty;
 import quickfix.field.MsgSeqNum;
 
 import quickfix.field.CxlRejReason;
+import quickfix.field.NoPartyIDs;
+import quickfix.field.NoUnderlyings;
 import quickfix.field.OrderID;
 import quickfix.field.OrderQty;
 import quickfix.field.OrigClOrdID;
 import quickfix.field.OrdRejReason;
 import quickfix.field.OrdStatus;
 import quickfix.field.OrdType;
+import quickfix.field.PartyID;
+import quickfix.field.PartyIDSource;
+import quickfix.field.PartyRole;
 import quickfix.field.Price;
+import quickfix.field.SecurityID;
 import quickfix.field.Side;
 import quickfix.field.Symbol;
+import quickfix.field.UnderlyingQty;
+import quickfix.field.UnderlyingSecurityID;
+import quickfix.field.UnderlyingSymbol;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -61,35 +72,69 @@ public class BlotterStore {
                 getChar(message, OrdStatus.FIELD),
                 getString(message, OrdRejReason.FIELD),
                 getString(message, CxlRejReason.FIELD),
+                getString(message, SecurityID.FIELD),
                 getString(message, Symbol.FIELD),
                 getChar(message, Side.FIELD),
                 getDecimal(message, OrderQty.FIELD),
                 getDecimal(message, Price.FIELD),
                 getChar(message, OrdType.FIELD),
                 getDecimal(message, CumQty.FIELD),
-                getDecimal(message, LeavesQty.FIELD)
+                getDecimal(message, LeavesQty.FIELD),
+                summarizeParties(message),
+                summarizeUnderlyings(message)
         );
     }
 
-    private String getString(Message message, int tag) {
+    // Repeating groups are rendered as a compact one-line summary per row (the topic
+    // probe carries the full detail). A NewOrderSingle carries both groups; an echoed
+    // ExecutionReport carries NoUnderlyings.
+
+    private String summarizeParties(Message message) {
+        List<String> parts = new ArrayList<>();
+        for (Group group : message.getGroups(NoPartyIDs.FIELD)) {
+            String id = getString(group, PartyID.FIELD);
+            String source = getChar(group, PartyIDSource.FIELD);
+            String role = getString(group, PartyRole.FIELD);
+            parts.add(id + slash(source) + slash(role));
+        }
+        return String.join(", ", parts);
+    }
+
+    private String summarizeUnderlyings(Message message) {
+        List<String> parts = new ArrayList<>();
+        for (Group group : message.getGroups(NoUnderlyings.FIELD)) {
+            String symbol = getString(group, UnderlyingSymbol.FIELD);
+            String securityId = getString(group, UnderlyingSecurityID.FIELD);
+            String qty = getDecimal(group, UnderlyingQty.FIELD);
+            String base = symbol.isEmpty() ? securityId : symbol;
+            parts.add(base + slash(qty));
+        }
+        return String.join(", ", parts);
+    }
+
+    private static String slash(String value) {
+        return value.isEmpty() ? "" : "/" + value;
+    }
+
+    private String getString(FieldMap map, int tag) {
         try {
-            return message.getString(tag);
+            return map.getString(tag);
         } catch (FieldNotFound e) {
             return "";
         }
     }
 
-    private String getChar(Message message, int tag) {
+    private String getChar(FieldMap map, int tag) {
         try {
-            return String.valueOf(message.getChar(tag));
+            return String.valueOf(map.getChar(tag));
         } catch (FieldNotFound e) {
             return "";
         }
     }
 
-    private String getDecimal(Message message, int tag) {
+    private String getDecimal(FieldMap map, int tag) {
         try {
-            return message.getDecimal(tag).toPlainString();
+            return map.getDecimal(tag).toPlainString();
         } catch (FieldNotFound e) {
             return "";
         }

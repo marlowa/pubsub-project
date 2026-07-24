@@ -15,12 +15,15 @@ public record BlotterRow(
         String ordStatus,
         String ordRejReason,
         String cxlRejReason,
+        String securityId,
         String symbol,
         String side,
         String ordQty,
         String price,
         String ordType,
         String cumQty,
-        String leavesQty
+        String leavesQty,
+        String parties,
+        String underlyings
 ) {
 }

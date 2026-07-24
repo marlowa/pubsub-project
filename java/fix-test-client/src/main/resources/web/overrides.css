@@ -1,0 +1,13 @@
+/* Shared tweaks layered on top of Pico (this file is loaded last on every page).
+   Pico's classless defaults size buttons for touch; this is a dense FIX dev tool, so
+   keep the interactive controls compact. */
+
+button,
+input[type="submit"],
+input[type="button"],
+input[type="reset"] {
+    width: auto;              /* content-width, not stretched to the container */
+    margin-bottom: 0;
+    padding: 0.3rem 0.75rem;
+    font-size: 0.82rem;
+}
