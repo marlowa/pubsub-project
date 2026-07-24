@@ -8,6 +8,7 @@
 #include <string_view>
 
 #include <fix_codec/FixField.hpp>
+#include <fix_codec/FixGroupWalker.hpp>
 #include <fix_codec/FixMessageReader.hpp>
 #include <fix_codec/FixReject.hpp>
 #include <fix_codec/fix_dictionary.hpp>
@@ -97,11 +98,13 @@ class FixMessageValidator {
             if (group >= 0) {
                 const FixField counter = field; // copy before advancing: field aliases the iterator's storage
                 ++it;
-                const FixReject group_reject = parse_group(group_at(group), counter, type, it, end, 0);
-                if (!group_reject.ok()) {
-                    return group_reject;
+                GroupValidationVisitor visitor;
+                visitor.type = type;
+                visitor.counter_value[0] = counter.value;
+                if (!walk_repeating_group(group_at(group), parse_num_in_group(counter.value), it, end, 0, visitor)) {
+                    return visitor.reject; // the walker left `it` at the first field beyond the group
                 }
-                continue; // parse_group left `it` at the first field beyond the group
+                continue;
             }
             ++it;
         }
@@ -198,11 +201,6 @@ class FixMessageValidator {
         return probe.as_utc_timestamp_ns(INT64_MIN) != INT64_MIN || probe.as_utc_timestamp_ns(INT64_MIN + 1) != INT64_MIN + 1;
     }
 
-    // Guards against a pathological (cyclic) dictionary; real FIX group nesting is
-    // only a few levels deep. Beyond this, a nested counter is treated as a plain
-    // field rather than recursed, bounding stack use.
-    static constexpr int max_group_depth = 16;
-
     /** @brief Data-format then enum-membership check for one field, by dense index. */
     static FixReject check_field_semantics(int dense_index, int tag, const FixField& field, std::string_view type) {
         const FixReject format_reject = check_format(dense_index, tag, field, type);
@@ -215,122 +213,80 @@ class FixMessageValidator {
         return FixReject{};
     }
 
-    /** @brief Index of @p tag within a group body, or -1 if it is not a member. */
-    static int group_member_index(const group_def& def, int tag) {
-        for (size_t member = 0; member < def.member_count; ++member) {
-            if (def.members[member].tag == tag) {
-                return static_cast<int>(member);
-            }
-        }
-        return -1;
-    }
-
-    /** @brief Non-negative NUMINGROUP count from a (format-validated) integer value. */
-    static int parse_num_in_group(std::string_view text) {
-        int value = 0;
-        for (const char character : text) {
-            if (character < '0' || character > '9') {
-                continue; // skip a leading sign; the field was already format-checked
-            }
-            value = value * 10 + (character - '0');
-        }
-        return value;
-    }
-
-    /** @brief Every required member of @p def must be present in the just-closed instance. */
-    static FixReject check_instance_required(const group_def& def, const int* instance_seen, size_t instance_count, std::string_view type) {
-        if (instance_count >= max_tracked_tags) {
-            return FixReject{}; // instance too large to have tracked -- skip, as the top-level walk does
-        }
-        for (size_t member = 0; member < def.member_count; ++member) {
-            if (!def.members[member].required) {
-                continue;
-            }
-            if (!contains(instance_seen, instance_count, def.members[member].tag)) {
-                return FixReject{RejectReason::RequiredTagMissing, def.members[member].tag, type, {}};
-            }
-        }
-        return FixReject{};
-    }
-
     /**
-     * @brief Validate the instances of one repeating group.
+     * @brief walk_repeating_group visitor applying the per-instance validation rules:
+     *        duplicate detection, required members, and declared-vs-actual count.
      *
-     * On entry @p it points at the first field after the NUMINGROUP counter; on
-     * return it points at the first field that is not part of this group. Each
-     * instance begins with @c def.delimiter_tag; within an instance every member
-     * tag is unique, format/enum checked, and required members must be present, and
-     * a nested-group counter recurses. Finally the declared count (@p counter_field)
-     * must equal the number of instances actually seen.
+     * One visitor drives every nesting level of a group, so its per-instance scope
+     * (seen tags, their count, and the counter value for the reject text) is indexed by
+     * the walk depth. The mechanical descent -- instance boundaries, nested recursion,
+     * consuming beyond the group -- lives in fix_codec::walk_repeating_group.
      */
-    static FixReject parse_group(const group_def& def, const FixField& counter_field, std::string_view type, FixMessageReader::const_iterator& it,
-                                 const FixMessageReader::const_iterator& end, int depth) {
-        const int declared = parse_num_in_group(counter_field.value);
+    struct GroupValidationVisitor {
+        std::string_view type{};
+        FixReject reject{};
+        int instance_seen[max_group_depth + 1][max_tracked_tags]; // written before read; intentionally not zero-initialised
+        size_t instance_count[max_group_depth + 1]{};
+        std::string_view counter_value[max_group_depth + 1]{};
 
-        int instance_seen[max_tracked_tags];
-        size_t instance_count = 0;
-        int instances = 0;
+        void enter_instance(int depth, const group_def& /*def*/, size_t /*index*/) {
+            instance_count[depth] = 0;
+        }
 
-        while (it != end) {
-            const FixField& field = *it;
-            const int tag = field.tag;
-            const int member = group_member_index(def, tag);
-            if (member < 0) {
-                break; // not a member of this group -> the group has ended
+        bool field(int depth, const group_def& /*def*/, size_t /*index*/, int /*member*/, const FixField& value) {
+            int* const seen = instance_seen[depth];
+            size_t& count = instance_count[depth];
+            if (contains(seen, count, value.tag)) {
+                reject = FixReject{RejectReason::TagAppearsMoreThanOnce, value.tag, type, {}};
+                return false;
             }
-
-            if (tag == def.delimiter_tag) {
-                // A new instance begins. Close the previous instance's required check.
-                if (instances > 0) {
-                    const FixReject missing = check_instance_required(def, instance_seen, instance_count, type);
-                    if (!missing.ok()) {
-                        return missing;
-                    }
-                }
-                ++instances;
-                instance_count = 0;
-            } else if (instances == 0) {
-                // A non-empty group instance must begin with its delimiter tag.
-                return FixReject{RejectReason::RequiredTagMissing, def.delimiter_tag, type, {}};
+            if (count < max_tracked_tags) {
+                seen[count++] = value.tag;
             }
-
-            if (contains(instance_seen, instance_count, tag)) {
-                return FixReject{RejectReason::TagAppearsMoreThanOnce, tag, type, {}};
-            }
-            if (instance_count < max_tracked_tags) {
-                instance_seen[instance_count++] = tag;
-            }
-
-            const int index = field_index(tag);
-            const FixReject semantic = check_field_semantics(index, tag, field, type);
+            const FixReject semantic = check_field_semantics(field_index(value.tag), value.tag, value, type);
             if (!semantic.ok()) {
-                return semantic;
+                reject = semantic;
+                return false;
             }
+            return true;
+        }
 
-            const int nested = def.members[static_cast<size_t>(member)].nested_group;
-            if (nested >= 0 && depth < max_group_depth) {
-                const FixField nested_counter = field; // copy before advancing: field aliases the iterator's storage
-                ++it;
-                const FixReject nested_reject = parse_group(group_at(nested), nested_counter, type, it, end, depth + 1);
-                if (!nested_reject.ok()) {
-                    return nested_reject;
+        bool orphan_field(int /*depth*/, const group_def& def, const FixField& /*value*/) {
+            // A non-empty group instance must begin with its delimiter tag.
+            reject = FixReject{RejectReason::RequiredTagMissing, def.delimiter_tag, type, {}};
+            return false;
+        }
+
+        bool enter_nested(int depth, const group_def& /*def*/, size_t /*index*/, const FixField& counter, const group_def& /*nested*/) {
+            counter_value[depth + 1] = counter.value; // for the nested group's IncorrectNumInGroupCount text
+            return true;                              // always descend to validate the nested group
+        }
+
+        bool leave_instance(int depth, const group_def& def, size_t /*index*/) {
+            // Every required member must be present in the just-closed instance.
+            if (instance_count[depth] >= max_tracked_tags) {
+                return true; // instance too large to have tracked -- skip, as the top-level walk does
+            }
+            for (size_t member = 0; member < def.member_count; ++member) {
+                if (!def.members[member].required) {
+                    continue;
                 }
-                continue; // parse_group left `it` at the first field beyond the nested group
+                if (!contains(instance_seen[depth], instance_count[depth], def.members[member].tag)) {
+                    reject = FixReject{RejectReason::RequiredTagMissing, def.members[member].tag, type, {}};
+                    return false;
+                }
             }
-            ++it;
+            return true;
         }
 
-        if (instances > 0) {
-            const FixReject missing = check_instance_required(def, instance_seen, instance_count, type);
-            if (!missing.ok()) {
-                return missing;
+        bool leave_group(int depth, const group_def& def, size_t instances, int declared) {
+            if (static_cast<int>(instances) != declared) {
+                reject = FixReject{RejectReason::IncorrectNumInGroupCount, def.counter_tag, type, counter_value[depth]};
+                return false;
             }
+            return true;
         }
-        if (instances != declared) {
-            return FixReject{RejectReason::IncorrectNumInGroupCount, def.counter_tag, type, counter_field.value};
-        }
-        return FixReject{};
-    }
+    };
 
     const FixMessageReader& reader_;
 };
