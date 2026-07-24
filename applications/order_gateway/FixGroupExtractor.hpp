@@ -112,7 +112,10 @@ inline void extract_party_sub_ids(const fix_codec::group_def& def, int declared,
     size_t count = 0;
     pubsub_itc_fw_app::PartySubIDs* current = nullptr;
     while (it != end) {
-        const fix_codec::FixField& field = *it;
+        // Copy, not reference: *it aliases the iterator's internal FixField, which ++it
+        // overwrites. The captured tag/value (the value_view points into the stable message
+        // buffer, not the iterator) must stay valid across the advance below.
+        const fix_codec::FixField field = *it;
         const int member = group_member_index(def, field.tag);
         if (member < 0) {
             break; // group ended
@@ -169,7 +172,9 @@ inline void extract_party_ids(int declared, const_iterator& it, const const_iter
     size_t count = 0;
     pubsub_itc_fw_app::PartyIDs* current = nullptr;
     while (it != end) {
-        const fix_codec::FixField& field = *it;
+        // Copy, not reference: *it aliases the iterator's internal FixField, which ++it
+        // overwrites (see extract_party_sub_ids).
+        const fix_codec::FixField field = *it;
         const int member = group_member_index(def, field.tag);
         if (member < 0) {
             break; // group ended
@@ -234,7 +239,9 @@ inline void extract_underlyings(int declared, const_iterator& it, const const_it
     size_t count = 0;
     pubsub_itc_fw_app::Underlyings* current = nullptr;
     while (it != end) {
-        const fix_codec::FixField& field = *it;
+        // Copy, not reference: *it aliases the iterator's internal FixField, which ++it
+        // overwrites (see extract_party_sub_ids).
+        const fix_codec::FixField field = *it;
         const int member = group_member_index(def, field.tag);
         if (member < 0) {
             break; // group ended
