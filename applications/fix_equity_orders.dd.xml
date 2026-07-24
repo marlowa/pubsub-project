@@ -1,0 +1,513 @@
+<fix major="5" minor="0" servicepack="2">
+  <fields>
+    <field number="1" name="Account" type="STRING"/>
+    <field number="6" name="AvgPx" type="PRICE"/>
+    <field number="11" name="ClOrdID" type="STRING"/>
+    <field number="14" name="CumQty" type="QTY"/>
+    <field number="17" name="ExecID" type="STRING"/>
+    <field number="22" name="SecurityIDSource" type="STRING">
+      <value enum="1" description="CUSIP"/>
+      <value enum="2" description="SEDOL"/>
+      <value enum="3" description="QUIK"/>
+      <value enum="4" description="ISIN_NUMBER"/>
+      <value enum="5" description="RIC_CODE"/>
+      <value enum="6" description="ISO_CURRENCY_CODE"/>
+      <value enum="7" description="ISO_COUNTRY_CODE"/>
+      <value enum="8" description="EXCHANGE_SYMBOL"/>
+      <value enum="9" description="CONSOLIDATED_TAPE_ASSOCIATION"/>
+      <value enum="A" description="BLOOMBERG_SYMBOL"/>
+      <value enum="B" description="WERTPAPIER"/>
+      <value enum="C" description="DUTCH"/>
+      <value enum="D" description="VALOREN"/>
+      <value enum="E" description="SICOVAM"/>
+      <value enum="F" description="BELGIAN"/>
+      <value enum="G" description="COMMON"/>
+      <value enum="H" description="CLEARING_HOUSE"/>
+      <value enum="I" description="ISDA_FP_ML_SPECIFICATION"/>
+      <value enum="J" description="OPTION_PRICE_REPORTING_AUTHORITY"/>
+      <value enum="K" description="ISDA_FP_MLURL"/>
+      <value enum="L" description="LETTER_OF_CREDIT"/>
+      <value enum="M" description="MARKETPLACE_ASSIGNED_IDENTIFIER"/>
+      <value enum="N" description="MARKIT_RED_ENTITY_CLIP"/>
+      <value enum="P" description="MARKIT_RED_PAIR_CLIP"/>
+      <value enum="Q" description="CFTC_COMMODITY_CODE"/>
+      <value enum="R" description="ISDA_COMMODITY_REFERENCE_PRICE"/>
+      <value enum="S" description="FINANCIAL_INSTRUMENT_GLOBAL_IDENTIFIER"/>
+      <value enum="T" description="LEGAL_ENTITY_IDENTIFIER"/>
+      <value enum="U" description="SYNTHETIC"/>
+      <value enum="V" description="FIDESSA_INSTRUMENT_MNEMONIC"/>
+      <value enum="W" description="INDEX_NAME"/>
+      <value enum="X" description="UNIFORM_SYMBOL"/>
+      <value enum="Y" description="DIGITAL_TOKEN_IDENTIFIER"/>
+    </field>
+    <field number="31" name="LastPx" type="PRICE"/>
+    <field number="32" name="LastQty" type="QTY"/>
+    <field number="37" name="OrderID" type="STRING"/>
+    <field number="38" name="OrderQty" type="QTY"/>
+    <field number="39" name="OrdStatus" type="CHAR">
+      <value enum="0" description="NEW"/>
+      <value enum="1" description="PARTIALLY_FILLED"/>
+      <value enum="2" description="FILLED"/>
+      <value enum="3" description="DONE_FOR_DAY"/>
+      <value enum="4" description="CANCELED"/>
+      <value enum="5" description="REPLACED"/>
+      <value enum="6" description="PENDING_CANCEL"/>
+      <value enum="7" description="STOPPED"/>
+      <value enum="8" description="REJECTED"/>
+      <value enum="9" description="SUSPENDED"/>
+      <value enum="A" description="PENDING_NEW"/>
+      <value enum="B" description="CALCULATED"/>
+      <value enum="C" description="EXPIRED"/>
+      <value enum="D" description="ACCEPTED_FOR_BIDDING"/>
+      <value enum="E" description="PENDING_REPLACE"/>
+    </field>
+    <field number="40" name="OrdType" type="CHAR">
+      <value enum="1" description="MARKET"/>
+      <value enum="2" description="LIMIT"/>
+      <value enum="3" description="STOP"/>
+      <value enum="4" description="STOP_LIMIT"/>
+      <value enum="5" description="MARKET_ON_CLOSE"/>
+      <value enum="6" description="WITH_OR_WITHOUT"/>
+      <value enum="7" description="LIMIT_OR_BETTER"/>
+      <value enum="8" description="LIMIT_WITH_OR_WITHOUT"/>
+      <value enum="9" description="ON_BASIS"/>
+      <value enum="A" description="ON_CLOSE"/>
+      <value enum="B" description="LIMIT_ON_CLOSE"/>
+      <value enum="C" description="FOREX_MARKET"/>
+      <value enum="D" description="PREVIOUSLY_QUOTED"/>
+      <value enum="E" description="PREVIOUSLY_INDICATED"/>
+      <value enum="F" description="FOREX_LIMIT"/>
+      <value enum="G" description="FOREX_SWAP"/>
+      <value enum="H" description="FOREX_PREVIOUSLY_QUOTED"/>
+      <value enum="I" description="FUNARI"/>
+      <value enum="J" description="MARKET_IF_TOUCHED"/>
+      <value enum="K" description="MARKET_WITH_LEFT_OVER_AS_LIMIT"/>
+      <value enum="L" description="PREVIOUS_FUND_VALUATION_POINT"/>
+      <value enum="M" description="NEXT_FUND_VALUATION_POINT"/>
+      <value enum="P" description="PEGGED"/>
+      <value enum="Q" description="COUNTER_ORDER_SELECTION"/>
+      <value enum="R" description="STOP_ON_BID_OR_OFFER"/>
+      <value enum="S" description="STOP_LIMIT_ON_BID_OR_OFFER"/>
+    </field>
+    <field number="41" name="OrigClOrdID" type="STRING"/>
+    <field number="44" name="Price" type="PRICE"/>
+    <field number="48" name="SecurityID" type="STRING"/>
+    <field number="54" name="Side" type="CHAR">
+      <value enum="1" description="BUY"/>
+      <value enum="2" description="SELL"/>
+      <value enum="3" description="BUY_MINUS"/>
+      <value enum="4" description="SELL_PLUS"/>
+      <value enum="5" description="SELL_SHORT"/>
+      <value enum="6" description="SELL_SHORT_EXEMPT"/>
+      <value enum="7" description="UNDISCLOSED"/>
+      <value enum="8" description="CROSS"/>
+      <value enum="9" description="CROSS_SHORT"/>
+      <value enum="A" description="CROSS_SHORT_EXEMPT"/>
+      <value enum="B" description="AS_DEFINED"/>
+      <value enum="C" description="OPPOSITE"/>
+      <value enum="D" description="SUBSCRIBE"/>
+      <value enum="E" description="REDEEM"/>
+      <value enum="F" description="LEND"/>
+      <value enum="G" description="BORROW"/>
+      <value enum="H" description="SELL_UNDISCLOSED"/>
+    </field>
+    <field number="55" name="Symbol" type="STRING"/>
+    <field number="58" name="Text" type="STRING"/>
+    <field number="59" name="TimeInForce" type="CHAR">
+      <value enum="0" description="DAY"/>
+      <value enum="1" description="GOOD_TILL_CANCEL"/>
+      <value enum="2" description="AT_THE_OPENING"/>
+      <value enum="3" description="IMMEDIATE_OR_CANCEL"/>
+      <value enum="4" description="FILL_OR_KILL"/>
+      <value enum="5" description="GOOD_TILL_CROSSING"/>
+      <value enum="6" description="GOOD_TILL_DATE"/>
+      <value enum="7" description="AT_THE_CLOSE"/>
+      <value enum="8" description="GOOD_THROUGH_CROSSING"/>
+      <value enum="9" description="AT_CROSSING"/>
+      <value enum="A" description="GOOD_FOR_TIME"/>
+      <value enum="B" description="GOOD_FOR_AUCTION"/>
+      <value enum="C" description="GOOD_FOR_MONTH"/>
+    </field>
+    <field number="60" name="TransactTime" type="UTCTIMESTAMP"/>
+    <field number="103" name="OrdRejReason" type="INT">
+      <value enum="0" description="BROKER_CREDIT"/>
+      <value enum="1" description="UNKNOWN_SYMBOL"/>
+      <value enum="2" description="EXCHANGE_CLOSED"/>
+      <value enum="3" description="ORDER_EXCEEDS_LIMIT"/>
+      <value enum="4" description="TOO_LATE_TO_ENTER"/>
+      <value enum="5" description="UNKNOWN_ORDER"/>
+      <value enum="6" description="DUPLICATE_ORDER"/>
+      <value enum="7" description="DUPLICATE_OF_A_VERBALLY_COMMUNICATED_ORDER"/>
+      <value enum="8" description="STALE_ORDER"/>
+      <value enum="9" description="TRADE_ALONG_REQUIRED"/>
+      <value enum="10" description="INVALID_INVESTOR_ID"/>
+      <value enum="11" description="UNSUPPORTED_ORDER_CHARACTERISTIC"/>
+      <value enum="12" description="SURVEILLANCE_OPTION"/>
+      <value enum="13" description="INCORRECT_QUANTITY"/>
+      <value enum="14" description="INCORRECT_ALLOCATED_QUANTITY"/>
+      <value enum="15" description="UNKNOWN_ACCOUNT"/>
+      <value enum="16" description="PRICE_EXCEEDS_CURRENT_PRICE_BAND"/>
+      <value enum="18" description="INVALID_PRICE_INCREMENT"/>
+      <value enum="19" description="REFERENCE_PRICE_NOT_AVAILABLE"/>
+      <value enum="20" description="NOTIONAL_VALUE_EXCEEDS_THRESHOLD"/>
+      <value enum="21" description="ALGORITHM_RISK_THRESHOLD_BREACHED"/>
+      <value enum="22" description="SHORT_SELL_NOT_PERMITTED"/>
+      <value enum="23" description="SHORT_SELL_SECURITY_PRE_BORROW_RESTRICTION"/>
+      <value enum="24" description="SHORT_SELL_ACCOUNT_PRE_BORROW_RESTRICTION"/>
+      <value enum="25" description="INSUFFICIENT_CREDIT_LIMIT"/>
+      <value enum="26" description="EXCEEDED_CLIP_SIZE_LIMIT"/>
+      <value enum="27" description="EXCEEDED_MAX_NOTIONAL_ORDER_AMT"/>
+      <value enum="28" description="EXCEEDED_DV01_PV01_LIMIT"/>
+      <value enum="29" description="EXCEEDED_CS01_LIMIT"/>
+      <value enum="99" description="OTHER"/>
+    </field>
+    <field number="150" name="ExecType" type="CHAR">
+      <value enum="0" description="NEW"/>
+      <value enum="3" description="DONE_FOR_DAY"/>
+      <value enum="4" description="CANCELED"/>
+      <value enum="5" description="REPLACED"/>
+      <value enum="6" description="PENDING_CANCEL"/>
+      <value enum="7" description="STOPPED"/>
+      <value enum="8" description="REJECTED"/>
+      <value enum="9" description="SUSPENDED"/>
+      <value enum="A" description="PENDING_NEW"/>
+      <value enum="B" description="CALCULATED"/>
+      <value enum="C" description="EXPIRED"/>
+      <value enum="D" description="RESTATED"/>
+      <value enum="E" description="PENDING_REPLACE"/>
+      <value enum="F" description="TRADE"/>
+      <value enum="G" description="TRADE_CORRECT"/>
+      <value enum="H" description="TRADE_CANCEL"/>
+      <value enum="I" description="ORDER_STATUS"/>
+      <value enum="J" description="TRADE_IN_A_CLEARING_HOLD"/>
+      <value enum="K" description="TRADE_HAS_BEEN_RELEASED_TO_CLEARING"/>
+      <value enum="L" description="TRIGGERED_OR_ACTIVATED_BY_SYSTEM"/>
+      <value enum="M" description="LOCKED"/>
+      <value enum="N" description="RELEASED"/>
+    </field>
+    <field number="151" name="LeavesQty" type="QTY"/>
+    <field number="309" name="UnderlyingSecurityID" type="STRING"/>
+    <field number="311" name="UnderlyingSymbol" type="STRING"/>
+    <field number="447" name="PartyIDSource" type="CHAR">
+      <value enum="6" description="UK_NATIONAL_INSURANCE_OR_PENSION_NUMBER"/>
+      <value enum="7" description="US_SOCIAL_SECURITY_NUMBER"/>
+      <value enum="8" description="US_EMPLOYER_OR_TAX_ID_NUMBER"/>
+      <value enum="9" description="AUSTRALIAN_BUSINESS_NUMBER"/>
+      <value enum="A" description="AUSTRALIAN_TAX_FILE_NUMBER"/>
+      <value enum="J" description="TAX_ID"/>
+      <value enum="1" description="KOREAN_INVESTOR_ID"/>
+      <value enum="2" description="TAIWANESE_FOREIGN_INVESTOR_ID"/>
+      <value enum="3" description="TAIWANESE_TRADING_ACCT"/>
+      <value enum="4" description="MALAYSIAN_CENTRAL_DEPOSITORY"/>
+      <value enum="5" description="CHINESE_INVESTOR_ID"/>
+      <value enum="I" description="ISITC_ACRONYM"/>
+      <value enum="B" description="BIC"/>
+      <value enum="C" description="GENERAL_IDENTIFIER"/>
+      <value enum="D" description="PROPRIETARY"/>
+      <value enum="E" description="ISO_COUNTRY_CODE"/>
+      <value enum="F" description="SETTLEMENT_ENTITY_LOCATION"/>
+      <value enum="G" description="MIC"/>
+      <value enum="H" description="CSD_PARTICIPANT"/>
+      <value enum="K" description="AUSTRALIAN_COMPANY_NUMBER"/>
+      <value enum="L" description="AUSTRALIAN_REGISTERED_BODY_NUMBER"/>
+      <value enum="M" description="CFTC_REPORTING_FIRM_IDENTIFIER"/>
+      <value enum="N" description="LEGAL_ENTITY_IDENTIFIER"/>
+      <value enum="O" description="INTERIM_IDENTIFIER"/>
+      <value enum="P" description="SHORT_CODE_IDENTIFIER"/>
+      <value enum="Q" description="NATIONAL_ID_NATURAL_PERSON"/>
+      <value enum="R" description="INDIA_PERMANENT_ACCOUNT_NUMBER"/>
+      <value enum="S" description="FDID"/>
+      <value enum="T" description="SPSAID"/>
+      <value enum="U" description="MASTER_SPSAID"/>
+    </field>
+    <field number="448" name="PartyID" type="STRING"/>
+    <field number="452" name="PartyRole" type="INT">
+      <value enum="1" description="EXECUTING_FIRM"/>
+      <value enum="2" description="BROKER_OF_CREDIT"/>
+      <value enum="3" description="CLIENT_ID"/>
+      <value enum="4" description="CLEARING_FIRM"/>
+      <value enum="5" description="INVESTOR_ID"/>
+      <value enum="6" description="INTRODUCING_FIRM"/>
+      <value enum="7" description="ENTERING_FIRM"/>
+      <value enum="8" description="LOCATE"/>
+      <value enum="9" description="FUND_MANAGER_CLIENT_ID"/>
+      <value enum="10" description="SETTLEMENT_LOCATION"/>
+      <value enum="11" description="ORDER_ORIGINATION_TRADER"/>
+      <value enum="12" description="EXECUTING_TRADER"/>
+      <value enum="13" description="ORDER_ORIGINATION_FIRM"/>
+      <value enum="14" description="GIVEUP_CLEARING_FIRM_DEPR"/>
+      <value enum="15" description="CORRESPONDANT_CLEARING_FIRM"/>
+      <value enum="16" description="EXECUTING_SYSTEM"/>
+      <value enum="17" description="CONTRA_FIRM"/>
+      <value enum="18" description="CONTRA_CLEARING_FIRM"/>
+      <value enum="19" description="SPONSORING_FIRM"/>
+      <value enum="20" description="UNDERLYING_CONTRA_FIRM"/>
+      <value enum="21" description="CLEARING_ORGANIZATION"/>
+      <value enum="22" description="EXCHANGE"/>
+      <value enum="24" description="CUSTOMER_ACCOUNT"/>
+      <value enum="25" description="CORRESPONDENT_CLEARING_ORGANIZATION"/>
+      <value enum="26" description="CORRESPONDENT_BROKER"/>
+      <value enum="27" description="BUYER"/>
+      <value enum="28" description="CUSTODIAN"/>
+      <value enum="29" description="INTERMEDIARY"/>
+      <value enum="30" description="AGENT"/>
+      <value enum="31" description="SUB_CUSTODIAN"/>
+      <value enum="32" description="BENEFICIARY"/>
+      <value enum="33" description="INTERESTED_PARTY"/>
+      <value enum="34" description="REGULATORY_BODY"/>
+      <value enum="35" description="LIQUIDITY_PROVIDER"/>
+      <value enum="36" description="ENTERING_TRADER"/>
+      <value enum="37" description="CONTRA_TRADER"/>
+      <value enum="38" description="POSITION_ACCOUNT"/>
+      <value enum="39" description="CONTRA_INVESTOR_ID"/>
+      <value enum="40" description="TRANSFER_TO_FIRM"/>
+      <value enum="41" description="CONTRA_POSITION_ACCOUNT"/>
+      <value enum="42" description="CONTRA_EXCHANGE"/>
+      <value enum="43" description="INTERNAL_CARRY_ACCOUNT"/>
+      <value enum="44" description="ORDER_ENTRY_OPERATOR_ID"/>
+      <value enum="45" description="SECONDARY_ACCOUNT_NUMBER"/>
+      <value enum="46" description="FOREIGN_FIRM"/>
+      <value enum="47" description="THIRD_PARTY_ALLOCATION_FIRM"/>
+      <value enum="48" description="CLAIMING_ACCOUNT"/>
+      <value enum="49" description="ASSET_MANAGER"/>
+      <value enum="50" description="PLEDGOR_ACCOUNT"/>
+      <value enum="51" description="PLEDGEE_ACCOUNT"/>
+      <value enum="52" description="LARGE_TRADER_REPORTABLE_ACCOUNT"/>
+      <value enum="53" description="TRADER_MNEMONIC"/>
+      <value enum="54" description="SENDER_LOCATION"/>
+      <value enum="55" description="SESSION_ID"/>
+      <value enum="56" description="ACCEPTABLE_COUNTERPARTY"/>
+      <value enum="57" description="UNACCEPTABLE_COUNTERPARTY"/>
+      <value enum="58" description="ENTERING_UNIT"/>
+      <value enum="59" description="EXECUTING_UNIT"/>
+      <value enum="60" description="INTRODUCING_BROKER"/>
+      <value enum="61" description="QUOTE_ORIGINATOR"/>
+      <value enum="62" description="REPORT_ORIGINATOR"/>
+      <value enum="63" description="SYSTEMATIC_INTERNALISER"/>
+      <value enum="64" description="MULTILATERAL_TRADING_FACILITY"/>
+      <value enum="65" description="REGULATED_MARKET"/>
+      <value enum="66" description="MARKET_MAKER"/>
+      <value enum="67" description="INVESTMENT_FIRM"/>
+      <value enum="68" description="HOST_COMPETENT_AUTHORITY"/>
+      <value enum="69" description="HOME_COMPETENT_AUTHORITY"/>
+      <value enum="70" description="COMPETENT_AUTHORITY_LIQUIDITY"/>
+      <value enum="71" description="COMPETENT_AUTHORITY_TRANSACTION_VENUE"/>
+      <value enum="72" description="REPORTING_INTERMEDIARY"/>
+      <value enum="73" description="EXECUTION_VENUE"/>
+      <value enum="74" description="MARKET_DATA_ENTRY_ORIGINATOR"/>
+      <value enum="75" description="LOCATION_ID"/>
+      <value enum="76" description="DESK_ID"/>
+      <value enum="77" description="MARKET_DATA_MARKET"/>
+      <value enum="78" description="ALLOCATION_ENTITY"/>
+      <value enum="79" description="PRIME_BROKER"/>
+      <value enum="80" description="STEP_OUT_FIRM"/>
+      <value enum="81" description="BROKER_CLEARING_ID"/>
+      <value enum="82" description="CENTRAL_REGISTRATION_DEPOSITORY"/>
+      <value enum="83" description="CLEARING_ACCOUNT"/>
+      <value enum="84" description="ACCEPTABLE_SETTLING_COUNTERPARTY"/>
+      <value enum="85" description="UNACCEPTABLE_SETTLING_COUNTERPARTY"/>
+      <value enum="86" description="CLS_MEMBER_BANK"/>
+      <value enum="87" description="IN_CONCERT_GROUP"/>
+      <value enum="88" description="IN_CONCERT_CONTROLLING_ENTITY"/>
+      <value enum="89" description="LARGE_POSITIONS_REPORTING_ACCOUNT"/>
+      <value enum="90" description="SETTLEMENT_FIRM"/>
+      <value enum="91" description="SETTLEMENT_ACCOUNT"/>
+      <value enum="92" description="REPORTING_MARKET_CENTER"/>
+      <value enum="93" description="RELATED_REPORTING_MARKET_CENTER"/>
+      <value enum="94" description="AWAY_MARKET"/>
+      <value enum="95" description="GIVEUP_TRADING_FIRM"/>
+      <value enum="96" description="TAKEUP_TRADING_FIRM"/>
+      <value enum="97" description="GIVEUP_CLEARING_FIRM"/>
+      <value enum="98" description="TAKEUP_CLEARING_FIRM"/>
+      <value enum="99" description="ORIGINATING_MARKET"/>
+      <value enum="100" description="MARGIN_ACCOUNT"/>
+      <value enum="101" description="COLLATERAL_ASSET_ACCOUNT"/>
+      <value enum="102" description="DATA_REPOSITORY"/>
+      <value enum="103" description="CALCULATION_AGENT"/>
+      <value enum="104" description="EXERCISE_NOTICE_SENDER"/>
+      <value enum="105" description="EXERCISE_NOTICE_RECEIVER"/>
+      <value enum="106" description="RATE_REFERENCE_BANK"/>
+      <value enum="107" description="CORRESPONDENT"/>
+      <value enum="109" description="BENEFICIARY_BANK"/>
+      <value enum="110" description="BORROWER"/>
+      <value enum="111" description="PRIMARY_OBLIGATOR"/>
+      <value enum="112" description="GUARANTOR"/>
+      <value enum="113" description="EXCLUDED_REFERENCE_ENTITY"/>
+      <value enum="114" description="DETERMINING_PARTY"/>
+      <value enum="115" description="HEDGING_PARTY"/>
+      <value enum="116" description="REPORTING_ENTITY"/>
+      <value enum="117" description="SALES_PERSON"/>
+      <value enum="118" description="OPERATOR"/>
+      <value enum="119" description="CSD"/>
+      <value enum="120" description="ICSD"/>
+      <value enum="121" description="TRADING_SUB_ACCOUNT"/>
+      <value enum="122" description="INVESTMENT_DECISION_MAKER"/>
+      <value enum="123" description="PUBLISHING_INTERMEDIARY"/>
+      <value enum="124" description="CSD_PARTICIPANT"/>
+      <value enum="125" description="ISSUER"/>
+      <value enum="126" description="CONTRA_CUSTOMER_ACCOUNT"/>
+      <value enum="127" description="CONTRA_INVESTMENT_DECISION_MAKER"/>
+    </field>
+    <field number="453" name="NoPartyIDs" type="NUMINGROUP"/>
+    <field number="523" name="PartySubID" type="STRING"/>
+    <field number="711" name="NoUnderlyings" type="NUMINGROUP"/>
+    <field number="802" name="NoPartySubIDs" type="NUMINGROUP"/>
+    <field number="803" name="PartySubIDType" type="INT">
+      <value enum="1" description="FIRM"/>
+      <value enum="2" description="PERSON"/>
+      <value enum="3" description="SYSTEM"/>
+      <value enum="4" description="APPLICATION"/>
+      <value enum="5" description="FULL_LEGAL_NAME_OF_FIRM"/>
+      <value enum="6" description="POSTAL_ADDRESS"/>
+      <value enum="7" description="PHONE_NUMBER"/>
+      <value enum="8" description="EMAIL_ADDRESS"/>
+      <value enum="9" description="CONTACT_NAME"/>
+      <value enum="10" description="SECURITIES_ACCOUNT_NUMBER"/>
+      <value enum="11" description="REGISTRATION_NUMBER"/>
+      <value enum="12" description="REGISTERED_ADDRESS_FOR_CONFIRMATION"/>
+      <value enum="13" description="REGULATORY_STATUS"/>
+      <value enum="14" description="REGISTRATION_NAME"/>
+      <value enum="15" description="CASH_ACCOUNT_NUMBER"/>
+      <value enum="16" description="BIC"/>
+      <value enum="17" description="CSD_PARTICIPANT_MEMBER_CODE"/>
+      <value enum="18" description="REGISTERED_ADDRESS"/>
+      <value enum="19" description="FUND_ACCOUNT_NAME"/>
+      <value enum="20" description="TELEX_NUMBER"/>
+      <value enum="21" description="FAX_NUMBER"/>
+      <value enum="22" description="SECURITIES_ACCOUNT_NAME"/>
+      <value enum="23" description="CASH_ACCOUNT_NAME"/>
+      <value enum="24" description="DEPARTMENT"/>
+      <value enum="25" description="LOCATION_DESK"/>
+      <value enum="26" description="POSITION_ACCOUNT_TYPE"/>
+      <value enum="27" description="SECURITY_LOCATE_ID"/>
+      <value enum="28" description="MARKET_MAKER"/>
+      <value enum="29" description="ELIGIBLE_COUNTERPARTY"/>
+      <value enum="30" description="PROFESSIONAL_CLIENT"/>
+      <value enum="31" description="LOCATION"/>
+      <value enum="32" description="EXECUTION_VENUE"/>
+      <value enum="33" description="CURRENCY_DELIVERY_IDENTIFIER"/>
+      <value enum="34" description="ADDRESS_CITY"/>
+      <value enum="35" description="ADDRESS_STATE_OR_PROVINCE"/>
+      <value enum="36" description="ADDRESS_POSTAL_CODE"/>
+      <value enum="37" description="ADDRESS_STREET"/>
+      <value enum="38" description="ADDRESS_ISO_COUNTRY_CODE"/>
+      <value enum="39" description="ISO_COUNTRY_CODE"/>
+      <value enum="40" description="MARKET_SEGMENT"/>
+      <value enum="41" description="CUSTOMER_ACCOUNT_TYPE"/>
+      <value enum="42" description="OMNIBUS_ACCOUNT"/>
+      <value enum="43" description="FUNDS_SEGREGATION_TYPE"/>
+      <value enum="44" description="GUARANTEE_FUND"/>
+      <value enum="45" description="SWAP_DEALER"/>
+      <value enum="46" description="MAJOR_PARTICIPANT"/>
+      <value enum="47" description="FINANCIAL_ENTITY"/>
+      <value enum="48" description="US_PERSON"/>
+      <value enum="49" description="REPORTING_ENTITY_INDICATOR"/>
+      <value enum="50" description="ELECTED_CLEARING_REQUIREMENT_EXCEPTION"/>
+      <value enum="51" description="BUSINESS_CENTER"/>
+      <value enum="52" description="REFERENCE_TEXT"/>
+      <value enum="53" description="SHORT_MARKING_EXEMPT_ACCOUNT"/>
+      <value enum="54" description="PARENT_FIRM_IDENTIFIER"/>
+      <value enum="55" description="PARENT_FIRM_NAME"/>
+      <value enum="56" description="DEAL_IDENTIFIER"/>
+      <value enum="57" description="SYSTEM_TRADE_ID"/>
+      <value enum="58" description="SYSTEM_TRADE_SUB_ID"/>
+      <value enum="59" description="FCM_CODE"/>
+      <value enum="60" description="DLVRY_TRML_CODE"/>
+      <value enum="61" description="VOLNTY_RPT_ENTITY"/>
+      <value enum="62" description="RPT_OBLIG_JURSDCTN"/>
+      <value enum="63" description="VOLNTY_RPT_JURSDCTN"/>
+      <value enum="64" description="COMPANY_ACTIVITIES"/>
+      <value enum="65" description="EE_AREA_DOMICILED"/>
+      <value enum="66" description="CONTRACT_LINKED"/>
+      <value enum="67" description="CONTRACT_ABOVE"/>
+      <value enum="68" description="VOLNTY_RPT_PTY"/>
+      <value enum="69" description="END_USER"/>
+      <value enum="70" description="LOCATION_OR_JURISDICTION"/>
+      <value enum="71" description="DERIVATIVES_DEALER"/>
+      <value enum="72" description="DOMICILE"/>
+      <value enum="73" description="EXEMPT_FROM_RECOGNITION"/>
+      <value enum="74" description="PAYER"/>
+      <value enum="75" description="RECEIVER"/>
+      <value enum="76" description="SYSTEMATIC_INTERNALISER"/>
+      <value enum="77" description="PUBLISHING_ENTITY_INDICATOR"/>
+      <value enum="78" description="FIRST_NAME"/>
+      <value enum="79" description="SURNAME"/>
+      <value enum="80" description="DATE_OF_BIRTH"/>
+      <value enum="81" description="ORDER_TRANSMITTING_FIRM"/>
+      <value enum="82" description="ORDER_TRANSMITTING_FIRM_BUYER"/>
+      <value enum="83" description="ORDER_TRANSMITTER_SELLER"/>
+      <value enum="84" description="LEGAL_ENTITY_IDENTIFIER"/>
+      <value enum="85" description="SUB_SECTOR_CLASSIFICATION"/>
+      <value enum="86" description="PARTY_SIDE"/>
+      <value enum="87" description="LEGAL_REGISTRATION_COUNTRY"/>
+    </field>
+    <field number="879" name="UnderlyingQty" type="QTY"/>
+  </fields>
+  <messages>
+    <message name="NewOrderSingle" msgtype="D" msgcat="app">
+      <field name="ClOrdID" required="Y"/>
+      <field name="Side" required="Y"/>
+      <field name="Symbol" required="Y"/>
+      <field name="OrdType" required="Y"/>
+      <field name="TransactTime" required="Y"/>
+      <field name="OrderQty" required="Y"/>
+      <field name="SecurityID" required="N"/>
+      <field name="SecurityIDSource" required="N"/>
+      <field name="Price" required="N"/>
+      <field name="TimeInForce" required="N"/>
+      <field name="Account" required="N"/>
+      <field name="Text" required="N"/>
+      <group name="NoPartyIDs" required="N">
+        <field name="PartyID" required="N"/>
+        <field name="PartyIDSource" required="N"/>
+        <field name="PartyRole" required="N"/>
+        <group name="NoPartySubIDs" required="N">
+          <field name="PartySubID" required="N"/>
+          <field name="PartySubIDType" required="N"/>
+        </group>
+      </group>
+      <group name="NoUnderlyings" required="N">
+        <field name="UnderlyingSymbol" required="N"/>
+        <field name="UnderlyingSecurityID" required="N"/>
+        <field name="UnderlyingQty" required="N"/>
+      </group>
+    </message>
+    <message name="OrderCancelRequest" msgtype="F" msgcat="app">
+      <field name="OrigClOrdID" required="Y"/>
+      <field name="ClOrdID" required="Y"/>
+      <field name="Side" required="Y"/>
+      <field name="Symbol" required="Y"/>
+      <field name="TransactTime" required="Y"/>
+      <field name="OrderQty" required="Y"/>
+      <field name="Account" required="N"/>
+      <field name="Text" required="N"/>
+    </message>
+    <message name="ExecutionReport" msgtype="8" msgcat="app">
+      <field name="OrderID" required="Y"/>
+      <field name="ExecID" required="Y"/>
+      <field name="ExecType" required="Y"/>
+      <field name="OrdStatus" required="Y"/>
+      <field name="Symbol" required="Y"/>
+      <field name="Side" required="Y"/>
+      <field name="LeavesQty" required="Y"/>
+      <field name="CumQty" required="Y"/>
+      <field name="AvgPx" required="Y"/>
+      <field name="TransactTime" required="Y"/>
+      <field name="ClOrdID" required="N"/>
+      <field name="OrdType" required="N"/>
+      <field name="Price" required="N"/>
+      <field name="OrderQty" required="N"/>
+      <field name="TimeInForce" required="N"/>
+      <field name="Account" required="N"/>
+      <field name="LastQty" required="N"/>
+      <field name="LastPx" required="N"/>
+      <field name="OrdRejReason" required="N"/>
+      <field name="Text" required="N"/>
+      <group name="NoPartyIDs" required="N">
+        <field name="PartyID" required="N"/>
+        <field name="PartyIDSource" required="N"/>
+        <field name="PartyRole" required="N"/>
+      </group>
+    </message>
+  </messages>
+</fix>
