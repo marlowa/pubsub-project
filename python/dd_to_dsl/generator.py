@@ -36,6 +36,7 @@ _TYPE_MAP = {
     "PRICEOFFSET": "string",
     "PERCENTAGE": "string",
     "UTCTIMESTAMP": "datetime_ns",
+    "LOCALMKTDATE": "datetime_ns",  # a local-market date (YYYYMMDD); carried internally as a timestamp
     "INT": "i32",
     "SEQNUM": "i32",
     "LENGTH": "i32",
@@ -311,9 +312,15 @@ def generate_dsl(spec: Spec, root: Path) -> str:  # pylint: disable=too-many-loc
     out.append("# ---------------------------------------------------------------------------")
     out.append("")
 
+    # PduId carries every generated message: the top-level PDUs (ids from the spec) and
+    # the repeating-group body messages (ids from _GROUP_ID_BASE). The C++ codegen's
+    # pdu-id-enum mode requires each `message (id=PduId.X)` to name an enum member, so the
+    # group bodies -- which are only ever nested inside a list<> -- are listed here too.
     out.append("enum PduId : i16 {")
     for message_spec in spec.messages:
         out.append(f"    {message_spec.name} = {message_spec.pdu_id}")
+    for info in group_registry.values():
+        out.append(f"    {info.message_name} = {info.message_id}  # repeating-group body")
     out.append("}")
     out.append("")
 
@@ -323,7 +330,7 @@ def generate_dsl(spec: Spec, root: Path) -> str:  # pylint: disable=too-many-loc
 
     # Group body messages, in registration order (nested groups precede their parents).
     for info in group_registry.values():
-        out.append(f"message {info.message_name} (id={info.message_id})  # repeating group '{info.counter.name}' (tag {info.counter.number})")
+        out.append(f"message {info.message_name} (id=PduId.{info.message_name})  # repeating group '{info.counter.name}' (tag {info.counter.number})")
         out.extend(emit_members(info.body, set()))
         out.append("end")
         out.append("")

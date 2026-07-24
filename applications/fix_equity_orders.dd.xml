@@ -5,6 +5,71 @@
     <field number="11" name="ClOrdID" type="STRING"/>
     <field number="14" name="CumQty" type="QTY"/>
     <field number="17" name="ExecID" type="STRING"/>
+    <field number="18" name="ExecInst" type="MULTIPLECHARVALUE">
+      <value enum="0" description="STAY_ON_OFFER_SIDE"/>
+      <value enum="1" description="NOT_HELD"/>
+      <value enum="2" description="WORK"/>
+      <value enum="3" description="GO_ALONG"/>
+      <value enum="4" description="OVER_THE_DAY"/>
+      <value enum="5" description="HELD"/>
+      <value enum="6" description="PARTICIPATE_DO_NOT_INITIATE"/>
+      <value enum="7" description="STRICT_SCALE"/>
+      <value enum="8" description="TRY_TO_SCALE"/>
+      <value enum="9" description="STAY_ON_BID_SIDE"/>
+      <value enum="A" description="NO_CROSS"/>
+      <value enum="B" description="OK_TO_CROSS"/>
+      <value enum="C" description="CALL_FIRST"/>
+      <value enum="D" description="PERCENT_OF_VOLUME"/>
+      <value enum="E" description="DO_NOT_INCREASE"/>
+      <value enum="F" description="DO_NOT_REDUCE"/>
+      <value enum="G" description="ALL_OR_NONE"/>
+      <value enum="H" description="REINSTATE_ON_SYSTEM_FAILURE"/>
+      <value enum="I" description="INSTITUTIONS_ONLY"/>
+      <value enum="J" description="REINSTATE_ON_TRADING_HALT"/>
+      <value enum="K" description="CANCEL_ON_TRADING_HALT"/>
+      <value enum="L" description="LAST_PEG"/>
+      <value enum="M" description="MID_PRICE_PEG"/>
+      <value enum="N" description="NON_NEGOTIABLE"/>
+      <value enum="O" description="OPENING_PEG"/>
+      <value enum="P" description="MARKET_PEG"/>
+      <value enum="Q" description="CANCEL_ON_SYSTEM_FAILURE"/>
+      <value enum="R" description="PRIMARY_PEG"/>
+      <value enum="S" description="SUSPEND"/>
+      <value enum="T" description="FIXED_PEG_TO_LOCAL_BEST_BID_OR_OFFER_AT_TIME_OF_ORDER"/>
+      <value enum="U" description="CUSTOMER_DISPLAY_INSTRUCTION"/>
+      <value enum="V" description="NETTING"/>
+      <value enum="W" description="PEG_TO_VWAP"/>
+      <value enum="X" description="TRADE_ALONG"/>
+      <value enum="Y" description="TRY_TO_STOP"/>
+      <value enum="Z" description="CANCEL_IF_NOT_BEST"/>
+      <value enum="a" description="TRAILING_STOP_PEG"/>
+      <value enum="b" description="STRICT_LIMIT"/>
+      <value enum="c" description="IGNORE_PRICE_VALIDITY_CHECKS"/>
+      <value enum="d" description="PEG_TO_LIMIT_PRICE"/>
+      <value enum="e" description="WORK_TO_TARGET_STRATEGY"/>
+      <value enum="f" description="INTERMARKET_SWEEP"/>
+      <value enum="g" description="EXTERNAL_ROUTING_ALLOWED"/>
+      <value enum="h" description="EXTERNAL_ROUTING_NOT_ALLOWED"/>
+      <value enum="i" description="IMBALANCE_ONLY"/>
+      <value enum="j" description="SINGLE_EXECUTION_REQUESTED_FOR_BLOCK_TRADE"/>
+      <value enum="k" description="BEST_EXECUTION"/>
+      <value enum="l" description="SUSPEND_ON_SYSTEM_FAILURE"/>
+      <value enum="m" description="SUSPEND_ON_TRADING_HALT"/>
+      <value enum="n" description="REINSTATE_ON_CONNECTION_LOSS"/>
+      <value enum="o" description="CANCEL_ON_CONNECTION_LOSS"/>
+      <value enum="p" description="SUSPEND_ON_CONNECTION_LOSS"/>
+      <value enum="q" description="RELEASE"/>
+      <value enum="r" description="EXECUTE_AS_DELTA_NEUTRAL"/>
+      <value enum="s" description="EXECUTE_AS_DURATION_NEUTRAL"/>
+      <value enum="t" description="EXECUTE_AS_FX_NEUTRAL"/>
+      <value enum="u" description="MIN_GUARANTEED_FILL_ELIGIBLE"/>
+      <value enum="v" description="BYPASS_NON_DISPLAY_LIQUIDITY"/>
+      <value enum="w" description="LOCK"/>
+      <value enum="x" description="IGNORE_NOTIONAL_VALUE_CHECKS"/>
+      <value enum="y" description="TRD_AT_REF_PX"/>
+      <value enum="z" description="ALLOW_FACILITATION"/>
+    </field>
+    <field number="19" name="ExecRefID" type="STRING"/>
     <field number="22" name="SecurityIDSource" type="STRING">
       <value enum="1" description="CUSIP"/>
       <value enum="2" description="SEDOL"/>
@@ -129,6 +194,22 @@
       <value enum="C" description="GOOD_FOR_MONTH"/>
     </field>
     <field number="60" name="TransactTime" type="UTCTIMESTAMP"/>
+    <field number="75" name="TradeDate" type="LOCALMKTDATE"/>
+    <field number="99" name="StopPx" type="PRICE"/>
+    <field number="100" name="ExDestination" type="EXCHANGE"/>
+    <field number="102" name="CxlRejReason" type="INT">
+      <value enum="0" description="TOO_LATE_TO_CANCEL"/>
+      <value enum="1" description="UNKNOWN_ORDER"/>
+      <value enum="2" description="BROKER_CREDIT"/>
+      <value enum="3" description="ORDER_ALREADY_IN_PENDING_STATUS"/>
+      <value enum="4" description="UNABLE_TO_PROCESS_ORDER_MASS_CANCEL_REQUEST"/>
+      <value enum="5" description="ORIG_ORD_MOD_TIME"/>
+      <value enum="6" description="DUPLICATE_CL_ORD_ID"/>
+      <value enum="7" description="PRICE_EXCEEDS_CURRENT_PRICE"/>
+      <value enum="8" description="PRICE_EXCEEDS_CURRENT_PRICE_BAND"/>
+      <value enum="18" description="INVALID_PRICE_INCREMENT"/>
+      <value enum="99" description="OTHER"/>
+    </field>
     <field number="103" name="OrdRejReason" type="INT">
       <value enum="0" description="BROKER_CREDIT"/>
       <value enum="1" description="UNKNOWN_SYMBOL"/>
@@ -161,6 +242,9 @@
       <value enum="29" description="EXCEEDED_CS01_LIMIT"/>
       <value enum="99" description="OTHER"/>
     </field>
+    <field number="110" name="MinQty" type="QTY"/>
+    <field number="111" name="MaxFloor" type="QTY"/>
+    <field number="126" name="ExpireTime" type="UTCTIMESTAMP"/>
     <field number="150" name="ExecType" type="CHAR">
       <value enum="0" description="NEW"/>
       <value enum="3" description="DONE_FOR_DAY"/>
@@ -454,8 +538,14 @@
       <field name="SecurityID" required="N"/>
       <field name="SecurityIDSource" required="N"/>
       <field name="Price" required="N"/>
+      <field name="StopPx" required="N"/>
       <field name="TimeInForce" required="N"/>
       <field name="Account" required="N"/>
+      <field name="ExDestination" required="N"/>
+      <field name="ExecInst" required="N"/>
+      <field name="MinQty" required="N"/>
+      <field name="MaxFloor" required="N"/>
+      <field name="ExpireTime" required="N"/>
       <field name="Text" required="N"/>
       <group name="NoPartyIDs" required="N">
         <field name="PartyID" required="N"/>
@@ -493,20 +583,36 @@
       <field name="CumQty" required="Y"/>
       <field name="AvgPx" required="Y"/>
       <field name="TransactTime" required="Y"/>
+      <field name="SecurityID" required="N"/>
+      <field name="SecurityIDSource" required="N"/>
       <field name="ClOrdID" required="N"/>
+      <field name="OrigClOrdID" required="N"/>
       <field name="OrdType" required="N"/>
       <field name="Price" required="N"/>
+      <field name="StopPx" required="N"/>
       <field name="OrderQty" required="N"/>
       <field name="TimeInForce" required="N"/>
       <field name="Account" required="N"/>
+      <field name="ExDestination" required="N"/>
+      <field name="ExecInst" required="N"/>
       <field name="LastQty" required="N"/>
       <field name="LastPx" required="N"/>
+      <field name="TradeDate" required="N"/>
+      <field name="ExecRefID" required="N"/>
       <field name="OrdRejReason" required="N"/>
+      <field name="CxlRejReason" required="N"/>
       <field name="Text" required="N"/>
+      <field name="MinQty" required="N"/>
+      <field name="MaxFloor" required="N"/>
+      <field name="ExpireTime" required="N"/>
       <group name="NoPartyIDs" required="N">
         <field name="PartyID" required="N"/>
         <field name="PartyIDSource" required="N"/>
         <field name="PartyRole" required="N"/>
+        <group name="NoPartySubIDs" required="N">
+          <field name="PartySubID" required="N"/>
+          <field name="PartySubIDType" required="N"/>
+        </group>
       </group>
     </message>
   </messages>

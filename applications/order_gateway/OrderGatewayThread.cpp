@@ -952,7 +952,7 @@ void OrderGatewayThread::handle_new_order_single(FixSession& session, const Pars
     const std::string_view exec_inst_str = msg.get(Tag::ExecInst);
     if (!exec_inst_str.empty()) {
         nos.has_exec_inst = true;
-        nos.exec_inst = static_cast<pubsub_itc_fw_app::ExecInst>(exec_inst_str[0]);
+        nos.exec_inst = exec_inst_str; // ExecInst is MULTIPLECHARVALUE -- carried verbatim as a string
     }
     const std::string_view min_qty = msg.get(Tag::MinQty);
     if (!min_qty.empty()) {
