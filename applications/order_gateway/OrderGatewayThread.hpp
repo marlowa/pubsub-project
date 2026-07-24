@@ -228,6 +228,13 @@ class OrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // drop an ER with many echoed group instances, no per-ER allocation after warmup.
     std::vector<char> er_wire_buffer_;
 
+    // Reusable arena backing the extracted NOS repeating-group element arrays. Sized to
+    // need (grow-and-retry in handle_new_order_single), not a fixed cap that could
+    // silently drop groups from a large order. Grows to the high-water mark and is reused.
+    static constexpr size_t initial_group_arena_size = 4096;
+    static constexpr size_t max_group_arena_size = 1u << 20; // 1 MiB sanity ceiling
+    std::vector<uint8_t> group_arena_buffer_;
+
     // Precomputed inbound service name for the sequencer ER listener port.
     const std::string er_inbound_svc_;
 

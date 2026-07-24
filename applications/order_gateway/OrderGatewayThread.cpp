@@ -135,6 +135,7 @@ OrderGatewayThread::OrderGatewayThread(pubsub_itc_fw::ApplicationThread::Constru
     // Start the reusable ER wire buffer at the common-case size; the ER send path grows
     // it if a large ExecutionReport (many echoed group instances) needs more.
     er_wire_buffer_.resize(execution_report_initial_buffer_size);
+    group_arena_buffer_.resize(initial_group_arena_size);
 }
 
 void OrderGatewayThread::on_app_ready_event() {
@@ -994,12 +995,23 @@ void OrderGatewayThread::handle_new_order_single(FixSession& session, const Pars
 
     // Repeating groups (NoUnderlyings, NoPartyIDs, nested NoPartySubIDs) cannot be
     // represented by the flat ParsedFixMessage, so they are extracted straight from the
-    // framed FIX bytes into the NOS's ListViews. The element arrays live in this
-    // call-scoped arena and the string_views point into the reader's buffer; both stay
-    // valid through forward_order_in_envelope, which encodes synchronously.
-    std::array<uint8_t, 8192> group_arena_buffer;
-    pubsub_itc_fw::BumpAllocator group_arena(group_arena_buffer.data(), group_arena_buffer.size());
-    extract_new_order_single_groups(reader, group_arena, nos);
+    // framed FIX bytes into the NOS's ListViews. The element arrays live in the reusable
+    // group_arena_buffer_ (string_views point into the reader's buffer); both stay valid
+    // through forward_order_in_envelope, which encodes synchronously. The arena is sized
+    // to need, not a fixed cap: extract, and if the arena was too small (bytes_used
+    // exceeds it) grow to the requirement and retry, so a large group set is never
+    // silently dropped. bytes_used reports the true need even when an allocation was
+    // refused, so doubling converges.
+    for (;;) {
+        pubsub_itc_fw::BumpAllocator group_arena(group_arena_buffer_.data(), group_arena_buffer_.size());
+        nos.no_underlyings = {};
+        nos.no_party_i_ds = {};
+        extract_new_order_single_groups(reader, group_arena, nos);
+        if (group_arena.bytes_used() <= group_arena_buffer_.size() || group_arena_buffer_.size() >= max_group_arena_size) {
+            break;
+        }
+        group_arena_buffer_.resize(std::max(group_arena.bytes_used(), group_arena_buffer_.size() * 2));
+    }
 
     // The originating session's connection id (so the sequencer can route the ER
     // back to this exact FIX session -- unique per TCP connection, avoiding the

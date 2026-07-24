@@ -39,7 +39,7 @@ TEST(FixErEncoderTest, EncodesAValidExecutionReport) {
     view.order_qty = "100";
 
     pubsub_itc_fw::ReplayClock clock(1700000000000000000LL);
-    char buffer[order_gateway::execution_report_buffer_size];
+    char buffer[order_gateway::execution_report_initial_buffer_size];
     const std::string_view wire = encode_execution_report(view, "GATEWAY", "CLIENT", 5, clock, buffer, sizeof(buffer));
 
     ASSERT_FALSE(wire.empty());

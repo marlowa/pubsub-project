@@ -322,16 +322,20 @@ void AuthenticationThread::handle_set_credential_request(const pubsub_itc_fw::Co
         result.comp_id = comp_id;
         result.outcome = outcome;
 
-        static constexpr size_t result_buffer_size = 512;
-        uint8_t result_buffer[result_buffer_size];
         size_t bytes_written = 0;
         size_t bytes_needed = 0;
-        if (!pubsub_itc_fw_app::encode(result, result_buffer, result_buffer_size, bytes_written, bytes_needed)) {
+        // Measure then fit into the reusable buffer -- no fixed cap that could silently
+        // drop an over-large result (these result PDUs are small, but keep the discipline).
+        [[maybe_unused]] const bool measured = pubsub_itc_fw_app::encode(result, nullptr, 0, bytes_written, bytes_needed);
+        if (admin_encode_buffer_.size() < bytes_needed) {
+            admin_encode_buffer_.resize(bytes_needed);
+        }
+        if (!pubsub_itc_fw_app::encode(result, admin_encode_buffer_.data(), admin_encode_buffer_.size(), bytes_written, bytes_needed)) {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "AuthenticationThread: failed to encode SetCredentialResult conn_id={}",
                        conn_id.get_value());
             return;
         }
-        send_admin_pdu(conn_id, pdu_id_set_credential_result, result_buffer, static_cast<uint32_t>(bytes_written));
+        send_admin_pdu(conn_id, pdu_id_set_credential_result, admin_encode_buffer_.data(), static_cast<uint32_t>(bytes_written));
     };
 
     if (comp_id.empty()) {
@@ -402,16 +406,20 @@ void AuthenticationThread::handle_remove_credential_request(const pubsub_itc_fw:
         result.comp_id = comp_id;
         result.outcome = outcome;
 
-        static constexpr size_t result_buffer_size = 512;
-        uint8_t result_buffer[result_buffer_size];
         size_t bytes_written = 0;
         size_t bytes_needed = 0;
-        if (!pubsub_itc_fw_app::encode(result, result_buffer, result_buffer_size, bytes_written, bytes_needed)) {
+        // Measure then fit into the reusable buffer -- no fixed cap that could silently
+        // drop an over-large result (these result PDUs are small, but keep the discipline).
+        [[maybe_unused]] const bool measured = pubsub_itc_fw_app::encode(result, nullptr, 0, bytes_written, bytes_needed);
+        if (admin_encode_buffer_.size() < bytes_needed) {
+            admin_encode_buffer_.resize(bytes_needed);
+        }
+        if (!pubsub_itc_fw_app::encode(result, admin_encode_buffer_.data(), admin_encode_buffer_.size(), bytes_written, bytes_needed)) {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "AuthenticationThread: failed to encode RemoveCredentialResult conn_id={}",
                        conn_id.get_value());
             return;
         }
-        send_admin_pdu(conn_id, pdu_id_remove_credential_result, result_buffer, static_cast<uint32_t>(bytes_written));
+        send_admin_pdu(conn_id, pdu_id_remove_credential_result, admin_encode_buffer_.data(), static_cast<uint32_t>(bytes_written));
     };
 
     if (comp_id.empty()) {
@@ -464,16 +472,20 @@ void AuthenticationThread::handle_restore_credential_request(const pubsub_itc_fw
         result.comp_id = comp_id;
         result.outcome = outcome;
 
-        static constexpr size_t result_buffer_size = 512;
-        uint8_t result_buffer[result_buffer_size];
         size_t bytes_written = 0;
         size_t bytes_needed = 0;
-        if (!pubsub_itc_fw_app::encode(result, result_buffer, result_buffer_size, bytes_written, bytes_needed)) {
+        // Measure then fit into the reusable buffer -- no fixed cap that could silently
+        // drop an over-large result (these result PDUs are small, but keep the discipline).
+        [[maybe_unused]] const bool measured = pubsub_itc_fw_app::encode(result, nullptr, 0, bytes_written, bytes_needed);
+        if (admin_encode_buffer_.size() < bytes_needed) {
+            admin_encode_buffer_.resize(bytes_needed);
+        }
+        if (!pubsub_itc_fw_app::encode(result, admin_encode_buffer_.data(), admin_encode_buffer_.size(), bytes_written, bytes_needed)) {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "AuthenticationThread: failed to encode RestoreCredentialResult conn_id={}",
                        conn_id.get_value());
             return;
         }
-        send_admin_pdu(conn_id, pdu_id_restore_credential_result, result_buffer, static_cast<uint32_t>(bytes_written));
+        send_admin_pdu(conn_id, pdu_id_restore_credential_result, admin_encode_buffer_.data(), static_cast<uint32_t>(bytes_written));
     };
 
     if (comp_id.empty()) {

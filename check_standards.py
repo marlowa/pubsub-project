@@ -833,6 +833,49 @@ def check_bool_literal_argument(path: Path, lines: list[str], stripped: list[str
 
 # ── Registry ─────────────────────────────────────────────────────────────────
 
+# A fixed-size char/uint8_t buffer declaration, capturing the variable name. Matches
+# both C arrays (char buf[N]) and std::array<char, N> buf (value, not reference/param).
+_FIXED_BYTE_BUFFER_DECL = re.compile(
+    r'\b(?:char|uint8_t|std::uint8_t)\s+(\w+)\s*\['
+    r'|std::array\s*<\s*(?:char|uint8_t|std::uint8_t)\s*,[^>]*>\s+(\w+)\s*[;{=]')
+
+# A message-encoding sink: a fixed buffer handed to any of these is the fragile pattern.
+_ENCODE_SINK = re.compile(r'\b(?:encode|FixMessageWriter|serialise)\b')
+
+
+def check_fixed_encode_buffer(path: Path, lines: list[str], stripped: list[str]) -> list[Violation]:
+    """Flag a fixed-size byte/char buffer fed to a message encoder/writer.
+
+    A variable-length message encoded into a fixed buffer silently drops or truncates on
+    overflow. Use measure-then-fit or grow-and-retry with a reusable buffer instead.
+    Scoped to production code (tests/benchmarks legitimately build fixed sample messages);
+    annotate a deliberate exception with a 'fixed-buffer-ok' comment on the decl or use.
+    """
+    parts = set(path.parts)
+    if parts & {'tests', 'tests_common', 'performance'} or path.name.endswith('Test.cpp'):
+        return []
+    violations: list[Violation] = []
+    count = len(stripped)
+    for i, line in enumerate(stripped):
+        match = _FIXED_BYTE_BUFFER_DECL.search(line)
+        if not match:
+            continue
+        name = match.group(1) or match.group(2)
+        if not name:
+            continue
+        for j in range(i, min(i + 10, count)):
+            probe = stripped[j]
+            if name in re.split(r'\W+', probe) and _ENCODE_SINK.search(probe):
+                if 'fixed-buffer-ok' in lines[i] or 'fixed-buffer-ok' in lines[j]:
+                    break
+                violations.append(Violation(path, i + 1,
+                    f"fixed-size buffer '{name}' fed to a message encoder/writer; "
+                    "use measure-then-fit or grow-and-retry with a reusable buffer "
+                    "(a fixed cap silently drops an over-large message)"))
+                break
+    return violations
+
+
 _CHECKS = [
     check_defines,
     check_screaming_snake_case,
@@ -859,6 +902,7 @@ _CHECKS = [
     check_include_order,
     check_explicit_single_arg_ctor,
     check_bool_literal_argument,
+    check_fixed_encode_buffer,
 ]
 
 

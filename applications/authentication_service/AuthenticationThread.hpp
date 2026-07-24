@@ -56,7 +56,7 @@ class AuthenticationThread : public pubsub_itc_fw::ApplicationThread {
 
   protected:
     void on_connection_established(pubsub_itc_fw::ConnectionID id) override;
-    void on_connection_lost(const pubsub_itc_fw::ConnectionID &id, const std::string& reason) override;
+    void on_connection_lost(const pubsub_itc_fw::ConnectionID& id, const std::string& reason) override;
     void on_framework_pdu_message(const pubsub_itc_fw::EventMessage& msg) override;
     void on_raw_socket_message(const pubsub_itc_fw::EventMessage& msg) override;
     void on_itc_message(const pubsub_itc_fw::EventMessage& msg) override;
@@ -93,6 +93,10 @@ class AuthenticationThread : public pubsub_itc_fw::ApplicationThread {
     std::unordered_map<int64_t, ExchangeState> exchanges_;
     // Tracks connections accepted on the TLS admin listener.
     std::unordered_set<pubsub_itc_fw::ConnectionID> admin_connections_;
+
+    // Reusable scratch buffer for encoding admin result PDUs (measure then fit) -- no
+    // fixed cap that could silently drop a result, no per-result allocation after warmup.
+    std::vector<uint8_t> admin_encode_buffer_;
 };
 
 } // namespaces

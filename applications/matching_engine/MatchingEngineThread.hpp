@@ -181,6 +181,12 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // reused -- no fixed cap that could silently drop an ER, no per-ER allocation.
     std::vector<uint8_t> er_encode_buffer_;
 
+    // Reusable arena backing the ER's echoed group element arrays (handle_new_order_single).
+    // Sized to need (grow-and-retry), not a fixed cap that could silently drop echoed groups.
+    static constexpr size_t initial_er_group_arena_size = 4096;
+    static constexpr size_t max_er_group_arena_size = 1u << 20; // 1 MiB sanity ceiling
+    std::vector<uint8_t> er_group_arena_buffer_ = std::vector<uint8_t>(initial_er_group_arena_size);
+
     // Wraps the ER in a WalRecord envelope and sends it to the sequencer(s). Routing
     // metadata for ERs not tied to a sequenced order (the seq_no==0 cancel-on-failover
     // ERs) rides on the envelope, so the ER PDU itself stays purely DD-derived. For

@@ -476,12 +476,22 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
 
     // Echo the order's NoUnderlyings and NoPartyIDs groups back on the acknowledgement so
     // downstream topic subscribers see the instrument legs and parties the client sent. The
-    // element arrays live in this call-scoped arena; their string_views point into the
-    // still-live NOS payload, and send_er_to_sequencer encodes synchronously below.
-    std::array<uint8_t, 4096> group_arena_buffer;
-    pubsub_itc_fw::BumpAllocator group_arena(group_arena_buffer.data(), group_arena_buffer.size());
-    echo_underlyings(view.no_underlyings, group_arena, er.no_underlyings);
-    echo_parties(view.no_party_i_ds, group_arena, er.no_party_i_ds);
+    // element arrays live in the reusable er_group_arena_buffer_ (string_views point into
+    // the still-live NOS payload); send_er_to_sequencer encodes synchronously below. The
+    // arena is sized to need, not a fixed cap: echo, and if it was too small (bytes_used
+    // exceeds it) grow to the requirement and retry, so large group sets are never silently
+    // dropped. bytes_used reports the true need even when an allocation was refused.
+    for (;;) {
+        pubsub_itc_fw::BumpAllocator group_arena(er_group_arena_buffer_.data(), er_group_arena_buffer_.size());
+        er.no_underlyings = {};
+        er.no_party_i_ds = {};
+        echo_underlyings(view.no_underlyings, group_arena, er.no_underlyings);
+        echo_parties(view.no_party_i_ds, group_arena, er.no_party_i_ds);
+        if (group_arena.bytes_used() <= er_group_arena_buffer_.size() || er_group_arena_buffer_.size() >= max_er_group_arena_size) {
+            break;
+        }
+        er_group_arena_buffer_.resize(std::max(group_arena.bytes_used(), er_group_arena_buffer_.size() * 2));
+    }
 
     send_er_to_sequencer(er, sequence_number);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: accepted NOS OrderID={} ExecID={} ClOrdID={} book_size={}", order_id,
