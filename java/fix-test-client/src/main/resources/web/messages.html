@@ -166,6 +166,9 @@
     <div style="display:flex; align-items:center; gap:12px; margin-top:16px; margin-bottom:4px;">
         <span style="font-weight:bold;">Blotter</span>
         <button onclick="doClear()" style="font-size:11px; padding:2px 8px;">Clear</button>
+        <label style="font-size:12px; font-weight:normal; margin:0; display:flex; align-items:center; gap:4px;">
+            <input type="checkbox" id="show-heartbeats" onchange="renderBlotter(lastRows)" style="margin:0;"> Show heartbeats
+        </label>
     </div>
     <div id="blotter-wrap">
         <table id="blotter">
@@ -188,10 +191,14 @@
 'use strict';
 
 let lastBlotterSize = 0;
+let lastRows = []; // most recent blotter fetch, so the heartbeat toggle can re-render without a poll
 
 const MSG_TYPE_LABEL = {
     'D': 'NewOrderSingle', 'F': 'OrderCancelRequest', '8': 'ExecutionReport',
     '9': 'OrderCancelReject', 'G': 'OrderCancelReplace',
+    // Session/admin message types (shown via fromAdmin).
+    '0': 'Heartbeat', '1': 'TestRequest', '2': 'ResendRequest', '3': 'Reject',
+    '4': 'SequenceReset', '5': 'Logout', 'A': 'Logon',
 };
 
 const EXEC_TYPE_LABEL = {
@@ -327,6 +334,7 @@ async function pollBlotter() {
     try {
         const rows = await apiGet('/api/messages');
         if (rows.length !== lastBlotterSize) {
+            lastRows = rows;
             renderBlotter(rows);
             lastBlotterSize = rows.length;
         }
@@ -339,7 +347,12 @@ async function pollBlotter() {
 function renderBlotter(rows) {
     const tbody = document.getElementById('blotter-body');
     tbody.innerHTML = '';
+    // Session/admin messages are always shown; Heartbeats (frequent noise) only when toggled on.
+    const showHeartbeats = document.getElementById('show-heartbeats')?.checked;
     for (const row of rows) {
+        if (row.msgType === '0' && !showHeartbeats) {
+            continue;
+        }
         const tr = document.createElement('tr');
 
         if (row.direction === 'OUT') {

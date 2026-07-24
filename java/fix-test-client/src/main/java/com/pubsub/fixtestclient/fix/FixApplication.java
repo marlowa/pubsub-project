@@ -183,6 +183,14 @@ public class FixApplication implements Application {
             }
         } catch (FieldNotFound ignored) {
         }
+
+        // Surface inbound session/admin messages (Logon, Logout, TestRequest, ResendRequest,
+        // SequenceReset, Reject, Heartbeat) in the blotter. The web UI always shows the
+        // session messages and hides the frequent Heartbeats behind a toggle (default off).
+        // Not fed to the inboundQueue: that is for app-message (order/ER) script correlation.
+        if (inboundListener != null) {
+            inboundListener.accept(message);
+        }
     }
 
     @Override
