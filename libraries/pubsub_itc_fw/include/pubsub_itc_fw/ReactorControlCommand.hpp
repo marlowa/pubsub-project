@@ -12,6 +12,7 @@
 
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
+#include <pubsub_itc_fw/ServiceID.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 #include <pubsub_itc_fw/TimerID.hpp>
 #include <pubsub_itc_fw/TimerType.hpp>
@@ -38,7 +39,7 @@ namespace pubsub_itc_fw {
  *
  *   AddTimer       -- owner_thread_id_, timer_id_, interval_, timer_type_
  *   CancelTimer    -- owner_thread_id_, timer_id_
- *   Connect        -- requesting_thread_id_, service_name_
+ *   Connect        -- requesting_thread_id_, service_id_
  *   Disconnect     -- connection_id_
  *   SendPdu        -- connection_id_, allocator_, slab_id_, pdu_chunk_ptr_, pdu_byte_count_
  *   SendRaw        -- connection_id_, allocator_, slab_id_, raw_chunk_ptr_, raw_byte_count_
@@ -133,12 +134,14 @@ class ReactorControlCommand {
     ThreadID requesting_thread_id_{};
 
     /**
-     * @brief The logical name of the service to connect to.
+     * @brief The service to connect to, as a stable id from the ServiceRegistry.
      *
-     * The reactor resolves this name via the ServiceRegistry it was constructed
-     * with, obtaining the primary and secondary endpoints to try.
+     * connect_to_service resolves the caller's service name to this id on the
+     * application thread (failing fast if the name is unknown), so no std::string
+     * rides the control-command queue. The reactor maps the id back to the
+     * service's name and endpoints via the ServiceRegistry it was constructed with.
      */
-    std::string service_name_;
+    ServiceID service_id_{};
 
     // Disconnect / SendPdu / SendRaw / CommitRawBytes payload fields
 

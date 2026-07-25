@@ -164,13 +164,21 @@ class OutboundTestThread : public ApplicationThread {
     std::atomic<bool> connection_established{false};
     std::atomic<bool> connection_failed{false};
     std::atomic<bool> connection_lost{false};
+    std::atomic<bool> connect_threw{false}; // set if connect_to_service fail-fasts (unknown service)
 
     std::string failure_reason;
     ConnectionID conn_id{};
 
   protected:
     void on_initial_event() override {
-        connect_to_service(service_name_);
+        // connect_to_service now fails fast on an unknown service. Catch it so the
+        // test can observe the fail-fast rather than tearing the thread down.
+        try {
+            connect_to_service(service_name_);
+        } catch (const PreconditionAssertion&) {
+            connect_threw.store(true, std::memory_order_release);
+            shutdown("unknown service (fail-fast)");
+        }
     }
 
     void on_connection_established(ConnectionID id) override {
@@ -304,15 +312,17 @@ TEST_F(OutboundConnectionTest, SecondaryEndpointRetry) {
     shutdown_and_join(*reactor, reactor_thread);
 }
 
-// Test: unknown service name delivers ConnectionFailed immediately
-TEST_F(OutboundConnectionTest, UnknownServiceFails) {
+// Test: connecting to an unknown service fails fast (connect_to_service throws
+// PreconditionAssertion on the calling thread) rather than deferring an
+// asynchronous ConnectionFailed.
+TEST_F(OutboundConnectionTest, UnknownServiceFailsFast) {
     ReactorConfiguration cfg{};
     cfg.inactivity_check_interval_ = std::chrono::milliseconds(100);
     cfg.init_phase_timeout_ = std::chrono::milliseconds(5000);
     cfg.shutdown_timeout_ = std::chrono::milliseconds(1000);
     cfg.connect_timeout = std::chrono::milliseconds(2000);
 
-    ServiceRegistry registry;
+    ServiceRegistry registry; // empty -- "no_such_service" is unregistered
 
     auto reactor = std::make_unique<Reactor>(cfg, registry, logger_->logger);
     auto thread = ApplicationThread::create<OutboundTestThread>(logger_->logger, *reactor, "no_such_service");
@@ -320,10 +330,9 @@ TEST_F(OutboundConnectionTest, UnknownServiceFails) {
 
     std::thread reactor_thread([&]() { reactor->run(); });
 
-    EXPECT_TRUE(wait_for([&]() { return thread->connection_failed.load(std::memory_order_acquire); })) << "ConnectionFailed not delivered for unknown service";
-
+    EXPECT_TRUE(wait_for([&]() { return thread->connect_threw.load(std::memory_order_acquire); }))
+        << "connect_to_service did not fail fast for an unknown service";
     EXPECT_FALSE(thread->connection_established.load(std::memory_order_acquire));
-    EXPECT_FALSE(thread->failure_reason.empty());
 
     shutdown_and_join(*reactor, reactor_thread);
 }
@@ -508,7 +517,7 @@ class OutboundConnectionManagerTest : public ::testing::Test {
 
         ReactorControlCommand cmd(ReactorControlCommand::CommandTag::Connect);
         cmd.requesting_thread_id_ = ThreadID{1};
-        cmd.service_name_ = "test_service";
+        cmd.service_id_ = registry_.resolve("test_service");
 
         OutboundConnectionManager& mgr = reactor_->outbound_manager();
         mgr.process_connect_command(cmd, id);

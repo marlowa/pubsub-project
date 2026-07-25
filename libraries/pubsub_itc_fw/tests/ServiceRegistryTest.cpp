@@ -135,4 +135,53 @@ TEST_F(ServiceRegistryTest, HostnameRoundTrips) {
     EXPECT_EQ(endpoints.secondary.host, "secondary.example.com");
 }
 
+// -- ServiceID (integer interning) -------------------------------------------
+
+TEST_F(ServiceRegistryTest, ResolveKnownServiceReturnsValidId) {
+    registry_.add("joe", {"192.168.1.10", 5001}, {});
+
+    const ServiceID id = registry_.resolve("joe");
+
+    EXPECT_TRUE(id.is_valid());
+}
+
+TEST_F(ServiceRegistryTest, ResolveUnknownServiceReturnsInvalidId) {
+    registry_.add("joe", {"192.168.1.10", 5001}, {});
+
+    const ServiceID id = registry_.resolve("nobody");
+
+    EXPECT_FALSE(id.is_valid());
+}
+
+TEST_F(ServiceRegistryTest, IdRoundTripsToNameAndEndpoints) {
+    registry_.add("joe", {"192.168.1.10", 5001}, {"192.168.1.11", 5002});
+
+    const ServiceID id = registry_.resolve("joe");
+
+    EXPECT_EQ(registry_.service_name(id), "joe");
+    EXPECT_EQ(registry_.endpoints(id).primary.host, "192.168.1.10");
+    EXPECT_EQ(registry_.endpoints(id).primary.port, 5001);
+    EXPECT_EQ(registry_.endpoints(id).secondary.port, 5002);
+}
+
+TEST_F(ServiceRegistryTest, EachServiceGetsADistinctId) {
+    registry_.add("joe", {"192.168.1.10", 5001}, {});
+    registry_.add("mary", {"192.168.1.10", 5002}, {});
+
+    const ServiceID joe = registry_.resolve("joe");
+    const ServiceID mary = registry_.resolve("mary");
+
+    EXPECT_NE(joe, mary);
+    EXPECT_EQ(registry_.service_name(joe), "joe");
+    EXPECT_EQ(registry_.service_name(mary), "mary");
+}
+
+TEST_F(ServiceRegistryTest, EndpointsWithInvalidIdThrows) {
+    registry_.add("joe", {"192.168.1.10", 5001}, {});
+
+    EXPECT_THROW((void)registry_.endpoints(ServiceID{}), PreconditionAssertion); // default (invalid) id
+    EXPECT_THROW((void)registry_.service_name(ServiceID{}), PreconditionAssertion);
+    EXPECT_THROW((void)registry_.endpoints(ServiceID{99}), PreconditionAssertion); // out of range
+}
+
 } // namespaces

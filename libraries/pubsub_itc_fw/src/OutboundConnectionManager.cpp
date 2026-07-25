@@ -35,17 +35,11 @@ OutboundConnectionManager::OutboundConnectionManager(int epoll_fd, const Reactor
     , logger_(logger) {}
 
 void OutboundConnectionManager::process_connect_command(const ReactorControlCommand& command, ConnectionID id) {
-    const std::string& service_name = command.service_name_;
-
-    auto [endpoints, lookup_error] = service_registry_.lookup(service_name);
-    if (!lookup_error.empty()) {
-        PUBSUB_LOG(logger_, FwLogLevel::Error, "OutboundConnectionManager::process_connect_command: unknown service '{}'", service_name);
-        auto* thread = thread_lookup_.get_fast_path_thread(command.requesting_thread_id_);
-        if (thread != nullptr) {
-            thread->enqueue(EventMessage::create_connection_failed_event(fmt::format("Unknown service: {}", service_name)));
-        }
-        return;
-    }
+    // connect_to_service resolved and validated the service id (fail-fast on an
+    // unknown name), so mapping the id back to its name and endpoints is always
+    // valid here.
+    const std::string& service_name = service_registry_.service_name(command.service_id_);
+    const ServiceEndpoints endpoints = service_registry_.endpoints(command.service_id_);
 
     const NetworkEndpointConfiguration& primary = endpoints.primary;
 
@@ -552,7 +546,9 @@ bool OutboundConnectionManager::process_disconnect_command(ConnectionID id) {
 void OutboundConnectionManager::schedule_retry(const std::string& service_name, ThreadID requesting_thread_id) {
     ReactorControlCommand retry_cmd{ReactorControlCommand::CommandTag::Connect};
     retry_cmd.requesting_thread_id_ = requesting_thread_id;
-    retry_cmd.service_name_ = service_name;
+    // service_name is an already-registered service (it came from a resolved
+    // connect), so this resolves to a valid ServiceID.
+    retry_cmd.service_id_ = service_registry_.resolve(service_name);
     const auto now = std::chrono::steady_clock::now();
     pending_retries_[service_name] = PendingRetry(retry_cmd, now + config_.connect_retry_interval_);
 

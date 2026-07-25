@@ -652,6 +652,10 @@ void Reactor::enqueue_control_command(ReactorControlCommand command) {
     }
 }
 
+ServiceID Reactor::resolve_service(const std::string& name) const {
+    return service_registry_.resolve(name);
+}
+
 TimerID Reactor::allocate_timer_id() {
     const std::lock_guard<std::mutex> lock(timer_registry_mutex_);
     TimerID id = next_timer_id_;

@@ -216,9 +216,18 @@ void ApplicationThread::cancel_timer(TimerID id) {
 void ApplicationThread::connect_to_service(const std::string& service_name) const {
     assert_called_from_owner();
 
+    // Resolve the name to a ServiceID here so no std::string rides the control
+    // queue. An unknown service is a configuration/programming error -- fail fast
+    // rather than defer an asynchronous ConnectionFailed for a name that can never
+    // resolve.
+    const ServiceID service_id = reactor_.resolve_service(service_name);
+    if (!service_id.is_valid()) {
+        throw PreconditionAssertion("ApplicationThread::connect_to_service: unknown service '" + service_name + "'", __FILE__, __LINE__);
+    }
+
     ReactorControlCommand command(ReactorControlCommand::CommandTag::Connect);
     command.requesting_thread_id_ = thread_id_;
-    command.service_name_ = service_name;
+    command.service_id_ = service_id;
     reactor_.enqueue_control_command(command);
 }
 

@@ -22,7 +22,7 @@ This separation keeps all file-descriptor state — connection maps, timer fds, 
 | `OutboundConnectionManager` | Owns all outbound connection state: connection maps, connect/read/write/teardown/timeout logic |
 | `ReactorConfiguration` | All config: timeouts, slab sizes, HA topology, command queue capacity, `connect_timeout` (default 5 s), `socket_maximum_inactivity_interval_` (default 60 s) |
 | `ReactorControlCommand` | Commands sent from application threads to the reactor: `AddTimer`, `CancelTimer`, `Connect`, `Disconnect`, `SendPdu`, `SendRaw`, `CommitRawBytes` |
-| `ServiceRegistry` | Static name→`ServiceEndpoints` map; populated before threads start; no file I/O at runtime |
+| `ServiceRegistry` | Static service catalog; interns each service to a stable `ServiceID` at registration and maps id→(name, `ServiceEndpoints`); populated before threads start; no file I/O at runtime. `connect_to_service(name)` resolves the name to its `ServiceID` up front (fail-fast on an unknown name), so a `Connect` command carries the integer id, not a `std::string` |
 | `ServiceEndpoints` | Primary + secondary `NetworkEndpointConfig`; secondary `port==0` means not configured |
 | `ConnectionID` | Strongly-typed connection identifier; 0 = invalid; monotonically increasing from 1; allocated by `Reactor::allocate_connection_id()`, shared across both managers |
 | `OutboundConnection` | Per-connection state for reactor-managed outbound TCP connections |

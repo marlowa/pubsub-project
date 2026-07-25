@@ -254,6 +254,11 @@ class Reactor : public ThreadLookupInterface {
 
     void on_housekeeping_tick();
 
+    // Resolve a service name to its ServiceID via the registry (invalid if unknown).
+    // Called from application threads by connect_to_service to keep the service
+    // name off the control-command queue; the registry is read-only after setup.
+    [[nodiscard]] ServiceID resolve_service(const std::string& name) const;
+
     [[nodiscard]] TimerID allocate_timer_id();
 
     QuillLogger& get_logger() {

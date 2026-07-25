@@ -110,7 +110,7 @@ Target environment is **low-latency** (sub-100ns encode/decode). Heap allocation
 | `OutboundConnectionManager` | Owns all outbound connection state: connection maps, connect/read/write/teardown/timeout logic |
 | `ReactorConfiguration` | All config: timeouts, slab sizes, HA topology, command queue config, `connect_timeout` (default 5s), `socket_maximum_inactivity_interval_` (default 60s) |
 | `ReactorControlCommand` | Commands: `AddTimer`, `CancelTimer`, `Connect`, `Disconnect`, `SendPdu` |
-| `ServiceRegistry` | Static name→`ServiceEndpoints` map; populated before threads start; no file I/O |
+| `ServiceRegistry` | Static service catalog; interns each service to a stable `ServiceID` at registration and maps id→(name, `ServiceEndpoints`); populated before threads start; no file I/O. `connect_to_service(name)` resolves the name to its id up front (fail-fast on unknown), so a `Connect` command carries the integer id, not a `std::string` |
 | `ServiceEndpoints` | Primary + secondary `NetworkEndpointConfig`; secondary port==0 means not configured |
 | `ConnectionID` | Strongly-typed connection identifier; 0 = invalid; monotonically increasing from 1; allocated by `Reactor::allocate_connection_id()` which is shared between both managers |
 | `OutboundConnection` | Per-connection state for reactor-managed outbound TCP connections (see below) |
@@ -1297,7 +1297,7 @@ The reserved ports are kept in the table so they are not accidentally repurposed
 |---|---|
 | `AddTimer` | `owner_thread_id_`, `timer_id_`, `timer_name_`, `interval_`, `timer_type_` |
 | `CancelTimer` | `owner_thread_id_`, `timer_id_` |
-| `Connect` | `requesting_thread_id_`, `service_name_` (resolved via `ServiceRegistry`) |
+| `Connect` | `requesting_thread_id_`, `service_id_` (a `ServiceID`; the name is resolved to this id by `connect_to_service`, fail-fast on unknown) |
 | `Disconnect` | `connection_id_` |
 | `SendPdu` | `connection_id_`, `slab_id_`, `pdu_chunk_ptr_`, `pdu_byte_count_` |
 

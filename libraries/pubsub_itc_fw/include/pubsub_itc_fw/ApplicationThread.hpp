@@ -343,9 +343,11 @@ class ApplicationThread {
      * ApplicationThread's callback context (e.g. on_initial_event,
      * on_app_ready_event, on_itc_message, etc.) and never from another thread.
      *
-     * The reactor resolves the service name via the ServiceRegistry, initiates
-     * a non-blocking TCP connect, and delivers one of the following events to
-     * this thread's queue when the attempt completes:
+     * connect_to_service() resolves the service name to its ServiceID via the
+     * ServiceRegistry (failing fast on an unknown name); the reactor then resolves
+     * that id to the service's endpoints, initiates a non-blocking TCP connect, and
+     * delivers one of the following events to this thread's queue when the attempt
+     * completes:
      *
      *   ConnectionEstablished - carrying the assigned ConnectionID.
      *   ConnectionFailed      - carrying a human-readable reason string.
@@ -358,14 +360,19 @@ class ApplicationThread {
      * @brief Requests the reactor to establish an outbound TCP connection to a
      *        named service.
      *
-     * The service name is resolved via the ServiceRegistry supplied to the
-     * Reactor at construction. The reactor tries the primary endpoint first
+     * The name is resolved to its ServiceID via the ServiceRegistry supplied to
+     * the Reactor at construction, and only that integer id is sent to the reactor
+     * (so no service-name string is copied through the control-command queue). An
+     * unknown service is a configuration error and fails fast: this throws
+     * PreconditionAssertion on the calling thread rather than deferring an
+     * asynchronous ConnectionFailed. The reactor tries the primary endpoint first
      * and falls back to the secondary if the primary is unreachable.
      *
-     * The result is delivered asynchronously via on_connection_established()
-     * or on_connection_failed().
+     * The result for a known service is delivered asynchronously via
+     * on_connection_established() or on_connection_failed().
      *
-     * @param[in] service_name Logical name of the service to connect to.
+     * @param[in] service_name Logical name of a registered service to connect to;
+     *                         an unregistered name throws PreconditionAssertion.
      */
     void connect_to_service(const std::string& service_name) const;
 
