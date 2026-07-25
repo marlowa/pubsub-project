@@ -13,6 +13,7 @@
 
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
+#include <pubsub_itc_fw/TimerID.hpp>
 
 #include "FixOrderLimits.hpp"
 #include "FixParser.hpp"
@@ -239,19 +240,10 @@ struct FixSession {
     int64_t absolute_head_seen_{0};
     int64_t absolute_bytes_committed_{0};
 
-    /**
-     * @brief Returns the timer name used for this session's logon timeout.
-     *
-     * Each session gets a unique name so the FixGatewayThread can start,
-     * cancel, and identify the timer on a per-session basis.
-     */
-    [[nodiscard]] std::string logon_timeout_timer_name() const {
-        return "logon_timeout_" + std::to_string(conn_id.get_value());
-    }
-
-    [[nodiscard]] std::string scram_auth_timeout_timer_name() const {
-        return "scram_auth_timeout_" + std::to_string(conn_id.get_value());
-    }
+    // Per-session timer ids (default-constructed = not scheduled). The gateway
+    // starts, cancels, and recognises each session's timers by these ids.
+    pubsub_itc_fw::TimerID logon_timeout_timer_id{};
+    pubsub_itc_fw::TimerID scram_auth_timeout_timer_id{};
 };
 
 } // namespaces

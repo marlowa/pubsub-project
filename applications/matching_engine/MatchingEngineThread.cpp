@@ -21,10 +21,6 @@ namespace {
 
 // Leader-follower protocol PDU ids (must match leader_follower.dsl).
 
-// Timer names.
-constexpr const char* timer_promotion_timeout = "me_promotion_timeout";
-constexpr const char* timer_arbiter_heartbeat = "me_arbiter_heartbeat";
-
 // Echo the NoUnderlyings repeating group from a decoded NewOrderSingle onto its
 // ExecutionReport. The decoded view carries UnderlyingsView elements; the ER expects
 // the (field-identical) Underlyings type, so each element is copied into an array
@@ -197,7 +193,7 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
         // Slice C: if a promotion was pending (primary had dropped and we armed
         // the timeout), the primary has reconnected first -- cancel the promotion.
         if (promotion_pending_) {
-            cancel_timer(timer_promotion_timeout);
+            cancel_timer(promotion_timeout_timer_id_);
             promotion_pending_ = false;
             PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                            "MatchingEngineThread: primary reconnected before promotion -- timer cancelled, staying FOLLOWER");
@@ -241,7 +237,7 @@ void MatchingEngineThread::on_connection_lost(const pubsub_itc_fw::ConnectionID&
         // Slice C: primary loss on the follower triggers arbiter-mediated promotion.
         // Arm the promotion timer; if the primary reconnects before it fires we cancel it.
         if (ha_role_state_ == MeRole::Follower) {
-            start_one_off_timer(timer_promotion_timeout, std::chrono::seconds(config_.heartbeat_timeout_seconds));
+            promotion_timeout_timer_id_ = start_one_off_timer(std::chrono::seconds(config_.heartbeat_timeout_seconds));
             promotion_pending_ = true;
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                        "MatchingEngineThread: promotion timeout armed ({}s) -- will request arbitration if primary does not reconnect",
@@ -251,13 +247,13 @@ void MatchingEngineThread::on_connection_lost(const pubsub_itc_fw::ConnectionID&
         arbiter_primary_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: arbiter-primary connection {} lost: {}", id.get_value(), reason);
         if (!arbiter_primary_conn_id_.is_valid() && !arbiter_secondary_conn_id_.is_valid()) {
-            cancel_timer(timer_arbiter_heartbeat);
+            cancel_timer(arbiter_heartbeat_timer_id_);
         }
     } else if (id == arbiter_secondary_conn_id_) {
         arbiter_secondary_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: arbiter-secondary connection {} lost: {}", id.get_value(), reason);
         if (!arbiter_primary_conn_id_.is_valid() && !arbiter_secondary_conn_id_.is_valid()) {
-            cancel_timer(timer_arbiter_heartbeat);
+            cancel_timer(arbiter_heartbeat_timer_id_);
         }
     } else if (sequencer_order_conn_ids_.count(id) > 0) {
         sequencer_order_conn_ids_.erase(id);
@@ -631,8 +627,8 @@ void MatchingEngineThread::send_er_to_sequencer(const pubsub_itc_fw_app::Executi
     }
 }
 
-void MatchingEngineThread::on_timer_event(const std::string& name) {
-    if (name == timer_promotion_timeout) {
+void MatchingEngineThread::on_timer_event(pubsub_itc_fw::TimerID id) {
+    if (id == promotion_timeout_timer_id_) {
         // Slice C: the primary did not reconnect in time. Request arbitration.
         promotion_pending_ = false;
         if (ha_role_state_ != MeRole::Follower) {
@@ -644,7 +640,7 @@ void MatchingEngineThread::on_timer_event(const std::string& name) {
         return;
     }
 
-    if (name == timer_arbiter_heartbeat) {
+    if (id == arbiter_heartbeat_timer_id_) {
         send_arbiter_heartbeat();
         return;
     }
@@ -742,8 +738,8 @@ void MatchingEngineThread::adopt_leader_role() {
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: adopting LEADER role (epoch={})", epoch_);
     ha_role_state_ = MeRole::Leader;
     // Renew the arbiter lease periodically for as long as we are leader.
-    cancel_timer(timer_arbiter_heartbeat);
-    start_recurring_timer(timer_arbiter_heartbeat, std::chrono::seconds(config_.heartbeat_interval_seconds));
+    cancel_timer(arbiter_heartbeat_timer_id_);
+    arbiter_heartbeat_timer_id_ = start_recurring_timer(std::chrono::seconds(config_.heartbeat_interval_seconds));
     // Send one heartbeat immediately so the arbiter registers us without delay.
     send_arbiter_heartbeat();
 }
@@ -825,7 +821,7 @@ void MatchingEngineThread::handle_arbitration_decision(const pubsub_itc_fw::Even
 
 void MatchingEngineThread::enter_follower_state() {
     ha_role_state_ = MeRole::Follower;
-    cancel_timer(timer_arbiter_heartbeat);
+    cancel_timer(arbiter_heartbeat_timer_id_);
 }
 
 void MatchingEngineThread::send_arbiter_heartbeat() {
@@ -847,7 +843,7 @@ void MatchingEngineThread::send_arbiter_heartbeat() {
 
 void MatchingEngineThread::begin_reconciliation() {
     // Cancel the promotion timer (it fired or arbitration is complete).
-    cancel_timer(timer_promotion_timeout);
+    cancel_timer(promotion_timeout_timer_id_);
     ha_role_state_ = MeRole::Reconciling;
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: entering RECONCILING (last_replicated_seq_no={}, book_size={})",
                last_replicated_seq_no_, order_book_.size());

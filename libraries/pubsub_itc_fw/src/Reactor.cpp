@@ -131,7 +131,7 @@ Reactor::Reactor(const ReactorConfiguration& reactor_configuration, const Servic
     }
 
     auto timer_id = allocate_timer_id();
-    create_timer_fd(timer_id, "Backstop", ThreadID(system_thread_id_value), config_.inactivity_check_interval_, TimerType(TimerType::Recurring));
+    create_timer_fd(timer_id, ThreadID(system_thread_id_value), config_.inactivity_check_interval_, TimerType(TimerType::Recurring));
     PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "backstop timer created");
 }
 
@@ -387,27 +387,21 @@ void Reactor::cancel_all_timer_fds_for_thread(ThreadID owner_thread_id) {
 
     PUBSUB_LOG(logger_, FwLogLevel::Info, "Reactor::run event loop has finished, will cancel all timers for thread {}", owner_thread_id.get_value());
 
-    auto it_thread = thread_timer_names_.find(owner_thread_id);
-    if (it_thread == thread_timer_names_.end()) {
+    auto it_thread = thread_timer_ids_.find(owner_thread_id);
+    if (it_thread == thread_timer_ids_.end()) {
         return;
     }
 
-    auto& timers_by_name = it_thread->second;
-
-    for (auto it = timers_by_name.begin(); it != timers_by_name.end();) {
-        const TimerID id = it->second;
-
+    for (const TimerID id : it_thread->second) {
         auto id_it = timer_id_to_fd_.find(id);
         if (id_it != timer_id_to_fd_.end()) {
             const int fd = id_it->second;
             timer_id_to_fd_.erase(id_it);
             deregister_handler(fd);
         }
-
-        it = timers_by_name.erase(it);
     }
 
-    thread_timer_names_.erase(it_thread);
+    thread_timer_ids_.erase(it_thread);
 }
 
 bool Reactor::wait_for_all_threads(std::function<bool(const ApplicationThread&)> predicate, const std::string& phase_name) {
@@ -665,18 +659,19 @@ TimerID Reactor::allocate_timer_id() {
     return id;
 }
 
-void Reactor::create_timer_fd(TimerID timer_id, const std::string& name, ThreadID owner_thread_id, std::chrono::microseconds interval, TimerType type) {
+void Reactor::create_timer_fd(TimerID timer_id, ThreadID owner_thread_id, std::chrono::microseconds interval, TimerType type) {
     const std::lock_guard<std::mutex> lock(timer_registry_mutex_);
 
-    auto& thread_timers = thread_timer_names_[owner_thread_id];
-    if (thread_timers.find(name) != thread_timers.end()) {
-        throw PreconditionAssertion(fmt::format("Thread {} already has a timer named '{}'", owner_thread_id.get_value(), name), __FILE__, __LINE__);
+    auto& thread_timers = thread_timer_ids_[owner_thread_id];
+    if (thread_timers.find(timer_id) != thread_timers.end()) {
+        throw PreconditionAssertion(fmt::format("Thread {} already has a timer with id {}", owner_thread_id.get_value(), timer_id.get_value()), __FILE__,
+                                    __LINE__);
     }
 
-    PUBSUB_LOG(logger_, FwLogLevel::Info, "Reactor created timer id {}\n", __FILE__, __LINE__, timer_id.get_value());
-    const Timer timer(name, owner_thread_id, timer_id, type, interval);
+    PUBSUB_LOG(logger_, FwLogLevel::Info, "Reactor created timer id {}", timer_id.get_value());
+    const Timer timer(owner_thread_id, timer_id, type, interval);
     auto timer_handler = std::make_unique<TimerHandler>(timer, *this);
-    thread_timers[name] = timer_id;
+    thread_timers.insert(timer_id);
     timer_id_to_fd_[timer_id] = timer_handler->get_fd();
     register_handler(std::move(timer_handler));
 }
@@ -691,24 +686,18 @@ void Reactor::cancel_timer_fd(ThreadID owner_thread_id, TimerID id) {
 
     const int fd = id_it->second;
 
-    auto handler_it = handlers_.find(fd);
-    if (handler_it == handlers_.end()) {
+    if (handlers_.find(fd) == handlers_.end()) {
         return;
     }
 
-    auto* timer_handler = dynamic_cast<TimerHandler*>(handler_it->second.get());
-    const std::string& timer_name = timer_handler->get_timer().get_name();
-
-    auto& thread_timers = thread_timer_names_[owner_thread_id];
-    auto name_it = thread_timers.find(timer_name);
-
-    if (name_it == thread_timers.end()) {
-        throw PreconditionAssertion(fmt::format("Thread {} does not have a timer named '{}'", owner_thread_id.get_value(), timer_name), __FILE__, __LINE__);
+    auto thread_it = thread_timer_ids_.find(owner_thread_id);
+    if (thread_it == thread_timer_ids_.end() || thread_it->second.find(id) == thread_it->second.end()) {
+        throw PreconditionAssertion(fmt::format("Thread {} does not have a timer with id {}", owner_thread_id.get_value(), id.get_value()), __FILE__, __LINE__);
     }
 
-    thread_timers.erase(name_it);
-    if (thread_timers.empty()) {
-        thread_timer_names_.erase(owner_thread_id);
+    thread_it->second.erase(id);
+    if (thread_it->second.empty()) {
+        thread_timer_ids_.erase(thread_it);
     }
 
     timer_id_to_fd_.erase(id_it);
@@ -899,7 +888,7 @@ void Reactor::process_control_commands() {
 
         switch (command.as_tag()) {
             case ReactorControlCommand::AddTimer:
-                create_timer_fd(command.timer_id_, command.timer_name_, command.owner_thread_id_, command.interval_, command.timer_type_);
+                create_timer_fd(command.timer_id_, command.owner_thread_id_, command.interval_, command.timer_type_);
                 break;
 
             case ReactorControlCommand::CancelTimer:

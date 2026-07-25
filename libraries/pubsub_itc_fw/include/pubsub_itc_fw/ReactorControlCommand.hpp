@@ -36,7 +36,7 @@ namespace pubsub_itc_fw {
  *
  * Tag / payload field mapping:
  *
- *   AddTimer       -- owner_thread_id_, timer_id_, timer_name_, interval_, timer_type_
+ *   AddTimer       -- owner_thread_id_, timer_id_, interval_, timer_type_
  *   CancelTimer    -- owner_thread_id_, timer_id_
  *   Connect        -- requesting_thread_id_, service_name_
  *   Disconnect     -- connection_id_
@@ -117,7 +117,6 @@ class ReactorControlCommand {
 
     ThreadID owner_thread_id_{};
     TimerID timer_id_{};
-    std::string timer_name_;
     std::chrono::microseconds interval_{0};
     TimerType timer_type_{TimerType::SingleShot};
 

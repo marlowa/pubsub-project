@@ -314,25 +314,26 @@ class ApplicationThread {
 
     /**
      * @brief Starts a one-off timer.
-     * @param [in] name The name of the timer.
      * @param [in] interval The timer interval.
-     * @return the timer ID for the timer created
+     * @return the TimerID for the timer created; retain it to cancel the timer
+     *         or to recognise it in on_timer_event.
      */
-    TimerID start_one_off_timer(const std::string& name, std::chrono::microseconds interval);
+    TimerID start_one_off_timer(std::chrono::microseconds interval);
 
     /**
      * @brief Starts a recurring timer.
-     * @param [in] name The name of the timer.
      * @param [in] interval The timer interval.
-     * @return the timer ID for the timer created
+     * @return the TimerID for the timer created; retain it to cancel the timer
+     *         or to recognise it in on_timer_event.
      */
-    TimerID start_recurring_timer(const std::string& name, std::chrono::microseconds interval);
+    TimerID start_recurring_timer(std::chrono::microseconds interval);
 
     /**
      * @brief Cancels a timer.
-     * @param [in] name The name of the timer to cancel.
+     * @param [in] id The TimerID returned when the timer was started. Unknown or
+     *                already-fired ids are ignored.
      */
-    void cancel_timer(const std::string& name);
+    void cancel_timer(TimerID id);
 
     /**
      * @name Connection API Contract
@@ -447,7 +448,6 @@ class ApplicationThread {
 
     /**
      * @brief Schedules a high-resolution timer.
-     * @param [in] name The name of the timer.
      * @param [in] interval The delay or interval before the timer rings.
      * @param [in] type Whether the timer is single-shot or recurring.
      * @return The TimerID for the timer created.
@@ -456,10 +456,11 @@ class ApplicationThread {
      * the underlying timerfd, waits for it in epoll, reads it when it becomes
      * readable, and enqueues one TimerRings event per ring into this thread's
      * message queue. ApplicationThread never touches timerfds directly.
-     * Note: if a timer with the specified time exists already, then it is called,
-     * so effectively, it gets rescheduled.
+     *
+     * Each call allocates a fresh TimerID; there is no name-based deduplication.
+     * To replace an existing timer, cancel it with its TimerID first.
      */
-    TimerID schedule_timer(const std::string& name, std::chrono::microseconds interval, TimerType type);
+    TimerID schedule_timer(std::chrono::microseconds interval, TimerType type);
 
     auto get_time_event_started() const {
         return time_event_started_;
@@ -678,7 +679,13 @@ class ApplicationThread {
 
     void on_timer_id_event(TimerID id);
 
-    virtual void on_timer_event([[maybe_unused]] const std::string& name) {}
+    /**
+     * @brief Called when a timer this thread scheduled rings.
+     * @param [in] id The TimerID returned by start_one_off_timer /
+     *                start_recurring_timer / schedule_timer. Compare against the
+     *                ids the thread retained to identify which timer fired.
+     */
+    virtual void on_timer_event([[maybe_unused]] TimerID id) {}
 
     /**
      * @brief Controls timer event deferral in the drain loop.
@@ -787,9 +794,6 @@ class ApplicationThread {
     // still tries to use it.
     std::unique_ptr<LockFreeMessageQueue<EventMessage>> message_queue_;
     std::unique_ptr<ThreadWithJoinTimeout> thread_;
-
-    std::unordered_map<std::string, TimerID> name_to_id_;
-    std::unordered_map<TimerID, std::string> id_to_name_;
 
     /// Extra threads registered by the subclass for Reactor CPU pinning.
     std::vector<ExtraThread> extra_threads_;

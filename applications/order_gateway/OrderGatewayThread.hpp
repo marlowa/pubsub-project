@@ -83,7 +83,7 @@ class OrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     void on_connection_lost(const pubsub_itc_fw::ConnectionID& id, const std::string& reason) override;
     void on_raw_socket_message(const pubsub_itc_fw::EventMessage& message) override;
     void on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message) override;
-    void on_timer_event(const std::string& name) override;
+    void on_timer_event(pubsub_itc_fw::TimerID id) override;
     void on_itc_message(const pubsub_itc_fw::EventMessage& message) override;
 
   private:
@@ -291,6 +291,9 @@ class OrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
 
     // True while the cancel-drain one-shot timer is armed.  Prevents double-arming.
     bool cancel_drain_timer_active_{false};
+
+    // Timer id of the cancel-drain one-shot, so on_timer_event can recognise it.
+    pubsub_itc_fw::TimerID cancel_drain_timer_id_{};
 };
 
 } // namespaces

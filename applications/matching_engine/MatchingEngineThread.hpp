@@ -73,7 +73,7 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     void on_connection_established(pubsub_itc_fw::ConnectionID id) override;
     void on_connection_lost(const pubsub_itc_fw::ConnectionID& id, const std::string& reason) override;
     void on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message) override;
-    void on_timer_event(const std::string& name) override;
+    void on_timer_event(pubsub_itc_fw::TimerID id) override;
     void on_itc_message(const pubsub_itc_fw::EventMessage& message) override;
 
   private:
@@ -247,6 +247,11 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // Leadership generation. Adopted from ArbitrationDecision, or self-incremented
     // on degraded self-promotion.
     int32_t epoch_{0};
+
+    // Timer ids (default-constructed = not scheduled); on_timer_event compares
+    // a fired timer's id against these to identify it.
+    pubsub_itc_fw::TimerID promotion_timeout_timer_id_{};
+    pubsub_itc_fw::TimerID arbiter_heartbeat_timer_id_{};
 
     // Secondary: instance_id of the primary (peer). Fixed at 1 by convention.
     static constexpr int64_t primary_instance_id = 1;

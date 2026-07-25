@@ -35,7 +35,7 @@ Subclasses override these to implement their behaviour:
 | `on_app_ready_event()` | All threads are operational; start sending traffic |
 | `on_termination_event(reason)` | Shutdown in progress; release resources |
 | `on_itc_message(msg)` | ITC message delivered from another thread — **pure virtual** |
-| `on_timer_event(name)` | Named timer fired |
+| `on_timer_event(id)` | A timer fired; `id` is the `TimerID` returned by `start_one_off_timer`/`start_recurring_timer` (compare against retained ids to identify it) |
 | `on_pubsub_message(msg)` | Pub/sub delivery |
 | `on_raw_socket_message(msg)` | Raw byte stream delivery (see [Socket Comms](socket_comms.md)) |
 | `on_framework_pdu_message(msg)` | Inbound PDU delivered — **caller must call `allocator.deallocate(msg.slab_id(), msg.payload())` after processing** |

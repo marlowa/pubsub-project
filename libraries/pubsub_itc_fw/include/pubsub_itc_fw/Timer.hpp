@@ -4,7 +4,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <chrono>
-#include <string>
 
 #include <pubsub_itc_fw/TimerID.hpp>
 #include <pubsub_itc_fw/TimerType.hpp>
@@ -17,19 +16,16 @@ namespace pubsub_itc_fw {
  * @brief Manages the attributes for a timer.
  *
  * This class encapsulates all necessary information for a recurring or single-shot timer.
+ *
+ * A timer is identified purely by its integer TimerID. The framework carries no
+ * timer name: if an application wants a human-readable label for its own debug
+ * logging it keeps its own TimerID-to-name map, so no string is ever constructed
+ * on the reactor control path.
  */
 class Timer {
   public:
-    Timer(const std::string& name, ThreadID owner_thread_id, TimerID timer_id, TimerType type, std::chrono::microseconds interval)
-        : name_(name), owner_thread_id_(owner_thread_id), timer_id_(timer_id), type_(type), interval_(interval) {}
-
-    /**
-     * @brief Returns the name of the timer.
-     * @return The name of the timer.
-     */
-    [[nodiscard]] const std::string& get_name() const {
-        return name_;
-    }
+    Timer(ThreadID owner_thread_id, TimerID timer_id, TimerType type, std::chrono::microseconds interval)
+        : owner_thread_id_(owner_thread_id), timer_id_(timer_id), type_(type), interval_(interval) {}
 
     [[nodiscard]] ThreadID get_owner_thread_id() const {
         return owner_thread_id_;
@@ -55,7 +51,6 @@ class Timer {
     }
 
   private:
-    std::string name_;
     ThreadID owner_thread_id_;
     TimerID timer_id_;
     TimerType type_;

@@ -97,7 +97,6 @@ int64_t parse_fix_utc_timestamp(std::string_view sv) {
     return static_cast<int64_t>(epoch_seconds) * 1'000'000'000LL + millis * 1'000'000LL;
 }
 
-constexpr const char* cancel_drain_timer_name = "cancel_drain";
 constexpr int cancel_drain_batch_size = 500;
 constexpr auto cancel_drain_interval = std::chrono::milliseconds{1};
 
@@ -190,8 +189,8 @@ void OrderGatewayThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& i
     auto it = sessions_.find(id);
     if (it != sessions_.end()) {
         FixSession& session = it->second;
-        cancel_timer(session.logon_timeout_timer_name());
-        cancel_timer(session.scram_auth_timeout_timer_name());
+        cancel_timer(session.logon_timeout_timer_id);
+        cancel_timer(session.scram_auth_timeout_timer_id);
         queue_session_for_cleanup(session);
         sessions_.erase(it);
     }
@@ -305,7 +304,7 @@ void OrderGatewayThread::on_raw_socket_message(const pubsub_itc_fw::EventMessage
                     }
                 }));
 
-        start_one_off_timer(sessions_.at(conn_id).logon_timeout_timer_name(), config_.logon_timeout);
+        sessions_.at(conn_id).logon_timeout_timer_id = start_one_off_timer(config_.logon_timeout);
 
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "OrderGatewayThread: connection {} new FIX session, waiting for Logon "
@@ -556,14 +555,14 @@ void OrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventMess
     release_pdu_payload(message);
 }
 
-void OrderGatewayThread::on_timer_event(const std::string& name) {
-    if (name == cancel_drain_timer_name) {
+void OrderGatewayThread::on_timer_event(pubsub_itc_fw::TimerID timer_id) {
+    if (timer_id == cancel_drain_timer_id_) {
         drain_pending_cancels();
         return;
     }
 
     for (auto& [id, session] : sessions_) {
-        if (session.logon_timeout_timer_name() == name) {
+        if (timer_id == session.logon_timeout_timer_id) {
             if (!session.session_established) {
                 PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "OrderGatewayThread: connection {} logon timeout -- disconnecting",
                            id.get_value());
@@ -571,7 +570,7 @@ void OrderGatewayThread::on_timer_event(const std::string& name) {
             }
             return;
         }
-        if (session.scram_auth_timeout_timer_name() == name) {
+        if (timer_id == session.scram_auth_timeout_timer_id) {
             if (session.auth_pending) {
                 PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "OrderGatewayThread: connection {} SCRAM authentication timeout -- disconnecting",
                            id.get_value());
@@ -692,7 +691,7 @@ void OrderGatewayThread::handle_authentication_result(const pubsub_itc_fw::Event
     }
     FixSession& session = *session_ptr;
     session.auth_pending = false;
-    cancel_timer(session.scram_auth_timeout_timer_name());
+    cancel_timer(session.scram_auth_timeout_timer_id);
 
     if (view.outcome != pubsub_itc_fw_app::AuthenticationOutcome::Granted) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "OrderGatewayThread: connection {} authentication failed outcome={} -- sending Logout",
@@ -735,7 +734,7 @@ void OrderGatewayThread::handle_authentication_result(const pubsub_itc_fw::Event
 // FIX session handlers
 
 void OrderGatewayThread::handle_logon(FixSession& session, const ParsedFixMessage& msg) {
-    cancel_timer(session.logon_timeout_timer_name());
+    cancel_timer(session.logon_timeout_timer_id);
     // client_comp_id is stored as std::string for use beyond this callback;
     // the implicit conversion from string_view copies the bytes here.
     session.client_comp_id = msg.get(Tag::SenderCompID);
@@ -792,7 +791,7 @@ void OrderGatewayThread::handle_logon(FixSession& session, const ParsedFixMessag
 
     // Arm a timeout so the session is not left pending indefinitely if the
     // authentication service is slow or loses the request.
-    start_one_off_timer(session.scram_auth_timeout_timer_name(), config_.scram_auth_timeout);
+    session.scram_auth_timeout_timer_id = start_one_off_timer(config_.scram_auth_timeout);
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "OrderGatewayThread: connection {} AuthenticationRequest sent request_id={} comp_id='{}' timeout={}s", session.conn_id.get_value(),
@@ -1218,7 +1217,7 @@ void OrderGatewayThread::queue_session_for_cleanup(FixSession& session) {
     pending_cancel_sessions_.push_back(std::move(dead));
 
     if (!cancel_drain_timer_active_) {
-        start_one_off_timer(cancel_drain_timer_name, cancel_drain_interval);
+        cancel_drain_timer_id_ = start_one_off_timer(cancel_drain_interval);
         cancel_drain_timer_active_ = true;
     }
 }
@@ -1259,7 +1258,7 @@ void OrderGatewayThread::drain_pending_cancels() {
     }
 
     if (!pending_cancel_sessions_.empty()) {
-        start_one_off_timer(cancel_drain_timer_name, cancel_drain_interval);
+        cancel_drain_timer_id_ = start_one_off_timer(cancel_drain_interval);
         cancel_drain_timer_active_ = true;
     } else if (sent > 0) {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "OrderGatewayThread: cancel drain complete");

@@ -166,7 +166,7 @@ class SenderThread : public ApplicationThread {
     void on_raw_socket_message(const EventMessage&) override {}
     void on_framework_pdu_message(const EventMessage&) override {}
     void on_itc_message(const EventMessage&) override {}
-    void on_timer_event(const std::string&) override {}
+    void on_timer_event(pubsub_itc_fw::TimerID) override {}
 
   private:
     void send_burst() {
@@ -335,7 +335,7 @@ class ReceiverThread : public ApplicationThread {
     }
 
     void on_itc_message([[maybe_unused]] const EventMessage& msg) override {}
-    void on_timer_event([[maybe_unused]] const std::string& name) override {}
+    void on_timer_event([[maybe_unused]] pubsub_itc_fw::TimerID id) override {}
 
   private:
     // Highest absolute head position observed across raw-socket events.

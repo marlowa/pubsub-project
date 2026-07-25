@@ -48,14 +48,15 @@ TimerHandler::TimerHandler(const Timer& timer, Reactor& reactor) : timer_(timer)
 
     // Special case: reactor backstop timer (owner thread ID == 0)
     if (owner_id.get_value() == 0) {
-        PUBSUB_LOG(reactor_.get_logger(), FwLogLevel::Info, "TimerHandler ctor: created backstop timerfd {} for timer '{}'", fd_, timer_.get_name());
+        PUBSUB_LOG(reactor_.get_logger(), FwLogLevel::Info, "TimerHandler ctor: created backstop timerfd {} for timer id {}", fd_,
+                   timer_.get_timer_id().get_value());
     } else {
         owner_thread_ = reactor_.get_fast_path_thread(owner_id);
         if (owner_thread_ == nullptr) {
             PUBSUB_LOG(reactor_.get_logger(), FwLogLevel::Error,
                        "TimerHandler ctor: owner thread {} not found in fast-path map "
-                       "for timer '{}'",
-                       owner_id.get_value(), timer_.get_name());
+                       "for timer id {}",
+                       owner_id.get_value(), timer_.get_timer_id().get_value());
             // This should never happen unless construction order is wrong
             throw PubSubItcException("TimerHandler: owner thread not found");
         }
@@ -104,7 +105,8 @@ bool TimerHandler::handle_event(uint32_t events) {
 
     if (!reactor_.is_running()) {
         PUBSUB_LOG(reactor_.get_logger(), FwLogLevel::Info,
-                   "TimerHandler::handle_event: reactor is no longer running; dropping {} pending expirations for timer '{}'", expirations, timer_.get_name());
+                   "TimerHandler::handle_event: reactor is no longer running; dropping {} pending expirations for timer id {}", expirations,
+                   timer_.get_timer_id().get_value());
         return true;
     }
 
@@ -117,20 +119,20 @@ bool TimerHandler::handle_event(uint32_t events) {
     // we drop all pending expirations at once.
     if (state != ThreadLifecycleState::Operational) {
         PUBSUB_LOG(reactor_.get_logger(), FwLogLevel::Warning,
-                   "TimerHandler: dropping {} pending expirations for timer '{}' "
+                   "TimerHandler: dropping {} pending expirations for timer id {} "
                    "because owner thread {} is in state {}",
-                   expirations, timer_.get_name(), owner.get_value(), ThreadLifecycleState::to_string(state));
+                   expirations, timer_.get_timer_id().get_value(), owner.get_value(), ThreadLifecycleState::to_string(state));
         return true;
     }
     // ---- END RACE-AVOIDANCE GUARD ----
 
     // 5. Deliver one event, coalescing multiple expirations (only when Operational)
     if (expirations == 1) {
-        PUBSUB_LOG(reactor_.get_logger(), FwLogLevel::Debug, "handle_event single expiration event, sending single timer event {} {}", timer_.get_name(),
+        PUBSUB_LOG(reactor_.get_logger(), FwLogLevel::Debug, "handle_event single expiration event, sending single timer event for timer id {}",
                    timer_.get_timer_id().get_value());
     } else {
-        PUBSUB_LOG(reactor_.get_logger(), FwLogLevel::Debug, "handle_event coalescing {} expiration events into single timer event {} {}", expirations,
-                   timer_.get_name(), timer_.get_timer_id().get_value());
+        PUBSUB_LOG(reactor_.get_logger(), FwLogLevel::Debug, "handle_event coalescing {} expiration events into single timer event for timer id {}",
+                   expirations, timer_.get_timer_id().get_value());
     }
 
     auto msg = EventMessage::create_timer_event(timer_.get_timer_id());

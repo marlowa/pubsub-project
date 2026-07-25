@@ -106,7 +106,7 @@ void SequencerThread::on_initial_event() {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: WAL is fresh (no prior records), starting from seq_no=1");
     }
 
-    start_recurring_timer("wal_snapshot", std::chrono::seconds(config_.snapshot_interval_seconds));
+    wal_snapshot_timer_id_ = start_recurring_timer(std::chrono::seconds(config_.snapshot_interval_seconds));
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: WAL snapshot timer started (interval={}s)", config_.snapshot_interval_seconds);
 
     if (!config_.ha_enabled) {
@@ -118,7 +118,7 @@ void SequencerThread::on_initial_event() {
         // HA mode: arm startup election window. If no peer contact within this
         // window, self-promote. Shorter than heartbeat_timeout_seconds so that
         // single-node HA deployments (peer down) also recover quickly.
-        start_one_off_timer("peer_heartbeat_timeout", std::chrono::seconds(config_.startup_election_timeout_seconds));
+        peer_heartbeat_timeout_timer_id_ = start_one_off_timer(std::chrono::seconds(config_.startup_election_timeout_seconds));
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: ha_enabled=true -- startup election timeout armed ({}s)",
                    config_.startup_election_timeout_seconds);
     }
@@ -166,14 +166,16 @@ void SequencerThread::on_connection_established(pubsub_itc_fw::ConnectionID id) 
         arbiter_primary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: arbiter-primary connection {} established", id.get_value());
         if (first_arbiter) {
-            start_recurring_timer("arbiter_heartbeat", std::chrono::seconds{30});
+            cancel_timer(arbiter_heartbeat_timer_id_);
+            arbiter_heartbeat_timer_id_ = start_recurring_timer(std::chrono::seconds{30});
         }
     } else if (svc == "arbiter_secondary") {
         const bool first_arbiter = !arbiter_primary_conn_id_.is_valid() && !arbiter_secondary_conn_id_.is_valid();
         arbiter_secondary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: arbiter-secondary connection {} established", id.get_value());
         if (first_arbiter) {
-            start_recurring_timer("arbiter_heartbeat", std::chrono::seconds{30});
+            cancel_timer(arbiter_heartbeat_timer_id_);
+            arbiter_heartbeat_timer_id_ = start_recurring_timer(std::chrono::seconds{30});
         }
     } else if (svc == "peer") {
         peer_conn_id_ = id;
@@ -216,13 +218,13 @@ void SequencerThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, 
         arbiter_primary_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: arbiter-primary connection {} lost: {}", id.get_value(), reason);
         if (!arbiter_primary_conn_id_.is_valid() && !arbiter_secondary_conn_id_.is_valid()) {
-            cancel_timer("arbiter_heartbeat");
+            cancel_timer(arbiter_heartbeat_timer_id_);
         }
     } else if (id == arbiter_secondary_conn_id_) {
         arbiter_secondary_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: arbiter-secondary connection {} lost: {}", id.get_value(), reason);
         if (!arbiter_primary_conn_id_.is_valid() && !arbiter_secondary_conn_id_.is_valid()) {
-            cancel_timer("arbiter_heartbeat");
+            cancel_timer(arbiter_heartbeat_timer_id_);
         }
     } else if (id == peer_conn_id_) {
         peer_conn_id_ = pubsub_itc_fw::ConnectionID{};
@@ -549,8 +551,8 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
     }
 }
 
-void SequencerThread::on_timer_event(const std::string& name) {
-    if (name == "wal_snapshot") {
+void SequencerThread::on_timer_event(pubsub_itc_fw::TimerID id) {
+    if (id == wal_snapshot_timer_id_) {
         try {
             wal_.take_snapshot();
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: WAL snapshot taken: last_seq_no={}, record_count={}",
@@ -561,17 +563,17 @@ void SequencerThread::on_timer_event(const std::string& name) {
         return;
     }
 
-    if (name == "peer_heartbeat") {
+    if (id == peer_heartbeat_timer_id_) {
         send_peer_heartbeat();
         return;
     }
 
-    if (name == "arbiter_heartbeat") {
+    if (id == arbiter_heartbeat_timer_id_) {
         send_arbiter_heartbeat();
         return;
     }
 
-    if (name == "peer_heartbeat_timeout") {
+    if (id == peer_heartbeat_timeout_timer_id_) {
         if (role_ == pubsub_itc_fw_app::Role::leader) {
             return; // already leader, nothing to do
         }
@@ -583,7 +585,7 @@ void SequencerThread::on_timer_event(const std::string& name) {
             // self-promote if no arbiter responds in time.
             PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: requesting arbitration from arbiter pool");
             send_arbitration_report();
-            start_one_off_timer("arbitration_timeout", std::chrono::seconds(config_.arbitration_timeout_seconds));
+            arbitration_timeout_timer_id_ = start_one_off_timer(std::chrono::seconds(config_.arbitration_timeout_seconds));
         } else {
             // No arbiter connected -- degrade to local instance-id rule.
             PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
@@ -594,7 +596,7 @@ void SequencerThread::on_timer_event(const std::string& name) {
         return;
     }
 
-    if (name == "arbitration_timeout") {
+    if (id == arbitration_timeout_timer_id_) {
         // Witness did not reply in time. Fall back to local instance-id rule.
         if (role_ != pubsub_itc_fw_app::Role::leader) {
             PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
@@ -629,15 +631,17 @@ void SequencerThread::adopt_role(pubsub_itc_fw_app::Role new_role) {
     role_ = new_role;
 
     if (new_role == pubsub_itc_fw_app::Role::leader) {
-        cancel_timer("peer_heartbeat_timeout");
-        start_recurring_timer("peer_heartbeat", std::chrono::seconds(config_.heartbeat_interval_seconds));
+        cancel_timer(peer_heartbeat_timeout_timer_id_);
+        cancel_timer(peer_heartbeat_timer_id_);
+        peer_heartbeat_timer_id_ = start_recurring_timer(std::chrono::seconds(config_.heartbeat_interval_seconds));
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: now LEADER -- heartbeat timer started ({}s interval)",
                    config_.heartbeat_interval_seconds);
     } else if (new_role == pubsub_itc_fw_app::Role::follower) {
-        start_recurring_timer("peer_heartbeat", std::chrono::seconds(config_.heartbeat_interval_seconds));
+        cancel_timer(peer_heartbeat_timer_id_);
+        peer_heartbeat_timer_id_ = start_recurring_timer(std::chrono::seconds(config_.heartbeat_interval_seconds));
         // Arm (or re-arm) the heartbeat timeout.
-        cancel_timer("peer_heartbeat_timeout");
-        start_one_off_timer("peer_heartbeat_timeout", std::chrono::seconds(config_.heartbeat_timeout_seconds));
+        cancel_timer(peer_heartbeat_timeout_timer_id_);
+        peer_heartbeat_timeout_timer_id_ = start_one_off_timer(std::chrono::seconds(config_.heartbeat_timeout_seconds));
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: now FOLLOWER -- heartbeat timer started, timeout armed ({}s)",
                    config_.heartbeat_timeout_seconds);
     }
@@ -776,7 +780,7 @@ void SequencerThread::handle_arbitration_decision(const pubsub_itc_fw::EventMess
         return;
     }
 
-    cancel_timer("arbitration_timeout");
+    cancel_timer(arbitration_timeout_timer_id_);
 
     epoch_ = decision.epoch;
 
@@ -871,8 +875,8 @@ void SequencerThread::handle_peer_heartbeat(const pubsub_itc_fw::EventMessage& m
 
     // Reset the heartbeat timeout whenever we receive a valid heartbeat.
     if (role_ == pubsub_itc_fw_app::Role::follower) {
-        cancel_timer("peer_heartbeat_timeout");
-        start_one_off_timer("peer_heartbeat_timeout", std::chrono::seconds(config_.heartbeat_timeout_seconds));
+        cancel_timer(peer_heartbeat_timeout_timer_id_);
+        peer_heartbeat_timeout_timer_id_ = start_one_off_timer(std::chrono::seconds(config_.heartbeat_timeout_seconds));
     }
 }
 

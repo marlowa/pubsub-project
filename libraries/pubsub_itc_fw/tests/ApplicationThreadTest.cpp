@@ -157,7 +157,7 @@ class TestThread : public ApplicationThread {
         last_processed_type.store(EventType(EventType::RawSocketCommunication), std::memory_order_release);
     }
 
-    void on_timer_event([[maybe_unused]] const std::string& name) override {
+    void on_timer_event([[maybe_unused]] TimerID id) override {
         last_processed_type.store(EventType(EventType::Timer), std::memory_order_release);
         processed_count.fetch_add(1, std::memory_order_release);
     }
@@ -175,7 +175,7 @@ class TestThreadOneOffTimer : public TestThread {
 
     void on_initial_event() override {
         TestThread::on_initial_event();
-        start_one_off_timer("once", std::chrono::milliseconds(5));
+        start_one_off_timer(std::chrono::milliseconds(5));
     }
 };
 
@@ -187,11 +187,11 @@ class TestThreadRecurringTimer : public TestThread {
 
     void on_initial_event() override {
         TestThread::on_initial_event();
-        start_recurring_timer("tick", std::chrono::milliseconds(5));
+        start_recurring_timer(std::chrono::milliseconds(5));
     }
 
     std::atomic<int>* counter{nullptr};
-    void on_timer_event([[maybe_unused]] const std::string& timer_name) override {
+    void on_timer_event([[maybe_unused]] TimerID id) override {
         counter->fetch_add(1, std::memory_order_release);
     }
 };
@@ -204,17 +204,20 @@ class TestThreadCancelTimer : public TestThread {
 
     void on_initial_event() override {
         TestThread::on_initial_event();
-        start_recurring_timer("tick", std::chrono::milliseconds(5));
+        tick_id_ = start_recurring_timer(std::chrono::milliseconds(5));
     }
 
     std::atomic<int>* counter{nullptr};
-    void on_timer_event([[maybe_unused]] const std::string& timer_name) override {
+    void on_timer_event([[maybe_unused]] TimerID id) override {
         counter->fetch_add(1, std::memory_order_release);
     }
 
     void on_itc_message([[maybe_unused]] const EventMessage& msg) override {
-        cancel_timer("tick");
+        cancel_timer(tick_id_);
     }
+
+  private:
+    TimerID tick_id_{};
 };
 
 // Exposes ApplicationThread's protected base methods so their default
@@ -246,18 +249,21 @@ class BaseCallbackThread : public TestThread {
 
 class TestThreadNameTimer : public TestThread {
   public:
-    std::string out;
+    std::atomic<bool> fired{false};
+    TimerID scheduled_id{};
+    TimerID fired_id{};
     TestThreadNameTimer(ConstructorToken token, QuillLogger& logger, Reactor& reactor, const std::string& name, ThreadID id,
                         const QueueConfiguration& queue_config, const AllocatorConfiguration& allocator_config)
         : TestThread(token, logger, reactor, name, id, queue_config, allocator_config) {}
 
     void on_initial_event() override {
         TestThread::on_initial_event();
-        start_one_off_timer("heartbeat", std::chrono::milliseconds(5));
+        scheduled_id = start_one_off_timer(std::chrono::milliseconds(5));
     }
 
-    void on_timer_event(const std::string& name) override {
-        out = name;
+    void on_timer_event(TimerID id) override {
+        fired_id = id;
+        fired.store(true, std::memory_order_release);
     }
 };
 
@@ -272,23 +278,27 @@ class TestThreadMultiTimer : public TestThread {
 
     void on_initial_event() override {
         TestThread::on_initial_event();
-        start_recurring_timer("A", std::chrono::milliseconds(5));
-        start_recurring_timer("B", std::chrono::milliseconds(7));
+        a_id_ = start_recurring_timer(std::chrono::milliseconds(5));
+        b_id_ = start_recurring_timer(std::chrono::milliseconds(7));
     }
 
-    void on_timer_event(const std::string& name) override {
-        if (name == "A") {
+    void on_timer_event(TimerID id) override {
+        if (id == a_id_) {
             a->fetch_add(1);
         }
-        if (name == "B") {
+        if (id == b_id_) {
             b->fetch_add(1);
         }
     }
 
     void on_itc_message([[maybe_unused]] const EventMessage& msg) override {
-        cancel_timer("A");
-        cancel_timer("B");
+        cancel_timer(a_id_);
+        cancel_timer(b_id_);
     }
+
+  private:
+    TimerID a_id_{};
+    TimerID b_id_{};
 };
 
 } // un-named namespace
@@ -1096,7 +1106,7 @@ TEST_F(ApplicationThreadTest, CancelTimerStopsEvents) {
     EXPECT_EQ(count.load(), after_cancel);
 }
 
-TEST_F(ApplicationThreadTest, TimerNameMapping) {
+TEST_F(ApplicationThreadTest, TimerIdMapping) {
     auto thread = ApplicationThread::create<TestThreadNameTimer>(logger_with_sink_.logger, *reactor_, "TimerThread", ThreadID(1), make_queue_config(),
                                                                  make_allocator_config());
 
@@ -1109,12 +1119,14 @@ TEST_F(ApplicationThreadTest, TimerNameMapping) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
-    for (int i = 0; i < 200 && thread->out.empty(); ++i) {
+    for (int i = 0; i < 200 && !thread->fired.load(std::memory_order_acquire); ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
     thread->shutdown("done");
-    EXPECT_EQ(thread->out, "heartbeat");
+    EXPECT_TRUE(thread->fired.load(std::memory_order_acquire));
+    EXPECT_EQ(thread->fired_id, thread->scheduled_id);
+    EXPECT_TRUE(thread->scheduled_id.is_valid());
 }
 
 TEST_F(ApplicationThreadTest, MultipleTimersIndependent) {
@@ -1169,7 +1181,7 @@ TEST_F(ApplicationThreadTest, CreatingTimerFromWrongThreadThrows) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
-    EXPECT_THROW(thread->start_one_off_timer("once", std::chrono::milliseconds(5)),
+    EXPECT_THROW(thread->start_one_off_timer(std::chrono::milliseconds(5)),
                  PreconditionAssertion); // NOLINT(cppcoreguidelines-avoid-goto,hicpp-avoid-goto)
 }
 
@@ -1194,7 +1206,7 @@ TEST_F(ApplicationThreadTest, DefaultHandlersAreCallableAndNoop) {
     t->on_initial_event();
     t->on_app_ready_event();
     t->on_termination_event("reason");
-    t->on_timer_event("timer");
+    t->on_timer_event(TimerID{});
     t->on_pubsub_message(EventMessage::create_pubsub_message(nullptr, 0, 0, 0));
     t->on_raw_socket_message(EventMessage::create_raw_socket_message(ConnectionID{}, nullptr, 0, 0, {}));
 }
@@ -1228,12 +1240,12 @@ class TimerPriorityThread : public ApplicationThread {
         // Both Timer and ITC land in the queue while the thread is blocked here.
         // When go_future_ returns, on_app_ready_event() returns, the reactor sets
         // Operational, and the drain loop finds Timer + ITC in the queue.
-        start_one_off_timer("test_timer", std::chrono::milliseconds(10));
+        start_one_off_timer(std::chrono::milliseconds(10));
         ready_promise_.set_value();
         go_future_.wait();
     }
 
-    void on_timer_event([[maybe_unused]] const std::string& name) override {
+    void on_timer_event([[maybe_unused]] TimerID id) override {
         std::lock_guard<std::mutex> lock(mutex_);
         events_.push_back(EventType(EventType::Timer));
         done_.fetch_add(1, std::memory_order_release);

@@ -70,7 +70,7 @@ void MatchingEnginePublisherThread::on_initial_event() {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MepThread: WAL is fresh");
     }
 
-    start_recurring_timer("wal_snapshot", std::chrono::seconds(config_.snapshot_interval_seconds));
+    wal_snapshot_timer_id_ = start_recurring_timer(std::chrono::seconds(config_.snapshot_interval_seconds));
 
     // Publish nothing until this instance actually becomes leader (adopt_role flips this).
     set_publisher_role(pubsub_itc_fw_app::Role::unknown);
@@ -80,7 +80,7 @@ void MatchingEnginePublisherThread::on_initial_event() {
         adopt_role(pubsub_itc_fw_app::Role::leader);
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MepThread: ha_enabled=false -- starting as leader");
     } else {
-        start_one_off_timer("peer_heartbeat_timeout", std::chrono::seconds(config_.startup_election_timeout_seconds));
+        peer_heartbeat_timeout_timer_id_ = start_one_off_timer(std::chrono::seconds(config_.startup_election_timeout_seconds));
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MepThread: ha_enabled=true -- startup election timeout armed ({}s)",
                    config_.startup_election_timeout_seconds);
     }
@@ -120,14 +120,16 @@ void MatchingEnginePublisherThread::on_connection_established(pubsub_itc_fw::Con
         arbiter_primary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MepThread: arbiter-primary connection {} established", id.get_value());
         if (first) {
-            start_recurring_timer("arbiter_heartbeat", std::chrono::seconds{30});
+            cancel_timer(arbiter_heartbeat_timer_id_);
+            arbiter_heartbeat_timer_id_ = start_recurring_timer(std::chrono::seconds{30});
         }
     } else if (svc == "arbiter_secondary") {
         const bool first = !arbiter_primary_conn_id_.is_valid() && !arbiter_secondary_conn_id_.is_valid();
         arbiter_secondary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MepThread: arbiter-secondary connection {} established", id.get_value());
         if (first) {
-            start_recurring_timer("arbiter_heartbeat", std::chrono::seconds{30});
+            cancel_timer(arbiter_heartbeat_timer_id_);
+            arbiter_heartbeat_timer_id_ = start_recurring_timer(std::chrono::seconds{30});
         }
     } else if (svc == "peer") {
         peer_conn_id_ = id;
@@ -160,13 +162,13 @@ void MatchingEnginePublisherThread::on_connection_lost(const pubsub_itc_fw::Conn
         arbiter_primary_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: arbiter-primary connection {} lost: {}", id.get_value(), reason);
         if (!arbiter_primary_conn_id_.is_valid() && !arbiter_secondary_conn_id_.is_valid()) {
-            cancel_timer("arbiter_heartbeat");
+            cancel_timer(arbiter_heartbeat_timer_id_);
         }
     } else if (id == arbiter_secondary_conn_id_) {
         arbiter_secondary_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: arbiter-secondary connection {} lost: {}", id.get_value(), reason);
         if (!arbiter_primary_conn_id_.is_valid() && !arbiter_secondary_conn_id_.is_valid()) {
-            cancel_timer("arbiter_heartbeat");
+            cancel_timer(arbiter_heartbeat_timer_id_);
         }
     } else {
         // Topic subscriber connection (or already gone): the owning publisher tears down
@@ -233,8 +235,8 @@ void MatchingEnginePublisherThread::on_framework_pdu_message(const pubsub_itc_fw
     release_pdu_payload(message);
 }
 
-void MatchingEnginePublisherThread::on_timer_event(const std::string& name) {
-    if (name == "wal_snapshot") {
+void MatchingEnginePublisherThread::on_timer_event(pubsub_itc_fw::TimerID id) {
+    if (id == wal_snapshot_timer_id_) {
         try {
             wal_.take_snapshot();
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MepThread: WAL snapshot taken: last_seq_no={} record_count={}", wal_.last_seq_no(),
@@ -245,24 +247,24 @@ void MatchingEnginePublisherThread::on_timer_event(const std::string& name) {
         return;
     }
 
-    if (name == "peer_heartbeat") {
+    if (id == peer_heartbeat_timer_id_) {
         send_peer_heartbeat();
         return;
     }
 
-    if (name == "arbiter_heartbeat") {
+    if (id == arbiter_heartbeat_timer_id_) {
         send_arbiter_heartbeat();
         return;
     }
 
-    if (name == "peer_heartbeat_timeout") {
+    if (id == peer_heartbeat_timeout_timer_id_) {
         if (role_ == pubsub_itc_fw_app::Role::leader) {
             return;
         }
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: peer heartbeat timeout (role={})", pubsub_itc_fw_app::to_string(role_));
         if (arbiter_primary_conn_id_.is_valid() || arbiter_secondary_conn_id_.is_valid()) {
             send_arbitration_report();
-            start_one_off_timer("arbitration_timeout", std::chrono::seconds(config_.arbitration_timeout_seconds));
+            arbitration_timeout_timer_id_ = start_one_off_timer(std::chrono::seconds(config_.arbitration_timeout_seconds));
         } else {
             PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: no arbiter connected -- self-promoting (degraded)");
             ++epoch_;
@@ -271,7 +273,7 @@ void MatchingEnginePublisherThread::on_timer_event(const std::string& name) {
         return;
     }
 
-    if (name == "arbitration_timeout") {
+    if (id == arbitration_timeout_timer_id_) {
         if (role_ != pubsub_itc_fw_app::Role::leader) {
             PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: arbitration timeout -- self-promoting (degraded)");
             ++epoch_;
@@ -299,14 +301,16 @@ void MatchingEnginePublisherThread::adopt_role(pubsub_itc_fw_app::Role new_role)
     role_ = new_role;
 
     if (new_role == pubsub_itc_fw_app::Role::leader) {
-        cancel_timer("peer_heartbeat_timeout");
-        start_recurring_timer("peer_heartbeat", std::chrono::seconds(config_.heartbeat_interval_seconds));
+        cancel_timer(peer_heartbeat_timeout_timer_id_);
+        cancel_timer(peer_heartbeat_timer_id_);
+        peer_heartbeat_timer_id_ = start_recurring_timer(std::chrono::seconds(config_.heartbeat_interval_seconds));
         set_publisher_role(new_role);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MepThread: now LEADER -- heartbeat timer started ({}s)", config_.heartbeat_interval_seconds);
     } else if (new_role == pubsub_itc_fw_app::Role::follower) {
-        start_recurring_timer("peer_heartbeat", std::chrono::seconds(config_.heartbeat_interval_seconds));
-        cancel_timer("peer_heartbeat_timeout");
-        start_one_off_timer("peer_heartbeat_timeout", std::chrono::seconds(config_.heartbeat_timeout_seconds));
+        cancel_timer(peer_heartbeat_timer_id_);
+        peer_heartbeat_timer_id_ = start_recurring_timer(std::chrono::seconds(config_.heartbeat_interval_seconds));
+        cancel_timer(peer_heartbeat_timeout_timer_id_);
+        peer_heartbeat_timeout_timer_id_ = start_one_off_timer(std::chrono::seconds(config_.heartbeat_timeout_seconds));
         // Stop publishing and drop all topic subscribers so they rediscover the new leader.
         set_publisher_role(new_role);
         orders_publisher_.drop_all_subscribers();
@@ -439,8 +443,8 @@ void MatchingEnginePublisherThread::handle_peer_heartbeat(const pubsub_itc_fw::E
         return;
     }
     if (role_ == pubsub_itc_fw_app::Role::follower) {
-        cancel_timer("peer_heartbeat_timeout");
-        start_one_off_timer("peer_heartbeat_timeout", std::chrono::seconds(config_.heartbeat_timeout_seconds));
+        cancel_timer(peer_heartbeat_timeout_timer_id_);
+        peer_heartbeat_timeout_timer_id_ = start_one_off_timer(std::chrono::seconds(config_.heartbeat_timeout_seconds));
     }
 }
 
@@ -480,7 +484,7 @@ void MatchingEnginePublisherThread::handle_arbitration_decision(const pubsub_itc
         return;
     }
 
-    cancel_timer("arbitration_timeout");
+    cancel_timer(arbitration_timeout_timer_id_);
     epoch_ = decision.epoch;
     if (decision.leader_instance_id == static_cast<int64_t>(config_.instance_id)) {
         adopt_role(pubsub_itc_fw_app::Role::leader);

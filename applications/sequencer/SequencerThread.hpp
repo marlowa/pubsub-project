@@ -61,7 +61,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void on_connection_established(pubsub_itc_fw::ConnectionID id) override;
     void on_connection_lost(const pubsub_itc_fw::ConnectionID& id, const std::string& reason) override;
     void on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message) override;
-    void on_timer_event(const std::string& name) override;
+    void on_timer_event(pubsub_itc_fw::TimerID id) override;
     void on_itc_message(const pubsub_itc_fw::EventMessage& message) override;
     bool prioritise_data_over_timers() const override {
         return true;
@@ -123,6 +123,14 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // Leader-follower state machine (slice 6).
     pubsub_itc_fw_app::Role role_{pubsub_itc_fw_app::Role::unknown};
     int32_t epoch_{0};
+
+    // Timer ids (default-constructed = not scheduled); on_timer_event compares
+    // a fired timer's id against these to identify it.
+    pubsub_itc_fw::TimerID wal_snapshot_timer_id_{};
+    pubsub_itc_fw::TimerID peer_heartbeat_timer_id_{};
+    pubsub_itc_fw::TimerID peer_heartbeat_timeout_timer_id_{};
+    pubsub_itc_fw::TimerID arbiter_heartbeat_timer_id_{};
+    pubsub_itc_fw::TimerID arbitration_timeout_timer_id_{};
 
     // WAL replication state (Slice 7).
     //

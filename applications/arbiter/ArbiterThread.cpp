@@ -48,7 +48,7 @@ ArbiterThread::ArbiterThread(pubsub_itc_fw::ApplicationThread::ConstructorToken 
 
 void ArbiterThread::on_initial_event() {
     // Arm startup election window.
-    start_one_off_timer("peer_heartbeat_timeout", std::chrono::seconds(config_.startup_election_timeout_seconds));
+    peer_heartbeat_timeout_timer_id_ = start_one_off_timer(std::chrono::seconds(config_.startup_election_timeout_seconds));
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: startup election timeout armed ({}s)", config_.startup_election_timeout_seconds);
 }
 
@@ -74,7 +74,8 @@ void ArbiterThread::on_connection_established(pubsub_itc_fw::ConnectionID id) {
     } else if (svc == "witness") {
         witness_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: witness connection {} established", id.get_value());
-        start_recurring_timer("witness_heartbeat", std::chrono::seconds(config_.witness_heartbeat_interval_seconds));
+        cancel_timer(witness_heartbeat_timer_id_);
+        witness_heartbeat_timer_id_ = start_recurring_timer(std::chrono::seconds(config_.witness_heartbeat_interval_seconds));
         send_witness_heartbeat();
     } else {
         // Inbound connection from a component (sequencer primary, sequencer secondary, ME, etc.)
@@ -91,7 +92,7 @@ void ArbiterThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, co
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "ArbiterThread: inbound peer connection {} lost: {}", id.get_value(), reason);
     } else if (id == witness_conn_id_) {
         witness_conn_id_ = pubsub_itc_fw::ConnectionID{};
-        cancel_timer("witness_heartbeat");
+        cancel_timer(witness_heartbeat_timer_id_);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "ArbiterThread: witness connection {} lost: {}", id.get_value(), reason);
     } else {
         // Component connection lost -- remove from tracking maps.
@@ -142,18 +143,18 @@ void ArbiterThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& 
     release_pdu_payload(message);
 }
 
-void ArbiterThread::on_timer_event(const std::string& name) {
-    if (name == "peer_heartbeat") {
+void ArbiterThread::on_timer_event(pubsub_itc_fw::TimerID id) {
+    if (id == peer_heartbeat_timer_id_) {
         send_peer_heartbeat();
         return;
     }
 
-    if (name == "witness_heartbeat") {
+    if (id == witness_heartbeat_timer_id_) {
         send_witness_heartbeat();
         return;
     }
 
-    if (name == "peer_heartbeat_timeout") {
+    if (id == peer_heartbeat_timeout_timer_id_) {
         if (role_ == pubsub_itc_fw_app::Role::leader) {
             return; // already active, nothing to do
         }
@@ -162,7 +163,7 @@ void ArbiterThread::on_timer_event(const std::string& name) {
         if (witness_conn_id_.is_valid()) {
             PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: requesting vote from witness");
             request_witness_vote();
-            start_one_off_timer("vote_timeout", std::chrono::seconds(config_.vote_timeout_seconds));
+            vote_timeout_timer_id_ = start_one_off_timer(std::chrono::seconds(config_.vote_timeout_seconds));
         } else {
             PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "ArbiterThread: witness not connected -- self-promoting using instance-id rule");
             ++epoch_;
@@ -171,7 +172,7 @@ void ArbiterThread::on_timer_event(const std::string& name) {
         return;
     }
 
-    if (name == "vote_timeout") {
+    if (id == vote_timeout_timer_id_) {
         if (role_ != pubsub_itc_fw_app::Role::leader && role_ != pubsub_itc_fw_app::Role::follower) {
             PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "ArbiterThread: vote timeout -- witness unreachable, self-promoting");
             ++epoch_;
@@ -204,15 +205,17 @@ void ArbiterThread::adopt_role(pubsub_itc_fw_app::Role new_role) {
     role_ = new_role;
 
     if (new_role == pubsub_itc_fw_app::Role::leader) {
-        cancel_timer("peer_heartbeat_timeout");
-        cancel_timer("vote_timeout");
-        start_recurring_timer("peer_heartbeat", std::chrono::seconds(config_.heartbeat_interval_seconds));
+        cancel_timer(peer_heartbeat_timeout_timer_id_);
+        cancel_timer(vote_timeout_timer_id_);
+        cancel_timer(peer_heartbeat_timer_id_);
+        peer_heartbeat_timer_id_ = start_recurring_timer(std::chrono::seconds(config_.heartbeat_interval_seconds));
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: now ACTIVE -- heartbeat timer started ({}s interval)",
                    config_.heartbeat_interval_seconds);
     } else if (new_role == pubsub_itc_fw_app::Role::follower) {
-        start_recurring_timer("peer_heartbeat", std::chrono::seconds(config_.heartbeat_interval_seconds));
-        cancel_timer("peer_heartbeat_timeout");
-        start_one_off_timer("peer_heartbeat_timeout", std::chrono::seconds(config_.heartbeat_timeout_seconds));
+        cancel_timer(peer_heartbeat_timer_id_);
+        peer_heartbeat_timer_id_ = start_recurring_timer(std::chrono::seconds(config_.heartbeat_interval_seconds));
+        cancel_timer(peer_heartbeat_timeout_timer_id_);
+        peer_heartbeat_timeout_timer_id_ = start_one_off_timer(std::chrono::seconds(config_.heartbeat_timeout_seconds));
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: now PASSIVE -- heartbeat timer started, timeout armed ({}s)",
                    config_.heartbeat_timeout_seconds);
     }
@@ -395,8 +398,8 @@ void ArbiterThread::handle_peer_heartbeat(const pubsub_itc_fw::EventMessage& mes
                hb.epoch);
 
     if (role_ == pubsub_itc_fw_app::Role::follower) {
-        cancel_timer("peer_heartbeat_timeout");
-        start_one_off_timer("peer_heartbeat_timeout", std::chrono::seconds(config_.heartbeat_timeout_seconds));
+        cancel_timer(peer_heartbeat_timeout_timer_id_);
+        peer_heartbeat_timeout_timer_id_ = start_one_off_timer(std::chrono::seconds(config_.heartbeat_timeout_seconds));
     }
 }
 
@@ -450,7 +453,7 @@ void ArbiterThread::handle_arbiter_state_ack(const pubsub_itc_fw::EventMessage& 
 // Witness PDU handlers
 
 void ArbiterThread::handle_arbiter_vote_response(const pubsub_itc_fw::EventMessage& message) {
-    cancel_timer("vote_timeout");
+    cancel_timer(vote_timeout_timer_id_);
 
     auto& arena_buf = decode_arena_buffer();
     pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());

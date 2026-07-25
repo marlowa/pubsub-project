@@ -13,6 +13,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <sys/epoll.h>
@@ -233,7 +234,7 @@ class Reactor : public ThreadLookupInterface {
         return lifecycle_.load(std::memory_order_acquire) == ReactorLifecycleState::Running;
     }
 
-    void create_timer_fd(TimerID timer_id, const std::string& name, ThreadID owner_thread_id, std::chrono::microseconds interval, TimerType type);
+    void create_timer_fd(TimerID timer_id, ThreadID owner_thread_id, std::chrono::microseconds interval, TimerType type);
 
     /**
      * @brief Cancels and deregisters a previously created timerfd.
@@ -400,12 +401,16 @@ class Reactor : public ThreadLookupInterface {
     mutable std::mutex timer_registry_mutex_;
 
     // Monotonically increasing counter used to generate unique TimerIDs.
-    // The first timer created is for the reactor backstop and has timer id zero.
-    TimerID next_timer_id_{0};
+    // Allocation starts at 1 so that id 0 is reserved as the invalid/"not
+    // scheduled" sentinel (a default-constructed TimerID). This means cancelling
+    // an unset TimerID is a harmless no-op and never collides with a real timer
+    // -- including the reactor backstop, which is simply the first id allocated.
+    TimerID next_timer_id_{1};
 
-    // Per-thread map of timer names to TimerIDs. Enforces uniqueness of timer
-    // names within a thread.
-    std::map<ThreadID, std::map<std::string, TimerID>> thread_timer_names_;
+    // Per-thread set of live TimerIDs, so all of a thread's timers can be
+    // cancelled when its event loop finishes. TimerIDs are unique by construction
+    // (allocate_timer_id), so no name-based bookkeeping is needed.
+    std::map<ThreadID, std::unordered_set<TimerID>> thread_timer_ids_;
 
     // Handler management: maps file descriptors to their EventHandlers.
     std::map<int, std::unique_ptr<EventHandler>> handlers_;

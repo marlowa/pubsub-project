@@ -188,31 +188,29 @@ void ApplicationThread::post_message(ThreadID target_thread_id, EventMessage mes
     reactor_.route_message(target_thread_id, std::move(message));
 }
 
-TimerID ApplicationThread::start_one_off_timer(const std::string& name, std::chrono::microseconds interval) {
-    return schedule_timer(name, interval, TimerType(TimerType::SingleShot));
+TimerID ApplicationThread::start_one_off_timer(std::chrono::microseconds interval) {
+    return schedule_timer(interval, TimerType(TimerType::SingleShot));
 }
 
-TimerID ApplicationThread::start_recurring_timer(const std::string& name, std::chrono::microseconds interval) {
-    return schedule_timer(name, interval, TimerType(TimerType::Recurring));
+TimerID ApplicationThread::start_recurring_timer(std::chrono::microseconds interval) {
+    return schedule_timer(interval, TimerType(TimerType::Recurring));
 }
 
-void ApplicationThread::cancel_timer(const std::string& name) {
+void ApplicationThread::cancel_timer(TimerID id) {
     assert_called_from_owner();
 
-    auto it = name_to_id_.find(name);
-    if (it == name_to_id_.end()) {
+    // An unset (default-constructed) id means "no timer" -- e.g. a timer field
+    // that was never armed, or one whose one-shot already fired. Cancelling it is
+    // a no-op, so avoid sending a command the reactor would only reject.
+    if (!id.is_valid()) {
         return;
     }
 
-    const TimerID id = it->second;
-    PUBSUB_LOG(logger_, FwLogLevel::Info, "Thread {} sending cancel timer command to reactor for timer {}", thread_name_, name);
+    PUBSUB_LOG(logger_, FwLogLevel::Info, "Thread {} sending cancel timer command to reactor for timer id {}", thread_name_, id.get_value());
     ReactorControlCommand command(ReactorControlCommand::CommandTag::CancelTimer);
     command.owner_thread_id_ = thread_id_;
     command.timer_id_ = id;
     reactor_.enqueue_control_command(command);
-
-    id_to_name_.erase(id);
-    name_to_id_.erase(it);
 }
 
 void ApplicationThread::connect_to_service(const std::string& service_name) const {
@@ -540,19 +538,10 @@ void ApplicationThread::process_message(const EventMessage& message) {
 }
 
 void ApplicationThread::on_timer_id_event(TimerID id) {
-    auto it = id_to_name_.find(id);
-    if (it == id_to_name_.end()) {
-        PUBSUB_LOG(logger_, FwLogLevel::Warning, "Thread {} received timer event for unknown TimerID {}", thread_name_, id.get_value());
-        return;
-    }
-
-    // Copy the name before invoking the callback.  The callback may call
-    // start_one_off_timer() or cancel_timer() with this name, both of which
-    // mutate id_to_name_ and would invalidate a reference into it.
-    const std::string name = it->second;
-
-    // Call the user-overridable handler.
-    on_timer_event(name);
+    // The framework does not track timer identities beyond the id; the id is
+    // handed straight to the user-overridable handler, which recognises it by
+    // comparing against the ids it retained when scheduling.
+    on_timer_event(id);
 }
 
 void ApplicationThread::on_connection_established(ConnectionID) {}
@@ -570,28 +559,19 @@ void ApplicationThread::set_lifecycle_state(ThreadLifecycleState::Tag new_tag) {
     lifecycle_state_.store(new_tag, std::memory_order_release);
 }
 
-TimerID ApplicationThread::schedule_timer(const std::string& name, std::chrono::microseconds interval, TimerType type) {
+TimerID ApplicationThread::schedule_timer(std::chrono::microseconds interval, TimerType type) {
     assert_called_from_owner();
 
-    // If a timer with this name already exists, cancel it first, i.e. reschedule.
-    auto it = name_to_id_.find(name);
-    if (it != name_to_id_.end()) {
-        cancel_timer(name);
-    }
-
-    // Ask Reactor to create and register the timerfd.
+    // Ask Reactor to create and register the timerfd. The reactor allocates a
+    // globally unique id, so there is no name-based deduplication here: callers
+    // that want to replace a timer cancel it (by id) first.
     TimerID id = reactor_.allocate_timer_id();
     ReactorControlCommand command(ReactorControlCommand::CommandTag::AddTimer);
-    command.timer_name_ = name;
     command.owner_thread_id_ = thread_id_;
     command.timer_id_ = id;
     command.interval_ = interval;
     command.timer_type_ = type;
     reactor_.enqueue_control_command(command);
-
-    // Store mappings for lookup and cancellation.
-    name_to_id_[name] = id;
-    id_to_name_[id] = name;
 
     return id;
 }

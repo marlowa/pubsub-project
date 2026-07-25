@@ -620,12 +620,12 @@ class TlsBackpressureServerThread : public ApplicationThread {
 
         if (!timer_armed_) {
             timer_armed_ = true;
-            start_one_off_timer("deferred_commit", std::chrono::milliseconds(100));
+            deferred_commit_timer_id_ = start_one_off_timer(std::chrono::milliseconds(100));
         }
     }
 
-    void on_timer_event(const std::string& name) override {
-        if (name == "deferred_commit") {
+    void on_timer_event(pubsub_itc_fw::TimerID id) override {
+        if (id == deferred_commit_timer_id_) {
             const int64_t head = bytes_received_head.load(std::memory_order_acquire);
             const int64_t already = bytes_committed.load(std::memory_order_relaxed);
             const int64_t to_commit = head - already;
@@ -640,6 +640,7 @@ class TlsBackpressureServerThread : public ApplicationThread {
 
   private:
     bool timer_armed_{false};
+    pubsub_itc_fw::TimerID deferred_commit_timer_id_{};
 };
 
 // Test fixture

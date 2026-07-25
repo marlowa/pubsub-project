@@ -79,7 +79,7 @@ void WitnessThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& 
     release_pdu_payload(message);
 }
 
-void WitnessThread::on_timer_event([[maybe_unused]] const std::string& name) {}
+void WitnessThread::on_timer_event([[maybe_unused]] pubsub_itc_fw::TimerID id) {}
 
 void WitnessThread::on_itc_message([[maybe_unused]] const pubsub_itc_fw::EventMessage& message) {}
 

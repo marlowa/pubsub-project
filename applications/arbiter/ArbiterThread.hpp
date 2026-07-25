@@ -50,7 +50,7 @@ class ArbiterThread : public pubsub_itc_fw::ApplicationThread {
     void on_connection_established(pubsub_itc_fw::ConnectionID id) override;
     void on_connection_lost(const pubsub_itc_fw::ConnectionID &id, const std::string& reason) override;
     void on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message) override;
-    void on_timer_event(const std::string& name) override;
+    void on_timer_event(pubsub_itc_fw::TimerID id) override;
     void on_itc_message(const pubsub_itc_fw::EventMessage& message) override;
 
   private:
@@ -59,6 +59,13 @@ class ArbiterThread : public pubsub_itc_fw::ApplicationThread {
     // Own active/passive role (independent of component leadership).
     pubsub_itc_fw_app::Role role_{pubsub_itc_fw_app::Role::unknown};
     int32_t epoch_{0};
+
+    // Timer ids for this thread's timers (default-constructed = not scheduled).
+    // on_timer_event recognises a fired timer by comparing against these.
+    pubsub_itc_fw::TimerID peer_heartbeat_timer_id_{};
+    pubsub_itc_fw::TimerID witness_heartbeat_timer_id_{};
+    pubsub_itc_fw::TimerID peer_heartbeat_timeout_timer_id_{};
+    pubsub_itc_fw::TimerID vote_timeout_timer_id_{};
 
     // Peer arbiter connections (outbound + inbound).
     pubsub_itc_fw::ConnectionID peer_conn_id_;
