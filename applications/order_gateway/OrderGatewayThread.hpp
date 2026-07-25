@@ -276,17 +276,26 @@ class OrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     FixSession* find_session_by_comp_id(const std::string& comp_id);
 
     // Holds the open-orders state of a disconnected session, pending deferred
-    // cancellation.  The map is moved from the FixSession in O(1) at disconnect
-    // time; drain_pending_cancels() iterates it in small batches.
+    // cancellation.
+    //
+    // A flat vector rather than the session's OpenOrderMap. Once a session is dead
+    // its orders are only ever consumed in sequence -- nothing looks one up by
+    // ClOrdID again -- so the hash map earns nothing here and costs a great deal:
+    // draining it meant calling begin() per order, and robin_map::begin() scans its
+    // bucket array from the start, rescanning every bucket already emptied. That made
+    // draining N orders O(N^2) in bucket probes and put this path at 11% of the
+    // gateway profile. next_order_index walks the vector instead, so each order is
+    // O(1) and the batching across timer ticks still resumes where it left off.
     struct DeadSession {
-        OpenOrderMap open_orders;
+        std::vector<OpenOrderEntry*> open_orders;
+        size_t next_order_index{0};
         int32_t session_conn_id{0};
         std::string client_comp_id;
         int cancel_id_counter{1};
     };
 
-    // Sessions waiting for their open orders to be cancelled.  Entries are
-    // appended at disconnect time (O(1) map move) and consumed by the drain timer.
+    // Sessions waiting for their open orders to be cancelled.  Entries are appended
+    // at disconnect time and consumed by the drain timer.
     std::deque<DeadSession> pending_cancel_sessions_;
 
     // True while the cancel-drain one-shot timer is armed.  Prevents double-arming.

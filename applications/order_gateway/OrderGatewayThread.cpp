@@ -1210,7 +1210,14 @@ void OrderGatewayThread::queue_session_for_cleanup(FixSession& session) {
                session.conn_id.get_value(), session.open_orders.size());
 
     DeadSession dead;
-    dead.open_orders = std::move(session.open_orders); // O(1) -- map internal state transfer
+    // One pass over the map to collect the entries; the pool still owns them, and each
+    // is released as its cancel is sent. Draining a vector afterwards avoids the
+    // repeated begin() rescan a map drain performs -- see DeadSession.
+    dead.open_orders.reserve(session.open_orders.size());
+    for (const auto& [cl_ord_id, entry] : session.open_orders) {
+        dead.open_orders.push_back(entry);
+    }
+    session.open_orders.clear();
     dead.session_conn_id = session.conn_id.get_value();
     dead.client_comp_id = session.client_comp_id;
     dead.cancel_id_counter = session.cancel_id_counter;
@@ -1229,13 +1236,12 @@ void OrderGatewayThread::drain_pending_cancels() {
     while (!pending_cancel_sessions_.empty() && sent < cancel_drain_batch_size) {
         DeadSession& dead = pending_cancel_sessions_.front();
 
-        if (dead.open_orders.empty()) {
+        if (dead.next_order_index >= dead.open_orders.size()) {
             pending_cancel_sessions_.pop_front();
             continue;
         }
 
-        auto it = dead.open_orders.begin();
-        OpenOrderEntry* entry = it->second;
+        OpenOrderEntry* entry = dead.open_orders[dead.next_order_index];
 
         const std::string cancel_cl_ord_id = "GW-CXL-" + std::to_string(dead.session_conn_id) + "-" + std::to_string(dead.cancel_id_counter++);
 
@@ -1253,7 +1259,7 @@ void OrderGatewayThread::drain_pending_cancels() {
         forward_order_in_envelope(static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest), ocr, dead.session_conn_id, dead.client_comp_id);
 
         open_order_pool_->deallocate(entry);
-        dead.open_orders.erase(it);
+        ++dead.next_order_index;
         ++sent;
     }
 

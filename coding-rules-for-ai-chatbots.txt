@@ -155,6 +155,19 @@ This is enforced by check_standards.py: it flags a bare true/false passed to a p
 (standard/library calls such as an atomic store or make_tuple are not project functions and are not flagged). A genuinely
 unavoidable case can opt out with a "bool-arg-ok" comment on the call line.
 
+Performance work
+
+The build stays at -O2. Do not raise the optimisation level, and do not offer -O3 as a way
+to make something faster: a change must show its gain at -O2, because -O2 is what ships.
+The setting is global, in the add_compile_options block of the top-level CMakeLists.txt.
+Measure before and after on a pinned core (taskset), and time a batch of iterations rather
+than reading the clock around each one -- a clock_gettime pair costs tens of nanoseconds and
+will hide the very difference being measured.
+Prefer a measured algorithmic change to a hand-written micro-optimisation. In particular do
+not reach for memchr, memcmp or similar libc calls on the short byte runs typical of FIX
+fields: the call goes through the PLT and loses to a plain scalar loop that the compiler
+can see through.
+
 FIX Protocol Version
 
 This project uses FIX 5.0 SP2 with FIXT 1.1 transport. The BeginString (tag 8) in every FIX message

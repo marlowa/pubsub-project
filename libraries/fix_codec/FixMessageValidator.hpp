@@ -65,8 +65,7 @@ class FixMessageValidator {
         // unknown, in which case per-field permission is not enforced.
         const uint64_t* const permitted = permitted_mask(type);
 
-        int seen[max_tracked_tags];
-        size_t seen_count = 0;
+        uint64_t seen[seen_mask_words] = {};
         auto it = reader_.begin();
         const auto end = reader_.end();
         while (it != end) {
@@ -79,11 +78,8 @@ class FixMessageValidator {
             if (permitted != nullptr && !mask_has_index(permitted, index)) {
                 return FixReject{RejectReason::TagNotDefinedForThisMessage, tag, type, {}};
             }
-            if (contains(seen, seen_count, tag)) {
+            if (test_and_set_index(seen, index)) {
                 return FixReject{RejectReason::TagAppearsMoreThanOnce, tag, type, {}};
-            }
-            if (seen_count < max_tracked_tags) {
-                seen[seen_count++] = tag;
             }
             // Reuse the dense index from field_index for the format and enum checks
             // so each is a direct array probe rather than another tag search.
@@ -109,13 +105,12 @@ class FixMessageValidator {
             ++it;
         }
 
-        // The top-level walk recorded every top-level tag in seen[] (unless the message
-        // had more than max_tracked_tags fields). Check the required tags against
-        // that set rather than re-scanning the message once per required tag.
-        const bool tracked_all = seen_count < max_tracked_tags;
+        // The top-level walk set a bit for every top-level tag, so each required tag is
+        // a bit test rather than a rescan of the message. The bitset covers the whole
+        // dense index space, so unlike the previous fixed-size tag list there is no
+        // field count above which tracking silently stops.
         for (const int required : required_tags(type)) {
-            const bool present = tracked_all ? contains(seen, seen_count, required) : !reader_.find(required).empty();
-            if (!present) {
+            if (!mask_has_index(seen, field_index(required))) {
                 return FixReject{RejectReason::RequiredTagMissing, required, type, {}};
             }
         }
@@ -123,10 +118,30 @@ class FixMessageValidator {
     }
 
   private:
-    // Enough for any realistic flat FIX message; extra fields skip duplicate
-    // tracking rather than allocate, and are still format/enum checked.
+    // Per-instance tag capacity for repeating groups, which is far more than any
+    // realistic group instance carries; members beyond it skip duplicate tracking
+    // rather than allocate, and are still format/enum checked.
     static constexpr size_t max_tracked_tags = 256;
 
+    // One bit per dense field index, sized as the dictionary's permitted-tag masks are,
+    // so top-level duplicate detection is a bit test rather than a scan of the tags seen
+    // so far, which grew quadratically with the field count.
+    static constexpr size_t seen_mask_words = detail::permitted_word_count;
+
+    /** @brief Sets a dense index in @p words, returning true if it was already set. */
+    static bool test_and_set_index(uint64_t* words, int dense_index) {
+        const size_t position = static_cast<size_t>(dense_index);
+        const uint64_t bit = 1ULL << (position % 64);
+        uint64_t& word = words[position / 64];
+        if ((word & bit) != 0) {
+            return true;
+        }
+        word |= bit;
+        return false;
+    }
+
+    // Group instances hold only a handful of members each, where a short linear scan
+    // beats clearing a bitset per instance.
     static bool contains(const int* values, size_t count, int target) {
         for (size_t index = 0; index < count; ++index) {
             if (values[index] == target) {

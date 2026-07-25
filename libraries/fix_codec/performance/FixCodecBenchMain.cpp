@@ -5,10 +5,22 @@
 // read, and fully validated. NewOrderSingle is the message the gateway receives on
 // every inbound order, so its parse-plus-validate cost is the figure that matters.
 //
-// Two measurements are reported:
+// Three measurements are reported:
+//   frame only      -- frame the message and verify its checksum, reading no fields
 //   parse           -- frame the message and read its key fields (no validation)
 //   parse+validate  -- the above plus full dictionary validation (required tags,
 //                      duplicates, data formats, enum membership)
+//
+// Note when comparing "frame only" against "parse": the parse figure reads its two
+// fields with unhinted find() calls, each of which tokenises again from the start of
+// the message. The gateway makes a single pass instead, so the difference between the
+// two lines overstates what it pays to read fields.
+//
+// Timing is batched by default -- one clock reading per batch of iterations, fastest
+// batch reported -- because a clock_gettime pair costs a large fraction of the couple
+// of hundred nanoseconds being measured. Pass --per-iteration for the original
+// per-iteration timing, whose figures carry that overhead and a much wider spread.
+// Pin the process for a stable comparison: taskset -c 2 ./fix_codec_bench
 //
 // The executable installs to bin and is deliberately a tight, long-running loop so
 // it can be profiled directly under perf, e.g.:
@@ -52,6 +64,38 @@ template <typename Function> long long measure_avg_ns(Function&& function, int i
     return total / iterations;
 }
 
+/**
+ * @brief Times a batch of iterations per clock reading and returns the fastest batch.
+ *
+ * @param[in]  function The work to measure, called batch_size times per reading.
+ * @param[in]  batch_size    Iterations between the two clock readings.
+ * @param[in]  batch_count   Number of batches; the fastest is reported.
+ * @return The mean nanoseconds per iteration of the fastest batch.
+ *
+ * The parse path costs a couple of hundred nanoseconds, and a clock_gettime pair
+ * costs a sizeable fraction of that. Reading the clock once per iteration therefore
+ * charges every measurement for the instrument and leaves a noise floor wider than
+ * the differences worth chasing. Amortising one reading over a batch removes both.
+ * The fastest batch is reported rather than the mean because it is the sample least
+ * disturbed by scheduling and frequency scaling.
+ */
+template <typename Function> double measure_batched_ns(Function&& function, int batch_size, int batch_count) {
+    for (int warmup = 0; warmup < batch_size; ++warmup) {
+        function();
+    }
+    double best = std::numeric_limits<double>::max();
+    for (int batch = 0; batch < batch_count; ++batch) {
+        const auto start = std::chrono::steady_clock::now();
+        for (int iteration = 0; iteration < batch_size; ++iteration) {
+            function();
+        }
+        const auto end = std::chrono::steady_clock::now();
+        const double elapsed = static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count());
+        best = std::min(best, elapsed / batch_size);
+    }
+    return best;
+}
+
 std::string_view build_new_order_single(char* buffer, size_t capacity) {
     fix_codec::FixMessageWriter writer(buffer, capacity);
     writer.push_back_field(tag::MsgType, fix_codec::msg_type::NewOrderSingle);
@@ -73,9 +117,28 @@ void report(const char* name, long long avg_ns, long long min_ns, long long max_
     std::printf("%-16s avg %5lld ns   min %5lld ns   max %6lld ns   %10.0f msg/s\n", name, avg_ns, min_ns, max_ns, per_second);
 }
 
+void report_batched(const char* name, double nanoseconds) {
+    const double per_second = nanoseconds > 0.0 ? 1e9 / nanoseconds : 0.0;
+    std::printf("%-16s %7.1f ns   %10.0f msg/s\n", name, nanoseconds, per_second);
+}
+
 } // namespaces
 
-int main() {
+int main(int argc, char** argv) {
+    bool per_iteration_mode = false;
+    for (int argument = 1; argument < argc; ++argument) {
+        const std::string_view option(argv[argument]);
+        if (option == "--per-iteration") {
+            per_iteration_mode = true;
+        } else {
+            std::printf("usage: %s [--per-iteration]\n", argv[0]);
+            std::printf("  default        time a batch of iterations per clock reading (accurate)\n");
+            std::printf("  --per-iteration  read the clock around every iteration (legacy; the\n");
+            std::printf("                   reading itself costs a large fraction of the result)\n");
+            return option == "--help" ? 0 : 2;
+        }
+    }
+
     char buffer[256];
     const std::string_view wire = build_new_order_single(buffer, sizeof(buffer));
     if (wire.empty()) {
@@ -83,31 +146,41 @@ int main() {
         return 1;
     }
 
-    const int iterations = 2000000;
     uint64_t sink = 0;
 
-    long long min_ns = 0;
-    long long max_ns = 0;
+    const auto frame_only = [&] {
+        fix_codec::FixMessageReader reader(wire);
+        sink += static_cast<uint64_t>(reader.status());
+    };
+    const auto parse = [&] {
+        fix_codec::FixMessageReader reader(wire);
+        sink += static_cast<uint64_t>(reader.status());
+        sink += reader.find(tag::ClOrdID).as_string_view().size();
+        sink += static_cast<uint64_t>(reader.find(tag::Side).as_char());
+    };
+    const auto parse_and_validate = [&] {
+        fix_codec::FixMessageReader reader(wire);
+        const fix_codec::FixReject reject = fix_codec::FixMessageValidator(reader).validate();
+        sink += static_cast<uint64_t>(reject.reason);
+        sink += static_cast<uint64_t>(reject.ref_tag);
+    };
 
-    const long long parse_avg = measure_avg_ns(
-        [&] {
-            fix_codec::FixMessageReader reader(wire);
-            sink += static_cast<uint64_t>(reader.status());
-            sink += reader.find(tag::ClOrdID).as_string_view().size();
-            sink += static_cast<uint64_t>(reader.find(tag::Side).as_char());
-        },
-        iterations, min_ns, max_ns);
-    report("parse", parse_avg, min_ns, max_ns);
-
-    const long long validate_avg = measure_avg_ns(
-        [&] {
-            fix_codec::FixMessageReader reader(wire);
-            const fix_codec::FixReject reject = fix_codec::FixMessageValidator(reader).validate();
-            sink += static_cast<uint64_t>(reject.reason);
-            sink += static_cast<uint64_t>(reject.ref_tag);
-        },
-        iterations, min_ns, max_ns);
-    report("parse+validate", validate_avg, min_ns, max_ns);
+    if (per_iteration_mode) {
+        const int iterations = 2000000;
+        long long min_ns = 0;
+        long long max_ns = 0;
+        const long long parse_avg = measure_avg_ns(parse, iterations, min_ns, max_ns);
+        report("parse", parse_avg, min_ns, max_ns);
+        const long long validate_avg = measure_avg_ns(parse_and_validate, iterations, min_ns, max_ns);
+        report("parse+validate", validate_avg, min_ns, max_ns);
+    } else {
+        const int batch_size = 20000;
+        const int batch_count = 200;
+        std::printf("message %zu bytes, fastest of %d batches of %d\n", wire.size(), batch_count, batch_size);
+        report_batched("frame only", measure_batched_ns(frame_only, batch_size, batch_count));
+        report_batched("parse", measure_batched_ns(parse, batch_size, batch_count));
+        report_batched("parse+validate", measure_batched_ns(parse_and_validate, batch_size, batch_count));
+    }
 
     // Consume sink so the work above cannot be optimised away.
     if (sink == 0xFFFFFFFFFFFFFFFFULL) {

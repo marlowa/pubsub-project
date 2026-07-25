@@ -382,6 +382,30 @@ def run_fix_codec_tests(build_dir):
     print("\n✓ All fix_codec tests passed")
 
 
+def run_fix_codec_performance_tests(build_dir):
+    """Run the fix_codec performance regression guard.
+
+    Kept apart from the unit tests because it asserts on timing rather than on
+    behaviour. Its main assertions are ratios -- how validation cost responds to
+    field count, and how each stage compares with framing the same message -- so it
+    means the same thing on a slow machine as on a fast one. The binary is absent in
+    sanitizer and coverage builds, where timings measure the instrumentation.
+    """
+    test_binary = build_dir / "libraries" / "fix_codec" / "fix_codec_performance_tests"
+
+    if not test_binary.exists():
+        print(f"NOTE: fix_codec performance test binary not found at {test_binary} — skipping")
+        return
+
+    run_command(
+        [str(test_binary)],
+        cwd=build_dir,
+        description="Running fix_codec performance regression tests"
+    )
+
+    print("\n✓ All fix_codec performance tests passed")
+
+
 def install_project(build_dir, install_dir):
     """Install the project to the specified directory."""
     run_command(
@@ -552,6 +576,10 @@ Examples:
         help='Skip C++ unit and integration tests only; Python and Java tests are unaffected'
     )
 
+    parser.add_argument('--no-performance-tests', action='store_true',
+        help='Skip the fix_codec performance regression tests only; other C++ tests are unaffected'
+    )
+
     parser.add_argument('--no-java-tests', action='store_true',
         help='Skip Java Maven tests only (-DskipTests); C++ and Python tests are unaffected'
     )
@@ -680,6 +708,8 @@ Examples:
             run_tests(build_dir, use_tsan=args.tsan, tsan_suppressions=args.tsan_suppressions)
             run_fix_codec_tests(build_dir)
             run_integration_tests(build_dir)
+            if not args.no_performance_tests:
+                run_fix_codec_performance_tests(build_dir)
 
         if args.coverage_report:
             generate_coverage_report(build_dir, source_dir)

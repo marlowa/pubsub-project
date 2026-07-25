@@ -53,3 +53,29 @@ add_dependencies(fix_codec_bench fix_dictionary_generated)
 install(TARGETS fix_codec_bench
         RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
 )
+
+# ── Performance regression guard ──────────────────────────────────────────────
+# A separate binary from fix_codec_tests: these assert on timing rather than on
+# behaviour, so a failure means something different and should not be mixed into the
+# unit test result. build.py runs it after the unit and integration suites, and
+# --no-performance-tests skips just this one.
+#
+# It deliberately inherits the project's -O2 rather than setting -O3 as the
+# pubsub_itc_fw harnesses do, because the point is to measure the code that ships.
+# Not built under coverage or a sanitizer, where the instrumentation is what gets timed.
+if(NOT (ENABLE_COVERAGE OR ENABLE_ASAN OR ENABLE_TSAN OR ENABLE_VALGRIND))
+    add_executable(fix_codec_performance_tests
+            performance/FixCodecPerformanceTest.cpp
+    )
+
+    target_link_libraries(fix_codec_performance_tests PRIVATE
+            fix_codec
+            GTest::gtest_main
+    )
+
+    add_dependencies(fix_codec_performance_tests fix_dictionary_generated)
+
+    install(TARGETS fix_codec_performance_tests
+            RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+    )
+endif()

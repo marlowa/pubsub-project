@@ -20,8 +20,10 @@ target_include_directories(fixed_pool_bench PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../include
 )
 
+# No -O optimisation level here: the harness inherits the project's -O2 so that it
+# measures the code that actually ships. See "Performance work" in
+# coding-rules-for-ai-chatbots.txt.
 target_compile_options(fixed_pool_bench PRIVATE
-    -O3
     -g
     -fno-omit-frame-pointer
 )
@@ -57,7 +59,6 @@ target_include_directories(topic_pubsub_bench PRIVATE
 )
 
 target_compile_options(topic_pubsub_bench PRIVATE
-    -O3
     -g
     -fno-omit-frame-pointer
 )
