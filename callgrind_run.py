@@ -85,6 +85,9 @@ _SEQ_LEADER_MARKERS     = ("SequencerThread: role transition", "-> leader")
 _ARB_ACTIVE_MARKERS     = ("ArbiterThread: role transition", "-> leader")
 _GW_OPERATIONAL_MARKERS = ("OrderGatewayThread", "operational state")
 _GW_LOGON_OK            = "authentication succeeded -- FIX session established"
+# The gateway logs one of these per ER it discards because the target client
+# session already disconnected. Such ERs are "accounted for" but never delivered.
+_ER_DROPPED_MARKER      = "client already disconnected -- dropping"
 
 FIX8_DIR  = Path("/home/marlowa/mystuff/fix8_install")
 FIX8_BIN  = FIX8_DIR / "bin" / "f8test"
@@ -346,10 +349,14 @@ def wait_for_order_completion(me_log: Path, total_orders: int, timeout: float) -
 
 
 def wait_for_er_completion(gw_log: Path, total_orders: int, timeout: float) -> bool:
+    # An ER is "accounted for" once the gateway either sends it to the client or
+    # drops it because that client already disconnected. Counting only GW-ER-SENT
+    # hangs forever when clients disconnect mid-stream: their ERs are dropped, so
+    # the delivered count can never reach total_orders.
     def count_er(chunk: str) -> int:
-        return chunk.count("GW-ER-SENT")
+        return chunk.count("GW-ER-SENT") + chunk.count(_ER_DROPPED_MARKER)
 
-    return _wait_for_log_pattern(gw_log, "GW-ER-SENT", total_orders, count_er, timeout,
+    return _wait_for_log_pattern(gw_log, "GW-ER (sent+dropped)", total_orders, count_er, timeout,
                                  min_idle_timeout=120.0)
 
 
@@ -430,6 +437,23 @@ def wait_for_fix_logons(gw_log: Path, sessions: int, timeout: float,
     return False
 
 
+def terminate_clients(procs: list[subprocess.Popen], clients: int) -> None:
+    """SIGKILL and reap all fix8 clients (f8test ignores SIGTERM).
+
+    Safe to call from a finally: this guarantees the clients are never orphaned,
+    even when the session aborts via die() or Ctrl-C mid-wait.
+    """
+    for proc in procs:
+        if proc.poll() is None:
+            proc.kill()
+    for proc in procs:
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
+    log(f"  All {clients} fix8 client(s) stopped")
+
+
 def shutdown_processes(named_procs: list[tuple[str, subprocess.Popen]]) -> None:
     log("Sending SIGTERM (signal 15) to applications to trigger Callgrind dumps...")
     for name, proc in named_procs:
@@ -501,43 +525,41 @@ def run_fix8_session(me_log: Path, gw_log: Path, burst: int, clients: int) -> No
         procs.append(proc)
         log(f"  client {i + 1} of {clients}: f8test PID {proc.pid}")
 
-    log(f"  Waiting for {clients} FIX session(s) to log on (poll, up to {LOGON_TIMEOUT:.0f}s) ...")
-    if not wait_for_fix_logons(gw_log, clients, LOGON_TIMEOUT, procs):
-        die(f"only {count_marker(gw_log, _GW_LOGON_OK)}/{clients} FIX session(s) "
-            f"logged on within {LOGON_TIMEOUT:.0f}s — cannot send orders")
-    log(f"  {clients} FIX session(s) established")
+    # The clients are launched; from here everything runs under try/finally so a
+    # die() (e.g. logon shortfall) or Ctrl-C mid-wait never orphans a fix8 client.
+    try:
+        log(f"  Waiting for {clients} FIX session(s) to log on (poll, up to {LOGON_TIMEOUT:.0f}s) ...")
+        if not wait_for_fix_logons(gw_log, clients, LOGON_TIMEOUT, procs):
+            die(f"only {count_marker(gw_log, _GW_LOGON_OK)}/{clients} FIX session(s) "
+                f"logged on within {LOGON_TIMEOUT:.0f}s — cannot send orders")
+        log(f"  {clients} FIX session(s) established")
 
-    log(f"  Sending {burst} T command(s) to each of {clients} client(s) ...")
-    for i, proc in enumerate(procs):
-        try:
-            for _ in range(burst):
-                proc.stdin.write(b"T\n")
-            proc.stdin.flush()
-        except BrokenPipeError:
-            die(f"f8test client {i + 1} stdin pipe broke before T commands were sent")
+        log(f"  Sending {burst} T command(s) to each of {clients} client(s) ...")
+        for i, proc in enumerate(procs):
+            try:
+                for _ in range(burst):
+                    proc.stdin.write(b"T\n")
+                proc.stdin.flush()
+            except BrokenPipeError:
+                die(f"f8test client {i + 1} stdin pipe broke before T commands were sent")
 
-    # A generous ceiling scaled by order count; polling (with its own idle
-    # bail-out) returns as soon as the pipeline drains, so this only bounds a hang.
-    timeout = ORDER_TIMEOUT * max(1, burst * clients)
+        # A generous ceiling scaled by order count; polling (with its own idle
+        # bail-out) returns as soon as the pipeline drains, so this only bounds a hang.
+        timeout = ORDER_TIMEOUT * max(1, burst * clients)
 
-    nos_ok = wait_for_order_completion(me_log, total_orders, timeout)
-    if not nos_ok:
-        log(f"  ME-ORD live count did not reach {total_orders:,} — "
-            f"pipeline still draining; proceeding to ER phase (authoritative)")
-    else:
-        log(f"  All {total_orders:,} NOS confirmed in matching engine log")
+        nos_ok = wait_for_order_completion(me_log, total_orders, timeout)
+        if not nos_ok:
+            log(f"  ME-ORD live count did not reach {total_orders:,} — "
+                f"pipeline still draining; proceeding to ER phase (authoritative)")
+        else:
+            log(f"  All {total_orders:,} NOS confirmed in matching engine log")
 
-    er_ok = wait_for_er_completion(gw_log, total_orders, timeout)
-    if not er_ok:
-        log(f"  WARNING: not all ERs delivered before timeout — {total_orders} ERs expected")
-
-    log("  Terminating fix8 client(s) immediately with SIGKILL ...")
-    for proc in procs:
-        if proc.poll() is None:
-            proc.kill()
-    for proc in procs:
-        proc.wait()
-    log(f"  All {clients} fix8 client(s) stopped")
+        er_ok = wait_for_er_completion(gw_log, total_orders, timeout)
+        if not er_ok:
+            log(f"  WARNING: not all ERs accounted for before timeout — {total_orders} expected")
+    finally:
+        log("  Terminating fix8 client(s) with SIGKILL ...")
+        terminate_clients(procs, clients)
 
 
 def main() -> None:
@@ -732,10 +754,11 @@ def main() -> None:
     # Count only the ME order-acceptance line ("accepted NOS OrderID=ME-ORD-N").
     # A bare "ME-ORD" substring also matches the cancel-ER lines ("sent cancel ER
     # OrderID=ME-ORD-N"), which double-counts one entry per cancelled order.
-    me_final     = count_in_log(me_log,  "accepted NOS")
-    gw_nos_recv  = count_in_log(gw_log,  "GW-NOS-RECV")
-    gw_er_sent   = count_in_log(gw_log,  "GW-ER-SENT")
-    gw_gap_fills = count_in_log(gw_log,  "SequenceReset-GapFill")
+    me_final      = count_in_log(me_log,  "accepted NOS")
+    gw_nos_recv   = count_in_log(gw_log,  "GW-NOS-RECV")
+    gw_er_sent    = count_in_log(gw_log,  "GW-ER-SENT")
+    gw_er_dropped = count_in_log(gw_log,  _ER_DROPPED_MARKER)
+    gw_gap_fills  = count_in_log(gw_log,  "SequenceReset-GapFill")
 
     def count_status(actual: int, expected: int) -> str:
         diff = actual - expected
@@ -749,13 +772,16 @@ def main() -> None:
     log(f"  ME-ORD        : {me_final:>10,} / {total_orders:,}  {count_status(me_final, total_orders)}")
     log(f"  GW-NOS-RECV   : {gw_nos_recv:>10,} / {total_orders:,}  {count_status(gw_nos_recv, total_orders)}")
     log(f"  GW-ER-SENT    : {gw_er_sent:>10,} / {total_orders:,}  {count_status(gw_er_sent, total_orders)}")
-    er_discrepancy = gw_er_sent - gw_nos_recv
+    if gw_er_dropped > 0:
+        log(f"  GW-ER-DROPPED : {gw_er_dropped:>10,}            (client disconnected before delivery)")
+    # An ER is accounted for whether delivered or dropped; compare that total to NOS.
+    er_discrepancy = (gw_er_sent + gw_er_dropped) - gw_nos_recv
     if er_discrepancy == 0:
-        log(f"  NOS→ER match  : YES — one ER per NOS")
+        log(f"  NOS→ER match  : YES — one ER (sent or dropped) per NOS")
     elif er_discrepancy > 0:
         log(f"  NOS→ER match  : {er_discrepancy:,} extra ERs (partial fills or late cancel ACKs)")
     else:
-        log(f"  NOS→ER match  : NO — {-er_discrepancy:,} ERs missing vs NOS count load")
+        log(f"  NOS→ER match  : NO — {-er_discrepancy:,} ERs unaccounted for vs NOS")
     if gw_gap_fills > 0:
         log(f"  Gap fills     : {gw_gap_fills}")
 

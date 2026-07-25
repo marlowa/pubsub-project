@@ -68,6 +68,10 @@ PERF_TARGETS     = {"order_gateway", "matching_engine_primary"}
 SHUTDOWN_TIMEOUT = 5.0   # seconds to wait for each app to exit after SIGTERM
 MAX_ORDER_TIMEOUT = 120.0  # hard cap on order/ER completion wait (2 minutes)
 
+# The gateway logs one of these per ER it discards because the target client
+# session already disconnected. Such ERs are "accounted for" but never delivered.
+_ER_DROPPED_MARKER = "client already disconnected -- dropping"
+
 FIX8_DIR  = Path("/home/marlowa/mystuff/fix8_install")
 FIX8_BIN  = FIX8_DIR / "bin" / "f8test"
 FIX8_CFG  = "myfix_gateway_client.xml"
@@ -311,11 +315,32 @@ def wait_for_er_completion(gw_log: Path, total_orders: int, timeout: float) -> b
     actual pipeline can be 100× slower than the burst; 120s gives it time to
     drain the backlog that accumulated during the ME phase.
     """
+    # An ER is "accounted for" once the gateway either sends it to the client or
+    # drops it because that client already disconnected. Counting only GW-ER-SENT
+    # hangs forever when clients disconnect mid-stream: their ERs are dropped, so
+    # the delivered count can never reach total_orders.
     def count_er(chunk: str) -> int:
-        return chunk.count("GW-ER-SENT")
+        return chunk.count("GW-ER-SENT") + chunk.count(_ER_DROPPED_MARKER)
 
-    return _wait_for_log_pattern(gw_log, "GW-ER-SENT", total_orders, count_er, timeout,
+    return _wait_for_log_pattern(gw_log, "GW-ER (sent+dropped)", total_orders, count_er, timeout,
                                   min_idle_timeout=120.0)
+
+
+def terminate_clients(procs: list[subprocess.Popen], clients: int) -> None:
+    """SIGKILL and reap all fix8 clients (f8test ignores SIGTERM).
+
+    Safe to call from a finally: this guarantees the clients are never orphaned,
+    even when the session aborts via die() or Ctrl-C mid-wait.
+    """
+    for proc in procs:
+        if proc.poll() is None:
+            proc.kill()
+    for proc in procs:
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
+    log(f"  All {clients} fix8 client(s) stopped")
 
 
 def shutdown_processes(named_procs: list[tuple[str, subprocess.Popen]]) -> None:
@@ -441,58 +466,41 @@ def run_fix8_session(me_log: Path, gw_log: Path, burst: int, clients: int) -> No
         procs.append(proc)
         log(f"  client {i + 1} of {clients}: f8test PID {proc.pid}")
 
-    log(f"  Waiting {FIX8_LOGON_WAIT:.0f}s for FIX logon(s) ...")
-    time.sleep(FIX8_LOGON_WAIT)
+    # The clients are launched; from here everything runs under try/finally so a
+    # die() or Ctrl-C mid-wait never orphans a fix8 client.
+    try:
+        log(f"  Waiting {FIX8_LOGON_WAIT:.0f}s for FIX logon(s) ...")
+        time.sleep(FIX8_LOGON_WAIT)
 
-    log(f"  Sending {burst} T command(s) to each of {clients} client(s) ...")
-    for i, proc in enumerate(procs):
-        try:
-            for _ in range(burst):
-                proc.stdin.write(b"T\n")
-            proc.stdin.flush()
-        except BrokenPipeError:
-            die(f"f8test client {i + 1} stdin pipe broke before T commands were sent")
-
-    timeout = min(ORDER_TIMEOUT * max(1, burst * clients), MAX_ORDER_TIMEOUT)
-
-    # Phase 1: ME intake.  This is a progress indicator only — the ME processes
-    # NOS in pipeline order and its log may lag the ER log.  A stall here does
-    # not mean orders are lost; GW-ER-SENT is the authoritative end-to-end signal.
-    nos_ok = wait_for_order_completion(me_log, total_orders, timeout)
-    if not nos_ok:
-        log(f"  ME-ORD live count did not reach {total_orders:,} — "
-            f"pipeline still draining; proceeding to ER phase (authoritative)")
-    else:
-        log(f"  All {total_orders:,} NOS confirmed in matching engine log")
-
-    # Phase 2: full round-trip — wait for gateway to deliver all ERs.
-    # Use the same timeout budget; after ME completion most of the remaining
-    # time is pipeline drain.
-    er_ok = wait_for_er_completion(gw_log, total_orders, timeout)
-    if not er_ok:
-        log(f"  WARNING: not all ERs delivered before timeout — {total_orders} ERs expected")
-
-    log("  Terminating fix8 client(s) ...")
-    if er_ok:
-        # Both phases completed cleanly. f8test ignores SIGTERM so use SIGKILL.
-        for proc in procs:
-            if proc.poll() is None:
-                proc.kill()
-        for proc in procs:
-            proc.wait()
-    else:
-        # Timed out or stalled: SIGTERM first, then SIGKILL if needed.
-        for proc in procs:
-            if proc.poll() is None:
-                proc.send_signal(signal.SIGTERM)
+        log(f"  Sending {burst} T command(s) to each of {clients} client(s) ...")
         for i, proc in enumerate(procs):
             try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                log(f"  WARNING: client {i + 1} did not exit — killing")
-                proc.kill()
-                proc.wait()
-    log(f"  All {clients} fix8 client(s) stopped")
+                for _ in range(burst):
+                    proc.stdin.write(b"T\n")
+                proc.stdin.flush()
+            except BrokenPipeError:
+                die(f"f8test client {i + 1} stdin pipe broke before T commands were sent")
+
+        timeout = min(ORDER_TIMEOUT * max(1, burst * clients), MAX_ORDER_TIMEOUT)
+
+        # Phase 1: ME intake.  This is a progress indicator only — the ME processes
+        # NOS in pipeline order and its log may lag the ER log.  A stall here does
+        # not mean orders are lost; GW-ER-SENT is the authoritative end-to-end signal.
+        nos_ok = wait_for_order_completion(me_log, total_orders, timeout)
+        if not nos_ok:
+            log(f"  ME-ORD live count did not reach {total_orders:,} — "
+                f"pipeline still draining; proceeding to ER phase (authoritative)")
+        else:
+            log(f"  All {total_orders:,} NOS confirmed in matching engine log")
+
+        # Phase 2: full round-trip — wait for gateway to account for all ERs
+        # (delivered or dropped for a disconnected client). Same timeout budget.
+        er_ok = wait_for_er_completion(gw_log, total_orders, timeout)
+        if not er_ok:
+            log(f"  WARNING: not all ERs accounted for before timeout — {total_orders} expected")
+    finally:
+        log("  Terminating fix8 client(s) with SIGKILL ...")
+        terminate_clients(procs, clients)
 
 
 def main() -> None:
@@ -662,17 +670,21 @@ def main() -> None:
         except FileNotFoundError:
             return 0
 
-    me_final     = count_in_log(me_log,  "ME-ORD")
-    gw_nos_recv  = count_in_log(gw_log,  "GW-NOS-RECV")
-    gw_er_sent   = count_in_log(gw_log,  "GW-ER-SENT")
-    gw_gap_fills = count_in_log(gw_log,  "SequenceReset-GapFill")
-    me_ok        = me_final    == total_orders
-    nos_ok       = gw_nos_recv == total_orders
-    # ERs can exceed NOS count when the ME generates multiple fills per order
-    # (e.g. partial fill + final fill). "short" is a real failure; "excess" is
-    # expected and not a failure.
-    er_short     = gw_er_sent  <  total_orders
-    er_excess    = gw_er_sent  >  total_orders
+    # Count the ME order-acceptance line only ("accepted NOS OrderID=ME-ORD-N").
+    # A bare "ME-ORD" substring also matches the cancel-ER lines, double-counting.
+    me_final      = count_in_log(me_log,  "accepted NOS")
+    gw_nos_recv   = count_in_log(gw_log,  "GW-NOS-RECV")
+    gw_er_sent    = count_in_log(gw_log,  "GW-ER-SENT")
+    gw_er_dropped = count_in_log(gw_log,  _ER_DROPPED_MARKER)
+    gw_gap_fills  = count_in_log(gw_log,  "SequenceReset-GapFill")
+    nos_ok        = gw_nos_recv == total_orders
+    # Every order generates an ER; the gateway either delivers it (GW-ER-SENT) or
+    # drops it because the client already disconnected. "short" (fewer accounted
+    # for than orders) is a real pipeline loss; a low delivered-count alone is
+    # not, since dropped ERs are expected when clients leave mid-stream.
+    er_accounted  = gw_er_sent + gw_er_dropped
+    er_short      = er_accounted < total_orders
+    er_excess     = er_accounted > total_orders
 
     def count_status(actual: int, expected: int) -> str:
         diff = actual - expected
@@ -686,32 +698,33 @@ def main() -> None:
     log(f"  ME-ORD        : {me_final:>10,} / {total_orders:,}  {count_status(me_final, total_orders)}")
     log(f"  GW-NOS-RECV   : {gw_nos_recv:>10,} / {total_orders:,}  {count_status(gw_nos_recv, total_orders)}")
     log(f"  GW-ER-SENT    : {gw_er_sent:>10,} / {total_orders:,}  {count_status(gw_er_sent, total_orders)}")
-    er_discrepancy = gw_er_sent - gw_nos_recv
+    if gw_er_dropped > 0:
+        log(f"  GW-ER-DROPPED : {gw_er_dropped:>10,}            (client disconnected before delivery)")
+    er_discrepancy = er_accounted - gw_nos_recv
     if er_discrepancy == 0:
-        log(f"  NOS→ER match  : YES — one ER per NOS")
+        log(f"  NOS→ER match  : YES — one ER (sent or dropped) per NOS")
     elif er_discrepancy > 0:
         log(f"  NOS→ER match  : {er_discrepancy:,} extra ERs (partial fills or late cancel ACKs)")
     else:
-        log(f"  NOS→ER match  : NO — {-er_discrepancy:,} ERs missing vs NOS count")
+        log(f"  NOS→ER match  : NO — {-er_discrepancy:,} ERs unaccounted for vs NOS")
     if gw_gap_fills > 0:
         log(f"  Gap fills     : {gw_gap_fills:>10,}  (FIX SequenceReset-GapFill sent in response to ResendRequest)")
 
-    # PASS criteria: gateway received every NOS and every NOS generated an ER
-    # back to a client.  ME-ORD excess is expected whenever cancel-on-disconnect
-    # is active (the ME logs the same ME-ORD-N marker for both accepted orders
-    # and gateway-initiated cancel requests), so me_ok is informational only.
+    # PASS: the gateway received every NOS and every ER was accounted for --
+    # delivered, or dropped because its client had already disconnected. ERs that
+    # are neither (er_short) are genuinely lost in the sequencer->gateway pipeline.
     if nos_ok and not er_short:
-        if er_excess:
-            log(f"=== PASS — all orders processed; {gw_er_sent - total_orders:,} extra ERs "
+        if gw_er_dropped > 0:
+            log(f"=== PASS — all orders processed; {gw_er_sent:,} ERs delivered, "
+                f"{gw_er_dropped:,} dropped for disconnected clients ===")
+        elif er_excess:
+            log(f"=== PASS — all orders processed; {er_accounted - total_orders:,} extra ERs "
                 f"(partial fills or HA double-forwarding) ===")
         else:
             log("=== PASS — all orders processed and every ER delivered ===")
-        if not me_ok:
-            log(f"  (ME-ORD excess of +{me_final - total_orders:,} reflects "
-                f"gateway-initiated cancel requests processed by the ME — expected)")
     elif er_short:
-        log(f"=== FAIL — {total_orders - gw_er_sent:,} ERs not delivered "
-            f"(lost in pipeline or fix8 client disconnected) ===")
+        log(f"=== FAIL — {total_orders - er_accounted:,} ERs unaccounted for "
+            f"(lost in the sequencer→gateway pipeline) ===")
     elif not nos_ok:
         log(f"=== FAIL — {total_orders - gw_nos_recv:,} NOS not received by gateway ===")
     else:
