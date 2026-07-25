@@ -193,7 +193,8 @@ def attach_perf(name: str, pid: int, perf_dir: Path) -> subprocess.Popen:
 def _wait_for_log_pattern(log_path: Path, label: str, target: int,
                            count_fn, timeout: float,
                            min_idle_timeout: float = 8.0,
-                           stall_is_warning: bool = True) -> bool:
+                           stall_is_warning: bool = True,
+                           done_predicate=None) -> bool:
     """
     Generic log-polling loop used by both wait phases.
 
@@ -245,6 +246,14 @@ def _wait_for_log_pattern(log_path: Path, label: str, target: int,
                 if total_seen >= target:
                     return True
 
+            # Optional early completion: e.g. once every client has disconnected,
+            # no ER can be delivered, so waiting for the target is pointless.
+            if done_predicate is not None and done_predicate():
+                log(f"  {label}: all client sessions gone — {total_seen:,}/{target:,} accounted, "
+                    f"remaining ERs are undeliverable; completing")
+                return True
+
+            if chunk:
                 if rate_start_t is not None:
                     elapsed = time.monotonic() - rate_start_t
                     if elapsed >= MIN_CALIBRATION_SECS:
@@ -300,7 +309,7 @@ def wait_for_order_completion(me_log: Path, total_orders: int, timeout: float) -
                                   stall_is_warning=False)
 
 
-def wait_for_er_completion(gw_log: Path, total_orders: int, timeout: float) -> bool:
+def wait_for_er_completion(gw_log: Path, total_orders: int, timeout: float, clients: int) -> bool:
     """Phase 2: wait for the gateway to deliver all ERs back to fix8 clients.
 
     Counts GW-ER-SENT lines in the gateway log.  Each line represents one
@@ -319,11 +328,24 @@ def wait_for_er_completion(gw_log: Path, total_orders: int, timeout: float) -> b
     # drops it because that client already disconnected. Counting only GW-ER-SENT
     # hangs forever when clients disconnect mid-stream: their ERs are dropped, so
     # the delivered count can never reach total_orders.
+    established = [0]
+    lost        = [0]
+    lost_re     = re.compile(r"FIX client connection \d+ lost")
+
     def count_er(chunk: str) -> int:
+        established[0] += chunk.count("FIX session established")
+        lost[0]       += len(lost_re.findall(chunk))
         return chunk.count("GW-ER-SENT") + chunk.count(_ER_DROPPED_MARKER)
 
+    def all_clients_gone() -> bool:
+        # Only once every client has logged on AND every one has since dropped:
+        # no session remains, so any further ER can only be dropped. Requiring
+        # `clients` on both sides avoids a false trigger during ramp-up (one
+        # client connecting+dropping before the others have connected).
+        return established[0] >= clients and lost[0] >= clients
+
     return _wait_for_log_pattern(gw_log, "GW-ER (sent+dropped)", total_orders, count_er, timeout,
-                                  min_idle_timeout=120.0)
+                                  min_idle_timeout=120.0, done_predicate=all_clients_gone)
 
 
 def terminate_clients(procs: list[subprocess.Popen], clients: int) -> None:
@@ -495,7 +517,7 @@ def run_fix8_session(me_log: Path, gw_log: Path, burst: int, clients: int) -> No
 
         # Phase 2: full round-trip — wait for gateway to account for all ERs
         # (delivered or dropped for a disconnected client). Same timeout budget.
-        er_ok = wait_for_er_completion(gw_log, total_orders, timeout)
+        er_ok = wait_for_er_completion(gw_log, total_orders, timeout, clients)
         if not er_ok:
             log(f"  WARNING: not all ERs accounted for before timeout — {total_orders} expected")
     finally:
