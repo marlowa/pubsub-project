@@ -91,24 +91,88 @@ Note the parallel with the warning already recorded under item 16 in the summary
 is instrumented more heavily than the other, the comparison measures the instrumentation. This is
 the scheduling form of the same trap.
 
-### Difficulty 3: HA makes the shortfall structural
+### Difficulty 3: the shortfall, and why "demote the standbys" is only half wrong
 
 Twenty-four threads want fifteen P-cores, so nine must land on E-cores whatever policy is chosen.
-The two obvious places to economise are the Quill backend threads (eight of them, and genuinely
-off the hot path by design) and the HA followers (six threads). The first is available. The second
-is not, for two independent reasons:
+Two obvious places to economise: the Quill backend threads (eight of them, genuinely off the hot
+path by design) and the HA followers (six threads). The backends are straightforwardly available.
+The followers need care, because **"secondary" is not a uniform latency class in this system.**
+Verified in the code:
 
 - **The sequencer follower is synchronously inside the client round trip.** Under the two-tier
-  commit described in [WAL and High Availability](wal_and_ha.md), the leader withholds the
-  execution report until the follower has acknowledged the WAL record. The follower's wake-up
-  latency is therefore added to every order's round trip — measured p90 wake-up for that thread is
-  around 354 us. A follower on a slow core slows the leader's client-visible responses.
-- **Roles swap, and that is the tested-for case.** `ha_test.py` kills and restarts components
-  routinely. A promoted follower is instantly the latency-critical path, so any allocation that
-  gave it worse cores is wrong exactly when the system is under stress.
+  commit described in [WAL and High Availability](wal_and_ha.md), the leader parks each execution
+  report in `pending_er_` and releases it to the gateway only when the matching `WalAck` arrives
+  (`SequencerThread.cpp:558` and `:1076`). The follower's wake-up latency is therefore added to
+  every order's round trip -- measured p90 wake-up for that thread is around 354 us. A follower on
+  a slow core slows the *leader's* client-visible responses. This one cannot be demoted.
+- **The matching engine secondary is not.** `send_book_update()` is fire-and-forget
+  (`MatchingEngineThread.cpp:453` and `:561`); the primary does not wait for the secondary to
+  acknowledge anything. The secondary merely tails the book. Same HA pattern as the sequencer,
+  opposite conclusion.
 
-So HA roughly doubles the hot-path core requirement and offers no way to economise: both members
-of a pair need equivalent cores.
+The remaining objection to demoting a follower was that roles swap, and that this is the
+tested-for case rather than an exception -- `ha_test.py` kills and restarts components routinely,
+and a promoted follower is instantly the latency-critical path. That objection has a
+straightforward answer:
+
+**Re-pin on promotion.** When a leader dies the registry evicts its entries automatically (the
+dead-pid compaction at the start of `claim_cpus()`), so its cores are free the moment it goes.
+Affinity can be changed at any time -- `pthread_setaffinity_np` is not restricted to startup. So a
+follower may sit on the cheap tier and, on being granted the leader role by the arbiter, claim the
+cores the dead leader has just released. That is a small piece of work, and it makes follower
+demotion sound for the matching engine and the publisher.
+
+So the honest statement of Difficulty 3 is narrower than "HA doubles the requirement": **one**
+follower, the sequencer's, needs hot-path cores continuously; the rest can be demoted provided
+promotion re-pins.
+
+With that, the arithmetic becomes comfortable rather than impossible:
+
+| tier | threads |
+|---|---|
+| Quill backends, all 8 components | 8 |
+| `matching_engine_secondary`, `mep_primary`, `mep_secondary` -- app + reactor | 6 |
+| **other-work tier total** | **14** |
+| both gateways, both sequencers, `matching_engine_primary` -- app + reactor | 10 |
+| **hot-path tier total** | **10**, against 15 available P-cores |
+
+Both gateways on P-cores, deterministically, with headroom.
+
+---
+
+## Process taxonomy: mandatory is not the same as latency-critical
+
+A production deployment needs to know which processes will run on a given machine, and which of
+those are mandatory for an operational system. That is the right question to ask, and the
+per-machine half of it is what makes the anti-affinity complement computable at all -- see approach
+6 below.
+
+But the *mandatory* flag must not also drive core allocation, because the two properties are
+orthogonal. The sequencer secondary is the counterexample that proves it: the venue trades
+perfectly well without it, so it is not mandatory, while its acknowledgement gates every execution
+report, so it is latency-critical. A single flag serving both purposes would place it on an E-core
+and slow every order in the system.
+
+| process | mandatory for trading | latency-critical | basis |
+|---|---|---|---|
+| `order_gateway`, `binary_gateway` | yes | **yes** | client edge |
+| `sequencer_primary` | yes | **yes** | the sequencing point |
+| `sequencer_secondary` | **no** | **yes** | `WalAck` gates every ER |
+| `matching_engine_primary` | yes | **yes** | matching |
+| `matching_engine_secondary` | **no** | **no** | `BookUpdate` is fire-and-forget |
+| `mep_primary`, `mep_secondary` | undecided | no | downstream of the ER path |
+| `auth_service_a`, `auth_service_b` | yes | no | logon only, not per order |
+| `arbiter_primary`, `arbiter_secondary`, `witness` | for resilience, not trading | no | election and failover only |
+| `admin_service` | no | no | operator UI |
+
+Two independent axes: **mandatory**, driving readiness and health checks and whether the launcher
+may declare the system operational; and a **latency class**, driving which core tier a process's
+threads receive. They agree on most rows, which is precisely why one flag would look adequate while
+quietly misplacing the row that matters.
+
+*Mandatory* may not be cleanly binary either. The arbiters are not needed for the venue to keep
+trading, only for it to survive a failure, so "mandatory for trading" and "mandatory for
+resilience" are arguably distinct -- which suggests an enum rather than a boolean.
 
 ---
 
@@ -189,12 +253,43 @@ templates today, and `deploy.py` already *computes* values rather than merely co
 registry paths and the WAL directories are both derived there. A layout planner could live in the
 same place, since `deploy.py` is the one participant that reads the whole component list.
 
+**6. Declare, per machine, which processes run there and what each one is.** The strongest option
+on this list, and the one that makes the anti-affinity complement computable rather than inferred.
+A production deployment has to know which processes a given host runs anyway -- for readiness
+checks, for monitoring, for knowing whether the system is operational. Once that manifest exists,
+"which cores will be pinned on this machine" is answerable by reading it, with no barrier, no
+claimant count, no quiescence timer and no launcher closure flag. Difficulty 1 does not arise,
+because nothing is being inferred from observed claims.
+
+Each entry needs the two orthogonal properties described under "Process taxonomy" above --
+*mandatory* and a *latency class* -- and the latency class is what assigns the core tier, which
+also disposes of Difficulty 2.
+
+A variant worth recording, suggested externally: rather than each component reading its assignment
+from its own config, have the launcher **pre-populate the registry with the whole layout before any
+binary starts**. The registry then inverts from a negotiation into a lookup table; a component
+reads its own pre-assigned cores, and a component restarted at any later time reads the same ones.
+That keeps a single machine-wide view of the layout, which is better for an operator than the same
+information scattered across per-component files. It is a presentation choice on top of approach 6
+rather than a different approach.
+
+Note one distinction that is easy to blur: **controlling the start order is not equivalent to
+declaring the allocation.** A controlled order makes a cold start deterministic and does nothing
+for restart, because a component killed by `ha_test.py` comes back outside any launcher-controlled
+sequence and re-claims from whatever is free. A declared allocation is restart-safe by
+construction. Since routine restart is designed-for behaviour here, only the latter is a solution;
+the former merely makes the fault harder to reproduce.
+
 ---
 
 ## Open questions
 
 1. Is the core layout something we are willing to declare in configuration, or must the system
    keep working it out at runtime?
+2. Should the per-machine manifest carry *mandatory* and *latency class* as two separate fields, and
+   is *mandatory* a boolean or an enum ("for trading" versus "for resilience")?
+3. Is re-pin-on-promotion worth building, so that non-critical followers can occupy the cheap tier
+   and take the dead leader's cores when the arbiter promotes them?
 2. If declared: does a reduced (`--no-ha`) deployment get the same assignment as full HA, so that
    the two are comparable, or a denser one that uses the freed cores?
 3. What does `CpuRegistry` become if it stops being the allocator? Proposal: a runtime record and

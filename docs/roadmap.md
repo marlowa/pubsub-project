@@ -44,8 +44,10 @@ Near-term tasks not tied to a specific slice.
   early computes a mask that silently permits cores pinned moments later. The same root cause —
   greedy, start-order-dependent claiming — is why both gateways landed on E-cores under full HA and
   on P-cores under `--no-ha`, which would make the FIX-versus-binary comparison measure core type
-  rather than protocol. HA compounds it: the sequencer follower is synchronously inside the client
-  round trip and may be promoted at any moment, so followers cannot be given the cheap cores.  
+  rather than protocol. HA complicates it, though not uniformly: the sequencer follower is
+  synchronously inside the client round trip and must keep good cores, while the matching engine
+  secondary only tails the book and can be demoted if promotion re-pins. "Mandatory for an
+  operational system" and "latency-critical" turn out to be orthogonal properties.  
   Five approaches are recorded with the specific flaw in each, along with the measured evidence, in
   [Anti-Affinity for Non-Hot-Path Threads](design/cpu_pinning_anti_affinity.md). **Read that before
   starting item 16** — the metrics endpoint should not land until this is settled, or the first

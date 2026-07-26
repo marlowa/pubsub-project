@@ -1070,11 +1070,17 @@ the trap already noted under item 16 -- and the symmetry that makes the gateway 
 all is an accident of arithmetic, since the P/E boundary falls wherever the cumulative thread count
 reaches 15 and one extra thread anywhere upstream would split the pair.
 
-**HA makes the shortfall structural.** 24 threads want 15 claimable P-cores, so nine must sit on
-E-cores regardless. The Quill backend threads (eight, genuinely off the hot path) are fair game.
-The HA followers are not: the sequencer follower is synchronously inside the client round trip
-because the leader withholds the ER until the WalAck arrives, and any follower may be promoted at
-any moment. Both members of a pair need equivalent cores.
+**HA narrows the options, but less than first thought.** 24 threads want 15 claimable P-cores, so
+nine must sit on E-cores regardless. The Quill backend threads (eight, genuinely off the hot path)
+are fair game. Among the followers, only the sequencer's must stay on the hot-path tier: it is
+synchronously inside the client round trip, because the leader parks each ER in `pending_er_` and
+releases it only on the matching WalAck. The matching engine secondary is not -- `send_book_update()`
+is fire-and-forget -- so it can be demoted, and the objection that a promoted follower instantly
+becomes latency-critical is answered by re-pinning on promotion, since the dead leader's cores are
+freed by the registry's dead-pid eviction the moment it goes. That brings hot-path demand to about
+ten threads against fifteen P-cores. **"Mandatory for an operational system" and "latency-critical"
+are orthogonal, and the sequencer secondary is the counterexample that proves it** -- the venue
+trades without it, yet its ack gates every ER.
 
 **Development is the environment that matters.** Production, preprod and test-1 all run one
 component per dedicated host, where there is no contention and anti-affinity is trivial. Only
