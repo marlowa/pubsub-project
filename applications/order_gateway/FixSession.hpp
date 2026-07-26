@@ -17,59 +17,17 @@
 
 #include "FixOrderLimits.hpp"
 #include "FixParser.hpp"
+#include "OpenOrderEntry.hpp"
 
 namespace order_gateway {
 
-// Hard structural ceilings for the symbol/qty open-order string fields (compile-time
-// char-array sizes in OpenOrderEntry). Runtime-configurable [fix_limits] limits must be
-// <= these and are enforced at startup; over-length symbol/qty get a FIX BusinessReject.
-// ClOrdID instead uses the single shared fix_order_limits::max_cl_ord_id_length -- validated
-// at ingress with an ExecutionReport rejection -- so the gateway pool and the matching-engine
-// book key stay on one value. See docs/applications/order_gateway.md.
-//
-// Why fixed char arrays rather than std::string or a general pool:
-//   std::string causes one heap allocation per field per order, measured at
-//   1.21% of gateway CPU at 122K orders/second. A general variable-size pool
-//   with individual frees requires implementing boundary-tag coalescing --
-//   complexity comparable to ExpandablePoolAllocator, which itself was very
-//   hard to write correctly. Fixed char arrays with ExpandablePoolAllocator
-//   and tsl::robin_map eliminate all per-order heap allocation with a
-//   manageable implementation cost.
-static constexpr size_t max_supported_symbol_length = 64;
-static constexpr size_t max_supported_order_qty_length = 32;
-
-/**
- * @brief Pool-allocated storage for a single open order's string fields.
- *
- * All string data is held inline in fixed char arrays -- no heap allocation
- * per order. An OpenOrderEntry is allocated from OrderGatewayThread's
- * open_order_pool_ when the ME sends a non-terminal ExecutionReport, and
- * returned to the pool when a terminal ER is received or when
- * drain_pending_cancels() sends the OrderCancelRequest on disconnect.
- *
- * The open_orders map in FixSession holds std::string_view keys that point
- * directly into cl_ord_id[] here. The pool entry must therefore remain alive
- * for the lifetime of the map entry.
- */
-struct OpenOrderEntry {
-    char cl_ord_id[fix_order_limits::max_cl_ord_id_length + 1]{};
-    uint8_t cl_ord_id_len{0};
-    char symbol[max_supported_symbol_length + 1]{};
-    uint8_t symbol_len{0};
-    char order_qty[max_supported_order_qty_length + 1]{};
-    uint8_t order_qty_len{0};
-    char side{0};
-};
-
-/**
- * @brief Map type used for open orders within a session.
- *
- * Key: std::string_view pointing into the corresponding OpenOrderEntry::cl_ord_id[].
- *      The view is stable for the lifetime of the pool entry.
- * Value: non-owning pointer to the pool-allocated OpenOrderEntry.
- *        The owning pool lives in OrderGatewayThread.
- */
-using OpenOrderMap = tsl::robin_map<std::string_view, OpenOrderEntry*, std::hash<std::string_view>, std::equal_to<std::string_view>>;
+// Open-order tracking lives in fix_common: cancelling a dead session's resting orders is
+// a property of being a gateway, not of speaking FIX, so the binary gateway shares these.
+// Re-exported here under the names the FIX gateway has always used.
+using open_orders::max_supported_order_qty_length;
+using open_orders::max_supported_symbol_length;
+using open_orders::OpenOrderEntry;
+using open_orders::OpenOrderMap;
 
 /**
  * @brief Holds the state for a single active FIX 5.0SP2 / FIXT 1.1 session.

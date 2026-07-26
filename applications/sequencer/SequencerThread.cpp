@@ -5,6 +5,7 @@
 
 #include <cstring>
 
+#include <algorithm>
 #include <array>
 
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
@@ -53,7 +54,6 @@ SequencerThread::SequencerThread(pubsub_itc_fw::ApplicationThread::ConstructorTo
     , order_inbound_svc_("inbound:" + std::to_string(config.listen_port))
     , er_inbound_svc_("inbound:" + std::to_string(config.er_listen_port))
     , wal_subscriber_inbound_svc_("inbound:" + std::to_string(config.wal_subscriber_listen_port))
-    , gateway_conn_id_{}
     , me_outbound_order_conn_id_{}
     , peer_conn_id_{}
     , peer_inbound_conn_id_{}
@@ -134,6 +134,9 @@ void SequencerThread::on_app_ready_event() {
     }
 
     connect_to_service("gateway");
+    if (config_.binary_gateway_enabled) {
+        connect_to_service("binary_gateway");
+    }
     connect_to_service("matching_engine");
     if (config_.ha_enabled) {
         connect_to_service("matching_engine_secondary");
@@ -148,8 +151,13 @@ void SequencerThread::on_connection_established(pubsub_itc_fw::ConnectionID id) 
     const std::string peer_inbound_svc = "inbound:" + std::to_string(config_.peer_listen_port);
 
     if (svc == "gateway") {
-        gateway_conn_id_ = id;
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: gateway connection {} established", id.get_value());
+        gateway_conn_ids_[gateway_ids::order_gateway] = id;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: order gateway (id {}) connection {} established",
+                   gateway_ids::order_gateway, id.get_value());
+    } else if (svc == "binary_gateway") {
+        gateway_conn_ids_[gateway_ids::binary_gateway] = id;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: binary gateway (id {}) connection {} established",
+                   gateway_ids::binary_gateway, id.get_value());
     } else if (svc == "matching_engine") {
         me_outbound_order_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: matching engine order connection {} established", id.get_value());
@@ -204,9 +212,11 @@ void SequencerThread::on_connection_established(pubsub_itc_fw::ConnectionID id) 
 }
 
 void SequencerThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, const std::string& reason) {
-    if (id == gateway_conn_id_) {
-        gateway_conn_id_ = pubsub_itc_fw::ConnectionID{};
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: gateway connection {} lost: {}", id.get_value(), reason);
+    const auto lost_gateway = std::find_if(gateway_conn_ids_.begin(), gateway_conn_ids_.end(), [&id](const auto& entry) { return entry.second == id; });
+    if (lost_gateway != gateway_conn_ids_.end()) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: gateway id {} connection {} lost: {}", lost_gateway->first,
+                   id.get_value(), reason);
+        gateway_conn_ids_.erase(lost_gateway);
     } else if (id == me_outbound_order_conn_id_) {
         me_outbound_order_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
@@ -376,11 +386,14 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             return;
         }
 
-        // Record seq_no -> gateway_session_conn_id for ER routing back to the exact
-        // FIX session. seq_no is globally unique; gateway_session_conn_id identifies
-        // the specific connection within the gateway.
+        // Record seq_no -> originating session for ER routing back to the exact client
+        // session. seq_no is globally unique; the connection id identifies a connection
+        // within one gateway, and the gateway id says which gateway that is.
         if (inbound.has_gateway_session_conn_id) {
-            seq_no_to_session_conn_id_[seq] = inbound.gateway_session_conn_id;
+            OriginSession origin;
+            origin.session_conn_id = inbound.gateway_session_conn_id;
+            origin.gateway_id = inbound.has_origin_gateway_id ? inbound.origin_gateway_id : gateway_ids::default_when_absent;
+            seq_no_to_session_conn_id_[seq] = origin;
         }
 
         // Forward the stamped envelope to the ME. The ME unwraps it, reads
@@ -413,11 +426,9 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: ER PDU on connection {} pdu_id={} seq={} -- forwarding to gateway",
                    message.connection_id().get_value(), message.pdu_id(), message.seq_no());
 
-        if (!gateway_conn_id_.is_valid()) {
-            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: gateway not connected -- dropping ER PDU");
-            release_pdu_payload(message);
-            return;
-        }
+        // Which gateway this ER belongs to is not known until the envelope has been
+        // decoded and the routing map consulted, so the "is that gateway connected?"
+        // check happens at the point of sending rather than here.
 
         auto& arena_buf = decode_arena_buffer();
         pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
@@ -454,12 +465,14 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         const int64_t er_seq_no = message.seq_no();
         bool has_routing_conn = false;
         int32_t routing_conn_id = 0;
+        int16_t routing_gateway_id = gateway_ids::default_when_absent;
         bool erase_routing_entry = false;
         {
             auto it = seq_no_to_session_conn_id_.find(er_seq_no);
             if (it != seq_no_to_session_conn_id_.end()) {
                 has_routing_conn = true;
-                routing_conn_id = it->second;
+                routing_conn_id = it->second.session_conn_id;
+                routing_gateway_id = it->second.gateway_id;
 
                 switch (view.ord_status) {
                     case pubsub_itc_fw_app::OrdStatus::Filled:
@@ -476,6 +489,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             } else if (inbound.has_gateway_session_conn_id) {
                 has_routing_conn = true;
                 routing_conn_id = inbound.gateway_session_conn_id;
+                routing_gateway_id = inbound.has_origin_gateway_id ? inbound.origin_gateway_id : gateway_ids::default_when_absent;
             } else {
                 PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                            "SequencerThread: ER seq_no={} not in routing map and no envelope conn id -- forwarding without gateway_session_conn_id", er_seq_no);
@@ -504,16 +518,18 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         envelope.wall_time_ns = er_wall_time_ns;
         envelope.has_gateway_session_conn_id = has_routing_conn;
         envelope.gateway_session_conn_id = routing_conn_id;
+        envelope.has_origin_gateway_id = has_routing_conn;
+        envelope.origin_gateway_id = routing_gateway_id;
 
         append_envelope_to_wal(envelope);
         send_wal_record(envelope);
         stream_wal_record_to_external_subscribers(envelope);
 
-        // Forward the envelope-wrapped ER to the gateway, gated on the follower having
-        // durably committed the *order's* WAL entry (er_seq_no). The gateway unwraps the
-        // envelope, reads gateway_session_conn_id, and routes to the FIX session.
+        // Forward the envelope-wrapped ER to the originating gateway, gated on the follower
+        // having durably committed the *order's* WAL entry (er_seq_no). That gateway
+        // unwraps the envelope, reads gateway_session_conn_id, and routes to the session.
         if (!needs_wal_ack()) {
-            send_pdu(gateway_conn_id_, pubsub_itc_fw_app::WalRecord::message_pdu_id, er_seq_no, envelope);
+            send_er_to_origin_gateway(routing_gateway_id, er_seq_no, envelope);
             release_pdu_payload(message);
             if (erase_routing_entry) {
                 seq_no_to_session_conn_id_.erase(er_seq_no);
@@ -523,7 +539,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             if (acked_it != wal_acked_seq_nos_.end()) {
                 // Follower already acked this seq_no; forward immediately.
                 wal_acked_seq_nos_.erase(acked_it);
-                send_pdu(gateway_conn_id_, pubsub_itc_fw_app::WalRecord::message_pdu_id, er_seq_no, envelope);
+                send_er_to_origin_gateway(routing_gateway_id, er_seq_no, envelope);
                 release_pdu_payload(message);
                 if (erase_routing_entry) {
                     seq_no_to_session_conn_id_.erase(er_seq_no);
@@ -536,6 +552,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
                 pending.payload.assign(inbound.payload.data, inbound.payload.data + inbound.payload.size);
                 pending.has_gateway_session_conn_id = has_routing_conn;
                 pending.gateway_session_conn_id = routing_conn_id;
+                pending.origin_gateway_id = routing_gateway_id;
                 pending.erase_routing_entry = erase_routing_entry;
                 PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: ER seq={} buffered -- awaiting WalAck from follower", er_seq_no);
                 pending_er_.emplace(er_seq_no, std::move(pending));
@@ -952,6 +969,18 @@ void SequencerThread::dispatch_replay_records() {
         envelope.gateway_session_conn_id = view.gateway_session_conn_id;
         envelope.has_sender_comp_id = view.has_sender_comp_id;
         envelope.sender_comp_id = view.sender_comp_id;
+        envelope.has_origin_gateway_id = view.has_origin_gateway_id;
+        envelope.origin_gateway_id = view.origin_gateway_id;
+
+        // Rebuild the routing map as the WAL is replayed, so ERs the matching engine
+        // emits for these orders after promotion reach the gateway they came from. The
+        // record carries the gateway id because the WAL stores the gateway's own envelope.
+        if (view.has_gateway_session_conn_id) {
+            OriginSession origin;
+            origin.session_conn_id = view.gateway_session_conn_id;
+            origin.gateway_id = view.has_origin_gateway_id ? view.origin_gateway_id : gateway_ids::default_when_absent;
+            seq_no_to_session_conn_id_[view.seq_no] = origin;
+        }
 
         send_pdu(me_outbound_order_conn_id_, pubsub_itc_fw_app::WalRecord::message_pdu_id, record.seq_no, envelope);
         ++dispatched;
@@ -1115,14 +1144,19 @@ void SequencerThread::flush_pending_er() {
     wal_acked_seq_nos_.clear();
 }
 
-void SequencerThread::forward_pending_er(const PendingEr& pending) {
-    if (!gateway_conn_id_.is_valid()) {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: gateway not connected -- dropping buffered ER");
+void SequencerThread::send_er_to_origin_gateway(int16_t gateway_id, int64_t er_seq_no, const pubsub_itc_fw_app::WalRecord& envelope) {
+    const pubsub_itc_fw::ConnectionID* connection = gateway_connection(gateway_id);
+    if (connection == nullptr) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: gateway id {} not connected -- dropping ER seq={}", gateway_id,
+                   er_seq_no);
         return;
     }
+    send_pdu(*connection, pubsub_itc_fw_app::WalRecord::message_pdu_id, er_seq_no, envelope);
+}
 
+void SequencerThread::forward_pending_er(const PendingEr& pending) {
     // Wrap the buffered raw ER in a WalRecord envelope carrying the routing conn id
-    // and forward it to the gateway, which unwraps and routes to the FIX session.
+    // and forward it to the originating gateway, which unwraps and routes to the session.
     // pending.payload is alive for this call; the envelope's BytesView borrows it.
     pubsub_itc_fw_app::WalRecord envelope{};
     envelope.seq_no = pending.seq_no;
@@ -1131,9 +1165,12 @@ void SequencerThread::forward_pending_er(const PendingEr& pending) {
     envelope.payload.size = pending.payload.size();
     envelope.has_gateway_session_conn_id = pending.has_gateway_session_conn_id;
     envelope.gateway_session_conn_id = pending.gateway_session_conn_id;
+    envelope.has_origin_gateway_id = pending.has_gateway_session_conn_id;
+    envelope.origin_gateway_id = pending.origin_gateway_id;
 
-    send_pdu(gateway_conn_id_, pubsub_itc_fw_app::WalRecord::message_pdu_id, pending.seq_no, envelope);
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: buffered ER seq={} forwarded to gateway", pending.seq_no);
+    send_er_to_origin_gateway(pending.origin_gateway_id, pending.seq_no, envelope);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: buffered ER seq={} forwarded to gateway id {}", pending.seq_no,
+               pending.origin_gateway_id);
 
     if (pending.erase_routing_entry) {
         seq_no_to_session_conn_id_.erase(pending.seq_no);

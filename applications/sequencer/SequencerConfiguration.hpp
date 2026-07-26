@@ -47,12 +47,27 @@ struct SequencerConfiguration {
     uint16_t er_listen_port{7021};
 
     // Outbound -- gateway ER forwarding
+    //
+    // There is more than one gateway: the ASCII FIX one and the binary one, each
+    // speaking a different client protocol into the same book. The sequencer dials
+    // both and routes each ER back to whichever originated the order, identified by
+    // origin_gateway_id on the envelope. A session connection id is only unique
+    // within its own gateway, so the gateway id is what disambiguates them.
 
-    /** @brief Host address of the gateway ER inbound listener. */
+    /** @brief Host address of the ASCII FIX gateway's ER inbound listener. */
     std::string gateway_host{"127.0.0.1"};
 
-    /** @brief TCP port of the gateway ER inbound listener. */
+    /** @brief TCP port of the ASCII FIX gateway's ER inbound listener. */
     uint16_t gateway_port{7010};
+
+    /** @brief Whether the binary gateway is deployed and should be dialled for ER delivery. */
+    bool binary_gateway_enabled{false};
+
+    /** @brief Host address of the binary gateway's ER inbound listener. */
+    std::string binary_gateway_host{"127.0.0.1"};
+
+    /** @brief TCP port of the binary gateway's ER inbound listener. */
+    uint16_t binary_gateway_port{7110};
 
     // Outbound -- matching engine order forwarding
     //

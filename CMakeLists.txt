@@ -396,6 +396,25 @@ add_custom_target(authentication_generated ALL
     DEPENDS "${AUTH_DSL_GENERATED_HPP}"
 )
 
+# Binary gateway session protocol PDU header (IDs 700-709; no --pdu-id-enum).
+set(BINARY_SESSION_DSL_SOURCE "${CMAKE_SOURCE_DIR}/applications/binary_session.dsl")
+set(BINARY_SESSION_DSL_GENERATED_HPP "${FIX_DSL_INCLUDE_DIR}/binary_session.hpp")
+
+add_custom_command(
+    OUTPUT "${BINARY_SESSION_DSL_GENERATED_HPP}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${FIX_DSL_INCLUDE_DIR}"
+    COMMAND ${Python3_EXECUTABLE} "${FIX_DSL_GENERATOR}"
+            --namespace pubsub_itc_fw_app
+            "${BINARY_SESSION_DSL_SOURCE}"
+            --cpp "${BINARY_SESSION_DSL_GENERATED_HPP}"
+    DEPENDS "${BINARY_SESSION_DSL_SOURCE}" "${FIX_DSL_GENERATOR}" ${FIX_DSL_GENERATOR_MODULES}
+    COMMENT "Generating binary_session.hpp from binary_session.dsl"
+    VERBATIM
+)
+add_custom_target(binary_session_generated ALL
+    DEPENDS "${BINARY_SESSION_DSL_GENERATED_HPP}"
+)
+
 # Matching engine book replication protocol PDU header (IDs 600-619).
 set(ME_REPL_DSL_SOURCE "${CMAKE_SOURCE_DIR}/applications/matching_engine/matching_engine_replication.dsl")
 set(ME_REPL_DSL_GENERATED_HPP "${FIX_DSL_INCLUDE_DIR}/matching_engine_replication.hpp")

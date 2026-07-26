@@ -21,6 +21,7 @@
 #include <pubsub_itc_fw/ExternalWalSubscriberRegistry.hpp>
 #include <pubsub_itc_fw/Wal.hpp>
 
+#include "GatewayIds.hpp"
 #include "SequencerConfiguration.hpp"
 
 namespace sequencer {
@@ -81,8 +82,20 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // forwarded to the matching engine. Never resets within a process lifetime.
     int64_t next_sequence_number_{1};
 
-    // ConnectionID of the outbound gateway connection for ER forwarding.
-    pubsub_itc_fw::ConnectionID gateway_conn_id_;
+    // Outbound gateway connections for ER forwarding, keyed by gateway id (see
+    // fix_common/GatewayIds.hpp). More than one gateway feeds the same book -- the ASCII
+    // FIX one and the binary one -- and each ER goes back to whichever the order came in
+    // through, so a single connection id is not enough.
+    std::unordered_map<int16_t, pubsub_itc_fw::ConnectionID> gateway_conn_ids_;
+
+    /** @brief The connection for a gateway id, or nullptr when that gateway is not connected. */
+    const pubsub_itc_fw::ConnectionID* gateway_connection(int16_t gateway_id) const {
+        auto it = gateway_conn_ids_.find(gateway_id);
+        if (it == gateway_conn_ids_.end() || !it->second.is_valid()) {
+            return nullptr;
+        }
+        return &it->second;
+    }
 
     // ConnectionID of the outbound matching-engine order connection.
     // The sequencer connects outbound to the ME's order listener on
@@ -143,6 +156,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
         std::vector<uint8_t> payload; // copy of the raw encoded ER from ME
         bool has_gateway_session_conn_id{false};
         int32_t gateway_session_conn_id{0};
+        int16_t origin_gateway_id{gateway_ids::default_when_absent};
         bool erase_routing_entry{false};
     };
 
@@ -201,6 +215,17 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void flush_pending_er();
     void forward_pending_er(const PendingEr& pending);
 
+    /**
+     * @brief Sends an envelope-wrapped ER to the gateway the order originated from.
+     * @param[in] gateway_id Which gateway to deliver to (see fix_common/GatewayIds.hpp).
+     * @param[in] er_seq_no  Sequence number stamped on the transport header.
+     * @param[in] envelope   The WalRecord-wrapped ER.
+     *
+     * Drops the ER with a warning when that gateway is not currently connected; the
+     * client behind it has no route, and no other gateway can serve its session.
+     */
+    void send_er_to_origin_gateway(int16_t gateway_id, int64_t er_seq_no, const pubsub_itc_fw_app::WalRecord& envelope);
+
     // External WAL subscriber helpers (MEP primary and secondary).
     void handle_wal_subscribe_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     void handle_external_wal_ack(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
@@ -220,14 +245,22 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void stream_wal_record_to_me(const pubsub_itc_fw::ConnectionID& conn_id, int64_t record_id, int16_t pdu_id, const uint8_t* pdu_payload, size_t pdu_size,
                                  int64_t wall_time_ns);
 
-    // seq_no -> gateway_session_conn_id of the originating FIX session.
+    // Identifies the client session an order came from: which gateway, and which
+    // connection within it. The connection id alone is ambiguous once more than one
+    // gateway is feeding the book.
+    struct OriginSession {
+        int32_t session_conn_id{0};
+        int16_t gateway_id{gateway_ids::default_when_absent};
+    };
+
+    // seq_no -> originating client session.
     // Keyed by the sequence number assigned to each NOS/OCR (globally unique,
-    // unlike ClOrdID which is only unique per FIX session).  Populated on each
+    // unlike ClOrdID which is only unique per client session).  Populated on each
     // sequenced NOS/OCR; rebuilt from WAL replay on startup.  Used to stamp
     // gateway_session_conn_id on forwarded ERs so the gateway can route each
-    // ER directly to the exact FIX session that placed the order, even when
+    // ER directly to the exact session that placed the order, even when
     // multiple sessions share the same SenderCompID or reuse ClOrdIDs.
-    std::unordered_map<int64_t, int32_t> seq_no_to_session_conn_id_;
+    std::unordered_map<int64_t, OriginSession> seq_no_to_session_conn_id_;
 };
 
 } // namespaces

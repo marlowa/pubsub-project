@@ -6,6 +6,7 @@ add_executable(sequencer
 
 target_include_directories(sequencer PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/../fix_common
         ${FIX_DSL_INCLUDE_DIR}
 )
 

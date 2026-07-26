@@ -1,7 +1,16 @@
 # DD-driven PDU generation and the internal envelope — design (draft) {#fix_pdu_generation}
 
-**Status:** Draft for review. Supersedes the flat, spec-curated generator committed as a
-stepping stone (`python/dd_to_dsl` + `fix_orders.spec.toml`). Not yet implemented.
+**Status:** Implemented and accepted. Both pieces are in place — the full-message DD generator
+(§1) and the internal envelope (§2, stages 1b–1f), with the vestigial internal fields since
+deleted from the generated PDUs (1g). `fix_orders.dsl` is generated into the build tree from
+`applications/fix_orders.dd.xml` at build time and is no longer source controlled (§4). The
+flat, spec-curated input this superseded (`fix_orders.spec.toml`) is gone; `python/dd_to_dsl`
+remains as the full-message generator.
+
+The acceptance gate has been met: a full clean build followed by `ha_test.py --scenario all`
+passes, including cancel-on-failover ER routing over the envelope, which `109df59` pins with an
+assertion in the `me_ha` scenario. Note that on-disk WALs written before the envelope are
+format-incompatible, so any such run must start from a clean WAL. See §5 for per-stage status.
 
 ## Goal
 
@@ -27,10 +36,14 @@ CMake invokes the generator with a DD and message names; there is **no field-lis
 spec**:
 
 ```
-dd_to_dsl --dd <dd.xml> [--dd <more.xml>] \
-          --message NewOrderSingle --message OrderCancelRequest --message ExecutionReport \
+generate_dd_to_dsl.py --dd <dd.xml> [--dd <more.xml>] \
+          --message NewOrderSingle:1000 --message OrderCancelRequest:1001 \
+          --message ExecutionReport:1002 \
           --output <build>/fix_orders.dsl
 ```
+
+This is what the top-level `CMakeLists.txt` runs; the message list and their PDU ids live in
+that invocation and nowhere else.
 
 Everything below is derived from the DD:
 
@@ -152,9 +165,9 @@ wrap / sequencer passthrough (deleting the ~20-field hand-copy) / ME unwrap, the
 then MEP + topic_probe, then delete the three internal fields from the DD PDUs (1g), with a
 live NOS→ER→topic round-trip and a failover test as the acceptance gate.
 
-### Implemented: 1b–1f (Option B — WalRecord as the on-wire + on-disk envelope)
+### Implemented: 1b–1g (Option B — WalRecord as the on-wire + on-disk envelope)
 
-Done as one coherent, build-green changeset (1g deferred). Decision: **Option B** — the WAL
+Done as one coherent, build-green changeset. Decision: **Option B** — the WAL
 stores the WalRecord envelope itself (record `pdu_id = WalRecord`, payload = the wrapped FIX
 PDU + routing fields), so the persisted bytes are byte-identical to the follower-replication
 and external-subscriber (MEP) streams, and every reader decodes envelope-then-payload.
@@ -175,10 +188,10 @@ and external-subscriber (MEP) streams, and every reader decodes envelope-then-pa
 - **MEP / topic_probe** unchanged: the MEP already unwraps `WalRecord` and republishes the
   inner (now pure) FIX PDU on its topic.
 
-The three internal fields remain **declared but unset** in `fix_orders.dsl` (vestigial);
-1g deletes them. **Existing on-disk WALs are now format-incompatible → start from a clean WAL.**
-Build + all unit/integration tests green; the replay/failover acceptance gate (live HA +
-`ha_test.py`) is still to be run.
+1g has since removed the three internal fields from the generated PDUs entirely, so nothing in
+`fix_orders.dsl` is now anything but DD-derived. **Existing on-disk WALs are format-incompatible
+→ start from a clean WAL.** Build and all unit/integration tests are green, and the
+replay/failover acceptance gate (live HA + `ha_test.py --scenario all`) has been run and passes.
 
 ---
 
@@ -207,28 +220,32 @@ full message reachable when needed.
 
 ## 4. Lifecycle
 
-The generated `.dsl` becomes a **build artifact**: `git rm` it, add to `.gitignore`, and have
-CMake run the generator (spec/DD + message names → `.dsl`) before the existing `.dsl → .hpp`
-step, chaining the dependency so incremental builds are correct. Source-controlled inputs are
-the **DD XML** and the CMake message list (and the trimmed demo DD).
+The generated `.dsl` is a **build artifact**. It is gitignored and produced into
+`build/generated_dsl/`, where CMake runs the DD generator before the existing `.dsl → .hpp`
+step, chaining the dependency so incremental builds are correct. The only source-controlled
+inputs are the **DD XML** (`applications/fix_orders.dd.xml`) and the message list in the CMake
+invocation.
 
 ---
 
 ## 5. Staged plan
 
-1. **Envelope first** (independent of the generator): introduce `PubSubEnvelope` (`bytes`
-   payload + `pdu_id`), move the three internal fields out of the PDUs, update
-   gateway/sequencer/ME/MEP/topic_probe/WAL. Land it green before touching generation.
-2. **Full-message generator**: component inlining, then repeating groups (`list<>`), then
-   auto-derive enums/required/order/types; drop the field-list spec (message names + ids on
-   the CLI).
-3. **Pipeline for the full NOS**: gateway parses the full inbound NOS into the PDU; ME/ER echo
-   the expanded field set; the WAL and topic_probe carry it.
-4. **Web UI**: pinned quick-order bar + collapsible advanced fields + group sub-panels (§3).
-5. **CMake lifecycle**: generate the `.dsl` at build time from DD + message names; git-rm +
-   gitignore it.
-6. **Verify**: whole pipeline builds; C++ + DSL tests green; live NOS→ER round-trip through
-   topic_probe shows the full DD-derived field set.
+1. **Envelope first** — **done.** Landed as Option B: `WalRecord` is the envelope on the wire
+   and on disk, carrying `gateway_session_conn_id` + `sender_comp_id`, with the three internal
+   fields since deleted from the PDUs (1g).
+2. **Full-message generator** — **done.** Components inlined, repeating groups as nested
+   messages plus `list<>`, enums/required/order/types all derived from the DD; message names
+   and PDU ids passed on the CLI, no field-list spec.
+3. **Pipeline for the full NOS** — **done.** The gateway extracts the inbound groups into the
+   PDU (growing its arena to need), and the ME echoes the expanded field set.
+4. **Web UI** — **done.** Sticky quick-order bar, collapsible "More fields", and Parties group
+   rows in the test client's message page.
+5. **CMake lifecycle** — **done.** See §4.
+6. **Verify** — **done.** Build and the C++/DSL suites are green, a live NOS→ER round-trip
+   through `topic_probe` shows the full DD-derived field set including groups, and
+   `ha_test.py --scenario all` passes from a clean build and a clean WAL. That last one
+   matters: the unit and integration suites do not exercise replay or failover against the
+   envelope format, so a green build alone is not evidence for it.
 
 ---
 

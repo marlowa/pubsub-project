@@ -8,6 +8,12 @@ er_listen_port = ${sequencer_secondary_network_er_listen_port}
 host = "${sequencer_secondary_gateway_host}"
 port = ${sequencer_secondary_gateway_port}
 
+# See the note in sequencer_primary.toml.
+[binary_gateway]
+enabled = ${sequencer_secondary_binary_gateway_enabled}
+host    = "${sequencer_secondary_binary_gateway_host}"
+port    = ${sequencer_secondary_binary_gateway_port}
+
 [matching_engine]
 host = "${sequencer_secondary_matching_engine_host}"
 port = ${sequencer_secondary_matching_engine_port}

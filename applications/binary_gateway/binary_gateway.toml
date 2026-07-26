@@ -1,0 +1,43 @@
+[network]
+listen_host    = "${binary_gateway_network_listen_host}"
+listen_port    = ${binary_gateway_network_listen_port}
+er_listen_host = "${binary_gateway_network_er_listen_host}"
+er_listen_port = ${binary_gateway_network_er_listen_port}
+
+[sequencer]
+ha_enabled     = true
+primary_host   = "${binary_gateway_sequencer_primary_host}"
+primary_port   = ${binary_gateway_sequencer_primary_port}
+secondary_host = "${binary_gateway_sequencer_secondary_host}"
+secondary_port = ${binary_gateway_sequencer_secondary_port}
+
+[logging]
+applog_level     = "info"
+syslog_level     = "critical"
+mode             = "none"
+max_file_size    = 10240000
+max_backup_files = 10
+
+[reactor]
+cpu_pinning_enabled    = true
+cpu_pinning_reserve_cpu0   = ${shared_reactor_cpu_pinning_reserve_cpu0}
+cpu_registry_shm_path  = "${shared_reactor_cpu_registry_shm_path}"
+cpu_registry_lock_file = "${shared_reactor_cpu_registry_lock_file}"
+connect_retry_warning_interval = "15m"
+
+[event_queue_pool]
+# Sized as the order gateway's is: one event per inbound PDU, and the perf tests drive
+# the same order volume through either gateway.
+objects_per_slab = 80000
+initial_slabs    = 1
+
+[command_queue_pool]
+objects_per_slab = 4096
+initial_slabs    = 1
+
+# Backs cancel-on-disconnect: one entry per order a session has resting on the book,
+# held until a terminal ExecutionReport retires it or the session's cancels are drained.
+# Size to the maximum expected concurrent open orders with headroom.
+[open_order_pool]
+objects_per_pool = ${binary_gateway_open_order_pool_objects_per_pool}
+initial_pools    = ${binary_gateway_open_order_pool_initial_pools}

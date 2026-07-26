@@ -55,6 +55,22 @@ SequencerConfiguration SequencerConfigurationLoader::load(const std::string& fil
         config.gateway_port = static_cast<uint16_t>(gateway_port);
         config.matching_engine_port = static_cast<uint16_t>(matching_engine_port);
 
+        // The binary gateway is optional: a deployment may run only the ASCII FIX one, and
+        // configs written before it existed have no such section. Absent means not deployed,
+        // so the sequencer simply never dials it. Once enabled, host and port are required --
+        // silently defaulting an endpoint would give a sequencer that dials the wrong place.
+        const auto [has_binary_gateway, binary_gateway_error] = toml.get_required("binary_gateway.enabled", config.binary_gateway_enabled);
+        if (!has_binary_gateway) {
+            config.binary_gateway_enabled = false;
+        }
+        if (config.binary_gateway_enabled) {
+            toml.get_required_except("binary_gateway.host", config.binary_gateway_host);
+            int32_t binary_gateway_port = 0;
+            toml.get_required_except("binary_gateway.port", binary_gateway_port);
+            validate_port(binary_gateway_port, "binary_gateway.port");
+            config.binary_gateway_port = static_cast<uint16_t>(binary_gateway_port);
+        }
+
         if (config.ha_enabled) {
             toml.get_required_except("matching_engine_secondary.host", config.matching_engine_secondary_host);
             int32_t matching_engine_secondary_port = 0;

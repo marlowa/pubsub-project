@@ -35,4 +35,10 @@ message BookUpdate(id=600)
     string          symbol
     string          order_qty
     optional string price
+    # Which gateway the order arrived through. session_id alone is ambiguous once more
+    # than one gateway feeds the book -- each numbers its own client connections -- and a
+    # promoted secondary needs this to route its cancel-on-failover ERs back to the right
+    # one. Trailing and optional, so a replica running older code still decodes; absent
+    # means the order gateway, which is what every pre-existing entry came from.
+    optional i16    origin_gateway_id
 end

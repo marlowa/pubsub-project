@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstring>
 #include <functional>
 #include <memory>
 #include <string>
@@ -669,6 +670,52 @@ class ApplicationThread {
         // send_pdu is instantiated in translation units that only have a forward
         // declaration of Reactor.
         enqueue_send_pdu_command(conn_id, slab_id, chunk, static_cast<uint32_t>(bytes_written));
+    }
+
+    /**
+     * @brief Sends an already-encoded PDU payload, framing it without decoding it.
+     *
+     * @param[in] conn_id The connection to send on.
+     * @param[in] pdu_id  The DSL message ID to stamp in the header.
+     * @param[in] seq_no  The sequence number to stamp; 0 when not yet sequenced.
+     * @param[in] payload Pointer to the encoded payload. Must not be nullptr.
+     * @param[in] size    Payload length in bytes. Must be greater than zero.
+     *
+     * For components that relay a PDU rather than originate one. A gateway that
+     * receives an ExecutionReport wrapped in an envelope already holds the encoded
+     * inner PDU; forwarding it through send_pdu would mean decoding it into a struct
+     * only to encode the identical bytes straight back. This copies the payload into
+     * the outbound slab behind a PduHeader and sends it, so the relayed message never
+     * has to be understood -- which also means a relay does not break when a message
+     * it merely passes through gains a field.
+     *
+     * The bytes must be a complete, valid encoding of pdu_id; nothing here checks
+     * that. The caller owns @p payload only until this returns, as the bytes are
+     * copied into the slab.
+     */
+    void send_pdu_payload(const ConnectionID& conn_id, int16_t pdu_id, int64_t seq_no, const void* payload, size_t size) {
+        if (payload == nullptr) {
+            throw PreconditionAssertion("send_pdu_payload: payload must not be nullptr", __FILE__, __LINE__);
+        }
+        if (size == 0) {
+            throw PreconditionAssertion("send_pdu_payload: size must be greater than zero", __FILE__, __LINE__);
+        }
+
+        const size_t frame_size = sizeof(PduHeader) + size;
+        auto [slab_id, chunk] = outbound_allocator_.allocate(frame_size);
+
+        auto* header = static_cast<PduHeader*>(chunk);
+        header->byte_count = htonl(static_cast<uint32_t>(size));
+        header->pdu_id = static_cast<int16_t>(htons(static_cast<uint16_t>(pdu_id)));
+        header->version = 1;
+        header->filler_a = 0;
+        header->seq_no = static_cast<int64_t>(htobe64(static_cast<uint64_t>(seq_no)));
+        header->canary = htonl(pdu_canary_value);
+        header->filler_b = 0;
+
+        std::memcpy(static_cast<uint8_t*>(chunk) + sizeof(PduHeader), payload, size);
+
+        enqueue_send_pdu_command(conn_id, slab_id, chunk, static_cast<uint32_t>(size));
     }
 
   protected:

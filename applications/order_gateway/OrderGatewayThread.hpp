@@ -22,6 +22,7 @@
 #include "FixMessage.hpp"
 #include "FixSerialiser.hpp"
 #include "FixSession.hpp"
+#include "GatewayIds.hpp"
 #include "OrderGatewayConfiguration.hpp"
 
 // authentication.hpp must be included before fix_orders.hpp because only
@@ -206,6 +207,11 @@ class OrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
         envelope.payload.size = bytes_written;
         envelope.has_gateway_session_conn_id = true;
         envelope.gateway_session_conn_id = gateway_session_conn_id;
+        // Which gateway this came from, so the sequencer can send the ER back here rather
+        // than to the binary gateway, whose session connection ids are numbered separately
+        // and would otherwise be indistinguishable from these.
+        envelope.has_origin_gateway_id = true;
+        envelope.origin_gateway_id = gateway_ids::order_gateway;
         if (!sender_comp_id.empty()) {
             envelope.has_sender_comp_id = true;
             envelope.sender_comp_id = sender_comp_id;

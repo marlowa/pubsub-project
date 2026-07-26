@@ -121,6 +121,7 @@ components = [
     "mep_primary",
     "mep_secondary",
     "order_gateway",
+    "binary_gateway",
     "admin_service",
     "fix_test_client",
 ]
@@ -195,6 +196,12 @@ ha_only = true
 binary  = "bin/order_gateway"
 config  = "etc/order_gateway/order_gateway.toml"
 workdir = "etc/order_gateway"
+ha_only = false
+
+[components.binary_gateway]
+binary  = "bin/binary_gateway"
+config  = "etc/binary_gateway/binary_gateway.toml"
+workdir = "etc/binary_gateway"
 ha_only = false
 
 # The admin service JAR is placed in install_dir/lib/ by build.py.
@@ -318,6 +325,18 @@ fix_limits_max_order_qty_length       = 24
 open_order_pool_objects_per_pool      = 4096
 open_order_pool_initial_pools         = 1
 
+[binary_gateway]
+network_listen_host      = "127.0.0.1"
+network_listen_port      = 9890
+network_er_listen_host   = "127.0.0.1"
+network_er_listen_port   = 11110
+sequencer_primary_host   = "127.0.0.1"
+sequencer_primary_port   = 11001
+sequencer_secondary_host = "127.0.0.1"
+sequencer_secondary_port = 11002
+open_order_pool_objects_per_pool = 4096
+open_order_pool_initial_pools    = 1
+
 [sequencer_primary]
 network_listen_host        = "127.0.0.1"
 network_listen_port        = 11001
@@ -325,6 +344,9 @@ network_er_listen_host     = "127.0.0.1"
 network_er_listen_port     = 11021
 gateway_host               = "127.0.0.1"
 gateway_port               = 11010
+binary_gateway_enabled     = true
+binary_gateway_host        = "127.0.0.1"
+binary_gateway_port        = 11110
 matching_engine_host       = "127.0.0.1"
 matching_engine_port       = 11020
 matching_engine_secondary_host = "127.0.0.1"
@@ -348,6 +370,9 @@ network_er_listen_host     = "127.0.0.1"
 network_er_listen_port     = 11022
 gateway_host               = "127.0.0.1"
 gateway_port               = 11010
+binary_gateway_enabled     = true
+binary_gateway_host        = "127.0.0.1"
+binary_gateway_port        = 11110
 matching_engine_host       = "127.0.0.1"
 matching_engine_port       = 11020
 matching_engine_secondary_host = "127.0.0.1"

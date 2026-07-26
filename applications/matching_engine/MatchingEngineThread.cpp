@@ -335,7 +335,8 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
             release_pdu_payload(message);
             return;
         }
-        handle_new_order_single(view, message.seq_no(), envelope.wall_time_ns, envelope.has_gateway_session_conn_id ? envelope.gateway_session_conn_id : 0);
+        handle_new_order_single(view, message.seq_no(), envelope.wall_time_ns, envelope.has_gateway_session_conn_id ? envelope.gateway_session_conn_id : 0,
+                                envelope.has_origin_gateway_id ? envelope.origin_gateway_id : gateway_ids::default_when_absent);
 
     } else if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest)) {
         pubsub_itc_fw_app::OrderCancelRequestView view{};
@@ -359,7 +360,7 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
 }
 
 void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number, int64_t sequenced_at_ns,
-                                                   int32_t gateway_session_conn_id) {
+                                                   int32_t gateway_session_conn_id, int16_t origin_gateway_id) {
     // RECONCILING (Slice D): apply the WAL catch-up NOS to the book but do NOT
     // emit an ER and do NOT replicate. The gateway already saw ERs for these
     // orders from the failed primary; re-sending would duplicate them.
@@ -380,6 +381,7 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
             recon_entry.set_price(view.price);
         }
         recon_entry.gateway_session_conn_id = recon_session_id;
+        recon_entry.origin_gateway_id = origin_gateway_id;
         order_book_.emplace(recon_key, recon_entry);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MatchingEngineThread: RECONCILING apply NOS seq={} cl_ord_id={} book_size={}",
                    sequence_number, view.cl_ord_id, order_book_.size());
@@ -435,6 +437,7 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
     OrderEntry entry{};
     entry.order_id_num = order_id_counter_;
     entry.gateway_session_conn_id = session_id;
+    entry.origin_gateway_id = origin_gateway_id;
     entry.side = view.side;
     entry.has_price = view.has_price;
     entry.ord_type = view.ord_type;
@@ -590,11 +593,13 @@ void MatchingEngineThread::handle_order_cancel_request(const pubsub_itc_fw_app::
                view.orig_cl_ord_id, order_book_.size());
 }
 
-void MatchingEngineThread::send_er_to_sequencer(const pubsub_itc_fw_app::ExecutionReport& er, int64_t seq_no, std::optional<int32_t> gateway_session_conn_id) {
+void MatchingEngineThread::send_er_to_sequencer(const pubsub_itc_fw_app::ExecutionReport& er, int64_t seq_no, std::optional<int32_t> gateway_session_conn_id,
+                                                int16_t origin_gateway_id) {
     // Encode the ER, then wrap it in a WalRecord envelope. The echoed seq_no travels in
     // the transport header (so the sequencer can route ordinary ERs via its seq->conn
     // map); the optional gateway_session_conn_id on the envelope routes ERs that are not
-    // tied to a sequenced order (the seq_no==0 cancel-on-failover ERs).
+    // tied to a sequenced order (the seq_no==0 cancel-on-failover ERs), and the gateway
+    // id says which gateway that connection id belongs to.
     // Measure then fit: a zero-size out buffer makes encode report bytes_needed, then
     // the reusable buffer is grown to hold it -- no fixed cap that could silently drop
     // an over-large ER, and no per-ER allocation once the buffer reaches its high-water
@@ -618,6 +623,8 @@ void MatchingEngineThread::send_er_to_sequencer(const pubsub_itc_fw_app::Executi
     envelope.payload.size = bytes_written;
     envelope.has_gateway_session_conn_id = gateway_session_conn_id.has_value();
     envelope.gateway_session_conn_id = gateway_session_conn_id.value_or(0);
+    envelope.has_origin_gateway_id = gateway_session_conn_id.has_value();
+    envelope.origin_gateway_id = origin_gateway_id;
 
     if (sequencer_er_conn_id_.is_valid()) {
         send_pdu(sequencer_er_conn_id_, pubsub_itc_fw_app::WalRecord::message_pdu_id, seq_no, envelope);
@@ -661,6 +668,8 @@ void MatchingEngineThread::send_book_update(int64_t seq_no, pubsub_itc_fw_app::B
     upd.cl_ord_id = cl_ord_id;
 
     if (entry != nullptr) {
+        upd.has_origin_gateway_id = true;
+        upd.origin_gateway_id = entry->origin_gateway_id;
         upd.order_id_num = entry->order_id_num;
         upd.side = static_cast<int8_t>(entry->side);
         upd.ord_type = static_cast<int8_t>(entry->ord_type);
@@ -698,6 +707,7 @@ void MatchingEngineThread::apply_book_update(const pubsub_itc_fw::EventMessage& 
         OrderEntry entry{};
         entry.order_id_num = view.order_id_num;
         entry.gateway_session_conn_id = view.session_id;
+        entry.origin_gateway_id = view.has_origin_gateway_id ? view.origin_gateway_id : gateway_ids::default_when_absent;
         entry.side = static_cast<pubsub_itc_fw_app::Side>(view.side);
         entry.ord_type = static_cast<pubsub_itc_fw_app::OrdType>(view.ord_type);
         entry.set_symbol(view.symbol);
@@ -955,7 +965,7 @@ void MatchingEngineThread::cancel_all_orders_on_failover() {
         // seq_no 0: these cancels are generated by the ME on promotion, not driven by a
         // sequenced order, so the sequencer cannot route them via its seq->conn map. The
         // originating session's connection id rides on the envelope instead.
-        send_er_to_sequencer(er, 0, entry.gateway_session_conn_id);
+        send_er_to_sequencer(er, 0, entry.gateway_session_conn_id, entry.origin_gateway_id);
         ++cancelled;
     }
 

@@ -166,8 +166,14 @@ message WalRecord (id=103, version=1)
     # WalRecord doubles as the pipeline envelope: the routing metadata that must not live
     # inside the (DD-derived) FIX PDU rides here instead. Trailing + optional so existing
     # WAL/replication records decode unchanged. See docs/design/fix_pdu_generation.md.
-    optional i32 gateway_session_conn_id  # originating FIX session; sequencer routes the ER back to it
+    optional i32 gateway_session_conn_id  # originating client session; sequencer routes the ER back to it
     optional string sender_comp_id        # originating client comp id, retained for audit
+    # Which gateway the order came from. gateway_session_conn_id is only unique within one
+    # gateway -- each numbers its own client connections -- so with more than one gateway
+    # (the ASCII FIX one and the binary one) the pair (origin_gateway_id, session conn id)
+    # is what identifies a client session. Absent means gateway 1, so records written before
+    # this field decode and route unchanged.
+    optional i16 origin_gateway_id
 end
 
 # ------------------------------------------------------------

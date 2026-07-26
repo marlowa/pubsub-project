@@ -24,6 +24,7 @@
 #include <matching_engine_replication.hpp>
 
 #include "FixOrderLimits.hpp"
+#include "GatewayIds.hpp"
 #include "MatchingEngineConfiguration.hpp"
 
 namespace matching_engine {
@@ -126,7 +127,11 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // All string fields stored as fixed-size char arrays -- no heap allocation.
     struct OrderEntry {
         int64_t order_id_num{};            // counter value; formatted to "ME-ORD-N" on demand
-        int32_t gateway_session_conn_id{}; // originating FIX session; used to route cancel ERs on failover
+        int32_t gateway_session_conn_id{}; // originating client session; used to route cancel ERs on failover
+        // Which gateway that session belongs to. Held alongside the connection id because
+        // the id alone is only unique within one gateway, so both are needed to send a
+        // cancel-on-failover ER back to the client that placed the order.
+        int16_t origin_gateway_id{gateway_ids::default_when_absent};
         pubsub_itc_fw_app::Side side{};
         pubsub_itc_fw_app::OrdType ord_type{};
         bool has_price{false};
@@ -172,8 +177,11 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // Both come from the WalRecord envelope, not the (DD-derived) FIX PDU:
     // sequenced_at_ns is the sequencer's wall time used as transact_time (0 => not
     // stamped, fall back to the local wall clock); gateway_session_conn_id is the
-    // originating FIX session's connection id, forming half of the order key (0 if absent).
-    void handle_new_order_single(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t seq_no, int64_t sequenced_at_ns, int32_t gateway_session_conn_id);
+    // originating client session's connection id, forming half of the order key (0 if
+    // absent); origin_gateway_id says which gateway that connection id belongs to, since
+    // it is only unique within one gateway.
+    void handle_new_order_single(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t seq_no, int64_t sequenced_at_ns, int32_t gateway_session_conn_id,
+                                 int16_t origin_gateway_id);
     void handle_order_cancel_request(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t seq_no, int64_t sequenced_at_ns,
                                      int32_t gateway_session_conn_id);
     // Reusable scratch buffer for encoding an ExecutionReport before wrapping it in a
@@ -191,7 +199,8 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // metadata for ERs not tied to a sequenced order (the seq_no==0 cancel-on-failover
     // ERs) rides on the envelope, so the ER PDU itself stays purely DD-derived. For
     // ordinary ERs the sequencer routes by the echoed seq_no, so no conn id is supplied.
-    void send_er_to_sequencer(const pubsub_itc_fw_app::ExecutionReport& er, int64_t seq_no, std::optional<int32_t> gateway_session_conn_id = std::nullopt);
+    void send_er_to_sequencer(const pubsub_itc_fw_app::ExecutionReport& er, int64_t seq_no, std::optional<int32_t> gateway_session_conn_id = std::nullopt,
+                              int16_t origin_gateway_id = gateway_ids::default_when_absent);
 
     const MatchingEngineConfiguration& config_;
 

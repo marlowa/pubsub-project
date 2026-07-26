@@ -8,6 +8,14 @@ er_listen_port = ${sequencer_primary_network_er_listen_port}
 host = "${sequencer_primary_gateway_host}"
 port = ${sequencer_primary_gateway_port}
 
+# The binary gateway, dialled for ExecutionReport delivery exactly as the ASCII FIX one
+# is. Orders carry origin_gateway_id on the envelope so each ER goes back to whichever
+# gateway its order came in through. Set enabled = false to run without it.
+[binary_gateway]
+enabled = ${sequencer_primary_binary_gateway_enabled}
+host    = "${sequencer_primary_binary_gateway_host}"
+port    = ${sequencer_primary_binary_gateway_port}
+
 [matching_engine]
 host = "${sequencer_primary_matching_engine_host}"
 port = ${sequencer_primary_matching_engine_port}

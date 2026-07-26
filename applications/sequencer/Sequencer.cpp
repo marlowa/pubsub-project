@@ -73,6 +73,10 @@ Sequencer::Sequencer(SequencerConfiguration config, std::unique_ptr<pubsub_itc_f
 
     // Outbound connections are initiated from SequencerThread::on_app_ready_event()
     // via connect_to_service(). The ServiceRegistry is populated here.
+    if (config_.binary_gateway_enabled) {
+        service_registry_.add("binary_gateway", pubsub_itc_fw::NetworkEndpointConfiguration{config_.binary_gateway_host, config_.binary_gateway_port},
+                              pubsub_itc_fw::NetworkEndpointConfiguration{});
+    }
     service_registry_.add("gateway", pubsub_itc_fw::NetworkEndpointConfiguration{config_.gateway_host, config_.gateway_port},
                           pubsub_itc_fw::NetworkEndpointConfiguration{});
     service_registry_.add("matching_engine", pubsub_itc_fw::NetworkEndpointConfiguration{config_.matching_engine_host, config_.matching_engine_port},
