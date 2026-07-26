@@ -104,6 +104,14 @@ _GW_LOGON_OK            = "authentication succeeded -- FIX session established"
 # session already disconnected. Such ERs are "accounted for" but never delivered.
 _ER_DROPPED_MARKER      = "client already disconnected -- dropping"
 
+# CONTRACT WITH THE GATEWAYS -- see the matching note in perf_run.py and the warning on
+# report_order_progress() in OrderGatewayThread.hpp. Both gateways emit GW-PROGRESS at Info
+# every 1000 accounted-for execution reports, and it is how this script knows a run has
+# finished. The per-order GW-NOS-RECV / GW-ER-SENT lines are at Debug and must not be counted
+# here. Break this and a run does not fail -- it hangs until timeout and reports a stall.
+_PROGRESS_MARKER        = "GW-PROGRESS"
+_PROGRESS_ACCOUNTED_RE  = re.compile(r"GW-PROGRESS accounted=(\d+)")
+
 FIX8_DIR  = Path("/home/marlowa/mystuff/fix8_install")
 FIX8_BIN  = FIX8_DIR / "bin" / "f8test"
 FIX8_CFG  = "myfix_gateway_client.xml"
@@ -398,12 +406,18 @@ def wait_for_er_completion(gw_log: Path, total_orders: int, timeout: float, clie
     # the delivered count can never reach total_orders.
     established = [0]
     lost        = [0]
+    highest     = [0]
     lost_re     = re.compile(r"FIX client connection \d+ lost")
 
     def count_er(chunk: str) -> int:
         established[0] += chunk.count("FIX session established")
         lost[0]       += len(lost_re.findall(chunk))
-        return chunk.count("GW-ER-SENT") + chunk.count(_ER_DROPPED_MARKER)
+        # The gateway reports a cumulative total but the poller accumulates what this
+        # returns, so hand back the increase since the last chunk.
+        previous = highest[0]
+        for match in _PROGRESS_ACCOUNTED_RE.finditer(chunk):
+            highest[0] = max(highest[0], int(match.group(1)))
+        return highest[0] - previous
 
     def all_clients_gone() -> bool:
         # Only once every client has logged on AND every one has since dropped:
@@ -894,8 +908,22 @@ def main() -> None:
     # A bare "ME-ORD" substring also matches the cancel-ER lines ("sent cancel ER
     # OrderID=ME-ORD-N"), which double-counts one entry per cancelled order.
     me_final      = count_in_log(me_log,  "accepted NOS")
-    gw_nos_recv   = count_in_log(gw_log,  "GW-NOS-RECV")
-    gw_er_sent    = count_in_log(gw_log,  "GW-ER-SENT")
+    # From the cumulative GW-PROGRESS totals: the per-order lines are at Debug and absent
+    # from a normal run. See the contract note beside _PROGRESS_MARKER above.
+    def latest_progress(path: Path) -> tuple[int, int]:
+        sent = received = 0
+        try:
+            for line in path.open(errors="replace"):
+                if _PROGRESS_MARKER not in line:
+                    continue
+                fields = dict(pair.split("=", 1) for pair in line.split() if "=" in pair)
+                sent = max(sent, int(fields.get("sent", 0)))
+                received = max(received, int(fields.get("nos_received", 0)))
+        except FileNotFoundError:
+            pass
+        return sent, received
+
+    gw_er_sent, gw_nos_recv = latest_progress(gw_log)
     gw_er_dropped = count_in_log(gw_log,  _ER_DROPPED_MARKER)
     gw_gap_fills  = count_in_log(gw_log,  "SequenceReset-GapFill")
 

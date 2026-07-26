@@ -51,7 +51,9 @@ Near-term tasks not tied to a specific slice.
 - **cpu_registry_shm_path configurable from TOML** (item 12).  
   The shm file path is still hardcoded in `ReactorConfiguration` (`/dev/shm/pubsub_cpu_registry`). Making it configurable requires touching six application config structs, six loaders, and nine TOML templates. Deferred.
 
-- **Prometheus metrics** (item 16).  
+- **Prometheus metrics** (item 16). Also the prerequisite for a meaningful FIX-versus-binary
+  gateway comparison: the metrics that would settle it are specified in the summary's item 16
+  note dated 2026-07-26.  
   Priority metrics: `order_latency_ns` histogram by phase (`gw_nos_received`, `seq_wal_roundtrip`, `me_roundtrip`, `gw_er_sent`); `seq_pending_er_count` gauge; `seq_wal_replication_lag_records` gauge; `seq_sequence_number` counter; queue depth gauges per `ApplicationThread`.  
   Hot-path instrumentation: `std::atomic` increments only — no locks, no allocation. Dedicated metrics-serving thread on a non-hot CPU.
 

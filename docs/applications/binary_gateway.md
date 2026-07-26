@@ -15,6 +15,17 @@ identity and routing, which is the irreducible job of a gateway.
 That makes it a useful control. Any cost the order gateway carries that this one does not is
 the cost of FIX specifically, not of being a gateway.
 
+**What that control has measured so far (2026-07-26).** Speaking ASCII FIX costs about **11% of
+the FIX gateway's samples** -- parse, validate, walk repeating groups, checksum -- against 0%
+here. Real, but far short of what intuition suggests: roughly 70% of both gateways' samples are
+in the kernel, so protocol choice can only ever move the remaining third. Two cautions came out
+of that exercise. Until it was equalised, *logging* cost more than FIX parsing did (32% of the
+FIX gateway's samples against 11% here), so both gateways now emit the same markers at the same
+cadence -- keep it that way or any comparison measures logging. And a throughput comparison is
+still not available, because the FIX harness infers completion from log polling rather than
+measuring it. The metrics that would settle it properly are specified under item 16 in
+`pubsub_itc_fw_summary.md`; the comparison is deferred until then.
+
 ## Wire protocol
 
 Every message is a 24-byte `PduHeader` followed by a DSL-encoded payload -- the same framing

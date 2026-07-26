@@ -118,6 +118,27 @@ class OrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     void drain_pending_cancels();
 
     /**
+     * @brief Logs a running total of accounted-for execution reports.
+     *
+     * **CONTRACT WITH THE PERFORMANCE HARNESS -- DO NOT CHANGE THE MARKER OR ITS FIELDS
+     * WITHOUT CHANGING perf_run.py AND callgrind_run.py TO MATCH.**
+     *
+     * `perf_run.py` parses the `GW-PROGRESS accounted=N` line to decide when a run has
+     * finished: it is the authoritative end-to-end signal that every order has completed the
+     * NOS -> ME -> sequencer -> gateway -> client round trip. Renaming the marker, dropping a
+     * field, changing the cadence, or raising the level above Info does not fail any unit test
+     * -- the run simply hangs until it times out, and the harness reports a stall that looks
+     * like a pipeline fault rather than a logging change.
+     *
+     * The per-order GW-NOS-RECV and GW-ER-SENT lines this replaced are at Debug because at
+     * 200,000 orders they cost around a third of the gateway's CPU in Quill alone -- more than
+     * the entire FIX parse -- which made any gateway-to-gateway comparison measure logging
+     * rather than protocol. Both gateways emit this same marker at the same cadence for that
+     * reason; keep them symmetrical.
+     */
+    void report_order_progress();
+
+    /**
      * @brief Sends an ExecutionReport-Rejected back to the originating client
      *        when an inbound order/cancel cannot be forwarded (e.g. primary
      *        sequencer not connected).
@@ -304,6 +325,13 @@ class OrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // Sessions waiting for their open orders to be cancelled.  Entries are appended
     // at disconnect time and consumed by the drain timer.
     std::deque<DeadSession> pending_cancel_sessions_;
+
+    // Running totals behind the GW-PROGRESS line. Per-order logging was moved to Debug
+    // because it cost roughly a third of this gateway's CPU under load; these keep the
+    // counts available at a thousandth of that.
+    int64_t orders_received_{0};
+    int64_t execution_reports_sent_{0};
+    int64_t execution_reports_dropped_{0};
 
     // Cancels sent since this drain began, so the completion line can report the whole
     // drain rather than whatever the final tick happened to do.

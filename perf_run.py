@@ -84,6 +84,20 @@ MAX_ORDER_TIMEOUT = 120.0  # hard cap on order/ER completion wait (2 minutes)
 # session already disconnected. Such ERs are "accounted for" but never delivered.
 _ER_DROPPED_MARKER = "client already disconnected -- dropping"
 
+# CONTRACT WITH THE GATEWAYS -- both order_gateway and binary_gateway emit this marker, at
+# Info, every 1000 accounted-for execution reports (see report_order_progress() in
+# OrderGatewayThread.hpp, which carries the matching warning). It is how this script knows a
+# run has finished: the count is the authoritative end-to-end signal that every order made
+# the full NOS -> ME -> sequencer -> gateway -> client round trip.
+#
+# If a gateway stops emitting it, or renames it, or changes the field, nothing fails loudly:
+# the run just waits until it times out and reports a stall that reads like a pipeline fault.
+# The per-order GW-NOS-RECV / GW-ER-SENT lines are at Debug and must not be relied on here --
+# counting them cost around a third of the gateway's CPU, which made the gateway comparison
+# measure logging rather than protocol.
+_PROGRESS_MARKER = "GW-PROGRESS"
+_PROGRESS_ACCOUNTED_RE = re.compile(r"GW-PROGRESS accounted=(\d+)")
+
 FIX8_DIR  = Path("/home/marlowa/mystuff/fix8_install")
 FIX8_BIN  = FIX8_DIR / "bin" / "f8test"
 FIX8_CFG  = "myfix_gateway_client.xml"
@@ -374,10 +388,19 @@ def wait_for_er_completion(gw_log: Path, total_orders: int, timeout: float, clie
     lost        = [0]
     lost_re     = re.compile(r"FIX client connection \d+ lost")
 
+    # The gateway reports a CUMULATIVE total, but _wait_for_log_pattern accumulates whatever
+    # this returns, so hand back the increase since the last chunk rather than the total --
+    # returning the total would count every progress line's whole history again and finish
+    # the run long before the orders had.
+    highest = [0]
+
     def count_er(chunk: str) -> int:
         established[0] += chunk.count("FIX session established")
         lost[0]       += len(lost_re.findall(chunk))
-        return chunk.count("GW-ER-SENT") + chunk.count(_ER_DROPPED_MARKER)
+        previous = highest[0]
+        for match in _PROGRESS_ACCOUNTED_RE.finditer(chunk):
+            highest[0] = max(highest[0], int(match.group(1)))
+        return highest[0] - previous
 
     def all_clients_gone() -> bool:
         # Only once every client has logged on AND every one has since dropped:
@@ -841,9 +864,25 @@ def main() -> None:
         log("=== Done ===")
         return
 
-    gw_nos_recv   = count_in_log(gw_log,  "GW-NOS-RECV")
-    gw_er_sent    = count_in_log(gw_log,  "GW-ER-SENT")
-    gw_er_dropped = count_in_log(gw_log,  _ER_DROPPED_MARKER)
+    # Read from the cumulative GW-PROGRESS totals rather than by counting per-order lines,
+    # which are at Debug and therefore absent from a normal run. See the contract note beside
+    # _PROGRESS_MARKER above.
+    def latest_progress(path: Path) -> tuple[int, int, int, int]:
+        accounted = sent = dropped = received = 0
+        try:
+            for line in path.open(errors="replace"):
+                if _PROGRESS_MARKER not in line:
+                    continue
+                fields = dict(pair.split("=", 1) for pair in line.split() if "=" in pair)
+                accounted = max(accounted, int(fields.get("accounted", 0)))
+                sent = max(sent, int(fields.get("sent", 0)))
+                dropped = max(dropped, int(fields.get("dropped", 0)))
+                received = max(received, int(fields.get("nos_received", 0)))
+        except FileNotFoundError:
+            pass
+        return accounted, sent, dropped, received
+
+    _, gw_er_sent, gw_er_dropped, gw_nos_recv = latest_progress(gw_log)
     gw_gap_fills  = count_in_log(gw_log,  "SequenceReset-GapFill")
     nos_ok        = gw_nos_recv == total_orders
     # Every order generates an ER; the gateway either delivers it (GW-ER-SENT) or

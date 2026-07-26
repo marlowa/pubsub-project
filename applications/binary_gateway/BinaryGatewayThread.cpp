@@ -45,6 +45,9 @@ pubsub_itc_fw::AllocatorConfiguration make_allocator_config(const BinaryGatewayC
 // SCRAM client nonce length, matching the FIX gateway's.
 constexpr size_t scram_client_nonce_size = 16;
 
+// Orders between GW-PROGRESS lines; matches the order gateway so the two are comparable.
+constexpr int64_t order_progress_interval = 1000;
+
 constexpr int cancel_drain_batch_size = 500;
 constexpr auto cancel_drain_interval = std::chrono::milliseconds{1};
 
@@ -508,6 +511,12 @@ BinarySession* BinaryGatewayThread::find_session_by_conn_id(int32_t conn_id_valu
 }
 
 void BinaryGatewayThread::handle_new_order_single(BinarySession& session, const pubsub_itc_fw::EventMessage& message) {
+    ++orders_received_;
+    // No ClOrdID here, unlike the FIX gateway's equivalent: this gateway forwards the order
+    // without decoding it, and decoding one purely to log it would undo the thing that makes
+    // this gateway cheap.
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "GW-NOS-RECV connection={} bytes={} comp_id={}", session.conn_id.get_value(),
+               message.payload_size(), session.comp_id);
     forward_order_in_envelope(static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle), message.payload(),
                               static_cast<size_t>(message.payload_size()), session);
     release_pdu_payload(message);
@@ -590,8 +599,11 @@ void BinaryGatewayThread::handle_execution_report(const pubsub_itc_fw::EventMess
     if (it == sessions_.end()) {
         // The ordinary case is a client that disconnected while its order was in flight,
         // including the acknowledgements of the cancels sent on its behalf.
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "BinaryGatewayThread: ER seq={} for connection {} which is no longer present -- dropping",
-                   envelope.seq_no, envelope.gateway_session_conn_id);
+        ++execution_reports_dropped_;
+        report_order_progress();
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
+                   "BinaryGatewayThread: ER seq={} for connection {} -- client already disconnected -- dropping", envelope.seq_no,
+                   envelope.gateway_session_conn_id);
         release_pdu_payload(message);
         return;
     }
@@ -610,8 +622,10 @@ void BinaryGatewayThread::handle_execution_report(const pubsub_itc_fw::EventMess
     }
 
     send_pdu_payload(it->second.conn_id, envelope.pdu_id, envelope.seq_no, envelope.payload.data, envelope.payload.size);
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "BinaryGatewayThread: ER seq={} relayed to connection {} ('{}')", envelope.seq_no,
-               envelope.gateway_session_conn_id, it->second.comp_id);
+    ++execution_reports_sent_;
+    report_order_progress();
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "GW-ER-SENT connection={} seq={} comp_id={}", envelope.gateway_session_conn_id, envelope.seq_no,
+               it->second.comp_id);
     release_pdu_payload(message);
 }
 
@@ -669,6 +683,15 @@ void BinaryGatewayThread::track_open_order(BinarySession& session, const pubsub_
         // The key views the pool storage, which is stable for the entry's lifetime.
         session.open_orders.emplace(std::string_view(entry->cl_ord_id, entry->cl_ord_id_len), entry);
     }
+}
+
+void BinaryGatewayThread::report_order_progress() {
+    const int64_t accounted = execution_reports_sent_ + execution_reports_dropped_;
+    if (accounted % order_progress_interval != 0) {
+        return;
+    }
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "GW-PROGRESS accounted={} sent={} dropped={} nos_received={}", accounted, execution_reports_sent_,
+               execution_reports_dropped_, orders_received_);
 }
 
 void BinaryGatewayThread::queue_session_for_cleanup(BinarySession& session) {

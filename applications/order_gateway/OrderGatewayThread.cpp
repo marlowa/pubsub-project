@@ -97,6 +97,12 @@ int64_t parse_fix_utc_timestamp(std::string_view sv) {
     return static_cast<int64_t>(epoch_seconds) * 1'000'000'000LL + millis * 1'000'000LL;
 }
 
+// Orders between progress lines. The per-order GW-NOS-RECV / GW-ER-SENT lines are at Debug
+// because at 200,000 orders they cost around a third of the gateway's CPU in Quill alone --
+// more than the entire FIX parse. A running total every thousand keeps the counts an operator
+// and the perf harness need, at a thousandth of the cost.
+constexpr int64_t order_progress_interval = 1000;
+
 constexpr int cancel_drain_batch_size = 500;
 constexpr auto cancel_drain_interval = std::chrono::milliseconds{1};
 
@@ -472,7 +478,9 @@ void OrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventMess
     if (!session_ptr) {
         // Expected after a client disconnect: in-flight ERs and cancel ACKs
         // arrive for sessions that are already gone.
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+        ++execution_reports_dropped_;
+        report_order_progress();
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
                    "OrderGatewayThread: ExecutionReport gateway_session_conn_id={} -- "
                    "client already disconnected -- dropping",
                    envelope.gateway_session_conn_id);
@@ -517,7 +525,9 @@ void OrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventMess
         }
     }
 
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "GW-ER-SENT connection={} OrderID={} ExecID={} gateway_session_conn_id={}",
+    ++execution_reports_sent_;
+    report_order_progress();
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "GW-ER-SENT connection={} OrderID={} ExecID={} gateway_session_conn_id={}",
                session.conn_id.get_value(), view.order_id, view.exec_id, envelope.gateway_session_conn_id);
 
     // Encode the FIX ExecutionReport into a reusable, growable buffer. encode_execution_report
@@ -862,7 +872,8 @@ void OrderGatewayThread::handle_new_order_single(FixSession& session, const Pars
     const std::string_view order_qty = msg.get(Tag::OrderQty);
     const std::string_view price_str = msg.get(Tag::Price);
 
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "GW-NOS-RECV connection={} ClOrdID={} Symbol={} Side={}", session.conn_id.get_value(), cl_ord_id,
+    ++orders_received_;
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "GW-NOS-RECV connection={} ClOrdID={} Symbol={} Side={}", session.conn_id.get_value(), cl_ord_id,
                symbol, side_str);
 
     // Validate required fields.
@@ -1201,6 +1212,18 @@ void OrderGatewayThread::send_fix_reject(FixSession& session, const ParsedFixMes
 // Warning is logged. The other sequencer still receives the PDU so the leader
 // can continue operating. When connection retry re-establishes the lost
 // connection the follower will resync from the leader's state.
+
+void OrderGatewayThread::report_order_progress() {
+    // Every execution report is either delivered or dropped because its client has gone, so
+    // the two together account for every order. That total is what tells a reader -- or the
+    // perf harness -- how far a run has got.
+    const int64_t accounted = execution_reports_sent_ + execution_reports_dropped_;
+    if (accounted % order_progress_interval != 0) {
+        return;
+    }
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "GW-PROGRESS accounted={} sent={} dropped={} nos_received={}", accounted, execution_reports_sent_,
+               execution_reports_dropped_, orders_received_);
+}
 
 void OrderGatewayThread::queue_session_for_cleanup(FixSession& session) {
     if (session.open_orders.empty()) {

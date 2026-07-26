@@ -674,6 +674,66 @@ Priority metrics:
 - `seq_sequence_number` counter — gives throughput directly in Grafana without log parsing.
 - Queue depth gauges per `ApplicationThread` — early warning for backpressure situations.
 
+**Note (added 2026-07-26): metrics needed to compare NOS handling between the FIX and binary
+gateways.** A day spent comparing the two by profiling and log timestamps produced one solid
+number and three things that could not be concluded, and every one of the failures is a case
+this item exists to fix. What follows is what that exercise says the instrumentation must
+provide.
+
+*What the comparison actually needs.* The two gateways differ only in a bounded segment: what
+happens between the client's bytes arriving and the order PDU leaving for the sequencer. The
+FIX gateway parses, validates, extracts repeating groups and builds the PDU; the binary gateway
+forwards the client's bytes as they arrived. Everything downstream -- sequencer, WAL, matching
+engine -- is common. So the metric that answers the question is not end-to-end latency but the
+gateway-internal segment, timed identically on both:
+
+- `gw_ingress_ns` histogram, from the reactor delivering client bytes to the envelope being
+  handed to the sequencer. This is the segment in which the protocols differ, and the only one
+  where a difference can legitimately be attributed to FIX.
+- `gw_egress_ns` histogram, from an execution report arriving from the sequencer to the bytes
+  being written to the client socket. The FIX gateway decodes the PDU and encodes FIX text; the
+  binary gateway relays the payload untouched.
+- `gw_decode_ns` and `gw_encode_ns` histograms on the FIX gateway only, as sub-phases of the
+  above. On the binary gateway these do not exist rather than reading zero -- a metric that is
+  structurally absent is clearer than one that is always empty.
+
+*Every one of these must carry a `gateway` label* (`order_gateway`, `binary_gateway`) and use
+**identical bucket boundaries**, so a single Grafana panel can overlay them. Different buckets
+would make the two incomparable in exactly the way that is hardest to notice.
+
+*Metrics that make a latency figure interpretable.* Two measurements from 2026-07-26 mean a
+gateway latency number is close to meaningless on its own:
+
+- `gw_sessions_active` gauge, per gateway. Median latency was measured at 119us with 4 sessions,
+  356us with 20 and 528us with 40, at an identical offered rate -- roughly `sessions^0.7`. Any
+  latency figure quoted without the session count that produced it is not reproducible.
+- `gw_orders_received_total` and `gw_reports_sent_total` counters, per gateway. Their *rates*
+  give throughput directly, which is the number the current harness cannot produce for the FIX
+  gateway at all: `perf_run.py` infers FIX completion by polling log lines, and in a fast run
+  the poller observes the finish long after it happened. A counter removes the inference. The
+  divergence between the two rates is also the live backlog signal -- when orders are offered
+  faster than reports come back, latency is queueing and any percentile is measuring queue
+  depth, not service time.
+
+*The trap this exercise fell into, which the instrumentation must not repeat.* The first
+comparison was dominated not by protocol but by **logging**: the FIX gateway logged a line per
+order at Info and the binary gateway logged none, which put 32% of the FIX gateway's samples in
+Quill against 11% for the binary one -- more than three times the cost of FIX parsing itself.
+Demoting both to Debug and adding a shared `GW-PROGRESS` total halved it. The same asymmetry is
+easy to reproduce with metrics: **if one gateway is instrumented more heavily than the other,
+the comparison measures the instrumentation.** Both gateways must observe the same histograms at
+the same points, and the per-observation cost must stay in the few-nanosecond range the design
+above requires.
+
+*What Prometheus will not settle.* Around 70% of both gateways' samples are in the kernel --
+TCP, epoll, syscalls -- and that is a deliberate property of the measurement environment, which
+must stay comparable with a development VM that has no kernel bypass (see the note on item 6).
+Wall-clock histograms of the segments above do include the syscall time inside them, so they
+measure the real cost; but no amount of instrumentation will make the userspace difference
+between the two gateways larger than the roughly 11% of samples that FIX parsing occupies. The
+value of the metrics is to measure that 11% continuously and reliably, not to find something
+larger.
+
 **Note (added 2026-07-03 re item 11):** `seq_wal_roundtrip` latency in the histogram above is also the metric needed to measure the practical benefit of the Option B (`prioritise_data_over_timers`) fix. The unit test (`ApplicationThreadTest.PrioritisesDataOverTimers`) proves the ordering guarantee mechanistically, but the magnitude of improvement in the tail distribution is only visible under load. When Prometheus is wired up, compare `seq_wal_roundtrip` p99 before and after to quantify how often a heartbeat or snapshot timer was previously competing with a WalAck in the same drain cycle.
 
 *Java instrumentation (admin service, fix-test-client):* Micrometer with the Prometheus registry. Gauges for FIX session state, counters for messages sent/received. A few lines of Javalin integration per service.
