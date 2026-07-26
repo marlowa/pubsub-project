@@ -18,6 +18,7 @@ add_executable(fix_codec_tests
         tests/FixMessageReaderAdversarialTest.cpp
         tests/FixMessageValidatorTest.cpp
         tests/FixMessageWriterTest.cpp
+        tests/FixRejectTest.cpp
 )
 
 target_link_libraries(fix_codec_tests PRIVATE
