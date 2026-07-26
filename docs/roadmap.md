@@ -48,10 +48,16 @@ Near-term tasks not tied to a specific slice.
   synchronously inside the client round trip and must keep good cores, while the matching engine
   secondary only tails the book and can be demoted if promotion re-pins. "Mandatory for an
   operational system" and "latency-critical" turn out to be orthogonal properties.  
-  Five approaches are recorded with the specific flaw in each, along with the measured evidence, in
-  [Anti-Affinity for Non-Hot-Path Threads](design/cpu_pinning_anti_affinity.md). **Read that before
-  starting item 16** — the metrics endpoint should not land until this is settled, or the first
-  thing it measures will be its own scheduling.
+  Six approaches are recorded with the specific flaw in each, along with the measured evidence and a
+  recommended shape, in
+  [Anti-Affinity for Non-Hot-Path Threads](design/cpu_pinning_anti_affinity.md). The shape now
+  favoured inverts the default: set the process's own affinity to the background tier early in
+  `main()` so every library-spawned thread inherits it, and explicitly promote only the threads that
+  earn hot-path cores. That dissolves the anti-affinity requirement rather than solving it, and makes
+  a forgotten thread harmless instead of harmful. Not ratified or built, and it leaves the rationing
+  question — which components get the 15 P-cores — still to be declared. **Read that doc before
+  starting item 16**; the metrics endpoint should not land until this is settled, or the first thing
+  it measures will be its own scheduling.
 
 - **Prometheus metrics** (item 16).  
   Continuous observability, so latency analysis stops being log archaeology. This is now the

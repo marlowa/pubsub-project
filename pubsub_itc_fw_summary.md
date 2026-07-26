@@ -1094,7 +1094,36 @@ drops three of the eight claimants so a full-HA count is never reached and waite
 "Programs running" is also the wrong quantity -- five components never claim at all -- and program
 count is a lossy proxy for core demand while `register_extra_thread()` exists.
 
-**Leaning:** declare the layout in configuration and derive nothing -- a `cores_for_other_work`
+**The shape now favoured -- reframes the requirement rather than answering it.** Instead of
+restricting one thread to unpinned cores, make **unpinned cores the default for every thread in the
+process** and treat hot-path placement as something a thread must be explicitly given: set the
+process's own affinity to the background tier early in `main()`, let every thread created afterwards
+inherit it (verified -- `pthread_create` copies the creator's mask), then have the Reactor
+explicitly pin only the `ApplicationThread`s and the reactor thread. Library threads -- civetweb,
+a future Kafka client -- then never need to be known about, and forgetting one is harmless because
+it lands in the background tier by default. The anti-affinity requirement dissolves, since the
+process-wide default already is one, and Difficulty 1 disappears with it.
+
+The prompt for this was how the author's workplace does it: a per-thread CPU bitmask config
+variable, differing per environment, where threads spawned inside libraries get forgotten and then
+interfere with important ones. That is a **default-value bug**, not a diligence failure -- absence
+of configuration means "run anywhere", and you cannot enumerate what a library will spawn next
+release. Inverting the default fixes it structurally. A bitmask also declares the answer rather than
+the intent, so it is machine-specific; declaring a tier and resolving it at deploy time survives a
+hardware change.
+
+One ordering constraint, with one named exception: `QuillLogger` is constructed before the config is
+loaded, so its backend thread exists before the background tier is known. That thread is not an
+unknown library thread -- the Reactor already finds it via `quill::Backend::get_thread_id()` -- so it
+is simply pinned to the background tier explicitly instead of, as now, to a hot-path core. Residual
+holes (static initialisers that spawn threads before `main()`, a library that sets its own affinity)
+are closed by auditing `/proc/self/task` at the end of startup and asserting that no undeclared
+thread's mask intersects the hot-path tier.
+
+What it does not settle: the rationing question. 24 threads, 15 P-cores, and which components'
+threads occupy the hot-path tier still has to be declared.
+
+**Also leaning:** declare the layout in configuration and derive nothing -- a `cores_for_other_work`
 entry in the environment TOML's `[shared]` section, with the hot-path pool as its complement and
 claiming constrained to it. That removes the race, survives the routine restarts that HA testing
 performs, fixes the P-core allocation, and makes measurements reproducible run to run. The

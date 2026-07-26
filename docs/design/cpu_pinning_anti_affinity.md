@@ -2,6 +2,11 @@
 
 **Status: open design problem. Nothing implemented. Raised 2026-07-26.**
 
+A direction has emerged since -- see
+[Recommended shape](#recommended-shape-make-the-background-tier-the-default-and-promote-what-earns-hot-path)
+near the end, which reframes the requirement rather than answering it as posed. It has not been
+ratified or built, and the rationing question it leaves open is still unanswered.
+
 This document records a problem found while planning the Prometheus metrics endpoint
 ([Roadmap](../roadmap.md) item 16), together with the approaches considered so far and why each
 falls short. It is a companion to [CPU Pinning](cpu_pinning.md), which describes the mechanism as
@@ -279,6 +284,102 @@ for restart, because a component killed by `ha_test.py` comes back outside any l
 sequence and re-claims from whatever is free. A declared allocation is restart-safe by
 construction. Since routine restart is designed-for behaviour here, only the latter is a solution;
 the former merely makes the fault harder to reproduce.
+
+---
+
+## Recommended shape: make the background tier the default, and promote what earns hot-path
+
+This reframes the problem rather than answering it as posed, so it is set out separately from the
+options above. The requirement was "restrict this thread to cores nobody has pinned". The better
+formulation is: **make unpinned cores the default for every thread in the process, and treat
+hot-path placement as something a thread must be explicitly given.**
+
+### Where the idea comes from
+
+The author's workplace solves this declaratively, and its failure mode is instructive. There, every
+thread wanting pinning -- positive or negative -- has a configuration variable holding a CPU
+bitmask, and those variables differ per environment. Two consequences:
+
+- It is tedious and error-prone, being O(threads x environments) to maintain.
+- **Threads spawned inside libraries -- Kafka clients, Prometheus/civetweb -- get forgotten**, and
+  a forgotten thread then runs on the wrong cores and interferes with important ones.
+
+The second is not a diligence failure that more care would fix. It is a **default-value bug**: the
+absence of configuration means "run anywhere", and "anywhere" includes the hot-path cores. You
+cannot enumerate what a third-party library will spawn in its next release, so a scheme that
+requires complete enumeration will fail eventually, and its failure is silent interference with the
+most latency-sensitive thread in the process.
+
+Note also that a bitmask declares the *answer* rather than the *intent*, so it is machine-specific
+and must be re-derived for every environment and every machine shape, with no way to check one
+encoding against another. Declaring a tier and letting the deployment tool resolve tier to core ids
+for the target host survives a hardware refresh; a bitmask does not.
+
+### The mechanism
+
+1. Early in `main()`, the process sets **its own** affinity to the background tier.
+2. Every thread created afterwards **inherits that mask automatically**. Verified on this machine:
+   a parent restricted to cores 28 and 30 produced a child reporting exactly `28 30`. This is
+   documented Linux behaviour -- `pthread_create` gives the new thread a copy of the creator's
+   affinity mask.
+3. The Reactor then explicitly pins the threads that earn hot-path cores -- each `ApplicationThread`
+   and the reactor thread itself -- overriding the default for those alone.
+
+### What it buys
+
+- **Library threads need never be known about.** No enumeration, no per-thread configuration, no
+  `/proc/self/task` sweep, no affinity-inheritance trickery at the point of use. A library that
+  spawns five more threads next release is safe without anyone noticing.
+- **Forgetting becomes harmless.** A thread nobody declared lands in the background tier, which is
+  where it belonged. The worst outcome is "a background thread got a background core".
+- **The anti-affinity requirement dissolves.** There is no negative pin to apply to the civetweb
+  thread, because the process-wide default already is one.
+- **Difficulty 1 disappears.** Nothing computes a complement from observed claims, so nothing needs
+  to know when machine-wide claiming finished.
+- It also frees the eight Quill backend threads from the hot-path tier, which is the bulk of the
+  arithmetic problem, without anyone having to remember them.
+
+### Ordering constraint, with one named exception
+
+The default must be set before anything spawns a thread. In this codebase there is exactly one
+thread that exists earlier, and the startup sequence makes it unavoidable: `QuillLogger` is
+constructed before the configuration is loaded (deliberately, so that configuration errors can be
+logged -- see the startup sequence in the summary), and Quill starts its backend thread on first
+logger construction. So at the moment the background tier becomes *known*, that thread already
+exists.
+
+This is not a problem, because Quill's backend is not an unknown library thread: the Reactor
+already locates it via `quill::Backend::get_thread_id()` in order to pin it today. The recipe is
+therefore:
+
+- set the process default affinity to the background tier immediately after the configuration is
+  loaded, before any further subsystem is initialised;
+- explicitly pin Quill's backend thread to the background tier rather than, as now, to a hot-path
+  core.
+
+Anything initialised later -- `prometheus-cpp`, a future Kafka client -- is created after the
+default is in place and inherits it.
+
+### Residual holes, and how to close them
+
+- **Threads created before `main()`** by a static initialiser in a third-party library would escape
+  the default. None are known in this codebase, but the possibility is real.
+- **A library that sets its own affinity explicitly** overrides the inherited mask. Uncommon, but
+  some NUMA-aware thread pools do it.
+- Both are caught by the same cheap measure: **audit and assert.** Walk `/proc/self/task` at the end
+  of startup, and again on the housekeeping tick if desired, and assert that no thread outside the
+  known-pinned set has an affinity mask intersecting the hot-path tier. That converts the invariant
+  from something hoped for into something checked, without reintroducing per-thread configuration.
+  It also gives a precise diagnostic -- naming the offending tid -- instead of unexplained jitter.
+- **The background tier must be sized** for everything that lands there by default, which is now
+  most of the process. That is a number to choose deliberately rather than assume.
+
+### What it does not solve
+
+Inheritance decides where *unknown* threads go. It does not decide the tiers themselves. The
+rationing question stands: 24 threads, 15 P-cores, and a declaration is still needed of which
+components' application and reactor threads occupy the hot-path tier. See "Process taxonomy" above
+for the two properties that decision needs.
 
 ---
 
