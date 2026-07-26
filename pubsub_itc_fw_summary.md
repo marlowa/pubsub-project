@@ -653,7 +653,7 @@ summary (e.g. "session 16", "session 25") to indicate when work was completed.
 4. ~~**Leader-follower — Slice 7 (network WAL replication)**~~ — DONE. Slice 7 complete (session 18): leader streams `WalRecord` PDUs to follower; follower acks with `WalAck`; leader gates ER emission on ack. WAL sequence number continuity across failover verified by scenario 14 (`wal_recovery`) added in session 2026-05-30: primary kills → secondary becomes leader → 1000 interim orders (seq 1001–2000) → primary restarts, reads WAL, syncs from peer, rejoins as follower → secondary kills → primary re-elected leader → recovery orders continue from seq 2001 with no reset or gap.
 5. ~~**`SequencedMessage` wrapper**~~ — the sequencer already forwards to the ME with `send_pdu(me_conn, pdu_id, seq, nos)` where `seq` is the WAL sequence number encoded into `PduHeader.seq_no`; the ME reads `message.seq_no()` to retrieve it. The envelope is already explicit. **Open question for WAL replay:** when a downstream consumer (Kafka publisher, future broadcast) connects with a position cursor, the seq_no in each replayed `WalRecord` already serves as the cursor position identifier. Verify at implementation time that no additional wrapper is needed for the replay/Aeron-style consumer path.
 6. ~~**Trace logs in `PduParser` and elsewhere**~~ — DONE. All five `PduParser.cpp` log lines (header fields, raw 16 header bytes, slab alloc, alloc result, payload hex dump) are at `Debug`. `InboundConnectionManager::on_accept` TRACE is `Debug`. `SequencerThread::on_framework_pdu_message` TRACE is `Debug`. Per-PDU `Info` hot-path logs in `SequencerThread` (WAL append, ER forwarding) and `MatchingEngineThread` (sequenced PDU received) also demoted to `Debug` in the same pass.
-7. **Pub/sub WAL** — long-term replacement for direct TCP; eliminates the rendezvous problem and the retry workaround.
+7. ~~**Pub/sub WAL**~~ — DONE as slice 10. Topic-based fan-out over the WAL, streamed and socket-paced, with replay from a cursor; the MEP is the reference publisher and `topic_probe` the reference subscriber. See [Pub/Sub](docs/design/pubsub.md). This is the long-term replacement for direct TCP and eliminates the rendezvous problem and the retry workaround; the retry logic can be removed as consumers migrate onto topics.
 8. ~~**Credential export script**~~ — done (session 23). `db/export_credentials.py` exports DB credentials to auth service `credentials.toml`. Live CRUD updates go via PDU 510/512.
 9. ~~**`RestoreCredentialRequest` PDU (514/515)**~~ — DONE (session 2026-06-03). PDU 514/515 added to `authentication.dsl`; `handle_restore_credential_request()` implemented in `AuthenticationThread` (decodes pre-derived SCRAM binary fields, validates sizes, installs into `credentials_` map, persists). `AuthServiceClient.restoreCredential()` added in Java (hex→binary conversion; sends PDU 514, validates PDU 515). `CompIdHandler.update()` now calls `restoreCredential` when transitioning from disabled/locked → enabled+unlocked. `FirmHandler.update()` now calls `restoreCredential` for all enabled+unlocked comp_ids when a firm is re-enabled. Warning notices removed from both Edit form templates. README credential lifecycle table updated to include the new restore actions.
 10. ~~**FIX message capture**~~ — DONE (session 2026-06-04). `FixCapture` class (`applications/order_gateway/FixCapture.hpp/.cpp`): gateway thread calls `capture(Direction, data, size, timestamp_ns)` which enqueues a record onto a `std::vector<Record>` queue (protected by mutex; short critical section, no file I/O). A background `std::thread` drains the queue via `condition_variable` and writes binary records to disk. Record format (little-endian): `uint32_t payload_size | int64_t timestamp_ns | uint8_t direction(0=in,1=out) | bytes`. Three capture points in `OrderGatewayThread`: (1) inbound — after `parser.feed()`, captures the consumed bytes of all complete FIX messages; (2) outbound session messages — in `send_fix_to_session`, after serialise; (3) outbound ERs — after `encode_execution_report`. Config: mandatory `[fix_capture] enabled` + `file` fields in `order_gateway.toml`; `enabled=false` in `dev.toml` by default. `capture_` member is `nullptr` when disabled; all three capture calls are guarded by `if (capture_ != nullptr)` so there is zero overhead when capture is off.
@@ -1034,6 +1034,19 @@ through the sequencer and a new PDU pair, so it is a cross-component protocol ch
 than a local edit.
 
 ## Immediate Next Task
+
+**Item 16 — Prometheus metrics.** Every other near-term item on the roadmap's "Active / Next"
+list is now done (items 11, 12, 13, 14, 15, 17, 18, 19), which leaves Prometheus as the head of
+the queue. It is also a prerequisite rather than a nicety: gateway performance work is paused
+until it lands, because the FIX-versus-binary comparison cannot be settled by profiling and log
+timestamps — the 2026-07-26 note under item 16 records exactly which measurements failed and
+which metrics would fix each one. The two design constraints that matter most are that both
+gateways must be instrumented at the same points with identical histogram buckets (otherwise the
+comparison measures the instrumentation), and that no observation may lock or allocate.
+
+Two design questions are open but not blocking: gateway availability/fairness/identity, and
+whether the internal PDU hops need transport encryption. Both are recorded as TODO sections
+above; the second is waiting on a security specialist and nothing should be built for it yet.
 
 **Item 18 — Doxygen navigation layer (clickable architecture maps) is DONE (2026-07-05).**
 The Graphviz DOT clickable maps are implemented: `docs/architecture.dot` (component-topology

@@ -18,7 +18,14 @@ Each slice leaves the system in a working state. Slices 1–8 and 10 are complet
 | 9 | Dual snapshots, snapshot validation, operational polish | Not started |
 | 10 | WAL multi-subscriber generalisation + MEP (MatchingEnginePublisher); topic pub/sub over the WAL | ✓ Done |
 | 11 | TAP (Trade Activity Publisher) — topic subscriber to MEP; Kafka/Pulsar publisher | Not started |
-| 12+ | ME primary-secondary pair; gateway pool; market data; seamless ME failover; DR site; multi-instrument scaling | Forward-looking, not yet planned |
+| 12+ | Gateway pool; market data; seamless ME failover; DR site; multi-instrument scaling | Forward-looking, not yet planned |
+
+The ME primary-secondary pair was listed under slice 12+ as forward-looking; it landed on
+2026-07-05 (role config, book replication via `BookUpdate`, arbiter-mediated promotion, WAL
+reconciliation with cancel-on-failover). `ha_test.py` scenario 16 covers it. A second gateway
+(`applications/binary_gateway`, same venue over internal PDUs with no FIX layer) also exists
+now, which makes the venue multi-gateway for the first time — but that is one more gateway, not
+the pool of slice 12+, and it raises the availability and fairness questions listed below.
 
 See [WAL and High Availability](design/wal_and_ha.md) for the full design behind slices 1–11.
 
@@ -30,43 +37,100 @@ Near-term tasks not tied to a specific slice.
 
 ### Active / Next
 
-- **WAL replication jitter — Option B fix** (item 11).  
-  Root cause: three `epoll_wait` hops in the sequencer WAL round-trip; timer events can queue ahead of WalAck events.  
-  Fix: change `SequencerThread`'s event drain loop to process `FrameworkPdu` and connection events to exhaustion before processing any timer event.
+- **Prometheus metrics** (item 16).  
+  Continuous observability, so latency analysis stops being log archaeology. This is now the
+  head of the queue for a second reason: it is the prerequisite for a meaningful FIX-versus-binary
+  gateway comparison, and gateway performance work is paused until it lands. A day spent comparing
+  the two gateways by profiling and log timestamps produced one solid number and three things that
+  could not be concluded; the metrics that would settle each of them are specified in the summary's
+  item 16 note dated 2026-07-26.  
+  Priority metrics: `order_latency_ns` histogram by phase (`gw_nos_received`, `seq_wal_roundtrip`, `me_roundtrip`, `gw_er_sent`); `seq_pending_er_count` gauge; `seq_wal_replication_lag_records` gauge; `seq_sequence_number` counter; queue depth gauges per `ApplicationThread`.  
+  For the gateway comparison specifically: `gw_ingress_ns` and `gw_egress_ns` histograms on both
+  gateways with a `gateway` label and **identical bucket boundaries**, `gw_decode_ns`/`gw_encode_ns`
+  on the FIX gateway only, `gw_sessions_active` gauge (latency is meaningless without the session
+  count that produced it), and `gw_orders_received_total`/`gw_reports_sent_total` counters. Both
+  gateways must be instrumented at the same points and to the same depth — the first comparison was
+  dominated by one gateway logging more than the other, and metrics can reproduce that mistake
+  exactly.  
+  Hot-path instrumentation: `std::atomic` increments only — no locks, no allocation. Dedicated metrics-serving thread on a non-hot CPU, excluded from the hot-path CPU registry.
 
-- **Burst test with WAL replication active** (item 17).  
-  Re-run a high-volume burst (≥ 1,000 orders) with `ha_enabled = true` and WAL replication live. Validates `pending_er_` accumulation and WAL channel backpressure behaviour under peak load. Natural companion to the smoke test (item 15).
+- **Gateway availability, fairness and identity** — design decisions, not yet implementation.  
+  Adding the binary gateway surfaced three questions the current design does not answer: the
+  gateway is a single point of failure (the HA document records N-way pooled redundancy, but only
+  one is ever run); load balancing across gateways has to be argued on deterministic fairness
+  rather than throughput, because an unequal path between two members is a regulatory problem;
+  and ER routing now keys on `gateway_session_conn_id`, which is gateway-local, so a client
+  reconnecting to a different pool member cannot be handed its in-flight reports. Also decided but
+  not built: one comp id may hold a session only once venue-wide, which needs the sequencer as the
+  shared authority and so is a cross-component protocol change. Full discussion in the summary
+  under "gateway availability, fairness and identity (raised 2026-07-26)".
 
-- **fix-test-client smoke test** (item 15).  
-  Python script driving the fix-test-client REST/Groovy API end-to-end: NOS burst, cancel round-trip, ER validation. Depends on `fix.uniqueId()` (item 14).
-
-- **fix-test-client: idempotent ClOrdID (`fix.uniqueId()`)** (item 14).  
-  Add `fix.uniqueId()` to `FixHelper` so scripts can be re-run without duplicate ClOrdID errors. Add a canonical example script to the scripts directory.
+- **Transport encryption on the binary gateway and the internal PDU paths** — undecided, awaiting
+  a security specialist. The binary gateway authenticates with SCRAM but has no TLS listener, so
+  it is not equivalent to the FIX gateway on this point. The wider question is whether order-flow
+  PDUs need encrypting on the internal hops too (gateway to sequencer, sequencer to ME, WAL
+  replication, topic streams — all plain TCP today), which pulls against the latency work above.
+  Nothing to be built until the question is settled.
 
 ### Deferred
 
-- **FixCapture: replace mutex/vector with SPSC lock-free queue** (item 13).  
-  `capture()` currently acquires a mutex and heap-allocates on the gateway hot path when capture is enabled. Replace with a single-producer single-consumer lock-free queue backed by pre-allocated slots (framework slab/pool infrastructure is the natural backing store). Zero overhead when disabled is already correct.
-
-- **cpu_registry_shm_path configurable from TOML** (item 12).  
-  The shm file path is still hardcoded in `ReactorConfiguration` (`/dev/shm/pubsub_cpu_registry`). Making it configurable requires touching six application config structs, six loaders, and nine TOML templates. Deferred.
-
-- **Prometheus metrics** (item 16). Also the prerequisite for a meaningful FIX-versus-binary
-  gateway comparison: the metrics that would settle it are specified in the summary's item 16
-  note dated 2026-07-26.  
-  Priority metrics: `order_latency_ns` histogram by phase (`gw_nos_received`, `seq_wal_roundtrip`, `me_roundtrip`, `gw_er_sent`); `seq_pending_er_count` gauge; `seq_wal_replication_lag_records` gauge; `seq_sequence_number` counter; queue depth gauges per `ApplicationThread`.  
-  Hot-path instrumentation: `std::atomic` increments only — no locks, no allocation. Dedicated metrics-serving thread on a non-hot CPU.
-
-- **Pub/sub WAL** (item 7) — **Done** (slice 10).  
-  Topic-based fan-out over the WAL, streamed and socket-paced, with replay from a cursor. See
-  [Pub/Sub](design/pubsub.md). The MEP is the reference publisher; `topic_probe` the reference
-  subscriber. TAP (slice 11) is the next consumer to build on it.
-
-- **Doxygen navigation layer — clickable architecture maps** (item 18).  
-  Hierarchy of SVG architecture maps embedded in Doxygen HTML. Each component is a clickable region linking to a curated `.dox` landing page. Tool: Graphviz/DOT (`URL` attribute → native SVG `<a>` elements, no JavaScript). See the full discussion in `pubsub_itc_fw_summary.md` under item 18.
-
 - **Adopt Conan for C++ dependency management** (build tooling).  
   Replace the current `THIRDPARTY_DIR` + `*_VERSION` env-var scheme with a Conan `conanfile.py` pinning the C++ third-party deps (fmt, quill, argparse, tsl-robin-map, googletest — all in ConanCenter) plus a gcc / `cppstd=17` profile. Low-churn fit: the build already uses config-mode `find_package(<pkg> CONFIG)`, so Conan's `CMakeDeps` / `CMakeToolchain` generators slot in with minimal `CMakeLists` change. Conan is pip-installable, so no root needed on RHEL8. **Must be designed first:** the Docker build is deliberately offline/air-gapped (deps prebuilt, liquibase copied from host), whereas Conan defaults to fetching from ConanCenter — so it needs a local Conan remote or a pre-seeded cache baked into the image. Approach when picked up: spike on a branch, validate the offline path in the Rocky 8 container. Deferred for now — the current env-var scheme works; not urgent.
+
+### Completed since this list was last revised
+
+Kept as a record of what the "Active / Next" and "Deferred" lists used to hold. The full
+account of each is in `pubsub_itc_fw_summary.md` under the same item number.
+
+- **Pub/sub WAL** (item 7) — done as slice 10. Topic-based fan-out over the WAL, streamed and
+  socket-paced, with replay from a cursor. See [Pub/Sub](design/pubsub.md). The MEP is the
+  reference publisher, `topic_probe` the reference subscriber, and TAP (slice 11) is the next
+  consumer to build on it. This also removes the rendezvous problem that the connection-retry
+  workaround exists to paper over.
+
+- **WAL replication jitter — Option B fix** (item 11) — done 2026-07-03.
+  `ApplicationThread::prioritise_data_over_timers()` (virtual, default `false`) makes the drain
+  loop buffer `Timer` events until all non-timer events in the cycle are exhausted;
+  `SequencerThread` overrides it to `true`, so a heartbeat or snapshot timer can no longer add
+  latency ahead of a `WalAck` that arrived in the same `epoll_wait` wakeup. FIFO ordering is
+  unchanged for every other subclass. The unit test proves the ordering guarantee; the magnitude
+  of the tail improvement needs `seq_wal_roundtrip` from item 16 to quantify.
+
+- **cpu_registry_shm_path configurable from TOML** (item 12) — done 2026-07-03. Present in every
+  application configuration struct and loader, and in every application and environment TOML.
+
+- **FixCapture: replace mutex/vector with SPSC lock-free queue** (item 13) — done. `FixCapture`
+  packs records straight into a pre-allocated ring (`ring_bytes`, default 64 MB) with
+  cache-line-aligned `write_offset_`/`read_offset_` atomics and a sentinel record for wrap-around.
+  No mutex and no per-record allocation. A contiguous ring beat `LockFreeMessageQueue` plus a pool
+  allocator here because it removes per-record node allocation entirely.
+
+- **fix-test-client: idempotent ClOrdID (`fix.uniqueId()`)** (item 14) — done 2026-07-03.
+  `FixHelper.uniqueId()` returns `currentTimeMillis() + "-" + counter.getAndIncrement()` over a
+  never-reset `AtomicLong`. `example.groovy` and `buys_sells_and_cancels.groovy` both use it, so
+  both are safely re-runnable.
+
+- **fix-test-client smoke test** (item 15) — done 2026-07-05. `fix_client_smoke_test.py`
+  (stdlib only) drives the REST/Groovy API: NOS burst, cancels, then a heavy idempotent loop,
+  and validates sent-versus-acked from the script output because the blotter records inbound ERs
+  only. Verified live at 128 orders plus 3 cancels.
+
+- **Burst test with WAL replication active** (item 17) — done 2026-07-05.
+  `fix_client_burst_test.py` submits N orders with `ha_enabled = true`, waits for every New ER,
+  and scans the sequencer log delta for WAL-path distress. Verified at 50,000 orders,
+  ~34,500 orders/s, zero drops, no slab or pool exhaustion — `pending_er_` and the WAL TCP
+  channel absorbed the burst. A 1M-order run via `perf_run.py`'s multi-client driver also passed.
+
+- **Doxygen navigation layer — clickable architecture maps** (item 18) — done 2026-07-05.
+  `docs/architecture.dot` carries `URL="\ref <page-label>"` on each component node and is embedded
+  via `\dotfile` in `docs/architecture_map.dox`, giving a clickable image map that links straight
+  to the existing markdown docs — no per-component stub pages needed. `doxygen Doxyfile` builds
+  clean under `WARN_AS_ERROR = FAIL_ON_WARNINGS`.
+
+- **Matching Engine HA wiring** (item 19) — done 2026-07-05. Role config and a second instance,
+  `BookUpdate` replication, arbiter-mediated promotion keyed by `(component-group, instance_id)`,
+  and WAL reconciliation before cancel-on-failover. `ha_test.py` scenario 16 passes, as does a run
+  with 15,000 orders WAL-committed during the failover gap and all replayed to the promoted ME.
 
 ### Known Issues
 
