@@ -230,21 +230,23 @@ struct ReactorConfiguration {
     /**
      * @brief Path to the shared registry file used for cross-process coordination.
      *
-     * All cooperating processes on the same machine must use the same path.
-     * /dev/shm/ (tmpfs) is preferred: the file is cleared on reboot, ensuring
-     * stale entries from previous runs are never inherited.
+     * All cooperating processes on the same machine must use the same path, and
+     * it belongs inside the deployment's own run directory rather than in a
+     * machine-wide location such as /dev/shm: two installations on one machine
+     * must not contend for a single registry, and staleness is dealt with by the
+     * deployment tooling clearing the file, not by waiting for a reboot.
      *
-     * Default: /dev/shm/pubsub_cpu_registry
+     * Mandatory whenever cpu_pinning_enabled is true; there is deliberately no
+     * default. Reactor::initialize() fails if pinning is enabled and this is empty.
      */
-    std::string cpu_registry_shm_path{"/dev/shm/pubsub_cpu_registry"};
+    std::string cpu_registry_shm_path;
 
     /**
      * @brief Path to the flock file used to serialise registry access.
      *
-     * All cooperating processes on the same machine must use the same path.
-     * Prefer /dev/shm/ (tmpfs) so the file is cleared on reboot.
-     *
-     * Mandatory: must be explicitly set from the application's TOML configuration.
+     * Same rules as cpu_registry_shm_path: all cooperating processes on the
+     * machine share one path, it lives in the deployment's run directory, and it
+     * is mandatory whenever cpu_pinning_enabled is true.
      */
     std::string cpu_registry_lock_file;
 };

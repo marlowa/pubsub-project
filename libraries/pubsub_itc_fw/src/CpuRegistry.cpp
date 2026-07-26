@@ -15,6 +15,7 @@
 #include <pubsub_itc_fw/CpuPinning.hpp>
 #include <pubsub_itc_fw/CpuRegistry.hpp>
 #include <pubsub_itc_fw/FileLock.hpp>
+#include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/StringUtils.hpp>
 
@@ -22,6 +23,15 @@ namespace pubsub_itc_fw {
 
 CpuRegistry::CpuRegistry(std::string shm_path, std::string lock_file_path)
     : shm_path_(std::move(shm_path)), lock_file_path_(std::move(lock_file_path)), my_pid_(::getpid()) {
+    // Empty here would silently open the process working directory, so the
+    // registry would appear to work while coordinating nothing.
+    if (shm_path_.empty()) {
+        throw PreconditionAssertion("CpuRegistry: shm_path must not be empty", __FILE__, __LINE__);
+    }
+    if (lock_file_path_.empty()) {
+        throw PreconditionAssertion("CpuRegistry: lock_file_path must not be empty", __FILE__, __LINE__);
+    }
+
     shm_fd_ = ::open(shm_path_.c_str(), O_CREAT | O_RDWR, 0666); // NOLINT(cppcoreguidelines-pro-type-vararg)
     if (shm_fd_ < 0) {
         throw PubSubItcException("CpuRegistry: open('" + shm_path_ + "') failed: " + StringUtils::get_errno_string());

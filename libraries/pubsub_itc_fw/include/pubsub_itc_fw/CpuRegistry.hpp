@@ -13,10 +13,11 @@ namespace pubsub_itc_fw {
 /**
  * @brief Cross-process CPU core registry backed by a memory-mapped shared file.
  *
- * Multiple cooperating processes use a single shared file (typically in
- * /dev/shm/) to coordinate CPU allocation. CpuRegistry uses an flock-based
- * lock file to serialise access during claim and release operations, preventing
- * two processes from claiming the same core simultaneously.
+ * Multiple cooperating processes use a single shared file, held in the
+ * deployment's own run directory, to coordinate CPU allocation. CpuRegistry uses
+ * an flock-based lock file to serialise access during claim and release
+ * operations, preventing two processes from claiming the same core
+ * simultaneously.
  *
  * Stale entries from dead processes are cleaned up automatically the next time
  * any live process calls claim_cpus(). No daemon or heartbeat is required.
@@ -31,17 +32,22 @@ namespace pubsub_itc_fw {
  *
  * ### File lifecycle
  *
- * The shared file lives in /dev/shm/ (tmpfs) by default and is therefore
- * cleared on reboot, which is desirable: stale entries from a previous boot
- * are never inherited. The lock file in /tmp/ is similarly ephemeral.
+ * Both files live under the deployment's run directory and neither is cleared by
+ * the operating system, so removing them is the deployment tooling's job:
+ * deploy.py clears them when it lays down an install and devenv.py clears them on
+ * every start. A machine-wide tmpfs location such as /dev/shm would be cleared on
+ * reboot, but Linux hosts reboot rarely enough that this is no real protection,
+ * and it would make two installations on one machine share a single registry.
+ *
+ * Stale entries left by a process that died without releasing are handled
+ * independently of file removal: claim_cpus() drops entries whose owning PID is
+ * no longer alive.
  */
 class CpuRegistry {
   public:
     /**
-     * @param shm_path       Path to the shared registry file.
-     *                       Default: /dev/shm/pubsub_cpu_registry
-     * @param lock_file_path Path to the flock serialisation file.
-     *                       Default: /tmp/pubsub_cpu_registry.lock
+     * @param[in] shm_path       Path to the shared registry file. Must not be empty.
+     * @param[in] lock_file_path Path to the flock serialisation file. Must not be empty.
      */
     CpuRegistry(std::string shm_path, std::string lock_file_path);
 

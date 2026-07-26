@@ -494,7 +494,9 @@ bool Reactor::initialize_threads() {
     }
 
     if (config_.cpu_pinning_enabled) {
-        pin_registered_threads();
+        if (!pin_registered_threads()) {
+            return false;
+        }
     } else {
         PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "CPU pinning disabled -- threads will run on any available core");
     }
@@ -527,10 +529,14 @@ bool Reactor::initialize_threads() {
     return true;
 }
 
-void Reactor::pin_registered_threads() {
-    if (config_.cpu_registry_lock_file.empty()) {
-        PUBSUB_LOG_STR(logger_, FwLogLevel::Warning, "CPU pinning: cpu_registry_lock_file is not configured -- skipping pinning");
-        return;
+bool Reactor::pin_registered_threads() {
+    // Silently carrying on unpinned was how a whole test harness ran for weeks
+    // without anyone noticing pinning had stopped being configured.
+    if (config_.cpu_registry_shm_path.empty() || config_.cpu_registry_lock_file.empty()) {
+        PUBSUB_LOG_STR(logger_, FwLogLevel::Error,
+                       "CPU pinning is enabled but cpu_registry_shm_path and cpu_registry_lock_file are not both configured -- both are mandatory when "
+                       "cpu_pinning_enabled is true");
+        return false;
     }
 
     try {
@@ -547,7 +553,7 @@ void Reactor::pin_registered_threads() {
         if (cpus.empty()) {
             PUBSUB_LOG_STR(logger_, FwLogLevel::Warning, "CPU pinning: no CPUs available -- skipping");
             cpu_registry_.reset();
-            return;
+            return true;
         }
 
         if (cpus.size() < total_needed) {
@@ -633,6 +639,8 @@ void Reactor::pin_registered_threads() {
         PUBSUB_LOG(logger_, FwLogLevel::Warning, "CPU pinning failed: {} -- continuing without pinning", ex.what());
         cpu_registry_.reset();
     }
+
+    return true;
 }
 
 void Reactor::enqueue_control_command(ReactorControlCommand command) {

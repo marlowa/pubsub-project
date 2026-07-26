@@ -74,7 +74,7 @@ def _fix_checksum(msg: str) -> str:
 
 
 def _build_fix(msg_type: str, seq_num: int, extra_fields: list) -> bytes:
-    """Construct a complete FIX 4.2 message with correct BodyLength and Checksum."""
+    """Construct a complete FIXT.1.1 message with correct BodyLength and Checksum."""
     body_fields = [
         ("35", msg_type),
         ("34", str(seq_num)),
@@ -90,7 +90,14 @@ def _build_fix(msg_type: str, seq_num: int, extra_fields: list) -> bytes:
 
 
 def _build_logon(seq_num: int) -> bytes:
-    return _build_fix("A", seq_num, [("98", "0"), ("108", "30")])
+    # 1137 (DefaultApplVerID) is required on a FIXT.1.1 Logon; the gateway's
+    # dictionary validator rejects the message without it.  9 == FIX 5.0 SP2.
+    # 554 (Password) carries the SCRAM password: the gateway reads it from the
+    # Logon and derives the proof from it, so a Logon without it authenticates
+    # against an empty password and is refused with BadPassword.
+    return _build_fix("A", seq_num, [
+        ("98", "0"), ("108", "30"), ("554", _STUB_PASSWORD), ("1137", "9"),
+    ])
 
 
 def _build_nos(seq_num: int, cl_ord_id: str) -> bytes:
@@ -116,17 +123,35 @@ def _build_logout(seq_num: int) -> bytes:
 _FIX_END_RE = re.compile(rb"\x0110=\d{3}\x01")
 
 
-def _recv_fix(sock: socket.socket, timeout: float) -> bytes:
-    """Receive one complete FIX message from the socket."""
-    sock.settimeout(timeout)
-    buf = b""
-    while True:
-        chunk = sock.recv(4096)
-        if not chunk:
-            raise EOFError("connection closed while waiting for FIX message")
-        buf += chunk
-        if _FIX_END_RE.search(buf):
-            return buf
+class FixStreamReader:
+    """
+    Reads one FIX message at a time from a socket, keeping whatever arrived
+    after it.
+
+    The buffer has to persist across calls.  The gateway answers a burst of
+    orders with a burst of reports, and several of them land in a single recv();
+    a reader that returned everything it had read and started empty next time
+    would silently discard all but the first, then block waiting for messages it
+    had already been sent.
+    """
+
+    def __init__(self, sock: socket.socket):
+        self._socket = sock
+        self._buffer = b""
+
+    def next_message(self, timeout: float) -> bytes:
+        """Return the next complete FIX message, reading more only when needed."""
+        self._socket.settimeout(timeout)
+        while True:
+            match = _FIX_END_RE.search(self._buffer)
+            if match is not None:
+                message = self._buffer[: match.end()]
+                self._buffer = self._buffer[match.end() :]
+                return message
+            chunk = self._socket.recv(4096)
+            if not chunk:
+                raise EOFError("connection closed while waiting for FIX message")
+            self._buffer += chunk
 
 
 def _fix_msg_type(raw: bytes) -> str:
@@ -270,9 +295,13 @@ def _write_auth_service_toml(path: Path, listen_port: int, admin_port: int,
         f'max_backup_files = 10\n'
         f'\n'
         f'[reactor]\n'
-        f'cpu_pinning_enabled      = false\n'
+        f'cpu_pinning_enabled = false\n'
         f'cpu_pinning_reserve_cpu0 = true\n'
-        f'cpu_registry_lock_file   = "/dev/shm/pubsub_cpu_registry_captest.lock"\n'
+        f'# In this test run\'s own temp directory, never the deployed install tree:\n'
+        f'# a test must not contend with a running system for the registry lock.\n'
+        f'cpu_registry_shm_path = "{path.parent / "cpu_registry"}"\n'
+        f'cpu_registry_lock_file = "{path.parent / "cpu_registry.lock"}"\n'
+        f'connect_retry_warning_interval = "15m"\n'
         f'\n'
         f'[event_queue_pool]\n'
         f'objects_per_slab = 64\n'
@@ -289,6 +318,9 @@ def _write_gateway_toml(path: Path, fix_port: int, er_port: int,
     # Use a dummy sequencer port — the gateway will retry the connection in the
     # background but that is harmless; no orders are forwarded in this test.
     dummy_seq_port = _find_free_port()
+    # fix_tls is disabled below so this port is never bound, but the loader
+    # requires a value and a real free port keeps the config honest.
+    tls_listen_port = _find_free_port()
     path.write_text(
         f'[network]\n'
         f'listen_host         = "127.0.0.1"\n'
@@ -296,18 +328,20 @@ def _write_gateway_toml(path: Path, fix_port: int, er_port: int,
         f'raw_buffer_capacity = 65536\n'
         f'er_listen_host      = "127.0.0.1"\n'
         f'er_listen_port      = {er_port}\n'
+        f'tls_listen_port     = {tls_listen_port}\n'
         f'\n'
         f'[authentication_service]\n'
         f'host           = "127.0.0.1"\n'
         f'port           = {auth_port}\n'
         f'secondary_host = "127.0.0.1"\n'
         f'secondary_port = {auth_port}\n'
-        f'scram_password = "{_STUB_PASSWORD}"\n'
         f'\n'
         f'[sequencer]\n'
         f'ha_enabled   = false\n'
         f'primary_host = "127.0.0.1"\n'
         f'primary_port = {dummy_seq_port}\n'
+        f'secondary_host = "127.0.0.1"\n'
+        f'secondary_port = {dummy_seq_port}\n'
         f'\n'
         f'[fix_session]\n'
         f'sender_comp_id         = "GATEWAY"\n'
@@ -325,9 +359,13 @@ def _write_gateway_toml(path: Path, fix_port: int, er_port: int,
         f'max_backup_files = 10\n'
         f'\n'
         f'[reactor]\n'
-        f'cpu_pinning_enabled    = false\n'
-        f'cpu_pinning_reserve_cpu0  = true\n'
-        f'cpu_registry_lock_file = "/dev/shm/pubsub_cpu_registry_captest.lock"\n'
+        f'cpu_pinning_enabled = false\n'
+        f'cpu_pinning_reserve_cpu0 = true\n'
+        f'# In this test run\'s own temp directory, never the deployed install tree:\n'
+        f'# a test must not contend with a running system for the registry lock.\n'
+        f'cpu_registry_shm_path = "{path.parent / "cpu_registry"}"\n'
+        f'cpu_registry_lock_file = "{path.parent / "cpu_registry.lock"}"\n'
+        f'connect_retry_warning_interval = "15m"\n'
         f'\n'
         f'[event_queue_pool]\n'
         f'objects_per_slab = 64\n'
@@ -338,9 +376,22 @@ def _write_gateway_toml(path: Path, fix_port: int, er_port: int,
         f'initial_slabs    = 1\n'
         f'\n'
         f'[fix_capture]\n'
-        f'enabled     = true\n'
-        f'file        = "{capture_file}"\n'
-        f'queue_depth = 1000\n'
+        f'enabled    = true\n'
+        f'file       = "{capture_file}"\n'
+        f'ring_bytes = 67108864\n'
+        f'\n'
+        f'[fix_tls]\n'
+        f'enabled = false\n'
+        f'cert    = ""\n'
+        f'key     = ""\n'
+        f'\n'
+        f'[fix_limits]\n'
+        f'max_symbol_length    = 32\n'
+        f'max_order_qty_length = 24\n'
+        f'\n'
+        f'[open_order_pool]\n'
+        f'objects_per_pool = 4096\n'
+        f'initial_pools    = 1\n'
     )
 
 
@@ -435,6 +486,7 @@ def run_test(prefix: Path) -> bool:
             log("=== Running FIX session ===")
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.connect(("127.0.0.1", fix_port))
+            reader = FixStreamReader(sock)
             seq = 1
 
             log("  Sending Logon (35=A) ...")
@@ -442,7 +494,7 @@ def run_test(prefix: Path) -> bool:
             seq += 1
 
             log(f"  Waiting for Logon reply (timeout {FIX_REPLY_TIMEOUT:.0f}s) ...")
-            reply = _recv_fix(sock, FIX_REPLY_TIMEOUT)
+            reply = reader.next_message(FIX_REPLY_TIMEOUT)
             reply_type = _fix_msg_type(reply)
             if reply_type not in ("A", "5"):
                 die(f"expected Logon reply (35=A) or Logout (35=5), got MsgType={reply_type!r}")
@@ -457,7 +509,7 @@ def run_test(prefix: Path) -> bool:
 
             log("  Waiting for 3 x ExecutionReport (reject) ...")
             for i in range(3):
-                er = _recv_fix(sock, FIX_REPLY_TIMEOUT)
+                er = reader.next_message(FIX_REPLY_TIMEOUT)
                 er_type = _fix_msg_type(er)
                 if er_type != "8":
                     die(f"expected ExecutionReport (35=8), got MsgType={er_type!r} for order {i+1}")
@@ -465,7 +517,7 @@ def run_test(prefix: Path) -> bool:
 
             log("  Sending Logout (35=5) ...")
             sock.sendall(_build_logout(seq))
-            reply = _recv_fix(sock, FIX_REPLY_TIMEOUT)
+            reply = reader.next_message(FIX_REPLY_TIMEOUT)
             logout_type = _fix_msg_type(reply)
             if logout_type != "5":
                 die(f"expected Logout reply (35=5), got MsgType={logout_type!r}")

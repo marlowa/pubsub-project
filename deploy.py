@@ -498,13 +498,24 @@ def main() -> None:
     # Override paths_install_dir with the resolved absolute path so that any
     # namespace values that reference ${paths_install_dir} expand correctly.
     namespace["paths_install_dir"] = str(install_dir)
-    # CPU registry files always live under install_dir/run/ regardless of what
-    # the env TOML says.  Inject the absolute paths here so the templates get
-    # concrete values and operators can see the resolved paths in installed/etc/.
+    # CPU registry files live under install_dir/run/.  This is the only place
+    # that decides where, so the env TOMLs carry no value for it: two
+    # installations on one machine must not share a registry.  The absolute paths
+    # are injected here so operators can see the resolved paths in installed/etc/.
     cpu_run_dir = install_dir / "run"
     cpu_run_dir.mkdir(parents=True, exist_ok=True)
-    namespace["shared_reactor_cpu_registry_shm_path"] = str(cpu_run_dir / "pubsub_cpu_registry")
-    namespace["shared_reactor_cpu_registry_lock_file"] = str(cpu_run_dir / "pubsub_cpu_registry.lock")
+    cpu_registry_path = cpu_run_dir / "pubsub_cpu_registry"
+    cpu_registry_lock_path = cpu_run_dir / "pubsub_cpu_registry.lock"
+    namespace["shared_reactor_cpu_registry_shm_path"] = str(cpu_registry_path)
+    namespace["shared_reactor_cpu_registry_lock_file"] = str(cpu_registry_lock_path)
+
+    # Nothing else clears these -- they are ordinary files, not tmpfs entries that
+    # a reboot would remove -- so a fresh install starts from an empty registry
+    # rather than inheriting core claims recorded by a previous install.
+    for stale in (cpu_registry_path, cpu_registry_lock_path):
+        if stale.exists():
+            stale.unlink()
+            print(f"removed stale {stale.name}")
 
     # Resolve WAL directory paths relative to install_dir when not absolute.
     # The sequencer binary requires an absolute path; dev.toml stores them as

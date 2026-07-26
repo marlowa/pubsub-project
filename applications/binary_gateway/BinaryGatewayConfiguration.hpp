@@ -106,7 +106,8 @@ struct BinaryGatewayConfiguration {
     /** @brief Exclude CPU 0 from pinning candidates. */
     bool cpu_pinning_reserve_cpu0{false};
 
-    /** @brief Shared-memory path backing the cross-process CPU registry. */
+    /** @brief Path to the shared CPU registry file, under the deployment's run
+     *  directory. Mandatory whenever cpu_pinning_enabled is true. */
     std::string cpu_registry_shm_path;
 
     /** @brief Path to the flock file serialising cross-process CPU registry access. */

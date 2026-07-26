@@ -202,9 +202,10 @@ struct SequencerConfiguration {
      *  Mandatory: must be set explicitly in the TOML configuration file. */
     bool cpu_pinning_reserve_cpu0;
 
-    /** @brief Path to the flock file used to serialise cross-process CPU registry access.
-     *  Prefer /dev/shm/ so the file is cleared on reboot.
-     *  Mandatory: must be set explicitly in the TOML configuration file. */
+    /** @brief Path to the shared CPU registry file, and to the flock file that serialises
+     *  access to it. Both live under the deployment's run directory so that two
+     *  installations on one machine cannot contend for a single registry.
+     *  Mandatory whenever cpu_pinning_enabled is true. */
     std::string cpu_registry_shm_path;
     std::string cpu_registry_lock_file;
 

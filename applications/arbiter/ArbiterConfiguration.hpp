@@ -103,7 +103,8 @@ struct ArbiterConfiguration {
     /** @brief Exclude CPU 0 from pinning candidates (for machines without isolated cores). */
     bool cpu_pinning_reserve_cpu0;
 
-    /** @brief Path to the flock file used to serialise cross-process CPU registry access. */
+    /** @brief Path to the shared CPU registry file, under the deployment's run
+     *  directory. Mandatory whenever cpu_pinning_enabled is true. */
     std::string cpu_registry_shm_path;
     std::string cpu_registry_lock_file;
 

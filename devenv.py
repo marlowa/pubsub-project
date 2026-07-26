@@ -345,10 +345,10 @@ def cmd_start(
     # independently claims the same CPUs.
     cpu_run_dir = install_dir / "run"
     cpu_run_dir.mkdir(parents=True, exist_ok=True)
-    cpu_registry = cpu_run_dir / "pubsub_cpu_registry"
-    if cpu_registry.exists():
-        cpu_registry.unlink()
-        print("removed stale CPU registry")
+    for stale in (cpu_run_dir / "pubsub_cpu_registry", cpu_run_dir / "pubsub_cpu_registry.lock"):
+        if stale.exists():
+            stale.unlink()
+            print(f"removed stale {stale.name}")
 
     print("=== exporting credentials ===")
     export_credentials(install_dir, env)

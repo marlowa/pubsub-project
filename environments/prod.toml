@@ -14,12 +14,22 @@ name        = "prod"
 description = "Production deployment. One component per dedicated host."
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-# Absolute paths required for production.
+# Everything this deployment owns lives under one root, /opt/pubsub: binaries,
+# configs, certs, logs, PID files and the WALs.  One root means the whole tree is
+# a single container volume or a single unit to move, back up or wipe, and it
+# keeps a deployment from scattering state across /var that nothing tracks.
+#
+# For rollback, make /opt/pubsub itself the symlink and switch it between
+# versioned trees.  Note what that implies: the WALs below move with the symlink.
+# That is fine for a test cluster, but for a live venue the sequencer WAL is the
+# authoritative record of accepted orders and must not change when the code
+# version does -- point wal_directory at a path outside the versioned tree
+# (/opt/pubsub-state/... or a dedicated mount) before running for real.
 
 [paths]
-install_dir = "/opt/pubsub"         # binaries, component configs, certs
-log_dir     = "/var/log/pubsub"     # component stdout/stderr and applog files
-run_dir     = "/var/run/pubsub"     # PID files written here by devenv.py
+install_dir = "/opt/pubsub"
+log_dir     = "/opt/pubsub/log"
+run_dir     = "/opt/pubsub/run"
 
 # ── Database ──────────────────────────────────────────────────────────────────
 # Password: set PUBSUB_APP_DB_PASSWORD in the environment before running
@@ -157,8 +167,10 @@ ha_only = false
 # production machine.  Set to true only if CPU 0 is not isolated on your
 # hardware.
 reactor_cpu_pinning_reserve_cpu0   = false
-reactor_cpu_registry_shm_path  = "/dev/shm/pubsub_cpu_registry"
-reactor_cpu_registry_lock_file = "/dev/shm/pubsub_cpu_registry.lock"
+# The CPU registry file and its lock live under install_dir/run/ and are set
+# by deploy.py, which is the single place that knows the install layout.  They
+# are deliberately not configurable here: two installations on one machine must
+# not share a registry.
 
 [witness]
 network_listen_host = "0.0.0.0"
@@ -252,7 +264,7 @@ peer_listen_host           = "0.0.0.0"
 peer_listen_port           = 11003
 peer_host                  = "sequencer-secondary.exchange.internal"     # REPLACE
 peer_port                  = 11004
-wal_directory              = "/var/lib/pubsub/sequencer_wal"
+wal_directory              = "/opt/pubsub/var/sequencer_wal"
 wal_subscriber_listen_host = "0.0.0.0"
 wal_subscriber_listen_port = 11030
 
@@ -276,7 +288,7 @@ peer_listen_host           = "0.0.0.0"
 peer_listen_port           = 11004
 peer_host                  = "sequencer-primary.exchange.internal"       # REPLACE
 peer_port                  = 11003
-wal_directory              = "/var/lib/pubsub/sequencer_secondary_wal"
+wal_directory              = "/opt/pubsub/var/sequencer_secondary_wal"
 wal_subscriber_listen_host = "0.0.0.0"
 wal_subscriber_listen_port = 11031
 

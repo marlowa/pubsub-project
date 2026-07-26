@@ -360,11 +360,16 @@ class Reactor : public ThreadLookupInterface {
      * Called from initialize_threads() after all threads have reached the
      * Started state. Uses CpuRegistry for cross-process coordination so that
      * cooperating processes on the same machine do not collide on cores.
-     * Failures are logged as warnings and do not abort startup.
      *
      * Only called when ReactorConfiguration::cpu_pinning_enabled is true.
+     *
+     * @return false only when the registry paths are unconfigured, which aborts
+     *         startup: pinning was asked for and cannot be delivered. Running
+     *         capacity problems (no free cores, fewer cores than threads, an
+     *         individual pin call failing) are logged as warnings and return true,
+     *         because the process still runs correctly, just unpinned.
      */
-    void pin_registered_threads();
+    [[nodiscard]] bool pin_registered_threads();
 
     /**
      * @brief Allocates the next ConnectionID from the shared monotonic counter.

@@ -229,8 +229,10 @@ ha_only = false
 
 [shared]
 reactor_cpu_pinning_reserve_cpu0   = true
-reactor_cpu_registry_shm_path  = "/dev/shm/pubsub_cpu_registry"
-reactor_cpu_registry_lock_file = "/dev/shm/pubsub_cpu_registry.lock"
+# The CPU registry file and its lock live under install_dir/run/ and are set
+# by deploy.py, which is the single place that knows the install layout.  They
+# are deliberately not configurable here: two installations on one machine must
+# not share a registry.
 
 [witness]
 network_listen_host = "127.0.0.1"
