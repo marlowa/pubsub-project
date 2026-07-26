@@ -3,6 +3,7 @@
 ## Where to start
 
 - **[Architecture](architecture.md)** — component overview, topology, data flow
+- **[Building](building.md)** — build flavours, why cleaning between them is unnecessary, and where instrumented artefacts go
 - **[Roadmap](roadmap.md)** — slicing plan, what is done, what comes next
 
 ## Design

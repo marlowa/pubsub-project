@@ -327,6 +327,44 @@ def test_environment(build_dir):
     return env
 
 
+def install_directory_name(args):
+    """
+    Name of the staging directory for this build's instrumentation flavour.
+
+    The plain build stages into "installed"; anything instrumented stages into
+    "installed-<flavour>". A coverage or sanitizer library is a different artefact
+    -- built at -O0, inlining disabled, gcov counters or a sanitizer runtime linked
+    in -- and it must not overwrite the plain one.
+
+    @param[in] args Parsed command-line arguments.
+    @return Directory name, relative to the project root.
+    """
+    flavours = []
+    if args.coverage:
+        flavours.append("coverage")
+    if args.asan:
+        flavours.append("asan")
+    if args.tsan:
+        flavours.append("tsan")
+    if args.valgrind:
+        flavours.append("valgrind")
+    if not flavours:
+        return "installed"
+    return "installed-" + "-".join(flavours)
+
+
+def install_directory_notice(staging_dir):
+    """Explain a non-default staging directory, and how to use it deliberately."""
+    print(f"NOTE: instrumented build -- staging to {staging_dir.name}/ instead of installed/")
+    print("  installed/ is left untouched so devenv.py, perf_run.py, ha_test.py and the")
+    print("  standalone test scripts keep loading uninstrumented libraries.  This matters")
+    print("  because LD_LIBRARY_PATH points at installed/lib and takes precedence over the")
+    print("  binaries' RUNPATH, so an instrumented library installed there would silently")
+    print("  become what every other tool loads -- a perf_run.py after a coverage build")
+    print("  would report figures with no indication that they are meaningless.")
+    print(f"  To run the system instrumented, name this prefix: ./start_fix_seq_system.py {staging_dir.name}")
+
+
 def run_tests(build_dir, use_tsan=False, tsan_suppressions=None):
     """Run the test suite"""
     test_binary = build_dir / "libraries" / "pubsub_itc_fw" / "tests" / "pubsub_itc_fw_tests"
@@ -678,7 +716,13 @@ Examples:
     # Fixed relative to the project root, not the build directory, so that all
     # tooling (ha_test.py, auth_service_test.py, devenv.py) finds binaries in the
     # same well-known location regardless of which --build-dir was used.
-    staging_dir = (source_dir / "installed").resolve()
+    #
+    # Instrumented builds stage elsewhere -- see install_directory_name(). Note that
+    # a separate --build-dir alone does not protect installed/, because the install
+    # prefix is independent of it.
+    staging_dir = (source_dir / install_directory_name(args)).resolve()
+    if staging_dir.name != "installed":
+        install_directory_notice(staging_dir)
 
     # Sanitizer mutual exclusion checks
     if args.asan and args.tsan:
