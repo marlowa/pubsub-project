@@ -1,5 +1,7 @@
 build/
 build/docs
+# Per-flavour build directories, e.g. --build-dir build-coverage
+build-*/
 thirdparty/
 
 # Deploy/runtime artefact trees (produced by build.py install / devenv.py; never committed)
