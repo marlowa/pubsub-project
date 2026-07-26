@@ -26,20 +26,36 @@ Two message types are specific to this gateway, defined in `applications/binary_
 
 | PDU | Direction | Purpose |
 |-----|-----------|---------|
-| `Logon` | client → gateway | Carries `comp_id`, the client's identity |
+| `Logon` | client → gateway | `comp_id`, `password`, `target_comp_id` |
 | `LogonAck` | gateway → client | `LogonOutcome`, plus optional text for logs |
 
 Everything else is the DD-derived order messages from `fix_orders.dsl` (ids 1000+):
 `NewOrderSingle` and `OrderCancelRequest` inbound, `ExecutionReport` outbound.
 
-A session is: connect, `Logon`, `LogonAck`, then orders. Any other PDU before `Logon` is
-refused and the connection closed, so every order in the pipeline carries a comp id.
+A session is: connect, `Logon`, SCRAM exchange with the authentication service, `LogonAck`,
+then orders. Any other PDU before the session is authenticated is refused and the connection
+closed, so nothing reaches the book from a session that has not proved who it is.
+
+### Authentication
+
+SCRAM-SHA-256 against the same authentication service the FIX gateway uses, and the same
+exchange: the gateway sends a client nonce with the comp id, derives a proof from the
+password when the challenge returns, and verifies the ServerSignature that comes back — so
+the service authenticates itself to the gateway in turn. The password never leaves the
+gateway process and is zeroed the moment the proof is derived.
+
+This was not the original design. The protocol first shipped with a comp id alone, on the
+reasoning that authenticating a second transport would re-tread ground the FIX gateway
+already covered. That reasoning was wrong: it left an order-entry port that anyone who could
+reach it could trade through, whatever the transport carrying the orders.
+
+`target_comp_id` is checked rather than merely recorded. Empty means the client did not mind
+which venue it reached; a populated value that does not match the gateway's configured
+`sender_comp_id` refuses the logon with `WrongTargetCompId`. A client that has connected
+somewhere it did not intend should be told, not quietly traded.
 
 ### What the protocol deliberately omits
 
-- **No password or SCRAM exchange.** The comp id gives session identity for ER routing and
-  the audit trail, which is what the pipeline needs. Authenticating a second transport would
-  re-tread what the FIX gateway already does against the authentication service.
 - **No heartbeats or sequence numbers.** The framework's PDU transport already detects a dead
   connection and delivers messages framed and in order. FIX needs both because it runs over a
   bare byte stream it must itself keep alive and ordered.
@@ -102,6 +118,10 @@ with it.
 | ER listener | 11110 | Must match `binary_gateway.port` in the sequencer's config |
 | Sequencer primary | 11001 | Outbound, dialled by the gateway |
 | Sequencer secondary | 11002 | Outbound, when `ha_enabled` |
+| Authentication service | 11070 / 11071 | Outbound, for the SCRAM exchange |
+
+`[binary_session] sender_comp_id` is this gateway's own name (`BINARY-GATEWAY`), checked
+against each client's `target_comp_id`.
 
 The sequencer must be told about it: `[binary_gateway] enabled/host/port` in
 `sequencer_primary.toml` and `sequencer_secondary.toml`. Setting `enabled = false` runs the
@@ -115,12 +135,45 @@ which dials its ER listener and otherwise retries.
 `bin/binary_client` logs on, sends orders, and prints the ERs that come back:
 
 ```
-binary_client --host 127.0.0.1 --port 9890 --comp-id BINCLIENT --orders 3
+binary_client --port 9890 --comp-id BINCLIENT --password stubpassword --orders 3
 ```
 
 It uses plain sockets and the generated codecs rather than the framework, which shows that a
-client needs nothing from `pubsub_itc_fw` beyond the PDU header layout. It is the worked
-example for the Java client that will eventually drive this gateway from the web UI.
+client needs nothing from `pubsub_itc_fw` beyond the PDU header layout.
+
+## Load generator
+
+`bin/binary_load_client` is the counterpart of fix8's `f8test`, which `perf_run.py` drives
+against the FIX gateway. It follows the same interface -- a `T` on stdin fires a burst -- so
+the harness can drive either, and `perf_run.py --gateway binary` selects it.
+
+```
+binary_load_client --sessions 4 --orders-per-burst 1000 --bursts 2
+binary_load_client --sessions 4 --orders-per-burst 2000 --bursts 1 --rate 2000
+```
+
+Two things it does that `f8test` cannot, because it owns both ends: it reports its own
+sent-versus-received counts rather than leaving the harness to infer completion from log
+lines, and it measures true per-order round-trip latency by matching each report to its send
+time by ClOrdID.
+
+**Give it a `--rate` for any latency measurement.** Without one it offers orders as fast as
+the socket accepts them, which is far faster than the pipeline drains, so the reported
+latencies are dominated by queueing rather than service time. The tool says so in its own
+output, but the distinction is easy to miss and the difference is two orders of magnitude.
+
+Its orders carry the full DD-derived field set including both repeating groups by default,
+matching what `f8test` sends. A binary run against a minimal order would flatter this gateway
+badly, since most per-order work scales with field and group count.
+
+## Java web test client
+
+The `fix-test-client` drives either gateway. The logon page has a FIX/Binary selector; one
+session is live at a time, and the order form, cancel and blotter follow whichever it is.
+Its protocol classes are generated from the same DSL as the C++ side at build time, so the
+client cannot drift from the gateway it talks to.
+
+The raw-FIX entry page stays FIX-only: there is no such thing as a hand-typed binary PDU.
 
 ## Cancel-on-disconnect
 
@@ -151,5 +204,12 @@ gateway that cannot read a message still has no business withholding it.
 
 ## Known differences from the order gateway
 
-- **No TLS listener.** The order gateway offers one; this gateway is plain TCP only.
-- **No authentication service integration**, as described above.
+- **No TLS listener.** The order gateway offers one; this gateway is plain TCP only, so the
+  password crosses the wire in the clear on the client-to-gateway hop. SCRAM means it is
+  never stored or forwarded, but it is not a substitute for transport encryption. Whether
+  to add it -- and whether the argument extends to the internal PDU hops, since order flow
+  is itself sensitive -- is an open question; see the encryption TODO in
+  `pubsub_itc_fw_summary.md`.
+- **No proprietary logon mode.** The FIX gateway has one; the binary gateway offers SCRAM
+  only. A proprietary mode was considered and rejected: its purpose would have been to test
+  a different venue's binary protocol, which this client cannot speak in any case.

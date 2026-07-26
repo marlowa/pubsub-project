@@ -27,8 +27,18 @@
     <!-- Pre-logon form -->
     <div id="logon-form">
         <div class="form-row">
+            <label>Gateway</label>
+            <label style="font-weight:normal; margin-right:14px;">
+                <input type="radio" name="gateway" value="fix" checked onchange="onGatewayChange()"> FIX
+            </label>
+            <label style="font-weight:normal;">
+                <input type="radio" name="gateway" value="binary" onchange="onGatewayChange()"> Binary
+            </label>
+            <span id="gateway-note" style="margin-left:10px; color:#555; font-size:0.9em;"></span>
+        </div>
+        <div class="form-row">
             <label>SenderCompID</label>
-            <input type="text" id="sender-comp-id" value="APM001">
+            <input type="text" id="sender-comp-id" value="APM001" oninput="updateLogonButton()">
         </div>
         <div class="form-row">
             <label>TargetCompID</label>
@@ -38,16 +48,16 @@
             <label>Password</label>
             <input type="password" id="password" oninput="updateLogonButton()">
         </div>
-        <div class="form-row">
+        <div class="form-row fix-only">
             <label>Use TLS</label>
             <input type="checkbox" id="use-tls" checked onchange="updatePortDisplay()">
             <span id="port-display" style="margin-left:10px; color:#555; font-size:0.9em;"></span>
         </div>
-        <div class="form-row">
+        <div class="form-row fix-only">
             <label>Proprietary logon</label>
             <input type="checkbox" id="proprietary-logon" onchange="onProprietaryChange()">
         </div>
-        <div class="form-row">
+        <div class="form-row fix-only">
             <label>Starting seq num</label>
             <input type="checkbox" id="override-seq-check" onchange="toggleSeqInput()">
             Override
@@ -88,9 +98,42 @@ function toggleSeqInput() {
         !document.getElementById('override-seq-check').checked;
 }
 
+function selectedGateway() {
+    const chosen = document.querySelector('input[name="gateway"]:checked');
+    return chosen ? chosen.value : 'fix';
+}
+
+// The binary gateway has no password, no TLS listener and no session-layer sequence
+// numbers, so its fields are hidden rather than shown-but-ignored: a disabled password box
+// still suggests the protocol has one.
+function onGatewayChange() {
+    const binary = selectedGateway() === 'binary';
+    document.querySelectorAll('.fix-only').forEach(row => {
+        row.style.display = binary ? 'none' : '';
+    });
+    document.getElementById('gateway-note').textContent = binary
+        ? 'Binary gateway: SCRAM authenticated, no TLS listener or sequence numbers'
+        : '';
+    // Each gateway answers to its own name, so carrying one default across to the other
+    // would have the gateway refuse a logon that looked perfectly reasonable on screen.
+    const target = document.getElementById('target-comp-id');
+    if (target) {
+        target.value = binary ? 'BINARY-GATEWAY' : 'GATEWAY';
+    }
+    updateLogonButton();
+    updatePortDisplay();
+}
+
 function updateLogonButton() {
+    // Both gateways authenticate, so both need a password; the binary one also needs the
+    // comp id, since it has no other way to know who is connecting.
+    const button = document.getElementById('logon-btn');
     const password = document.getElementById('password').value;
-    document.getElementById('logon-btn').disabled = !password;
+    if (selectedGateway() === 'binary') {
+        button.disabled = !password || !document.getElementById('sender-comp-id').value.trim();
+        return;
+    }
+    button.disabled = !password;
 }
 
 async function doCancel() {
@@ -103,6 +146,7 @@ async function doLogon() {
     btn.disabled = true;
 
     const params = {
+        gateway:          selectedGateway(),
         senderCompId:     document.getElementById('sender-comp-id').value,
         targetCompId:     document.getElementById('target-comp-id').value,
         password:         document.getElementById('password').value,
@@ -203,8 +247,10 @@ function renderNotLoggedOn(status) {
     if (cancelBtn) cancelBtn.style.display = 'none';
     if (btn) {
         btn.textContent = 'Log On';
-        const password = document.getElementById('password');
-        btn.disabled = !password || !password.value;
+        // Delegate rather than test the password field directly: what makes a logon
+        // possible depends on the gateway, and this runs on every status poll, so
+        // duplicating the rule here silently overrides it a second later.
+        updateLogonButton();
     }
 
     const errEl = document.getElementById('logon-error');
@@ -245,6 +291,15 @@ let ports = { plainPort: null, tlsPort: null, proprietaryPort: null };
 let tlsConfigured = false;
 
 function updatePortDisplay() {
+    if (selectedGateway() === 'binary') {
+        // Shown next to the gateway choice rather than the (hidden) TLS row.
+        const note = document.getElementById('gateway-note');
+        if (note && ports.binaryPort != null) {
+            note.textContent = 'Binary gateway on port ' + ports.binaryPort
+                               + ' -- comp id only, no password or TLS';
+        }
+        return;
+    }
     const proprietary = document.getElementById('proprietary-logon').checked;
     const useTls = document.getElementById('use-tls').checked;
     let port;
@@ -308,6 +363,9 @@ async function loadPorts() {
 function pageInit() {
     loadPorts();
     loadLastSession();
+    // Apply the gateway choice once at load, so the FIX-only fields are in the right state
+    // before anyone touches the form.
+    onGatewayChange();
 
     const originalPoll = window._sessionStatusCallback;
     window._sessionStatusCallback = function(status) {

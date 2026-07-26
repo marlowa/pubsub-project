@@ -56,6 +56,15 @@ BinaryGateway::BinaryGateway(const BinaryGatewayConfiguration& config, std::uniq
 
     // Outbound connections are initiated from BinaryGatewayThread::on_app_ready_event()
     // via connect_to_service(); the registry is populated here so the names resolve.
+    service_registry_.add("authentication_service_primary",
+                          pubsub_itc_fw::NetworkEndpointConfiguration{config_.authentication_service_host, config_.authentication_service_port},
+                          pubsub_itc_fw::NetworkEndpointConfiguration{});
+    if (config_.ha_enabled) {
+        service_registry_.add(
+            "authentication_service_secondary",
+            pubsub_itc_fw::NetworkEndpointConfiguration{config_.authentication_service_secondary_host, config_.authentication_service_secondary_port},
+            pubsub_itc_fw::NetworkEndpointConfiguration{});
+    }
     service_registry_.add("sequencer_primary", pubsub_itc_fw::NetworkEndpointConfiguration{config_.sequencer_primary_host, config_.sequencer_primary_port},
                           pubsub_itc_fw::NetworkEndpointConfiguration{});
     if (config_.ha_enabled) {
@@ -66,6 +75,8 @@ BinaryGateway::BinaryGateway(const BinaryGatewayConfiguration& config, std::uniq
 
     PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "BinaryGateway: client listener on {}:{}", config_.listen_host, config_.listen_port);
     PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "BinaryGateway: ER listener on {}:{}", config_.er_listen_host, config_.er_listen_port);
+    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "BinaryGateway: authentication service {}:{} (SCRAM-SHA-256)", config_.authentication_service_host,
+               config_.authentication_service_port);
     if (config_.ha_enabled) {
         PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "BinaryGateway: sequencer primary={}:{} secondary={}:{} (HA enabled)",
                    config_.sequencer_primary_host, config_.sequencer_primary_port, config_.sequencer_secondary_host, config_.sequencer_secondary_port);

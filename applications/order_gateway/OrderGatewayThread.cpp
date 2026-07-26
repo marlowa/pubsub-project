@@ -1243,7 +1243,19 @@ void OrderGatewayThread::drain_pending_cancels() {
 
         OpenOrderEntry* entry = dead.open_orders[dead.next_order_index];
 
-        const std::string cancel_cl_ord_id = "GW-CXL-" + std::to_string(dead.session_conn_id) + "-" + std::to_string(dead.cancel_id_counter++);
+        // Formatted into a stack buffer rather than built with std::string: the obvious
+        // spelling allocates three times per cancel, on a path that can generate thousands
+        // in a burst.
+        std::array<char, cancel_cl_ord_id::max_length> cancel_id_buffer{};
+        const std::string_view cancel_cl_ord_id = cancel_cl_ord_id::format(cancel_id_buffer, "GW-CXL-", dead.session_conn_id, dead.cancel_id_counter++);
+        if (cancel_cl_ord_id.empty()) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                       "OrderGatewayThread: could not format a cancel ClOrdID for session {} -- order left on the book", dead.session_conn_id);
+            open_order_pool_->deallocate(entry);
+            ++dead.next_order_index;
+            ++sent;
+            continue;
+        }
 
         pubsub_itc_fw_app::OrderCancelRequest ocr{};
         ocr.orig_cl_ord_id = std::string_view(entry->cl_ord_id, entry->cl_ord_id_len);
@@ -1261,13 +1273,21 @@ void OrderGatewayThread::drain_pending_cancels() {
         open_order_pool_->deallocate(entry);
         ++dead.next_order_index;
         ++sent;
+        ++cancels_sent_this_drain_;
     }
 
     if (!pending_cancel_sessions_.empty()) {
         cancel_drain_timer_id_ = start_one_off_timer(cancel_drain_interval);
         cancel_drain_timer_active_ = true;
-    } else if (sent > 0) {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "OrderGatewayThread: cancel drain complete");
+        return;
+    }
+
+    // Report on the tick that empties the queue, whether or not that tick sent anything.
+    // Gating on sent > 0 missed the common case: the final tick usually just pops the last
+    // exhausted session, so the completion line went unlogged exactly when a drain finished.
+    if (cancels_sent_this_drain_ > 0) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "OrderGatewayThread: cancel drain complete -- {} cancel(s) sent", cancels_sent_this_drain_);
+        cancels_sent_this_drain_ = 0;
     }
 }
 

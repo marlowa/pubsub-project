@@ -1,6 +1,8 @@
 package com.pubsub.fixtestclient;
 
+import com.pubsub.fixtestclient.binary.BinaryEngine;
 import com.pubsub.fixtestclient.blotter.BlotterStore;
+import com.pubsub.fixtestclient.gateway.GatewaySelector;
 import com.pubsub.fixtestclient.capture.MessageCapture;
 import com.pubsub.fixtestclient.fix.FixApplication;
 import com.pubsub.fixtestclient.fix.FixEngine;
@@ -34,6 +36,11 @@ public class Main {
         FixEngine fixEngine = new FixEngine(config, fixApplication);
 
         BlotterStore blotterStore = new BlotterStore();
+
+        // The venue's other front door. One session is live at a time; the selector holds
+        // which, so the handlers do not each have to work it out.
+        BinaryEngine binaryEngine = new BinaryEngine(config, blotterStore);
+        GatewaySelector gateways = new GatewaySelector(fixEngine, binaryEngine);
         fixApplication.setInboundListener(blotterStore::addInbound);
 
         MessageCapture messageCapture = new MessageCapture(config.outputDir());
@@ -46,10 +53,10 @@ public class Main {
         FixHelper fixHelper = new FixHelper();
         ScriptRunner scriptRunner = new ScriptRunner(sessionBinding, fixHelper, messageCapture);
 
-        SessionHandler sessionHandler = new SessionHandler(fixEngine, config.gatewayPort(), config.tlsGatewayPort(),
-                config.proprietaryGatewayPort(), config.tlsEnabled());
+        SessionHandler sessionHandler = new SessionHandler(gateways, config.gatewayPort(), config.tlsGatewayPort(),
+                config.proprietaryGatewayPort(), config.tlsEnabled(), config.binaryGatewayPort());
         ScriptHandler scriptHandler = new ScriptHandler(scriptRunner, config.scriptsDir());
-        MessagesHandler messagesHandler = new MessagesHandler(fixEngine, blotterStore);
+        MessagesHandler messagesHandler = new MessagesHandler(gateways, blotterStore);
         ConfigHandler configHandler = new ConfigHandler(configPath);
         LogHandler logHandler = new LogHandler(logBuffer);
         LogoHandler logoHandler = new LogoHandler(config.logoPath());

@@ -345,7 +345,8 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
             release_pdu_payload(message);
             return;
         }
-        handle_order_cancel_request(view, message.seq_no(), envelope.wall_time_ns, envelope.has_gateway_session_conn_id ? envelope.gateway_session_conn_id : 0);
+        handle_order_cancel_request(view, message.seq_no(), envelope.wall_time_ns, envelope.has_gateway_session_conn_id ? envelope.gateway_session_conn_id : 0,
+                                    envelope.has_origin_gateway_id ? envelope.origin_gateway_id : gateway_ids::default_when_absent);
 
     } else if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport)) {
         // The ME is the source of ERs, not a consumer -- discard.
@@ -366,7 +367,7 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
     // orders from the failed primary; re-sending would duplicate them.
     if (ha_role_state_ == MeRole::Reconciling) {
         const int32_t recon_session_id = gateway_session_conn_id;
-        const OrderKey recon_key = OrderKey::make(recon_session_id, view.cl_ord_id);
+        const OrderKey recon_key = OrderKey::make(recon_session_id, origin_gateway_id, view.cl_ord_id);
         if (order_book_.count(recon_key)) {
             return; // duplicate during replay -- ignore
         }
@@ -395,7 +396,7 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
 
     const int64_t now_ns = sequenced_at_ns != 0 ? sequenced_at_ns : config_.wall_clock->now_ns();
     const int32_t session_id = gateway_session_conn_id;
-    const OrderKey order_key = OrderKey::make(session_id, view.cl_ord_id);
+    const OrderKey order_key = OrderKey::make(session_id, origin_gateway_id, view.cl_ord_id);
 
     // Stack-allocated ID buffers -- no heap allocation.
     std::array<char, 32> exec_id_buf{};
@@ -498,11 +499,11 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
 }
 
 void MatchingEngineThread::handle_order_cancel_request(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t sequence_number, int64_t sequenced_at_ns,
-                                                       int32_t gateway_session_conn_id) {
+                                                       int32_t gateway_session_conn_id, int16_t origin_gateway_id) {
     // RECONCILING (Slice D): apply the WAL catch-up OCR to the book but do NOT emit an ER.
     if (ha_role_state_ == MeRole::Reconciling) {
         const int32_t recon_session_id = gateway_session_conn_id;
-        const OrderKey recon_key = OrderKey::make(recon_session_id, view.orig_cl_ord_id);
+        const OrderKey recon_key = OrderKey::make(recon_session_id, origin_gateway_id, view.orig_cl_ord_id);
         order_book_.erase(recon_key);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MatchingEngineThread: RECONCILING apply OCR seq={} orig_cl_ord_id={} book_size={}",
                    sequence_number, view.orig_cl_ord_id, order_book_.size());
@@ -516,7 +517,7 @@ void MatchingEngineThread::handle_order_cancel_request(const pubsub_itc_fw_app::
 
     const int64_t now_ns = sequenced_at_ns != 0 ? sequenced_at_ns : config_.wall_clock->now_ns();
     const int32_t session_id = gateway_session_conn_id;
-    const OrderKey orig_key = OrderKey::make(session_id, view.orig_cl_ord_id);
+    const OrderKey orig_key = OrderKey::make(session_id, origin_gateway_id, view.orig_cl_ord_id);
 
     std::array<char, 32> exec_id_buf{};
     const std::string_view exec_id = format_id(exec_id_buf, "ME-EXEC-", 8, ++exec_id_counter_);
@@ -700,7 +701,8 @@ void MatchingEngineThread::apply_book_update(const pubsub_itc_fw::EventMessage& 
         return;
     }
 
-    const OrderKey key = OrderKey::make(view.session_id, view.cl_ord_id);
+    const OrderKey key =
+        OrderKey::make(view.session_id, view.has_origin_gateway_id ? view.origin_gateway_id : gateway_ids::default_when_absent, view.cl_ord_id);
     const auto update_type = static_cast<pubsub_itc_fw_app::BookUpdateType>(view.update_type);
 
     if (update_type == pubsub_itc_fw_app::BookUpdateType::Add) {

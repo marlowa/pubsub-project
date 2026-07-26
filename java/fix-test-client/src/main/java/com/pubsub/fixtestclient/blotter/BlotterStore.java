@@ -51,6 +51,22 @@ public class BlotterStore {
         rows.add(buildRow("IN", message));
     }
 
+    /**
+     * Appends a row built elsewhere.
+     *
+     * The FIX path builds rows here from QuickFIX messages; the binary path builds them from
+     * generated PDU structs, which this class has no business knowing about. A blotter row is
+     * a set of order fields rather than a FIX message, so both belong in the same table.
+     */
+    public void add(BlotterRow row) {
+        rows.add(row);
+    }
+
+    /** Claims the next row id, for callers that build their own rows. */
+    public long nextRowId() {
+        return nextId.getAndIncrement();
+    }
+
     public List<BlotterRow> rows() {
         return new ArrayList<>(rows);
     }

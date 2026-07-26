@@ -41,6 +41,8 @@ struct Options {
     std::string host{"127.0.0.1"};
     uint16_t port{9890};
     std::string comp_id{"BINCLIENT"};
+    std::string password{"stubpassword"};
+    std::string target_comp_id{"BINARY-GATEWAY"};
     std::string symbol{"AAPL"};
     int order_count{1};
 };
@@ -55,12 +57,17 @@ bool parse_options(int argc, char** argv, Options& options) {
             options.port = static_cast<uint16_t>(std::stoi(argv[++index]));
         } else if (argument == "--comp-id" && has_value) {
             options.comp_id = argv[++index];
+        } else if (argument == "--password" && has_value) {
+            options.password = argv[++index];
+        } else if (argument == "--target-comp-id" && has_value) {
+            options.target_comp_id = argv[++index];
         } else if (argument == "--symbol" && has_value) {
             options.symbol = argv[++index];
         } else if (argument == "--orders" && has_value) {
             options.order_count = std::stoi(argv[++index]);
         } else {
-            std::printf("usage: %s [--host H] [--port P] [--comp-id ID] [--symbol SYM] [--orders N]\n", argv[0]);
+            std::printf("usage: %s [--host H] [--port P] [--comp-id ID] [--password P]\n", argv[0]);
+            std::printf("          [--target-comp-id ID] [--symbol SYM] [--orders N]\n");
             return false;
         }
     }
@@ -187,6 +194,8 @@ int main(int argc, char** argv) {
 
     pubsub_itc_fw_app::Logon logon{};
     logon.comp_id = options.comp_id;
+    logon.password = options.password;
+    logon.target_comp_id = options.target_comp_id;
     if (!send_pdu(socket_fd, pubsub_itc_fw_app::Logon::message_pdu_id, logon)) {
         std::printf("failed to send Logon\n");
         ::close(socket_fd);

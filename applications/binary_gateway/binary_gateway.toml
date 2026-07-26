@@ -11,6 +11,20 @@ primary_port   = ${binary_gateway_sequencer_primary_port}
 secondary_host = "${binary_gateway_sequencer_secondary_host}"
 secondary_port = ${binary_gateway_sequencer_secondary_port}
 
+# Clients authenticate by SCRAM-SHA-256 against the same service the FIX gateway uses.
+[authentication_service]
+host           = "${binary_gateway_authentication_service_host}"
+port           = ${binary_gateway_authentication_service_port}
+secondary_host = "${binary_gateway_authentication_service_secondary_host}"
+secondary_port = ${binary_gateway_authentication_service_secondary_port}
+
+[binary_session]
+# Checked against each client's TargetCompID; a client naming a different venue is refused.
+sender_comp_id = "BINARY-GATEWAY"
+
+[timeouts]
+scram_auth_timeout = "10s"
+
 [logging]
 applog_level     = "info"
 syslog_level     = "critical"

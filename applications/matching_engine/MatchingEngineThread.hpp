@@ -26,6 +26,7 @@
 #include "FixOrderLimits.hpp"
 #include "GatewayIds.hpp"
 #include "MatchingEngineConfiguration.hpp"
+#include "OrderKey.hpp"
 
 namespace matching_engine {
 
@@ -84,44 +85,6 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     static constexpr size_t max_cl_ord_id_length = fix_order_limits::max_cl_ord_id_length;
     static constexpr size_t max_symbol_length = 16;
     static constexpr size_t max_qty_length = 24;
-
-    // Composite order book key: FIX session + ClOrdID.
-    // Fixed-size struct -- no heap allocation per lookup.
-    struct OrderKey {
-        int32_t session_id{};
-        uint8_t cl_ord_id_len{};
-        std::array<char, max_cl_ord_id_length> cl_ord_id{};
-
-        static OrderKey make(int32_t sid, std::string_view id) {
-            OrderKey k;
-            k.session_id = sid;
-            k.cl_ord_id_len = static_cast<uint8_t>(std::min(id.size(), max_cl_ord_id_length));
-            std::memcpy(k.cl_ord_id.data(), id.data(), k.cl_ord_id_len);
-            return k;
-        }
-
-        bool operator==(const OrderKey& other) const {
-            return session_id == other.session_id && cl_ord_id_len == other.cl_ord_id_len &&
-                   std::memcmp(cl_ord_id.data(), other.cl_ord_id.data(), cl_ord_id_len) == 0;
-        }
-    };
-
-    struct OrderKeyHash {
-        size_t operator()(const OrderKey& key) const {
-            // FNV-1a over session_id bytes then cl_ord_id bytes.
-            size_t h = 14695981039346656037ULL;
-            const auto* sid_bytes = reinterpret_cast<const uint8_t*>(&key.session_id);
-            for (size_t i = 0; i < sizeof(key.session_id); ++i) {
-                h ^= sid_bytes[i];
-                h *= 1099511628211ULL;
-            }
-            for (uint8_t i = 0; i < key.cl_ord_id_len; ++i) {
-                h ^= static_cast<uint8_t>(key.cl_ord_id[i]);
-                h *= 1099511628211ULL;
-            }
-            return h;
-        }
-    };
 
     // Live order stored in the order book from NOS acceptance until cancel.
     // All string fields stored as fixed-size char arrays -- no heap allocation.
@@ -183,7 +146,7 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     void handle_new_order_single(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t seq_no, int64_t sequenced_at_ns, int32_t gateway_session_conn_id,
                                  int16_t origin_gateway_id);
     void handle_order_cancel_request(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t seq_no, int64_t sequenced_at_ns,
-                                     int32_t gateway_session_conn_id);
+                                     int32_t gateway_session_conn_id, int16_t origin_gateway_id);
     // Reusable scratch buffer for encoding an ExecutionReport before wrapping it in a
     // WalRecord envelope (send_er_to_sequencer). Grown to the largest ER seen and
     // reused -- no fixed cap that could silently drop an ER, no per-ER allocation.

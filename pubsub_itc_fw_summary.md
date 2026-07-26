@@ -811,6 +811,168 @@ Doxygen mainpage
 
 14. ~~**fix-test-client scripting: idempotent ClOrdID and example script**~~ — DONE (2026-07-03). Added `uniqueId()` to `FixHelper`: returns `System.currentTimeMillis() + "-" + counter.getAndIncrement()` where `counter` is an `AtomicLong` that never resets, guaranteeing uniqueness across all script runs for the lifetime of the process. Updated `example.groovy` and `buys_sells_and_cancels.groovy` to use `fix.uniqueId()` for all ClOrdIDs. Both scripts are now safely re-runnable without generating duplicate IDs.
 
+## TODO — transport encryption on the binary gateway, and on the PDU paths generally (raised 2026-07-26)
+
+**Undecided. To be discussed with a security specialist before anything is built.**
+
+The binary gateway authenticates with SCRAM-SHA-256 but has **no TLS listener**, so a
+client's password crosses the client-to-gateway hop in clear text. SCRAM limits the damage --
+the password is never stored, never forwarded, and never leaves the gateway process -- but
+that is a property of the credential handling, not of the transport. The FIX gateway does
+offer TLS, so the two gateways are not equivalent on this point, and a venue offering one
+encrypted and one unencrypted front door would be hard to defend.
+
+The wider question is the more interesting one. The argument for encrypting the binary
+gateway is not only the password: **PDUs carry order flow**, and some venues would treat that
+as sensitive in its own right -- who is trading what, in what size, at what price, ahead of
+anyone else seeing it. On that reading the case for encryption does not stop at the client
+edge. It applies to the internal PDU paths too: gateway to sequencer, sequencer to matching
+engine, WAL replication between sequencer instances, and the topic streams external
+subscribers read. Those are all currently plain TCP.
+
+Points to settle:
+- Whether client-edge TLS on the binary gateway is required, optional, or configured per
+  deployment as the FIX gateway's is.
+- Whether the internal PDU hops need it, and if so whether that is a deployment concern
+  (trusted network segment, IPsec) or an application one.
+- What it costs. The framework's TLS path exists and is used by the FIX listener and the
+  admin channel, so the mechanism is not new -- but encryption on the hot path is exactly
+  the kind of thing the perf work in this document is measuring, and the two goals pull
+  against each other.
+
+## Measured: latency grows with sessions per gateway (2026-07-26)
+
+Five runs against the binary gateway with `perf_run.py`, all on the Mint dev box, plain
+loopback TCP, no kernel bypass. Directly relevant to the fairness question below, because it
+shows the problem arising *inside* a single gateway before any question of balancing across
+several.
+
+### Throughput ceiling
+
+Offering orders as fast as the socket accepts them (no `--rate`), 20 sessions, 200,000 full
+DD-derived orders including both repeating groups:
+
+| Run | Round-trip throughput |
+|-----|----------------------|
+| First | 73,860 orders/s |
+| Second | 57,930 orders/s |
+
+Two runs 16,000/s apart, so **treat the ceiling as "roughly 60-75k/s" rather than a figure**.
+Nothing changed between them that should have slowed the order path. Repeats are needed before
+quoting a number.
+
+Latency cannot be read from these runs: at 10-15 million orders/s offered into a pipeline
+draining at ~60-75k/s, everything queues, and the reported p50 of 2.7-3.4 **seconds** is queue
+depth. `binary_load_client` says so in its own output. Use `--rate` for latency.
+
+### Latency versus session count
+
+All three runs offered 10,000 orders/s and achieved ~9,990, all drained in 20ms after the last
+send, so throughput is identical and the only variable is the number of client sessions:
+
+| Sessions | min | p50 | p99 | p99.9 | max |
+|---------:|----:|----:|----:|------:|----:|
+| 4 | 92.8 us | **118.5 us** | 310 us | 1,214 us | 2,368 us |
+| 20 | 94.1 us | **356.1 us** | 650 us | 4,651 us | 14,229 us |
+| 40 | 96.5 us | **527.9 us** | 1,579 us | 6,799 us | 14,761 us |
+
+Two conclusions, and the first is what makes the second interesting:
+
+- **The pipeline itself is unaffected by session count.** The minimum is flat -- 92.8, 94.1,
+  96.5 us across a tenfold change in sessions. One order's round trip through gateway,
+  sequencer, matching engine and back costs the same however many sessions exist, which rules
+  out per-session state, lookup cost, or anything on the order path.
+- **Median latency grows with session count, sub-linearly.** 4 to 20 sessions (5x) costs 3.0x;
+  20 to 40 (2x) costs 1.48x. That fits roughly `sessions^0.7`. The tail is worse than the
+  median: p99 goes 310 to 650 to 1,579 us, the last step being 2.4x for 2x the sessions, so
+  tail latency degrades slightly *super*-linearly even as the median flattens.
+
+The cause is reactor-turn contention: one thread multiplexes every client socket, so an
+order's report waits behind other sockets' processing within the same epoll iteration. The
+profile agrees -- no hot function, work spread thin, around 75% of samples in the kernel. It is
+structural, not a hotspot to optimise away.
+
+**Load and session count compound.** Adding rate to the picture: 10,000/s with 4 sessions gives
+p50 119 us; 10,000/s with 20 sessions gives 356 us (3x from sessions); 50,000/s with 20 sessions
+-- about 70-86% of the ceiling -- gives 3,962 us, a further 11x from running near saturation.
+
+### Why this belongs next to the fairness TODO
+
+A member's latency depends on how many other members happen to share its gateway: 119 us median
+on a quiet gateway, 528 us on one carrying 40 sessions. That is a 4.4x disadvantage arising from
+nothing the member did or can control, which is the equitable-access problem in miniature. It
+suggests **capacity per gateway is part of the fairness design, not only the number of gateways
+or how orders are steered between them**. If sessions per gateway are to be capped to keep
+latency uniform, this is the data that says where the cap bites.
+
+### Caveats
+
+One run per data point, on a shared desktop rather than an isolated machine, and the throughput
+figures above show run-to-run variance of over 20%. The session-count trend is consistent across
+three points and the flat minimum is a strong internal control, but the absolute numbers should
+be re-measured before any of them is quoted as a result.
+
+## TODO — gateway availability, fairness and identity (raised 2026-07-26)
+
+Adding the binary gateway made the venue multi-gateway for the first time, and that has
+surfaced three questions the current design does not answer. None is a defect in what is
+built; all three need deciding before this could be called an exchange design.
+
+**1. The gateway is a single point of failure.** `docs/design/wal_and_ha.md` records the
+model as "N-way pooled redundancy": the gateway elects nothing and holds no WAL, so
+redundancy is meant to come from running several and letting clients reconnect. Only one is
+ever run. If its process or host dies, every member loses connectivity at once — unable to
+enter orders, and unable to manage the risk already on the book. A single reactor also puts
+a ceiling on inbound TCP, frame decode and dispatch that will be met under volatility.
+
+**2. Load balancing across gateways must preserve deterministic fairness.** The usual
+answers — round-robin, least-connections, random — are not available to an exchange. If one
+member's order is served in 50us on gateway 1 while an identical order queues 200us on
+gateway 2 through uneven balancing or an asymmetric network path, the venue has failed its
+duty of fair and equitable access. Participants detect that delta immediately via drop
+copies and market data, and the consequence is regulatory rather than technical. Any pooling
+scheme here has to be argued for on determinism, not throughput.
+
+**3. Pooled redundancy is weaker than the document claims, because ER routing changed.**
+`wal_and_ha.md` still says routing is on the FIX comp-id pair and "not on ConnectionID".
+The code routes on `gateway_session_conn_id`; `OrderGatewayThread` marks the comp-id lookup
+"legacy -- no longer used for ER routing". That change was right and must be kept: it fixed
+ClOrdID collisions between sessions sharing a comp id. But a connection id is gateway-local
+and unstable across reconnects, so a client reconnecting to a *different* pool member can no
+longer be handed its in-flight reports. Either the document records the trade-off, or
+pooled redundancy needs a comp-id-based path back alongside the connection-id one.
+
+**The intended answer: stateless front-end gateways behind the sequencer.** Rather than
+load-balancing orders across independent matching gateways, split the tiers: several
+redundant gateway processes accept member connections and do only session-layer work
+(protocol parse, validation, authentication), and every message they accept is funnelled
+into the one strictly-ordered sequencer. The sequencer stamps a monotonic sequence number at
+the moment the exchange accepts the message, and that number — not the arrival gateway —
+dictates processing order. Fairness then comes from a single ordering authority rather than
+from trying to balance load evenly, which is what makes it workable for a venue.
+
+**This system already has that shape**, which is the useful part: the gateways are already
+near-stateless and own no book state, the sequencer already assigns the monotonic number, and
+`origin_gateway_id` already lets any number of gateways funnel into it while their execution
+reports still find their way home. What is missing is only running more than one instance of
+a gateway, and the front-end fairness work below.
+
+Note what the sequencer does and does not settle. It makes *processing order* fair and
+deterministic however many gateways feed it. It does not equalise the time a message takes to
+*reach* it: two members on different gateway instances, or different network paths, can still
+see different latencies to the sequencing point. So Pattern A removes the ordering-fairness
+problem but leaves the access-latency one, which is what has to be argued about symmetric
+paths, pinned cores and per-gateway capacity rather than about sequencing.
+
+**Decided, not yet implemented: one comp id may be logged on only once, venue-wide.**
+Today each gateway checks for a duplicate comp id only among its own sessions, so the same
+identity can hold a session on the FIX gateway and the binary gateway simultaneously. This
+cannot be fixed inside a gateway: two processes cannot see each other's sessions. It needs a
+shared authority, and the sequencer is the natural one — it is arbiter-elected so there is
+exactly one leader, and both gateways already connect to it. That means a logon round trip
+through the sequencer and a new PDU pair, so it is a cross-component protocol change rather
+than a local edit.
+
 ## Immediate Next Task
 
 **Item 18 — Doxygen navigation layer (clickable architecture maps) is DONE (2026-07-05).**
@@ -1468,6 +1630,15 @@ These are normal for a TCP-over-loopback workload and cannot be reduced without 
 4. **Cache `FixSerialiser::current_utc_timestamp()` at second resolution** — eliminates 0.86 % strftime cost.
 5. **Batch `ReactorControlCommand` allocations** — reduces 5.34 % framework overhead; requires API change.
 6. **Switch to Unix domain sockets for intra-host connections** — bypasses kernel TCP entirely (39 % of samples); largest possible gain but highest effort.
+
+   **Do not pursue this.** (Decided 2026-07-26.) Performance studies here must stay
+   comparable with the work development environment, which is a VM with no kernel
+   bypass -- no onload, full networking. Removing kernel TCP would make the numbers
+   measure a system nobody runs. Both gateways currently spend around 70% of their
+   samples in the kernel (binary 68.3%, FIX 71.8%), and that is the floor, not a
+   defect: the remaining ~30% of userspace is the whole space in which gateway design
+   choices can move the number. Optimise within it, and read any gateway comparison
+   with that ceiling in mind.
 
 ---
 

@@ -277,8 +277,15 @@ WAL, not in the gateway. This makes the gateway near-stateless:
 - A FIX client reconnecting to a different gateway is naturally addressable; the new gateway
   registers `(CompA, CompB)` with the sequencer and the map updates.
 
-`ConnectionID` is not stable across reconnects; routing is on the FIX-level comp-id pair,
-not on `ConnectionID`.
+**Superseded.** ER routing is now on `gateway_session_conn_id` — the originating connection —
+carried on the `WalRecord` envelope, paired with `origin_gateway_id` to say which gateway that
+connection belongs to. The comp-id pair was dropped because two sessions sharing a comp id
+could reuse a ClOrdID and collide; a connection identifies exactly one session and cannot.
+
+The trade-off that buys is real and is not yet resolved: a connection id is gateway-local and
+does not survive a reconnect, so a client that reconnects to a *different* pool member cannot
+be handed reports still in flight for its old connection. The pooled-redundancy model above
+assumes it can. See the gateway TODO in `pubsub_itc_fw_summary.md`.
 
 ### Gateway↔Sequencer Connectivity
 

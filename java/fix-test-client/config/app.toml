@@ -11,6 +11,12 @@ target_comp_id       = "GATEWAY"
 trust_store_path     = "config/fix_gateway_trust.jks"
 trust_store_password = "pubsub_dev"
 
+# The venue's other front door. The client holds one session at a time; the logon page
+# chooses which gateway it goes to.
+[binary]
+gateway_host = "127.0.0.1"
+gateway_port = ${fix_test_client_binary_gateway_port}
+
 [capture]
 output_dir = "output"
 

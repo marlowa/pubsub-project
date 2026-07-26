@@ -18,6 +18,7 @@
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
 
+#include "CancelClOrdId.hpp"
 #include "FixCapture.hpp"
 #include "FixMessage.hpp"
 #include "FixSerialiser.hpp"
@@ -303,6 +304,10 @@ class OrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // Sessions waiting for their open orders to be cancelled.  Entries are appended
     // at disconnect time and consumed by the drain timer.
     std::deque<DeadSession> pending_cancel_sessions_;
+
+    // Cancels sent since this drain began, so the completion line can report the whole
+    // drain rather than whatever the final tick happened to do.
+    int64_t cancels_sent_this_drain_{0};
 
     // True while the cancel-drain one-shot timer is armed.  Prevents double-arming.
     bool cancel_drain_timer_active_{false};

@@ -34,3 +34,36 @@ install(FILES
         ${CMAKE_CURRENT_SOURCE_DIR}/matching_engine_secondary.toml
         DESTINATION etc/matching_engine
 )
+
+# ── Unit tests ────────────────────────────────────────────────────────────────
+# The order book key decides which orders are the same order, and got that wrong once
+# when a second gateway arrived. It is a plain value type, so it is worth testing on its
+# own rather than only through the running engine.
+add_executable(matching_engine_tests
+        tests/OrderKeyTest.cpp
+        tests/CancelClOrdIdTest.cpp
+)
+
+target_include_directories(matching_engine_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/../fix_common
+        ${FIX_DSL_INCLUDE_DIR}
+)
+
+target_link_libraries(matching_engine_tests PRIVATE
+        pubsub_itc_fw
+        GTest::gtest_main
+)
+
+add_dependencies(matching_engine_tests fix_orders_generated)
+
+include(GoogleTest)
+if(ENABLE_TSAN)
+    gtest_discover_tests(matching_engine_tests DISCOVERY_MODE PRE_TEST)
+else()
+    gtest_discover_tests(matching_engine_tests)
+endif()
+
+install(TARGETS matching_engine_tests
+        RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+)

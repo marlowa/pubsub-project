@@ -84,6 +84,97 @@
                 <version>3.2.5</version>
             </plugin>
 
+            <!--
+              Generate the binary gateway's protocol classes from the same DSL the C++ side
+              uses, so the client cannot drift from the wire format it talks to.
+
+              fix_orders.dsl is itself generated from the FIX data dictionary, and is
+              expanded here rather than read out of the CMake build tree: this build stays
+              self-contained and `mvn package` works without a prior C++ build. The message
+              list must match the one in the top-level CMakeLists.txt.
+            -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <!-- 3.1.0: last version compatible with Maven 3.5.x (RHEL8); 3.2.0+ requires Maven 3.6.3 -->
+                <version>3.1.0</version>
+                <executions>
+                    <execution>
+                        <id>generate-fix-orders-dsl</id>
+                        <phase>generate-sources</phase>
+                        <goals><goal>exec</goal></goals>
+                        <configuration>
+                            <executable>python3</executable>
+                            <arguments>
+                                <argument>${project.basedir}/../../python/tools/generate_dd_to_dsl.py</argument>
+                                <argument>--dd</argument>
+                                <argument>${project.basedir}/../../applications/fix_orders.dd.xml</argument>
+                                <argument>--message</argument>
+                                <argument>NewOrderSingle:1000</argument>
+                                <argument>--message</argument>
+                                <argument>OrderCancelRequest:1001</argument>
+                                <argument>--message</argument>
+                                <argument>ExecutionReport:1002</argument>
+                                <argument>--output</argument>
+                                <argument>${project.build.directory}/generated-sources/dsl-schema/fix_orders.dsl</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>generate-fix-orders-java</id>
+                        <phase>generate-sources</phase>
+                        <goals><goal>exec</goal></goals>
+                        <configuration>
+                            <executable>python3</executable>
+                            <arguments>
+                                <argument>${project.basedir}/../../python/tools/generate_cpp_from_dsl.py</argument>
+                                <argument>${project.build.directory}/generated-sources/dsl-schema/fix_orders.dsl</argument>
+                                <argument>--java</argument>
+                                <argument>${project.build.directory}/generated-sources/dsl/com/pubsub/fixtestclient/protocol/FixOrders.java</argument>
+                                <argument>--package</argument>
+                                <argument>com.pubsub.fixtestclient.protocol</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>generate-binary-session-java</id>
+                        <phase>generate-sources</phase>
+                        <goals><goal>exec</goal></goals>
+                        <configuration>
+                            <executable>python3</executable>
+                            <arguments>
+                                <argument>${project.basedir}/../../python/tools/generate_cpp_from_dsl.py</argument>
+                                <argument>${project.basedir}/../../applications/binary_session.dsl</argument>
+                                <argument>--java</argument>
+                                <argument>${project.build.directory}/generated-sources/dsl/com/pubsub/fixtestclient/protocol/BinarySession.java</argument>
+                                <argument>--package</argument>
+                                <argument>com.pubsub.fixtestclient.protocol</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- Register the generated sources directory -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>build-helper-maven-plugin</artifactId>
+                <!-- 3.4.0: last version compatible with Maven 3.5.x (RHEL8); 3.5.0+ requires Maven 3.6.3 -->
+                <version>3.4.0</version>
+                <executions>
+                    <execution>
+                        <id>add-generated-sources</id>
+                        <phase>generate-sources</phase>
+                        <goals><goal>add-source</goal></goals>
+                        <configuration>
+                            <sources>
+                                <source>${project.build.directory}/generated-sources/dsl</source>
+                            </sources>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
             <!-- Fat JAR for running standalone -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>

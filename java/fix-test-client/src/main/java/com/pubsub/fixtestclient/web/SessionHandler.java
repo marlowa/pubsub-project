@@ -2,6 +2,8 @@ package com.pubsub.fixtestclient.web;
 
 import com.pubsub.fixtestclient.fix.FixEngine;
 import com.pubsub.fixtestclient.fix.LogonMode;
+import com.pubsub.fixtestclient.gateway.GatewayKind;
+import com.pubsub.fixtestclient.gateway.GatewaySelector;
 import com.pubsub.fixtestclient.fix.SessionStatus;
 import io.javalin.http.Context;
 
@@ -16,16 +18,20 @@ public class SessionHandler {
     private static final DateTimeFormatter TIMESTAMP =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneOffset.UTC);
 
+    private final GatewaySelector gateways;
     private final FixEngine fixEngine;
     private final int plainPort;
     private final int tlsPort;
     private final int proprietaryPort;
     private final boolean tlsEnabled;
+    private final int binaryPort;
 
     private volatile LastSession lastSession;
 
-    public SessionHandler(FixEngine fixEngine, int plainPort, int tlsPort, int proprietaryPort, boolean tlsEnabled) {
-        this.fixEngine       = fixEngine;
+    public SessionHandler(GatewaySelector gateways, int plainPort, int tlsPort, int proprietaryPort, boolean tlsEnabled, int binaryPort) {
+        this.gateways        = gateways;
+        this.fixEngine       = gateways.fix();
+        this.binaryPort      = binaryPort;
         this.plainPort       = plainPort;
         this.tlsPort         = tlsPort;
         this.proprietaryPort = proprietaryPort;
@@ -33,12 +39,14 @@ public class SessionHandler {
     }
 
     public void getPorts(Context ctx) {
-        ctx.json(Map.of("plainPort", plainPort, "tlsPort", tlsPort, "proprietaryPort", proprietaryPort, "tlsEnabled", tlsEnabled));
+        ctx.json(Map.of("plainPort", plainPort, "tlsPort", tlsPort, "proprietaryPort", proprietaryPort,
+                        "tlsEnabled", tlsEnabled, "binaryPort", binaryPort));
     }
 
     public void getStatus(Context ctx) {
-        SessionStatus status = fixEngine.getStatus();
+        SessionStatus status = gateways.status();
         Map<String, Object> body = new java.util.LinkedHashMap<>();
+        body.put("gateway",           gateways.active().name().toLowerCase(java.util.Locale.ROOT));
         body.put("connected",         status.connected());
         body.put("loggingOn",         status.loggingOn());
         body.put("loggedOn",          status.loggedOn());
@@ -56,6 +64,17 @@ public class SessionHandler {
     }
 
     public void logon(Context ctx) {
+        GatewayKind requested = GatewayKind.fromFormValue(ctx.formParam("gateway"));
+        String switchError = gateways.setActive(requested);
+        if (!switchError.isEmpty()) {
+            ctx.status(400).json(Map.of("ok", false, "error", switchError));
+            return;
+        }
+        if (requested == GatewayKind.BINARY) {
+            logonBinary(ctx);
+            return;
+        }
+
         String senderCompId = ctx.formParam("senderCompId");
         String targetCompId = ctx.formParam("targetCompId");
         String password     = ctx.formParam("password");
@@ -92,8 +111,31 @@ public class SessionHandler {
         ctx.json(Map.of("ok", true));
     }
 
+    /**
+     * Logs on to the binary gateway, which needs only an identity.
+     *
+     * Comp id, password and target comp id. No TLS flag or sequence-number override: the
+     * binary gateway has no TLS listener and no session-layer sequence numbers, so offering
+     * those would imply capabilities that do not exist. Authentication it does have --
+     * SCRAM-SHA-256 against the same service the FIX gateway uses.
+     */
+    private void logonBinary(Context ctx) {
+        String compId = ctx.formParam("senderCompId");
+        String password = ctx.formParam("password");
+        if (password == null || password.isEmpty()) {
+            ctx.status(400).json(Map.of("ok", false, "error", "Password is required"));
+            return;
+        }
+        String error = gateways.binary().logon(compId, password, ctx.formParam("targetCompId"));
+        if (!error.isEmpty()) {
+            ctx.status(400).json(Map.of("ok", false, "error", error));
+            return;
+        }
+        ctx.json(Map.of("ok", true));
+    }
+
     public void logout(Context ctx) {
-        SessionStatus status = fixEngine.getStatus();
+        SessionStatus status = gateways.status();
         if (status.loggedOn() && status.logonTime() != null) {
             lastSession = new LastSession(
                     status.senderCompId(),
@@ -101,7 +143,11 @@ public class SessionHandler {
                     Instant.now()
             );
         }
-        fixEngine.logout();
+        if (gateways.isBinaryActive()) {
+            gateways.binary().logout();
+        } else {
+            fixEngine.logout();
+        }
         ctx.json(Map.of("ok", true));
     }
 

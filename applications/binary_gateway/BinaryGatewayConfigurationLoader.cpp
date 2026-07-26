@@ -102,6 +102,21 @@ BinaryGatewayConfigurationLoader::load_and_init_logging(const std::string& file_
     validate_positive(config.command_queue_pool_objects_per_slab, "command_queue_pool.objects_per_slab");
     validate_positive(config.command_queue_pool_initial_slabs, "command_queue_pool.initial_slabs");
 
+    toml.get_required_except("authentication_service.host", config.authentication_service_host);
+    int32_t authentication_service_port = 0;
+    toml.get_required_except("authentication_service.port", authentication_service_port);
+    validate_port(authentication_service_port, "authentication_service.port");
+    config.authentication_service_port = static_cast<uint16_t>(authentication_service_port);
+    if (config.ha_enabled) {
+        toml.get_required_except("authentication_service.secondary_host", config.authentication_service_secondary_host);
+        int32_t secondary = 0;
+        toml.get_required_except("authentication_service.secondary_port", secondary);
+        validate_port(secondary, "authentication_service.secondary_port");
+        config.authentication_service_secondary_port = static_cast<uint16_t>(secondary);
+    }
+    toml.get_required_except("binary_session.sender_comp_id", config.sender_comp_id);
+    toml.get_required_except("timeouts.scram_auth_timeout", config.scram_auth_timeout);
+
     toml.get_required_except("open_order_pool.objects_per_pool", config.open_order_pool_objects_per_pool);
     toml.get_required_except("open_order_pool.initial_pools", config.open_order_pool_initial_pools);
     validate_positive(config.open_order_pool_objects_per_pool, "open_order_pool.objects_per_pool");

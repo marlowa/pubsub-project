@@ -16,24 +16,27 @@
 #
 #  Sequence:
 #
-#    Client                                  Binary Gateway
-#       |                                          |
-#       |--- Logon --------------------------------->|  comp_id
-#       |<-- LogonAck -------------------------------|  outcome
+#    Client                        Binary Gateway            Auth Service
+#       |                                |                        |
+#       |--- Logon --------------------->|  comp_id + password     |
+#       |                                |--- SCRAM exchange ----->|
+#       |                                |<-- granted or refused --|
+#       |<-- LogonAck -------------------|  outcome
 #       |                                          |
 #       |--- NewOrderSingle ----------------------->|  (from fix_orders.dsl)
 #       |<-- ExecutionReport ------------------------|  (from fix_orders.dsl)
 #
 #  Deliberately absent, and why:
 #
-#    - No password or SCRAM exchange. The comp id establishes session identity
-#      for execution-report routing and for the audit trail, which is what the
-#      pipeline needs. Authenticating a second transport would re-tread ground
-#      the FIX gateway already covers against the authentication service, and
-#      teach us nothing new about the framework.
 #    - No heartbeats or sequence numbers. The framework's PDU transport already
 #      detects a dead connection, and every PDU is framed and ordered by it.
 #      FIX needs those because it must work over a bare byte stream.
+#
+#  Authentication is SCRAM-SHA-256, the same exchange the FIX gateway runs against
+#  the authentication service. The password in Logon never leaves the gateway
+#  process: it is used to derive a proof and then zeroed. An order-entry port that
+#  anyone reachable could trade through would not be worth demonstrating, whatever
+#  the transport.
 #
 #  ID range:
 #    700-709 reserved for the binary session protocol. 100-401 leader/follower,
@@ -59,10 +62,14 @@ framing {
 # ---------------------------------------------------------------------------
 
 enum LogonOutcome : i32 {
-    Accepted        = 0
-    MissingCompId   = 1
-    DuplicateCompId = 2
-    AlreadyLoggedOn = 3
+    Accepted            = 0
+    MissingCompId       = 1
+    DuplicateCompId     = 2
+    AlreadyLoggedOn     = 3
+    AuthenticationFailed = 4   # bad password, unknown user, locked account
+    AuthenticationTimeout = 5  # the authentication service did not answer in time
+    AuthenticationUnavailable = 6  # no authentication service connected
+    WrongTargetCompId    = 7   # the client is talking to a venue it did not mean to reach
 }
 
 # ---------------------------------------------------------------------------
@@ -73,7 +80,12 @@ enum LogonOutcome : i32 {
 # ---------------------------------------------------------------------------
 
 message Logon (id=700, version=1)
-    string comp_id    # the client's identity, as SenderCompID is in FIX
+    string comp_id         # the client's identity, as SenderCompID is in FIX
+    string password        # verified by SCRAM-SHA-256; never travels beyond the gateway
+    # The venue the client believes it is reaching. Checked against the gateway's own
+    # identity rather than merely recorded: a client that has connected somewhere it did
+    # not intend should be told so, not quietly traded. Leave it empty to skip the check.
+    string target_comp_id
 end
 
 # ---------------------------------------------------------------------------

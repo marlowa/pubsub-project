@@ -2,7 +2,9 @@ package com.pubsub.fixtestclient.web;
 
 import com.pubsub.fixtestclient.blotter.BlotterRow;
 import com.pubsub.fixtestclient.blotter.BlotterStore;
+import com.pubsub.fixtestclient.binary.BinaryOrderForm;
 import com.pubsub.fixtestclient.fix.FixEngine;
+import com.pubsub.fixtestclient.gateway.GatewaySelector;
 import io.javalin.http.Context;
 import quickfix.fix50sp2.NewOrderSingle;
 import quickfix.fix50sp2.OrderCancelRequest;
@@ -51,11 +53,13 @@ public class MessagesHandler {
     private static final DateTimeFormatter TIME_FORMAT =
             DateTimeFormatter.ofPattern("HH:mm:ss.SSSSSS").withZone(ZoneOffset.UTC);
 
+    private final GatewaySelector gateways;
     private final FixEngine fixEngine;
     private final BlotterStore blotterStore;
 
-    public MessagesHandler(FixEngine fixEngine, BlotterStore blotterStore) {
-        this.fixEngine = fixEngine;
+    public MessagesHandler(GatewaySelector gateways, BlotterStore blotterStore) {
+        this.gateways = gateways;
+        this.fixEngine = gateways.fix();
         this.blotterStore = blotterStore;
     }
 
@@ -75,6 +79,16 @@ public class MessagesHandler {
         }
         if (symbol == null || symbol.isBlank()) {
             ctx.status(400).json(Map.of("error", "Symbol is required"));
+            return;
+        }
+
+        if (gateways.isBinaryActive()) {
+            String error = gateways.binary().sendNewOrderSingle(BinaryOrderForm.buildOrder(ctx, clOrdId.trim()));
+            if (!error.isEmpty()) {
+                ctx.status(400).json(Map.of("error", error));
+                return;
+            }
+            ctx.json(Map.of("ok", true, "clOrdId", clOrdId.trim()));
             return;
         }
 
@@ -228,8 +242,20 @@ public class MessagesHandler {
             return;
         }
 
+        String cancelClOrdId = "CXL-" + origClOrdId.trim() + "-" + System.currentTimeMillis();
+
+        if (gateways.isBinaryActive()) {
+            String error = gateways.binary().sendOrderCancelRequest(BinaryOrderForm.buildCancel(ctx, cancelClOrdId));
+            if (!error.isEmpty()) {
+                ctx.status(400).json(Map.of("error", error));
+                return;
+            }
+            ctx.json(Map.of("ok", true, "clOrdId", cancelClOrdId));
+            return;
+        }
+
         try {
-            String clOrdId = "CXL-" + origClOrdId.trim() + "-" + System.currentTimeMillis();
+            String clOrdId = cancelClOrdId;
             OrderCancelRequest ocr = new OrderCancelRequest();
             ocr.set(new ClOrdID(clOrdId));
             ocr.set(new OrigClOrdID(origClOrdId.trim()));
@@ -249,6 +275,11 @@ public class MessagesHandler {
     }
 
     public void sendRaw(Context ctx) {
+        if (gateways.isBinaryActive()) {
+            ctx.status(400).json(Map.of("error",
+                    "Raw entry is FIX text; the binary gateway takes encoded PDUs. Log on to the FIX gateway to use it."));
+            return;
+        }
         String raw = ctx.formParam("raw");
         if (raw == null || raw.isBlank()) {
             ctx.status(400).json(Map.of("error", "FIX string is required"));

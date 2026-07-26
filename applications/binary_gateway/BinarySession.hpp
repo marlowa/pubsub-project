@@ -3,9 +3,12 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <cstdint> // IWYU pragma: keep
 #include <string>
+#include <vector>
 
 #include <pubsub_itc_fw/ConnectionID.hpp>
+#include <pubsub_itc_fw/TimerID.hpp>
 
 #include "OpenOrderEntry.hpp"
 
@@ -28,13 +31,36 @@ struct BinarySession {
     std::string comp_id;
 
     /**
-     * @brief Whether Logon has been accepted.
+     * @brief Whether Logon has been accepted and authentication has succeeded.
      *
-     * A connection exists before its client has identified itself. Orders arriving in
-     * that window are refused rather than forwarded, so that every order in the
-     * pipeline carries a comp id.
+     * A connection exists before its client has identified itself, and identifying itself
+     * is not enough -- the SCRAM exchange has to complete first. Orders arriving before
+     * then are refused, so nothing reaches the book from an unauthenticated session.
      */
     bool logged_on{false};
+
+    /** @brief True between sending the AuthenticationRequest and the result arriving. */
+    bool auth_pending{false};
+
+    /** @brief The venue the client named in its Logon, retained for audit. */
+    std::string target_comp_id;
+
+    /** @brief Random nonce this session contributed to the SCRAM exchange. */
+    std::vector<uint8_t> scram_client_nonce;
+
+    /** @brief ServerSignature this session expects back, to authenticate the server in turn. */
+    std::vector<uint8_t> scram_expected_server_signature;
+
+    /**
+     * @brief The password from Logon, held only until the SCRAM proof is derived.
+     *
+     * Zeroed and released the moment the derivation is done, so a session that is merely
+     * open is not also a place a password is sitting in memory.
+     */
+    std::string client_password;
+
+    /** @brief Fires if the authentication service does not answer, so a logon cannot hang. */
+    pubsub_itc_fw::TimerID scram_auth_timeout_timer_id{};
 
     /**
      * @brief Orders this session has resting on the book, keyed by ClOrdID.

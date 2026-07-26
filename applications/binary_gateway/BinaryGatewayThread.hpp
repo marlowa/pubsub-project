@@ -21,12 +21,19 @@
 #include <pubsub_itc_fw/Reactor.hpp>
 #include <pubsub_itc_fw/TimerID.hpp>
 
+// authentication.hpp must be included before the others because only it defines BytesView
+// inside the PUBSUB_ITC_FW_APP_DSL_SHARED_HELPERS guard block.
+#include <authentication.hpp>
+
 #include <binary_session.hpp>
 #include <fix_orders.hpp>
 #include <leader_follower.hpp>
 
+#include <scram_crypto/ScramCrypto.hpp> // IWYU pragma: keep
+
 #include "BinaryGatewayConfiguration.hpp"
 #include "BinarySession.hpp"
+#include "CancelClOrdId.hpp"
 #include "GatewayIds.hpp"
 
 namespace binary_gateway {
@@ -62,6 +69,24 @@ class BinaryGatewayThread : public pubsub_itc_fw::ApplicationThread {
 
   private:
     void handle_logon(BinarySession& session, const pubsub_itc_fw::EventMessage& message);
+
+    /**
+     * @brief Starts the SCRAM-SHA-256 exchange for a session that has sent a valid Logon.
+     *
+     * The same exchange the FIX gateway runs, against the same service: a fresh client
+     * nonce goes out with the comp id, and the session waits. The password is not sent --
+     * only a proof derived from it, once the challenge comes back.
+     */
+    void begin_scram_authentication(BinarySession& session);
+
+    void handle_authentication_challenge(const pubsub_itc_fw::EventMessage& message);
+    void handle_authentication_result(const pubsub_itc_fw::EventMessage& message);
+
+    /** @brief Refuses a logon, sends the reason, and closes the connection. */
+    void refuse_logon(BinarySession& session, pubsub_itc_fw_app::LogonOutcome outcome, std::string_view text);
+
+    /** @brief Returns the session with the given connection id value, or nullptr. */
+    BinarySession* find_session_by_conn_id(int32_t conn_id_value);
     void handle_new_order_single(BinarySession& session, const pubsub_itc_fw::EventMessage& message);
     void handle_order_cancel_request(BinarySession& session, const pubsub_itc_fw::EventMessage& message);
     void handle_execution_report(const pubsub_itc_fw::EventMessage& message);
@@ -128,6 +153,8 @@ class BinaryGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // against a known session rather than an absent one.
     std::unordered_map<int32_t, BinarySession> sessions_;
 
+    pubsub_itc_fw::ConnectionID auth_service_primary_conn_id_{};
+    pubsub_itc_fw::ConnectionID auth_service_secondary_conn_id_{};
     pubsub_itc_fw::ConnectionID sequencer_primary_conn_id_{};
     pubsub_itc_fw::ConnectionID sequencer_secondary_conn_id_{};
 
@@ -157,6 +184,10 @@ class BinaryGatewayThread : public pubsub_itc_fw::ApplicationThread {
     };
 
     std::deque<DeadSession> pending_cancel_sessions_;
+
+    // Cancels sent since this drain began, so the completion line can report the whole
+    // drain rather than whatever the final tick happened to do.
+    int64_t cancels_sent_this_drain_{0};
 
     // True while the cancel-drain one-shot timer is armed, so it is not double-armed.
     bool cancel_drain_timer_active_{false};

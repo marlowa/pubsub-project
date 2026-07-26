@@ -16,10 +16,10 @@ namespace binary_gateway {
  * @brief Configuration for the binary gateway application.
  *
  * The binary gateway is the order gateway's peer: same sequencers, same matching
- * engine, same book -- a different client protocol. Its configuration is
- * correspondingly smaller. There is no TLS certificate pair for a FIX listener, no
- * FIX session identity, and no authentication service, because its clients speak
- * framed PDUs and identify themselves with a single Logon PDU.
+ * engine, same book, same authentication service -- a different client protocol. Its
+ * configuration is correspondingly smaller: no TLS certificate pair for a FIX listener
+ * and no FIX session identity, because its clients speak framed PDUs. What it does
+ * share is the credential check, since an order-entry port is an order-entry port.
  */
 struct BinaryGatewayConfiguration {
     // Inbound client listener
@@ -60,6 +60,36 @@ struct BinaryGatewayConfiguration {
 
     /** @brief TCP port on which the gateway listens for ER PDUs from the sequencer. */
     uint16_t er_listen_port{7110};
+
+    // Authentication service
+    //
+    // Clients authenticate by SCRAM-SHA-256 exactly as they do on the FIX gateway, so this
+    // gateway dials the same service. An order-entry port that anyone reachable could trade
+    // through is not worth demonstrating, whatever the transport carrying the orders.
+
+    /** @brief Host address of the primary authentication service. */
+    std::string authentication_service_host{"127.0.0.1"};
+
+    /** @brief TCP port of the primary authentication service. */
+    uint16_t authentication_service_port{7070};
+
+    /** @brief Host of the secondary authentication service. Only used when ha_enabled. */
+    std::string authentication_service_secondary_host{"127.0.0.1"};
+
+    /** @brief Port of the secondary authentication service. Only used when ha_enabled. */
+    uint16_t authentication_service_secondary_port{7071};
+
+    /**
+     * @brief This gateway's own identity, checked against a client's TargetCompID.
+     *
+     * A client that names a different venue is refused, so connecting to the wrong
+     * endpoint is a logon failure with a reason rather than orders going somewhere
+     * unintended.
+     */
+    std::string sender_comp_id{"BINARY-GATEWAY"};
+
+    /** @brief How long a SCRAM exchange may take before the logon is abandoned. */
+    std::chrono::seconds scram_auth_timeout{10};
 
     /** @brief Minimum severity written to the application log file. */
     pubsub_itc_fw::FwLogLevel applog_level{pubsub_itc_fw::FwLogLevel::Info};

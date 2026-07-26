@@ -78,12 +78,27 @@ ORDER_TIMEOUT = 1800.0    # order/ER completion for a burst through slowed compo
 CALLGRIND_FLUSH_TIMEOUT = 600.0  # seconds to wait for clean exit + profile dump
 
 # Processes to profile; set to None to profile all launched processes.
-CALLGRIND_TARGETS = {"order_gateway", "matching_engine_primary"}
+# Which processes are profiled is decided per run from --gateway, since callgrind slows its
+# target by one to two orders of magnitude and profiling the idle gateway would cost the run
+# dearly for nothing. See callgrind_targets in main().
+
+# The binary gateway's client listener, and the burst size both load tools use, so --burst
+# means the same thing whichever gateway is under the profiler.
+BINARY_GATEWAY_HOST = "127.0.0.1"
+BINARY_GATEWAY_PORT = 9890
+ORDERS_PER_BURST    = 1000
+
+# The binary gateway authenticates with SCRAM, so its load client needs credentials of its
+# own; the load client gives every session a distinct comp id because the gateway refuses a
+# duplicate, so a run needs one credential per session.
+BINARY_LOAD_COMP_ID_PREFIX = "LOADCLIENT"
+BINARY_LOAD_PASSWORD       = "loadclientpassword"
 
 # ── readiness markers (all substrings must appear together on one log line) ────
 _SEQ_LEADER_MARKERS     = ("SequencerThread: role transition", "-> leader")
 _ARB_ACTIVE_MARKERS     = ("ArbiterThread: role transition", "-> leader")
 _GW_OPERATIONAL_MARKERS = ("OrderGatewayThread", "operational state")
+_BINARY_GW_OPERATIONAL_MARKERS = ("BinaryGatewayThread", "operational state")
 _GW_LOGON_OK            = "authentication succeeded -- FIX session established"
 # The gateway logs one of these per ER it discards because the target client
 # session already disconnected. Such ERs are "accounted for" but never delivered.
@@ -104,12 +119,7 @@ def die(msg: str) -> None:
     sys.exit(1)
 
 
-def ensure_fix8_credentials(creds_file: Path, comp_id: str, password: str,
-                             logon_mode: str) -> None:
-    if logon_mode == "proprietary":
-        log(f"  proprietary logon mode -- skipping SCRAM credential rewrite for '{comp_id}'")
-        return
-
+def write_scram_credential(creds_file: Path, comp_id: str, password: str) -> None:
     salt = secrets.token_bytes(16)
     pwd_bytes = password.encode("utf-8")
     salted = hashlib.pbkdf2_hmac("sha256", pwd_bytes, salt, 4096)
@@ -135,6 +145,30 @@ def ensure_fix8_credentials(creds_file: Path, comp_id: str, password: str,
     result = header + "".join(f"[[credential]]{b}" for b in kept) + new_block
     creds_file.write_text(result)
     log(f"  SCRAM credential for '{comp_id}' (password={password!r}) written to {creds_file.name}")
+
+
+
+def ensure_fix8_credentials(creds_file: Path, comp_id: str, password: str,
+                            logon_mode: str) -> None:
+    """Provision the credential f8test authenticates with, unless proprietary logon is used."""
+    if logon_mode == "proprietary":
+        log(f"  proprietary logon mode -- skipping SCRAM credential rewrite for '{comp_id}'")
+        return
+    write_scram_credential(creds_file, comp_id, password)
+
+
+def binary_load_comp_ids(clients: int) -> list[str]:
+    """The comp ids binary_load_client uses -- must mirror its own naming exactly."""
+    if clients == 1:
+        return [BINARY_LOAD_COMP_ID_PREFIX]
+    return [f"{BINARY_LOAD_COMP_ID_PREFIX}-{index + 1}" for index in range(clients)]
+
+
+def ensure_binary_load_credentials(creds_file: Path, clients: int) -> None:
+    """Provision a credential for every comp id binary_load_client will log on with."""
+    for comp_id in binary_load_comp_ids(clients):
+        write_scram_credential(creds_file, comp_id, BINARY_LOAD_PASSWORD)
+    log(f"  {clients} SCRAM credential(s) written for the binary load client")
 
 
 def set_fix_capture_enabled(config_path: Path, enabled: bool) -> None:
@@ -414,7 +448,7 @@ def count_marker(log_path: Path, marker: str) -> int:
         return sum(1 for line in fh if marker in line)
 
 
-def wait_for_system_ready(seq_log: Path, arb_log: Path, gw_log: Path) -> None:
+def wait_for_system_ready(seq_log: Path, arb_log: Path, gw_log: Path, gw_markers: tuple) -> None:
     """Block until the HA system has elected leaders and the gateway is up.
 
     Uses log polling, which self-adjusts to callgrind's slowdown, instead of a
@@ -434,11 +468,11 @@ def wait_for_system_ready(seq_log: Path, arb_log: Path, gw_log: Path) -> None:
 
     # The gateway is profiled under callgrind, so reaching operational (listeners
     # up) is the slow step -- polling waits exactly as long as it takes.
-    found, secs = poll_log_for(gw_log, *_GW_OPERATIONAL_MARKERS, timeout=READY_TIMEOUT)
+    found, secs = poll_log_for(gw_log, *gw_markers, timeout=READY_TIMEOUT)
     if not found:
-        die(f"order_gateway did not reach operational within {READY_TIMEOUT:.0f}s "
+        die(f"the gateway did not reach operational within {READY_TIMEOUT:.0f}s "
             f"(profiled under callgrind -- consider raising READY_TIMEOUT)")
-    log(f"  order_gateway: operational ({secs:.1f}s)")
+    log(f"  gateway: operational ({secs:.1f}s)")
 
 
 def wait_for_fix_logons(gw_log: Path, sessions: int, timeout: float,
@@ -530,6 +564,58 @@ def generate_reports(app_names: list[str], callgrind_dir: Path) -> None:
     log(f"Combined text report : {report_path}")
 
 
+def run_binary_load_session(bin_dir: Path, output_dir: Path, burst: int, clients: int, rate: int) -> None:
+    """Drive the binary gateway with binary_load_client, the counterpart of f8test.
+
+    Simpler than the fix8 path because the client owns both ends: it knows exactly how many
+    orders it sent and how many reports came back, so completion is the process exiting
+    rather than a log-line count reaching a total.
+
+    Under callgrind everything runs one to two orders of magnitude slower, so the client's
+    own timeout would fire long before the run finished. It is given the whole remaining
+    budget instead, and its own stall detection is what catches a genuinely wedged pipeline.
+    """
+    total_orders = clients * burst * ORDERS_PER_BURST
+    log(f"=== Starting binary_load_client, {clients} session(s), {burst} burst(s) each "
+        f"({total_orders} orders total) ===")
+
+    command = [
+        str(bin_dir / "binary_load_client"),
+        "--host", BINARY_GATEWAY_HOST,
+        "--port", str(BINARY_GATEWAY_PORT),
+        "--comp-id-prefix", BINARY_LOAD_COMP_ID_PREFIX,
+        "--password", BINARY_LOAD_PASSWORD,
+        "--sessions", str(clients),
+        "--orders-per-burst", str(ORDERS_PER_BURST),
+        "--bursts", str(burst),
+    ]
+    if rate > 0:
+        command += ["--rate", str(rate)]
+        log(f"  rate limited to {rate} orders/s per session")
+    else:
+        log("  no rate limit; under callgrind the profiler is the constraint anyway")
+
+    try:
+        result = subprocess.run(command, timeout=ORDER_TIMEOUT, check=False,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    except subprocess.TimeoutExpired:
+        die(f"binary_load_client did not finish within {ORDER_TIMEOUT:.0f}s")
+
+    # Echo it and keep a copy. The client's throughput and latency figures are the whole
+    # point of the run, and they used to exist only on the console -- so a run whose output
+    # was not teed left its perf artefacts behind but none of its measurements.
+    summary_file = output_dir / "binary_load_client.txt"
+    summary_file.write_text(result.stdout or "")
+    for line in (result.stdout or "").splitlines():
+        log(f"  {line}")
+    log(f"  load client output saved to {summary_file}")
+
+    if result.returncode != 0:
+        die(f"binary_load_client reported failure (exit {result.returncode}) -- "
+            f"not every order was acknowledged")
+    log("  binary_load_client completed: every order acknowledged")
+
+
 def run_fix8_session(me_log: Path, gw_log: Path, burst: int, clients: int) -> None:
     total_orders = clients * burst * 1000
     log(f"=== Starting {clients} fix8 client(s), {burst} T burst(s) each "
@@ -596,6 +682,13 @@ def main() -> None:
                         help="Number of concurrent fix8 sessions. Default: 1")
     parser.add_argument("--capture", action="store_true", default=False,
                         help="Enable FIX capture (writes all wire bytes to fix_capture.bin).")
+    parser.add_argument("--gateway", choices=["fix", "binary"], default="fix",
+                        help="Which gateway to load and profile.  'fix' (default): the ASCII "
+                             "FIX gateway via fix8's f8test.  'binary': the binary gateway via "
+                             "binary_load_client.  Both send the same orders into the same book.")
+    parser.add_argument("--rate", type=int, default=0, metavar="N",
+                        help="Orders per second per session (binary gateway only).  Rarely "
+                             "needed here: under callgrind the profiler is the constraint.")
     parser.add_argument("--logon-mode", choices=["scram", "proprietary"], default="scram",
                         help="Authentication mode for fix8 clients.")
     parser.add_argument("--slowdown-factor", type=int, default=50, metavar="N",
@@ -609,6 +702,10 @@ def main() -> None:
         parser.error("--clients must be >= 1")
     if args.slowdown_factor < 1:
         parser.error("--slowdown-factor must be >= 1")
+    if args.rate and args.gateway != "binary":
+        parser.error("--rate applies only to --gateway binary; f8test has no rate control")
+    if args.capture and args.gateway != "fix":
+        parser.error("--capture is FIX wire capture and applies only to --gateway fix")
 
     script_dir = Path(__file__).resolve().parent
     prefix     = resolve_prefix(str(script_dir / args.prefix)
@@ -652,9 +749,11 @@ def main() -> None:
     log("=== callgrind_run ===")
     log(f"  install prefix : {prefix}")
     log(f"  callgrind output: {callgrind_dir}")
-    targets_desc = ", ".join(sorted(CALLGRIND_TARGETS)) if CALLGRIND_TARGETS is not None else "all"
+    targets_desc = ("matching_engine_primary, "
+                    + ("binary_gateway" if args.gateway == "binary" else "order_gateway"))
     log(f"  valgrind tool  : callgrind")
     log(f"  callgrind targets: {targets_desc}")
+    log(f"  gateway        : {args.gateway}")
     log(f"  clients        : {args.clients}")
     log(f"  burst          : {args.burst}  ({args.clients * args.burst * 1000} orders total)")
     log(f"  FIX capture    : {'enabled' if args.capture else 'disabled'}")
@@ -676,7 +775,10 @@ def main() -> None:
     if result.returncode != 0:
         die(f"export_credentials.py failed:\n{result.stderr.strip()}")
     log("  credentials exported")
-    ensure_fix8_credentials(creds_file, FIX8_COMP_ID, FIX8_PASSWORD, args.logon_mode)
+    if args.gateway == "binary":
+        ensure_binary_load_credentials(creds_file, args.clients)
+    else:
+        ensure_fix8_credentials(creds_file, FIX8_COMP_ID, FIX8_PASSWORD, args.logon_mode)
 
     steps = [
         ("auth_service_a",   "authentication_service", etc_dir / "authentication_service" / "authentication_service_a.toml",  etc_dir / "authentication_service"),
@@ -689,7 +791,20 @@ def main() -> None:
         ("sequencer_primary",      "sequencer",              etc_dir / "sequencer"              / "sequencer_primary.toml",      None),
         ("sequencer_secondary",    "sequencer",              etc_dir / "sequencer"              / "sequencer_secondary.toml",    None),
         ("order_gateway",          "order_gateway",          etc_dir / "order_gateway"          / "order_gateway.toml",          etc_dir / "order_gateway"),
+        ("binary_gateway",         "binary_gateway",         etc_dir / "binary_gateway"         / "binary_gateway.toml",         etc_dir / "binary_gateway"),
     ]
+
+    # Both gateways run whichever is under the profiler, so the process set is the same in
+    # either run and the two are comparable. Only the one under test is profiled: callgrind
+    # slows its target by one to two orders of magnitude, so profiling the idle one would
+    # cost the run dearly for nothing.
+    callgrind_targets = {"matching_engine_primary"}
+    callgrind_targets.add("binary_gateway" if args.gateway == "binary" else "order_gateway")
+
+    # Readiness is judged on whichever gateway is under the profiler: it is the slow one to
+    # come up, and the unprofiled one says nothing about the run being ready.
+    gw_ready_log = log_dir / ("binary_gateway.log" if args.gateway == "binary" else "order_gateway.log")
+    gw_ready_markers = _BINARY_GW_OPERATIONAL_MARKERS if args.gateway == "binary" else _GW_OPERATIONAL_MARKERS
 
     app_procs: list[tuple[str, subprocess.Popen]] = []
 
@@ -701,8 +816,7 @@ def main() -> None:
         shutdown_processes(app_procs)
         # Only the profiled processes produce callgrind output; reporting the
         # unprofiled ones would just emit "no data" noise.
-        profiled = [n for n, _ in app_procs
-                    if CALLGRIND_TARGETS is None or n in CALLGRIND_TARGETS]
+        profiled = [n for n, _ in app_procs if n in callgrind_targets]
         if profiled:
             generate_reports(profiled, callgrind_dir)
 
@@ -717,7 +831,7 @@ def main() -> None:
             log("FIX capture enabled in order_gateway config")
 
         for name, bin_name, config, workdir in steps:
-            if CALLGRIND_TARGETS is None or name in CALLGRIND_TARGETS:
+            if name in callgrind_targets:
                 proc = launch_app_under_callgrind(
                     name, bin_name, config, bin_dir, log_dir, callgrind_dir, workdir
                 )
@@ -743,9 +857,12 @@ def main() -> None:
                 die(f"{name} (PID {proc.pid}) died during startup "
                     f"(exit code {proc.returncode})")
 
-        wait_for_system_ready(seq_log, arb_log, gw_log)
+        wait_for_system_ready(seq_log, arb_log, gw_ready_log, gw_ready_markers)
 
-        run_fix8_session(me_log, gw_log, args.burst, args.clients)
+        if args.gateway == "binary":
+            run_binary_load_session(bin_dir, callgrind_dir, args.burst, args.clients, args.rate)
+        else:
+            run_fix8_session(me_log, gw_log, args.burst, args.clients)
 
         log(f"Waiting {POST_ORDER_WAIT:.0f}s for pipeline to drain ...")
         time.sleep(POST_ORDER_WAIT)

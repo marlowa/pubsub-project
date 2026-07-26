@@ -53,7 +53,8 @@ STARTUP_DELAY   = 1.0    # seconds between app launches
 SETTLE_TIME     = 3.0    # seconds after last app before attaching perf
 FIX8_LOGON_WAIT = 3.0    # seconds for fix8 to establish the FIX session
 ORDER_TIMEOUT   = 180.0  # seconds to wait for ord1000 in the ME log
-POST_ORDER_WAIT = 2.0    # seconds after last order before SIGTERM
+POST_ORDER_WAIT = 15.0   # seconds after last order before SIGTERM; long enough for
+                         # the cancel-on-disconnect drain of a large book to finish
 CALLGRAPH        = "dwarf" # dwarf unwinds across the user/kernel boundary; resolves the
                            # otherwise-anonymous kernel stacks that dominate the gateway profile.
                            # fp would suffice for pure-userspace profiling but loses the call
@@ -65,6 +66,17 @@ FREQ             = 99      # perf sample frequency (Hz)
 # Profiling arbiters, the witness, and both sequencers with DWARF is expensive
 # and rarely useful; the hot path is gateway and ME.
 PERF_TARGETS     = {"order_gateway", "matching_engine_primary"}
+
+# The binary gateway's client listener, and the burst size both load tools use.
+# 1000 is fix8's "T" command, so --burst means the same thing for either gateway.
+BINARY_GATEWAY_HOST = "127.0.0.1"
+BINARY_GATEWAY_PORT = 9890
+ORDERS_PER_BURST    = 1000
+
+# The binary gateway authenticates with SCRAM, so the load client needs credentials.
+# These are provisioned into credentials.toml at the start of each run.
+BINARY_LOAD_COMP_ID_PREFIX = "LOADCLIENT"
+BINARY_LOAD_PASSWORD       = "loadclientpassword"
 SHUTDOWN_TIMEOUT = 5.0   # seconds to wait for each app to exit after SIGTERM
 MAX_ORDER_TIMEOUT = 120.0  # hard cap on order/ER completion wait (2 minutes)
 
@@ -88,18 +100,12 @@ def die(msg: str) -> None:
     sys.exit(1)
 
 
-def ensure_fix8_credentials(creds_file: Path, comp_id: str, password: str,
-                             logon_mode: str) -> None:
+def write_scram_credential(creds_file: Path, comp_id: str, password: str) -> None:
     """Rewrite the SCRAM credential for comp_id in credentials.toml.
 
-    Called after export_credentials.py so the perf test always authenticates
-    successfully regardless of what the database holds for the fix8 comp_id.
-    Skipped when logon_mode == 'proprietary' (no SCRAM involved).
+    Called after export_credentials.py so a perf run always authenticates successfully
+    regardless of what the database holds for the comp ids the load tools use.
     """
-    if logon_mode == "proprietary":
-        log(f"  proprietary logon mode -- skipping SCRAM credential rewrite for '{comp_id}'")
-        return
-
     salt = secrets.token_bytes(16)
     pwd_bytes = password.encode("utf-8")
     salted = hashlib.pbkdf2_hmac("sha256", pwd_bytes, salt, 4096)
@@ -126,6 +132,42 @@ def ensure_fix8_credentials(creds_file: Path, comp_id: str, password: str,
     result = header + "".join(f"[[credential]]{b}" for b in kept) + new_block
     creds_file.write_text(result)
     log(f"  SCRAM credential for '{comp_id}' (password={password!r}) written to {creds_file.name}")
+
+
+def ensure_fix8_credentials(creds_file: Path, comp_id: str, password: str,
+                            logon_mode: str) -> None:
+    """Provision the credential f8test authenticates with.
+
+    Skipped when logon_mode == 'proprietary' (no SCRAM involved).
+    """
+    if logon_mode == "proprietary":
+        log(f"  proprietary logon mode -- skipping SCRAM credential rewrite for '{comp_id}'")
+        return
+    write_scram_credential(creds_file, comp_id, password)
+
+
+def ensure_binary_load_credentials(creds_file: Path, clients: int) -> None:
+    """Provision a credential for each comp id binary_load_client will log on with.
+
+    The binary gateway authenticates every session, and the load client gives each of its
+    sessions a distinct comp id because the gateway refuses a duplicate. So a run needs one
+    credential per session, not the single one f8test needs, and the names have to match
+    exactly what the client derives from its prefix.
+    """
+    for comp_id in binary_load_comp_ids(clients):
+        write_scram_credential(creds_file, comp_id, BINARY_LOAD_PASSWORD)
+    log(f"  {clients} SCRAM credential(s) written for the binary load client")
+
+
+def binary_load_comp_ids(clients: int) -> list[str]:
+    """The comp ids binary_load_client uses -- must mirror its own naming exactly.
+
+    A single session keeps the bare prefix; more than one appends an index. Getting this
+    wrong provisions credentials nobody asks for and refuses the logons that do arrive.
+    """
+    if clients == 1:
+        return [BINARY_LOAD_COMP_ID_PREFIX]
+    return [f"{BINARY_LOAD_COMP_ID_PREFIX}-{index + 1}" for index in range(clients)]
 
 
 def set_fix_capture_enabled(config_path: Path, enabled: bool) -> None:
@@ -457,6 +499,63 @@ def generate_reports(app_names: list[str], perf_dir: Path) -> None:
     log(f"Per-process SVGs     : {perf_dir}/*.svg")
 
 
+def run_binary_load_session(bin_dir: Path, output_dir: Path, burst: int, clients: int, rate: int) -> None:
+    """
+    Drive the binary gateway with binary_load_client, the counterpart of f8test.
+
+    Simpler than the fix8 path because the client owns both ends of the exchange: it
+    knows exactly how many orders it sent and how many reports came back, so completion
+    is the process exiting rather than a log-line count reaching a total. It also reports
+    per-order round-trip latency, which the FIX path cannot measure from outside.
+
+    Deliberately NOT mirrored on the FIX side: the binary gateway does not log a line per
+    execution report. Adding one would import the FIX gateway's per-ER logging cost into
+    the very measurement meant to compare them.
+    """
+    total_orders = clients * burst * ORDERS_PER_BURST
+    log(f"=== Starting binary_load_client, {clients} session(s), {burst} burst(s) each "
+        f"({total_orders} orders total) ===")
+
+    command = [
+        str(bin_dir / "binary_load_client"),
+        "--host", BINARY_GATEWAY_HOST,
+        "--port", str(BINARY_GATEWAY_PORT),
+        "--comp-id-prefix", BINARY_LOAD_COMP_ID_PREFIX,
+        "--password", BINARY_LOAD_PASSWORD,
+        "--sessions", str(clients),
+        "--orders-per-burst", str(ORDERS_PER_BURST),
+        "--bursts", str(burst),
+    ]
+    if rate > 0:
+        command += ["--rate", str(rate)]
+        log(f"  rate limited to {rate} orders/s per session "
+            f"({rate * clients} offered venue-wide) -- measuring service latency")
+    else:
+        log("  no rate limit -- measuring peak throughput; reported latency is "
+            "queueing-dominated")
+
+    timeout = min(ORDER_TIMEOUT * max(1, burst * clients), MAX_ORDER_TIMEOUT)
+    try:
+        result = subprocess.run(command, timeout=timeout, check=False,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    except subprocess.TimeoutExpired:
+        die(f"binary_load_client did not finish within {timeout:.0f}s")
+
+    # Echo it and keep a copy. The client's throughput and latency figures are the whole
+    # point of the run, and they used to exist only on the console -- so a run whose output
+    # was not teed left its perf artefacts behind but none of its measurements.
+    summary_file = output_dir / "binary_load_client.txt"
+    summary_file.write_text(result.stdout or "")
+    for line in (result.stdout or "").splitlines():
+        log(f"  {line}")
+    log(f"  load client output saved to {summary_file}")
+
+    if result.returncode != 0:
+        die(f"binary_load_client reported failure (exit {result.returncode}) -- "
+            f"not every order was acknowledged")
+    log("  binary_load_client completed: every order acknowledged")
+
+
 def run_fix8_session(me_log: Path, gw_log: Path, burst: int, clients: int) -> None:
     """
     Start `clients` concurrent f8test processes, wait for all FIX sessions to
@@ -537,6 +636,16 @@ def main() -> None:
                         help="Number of concurrent fix8 sessions. Default: 1")
     parser.add_argument("--capture", action="store_true", default=False,
                         help="Enable FIX capture (writes all wire bytes to fix_capture.bin).")
+    parser.add_argument("--gateway", choices=["fix", "binary"], default="fix",
+                        help="Which gateway to load and profile.  'fix' (default): the ASCII "
+                             "FIX gateway, driven by fix8's f8test.  'binary': the binary "
+                             "gateway, driven by binary_load_client.  Both send the same "
+                             "orders into the same book, so the two runs are comparable.")
+    parser.add_argument("--rate", type=int, default=0,
+                        help="Orders per second per session (binary gateway only).  Omit for a "
+                             "throughput test, which offers load faster than the pipeline "
+                             "drains so the latency figures are queueing-dominated.  Set a "
+                             "sustainable rate to measure service latency.")
     parser.add_argument("--logon-mode", choices=["scram", "proprietary"], default="scram",
                         help="Authentication mode for fix8 clients.  'scram' (default): "
                              "standard SCRAM-SHA-256 with an empty password (fix8 sends no "
@@ -547,6 +656,10 @@ def main() -> None:
         parser.error("--burst must be >= 1")
     if args.clients < 1:
         parser.error("--clients must be >= 1")
+    if args.rate and args.gateway != "binary":
+        parser.error("--rate applies only to --gateway binary; f8test has no rate control")
+    if args.capture and args.gateway != "fix":
+        parser.error("--capture is FIX wire capture and applies only to --gateway fix")
 
     script_dir = Path(__file__).resolve().parent
     prefix     = resolve_prefix(str(script_dir / args.prefix)
@@ -581,9 +694,11 @@ def main() -> None:
     log(f"  install prefix : {prefix}")
     log(f"  perf output    : {perf_dir}")
     cg_desc = f"{CALLGRAPH},{DWARF_STACK_SIZE}" if CALLGRAPH == "dwarf" else CALLGRAPH
-    targets_desc = ", ".join(sorted(PERF_TARGETS)) if PERF_TARGETS is not None else "all"
+    targets_desc = ("matching_engine_primary, "
+                    + ("binary_gateway" if args.gateway == "binary" else "order_gateway"))
     log(f"  call-graph     : {cg_desc}  (freq={FREQ} Hz, mmap={PERF_MMAP_SIZE})")
     log(f"  perf targets   : {targets_desc}")
+    log(f"  gateway        : {args.gateway}")
     log(f"  clients        : {args.clients}")
     log(f"  burst          : {args.burst}  ({args.clients * args.burst * 1000} orders total)")
     log(f"  FIX capture    : {'enabled' if args.capture else 'disabled'}")
@@ -605,7 +720,10 @@ def main() -> None:
     if result.returncode != 0:
         die(f"export_credentials.py failed:\n{result.stderr.strip()}")
     log("  credentials exported")
-    ensure_fix8_credentials(creds_file, FIX8_COMP_ID, FIX8_PASSWORD, args.logon_mode)
+    if args.gateway == "binary":
+        ensure_binary_load_credentials(creds_file, args.clients)
+    else:
+        ensure_fix8_credentials(creds_file, FIX8_COMP_ID, FIX8_PASSWORD, args.logon_mode)
 
     # -- launch applications in dependency order (mirrors dev.toml startup_order)
     # Each tuple: (name, binary, config, optional_workdir).
@@ -621,7 +739,14 @@ def main() -> None:
         ("sequencer_primary",      "sequencer",              etc_dir / "sequencer"             / "sequencer_primary.toml",                None),
         ("sequencer_secondary",    "sequencer",              etc_dir / "sequencer"             / "sequencer_secondary.toml",      None),
         ("order_gateway",          "order_gateway",          etc_dir / "order_gateway"         / "order_gateway.toml",            etc_dir / "order_gateway"),
+        ("binary_gateway",         "binary_gateway",         etc_dir / "binary_gateway"        / "binary_gateway.toml",           etc_dir / "binary_gateway"),
     ]
+
+    # Both gateways run whichever is under test, so the process set -- and therefore the
+    # machine's load -- is the same in either run and the two are comparable. The idle one
+    # does nothing but hold its listeners open.
+    perf_targets = {"matching_engine_primary"}
+    perf_targets.add("binary_gateway" if args.gateway == "binary" else "order_gateway")
 
     app_procs:  list[tuple[str, subprocess.Popen]] = []
     perf_procs: list[tuple[str, subprocess.Popen]] = []
@@ -650,13 +775,16 @@ def main() -> None:
         # Attach perf to targeted processes
         log("=== Attaching perf to all processes ===")
         for name, proc in app_procs:
-            if PERF_TARGETS is None or name in PERF_TARGETS:
+            if name in perf_targets:
                 perf_proc = attach_perf(name, proc.pid, perf_dir)
                 perf_procs.append((name, perf_proc))
         time.sleep(1)  # give perf a moment to start recording
 
-        # Fire fix8 session(s)
-        run_fix8_session(me_log, gw_log, args.burst, args.clients)
+        # Drive load through whichever gateway is under test.
+        if args.gateway == "binary":
+            run_binary_load_session(bin_dir, perf_dir, args.burst, args.clients, args.rate)
+        else:
+            run_fix8_session(me_log, gw_log, args.burst, args.clients)
 
         log(f"Waiting {POST_ORDER_WAIT:.0f}s for pipeline to drain ...")
         time.sleep(POST_ORDER_WAIT)
@@ -695,6 +823,24 @@ def main() -> None:
     # Count the ME order-acceptance line only ("accepted NOS OrderID=ME-ORD-N").
     # A bare "ME-ORD" substring also matches the cancel-ER lines, double-counting.
     me_final      = count_in_log(me_log,  "accepted NOS")
+
+    if args.gateway == "binary":
+        # The binary gateway logs no line per execution report, deliberately: doing so
+        # would import the FIX gateway's per-ER logging cost into the measurement meant to
+        # compare the two. binary_load_client counted its own sends and receipts and has
+        # already failed the run if they did not match, so the ME count is the only
+        # independent check worth making here.
+        log("=== Post-shutdown ground-truth counts ===")
+        log(f"  ME-ORD        : {me_final:>10,} / {total_orders:,}  "
+            f"{'OK' if me_final == total_orders else 'MISMATCH'}")
+        log("  ER delivery   : verified by binary_load_client (it exits non-zero on any shortfall)")
+        if me_final != total_orders:
+            log("=== FAIL — the matching engine did not accept every order ===")
+            sys.exit(1)
+        log("=== PASS — all orders processed ===")
+        log("=== Done ===")
+        return
+
     gw_nos_recv   = count_in_log(gw_log,  "GW-NOS-RECV")
     gw_er_sent    = count_in_log(gw_log,  "GW-ER-SENT")
     gw_er_dropped = count_in_log(gw_log,  _ER_DROPPED_MARKER)

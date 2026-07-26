@@ -105,6 +105,10 @@ def main(argv=None) -> int:
             return 1
         return 0
 
+    # Create the output directory rather than requiring every caller to. CMake makes it
+    # first, but Maven invokes this straight into an empty target tree, and the tool being
+    # self-sufficient is less fragile than each build system remembering.
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(text, encoding="utf-8")
     print(f"dd_to_dsl: wrote {spec.output}")
     return 0

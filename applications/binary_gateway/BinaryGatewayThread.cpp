@@ -3,9 +3,14 @@
 
 #include "BinaryGatewayThread.hpp"
 
+#include <openssl/rand.h>
+
+#include <algorithm>
+#include <array>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/BumpAllocator.hpp>
@@ -37,6 +42,9 @@ pubsub_itc_fw::AllocatorConfiguration make_allocator_config(const BinaryGatewayC
 
 // Sent per drain tick. A client with thousands of resting orders would otherwise stall
 // the reactor while every cancel was encoded and forwarded in one go.
+// SCRAM client nonce length, matching the FIX gateway's.
+constexpr size_t scram_client_nonce_size = 16;
+
 constexpr int cancel_drain_batch_size = 500;
 constexpr auto cancel_drain_interval = std::chrono::milliseconds{1};
 
@@ -78,6 +86,10 @@ void BinaryGatewayThread::on_app_ready_event() {
         /*handler_for_invalid_free=*/nullptr,
         /*handler_for_huge_pages_error=*/nullptr, pubsub_itc_fw::UseHugePagesFlag{pubsub_itc_fw::UseHugePagesFlag::DoNotUseHugePages});
 
+    connect_to_service("authentication_service_primary");
+    if (config_.ha_enabled) {
+        connect_to_service("authentication_service_secondary");
+    }
     connect_to_service("sequencer_primary");
     if (config_.ha_enabled) {
         connect_to_service("sequencer_secondary");
@@ -87,12 +99,37 @@ void BinaryGatewayThread::on_app_ready_event() {
 void BinaryGatewayThread::on_timer_event(pubsub_itc_fw::TimerID timer_id) {
     if (timer_id == cancel_drain_timer_id_) {
         drain_pending_cancels();
+        return;
+    }
+
+    // A logon left pending because the authentication service never answered. Refusing it
+    // matters: a session stuck in auth_pending would otherwise hold a connection open for
+    // ever without ever being able to trade.
+    for (auto& [conn_id_value, session] : sessions_) {
+        if (session.auth_pending && timer_id == session.scram_auth_timeout_timer_id) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "BinaryGatewayThread: connection {} authentication timed out -- refusing logon",
+                       session.conn_id.get_value());
+            refuse_logon(session, pubsub_itc_fw_app::LogonOutcome::AuthenticationTimeout, "authentication service did not respond");
+            return;
+        }
     }
 }
 
 void BinaryGatewayThread::on_connection_established(pubsub_itc_fw::ConnectionID id) {
     const std::string& service = id.service_name();
 
+    if (service == "authentication_service_primary") {
+        auth_service_primary_conn_id_ = id;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "BinaryGatewayThread: primary authentication service connection {} established",
+                   id.get_value());
+        return;
+    }
+    if (service == "authentication_service_secondary") {
+        auth_service_secondary_conn_id_ = id;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "BinaryGatewayThread: secondary authentication service connection {} established",
+                   id.get_value());
+        return;
+    }
     if (service == "sequencer_primary") {
         sequencer_primary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "BinaryGatewayThread: primary sequencer connection {} established", id.get_value());
@@ -120,6 +157,18 @@ void BinaryGatewayThread::on_connection_established(pubsub_itc_fw::ConnectionID 
 }
 
 void BinaryGatewayThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, const std::string& reason) {
+    if (id == auth_service_primary_conn_id_) {
+        auth_service_primary_conn_id_ = pubsub_itc_fw::ConnectionID{};
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "BinaryGatewayThread: primary authentication service connection {} lost: {}",
+                   id.get_value(), reason);
+        return;
+    }
+    if (id == auth_service_secondary_conn_id_) {
+        auth_service_secondary_conn_id_ = pubsub_itc_fw::ConnectionID{};
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "BinaryGatewayThread: secondary authentication service connection {} lost: {}",
+                   id.get_value(), reason);
+        return;
+    }
     if (id == sequencer_primary_conn_id_) {
         sequencer_primary_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "BinaryGatewayThread: primary sequencer connection {} lost: {}", id.get_value(), reason);
@@ -153,6 +202,21 @@ void BinaryGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventMes
     // client cannot reach the ER path by sending a PDU it has no business sending.
     if (message.connection_id().service_name() == er_inbound_service_) {
         handle_execution_report(message);
+        return;
+    }
+
+    const bool from_auth_service =
+        message.connection_id() == auth_service_primary_conn_id_ || (config_.ha_enabled && message.connection_id() == auth_service_secondary_conn_id_);
+    if (from_auth_service) {
+        if (message.pdu_id() == pubsub_itc_fw_app::AuthenticationChallenge::message_pdu_id) {
+            handle_authentication_challenge(message);
+        } else if (message.pdu_id() == pubsub_itc_fw_app::AuthenticationResult::message_pdu_id) {
+            handle_authentication_result(message);
+        } else {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "BinaryGatewayThread: unexpected PDU id {} from the authentication service -- dropping", message.pdu_id());
+            release_pdu_payload(message);
+        }
         return;
     }
 
@@ -205,42 +269,89 @@ void BinaryGatewayThread::handle_logon(BinarySession& session, const pubsub_itc_
     pubsub_itc_fw_app::LogonView view{};
     const bool decoded =
         pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed);
-    const pubsub_itc_fw::ConnectionID conn_id = message.connection_id();
     release_pdu_payload(message);
 
     if (!decoded) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "BinaryGatewayThread: failed to decode Logon on connection {} -- disconnecting",
-                   conn_id.get_value());
-        send_logon_ack(conn_id, pubsub_itc_fw_app::LogonOutcome::MissingCompId, "Logon could not be decoded");
+                   session.conn_id.get_value());
+        refuse_logon(session, pubsub_itc_fw_app::LogonOutcome::MissingCompId, "Logon could not be decoded");
         return;
     }
 
-    if (session.logged_on) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "BinaryGatewayThread: second Logon on connection {} (comp id '{}') -- disconnecting",
-                   conn_id.get_value(), session.comp_id);
-        send_logon_ack(conn_id, pubsub_itc_fw_app::LogonOutcome::AlreadyLoggedOn, "session is already logged on");
+    if (session.logged_on || session.auth_pending) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "BinaryGatewayThread: second Logon on connection {} -- disconnecting",
+                   session.conn_id.get_value());
+        refuse_logon(session, pubsub_itc_fw_app::LogonOutcome::AlreadyLoggedOn, "a logon is already in progress or complete");
         return;
     }
 
     if (view.comp_id.empty()) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "BinaryGatewayThread: Logon with empty comp id on connection {} -- disconnecting",
-                   conn_id.get_value());
-        send_logon_ack(conn_id, pubsub_itc_fw_app::LogonOutcome::MissingCompId, "comp_id must not be empty");
+                   session.conn_id.get_value());
+        refuse_logon(session, pubsub_itc_fw_app::LogonOutcome::MissingCompId, "comp_id must not be empty");
         return;
     }
 
     if (comp_id_in_use(view.comp_id)) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "BinaryGatewayThread: Logon for comp id '{}' already logged on -- disconnecting connection {}", view.comp_id, conn_id.get_value());
-        send_logon_ack(conn_id, pubsub_itc_fw_app::LogonOutcome::DuplicateCompId, "comp_id is already logged on");
+                   "BinaryGatewayThread: Logon for comp id '{}' already logged on -- disconnecting connection {}", view.comp_id, session.conn_id.get_value());
+        refuse_logon(session, pubsub_itc_fw_app::LogonOutcome::DuplicateCompId, "comp_id is already logged on");
+        return;
+    }
+
+    // An empty TargetCompID means the client did not care which venue it reached; a
+    // populated one that does not match means it has connected somewhere it did not intend,
+    // which is a misconfiguration worth failing loudly rather than trading through.
+    if (!view.target_comp_id.empty() && view.target_comp_id != config_.sender_comp_id) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "BinaryGatewayThread: connection {} Logon names TargetCompID '{}' but this gateway is '{}' -- refusing", session.conn_id.get_value(),
+                   view.target_comp_id, config_.sender_comp_id);
+        refuse_logon(session, pubsub_itc_fw_app::LogonOutcome::WrongTargetCompId, "this gateway is " + config_.sender_comp_id);
         return;
     }
 
     session.comp_id.assign(view.comp_id.data(), view.comp_id.size());
-    session.logged_on = true;
+    session.target_comp_id.assign(view.target_comp_id.data(), view.target_comp_id.size());
+    session.client_password.assign(view.password.data(), view.password.size());
 
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "BinaryGatewayThread: connection {} logged on as '{}'", conn_id.get_value(), session.comp_id);
-    send_logon_ack(conn_id, pubsub_itc_fw_app::LogonOutcome::Accepted, {});
+    // The session is not logged on yet. It becomes so only when the authentication service
+    // grants it, so nothing can reach the book on the strength of a comp id alone.
+    begin_scram_authentication(session);
+}
+
+void BinaryGatewayThread::begin_scram_authentication(BinarySession& session) {
+    const pubsub_itc_fw::ConnectionID auth_conn_id =
+        auth_service_primary_conn_id_.get_value() != 0 ? auth_service_primary_conn_id_ : auth_service_secondary_conn_id_;
+    if (auth_conn_id.get_value() == 0) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "BinaryGatewayThread: connection {} Logon refused -- no authentication service connected",
+                   session.conn_id.get_value());
+        refuse_logon(session, pubsub_itc_fw_app::LogonOutcome::AuthenticationUnavailable, "authentication service unavailable");
+        return;
+    }
+
+    uint8_t nonce_bytes[scram_client_nonce_size];
+    if (RAND_bytes(nonce_bytes, static_cast<int>(sizeof(nonce_bytes))) != 1) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "BinaryGatewayThread: connection {} RAND_bytes failed -- disconnecting",
+                   session.conn_id.get_value());
+        refuse_logon(session, pubsub_itc_fw_app::LogonOutcome::AuthenticationFailed, "failed to generate a client nonce");
+        return;
+    }
+    session.scram_client_nonce.assign(nonce_bytes, nonce_bytes + sizeof(nonce_bytes));
+    session.auth_pending = true;
+
+    pubsub_itc_fw_app::AuthenticationRequest auth_request{};
+    // The connection id correlates the reply back to this session, as it does on the FIX
+    // gateway: it is unique per connection and the service echoes it untouched.
+    auth_request.request_id = static_cast<int64_t>(session.conn_id.get_value());
+    auth_request.comp_id = session.comp_id;
+    auth_request.client_nonce = pubsub_itc_fw_app::BytesView{session.scram_client_nonce.data(), session.scram_client_nonce.size()};
+    send_pdu(auth_conn_id, pubsub_itc_fw_app::AuthenticationRequest::message_pdu_id, 0, auth_request);
+
+    session.scram_auth_timeout_timer_id = start_one_off_timer(config_.scram_auth_timeout);
+
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "BinaryGatewayThread: connection {} AuthenticationRequest sent request_id={} comp_id='{}' timeout={}s", session.conn_id.get_value(),
+               auth_request.request_id, session.comp_id, config_.scram_auth_timeout.count());
 }
 
 void BinaryGatewayThread::send_logon_ack(const pubsub_itc_fw::ConnectionID& conn_id, pubsub_itc_fw_app::LogonOutcome outcome, std::string_view text) {
@@ -251,14 +362,149 @@ void BinaryGatewayThread::send_logon_ack(const pubsub_itc_fw::ConnectionID& conn
         ack.text = text;
     }
     send_pdu(conn_id, pubsub_itc_fw_app::LogonAck::message_pdu_id, 0, ack);
+}
 
-    if (outcome != pubsub_itc_fw_app::LogonOutcome::Accepted) {
-        // The ack is queued before the disconnect command, so the client gets its reason
-        // rather than an unexplained close.
-        pubsub_itc_fw::ReactorControlCommand command(pubsub_itc_fw::ReactorControlCommand::CommandTag::Disconnect);
-        command.connection_id_ = conn_id;
-        get_reactor().enqueue_control_command(command);
+void BinaryGatewayThread::refuse_logon(BinarySession& session, pubsub_itc_fw_app::LogonOutcome outcome, std::string_view text) {
+    session.auth_pending = false;
+    session.logged_on = false;
+    // A refused session may still be holding the password it was given; do not leave it
+    // sitting in memory on a connection that is about to be closed.
+    std::fill(session.client_password.begin(), session.client_password.end(), '\0');
+    session.client_password.clear();
+
+    // The ack is queued before the disconnect so the client learns why, rather than seeing
+    // an unexplained close.
+    send_logon_ack(session.conn_id, outcome, text);
+
+    pubsub_itc_fw::ReactorControlCommand command(pubsub_itc_fw::ReactorControlCommand::CommandTag::Disconnect);
+    command.connection_id_ = session.conn_id;
+    get_reactor().enqueue_control_command(command);
+}
+
+void BinaryGatewayThread::handle_authentication_challenge(const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buffer = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buffer.data(), arena_buffer.size());
+    arena.reset();
+    size_t bytes_consumed = 0;
+    size_t arena_bytes_needed = 0;
+
+    pubsub_itc_fw_app::AuthenticationChallengeView view{};
+    if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "BinaryGatewayThread: failed to decode AuthenticationChallenge -- dropping");
+        release_pdu_payload(message);
+        return;
     }
+    const pubsub_itc_fw::ConnectionID auth_conn_id = message.connection_id();
+
+    BinarySession* session_ptr = find_session_by_conn_id(static_cast<int32_t>(view.request_id));
+    if (session_ptr == nullptr || !session_ptr->auth_pending) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "BinaryGatewayThread: AuthenticationChallenge request_id={} -- no matching pending session -- dropping", view.request_id);
+        release_pdu_payload(message);
+        return;
+    }
+    BinarySession& session = *session_ptr;
+
+    const std::vector<uint8_t> server_nonce(view.server_nonce.data, view.server_nonce.data + view.server_nonce.size);
+    const std::vector<uint8_t> salt(view.salt.data, view.salt.data + view.salt.size);
+    const int32_t iterations = view.iterations;
+    const int64_t request_id = view.request_id;
+    release_pdu_payload(message);
+
+    // The proof is derived here and the password never leaves this process, which is the
+    // whole point of SCRAM: the service verifies without ever seeing it.
+    static const std::string client_key_label = "Client Key";
+    static const std::string server_key_label = "Server Key";
+
+    const std::vector<uint8_t> auth_message =
+        scram_crypto::compute_auth_message(session.comp_id, session.scram_client_nonce, server_nonce, salt.data(), salt.size(), iterations);
+    const std::vector<uint8_t> salted_password = scram_crypto::pbkdf2_sha256(session.client_password, salt.data(), salt.size(), iterations);
+
+    std::fill(session.client_password.begin(), session.client_password.end(), '\0');
+    session.client_password.clear();
+    session.client_password.shrink_to_fit();
+
+    const std::vector<uint8_t> client_key = scram_crypto::hmac_sha256(salted_password.data(), salted_password.size(),
+                                                                      reinterpret_cast<const uint8_t*>(client_key_label.data()), client_key_label.size());
+    const std::vector<uint8_t> stored_key = scram_crypto::sha256(client_key.data(), client_key.size());
+    const std::vector<uint8_t> client_signature = scram_crypto::hmac_sha256(stored_key.data(), stored_key.size(), auth_message.data(), auth_message.size());
+
+    static constexpr size_t sha256_size = 32;
+    std::vector<uint8_t> client_proof(sha256_size);
+    for (size_t index = 0; index < sha256_size; ++index) {
+        client_proof[index] = client_key[index] ^ client_signature[index];
+    }
+
+    const std::vector<uint8_t> server_key = scram_crypto::hmac_sha256(salted_password.data(), salted_password.size(),
+                                                                      reinterpret_cast<const uint8_t*>(server_key_label.data()), server_key_label.size());
+    session.scram_expected_server_signature = scram_crypto::hmac_sha256(server_key.data(), server_key.size(), auth_message.data(), auth_message.size());
+
+    pubsub_itc_fw_app::AuthenticationProof proof{};
+    proof.request_id = request_id;
+    proof.client_proof = pubsub_itc_fw_app::BytesView{client_proof.data(), client_proof.size()};
+    // Reply on the connection the challenge arrived on, so a primary and a secondary
+    // service each see their own exchange through.
+    send_pdu(auth_conn_id, pubsub_itc_fw_app::AuthenticationProof::message_pdu_id, 0, proof);
+
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "BinaryGatewayThread: connection {} AuthenticationProof sent request_id={}",
+               session.conn_id.get_value(), request_id);
+}
+
+void BinaryGatewayThread::handle_authentication_result(const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buffer = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buffer.data(), arena_buffer.size());
+    arena.reset();
+    size_t bytes_consumed = 0;
+    size_t arena_bytes_needed = 0;
+
+    pubsub_itc_fw_app::AuthenticationResultView view{};
+    if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "BinaryGatewayThread: failed to decode AuthenticationResult -- dropping");
+        release_pdu_payload(message);
+        return;
+    }
+
+    BinarySession* session_ptr = find_session_by_conn_id(static_cast<int32_t>(view.request_id));
+    if (session_ptr == nullptr || !session_ptr->auth_pending) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "BinaryGatewayThread: AuthenticationResult request_id={} -- no matching pending session -- dropping", view.request_id);
+        release_pdu_payload(message);
+        return;
+    }
+    BinarySession& session = *session_ptr;
+    const pubsub_itc_fw_app::AuthenticationOutcome outcome = view.outcome;
+    const std::vector<uint8_t> server_signature(view.server_signature.data, view.server_signature.data + view.server_signature.size);
+    release_pdu_payload(message);
+
+    session.auth_pending = false;
+    cancel_timer(session.scram_auth_timeout_timer_id);
+
+    if (outcome != pubsub_itc_fw_app::AuthenticationOutcome::Granted) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "BinaryGatewayThread: connection {} authentication failed outcome={} -- refusing logon",
+                   session.conn_id.get_value(), static_cast<int32_t>(outcome));
+        refuse_logon(session, pubsub_itc_fw_app::LogonOutcome::AuthenticationFailed, "authentication failed");
+        return;
+    }
+
+    // SCRAM is mutual: the service proves itself to the gateway as well. A wrong signature
+    // means the far end does not hold the credential it claims to, so the session is
+    // refused even though the outcome says granted.
+    if (server_signature != session.scram_expected_server_signature) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "BinaryGatewayThread: connection {} ServerSignature mismatch -- refusing logon",
+                   session.conn_id.get_value());
+        refuse_logon(session, pubsub_itc_fw_app::LogonOutcome::AuthenticationFailed, "server signature mismatch");
+        return;
+    }
+
+    session.logged_on = true;
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "BinaryGatewayThread: connection {} authenticated and logged on as '{}'",
+               session.conn_id.get_value(), session.comp_id);
+    send_logon_ack(session.conn_id, pubsub_itc_fw_app::LogonOutcome::Accepted, {});
+}
+
+BinarySession* BinaryGatewayThread::find_session_by_conn_id(int32_t conn_id_value) {
+    auto it = sessions_.find(conn_id_value);
+    return it == sessions_.end() ? nullptr : &it->second;
 }
 
 void BinaryGatewayThread::handle_new_order_single(BinarySession& session, const pubsub_itc_fw::EventMessage& message) {
@@ -467,11 +713,23 @@ void BinaryGatewayThread::drain_pending_cancels() {
 
         open_orders::OpenOrderEntry* entry = dead.open_orders[dead.next_order_index];
 
-        const std::string cancel_cl_ord_id = "BGW-CXL-" + std::to_string(dead.session_conn_id) + "-" + std::to_string(dead.cancel_id_counter++);
+        // Formatted into a stack buffer rather than built with std::string: the obvious
+        // spelling allocates three times per cancel, on a path that can generate thousands
+        // in a burst.
+        std::array<char, cancel_cl_ord_id::max_length> cancel_id_buffer{};
+        const std::string_view cancel_cl_ord_id_text = cancel_cl_ord_id::format(cancel_id_buffer, "BGW-CXL-", dead.session_conn_id, dead.cancel_id_counter++);
+        if (cancel_cl_ord_id_text.empty()) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                       "BinaryGatewayThread: could not format a cancel ClOrdID for session {} -- order left on the book", dead.session_conn_id);
+            open_order_pool_->deallocate(entry);
+            ++dead.next_order_index;
+            ++sent;
+            continue;
+        }
 
         pubsub_itc_fw_app::OrderCancelRequest cancel{};
         cancel.orig_cl_ord_id = std::string_view(entry->cl_ord_id, entry->cl_ord_id_len);
-        cancel.cl_ord_id = cancel_cl_ord_id;
+        cancel.cl_ord_id = cancel_cl_ord_id_text;
         cancel.symbol = std::string_view(entry->symbol, entry->symbol_len);
         cancel.side = static_cast<pubsub_itc_fw_app::Side>(entry->side);
         cancel.transact_time = 0; // the sequencer stamps the authoritative time
@@ -512,13 +770,21 @@ void BinaryGatewayThread::drain_pending_cancels() {
         open_order_pool_->deallocate(entry);
         ++dead.next_order_index;
         ++sent;
+        ++cancels_sent_this_drain_;
     }
 
     if (!pending_cancel_sessions_.empty()) {
         cancel_drain_timer_id_ = start_one_off_timer(cancel_drain_interval);
         cancel_drain_timer_active_ = true;
-    } else if (sent > 0) {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "BinaryGatewayThread: cancel drain complete");
+        return;
+    }
+
+    // Report on the tick that empties the queue, whether or not that tick sent anything.
+    // Gating on sent > 0 missed the common case: the final tick usually just pops the last
+    // exhausted session, so the completion line went unlogged exactly when a drain finished.
+    if (cancels_sent_this_drain_ > 0) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "BinaryGatewayThread: cancel drain complete -- {} cancel(s) sent", cancels_sent_this_drain_);
+        cancels_sent_this_drain_ = 0;
     }
 }
 
