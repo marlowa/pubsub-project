@@ -266,7 +266,9 @@ if(DOXYGEN_FOUND AND ENABLE_DOXYGEN)
             RESULT_VARIABLE _doxy_result
         )
         if(NOT _doxy_result EQUAL 0)
-            message(WARNING \"Doxygen failed with exit code \${_doxy_result}\")
+            # Fatal, not a warning. A warning here is how a documentation build stayed
+            # broken unnoticed: it scrolls past in the middle of the install output.
+            message(FATAL_ERROR \"Doxygen failed with exit code \${_doxy_result}\")
         endif()
     ")
 

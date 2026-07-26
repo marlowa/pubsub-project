@@ -352,8 +352,11 @@ def configure_cmake(build_dir, source_dir, enable_valgrind=False, enable_coverag
     ]
 
     cmake_args.append(f"-DCMAKE_BUILD_TYPE={'Debug' if debug else 'Release'}")
-    if not enable_doxygen:
-        cmake_args.append("-DENABLE_DOXYGEN=OFF")
+    # Always explicit. Passing only the OFF case made this a one-way switch: CMake
+    # cache entries persist, so a single --no-doxygen run left ENABLE_DOXYGEN=OFF in
+    # the cache and silently disabled the install-time documentation build from then
+    # on, however many times it was rebuilt without the flag.
+    cmake_args.append(f"-DENABLE_DOXYGEN={'ON' if enable_doxygen else 'OFF'}")
     if install_dir is not None:
         cmake_args.append(f"-DCMAKE_INSTALL_PREFIX={install_dir}")
     if enable_valgrind:

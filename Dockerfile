@@ -53,6 +53,16 @@ RUN dnf install -y python3-pip python38-devel \
 COPY docker-deps/liquibase /opt/liquibase
 RUN ln -s /opt/liquibase/liquibase /usr/bin/liquibase
 
+# Doxygen and graphviz for the documentation build. Neither is in BaseOS,
+# AppStream or EPEL: on Rocky 8 doxygen lives in the powertools repo, which is
+# disabled by default (the RHEL8 equivalent is codeready-builder-for-rhel-8-*-rpms).
+# The version this pulls is 1.8.14, which is the whole point -- it is the version
+# the real RHEL8 build hosts have, and the one the Doxyfile is written for. Without
+# it this container cannot validate the docs build on the target toolchain, which is
+# what the container exists to do.
+RUN dnf install -y --enablerepo=powertools doxygen graphviz \
+    && dnf clean all
+
 # Configure git to allow /workspace
 RUN git config --global --add safe.directory /workspace
 

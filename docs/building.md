@@ -119,6 +119,78 @@ LD_LIBRARY_PATH=$PWD/build/libraries/pubsub_itc_fw \
 
 ---
 
+## The documentation build, and why the Doxyfile is not used directly on RHEL8
+
+This is worth reading before touching anything Doxygen-related, because there is more
+machinery here than the single committed `Doxyfile` suggests.
+
+**On RHEL8 the committed Doxyfile is not the file Doxygen runs.** `CMakeLists.txt` sets
+`DOXYGEN_DISABLE_DOT` ON by default for the el8 family (rhel, rocky, centos, almalinux with
+`VERSION_ID=8`), and in that case generates `${CMAKE_BINARY_DIR}/Doxyfile.nodot`:
+
+```
+@INCLUDE = <source>/Doxyfile
+HAVE_DOT            = NO
+COLLABORATION_GRAPH = NO
+INCLUDE_GRAPH       = NO
+INCLUDED_BY_GRAPH   = NO
+GRAPHICAL_HIERARCHY = NO
+DIRECTORY_GRAPH     = NO
+```
+
+Doxygen applies configuration lines top to bottom with the last assignment winning, so the
+generated file overrides the included one. The committed `Doxyfile` stays untouched, and hosts
+with dot run it verbatim. Consequences of the no-dot path:
+
+- Documentation builds much faster on RHEL8, which is the point.
+- Built-in class inheritance diagrams still appear; every dot-generated graph does not.
+- **The clickable architecture map is not rendered at all** -- it is a `\dotfile` graph. Its
+  post-build link checker, `scripts/check_architecture_map.py`, therefore only runs on the
+  dot-enabled path.
+
+To force either behaviour regardless of platform, configure with `-DDOXYGEN_DISABLE_DOT=ON`
+or `=OFF`.
+
+**Doxygen runs at install time, not only via `--doxygen`.** `ENABLE_DOXYGEN` defaults ON and an
+`install(CODE ...)` hook builds the `doxygen_docs` target during `cmake --install`. The
+`--doxygen` and `--doxygen-only` flags to `build.py` are an *additional* explicit run.
+
+**WARN_AS_ERROR does not work on doxygen 1.8.14.** The Doxyfile sets
+`WARN_AS_ERROR = FAIL_ON_WARNINGS`, which is a doxygen 1.9 value. On the 1.8.14 that RHEL8
+ships, it is rejected -- `argument 'FAIL_ON_WARNINGS' for option WARN_AS_ERROR is not a valid
+boolean value` -- and falls back to `NO`. So **on RHEL8 the documentation build never fails,
+whatever it emits.** Measured in the Rocky 8 container on 2026-07-26: the same tree that
+produces zero diagnostics on doxygen 1.9.8 produces **474 warnings and exit 0** on 1.8.14,
+mostly `found subsection command outside of section context` from the older markdown handling
+of `##`/`###` headings. That backlog is not addressed; it is recorded here so nobody mistakes
+a green RHEL8 docs build for a clean one.
+
+The architecture-map checker exists precisely because of this gap -- its comment says doxygen
+1.8.14 does not fail on an unresolved `\ref` inside a dot URL -- but it only runs where dot is
+enabled, so it does not cover RHEL8 either.
+
+**Cost.** One second for a clean run on the development workstation with dot and 151 generated
+images, and one second in the Rocky 8 container on 1.8.14 without dot. Documentation is not what
+makes a build slow.
+
+**Validating the RHEL8 documentation path** needs doxygen and graphviz in the container. They are
+installed by the Dockerfile from the `powertools` repo, which is disabled by default and is where
+Rocky 8 keeps doxygen (RHEL8 calls the equivalent repo
+`codeready-builder-for-rhel-8-*-rpms`). To run just the docs there:
+
+```bash
+docker run --rm --entrypoint bash -v "$PWD":/workspace:ro pubsub-rhel8:latest \
+    -lc '( cat Doxyfile; echo "OUTPUT_DIRECTORY=/tmp/dox" ) | doxygen -'
+```
+
+**No intra-document anchor links in `docs/`.** A markdown `[text](#anchor)` link becomes a
+`\ref anchor` command, and a GitHub-style heading slug is not a label Doxygen knows, so it is an
+error under `WARN_AS_ERROR` on 1.9.x. Name the target section in bold instead. Adding `{#label}`
+to headings would resolve it but renders literally on GitHub, and `MARKDOWN_ID_STYLE = GITHUB`
+does not exist in 1.8.14.
+
+---
+
 ## Coverage reports
 
 ```bash
