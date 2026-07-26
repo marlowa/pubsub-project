@@ -309,6 +309,24 @@ def build_project(build_dir, jobs=None, verbose=False):
 
     print("\n✓ Build completed successfully")
 
+def test_environment(build_dir):
+    """
+    Environment for running a test binary against the library just built.
+
+    The test binaries carry a RUNPATH pointing at the build tree, but an
+    LD_LIBRARY_PATH set in the surrounding environment takes precedence over
+    RUNPATH, and the developer profile points it at installed/lib.  Since the
+    install step runs after the tests, that silently tests the *previous* build's
+    library: a change to a library .cpp could be validated against the old .so and
+    pass.  Prepending the build tree makes the freshly built library win.
+    """
+    env = os.environ.copy()
+    build_library_dir = str((build_dir / "libraries" / "pubsub_itc_fw").resolve())
+    existing = env.get("LD_LIBRARY_PATH", "")
+    env["LD_LIBRARY_PATH"] = f"{build_library_dir}:{existing}" if existing else build_library_dir
+    return env
+
+
 def run_tests(build_dir, use_tsan=False, tsan_suppressions=None):
     """Run the test suite"""
     test_binary = build_dir / "libraries" / "pubsub_itc_fw" / "tests" / "pubsub_itc_fw_tests"
@@ -328,7 +346,7 @@ def run_tests(build_dir, use_tsan=False, tsan_suppressions=None):
         cmd = [str(test_binary)]
 
     # TSan suppressions are passed via environment variable, not command line.
-    env = os.environ.copy()
+    env = test_environment(build_dir)
     if use_tsan and tsan_suppressions is not None:
         suppressions_path = Path(tsan_suppressions).resolve()
         if not suppressions_path.exists():
@@ -359,7 +377,8 @@ def run_integration_tests(build_dir):
     run_command(
         [str(test_binary)],
         cwd=build_dir,
-        description="Running integration test suite"
+        description="Running integration test suite",
+        env=test_environment(build_dir)
     )
 
     print("\n✓ All integration tests passed")
@@ -376,7 +395,8 @@ def run_fix_codec_tests(build_dir):
     run_command(
         [str(test_binary)],
         cwd=build_dir,
-        description="Running fix_codec test suite"
+        description="Running fix_codec test suite",
+        env=test_environment(build_dir)
     )
 
     print("\n✓ All fix_codec tests passed")
@@ -400,7 +420,8 @@ def run_fix_codec_performance_tests(build_dir):
     run_command(
         [str(test_binary)],
         cwd=build_dir,
-        description="Running fix_codec performance regression tests"
+        description="Running fix_codec performance regression tests",
+        env=test_environment(build_dir)
     )
 
     print("\n✓ All fix_codec performance tests passed")

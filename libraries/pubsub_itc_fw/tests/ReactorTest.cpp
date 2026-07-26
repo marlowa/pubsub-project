@@ -633,3 +633,72 @@ TEST_F(ReactorTest, HandleSigtermInitiatesShutdown) {
 
     EXPECT_TRUE(reactor_->is_finished());
 }
+
+/*
+Asking for CPU pinning and not getting it must be loud. These two tests pin down
+that boundary: a deployment that configures pinning but no registry paths refuses
+to start, while one that never asked for pinning starts regardless. The failure
+these guard against is the quiet one -- warning and running unpinned looks like a
+healthy process, so a latency-critical component can lose its cores and nobody
+finds out until the numbers are being questioned.
+*/
+
+TEST_F(ReactorTest, PinningEnabledWithoutRegistryPathsAbortsStartup) {
+    ReactorConfiguration configuration;
+    configuration.init_phase_timeout_ = MillisecondClock::duration{2000};
+    configuration.shutdown_timeout_ = std::chrono::milliseconds(100);
+    configuration.cpu_pinning_enabled = true;
+    // cpu_registry_shm_path and cpu_registry_lock_file are left empty deliberately.
+
+    reactor_ = std::make_unique<Reactor>(configuration, service_registry_, logger_with_sink_.logger);
+    // A registered thread is needed for startup to reach the pinning step at all.
+    auto thread = ApplicationThread::create<CooperativeShutdownThread>(logger_with_sink_.logger, *reactor_, "PinnedThread", ThreadID{1}, make_queue_config(),
+                                                                       make_allocator_config());
+    reactor_->register_thread(thread);
+    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>([this] { reactor_->run(); });
+
+    {
+        BackoffWithYield backoff;
+        const auto start = MillisecondClock::now();
+        while (!reactor_->is_finished()) {
+            if (MillisecondClock::now() - start > MillisecondClock::duration{2000}) {
+                FAIL() << "Reactor did not shut down when pinning was configured without registry paths";
+            }
+            backoff.pause();
+        }
+    }
+
+    EXPECT_FALSE(reactor_->is_initialized());
+    EXPECT_TRUE(reactor_->is_finished());
+    EXPECT_TRUE(logger_with_sink_.contains_message("CPU pinning is enabled but"));
+}
+
+TEST_F(ReactorTest, PinningDisabledWithoutRegistryPathsStartsNormally) {
+    ReactorConfiguration configuration;
+    configuration.init_phase_timeout_ = MillisecondClock::duration{2000};
+    configuration.shutdown_timeout_ = std::chrono::milliseconds(100);
+    configuration.cpu_pinning_enabled = false;
+
+    reactor_ = std::make_unique<Reactor>(configuration, service_registry_, logger_with_sink_.logger);
+    auto thread = ApplicationThread::create<CooperativeShutdownThread>(logger_with_sink_.logger, *reactor_, "UnpinnedThread", ThreadID{1}, make_queue_config(),
+                                                                       make_allocator_config());
+    reactor_->register_thread(thread);
+    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>([this] { reactor_->run(); });
+
+    {
+        BackoffWithYield backoff;
+        const auto start = MillisecondClock::now();
+        while (!reactor_->is_initialized()) {
+            if (reactor_->is_finished()) {
+                FAIL() << "Reactor shut down instead of initialising with pinning disabled";
+            }
+            if (MillisecondClock::now() - start > MillisecondClock::duration{2000}) {
+                FAIL() << "Reactor did not initialise with pinning disabled";
+            }
+            backoff.pause();
+        }
+    }
+
+    EXPECT_TRUE(reactor_->is_initialized());
+    EXPECT_TRUE(logger_with_sink_.contains_message("CPU pinning disabled"));
+}
