@@ -499,6 +499,29 @@ class BlockingTlsServer {
     }
 
     /**
+     * @brief Drops the client connection abruptly, forcing a TCP reset.
+     *
+     * No close_notify and no draining: SO_LINGER with a zero timeout makes close()
+     * send RST rather than FIN, so a peer with data still queued to us learns about
+     * it on its next write instead of waiting for a timeout. Used to tear a
+     * connection down while the far side still has an unfinished send.
+     */
+    void abort_client() {
+        if (ssl_ != nullptr) {
+            SSL_free(ssl_);
+            ssl_ = nullptr;
+        }
+        if (client_fd_ != -1) {
+            struct linger reset_on_close {};
+            reset_on_close.l_onoff = 1;
+            reset_on_close.l_linger = 0;
+            ::setsockopt(client_fd_, SOL_SOCKET, SO_LINGER, &reset_on_close, sizeof(reset_on_close));
+            ::close(client_fd_);
+            client_fd_ = -1;
+        }
+    }
+
+    /**
      * @brief Closes the client connection with a TLS close_notify.
      */
     void close_client() {
@@ -1054,6 +1077,65 @@ TEST_F(TlsOutboundIntegrationTest, OutboundTlsLargeSendCompletesAcrossWriteReady
     EXPECT_EQ(server_received.size(), outbound_large_payload_bytes) << "server did not receive the whole payload";
     EXPECT_EQ(server_received, connector->sent_payload) << "the resumed send did not reproduce the payload byte for byte";
 
+    shutdown_and_join(*reactor, reactor_thread);
+}
+
+/*
+Test: tearing down a TLS connection while a send is still unfinished releases the
+pending ciphertext.
+
+This reaches TlsRawBytesProtocolHandler::deallocate_pending_send(), which was the last
+function in the framework that no test called. It is only reachable from the branch of
+OutboundConnectionManager::teardown_connection() that runs when has_pending_send() is
+true and the connection is TLS -- so the connection has to die *during* a send, not
+after one.
+
+The server never reads a byte of application data, which is what makes this
+deterministic rather than a race: with a 2 MB payload and a 16 KB send buffer the
+connector can never finish, so pending ciphertext is guaranteed to still be queued
+when the server resets the connection. The abrupt close (RST, no close_notify) is what
+makes the connector notice promptly.
+*/
+TEST_F(TlsOutboundIntegrationTest, TlsTeardownDuringUnfinishedSendReleasesPendingCiphertext) {
+    BlockingTlsServer server(certs_->server_cert_path, certs_->server_key_path);
+    ASSERT_TRUE(server.is_ready()) << "BlockingTlsServer failed to bind";
+
+    ServiceRegistry registry;
+    TlsClientConfiguration tls_config;
+    tls_config.ca_path = certs_->ca_cert_path;
+    tls_config.raw_buffer_capacity = outbound_tls_buffer_capacity;
+    registry.add_tls(outbound_service_name, NetworkEndpointConfiguration{"127.0.0.1", server.port()}, NetworkEndpointConfiguration{}, tls_config);
+
+    auto reactor = std::make_unique<Reactor>(make_outbound_partial_send_reactor_config(), registry, logger_->logger);
+    set_current_reactor(*reactor);
+
+    auto connector = ApplicationThread::create<TlsOutboundLargeSendConnectorThread>(logger_->logger, *reactor);
+    reactor->register_thread(connector);
+
+    std::thread server_thread([&]() {
+        if (!server.accept_client()) {
+            return;
+        }
+        // Deliberately read nothing, so the connector's send cannot complete, then
+        // reset the connection while its ciphertext is still queued.
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        server.abort_client();
+    });
+
+    std::thread reactor_thread([&]() { reactor->run(); });
+
+    EXPECT_TRUE(wait_for([&]() { return connector->connection_established.load(std::memory_order_acquire); }))
+        << "Connector: ConnectionEstablished not received: " << last_wait_failure_description();
+
+    EXPECT_TRUE(wait_for([&]() { return connector->connection_lost.load(std::memory_order_acquire); }, 20000))
+        << "Connector: ConnectionLost not received after the server reset the connection: " << last_wait_failure_description();
+
+    // The reply never comes: the server read nothing and answered nothing.
+    EXPECT_FALSE(connector->message_received.load(std::memory_order_acquire));
+
+    if (server_thread.joinable()) {
+        server_thread.join();
+    }
     shutdown_and_join(*reactor, reactor_thread);
 }
 
