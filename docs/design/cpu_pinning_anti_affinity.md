@@ -2,10 +2,9 @@
 
 **Status: open design problem. Nothing implemented. Raised 2026-07-26.**
 
-A direction has emerged since -- see
-[Recommended shape](#recommended-shape-make-the-background-tier-the-default-and-promote-what-earns-hot-path)
-near the end, which reframes the requirement rather than answering it as posed. It has not been
-ratified or built, and the rationing question it leaves open is still unanswered.
+A direction has emerged since -- see the **Recommended shape** section near the end, which
+reframes the requirement rather than answering it as posed. It has not been ratified or built, and
+the rationing question it leaves open is still unanswered.
 
 This document records a problem found while planning the Prometheus metrics endpoint
 ([Roadmap](../roadmap.md) item 16), together with the approaches considered so far and why each

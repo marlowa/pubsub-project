@@ -369,10 +369,9 @@ hand-written and the other generated.
 
 The generated header is a build artefact, so there is normally nothing to do — a
 normal build regenerates it when the XML or the generator changes. To regenerate
-by hand (for inspection), run the CLI shown under
-[Pipeline](#pipeline) above. To change *what* is generated, edit the emitter and
-add a pytest case in `python/tests/test_fix_dictionary.py`; the pylint gate must
-stay at 10.00/10.
+by hand (for inspection), run the CLI shown in the **Pipeline** section above. To
+change *what* is generated, edit the emitter and add a pytest case in
+`python/tests/test_fix_dictionary.py`; the pylint gate must stay at 10.00/10.
 
 ---
 
