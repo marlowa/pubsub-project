@@ -154,6 +154,18 @@ so it reports a larger denominator than the rendered report -- two different num
 thing. `build.py` prints the corrected totals instead, so what the build says matches what the
 HTML shows.
 
+### Cost, and run-to-run variation
+
+A coverage build from scratch -- empty build directory, all C++ test suites, report generated --
+took **226 seconds** on the development workstation (2026-07-26, `-j` default, `--no-java
+--no-doxygen`). Budget four minutes rather than the one an incremental build takes, and note that a
+300-second timeout is uncomfortably close to the measured figure.
+
+The line total moves by a handful of lines between runs -- 5398, 5421, 5427 across three runs of
+the same tree. That is expected: several integration tests are timing-dependent, so which branches
+of a concurrent path get taken varies. Treat a change of a few lines as noise and look for tens
+before concluding anything moved.
+
 ### Reading the report
 
 Line and branch coverage are the trustworthy columns. Function coverage is now meaningful too, but

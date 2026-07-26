@@ -106,6 +106,21 @@ static constexpr size_t outbound_length_prefix_size = sizeof(uint32_t);
 
 static const std::string outbound_service_name = "auth_service";
 
+/*
+Sizing for the partial-send test. The existing outbound TLS tests send a handful of
+bytes, which SSL_write always takes in one go, so TlsRawBytesProtocolHandler::
+continue_send() and the is_tls() branch of OutboundConnectionManager::on_write_ready()
+were never reached. A payload far larger than the socket send buffer forces the write
+to go partial, EPOLLOUT to be registered, and the send to be resumed.
+
+16384 is the same send-buffer size PduProtocolHandlerIntegrationTest uses to force
+blocking on the plain-PDU path, so the mechanism is already proven on this platform.
+*/
+static constexpr size_t outbound_large_payload_bytes = 2 * 1024 * 1024;
+static constexpr int outbound_small_send_buffer_bytes = 16384;
+// The whole frame must fit one outbound slab chunk: payload plus length prefix.
+static constexpr size_t outbound_large_slab_bytes = 4 * 1024 * 1024;
+
 // Framing helpers
 
 namespace {
@@ -548,6 +563,28 @@ ReactorConfiguration make_outbound_reactor_config() {
     return cfg;
 }
 
+ReactorConfiguration make_outbound_partial_send_reactor_config() {
+    ReactorConfiguration cfg = make_outbound_reactor_config();
+    cfg.socket_send_buffer_size = outbound_small_send_buffer_bytes;
+    return cfg;
+}
+
+ApplicationThreadConfiguration make_large_send_thread_config() {
+    ApplicationThreadConfiguration cfg{};
+    cfg.outbound_slab_size = outbound_large_slab_bytes;
+    return cfg;
+}
+
+// A payload with position-dependent content, so a resumed send that duplicates or
+// drops a chunk is detected rather than being masked by uniform bytes.
+std::string make_large_outbound_payload() {
+    std::string payload(outbound_large_payload_bytes, '\0');
+    for (size_t index = 0; index < payload.size(); ++index) {
+        payload[index] = static_cast<char>('A' + (index % 26));
+    }
+    return payload;
+}
+
 } // un-named namespace
 
 // Connector thread: sends one framed request then decodes the reply.
@@ -651,6 +688,76 @@ class TlsOutboundPassiveConnectorThread : public ApplicationThread {
 };
 
 // Test fixture
+/*
+Connector thread that sends a payload too large for the socket send buffer, so the
+outbound TLS write must be completed across one or more EPOLLOUT wakeups.
+*/
+class TlsOutboundLargeSendConnectorThread : public ApplicationThread {
+  public:
+    TlsOutboundLargeSendConnectorThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
+        : ApplicationThread(token, logger, reactor, "TlsOutboundLargeSendConnectorThread", ThreadID{1}, make_queue_config(),
+                            make_allocator_config("TlsOutboundLargeSendPool"), make_large_send_thread_config()) {}
+
+    std::atomic<bool> connection_established{false};
+    std::atomic<bool> message_received{false};
+    std::atomic<bool> connection_lost{false};
+    std::string received_payload;
+    std::string sent_payload;
+    ConnectionID conn_id{};
+
+  protected:
+    void on_initial_event() override {
+        connect_to_service(outbound_service_name);
+    }
+
+    void on_connection_established(ConnectionID id) override {
+        conn_id = id;
+        connection_established.store(true, std::memory_order_release);
+        sent_payload = make_large_outbound_payload();
+        const std::string frame = make_outbound_framed(sent_payload);
+        send_raw(conn_id, frame.data(), static_cast<uint32_t>(frame.size()));
+    }
+
+    void on_connection_lost(const ConnectionID&, const std::string&) override {
+        connection_lost.store(true, std::memory_order_release);
+        shutdown("server disconnected");
+    }
+
+    void on_raw_socket_message(const EventMessage& message) override {
+        const uint8_t* data = message.payload();
+        const int available = message.payload_size();
+        if (data == nullptr || available <= 0) {
+            return;
+        }
+        if (available < last_available_) {
+            bytes_decoded_ = 0;
+        }
+        last_available_ = available;
+
+        const int unprocessed = available - bytes_decoded_;
+        if (unprocessed <= 0) {
+            return;
+        }
+
+        int64_t bytes_consumed = 0;
+        const std::string payload = try_decode_outbound_framed(data + bytes_decoded_, unprocessed, bytes_consumed);
+        if (bytes_consumed == 0) {
+            return;
+        }
+
+        received_payload = payload;
+        message_received.store(true, std::memory_order_release);
+        bytes_decoded_ += static_cast<int>(bytes_consumed);
+        commit_raw_bytes(conn_id, static_cast<int64_t>(bytes_decoded_));
+    }
+
+    void on_itc_message([[maybe_unused]] const EventMessage& msg) override {}
+
+  private:
+    int bytes_decoded_{0};
+    int last_available_{0};
+};
+
 class TlsOutboundIntegrationTest : public ::testing::Test {
   protected:
     void SetUp() override {
@@ -878,6 +985,75 @@ TEST_F(TlsOutboundIntegrationTest, OutboundTlsHandshakeFailureNoConnectionEstabl
     if (server_thread.joinable()) {
         server_thread.join();
     }
+    shutdown_and_join(*reactor, reactor_thread);
+}
+
+/*
+Test: an outbound TLS write larger than the socket send buffer is completed across
+EPOLLOUT wakeups, with the bytes arriving intact and in order.
+
+This is the only test in the suite that reaches TlsRawBytesProtocolHandler::
+continue_send() and the is_tls() branch of OutboundConnectionManager::on_write_ready().
+The plain-PDU equivalents are covered by PduProtocolHandlerIntegrationTest; the TLS
+path was not, and it is the path whose sibling defect -- EPOLLOUT not registered after
+flush_wbio returned EAGAIN -- once left a FIX logon hanging.
+
+The server deliberately delays before reading. That lets the send buffer fill while
+the reactor is still writing, which is what makes the partial write happen rather
+than hoping the payload alone is enough. Comparing the received payload with the sent
+one is the assertion that matters: it proves the resumed send reassembled the stream
+correctly, not merely that the resume path executed.
+*/
+TEST_F(TlsOutboundIntegrationTest, OutboundTlsLargeSendCompletesAcrossWriteReadyEvents) {
+    BlockingTlsServer server(certs_->server_cert_path, certs_->server_key_path);
+    ASSERT_TRUE(server.is_ready()) << "BlockingTlsServer failed to bind";
+
+    ServiceRegistry registry;
+    TlsClientConfiguration tls_config;
+    tls_config.ca_path = certs_->ca_cert_path;
+    tls_config.raw_buffer_capacity = outbound_tls_buffer_capacity;
+    registry.add_tls(outbound_service_name, NetworkEndpointConfiguration{"127.0.0.1", server.port()}, NetworkEndpointConfiguration{}, tls_config);
+
+    auto reactor = std::make_unique<Reactor>(make_outbound_partial_send_reactor_config(), registry, logger_->logger);
+    set_current_reactor(*reactor);
+
+    auto connector = ApplicationThread::create<TlsOutboundLargeSendConnectorThread>(logger_->logger, *reactor);
+    reactor->register_thread(connector);
+
+    std::string server_received;
+    std::thread server_thread([&]() {
+        if (!server.accept_client()) {
+            return;
+        }
+        // Let the connector's send buffer fill before draining anything.
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        server_received = server.recv_framed();
+        server.send_framed(outbound_response_payload);
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        server.close_client();
+    });
+
+    std::thread reactor_thread([&]() { reactor->run(); });
+
+    EXPECT_TRUE(wait_for([&]() { return connector->connection_established.load(std::memory_order_acquire); }))
+        << "Connector: ConnectionEstablished not received: " << last_wait_failure_description();
+
+    EXPECT_TRUE(wait_for([&]() { return connector->message_received.load(std::memory_order_acquire); }, 20000))
+        << "Connector: reply not received after large send: " << last_wait_failure_description();
+
+    EXPECT_EQ(connector->received_payload, outbound_response_payload);
+
+    EXPECT_TRUE(wait_for([&]() { return connector->connection_lost.load(std::memory_order_acquire); }))
+        << "Connector: ConnectionLost not received after server closed: " << last_wait_failure_description();
+
+    if (server_thread.joinable()) {
+        server_thread.join();
+    }
+
+    // The whole point: every byte arrived, once, in order.
+    EXPECT_EQ(server_received.size(), outbound_large_payload_bytes) << "server did not receive the whole payload";
+    EXPECT_EQ(server_received, connector->sent_payload) << "the resumed send did not reproduce the payload byte for byte";
+
     shutdown_and_join(*reactor, reactor_thread);
 }
 
