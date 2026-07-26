@@ -230,13 +230,19 @@ of each `claim_cpus()` call, but deletion is the clean reset.
 
 ## Outstanding
 
-- `cpu_registry_shm_path` is not yet configurable from TOML. The path defaults to
-  `<install_dir>/run/pubsub_cpu_registry` (injected by `deploy.py`). The C++ default in
-  `ReactorConfiguration` is `/dev/shm/pubsub_cpu_registry` — not used in practice because
-  `deploy.py` always overrides it. Making it fully configurable via TOML is deferred
-  (see [Roadmap](../roadmap.md)).
+- **Anti-affinity for non-hot-path threads is an open design problem.** The Prometheus metrics
+  endpoint needs a thread restricted to cores that nobody has pinned, and the registry cannot
+  answer that question reliably because no process knows when machine-wide claiming has finished.
+  The same root cause — greedy, start-order-dependent claiming — is why the gateways can end up on
+  E-cores. Nothing is implemented and no approach has been chosen; see
+  [Anti-Affinity for Non-Hot-Path Threads](cpu_pinning_anti_affinity.md).
+
+`cpu_registry_shm_path` and `cpu_registry_lock_file` are both configurable from TOML (since
+2026-07-03) and both mandatory whenever `cpu_pinning_enabled` is true — there is no longer a
+C++ default for either, and startup fails rather than running unpinned if they are absent.
 
 ## See Also
 
+- [Anti-Affinity for Non-Hot-Path Threads](cpu_pinning_anti_affinity.md)
 - [Threading](threading.md)
 - [Reactor](reactor.md)

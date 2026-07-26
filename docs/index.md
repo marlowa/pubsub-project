@@ -11,6 +11,7 @@
 - [Reactor](design/reactor.md)
 - [Threading](design/threading.md)
 - [CPU Pinning](design/cpu_pinning.md)
+- [CPU Pinning — Anti-Affinity for Non-Hot-Path Threads](design/cpu_pinning_anti_affinity.md) (open problem)
 - [Socket Communications](design/socket_comms.md)
 - [Secure Communications — TLS and SCRAM](design/secure_comms.md)
 - [Write-Ahead Log](design/wal.md)

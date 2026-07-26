@@ -740,6 +740,16 @@ larger.
 
 *Deployment:* Prometheus server and Grafana added to the environment configuration. The metrics HTTP endpoint for each C++ process should be on a configurable port, added to the TOML config templates and `dev.toml`. The scrape thread's CPU pinning must be excluded from the hot-path CPU registry so it does not collide with `OrderGatewayThread`, `SequencerThread`, or `MatchingEngineThread`.
 
+**Note (added 2026-07-26): that last sentence is a whole design problem, not a detail.** Keeping the
+scrape thread off the pinned cores requires knowing which cores are pinned, and the CPU registry
+cannot say reliably: it records what has claimed so far, and no process knows when machine-wide
+claiming has finished. A component that starts early computes a mask that silently permits cores
+pinned moments later. The same root cause also decides which components get P-cores, so it bears
+directly on the gateway comparison above. See the TODO section
+"anti-affinity for non-hot-path threads" below and
+[docs/design/cpu_pinning_anti_affinity.md](docs/design/cpu_pinning_anti_affinity.md); that should be
+settled before the endpoint lands, or the first thing it measures will be its own scheduling.
+
 17. ~~**Burst test with WAL replication active.**~~ — DONE (2026-07-05). `fix_client_burst_test.py` (stdlib only) drives the fix-test-client's Groovy API with a tight loop of N NewOrderSingles (default 20,000; `fix.uniqueId()` for idempotent ClOrdIDs), against the current system with `ha_enabled = true` and WAL replication live. It waits for every order's New ER (zero drops), checks for unexpected OrdStatus, and scans the delta of `sequencer_primary.log`/`sequencer_secondary.log` for WAL-path distress (slab/pool exhaustion, errors, drops; backpressure/EPOLLOUT reported as informational since they are handled). Verified live: **50,000 orders submitted at ~34,500 orders/s, all 50,000 acked (zero drops), no slab/pool exhaustion, no distress in the sequencer logs** — the `pending_er_` buffer and WAL TCP channel absorbed the burst. Reports throughput + PASS/FAIL; exit 0/1/2. pylint 10/10. For million-scale peak load, `perf_run.py`'s multi-client fix8 driver is the complement (a 1M-order burst with WAL active also passed this session). Original risk analysis retained below.
 
 The gateway thread is not the bottleneck: it is fully non-blocking (parse NOS → encode PDU → SendPdu command → return to event loop; the ER arrives as a separate later event). Multiple orders are genuinely in-flight simultaneously at different pipeline stages. Under a 1,000-order burst the gateway thread spends nearly all its time parsing and forwarding, not waiting.
@@ -1033,11 +1043,68 @@ exactly one leader, and both gateways already connect to it. That means a logon 
 through the sequencer and a new PDU pair, so it is a cross-component protocol change rather
 than a local edit.
 
+## TODO — anti-affinity for non-hot-path threads, and who gets the P-cores (raised 2026-07-26)
+
+**Open design problem. Nothing implemented, no approach chosen.** Full treatment, including the
+five approaches considered and the specific flaw in each, is in
+[docs/design/cpu_pinning_anti_affinity.md](docs/design/cpu_pinning_anti_affinity.md). Summary here
+so the problem is visible from this file.
+
+The Prometheus endpoint (item 16) runs its HTTP server on a civetweb background thread that must
+not share a core with a hot-path thread. That needs the inverse of the current facility: not "pin
+thread T to core C" but "restrict thread T to whatever cores nobody has pinned". Applying such a
+mask is easy -- `sched_setaffinity` takes a set, and the civetweb thread id is obtainable.
+Determining the set is the problem.
+
+**The registry is a record, not a plan.** `claim_cpus()` reports what has claimed so far. The
+anti-affinity mask needs to know what *will* claim, and a process that has not started yet leaves
+no trace. So a component that starts early computes a complement covering nearly every core --
+including the ones pinned seconds later -- and applies it successfully. The failure is silent.
+
+**The same root cause misallocates P-cores.** Claiming is greedy and follows `devenv.py` start
+order, so the gateways, which start last, get what is left. Measured 2026-07-26, same binaries and
+configuration: under full HA `OrderGatewayThread` landed on CPU 19 and `BinaryGatewayThread` on
+CPU 22, both E-cores; under `devenv.py --no-ha` they landed on CPU 10 and CPU 13, both P-cores.
+Nothing in the output records which regime produced a measurement. This is the scheduling form of
+the trap already noted under item 16 -- and the symmetry that makes the gateway comparison valid at
+all is an accident of arithmetic, since the P/E boundary falls wherever the cumulative thread count
+reaches 15 and one extra thread anywhere upstream would split the pair.
+
+**HA makes the shortfall structural.** 24 threads want 15 claimable P-cores, so nine must sit on
+E-cores regardless. The Quill backend threads (eight, genuinely off the hot path) are fair game.
+The HA followers are not: the sequencer follower is synchronously inside the client round trip
+because the leader withholds the ER until the WalAck arrives, and any follower may be promoted at
+any moment. Both members of a pair need equivalent cores.
+
+**Development is the environment that matters.** Production, preprod and test-1 all run one
+component per dedicated host, where there is no contention and anti-affinity is trivial. Only
+`dev.toml` puts eight claimants on one workstation -- and that is where every latency measurement
+and every protocol comparison is taken. A design that is sound in production and indeterminate in
+development yields a system that cannot be characterised.
+
+**Not viable, for the record:** a configured cap on how many programs may run. A maximum is an
+upper bound, not an expectation; the two coincide only at exactly full capacity, and `--no-ha`
+drops three of the eight claimants so a full-HA count is never reached and waiters block forever.
+"Programs running" is also the wrong quantity -- five components never claim at all -- and program
+count is a lossy proxy for core demand while `register_extra_thread()` exists.
+
+**Leaning:** declare the layout in configuration and derive nothing -- a `cores_for_other_work`
+entry in the environment TOML's `[shared]` section, with the hot-path pool as its complement and
+claiming constrained to it. That removes the race, survives the routine restarts that HA testing
+performs, fixes the P-core allocation, and makes measurements reproducible run to run. The
+objection that this project has no shared config does not hold: `[shared]` plus `deploy.py`'s
+template expansion is exactly that mechanism, and `deploy.py` already derives values rather than
+copying them. The cost is a maintained core budget, a deploy-time check that the sets are disjoint
+and complete, and `CpuRegistry` becoming a verifier rather than an allocator.
+
 ## Immediate Next Task
 
-**Item 16 — Prometheus metrics.** Every other near-term item on the roadmap's "Active / Next"
-list is now done (items 11, 12, 13, 14, 15, 17, 18, 19), which leaves Prometheus as the head of
-the queue. It is also a prerequisite rather than a nicety: gateway performance work is paused
+**Item 16 — Prometheus metrics, but read the CPU pinning anti-affinity TODO above first.** Every
+other near-term item on the roadmap's "Active / Next" list is now done (items 11, 12, 13, 14, 15,
+17, 18, 19), which leaves Prometheus as the head of the queue — with one unsettled design problem
+in front of it: the metrics thread must be kept off the pinned cores, and as of 2026-07-26 there is
+no sound way to determine which cores those are. That is not a detail of the endpoint; it reaches
+into the claiming model and into which components get P-cores at all. It is also a prerequisite rather than a nicety: gateway performance work is paused
 until it lands, because the FIX-versus-binary comparison cannot be settled by profiling and log
 timestamps — the 2026-07-26 note under item 16 records exactly which measurements failed and
 which metrics would fix each one. The two design constraints that matter most are that both

@@ -37,6 +37,20 @@ Near-term tasks not tied to a specific slice.
 
 ### Active / Next
 
+- **CPU pinning: anti-affinity for non-hot-path threads** — open design problem, nothing chosen.  
+  Raised 2026-07-26 while planning item 16. The Prometheus endpoint's civetweb thread must not run
+  on any pinned core, and the CPU registry cannot answer that reliably: it records what has claimed
+  so far, and no process knows when machine-wide claiming has finished, so a component that starts
+  early computes a mask that silently permits cores pinned moments later. The same root cause —
+  greedy, start-order-dependent claiming — is why both gateways landed on E-cores under full HA and
+  on P-cores under `--no-ha`, which would make the FIX-versus-binary comparison measure core type
+  rather than protocol. HA compounds it: the sequencer follower is synchronously inside the client
+  round trip and may be promoted at any moment, so followers cannot be given the cheap cores.  
+  Five approaches are recorded with the specific flaw in each, along with the measured evidence, in
+  [Anti-Affinity for Non-Hot-Path Threads](design/cpu_pinning_anti_affinity.md). **Read that before
+  starting item 16** — the metrics endpoint should not land until this is settled, or the first
+  thing it measures will be its own scheduling.
+
 - **Prometheus metrics** (item 16).  
   Continuous observability, so latency analysis stops being log archaeology. This is now the
   head of the queue for a second reason: it is the prerequisite for a meaningful FIX-versus-binary
