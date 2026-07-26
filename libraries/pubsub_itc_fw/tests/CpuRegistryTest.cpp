@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <cstddef>
+#include <cstdlib>
 #include <set>
 #include <string>
 #include <thread>
@@ -17,21 +18,34 @@
 #include <pubsub_itc_fw/CpuRegistry.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
+#include <pubsub_itc_fw/StringUtils.hpp>
 
 using namespace pubsub_itc_fw;
 
 class CpuRegistryTest : public ::testing::Test {
   protected:
+    /*
+    Both files go in a directory unique to this test, not at a fixed machine-wide
+    name. A fixed name means two runs of the suite -- two developers on a shared
+    box, or one developer running it twice -- share a registry and interfere with
+    each other's claims, which is the same mistake the production configuration
+    used to make by putting the registry in /dev/shm.
+    */
     void SetUp() override {
-        shm_path_ = "/dev/shm/pubsub_cpu_registry_test.shm";
-        lock_path_ = "/tmp/pubsub_cpu_registry_test.lock";
-        ::unlink(shm_path_.c_str());
-        ::unlink(lock_path_.c_str());
+        char directory_template[] = "/tmp/pubsub_cpu_registry_test_XXXXXX"; // NOLINT(modernize-avoid-c-arrays)
+        const char* created_directory = ::mkdtemp(directory_template);
+        ASSERT_NE(created_directory, nullptr) << "mkdtemp failed: " << StringUtils::get_errno_string();
+        directory_ = created_directory;
+        shm_path_ = directory_ + "/registry";
+        lock_path_ = directory_ + "/registry.lock";
     }
 
     void TearDown() override {
         ::unlink(shm_path_.c_str());
         ::unlink(lock_path_.c_str());
+        if (!directory_.empty()) {
+            ::rmdir(directory_.c_str());
+        }
     }
 
     /*
@@ -45,6 +59,7 @@ class CpuRegistryTest : public ::testing::Test {
         return std::thread::hardware_concurrency();
     }
 
+    std::string directory_{};
     std::string shm_path_{};
     std::string lock_path_{};
 };
@@ -57,12 +72,18 @@ TEST_F(CpuRegistryTest, ConstructionCreatesAndSizesTheSharedFile) {
     EXPECT_GE(st.st_size, static_cast<off_t>(sizeof(SharedCoreRegistryLayout)));
 }
 
-TEST_F(CpuRegistryTest, ClaimReturnsAtMostRequestedCount) {
+TEST_F(CpuRegistryTest, ClaimReturnsExactlyTheRequestedCount) {
+    if (machine_core_count() < 2) {
+        GTEST_SKIP() << "machine has fewer than two cores";
+    }
+
     CpuRegistry registry(shm_path_, lock_path_);
 
     const AvailableCpuVector claimed = registry.claim_cpus(2, false);
 
-    EXPECT_LE(claimed.size(), static_cast<size_t>(2));
+    // On a machine with cores to spare the count is exact, not merely bounded: an
+    // upper bound alone is satisfied by claiming nothing.
+    EXPECT_EQ(claimed.size(), static_cast<size_t>(2));
 }
 
 TEST_F(CpuRegistryTest, ClaimZeroReturnsEmpty) {
@@ -71,22 +92,30 @@ TEST_F(CpuRegistryTest, ClaimZeroReturnsEmpty) {
     EXPECT_TRUE(registry.claim_cpus(0, false).empty());
 }
 
-TEST_F(CpuRegistryTest, ClaimWithReserveCpu0Runs) {
+TEST_F(CpuRegistryTest, ClaimWithReserveCpu0ExcludesCpuZero) {
+    if (machine_core_count() < 2) {
+        GTEST_SKIP() << "reserving CPU 0 leaves nothing to claim on a single-core machine";
+    }
+
     CpuRegistry registry(shm_path_, lock_path_);
 
     const AvailableCpuVector claimed = registry.claim_cpus(1, true);
 
-    EXPECT_LE(claimed.size(), static_cast<size_t>(1));
+    ASSERT_FALSE(claimed.empty()) << "a machine with cores claimed none";
     for (const CpuAssignment& assignment : claimed) {
         EXPECT_NE(assignment.cpu_id.get_value(), 0);
     }
 }
 
 TEST_F(CpuRegistryTest, ReleaseIsIdempotent) {
+    if (machine_core_count() < 1) {
+        GTEST_SKIP() << "machine reports no cores";
+    }
+
     CpuRegistry registry(shm_path_, lock_path_);
 
     const AvailableCpuVector claimed = registry.claim_cpus(1, false);
-    EXPECT_LE(claimed.size(), static_cast<size_t>(1));
+    ASSERT_FALSE(claimed.empty()) << "a machine with cores claimed none";
 
     registry.release_cpus();
     registry.release_cpus(); // second call is a no-op, must not crash
@@ -98,13 +127,18 @@ TEST_F(CpuRegistryTest, ThrowsWhenSharedFileCannotBeOpened) {
 }
 
 TEST_F(CpuRegistryTest, MoveConstructionLeavesSourceInert) {
+    if (machine_core_count() < 1) {
+        GTEST_SKIP() << "machine reports no cores";
+    }
+
     CpuRegistry source(shm_path_, lock_path_);
     CpuRegistry moved(std::move(source));
 
     // The moved-from registry has no mapping, so a claim returns nothing and does
-    // not crash.
+    // not crash. The destination must have taken over the mapping and still work --
+    // asserting only an upper bound on its claim would pass for a broken move.
     EXPECT_TRUE(source.claim_cpus(1, false).empty()); // NOLINT(bugprone-use-after-move)
-    EXPECT_LE(moved.claim_cpus(1, false).size(), static_cast<size_t>(1));
+    EXPECT_FALSE(moved.claim_cpus(1, false).empty());
 }
 
 TEST_F(CpuRegistryTest, ThrowsWhenTheRegistryPathIsEmpty) {
