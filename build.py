@@ -60,6 +60,95 @@ def run_pytest(source_dir):
     print("\n✓ Python tests passed")
 
 
+def rewrite_tracefile_for_genhtml(raw_info, clean_info):
+    """
+    Rewrite gcovr's lcov tracefile into something genhtml renders honestly.
+
+    Three corrections, each of which was producing a misleading report:
+
+    1. gcovr embeds a per-line source checksum (the third DA field) and a VER
+       line. lcov 1.14's genhtml recomputes the checksum differently and aborts.
+
+    2. Every PUBSUB_LOG call site emits an FMT_COMPILE_STRING lambda that gcov
+       records as a function and never marks executed -- measured 2026-07-26 as 144
+       records, every one uncovered, because they are uncoverable by construction.
+       They wreck the per-file function figures: OutboundConnectionManager.cpp read
+       40.5% while all 17 of its real member functions were being called, and
+       TimerHandler.cpp read 25.0% with 3 of 3 called. The log *lines* are already
+       dropped by --exclude-lines-by-pattern; these are the same artefact at the
+       same call sites, so removing them is consistency rather than generosity.
+
+    3. gcovr's LF/LH and FNF/FNH summary counters disagree with the per-line and
+       per-function records for template-heavy headers -- ThreadWithJoinTimeout.hpp
+       claimed LF:1145 for a 196-line file whose records hold 64 lines. genhtml
+       recomputes from the records, so its HTML was right, but anything reading the
+       tracefile directly is misled. Recompute the counters from what survives.
+
+    @param[in]  raw_info    Tracefile as gcovr wrote it.
+    @param[out] clean_info  Tracefile to hand to genhtml.
+    """
+    da_line = re.compile(r'^DA:(\d+),(\d+)')
+    function_line = re.compile(r'^(FN|FNDA):[^,]+,(.+)$')
+    function_data_line = re.compile(r'^FNDA:(\d+),(.+)$')
+    function_name_line = re.compile(r'^FN:\d+,(.+)$')
+
+    output = []
+    record = []
+
+    def flush_record():
+        """Emit one source-file record with its counters recomputed."""
+        if not record:
+            return
+        line_hits = {}
+        function_hits = {}
+        for entry in record:
+            match = da_line.match(entry)
+            if match is not None:
+                number = int(match.group(1))
+                line_hits[number] = line_hits.get(number, 0) + int(match.group(2))
+                continue
+            match = function_name_line.match(entry)
+            if match is not None:
+                function_hits.setdefault(match.group(1), 0)
+                continue
+            match = function_data_line.match(entry)
+            if match is not None:
+                name = match.group(2)
+                function_hits[name] = function_hits.get(name, 0) + int(match.group(1))
+        for entry in record:
+            if entry.startswith(("LF:", "LH:", "FNF:", "FNH:")):
+                continue
+            output.append(entry)
+        output.append(f"FNF:{len(function_hits)}\n")
+        output.append(f"FNH:{sum(1 for count in function_hits.values() if count > 0)}\n")
+        output.append(f"LF:{len(line_hits)}\n")
+        output.append(f"LH:{sum(1 for count in line_hits.values() if count > 0)}\n")
+        record.clear()
+
+    for line in raw_info.read_text(encoding="utf-8").splitlines(keepends=True):
+        if line.startswith("VER:"):
+            continue
+        match = function_line.match(line.rstrip("\n"))
+        if match is not None and "FMT_COMPILE_STRING" in match.group(2):
+            continue
+        if line.startswith("end_of_record"):
+            flush_record()
+            output.append(line)
+            continue
+        # Drop gcovr's DA checksum, keeping line number and hit count.
+        record.append(re.sub(r'^(DA:\d+,\d+),.*$', r'\1', line.rstrip("\n")) + "\n"
+                      if line.startswith("DA:") else line)
+    flush_record()
+
+    clean_info.write_text("".join(output), encoding="utf-8")
+
+    lines_found = sum(int(entry[3:]) for entry in output if entry.startswith("LF:"))
+    lines_hit = sum(int(entry[3:]) for entry in output if entry.startswith("LH:"))
+    functions_found = sum(int(entry[4:]) for entry in output if entry.startswith("FNF:"))
+    functions_hit = sum(int(entry[4:]) for entry in output if entry.startswith("FNH:"))
+    return lines_found, lines_hit, functions_found, functions_hit
+
+
 def generate_coverage_report(build_dir, source_dir):
     """Generate an HTML coverage report: gcovr captures, genhtml renders.
 
@@ -102,6 +191,11 @@ def generate_coverage_report(build_dir, source_dir):
         # "functions", crushing the function-coverage figure. It carries no
         # testable logic of its own, so exclude it from the denominator.
         r"(.*/)?LoggingMacros\.hpp",
+        # Benchmark and bench-harness mains. These are main() functions of
+        # standalone performance executables, never run by the test suites, so they
+        # sit permanently at 0% and only depress the figure -- same reasoning as
+        # tests/ and applications/ above.
+        r"(.*/)?performance/.*",
     ]
 
     # Prefer the gcovr executable on PATH (e.g. a pipx/user install) so the report
@@ -117,7 +211,6 @@ def generate_coverage_report(build_dir, source_dir):
         "--exclude-lines-by-pattern", r'PUBSUB_LOG|^\s+"[^"]*"',
         "--exclude-throw-branches",
         "--exclude-unreachable-branches",
-        "--print-summary",
         "--lcov", str(raw_info),
     ]
     for pattern in excludes:
@@ -125,15 +218,12 @@ def generate_coverage_report(build_dir, source_dir):
 
     run_command(cmd, description="Capturing coverage with gcovr")
 
-    # Strip gcovr's per-line source checksums and VER line so lcov 1.14's genhtml
-    # does not abort on a checksum it recomputes differently.
-    da_line = re.compile(r'^(DA:\d+,\d+),.*$')
-    cleaned = []
-    for line in raw_info.read_text(encoding="utf-8").splitlines(keepends=True):
-        if line.startswith("VER:"):
-            continue
-        cleaned.append(da_line.sub(r'\1', line))
-    clean_info.write_text("".join(cleaned), encoding="utf-8")
+    lines_found, lines_hit, functions_found, functions_hit = rewrite_tracefile_for_genhtml(raw_info, clean_info)
+    # gcovr's own --print-summary counts each template instantiation as separate
+    # lines, so it reports a different (larger) denominator than the rendered
+    # report. Print what the HTML shows, so there is one number to quote.
+    print(f"  lines     {lines_hit}/{lines_found} = {100.0 * lines_hit / lines_found:.1f}%")
+    print(f"  functions {functions_hit}/{functions_found} = {100.0 * functions_hit / functions_found:.1f}%")
 
     run_command(
         [
