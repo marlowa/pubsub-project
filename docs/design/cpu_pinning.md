@@ -230,12 +230,15 @@ of each `claim_cpus()` call, but deletion is the clean reset.
 
 ## Outstanding
 
-- **Anti-affinity for non-hot-path threads is an open design problem.** The Prometheus metrics
-  endpoint needs a thread restricted to cores that nobody has pinned, and the registry cannot
-  answer that question reliably because no process knows when machine-wide claiming has finished.
-  The same root cause — greedy, start-order-dependent claiming — is why the gateways can end up on
-  E-cores. Nothing is implemented and no approach has been chosen; see
-  [Anti-Affinity for Non-Hot-Path Threads](cpu_pinning_anti_affinity.md).
+- **The allocation scheme described above is superseded in design, though not yet in code.** Greedy,
+  start-order-dependent claiming cannot say which cores a not-yet-started process will take, so the
+  Prometheus endpoint cannot compute a mask of unpinned cores, and the gateways can end up on
+  E-cores purely because they start last. The agreed replacement declares the layout instead of
+  negotiating it: a per-machine manifest plus a machine-invariant rank per component, resolved to
+  core ids by `deploy.py` on the target host, with every process masked to a background pool by
+  default and hot-path placement granted by explicit promotion. `CpuRegistry` is proposed to become
+  a runtime record and collision detector rather than the allocator. Nothing is implemented; see
+  [CPU Core Layout](cpu_pinning_anti_affinity.md).
 
 `cpu_registry_shm_path` and `cpu_registry_lock_file` are both configurable from TOML (since
 2026-07-03) and both mandatory whenever `cpu_pinning_enabled` is true — there is no longer a
@@ -243,6 +246,6 @@ C++ default for either, and startup fails rather than running unpinned if they a
 
 ## See Also
 
-- [Anti-Affinity for Non-Hot-Path Threads](cpu_pinning_anti_affinity.md)
+- [CPU Core Layout — Declared Allocation and Background by Default](cpu_pinning_anti_affinity.md)
 - [Threading](threading.md)
 - [Reactor](reactor.md)

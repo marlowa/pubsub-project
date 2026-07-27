@@ -1,40 +1,40 @@
-# CPU Pinning — Anti-Affinity for Non-Hot-Path Threads
+# CPU Core Layout — Declared Allocation and Background by Default
 
-**Status: open design problem. Nothing implemented. Raised 2026-07-26.**
+**Status: design agreed 2026-07-27. Nothing implemented.**
 
-A direction has emerged since -- see the **Recommended shape** section near the end, which
-reframes the requirement rather than answering it as posed. It has not been ratified or built, and
-the rationing question it leaves open is still unanswered.
+This document began as a record of an open problem found while planning the Prometheus metrics
+endpoint ([Roadmap](../roadmap.md) item 16). That problem is now resolved in design, and the
+agreed shape is set out in [The agreed design](#the-agreed-design) below. The original problem
+statement and the approaches rejected along the way are retained, because the reasoning is the
+justification for the design and re-covering the ground would be waste.
 
-This document records a problem found while planning the Prometheus metrics endpoint
-([Roadmap](../roadmap.md) item 16), together with the approaches considered so far and why each
-falls short. It is a companion to [CPU Pinning](cpu_pinning.md), which describes the mechanism as
-built; this one describes what the mechanism cannot currently do.
+Three points within the design are marked **proposal** — they were put forward as the obvious
+answers rather than settled in discussion, and should be challenged before implementation.
 
-The problem is not solved. Do not treat any option below as chosen.
+It is a companion to [CPU Pinning](cpu_pinning.md), which describes the mechanism as built.
 
 ---
 
-## The requirement
+## The requirement, as originally posed
 
 The Prometheus endpoint runs an embedded HTTP server (civetweb, inside `prometheus-cpp`) on a
 background thread that an external scraper connects to. That thread does blocking I/O on a
 timescale of scrape intervals and has no business sharing a core with a hot-path thread.
 
-So it needs the inverse of the existing facility. Today the framework can say *pin thread T to
-core C* (`pin_thread_to_core`, `pin_tid_to_core` in `CpuPinning.hpp`). What is needed is *restrict
-thread T to whatever cores nobody has pinned* — anti-affinity against the CPU registry.
+So it needed the inverse of the existing facility. The framework can say *pin thread T to core C*
+(`pin_thread_to_core`, `pin_tid_to_core` in `CpuPinning.hpp`). What was wanted is *restrict thread
+T to whatever cores nobody has pinned* — anti-affinity against the CPU registry.
 
-Two parts of this are not difficult:
+Two parts of this were never difficult:
 
 - **Applying the mask.** `sched_setaffinity` takes a CPU set, so a multi-core mask costs no more
   than a single-core one. The natural formulation is a positive affinity mask over the complement
   of the claimed set, rather than anything genuinely "negative".
 - **Reaching the thread.** The civetweb thread's OS thread id is obtainable, so no `/proc/self/task`
-  walking or affinity-inheritance trickery is required. (Threads do inherit their creator's mask
-  on Linux, verified, but it turns out not to be needed.)
+  walking or affinity-inheritance trickery is required.
 
-Determining *which cores* belong in the mask is the whole problem.
+Determining *which cores* belong in the mask was the whole problem — and the design below dissolves
+the question rather than answering it, by never computing a complement from observed claims at all.
 
 ---
 
@@ -59,9 +59,7 @@ claimant has arrived:
 - There is an intra-process ordering hazard as well: the Reactor claims during `initialize()`, so
   a thread created before that point cannot see even its own process's pins.
 - If every core is claimed, the complement is empty. An empty affinity mask is `EINVAL`; a thread
-  permitted to run nowhere is not a thread. A fallback must be defined — leaving the mask untouched
-  and logging at `Error` is the obvious candidate, since silently running unrestricted is the
-  thing being prevented.
+  permitted to run nowhere is not a thread.
 
 A process that has not started yet leaves no trace, so this is not a matter of looking harder.
 
@@ -95,7 +93,7 @@ Note the parallel with the warning already recorded under item 16 in the summary
 is instrumented more heavily than the other, the comparison measures the instrumentation. This is
 the scheduling form of the same trap.
 
-### Difficulty 3: the shortfall, and why "demote the standbys" is only half wrong
+### Difficulty 3: the shortfall
 
 Twenty-four threads want fifteen P-cores, so nine must land on E-cores whatever policy is chosen.
 Two obvious places to economise: the Quill backend threads (eight of them, genuinely off the hot
@@ -107,40 +105,17 @@ Verified in the code:
   commit described in [WAL and High Availability](wal_and_ha.md), the leader parks each execution
   report in `pending_er_` and releases it to the gateway only when the matching `WalAck` arrives
   (`SequencerThread.cpp:558` and `:1076`). The follower's wake-up latency is therefore added to
-  every order's round trip -- measured p90 wake-up for that thread is around 354 us. A follower on
-  a slow core slows the *leader's* client-visible responses. This one cannot be demoted.
+  every order's round trip — measured p90 wake-up for that thread is around 354 us. A follower on
+  a slow core slows the *leader's* client-visible responses.
 - **The matching engine secondary is not.** `send_book_update()` is fire-and-forget
   (`MatchingEngineThread.cpp:453` and `:561`); the primary does not wait for the secondary to
   acknowledge anything. The secondary merely tails the book. Same HA pattern as the sequencer,
   opposite conclusion.
 
-The remaining objection to demoting a follower was that roles swap, and that this is the
-tested-for case rather than an exception -- `ha_test.py` kills and restarts components routinely,
-and a promoted follower is instantly the latency-critical path. That objection has a
-straightforward answer:
-
-**Re-pin on promotion.** When a leader dies the registry evicts its entries automatically (the
-dead-pid compaction at the start of `claim_cpus()`), so its cores are free the moment it goes.
-Affinity can be changed at any time -- `pthread_setaffinity_np` is not restricted to startup. So a
-follower may sit on the cheap tier and, on being granted the leader role by the arbiter, claim the
-cores the dead leader has just released. That is a small piece of work, and it makes follower
-demotion sound for the matching engine and the publisher.
-
-So the honest statement of Difficulty 3 is narrower than "HA doubles the requirement": **one**
-follower, the sequencer's, needs hot-path cores continuously; the rest can be demoted provided
-promotion re-pins.
-
-With that, the arithmetic becomes comfortable rather than impossible:
-
-| tier | threads |
-|---|---|
-| Quill backends, all 8 components | 8 |
-| `matching_engine_secondary`, `mep_primary`, `mep_secondary` -- app + reactor | 6 |
-| **other-work tier total** | **14** |
-| both gateways, both sequencers, `matching_engine_primary` -- app + reactor | 10 |
-| **hot-path tier total** | **10**, against 15 available P-cores |
-
-Both gateways on P-cores, deterministically, with headroom.
+This pair is the reason the design carries a declared ranking rather than deriving one. No tool can
+infer the `WalAck` fact from placement or from the code, and the tempting rule — "demote a
+secondary when it is co-located with its primary" — gets the matching engine right and the
+sequencer catastrophically wrong.
 
 ---
 
@@ -148,8 +123,7 @@ Both gateways on P-cores, deterministically, with headroom.
 
 A production deployment needs to know which processes will run on a given machine, and which of
 those are mandatory for an operational system. That is the right question to ask, and the
-per-machine half of it is what makes the anti-affinity complement computable at all -- see approach
-6 below.
+per-machine half of it is what makes the layout computable at all.
 
 But the *mandatory* flag must not also drive core allocation, because the two properties are
 orthogonal. The sequencer secondary is the counterexample that proves it: the venue trades
@@ -168,25 +142,24 @@ and slow every order in the system.
 | `auth_service_a`, `auth_service_b` | yes | no | logon only, not per order |
 | `arbiter_primary`, `arbiter_secondary`, `witness` | for resilience, not trading | no | election and failover only |
 | `admin_service` | no | no | operator UI |
+| `fix_test_client` | no | no | load generator; dev, FT and NFT only |
 
 Two independent axes: **mandatory**, driving readiness and health checks and whether the launcher
-may declare the system operational; and a **latency class**, driving which core tier a process's
+may declare the system operational; and a **latency rank**, driving which core tier a process's
 threads receive. They agree on most rows, which is precisely why one flag would look adequate while
 quietly misplacing the row that matters.
 
-*Mandatory* may not be cleanly binary either. The arbiters are not needed for the venue to keep
-trading, only for it to survive a failure, so "mandatory for trading" and "mandatory for
-resilience" are arguably distinct -- which suggests an enum rather than a boolean.
+Only the latency rank is part of this design. *Mandatory* is left for whoever builds readiness
+checks, and may not be cleanly binary — the arbiters are not needed for the venue to keep trading,
+only for it to survive a failure, which suggests an enum rather than a boolean.
 
 ---
 
 ## Why development is the environment that matters
 
 `prod.toml`, `preprod.toml` and `test-1.toml` all run **one component per dedicated host**. There
-is no contention there: a single claimant takes what it needs from a whole machine, the complement
-is large and stable, and anti-affinity is trivial because the only claimant has finished claiming
-before anything else starts. Production hosts are also candidates for `isolcpus` / `nohz_full` and
-a low-latency kernel.
+is no contention there: a single claimant takes what it needs from a whole machine. Production
+hosts are also candidates for `isolcpus` / `nohz_full` and a low-latency kernel.
 
 `dev.toml` runs everything on one workstation — fifteen components, eight of which pin — with no
 CPU isolation and a stock kernel.
@@ -198,210 +171,578 @@ design that is sound in production and indeterminate in development yields a sys
 characterised.
 
 This does constrain the solution, though — production must not be made to carry configuration
-whose only purpose is the development case.
+whose only purpose is the development case. The design below satisfies that: the ranking is
+declared once and is machine-invariant, and on a dedicated production host it never binds.
 
 ---
 
-## Approaches considered
+## The agreed design
 
-None chosen. Recorded so the ground is not re-covered.
+### The two halves
+
+The decisive observation is that "should this instance get hot-path cores" is not one quantity but
+two, and conflating them is what made earlier attempts awkward:
+
+- **Rank — declared, machine-invariant.** The order in which entitlement to a hot-path core is
+  given up when a machine is short. This is domain knowledge: the sequencer follower's `WalAck`
+  gates every execution report, the matching engine secondary's `BookUpdate` does not. That fact is
+  true in every environment and never varies by deployment.
+- **Cut point — computed, per machine.** Where the pool runs out. A function of the machine's
+  population and its actual core topology, both of which `deploy.py` can determine on the target
+  host.
+
+On a dedicated production host the cut point falls below everything, the rank never binds, and a
+secondary receives exactly what its primary receives — with no per-environment configuration and no
+special case. On the development workstation the cut point lands somewhere real and the rank
+decides who is above it.
+
+This is why a *class* ("this component is background") would have been wrong. There is no reason to
+withhold a P-core from `matching_engine_secondary` on a host where nothing else wants one. Demotion
+is a consequence of contention, not a property of the component.
+
+### Declared input 1: which processes run on which machine
+
+A new `[machines.*]` section in the environment TOML:
+
+```toml
+[machines.localhost]
+components = [
+    "auth_service_a", "auth_service_b", "witness",
+    "arbiter_primary", "arbiter_secondary",
+    "matching_engine_primary", "matching_engine_secondary",
+    "sequencer_primary", "sequencer_secondary",
+    "mep_primary", "mep_secondary",
+    "order_gateway", "binary_gateway",
+    "admin_service", "fix_test_client",
+]
+# minimum_background_cores omitted: this workstation is hybrid, so the P-core
+# ceiling caps hot-path at 15 and the 16 E-cores are background regardless.
+```
+
+```toml
+[machines.matching-engine-1.exchange.internal]
+components = ["matching_engine"]
+minimum_background_cores = 2
+```
+
+Points of substance:
+
+- **`localhost` is a recognised machine name**, used by `dev.toml` where everything runs on one
+  workstation. It needs no resolution and carries no `# REPLACE`.
+- **The list must name every process on the machine, not only those that pin.** Seven of the
+  fifteen dev components have `cpu_pinning_enabled = false` and claim nothing today — which means
+  they are currently free to run *anywhere*, including on the cores the gateways are pinned to.
+  They are listed because they need a background mask, which is the point they were previously
+  missing.
+- Absolute counts rather than fractions: clearer to reason about, and there will be few machines.
+
+#### What `minimum_background_cores` means
+
+The two tiers are two *ways of using a core*, not used versus unused:
+
+| tier | occupancy |
+|---|---|
+| hot-path | **dedicated** — one thread per core, exclusively |
+| background | **shared** — ordinary multitasking, many threads per core |
+
+So background cores are not free or idle; they are where everything else runs. The setting asks how
+much of the machine stays ordinary shared multitasking, at minimum. It is **a floor on the size of
+the background pool**, not an apportionment of the machine, and it is small on every machine
+regardless of size:
+
+| machine | dedicated | shared | minimum |
+|---|---|---|---|
+| prod matching-engine host, 20 cores | 2 | 18, holding 1-2 threads | 2 |
+| development workstation, 32 cores | 14 | 17, holding ~25 threads plus two JVMs | omitted — see below |
+| work machine, 20 cores uniform | 10 | 9 | 4-6 |
+| 8-core VM | 4 | 4 | 2 |
+
+**Its first job is correctness, not tuning: the background pool must never be empty.** Every process
+has at least a Quill backend that must run somewhere, and an empty affinity mask is `EINVAL` — a
+thread permitted to run nowhere is not a thread. On an 8-core VM, rank 1 takes four cores leaving
+four; rank 2 wants four more, which would leave zero. The floor is what refuses that.
+
+**It does not bind on a hybrid machine, so `dev.toml` omits it.** Verified on the development
+workstation via `acpi_cppc/highest_perf`: cores 0-15 report 70 or 74 (P-cores, eight physical with
+hyperthreading), cores 16-31 report 43 (E-cores). With cpu0 reserved that is 15 claimable P-cores
+and 16 E-cores. Hot-path threads only ever occupy P-cores, so the hot-path pool can never exceed 15
+and the background pool can never fall below 16 — the P-core ceiling always binds first, and any
+value from 0 to 16 yields an identical layout. A setting that cannot affect the outcome on the
+machine it is written for is worse than no setting, so it is omitted and `deploy.py` warns if one
+appears on a hybrid host.
+
+**It does not bind in production either**, where a host runs one component wanting two cores out of
+twenty. It is therefore a development-and-VM safety valve: it constrains a **uniform-core** machine,
+where every core reads as `CoreType::Unknown`, is treated as a P-core, and nothing else stops
+hot-path growth from consuming the host. Missing on a uniform-core machine is a hard error. The
+20-core worked example below is that case.
+
+A bonus that falls out and is worth taking: `prod.toml` currently repeats hostnames across roughly
+twenty `# REPLACE` entries — `sequencer-primary.exchange.internal` appears five times. With a
+machine manifest those become derivable from the machine each component sits on, in the same place
+`deploy.py` already derives registry paths and WAL directories.
+
+### Declared input 2: the rank
+
+On `[components.*]`, alongside `ha_only`, because it is a per-instance property and `dev.toml`
+already gives each instance its own entry:
+
+```toml
+[components.order_gateway]
+binary        = "bin/order_gateway"
+config        = "etc/order_gateway/order_gateway.toml"
+workdir       = "etc/order_gateway"
+ha_only       = false
+hot_path_rank = 1
+
+[components.sequencer_secondary]
+ha_only       = true
+hot_path_rank = 2          # WalAck gates every ER; not demotable
+
+[components.matching_engine_secondary]
+ha_only       = true
+hot_path_rank = 5          # BookUpdate is fire-and-forget; first to yield
+```
+
+**Absence of `hot_path_rank` means background.** Forgetting to rank a component places it where it
+almost certainly belonged, and the worst outcome is a background thread on a background core. This
+is the same default-value discipline the rest of the design rests on.
+
+The proposed ranking, following the reasoning in Difficulty 3 and the taxonomy table:
+
+| rank | components | hot-path threads |
+|---|---|---|
+| 1 | `order_gateway`, `binary_gateway` | 4 |
+| 2 | `sequencer_primary`, `sequencer_secondary` | 4 |
+| 3 | `matching_engine_primary` | 2 |
+| 4 | `mep_primary`, `mep_secondary` | 4 |
+| 5 | `matching_engine_secondary` | 2 |
+| — | everything else | background |
+
+### Ties are a constraint, not merely an ordering
+
+**A rank group is admitted whole or not at all.** Both gateways are rank 1, so either both are above
+the cut or both are below it. They can never be split.
+
+This is the point of the whole encoding. Today the gateway symmetry is, per Difficulty 2, an
+accident of arithmetic — one extra thread anywhere upstream splits the pair mid-run with nothing in
+the output to say so. Under whole-group admission an extra thread demotes the *lowest-ranked entire
+group*. The comparison that item 16 exists to enable stays valid by construction rather than by
+luck.
+
+### Thread counts stay in the code; the TOML never declares them
+
+**The application knows how many threads it registers with the Reactor, and the environment TOML
+must not need to know.** A count in configuration is a second source of truth that drifts the moment
+someone adds a thread, and drifts silently.
+
+Under this design the quantity is simple and stable:
+
+> hot-path demand = the reactor thread + the registered `ApplicationThread`s
+
+Threads registered through `register_extra_thread()` are **background by default**, like any other
+thread the process creates, and so do not enter the calculation. Every component currently registers
+exactly one `ApplicationThread` (`MatchingEngine.cpp:62`, `Sequencer.cpp:72`,
+`OrderGateway.cpp:67`, `AuthenticationService.cpp:51`), so every ranked component wants two cores.
+
+That extras are excluded is not a simplification for its own sake — it removes a real hazard.
+`OrderGatewayThread` registers `FixCaptureWriter` **conditionally**, on
+`config.fix_capture_enabled`. So today the same binary has different core demand depending on a
+configuration flag (`Reactor.cpp:549` adds `1 + thread->get_extra_threads().size()` per thread). Any
+figure written into the environment TOML would be correct for one setting of that flag and silently
+wrong for the other. With extras in the background tier, `order_gateway` wants two hot-path cores
+either way, and `FixCaptureWriter` — a file-writing thread — stops consuming a dedicated core, which
+it should never have had.
+
+`deploy.py` therefore asks the binary rather than reading a number: it runs on the target host, so
+the binary is present and can be queried (`bin/sequencer --hot-path-thread-count`). This is backed
+by a fail-loud check at component startup when fewer cores have been assigned than the component
+needs, so a stale layout is diagnosed rather than absorbed.
+
+### Resolution: what `deploy.py` computes
+
+`deploy.py` takes no host argument and runs on the machine it is installing to, so it can read
+`/sys/devices/system/cpu` directly and see the real topology — 32 cores on the development
+workstation, 20 on the work machine, fewer on a VM. The same declaration resolves differently on
+each, and re-running deploy after a hardware change recomputes it. This is the reason for declaring
+a *rank* rather than a CPU bitmask: a bitmask states the answer, is machine-specific, must be
+re-derived for every environment, and offers no way to check one encoding against another.
+
+```
+claimable = online cores, minus cpu0 when reactor_cpu_pinning_reserve_cpu0
+groups    = components on this machine having hot_path_rank, grouped by rank, ascending
+hot_path  = []
+
+for group in groups:
+    demand = sum of hot_path_thread_count over the group
+    if enough P-cores remain for demand, and
+       claimable - |hot_path| - demand >= minimum_background_cores:
+        admit the group, allocating P-cores first
+    else:
+        stop
+
+background = claimable - hot_path
+```
+
+Two constraints, both of which must hold, and **`stop` rather than `skip`**: once a group does not
+fit, no lower-ranked group is considered either. Otherwise a small low-rank group could leapfrog a
+larger high-rank one, which would be surprising and would undermine the point of ranking.
+
+On a hybrid machine the hot-path pool is drawn from P-cores only. On a uniform machine every core
+reads as `CoreType::Unknown`, which `get_available_cpu_ids()` already treats as a P-core, so the
+reserve is the binding constraint instead.
+
+### When demand plus the background floor exceeds the machine
+
+Four cases, distinguished because they need different responses.
+
+**A — some rank groups fit, some do not.** The designed case, and not an error: admission stops at
+the first group failing either constraint and everything below goes to background. The 20-core
+worked example is this.
+
+Note this differs from what the code does today. `Reactor.cpp:552-562` logs a `Warning` on shortfall
+and pins whatever it can, so *which* threads miss out falls out of map iteration order — the
+arbitrary splitting this design exists to prevent. Whole-group admission replaces it, and the
+decision is taken once at deploy time and visible in one place, rather than discovered at startup
+across fourteen log files.
+
+**B — not even rank 1 fits.** For example a 4-core VM with `minimum_background_cores = 2` and rank 1
+wanting four threads: `4 - 0 - 4 = 0`, below the floor, rejected, stop. **Nothing is pinned and the
+whole machine is background.**
+
+That is the correct outcome. Admitting rank 1 partially would pin one gateway and not the other,
+which is precisely the invalid comparison whole-group admission exists to prevent, and the system
+runs correctly unpinned — it is what `cpu_pinning_enabled = false` gives today.
+
+It is also legitimate on a functional-test VM and alarming on a production host, and nothing in the
+layout tells those apart. So **the computed layout must be reported prominently by `deploy.py` and
+recorded in the layout file**, naming every rank group that was demoted and why. A demotion that
+appears in the layout file is diagnosable; one that appears only as unexplained latency is not.
+
+Whether anything stronger than reporting is needed — an assertion that `deploy.py` refuses to
+install a layout dropping something the deployment declared it needs — is open question 6. It is
+deliberately *not* in the schema above, because on the deployments in hand it would be unreachable:
+a dedicated production host running `matching_engine` wants two cores out of twenty, so admission
+fails only when fewer than four cores are claimable, which is already case C or case D. The case
+where such an assertion could genuinely fire is consolidation — several ranked components on one
+small host, for example both gateways and both sequencers on an 8-core VM, where rank 1 takes four
+and rank 2 is silently demoted for want of two more.
+
+**C — `minimum_background_cores` is greater than or equal to the claimable core count.** Not a
+shortfall but a nonsensical configuration: no group can ever be admitted whatever the demand. Hard
+error at deploy time.
+
+**D — the machine changes shape after deployment.** New with a declared layout, and worth naming
+because the negotiated registry discovered cores at runtime and this does not. If the layout was
+computed for 20 cores and the machine later has 16 online — cores offlined, a VM resized, hardware
+replaced — then `taskset -c 16-31` fails and the wrapper does not start the process, and
+`pthread_setaffinity_np` against a nonexistent core returns `EINVAL`. Both must be startup
+**errors**, not warnings; the remedy is to re-run `deploy.py`. Refusing to start is correct: a
+latency-critical component running under a layout computed for different hardware is worse than one
+that does not run.
+
+### Worked examples
+
+**Development workstation — 32 cores, 15 claimable P-cores, cpu0 reserved:**
+
+| rank | demand | cumulative | admitted |
+|---|---|---|---|
+| 1 | 4 | 4 | yes |
+| 2 | 4 | 8 | yes |
+| 3 | 2 | 10 | yes |
+| 4 | 4 | 14 | yes — 14 of 15 P-cores |
+| 5 | 2 | 16 | **no** — exceeds the P-core pool |
+
+`matching_engine_secondary` goes to background, everything above it is on a P-core, and both
+gateways are rank 1 on P-cores in both the full-HA and `--no-ha` deployments. That is the
+E-core/P-core flip in Difficulty 2's table, fixed.
+
+The background pool is then the one spare P-core plus all sixteen E-cores — seventeen cores, for:
+
+| source | threads |
+|---|---|
+| Quill backends, thirteen C++ components | 13 |
+| five non-pinning C++ components (two auth services, witness, two arbiters) — reactor + app | ~10 |
+| `matching_engine_secondary`, demoted at rank 5 | 2 |
+| `admin_service` JVM — Jetty pool, GC, JIT | dozens, nearly all idle |
+| `fix_test_client` JVM — MINA pool, GC, JIT | dozens, **saturating under NFT load** |
+
+Comfortable on thread count. The one that genuinely consumes the tier is `fix_test_client`, which is
+the intended outcome: it is where it belongs rather than on CPUs 19 and 22.
+
+**Work machine — 20 uniform cores, cpu0 reserved (19 claimable), reserve 6:**
+
+| rank | demand | cumulative | background left | admitted |
+|---|---|---|---|---|
+| 1 | 4 | 4 | 15 | yes |
+| 2 | 4 | 8 | 11 | yes |
+| 3 | 2 | 10 | 9 | yes |
+| 4 | 4 | 14 | 5 | **no** — below the reserve of 6 |
+
+The MEPs go to background and ten threads are hot-path. Note that this reproduces, on the smaller
+machine, exactly the tiering that was chosen by hand when Difficulty 3 was first analysed — and the
+machine that motivated that choice was the smaller one. The policy arrives at the same answer
+without anyone maintaining it.
+
+### The runtime mechanism: background by default, promotion by exception
+
+The requirement was "restrict this thread to cores nobody has pinned". The better formulation, and
+the one adopted, is: **make background cores the default for every thread in the process, and treat
+hot-path placement as something a thread must be explicitly given.**
+
+1. The process's affinity is set to the background pool **before it starts creating threads**.
+2. Every thread created afterwards **inherits that mask automatically**. This is documented Linux
+   behaviour — `pthread_create` gives the new thread a copy of the creator's mask — and was
+   verified on the development machine: a parent restricted to cores 28 and 30 produced a child
+   reporting exactly `28 30`.
+3. The Reactor then explicitly pins the threads that earn hot-path cores — each `ApplicationThread`
+   and the reactor thread itself — overriding the default for those alone.
+
+Promotion works because **an affinity mask is not a ratchet.** `sched_setaffinity` is bounded by
+the process's cgroup cpuset, not by its current mask, so a thread may widen its own affinity back
+out to a hot-path core. This is the reason the design uses `taskset` and not cgroup cpusets: a
+cpuset is a hard ceiling and promotion into a core outside it would fail. Cpusets remain the
+stronger tool if genuine exclusion is ever wanted, but then the hot-path cores must sit inside the
+same cpuset as the threads being promoted into them.
+
+What this buys:
+
+- **Library threads never need to be known about.** No enumeration, no per-thread configuration, no
+  `/proc/self/task` sweep at the point of use. `prometheus-cpp`'s civetweb thread, a future Kafka
+  client, whatever a library spawns in its next release — all safe without anyone noticing.
+- **Forgetting is harmless.** An undeclared thread lands in the background tier, which is where it
+  belonged.
+- **The anti-affinity requirement dissolves.** There is no negative pin to apply to the civetweb
+  thread, because the process-wide default already is one.
+- **Difficulty 1 disappears.** Nothing computes a complement from observed claims, so nothing needs
+  to know when machine-wide claiming finished.
+
+This is the failure mode of the author's workplace scheme, avoided. There, every thread wanting
+pinning has a per-environment configuration variable holding a CPU bitmask — O(threads ×
+environments) to maintain, and threads spawned inside libraries get forgotten. That is not a
+diligence failure that more care would fix; it is a **default-value bug**, in which the absence of
+configuration means "run anywhere" and "anywhere" includes the hot-path cores. A scheme requiring
+complete enumeration of third-party threads will fail eventually, and its failure is silent
+interference with the most latency-sensitive thread in the process.
+
+### Quill is pinned explicitly, not left to inheritance
+
+The Quill backend threads are *not* left to float within the background pool. `Reactor.cpp:630`
+already locates the backend by tid via `quill::Backend::get_thread_id()` and calls
+`pin_tid_to_core`; that call stays, aimed at a **background** core instead of a claimed hot-path
+one. Backends pinned to specific background cores are more deterministic than backends drifting
+under the scheduler.
+
+Note the count changes under this design. The earlier analysis said eight Quill backends, counting
+only the eight components that pin. Background by default masks **every** C++ component on the
+machine, and `dev.toml` has thirteen of those — fifteen components less `admin_service` and
+`fix_test_client`, which are JVMs. Thirteen backends, not eight.
+
+The consequence, which must not be overlooked: **if anything is pinned explicitly into the
+background tier, the background tier needs allocating too.** `CpuRegistry` today allocates only
+what gets pinned, which is the hot-path set. See open question 2.
+
+The reactor thread and every `ApplicationThread` are pinned explicitly, as now.
+
+### Applying the mask: a generated wrapper script
+
+The mask must be in place before the process creates any thread. Rather than depend on a particular
+launcher — `devenv.py` today, possibly schedulix or something else in production, undecided — the
+design puts it in a **launch wrapper generated by `deploy.py`**, with that machine's resolved core
+list baked in:
+
+```sh
+#!/bin/sh
+# bin/run_binary_gateway  --  generated by deploy.py for host <name>
+exec taskset -c 16-31 /opt/pubsub/bin/binary_gateway "$@"
+```
+
+Whatever invokes it — schedulix, systemd, `devenv.py`, `perf_run.py`, a person at a shell — gets
+identical behaviour. The launch mechanism becomes irrelevant, which is what is wanted while it is
+still undecided, and choosing a production scheduler later costs nothing.
+
+Three further benefits:
+
+- **It covers the JVM components.** `fix_test_client` and `admin_service` are JARs; a JVM cannot set
+  its own affinity portably, but an affinity mask is **preserved across `execve`**, so a `taskset`
+  prefix constrains the JVM and every thread it will ever create — GC, JIT, MINA's I/O pool — with
+  no Java code, no JNI, no library.
+- **It is an interposition point.** A component can be run under `perf`, `valgrind` or `gdb` by
+  editing one generated script. The ordering works out: `taskset` outside, tool inside
+  (`exec taskset -c 16-31 valgrind ./binary_gateway`), so the mask applies to the tool and
+  everything it spawns.
+- **It closes the pre-`main()` hole.** Threads created by a third-party static initialiser before
+  `main()` runs would escape an in-process call. Masking before `exec` means there is no window.
+
+`devenv.py` currently injects `LD_LIBRARY_PATH` at `start_one()` to locate `libpubsub_itc_fw.so`.
+That is a natural thing to move into the wrapper as well, since it has the same "however you launch
+it, launch this" character — but it is an opportunity, not a requirement of this design.
+
+**The wrapper is not the guarantee.** Each C++ component also sets its own process affinity to the
+background pool early in `main()`, immediately after configuration is loaded and before any
+subsystem is initialised. A binary launched bare, bypassing the wrapper, still lands in the
+background tier and still promotes its own hot-path threads. So nothing in the production hot path
+depends on launcher cooperation; the wrapper covers only what a process cannot reach from inside
+itself — the JVMs and any pre-`main()` threads.
+
+### `fix_test_client` is the process that most needs this
+
+It is a Java load generator with `cpu_pinning_enabled` effectively absent — it pins nothing. That
+was previously read as "it cannot be helped, and it is only a test program". Both halves are wrong:
+
+- `taskset` at launch constrains it completely, with no Java changes.
+- It is not peripheral to the measurement, it is *on* it. `dev.toml:437` shows it driving both
+  gateways (`fix_gateway_port = 9879`, `binary_gateway_port = 9890`), and it exists in dev, FT and
+  **NFT** — the environment where the performance numbers are taken. It is a load generator, so it
+  is saturating cores by design, at precisely the moment a measurement is being made.
+
+Unconstrained, it can be scheduled onto CPUs 19 and 22 while `OrderGatewayThread` and
+`BinaryGatewayThread` are pinned there — because pinning restricts the pinned thread and excludes
+nobody, and the development workstation has no `isolcpus`. Nothing makes that contamination land
+equally on both gateways. It is the same shape as the logging asymmetry already recorded under item
+16: instrument, or contaminate, both equally or the comparison measures the wrong thing.
+
+### `--no-ha` needs no special handling
+
+The assignment is computed at deploy time over the **full** manifest. `--no-ha` is a runtime flag
+that makes `devenv.py` skip components marked `ha_only = true` (`devenv.py:77`); their pre-assigned
+cores simply sit idle.
+
+Identical assignment across the two deployments therefore falls out for free, and **nothing in the
+allocation path needs to know what an HA component is.** Only `devenv.py` needs that, and it
+already has `ha_only`.
+
+This also disposes of a heuristic that was considered and rejected: identifying HA components by
+name suffix. It would misclassify two of dev.toml's fifteen — `witness` and `arbiter_primary` are
+both `ha_only = true` while being nobody's secondary, because they exist *only* to serve HA. The
+declared flag means "not needed when HA is off"; the naming rule would encode "is the secondary of
+something"; those differ exactly for HA infrastructure with no non-HA counterpart. A derived rule
+also has no escape hatch for a component that does not fit, where a declared flag does.
+
+### Verification: a machine-wide affinity audit
+
+The invariant is *no thread outside the declared hot-path set has a mask intersecting the hot-path
+pool*. It should be checked, not hoped for — a bypassed wrapper would otherwise fail silently,
+which is the failure mode this whole document keeps warning about.
+
+An in-process `/proc/self/task` sweep is not sufficient, because the design now includes processes
+that cannot be checked from inside — the JVMs. The check therefore wants a machine-wide form: read
+`Cpus_allowed_list` from `/proc/*/task/*/status` and report anything overlapping the hot-path pool
+that is not a declared hot-path thread.
+
+A natural Python diagnostic, per the project's script conventions. It names the offending pid
+instead of leaving unexplained jitter to be investigated later.
+
+---
+
+## Proposals within the design, not yet ratified
+
+These were put forward as the obvious answers rather than argued through. They are recorded as part
+of the design because it is incomplete without them, and flagged because they should be challenged
+first. Proposal 1 has since been ratified and moved into the design above.
+
+**Proposal 2 — `CpuRegistry` becomes a record and collision detector.** Allocation moves to
+`deploy.py`, so the registry stops negotiating. It still earns its place: catching two installations
+on one machine claiming the same core is a real service, and the runtime record is what the audit
+above compares against. This costs a rework of the tests in `CpuRegistryTest.cpp` that currently
+assert negotiation behaviour.
+
+**Proposal 3 — one machine-wide layout file, written by `deploy.py` into `run/`.** Each component
+reads its own entry. Better for an operator than the same facts scattered across fourteen component
+TOMLs, and it gives the audit a single authority to check against. It also answers the background
+allocation problem raised by explicit Quill pinning, since background assignments live in the same
+file.
+
+---
+
+## Deferred
+
+**Re-pin on promotion.** When the arbiter promotes a follower that is sitting in the background
+tier, its threads should move to the hot-path tier. Affinity can be changed at any time —
+`pthread_setaffinity_np` is not restricted to startup — and under a declared layout this becomes
+"adopt the dead leader's assignment" rather than "reclaim whatever the dead leader released", which
+is cleaner than the version considered before the layout was declared. `ha_test.py` kills and
+restarts components routinely, so this is designed-for behaviour rather than an exception.
+
+Deliberately deferred: the static scheme should land and be measured first. Note the design is
+still correct without it — a promoted `matching_engine_secondary` runs on background cores until
+restarted, which is a performance shortfall under an already-degraded condition, not an error.
+
+---
+
+## Approaches rejected along the way
+
+Recorded so the ground is not re-covered.
 
 **1. Compute the complement once, when the metrics thread starts.** Simplest possible change. Per
 Difficulty 1 it is close to useless for any early-starting component, and it fails silently.
 
 **2. Quiescence detection.** Apply the mask once the registry has been unchanged for T, re-applying
-if it changes again; the housekeeping tick is the natural place. A heuristic, and T is arbitrary.
-Its redeeming argument: it is *self-correcting*, and never worse than the status quo in which
-nothing restricts the thread at all — so the window is time-to-correctness rather than a
-correctness failure.
+if it changes again. A heuristic, and T is arbitrary. Its redeeming argument was that it is
+self-correcting and never worse than the status quo — but "time-to-correctness" is not a property
+worth having when the alternative is correct at t=0.
 
-**3. A barrier on a configured expected claimant count.** Rejected. A configured maximum is an
-*upper bound*, not an *expectation*, and the two coincide only when the deployment runs at exactly
-full capacity. `devenv.py --no-ha` drops three of the eight claimants, so a count configured for
-full HA is never reached and waiters block forever; a count configured for `--no-ha` would refuse
-to start half the HA deployment. Separately, "processes running" is the wrong quantity — five of
-the components have `cpu_pinning_enabled = false` and never claim, so the figure needed is a
-claimant count that changes whenever a config flag is flipped, with nothing to detect the
-divergence. A program count is in any case a lossy proxy for core demand: `register_extra_thread()`
-means components do not consume equal numbers of cores.
+**3. A barrier on a configured expected claimant count.** A configured maximum is an *upper bound*,
+not an *expectation*, and the two coincide only at exactly full capacity. `devenv.py --no-ha` drops
+three of the eight claimants, so a count configured for full HA is never reached and waiters block
+forever. "Processes running" is in any case the wrong quantity — several components never claim,
+and `register_extra_thread()` means components do not consume equal numbers of cores.
 
-**4. Have the launcher close the layout.** Each process records "claiming complete" at the end of
-`pin_registered_threads()`; `devenv.py`, which does know the intended component set for this
-deployment, writes a "layout final" flag into the registry once all claimants have recorded it; the
-metrics thread applies its mask when it sees the flag. This is sound at cold start — no timeout, no
-heuristic, and the authority is the one participant that knows the population, so `--no-ha` is
-simply a smaller plan. It also degrades honestly: a component that fails to start means the layout
-is never closed, which is diagnosable. **Its weakness is mid-life restart**: a restarted component
-re-claims greedily and can shift the layout after closure.
+**4. Have the launcher close the layout.** Each process records "claiming complete"; `devenv.py`
+writes a "layout final" flag once all claimants have recorded it. Sound at cold start, and it
+degrades honestly. **Its weakness is mid-life restart**: a restarted component re-claims greedily
+and can shift the layout after closure. Since routine restart is designed-for behaviour here, that
+is fatal.
 
-**5. Declare the layout in configuration; derive nothing.** State which cores are for hot-path
-pinning and which are for everything else, constrain claiming to the former, and mask the metrics
-thread to the latter — for example a `cores_for_other_work` entry in the `[shared]` section of the
-environment TOML, with the hot-path pool as its complement.
+**5. Declare the core layout directly in configuration as bitmasks.** Removes the race and survives
+restart, and was the direct ancestor of the adopted design. Rejected in that form because a bitmask
+declares the *answer* rather than the *intent*: it is machine-specific, must be re-derived for every
+environment and every machine shape, and cannot be checked against another encoding. Declaring a
+rank and letting `deploy.py` resolve rank to core ids for the target host survives a hardware
+refresh; a bitmask does not.
 
-This removes the race (nothing is inferred), survives restart (a component reclaims its own
-declared cores), fixes Difficulty 2, and makes measurements reproducible run to run — which for
-latency work is a property in its own right. The Quill backends and the metrics thread move to the
-other-work set by definition, freeing eight P-cores and making the arithmetic fit.
-
-Costs: a maintained configuration; a check that the two sets are disjoint and cover the machine,
-failing hard if not (a misconfiguration that silently degrades pinning being worse than one that
-refuses to start); and it changes `CpuRegistry` from an allocator into a verifier, which would
-require reworking several of the tests in `CpuRegistryTest.cpp` that currently assert negotiation
-behaviour.
-
-Note that the objection "there is no shared config in this project" does not hold: the `[shared]`
-section of the environment TOML plus `deploy.py`'s template expansion is exactly that mechanism.
-`reactor_cpu_pinning_reserve_cpu0` is authored once and expanded into fourteen component
-templates today, and `deploy.py` already *computes* values rather than merely copying them — the
-registry paths and the WAL directories are both derived there. A layout planner could live in the
-same place, since `deploy.py` is the one participant that reads the whole component list.
-
-**6. Declare, per machine, which processes run there and what each one is.** The strongest option
-on this list, and the one that makes the anti-affinity complement computable rather than inferred.
-A production deployment has to know which processes a given host runs anyway -- for readiness
-checks, for monitoring, for knowing whether the system is operational. Once that manifest exists,
-"which cores will be pinned on this machine" is answerable by reading it, with no barrier, no
-claimant count, no quiescence timer and no launcher closure flag. Difficulty 1 does not arise,
-because nothing is being inferred from observed claims.
-
-Each entry needs the two orthogonal properties described under "Process taxonomy" above --
-*mandatory* and a *latency class* -- and the latency class is what assigns the core tier, which
-also disposes of Difficulty 2.
-
-A variant worth recording, suggested externally: rather than each component reading its assignment
-from its own config, have the launcher **pre-populate the registry with the whole layout before any
-binary starts**. The registry then inverts from a negotiation into a lookup table; a component
-reads its own pre-assigned cores, and a component restarted at any later time reads the same ones.
-That keeps a single machine-wide view of the layout, which is better for an operator than the same
-information scattered across per-component files. It is a presentation choice on top of approach 6
-rather than a different approach.
-
-Note one distinction that is easy to blur: **controlling the start order is not equivalent to
-declaring the allocation.** A controlled order makes a cold start deterministic and does nothing
-for restart, because a component killed by `ha_test.py` comes back outside any launcher-controlled
-sequence and re-claims from whatever is free. A declared allocation is restart-safe by
-construction. Since routine restart is designed-for behaviour here, only the latter is a solution;
-the former merely makes the fault harder to reproduce.
-
----
-
-## Recommended shape: make the background tier the default, and promote what earns hot-path
-
-This reframes the problem rather than answering it as posed, so it is set out separately from the
-options above. The requirement was "restrict this thread to cores nobody has pinned". The better
-formulation is: **make unpinned cores the default for every thread in the process, and treat
-hot-path placement as something a thread must be explicitly given.**
-
-### Where the idea comes from
-
-The author's workplace solves this declaratively, and its failure mode is instructive. There, every
-thread wanting pinning -- positive or negative -- has a configuration variable holding a CPU
-bitmask, and those variables differ per environment. Two consequences:
-
-- It is tedious and error-prone, being O(threads x environments) to maintain.
-- **Threads spawned inside libraries -- Kafka clients, Prometheus/civetweb -- get forgotten**, and
-  a forgotten thread then runs on the wrong cores and interferes with important ones.
-
-The second is not a diligence failure that more care would fix. It is a **default-value bug**: the
-absence of configuration means "run anywhere", and "anywhere" includes the hot-path cores. You
-cannot enumerate what a third-party library will spawn in its next release, so a scheme that
-requires complete enumeration will fail eventually, and its failure is silent interference with the
-most latency-sensitive thread in the process.
-
-Note also that a bitmask declares the *answer* rather than the *intent*, so it is machine-specific
-and must be re-derived for every environment and every machine shape, with no way to check one
-encoding against another. Declaring a tier and letting the deployment tool resolve tier to core ids
-for the target host survives a hardware refresh; a bitmask does not.
-
-### The mechanism
-
-1. Early in `main()`, the process sets **its own** affinity to the background tier.
-2. Every thread created afterwards **inherits that mask automatically**. Verified on this machine:
-   a parent restricted to cores 28 and 30 produced a child reporting exactly `28 30`. This is
-   documented Linux behaviour -- `pthread_create` gives the new thread a copy of the creator's
-   affinity mask.
-3. The Reactor then explicitly pins the threads that earn hot-path cores -- each `ApplicationThread`
-   and the reactor thread itself -- overriding the default for those alone.
-
-### What it buys
-
-- **Library threads need never be known about.** No enumeration, no per-thread configuration, no
-  `/proc/self/task` sweep, no affinity-inheritance trickery at the point of use. A library that
-  spawns five more threads next release is safe without anyone noticing.
-- **Forgetting becomes harmless.** A thread nobody declared lands in the background tier, which is
-  where it belonged. The worst outcome is "a background thread got a background core".
-- **The anti-affinity requirement dissolves.** There is no negative pin to apply to the civetweb
-  thread, because the process-wide default already is one.
-- **Difficulty 1 disappears.** Nothing computes a complement from observed claims, so nothing needs
-  to know when machine-wide claiming finished.
-- It also frees the eight Quill backend threads from the hot-path tier, which is the bulk of the
-  arithmetic problem, without anyone having to remember them.
-
-### Ordering constraint, with one named exception
-
-The default must be set before anything spawns a thread. In this codebase there is exactly one
-thread that exists earlier, and the startup sequence makes it unavoidable: `QuillLogger` is
-constructed before the configuration is loaded (deliberately, so that configuration errors can be
-logged -- see the startup sequence in the summary), and Quill starts its backend thread on first
-logger construction. So at the moment the background tier becomes *known*, that thread already
-exists.
-
-This is not a problem, because Quill's backend is not an unknown library thread: the Reactor
-already locates it via `quill::Backend::get_thread_id()` in order to pin it today. The recipe is
-therefore:
-
-- set the process default affinity to the background tier immediately after the configuration is
-  loaded, before any further subsystem is initialised;
-- explicitly pin Quill's backend thread to the background tier rather than, as now, to a hot-path
-  core.
-
-Anything initialised later -- `prometheus-cpp`, a future Kafka client -- is created after the
-default is in place and inherits it.
-
-### Residual holes, and how to close them
-
-- **Threads created before `main()`** by a static initialiser in a third-party library would escape
-  the default. None are known in this codebase, but the possibility is real.
-- **A library that sets its own affinity explicitly** overrides the inherited mask. Uncommon, but
-  some NUMA-aware thread pools do it.
-- Both are caught by the same cheap measure: **audit and assert.** Walk `/proc/self/task` at the end
-  of startup, and again on the housekeeping tick if desired, and assert that no thread outside the
-  known-pinned set has an affinity mask intersecting the hot-path tier. That converts the invariant
-  from something hoped for into something checked, without reintroducing per-thread configuration.
-  It also gives a precise diagnostic -- naming the offending tid -- instead of unexplained jitter.
-- **The background tier must be sized** for everything that lands there by default, which is now
-  most of the process. That is a number to choose deliberately rather than assume.
-
-### What it does not solve
-
-Inheritance decides where *unknown* threads go. It does not decide the tiers themselves. The
-rationing question stands: 24 threads, 15 P-cores, and a declaration is still needed of which
-components' application and reactor threads occupy the hot-path tier. See "Process taxonomy" above
-for the two properties that decision needs.
+**6. Control the start order.** Not equivalent to declaring the allocation, and worth stating
+because the two are easy to blur. A controlled order makes a cold start deterministic and does
+nothing for restart, because a component killed by `ha_test.py` comes back outside any
+launcher-controlled sequence and re-claims from whatever is free. It makes the fault harder to
+reproduce rather than fixing it.
 
 ---
 
 ## Open questions
 
-1. Is the core layout something we are willing to declare in configuration, or must the system
-   keep working it out at runtime?
-2. Should the per-machine manifest carry *mandatory* and *latency class* as two separate fields, and
-   is *mandatory* a boolean or an enum ("for trading" versus "for resilience")?
-3. Is re-pin-on-promotion worth building, so that non-critical followers can occupy the cheap tier
-   and take the dead leader's cores when the arbiter promotes them?
-2. If declared: does a reduced (`--no-ha`) deployment get the same assignment as full HA, so that
-   the two are comparable, or a denser one that uses the freed cores?
-3. What does `CpuRegistry` become if it stops being the allocator? Proposal: a runtime record and
-   collision detector — it still earns its place, because catching two installations claiming the
-   same core on one machine is a real service.
-4. What is the fallback when the anti-affinity set is empty?
+1. The rank values in the table above are proposed, not settled. In particular the MEPs at rank 4
+   are promoted on a 32-core machine and demoted on a 20-core one; both are defensible, but the
+   choice should be deliberate rather than a by-product of the arithmetic.
+2. If explicit Quill pinning requires background cores to be allocated, does that live in the
+   machine-wide layout file (Proposal 3) or does `CpuRegistry` grow a second pool?
+3. Does a reduced (`--no-ha`) deployment keep the freed cores idle — as designed above, so the two
+   deployments are comparable — or is there ever a reason to want a denser assignment?
+4. What is `minimum_background_cores` for the work machine? The development workstation is settled —
+   it is hybrid, so the P-core ceiling binds first and the setting is omitted. The work machine's
+   value is the one that matters, because it is uniform-core and the floor is the only thing
+   capping hot-path growth there; 6 in the worked example above is illustrative, and it is the
+   difference between the MEPs being promoted or demoted.
+5. Residual hole: a library that sets its own affinity explicitly overrides the inherited mask.
+   Uncommon, but some NUMA-aware thread pools do it. The machine-wide audit detects it; nothing
+   prevents it.
+6. Does case B need an assertion at all, beyond prominent reporting of the computed layout? A
+   `required_hot_path_rank = N` on the machine entry was drafted and withdrawn, for three reasons
+   worth recording so it is not re-proposed unexamined. First, a **global** rank scale does not
+   compose with a **per-machine** assertion: on a dedicated host the ranks present are an arbitrary
+   subset, so "ranks 1 to N" asserts nothing about the ranks that have no components there, and the
+   value looks like a meaningful threshold while being merely the one rank present. Second, it is a
+   number that must be kept consistent with the rank table by hand, with nothing to check it
+   against. Third and decisively, on the deployments in hand it is unreachable — see case B. If an
+   assertion is ever wanted, the form that composes is a boolean *every ranked component on this
+   machine must be admitted*, which means the same thing on every host and needs nothing kept in
+   sync. The scenario to design it for is consolidation onto a small host, not a dedicated one.
 
 ---
 
 ## See Also
 
 - [CPU Pinning](cpu_pinning.md) — the mechanism as built
-- [WAL and High Availability](wal_and_ha.md) — two-tier commit, why the follower is on the
-  critical path
+- [WAL and High Availability](wal_and_ha.md) — two-tier commit, why the sequencer follower is on
+  the critical path
 - [Roadmap](../roadmap.md) — item 16, Prometheus metrics

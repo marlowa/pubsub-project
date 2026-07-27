@@ -37,27 +37,31 @@ Near-term tasks not tied to a specific slice.
 
 ### Active / Next
 
-- **CPU pinning: anti-affinity for non-hot-path threads** — open design problem, nothing chosen.  
+- **CPU core layout: declared allocation and background by default** — design agreed 2026-07-27,
+  nothing implemented.  
   Raised 2026-07-26 while planning item 16. The Prometheus endpoint's civetweb thread must not run
   on any pinned core, and the CPU registry cannot answer that reliably: it records what has claimed
   so far, and no process knows when machine-wide claiming has finished, so a component that starts
   early computes a mask that silently permits cores pinned moments later. The same root cause —
   greedy, start-order-dependent claiming — is why both gateways landed on E-cores under full HA and
   on P-cores under `--no-ha`, which would make the FIX-versus-binary comparison measure core type
-  rather than protocol. HA complicates it, though not uniformly: the sequencer follower is
-  synchronously inside the client round trip and must keep good cores, while the matching engine
-  secondary only tails the book and can be demoted if promotion re-pins. "Mandatory for an
-  operational system" and "latency-critical" turn out to be orthogonal properties.  
-  Six approaches are recorded with the specific flaw in each, along with the measured evidence and a
-  recommended shape, in
-  [Anti-Affinity for Non-Hot-Path Threads](design/cpu_pinning_anti_affinity.md). The shape now
-  favoured inverts the default: set the process's own affinity to the background tier early in
-  `main()` so every library-spawned thread inherits it, and explicitly promote only the threads that
-  earn hot-path cores. That dissolves the anti-affinity requirement rather than solving it, and makes
-  a forgotten thread harmless instead of harmful. Not ratified or built, and it leaves the rationing
-  question — which components get the 15 P-cores — still to be declared. **Read that doc before
-  starting item 16**; the metrics endpoint should not land until this is settled, or the first thing
-  it measures will be its own scheduling.
+  rather than protocol.  
+  The agreed design is in
+  [CPU Core Layout](design/cpu_pinning_anti_affinity.md). In outline: a per-machine manifest in the
+  environment TOML declares which components run on each host; a machine-invariant `hot_path_rank`
+  per component declares the order in which entitlement to a good core is surrendered, with whole
+  rank groups admitted atomically so the two gateways can never be split; `deploy.py` runs on the
+  target host, reads the real topology and resolves rank to core ids, so the same declaration works
+  on a 32-core workstation, a 20-core work machine and a small VM. At runtime every process starts
+  masked to the background pool — applied by a `deploy.py`-generated wrapper script, which also
+  covers the JVM components and doubles as a `perf` / `valgrind` interposition point — and the
+  Reactor explicitly promotes only the threads that earn hot-path cores. Forgetting a thread becomes
+  harmless, and the anti-affinity requirement dissolves rather than being solved.  
+  Three points within it are flagged as proposals rather than settled: the binary self-reporting its
+  hot-path thread count, `CpuRegistry` becoming a record and collision detector rather than an
+  allocator, and a single machine-wide layout file. **Read that doc before starting item 16**; the
+  metrics endpoint should not land until this is built, or the first thing it measures will be its
+  own scheduling.
 
 - **Prometheus metrics** (item 16).  
   Continuous observability, so latency analysis stops being log archaeology. This is now the
