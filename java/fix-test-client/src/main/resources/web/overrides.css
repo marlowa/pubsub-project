@@ -52,3 +52,20 @@ label {
 .form-row {
     margin-bottom: 0.3rem;
 }
+
+/* Blotter row colours. style.css sets the state colour on the <tr> (green for a
+   normal execution report, pink for a cancel, red for an error) so that the
+   sticky first column can pick it up with background: inherit.
+
+   Pico paints an opaque background on every cell -- td,th { background-color:
+   var(--pico-background-color) } -- which covers that row colour completely.
+   Only the sticky first column kept its colour, because it already declares
+   background: inherit; the rest of the row went white. style.css cannot fix it
+   there because it is loaded before Pico.
+
+   Letting every blotter cell inherit restores the whole row, and uses the same
+   mechanism the sticky column already relied on. */
+#blotter td,
+#blotter th {
+    background: inherit;
+}

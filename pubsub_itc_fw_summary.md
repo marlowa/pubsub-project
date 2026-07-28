@@ -882,6 +882,32 @@ Doxygen mainpage
 
 14. ~~**fix-test-client scripting: idempotent ClOrdID and example script**~~ — DONE (2026-07-03). Added `uniqueId()` to `FixHelper`: returns `System.currentTimeMillis() + "-" + counter.getAndIncrement()` where `counter` is an `AtomicLong` that never resets, guaranteeing uniqueness across all script runs for the lifetime of the process. Updated `example.groovy` and `buys_sells_and_cancels.groovy` to use `fix.uniqueId()` for all ClOrdIDs. Both scripts are now safely re-runnable without generating duplicate IDs.
 
+## TODO — replace Pico.css in the web UIs (raised 2026-07-28)
+
+**Pico is the wrong framework for these UIs and should be replaced.** It is designed for touch
+screens, so its controls are sized for fingers: large slab buttons, `0.75rem` vertical form padding
+and a `1rem` bottom margin on every element. On a dense desktop tool -- an order-entry form of forty
+FIX fields, a blotter of twenty columns -- that turns the page into a column of paving slabs.
+
+The evidence is already in the tree. `java/fix-test-client/src/main/resources/web/overrides.css`
+exists almost entirely to undo Pico: it resets button and input padding, font size, line height and
+margins by overriding Pico's own custom properties on the elements. When the overrides file exists
+mainly to cancel the framework, the framework is not earning its place.
+
+Pico also caused a silent regression worth recording, because any replacement must be judged against
+it. Pico sets an opaque background on every table cell --
+`td,th{background-color:var(--pico-background-color)}` -- which painted over the FIX blotter's row
+state colours (green for a normal execution report, pink for a cancel, red for an error), set on the
+`<tr>`. Only the sticky first column kept its colour, because that one cell already declared
+`background: inherit`. The row colours landed on 2026-06-24 (`6f93f17`); site-wide Pico landed a
+month later (`b6b4545`, 2026-07-24) and broke them, and it went unnoticed until 2026-07-28. Fixed by
+letting every blotter cell inherit, in `overrides.css` -- `style.css` loads *before* Pico and so
+cannot win on equal specificity.
+
+Criteria for the replacement: desktop-density defaults, so compact controls need no overrides file;
+and no opaque cell backgrounds fighting application styling. Both web UIs use Pico today, the admin
+service and the fix-test-client. Javalin as the web framework is not in question and stays.
+
 ## TODO — transport encryption on the binary gateway, and on the PDU paths generally (raised 2026-07-26)
 
 **Undecided. To be discussed with a security specialist before anything is built.**
