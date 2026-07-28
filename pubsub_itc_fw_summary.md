@@ -882,6 +882,39 @@ Doxygen mainpage
 
 14. ~~**fix-test-client scripting: idempotent ClOrdID and example script**~~ — DONE (2026-07-03). Added `uniqueId()` to `FixHelper`: returns `System.currentTimeMillis() + "-" + counter.getAndIncrement()` where `counter` is an `AtomicLong` that never resets, guaranteeing uniqueness across all script runs for the lifetime of the process. Updated `example.groovy` and `buys_sells_and_cancels.groovy` to use `fix.uniqueId()` for all ClOrdIDs. Both scripts are now safely re-runnable without generating duplicate IDs.
 
+## TODO — quieten the hot-path cores before the next latency measurement (raised 2026-07-28)
+
+The CPU core layout decides *which* component owns *which* core, and it does that correctly. It does
+not make those cores quiet, and the two are easy to conflate. **An affinity mask reserves a core for
+a thread; it does not reserve it from anything else.** Found by auditing all 2075 threads on the
+development workstation on 2026-07-28, with the deployment running and its own layout perfectly
+consistent:
+
+- **Fifteen interrupt handlers were pinned to cores 1-14.** Concretely: `iwlwifi:default_queue` on
+  CPU 14 (`mep_secondary`), `iwlwifi:queue_1` on CPU 7 (`sequencer_secondary`), `iwlwifi:queue_4` on
+  CPU 10 (`matching_engine_primary`), `iwlwifi:queue_5` on CPU 6 (`sequencer_primary`). Wireless
+  interrupts on the sequencer cores matter more than they sound: under the two-tier commit the
+  follower's wake-up latency is added to every order's round trip.
+- **About 1500 unrelated userspace threads** were free to run on those cores -- a JVM (214 threads),
+  Firefox (150 + 125 + 78), Rider (87), apache2 (55), tor (33). Nothing prevents it, because the
+  workstation does not use `isolcpus`.
+- **`irqbalance` is running**, so any hand-steering of interrupts is undone on its own schedule.
+
+None of this is a fault in the layout, and none of it was visible in the component logs -- they
+report the pinning each component performed, which is not the same as what else can run there.
+
+**Why it matters now:** development is the environment where every latency measurement and every
+protocol comparison is taken, and the FIX-versus-binary gateway comparison is the reason item 16
+exists. Interrupt noise on one gateway's core and not the other's would be indistinguishable from a
+protocol difference.
+
+**What to do**, cheapest first: steer the movable IRQs to the background tier and stop or restrict
+`irqbalance` (no reboot; see "Interrupt affinity" in
+[docs/design/cpu_pinning.md](docs/design/cpu_pinning.md)); then consider `isolcpus` with `nohz_full`
+and `rcu_nocbs` for the hot-path range, which is the only thing that stops ordinary userspace being
+scheduled there and which does need a reboot. `python3 cpu_audit.py --strict` fails while the
+machine is still noisy, so it can gate a measurement run.
+
 ## TODO — replace Pico.css in the web UIs (raised 2026-07-28)
 
 **Pico is the wrong framework for these UIs and should be replaced.** It is designed for touch

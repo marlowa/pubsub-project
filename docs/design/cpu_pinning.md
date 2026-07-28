@@ -232,6 +232,60 @@ taskset -c <cpu_id> stress-ng --cpu 1 --timeout 5s &
 
 ---
 
+## Interrupt affinity — the contaminant `isolcpus` is not needed to fix
+
+Pinning reserves a core *for* a thread. It does not reserve it *from* anything else, and interrupt
+handlers are the sharpest example: an IRQ thread pinned to a hot-path core preempts the latency-
+critical thread there, at hardware rates, with nothing in the application logs to show for it.
+
+This is worth separating from `isolcpus` because it is fixable without a reboot, and because it was
+found in exactly that state on the development workstation (2026-07-28):
+
+| IRQ | Device | Was steered at | Which is |
+|---|---|---|---|
+| 225 | `iwlwifi:default_queue` | CPU 14 | `mep_secondary` application thread |
+| 226 | `iwlwifi:queue_1` | CPU 7 | `sequencer_secondary` reactor thread |
+| 229 | `iwlwifi:queue_4` | CPU 10 | `matching_engine_primary` application thread |
+| 230 | `iwlwifi:queue_5` | CPU 6 | `sequencer_primary` application thread |
+
+Fifteen interrupt handlers in total sat on cores 1-14. Wireless interrupts land on the sequencer and
+matching-engine cores, which are precisely the threads whose wake-up latency the two-tier commit
+adds to every order's round trip.
+
+### Check
+
+`cpu_audit.py` reports this, classified separately from unavoidable per-CPU kernel threads:
+
+```bash
+python3 cpu_audit.py            # reports occupancy; passes if the layout is consistent
+python3 cpu_audit.py --strict   # also fails when unrelated userspace threads may run there
+```
+
+Or directly:
+
+```bash
+cat /proc/irq/<n>/smp_affinity_list
+grep -E "^\s*<n>:" /proc/interrupts
+```
+
+### Steer them away
+
+```bash
+# Confine an IRQ to the background tier (cores 15-31 on the dev workstation).
+echo 15-31 | sudo tee /proc/irq/<n>/smp_affinity_list
+```
+
+**`irqbalance` will undo this.** It is a daemon that redistributes interrupt affinity on its own
+schedule, so hand-steering only holds until it next runs. Either stop it for the duration of a
+measurement, or tell it to leave the hot-path cores alone via `IRQBALANCE_BANNED_CPULIST` in
+`/etc/default/irqbalance`. `cpu_audit.py` warns when it is running, because otherwise the
+IRQ placement it reports is not stable enough to rely on.
+
+Not every interrupt can be moved: some are genuinely per-CPU (the local APIC timer, rescheduling
+IPIs) and have no affinity to set. Those are the ones `isolcpus` with `nohz_full` addresses.
+
+---
+
 ## What a Machine Needs for Sub-100µs Median Wakeup
 
 All five steps are independent and cumulative. Steps 1–3 require no reboot.

@@ -39,6 +39,7 @@ except ImportError:
 
 import argparse
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import cpu_layout
@@ -88,7 +89,84 @@ def read_running_components(run_dir: Path) -> dict[str, int]:
     return running
 
 
-def audit(layout_path: Path, run_dir: Path, verbose: bool) -> list[str]:
+def is_kernel_thread(pid: int) -> bool:
+    """Kernel threads have an empty cmdline; userspace processes do not."""
+    try:
+        return len(Path(f"/proc/{pid}/cmdline").read_bytes()) == 0
+    except OSError:
+        return True
+
+
+@dataclass
+class Occupant:
+    """A thread found to be permitted on a hot-path core it does not own."""
+
+    label: str
+    cores: list[int]
+    kind: str  # "irq", "kernel" or "userspace"
+
+
+def survey_hot_path_occupancy(hot_path_owner: dict[int, str],
+                              deployment_pids: set[int]) -> list[Occupant]:
+    """Find every thread on the machine allowed to run on a hot-path core.
+
+    Pinning a thread to a core reserves the core *for* it; it does not reserve
+    the core *from* anything else.  Nothing but `isolcpus` stops an unrelated
+    process being scheduled there, so the layout being internally consistent is
+    not the same as the hot-path cores being quiet -- and it is the second that
+    a latency measurement actually depends on.
+
+    Threads are classified by what can be done about them:
+
+      kernel    per-CPU housekeeping (cpuhp/N, migration/N, ksoftirqd/N,
+                kworker/N:*). One set exists on every core by construction and
+                cannot be moved. Reported for completeness, never a failure.
+      irq       interrupt handler threads. These *are* steerable, independently
+                of isolcpus, by rewriting the IRQ's affinity -- so an interrupt
+                landing on a hot-path core is worth knowing about.
+      userspace anything else. Avoidable, and the reason --strict exists.
+    """
+    hot_path_cores = set(hot_path_owner)
+    occupants: list[Occupant] = []
+
+    for process_dir in Path("/proc").iterdir():
+        if not process_dir.name.isdigit():
+            continue
+        pid = int(process_dir.name)
+        if pid in deployment_pids:
+            continue
+
+        kernel = is_kernel_thread(pid)
+        try:
+            process_name = (process_dir / "comm").read_text(encoding="utf-8").strip()
+            tasks = list((process_dir / "task").iterdir())
+        except OSError:
+            continue
+
+        for task in tasks:
+            try:
+                thread_id = int(task.name)
+            except ValueError:
+                continue
+            mask = read_thread_affinity(pid, thread_id)
+            if mask is None:
+                continue
+            overlap = sorted(set(mask) & hot_path_cores)
+            if not overlap:
+                continue
+
+            thread_name = read_thread_name(pid, thread_id)
+            if kernel:
+                kind = "irq" if thread_name.startswith("irq/") else "kernel"
+            else:
+                kind = "userspace"
+            label = thread_name if thread_name == process_name else f"{process_name}/{thread_name}"
+            occupants.append(Occupant(f"{label} (pid {pid})", overlap, kind))
+
+    return occupants
+
+
+def audit(layout_path: Path, run_dir: Path, verbose: bool, strict: bool) -> list[str]:
     """Compare every running thread's real mask against the layout."""
     with open(layout_path, "rb") as handle:  # binary: tomllib requires it
         layout = tomllib.load(handle)
@@ -168,7 +246,68 @@ def audit(layout_path: Path, run_dir: Path, verbose: bool) -> list[str]:
                 f"{cpu_layout.format_cpu_list(sorted(unclaimed_own_cores))} "
                 f"but no thread is pinned there")
 
+    problems.extend(report_hot_path_occupancy(hot_path_owner, set(running.values()), strict))
     return problems
+
+
+def report_hot_path_occupancy(hot_path_owner: dict[int, str], deployment_pids: set[int],
+                              strict: bool) -> list[str]:
+    """Print who else can run on the hot-path cores; return failures if strict.
+
+    Printed rather than returned by default because on a development workstation
+    without `isolcpus` this is never empty -- a check that is permanently red is
+    a check that gets ignored. It is reported so the contamination is visible
+    when a measurement is being taken, and --strict turns the avoidable part of
+    it into a failure for a machine that is supposed to be quiet.
+    """
+    occupants = survey_hot_path_occupancy(hot_path_owner, deployment_pids)
+    if not occupants:
+        print("  no other thread on this machine may run on a hot-path core")
+        return []
+
+    by_kind: dict[str, list[Occupant]] = {"userspace": [], "irq": [], "kernel": []}
+    for occupant in occupants:
+        by_kind[occupant.kind].append(occupant)
+
+    print()
+    print("  Hot-path core occupancy by threads outside the deployment")
+    print("  (an affinity mask reserves a core *for* a thread, not *from* others;")
+    print("   only isolcpus does that, and this machine does not use it)")
+
+    if by_kind["irq"]:
+        count = len(by_kind["irq"])
+        print(f"\n  {count} interrupt handler(s) on hot-path cores -- these are steerable:")
+        for occupant in sorted(by_kind["irq"], key=lambda o: o.cores):
+            print(f"    CPU {cpu_layout.format_cpu_list(occupant.cores)}: {occupant.label}")
+
+    if by_kind["userspace"]:
+        # Ranked by thread count: a browser with 150 threads is a far bigger
+        # contaminant than a daemon with one, and they all span the same cores.
+        weights: dict[str, int] = {}
+        for occupant in by_kind["userspace"]:
+            name = occupant.label.rsplit(" (pid", 1)[0].split("/")[0]
+            weights[name] = weights.get(name, 0) + 1
+        count = len(by_kind["userspace"])
+        print(f"\n  {count} unrelated userspace thread(s), from {len(weights)} process name(s).")
+        print("    Heaviest first:")
+        for name, count in sorted(weights.items(), key=lambda item: -item[1])[:12]:
+            print(f"    {count:>5} threads  {name}")
+
+        if "irqbalance" in weights:
+            print("\n    NOTE: irqbalance is running. It moves interrupt affinity around at will,")
+            print("    so any hand-steering of the IRQs above will be undone. Stop or restrict it")
+            print("    before relying on IRQ placement for a measurement.")
+
+    if by_kind["kernel"]:
+        count = len(by_kind["kernel"])
+        print(f"\n  {count} per-CPU kernel thread(s) (cpuhp, migration, ksoftirqd, kworker).")
+        print("    One set exists on every core by construction and cannot be moved.")
+
+    if strict and by_kind["userspace"]:
+        return [f"{len(by_kind['userspace'])} unrelated userspace thread(s) may run on "
+                f"hot-path cores -- this machine is not quiet enough for a latency "
+                f"measurement (see isolcpus in docs/design/cpu_pinning.md)"]
+    return []
 
 
 def parse_args() -> argparse.Namespace:
@@ -181,6 +320,9 @@ def parse_args() -> argparse.Namespace:
                         help="install directory (default: paths.install_dir from the env TOML)")
     parser.add_argument("--verbose", action="store_true",
                         help="also report threads that are correctly placed")
+    parser.add_argument("--strict", action="store_true",
+                        help="fail when unrelated userspace threads may run on hot-path cores "
+                             "(expected to fail on a workstation without isolcpus)")
     return parser.parse_args()
 
 
@@ -208,8 +350,9 @@ def main() -> None:
     print(f"  layout : {layout_path}")
     print()
 
-    problems = audit(layout_path, run_dir, args.verbose)
+    problems = audit(layout_path, run_dir, args.verbose, args.strict)
 
+    print()
     if problems:
         print(f"{len(problems)} problem(s) found:")
         for problem in problems:
