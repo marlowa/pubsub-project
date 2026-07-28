@@ -92,6 +92,32 @@ ca   = ""
 # Components that reference certs or data files by relative path in their
 # TOML must be started from the directory containing those files.
 # ha_only = true: component is skipped when HA is disabled.
+#
+# hot_path_rank declares the order in which entitlement to a dedicated CPU core is
+# surrendered when a machine cannot satisfy every component.  It is a property of
+# the instance, not of the machine, so the same value is used in every
+# environment; where the cut falls is computed per machine by deploy.py.  Absence
+# of hot_path_rank means the component's threads run in the shared background
+# tier, which is the safe default -- forgetting to rank something places it where
+# it almost certainly belonged.
+#
+# A rank group is admitted whole or not at all, so both gateways (rank 1) can
+# never be split across core types.  That is what makes the FIX-versus-binary
+# gateway comparison valid by construction rather than by arithmetic accident.
+#
+#   1  order_gateway, binary_gateway     client edge
+#   2  sequencer_primary/_secondary      the sequencing point; the follower's
+#                                        WalAck gates every execution report, so
+#                                        it is latency-critical despite not being
+#                                        mandatory for trading
+#   3  matching_engine_primary           matching
+#   4  mep_primary, mep_secondary        downstream of the ER path
+#   5  matching_engine_secondary         BookUpdate is fire-and-forget, so this
+#                                        one yields first
+#
+# No thread counts appear here.  The application knows how many threads it
+# registers with the Reactor; deploy.py asks the binary rather than reading a
+# figure that would drift silently.
 
 # Startup order is listed explicitly here so devenv.py can start components
 # in dependency order and wait for each to be ready before proceeding.
@@ -108,6 +134,49 @@ ca   = ""
 #   admin_service       — independent; started last for convenience
 
 [startup_order]
+components = [
+    "auth_service_a",
+    "auth_service_b",
+    "witness",
+    "arbiter_primary",
+    "arbiter_secondary",
+    "matching_engine_primary",
+    "matching_engine_secondary",
+    "sequencer_primary",
+    "sequencer_secondary",
+    "mep_primary",
+    "mep_secondary",
+    "order_gateway",
+    "binary_gateway",
+    "admin_service",
+    "fix_test_client",
+]
+
+# ── Machine layout ────────────────────────────────────────────────────────────
+# Which processes run on which host.  deploy.py reads this on the target machine,
+# reads that machine's real CPU topology, and resolves the hot_path_rank values
+# below into concrete core ids.  See docs/design/cpu_pinning_anti_affinity.md.
+#
+# Every process is listed, not only those that pin.  A process absent from this
+# list gets no background mask and is therefore free to be scheduled onto the
+# cores that hot-path threads are pinned to -- which is the current behaviour of
+# the seven components here that claim nothing, fix_test_client included.
+#
+# minimum_background_cores is inert on the development workstation and binding
+# elsewhere, which is why it is declared rather than omitted.  This workstation is
+# a hybrid CPU: cores 0-15 are P-cores and 16-31 are E-cores, and hot-path threads
+# only ever occupy P-cores, so the hot-path pool cannot exceed the 15 claimable
+# P-cores and the background pool cannot fall below the 16 E-cores.  The P-core
+# ceiling binds first and any floor from 0 to 16 gives an identical layout here.
+#
+# It is not neutral on a uniform-core machine running this same consolidated
+# layout, where the floor is the only thing capping hot-path growth.  At 6 the cut
+# falls after rank 3 on a 20-core host: ten hot-path threads, nine background.
+# With no floor at all the same file would admit ranks 4 and 5 there and leave
+# three background cores for two JVMs and thirteen Quill backends.
+
+[machines.localhost]
+minimum_background_cores = 6
 components = [
     "auth_service_a",
     "auth_service_b",
@@ -161,48 +230,56 @@ binary  = "bin/matching_engine"
 config  = "etc/matching_engine/matching_engine_primary.toml"
 workdir = "etc/matching_engine"
 ha_only = false
+hot_path_rank = 3
 
 [components.matching_engine_secondary]
 binary  = "bin/matching_engine"
 config  = "etc/matching_engine/matching_engine_secondary.toml"
 workdir = "etc/matching_engine"
 ha_only = true
+hot_path_rank = 5
 
 [components.sequencer_primary]
 binary  = "bin/sequencer"
 config  = "etc/sequencer/sequencer_primary.toml"
 workdir = "etc/sequencer"
 ha_only = false
+hot_path_rank = 2
 
 [components.sequencer_secondary]
 binary  = "bin/sequencer"
 config  = "etc/sequencer/sequencer_secondary.toml"
 workdir = "etc/sequencer"
 ha_only = true
+hot_path_rank = 2
 
 [components.mep_primary]
 binary  = "bin/matching_engine_publisher"
 config  = "etc/matching_engine_publisher/matching_engine_publisher_primary.toml"
 workdir = "etc/matching_engine_publisher"
 ha_only = false
+hot_path_rank = 4
 
 [components.mep_secondary]
 binary  = "bin/matching_engine_publisher"
 config  = "etc/matching_engine_publisher/matching_engine_publisher_secondary.toml"
 workdir = "etc/matching_engine_publisher"
 ha_only = true
+hot_path_rank = 4
 
 [components.order_gateway]
 binary  = "bin/order_gateway"
 config  = "etc/order_gateway/order_gateway.toml"
 workdir = "etc/order_gateway"
 ha_only = false
+hot_path_rank = 1
 
 [components.binary_gateway]
 binary  = "bin/binary_gateway"
 config  = "etc/binary_gateway/binary_gateway.toml"
 workdir = "etc/binary_gateway"
 ha_only = false
+hot_path_rank = 1
 
 # The admin service JAR is placed in install_dir/lib/ by build.py.
 # workdir is etc/admin_service/ so that relative paths in application.properties

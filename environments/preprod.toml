@@ -63,6 +63,30 @@ ca   = "ca.crt"
 
 # ── Components ────────────────────────────────────────────────────────────────
 
+# hot_path_rank declares the order in which entitlement to a dedicated CPU core is
+# surrendered when a machine cannot satisfy every component.  It is a property of
+# the instance, not of the machine, so the same value is used in every
+# environment; where the cut falls is computed per machine by deploy.py.  Absence
+# of hot_path_rank means the component's threads run in the shared background
+# tier, which is the safe default.
+#
+# A rank group is admitted whole or not at all, so both gateways (rank 1) can
+# never be split across core types.  Both share one host here, so that rule is
+# doing real work in this environment rather than being a formality.
+#
+#   1  order_gateway, binary_gateway   client edge
+#   2  sequencer_primary/_secondary    the sequencing point; the follower's WalAck
+#                                      gates every execution report, so it is
+#                                      latency-critical despite not being
+#                                      mandatory for trading
+#   3  matching_engine                 matching
+#
+# No thread counts appear here.  The application knows how many threads it
+# registers with the Reactor; deploy.py asks the binary rather than reading a
+# figure that would drift silently.
+#
+# See docs/design/cpu_pinning_anti_affinity.md.
+
 [startup_order]
 components = [
     "auth_service_a",
@@ -77,6 +101,62 @@ components = [
     "binary_gateway",
     "admin_service",
 ]
+
+# ── Machine layout ────────────────────────────────────────────────────────────
+# Which processes run on which host.  deploy.py runs on the target machine, reads
+# that machine's real CPU topology, and resolves the hot_path_rank values above
+# into concrete core ids -- so the same declaration serves hosts of different
+# sizes and survives a hardware refresh.
+#
+# Hostnames must match the *_host values further down.  REPLACE them together.
+#
+# minimum_background_cores is a floor on the shared tier, not an apportionment of
+# the machine.  Background cores are where everything not pinned actually runs --
+# the Quill backend, and later the Prometheus scrape thread -- so the value is
+# small on every host regardless of its size.  Its first job is correctness: the
+# background pool must never be empty, because an empty CPU affinity mask is
+# EINVAL and every process has at least a Quill backend needing somewhere to run.
+# On a dedicated host wanting two cores out of twenty it never binds.
+
+[machines."auth-primary.preprod.exchange.internal"]  # REPLACE
+components               = ["auth_service_a"]
+minimum_background_cores = 2
+
+[machines."auth-secondary.preprod.exchange.internal"]  # REPLACE
+components               = ["auth_service_b"]
+minimum_background_cores = 2
+
+[machines."witness.preprod.exchange.internal"]  # REPLACE
+components               = ["witness"]
+minimum_background_cores = 2
+
+[machines."arbiter-primary.preprod.exchange.internal"]  # REPLACE
+components               = ["arbiter_primary"]
+minimum_background_cores = 2
+
+[machines."arbiter-secondary.preprod.exchange.internal"]  # REPLACE
+components               = ["arbiter_secondary"]
+minimum_background_cores = 2
+
+[machines."matching-engine.preprod.exchange.internal"]  # REPLACE
+components               = ["matching_engine"]
+minimum_background_cores = 2
+
+[machines."sequencer-primary.preprod.exchange.internal"]  # REPLACE
+components               = ["sequencer_primary"]
+minimum_background_cores = 2
+
+[machines."sequencer-secondary.preprod.exchange.internal"]  # REPLACE
+components               = ["sequencer_secondary"]
+minimum_background_cores = 2
+
+[machines."gateway.preprod.exchange.internal"]  # REPLACE
+components               = ["order_gateway", "binary_gateway"]
+minimum_background_cores = 2
+
+[machines."admin.preprod.exchange.internal"]  # REPLACE
+components               = ["admin_service"]
+minimum_background_cores = 2
 
 [components.auth_service_a]
 binary  = "bin/authentication_service"
@@ -113,30 +193,35 @@ binary  = "bin/matching_engine"
 config  = "etc/matching_engine/matching_engine.toml"
 workdir = "etc/matching_engine"
 ha_only = false
+hot_path_rank = 3
 
 [components.sequencer_primary]
 binary  = "bin/sequencer"
 config  = "etc/sequencer/sequencer.toml"
 workdir = "etc/sequencer"
 ha_only = false
+hot_path_rank = 2
 
 [components.sequencer_secondary]
 binary  = "bin/sequencer"
 config  = "etc/sequencer/sequencer_secondary.toml"
 workdir = "etc/sequencer"
 ha_only = true
+hot_path_rank = 2
 
 [components.order_gateway]
 binary  = "bin/order_gateway"
 config  = "etc/order_gateway/order_gateway.toml"
 workdir = "etc/order_gateway"
 ha_only = false
+hot_path_rank = 1
 
 [components.binary_gateway]
 binary  = "bin/binary_gateway"
 config  = "etc/binary_gateway/binary_gateway.toml"
 workdir = "etc/binary_gateway"
 ha_only = false
+hot_path_rank = 1
 
 [components.admin_service]
 jar     = "lib/admin-service.jar"

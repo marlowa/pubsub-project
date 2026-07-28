@@ -12,7 +12,7 @@
 - [Reactor](design/reactor.md)
 - [Threading](design/threading.md)
 - [CPU Pinning](design/cpu_pinning.md)
-- [CPU Core Layout — Declared Allocation and Background by Default](design/cpu_pinning_anti_affinity.md) (design agreed, not implemented)
+- [CPU Core Layout — Declared Allocation and Background by Default](design/cpu_pinning_anti_affinity.md)
 - [Socket Communications](design/socket_comms.md)
 - [Secure Communications — TLS and SCRAM](design/secure_comms.md)
 - [Write-Ahead Log](design/wal.md)

@@ -93,6 +93,8 @@ BinaryGatewayConfigurationLoader::load_and_init_logging(const std::string& file_
     if (config.cpu_pinning_enabled) {
         toml.get_required_except("reactor.cpu_registry_shm_path", config.cpu_registry_shm_path);
         toml.get_required_except("reactor.cpu_registry_lock_file", config.cpu_registry_lock_file);
+        toml.get_required_except("reactor.cpu_layout_file", config.cpu_layout_file);
+        toml.get_required_except("reactor.cpu_layout_component", config.cpu_layout_component);
     }
     toml.get_required_except("reactor.connect_retry_warning_interval", config.connect_retry_warning_interval);
 

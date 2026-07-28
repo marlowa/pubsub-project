@@ -95,51 +95,64 @@ CpuRegistry& CpuRegistry::operator=(CpuRegistry&& other) {
     return *this;
 }
 
-AvailableCpuVector CpuRegistry::claim_cpus(size_t count, bool reserve_cpu0) const {
-    if (layout_ == nullptr || count == 0) {
-        return {};
+std::tuple<bool, std::string> CpuRegistry::record_assignment(const std::vector<CpuId>& core_ids) const {
+    if (layout_ == nullptr || core_ids.empty()) {
+        return {true, ""};
     }
 
     const FileLock lock(lock_file_path_);
 
-    // Compact stale entries (dead or invalid PIDs) before consulting the registry.
-    // Entries with pid <= 0 are corrupt/zero-initialised and can never be released
-    // by release_cpus() (which only removes entries matching the current process),
-    // so they must be evicted here to prevent the table from filling permanently.
-    uint32_t write_idx = 0;
+    // Evict entries whose owner is gone before consulting the registry, or a
+    // crashed predecessor would look like a live collision for ever. Entries
+    // with pid <= 0 are corrupt or zero-initialised and can never be removed by
+    // release_cpus(), which only matches the current process, so they have to be
+    // dropped here to stop the table filling permanently.
+    uint32_t write_index = 0;
     for (uint32_t i = 0; i < layout_->active_entry_count; ++i) {
-        const auto& e = layout_->entries[i];
-        const bool keep = (e.process_id > 0) && (kill(e.process_id, 0) == 0 || errno != ESRCH);
-        if (keep) {
-            layout_->entries[write_idx++] = e;
+        const auto& entry = layout_->entries[i];
+        const bool owner_alive = (entry.process_id > 0) && (kill(entry.process_id, 0) == 0 || errno != ESRCH);
+        if (owner_alive) {
+            layout_->entries[write_index++] = entry;
         }
     }
-    layout_->active_entry_count = write_idx;
+    layout_->active_entry_count = write_index;
 
-    // Find CPUs not owned by any live process.
-    AvailableCpuVector available = get_available_cpu_ids(reserve_cpu0, *layout_);
-
-    // Limit to what was requested.
-    if (available.size() > count) {
-        available.resize(count);
+    std::string collisions;
+    for (const CpuId core_id : core_ids) {
+        for (uint32_t i = 0; i < layout_->active_entry_count; ++i) {
+            const auto& entry = layout_->entries[i];
+            if (entry.core_id != core_id.get_value() || entry.process_id == my_pid_) {
+                continue;
+            }
+            if (!collisions.empty()) {
+                collisions += "; ";
+            }
+            collisions += "CPU " + std::to_string(core_id.get_value()) + " is already held by pid " + std::to_string(entry.process_id);
+            break;
+        }
     }
 
-    // Claim each selected CPU by writing an entry into the shared registry.
-    for (const CpuAssignment& cpu : available) {
+    // Record regardless of collision, so the registry stays a complete picture
+    // of what is really pinned where -- which is what the affinity audit checks
+    // against, and what makes a collision visible from either side.
+    for (const CpuId core_id : core_ids) {
         if (layout_->active_entry_count >= SharedCoreRegistryLayout::max_system_cores) {
-            // Registry full -- should not happen on a well-configured system.
             break;
         }
         auto& entry = layout_->entries[layout_->active_entry_count];
-        entry.core_id = cpu.cpu_id.get_value();
-        entry.numa_node_id = cpu.numa_node_id;
+        entry.core_id = core_id.get_value();
+        entry.numa_node_id = -1;
         entry.process_id = my_pid_;
         entry.thread_tag = 0;
         entry.timestamp_ns = 0;
         ++layout_->active_entry_count;
     }
 
-    return available;
+    if (!collisions.empty()) {
+        return {false, "CPU core collision -- another installation on this machine has pinned the same core(s): " + collisions +
+                           ". Both layouts are self-consistent but they overlap; the deployments must be given disjoint cores"};
+    }
+    return {true, ""};
 }
 
 void CpuRegistry::release_cpus() const {

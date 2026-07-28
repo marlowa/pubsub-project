@@ -26,6 +26,7 @@
 #include <quill/Backend.h>
 
 #include <pubsub_itc_fw/BackoffWithYield.hpp>
+#include <pubsub_itc_fw/CpuLayout.hpp>
 #include <pubsub_itc_fw/CpuPinning.hpp>
 #include <pubsub_itc_fw/CpuRegistry.hpp>
 #include <pubsub_itc_fw/DeliverLostEventFlag.hpp>
@@ -529,115 +530,125 @@ bool Reactor::initialize_threads() {
     return true;
 }
 
+std::tuple<bool, std::string> Reactor::verify_hot_path_thread_count(size_t allocated_core_count) const {
+    // The reactor thread plus one core per registered ApplicationThread. Threads
+    // registered through register_extra_thread() are excluded on purpose: they
+    // are background by default, and counting them would make a component's core
+    // demand vary with configuration -- OrderGatewayThread registers
+    // FixCaptureWriter only when fix_capture_enabled is set.
+    const size_t registered_demand = 1 + threads_.size();
+
+    if (allocated_core_count < registered_demand) {
+        return {false, fmt::format("this component registered {} hot-path thread(s) (reactor thread + {} ApplicationThread(s)) but the CPU layout allocated "
+                                   "only {} core(s). The layout was sized from the count reported by --hot-path-thread-count, so that declared constant no "
+                                   "longer matches the registrations. Update it and re-run deploy.py",
+                                   registered_demand, threads_.size(), allocated_core_count)};
+    }
+    return {true, ""};
+}
+
 bool Reactor::pin_registered_threads() {
     // Silently carrying on unpinned was how a whole test harness ran for weeks
     // without anyone noticing pinning had stopped being configured.
-    if (config_.cpu_registry_shm_path.empty() || config_.cpu_registry_lock_file.empty()) {
+    if (config_.cpu_layout_file.empty() || config_.cpu_layout_component.empty()) {
         PUBSUB_LOG_STR(logger_, FwLogLevel::Error,
-                       "CPU pinning is enabled but cpu_registry_shm_path and cpu_registry_lock_file are not both configured -- both are mandatory when "
+                       "CPU pinning is enabled but cpu_layout_file and cpu_layout_component are not both configured -- both are mandatory when "
                        "cpu_pinning_enabled is true");
         return false;
     }
 
-    try {
-        cpu_registry_ = std::make_unique<CpuRegistry>(config_.cpu_registry_shm_path, config_.cpu_registry_lock_file);
+    CpuLayout layout;
+    const auto [loaded, load_error] = layout.load(config_.cpu_layout_file, config_.cpu_layout_component);
+    if (!loaded) {
+        PUBSUB_LOG(logger_, FwLogLevel::Error, "CPU pinning: {}", load_error);
+        return false;
+    }
 
-        // Claim one CPU per application thread (plus any extras each thread
-        // registered), one for the reactor thread, and one for the Quill backend.
-        size_t total_needed = 2; // reactor + Quill backend
-        for (const auto& [name, thread] : threads_) {
-            total_needed += 1 + thread->get_extra_threads().size();
+    // A layout computed for hardware that is no longer present must stop
+    // start-up rather than degrade quietly: pinning to an offline core returns
+    // EINVAL, and the remedy is to re-run deploy.py.
+    const auto [cores_present, missing_error] = layout.verify_cores_present();
+    if (!cores_present) {
+        PUBSUB_LOG(logger_, FwLogLevel::Error, "CPU pinning: {}", missing_error);
+        return false;
+    }
+
+    if (!layout.is_admitted()) {
+        // Not an error. The layout deliberately left this component in the
+        // shared tier, and it runs correctly there -- that is what disabling
+        // pinning altogether gives. Report it at Info with the reason so it is
+        // diagnosable rather than showing up only as latency.
+        PUBSUB_LOG(logger_, FwLogLevel::Info, "CPU pinning: component '{}' runs in the background tier on cores {} -- {}", config_.cpu_layout_component,
+                   format_cpu_list(layout.background_cores()), layout.demotion_reason());
+        return true;
+    }
+
+    const std::vector<CpuId>& hot_path_cores = layout.hot_path_cores();
+    const auto [count_matches, count_error] = verify_hot_path_thread_count(hot_path_cores.size());
+    if (!count_matches) {
+        PUBSUB_LOG(logger_, FwLogLevel::Error, "CPU pinning: {}", count_error);
+        return false;
+    }
+
+    PUBSUB_LOG(logger_, FwLogLevel::Info, "CPU pinning: component '{}' on machine '{}' -- hot-path cores {}, background cores {}", config_.cpu_layout_component,
+               layout.machine_name(), format_cpu_list(hot_path_cores), format_cpu_list(layout.background_cores()));
+
+    // The reactor thread takes the first core and each registered
+    // ApplicationThread one of the rest. Extra threads are not promoted: they
+    // keep the inherited background mask, which is where a file writer such as
+    // FixCaptureWriter belongs and where it never had any business consuming a
+    // dedicated core.
+    size_t next_core = 0;
+
+    if (pin_thread_to_core(pthread_self(), hot_path_cores[next_core])) {
+        PUBSUB_LOG(logger_, FwLogLevel::Info, "CPU pinning: reactor thread pinned to CPU {}", hot_path_cores[next_core].get_value());
+    } else {
+        PUBSUB_LOG(logger_, FwLogLevel::Error, "CPU pinning: failed to pin reactor thread to CPU {}: {}", hot_path_cores[next_core].get_value(),
+                   StringUtils::get_errno_string());
+        return false;
+    }
+    ++next_core;
+
+    for (auto& [name, thread] : threads_) {
+        const CpuId core_id = hot_path_cores[next_core];
+        if (pin_thread_to_core(thread->get_pthread_id(), core_id)) {
+            PUBSUB_LOG(logger_, FwLogLevel::Info, "CPU pinning: thread '{}' pinned to CPU {}", name, core_id.get_value());
+        } else {
+            PUBSUB_LOG(logger_, FwLogLevel::Error, "CPU pinning: failed to pin thread '{}' to CPU {}: {}", name, core_id.get_value(),
+                       StringUtils::get_errno_string());
+            return false;
         }
-        AvailableCpuVector cpus = cpu_registry_->claim_cpus(total_needed, config_.cpu_pinning_reserve_cpu0);
+        ++next_core;
 
-        if (cpus.empty()) {
-            PUBSUB_LOG_STR(logger_, FwLogLevel::Warning, "CPU pinning: no CPUs available -- skipping");
+        for (const auto& extra : thread->get_extra_threads()) {
+            PUBSUB_LOG(logger_, FwLogLevel::Info, "CPU pinning: extra thread '{}' (registered by '{}') stays in the background tier", extra.name, name);
+        }
+    }
+
+    // The Quill backend is not dealt with here. It is placed by
+    // apply_background_affinity() in main(), which runs for admitted and demoted
+    // components alike -- doing it here would leave the backend of a demoted
+    // component unmasked, since this function returns early for those.
+
+    // Record what was pinned. The registry no longer allocates -- the layout file
+    // did that -- but it is the only thing that can see across two installations
+    // on one machine, each with its own layout file, each correct alone, both
+    // handing out the same core.
+    if (!config_.cpu_registry_shm_path.empty() && !config_.cpu_registry_lock_file.empty()) {
+        try {
+            cpu_registry_ = std::make_unique<CpuRegistry>(config_.cpu_registry_shm_path, config_.cpu_registry_lock_file);
+            const auto [no_collision, collision_error] = cpu_registry_->record_assignment(hot_path_cores);
+            if (!no_collision) {
+                // Not fatal: this process is correctly pinned to what it was
+                // allocated, and stopping it would not free the other holder.
+                // Loud, because the symptom otherwise is two latency-critical
+                // threads quietly sharing a core.
+                PUBSUB_LOG(logger_, FwLogLevel::Error, "CPU pinning: {}", collision_error);
+            }
+        } catch (const std::exception& ex) {
+            PUBSUB_LOG(logger_, FwLogLevel::Warning, "CPU pinning: could not record the core assignment: {} -- pinning itself is unaffected", ex.what());
             cpu_registry_.reset();
-            return true;
         }
-
-        if (cpus.size() < total_needed) {
-            PUBSUB_LOG(logger_, FwLogLevel::Warning, "CPU pinning: only {} CPUs available, {} needed -- some threads will not be pinned", cpus.size(),
-                       total_needed);
-        }
-
-        // Pin each registered application thread, followed immediately by any
-        // extra threads it registered, so related threads land on adjacent cores.
-        size_t idx = 0;
-        for (auto& [name, thread] : threads_) {
-            if (idx >= cpus.size()) {
-                break;
-            }
-            const CpuAssignment cpu = cpus[idx++];
-            if (pin_thread_to_core(thread->get_pthread_id(), cpu.cpu_id)) {
-                PUBSUB_LOG(logger_, FwLogLevel::Info, "CPU pinning: thread '{}' pinned to CPU {} (NUMA node {}, {})", name, cpu.cpu_id.get_value(),
-                           cpu.numa_node_id, core_type_name(cpu.core_type));
-                if (cpu.core_type == CoreType::E_core) {
-                    PUBSUB_LOG(logger_, FwLogLevel::Warning,
-                               "CPU pinning: CPU {} is an E-core -- all P-cores are claimed; thread '{}' will have reduced throughput and higher latency",
-                               cpu.cpu_id.get_value(), name);
-                }
-            } else {
-                PUBSUB_LOG(logger_, FwLogLevel::Warning, "CPU pinning: failed to pin thread '{}' to CPU {}", name, cpu.cpu_id.get_value());
-            }
-
-            for (const auto& extra : thread->get_extra_threads()) {
-                if (idx >= cpus.size()) {
-                    break;
-                }
-                const CpuAssignment extra_cpu = cpus[idx++];
-                if (pin_thread_to_core(extra.thread_id, extra_cpu.cpu_id)) {
-                    PUBSUB_LOG(logger_, FwLogLevel::Info, "CPU pinning: extra thread '{}' (registered by '{}') pinned to CPU {} (NUMA node {}, {})",
-                               extra.name, name, extra_cpu.cpu_id.get_value(), extra_cpu.numa_node_id, core_type_name(extra_cpu.core_type));
-                    if (extra_cpu.core_type == CoreType::E_core) {
-                        PUBSUB_LOG(logger_, FwLogLevel::Warning,
-                                   "CPU pinning: CPU {} is an E-core -- all P-cores are claimed; extra thread '{}' will have reduced throughput",
-                                   extra_cpu.cpu_id.get_value(), extra.name);
-                    }
-                } else {
-                    PUBSUB_LOG(logger_, FwLogLevel::Warning, "CPU pinning: failed to pin extra thread '{}' (registered by '{}') to CPU {}", extra.name, name,
-                               extra_cpu.cpu_id.get_value());
-                }
-            }
-        }
-
-        // Pin the reactor thread itself (the caller of run()).
-        if (idx < cpus.size()) {
-            const CpuAssignment cpu = cpus[idx++];
-            if (pin_thread_to_core(pthread_self(), cpu.cpu_id)) {
-                PUBSUB_LOG(logger_, FwLogLevel::Info, "CPU pinning: reactor thread pinned to CPU {} (NUMA node {}, {})", cpu.cpu_id.get_value(),
-                           cpu.numa_node_id, core_type_name(cpu.core_type));
-                if (cpu.core_type == CoreType::E_core) {
-                    PUBSUB_LOG(logger_, FwLogLevel::Warning,
-                               "CPU pinning: CPU {} is an E-core -- all P-cores are claimed; reactor thread will have reduced throughput",
-                               cpu.cpu_id.get_value());
-                }
-            } else {
-                PUBSUB_LOG(logger_, FwLogLevel::Warning, "CPU pinning: failed to pin reactor thread to CPU {}", cpu.cpu_id.get_value());
-            }
-        }
-
-        // Pin the Quill logger backend thread.
-        // quill::Backend::get_thread_id() returns the kernel LWP (uint32_t); it
-        // returns 0 before the backend thread has fully started, which cannot
-        // happen here because the backend is started on first logger construction,
-        // which occurs before Reactor::run() is entered.  Guard anyway.
-        if (idx < cpus.size()) {
-            const CpuAssignment cpu = cpus[idx];
-            const auto quill_tid = static_cast<pid_t>(quill::Backend::get_thread_id());
-            if (quill_tid == 0) {
-                PUBSUB_LOG_STR(logger_, FwLogLevel::Warning, "CPU pinning: Quill backend TID is 0 -- skipping backend core assignment");
-            } else if (pin_tid_to_core(quill_tid, cpu.cpu_id)) {
-                PUBSUB_LOG(logger_, FwLogLevel::Info, "CPU pinning: Quill backend thread (tid={}) pinned to CPU {} (NUMA node {}, {})", quill_tid,
-                           cpu.cpu_id.get_value(), cpu.numa_node_id, core_type_name(cpu.core_type));
-            } else {
-                PUBSUB_LOG(logger_, FwLogLevel::Warning, "CPU pinning: failed to pin Quill backend thread (tid={}) to CPU {}", quill_tid,
-                           cpu.cpu_id.get_value());
-            }
-        }
-    } catch (const std::exception& ex) {
-        PUBSUB_LOG(logger_, FwLogLevel::Warning, "CPU pinning failed: {} -- continuing without pinning", ex.what());
-        cpu_registry_.reset();
     }
 
     return true;

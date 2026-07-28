@@ -113,6 +113,14 @@ struct BinaryGatewayConfiguration {
     /** @brief Path to the flock file serialising cross-process CPU registry access. */
     std::string cpu_registry_lock_file;
 
+    /** The machine-wide CPU layout file written by deploy.py, and this
+     *  component's key within it (e.g. "sequencer_secondary" -- the instance,
+     *  not the binary, since a primary and its secondary are placed separately).
+     *  Cores are allocated at deploy time, not negotiated at run time.
+     *  Mandatory whenever cpu_pinning_enabled is true. */
+    std::string cpu_layout_file;
+    std::string cpu_layout_component;
+
     /** @brief How often to warn while an outbound connection is retrying. */
     std::chrono::minutes connect_retry_warning_interval{15};
 

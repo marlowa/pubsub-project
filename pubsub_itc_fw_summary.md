@@ -1044,10 +1044,25 @@ exactly one leader, and both gateways already connect to it. That means a logon 
 through the sequencer and a new PDU pair, so it is a cross-component protocol change rather
 than a local edit.
 
-## TODO — CPU core layout: declared allocation and background by default (raised 2026-07-26, design agreed 2026-07-27)
+## DONE — CPU core layout: declared allocation and background by default (raised 2026-07-26, design agreed 2026-07-27, built 2026-07-28)
 
-**Design agreed. Nothing implemented.** Full treatment, including the rejected approaches and the
-specific flaw in each, is in
+**Implemented and live-verified 2026-07-28.** Every ranked component landed on the cores the layout
+allocated it (gateways 1-4, sequencers 5-8, matching engine 9-10, MEPs 11-14),
+`matching_engine_secondary` was demoted at rank 5 with its reason logged, and both JVMs --
+`fix_test_client` included -- start masked to the background tier. `cpu_audit.py` compares every
+running thread's real mask from `/proc` against the layout and exits non-zero on a mismatch.
+What was built: `cpu_layout.py` and a new `deploy.py` step that writes `run/cpu_layout.toml` and the
+`run/background_tier` wrapper; `CpuLayout` and `HotPathThreadCount` in the framework;
+`--hot-path-thread-count` on the five ranked binaries; Reactor promotion plus
+`verify_hot_path_thread_count()`; `CpuRegistry` reduced to a record and cross-installation collision
+detector; and `cpu_audit.py`.
+Three things the implementation found that the design had not: the Quill backend never inherits the
+process mask (it starts before the config is read, so it must be placed explicitly, and placing it
+in the Reactor left *demoted* components' backends unmasked); all thirteen backends must not share
+one background core, so `deploy.py` allocates one each; and `cpu_pinning_enabled` had to become
+"take part in the machine's CPU layout" and be true for every component, since the five that pinned
+nothing were sitting unmasked and free to run on the gateways' cores.
+Full treatment, including the rejected approaches and the specific flaw in each, is in
 [docs/design/cpu_pinning_anti_affinity.md](docs/design/cpu_pinning_anti_affinity.md). Summary here
 so the problem and its answer are visible from this file.
 
@@ -1057,7 +1072,7 @@ thread T to core C" but "restrict thread T to whatever cores nobody has pinned".
 mask is easy -- `sched_setaffinity` takes a set, and the civetweb thread id is obtainable.
 Determining the set is the problem.
 
-**The registry is a record, not a plan.** `claim_cpus()` reports what has claimed so far. The
+**The registry was a record, not a plan.** `claim_cpus()` reported what had claimed so far. The
 anti-affinity mask needs to know what *will* claim, and a process that has not started yet leaves
 no trace. So a component that starts early computes a complement covering nearly every core --
 including the ones pinned seconds later -- and applies it successfully. The failure is silent.
@@ -1117,9 +1132,10 @@ which components run on each host (`localhost` recognised, used by `dev.toml`) p
   uniform-core machines; omitted on the hybrid dev workstation, where the 15-P-core ceiling binds
   first, and inert in production, where a host runs one component wanting two cores out of twenty.
 Absence of a rank means background, so forgetting is harmless. The machine list names **every**
-process on the host, not only those that pin -- the seven dev components with
-`cpu_pinning_enabled = false` currently run anywhere at all, including on the gateways' cores, which
-is the hole they were missing.
+process on the host, not only those that pin -- under the old scheme the seven dev components that
+claimed nothing ran anywhere at all, including on the gateways' cores, which is the hole they were
+missing. In the built version `cpu_pinning_enabled` means "take part in the machine's layout" and is
+true for all of them; one that pins nothing is unadmitted and stays in the background tier.
 
 **Ties are a constraint, not just an ordering.** A rank group is admitted whole or not at all. Both
 gateways are rank 1, so they can never be split across core types -- turning the gateway symmetry
@@ -1191,13 +1207,12 @@ compose with a per-machine assertion, and on the deployments in hand it was unre
 
 ## Immediate Next Task
 
-**The CPU core layout, then item 16 — Prometheus metrics.** Every
-other near-term item on the roadmap's "Active / Next" list is now done (items 11, 12, 13, 14, 15,
-17, 18, 19), which leaves Prometheus as the head of the queue — with one piece of work in front of
-it: the metrics thread must be kept off the pinned cores, and the design for that was agreed on
-2026-07-27 but not built. It is not a detail of the endpoint; it reaches into the claiming model,
-into which components get P-cores at all, and into how every component is launched. Prometheus is
-in turn a prerequisite rather than a nicety: gateway performance work is paused
+**Item 16 — Prometheus metrics.** Every other near-term item on the roadmap's "Active / Next" list
+is now done (items 11, 12, 13, 14, 15, 17, 18, 19), and the CPU core layout that stood in front of
+Prometheus was built on 2026-07-28, so nothing is left ahead of it. That work has also removed the
+requirement that prompted it: the metrics thread needs no anti-affinity calculation of its own,
+because every thread not explicitly promoted is already confined to the background tier. Prometheus
+is a prerequisite rather than a nicety: gateway performance work is paused
 until it lands, because the FIX-versus-binary comparison cannot be settled by profiling and log
 timestamps — the 2026-07-26 note under item 16 records exactly which measurements failed and
 which metrics would fix each one. The two design constraints that matter most are that both

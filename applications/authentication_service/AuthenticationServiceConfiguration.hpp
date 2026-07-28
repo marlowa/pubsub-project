@@ -79,6 +79,14 @@ struct AuthenticationServiceConfiguration {
     std::string cpu_registry_shm_path;
     std::string cpu_registry_lock_file;
 
+    /** The machine-wide CPU layout file written by deploy.py, and this
+     *  component's key within it (e.g. "sequencer_secondary" -- the instance,
+     *  not the binary, since a primary and its secondary are placed separately).
+     *  Cores are allocated at deploy time, not negotiated at run time.
+     *  Mandatory whenever cpu_pinning_enabled is true. */
+    std::string cpu_layout_file;
+    std::string cpu_layout_component;
+
     /** @brief How long to wait between "still disconnected" log warnings during outbound retry. */
     std::chrono::milliseconds connect_retry_warning_interval;
 

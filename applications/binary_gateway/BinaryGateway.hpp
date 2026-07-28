@@ -3,6 +3,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <cstddef>
 #include <memory>
 
 #include <pubsub_itc_fw/QuillLogger.hpp>
@@ -31,6 +32,11 @@ namespace binary_gateway {
  */
 class BinaryGateway {
   public:
+    /// Reactor thread plus the one BinaryGatewayThread registered in the constructor.
+    /// Answered to deploy.py via --hot-path-thread-count and checked against the
+    /// real registrations at startup; see HotPathThreadCount.hpp.
+    static constexpr size_t hot_path_thread_count = 2;
+
     /**
      * @brief Constructs the gateway and wires all connections.
      * @param[in] config Gateway configuration.

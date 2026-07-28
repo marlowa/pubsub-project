@@ -9,15 +9,21 @@ Steps (in order):
      the admin-service JAR, using values from the env TOML.
      Placeholder names are the full flattened TOML path, e.g.
        [arbiter_primary] peer_host  →  ${arbiter_primary_peer_host}.
-  3. Generate self-signed TLS certificates for each [tls.*] section in the env
+  3. Resolve the CPU core layout for this machine and write run/cpu_layout.toml.
+     The env TOML declares which processes run on each host ([machines.*]) and
+     the order in which they surrender a dedicated core (hot_path_rank); this
+     step reads the host's real topology and turns that intent into core ids.
+     Because deploy runs on the target machine, one declaration serves hosts of
+     different sizes and survives a hardware refresh.
+  4. Generate self-signed TLS certificates for each [tls.*] section in the env
      TOML (unless --skip-certs).
-  4. Create or update the PostgreSQL database via db/create_db.py
+  5. Create or update the PostgreSQL database via db/create_db.py
      (unless --skip-db).
-  5. Provision FIX client SCRAM credentials from [[fix_credentials]] entries in
+  6. Provision FIX client SCRAM credentials from [[fix_credentials]] entries in
      the env TOML.  Derives fresh SCRAM material from the configured plaintext
      password and writes it directly into the database, making this step the
      single authoritative source for those credentials.
-  6. Export SCRAM credentials from the database to credentials.toml via
+  7. Export SCRAM credentials from the database to credentials.toml via
      db/export_credentials.py.
 
 Usage:
@@ -46,6 +52,8 @@ import sys
 import tarfile
 import zipfile
 from pathlib import Path
+
+import cpu_layout
 
 # Matches intentional ${placeholder} patterns — used to catch unresolved
 # placeholders after safe_substitute (which silently skips unknowns).
@@ -113,21 +121,55 @@ def unpack_artefact(artefact_path: Path, install_dir: Path) -> None:
 
 # ── Template expansion ────────────────────────────────────────────────────────
 
-def expand_templates(install_dir: Path, namespace: dict[str, str]) -> None:
-    """Expand ${placeholder} in all .toml files under install_dir/etc/."""
+def map_config_files_to_components(env: dict, install_dir: Path) -> dict[Path, str]:
+    """Map each component's config file to the component key that owns it.
+
+    The mapping is already declared, one to one, by components.<key>.config; this
+    just inverts it.  It exists so a component can be told its own name during
+    template expansion, which is what lets it find its entry in the machine-wide
+    CPU layout file.  The name has to be the instance ("sequencer_secondary"),
+    not the binary, because a primary and its secondary run the same binary and
+    are ranked and placed separately.
+    """
+    owners: dict[Path, str] = {}
+    for name, component in env.get("components", {}).items():
+        config = component.get("config")
+        if config is None:
+            continue
+        owners[(install_dir / config).resolve()] = name
+    return owners
+
+
+def expand_templates(install_dir: Path, namespace: dict[str, str], config_owners: dict[Path, str] | None = None) -> None:
+    """Expand ${placeholder} in all .toml files under install_dir/etc/.
+
+    Most placeholders come from the shared namespace and mean the same thing in
+    every file.  ${component_name} is the exception: it resolves per file, to the
+    component that declared that file as its config.
+    """
     etc_dir = install_dir / "etc"
     if not etc_dir.is_dir():
         print(f"  warning: {etc_dir} not found — no templates to expand")
         return
 
+    owners = config_owners or {}
     expanded = 0
     for toml_path in sorted(etc_dir.rglob("*.toml")):
         text = toml_path.read_text(encoding="utf-8")
+        # A config file with no owner is one no component in *this* environment
+        # declares as its config -- the release artefact ships the templates for
+        # every environment, so dev installs prod's matching_engine.toml and
+        # never launches it.  Such a file gets an empty component name rather
+        # than an error: it has no component identity here, and saying so
+        # honestly means that if it were ever launched, CpuLayout would fail at
+        # startup with "no CPU layout component name configured" rather than
+        # silently matching the wrong entry.
+        file_namespace = {**namespace, "component_name": owners.get(toml_path.resolve(), "")}
         # safe_substitute leaves unrecognised $ sequences (e.g. bcrypt hashes
         # containing $2a$12$…) intact instead of raising ValueError.  We then
         # scan the result for any remaining ${identifier} patterns to catch
         # typos or genuinely missing namespace entries.
-        result = string.Template(text).safe_substitute(namespace)
+        result = string.Template(text).safe_substitute(file_namespace)
         unresolved = _PLACEHOLDER_RE.findall(result)
         if unresolved:
             sys.exit(f"error: undefined placeholder(s) {unresolved} in {toml_path.relative_to(install_dir)}")
@@ -359,6 +401,152 @@ def provision_fix_credentials(env: dict) -> None:
         print(f"  provisioned: {comp_id}")
 
 
+# ── CPU core layout ───────────────────────────────────────────────────────────
+
+# Reactor thread plus the one ApplicationThread every component registers.
+# Used only when the binary cannot be asked; see query_hot_path_thread_count().
+_ASSUMED_HOT_PATH_THREAD_COUNT = 2
+
+
+def query_hot_path_thread_count(install_dir: Path, component: dict) -> tuple[int, bool]:
+    """Ask a component's binary how many hot-path threads it will register.
+
+    The application knows how many threads it registers with the Reactor and the
+    environment TOML must not need to know: a count in configuration is a second
+    source of truth that drifts the moment someone adds a thread, and drifts
+    silently.  deploy.py runs on the target host, so the binary is present and
+    can be asked.
+
+    Falls back to the framework invariant -- reactor thread plus the one
+    ApplicationThread every component registers -- when the binary is absent or
+    does not support the query, so a deploy from a partial tree still produces a
+    layout.  Returns (count, queried) so the caller can report the fallback: an
+    assumed count is correct today and would be wrong the moment a component
+    registers a second ApplicationThread, which is exactly the drift the query
+    exists to prevent.
+    """
+    binary = component.get("binary")
+    if binary is None:
+        return _ASSUMED_HOT_PATH_THREAD_COUNT, False
+
+    binary_path = install_dir / binary
+    if not binary_path.is_file():
+        return _ASSUMED_HOT_PATH_THREAD_COUNT, False
+
+    # The installed binaries do not carry an RPATH, so they cannot find
+    # libpubsub_itc_fw.so on their own.  devenv.py prepends the install lib
+    # directories when it launches a component and this must do the same, or
+    # every query fails with a loader error and the layout is silently computed
+    # from assumed counts.  GNUInstallDirs uses lib64 on RHEL8; include both
+    # rather than probing which one CMake chose.
+    library_dirs = [str(d) for d in (install_dir / "lib64", install_dir / "lib") if d.is_dir()]
+    child_env = os.environ.copy()
+    existing = child_env.get("LD_LIBRARY_PATH", "")
+    child_env["LD_LIBRARY_PATH"] = ":".join(library_dirs + ([existing] if existing else []))
+
+    try:
+        result = subprocess.run(
+            [str(binary_path), "--hot-path-thread-count"],
+            capture_output=True, text=True, timeout=10, check=False, env=child_env,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return _ASSUMED_HOT_PATH_THREAD_COUNT, False
+
+    if result.returncode != 0:
+        return _ASSUMED_HOT_PATH_THREAD_COUNT, False
+    try:
+        return int(result.stdout.strip()), True
+    except ValueError:
+        return _ASSUMED_HOT_PATH_THREAD_COUNT, False
+
+
+def resolve_cpu_layout(env: dict, install_dir: Path, run_dir: Path) -> Path | None:
+    """Resolve declared hot_path_rank values into core ids for this machine.
+
+    Writes one machine-wide layout file into run/ and reports the result.  The
+    report is not decoration: whether a demoted rank group is correct depends on
+    the machine, and nothing in the layout can tell a functional-test VM from a
+    production host.  A demotion visible here is diagnosable; one visible only as
+    unexplained latency is not.
+    """
+    machines = env.get("machines")
+    if not machines:
+        print("  no [machines.*] in the env TOML -- no layout computed")
+        return None
+
+    try:
+        machine_key, machine = cpu_layout.select_machine(machines)
+    except cpu_layout.LayoutError as exc:
+        sys.exit(f"error: {exc}")
+
+    components = env.get("components", {})
+    on_machine = machine.get("components", [])
+
+    unknown = [name for name in on_machine if name not in components]
+    if unknown:
+        sys.exit(
+            f"error: [machines.\"{machine_key}\"] lists component(s) with no "
+            f"[components.*] entry: {', '.join(unknown)}"
+        )
+
+    ranks = {
+        name: components[name]["hot_path_rank"]
+        for name in on_machine
+        if "hot_path_rank" in components[name]
+    }
+    thread_counts: dict[str, int] = {}
+    assumed: list[str] = []
+    for name in ranks:
+        count, queried = query_hot_path_thread_count(install_dir, components[name])
+        thread_counts[name] = count
+        if not queried:
+            assumed.append(name)
+    if assumed:
+        print(
+            f"  note: {len(assumed)} binaries could not be asked for their hot-path thread count;\n"
+            f"        assuming {_ASSUMED_HOT_PATH_THREAD_COUNT} each (reactor thread + one "
+            f"ApplicationThread):\n"
+            f"        {', '.join(sorted(assumed))}"
+        )
+        print()
+
+    # reserve_cpu0 is a framework-wide setting in [shared], not a per-machine one:
+    # it says cpu0 belongs to the OS, which is true of every host or none.
+    reserve_cpu0 = bool(env.get("shared", {}).get("reactor_cpu_pinning_reserve_cpu0", True))
+
+    try:
+        layout = cpu_layout.resolve_layout(
+            machine=machine_key,
+            components_on_machine=on_machine,
+            ranks=ranks,
+            thread_counts=thread_counts,
+            topology=cpu_layout.read_topology(),
+            minimum_background_cores=machine.get("minimum_background_cores", 0),
+            reserve_cpu0=reserve_cpu0,
+            # Only the C++ components have a Quill backend to place; the JVMs
+            # are declared with "jar" rather than "binary" and have none.
+            quill_backend_components=[name for name in on_machine if "binary" in components[name]],
+        )
+    except (cpu_layout.LayoutError, RuntimeError) as exc:
+        sys.exit(f"error: {exc}")
+
+    print(cpu_layout.format_layout(layout))
+
+    layout_path = run_dir / "cpu_layout.toml"
+    layout_path.write_text(cpu_layout.render_layout_file(layout), encoding="utf-8")
+
+    # The wrapper closes the two holes a C++ self-mask cannot: the window before
+    # main() is entered, and the JVM components, which have no main() of ours.
+    wrapper_path = run_dir / "background_tier"
+    wrapper_path.write_text(cpu_layout.render_background_wrapper(layout), encoding="utf-8")
+    wrapper_path.chmod(0o755)
+
+    print()
+    print(f"  wrote {layout_path}")
+    print(f"  wrote {wrapper_path}")
+    return layout_path
+
+
 # ── Database setup ────────────────────────────────────────────────────────────
 
 def run_create_db(
@@ -508,6 +696,10 @@ def main() -> None:
     cpu_registry_lock_path = cpu_run_dir / "pubsub_cpu_registry.lock"
     namespace["shared_reactor_cpu_registry_shm_path"] = str(cpu_registry_path)
     namespace["shared_reactor_cpu_registry_lock_file"] = str(cpu_registry_lock_path)
+    # Written below by resolve_cpu_layout(); the path is injected here because
+    # the component TOMLs are expanded before the layout is computed, and it is
+    # this file that decides where run/ lives.
+    namespace["shared_reactor_cpu_layout_file"] = str(cpu_run_dir / "cpu_layout.toml")
 
     # Nothing else clears these -- they are ordinary files, not tmpfs entries that
     # a reboot would remove -- so a fresh install starts from an empty registry
@@ -528,17 +720,24 @@ def main() -> None:
             wal_path.mkdir(parents=True, exist_ok=True)
             namespace[key] = str(wal_path)
 
-    expand_templates(install_dir, namespace)
+    expand_templates(install_dir, namespace, map_config_files_to_components(env, install_dir))
     patch_jar_properties(env, install_dir, namespace)
     print()
 
-    # Step 3: TLS certificates
+    # Step 3: CPU core layout.  Runs on the target machine and reads its real
+    # topology, so the same declaration resolves differently on a 32-core
+    # workstation, a 20-core host or a VM.
+    print("=== resolving CPU core layout ===")
+    resolve_cpu_layout(env, install_dir, cpu_run_dir)
+    print()
+
+    # Step 4: TLS certificates
     if not args.skip_certs:
         print("=== generating TLS certificates ===")
         generate_tls_certs(env, install_dir, force=args.force_certs)
         print()
 
-    # Steps 4-6: database and credentials
+    # Steps 5-7: database and credentials
     if not args.skip_db:
         if not args.skip_create_db:
             print("=== creating database ===")

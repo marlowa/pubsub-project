@@ -165,6 +165,16 @@ def start_one(  # pylint: disable=too-many-arguments,too-many-locals
         return
 
     command, workdir = build_command(name, comp, install_dir, log_dir, debug=debug)
+
+    # Start every process in the machine's background CPU tier.  deploy.py
+    # generates the wrapper from the resolved layout; a deployment that predates
+    # it simply runs unwrapped, as before.  This is what covers the JVM
+    # components, which cannot mask themselves the way the C++ ones do, and the
+    # window before a C++ main() is entered.
+    background_wrapper = run_dir / "background_tier"
+    if background_wrapper.is_file() and os.access(background_wrapper, os.X_OK):
+        command = [str(background_wrapper)] + command
+
     stdout_path = log_dir / f"{name}.stdout"
 
     if "binary" in comp:

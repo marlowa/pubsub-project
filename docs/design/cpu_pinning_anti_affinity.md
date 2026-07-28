@@ -1,15 +1,18 @@
 # CPU Core Layout — Declared Allocation and Background by Default
 
-**Status: design agreed 2026-07-27. Nothing implemented.**
+**Status: design agreed 2026-07-27; ranks and reserve settled and the design implemented
+2026-07-28.** Live-verified on the 32-core development workstation: every ranked component landed on
+the cores the layout allocated it, `matching_engine_secondary` was demoted at rank 5 with its reason
+logged, and both JVMs -- `fix_test_client` included -- start masked to the background tier.
 
 This document began as a record of an open problem found while planning the Prometheus metrics
-endpoint ([Roadmap](../roadmap.md) item 16). That problem is now resolved in design, and the
-agreed shape is set out in [The agreed design](#the-agreed-design) below. The original problem
-statement and the approaches rejected along the way are retained, because the reasoning is the
-justification for the design and re-covering the ground would be waste.
+endpoint ([Roadmap](../roadmap.md) item 16). That problem is now resolved in design, and the agreed
+shape is set out under "The agreed design" below. The original problem statement and the approaches
+rejected along the way are retained, because the reasoning is the justification for the design and
+re-covering the ground would be waste.
 
-Three points within the design are marked **proposal** — they were put forward as the obvious
-answers rather than settled in discussion, and should be challenged before implementation.
+All three points that were originally marked **proposal** have since been ratified. The remaining
+open questions are listed at the end.
 
 It is a companion to [CPU Pinning](cpu_pinning.md), which describes the mechanism as built.
 
@@ -230,8 +233,10 @@ Points of substance:
 - **`localhost` is a recognised machine name**, used by `dev.toml` where everything runs on one
   workstation. It needs no resolution and carries no `# REPLACE`.
 - **The list must name every process on the machine, not only those that pin.** Seven of the
-  fifteen dev components have `cpu_pinning_enabled = false` and claim nothing today — which means
-  they are currently free to run *anywhere*, including on the cores the gateways are pinned to.
+  fifteen dev components claimed nothing under the old scheme, and so were free to run *anywhere*,
+  including on the cores the gateways were pinned to. (Resolved in implementation by making
+  `cpu_pinning_enabled` mean "take part in the machine's layout" and setting it on every component;
+  one that pins nothing is simply unadmitted and stays in the background tier.)
   They are listed because they need a background mask, which is the point they were previously
   missing.
 - Absolute counts rather than fractions: clearer to reason about, and there will be few machines.
@@ -308,7 +313,7 @@ hot_path_rank = 5          # BookUpdate is fire-and-forget; first to yield
 almost certainly belonged, and the worst outcome is a background thread on a background core. This
 is the same default-value discipline the rest of the design rests on.
 
-The proposed ranking, following the reasoning in Difficulty 3 and the taxonomy table:
+The ranking, following the reasoning in Difficulty 3 and the taxonomy table:
 
 | rank | components | hot-path threads |
 |---|---|---|
@@ -318,6 +323,20 @@ The proposed ranking, following the reasoning in Difficulty 3 and the taxonomy t
 | 4 | `mep_primary`, `mep_secondary` | 4 |
 | 5 | `matching_engine_secondary` | 2 |
 | — | everything else | background |
+
+These values are **settled**, together with `minimum_background_cores = 6` for a consolidated
+deployment on a uniform machine. The two were decided together because they are one decision: the
+ranking alone does not say where the cut falls, and on the 32-core workstation the P-core ceiling
+binds before any floor does, so the reserve only becomes visible on the smaller uniform machine. The
+combination places the MEPs below the cut there and above it on the workstation. That is deliberate:
+it reproduces the tiering chosen by hand when Difficulty 3 was first analysed, on the machine that
+motivated the choice, without anyone maintaining a second set of numbers.
+
+The cost accepted is that publish-to-receive latency on the 20-core machine is measured with the
+publisher in the background tier. The alternative — a reserve of 5, admitting rank 4 — was rejected
+because it leaves five background cores to absorb thirteen Quill backends, both JVMs and
+`fix_test_client` under NFT load, which would contaminate the measurement more than an unpinned MEP
+does.
 
 ### Ties are a constraint, not merely an ordering
 
@@ -412,7 +431,7 @@ whole machine is background.**
 
 That is the correct outcome. Admitting rank 1 partially would pin one gateway and not the other,
 which is precisely the invalid comparison whole-group admission exists to prevent, and the system
-runs correctly unpinned — it is what `cpu_pinning_enabled = false` gives today.
+runs correctly unpinned — it is what disabling pinning altogether gives.
 
 It is also legitimate on a functional-test VM and alarming on a production host, and nothing in the
 layout tells those apart. So **the computed layout must be reported prominently by `deploy.py` and
@@ -635,11 +654,11 @@ instead of leaving unexplained jitter to be investigated later.
 
 ---
 
-## Proposals within the design, not yet ratified
+## Proposals within the design
 
-These were put forward as the obvious answers rather than argued through. They are recorded as part
-of the design because it is incomplete without them, and flagged because they should be challenged
-first. Proposal 1 has since been ratified and moved into the design above.
+All three have been ratified. Proposal 1 was folded into the design above; 2 and 3 are recorded here
+because they are what the implementation builds, and because the reasoning for each is worth keeping
+next to the alternatives it displaced.
 
 **Proposal 2 — `CpuRegistry` becomes a record and collision detector.** Allocation moves to
 `deploy.py`, so the registry stops negotiating. It still earns its place: catching two installations
@@ -651,7 +670,8 @@ assert negotiation behaviour.
 reads its own entry. Better for an operator than the same facts scattered across fourteen component
 TOMLs, and it gives the audit a single authority to check against. It also answers the background
 allocation problem raised by explicit Quill pinning, since background assignments live in the same
-file.
+file — which is why open question 2 needed no separate answer: the layout file carries both pools,
+and `CpuRegistry` does not grow a second one.
 
 ---
 
@@ -711,21 +731,28 @@ reproduce rather than fixing it.
 
 ## Open questions
 
-1. The rank values in the table above are proposed, not settled. In particular the MEPs at rank 4
-   are promoted on a 32-core machine and demoted on a 20-core one; both are defensible, but the
-   choice should be deliberate rather than a by-product of the arithmetic.
-2. If explicit Quill pinning requires background cores to be allocated, does that live in the
-   machine-wide layout file (Proposal 3) or does `CpuRegistry` grow a second pool?
+1. ~~The rank values are proposed, not settled.~~ **Closed.** The table stands as proposed, with
+   `minimum_background_cores = 6` for a consolidated uniform machine; the MEPs are therefore
+   promoted on the 32-core workstation and demoted on the 20-core one, deliberately. See "Declared
+   input 2: the rank" for the reasoning and the cost accepted. This closed question 4 with it.
+2. ~~Does background allocation for explicit Quill pinning live in the layout file or a second
+   `CpuRegistry` pool?~~ **Closed** by ratifying Proposal 3: the layout file carries both pools and
+   the registry grows nothing.
 3. Does a reduced (`--no-ha`) deployment keep the freed cores idle — as designed above, so the two
    deployments are comparable — or is there ever a reason to want a denser assignment?
-4. What is `minimum_background_cores` for the work machine? The development workstation is settled —
-   it is hybrid, so the P-core ceiling binds first and the setting is omitted. The work machine's
-   value is the one that matters, because it is uniform-core and the floor is the only thing
-   capping hot-path growth there; 6 in the worked example above is illustrative, and it is the
-   difference between the MEPs being promoted or demoted.
-5. Residual hole: a library that sets its own affinity explicitly overrides the inherited mask.
-   Uncommon, but some NUMA-aware thread pools do it. The machine-wide audit detects it; nothing
-   prevents it.
+4. ~~What is `minimum_background_cores` for the work machine?~~ **Closed** with question 1: 6,
+   declared once on `dev.toml`'s `[machines.localhost]` and therefore in force on both machines.
+   It is inert on the hybrid workstation — the P-core ceiling binds first there, so any floor from
+   0 to 16 gives an identical layout — and binding on the 20-core uniform machine. Omitting it, as
+   was first drafted, is not neutral: with no floor the same file admits ranks 4 *and* 5 on the work
+   machine, leaving three background cores for two JVMs and thirteen Quill backends.
+5. ~~Residual hole: a library that sets its own affinity explicitly overrides the inherited mask.~~
+   **Closed as far as it can be.** Nothing can prevent it -- an affinity mask is advisory and any
+   thread may change its own at any time -- so it is detected instead. `cpu_audit.py` reads every
+   running thread's real mask from `/proc/<pid>/task/<tid>/status` and compares it against the
+   layout, exiting non-zero on a mismatch so it can gate a performance run rather than being read by
+   eye. Verified by deliberately moving a `fix_test_client` JVM thread onto `order_gateway`'s core,
+   which the audit reported by thread, core and owner.
 6. Does case B need an assertion at all, beyond prominent reporting of the computed layout? A
    `required_hot_path_rank = N` on the machine entry was drafted and withdrawn, for three reasons
    worth recording so it is not re-proposed unexamined. First, a **global** rank scale does not
@@ -737,6 +764,28 @@ reproduce rather than fixing it.
    assertion is ever wanted, the form that composes is a boolean *every ranked component on this
    machine must be admitted*, which means the same thing on every host and needs nothing kept in
    sync. The scenario to design it for is consolidation onto a small host, not a dedicated one.
+7. **The declared thread count can only drift upwards safely.**
+   `Reactor::verify_hot_path_thread_count()` compares the constant a component reports through
+   `--hot-path-thread-count` against what it really registered, and fails startup when the
+   allocation is too small. It cannot catch the opposite: a constant left at 4 when the component
+   registers 2 wastes two cores per instance, silently, and the layout looks entirely healthy. The
+   asymmetry is deliberate for now — over-declaring costs cores, under-declaring costs a shared
+   hot-path core — but a component that has *fewer* threads than it claimed is still a defect, and
+   nothing reports it. The natural place is the audit rather than startup, since the audit already
+   knows which allocated cores have no thread pinned to them.
+8. **Three questions about the environment TOMLs themselves, unresolved since the manifests were
+   first written.** None block the mechanism; all three affect whether the declared deployment is
+   the intended one.
+   - **Both gateways are placed on one host** (`gateway.<env>.exchange.internal`), because that is
+     what the existing `*_host` values say. This contradicts `prod.toml`'s own header comment that
+     each component gets a dedicated host — a comment that predates this work. Either the comment
+     or the placement is wrong. Note the layout copes with it correctly: they share a rank, so they
+     are admitted together or not at all, four hot-path cores on that host.
+   - **`admin_service` had no host anywhere.** `admin.<env>.exchange.internal` was invented and
+     marked `# REPLACE`. It is a guess and needs confirming.
+   - **Machine keys duplicate the `*_host` values.** Both carry `# REPLACE`, and they must be kept
+     consistent by hand. Deriving one from the other is a `deploy.py` change and was deliberately
+     not attempted while the layout mechanism was being built.
 
 ---
 

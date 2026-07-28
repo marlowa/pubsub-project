@@ -4,6 +4,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <string>
+#include <tuple>
+#include <vector>
+
 #include <sys/types.h>
 
 #include <pubsub_itc_fw/CpuPinning.hpp>
@@ -13,21 +16,29 @@ namespace pubsub_itc_fw {
 /**
  * @brief Cross-process CPU core registry backed by a memory-mapped shared file.
  *
- * Multiple cooperating processes use a single shared file, held in the
- * deployment's own run directory, to coordinate CPU allocation. CpuRegistry uses
- * an flock-based lock file to serialise access during claim and release
- * operations, preventing two processes from claiming the same core
- * simultaneously.
+ * The registry is a record and a collision detector, not an allocator. Cores are
+ * allocated at deploy time by deploy.py, which resolves the declared layout
+ * against the machine's real topology and writes run/cpu_layout.toml; every
+ * process then simply uses what it was given. Negotiating at run time was
+ * abandoned because the outcome depended on start order, so a component
+ * restarted mid-life -- which ha_test.py does routinely -- could come back and
+ * shift the layout under everything else.
+ *
+ * What a shared record is still needed for is the case one layout file cannot
+ * see: two installations on the same machine, each with its own layout, each
+ * self-consistent, both handing out core 5. Processes record what they have
+ * pinned, under an flock-based lock file, and a process finding a core already
+ * held by a live owner reports it.
  *
  * Stale entries from dead processes are cleaned up automatically the next time
- * any live process calls claim_cpus(). No daemon or heartbeat is required.
+ * any live process calls record_assignment(). No daemon or heartbeat is required.
  *
  * ### Typical lifecycle
  *
  *  1. Construct -- opens (or creates) the shared file and maps it read/write.
- *  2. claim_cpus() -- acquires flock, discovers free CPUs via get_available_cpu_ids(),
- *     writes ownership entries, releases flock, returns the claimed CPU IDs.
- *  3. Caller pins its threads to the returned IDs.
+ *  2. Caller pins its threads to the cores the layout file allocated it.
+ *  3. record_assignment() -- acquires flock, evicts dead owners, reports any
+ *     live process already holding those cores, records this process, releases.
  *  4. Destructor / release_cpus() -- acquires flock, removes this PID's entries.
  *
  * ### File lifecycle
@@ -40,7 +51,7 @@ namespace pubsub_itc_fw {
  * and it would make two installations on one machine share a single registry.
  *
  * Stale entries left by a process that died without releasing are handled
- * independently of file removal: claim_cpus() drops entries whose owning PID is
+ * independently of file removal: record_assignment() drops entries whose owning PID is
  * no longer alive.
  */
 class CpuRegistry {
@@ -61,19 +72,29 @@ class CpuRegistry {
     CpuRegistry& operator=(CpuRegistry&&);
 
     /**
-     * @brief Atomically discover and claim up to `count` free CPU cores.
+     * @brief Record the cores this process was allocated, and report collisions.
+     *
+     * The registry does not allocate. deploy.py resolved the layout on this
+     * machine and wrote it to the layout file; by the time this is called the
+     * decision has been made and the threads are already pinned. What the
+     * registry still earns its place doing is catching the case the declared
+     * layout cannot prevent by itself: **two installations on one machine**,
+     * each with its own layout file, each correct in isolation, both handing out
+     * the same core.
      *
      * Under the flock:
-     *  - Calls get_available_cpu_ids() to find CPUs not owned by any live process.
-     *  - Selects up to `count` of those CPUs.
-     *  - Writes registry entries recording this process as the owner.
+     *  - Evicts entries owned by processes that are no longer alive.
+     *  - Looks for any of `core_ids` already recorded by a live process.
+     *  - Records this process as an owner of each of `core_ids`, whether or not
+     *    a collision was found, so the runtime record stays a complete picture
+     *    of what is actually pinned where.
      *
-     * @param count       Maximum number of CPUs to claim.
-     * @param reserve_cpu0 When true, CPU 0 is excluded from candidates.
-     * @return The claimed CPU IDs. May be fewer than `count` if not enough
-     *         cores are available; never exceeds SharedCoreRegistryLayout::max_system_cores.
+     * @param[in] core_ids The cores this process has pinned threads to.
+     * @return true and an empty string when no other live process holds any of
+     *         these cores; false and a description naming the cores and the
+     *         processes holding them otherwise.
      */
-    [[nodiscard]] AvailableCpuVector claim_cpus(size_t count, bool reserve_cpu0) const;
+    [[nodiscard]] std::tuple<bool, std::string> record_assignment(const std::vector<CpuId>& core_ids) const;
 
     /**
      * @brief Remove all registry entries owned by this process.

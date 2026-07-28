@@ -37,8 +37,9 @@ Near-term tasks not tied to a specific slice.
 
 ### Active / Next
 
-- **CPU core layout: declared allocation and background by default** — design agreed 2026-07-27,
-  nothing implemented.  
+- **CPU core layout: declared allocation and background by default** — **DONE.** Design agreed
+  2026-07-27, ranks and reserve settled and the whole design implemented and live-verified
+  2026-07-28.  
   Raised 2026-07-26 while planning item 16. The Prometheus endpoint's civetweb thread must not run
   on any pinned core, and the CPU registry cannot answer that reliably: it records what has claimed
   so far, and no process knows when machine-wide claiming has finished, so a component that starts
@@ -57,11 +58,18 @@ Near-term tasks not tied to a specific slice.
   covers the JVM components and doubles as a `perf` / `valgrind` interposition point — and the
   Reactor explicitly promotes only the threads that earn hot-path cores. Forgetting a thread becomes
   harmless, and the anti-affinity requirement dissolves rather than being solved.  
-  Three points within it are flagged as proposals rather than settled: the binary self-reporting its
-  hot-path thread count, `CpuRegistry` becoming a record and collision detector rather than an
-  allocator, and a single machine-wide layout file. **Read that doc before starting item 16**; the
-  metrics endpoint should not land until this is built, or the first thing it measures will be its
-  own scheduling.
+  All three points originally flagged as proposals were ratified and built: the binary reports its
+  hot-path thread count through `--hot-path-thread-count`, `CpuRegistry` is now a record and
+  cross-installation collision detector rather than an allocator, and one machine-wide layout file
+  (`run/cpu_layout.toml`) carries both tiers.  
+  Verified on the 32-core workstation: every ranked component landed on the cores it was allocated,
+  `matching_engine_secondary` was demoted at rank 5 with its reason logged, and both JVMs —
+  `fix_test_client` included — start masked to the background tier. `cpu_audit.py` checks every
+  running thread's real mask from `/proc` against the layout and exits non-zero on a mismatch, so a
+  performance run can be gated on it.  
+  **This unblocks item 16.** The civetweb thread now needs no anti-affinity calculation of its own:
+  it is background by default like every other unpinned thread, which is what the requirement was
+  asking for all along.
 
 - **Prometheus metrics** (item 16).  
   Continuous observability, so latency analysis stops being log archaeology. This is now the

@@ -3,6 +3,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <cstddef>
 #include <memory>
 
 #include <pubsub_itc_fw/QuillLogger.hpp>
@@ -26,6 +27,11 @@ namespace matching_engine {
  */
 class MatchingEngine {
   public:
+    /// Reactor thread plus the one MatchingEngineThread registered in the constructor.
+    /// Answered to deploy.py via --hot-path-thread-count and checked against the
+    /// real registrations at startup; see HotPathThreadCount.hpp.
+    static constexpr size_t hot_path_thread_count = 2;
+
     /**
      * @param[in] config Matching engine configuration.
      * @param[in] logger Logger. Ownership transferred. Must already have the

@@ -351,6 +351,119 @@ inline bool pin_thread_to_core(pthread_t thread_handle, CpuId core_id) {
 }
 
 /**
+ * @brief Render a core list as a kernel cpu-list string, so [1,2,3,7] reads "1-3,7".
+ *
+ * The same notation the layout file and taskset -c use, which keeps log output
+ * comparable with the file it was derived from.
+ */
+[[nodiscard]] inline std::string format_cpu_list(const std::vector<CpuId>& core_ids) {
+    if (core_ids.empty()) {
+        return "(none)";
+    }
+
+    std::vector<int> ordered;
+    ordered.reserve(core_ids.size());
+    for (const CpuId core_id : core_ids) {
+        ordered.push_back(core_id.get_value());
+    }
+    std::sort(ordered.begin(), ordered.end());
+
+    std::string result;
+    size_t index = 0;
+    while (index < ordered.size()) {
+        size_t last = index;
+        while (last + 1 < ordered.size() && ordered[last + 1] == ordered[last] + 1) {
+            ++last;
+        }
+        if (!result.empty()) {
+            result += ",";
+        }
+        result += std::to_string(ordered[index]);
+        if (last > index) {
+            result += "-" + std::to_string(ordered[last]);
+        }
+        index = last + 1;
+    }
+    return result;
+}
+
+/**
+ * @brief Restrict a thread to a set of cores rather than a single one.
+ *
+ * This is how the background tier is applied. An affinity mask is not a ratchet:
+ * a thread masked to the background pool can later be moved to a hot-path core
+ * by pin_thread_to_core(), which is what makes background-by-default with
+ * promotion-by-exception possible without cgroup cpusets.
+ *
+ * @param[in] thread_handle The pthread handle of the thread to mask.
+ * @param[in] core_ids The cores the thread may run on. Must not be empty: an
+ *                     empty CPU set is EINVAL.
+ * @return true on success, false on failure (check errno for details).
+ */
+[[nodiscard]] inline bool apply_affinity_mask(pthread_t thread_handle, const std::vector<CpuId>& core_ids) {
+    if (core_ids.empty()) {
+        return false;
+    }
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    for (const CpuId core_id : core_ids) {
+        CPU_SET(core_id.get_value(), &cpuset);
+    }
+    return pthread_setaffinity_np(thread_handle, sizeof(cpu_set_t), &cpuset) == 0;
+}
+
+/**
+ * @brief Restrict a kernel thread to a set of cores, by TID.
+ *
+ * For threads not addressable by a pthread_t -- the Quill backend, which
+ * quill::Backend::get_thread_id() identifies only by its Linux TID.
+ *
+ * @param[in] thread_id Linux kernel thread ID (LWP).
+ * @param[in] core_ids The cores the thread may run on. Must not be empty.
+ * @return true on success, false on failure (check errno for details).
+ */
+[[nodiscard]] inline bool apply_thread_affinity_mask(pid_t thread_id, const std::vector<CpuId>& core_ids) {
+    if (core_ids.empty()) {
+        return false;
+    }
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    for (const CpuId core_id : core_ids) {
+        CPU_SET(core_id.get_value(), &cpuset);
+    }
+    return ::sched_setaffinity(thread_id, sizeof(cpu_set_t), &cpuset) == 0;
+}
+
+/**
+ * @brief Restrict the whole calling process to a set of cores.
+ *
+ * sched_setaffinity() with pid 0 addresses the calling thread, and any thread
+ * created afterwards inherits the mask. Called early in main(), before any
+ * thread is spawned, this places the entire process in the background tier --
+ * the "background by default" half of the design. The Reactor then promotes the
+ * few threads that have been allocated dedicated cores.
+ *
+ * The generated wrapper script applies the same mask before the process starts,
+ * which additionally covers the JVM components and the window before main() is
+ * entered. This call is the backstop that makes production independent of
+ * whether the launcher cooperated.
+ *
+ * @param[in] core_ids The cores the process may run on. Must not be empty.
+ * @return true on success, false on failure (check errno for details).
+ */
+[[nodiscard]] inline bool apply_process_affinity_mask(const std::vector<CpuId>& core_ids) {
+    if (core_ids.empty()) {
+        return false;
+    }
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    for (const CpuId core_id : core_ids) {
+        CPU_SET(core_id.get_value(), &cpuset);
+    }
+    return ::sched_setaffinity(0, sizeof(cpu_set_t), &cpuset) == 0;
+}
+
+/**
  * @brief Pin a kernel thread to a single CPU core using sched_setaffinity.
  *
  * For threads not addressable by a pthread_t -- e.g. the Quill logger backend

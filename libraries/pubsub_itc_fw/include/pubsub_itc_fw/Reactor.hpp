@@ -355,21 +355,45 @@ class Reactor : public ThreadLookupInterface {
     void process_control_commands();
 
     /**
-     * @brief Pin all registered ApplicationThreads to dedicated CPU cores.
+     * @brief Promote the reactor thread and registered ApplicationThreads onto
+     *        this component's dedicated cores.
      *
      * Called from initialize_threads() after all threads have reached the
-     * Started state. Uses CpuRegistry for cross-process coordination so that
-     * cooperating processes on the same machine do not collide on cores.
+     * Started state. Cores are not negotiated here: deploy.py allocated them and
+     * wrote them to the machine-wide layout file, which this reads.
+     *
+     * The process is already masked to the background pool by the time this
+     * runs, so every thread starts in the background tier and this promotes the
+     * few that were allocated cores. Threads registered through
+     * register_extra_thread() are deliberately left where they are, and the
+     * Quill backend is pinned explicitly to a background core.
      *
      * Only called when ReactorConfiguration::cpu_pinning_enabled is true.
      *
-     * @return false only when the registry paths are unconfigured, which aborts
-     *         startup: pinning was asked for and cannot be delivered. Running
-     *         capacity problems (no free cores, fewer cores than threads, an
-     *         individual pin call failing) are logged as warnings and return true,
-     *         because the process still runs correctly, just unpinned.
+     * @return false when pinning was asked for and cannot be honoured -- the
+     *         layout is unconfigured, unreadable, describes hardware that is no
+     *         longer present, or allocates fewer cores than this component
+     *         actually registered. All of those abort startup, because a
+     *         latency-critical component running under a layout that does not
+     *         match reality is worse than one that does not run. A component the
+     *         layout deliberately demoted is not a failure: it runs entirely in
+     *         the background tier and this returns true.
      */
     [[nodiscard]] bool pin_registered_threads();
+
+    /**
+     * @brief Check the component's declared hot-path thread count against reality.
+     *
+     * deploy.py sized this component's core allocation from the constant the
+     * binary reports through --hot-path-thread-count. That constant is declared
+     * by hand next to the registrations, so it can drift from them. Here, at
+     * startup, both numbers are finally known and can be compared.
+     *
+     * @param[in] allocated_core_count Cores the layout file gave this component.
+     * @return true and an empty string when the allocation covers what was
+     *         registered; false and an explanation otherwise.
+     */
+    [[nodiscard]] std::tuple<bool, std::string> verify_hot_path_thread_count(size_t allocated_core_count) const;
 
     /**
      * @brief Allocates the next ConnectionID from the shared monotonic counter.

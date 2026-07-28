@@ -9,8 +9,10 @@
 
 #include <pubsub_itc_fw/ApplicationAnnouncer.hpp>
 #include <pubsub_itc_fw/ConfigurationException.hpp>
+#include <pubsub_itc_fw/CpuLayout.hpp>
 #include <pubsub_itc_fw/FileOpenMode.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
+#include <pubsub_itc_fw/HotPathThreadCount.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/NetworkEndpointConfiguration.hpp>
 #include <pubsub_itc_fw/ProtocolType.hpp>
@@ -29,6 +31,8 @@ MatchingEnginePublisher::MatchingEnginePublisher(MatchingEnginePublisherConfigur
     reactor_configuration_.cpu_pinning_reserve_cpu0 = config_.cpu_pinning_reserve_cpu0;
     reactor_configuration_.cpu_registry_shm_path = config_.cpu_registry_shm_path;
     reactor_configuration_.cpu_registry_lock_file = config_.cpu_registry_lock_file;
+    reactor_configuration_.cpu_layout_file = config_.cpu_layout_file;
+    reactor_configuration_.cpu_layout_component = config_.cpu_layout_component;
     reactor_configuration_.connect_retry_warning_interval_ = config_.connect_retry_warning_interval;
     reactor_configuration_.command_allocator_configuration_.pool_name = "MepCommandPool";
     reactor_configuration_.command_allocator_configuration_.objects_per_pool = config_.command_queue_pool_objects_per_slab;
@@ -90,6 +94,10 @@ int MatchingEnginePublisher::run() const {
 } // namespaces
 
 int main(int argc, char* argv[]) {
+    if (pubsub_itc_fw::answer_hot_path_thread_count_query(argc, argv, matching_engine_publisher::MatchingEnginePublisher::hot_path_thread_count)) {
+        return 0;
+    }
+
     if (argc != 3) {
         std::cerr << "Usage: matching_engine_publisher <logfile> <config.toml>\n";
         return 1;
@@ -120,6 +128,17 @@ int main(int argc, char* argv[]) {
 
     logger->set_log_level(config.applog_level);
     logger->set_syslog_level(config.syslog_level);
+
+    // Background by default: mask the whole process to the shared tier before it
+    // creates any thread, so every thread inherits it and the Reactor only has to
+    // promote the few that were allocated dedicated cores.
+    if (config.cpu_pinning_enabled) {
+        const auto [masked, mask_error] = pubsub_itc_fw::apply_background_affinity(config.cpu_layout_file, config.cpu_layout_component);
+        if (!masked) {
+            PUBSUB_LOG((*logger), pubsub_itc_fw::FwLogLevel::Error, "CPU pinning: {}", mask_error);
+            return 1;
+        }
+    }
 
     try {
         const matching_engine_publisher::MatchingEnginePublisher app{config, std::move(logger)};

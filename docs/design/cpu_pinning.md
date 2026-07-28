@@ -19,39 +19,100 @@ than actual system behaviour.
 
 ---
 
-## The CPU Registry
+## Where cores come from
 
-Each process in the system claims its CPUs via a shared-memory registry at startup, so that
-no two processes claim the same CPU.
+**Cores are allocated at deploy time, not negotiated at run time.** `deploy.py` runs on the target
+host, reads its real CPU topology, resolves the layout declared in the environment TOML into
+concrete core ids, and writes the answer to a single file that every component reads. The full
+reasoning is in [CPU Core Layout](cpu_pinning_anti_affinity.md); this section covers the mechanism.
 
-**File:** `<install_dir>/run/pubsub_cpu_registry`  
-**Lock file:** `<install_dir>/run/pubsub_cpu_registry.lock`  
-**Class:** `CpuRegistry` (`libraries/pubsub_itc_fw/`)
+**Layout file:** `<install_dir>/run/cpu_layout.toml` — generated, never edited  
+**Wrapper:** `<install_dir>/run/background_tier` — generated, applies the background mask  
+**Registry:** `<install_dir>/run/pubsub_cpu_registry` (+ `.lock`) — a record, not an allocator  
+**Classes:** `CpuLayout`, `CpuRegistry` (`libraries/pubsub_itc_fw/`)
+
+### Two tiers
+
+Every machine's cores are split in two. The **background tier** is shared by everything not
+explicitly promoted. A component's **hot-path cores** are its own, one per hot-path thread.
+
+The default direction matters: a process starts entirely in the background tier and the Reactor
+promotes the few threads that were allocated cores. Enumerating what should *not* be hot-path would
+be the other way round, and the threads someone forgot are precisely the ones that would end up
+contaminating a pinned core.
 
 ### How it works
 
-1. On startup, the Reactor calls `CpuRegistry::claim_cpus()`.
-2. `claim_cpus()` acquires an `flock` on the lock file, opens the shared-memory file, and
-   scans the registry for stale entries (PIDs that are no longer alive). Stale entries are
-   compacted out before the availability scan.
-3. Available CPUs are those in the configured range that are not currently claimed by a live
-   process. The first N are claimed (N = number of threads the process will start).
-4. Each claimed entry records the PID and the CPU ID. The entry persists until the process
-   exits or the registry file is deleted.
-5. On process exit (or `devenv.py start`), the registry file is deleted so the next run
-   begins clean.
+1. `deploy.py` writes `cpu_layout.toml` (both tiers, per component) and the `background_tier`
+   wrapper script.
+2. The launcher starts each component through the wrapper, which `exec`s it under
+   `taskset --cpu-list <background>`. This covers the JVM components, which have no `main()` of
+   ours, and the window before a C++ `main()` is entered. An affinity mask survives `execve`.
+3. In `main()`, each C++ component calls `apply_background_affinity()`, which masks the process to
+   the background tier — a backstop so production never depends on the launcher cooperating — and
+   places the Quill backend (see below).
+4. Threads created after that inherit the background mask.
+5. `Reactor::pin_registered_threads()` reads this component's entry and calls
+   `pthread_setaffinity_np` to promote the reactor thread and each registered `ApplicationThread`
+   onto its allocated core. Threads registered through `register_extra_thread()` are deliberately
+   left in the background tier.
+6. `CpuRegistry::record_assignment()` records what was pinned and reports any core already held by
+   a live process from another installation.
 
-### Thread pinning
+This works because **an affinity mask is not a ratchet**: a thread masked to the background pool can
+still be moved onto a hot-path core afterwards. That is why the mask is applied with `taskset` and
+`sched_setaffinity` rather than a cgroup cpuset, which would forbid the later promotion.
 
-After `claim_cpus()` returns, the Reactor calls `pthread_setaffinity_np` on each
-`ApplicationThread` as it starts, binding it to its claimed CPU. The Quill logging backend
-thread is also pinned to a claimed CPU (separate from the hot-path threads).
+### The Quill backend is a special case
+
+The backend thread starts on first logger construction, which happens *before* the configuration
+naming the layout file has been read. `sched_setaffinity(0, ...)` affects the calling thread and
+threads created after it, so the backend inherits nothing and would keep an unrestricted mask —
+free to be scheduled onto the very cores this design reserves.
+
+It is therefore placed explicitly, by `apply_background_affinity()`, onto a background core that
+`deploy.py` allocated it. `deploy.py` hands out one per component round-robin, because there are
+thirteen C++ components on the development box and putting all thirteen backends on one core would
+simply move the contention rather than remove it.
+
+Placing it there rather than in the Reactor is deliberate: the Reactor returns early for a component
+the layout demoted, so a backend handled there would be left unmasked on exactly those components.
+
+### Verifying it
+
+`cpu_audit.py` reads every running thread's real mask from `/proc/<pid>/task/<tid>/status` and
+compares it against the layout, exiting non-zero on a mismatch so a performance run can be gated on
+it. Nothing can *prevent* a thread changing its own affinity — the mask is advisory, and some
+NUMA-aware thread pools in third-party libraries do exactly that — so it is detected instead.
 
 ---
 
 ## Configuration
 
 CPU pinning is configured per-environment in the TOML files.
+
+### `cpu_pinning_enabled` and the layout settings
+
+`cpu_pinning_enabled` now means **take part in the machine's declared CPU layout**, and should be
+true for *every* component on a machine that has one — not only those expecting dedicated cores. A
+component that pins nothing still needs the background mask; without one it is free to be scheduled
+onto the cores other components depend on. Such a component simply finds itself unadmitted in the
+layout and stays in the background tier.
+
+Four settings are mandatory whenever it is true, with no C++ defaults — startup fails rather than
+running unpinned if any is absent:
+
+| Setting | Meaning |
+|---|---|
+| `cpu_layout_file` | The generated `run/cpu_layout.toml` |
+| `cpu_layout_component` | This component's key in the environment TOML, e.g. `sequencer_secondary` |
+| `cpu_registry_shm_path` | Cross-installation collision record |
+| `cpu_registry_lock_file` | `flock` file serialising access to it |
+
+`cpu_layout_component` must be the *instance* name, not the binary name: a primary and its secondary
+run the same binary and are ranked and placed separately. `deploy.py` expands it per component when
+it expands the config templates, so it is not maintained by hand.
+
 
 ### `cpu_pinning_reserve_cpu0`
 
@@ -214,35 +275,20 @@ zcat /proc/config.gz | grep PREEMPT
 
 ---
 
-## Known Issue: Stale Registry Entries
+## A stale layout is a startup error, not a warning
 
-If the registry file is left over from a previous run with a different process layout, all
-processes may claim identical CPUs. The symptom is log lines showing every process pinned to
-the same set of CPUs (e.g. CPUs 1, 2, 3 across gateway, sequencer, and ME).
+The layout is computed once, at deploy time, so a machine that changes shape afterwards — cores
+offlined, a VM resized, hardware replaced — leaves the file describing CPUs that are no longer
+there. `CpuLayout::verify_cores_present()` checks this at startup and refuses to continue.
 
-**Fix:** `devenv.py start` deletes the registry file before starting components. If starting
-processes manually, delete `<install_dir>/run/pubsub_cpu_registry` first.
+Refusing to start is the right response: a latency-critical component running under a layout
+computed for different hardware is worse than one that does not run. The remedy is to re-run
+`deploy.py`, which recomputes against the machine as it now is.
 
-The registry code itself defends against this via compaction of stale entries at the start
-of each `claim_cpus()` call, but deletion is the clean reset.
-
----
-
-## Outstanding
-
-- **The allocation scheme described above is superseded in design, though not yet in code.** Greedy,
-  start-order-dependent claiming cannot say which cores a not-yet-started process will take, so the
-  Prometheus endpoint cannot compute a mask of unpinned cores, and the gateways can end up on
-  E-cores purely because they start last. The agreed replacement declares the layout instead of
-  negotiating it: a per-machine manifest plus a machine-invariant rank per component, resolved to
-  core ids by `deploy.py` on the target host, with every process masked to a background pool by
-  default and hot-path placement granted by explicit promotion. `CpuRegistry` is proposed to become
-  a runtime record and collision detector rather than the allocator. Nothing is implemented; see
-  [CPU Core Layout](cpu_pinning_anti_affinity.md).
-
-`cpu_registry_shm_path` and `cpu_registry_lock_file` are both configurable from TOML (since
-2026-07-03) and both mandatory whenever `cpu_pinning_enabled` is true — there is no longer a
-C++ default for either, and startup fails rather than running unpinned if they are absent.
+The stale-*registry* problem that used to appear here — every process pinned to the same CPUs
+because a leftover file confused the availability scan — cannot happen any more. Nothing is
+inferred from the registry's contents; the layout file says which cores belong to which component,
+and a restarted component gets the same ones it had before because the file did not change.
 
 ## See Also
 

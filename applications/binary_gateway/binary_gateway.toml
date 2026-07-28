@@ -37,6 +37,8 @@ cpu_pinning_enabled    = true
 cpu_pinning_reserve_cpu0   = ${shared_reactor_cpu_pinning_reserve_cpu0}
 cpu_registry_shm_path  = "${shared_reactor_cpu_registry_shm_path}"
 cpu_registry_lock_file = "${shared_reactor_cpu_registry_lock_file}"
+cpu_layout_file = "${shared_reactor_cpu_layout_file}"
+cpu_layout_component = "${component_name}"
 connect_retry_warning_interval = "15m"
 
 [event_queue_pool]
