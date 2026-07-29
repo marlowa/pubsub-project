@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <link rel="stylesheet" href="/static/pico.classless.min.css">
+    <link rel="stylesheet" href="/static/desktop.css">
     <#if brandCss?has_content><style>${brandCss}</style></#if>
     <title>Sign in – ${brandName}</title>
 </head>

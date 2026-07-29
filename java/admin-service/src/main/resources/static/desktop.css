@@ -1,0 +1,341 @@
+/* Admin service stylesheet. Replaces Pico.
+
+   The look deliberately matches the fix-test-client (java/fix-test-client/src/main/
+   resources/web/style.css): monospace throughout, grey chrome, bevelled buttons, dense
+   tables. The two are separate Maven projects with no parent pom, so this file is not
+   literally shared with that one -- the colours and sizes below are kept in step by hand
+   so the two UIs read as one product.
+
+   The templates are unchanged from their Pico shape, so this file styles what Pico used
+   to: bare <main>/<article>/<hgroup>/<mark>, the classless header > nav > ul navbar,
+   a[role=button], .grid, and forms written as <label>Text <input></label>.
+
+   ${brandCss} from application.properties is inlined by layout.ftl *after* the link to
+   this file, so operator colour overrides still win. Keep it that way. */
+
+/* The brandable surface. brand.css-file used to be documented as a place to override
+   Pico's --pico-* custom properties; these replace them, so a site can recolour the UI
+   without knowing anything about the rules below. Everything else here is deliberately
+   fixed -- the density and the bevels are the point of the design, not a preference. */
+:root {
+    --admin-page-background: #f4f4f4;
+    --admin-text-colour: #111;
+    --admin-chrome-background: #e0e0e0;
+    --admin-chrome-border-colour: #aaa;
+    --admin-accent-colour: #1a5fa8;
+    --admin-accent-hover-colour: #0d3d70;
+}
+
+*, *::before, *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    font-family: monospace;
+    font-size: 14px;
+    background: var(--admin-page-background);
+    color: var(--admin-text-colour);
+}
+
+/* ── Menu bar ─────────────────────────────────────────────────── */
+
+/* layout.ftl writes three <ul>s inside header > nav: the brand, the page links, and the
+   signed-in user. The first two sit left as a desktop menu bar would; the third is
+   pushed to the right edge. */
+
+header {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background: var(--admin-chrome-background);
+    border-bottom: 1px solid var(--admin-chrome-border-colour);
+}
+
+header nav {
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    padding: 5px 12px;
+}
+
+header nav ul {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    list-style: none;
+}
+
+header nav ul:last-child {
+    margin-left: auto;
+}
+
+header nav a {
+    display: inline-block;
+    padding: 2px 8px;
+    border: 1px solid transparent;
+    border-radius: 2px;
+    color: var(--admin-text-colour);
+    text-decoration: none;
+}
+
+header nav a:hover {
+    background: #f0f0f0;
+    border-color: var(--admin-chrome-border-colour);
+}
+
+/* ── Main content ─────────────────────────────────────────────── */
+
+main {
+    padding: 16px 20px;
+    max-width: 1400px;
+}
+
+h1 { font-size: 16px; margin-bottom: 10px; }
+h2 { font-size: 15px; margin-bottom: 8px; }
+h3 { font-size: 14px; margin-bottom: 6px; }
+
+p {
+    margin-bottom: 10px;
+}
+
+hr {
+    border: none;
+    border-top: 1px solid #bbb;
+    margin: 16px 0;
+}
+
+a {
+    color: var(--admin-accent-colour);
+}
+
+a:hover {
+    color: var(--admin-accent-hover-colour);
+}
+
+small {
+    font-size: 12px;
+    color: #555;
+}
+
+code {
+    background: #e8e8e8;
+    border: 1px solid #d5d5d5;
+    border-radius: 2px;
+    padding: 0 3px;
+}
+
+/* A page title with its primary action beside it, which is what the templates use
+   <hgroup> for -- an h1 and a one-line <p> holding a "+ New ..." link. */
+hgroup {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 12px;
+}
+
+hgroup h1,
+hgroup p {
+    margin-bottom: 0;
+}
+
+/* <mark> is only ever used to carry an error message, so it reads as one rather than as
+   a yellow highlighter. */
+mark {
+    display: inline-block;
+    background: #fdd;
+    border: 1px solid #f88;
+    border-radius: 2px;
+    padding: 2px 6px;
+    color: #900;
+}
+
+/* ── Panels ───────────────────────────────────────────────────── */
+
+/* <article> is the templates' card: the login and setup boxes, the narrow user forms,
+   and the error page. */
+article {
+    background: #fff;
+    border: 1px solid #bbb;
+    border-radius: 3px;
+    padding: 14px 16px;
+    margin-bottom: 16px;
+}
+
+article > header {
+    position: static;
+    background: none;
+    border: none;
+    border-bottom: 1px solid #ddd;
+    padding: 0 0 8px;
+    margin-bottom: 10px;
+}
+
+article > footer {
+    border-top: 1px solid #ddd;
+    padding-top: 8px;
+    margin-top: 10px;
+}
+
+/* Pico's two-column form helper, used once on the firm edit page. */
+.grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+    gap: 14px;
+}
+
+/* ── Buttons ──────────────────────────────────────────────────── */
+
+/* The same bevel as the fix-test-client, so the two tools feel like one. Links carrying
+   role="button" are included: to the reader they are buttons. */
+button,
+input[type=submit],
+a[role=button] {
+    display: inline-block;
+    font-family: monospace;
+    font-size: 13px;
+    cursor: pointer;
+    box-shadow: 2px 2px 4px #888, -1px -1px 2px #fff;
+    border: 1px solid #999;
+    background: #e8e8e8;
+    color: #111;
+    padding: 3px 12px;
+    border-radius: 3px;
+    text-decoration: none;
+}
+
+button:hover,
+a[role=button]:hover {
+    background: #efefef;
+    color: #111;
+}
+
+button:active,
+a[role=button]:active {
+    box-shadow: inset 2px 2px 4px #888;
+    border-color: #777;
+    background: #d0d0d0;
+}
+
+button:disabled {
+    opacity: 0.45;
+    cursor: default;
+    box-shadow: none;
+}
+
+/* ── Form controls ────────────────────────────────────────────── */
+
+input[type=text],
+input[type=number],
+input[type=password],
+input[type=search],
+input[type=email],
+select,
+textarea {
+    font-family: monospace;
+    font-size: 13px;
+    border: 1px solid #aaa;
+    border-radius: 2px;
+    background: #fff;
+    color: #111;
+    padding: 3px 5px;
+}
+
+input:read-only,
+input:disabled,
+select:disabled,
+textarea:disabled {
+    background: #eee;
+    color: #666;
+}
+
+input[type=checkbox],
+input[type=radio] {
+    margin-right: 4px;
+    vertical-align: middle;
+}
+
+/* The templates write their forms as <label>Caption <input></label> and relied on Pico
+   to stack the two. Reproduced here, but only for the fields that want a line of their
+   own -- a checkbox belongs beside its caption, not above it. */
+form label {
+    display: block;
+    margin-bottom: 10px;
+    font-size: 13px;
+}
+
+form label > input:not([type=checkbox]):not([type=radio]),
+form label > select {
+    display: block;
+    margin-top: 3px;
+    width: 100%;
+    max-width: 26rem;
+}
+
+form button,
+form input[type=submit],
+form a[role=button] {
+    margin-right: 8px;
+}
+
+fieldset {
+    border: 1px solid #bbb;
+    border-radius: 3px;
+    padding: 10px 12px;
+    margin-bottom: 12px;
+}
+
+legend {
+    padding: 0 4px;
+    font-size: 12px;
+    color: #555;
+}
+
+/* ── Tables ───────────────────────────────────────────────────── */
+
+/* Row backgrounds go on the <tr>, never on the cells. Pico painting an opaque background
+   onto every td/th is what silently killed the fix-test-client blotter's row colours for
+   a month; leaving cells transparent here means any future row-level colouring just
+   works. */
+table {
+    border-collapse: collapse;
+    width: 100%;
+    margin-bottom: 14px;
+    font-size: 13px;
+}
+
+thead tr {
+    background: #ccc;
+}
+
+tbody tr {
+    background: #fff;
+}
+
+tbody tr:hover {
+    background: #eef4fb;
+}
+
+th {
+    border: 1px solid #aaa;
+    padding: 4px 8px;
+    text-align: left;
+    white-space: nowrap;
+}
+
+td {
+    border: 1px solid #ccc;
+    padding: 3px 8px;
+    vertical-align: top;
+}
+
+/* The action column packs links, separators and inline delete forms onto one line. */
+td form {
+    display: inline;
+}
+
+td button {
+    padding: 1px 8px;
+    font-size: 12px;
+}

@@ -642,7 +642,7 @@ summary (e.g. "session 16", "session 25") to indicate when work was completed.
 - `arbiter` — complete. Implements the `ArbitrationReport`/`ArbitrationDecision` PDU exchange. End-to-end arbiter-mediated election verified by ha_test.py scenario 15 (session 2026-06-03).
 - `start_fix_seq_system.py` — runs primary only (secondary launch removed in session 15 pending leader-follower)
 - PostgreSQL schema and migration tooling — complete (session 22). `db/create_db.py` idempotent setup script; Liquibase 5.x changelog; three tables: `pubsub_firm`, `pubsub_comp_id` (SCRAM fields, account status, audit timestamps), `pubsub_comp_id_gateway_permission`. Table prefix configurable (default `pubsub_`).
-- Java admin service (`java/admin-service/`) — complete (sessions 22–23). Javalin 6 + Freemarker 2.3 + plain JDBC + Pico.css. Full CRUD for firms, comp_ids, and gateway permissions. Password set path: derives SCRAM-SHA-256 → writes to DB → pushes plaintext password to auth service via `SetCredentialRequest` (PDU 510) over TLS. Credential revocation: `RemoveCredentialRequest` (PDU 512) sent when a firm or comp_id is disabled, locked, or deleted. Maven build with Checkstyle, SpotBugs (exclude filter for DI false positives), JaCoCo (80% threshold), and OWASP Dependency Check. Logging: SLF4J API + Logback 1.2.13 (not Log4j2 — Logback is the native SLF4J implementation and needs only one dependency; Log4j2 requires an additional `log4j-slf4j-impl` bridge adapter with no benefit in this context; Javalin 6.3.0 depends on SLF4J 1.x so Logback 1.5.x is incompatible — 1.2.13 is the correct version). `logback.xml` suppresses Javalin/Jetty/HikariCP noise to WARN. `FreemarkerRenderer` registered via `config.fileRenderer()` (Javalin 6 requires explicit registration). Fat JAR built with maven-shade-plugin including signature-file exclusion and ServicesResourceTransformer. Service starts cleanly and responds on port 8080. Admin UI authentication: Jenkins-style login system backed by a TOML file (`admin_users.toml`) — no database dependency. BCrypt-hashed passwords (jbcrypt 0.4, cost 12). Two roles: ADMIN (full CRUD) and VIEWER (read-only; POST routes blocked with 403 by `AuthFilter`). First-run setup wizard creates the initial ADMIN account. Force-password-change flag set on admin-created accounts; user is redirected to `/change-password` on next login. Session auth via Jetty `SessionHandler`; `AuthFilter` runs as Javalin `before()` handler. Pico.css is bundled in the JAR (`src/main/resources/static/`) — no CDN dependency; works in air-gapped corporate environments. Three branding properties in `application.properties`: `brand.name` (product name shown in titles and nav), `brand.logo-url` (logo image in nav and login page), `brand.css-file` (path to a CSS file inlined into every page for colour overrides). See `java/admin-service/README.md` for deployment and branding instructions. Credential lifecycle gap: re-enabling a firm or comp_id, or unlocking a comp_id, does NOT automatically restore the auth service credential (PDU 510 requires the plaintext password, which is never stored); the operator must reset the password afterwards. The Edit forms display a warning when this applies; the full procedure is documented in the README "Credential Lifecycle" section.
+- Java admin service (`java/admin-service/`) — complete (sessions 22–23). Javalin 6 + Freemarker 2.3 + plain JDBC, no CSS framework. Full CRUD for firms, comp_ids, and gateway permissions. Password set path: derives SCRAM-SHA-256 → writes to DB → pushes plaintext password to auth service via `SetCredentialRequest` (PDU 510) over TLS. Credential revocation: `RemoveCredentialRequest` (PDU 512) sent when a firm or comp_id is disabled, locked, or deleted. Maven build with Checkstyle, SpotBugs (exclude filter for DI false positives), JaCoCo (80% threshold), and OWASP Dependency Check. Logging: SLF4J API + Logback 1.2.13 (not Log4j2 — Logback is the native SLF4J implementation and needs only one dependency; Log4j2 requires an additional `log4j-slf4j-impl` bridge adapter with no benefit in this context; Javalin 6.3.0 depends on SLF4J 1.x so Logback 1.5.x is incompatible — 1.2.13 is the correct version). `logback.xml` suppresses Javalin/Jetty/HikariCP noise to WARN. `FreemarkerRenderer` registered via `config.fileRenderer()` (Javalin 6 requires explicit registration). Fat JAR built with maven-shade-plugin including signature-file exclusion and ServicesResourceTransformer. Service starts cleanly and responds on port 8080. Admin UI authentication: Jenkins-style login system backed by a TOML file (`admin_users.toml`) — no database dependency. BCrypt-hashed passwords (jbcrypt 0.4, cost 12). Two roles: ADMIN (full CRUD) and VIEWER (read-only; POST routes blocked with 403 by `AuthFilter`). First-run setup wizard creates the initial ADMIN account. Force-password-change flag set on admin-created accounts; user is redirected to `/change-password` on next login. Session auth via Jetty `SessionHandler`; `AuthFilter` runs as Javalin `before()` handler. Styling is a single hand-written stylesheet, `static/desktop.css`, bundled in the JAR — no CDN dependency; works in air-gapped corporate environments. Pico.css was removed 2026-07-29. Three branding properties in `application.properties`: `brand.name` (product name shown in titles and nav), `brand.logo-url` (logo image in nav and login page), `brand.css-file` (path to a CSS file inlined into every page for colour overrides). See `java/admin-service/README.md` for deployment and branding instructions. Credential lifecycle gap: re-enabling a firm or comp_id, or unlocking a comp_id, does NOT automatically restore the auth service credential (PDU 510 requires the plaintext password, which is never stored); the operator must reset the password afterwards. The Edit forms display a warning when this applies; the full procedure is documented in the README "Credential Lifecycle" section.
 - `db/export_credentials.py` — complete (session 23). Exports SCRAM credentials from `pubsub_comp_id` (enabled comp_ids from enabled firms, not locked) to `credentials.toml` in auth service `[[credential]]` TOML format. Uses `psql --csv --tuples-only` with `PGPASSWORD` env var. Atomic write via temp file + rename.
 
 ## What Is Not Yet Done (in dependency order)
@@ -915,9 +915,11 @@ and `rcu_nocbs` for the hot-path range, which is the only thing that stops ordin
 scheduled there and which does need a reboot. `python3 cpu_audit.py --strict` fails while the
 machine is still noisy, so it can gate a measurement run.
 
-## TODO — replace Pico.css in the web UIs (raised 2026-07-28)
+## DONE — Pico.css removed from both web UIs (raised 2026-07-28, completed 2026-07-29)
 
-**Status 2026-07-29: done for the fix-test-client, outstanding for the admin service.**
+**Pico is gone from the tree. Nothing here is outstanding.** Kept as a record: the reasoning is
+worth having, and the table-cell trap below is a standing constraint on anything that styles the
+FIX blotter.
 
 The fix-test-client did not need a replacement framework, because it already had one. `style.css`
 was written before Pico arrived and is a deliberate native-desktop look: monospace throughout, a
@@ -936,27 +938,38 @@ been relying on Pico), `fieldset`/`legend` as a desktop group box, `code`, `summ
 its own borders. `overrides.css` and the 71KB `pico.classless.min.css` are gone, along with the
 `#blotter td,th { background: inherit }` workaround, which existed only to undo Pico.
 
-**Still to do: the admin service.** That one is a genuine dependency, not an accident -- 13
-Freemarker templates use `<article>` (5), `role="button"` (5), `class="grid"`, and Pico's classless
-`header > nav > ul` navbar. The intended fix is to promote the fix-test-client's `style.css` into a
-shared `desktop.css` and extend it to cover those, which needs roughly 120-150 more lines. Note the
-two apps are independent Maven projects with no parent pom, so "shared" means a duplicated file or a
-build-time copy step.
+**The admin service** was the real dependency, not an accident: 13 Freemarker templates lean on
+`<main>`, `<article>` (6), `<hgroup>` (4), `<mark>` (5), `role="button"` (5), `class="grid"`, the
+classless `header > nav > ul` navbar, and forms written as `<label>Caption <input></label>` for Pico
+to stack. It got `src/main/resources/static/desktop.css`, which styles all of that in the same
+desktop idiom as the client, so **no template markup changed** -- only the stylesheet link in the
+three templates that carry a `<head>` (`layout.ftl`, `login.ftl`, `setup.ftl`).
 
-The original argument, kept because the replacement criteria still apply to the admin service:
+Two things worth knowing about that file. Its `:root` block declares the recolourable values as
+custom properties, because `brand.css-file` was documented as a place to override Pico's `--pico-*`
+variables and that hook would otherwise have silently stopped working; `brand.css` is still inlined
+*after* the stylesheet link, so a site override still wins. And row backgrounds are set on `<tr>`
+with cells left transparent, deliberately, so the trap described below cannot recur.
 
-**Pico is the wrong framework for these UIs and should be replaced.** It is designed for touch
+The two apps are independent Maven projects with no parent pom. A single shared `desktop.css` would
+therefore mean either a duplicated file or a build-time copy step, so each app keeps its own
+stylesheet and the shared colours and sizes are held in step by hand -- noted in the header comment
+of both files.
+
+The original argument, kept as the rationale:
+
+**Pico was the wrong framework for these UIs.** It is designed for touch
 screens, so its controls are sized for fingers: large slab buttons, `0.75rem` vertical form padding
 and a `1rem` bottom margin on every element. On a dense desktop tool -- an order-entry form of forty
 FIX fields, a blotter of twenty columns -- that turns the page into a column of paving slabs.
 
-The evidence is already in the tree. `java/fix-test-client/src/main/resources/web/overrides.css`
-exists almost entirely to undo Pico: it resets button and input padding, font size, line height and
-margins by overriding Pico's own custom properties on the elements. When the overrides file exists
-mainly to cancel the framework, the framework is not earning its place.
+The evidence was in the tree. `java/fix-test-client/src/main/resources/web/overrides.css` (since
+deleted) existed almost entirely to undo Pico: it reset button and input padding, font size, line
+height and margins by overriding Pico's own custom properties on the elements. When the overrides
+file exists mainly to cancel the framework, the framework is not earning its place.
 
-Pico also caused a silent regression worth recording, because any replacement must be judged against
-it. Pico sets an opaque background on every table cell --
+Pico also caused a silent regression worth recording, because any future styling must be judged
+against it. Pico set an opaque background on every table cell --
 `td,th{background-color:var(--pico-background-color)}` -- which painted over the FIX blotter's row
 state colours (green for a normal execution report, pink for a cancel, red for an error), set on the
 `<tr>`. Only the sticky first column kept its colour, because that one cell already declared
@@ -965,9 +978,9 @@ month later (`b6b4545`, 2026-07-24) and broke them, and it went unnoticed until 
 letting every blotter cell inherit, in `overrides.css` -- `style.css` loads *before* Pico and so
 cannot win on equal specificity.
 
-Criteria for the replacement: desktop-density defaults, so compact controls need no overrides file;
-and no opaque cell backgrounds fighting application styling. Javalin as the web framework is not in
-question and stays.
+The standing constraint that came out of this: **never set a background on `td`/`th`.** Row-level
+colouring belongs on the `<tr>`, and both stylesheets now follow that rule. Javalin as the web
+framework was never in question and stays.
 
 ## TODO — transport encryption on the binary gateway, and on the PDU paths generally (raised 2026-07-26)
 

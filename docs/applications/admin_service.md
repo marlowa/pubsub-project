@@ -13,13 +13,24 @@ PostgreSQL directly. It provides:
   credentials to `credentials.toml` for the authentication service to load at startup.
 
 **Technology stack:** Java 17, Javalin 6, Freemarker 2.3, plain JDBC (HikariCP),
-PostgreSQL, Pico.css, Maven. No Spring.
+PostgreSQL, Maven. No Spring, and no CSS framework.
 
 ## Web UI
 
-The UI is server-rendered HTML via Freemarker templates with Pico.css classless styling.
-Pico.css is bundled in the JAR (`src/main/resources/static/`) — no CDN dependency; works
-in air-gapped environments.
+The UI is server-rendered HTML via Freemarker templates. Styling is a single hand-written
+stylesheet, `src/main/resources/static/desktop.css`, bundled in the JAR and served at
+`/static/desktop.css` — no CDN dependency, so it works in air-gapped environments. The look
+matches the fix-test-client: monospace, grey chrome, dense tables, bevelled buttons.
+
+Pico.css was removed on 2026-07-29; it was sized for touch screens and wrong for a dense
+desktop administration tool. The templates were left in their classless shape, so
+`desktop.css` styles bare `<main>`, `<article>`, `<hgroup>` and `<mark>`, the
+`header > nav > ul` menu bar, `a[role=button]`, `.grid`, and forms written as
+`<label>Caption <input></label>`.
+
+Branding: the stylesheet declares its recolourable values as custom properties in a `:root`
+block, and `brand.css-file` is inlined *after* the stylesheet link, so a site override wins.
+See the README for the list.
 
 **Pages:**
 - **Firms** — list, create, edit (name, enabled flag). Disabling a firm revokes all its

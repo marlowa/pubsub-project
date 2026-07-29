@@ -421,7 +421,7 @@ Environment comparison:
 
 **Java admin service (`java/admin-service/`).**
 
-A standalone Javalin 6 + Freemarker 2.3 + plain JDBC (HikariCP) web application. Technology choices: Javalin for HTTP (not Spring — never Spring), Pico.css classless CSS from CDN, Freemarker for server-rendered templates, HikariCP + PostgreSQL JDBC for database access, Maven Shade plugin for a fat JAR. Java 17.
+A standalone Javalin 6 + Freemarker 2.3 + plain JDBC (HikariCP) web application. Technology choices: Javalin for HTTP (not Spring — never Spring), Pico.css classless CSS from CDN (superseded — Pico was removed on 2026-07-29 in favour of a bundled hand-written `static/desktop.css`), Freemarker for server-rendered templates, HikariCP + PostgreSQL JDBC for database access, Maven Shade plugin for a fat JAR. Java 17.
 
 *Package layout:*
 - `Config` — loads `application.properties` from classpath; overrides `db.url`, `db.username`, `db.password` from env vars `PUBSUB_DB_URL`, `PUBSUB_DB_USERNAME`, `PUBSUB_APP_DB_PASSWORD`. Fields include `tablePrefix`, `authServiceEnabled`, `authServiceHost`, `authServiceAdminPort`, `serverPort`.
@@ -434,7 +434,7 @@ A standalone Javalin 6 + Freemarker 2.3 + plain JDBC (HikariCP) web application.
 
 *Routes:* `GET/POST /firms`, `/firms/new`, `/firms/{id}`, `/firms/{id}/delete`; `GET /comp-ids` (all or `?firmId=X`); `GET/POST /firms/{firmId}/comp-ids/new`, `/firms/{firmId}/comp-ids`; `GET/POST /comp-ids/{id}`, `/comp-ids/{id}/delete`, `/comp-ids/{id}/password`; `GET/POST /comp-ids/{id}/gateways`, `/comp-ids/{id}/gateways/{type}/delete`.
 
-*Freemarker templates* (under `src/main/resources/templates/`): `layout.ftl` (Pico.css nav macro), `error.ftl`, `firms/list.ftl`, `firms/form.ftl` (create and edit via `<#if firm?>` branching), `comp-ids/list.ftl`, `comp-ids/form.ftl` (create and edit), `comp-ids/set-password.ftl`, `gateway-permissions/list.ftl` (list + inline add form).
+*Freemarker templates* (under `src/main/resources/templates/`): `layout.ftl` (nav macro; Pico.css at the time, replaced by `static/desktop.css` on 2026-07-29), `error.ftl`, `firms/list.ftl`, `firms/form.ftl` (create and edit via `<#if firm?>` branching), `comp-ids/list.ftl`, `comp-ids/form.ftl` (create and edit), `comp-ids/set-password.ftl`, `gateway-permissions/list.ftl` (list + inline add form).
 
 *Build tooling added to `pom.xml`:*
 - `maven-checkstyle-plugin:3.3.1` — bound to `validate` phase; custom `checkstyle.xml` (unused imports, need braces, empty catch exemption for `ignored`-named variables, etc.). Zero violations.
@@ -1041,8 +1041,9 @@ Both files at identical sequence number, 12 ms apart.
 A FIX 5.0 SP2 gateway test client replacing fix8 for interactive and scripted testing.
 Single-user, single-session web application.
 
-**Technology stack:** QuickFIX/J 2.3.1, Javalin 6.3.0, Groovy 4.0.21, toml4j, Logback 1.5.x,
-Pico.css styling. Fat JAR via maven-shade. Java 17. No Spring.
+**Technology stack:** QuickFIX/J 2.3.1, Javalin 6.3.0, Groovy 4.0.21, toml4j, Logback 1.5.x.
+Styling was Pico.css at the time; Pico was removed on 2026-07-29 and `web/style.css` is now the
+whole stylesheet. Fat JAR via maven-shade. Java 17. No Spring.
 
 **Architecture:**
 - `FixEngine` — wraps `SocketInitiator`; owns session lifecycle; exposes `SessionStatus` record.

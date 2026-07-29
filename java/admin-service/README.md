@@ -3,7 +3,8 @@
 A web-based administration UI for managing firms, comp IDs, gateway permissions,
 and SCRAM-SHA-256 credentials for the PubSub system.
 
-Built with Javalin 6, Freemarker 2.3, plain JDBC (HikariCP), and Pico.css.
+Built with Javalin 6, Freemarker 2.3, and plain JDBC (HikariCP). No CSS
+framework — the UI is styled by `src/main/resources/static/desktop.css`.
 
 ## Prerequisites
 
@@ -159,8 +160,10 @@ Filesystem path to a CSS file. Its content is inlined as a `<style>` block into
 every page — including the login and setup pages which have no nav bar. The file
 is read once at startup; the service must be restarted to pick up changes.
 
-Use this to override pico.css custom properties and apply your organisation's
-colour palette without modifying or rebuilding the JAR.
+Use this to apply your organisation's colour palette without modifying or
+rebuilding the JAR. The stylesheet declares its brandable colours as custom
+properties in a `:root` block, and `brand.css` is inlined *after* the stylesheet
+link, so redeclaring any of them wins.
 
 ```properties
 brand.css-file=/etc/pubsub-admin/brand.css
@@ -170,21 +173,31 @@ brand.css-file=/etc/pubsub-admin/brand.css
 
 ```css
 :root {
-    /* Primary action colour — buttons, links, focus rings */
-    --pico-primary:             #003087;
-    --pico-primary-hover:       #00205b;
-    --pico-primary-focus:       rgba(0, 48, 135, 0.25);
-    --pico-primary-inverse:     #ffffff;
+    /* Links and other accents */
+    --admin-accent-colour:       #003087;
+    --admin-accent-hover-colour: #00205b;
 
-    /* Form element accent */
-    --pico-form-element-active-border-color: #003087;
-    --pico-form-element-focus-color:         rgba(0, 48, 135, 0.25);
+    /* The menu bar across the top of every page */
+    --admin-chrome-background:    #dfe4ec;
+    --admin-chrome-border-colour: #9aa4b4;
+
+    /* Page background and body text */
+    --admin-page-background: #f4f4f4;
+    --admin-text-colour:     #111;
 }
 ```
 
-A full list of overridable pico.css variables is in pico's own documentation. The
-bundled file is `pico.classless.min.css` version 2 (served at `/static/pico.classless.min.css`).
-The service has no outbound network dependency — pico.css is bundled in the JAR.
+Those six properties are the whole supported branding surface, and the
+authoritative list is the `:root` block at the top of
+`src/main/resources/static/desktop.css`. The rest of the stylesheet — the
+monospace type, the dense tables, the bevelled buttons — is fixed on purpose:
+this is a desktop administration tool, and the density is the design rather than
+a preference. You can of course override any other rule from `brand.css`, but
+those selectors are not a stable interface and may change.
+
+The UI uses no CSS framework. `desktop.css` is served from the JAR at
+`/static/desktop.css`, so the service has no outbound network dependency and
+works in air-gapped environments.
 
 ### Worked example — full branding for "Acme Messaging"
 
