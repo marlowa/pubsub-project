@@ -32,6 +32,26 @@ public class FreemarkerRenderer implements FileRenderer {
 
     @Override
     public String render(String filePath, Map<String, ? extends Object> model, Context context) {
+        Map<String, Object> withSession = new HashMap<>(model);
+
+        String username = context.sessionAttribute(AuthFilter.SESSION_USERNAME);
+        if (username != null) {
+            withSession.put("currentUser", username);
+            withSession.put("isAdmin",
+                    "ADMIN".equals(context.sessionAttribute(AuthFilter.SESSION_ROLE)));
+        }
+
+        return renderTemplate(filePath, withSession);
+    }
+
+    /**
+     * Renders a template against an already-resolved model, adding only the branding
+     * attributes. Split out from {@link #render} so that the templates can be rendered in a
+     * test without a Javalin {@link Context}: a Freemarker template is parsed as a whole
+     * before any of it executes, so a syntax error anywhere in one is invisible until the
+     * page is actually requested. See FreemarkerTemplateRenderingTest.
+     */
+    String renderTemplate(String filePath, Map<String, ?> model) {
         try {
             String name = filePath.startsWith("/") ? filePath.substring(1) : filePath;
             Template template = cfg.getTemplate(name);
@@ -40,13 +60,6 @@ public class FreemarkerRenderer implements FileRenderer {
             merged.put("brandName", brandName);
             merged.put("brandLogoUrl", brandLogoUrl);
             merged.put("brandCss", brandCss);
-
-            String username = context.sessionAttribute(AuthFilter.SESSION_USERNAME);
-            if (username != null) {
-                merged.put("currentUser", username);
-                merged.put("isAdmin",
-                        "ADMIN".equals(context.sessionAttribute(AuthFilter.SESSION_ROLE)));
-            }
 
             StringWriter writer = new StringWriter();
             template.process(merged, writer);
