@@ -1,7 +1,12 @@
 <#import "/templates/layout.ftl" as layout>
-<@layout.page title="${user??'Edit User':'New User'}">
+<#if user??>
+    <#assign pageTitle = "Edit User: " + user.username()>
+<#else>
+    <#assign pageTitle = "New User">
+</#if>
+<@layout.page title=pageTitle>
 <article style="max-width:30rem">
-    <h2><#if user??>Edit User: ${user.username()}<#else>New User</#if></h2>
+    <h2>${pageTitle}</h2>
     <#if error??><p><mark>${error}</mark></p></#if>
     <#if user??>
     <form method="post" action="/admin/users/${user.username()}">
