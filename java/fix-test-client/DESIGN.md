@@ -143,7 +143,7 @@ pushed as they arrive; the browser reconnects automatically on disconnect.
 |-------------------|-------------------------|
 | FIX engine        | QuickFIX/J 2.3.x        |
 | Web framework     | Javalin 6.x             |
-| UI styling        | Pico.css (CDN) + custom |
+| UI styling        | `web/style.css` (no framework) |
 | Scripting         | Groovy 4.x              |
 | Logging           | Logback 1.5.x           |
 | Config parsing    | jackson-dataformat-toml |

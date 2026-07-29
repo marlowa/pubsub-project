@@ -917,6 +917,34 @@ machine is still noisy, so it can gate a measurement run.
 
 ## TODO — replace Pico.css in the web UIs (raised 2026-07-28)
 
+**Status 2026-07-29: done for the fix-test-client, outstanding for the admin service.**
+
+The fix-test-client did not need a replacement framework, because it already had one. `style.css`
+was written before Pico arrived and is a deliberate native-desktop look: monospace throughout, a
+`#e0e0e0` fixed chrome bar, bevelled buttons (`box-shadow: 2px 2px 4px #888, -1px -1px 2px #fff`),
+and a 12px blotter with a sticky header and sticky first column. The page load order told the whole
+story -- `style.css`, then Pico, then `overrides.css` -- a stylesheet we wanted, a framework that
+clobbered it, and a third file to claw the look back.
+
+So Pico was deleted rather than swapped. The Pico-specific surface across the six pages turned out
+to be two `class="secondary"` buttons and three `<details class="panel">` accordions; there was no
+`<article>` and no `role="button"`. `style.css` absorbed what Pico had been quietly providing for
+bare elements -- a general rule for text inputs, `select` and `textarea` (previously only
+`input[type=text]` and `[type=number]` inside `.form-row`, so the password and datetime fields had
+been relying on Pico), `fieldset`/`legend` as a desktop group box, `code`, `summary { cursor }`, a
+`button.secondary`, and native checkbox/radio widgets left alone deliberately. `.group-table` grew
+its own borders. `overrides.css` and the 71KB `pico.classless.min.css` are gone, along with the
+`#blotter td,th { background: inherit }` workaround, which existed only to undo Pico.
+
+**Still to do: the admin service.** That one is a genuine dependency, not an accident -- 13
+Freemarker templates use `<article>` (5), `role="button"` (5), `class="grid"`, and Pico's classless
+`header > nav > ul` navbar. The intended fix is to promote the fix-test-client's `style.css` into a
+shared `desktop.css` and extend it to cover those, which needs roughly 120-150 more lines. Note the
+two apps are independent Maven projects with no parent pom, so "shared" means a duplicated file or a
+build-time copy step.
+
+The original argument, kept because the replacement criteria still apply to the admin service:
+
 **Pico is the wrong framework for these UIs and should be replaced.** It is designed for touch
 screens, so its controls are sized for fingers: large slab buttons, `0.75rem` vertical form padding
 and a `1rem` bottom margin on every element. On a dense desktop tool -- an order-entry form of forty
@@ -938,8 +966,8 @@ letting every blotter cell inherit, in `overrides.css` -- `style.css` loads *bef
 cannot win on equal specificity.
 
 Criteria for the replacement: desktop-density defaults, so compact controls need no overrides file;
-and no opaque cell backgrounds fighting application styling. Both web UIs use Pico today, the admin
-service and the fix-test-client. Javalin as the web framework is not in question and stays.
+and no opaque cell backgrounds fighting application styling. Javalin as the web framework is not in
+question and stays.
 
 ## TODO — transport encryption on the binary gateway, and on the PDU paths generally (raised 2026-07-26)
 

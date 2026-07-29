@@ -4,20 +4,17 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>FIX Test Client — Messages</title>
-    <!-- style.css first so the fixed chrome / blotter (id-scoped) keep their look;
-         Pico (classless) loads after to style the new order form's bare elements. -->
     <link rel="stylesheet" href="/style.css">
-    <link rel="stylesheet" href="/pico.classless.min.css">
-    <link rel="stylesheet" href="/overrides.css">
     <style>
         /* The quick-order bar stays pinned just below the 62px fixed chrome so Send is
-           always reachable however far the rest of the form is scrolled. */
+           always reachable however far the rest of the form is scrolled. Its background
+           must be opaque -- the rest of the form scrolls underneath it. */
         #quick-bar {
             position: sticky;
             top: 62px;
             z-index: 50;
-            background: var(--pico-background-color, #fff);
-            border-bottom: 1px solid var(--pico-muted-border-color, #bbb);
+            background: #f4f4f4;
+            border-bottom: 1px solid #bbb;
             padding: 0.5rem 0 0.7rem;
             margin-bottom: 0.8rem;
         }
@@ -30,14 +27,13 @@
         #quick-bar button { align-self: flex-end; }
         .more-grid { display: flex; flex-wrap: wrap; gap: 1rem; }
         .more-grid fieldset { flex: 1 1 14rem; margin: 0; }
-        .group-table { font-size: 0.85rem; }
-        .group-table td, .group-table th { padding: 3px 6px; }
+        .group-table { border-collapse: collapse; font-size: 0.85rem; }
+        .group-table td, .group-table th { border: 1px solid #ccc; padding: 3px 6px; }
+        .group-table th { background: #e0e0e0; text-align: left; font-weight: bold; }
         .group-table input, .group-table select { margin: 0; width: 100%; min-width: 7rem; }
-        details.panel { border: 1px solid var(--pico-muted-border-color, #ccc); border-radius: 6px; padding: 0 0.8rem; margin-bottom: 0.8rem; }
+        details.panel { border: 1px solid #bbb; border-radius: 3px; padding: 0 0.8rem; margin-bottom: 0.8rem; }
         details.panel > summary { font-weight: bold; padding: 0.5rem 0; }
-        .row-count { font-weight: normal; color: var(--pico-muted-color, #777); font-size: 0.8rem; }
-        /* Keep the FIX blotter monospaced for column alignment even under Pico. */
-        #blotter { font-family: monospace; }
+        .row-count { font-weight: normal; color: #777; font-size: 0.8rem; }
     </style>
 </head>
 <body>
@@ -77,7 +73,7 @@
                 <label class="field narrow">Price <input type="number" id="f-price" value="10.50" step="0.01"></label>
                 <button id="btn-send" type="button" onclick="doSend()" disabled>Send</button>
             </div>
-            <small id="send-error" style="color:var(--pico-del-color,#c00); display:none;"></small>
+            <small id="send-error" style="color:#c00; display:none;"></small>
         </div>
 
         <!-- Remaining scalar fields, collapsed by default and grouped by purpose. -->

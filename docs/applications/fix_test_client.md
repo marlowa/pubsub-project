@@ -7,7 +7,8 @@ A FIX 5.0 SP2 gateway test client for interactive and scripted testing. It repla
 Single-user, single-session web application.
 
 **Technology stack:** Java 17, QuickFIX/J 2.3.1, Javalin 6.3.0, Groovy 4.0.21, toml4j,
-Logback 1.5.x, Pico.css. Fat JAR via maven-shade. No Spring.
+Logback 1.5.x. Fat JAR via maven-shade. No Spring, and no CSS framework -- the UI is styled
+by `web/style.css` alone.
 
 ## Architecture
 
