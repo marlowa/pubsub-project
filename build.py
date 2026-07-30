@@ -23,6 +23,27 @@ def _is_rhel8():
         return False
 
 
+def platform_tag():
+    """Short name for the target platform, or None when this is the ordinary dev host.
+
+    Used to keep build output for a different toolchain apart. A gcc-8.5 Rocky/RHEL8
+    build is a different artefact from a gcc-13 host build in exactly the way a
+    coverage or sanitizer build is: same sources, incompatible objects. Sharing a
+    directory means every platform switch is a full rebuild at best, and a confusing
+    mixture of stale objects and a stale CMake cache at worst.
+    """
+    try:
+        text = Path('/etc/os-release').read_text()
+        lines = {l.split('=')[0]: l.split('=', 1)[1] for l in text.splitlines() if '=' in l}
+        identifier = lines.get('ID', '').strip('"')
+        version = lines.get('VERSION_ID', '').strip('"')
+    except OSError:
+        return None
+    if identifier in ('rhel', 'rocky', 'centos') and version.startswith('8'):
+        return 'rhel8' if identifier == 'rhel' else 'rocky8'
+    return None
+
+
 def run_check_standards(source_dir):
     """Run check_standards.py and abort the build if any violations are found."""
     script = source_dir / "check_standards.py"
@@ -49,12 +70,23 @@ def run_pylint(source_dir):
     print("\n✓ pylint passed")
 
 
-def run_pytest(source_dir):
-    """Run the Python DSL test suite."""
+def run_pytest(source_dir, build_dir=None):
+    """Run the Python DSL test suite.
+
+    PUBSUB_BUILD_DIR tells the pybind11 test harness where to compile its extension
+    modules. They must not go under the system temp directory -- /tmp is mounted
+    noexec on the RHEL8 target, so the module builds and then fails to dlopen -- and
+    they must follow --build-dir so a container run does not write into the host's
+    build tree.
+    """
     python_dir = source_dir / "python"
+    environment = dict(os.environ)
+    if build_dir is not None:
+        environment["PUBSUB_BUILD_DIR"] = str(Path(build_dir).resolve())
     run_command(
         [sys.executable, "-m", "pytest", "-q"],
         cwd=python_dir,
+        env=environment,
         description="Running Python DSL test suite"
     )
     print("\n✓ Python tests passed")
@@ -241,12 +273,15 @@ def generate_coverage_report(build_dir, source_dir):
     print("\n✓ Coverage report generated:")
     print(f"  {html_dir}/index.html")
 
-def run_command(cmd, cwd=None, description=None, env=None, quiet=False):
+def run_command(cmd, cwd=None, description=None, env=None, quiet=False, stdin_text=None):
     """Run a shell command, streaming output in real time while capturing it.
 
     On failure, prints the captured output (quiet mode) or the last 30 lines
     (non-quiet mode, where the full output already streamed to the terminal)
     inside the error banner so the cause is clearly visible.
+
+    @param[in] stdin_text Text piped to the command's stdin, for tools configured that
+                          way (doxygen reads its configuration from stdin as "doxygen -").
     """
     if description:
         print(f"\n{'='*60}")
@@ -261,11 +296,16 @@ def run_command(cmd, cwd=None, description=None, env=None, quiet=False):
         cwd=cwd,
         shell=isinstance(cmd, str),
         env=env,
+        stdin=subprocess.PIPE if stdin_text is not None else None,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
         bufsize=1,
     )
+
+    if stdin_text is not None:
+        process.stdin.write(stdin_text)
+        process.stdin.close()
 
     lines = []
     for line in process.stdout:
@@ -324,8 +364,14 @@ def check_environment_variables():
         sys.exit(1)
 
 
-def run_doxygen(source_dir):
-    """Run Doxygen to generate documentation"""
+def run_doxygen(source_dir, build_dir=None):
+    """Run Doxygen to generate documentation.
+
+    Doxyfile hardcodes OUTPUT_DIRECTORY = build/docs, which ignores --build-dir and so
+    writes a Rocky container's docs over the host's. Rather than edit the Doxyfile --
+    which would break a plain `doxygen Doxyfile` run by hand -- the config is piped in
+    with an override appended. In a Doxygen config the last assignment of a key wins.
+    """
     doxyfile = source_dir / "Doxyfile"
 
     if not doxyfile.exists():
@@ -333,11 +379,16 @@ def run_doxygen(source_dir):
         print("Please create a Doxyfile in your project root", file=sys.stderr)
         sys.exit(1)
 
+    configuration = doxyfile.read_text()
+    if build_dir is not None:
+        configuration += f"\nOUTPUT_DIRECTORY = {Path(build_dir).resolve() / 'docs'}\n"
+
     run_command(
-        ["doxygen", str(doxyfile)],
+        ["doxygen", "-"],
         cwd=source_dir,
         description="Generating Doxygen documentation",
-        quiet=_is_rhel8()
+        quiet=_is_rhel8(),
+        stdin_text=configuration,
     )
 
     print("\n✓ Doxygen documentation generated successfully")
@@ -441,6 +492,9 @@ def install_directory_name(args):
         flavours.append("tsan")
     if args.valgrind:
         flavours.append("valgrind")
+    tag = platform_tag()
+    if tag:
+        flavours.append(tag)
     if not flavours:
         return "installed"
     return "installed-" + "-".join(flavours)
@@ -847,7 +901,7 @@ Examples:
     # Handle doxygen-only mode
     if args.doxygen_only:
         if not args.no_doxygen:
-            run_doxygen(source_dir)
+            run_doxygen(source_dir, build_dir)
         else:
             print("NOTE: --no-doxygen is set; skipping Doxygen")
         return 0
@@ -866,7 +920,7 @@ Examples:
         else:
             print("NOTE: --no-pylint is set; skipping pylint")
         if not skip_pytest:
-            run_pytest(source_dir)
+            run_pytest(source_dir, build_dir)
 
         if args.clean:
             clean_build(build_dir)
@@ -894,7 +948,7 @@ Examples:
         install_project(build_dir, staging_dir)
 
         if args.doxygen and not args.no_doxygen:
-            run_doxygen(source_dir)
+            run_doxygen(source_dir, build_dir)
 
     # ── Java build ────────────────────────────────────────────────────────────
     if not args.no_java:

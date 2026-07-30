@@ -39,6 +39,7 @@ That gap is real and is stated here rather than papered over.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import shutil
 import subprocess
@@ -53,6 +54,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 # invocation documented in the README.
 CONTAINER_WORKSPACE = "/workspace"
 ROCKY_IMAGE = "pubsub-rhel8"
+# Where the gcc-8.5-built compiled deps volume is mounted inside the container.
+CONTAINER_DEPS = "/opt/deps"
 
 
 @dataclass
@@ -161,35 +164,62 @@ def stage_rocky(args) -> tuple[bool, str]:
         return False, (f"image '{ROCKY_IMAGE}' not present. Build it first:\n"
                        f"    docker build -t {ROCKY_IMAGE} .")
 
-    # The third-party tree must have been built with gcc 8.5 in the container. A tree
-    # built on the development host *compiles* but fails to link: its libfmt/libgtest
-    # reference GLIBCXX/GLIBC symbols that Rocky 8's older glibc does not have. The
-    # gcc-8.5-built deps are cached in a docker volume, whose layout matches a normal
-    # third-party tree, so mounting it where build.sh already looks needs no env override.
-    if args.thirdparty:
-        source = Path(args.thirdparty).resolve()
-        if not source.is_dir():
-            return False, f"third-party tree not found: {source}"
-        mount = f"{source}:{CONTAINER_WORKSPACE}/thirdparty"
-    else:
-        code, out = run(["docker", "volume", "inspect", args.deps_volume])
-        if code != 0:
-            return False, (f"docker volume '{args.deps_volume}' not found, and no --thirdparty\n"
-                           "given.\n"
-                           "The Rocky stage needs third-party libraries built with gcc 8.5 in the\n"
-                           "container; a tree built on this host compiles but fails to link.\n"
-                           "See the RHEL8 section of the README for how the volume is populated.")
-        mount = f"{args.deps_volume}:{CONTAINER_WORKSPACE}/thirdparty"
+    # Two mounts are needed, and getting this wrong is easy.
+    #
+    # The compiled deps (fmt, googletest) must be built with gcc 8.5: a tree built
+    # on the development host *compiles* and then fails to link, because its libfmt
+    # and libgtest reference GLIBCXX/GLIBC symbols absent from Rocky 8's older glibc.
+    # Those live in the docker volume, as real directories.
+    #
+    # The header-only deps (quill, argparse, tomlplusplus, tsl-robin-map) are
+    # SYMLINKS inside that volume pointing at /workspace/thirdparty -- they need no
+    # compiling, so they are taken straight from the host tree. Mounting the volume
+    # *at* /workspace/thirdparty therefore makes those symlinks point at themselves
+    # and the build fails at configure with "Could not find a package configuration
+    # file provided by quill". Mount the host tree there and the volume at /opt/deps.
+    if args.thirdparty is None:
+        return False, ("--thirdparty is required: the Rocky stage mounts the host third-party\n"
+                       "tree so the header-only deps resolve, and the gcc-8.5-built compiled\n"
+                       f"deps from the '{args.deps_volume}' volume alongside it.")
+    host_tree = Path(args.thirdparty).resolve()
+    if not host_tree.is_dir():
+        return False, f"third-party tree not found: {host_tree}"
 
+    code, out = run(["docker", "volume", "inspect", args.deps_volume])
+    if code != 0:
+        return False, (f"docker volume '{args.deps_volume}' not found. It holds the fmt and\n"
+                       "googletest builds made with gcc 8.5 in the container; see the RHEL8\n"
+                       "section of the README for how it is populated.")
+
+    # build.sh would override THIRDPARTY_DIR for rocky8, so build.py is invoked
+    # directly with the environment the volume layout needs.
+    environment = " ".join([
+        f"THIRDPARTY_DIR={CONTAINER_DEPS}",
+        "FMT_VERSION=11.0.2", "QUILL_VERSION=11.0.2", "ARGPARSE_VERSION=3.2",
+        "GOOGLETEST_VERSION=1.10.0", "TOMLPLUSPLUS_VERSION=3.4.0", "ROBINMAP_VERSION=1.4.1",
+    ])
+    # Run as the invoking user, not root. The repo is bind-mounted, so a root-run
+    # container leaves root-owned build/, build-rocky/, installed/ and doxygen output
+    # behind, which the next build on the host cannot delete or overwrite. --build-dir
+    # alone does not cover it: the install step and the doxygen output have their own
+    # paths. HOME is redirected because the invoking uid has no home inside the image.
     command = [
         "docker", "run", "--rm", "--entrypoint", "bash",
+        "--user", f"{os.getuid()}:{os.getgid()}",
+        "-e", "HOME=/tmp",
         "-v", f"{PROJECT_ROOT}:{CONTAINER_WORKSPACE}",
-        "-v", mount,
+        "-v", f"{host_tree}:{CONTAINER_WORKSPACE}/thirdparty",
+        "-v", f"{args.deps_volume}:{CONTAINER_DEPS}",
         ROCKY_IMAGE,
         "-lc",
-        # The image ships no Java or Maven, so those are skipped here and covered
-        # by the local stage instead. Everything else runs.
-        f"cd {CONTAINER_WORKSPACE} && ./build.sh --clean --no-java",
+        # The image ships no Java or Maven, so those are skipped here and covered by
+        # the local stage instead. Everything else runs.
+        # A separate build directory: the repo is bind-mounted, so building into
+        # ./build would leave gcc-8.5 objects where the host build expects its own,
+        # and the next local build would silently mix the two. build-rocky/ is
+        # already covered by the build-*/ gitignore rule.
+        f"cd {CONTAINER_WORKSPACE} && {environment} "
+        f"python3 build.py --clean --no-java -j{args.jobs} --build-dir build-rocky",
     ]
     code, out = run(command, timeout=args.build_timeout)
     return code == 0, tail(out, 40)
@@ -280,8 +310,8 @@ def build_parser() -> argparse.ArgumentParser:
         epilog="Stages:\n" + "\n".join(f"  {name:<14} {desc}" for name, _, desc in STAGES),
     )
     parser.add_argument("--thirdparty", metavar="DIR",
-                        help="Host directory holding a Rocky 8-built third-party tree. "
-                             "Overrides --deps-volume.")
+                        help="Host third-party tree, mounted so the header-only deps resolve. "
+                             "Required by the rocky stage.")
     parser.add_argument("--deps-volume", metavar="NAME", default="pubsub-rocky-deps",
                         help="Docker volume holding the gcc-8.5-built third-party libraries "
                              "(default: pubsub-rocky-deps).")

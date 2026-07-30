@@ -1,3 +1,4 @@
+import os
 import uuid
 import subprocess
 import tempfile
@@ -25,7 +26,13 @@ _PUBSUB_ITC_FW_INCLUDE_DIR = str(_PROJECT_ROOT / "libraries" / "pubsub_itc_fw" /
 # after building perfectly. Building under the project's own (gitignored) build tree
 # fixes that, and independently satisfies the rule that a build produces nothing
 # outside the project directory -- temporary files included.
-_MODULE_BUILD_ROOT = _PROJECT_ROOT / "build" / "pybind11_test_modules"
+# PUBSUB_BUILD_DIR is set by build.py so the scratch build follows --build-dir; a
+# Rocky container run must not write into the host's build tree, because gcc-8.5
+# objects and a gcc-13 CMake cache in one directory make every platform switch a
+# full rebuild at best. Falls back to ./build for a bare pytest run.
+_MODULE_BUILD_ROOT = Path(
+    os.environ.get("PUBSUB_BUILD_DIR", str(_PROJECT_ROOT / "build"))
+) / "pybind11_test_modules"
 
 
 def compile_and_load(dsl_text: str, namespace: str = "ns"):
