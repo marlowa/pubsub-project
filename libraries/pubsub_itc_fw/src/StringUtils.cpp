@@ -4,11 +4,13 @@
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 
 #include <array>
+#include <iterator>
 #include <string>
 #include <string_view>
+
+#include <fmt/format.h>
 
 #include <cstring> // for strerror_r
 
@@ -82,17 +84,17 @@ std::string StringUtils::hex_dump(const void* data, size_t len) {
     out += " bytes\n";
 
     for (size_t i = 0; i < len; i += bytes_per_line) {
-        std::array<char, 32> buf{};
+        // format_to appends straight into out, so there is no intermediate buffer and no
+        // second copy of every field on the way in.
+        auto sink = std::back_inserter(out);
 
         // Offset
-        (void)std::snprintf(buf.data(), buf.size(), "%04zx: ", i);
-        out += buf.data();
+        fmt::format_to(sink, "{:04x}: ", i);
 
         // Hex column
         for (size_t j = 0; j < bytes_per_line; ++j) {
             if (i + j < len) {
-                (void)std::snprintf(buf.data(), buf.size(), "%02X ", bytes[i + j]);
-                out += buf.data();
+                fmt::format_to(sink, "{:02X} ", bytes[i + j]);
             } else {
                 out += "   ";
             }

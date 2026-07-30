@@ -4,10 +4,10 @@
 #include <pubsub_itc_fw/Wal.hpp>
 
 #include <cerrno>
-#include <cinttypes>
-#include <cstdio>
 #include <cstring>
 #include <vector>
+
+#include <fmt/format.h>
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -26,9 +26,7 @@ std::string Wal::snapshot_path() const {
 }
 
 std::string Wal::segment_path_for_delete(uint64_t seg_num) const {
-    char buf[32];
-    std::snprintf(buf, sizeof(buf), "/wal_%06" PRIu64 ".log", seg_num);
-    return directory_ + buf;
+    return directory_ + fmt::format("/wal_{:06}.log", seg_num);
 }
 
 int64_t Wal::open(const std::string& directory, size_t segment_size, ReplayCallback replay_cb, WalOpenMode open_mode) {

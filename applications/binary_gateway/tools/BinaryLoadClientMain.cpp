@@ -46,6 +46,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include <fmt/format.h>
+
 #include <pubsub_itc_fw/BumpAllocator.hpp>
 #include <pubsub_itc_fw/PduHeader.hpp>
 
@@ -107,30 +109,30 @@ bool parse_options(int argc, char** argv, Options& options) {
         } else if (argument == "--minimal-order") {
             options.minimal_order = true;
         } else {
-            std::printf("usage: %s [--host H] [--port P] [--comp-id-prefix ID] [--symbol SYM]\n", argv[0]);
-            std::printf("          [--sessions N] [--orders-per-burst N] [--bursts N] [--rate N]\n\n");
-            std::printf("  --password          SCRAM password for every session (default stubpassword)\n");
-            std::printf("  --target-comp-id    the venue name to send; must match the gateway\n");
-            std::printf("  --sessions          concurrent logged-on sessions, each with its own comp id\n");
-            std::printf("  --orders-per-burst  orders each session sends per burst (default 1000)\n");
-            std::printf("  --bursts            fire N bursts then wait; omit to take one burst per\n");
-            std::printf("                      \"T\" line on stdin, as f8test does\n");
-            std::printf("  --rate              orders per second per session. Omit for a throughput\n");
-            std::printf("                      test: orders go out as fast as the socket accepts them,\n");
-            std::printf("                      which offers load far faster than the pipeline drains,\n");
-            std::printf("                      so the reported latencies are dominated by queueing.\n");
-            std::printf("                      Set a sustainable rate to measure service latency.\n");
-            std::printf("  --underlyings       NoUnderlyings instances per order (default 3)\n");
-            std::printf("  --parties           NoPartyIDs instances per order (default 1)\n");
-            std::printf("  --party-sub-ids     NoPartySubIDs per party (default 1)\n");
-            std::printf("  --minimal-order     send only the required fields and no groups. Useful to\n");
-            std::printf("                      isolate per-field cost, but NOT comparable with a fix8\n");
-            std::printf("                      run, which sends a full order with nested groups.\n");
+            fmt::print("usage: {} [--host H] [--port P] [--comp-id-prefix ID] [--symbol SYM]\n", argv[0]);
+            fmt::print("          [--sessions N] [--orders-per-burst N] [--bursts N] [--rate N]\n\n");
+            fmt::print("  --password          SCRAM password for every session (default stubpassword)\n");
+            fmt::print("  --target-comp-id    the venue name to send; must match the gateway\n");
+            fmt::print("  --sessions          concurrent logged-on sessions, each with its own comp id\n");
+            fmt::print("  --orders-per-burst  orders each session sends per burst (default 1000)\n");
+            fmt::print("  --bursts            fire N bursts then wait; omit to take one burst per\n");
+            fmt::print("                      \"T\" line on stdin, as f8test does\n");
+            fmt::print("  --rate              orders per second per session. Omit for a throughput\n");
+            fmt::print("                      test: orders go out as fast as the socket accepts them,\n");
+            fmt::print("                      which offers load far faster than the pipeline drains,\n");
+            fmt::print("                      so the reported latencies are dominated by queueing.\n");
+            fmt::print("                      Set a sustainable rate to measure service latency.\n");
+            fmt::print("  --underlyings       NoUnderlyings instances per order (default 3)\n");
+            fmt::print("  --parties           NoPartyIDs instances per order (default 1)\n");
+            fmt::print("  --party-sub-ids     NoPartySubIDs per party (default 1)\n");
+            fmt::print("  --minimal-order     send only the required fields and no groups. Useful to\n");
+            fmt::print("                      isolate per-field cost, but NOT comparable with a fix8\n");
+            fmt::print("                      run, which sends a full order with nested groups.\n");
             return argument == "--help";
         }
     }
     if (options.session_count < 1 || options.orders_per_burst < 1) {
-        std::printf("--sessions and --orders-per-burst must both be at least 1\n");
+        fmt::print("--sessions and --orders-per-burst must both be at least 1\n");
         return false;
     }
     return true;
@@ -336,7 +338,7 @@ bool LoadSession::connect_and_logon(const std::string& host, uint16_t port) {
     address.sin_family = AF_INET;
     address.sin_port = htons(port);
     if (::inet_pton(AF_INET, host.c_str(), &address.sin_addr) != 1) {
-        std::printf("bad host address '%s'\n", host.c_str());
+        fmt::print("bad host address '{}'\n", host);
         return false;
     }
     if (::connect(socket_fd_, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != 0) {
@@ -356,13 +358,13 @@ bool LoadSession::connect_and_logon(const std::string& host, uint16_t port) {
     logon.password = password_;
     logon.target_comp_id = target_comp_id_;
     if (!send_pdu(pubsub_itc_fw_app::Logon::message_pdu_id, logon)) {
-        std::printf("%s: failed to send Logon\n", comp_id_.c_str());
+        fmt::print("{}: failed to send Logon\n", comp_id_);
         return false;
     }
 
     pubsub_itc_fw::PduHeader header{};
     if (!read_fully(socket_fd_, reinterpret_cast<uint8_t*>(&header), sizeof(header))) {
-        std::printf("%s: no LogonAck (connection closed or timed out)\n", comp_id_.c_str());
+        fmt::print("{}: no LogonAck (connection closed or timed out)\n", comp_id_);
         return false;
     }
     const int16_t pdu_id = static_cast<int16_t>(ntohs(static_cast<uint16_t>(header.pdu_id)));
@@ -371,7 +373,7 @@ bool LoadSession::connect_and_logon(const std::string& host, uint16_t port) {
         return false;
     }
     if (pdu_id != pubsub_itc_fw_app::LogonAck::message_pdu_id) {
-        std::printf("%s: expected LogonAck, got PDU id %d\n", comp_id_.c_str(), pdu_id);
+        fmt::print("{}: expected LogonAck, got PDU id {}\n", comp_id_, pdu_id);
         return false;
     }
 
@@ -381,11 +383,11 @@ bool LoadSession::connect_and_logon(const std::string& host, uint16_t port) {
     size_t arena_bytes_needed = 0;
     pubsub_itc_fw_app::LogonAckView ack{};
     if (!pubsub_itc_fw_app::decode(ack, payload.data(), payload.size(), bytes_consumed, arena, arena_bytes_needed)) {
-        std::printf("%s: failed to decode LogonAck\n", comp_id_.c_str());
+        fmt::print("{}: failed to decode LogonAck\n", comp_id_);
         return false;
     }
     if (ack.outcome != pubsub_itc_fw_app::LogonOutcome::Accepted) {
-        std::printf("%s: logon refused (%s)\n", comp_id_.c_str(), pubsub_itc_fw_app::to_string(ack.outcome).data());
+        fmt::print("{}: logon refused ({})\n", comp_id_, pubsub_itc_fw_app::to_string(ack.outcome));
         return false;
     }
 
@@ -467,7 +469,7 @@ bool LoadSession::send_burst(int order_count, int64_t nanoseconds_between_orders
         }
 
         if (!send_pdu(pubsub_itc_fw_app::NewOrderSingle::message_pdu_id, order)) {
-            std::printf("%s: send failed after %lld order(s)\n", comp_id_.c_str(), static_cast<long long>(orders_sent_));
+            fmt::print("{}: send failed after {} order(s)\n", comp_id_, orders_sent_);
             return false;
         }
         ++orders_sent_;
@@ -500,7 +502,7 @@ void LoadSession::receive_loop() {
             return; // socket closed, by the peer or by stop_receiver
         }
         if (ntohl(header.canary) != pubsub_itc_fw::pdu_canary_value) {
-            std::printf("%s: PDU canary mismatch -- stream out of sync\n", comp_id_.c_str());
+            fmt::print("{}: PDU canary mismatch -- stream out of sync\n", comp_id_);
             return;
         }
         payload.resize(ntohl(header.byte_count));
@@ -537,7 +539,7 @@ void LoadSession::receive_loop() {
 /** @brief Prints the latency distribution, which is the figure a throughput number hides. */
 void report_latencies(std::vector<int64_t>& latencies) {
     if (latencies.empty()) {
-        std::printf("  latency        no matched round trips\n");
+        fmt::print("  latency        no matched round trips\n");
         return;
     }
     std::sort(latencies.begin(), latencies.end());
@@ -545,8 +547,8 @@ void report_latencies(std::vector<int64_t>& latencies) {
         const size_t index = static_cast<size_t>(percentile / 100.0 * static_cast<double>(latencies.size() - 1));
         return latencies[index] / 1000.0;
     };
-    std::printf("  latency us     min %.1f  p50 %.1f  p99 %.1f  p99.9 %.1f  max %.1f  (%zu matched)\n", at_percentile(0), at_percentile(50), at_percentile(99),
-                at_percentile(99.9), at_percentile(100), latencies.size());
+    fmt::print("  latency us     min {:.1f}  p50 {:.1f}  p99 {:.1f}  p99.9 {:.1f}  max {:.1f}  ({} matched)\n", at_percentile(0), at_percentile(50),
+               at_percentile(99), at_percentile(99.9), at_percentile(100), latencies.size());
 }
 
 } // namespaces
@@ -572,11 +574,11 @@ int main(int argc, char** argv) {
 
     for (const auto& session : sessions) {
         if (!session->connect_and_logon(options.host, options.port)) {
-            std::printf("FAILED: session '%s' could not log on\n", session->comp_id().c_str());
+            fmt::print("FAILED: session '{}' could not log on\n", session->comp_id());
             return 1;
         }
     }
-    std::printf("%d session(s) logged on to %s:%u\n", options.session_count, options.host.c_str(), options.port);
+    fmt::print("{} session(s) logged on to {}:{}\n", options.session_count, options.host, options.port);
     std::fflush(stdout);
 
     for (const auto& session : sessions) {
@@ -612,8 +614,8 @@ int main(int argc, char** argv) {
         }
         const double elapsed_seconds = static_cast<double>(now_nanoseconds() - started) / 1e9;
         const int total = options.session_count * options.orders_per_burst;
-        std::printf("burst %d: %d order(s) sent in %.3fs (%.0f orders/s offered)\n", burst_number, total, elapsed_seconds,
-                    elapsed_seconds > 0.0 ? static_cast<double>(total) / elapsed_seconds : 0.0);
+        fmt::print("burst {}: {} order(s) sent in {:.3f}s ({:.0f} orders/s offered)\n", burst_number, total, elapsed_seconds,
+                   elapsed_seconds > 0.0 ? static_cast<double>(total) / elapsed_seconds : 0.0);
         std::fflush(stdout);
         return true;
     };
@@ -667,7 +669,7 @@ int main(int argc, char** argv) {
             last_received = total_received;
             last_progress_at = now_nanoseconds();
         } else if (now_nanoseconds() - last_progress_at > stall_limit_nanoseconds) {
-            std::printf("stalled: no further reports for 30s\n");
+            fmt::print("stalled: no further reports for 30s\n");
             break;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -685,29 +687,29 @@ int main(int argc, char** argv) {
 
     const double total_seconds = static_cast<double>(now_nanoseconds() - run_started) / 1e9;
 
-    std::printf("\n=== binary_load_client summary ===\n");
-    std::printf("  sessions       %d\n", options.session_count);
+    fmt::print("\n=== binary_load_client summary ===\n");
+    fmt::print("  sessions       {}\n", options.session_count);
     if (options.minimal_order) {
-        std::printf("  order shape    minimal -- NOT comparable with a fix8 run\n");
+        fmt::print("  order shape    minimal -- NOT comparable with a fix8 run\n");
     } else {
-        std::printf("  order shape    full: all scalars, %d underlying(s), %d party/parties x %d sub-id(s)\n", options.underlyings, options.parties,
-                    options.party_sub_ids);
+        fmt::print("  order shape    full: all scalars, {} underlying(s), {} party/parties x {} sub-id(s)\n", options.underlyings, options.parties,
+                   options.party_sub_ids);
     }
-    std::printf("  bursts         %d of %d order(s) per session\n", bursts_run, options.orders_per_burst);
-    std::printf("  orders sent    %lld\n", static_cast<long long>(total_sent));
-    std::printf("  reports recvd  %lld\n", static_cast<long long>(total_received));
+    fmt::print("  bursts         {} of {} order(s) per session\n", bursts_run, options.orders_per_burst);
+    fmt::print("  orders sent    {}\n", total_sent);
+    fmt::print("  reports recvd  {}\n", total_received);
     if (total_seconds > 0.0) {
-        std::printf("  throughput     %.0f orders/s round trip over %.3fs\n", static_cast<double>(total_received) / total_seconds, total_seconds);
+        fmt::print("  throughput     {:.0f} orders/s round trip over {:.3f}s\n", static_cast<double>(total_received) / total_seconds, total_seconds);
     }
-    std::printf("  drain          %.3fs after the last send\n", round_trip_seconds);
+    fmt::print("  drain          {:.3f}s after the last send\n", round_trip_seconds);
     report_latencies(latencies);
     if (options.orders_per_second <= 0) {
-        std::printf("  NOTE           no --rate given, so orders were offered as fast as the socket\n");
-        std::printf("                 accepted them. That measures throughput; the latencies above are\n");
-        std::printf("                 mostly queueing delay. Re-run with --rate for service latency.\n");
+        fmt::print("  NOTE           no --rate given, so orders were offered as fast as the socket\n");
+        fmt::print("                 accepted them. That measures throughput; the latencies above are\n");
+        fmt::print("                 mostly queueing delay. Re-run with --rate for service latency.\n");
     }
 
     const bool complete = total_received >= total_sent && total_sent > 0;
-    std::printf("  RESULT         %s\n", complete ? "PASS -- every order was acknowledged" : "FAIL -- reports missing");
+    fmt::print("  RESULT         {}\n", complete ? "PASS -- every order was acknowledged" : "FAIL -- reports missing");
     return complete ? 0 : 1;
 }

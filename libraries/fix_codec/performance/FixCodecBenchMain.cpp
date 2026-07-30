@@ -31,9 +31,10 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <limits>
 #include <string_view>
+
+#include <fmt/format.h>
 
 #include <fix_codec/FixMessageReader.hpp>
 #include <fix_codec/FixMessageValidator.hpp>
@@ -114,12 +115,12 @@ std::string_view build_new_order_single(char* buffer, size_t capacity) {
 
 void report(const char* name, long long avg_ns, long long min_ns, long long max_ns) {
     const double per_second = avg_ns > 0 ? 1e9 / static_cast<double>(avg_ns) : 0.0;
-    std::printf("%-16s avg %5lld ns   min %5lld ns   max %6lld ns   %10.0f msg/s\n", name, avg_ns, min_ns, max_ns, per_second);
+    fmt::print("{:<16} avg {:5} ns   min {:5} ns   max {:6} ns   {:10.0f} msg/s\n", name, avg_ns, min_ns, max_ns, per_second);
 }
 
 void report_batched(const char* name, double nanoseconds) {
     const double per_second = nanoseconds > 0.0 ? 1e9 / nanoseconds : 0.0;
-    std::printf("%-16s %7.1f ns   %10.0f msg/s\n", name, nanoseconds, per_second);
+    fmt::print("{:<16} {:7.1f} ns   {:10.0f} msg/s\n", name, nanoseconds, per_second);
 }
 
 } // namespaces
@@ -131,10 +132,10 @@ int main(int argc, char** argv) {
         if (option == "--per-iteration") {
             per_iteration_mode = true;
         } else {
-            std::printf("usage: %s [--per-iteration]\n", argv[0]);
-            std::printf("  default        time a batch of iterations per clock reading (accurate)\n");
-            std::printf("  --per-iteration  read the clock around every iteration (legacy; the\n");
-            std::printf("                   reading itself costs a large fraction of the result)\n");
+            fmt::print("usage: {} [--per-iteration]\n", argv[0]);
+            fmt::print("  default        time a batch of iterations per clock reading (accurate)\n");
+            fmt::print("  --per-iteration  read the clock around every iteration (legacy; the\n");
+            fmt::print("                   reading itself costs a large fraction of the result)\n");
             return option == "--help" ? 0 : 2;
         }
     }
@@ -142,7 +143,7 @@ int main(int argc, char** argv) {
     char buffer[256];
     const std::string_view wire = build_new_order_single(buffer, sizeof(buffer));
     if (wire.empty()) {
-        std::printf("failed to build NewOrderSingle\n");
+        fmt::print("failed to build NewOrderSingle\n");
         return 1;
     }
 
@@ -176,7 +177,7 @@ int main(int argc, char** argv) {
     } else {
         const int batch_size = 20000;
         const int batch_count = 200;
-        std::printf("message %zu bytes, fastest of %d batches of %d\n", wire.size(), batch_count, batch_size);
+        fmt::print("message {} bytes, fastest of {} batches of {}\n", wire.size(), batch_count, batch_size);
         report_batched("frame only", measure_batched_ns(frame_only, batch_size, batch_count));
         report_batched("parse", measure_batched_ns(parse, batch_size, batch_count));
         report_batched("parse+validate", measure_batched_ns(parse_and_validate, batch_size, batch_count));
@@ -184,7 +185,7 @@ int main(int argc, char** argv) {
 
     // Consume sink so the work above cannot be optimised away.
     if (sink == 0xFFFFFFFFFFFFFFFFULL) {
-        std::printf("unreachable %llu\n", static_cast<unsigned long long>(sink));
+        fmt::print("unreachable {}\n", sink);
     }
     return 0;
 }

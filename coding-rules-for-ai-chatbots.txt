@@ -175,3 +175,45 @@ must be "8=FIXT.1.1", NOT "8=FIX.4.2" or any other version string. The gateway e
 preamble check (see FixMessage.hpp expected_preamble) and disconnects immediately if the wrong
 BeginString is received. Any test code, scripts, or utilities that construct raw FIX messages must
 use "8=FIXT.1.1" as the BeginString.
+
+Text formatting: fmt, never printf
+
+Do not use printf, sprintf, snprintf, fprintf or their v- variants. Use fmt. The project
+already depends on it project-wide via quill, so it costs nothing to reach for.
+
+The reason is not tidiness. A printf format string is not checked against its arguments, so a
+mismatch is undefined behaviour rather than a diagnostic, and every string_view argument needs
+a hand-written static_cast<int>(x.size()), x.data() pair that a later refactor can silently
+break. gcc's -Wformat-truncation also rejects deliberate, documented truncation, which is what
+broke the RHEL8 build of 0.2.0.
+
+Pick the right member of the family:
+
+  fmt::format_to_n(buffer, capacity, "...", args)   bounded write into a caller's buffer.
+                                                    Reports the size a full write would have
+                                                    needed, exactly as snprintf does. Use this
+                                                    wherever the old code used snprintf.
+  fmt::format_to(sink, "...", args)                 append through an iterator, e.g.
+                                                    std::back_inserter(some_string). No
+                                                    intermediate buffer and no second copy.
+  fmt::print(stream, "...", args)                   write straight to stdout or stderr.
+                                                    Formats into a stack buffer, so short
+                                                    output does not allocate.
+  fmt::format("...", args)                          returns std::string, so it ALLOCATES. Use
+                                                    only where a std::string was wanted anyway.
+
+On any path where allocation matters, prefer format_to / format_to_n into a reusable buffer
+over format. This is the same rule as "no fixed-size encode buffers", from the other side: do
+not allocate where a caller's buffer will do, and do not silently truncate where a size can be
+reported.
+
+The one place neither fmt nor printf is allowed is an async-signal-safe context -- a signal
+handler. Neither is async-signal-safe. There the only correct answer is write(2) on a
+pre-formatted buffer, with any numbers converted by hand. Mark such a use with a
+'signal-safe-ok' comment so check_standards.py accepts it.
+
+Note that literal braces in an fmt format string must be doubled: "{{" and "}}".
+
+check_standards.py enforces this (check 26). It matches against comment- and string-stripped
+text, so prose describing snprintf's contract -- BumpAllocator documents its measuring mode
+that way -- is not a violation. Only a call is.

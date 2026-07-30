@@ -31,6 +31,7 @@ Checks implemented:
   23. #include ordering: external / third-party headers before project headers
   24. Single-argument constructor not declared explicit
   25. Bare true / false literal passed as a function argument
+  26. printf family (printf/sprintf/snprintf/fprintf and v- variants); use fmt
 """
 
 import argparse
@@ -876,6 +877,46 @@ def check_fixed_encode_buffer(path: Path, lines: list[str], stripped: list[str])
     return violations
 
 
+# ── Check 26: printf family ───────────────────────────────────────────────────
+
+# Matched against the comment- and string-stripped text, so prose describing snprintf's
+# contract (BumpAllocator's measuring mode documents itself that way) is not a violation.
+# Only a call is: the name must be followed by an opening parenthesis.
+_PRINTF_FAMILY_RE = re.compile(
+    r'\b(?:std::)?(printf|fprintf|sprintf|snprintf|vprintf|vfprintf|vsprintf|vsnprintf)\s*\(')
+
+def check_printf_family(path: Path, lines: list[str], stripped: list[str]) -> list[Violation]:
+    """Flag any use of the printf family; fmt does the same job type-safely.
+
+    printf format strings are unchecked against their arguments, so a mismatch is undefined
+    behaviour rather than a diagnostic -- and every string_view argument needs a hand-written
+    static_cast<int>(x.size()), x.data() pair that a refactor can silently break. gcc's
+    -Wformat-truncation also rejects deliberate truncation, which cost a release.
+
+    Use fmt::format_to / fmt::format_to_n into a caller-supplied or reusable buffer on any
+    path where allocation matters, fmt::print to write straight to a stream, and fmt::format
+    only where a returned std::string is wanted anyway.
+
+    The one place neither is allowed is an async-signal-safe context -- a signal handler --
+    where fmt and printf are equally unsafe and write(2) on a pre-formatted buffer is the
+    only correct answer. Annotate such a use with 'signal-safe-ok' to accept it here.
+    """
+    violations: list[Violation] = []
+    for i, line in enumerate(stripped):
+        match = _PRINTF_FAMILY_RE.search(line)
+        if not match:
+            continue
+        if 'signal-safe-ok' in lines[i]:
+            continue
+        name = match.group(1)
+        violations.append(Violation(path, i + 1,
+            f"'{name}' is banned; use fmt (format_to_n into a caller buffer, print to a "
+            "stream, or format where a std::string is wanted). In a signal handler use "
+            "write(2) -- neither printf nor fmt is async-signal-safe -- and mark it "
+            "'signal-safe-ok'"))
+    return violations
+
+
 _CHECKS = [
     check_defines,
     check_screaming_snake_case,
@@ -903,6 +944,7 @@ _CHECKS = [
     check_explicit_single_arg_ctor,
     check_bool_literal_argument,
     check_fixed_encode_buffer,
+    check_printf_family,
 ]
 
 

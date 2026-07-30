@@ -6,6 +6,7 @@
 #include <string>
 #include <string_view>
 
+#include <fmt/format.h>
 #include <gtest/gtest.h>
 
 namespace {
@@ -23,9 +24,8 @@ TEST(FixChecksumTest, MatchesWellFormedChecksum) {
                              "9=5\x01"
                              "35=0\x01";
     const unsigned int expected = fix_codec::compute_checksum(body);
-    char digits[4];
-    std::snprintf(digits, sizeof(digits), "%03u", expected);
-    EXPECT_TRUE(fix_codec::checksum_matches(body, std::string_view(digits, 3)));
+    const std::string digits = fmt::format("{:03}", expected);
+    EXPECT_TRUE(fix_codec::checksum_matches(body, digits));
 }
 
 TEST(FixChecksumTest, RejectsWrongChecksum) {

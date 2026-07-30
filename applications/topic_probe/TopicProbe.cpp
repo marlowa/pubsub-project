@@ -36,6 +36,8 @@ TopicNotLeader; point the probe at the leader instance's port instead.
 
 #include <unistd.h>
 
+#include <fmt/format.h>
+
 #include <argparse/argparse.hpp>
 
 #include <fix_orders.hpp>
@@ -111,25 +113,24 @@ template <typename View> bool decode_and_dump(const uint8_t* payload, size_t pay
         return false;
     }
     const std::string dump = app::to_string(view);
-    std::printf(" %s\n", dump.c_str());
+    fmt::print(" {}\n", dump);
     return true;
 }
 
 void print_hex_preview(const uint8_t* payload, size_t payload_size) {
-    std::printf(" [hex]");
+    fmt::print(" [hex]");
     const size_t preview = payload_size < 32 ? payload_size : 32;
     for (size_t i = 0; i < preview; ++i) {
-        std::printf(" %02x", payload[i]);
+        fmt::print(" {:02x}", payload[i]);
     }
     if (preview < payload_size) {
-        std::printf(" ...");
+        fmt::print(" ...");
     }
-    std::printf("\n");
+    fmt::print("\n");
 }
 
 void print_record(const std::string& topic_name, int64_t seq_no, int16_t pdu_id, const uint8_t* payload, size_t payload_size) {
-    std::printf(">>> [%s] seq=%lld pdu=%s(%d) size=%zu:", topic_name.c_str(), static_cast<long long>(seq_no), pdu_name(pdu_id), static_cast<int>(pdu_id),
-                payload_size);
+    fmt::print(">>> [{}] seq={} pdu={}({}) size={}:", topic_name, seq_no, pdu_name(pdu_id), pdu_id, payload_size);
 
     // Dispatch on the DSL pdu id to the matching generated view; the structured
     // dump (field=value ...) comes from the generated to_string, so it stays in
@@ -172,13 +173,13 @@ class ProbeThread : public pubsub_itc_fw::TopicSubscriberThread {
     }
 
     void on_connection_established(pubsub_itc_fw::ConnectionID id) override {
-        std::printf("--- connected; subscribing to topic '%s'\n", topic_name().c_str());
+        fmt::print("--- connected; subscribing to topic '{}'\n", topic_name());
         std::fflush(stdout);
         TopicSubscriberThread::on_connection_established(id);
     }
 
     void on_connection_lost(const pubsub_itc_fw::ConnectionID& id, const std::string& reason) override {
-        std::printf("--- connection lost: %s\n", reason.c_str());
+        fmt::print("--- connection lost: {}\n", reason);
         std::fflush(stdout);
         TopicSubscriberThread::on_connection_lost(id, reason);
     }
@@ -273,9 +274,9 @@ int main(int argc, char** argv) {
     }
 
     // Report exactly which topics (and ports) this probe is subscribing to.
-    std::printf("topic_probe: subscribing to %zu topic(s) from seq_no=%lld (Ctrl-C to stop):\n", topics.size(), static_cast<long long>(from_seq_no));
+    fmt::print("topic_probe: subscribing to {} topic(s) from seq_no={} (Ctrl-C to stop):\n", topics.size(), from_seq_no);
     for (const std::string& topic_name : topics) {
-        std::printf("  - %s (%s:%d)\n", topic_name.c_str(), host.c_str(), default_port_for_topic(topic_name));
+        fmt::print("  - {} ({}:{})\n", topic_name, host, default_port_for_topic(topic_name));
     }
     std::fflush(stdout);
 

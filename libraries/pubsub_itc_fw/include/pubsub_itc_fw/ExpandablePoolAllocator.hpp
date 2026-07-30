@@ -16,6 +16,8 @@
 #include <utility>
 #include <vector>
 
+#include <fmt/format.h>
+
 #include <pubsub_itc_fw/AllocatorBehaviourStatistics.hpp>
 #include <pubsub_itc_fw/CacheLine.hpp>
 #include <pubsub_itc_fw/FixedSizeMemoryPool.hpp>
@@ -489,15 +491,18 @@ template <typename T> void ExpandablePoolAllocator<T>::deallocate(T* obj) {
     // valid for post-mortem examination in a core dump.
     const std::uint64_t* canary_ptr = get_canary_for_object(obj);
     if (*canary_ptr != slot_canary_value) {
-        std::fprintf(stderr,
-                     "[ExpandablePoolAllocator] CANARY CORRUPTED in deallocate: "
-                     "pool '%s', object at %p. "
-                     "Expected canary 0x%016llX, found 0x%016llX. "
-                     "The T object wrote before its own start address. "
-                     "Slot is not returned to pool. "
-                     "Calling handler_for_invalid_free_.\n",
-                     pool_name_.c_str(), static_cast<void*>(obj), static_cast<unsigned long long>(slot_canary_value),
-                     static_cast<unsigned long long>(*canary_ptr));
+        // fmt::print rather than fmt::format: print formats into a stack buffer and writes,
+        // where format would return a std::string and so allocate. A corrupt canary means
+        // something wrote out of bounds, and if that was the heap then allocating here could
+        // fault inside the allocator and bury the real diagnostic under a secondary crash.
+        fmt::print(stderr,
+                   "[ExpandablePoolAllocator] CANARY CORRUPTED in deallocate: "
+                   "pool '{}', object at {}. "
+                   "Expected canary 0x{:016X}, found 0x{:016X}. "
+                   "The T object wrote before its own start address. "
+                   "Slot is not returned to pool. "
+                   "Calling handler_for_invalid_free_.\n",
+                   pool_name_, static_cast<void*>(obj), slot_canary_value, *canary_ptr);
         if (handler_for_invalid_free_ != nullptr) {
             std::lock_guard<std::mutex> lock(callback_mutex_);
             handler_for_invalid_free_(nullptr, obj);

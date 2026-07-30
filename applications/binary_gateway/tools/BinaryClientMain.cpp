@@ -21,11 +21,12 @@
 
 #include <chrono>
 #include <cstdint>
-#include <cstdio>
 #include <cstring>
 #include <string>
 #include <string_view>
 #include <vector>
+
+#include <fmt/format.h>
 
 #include <pubsub_itc_fw/BumpAllocator.hpp>
 #include <pubsub_itc_fw/PduHeader.hpp>
@@ -66,8 +67,8 @@ bool parse_options(int argc, char** argv, Options& options) {
         } else if (argument == "--orders" && has_value) {
             options.order_count = std::stoi(argv[++index]);
         } else {
-            std::printf("usage: %s [--host H] [--port P] [--comp-id ID] [--password P]\n", argv[0]);
-            std::printf("          [--target-comp-id ID] [--symbol SYM] [--orders N]\n");
+            fmt::print("usage: {} [--host H] [--port P] [--comp-id ID] [--password P]\n", argv[0]);
+            fmt::print("          [--target-comp-id ID] [--symbol SYM] [--orders N]\n");
             return false;
         }
     }
@@ -85,7 +86,7 @@ int connect_to_gateway(const Options& options) {
     address.sin_family = AF_INET;
     address.sin_port = htons(options.port);
     if (::inet_pton(AF_INET, options.host.c_str(), &address.sin_addr) != 1) {
-        std::printf("bad host address '%s'\n", options.host.c_str());
+        fmt::print("bad host address '{}'\n", options.host);
         ::close(socket_fd);
         return -1;
     }
@@ -160,7 +161,7 @@ bool receive_pdu(int socket_fd, int16_t& pdu_id, int64_t& seq_no, std::vector<ui
         return false;
     }
     if (ntohl(header.canary) != pubsub_itc_fw::pdu_canary_value) {
-        std::printf("bad canary in PDU header -- stream is out of sync\n");
+        fmt::print("bad canary in PDU header -- stream is out of sync\n");
         return false;
     }
     pdu_id = static_cast<int16_t>(ntohs(static_cast<uint16_t>(header.pdu_id)));
@@ -185,7 +186,7 @@ int main(int argc, char** argv) {
     if (socket_fd < 0) {
         return 1;
     }
-    std::printf("connected to %s:%u\n", options.host.c_str(), options.port);
+    fmt::print("connected to {}:{}\n", options.host, options.port);
 
     std::vector<uint8_t> arena_buffer(decode_arena_size);
     std::vector<uint8_t> payload;
@@ -197,13 +198,13 @@ int main(int argc, char** argv) {
     logon.password = options.password;
     logon.target_comp_id = options.target_comp_id;
     if (!send_pdu(socket_fd, pubsub_itc_fw_app::Logon::message_pdu_id, logon)) {
-        std::printf("failed to send Logon\n");
+        fmt::print("failed to send Logon\n");
         ::close(socket_fd);
         return 1;
     }
 
     if (!receive_pdu(socket_fd, pdu_id, seq_no, payload) || pdu_id != pubsub_itc_fw_app::LogonAck::message_pdu_id) {
-        std::printf("did not get a LogonAck (pdu_id=%d)\n", pdu_id);
+        fmt::print("did not get a LogonAck (pdu_id={})\n", pdu_id);
         ::close(socket_fd);
         return 1;
     }
@@ -213,18 +214,17 @@ int main(int argc, char** argv) {
         size_t arena_bytes_needed = 0;
         pubsub_itc_fw_app::LogonAckView ack{};
         if (!pubsub_itc_fw_app::decode(ack, payload.data(), payload.size(), bytes_consumed, arena, arena_bytes_needed)) {
-            std::printf("failed to decode LogonAck\n");
+            fmt::print("failed to decode LogonAck\n");
             ::close(socket_fd);
             return 1;
         }
         if (ack.outcome != pubsub_itc_fw_app::LogonOutcome::Accepted) {
-            std::printf("logon refused: %s (%s)\n", pubsub_itc_fw_app::to_string(ack.outcome).data(),
-                        ack.has_text ? std::string(ack.text).c_str() : "no detail");
+            fmt::print("logon refused: {} ({})\n", pubsub_itc_fw_app::to_string(ack.outcome), ack.has_text ? std::string(ack.text) : std::string("no detail"));
             ::close(socket_fd);
             return 1;
         }
     }
-    std::printf("logged on as '%s'\n", options.comp_id.c_str());
+    fmt::print("logged on as '{}'\n", options.comp_id);
 
     for (int order = 0; order < options.order_count; ++order) {
         const std::string cl_ord_id = options.comp_id + "-" + std::to_string(now_nanoseconds()) + "-" + std::to_string(order);
@@ -240,21 +240,21 @@ int main(int argc, char** argv) {
         order_message.price = "100.00";
 
         if (!send_pdu(socket_fd, pubsub_itc_fw_app::NewOrderSingle::message_pdu_id, order_message)) {
-            std::printf("failed to send NewOrderSingle\n");
+            fmt::print("failed to send NewOrderSingle\n");
             ::close(socket_fd);
             return 1;
         }
-        std::printf("sent NewOrderSingle ClOrdID=%s\n", cl_ord_id.c_str());
+        fmt::print("sent NewOrderSingle ClOrdID={}\n", cl_ord_id);
     }
 
     for (int received = 0; received < options.order_count; ++received) {
         if (!receive_pdu(socket_fd, pdu_id, seq_no, payload)) {
-            std::printf("connection closed after %d execution report(s)\n", received);
+            fmt::print("connection closed after {} execution report(s)\n", received);
             ::close(socket_fd);
             return 1;
         }
         if (pdu_id != pubsub_itc_fw_app::ExecutionReport::message_pdu_id) {
-            std::printf("unexpected PDU id %d\n", pdu_id);
+            fmt::print("unexpected PDU id {}\n", pdu_id);
             continue;
         }
 
@@ -263,15 +263,15 @@ int main(int argc, char** argv) {
         size_t arena_bytes_needed = 0;
         pubsub_itc_fw_app::ExecutionReportView report{};
         if (!pubsub_itc_fw_app::decode(report, payload.data(), payload.size(), bytes_consumed, arena, arena_bytes_needed)) {
-            std::printf("failed to decode ExecutionReport\n");
+            fmt::print("failed to decode ExecutionReport\n");
             continue;
         }
-        std::printf("ExecutionReport seq=%lld ClOrdID=%.*s OrdStatus=%s ExecType=%s Symbol=%.*s\n", static_cast<long long>(seq_no),
-                    static_cast<int>(report.cl_ord_id.size()), report.cl_ord_id.data(), pubsub_itc_fw_app::to_string(report.ord_status).data(),
-                    pubsub_itc_fw_app::to_string(report.exec_type).data(), static_cast<int>(report.symbol.size()), report.symbol.data());
+        fmt::print("ExecutionReport seq={} ClOrdID={} OrdStatus={} ExecType={} Symbol={}\n", seq_no,
+                   std::string_view(report.cl_ord_id.data(), report.cl_ord_id.size()), pubsub_itc_fw_app::to_string(report.ord_status),
+                   pubsub_itc_fw_app::to_string(report.exec_type), std::string_view(report.symbol.data(), report.symbol.size()));
     }
 
     ::close(socket_fd);
-    std::printf("done\n");
+    fmt::print("done\n");
     return 0;
 }

@@ -26,9 +26,10 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <limits>
 #include <string_view>
+
+#include <fmt/format.h>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -310,8 +311,8 @@ TEST_F(FixCodecPerformanceTest, ValidationCostGrowsInStepWithFieldCount) {
 
     // Logged on success too: the trend over time is the useful signal, and a number
     // creeping towards the threshold is worth seeing before it trips.
-    std::printf("[ SCALING  ] %zu fields %.0f ns, %zu fields %.0f ns -- %.2fx cost for %.0fx the fields (limit %.1fx)\n", small_field_count, small_nanoseconds,
-                large_field_count, large_nanoseconds, cost_ratio, field_ratio, maximum_scaling_ratio);
+    fmt::print("[ SCALING  ] {} fields {:.0f} ns, {} fields {:.0f} ns -- {:.2f}x cost for {:.0f}x the fields (limit {:.1f}x)\n", small_field_count,
+               small_nanoseconds, large_field_count, large_nanoseconds, cost_ratio, field_ratio, maximum_scaling_ratio);
 
     EXPECT_LT(cost_ratio, maximum_scaling_ratio) << "validating " << large_field_count << " fields cost " << cost_ratio << "x validating " << small_field_count
                                                  << " (" << large_nanoseconds << " ns vs " << small_nanoseconds << " ns) for " << field_ratio
