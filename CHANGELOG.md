@@ -9,6 +9,73 @@ change in any release.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-07-30
+
+A patch release fixing three separate failures on the RHEL8 target. **v0.2.0 does
+not build on RHEL8**; this release does. There are no functional changes.
+
+All three shared a cause: each was a property of the *target toolchain* rather than
+of the source, so a development machine could not see any of them, and no unit test
+could have caught them.
+
+### Fixed
+
+- **`fix_codec` did not compile under gcc 8.5.** `FixReject::describe` used
+  `snprintf`, and gcc 8.5 rejects it under `-Werror=format-truncation` at a call
+  site with a small constant capacity — which the test suite deliberately
+  provides, because truncation there is the documented behaviour. Replaced with
+  `fmt::format_to_n`, which has the same bounded, non-allocating contract but is
+  not a printf format string. Newer gcc does not emit the diagnostic at all, which
+  is why the development build stayed green.
+- **The Python lint gate disagreed between machines.** pylint 3.3 split
+  `too-many-arguments` into a total count (`R0913`) and a positional count
+  (`R0917`); a `disable` comment written before the split no longer covered the
+  new check. `_emit_dump_value` now takes keyword-only arguments, which satisfies
+  the check honestly rather than widening the suppression — `expr`, `out` and
+  `indent` are all strings, so a transposition at a call site would silently emit
+  wrong C++.
+- **The pybind11 round-trip tests failed to load their extension.** The harness
+  compiled a shared object into the system temp directory and `dlopen`ed it from
+  there; `/tmp` is mounted `noexec` on the target, so the mapping was refused and
+  every test failed with `failed to map segment from shared object` after building
+  perfectly. The extension is now built under the project's own build tree, which
+  also satisfies the rule that a build produces nothing outside the project
+  directory. The load failure now explains itself, naming `noexec` and SELinux,
+  rather than repeating dlopen's cryptic wording.
+
+### Changed
+
+- **The printf family is banned project-wide in favour of fmt**, with the rule in
+  `coding-rules-for-ai-chatbots.txt` and enforcement as `check_standards.py`
+  check 26. All 84 remaining call sites converted. A printf format string is
+  unchecked against its arguments, so a mismatch is undefined behaviour rather
+  than a diagnostic. The rule names which member of the family to use —
+  `format_to_n` for a caller's buffer, `format_to` to append, `print` for a
+  stream, and `format` only where a `std::string` was wanted anyway, since that
+  one allocates — and carves out signal handlers, where neither fmt nor printf is
+  legal and `write(2)` is the only correct answer.
+- **`pylint` and `pybind11` are now pinned in the Python dev extras.** Neither was.
+  pybind11 was not even declared, despite three test modules being unable to run
+  without it, which is why it was simply absent on the RHEL8 host and why two
+  machines ended up four major versions apart.
+
+### Added
+
+- **`release_check.py`** — a pre-release gate, deliberately not part of a normal
+  build. It checks the working tree is committed, that the version agrees across
+  `CMakeLists.txt`, both README references and the CHANGELOG, runs the coding
+  standards and a full build with nothing skipped, and **builds under RHEL8's
+  gcc 8.5 in the Rocky container**. It states plainly what it cannot cover: the
+  container shares RHEL8's gcc but not its Python, so it would have caught the
+  first of the three failures above and neither of the others.
+
+### Known limitations
+
+Unchanged from 0.2.0: the order gateway remains a single point of failure,
+in-flight execution reports do not survive a client reconnect, hot-path cores are
+allocated but not quiet, and `ResendRequest` / `SequenceReset-GapFill` remain
+untested under load. See the 0.2.0 entry for detail.
+
 ## [0.2.0] - 2026-07-30
 
 Second tagged release. The headline is a **second order-entry gateway**, which makes the

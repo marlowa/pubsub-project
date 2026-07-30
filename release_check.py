@@ -161,19 +161,30 @@ def stage_rocky(args) -> tuple[bool, str]:
         return False, (f"image '{ROCKY_IMAGE}' not present. Build it first:\n"
                        f"    docker build -t {ROCKY_IMAGE} .")
 
-    thirdparty = args.thirdparty
-    if thirdparty is None:
-        return False, ("--thirdparty is required for the Rocky stage: the container needs a\n"
-                       "third-party tree built for Rocky 8. A tree built on the development\n"
-                       "host compiles but fails to link.")
-    thirdparty = Path(thirdparty).resolve()
-    if not thirdparty.is_dir():
-        return False, f"third-party tree not found: {thirdparty}"
+    # The third-party tree must have been built with gcc 8.5 in the container. A tree
+    # built on the development host *compiles* but fails to link: its libfmt/libgtest
+    # reference GLIBCXX/GLIBC symbols that Rocky 8's older glibc does not have. The
+    # gcc-8.5-built deps are cached in a docker volume, whose layout matches a normal
+    # third-party tree, so mounting it where build.sh already looks needs no env override.
+    if args.thirdparty:
+        source = Path(args.thirdparty).resolve()
+        if not source.is_dir():
+            return False, f"third-party tree not found: {source}"
+        mount = f"{source}:{CONTAINER_WORKSPACE}/thirdparty"
+    else:
+        code, out = run(["docker", "volume", "inspect", args.deps_volume])
+        if code != 0:
+            return False, (f"docker volume '{args.deps_volume}' not found, and no --thirdparty\n"
+                           "given.\n"
+                           "The Rocky stage needs third-party libraries built with gcc 8.5 in the\n"
+                           "container; a tree built on this host compiles but fails to link.\n"
+                           "See the RHEL8 section of the README for how the volume is populated.")
+        mount = f"{args.deps_volume}:{CONTAINER_WORKSPACE}/thirdparty"
 
     command = [
         "docker", "run", "--rm", "--entrypoint", "bash",
         "-v", f"{PROJECT_ROOT}:{CONTAINER_WORKSPACE}",
-        "-v", f"{thirdparty}:{CONTAINER_WORKSPACE}/thirdparty",
+        "-v", mount,
         ROCKY_IMAGE,
         "-lc",
         # The image ships no Java or Maven, so those are skipped here and covered
@@ -269,8 +280,11 @@ def build_parser() -> argparse.ArgumentParser:
         epilog="Stages:\n" + "\n".join(f"  {name:<14} {desc}" for name, _, desc in STAGES),
     )
     parser.add_argument("--thirdparty", metavar="DIR",
-                        help="Rocky 8-built third-party tree, mounted into the container. "
-                             "Required by the rocky stage.")
+                        help="Host directory holding a Rocky 8-built third-party tree. "
+                             "Overrides --deps-volume.")
+    parser.add_argument("--deps-volume", metavar="NAME", default="pubsub-rocky-deps",
+                        help="Docker volume holding the gcc-8.5-built third-party libraries "
+                             "(default: pubsub-rocky-deps).")
     parser.add_argument("--only", metavar="STAGE", action="append",
                         help="Run only this stage; repeatable.")
     parser.add_argument("--skip", metavar="STAGE", action="append", default=[],
