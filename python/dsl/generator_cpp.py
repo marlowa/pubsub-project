@@ -240,15 +240,22 @@ class CppGenerator:
                 w(f"    if (view.has_{field.name}) {{")
                 indent = "        "
             w(f'{indent}out += " {field.name}=";')
-            self._emit_dump_value(field.type, f"view.{field.name}", "out", w, indent, enum_names, 0)
+            self._emit_dump_value(field.type, f"view.{field.name}", "out", w=w, indent=indent, enum_names=enum_names, depth=0)
             if field.optional:
                 w("    }")
         w('    out += " }";')
         w("    return out;")
         w("}")
 
-    def _emit_dump_value(self, type_node, expr, out, w, indent, enum_names, depth):  # pylint: disable=too-many-arguments
-        """Emit code that appends the value of expr (of type type_node) to out."""
+    def _emit_dump_value(self, type_node, expr, out, *, w, indent, enum_names, depth):  # pylint: disable=too-many-arguments
+        """Emit code that appends the value of expr (of type type_node) to out.
+
+        Everything after out is keyword-only. expr, out and indent are all strings, so a
+        transposition at a call site would be silent; naming them removes that. It also
+        satisfies pylint's too-many-positional-arguments (R0917), added in pylint 3.3 when
+        too-many-arguments was split into a total count and a positional count. The disable
+        above still applies to the total.
+        """
         if isinstance(type_node, PrimitiveType):
             if type_node.name == "bool":
                 w(f"{indent}{out} += ({expr} ? 'Y' : 'N');")
@@ -273,7 +280,7 @@ class CppGenerator:
             w(f'{indent}{out} += "[";')
             w(f"{indent}for (std::size_t {loop_var} = 0; {loop_var} < {count}; ++{loop_var}) {{")
             w(f'{indent}    if ({loop_var} != 0) {{ {out} += ", "; }}')
-            self._emit_dump_value(type_node.element_type, f"{expr}[{loop_var}]", out, w, indent + "    ", enum_names, depth + 1)
+            self._emit_dump_value(type_node.element_type, f"{expr}[{loop_var}]", out, w=w, indent=indent + "    ", enum_names=enum_names, depth=depth + 1)
             w(f"{indent}}}")
             w(f'{indent}{out} += "]";')
         else:

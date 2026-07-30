@@ -17,7 +17,14 @@ license = { text = "MIT" }
 # clang-format is pinned so every machine (dev and RHEL8) formats C++ identically,
 # independent of the OS-provided clang-format version. Used by the pre-commit hook
 # in .githooks/ (enable with scripts/install-git-hooks.sh).
-dev = ["pylint", "pytest", "coverage", "clang-format==18.1.3"]
+#
+# pylint is pinned for exactly the same reason, and was not: the build gate wants
+# 10.00/10, but each pylint release adds checks, so an unpinned linter means the
+# gate is defined by whichever version pip last resolved on that machine. The dev
+# box and RHEL8 then disagree about whether the same unchanged code passes.
+# Upgrading pylint is now a deliberate change with its own commit, rather than
+# something that happens by surprise on someone else's machine.
+dev = ["pylint==4.0.5", "pytest", "coverage", "clang-format==18.1.3"]
 
 # No dependencies — the whole toolchain is pure Python
 dependencies = []
