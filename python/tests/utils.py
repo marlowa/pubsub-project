@@ -9,12 +9,23 @@ from dsl.validator import Validator
 from dsl.generator_cpp import CppGenerator
 from dsl.generator_pybind11 import Pybind11Generator
 
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+
 # Path to the directory that contains the pubsub_itc_fw folder,
 # i.e. the directory such that <pubsub_itc_fw/BumpAllocator.hpp> resolves.
-# Adjust this to match your project layout.
-_PUBSUB_ITC_FW_INCLUDE_DIR = str(
-    Path(__file__).resolve().parent.parent.parent / "libraries" / "pubsub_itc_fw" / "include"
-)
+_PUBSUB_ITC_FW_INCLUDE_DIR = str(_PROJECT_ROOT / "libraries" / "pubsub_itc_fw" / "include")
+
+# These tests compile a shared object and dlopen it, so the scratch directory must
+# permit executable mappings. The system temp directory frequently does not: mounting
+# /tmp noexec is a standard hardening measure and is in place on the RHEL8 target,
+# where every one of these tests failed with
+#
+#     ImportError: .../dslgen.so: failed to map segment from shared object
+#
+# after building perfectly. Building under the project's own (gitignored) build tree
+# fixes that, and independently satisfies the rule that a build produces nothing
+# outside the project directory -- temporary files included.
+_MODULE_BUILD_ROOT = _PROJECT_ROOT / "build" / "pybind11_test_modules"
 
 
 def compile_and_load(dsl_text: str, namespace: str = "ns"):
@@ -37,7 +48,8 @@ def compile_and_load(dsl_text: str, namespace: str = "ns"):
     pyb_gen = Pybind11Generator(namespace=namespace, module_name=module_name)
     bindings_code = pyb_gen.emit(ast)
 
-    with tempfile.TemporaryDirectory(prefix="dslgen_") as tmpdir:
+    _MODULE_BUILD_ROOT.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="dslgen_", dir=_MODULE_BUILD_ROOT) as tmpdir:
         tmp = Path(tmpdir)
 
         (tmp / "generated.hpp").write_text(header_code)
@@ -106,5 +118,19 @@ set_target_properties(dslgen PROPERTIES
 def _load_extension(path: Path, module_name: str):
     spec = importlib.util.spec_from_file_location(module_name, path)
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    try:
+        spec.loader.exec_module(mod)
+    except ImportError as exc:
+        # dlopen's own wording for this is unhelpfully cryptic, and the cause is
+        # almost always a filesystem that refuses executable mappings.
+        if "failed to map segment" in str(exc):
+            raise ImportError(
+                f"{exc}\n\n"
+                f"The extension compiled but could not be loaded from {path.parent}.\n"
+                "That directory almost certainly forbids executable mappings -- a "
+                "filesystem mounted noexec, or an SELinux denial.\n"
+                "Check with:  mount | grep -w " + str(path.parents[3]) + "\n"
+                "             getenforce && sudo ausearch -m avc -ts recent"
+            ) from exc
+        raise
     return mod

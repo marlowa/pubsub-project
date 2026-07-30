@@ -24,7 +24,13 @@ license = { text = "MIT" }
 # box and RHEL8 then disagree about whether the same unchanged code passes.
 # Upgrading pylint is now a deliberate change with its own commit, rather than
 # something that happens by surprise on someone else's machine.
-dev = ["pylint==4.0.5", "pytest", "coverage", "clang-format==18.1.3"]
+#
+# pybind11 was an UNDECLARED dependency until 2026-07-30: three test modules
+# (test_bytes_type, test_roundtrip_nested_lists, test_generator_pybind11_coverage)
+# compile and load a generated extension and cannot run without it, yet nothing
+# said so. That is why it was simply absent on the RHEL8 host, and why two machines
+# ended up four major versions apart. Verified against both 2.11.1 and 3.0.4.
+dev = ["pylint==4.0.5", "pytest", "coverage", "clang-format==18.1.3", "pybind11==3.0.4"]
 
 # No dependencies — the whole toolchain is pure Python
 dependencies = []
