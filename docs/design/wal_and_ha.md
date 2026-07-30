@@ -26,7 +26,7 @@ authentication service at all.**
 | **Sequencer** | Arbiter-elected leader/follower | Yes (arbiter grant) | Yes — owns the authoritative WAL | Peer-heartbeat loss → arbiter grant | Brief cutover; gateway buffers orders across it |
 | **Matching engine** | Arbiter-elected leader/follower | Yes (arbiter grant) | No WAL of its own; **reconciles from the sequencer's WAL** on promotion | Replication-channel TCP EOF → promotion timer → arbiter grant | Cancel-on-failover: outstanding orders cancelled; client resubmits |
 | **Arbiter** | Primary/secondary + witness (PSA quorum) | Yes (witness vote) | No (small replicated leadership cell) | Active-arbiter heartbeat loss + witness confirm | None — off the data path |
-| **Order gateway** | N-way pooled redundancy | No | No | FIX client reconnects to another pool member | FIX reconnect (seconds); FIX resend covers the gap |
+| **Order gateway** | Single instance today; session-pinned primary/backup planned (see [Gateway HA](gateway_ha.md)) | No | No | FIX client reconnects to the session's backup instance | FIX reconnect (seconds) |
 | **Authentication service** | Active/active, caller-selected | No | No — the database is the source of truth | Caller (gateway) falls to the other endpoint | None — the surviving instance is already current |
 
 Reading the table by column makes the point precise:
@@ -283,9 +283,10 @@ connection belongs to. The comp-id pair was dropped because two sessions sharing
 could reuse a ClOrdID and collide; a connection identifies exactly one session and cannot.
 
 The trade-off that buys is real and is not yet resolved: a connection id is gateway-local and
-does not survive a reconnect, so a client that reconnects to a *different* pool member cannot
-be handed reports still in flight for its old connection. The pooled-redundancy model above
-assumes it can. See the gateway TODO in `pubsub_itc_fw_summary.md`.
+does not survive a reconnect, so a client that reconnects to a *different* instance cannot
+be handed reports still in flight for its old connection. Resolving it is the substantial half
+of [Gateway High Availability](gateway_ha.md), which re-keys the routing entry on the session's
+provisioned identity and keeps the connection triple as a mutable destination.
 
 ### Gateway↔Sequencer Connectivity
 
@@ -434,14 +435,23 @@ Gateway HA differs from sequencer HA. A FIX session is a TCP connection bound to
 gateway machine. When a gateway dies, the connection is gone and the FIX client must
 re-establish.
 
-The gateway pool is **N-way pooled redundancy**, not primary/secondary HA. Failure mode:
-"FIX client reconnects to a different gateway in the pool." This works because:
-- FIX has built-in resend semantics (sequence number negotiation on reconnect).
-- ER routing uses the sequencer's comp-id map, not the gateway's connection state.
-- The new gateway registers the FIX session with the sequencer on reconnect; the sequencer's
-  map updates and ERs are routed to the new connection.
+**Superseded on 2026-07-30. See [Gateway High Availability](gateway_ha.md), which replaces
+this section.**
 
-The user-visible interruption is the FIX reconnect latency — typically seconds, not
+This section previously described **N-way pooled redundancy**: a client reconnecting to any
+gateway in the pool, with ER routing on the sequencer's comp-id map. That claim is withdrawn on
+two counts. It was never implemented -- only one gateway instance is ever run -- and it no longer
+matched the code, because ER routing moved to `gateway_session_conn_id`, which is gateway-local
+and so cannot be inherited by a different pool member. The three bullets that used to justify
+pooling rested on the comp-id map that routing no longer uses.
+
+The agreed direction is **session-pinned primary/backup**: a session is provisioned against two
+named gateway instances and may log on to either, which is how venues actually provision order
+entry. The reasoning, the gaps between here and there, and the implementation order are all in
+[Gateway High Availability](gateway_ha.md). It is planned for 0.3.0 and is not built as of 0.2.0;
+the gateway remains a single point of failure until it is.
+
+The user-visible interruption on failover is the FIX reconnect latency -- typically seconds, not
 transparent.
 
 ---

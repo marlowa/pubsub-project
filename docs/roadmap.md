@@ -88,16 +88,28 @@ Near-term tasks not tied to a specific slice.
   exactly.  
   Hot-path instrumentation: `std::atomic` increments only — no locks, no allocation. Dedicated metrics-serving thread on a non-hot CPU, excluded from the hot-path CPU registry.
 
-- **Gateway availability, fairness and identity** — design decisions, not yet implementation.  
-  Adding the binary gateway surfaced three questions the current design does not answer: the
-  gateway is a single point of failure (the HA document records N-way pooled redundancy, but only
-  one is ever run); load balancing across gateways has to be argued on deterministic fairness
-  rather than throughput, because an unequal path between two members is a regulatory problem;
-  and ER routing now keys on `gateway_session_conn_id`, which is gateway-local, so a client
-  reconnecting to a different pool member cannot be handed its in-flight reports. Also decided but
-  not built: one comp id may hold a session only once venue-wide, which needs the sequencer as the
-  shared authority and so is a cross-component protocol change. Full discussion in the summary
-  under "gateway availability, fairness and identity (raised 2026-07-26)".
+- **Gateway availability, fairness and identity** — **design agreed 2026-07-30, targeted at
+  0.3.0.** Written up in [Gateway High Availability](design/gateway_ha.md); nothing is built yet,
+  and the gateway remains a single point of failure until it is.
+  Two decisions were taken. Sessions are **pinned to a primary and a backup gateway**, not pooled
+  any-of-N — that is how venues actually provision order entry, and it turns a distributed-state
+  problem into a replication problem between two known endpoints. The claim of "N-way pooled
+  redundancy" in `wal_and_ha.md` is withdrawn: it was never implemented, and it stopped matching
+  the code when ER routing moved to the gateway-local `gateway_session_conn_id`. And **in-flight
+  execution reports must survive the reconnect**, which is the expensive half.
+  Verifying the code turned up more than the summary had assumed. `origin_gateway_id` names a
+  *protocol*, not an instance, so two FIX gateways would be indistinguishable to the sequencer;
+  the sequencer's gateway endpoints are scalars with no way to express a second instance; an ER
+  for a disconnected gateway is dropped outright; and there is no outbound message store at all —
+  `handle_resend_request` answers every ResendRequest with a blanket `SequenceReset-GapFill`, so
+  in-flight reports do not survive a reconnect today even to the *same* gateway.
+  Cancel-on-disconnect, by contrast, is already implemented.
+  Implementation order is in the design doc; steps 1-3 (instance identity, endpoint collection,
+  two instances actually running) are the SPOF work and are worth landing on their own. Open:
+  whether cancel-on-disconnect stays, becomes configurable, or goes.
+  Still decided but not built: one comp id may hold a session only once venue-wide, which needs
+  the sequencer as the shared authority and so is a cross-component protocol change. Pinning makes
+  it smaller — two instances to check rather than N — but does not solve it.
 
 - **Transport encryption on the binary gateway and the internal PDU paths** — undecided, awaiting
   a security specialist. The binary gateway authenticates with SCRAM but has no TLS listener, so
