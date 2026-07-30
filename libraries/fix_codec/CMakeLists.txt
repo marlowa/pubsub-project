@@ -10,6 +10,14 @@ target_include_directories(fix_codec INTERFACE
         ${FIX_DICT_INCLUDE_DIR}
 )
 
+# fmt is the library's only third-party dependency, used by FixReject::describe for a
+# bounded, non-allocating format into the caller's buffer. It replaced snprintf, which
+# gcc 8.5 on RHEL8 rejected under -Werror=format-truncation at call sites with a small
+# constant capacity -- truncation being the documented behaviour there, not a defect.
+# Because this is an INTERFACE target the dependency propagates to every consumer; that
+# is accepted, as fmt is already present project-wide via quill.
+target_link_libraries(fix_codec INTERFACE fmt::fmt)
+
 # ── Unit tests ────────────────────────────────────────────────────────────────
 add_executable(fix_codec_tests
         tests/FixChecksumTest.cpp

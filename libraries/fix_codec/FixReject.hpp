@@ -4,8 +4,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <cstddef>
-#include <cstdio>
 #include <string_view>
+
+#include <fmt/format.h>
 
 #include <fix_codec/fix_dictionary.hpp>
 
@@ -89,19 +90,21 @@ struct FixReject {
         }
         const std::string_view reason_name = reason_text(reason);
         const std::string_view tag_text = tag_name(ref_tag);
-        int written = 0;
-        if (value.empty()) {
-            written = std::snprintf(buffer, capacity, "%.*s: tag %d (%.*s) in %.*s", static_cast<int>(reason_name.size()), reason_name.data(), ref_tag,
-                                    static_cast<int>(tag_text.size()), tag_text.data(), static_cast<int>(ref_msg_type.size()), ref_msg_type.data());
-        } else {
-            written = std::snprintf(buffer, capacity, "%.*s: tag %d (%.*s) value '%.*s' in %.*s", static_cast<int>(reason_name.size()), reason_name.data(),
-                                    ref_tag, static_cast<int>(tag_text.size()), tag_text.data(), static_cast<int>(value.size()), value.data(),
-                                    static_cast<int>(ref_msg_type.size()), ref_msg_type.data());
-        }
-        if (written < 0) {
-            return {};
-        }
-        const size_t length = static_cast<size_t>(written) < capacity ? static_cast<size_t>(written) : capacity - 1;
+
+        // fmt::format_to_n rather than snprintf: same contract -- bounded write into the
+        // caller's buffer, no allocation, and a reported size of what a full write would
+        // have needed -- but without a printf format string. gcc 8.5 on RHEL8 rejected the
+        // snprintf form under -Werror=format-truncation, because at a call site with a small
+        // constant capacity it can prove the output is truncated. Truncation is this
+        // function's documented behaviour and is what FixRejectTest asserts, so the
+        // diagnostic was correct about the facts and wrong about whether they were a problem.
+        const auto result = value.empty()
+                                ? fmt::format_to_n(buffer, capacity, "{}: tag {} ({}) in {}", reason_name, ref_tag, tag_text, ref_msg_type)
+                                : fmt::format_to_n(buffer, capacity, "{}: tag {} ({}) value '{}' in {}", reason_name, ref_tag, tag_text, value, ref_msg_type);
+
+        // result.size is what the full text would have needed, so it can exceed capacity.
+        // Clamp to capacity - 1 to match the previous behaviour of returning a truncated view.
+        const size_t length = result.size < capacity ? result.size : capacity - 1;
         return {buffer, length};
     }
 };
