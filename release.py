@@ -48,7 +48,25 @@ import tempfile
 from pathlib import Path
 
 _SCRIPT_DIR       = Path(__file__).resolve().parent
-_DEFAULT_INSTALL  = _SCRIPT_DIR / "installed"
+
+
+def _default_install_dir() -> Path:
+    """The staging directory build.py would have installed into on this platform.
+
+    build.py qualifies the staging directory by target platform, so a Rocky/RHEL8 build
+    stages to installed-rhel8/ rather than installed/ -- gcc-8.5 binaries must not
+    overwrite the host's. release.py has to agree, or it looks in the wrong place and
+    reports the install directory as missing, which is exactly what happened on RHEL8
+    after the split landed.
+
+    Imported from build.py rather than duplicated so there is one definition of the name.
+    """
+    import build  # noqa: PLC0415  -- deferred: only needed to resolve the default
+    tag = build.platform_tag()
+    return _SCRIPT_DIR / (f"installed-{tag}" if tag else "installed")
+
+
+_DEFAULT_INSTALL  = _default_install_dir()
 _DEFAULT_ENV_FILE = _SCRIPT_DIR / "environments" / "dev.toml"
 _DEFAULT_OUTPUT   = _SCRIPT_DIR / "release"
 _CMAKE_LISTS      = _SCRIPT_DIR / "CMakeLists.txt"
