@@ -456,6 +456,27 @@ function setOrderControlsEnabled(loggedOn) {
     document.getElementById('btn-send-cancel').disabled = !loggedOn;
 }
 
+// ExpireTime only means anything for GTD. Left always-enabled it invites two invalid
+// orders: an expiry on a Day/IOC/FOK order, which the venue ignores, and a GTD with no
+// expiry at all, which is incomplete. Driving it from the TimeInForce select makes that
+// relationship visible instead of something you learn from a reject.
+function syncExpireTimeToTimeInForce() {
+    const timeInForce = document.getElementById('f-tif');
+    const expireTime = document.getElementById('f-expiretime');
+    const isGoodTillDate = timeInForce.value === '6';
+
+    expireTime.disabled = !isGoodTillDate;
+    expireTime.required = isGoodTillDate;
+    if (!isGoodTillDate) {
+        expireTime.value = '';
+    }
+    // An expiry already in the past is never what was meant, so do not offer one.
+    // datetime-local wants local time with no zone and no seconds.
+    const now = new Date();
+    now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
+    expireTime.min = now.toISOString().slice(0, 16);
+}
+
 function pageInit() {
     const initial = window._lastSessionStatus;
     if (initial) {
@@ -467,6 +488,9 @@ function pageInit() {
         originalUpdate(status);
         setOrderControlsEnabled(status.loggedOn);
     };
+
+    document.getElementById('f-tif').addEventListener('change', syncExpireTimeToTimeInForce);
+    syncExpireTimeToTimeInForce();
 
     pollBlotter();
 }
