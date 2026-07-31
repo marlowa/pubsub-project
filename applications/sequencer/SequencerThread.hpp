@@ -82,15 +82,26 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // forwarded to the matching engine. Never resets within a process lifetime.
     int64_t next_sequence_number_{1};
 
-    // Outbound gateway connections for ER forwarding, keyed by gateway id (see
-    // fix_common/GatewayIds.hpp). More than one gateway feeds the same book -- the ASCII
-    // FIX one and the binary one -- and each ER goes back to whichever the order came in
-    // through, so a single connection id is not enough.
-    std::unordered_map<int16_t, pubsub_itc_fw::ConnectionID> gateway_conn_ids_;
+    // Outbound gateway connections for ER forwarding, keyed by (protocol, instance).
+    //
+    // More than one gateway feeds the same book -- the ASCII FIX one and the binary one --
+    // and each may run as several instances, so neither axis identifies a process on its
+    // own. Protocol says which wire format the report is encoded in; instance says which
+    // process to send it to. See fix_common/GatewayIds.hpp and docs/design/gateway_ha.md.
+    //
+    // Packed into one integer key rather than a std::pair so the map needs no custom hash.
+    using GatewayKey = int32_t;
 
-    /** @brief The connection for a gateway id, or nullptr when that gateway is not connected. */
-    const pubsub_itc_fw::ConnectionID* gateway_connection(int16_t gateway_id) const {
-        auto it = gateway_conn_ids_.find(gateway_id);
+    /** @brief Packs (protocol, instance) into the key gateway_conn_ids_ is indexed by. */
+    static constexpr GatewayKey gateway_key(int16_t protocol, int16_t instance) {
+        return (static_cast<GatewayKey>(protocol) << 16) | static_cast<GatewayKey>(static_cast<uint16_t>(instance));
+    }
+
+    std::unordered_map<GatewayKey, pubsub_itc_fw::ConnectionID> gateway_conn_ids_;
+
+    /** @brief The connection for a gateway instance, or nullptr when it is not connected. */
+    const pubsub_itc_fw::ConnectionID* gateway_connection(int16_t protocol, int16_t instance) const {
+        auto it = gateway_conn_ids_.find(gateway_key(protocol, instance));
         if (it == gateway_conn_ids_.end() || !it->second.is_valid()) {
             return nullptr;
         }
@@ -157,6 +168,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
         bool has_gateway_session_conn_id{false};
         int32_t gateway_session_conn_id{0};
         int16_t origin_gateway_id{gateway_ids::default_when_absent};
+        int16_t origin_gateway_instance{gateway_ids::first_instance};
         bool erase_routing_entry{false};
     };
 
@@ -217,14 +229,16 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
 
     /**
      * @brief Sends an envelope-wrapped ER to the gateway the order originated from.
-     * @param[in] gateway_id Which gateway to deliver to (see fix_common/GatewayIds.hpp).
+     * @param[in] protocol Which client protocol (see fix_common/GatewayIds.hpp).
+     * @param[in] instance Which instance of that protocol, numbered from 1.
      * @param[in] er_seq_no  Sequence number stamped on the transport header.
      * @param[in] envelope   The WalRecord-wrapped ER.
      *
-     * Drops the ER with a warning when that gateway is not currently connected; the
-     * client behind it has no route, and no other gateway can serve its session.
+     * Drops the ER with a warning when that gateway instance is not currently connected;
+     * the client behind it has no route, and no other instance can serve its session
+     * until session provisioning and report replay land (steps 4-6 of gateway_ha.md).
      */
-    void send_er_to_origin_gateway(int16_t gateway_id, int64_t er_seq_no, const pubsub_itc_fw_app::WalRecord& envelope);
+    void send_er_to_origin_gateway(int16_t protocol, int16_t instance, int64_t er_seq_no, const pubsub_itc_fw_app::WalRecord& envelope);
 
     // External WAL subscriber helpers (MEP primary and secondary).
     void handle_wal_subscribe_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
@@ -251,6 +265,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     struct OriginSession {
         int32_t session_conn_id{0};
         int16_t gateway_id{gateway_ids::default_when_absent};
+        int16_t gateway_instance{gateway_ids::first_instance};
     };
 
     // seq_no -> originating client session.

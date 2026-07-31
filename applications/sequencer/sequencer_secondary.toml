@@ -4,15 +4,31 @@ listen_port    = ${sequencer_secondary_network_listen_port}
 er_listen_host = "${sequencer_secondary_network_er_listen_host}"
 er_listen_port = ${sequencer_secondary_network_er_listen_port}
 
-[gateway]
-host = "${sequencer_secondary_gateway_host}"
-port = ${sequencer_secondary_gateway_port}
+# Every gateway process the sequencer delivers execution reports to, one table each.
+#
+# protocol is the gateway_ids value: 1 = the ASCII FIX gateway, 2 = the binary one. It
+# says which wire format the report is encoded in. instance says which process of that
+# protocol to send it to, numbered from 1 within the protocol -- so instance 1 of the FIX
+# gateway and instance 1 of the binary gateway are different processes and do not collide.
+#
+# enabled = false leaves an entry configured but undialled, which is how preprod, prod and
+# test-1 run without the binary gateway. Omitting the table entirely does the same thing;
+# the flag exists so an environment can switch a gateway off without editing this template.
+# Add a table to run a second instance of either protocol. See docs/design/gateway_ha.md.
 
-# See the note in sequencer_primary.toml.
-[binary_gateway]
-enabled = ${sequencer_secondary_binary_gateway_enabled}
-host    = "${sequencer_secondary_binary_gateway_host}"
-port    = ${sequencer_secondary_binary_gateway_port}
+[[gateway]]
+protocol = 1
+instance = 1
+enabled  = true
+host     = "${sequencer_secondary_gateway_host}"
+port     = ${sequencer_secondary_gateway_port}
+
+[[gateway]]
+protocol = 2
+instance = 1
+enabled  = ${sequencer_secondary_binary_gateway_enabled}
+host     = "${sequencer_secondary_binary_gateway_host}"
+port     = ${sequencer_secondary_binary_gateway_port}
 
 [matching_engine]
 host = "${sequencer_secondary_matching_engine_host}"

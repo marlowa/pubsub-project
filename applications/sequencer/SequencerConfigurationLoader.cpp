@@ -23,18 +23,15 @@ SequencerConfiguration SequencerConfigurationLoader::load(const std::string& fil
     try {
         toml.get_required_except("network.listen_host", config.listen_host);
         toml.get_required_except("network.er_listen_host", config.er_listen_host);
-        toml.get_required_except("gateway.host", config.gateway_host);
         toml.get_required_except("matching_engine.host", config.matching_engine_host);
         toml.get_required_except("ha.ha_enabled", config.ha_enabled);
 
         int32_t listen_port = 0;
         int32_t er_listen_port = 0;
-        int32_t gateway_port = 0;
         int32_t matching_engine_port = 0;
 
         toml.get_required_except("network.listen_port", listen_port);
         toml.get_required_except("network.er_listen_port", er_listen_port);
-        toml.get_required_except("gateway.port", gateway_port);
         toml.get_required_except("matching_engine.port", matching_engine_port);
         toml.get_required_except("ha.instance_id", config.instance_id);
 
@@ -47,28 +44,83 @@ SequencerConfiguration SequencerConfigurationLoader::load(const std::string& fil
 
         validate_port(listen_port, "network.listen_port");
         validate_port(er_listen_port, "network.er_listen_port");
-        validate_port(gateway_port, "gateway.port");
         validate_port(matching_engine_port, "matching_engine.port");
 
         config.listen_port = static_cast<uint16_t>(listen_port);
         config.er_listen_port = static_cast<uint16_t>(er_listen_port);
-        config.gateway_port = static_cast<uint16_t>(gateway_port);
         config.matching_engine_port = static_cast<uint16_t>(matching_engine_port);
 
-        // The binary gateway is optional: a deployment may run only the ASCII FIX one, and
-        // configs written before it existed have no such section. Absent means not deployed,
-        // so the sequencer simply never dials it. Once enabled, host and port are required --
-        // silently defaulting an endpoint would give a sequencer that dials the wrong place.
-        const auto [has_binary_gateway, binary_gateway_error] = toml.get_required("binary_gateway.enabled", config.binary_gateway_enabled);
-        if (!has_binary_gateway) {
-            config.binary_gateway_enabled = false;
+        // Gateways are an array of tables, one per process:
+        //
+        //   [[gateway]]
+        //   protocol = 1        # gateway_ids::order_gateway
+        //   instance = 1
+        //   host     = "127.0.0.1"
+        //   port     = 7010
+        //
+        // A gateway that is not deployed simply has no entry. That replaces the earlier
+        // binary_gateway.enabled switch, which said the same thing less directly, and it
+        // lets a protocol run as several instances -- which a scalar host/port pair could
+        // not express at all.
+        //
+        // Every field is required on every entry. Defaulting an endpoint would give a
+        // sequencer that quietly dials the wrong place, and defaulting an instance number
+        // would let two entries collide on the same service name.
+        const size_t gateway_count = toml.array_size("gateway");
+
+        for (size_t index = 0; index < gateway_count; ++index) {
+            SequencerConfiguration::GatewayEndpoint endpoint;
+            const std::string prefix = "gateway[" + std::to_string(index) + "].";
+
+            // enabled is the one optional field: absent means deployed. It lets an
+            // environment switch a gateway off without deleting its table, which is how
+            // preprod, prod and test-1 run without the binary gateway.
+            bool enabled = true;
+            const auto [has_enabled, enabled_error] = toml.get_required(prefix + "enabled", enabled);
+            if (!has_enabled) {
+                enabled = true;
+            }
+            if (!enabled) {
+                continue;
+            }
+
+            int32_t protocol = 0;
+            int32_t instance = 0;
+            int32_t port = 0;
+            toml.get_required_except(prefix + "protocol", protocol);
+            toml.get_required_except(prefix + "instance", instance);
+            toml.get_required_except(prefix + "host", endpoint.host);
+            toml.get_required_except(prefix + "port", port);
+            validate_port(port, prefix + "port");
+
+            if (protocol <= 0 || protocol > INT16_MAX) {
+                throw pubsub_itc_fw::ConfigurationException("SequencerConfigurationLoader: " + prefix + "protocol out of range");
+            }
+            if (instance <= 0 || instance > INT16_MAX) {
+                throw pubsub_itc_fw::ConfigurationException("SequencerConfigurationLoader: " + prefix +
+                                                            "instance must be 1 or greater (instances are numbered from 1)");
+            }
+            endpoint.protocol = static_cast<int16_t>(protocol);
+            endpoint.instance = static_cast<int16_t>(instance);
+            endpoint.port = static_cast<uint16_t>(port);
+
+            // Two entries sharing a (protocol, instance) would register the same service
+            // name twice and silently route every report for that pair to whichever won.
+            for (const auto& existing : config.gateway_endpoints) {
+                if (existing.protocol == endpoint.protocol && existing.instance == endpoint.instance) {
+                    throw pubsub_itc_fw::ConfigurationException("SequencerConfigurationLoader: duplicate gateway (protocol " +
+                                                                std::to_string(endpoint.protocol) + ", instance " + std::to_string(endpoint.instance) + ")");
+                }
+            }
+            config.gateway_endpoints.push_back(endpoint);
         }
-        if (config.binary_gateway_enabled) {
-            toml.get_required_except("binary_gateway.host", config.binary_gateway_host);
-            int32_t binary_gateway_port = 0;
-            toml.get_required_except("binary_gateway.port", binary_gateway_port);
-            validate_port(binary_gateway_port, "binary_gateway.port");
-            config.binary_gateway_port = static_cast<uint16_t>(binary_gateway_port);
+
+        // Checked after the loop rather than on the raw count, so that a config whose every
+        // gateway is enabled = false fails here rather than starting a sequencer with nowhere
+        // to deliver execution reports.
+        if (config.gateway_endpoints.empty()) {
+            throw pubsub_itc_fw::ConfigurationException("SequencerConfigurationLoader: no enabled [[gateway]] entries; "
+                                                        "the sequencer would have nowhere to deliver execution reports");
         }
 
         if (config.ha_enabled) {

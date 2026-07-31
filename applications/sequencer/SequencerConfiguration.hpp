@@ -6,6 +6,7 @@
 #include <cstdint> // IWYU pragma: keep
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/WallClock.hpp>
@@ -48,26 +49,51 @@ struct SequencerConfiguration {
 
     // Outbound -- gateway ER forwarding
     //
-    // There is more than one gateway: the ASCII FIX one and the binary one, each
-    // speaking a different client protocol into the same book. The sequencer dials
-    // both and routes each ER back to whichever originated the order, identified by
-    // origin_gateway_id on the envelope. A session connection id is only unique
-    // within its own gateway, so the gateway id is what disambiguates them.
+    // A venue runs more than one gateway: the ASCII FIX one and the binary one speak
+    // different client protocols into the same book, and each may run as several
+    // instances for availability. The sequencer dials every configured endpoint and
+    // routes each ER back to the one the order came from.
+    //
+    // A session connection id is only unique within a single gateway process, so it is
+    // the triple (protocol, instance, connection) that identifies a session venue-wide.
+    // This collection supplies the first two: protocol says which wire format the report
+    // is encoded in, instance says which process to send it to.
+    //
+    // See docs/design/gateway_ha.md.
 
-    /** @brief Host address of the ASCII FIX gateway's ER inbound listener. */
-    std::string gateway_host{"127.0.0.1"};
+    /** @brief One gateway process the sequencer delivers execution reports to. */
+    struct GatewayEndpoint {
+        /** @brief Which client protocol, from gateway_ids: order_gateway or binary_gateway. */
+        int16_t protocol{1};
 
-    /** @brief TCP port of the ASCII FIX gateway's ER inbound listener. */
-    uint16_t gateway_port{7010};
+        /** @brief Which instance of that protocol, numbered from 1 within the protocol. */
+        int16_t instance{1};
 
-    /** @brief Whether the binary gateway is deployed and should be dialled for ER delivery. */
-    bool binary_gateway_enabled{false};
+        /** @brief Host address of this gateway's ER inbound listener. */
+        std::string host{"127.0.0.1"};
 
-    /** @brief Host address of the binary gateway's ER inbound listener. */
-    std::string binary_gateway_host{"127.0.0.1"};
+        /** @brief TCP port of this gateway's ER inbound listener. */
+        uint16_t port{7010};
 
-    /** @brief TCP port of the binary gateway's ER inbound listener. */
-    uint16_t binary_gateway_port{7110};
+        /**
+         * @brief Reactor service name for this endpoint, e.g. "gateway_1_2".
+         *
+         * Unique per (protocol, instance) so the two axes cannot alias: instance 1 of the
+         * FIX gateway and instance 1 of the binary gateway are different processes.
+         */
+        [[nodiscard]] std::string service_name() const {
+            return "gateway_" + std::to_string(protocol) + "_" + std::to_string(instance);
+        }
+    };
+
+    /**
+     * @brief Every gateway process to deliver execution reports to.
+     *
+     * Replaces the earlier scalar gateway_host/gateway_port pair and the
+     * binary_gateway_enabled flag: a gateway that is not deployed simply has no entry,
+     * which says the same thing without a separate switch.
+     */
+    std::vector<GatewayEndpoint> gateway_endpoints{};
 
     // Outbound -- matching engine order forwarding
     //

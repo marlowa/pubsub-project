@@ -77,12 +77,13 @@ Sequencer::Sequencer(SequencerConfiguration config, std::unique_ptr<pubsub_itc_f
 
     // Outbound connections are initiated from SequencerThread::on_app_ready_event()
     // via connect_to_service(). The ServiceRegistry is populated here.
-    if (config_.binary_gateway_enabled) {
-        service_registry_.add("binary_gateway", pubsub_itc_fw::NetworkEndpointConfiguration{config_.binary_gateway_host, config_.binary_gateway_port},
+    // One service per configured gateway process. The name carries both axes -- see
+    // GatewayEndpoint::service_name() -- so instance 1 of the FIX gateway and instance 1
+    // of the binary gateway cannot alias onto the same entry.
+    for (const auto& endpoint : config_.gateway_endpoints) {
+        service_registry_.add(endpoint.service_name(), pubsub_itc_fw::NetworkEndpointConfiguration{endpoint.host, endpoint.port},
                               pubsub_itc_fw::NetworkEndpointConfiguration{});
     }
-    service_registry_.add("gateway", pubsub_itc_fw::NetworkEndpointConfiguration{config_.gateway_host, config_.gateway_port},
-                          pubsub_itc_fw::NetworkEndpointConfiguration{});
     service_registry_.add("matching_engine", pubsub_itc_fw::NetworkEndpointConfiguration{config_.matching_engine_host, config_.matching_engine_port},
                           pubsub_itc_fw::NetworkEndpointConfiguration{});
     if (config_.ha_enabled) {
@@ -103,10 +104,16 @@ Sequencer::Sequencer(SequencerConfiguration config, std::unique_ptr<pubsub_itc_f
                config_.listen_port, config_.er_listen_host, config_.er_listen_port, config_.wal_subscriber_listen_host, config_.wal_subscriber_listen_port,
                config_.instance_id);
     PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info,
-               "Sequencer: gateway={}:{} matching_engine={}:{} arbiter_primary={}:{} arbiter_secondary={}:{} peer_listen={}:{} peer={}:{}",
-               config_.gateway_host, config_.gateway_port, config_.matching_engine_host, config_.matching_engine_port, config_.arbiter_primary_host,
-               config_.arbiter_primary_port, config_.arbiter_secondary_host, config_.arbiter_secondary_port, config_.peer_listen_host, config_.peer_listen_port,
-               config_.peer_host, config_.peer_port);
+               "Sequencer: matching_engine={}:{} arbiter_primary={}:{} arbiter_secondary={}:{} peer_listen={}:{} peer={}:{}", config_.matching_engine_host,
+               config_.matching_engine_port, config_.arbiter_primary_host, config_.arbiter_primary_port, config_.arbiter_secondary_host,
+               config_.arbiter_secondary_port, config_.peer_listen_host, config_.peer_listen_port, config_.peer_host, config_.peer_port);
+    // Logged one per line rather than folded into the line above: the count is variable, and
+    // which gateways a sequencer actually dials is the first thing worth knowing from a log
+    // when reports are not arriving where they should.
+    for (const auto& endpoint : config_.gateway_endpoints) {
+        PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "Sequencer: gateway protocol={} instance={} endpoint={}:{} service='{}'", endpoint.protocol,
+                   endpoint.instance, endpoint.host, endpoint.port, endpoint.service_name());
+    }
 }
 
 int Sequencer::run() const {
