@@ -491,7 +491,7 @@ TLS support was added to the framework's raw-bytes connection layer in Session 2
 - `create_server(cert_path, key_path, ca_path, require_client_cert)` — server-side context. `ca_path` empty disables client certificate verification.
 - `create_client(ca_path, cert_path, key_path)` — client-side context. `ca_path` empty skips server verification.
 
-Both enforce TLS 1.2 minimum, prefer TLS 1.3. Ciphers: TLS 1.2 AEAD only (`ECDHE-ECDSA-AES256-GCM-SHA384` etc.); TLS 1.3 `TLS_AES_256_GCM_SHA384` and `TLS_CHACHA20_POLY1305_SHA256`. One `TlsContext` per listener or outbound service; certificate loading happens once at construction, not per-connection.
+Both enforce **TLS 1.2 only** -- `TlsContext::apply_common_tls_options()` sets min *and* max proto version to `TLS1_2_VERSION`. This is a deliberate cap, not a floor: QuickFIX/J's MINA `SslFilter` mishandles TLS 1.3 `NewSessionTicket` records and deadlocks, timing the fix-test-client out on logon. Lifting it means removing those two calls and adding the TLS 1.3 cipher groups. Ciphers: AEAD only (`ECDHE-RSA-AES256-GCM-SHA384` and similar). See docs/design/secure_comms.md. One `TlsContext` per listener or outbound service; certificate loading happens once at construction, not per-connection.
 
 **`TlsState`** (`TlsState.hpp` / `.cpp`). Per-connection. Owns `SSL*`, `BIO* rbio`, `BIO* wbio`. Owns a `pending_outbound` byte vector (ciphertext bytes that could not be sent immediately). `HandshakePhase` enum: `Pending`, `Complete`, `Failed`. Move-constructible (needed when `OutboundConnection` is move-inserted into the connections map).
 
