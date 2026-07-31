@@ -17,15 +17,22 @@ namespace gateway_ids {
 // integers for unrelated sessions. The pair (gateway id, session connection id) is what
 // identifies a session across the venue.
 //
-// Values are part of the on-disk WAL format once written, so they must never be reused for
-// a different gateway. Add new gateways by taking the next free number.
+// Add new gateways by taking the next free number. Reusing a value would misread any WAL
+// still on disk from an older build, so it is worth avoiding -- but it is not the hard
+// constraint an earlier version of this comment claimed: the project is pre-1.0 and makes
+// no compatibility promise across releases, so a WAL from an older build is discarded
+// rather than replayed.
 
 inline constexpr int16_t order_gateway = 1;  ///< The ASCII FIX gateway.
 inline constexpr int16_t binary_gateway = 2; ///< The binary (DSL PDU) gateway.
 
-// A WalRecord written before origin_gateway_id existed has no gateway id, and every such
-// record came from the only gateway there was at the time. Readers treat an absent field
-// as this value so old WALs replay and route unchanged.
+// origin_gateway_id is optional, and this is the value a reader uses when it is absent.
+//
+// Not for backwards compatibility, despite appearances: the FIX gateway never constructs a
+// WalRecord at all. It sends a bare NewOrderSingle and the sequencer wraps it, so on that
+// path there is nothing upstream that could stamp an origin. The default covers that gap.
+// Removing it needs the sequencer to attribute origin from the connection a PDU arrived on
+// -- see docs/design/gateway_ha.md, step 2.
 inline constexpr int16_t default_when_absent = order_gateway;
 
 // Which *instance* of a gateway an order entered through, carried on the envelope as

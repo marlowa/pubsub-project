@@ -48,9 +48,18 @@ Verified in the code on 2026-07-30, not inferred from documentation.
 
 **Gateway identity is per protocol, not per instance.** `GatewayIds.hpp` defines
 `order_gateway = 1` and `binary_gateway = 2`. That value rides on the `WalRecord` envelope as
-`origin_gateway_id` and is how the sequencer decides where to send an execution report. Its own
-comment records the binding constraint: these values are on-disk WAL format once written and must
-never be reused for a different gateway.
+`origin_gateway_id` and is how the sequencer decides where to send an execution report.
+
+Its own comment used to call these values a binding constraint — on-disk WAL format, never to be
+reused. That was overstated and has been corrected: the project is pre-1.0 and makes no
+compatibility promise across releases, so a WAL from an older build is discarded rather than
+replayed. Reusing a value is worth avoiding, not forbidden.
+
+**`origin_gateway_id` is optional, and the FIX gateway never sets it.** It never constructs a
+`WalRecord` at all — it sends a bare `NewOrderSingle` and the sequencer wraps it. So
+`gateway_ids::default_when_absent` is not a compatibility fallback: it covers a path on which
+nothing upstream could stamp an origin. This is the fact that shapes step 2.
+
 
 **The sequencer dials a fixed pair of endpoints.** `SequencerConfiguration` holds scalars —
 `gateway_host`/`gateway_port` for the FIX gateway, `binary_gateway_host`/`binary_gateway_port` and
@@ -100,20 +109,32 @@ separable, and the SPOF half is worth having on its own.
 
 ### Instance identity
 
-Add a **`gateway_instance_id`** to the envelope alongside `origin_gateway_id`. Do not repurpose
-the existing field: it is WAL format, and every record already written carries a protocol value in
-it.
+Add a **`gateway_instance_id`** to the envelope alongside `origin_gateway_id`, rather than
+repurposing the existing field.
 
-- `origin_gateway_id` keeps its present meaning — which *protocol* the order arrived on. It stays
-  the value that decides which wire format the report is encoded in.
-- `gateway_instance_id` says *which instance of that protocol*. Absent on every existing record,
-  which reads as instance 1 by the same `default_when_absent` convention `GatewayIds.hpp` already
-  uses for `origin_gateway_id`.
+**The reason is not backwards compatibility.** An earlier draft argued the existing values could
+never be reassigned because they are on disk in every WAL record. That does not hold: the project
+is pre-1.0, so an old WAL is discarded rather than replayed. Nothing forces two fields on those
+grounds.
+
+The reasons that do hold are quieter but real. Protocol and instance are orthogonal, so separate
+fields model them honestly rather than encoding two things in one number. And a record stays
+self-describing: the sequencer can pick the execution report's wire encoding, and a person reading
+a WAL can see which gateway an order came from, without consulting configuration. The cost is one
+`i16`.
+
+- `origin_gateway_id` keeps its present meaning — which *protocol* the order arrived on.
+- `gateway_instance_id` says *which instance of that protocol*, numbered from 1.
 
 The session is then identified venue-wide by the triple
 `(origin_gateway_id, gateway_instance_id, gateway_session_conn_id)`. That preserves the ClOrdID
 collision fix that motivated connection-id routing in the first place — a connection identifies
 exactly one session and cannot collide — while making the identity unambiguous across instances.
+
+Both fields are **required** in the end state. Neither is self-reported by a gateway: step 2 has
+the sequencer derive them from the connection a PDU arrived on, which is the only way the FIX path
+can supply them at all.
+
 
 ### Sequencer endpoint collection
 
@@ -224,11 +245,29 @@ each session's own throughput is still bounded by the one instance serving it.
 
 Each step leaves the system working.
 
-1. **Instance identity on the envelope.** `gateway_instance_id`, absent-means-1, plus the encode
-   and decode paths and their round-trip tests. No behaviour change.
-2. **Sequencer endpoint collection.** Scalars to a list; `send_er_to_origin_gateway` looks up
-   `(protocol, instance)`. Environment TOMLs updated. Still one instance of each in dev, so still
-   no behaviour change — but two are now expressible.
+1. **Instance identity on the envelope.** `gateway_instance_id` plus the encode and decode paths
+   and their round-trip tests. No behaviour change. **Done** — committed as an *optional* field
+   with absent-means-1, which step 2 replaces with a required field once the sequencer can supply
+   it on every path. The optional form is a staging post, not the intended end state.
+2. **Sequencer endpoint collection, and origin attributed from the connection.** Scalars to a
+   list; `send_er_to_origin_gateway` looks up `(protocol, instance)`. Environment TOMLs updated.
+
+   This step also carries a correction found while doing step 1. **The FIX gateway never
+   constructs a `WalRecord`.** It sends a bare `NewOrderSingle` and the sequencer wraps it, which
+   is why `origin_gateway_id` is optional and why `gateway_ids::default_when_absent` exists — not
+   for compatibility, but because on that path nothing upstream could stamp an origin. A required
+   `gateway_instance_id` therefore cannot be satisfied on the FIX path at all.
+
+   The answer is that **origin is a property of the arrival connection, not of the payload.** The
+   sequencer knows which of its gateway connections a PDU came in on, and once the endpoints are a
+   keyed collection, the connection to `(protocol, instance)` mapping falls out of the same
+   configuration. That is better than gateways self-reporting: it works for both protocols without
+   the FIX gateway growing an envelope it does not otherwise need, and a gateway cannot misreport
+   its own identity.
+
+   Both fields then become **required** on the envelope, carried where they are actually needed —
+   in the WAL and on the outbound execution report, for routing and audit — and
+   `default_when_absent` goes away.
 3. **Run two FIX gateway instances in dev.** The first point at which the SPOF is actually
    reduced, and the first honest test of steps 1 and 2. Expect this to surface things this document
    has not predicted.
