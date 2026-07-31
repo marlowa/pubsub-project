@@ -9,7 +9,7 @@ change in any release.
 
 ## [Unreleased]
 
-## [0.2.1] - 2026-07-30
+## [0.2.1] - 2026-07-31
 
 A patch release fixing three separate failures on the RHEL8 target. **v0.2.0 does
 not build on RHEL8**; this release does. There are no functional changes.
