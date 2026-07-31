@@ -731,11 +731,11 @@ def main() -> None:
     ts         = datetime.now().strftime("%Y%m%d_%H%M%S")
     callgrind_dir = prefix / "callgrind" / ts
     me_log     = log_dir / "matching_engine_primary.log"
-    gw_log     = log_dir / "order_gateway.log"
+    gw_log     = log_dir / "order_gateway_a.log"
     seq_log    = log_dir / "sequencer_primary.log"
     arb_log    = log_dir / "arbiter_primary.log"
 
-    gw_config = prefix / "etc" / "order_gateway" / "order_gateway.toml"
+    gw_config = prefix / "etc" / "order_gateway" / "order_gateway_a.toml"
 
     # Launched components whose HA/session timeouts must be relaxed so callgrind's
     # slowdown does not trip failover or the gateway's own FIX logon timeout.
@@ -764,7 +764,7 @@ def main() -> None:
     log(f"  install prefix : {prefix}")
     log(f"  callgrind output: {callgrind_dir}")
     targets_desc = ("matching_engine_primary, "
-                    + ("binary_gateway" if args.gateway == "binary" else "order_gateway"))
+                    + ("binary_gateway" if args.gateway == "binary" else "order_gateway_a"))
     log(f"  valgrind tool  : callgrind")
     log(f"  callgrind targets: {targets_desc}")
     log(f"  gateway        : {args.gateway}")
@@ -804,7 +804,7 @@ def main() -> None:
         ("matching_engine_secondary", "matching_engine",      etc_dir / "matching_engine"        / "matching_engine_secondary.toml",None),
         ("sequencer_primary",      "sequencer",              etc_dir / "sequencer"              / "sequencer_primary.toml",      None),
         ("sequencer_secondary",    "sequencer",              etc_dir / "sequencer"              / "sequencer_secondary.toml",    None),
-        ("order_gateway",          "order_gateway",          etc_dir / "order_gateway"          / "order_gateway.toml",          etc_dir / "order_gateway"),
+        ("order_gateway_a",        "order_gateway",          etc_dir / "order_gateway"          / "order_gateway_a.toml",        etc_dir / "order_gateway"),
         ("binary_gateway",         "binary_gateway",         etc_dir / "binary_gateway"         / "binary_gateway.toml",         etc_dir / "binary_gateway"),
     ]
 
@@ -813,11 +813,11 @@ def main() -> None:
     # slows its target by one to two orders of magnitude, so profiling the idle one would
     # cost the run dearly for nothing.
     callgrind_targets = {"matching_engine_primary"}
-    callgrind_targets.add("binary_gateway" if args.gateway == "binary" else "order_gateway")
+    callgrind_targets.add("binary_gateway" if args.gateway == "binary" else "order_gateway_a")
 
     # Readiness is judged on whichever gateway is under the profiler: it is the slow one to
     # come up, and the unprofiled one says nothing about the run being ready.
-    gw_ready_log = log_dir / ("binary_gateway.log" if args.gateway == "binary" else "order_gateway.log")
+    gw_ready_log = log_dir / ("binary_gateway.log" if args.gateway == "binary" else "order_gateway_a.log")
     gw_ready_markers = _BINARY_GW_OPERATIONAL_MARKERS if args.gateway == "binary" else _GW_OPERATIONAL_MARKERS
 
     app_procs: list[tuple[str, subprocess.Popen]] = []

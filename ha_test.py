@@ -1461,11 +1461,11 @@ def run_scenario(scenario: Scenario, args) -> bool:
     if scenario.me_ha:
         me_log                 = log_dir / "matching_engine_primary.log"
         me_secondary_log       = log_dir / "matching_engine_secondary.log"
-        gw_log                 = log_dir / "order_gateway.log"
+        gw_log                 = log_dir / "order_gateway_a.log"
     else:
         me_log                 = log_dir / "matching_engine.log"
         me_secondary_log       = None
-        gw_log                 = log_dir / "order_gateway.log"
+        gw_log                 = log_dir / "order_gateway_a.log"
     seq_primary_log            = log_dir / "sequencer_primary.log"
     seq_secondary_log          = log_dir / "sequencer_secondary.log"
     arb_primary_log            = log_dir / "arbiter_primary.log"
@@ -1525,6 +1525,11 @@ def run_scenario(scenario: Scenario, args) -> bool:
     # to them immediately on startup.  The ME-HA topology uses the
     # _primary/_secondary config set and adds a second matching engine so the
     # secondary can promote when the primary is killed.
+    # Only gateway instance a is launched. These scenarios fail over the sequencer, matching
+    # engine and arbiter; a second gateway adds a process and its timing to every one of them
+    # without exercising anything they test. The sequencer will retry its configured FIX/2
+    # endpoint in the background and say so every connect_retry_warning_interval, which is
+    # expected here rather than a symptom. perf_run.py launches both.
     if scenario.me_ha:
         launch_table = [
             ("witness",                          "witness",
@@ -1537,8 +1542,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
              etc_dir / "authentication_service" / "authentication_service_a.toml"),
             ("authentication_service_b", "authentication_service",
              etc_dir / "authentication_service" / "authentication_service_b.toml"),
-            ("order_gateway",                    "order_gateway",
-             etc_dir / "order_gateway"          / "order_gateway.toml"),
+            ("order_gateway_a",                  "order_gateway",
+             etc_dir / "order_gateway"          / "order_gateway_a.toml"),
             ("sequencer_primary",                "sequencer",
              etc_dir / "sequencer"              / "sequencer_primary.toml"),
             ("sequencer_secondary",              "sequencer",
@@ -1567,8 +1572,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
              etc_dir / "authentication_service" / "authentication_service_a.toml"),
             ("authentication_service_b", "authentication_service",
              etc_dir / "authentication_service" / "authentication_service_b.toml"),
-            ("order_gateway",           "order_gateway",
-             etc_dir / "order_gateway" / "order_gateway.toml"),
+            ("order_gateway_a",         "order_gateway",
+             etc_dir / "order_gateway" / "order_gateway_a.toml"),
             ("sequencer_primary",                "sequencer",
              etc_dir / "sequencer"              / "sequencer_primary.toml"),
             ("sequencer_secondary",              "sequencer",
