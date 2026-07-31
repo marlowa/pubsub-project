@@ -5,6 +5,8 @@
 
 #include <string>
 
+#include <pubsub_itc_fw/TomlConfiguration.hpp>
+
 #include "SequencerConfiguration.hpp"
 
 namespace sequencer {
@@ -38,6 +40,19 @@ class SequencerConfigurationLoader {
      * @throws pubsub_itc_fw::ConfigurationException on any error.
      */
     static SequencerConfiguration load(const std::string& file_path);
+
+    /**
+     * @brief Loads from an already-parsed TOML document.
+     *
+     * Split from the file-path overload so the parsing rules can be tested without a
+     * filesystem fixture -- the same seam LoggingConfigurationLoader offers. The file
+     * overload reads the document and delegates here.
+     *
+     * @param[in] toml Parsed configuration document.
+     * @return Populated SequencerConfiguration.
+     * @throws pubsub_itc_fw::ConfigurationException on any error.
+     */
+    static SequencerConfiguration load(const pubsub_itc_fw::TomlConfiguration& toml);
 };
 
 } // namespaces

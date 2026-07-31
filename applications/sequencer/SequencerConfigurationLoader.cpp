@@ -17,7 +17,10 @@ SequencerConfiguration SequencerConfigurationLoader::load(const std::string& fil
     if (!ok) {
         throw pubsub_itc_fw::ConfigurationException("SequencerConfigurationLoader: failed to load '" + file_path + "': " + err);
     }
+    return load(toml);
+}
 
+SequencerConfiguration SequencerConfigurationLoader::load(const pubsub_itc_fw::TomlConfiguration& toml) {
     SequencerConfiguration config;
 
     try {
