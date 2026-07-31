@@ -77,7 +77,7 @@ ca   = ""
 # never be split across core types.  Both share one host here, so that rule is
 # doing real work in this environment rather than being a formality.
 #
-#   1  order_gateway, binary_gateway   client edge
+#   1  order_gateway_a, binary_gateway   client edge
 #   2  sequencer_primary/_secondary    the sequencing point; the follower's WalAck
 #                                      gates every execution report, so it is
 #                                      latency-critical despite not being
@@ -100,7 +100,7 @@ components = [
     "matching_engine",
     "sequencer_primary",
     "sequencer_secondary",
-    "order_gateway",
+    "order_gateway_a",
     "binary_gateway",
     "admin_service",
 ]
@@ -154,7 +154,7 @@ components               = ["sequencer_secondary"]
 minimum_background_cores = 2
 
 [machines."gateway.test-1.exchange.internal"]  # REPLACE
-components               = ["order_gateway", "binary_gateway"]
+components               = ["order_gateway_a", "binary_gateway"]
 minimum_background_cores = 2
 
 [machines."admin.test-1.exchange.internal"]  # REPLACE
@@ -212,9 +212,9 @@ workdir = "etc/sequencer"
 ha_only = true
 hot_path_rank = 2
 
-[components.order_gateway]
+[components.order_gateway_a]
 binary  = "bin/order_gateway"
-config  = "etc/order_gateway/order_gateway.toml"
+config  = "etc/order_gateway/order_gateway_a.toml"
 workdir = "etc/order_gateway"
 ha_only = false
 hot_path_rank = 1
@@ -284,7 +284,7 @@ sequencer_er_port             = 11021
 sequencer_er_secondary_host   = "sequencer-secondary.test-1.exchange.internal"  # REPLACE
 sequencer_er_secondary_port   = 11022
 
-[order_gateway]
+[order_gateway_a]
 gateway_instance_id        = 1
 network_listen_host                   = "0.0.0.0"
 network_listen_port                   = 9879
@@ -317,6 +317,9 @@ open_order_pool_objects_per_pool = 4096
 open_order_pool_initial_pools    = 1
 
 [sequencer_primary]
+gateway_b_enabled          = false
+gateway_b_host             = "127.0.0.1"
+gateway_b_port             = 11011
 network_listen_host        = "0.0.0.0"
 network_listen_port        = 11001
 network_er_listen_host     = "0.0.0.0"
@@ -341,6 +344,9 @@ wal_subscriber_listen_host = "0.0.0.0"
 wal_subscriber_listen_port = 11030
 
 [sequencer_secondary]
+gateway_b_enabled          = false
+gateway_b_host             = "127.0.0.1"
+gateway_b_port             = 11011
 network_listen_host        = "0.0.0.0"
 network_listen_port        = 11002
 network_er_listen_host     = "0.0.0.0"

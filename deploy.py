@@ -280,12 +280,18 @@ def generate_tls_certs(env: dict, install_dir: Path, force: bool) -> None:
 
 
 def _generate_fix_client_truststore(env: dict, install_dir: Path, force: bool) -> None:
-    """Import the order_gateway FIX TLS cert into a JKS truststore for fix-test-client."""
-    gateway_tls = env.get("tls", {}).get("order_gateway")
-    if gateway_tls is None:
-        return
+    """Import a FIX gateway's TLS cert into a JKS truststore for fix-test-client.
 
-    gateway_comp = env.get("components", {}).get("order_gateway")
+    Takes the first gateway instance that has a [tls.*] section. The instances share a
+    certificate today, so the client trusts whichever it connects to; if they are ever
+    given distinct certs, every one of them needs importing into the same truststore.
+    """
+    gateway_name = next((name for name in env.get("tls", {}) if name.startswith("order_gateway")), None)
+    if gateway_name is None:
+        return
+    gateway_tls = env["tls"][gateway_name]
+
+    gateway_comp = env.get("components", {}).get(gateway_name)
     client_comp  = env.get("components", {}).get("fix_test_client")
     if gateway_comp is None or client_comp is None:
         return

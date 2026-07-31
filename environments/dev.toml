@@ -81,7 +81,12 @@ cert = "admin.crt"
 key  = "admin.key"
 ca   = ""
 
-[tls.order_gateway]
+[tls.order_gateway_a]
+cert = "fix_gateway.crt"
+key  = "fix_gateway.key"
+ca   = ""
+
+[tls.order_gateway_b]
 cert = "fix_gateway.crt"
 key  = "fix_gateway.key"
 ca   = ""
@@ -105,7 +110,7 @@ ca   = ""
 # never be split across core types.  That is what makes the FIX-versus-binary
 # gateway comparison valid by construction rather than by arithmetic accident.
 #
-#   1  order_gateway, binary_gateway     client edge
+#   1  order_gateway_a, order_gateway_b, binary_gateway     client edge
 #   2  sequencer_primary/_secondary      the sequencing point; the follower's
 #                                        WalAck gates every execution report, so
 #                                        it is latency-critical despite not being
@@ -146,7 +151,8 @@ components = [
     "sequencer_secondary",
     "mep_primary",
     "mep_secondary",
-    "order_gateway",
+    "order_gateway_a",
+    "order_gateway_b",
     "binary_gateway",
     "admin_service",
     "fix_test_client",
@@ -189,7 +195,8 @@ components = [
     "sequencer_secondary",
     "mep_primary",
     "mep_secondary",
-    "order_gateway",
+    "order_gateway_a",
+    "order_gateway_b",
     "binary_gateway",
     "admin_service",
     "fix_test_client",
@@ -267,12 +274,17 @@ workdir = "etc/matching_engine_publisher"
 ha_only = true
 hot_path_rank = 4
 
-[components.order_gateway]
+[components.order_gateway_a]
 binary  = "bin/order_gateway"
-config  = "etc/order_gateway/order_gateway.toml"
+config  = "etc/order_gateway/order_gateway_a.toml"
 workdir = "etc/order_gateway"
 ha_only = false
 hot_path_rank = 1
+
+[components.order_gateway_b]
+binary  = "bin/order_gateway"
+config  = "etc/order_gateway/order_gateway_b.toml"
+workdir = "etc/order_gateway"
 
 [components.binary_gateway]
 binary  = "bin/binary_gateway"
@@ -380,13 +392,38 @@ arbiter_primary_port          = 11200
 arbiter_secondary_host        = "127.0.0.1"
 arbiter_secondary_port        = 11201
 
-[order_gateway]
+[order_gateway_a]
 gateway_instance_id        = 1
 network_listen_host                   = "127.0.0.1"
 network_listen_port                   = 9879
 network_tls_listen_port               = 9880
 network_er_listen_host                = "127.0.0.1"
 network_er_listen_port                = 11010
+authentication_service_host           = "127.0.0.1"
+authentication_service_port           = 11070
+authentication_service_secondary_host = "127.0.0.1"
+authentication_service_secondary_port = 11071
+sequencer_primary_host                = "127.0.0.1"
+sequencer_primary_port                = 11001
+sequencer_secondary_host              = "127.0.0.1"
+sequencer_secondary_port              = 11002
+fix_tls_enabled                       = true
+fix_tls_cert                          = "fix_gateway.crt"
+fix_tls_key                           = "fix_gateway.key"
+fix_capture_file                      = "fix_capture.bin"
+fix_capture_ring_bytes                = 67108864
+fix_limits_max_symbol_length          = 32
+fix_limits_max_order_qty_length       = 24
+open_order_pool_objects_per_pool      = 4096
+open_order_pool_initial_pools         = 1
+
+[order_gateway_b]
+gateway_instance_id        = 2
+network_listen_host                   = "127.0.0.1"
+network_listen_port                   = 9881
+network_tls_listen_port               = 9882
+network_er_listen_host                = "127.0.0.1"
+network_er_listen_port                = 11011
 authentication_service_host           = "127.0.0.1"
 authentication_service_port           = 11070
 authentication_service_secondary_host = "127.0.0.1"
@@ -423,6 +460,9 @@ open_order_pool_objects_per_pool = 4096
 open_order_pool_initial_pools    = 1
 
 [sequencer_primary]
+gateway_b_enabled          = true
+gateway_b_host             = "127.0.0.1"
+gateway_b_port             = 11011
 network_listen_host        = "127.0.0.1"
 network_listen_port        = 11001
 network_er_listen_host     = "127.0.0.1"
@@ -449,6 +489,9 @@ wal_subscriber_listen_host = "127.0.0.1"
 wal_subscriber_listen_port = 11030
 
 [sequencer_secondary]
+gateway_b_enabled          = true
+gateway_b_host             = "127.0.0.1"
+gateway_b_port             = 11011
 network_listen_host        = "127.0.0.1"
 network_listen_port        = 11002
 network_er_listen_host     = "127.0.0.1"

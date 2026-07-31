@@ -24,6 +24,13 @@ host     = "${sequencer_primary_gateway_host}"
 port     = ${sequencer_primary_gateway_port}
 
 [[gateway]]
+protocol = 1
+instance = 2
+enabled  = ${sequencer_primary_gateway_b_enabled}
+host     = "${sequencer_primary_gateway_b_host}"
+port     = ${sequencer_primary_gateway_b_port}
+
+[[gateway]]
 protocol = 2
 instance = 1
 enabled  = ${sequencer_primary_binary_gateway_enabled}
