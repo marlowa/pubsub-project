@@ -99,6 +99,10 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
 
     std::unordered_map<GatewayKey, pubsub_itc_fw::ConnectionID> gateway_conn_ids_;
 
+    // (protocol, instance) pairs already reported as absent from the configuration.
+    // Keeps the deployment-error message to once per pair rather than once per report.
+    std::unordered_set<GatewayKey> unknown_gateways_warned_;
+
     /** @brief The connection for a gateway instance, or nullptr when it is not connected. */
     const pubsub_itc_fw::ConnectionID* gateway_connection(int16_t protocol, int16_t instance) const {
         auto it = gateway_conn_ids_.find(gateway_key(protocol, instance));

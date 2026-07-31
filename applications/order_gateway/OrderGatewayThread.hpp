@@ -234,6 +234,10 @@ class OrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
         // and would otherwise be indistinguishable from these.
         envelope.has_origin_gateway_id = true;
         envelope.origin_gateway_id = gateway_ids::order_gateway;
+        // Which instance of this protocol. The protocol id alone stopped identifying a
+        // process once a protocol could run more than one.
+        envelope.has_gateway_instance_id = true;
+        envelope.gateway_instance_id = config_.instance_id;
         if (!sender_comp_id.empty()) {
             envelope.has_sender_comp_id = true;
             envelope.sender_comp_id = sender_comp_id;

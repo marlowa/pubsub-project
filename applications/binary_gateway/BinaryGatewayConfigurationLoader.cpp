@@ -46,6 +46,21 @@ BinaryGatewayConfigurationLoader::load_and_init_logging(const std::string& file_
     };
 
     toml.get_required_except("network.listen_host", config.listen_host);
+
+    // Optional, defaulting to 1: a deployment running a single instance of this
+    // protocol needs no such line, and that is every deployment until step 3. The
+    // sequencer reports a mismatch loudly, so a wrong value fails visibly rather
+    // than by reports quietly going missing.
+    int32_t instance_id = 1;
+    const auto [has_instance_id, instance_id_error] = toml.get_required("gateway.instance_id", instance_id);
+    if (!has_instance_id) {
+        instance_id = 1;
+    }
+    if (instance_id < 1 || instance_id > INT16_MAX) {
+        throw pubsub_itc_fw::ConfigurationException("BinaryGatewayConfigurationLoader: gateway.instance_id must be 1 or greater "
+                                                    "(instances are numbered from 1)");
+    }
+    config.instance_id = static_cast<int16_t>(instance_id);
     toml.get_required_except("network.er_listen_host", config.er_listen_host);
     toml.get_required_except("sequencer.ha_enabled", config.ha_enabled);
     toml.get_required_except("sequencer.primary_host", config.sequencer_primary_host);

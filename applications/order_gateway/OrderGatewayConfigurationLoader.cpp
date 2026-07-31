@@ -42,6 +42,21 @@ OrderGatewayConfigurationLoader::load_and_init_logging(const std::string& file_p
         toml.get_required_except("network.er_listen_host", config.er_listen_host);
         toml.get_required_except("authentication_service.host", config.authentication_service_host);
         toml.get_required_except("fix_session.sender_comp_id", config.sender_comp_id);
+
+        // Optional, defaulting to 1: a deployment running a single instance of this
+        // protocol needs no such line, and that is every deployment until step 3. The
+        // sequencer reports a mismatch loudly, so a wrong value fails visibly rather
+        // than by reports quietly going missing.
+        int32_t instance_id = 1;
+        const auto [has_instance_id, instance_id_error] = toml.get_required("gateway.instance_id", instance_id);
+        if (!has_instance_id) {
+            instance_id = 1;
+        }
+        if (instance_id < 1 || instance_id > INT16_MAX) {
+            throw pubsub_itc_fw::ConfigurationException("OrderGatewayConfigurationLoader: gateway.instance_id must be 1 or greater "
+                                                        "(instances are numbered from 1)");
+        }
+        config.instance_id = static_cast<int16_t>(instance_id);
         toml.get_required_except("fix_session.default_target_comp_id", config.default_target_comp_id);
         toml.get_required_except("timeouts.logon_timeout", config.logon_timeout);
         toml.get_required_except("timeouts.scram_auth_timeout", config.scram_auth_timeout);

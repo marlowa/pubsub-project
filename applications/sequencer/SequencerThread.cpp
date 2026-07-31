@@ -1157,6 +1157,22 @@ void SequencerThread::flush_pending_er() {
 void SequencerThread::send_er_to_origin_gateway(int16_t protocol, int16_t instance, int64_t er_seq_no, const pubsub_itc_fw_app::WalRecord& envelope) {
     const pubsub_itc_fw::ConnectionID* connection = gateway_connection(protocol, instance);
     if (connection == nullptr) {
+        // Distinguish "configured but not currently connected", which is transient and
+        // resolves when the gateway reconnects, from "never configured", which never
+        // resolves and means a gateway is submitting orders whose reports can go nowhere.
+        // The second is a deployment error worth naming loudly and exactly once per pair,
+        // rather than once per report -- a busy gateway would otherwise flood the log with
+        // the same misconfiguration.
+        const bool configured = std::any_of(config_.gateway_endpoints.begin(), config_.gateway_endpoints.end(), [protocol, instance](const auto& endpoint) {
+            return endpoint.protocol == protocol && endpoint.instance == instance;
+        });
+        if (!configured && unknown_gateways_warned_.insert(gateway_key(protocol, instance)).second) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                       "SequencerThread: orders received from gateway protocol={} instance={}, which is not in this sequencer's [[gateway]] "
+                       "configuration -- its execution reports cannot be delivered anywhere. Check the gateway's instance_id against the "
+                       "sequencer's endpoints.",
+                       protocol, instance);
+        }
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: gateway protocol={} instance={} not connected -- dropping ER seq={}",
                    protocol, instance, er_seq_no);
         return;

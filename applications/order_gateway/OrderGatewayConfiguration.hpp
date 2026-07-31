@@ -26,6 +26,21 @@ namespace order_gateway {
  * All fields have sensible defaults suitable for local development.
  */
 struct OrderGatewayConfiguration {
+    /**
+     * @brief Which instance of this gateway protocol this process is, numbered from 1.
+     *
+     * Stamped onto every order envelope beside the protocol id. A protocol may run as
+     * several instances for availability, and a session connection id is only unique
+     * within one process, so it is the triple (protocol, instance, connection) that
+     * identifies a session venue-wide and lets the sequencer route the execution report
+     * back to the process the order arrived on.
+     *
+     * Must match a [[gateway]] entry in the sequencer's configuration; the sequencer
+     * warns if it sees a pair it has no endpoint for, because it cannot deliver reports
+     * to a gateway it was never told about.
+     */
+    int16_t instance_id{1};
+
     // Inbound FIX listener
 
     /** @brief Host address on which the gateway listens for FIX client connections. */

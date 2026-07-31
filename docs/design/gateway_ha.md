@@ -55,10 +55,20 @@ reused. That was overstated and has been corrected: the project is pre-1.0 and m
 compatibility promise across releases, so a WAL from an older build is discarded rather than
 replayed. Reusing a value is worth avoiding, not forbidden.
 
-**`origin_gateway_id` is optional, and the FIX gateway never sets it.** It never constructs a
-`WalRecord` at all — it sends a bare `NewOrderSingle` and the sequencer wraps it. So
-`gateway_ids::default_when_absent` is not a compatibility fallback: it covers a path on which
-nothing upstream could stamp an origin. This is the fact that shapes step 2.
+**Both gateways stamp `origin_gateway_id` on every order.** The FIX gateway does it in
+`forward_order_in_envelope`, a template in `OrderGatewayThread.hpp`; the binary gateway does it
+at two sites in `BinaryGatewayThread.cpp`.
+
+An earlier version of this document claimed the FIX gateway never constructs a `WalRecord` and
+that `gateway_ids::default_when_absent` therefore covered a structural gap. **That was wrong** —
+it came from grepping the `.cpp` and missing the template in the header. The default covers
+records that have no gateway origin at all, which is a real category: `has_origin_gateway_id` is
+set conditionally on there being a session connection, so execution reports and replayed records
+can legitimately carry none.
+
+That correction matters because it makes the fields **optional by design, not by legacy**. An
+earlier draft proposed making both required; that would force a meaningless protocol and instance
+onto every record that never came from a gateway.
 
 
 **The sequencer dials a fixed pair of endpoints.** `SequencerConfiguration` holds scalars —
@@ -131,9 +141,20 @@ The session is then identified venue-wide by the triple
 collision fix that motivated connection-id routing in the first place — a connection identifies
 exactly one session and cannot collide — while making the identity unambiguous across instances.
 
-Both fields are **required** in the end state. Neither is self-reported by a gateway: step 2 has
-the sequencer derive them from the connection a PDU arrived on, which is the only way the FIX path
-can supply them at all.
+Both fields stay **optional**, because not every `WalRecord` has a gateway origin. What is
+guaranteed is that a gateway always sets both: each gateway process carries its own
+`gateway.instance_id` in configuration and stamps it beside the protocol on every order envelope.
+
+Attribution from the arrival connection was considered and rejected as unnecessary. It would have
+needed an announce PDU on connect, because the sequencer listens on one port and accepts, so it
+cannot otherwise tell instances apart. Since both gateways already stamp per message, the
+announce would buy only that a gateway could not misreport its own identity — a weak argument
+between venue components — at the cost of a protocol addition and per-connection state.
+
+What that would also have bought, a validation point, is kept without it: the sequencer warns
+once per unrecognised `(protocol, instance)` pair when it has orders to answer but no configured
+endpoint, naming the pair and the likely cause. Once per pair rather than once per report, so a
+busy gateway cannot flood the log with the same misconfiguration.
 
 
 ### Sequencer endpoint collection
@@ -249,25 +270,30 @@ Each step leaves the system working.
    and their round-trip tests. No behaviour change. **Done** — committed as an *optional* field
    with absent-means-1, which step 2 replaces with a required field once the sequencer can supply
    it on every path. The optional form is a staging post, not the intended end state.
-2. **Sequencer endpoint collection, and origin attributed from the connection.** Scalars to a
-   list; `send_er_to_origin_gateway` looks up `(protocol, instance)`. Environment TOMLs updated.
+2. **Sequencer endpoint collection, and gateways stamping their instance.** **Done.**
 
-   This step also carries a correction found while doing step 1. **The FIX gateway never
-   constructs a `WalRecord`.** It sends a bare `NewOrderSingle` and the sequencer wraps it, which
-   is why `origin_gateway_id` is optional and why `gateway_ids::default_when_absent` exists — not
-   for compatibility, but because on that path nothing upstream could stamp an origin. A required
-   `gateway_instance_id` therefore cannot be satisfied on the FIX path at all.
+   2a: the sequencer's scalar gateway host/port pairs and the `binary_gateway.enabled` flag
+   become a `[[gateway]]` array of tables, each entry carrying protocol, instance, host, port and
+   its own `enabled` flag. `gateway_conn_ids_` is rekeyed on `(protocol, instance)` and
+   `send_er_to_origin_gateway` takes both axes. Duplicate pairs are rejected at load.
 
-   The answer is that **origin is a property of the arrival connection, not of the payload.** The
-   sequencer knows which of its gateway connections a PDU came in on, and once the endpoints are a
-   keyed collection, the connection to `(protocol, instance)` mapping falls out of the same
-   configuration. That is better than gateways self-reporting: it works for both protocols without
-   the FIX gateway growing an envelope it does not otherwise need, and a gateway cannot misreport
-   its own identity.
+   2b: each gateway process carries `gateway.instance_id` in its configuration and stamps it onto
+   every order envelope beside the protocol id.
 
-   Both fields then become **required** on the envelope, carried where they are actually needed —
-   in the WAL and on the outbound execution report, for routing and audit — and
-   `default_when_absent` goes away.
+   An earlier draft of this step proposed attributing origin from the arrival connection instead,
+   via an announce PDU sent on connect. That was dropped: it rested on the mistaken belief that
+   the FIX gateway sends bare orders and could not stamp an origin. Both gateways already stamp
+   per message, so the announce would have bought only that a gateway cannot misreport its own
+   identity — weak between venue components — at the cost of a protocol addition and
+   per-connection state.
+
+   Its one genuine benefit, a validation point, is kept without it: the sequencer logs an error
+   once per unrecognised `(protocol, instance)` pair for which it has reports but no configured
+   endpoint, naming the pair and the likely cause. Once per pair rather than once per report.
+
+   Still missing: the loader has no unit test, there being no sequencer configuration loader test
+   to extend. Worth adding before step 3 runs two instances for real.
+
 3. **Run two FIX gateway instances in dev.** The first point at which the SPOF is actually
    reduced, and the first honest test of steps 1 and 2. Expect this to surface things this document
    has not predicted.

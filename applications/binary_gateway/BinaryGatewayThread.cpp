@@ -538,6 +538,8 @@ void BinaryGatewayThread::forward_order_in_envelope(int16_t inner_pdu_id, const 
     envelope.gateway_session_conn_id = session.conn_id.get_value();
     envelope.has_origin_gateway_id = true;
     envelope.origin_gateway_id = gateway_ids::binary_gateway;
+    envelope.has_gateway_instance_id = true;
+    envelope.gateway_instance_id = config_.instance_id;
     if (!session.comp_id.empty()) {
         envelope.has_sender_comp_id = true;
         envelope.sender_comp_id = session.comp_id;
@@ -783,6 +785,8 @@ void BinaryGatewayThread::drain_pending_cancels() {
             envelope.gateway_session_conn_id = dead.session_conn_id;
             envelope.has_origin_gateway_id = true;
             envelope.origin_gateway_id = gateway_ids::binary_gateway;
+            envelope.has_gateway_instance_id = true;
+            envelope.gateway_instance_id = config_.instance_id;
             if (!dead.comp_id.empty()) {
                 envelope.has_sender_comp_id = true;
                 envelope.sender_comp_id = dead.comp_id;
