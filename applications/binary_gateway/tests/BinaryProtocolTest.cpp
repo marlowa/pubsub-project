@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -151,6 +152,80 @@ TEST_F(BinaryProtocolTest, GatewayIdsAreDistinctAndStable) {
     EXPECT_EQ(gateway_ids::order_gateway, 1);
     EXPECT_EQ(gateway_ids::binary_gateway, 2);
     EXPECT_NE(gateway_ids::order_gateway, gateway_ids::binary_gateway);
+}
+
+// origin_gateway_id names a protocol, not a process, and cannot be made to mean
+// anything else -- its values are already on disk. Running two instances of the same
+// protocol therefore needs a second axis, which gateway_instance_id supplies. The
+// triple (protocol, instance, connection) is what identifies a session venue-wide.
+TEST_F(BinaryProtocolTest, EnvelopeCarriesTheOriginatingGatewayInstance) {
+    const std::vector<uint8_t> order_payload{4, 5, 6};
+
+    pubsub_itc_fw_app::WalRecord envelope{};
+    envelope.pdu_id = static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle);
+    envelope.payload.data = order_payload.data();
+    envelope.payload.size = order_payload.size();
+    envelope.has_gateway_session_conn_id = true;
+    envelope.gateway_session_conn_id = 11;
+    envelope.has_origin_gateway_id = true;
+    envelope.origin_gateway_id = gateway_ids::order_gateway;
+    envelope.has_gateway_instance_id = true;
+    envelope.gateway_instance_id = 2;
+    const std::vector<uint8_t> wire = encode_message(envelope);
+
+    pubsub_itc_fw::BumpAllocator arena(arena_buffer_.data(), arena_buffer_.size());
+    size_t bytes_consumed = 0;
+    size_t arena_bytes_needed = 0;
+    pubsub_itc_fw_app::WalRecordView view{};
+    ASSERT_TRUE(pubsub_itc_fw_app::decode(view, wire.data(), wire.size(), bytes_consumed, arena, arena_bytes_needed));
+
+    ASSERT_TRUE(view.has_gateway_instance_id);
+    EXPECT_EQ(view.gateway_instance_id, 2);
+    EXPECT_EQ(view.origin_gateway_id, gateway_ids::order_gateway);
+    EXPECT_EQ(view.gateway_session_conn_id, 11);
+}
+
+// The same compatibility promise origin_gateway_id makes: the field is optional and
+// trailing, so every record written before it existed still decodes, and its absence
+// means the only instance that was running at the time.
+TEST_F(BinaryProtocolTest, EnvelopeWithoutAnInstanceIdStillDecodesAndMeansInstanceOne) {
+    const std::vector<uint8_t> order_payload{7, 8};
+
+    pubsub_itc_fw_app::WalRecord envelope{};
+    envelope.pdu_id = static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle);
+    envelope.payload.data = order_payload.data();
+    envelope.payload.size = order_payload.size();
+    envelope.has_gateway_session_conn_id = true;
+    envelope.gateway_session_conn_id = 5;
+    envelope.has_origin_gateway_id = true;
+    envelope.origin_gateway_id = gateway_ids::binary_gateway;
+    // Left unset, reproducing the bytes every writer produced before this field existed.
+    envelope.has_gateway_instance_id = false;
+    const std::vector<uint8_t> wire = encode_message(envelope);
+
+    pubsub_itc_fw::BumpAllocator arena(arena_buffer_.data(), arena_buffer_.size());
+    size_t bytes_consumed = 0;
+    size_t arena_bytes_needed = 0;
+    pubsub_itc_fw_app::WalRecordView view{};
+    ASSERT_TRUE(pubsub_itc_fw_app::decode(view, wire.data(), wire.size(), bytes_consumed, arena, arena_bytes_needed));
+
+    EXPECT_FALSE(view.has_gateway_instance_id);
+    EXPECT_EQ(view.origin_gateway_id, gateway_ids::binary_gateway);
+    EXPECT_EQ(view.gateway_session_conn_id, 5);
+    EXPECT_EQ(gateway_ids::default_instance_when_absent, gateway_ids::first_instance);
+    EXPECT_EQ(gateway_ids::first_instance, 1);
+}
+
+// Instances are numbered per protocol, so instance 1 of the FIX gateway and instance 1
+// of the binary gateway are different sessions and must not be conflated. It is the
+// pair that disambiguates, which is why the instance id could not simply extend the
+// existing gateway id space.
+TEST_F(BinaryProtocolTest, InstanceIdsAreScopedToTheirProtocol) {
+    const auto session_key = [](int16_t gateway, int16_t instance, int32_t connection) { return std::make_tuple(gateway, instance, connection); };
+
+    EXPECT_NE(session_key(gateway_ids::order_gateway, 1, 7), session_key(gateway_ids::binary_gateway, 1, 7));
+    EXPECT_NE(session_key(gateway_ids::order_gateway, 1, 7), session_key(gateway_ids::order_gateway, 2, 7));
+    EXPECT_EQ(session_key(gateway_ids::order_gateway, 1, 7), session_key(gateway_ids::order_gateway, 1, 7));
 }
 
 } // namespaces

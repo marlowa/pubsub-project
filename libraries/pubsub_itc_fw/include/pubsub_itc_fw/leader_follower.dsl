@@ -174,6 +174,14 @@ message WalRecord (id=103, version=1)
     # is what identifies a client session. Absent means gateway 1, so records written before
     # this field decode and route unchanged.
     optional i16 origin_gateway_id
+    # Which *instance* of that gateway. origin_gateway_id names a protocol -- the ASCII FIX
+    # gateway or the binary one -- and stays that way, because its values are already baked
+    # into every WAL record written. Running two instances of the same protocol needs a second
+    # axis, and this is it. The triple (origin_gateway_id, gateway_instance_id,
+    # gateway_session_conn_id) identifies a client session venue-wide.
+    # Absent means instance 1, so every record written before this field decodes and routes
+    # unchanged. See docs/design/gateway_ha.md.
+    optional i16 gateway_instance_id
 end
 
 # ------------------------------------------------------------
