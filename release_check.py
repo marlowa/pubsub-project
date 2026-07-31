@@ -212,14 +212,21 @@ def stage_rocky(args) -> tuple[bool, str]:
         "-v", f"{args.deps_volume}:{CONTAINER_DEPS}",
         ROCKY_IMAGE,
         "-lc",
-        # The image ships no Java or Maven, so those are skipped here and covered by
-        # the local stage instead. Everything else runs.
-        # A separate build directory: the repo is bind-mounted, so building into
-        # ./build would leave gcc-8.5 objects where the host build expects its own,
-        # and the next local build would silently mix the two. build-rocky/ is
-        # already covered by the build-*/ gitignore rule.
+        # devsetup.py rather than build.py: devsetup runs build, release and deploy, and
+        # this stage previously ran only the build. That gap let a real bug through. When
+        # the staging directory became platform-qualified, release.py still looked for a
+        # hardcoded "installed" and failed on RHEL8 -- because the only stage that runs the
+        # release step runs it on the development host, where the name happens to be right.
+        # A stage that runs a narrower command than the real workflow tests less than its
+        # name implies.
+        #
+        # The image ships no Java or Maven, so those are skipped here and covered by the
+        # local stage instead. A separate build directory is essential: the repo is
+        # bind-mounted, so building into ./build would leave gcc-8.5 objects where the host
+        # build expects its own. build-rocky/ is covered by the build-*/ gitignore rule.
         f"cd {CONTAINER_WORKSPACE} && {environment} "
-        f"python3 build.py --clean --no-java -j{args.jobs} --build-dir build-rocky",
+        f"python3 devsetup.py --clean --skip-db --skip-certs --no-java "
+        f"-j{args.jobs} --build-dir build-rocky",
     ]
     code, out = run(command, timeout=args.build_timeout)
     return code == 0, tail(out, 40)

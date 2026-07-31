@@ -61,6 +61,10 @@ def main() -> None:
     build_group = parser.add_argument_group("build options")
     build_group.add_argument("--clean", action="store_true",
         help="clean before building")
+    build_group.add_argument("--build-dir", metavar="DIR",
+        help="build directory, forwarded to build.py. Needed when building for a "
+             "different target platform in a container: the repo is bind-mounted, so "
+             "without this a gcc-8.5 build writes over the host's build tree.")
     build_group.add_argument("--no-tests", action="store_true",
         help="skip all tests")
     build_group.add_argument("--no-cpp-tests", action="store_true",
@@ -125,6 +129,8 @@ def main() -> None:
         build_cmd.append("--no-pytest")
     if args.jobs:
         build_cmd += ["-j", str(args.jobs)]
+    if args.build_dir:
+        build_cmd += ["--build-dir", args.build_dir]
     _run(build_cmd, "Step 1/4: build")
 
     # Step 2: release
