@@ -224,23 +224,39 @@ survive the instance change — otherwise the backup starts at 1 and the member 
 break it cannot reconcile. It belongs with the session's provisioned state, alongside the primary
 and backup assignment.
 
-### Does cancel-on-disconnect stay?
+### Cancel-on-disconnect: configurable per comp id, with a grace period
 
-**Open, and it needs deciding before implementation.** Cancel-on-disconnect is built and working
-today. It is also the standard venue answer to the risk half of a gateway failure — a member that
-cannot reach the venue cannot manage its exposure, so the venue flattens it.
+**Decided 2026-07-31.** It stays, becomes configurable per comp id, and gains a configurable
+grace period.
 
-It sits awkwardly with "in-flight reports survive": if every order is cancelled the moment the
-connection drops, then what survives to be recovered is the *history* — fills that happened before
-the cancel, and the cancel reports themselves — rather than working orders the member can continue
-to manage. That is still worth having and members do expect it. But if the intent is that a member
-reconnects to its backup and finds its book intact, cancel-on-disconnect has to become
-configurable, and probably per comp id.
+Today it is unconditional and immediate. `queue_session_for_cleanup` cancels every open order the
+moment a connection drops; the 1ms drain timer paces the emission at 500 per batch and is not a
+delay before cancelling.
 
-The two are not in conflict; they answer different questions. But the answer changes what the
-recovery path is *for*, so it should be settled before the work starts.
+**The grace period is not a refinement, it is what makes gateway failover coherent.** As things
+stand, when a gateway process dies every session on it drops and every member's book is flattened
+immediately. Run two instances, kill one, and the high-availability mechanism produces exactly the
+outcome high availability exists to prevent. The reconnect window and the cancel delay are the
+same number: if cancellation waits long enough for a member to reach its backup, a gateway failure
+becomes a reconnect, some replayed reports, and a book still standing.
 
----
+This is therefore not a separate question from steps 4-6. It is the same question.
+
+What venues do, and what this follows:
+
+- **Configurable per session or comp id**, applied at provisioning rather than toggled by the
+  client. Here that means the admin service and the database, which already own comp-id
+  provisioning -- so a Liquibase changeset, a DAO field and an admin UI control.
+- **Default on.** An unmanaged book behind a dead session is the worse failure.
+- **A grace period before cancelling**, defaulting to comfortably longer than a FIX reconnect.
+- **Persistent order types excluded.** GTC and GTD are by definition meant to outlive the session;
+  killing them because a socket dropped defeats what the member asked for. TimeInForce is already
+  carried in the data dictionary, so the information is to hand.
+- **A clean Logout treated differently from an unexpected drop.** A member that logs out has said
+  what it wants; a socket that vanished has not.
+
+The last two are recommendations rather than settled decisions.
+
 
 ## What this does not solve
 
@@ -294,9 +310,19 @@ Each step leaves the system working.
    Still missing: the loader has no unit test, there being no sequencer configuration loader test
    to extend. Worth adding before step 3 runs two instances for real.
 
-3. **Run two FIX gateway instances in dev.** The first point at which the SPOF is actually
-   reduced, and the first honest test of steps 1 and 2. Expect this to surface things this document
-   has not predicted.
+3. **Run two FIX gateway instances in dev.** The first point at which the single point of failure
+   is actually reduced rather than described, and the first honest test of steps 1 and 2. Needs
+   `gateway.instance_id` in the gateway app TOMLs, a second order-gateway component in the
+   environment with its own ports, a second `[[gateway]]` entry in the sequencer configuration,
+   and devenv launching it. Expect this to surface things this document has not predicted.
+
+3b. **Cancel-on-disconnect made configurable, with a grace period.** Decided 2026-07-31; see the
+   section above. Sequenced here rather than with steps 4-6 because without the grace period, a
+   gateway failover flattens every book on the failed instance -- so step 3 demonstrates the
+   failure mode, and this is what makes the demonstration worth having. Spans a Liquibase
+   changeset, a comp-id DAO field, an admin UI control, gateway configuration and the cancel path
+   itself.
+
 4. **Session provisioning.** Primary and backup per comp id in the admin service and database;
    gateways reject a logon at an instance a session is not provisioned for.
 5. **Re-key the routing entry** on session identity with the connection triple as destination.
@@ -309,8 +335,6 @@ decision and are the larger half.
 
 ## Open questions
 
-- Does cancel-on-disconnect stay, become configurable, or go? See above — it changes what recovery
-  is for.
 - What does a member nominate as its recovery position? FIX gives `BeginSeqNo` on the
   ResendRequest, which is a session-level sequence number and not the sequencer's. The mapping
   between the two has to live somewhere, and that somewhere is probably the session state that
