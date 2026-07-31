@@ -381,6 +381,7 @@ arbiter_secondary_host        = "127.0.0.1"
 arbiter_secondary_port        = 11201
 
 [order_gateway]
+gateway_instance_id        = 1
 network_listen_host                   = "127.0.0.1"
 network_listen_port                   = 9879
 network_tls_listen_port               = 9880
@@ -405,6 +406,7 @@ open_order_pool_objects_per_pool      = 4096
 open_order_pool_initial_pools         = 1
 
 [binary_gateway]
+gateway_instance_id        = 1
 authentication_service_host           = "127.0.0.1"
 authentication_service_port           = 11070
 authentication_service_secondary_host = "127.0.0.1"

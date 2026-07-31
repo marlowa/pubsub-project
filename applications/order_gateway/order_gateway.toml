@@ -27,6 +27,15 @@ primary_port    = ${order_gateway_sequencer_primary_port}
 secondary_host  = "${order_gateway_sequencer_secondary_host}"
 secondary_port  = ${order_gateway_sequencer_secondary_port}
 
+[gateway]
+# Which instance of this gateway protocol this process is, numbered from 1. Stamped onto
+# every order envelope beside the protocol id, so the sequencer can route the execution
+# report back to the process the order arrived on rather than merely to the right protocol.
+#
+# Must match a [[gateway]] entry in the sequencer's configuration. The sequencer logs an
+# error naming the pair if it has reports for an instance it was never told about.
+instance_id = ${order_gateway_gateway_instance_id}
+
 [fix_session]
 sender_comp_id         = "GATEWAY"
 default_target_comp_id = "CLIENT"

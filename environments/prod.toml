@@ -300,6 +300,7 @@ sequencer_er_secondary_host   = "sequencer-secondary.exchange.internal"  # REPLA
 sequencer_er_secondary_port   = 11022
 
 [order_gateway]
+gateway_instance_id        = 1
 network_listen_host                   = "0.0.0.0"
 network_listen_port                   = 9879
 network_er_listen_host                = "0.0.0.0"
@@ -314,6 +315,7 @@ sequencer_secondary_host              = "sequencer-secondary.exchange.internal" 
 sequencer_secondary_port              = 11002
 
 [binary_gateway]
+gateway_instance_id        = 1
 authentication_service_host           = "auth-primary.exchange.internal"    # REPLACE
 authentication_service_port           = 11070
 authentication_service_secondary_host = "auth-secondary.exchange.internal"  # REPLACE
