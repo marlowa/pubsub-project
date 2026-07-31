@@ -65,7 +65,7 @@ FREQ             = 99      # perf sample frequency (Hz)
 # Processes to profile; set to None to profile all launched processes.
 # Profiling arbiters, the witness, and both sequencers with DWARF is expensive
 # and rarely useful; the hot path is gateway and ME.
-PERF_TARGETS     = {"order_gateway", "matching_engine_primary"}
+PERF_TARGETS     = {"order_gateway_a", "matching_engine_primary"}
 
 # The binary gateway's client listener, and the burst size both load tools use.
 # 1000 is fix8's "T" command, so --burst means the same thing for either gateway.
@@ -146,6 +146,54 @@ def write_scram_credential(creds_file: Path, comp_id: str, password: str) -> Non
     result = header + "".join(f"[[credential]]{b}" for b in kept) + new_block
     creds_file.write_text(result)
     log(f"  SCRAM credential for '{comp_id}' (password={password!r}) written to {creds_file.name}")
+
+
+# ── FIX gateway instances ─────────────────────────────────────────────────────
+# The FIX gateway runs as several instances (order_gateway_a, order_gateway_b, ...) so
+# that losing one does not take every session with it. They listen on different ports,
+# so driving a chosen instance means pointing f8test at that port.
+#
+# f8test takes its target from an XML session config that lives in the fix8 installation,
+# outside this repo. Rather than requiring a hand-maintained file per instance -- which
+# would drift from the deployed configuration -- the port is read from the instance's own
+# deployed TOML and written into a generated copy of the config.
+
+def fix_gateway_listen_port(prefix: Path, instance: str) -> int:
+    """Read an instance's plain FIX listen port from its deployed configuration."""
+    config = prefix / "etc" / "order_gateway" / f"order_gateway_{instance}.toml"
+    if not config.is_file():
+        die(f"order_gateway_{instance} config not found: {config}\n"
+            f"       is instance '{instance}' deployed in this environment?")
+    for line in config.read_text().splitlines():
+        match = re.match(r"\s*listen_port\s*=\s*(\d+)", line)
+        if match:
+            return int(match.group(1))
+    die(f"no listen_port in {config}")
+    return 0  # unreachable; die() exits
+
+
+def fix8_config_for_instance(prefix: Path, instance: str) -> str:
+    """Return the name of an f8test config aimed at the given gateway instance.
+
+    Instance 'a' uses the stock config unchanged, so the common case behaves exactly as
+    before. Any other instance gets a generated copy with the port rewritten, written
+    beside the original because f8test resolves the name relative to its own directory.
+    """
+    if instance == "a":
+        return FIX8_CFG
+
+    port = fix_gateway_listen_port(prefix, instance)
+    source = FIX8_DIR / FIX8_CFG
+    if not source.is_file():
+        die(f"fix8 session config not found: {source}")
+
+    generated_name = f"myfix_gateway_client_{instance}.xml"
+    rewritten, count = re.subn(r'port="\d+"', f'port="{port}"', source.read_text(), count=1)
+    if count == 0:
+        die(f"no port attribute to rewrite in {source}")
+    (FIX8_DIR / generated_name).write_text(rewritten)
+    log(f"fix8 config for instance {instance}: {generated_name} -> port {port}")
+    return generated_name
 
 
 def ensure_fix8_credentials(creds_file: Path, comp_id: str, password: str,
@@ -579,7 +627,7 @@ def run_binary_load_session(bin_dir: Path, output_dir: Path, burst: int, clients
     log("  binary_load_client completed: every order acknowledged")
 
 
-def run_fix8_session(me_log: Path, gw_log: Path, burst: int, clients: int) -> None:
+def run_fix8_session(me_log: Path, gw_log: Path, burst: int, clients: int, fix8_config: str) -> None:
     """
     Start `clients` concurrent f8test processes, wait for all FIX sessions to
     log on, then send `burst` 'T' commands to each (each T = 1000 NOS).
@@ -601,7 +649,7 @@ def run_fix8_session(me_log: Path, gw_log: Path, burst: int, clients: int) -> No
     procs: list[subprocess.Popen] = []
     for i in range(clients):
         proc = subprocess.Popen(
-            [str(FIX8_BIN), "-c", FIX8_CFG, "-N", "GW1"],
+            [str(FIX8_BIN), "-c", fix8_config, "-N", "GW1"],
             cwd=str(FIX8_DIR),
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
@@ -664,6 +712,12 @@ def main() -> None:
                              "FIX gateway, driven by fix8's f8test.  'binary': the binary "
                              "gateway, driven by binary_load_client.  Both send the same "
                              "orders into the same book, so the two runs are comparable.")
+    parser.add_argument("--gateway-instance", choices=["a", "b"], default="a",
+                        help="Which FIX gateway instance to drive and profile (default: a). "
+                             "Both instances are launched either way, so the process set and "
+                             "therefore the machine's load is the same whichever is measured. "
+                             "f8test is pointed at the chosen instance's listen port, read from "
+                             "its deployed configuration. Ignored for --gateway binary.")
     parser.add_argument("--rate", type=int, default=0,
                         help="Orders per second per session (binary gateway only).  Omit for a "
                              "throughput test, which offers load faster than the pipeline "
@@ -694,9 +748,9 @@ def main() -> None:
     ts         = datetime.now().strftime("%Y%m%d_%H%M%S")
     perf_dir   = prefix / "perf" / ts
     me_log     = log_dir / "matching_engine_primary.log"
-    gw_log     = log_dir / "order_gateway.log"
+    gw_log     = log_dir / f"order_gateway_{args.gateway_instance}.log"
 
-    gw_config = prefix / "etc" / "order_gateway" / "order_gateway.toml"
+    gw_config = prefix / "etc" / "order_gateway" / f"order_gateway_{args.gateway_instance}.toml"
 
     preflight(prefix)
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -718,7 +772,8 @@ def main() -> None:
     log(f"  perf output    : {perf_dir}")
     cg_desc = f"{CALLGRAPH},{DWARF_STACK_SIZE}" if CALLGRAPH == "dwarf" else CALLGRAPH
     targets_desc = ("matching_engine_primary, "
-                    + ("binary_gateway" if args.gateway == "binary" else "order_gateway"))
+                    + ("binary_gateway" if args.gateway == "binary"
+                       else f"order_gateway_{args.gateway_instance}"))
     log(f"  call-graph     : {cg_desc}  (freq={FREQ} Hz, mmap={PERF_MMAP_SIZE})")
     log(f"  perf targets   : {targets_desc}")
     log(f"  gateway        : {args.gateway}")
@@ -761,7 +816,8 @@ def main() -> None:
         ("matching_engine_secondary", "matching_engine",    etc_dir / "matching_engine"       / "matching_engine_secondary.toml",None),
         ("sequencer_primary",      "sequencer",              etc_dir / "sequencer"             / "sequencer_primary.toml",                None),
         ("sequencer_secondary",    "sequencer",              etc_dir / "sequencer"             / "sequencer_secondary.toml",      None),
-        ("order_gateway",          "order_gateway",          etc_dir / "order_gateway"         / "order_gateway.toml",            etc_dir / "order_gateway"),
+        ("order_gateway_a",        "order_gateway",          etc_dir / "order_gateway"         / "order_gateway_a.toml",          etc_dir / "order_gateway"),
+        ("order_gateway_b",        "order_gateway",          etc_dir / "order_gateway"         / "order_gateway_b.toml",          etc_dir / "order_gateway"),
         ("binary_gateway",         "binary_gateway",         etc_dir / "binary_gateway"        / "binary_gateway.toml",           etc_dir / "binary_gateway"),
     ]
 
@@ -769,7 +825,8 @@ def main() -> None:
     # machine's load -- is the same in either run and the two are comparable. The idle one
     # does nothing but hold its listeners open.
     perf_targets = {"matching_engine_primary"}
-    perf_targets.add("binary_gateway" if args.gateway == "binary" else "order_gateway")
+    perf_targets.add("binary_gateway" if args.gateway == "binary"
+                     else f"order_gateway_{args.gateway_instance}")
 
     app_procs:  list[tuple[str, subprocess.Popen]] = []
     perf_procs: list[tuple[str, subprocess.Popen]] = []
@@ -807,7 +864,8 @@ def main() -> None:
         if args.gateway == "binary":
             run_binary_load_session(bin_dir, perf_dir, args.burst, args.clients, args.rate)
         else:
-            run_fix8_session(me_log, gw_log, args.burst, args.clients)
+            run_fix8_session(me_log, gw_log, args.burst, args.clients,
+                             fix8_config_for_instance(prefix, args.gateway_instance))
 
         log(f"Waiting {POST_ORDER_WAIT:.0f}s for pipeline to drain ...")
         time.sleep(POST_ORDER_WAIT)
