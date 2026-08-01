@@ -71,10 +71,12 @@ earlier draft proposed making both required; that would force a meaningless prot
 onto every record that never came from a gateway.
 
 
-**The sequencer dials a fixed pair of endpoints.** `SequencerConfiguration` holds scalars —
-`gateway_host`/`gateway_port` for the FIX gateway, `binary_order_gateway_host`/`binary_order_gateway_port` and
-a `binary_order_gateway_enabled` flag for the binary one. There is no collection, so there is nowhere to
-express a second instance of either.
+**The sequencer dialled a fixed pair of endpoints.** `SequencerConfiguration` held scalars —
+`gateway_host`/`gateway_port` for the FIX gateway, `binary_gateway_host`/`binary_gateway_port` and
+a `binary_gateway_enabled` flag for the binary one. There was no collection, so there was nowhere
+to express a second instance of either. *Superseded by step 2a: it is now a `[[gateway]]`
+collection keyed on `(protocol, instance)`, and dev configures four entries. Kept here because the
+rest of this section is the 2026-07-30 baseline the design was written against.*
 
 **An execution report for a disconnected gateway is dropped.**
 `SequencerThread::send_er_to_origin_gateway` logs `gateway id {} not connected -- dropping ER
@@ -96,6 +98,67 @@ introduced by going multi-gateway.
 The last two facts together describe the current behaviour honestly: when a member's connection
 drops, its orders are cancelled, and when it reconnects it is *not* told what happened — the
 reports are gap-filled away.
+
+---
+
+## What running two instances gives you today — and what it does not
+
+Steps 1-3 are done, so dev runs `fix_order_gateway_a`/`_b` and `binary_order_gateway_a`/`_b`. It
+is easy to read that as "the gateway is now HA". It is not, and the difference is worth stating
+plainly because the half that is missing is the half a member would notice.
+
+### What works, and is proven
+
+**Per-instance execution-report routing.** The sequencer holds every instance as a separate
+endpoint keyed on `(protocol, instance)` — services `gateway_1_1`, `gateway_1_2`, `gateway_2_1`,
+`gateway_2_2` — and sends each report back to the instance its order arrived on. Verified
+empirically on 2026-08-01, in both directions for both protocols: driving instance `b` produced
+`GW-PROGRESS` lines on `b` only, with `a` running and idle, and vice versa. This is the "complex
+routing" the multi-instance work existed to build, and it is correct.
+
+**Reduced single point of failure, for new sessions.** If instance `a` is down, a member
+configured for instance `b` logs on and trades normally. Nothing about `a`'s absence stops `b`.
+
+### What does not work
+
+**There is no load sharing.** Nothing distributes sessions between instances. There is no shared
+session registry, no least-loaded selection, no proxy in front. A member connects to the endpoint
+it was configured with, and that is the instance it uses. Two instances are redundancy plus
+capacity you divide by hand, not a balanced pool. Session provisioning (step 4) is what will make
+the division deliberate rather than incidental.
+
+**Instance `b` does not inherit anything from instance `a`.** There is no handover of any kind:
+
+- On losing a gateway connection, `SequencerThread::on_connection_lost` simply erases the entry
+  from `gateway_conn_ids_`. It does not reroute to another instance of the same protocol.
+- Every subsequent report for that instance hits the `connection == nullptr` branch of
+  `send_er_to_origin_gateway` and is logged and dropped: `gateway protocol=1 instance=1 not
+  connected -- dropping ER seq=N`. There is no outbound message store, so it is gone, not queued.
+- Instance `b` has no knowledge of `a`'s sessions, their open orders, or their sequence numbers.
+
+**And cancel-on-disconnect makes the two failure modes worse in opposite directions.**
+`queue_session_for_cleanup` fires the moment a client session drops and `drain_pending_cancels`
+sends an `OrderCancelRequest` for every resting order, immediately, unconditionally — no grace
+period, no per-comp-id switch. So:
+
+| What fails | What happens today |
+|---|---|
+| The client's connection to `a` drops, `a` survives | `a` cancels that session's entire book at once. The member reconnects — to `a` or to `b` — and finds itself flat. Its positions were closed by a network blip. |
+| The `a` process dies | No cancels are sent, because the process that would send them is dead. The orders stay resting in the matching engine, but no gateway holds their session and every report for them is dropped by the sequencer. The member reconnects to `b` and cannot see or cancel orders that are still live in the book. |
+
+The first is the cancel storm step 3b's grace period exists to prevent. The second is arguably
+worse — orphaned live orders are a real risk position that the member cannot manage — and it is
+what steps 4-6 (session provisioning, re-keyed routing, session-slice replay) exist to close.
+
+**Neither case is a regression.** Both follow from running more than one instance at all, which is
+exactly why the design sequences 3b immediately after step 3 rather than with the later work: step
+3 makes the failure demonstrable, and 3b is what makes the demonstration worth having.
+
+### The short version
+
+Two instances today mean *a venue that keeps trading when one gateway dies*. They do not yet mean
+*a session that survives its gateway dying*. Until steps 3b-6 land, treat instance `b` as a place
+for new sessions to go, not as a place old ones can be recovered.
 
 ---
 
