@@ -195,13 +195,22 @@ the reports never reach the gateway at all. It now asserts delivery positively �
 have sent at least one report per order **plus** one per cancel — and would have failed before the
 fix.
 
-**Still open, and not fixed here: `OrderKey` is one axis short too.** It keys the book on
-`(session_id, gateway_id, cl_ord_id)`, and its own documentation makes exactly the argument that
-now extends to instances: a connection id "is only unique within one gateway, because each
+**A third defect in the same family, also now fixed: `OrderKey` was one axis short.** It keyed the
+book on `(session_id, gateway_id, cl_ord_id)`, and its own documentation made exactly the argument
+that extends to instances: a connection id "is only unique within one gateway, because each
 gateway numbers its own client connections from its own counter". With two instances of one
-protocol, instance `a`'s connection 5 and instance `b`'s connection 5 are unrelated sessions that
-share a key, so a cancel from one could retire the other's order. That is about order *identity*
-rather than report *delivery*, which is why it is tracked separately rather than folded in here.
+protocol, instance `a`'s connection 5 and instance `b`'s connection 5 were unrelated sessions
+sharing a book key — so a second order with the same ClOrdID from the other instance was rejected
+as a duplicate, or a cancel from one session retired the other's order. Unlike the two above this
+one is about order *identity* rather than report *delivery*, and it became reachable the moment a
+second instance of any protocol started taking orders.
+
+`OrderKey` now carries `gateway_instance`, in the key, the equality and the hash.
+`OrderKey::make` takes it as a required parameter rather than a defaulted one: this axis was
+forgotten once already, and a default would let the next call site forget it silently instead of
+failing to compile. Four new tests cover it, mirroring the cross-gateway ones — two instances
+coexisting and cancelling independently, protocol and instance not being interchangeable, and
+absent meaning instance 1.
 
 ### The short version
 

@@ -152,11 +152,8 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // it is only unique within one gateway.
     void handle_new_order_single(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t seq_no, int64_t sequenced_at_ns, int32_t gateway_session_conn_id,
                                  int16_t origin_gateway_id, int16_t origin_gateway_instance);
-    // No instance parameter: a cancel looks the order up by OrderKey and its ER is routed
-    // by the echoed seq_no, so neither path needs it. OrderKey itself is still one axis
-    // short -- see the note on OrderKey -- but that is a separate defect from ER routing.
     void handle_order_cancel_request(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t seq_no, int64_t sequenced_at_ns,
-                                     int32_t gateway_session_conn_id, int16_t origin_gateway_id);
+                                     int32_t gateway_session_conn_id, int16_t origin_gateway_id, int16_t origin_gateway_instance);
     // Reusable scratch buffer for encoding an ExecutionReport before wrapping it in a
     // WalRecord envelope (send_er_to_sequencer). Grown to the largest ER seen and
     // reused -- no fixed cap that could silently drop an ER, no per-ER allocation.
