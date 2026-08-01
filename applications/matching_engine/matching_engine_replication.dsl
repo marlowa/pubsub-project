@@ -41,4 +41,11 @@ message BookUpdate(id=600)
     # one. Trailing and optional, so a replica running older code still decodes; absent
     # means the FIX order gateway, which is what every pre-existing entry came from.
     optional i16    origin_gateway_id
+    # Which *instance* of that gateway protocol. origin_gateway_id names a protocol, not
+    # a process, so once a protocol runs as more than one instance it is one axis short:
+    # instance a's connection 5 and instance b's connection 5 are unrelated sessions. A
+    # promoted secondary needs this to send its cancel-on-failover ERs to the process that
+    # actually holds the session, rather than to whichever instance is numbered 1.
+    # Trailing and optional, matching origin_gateway_id above; absent means instance 1.
+    optional i16    gateway_instance_id
 end

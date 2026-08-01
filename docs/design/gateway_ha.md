@@ -154,34 +154,54 @@ what steps 4-6 (session provisioning, re-keyed routing, session-slice replay) ex
 exactly why the design sequences 3b immediately after step 3 rather than with the later work: step
 3 makes the failure demonstrable, and 3b is what makes the demonstration worth having.
 
-### Two defects found while testing this
+### Two defects found while testing this — both now fixed
 
 `ha_test.py` scenario 18 (`fix_gateway_a_death`) was written to pin the no-handover behaviour
 above. Writing it turned up two separate defects, neither caused by the multi-instance work.
 
-**Cancel-on-failover execution reports are never delivered when the sequencer has a follower.**
+**Cancel-on-failover execution reports were never delivered when the sequencer had a follower.**
 The promoted matching engine sends each cancel ER with `seq_no = 0`, because the cancel is
 generated on promotion rather than driven by a sequenced order. But `SequencerThread::on_pdu`
-forwards an ER only once `wal_acked_seq_nos_` contains its seq_no, and no WalAck for seq_no 0 can
-ever arrive. So under `needs_wal_ack()` — `ha_enabled` with a follower connected, which is the
-normal configuration — every cancel ER is parked in `pending_er_` forever: not delivered, not
-dropped, and traced only by a `Debug` line that `applog_level = "info"` suppresses. **On ME
-failover the whole book is cancelled and no client is ever told.**
+forwarded an ER only once `wal_acked_seq_nos_` contained its seq_no, and no WalAck for seq_no 0
+can ever arrive. So under `needs_wal_ack()` — `ha_enabled` with a follower connected, which is
+the normal configuration — every cancel ER was parked in `pending_er_` forever: not delivered,
+not dropped, traced only by a `Debug` line that `applog_level = "info"` suppresses. And because
+`pending_er_` is keyed on the gate sequence, all of them collided on key 0 and only the first was
+even retained. **The whole book was cancelled and no client was ever told.**
 
-Scenario 16 does not catch this and reads as though it does: its assertion counts the *gateway's*
-`has no gateway_session_conn_id -- dropping` lines and requires zero, which passes vacuously when
-the reports never reach the gateway at all.
+Fixed by gating an ER that has no originating order sequence on **its own** WAL record instead.
+The follower acks every `WalRecord` it receives, so `er_wal_seq` is acked exactly as an order's
+seq_no is, and it is unique per ER so the keys no longer collide. That is strictly the stronger
+guarantee — the client learns of the cancel only once the backup holds the cancel record — and it
+is the "full two-tier commit of ERs" the code already noted as a follow-up, applied to the one
+case that had no working gate at all.
 
-**The matching engine never stores the gateway instance.** `OrderEntry` carries
-`gateway_session_conn_id` and `origin_gateway_id` but no instance. Its own comment says the
+**The matching engine did not store the gateway instance.** `OrderEntry` carried
+`gateway_session_conn_id` and `origin_gateway_id` but no instance. Its own comment said the
 connection id "alone is only unique within one gateway, so both are needed" — true before
-instances existed, one axis short now. A cancel-on-failover ER for an order placed through
-instance `b` is therefore addressed to instance 1, which is `a`. Latent only because the first
-defect stops these reports reaching the routing decision; fix that one alone and cancel reports
-start misrouting between instances.
+instances existed, one axis short afterwards. A cancel-on-failover ER for an order placed through
+instance `b` would have been addressed to instance 1, which is `a`, and delivered to whatever
+session happened to hold that connection id there: one client's report handed to another. Latent
+only because the first defect stopped these reports reaching the routing decision, so fixing that
+alone would have turned silence into misdelivery.
 
-Both need fixing as part of 3b, since 3b's grace period is meaningless if the cancel reports it
-governs cannot be delivered.
+Fixed by carrying the instance alongside the gateway id everywhere the id already travelled:
+`OrderEntry`, the `BookUpdate` replication message (a trailing optional field, as
+`origin_gateway_id` is), and the envelope `send_er_to_sequencer` stamps.
+
+Scenario 16 caught neither, and read as though it did: it counted the *gateway's*
+`has no gateway_session_conn_id -- dropping` lines and required 0, which passes vacuously when
+the reports never reach the gateway at all. It now asserts delivery positively — the gateway must
+have sent at least one report per order **plus** one per cancel — and would have failed before the
+fix.
+
+**Still open, and not fixed here: `OrderKey` is one axis short too.** It keys the book on
+`(session_id, gateway_id, cl_ord_id)`, and its own documentation makes exactly the argument that
+now extends to instances: a connection id "is only unique within one gateway, because each
+gateway numbers its own client connections from its own counter". With two instances of one
+protocol, instance `a`'s connection 5 and instance `b`'s connection 5 are unrelated sessions that
+share a key, so a cancel from one could retire the other's order. That is about order *identity*
+rather than report *delivery*, which is why it is tracked separately rather than folded in here.
 
 ### The short version
 

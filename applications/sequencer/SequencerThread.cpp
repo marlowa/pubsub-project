@@ -507,11 +507,12 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         // Canceled -- so they cannot share the order's seq). The stored/replicated/streamed
         // record is the WalRecord-wrapped ER; the routing conn id rides on the envelope
         // (the MEP unwraps and publishes only the inner DD-derived ER). Replay skips ER
-        // records (dispatch_replay_records only re-sends NOS/OCR). NOTE: the ER is
-        // forwarded to the gateway gated on the *order's* WalAck, not this ER record's own
-        // -- so at a failover instant a just-forwarded ER may be missing from the new
-        // leader's WAL (an execution_reports-topic gap at the seam). Full two-tier commit
-        // of ERs is a follow-up.
+        // records (dispatch_replay_records only re-sends NOS/OCR). NOTE: an ER driven by a
+        // sequenced order is forwarded to the gateway gated on the *order's* WalAck, not on
+        // this ER record's own -- so at a failover instant a just-forwarded ER may be
+        // missing from the new leader's WAL (an execution_reports-topic gap at the seam).
+        // Full two-tier commit of ordinary ERs is still a follow-up; ERs with no
+        // originating order sequence already gate on their own record, see below.
         const int64_t er_wal_seq = next_sequence_number_++;
         const int64_t er_wall_time_ns = config_.wall_clock->now_ns();
 
@@ -531,9 +532,31 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         send_wal_record(envelope);
         stream_wal_record_to_external_subscribers(envelope);
 
-        // Forward the envelope-wrapped ER to the originating gateway, gated on the follower
-        // having durably committed the *order's* WAL entry (er_seq_no). That gateway
-        // unwraps the envelope, reads gateway_session_conn_id, and routes to the session.
+        // Which WalAck releases this ER to the gateway.
+        //
+        // Ordinarily it is the *order's* WAL entry: do not tell a client its order
+        // executed until the follower has durably committed the order itself.
+        //
+        // An ER with no originating order sequence cannot use that rule. The
+        // cancel-on-failover ERs a promoted matching engine emits carry seq_no 0,
+        // because they are generated on promotion rather than driven by a sequenced
+        // order. Gating those on seq_no 0 waited for a WalAck that can never arrive:
+        // every one was parked in pending_er_ forever -- never delivered, never
+        // dropped, and traced only by the Debug line below. Worse, pending_er_ is
+        // keyed on the gate sequence, so all of them collided on key 0 and only the
+        // first was even retained; the rest were discarded outright. The whole book
+        // was cancelled and no client was ever told.
+        //
+        // They gate on the ER record's own WAL sequence instead. The follower acks
+        // every WalRecord it receives (see handle_peer_wal_record), so er_wal_seq is
+        // acked exactly as an order's seq_no is, and it is unique per ER so the keys
+        // no longer collide. This is strictly the stronger guarantee -- the client
+        // learns of the cancel only once the backup holds the cancel record itself --
+        // and it is the "full two-tier commit of ERs" noted above, applied to the one
+        // case that had no working gate at all.
+        const bool gate_on_own_record = (er_seq_no == 0);
+        const int64_t gate_seq_no = gate_on_own_record ? er_wal_seq : er_seq_no;
+
         if (!needs_wal_ack()) {
             send_er_to_origin_gateway(routing_gateway_id, routing_gateway_instance, er_seq_no, envelope);
             release_pdu_payload(message);
@@ -541,7 +564,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
                 seq_no_to_session_conn_id_.erase(er_seq_no);
             }
         } else {
-            auto acked_it = wal_acked_seq_nos_.find(er_seq_no);
+            auto acked_it = wal_acked_seq_nos_.find(gate_seq_no);
             if (acked_it != wal_acked_seq_nos_.end()) {
                 // Follower already acked this seq_no; forward immediately.
                 wal_acked_seq_nos_.erase(acked_it);
@@ -561,8 +584,9 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
                 pending.origin_gateway_id = routing_gateway_id;
                 pending.origin_gateway_instance = routing_gateway_instance;
                 pending.erase_routing_entry = erase_routing_entry;
-                PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: ER seq={} buffered -- awaiting WalAck from follower", er_seq_no);
-                pending_er_.emplace(er_seq_no, std::move(pending));
+                PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: ER seq={} buffered -- awaiting WalAck seq={} from follower",
+                           er_seq_no, gate_seq_no);
+                pending_er_.emplace(gate_seq_no, std::move(pending));
                 release_pdu_payload(message);
             }
         }

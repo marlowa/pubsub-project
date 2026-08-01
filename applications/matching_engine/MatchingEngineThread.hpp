@@ -95,6 +95,13 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
         // the id alone is only unique within one gateway, so both are needed to send a
         // cancel-on-failover ER back to the client that placed the order.
         int16_t origin_gateway_id{gateway_ids::default_when_absent};
+        // And which instance of that gateway. origin_gateway_id names a protocol, not a
+        // process; with a protocol running as several instances the pair above is still
+        // ambiguous, because each instance numbers its own connections. Without this a
+        // cancel-on-failover ER for an order placed through instance b is addressed to
+        // instance 1 and delivered to whatever session happens to hold that connection id
+        // there -- a report for one client handed to another.
+        int16_t origin_gateway_instance{gateway_ids::first_instance};
         pubsub_itc_fw_app::Side side{};
         pubsub_itc_fw_app::OrdType ord_type{};
         bool has_price{false};
@@ -144,7 +151,10 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // absent); origin_gateway_id says which gateway that connection id belongs to, since
     // it is only unique within one gateway.
     void handle_new_order_single(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t seq_no, int64_t sequenced_at_ns, int32_t gateway_session_conn_id,
-                                 int16_t origin_gateway_id);
+                                 int16_t origin_gateway_id, int16_t origin_gateway_instance);
+    // No instance parameter: a cancel looks the order up by OrderKey and its ER is routed
+    // by the echoed seq_no, so neither path needs it. OrderKey itself is still one axis
+    // short -- see the note on OrderKey -- but that is a separate defect from ER routing.
     void handle_order_cancel_request(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t seq_no, int64_t sequenced_at_ns,
                                      int32_t gateway_session_conn_id, int16_t origin_gateway_id);
     // Reusable scratch buffer for encoding an ExecutionReport before wrapping it in a
@@ -163,7 +173,7 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // ERs) rides on the envelope, so the ER PDU itself stays purely DD-derived. For
     // ordinary ERs the sequencer routes by the echoed seq_no, so no conn id is supplied.
     void send_er_to_sequencer(const pubsub_itc_fw_app::ExecutionReport& er, int64_t seq_no, std::optional<int32_t> gateway_session_conn_id = std::nullopt,
-                              int16_t origin_gateway_id = gateway_ids::default_when_absent);
+                              int16_t origin_gateway_id = gateway_ids::default_when_absent, int16_t origin_gateway_instance = gateway_ids::first_instance);
 
     const MatchingEngineConfiguration& config_;
 

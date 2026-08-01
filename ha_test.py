@@ -194,11 +194,6 @@ FIX8_LOGON_WAIT        = 3.0   # seconds for f8test to establish a FIX session
 LOG_POLL_INTERVAL      = 0.05  # seconds between log-file polls
 SHUTDOWN_TIMEOUT       = 5.0   # seconds per-process for SIGTERM grace period
 SETTLE_AFTER_FAILOVER  = 2.0   # seconds after failover confirmed (let conns stabilise)
-# Time for the promoted ME's cancel-on-failover ER burst to traverse ME -> sequencer
-# before the gateway-orphan scenario samples the gateway logs.  Only that scenario
-# needs it: every other me_ha scenario spends far longer than this sending Phase 5
-# recovery orders before it asserts anything.
-_CANCEL_ER_SETTLE      = 5.0
 SETTLE_AFTER_KILL      = 1.0   # seconds after a kill where no failover is expected
 
 FIX8_DIR = Path("/home/marlowa/mystuff/fix8_install")
@@ -1004,6 +999,13 @@ _SCENARIOS: list[Scenario] = [
     # Kill order matters: gateway a first, ME primary second. The reverse would let
     # the cancel ERs reach a before it died and prove nothing.
     #
+    # The first version of this scenario could not assert the drop, because the reports
+    # never reached the drop decision: cancel ERs carry seq_no 0 and the sequencer gated
+    # them on a WalAck for seq_no 0 that could never arrive, so they were parked forever
+    # (and, pending_er_ being keyed on that sequence, all but the first were discarded).
+    # That defect is fixed -- they now gate on their own WAL record -- which is what
+    # makes the drop assertion below reachable at all.
+    #
     # WHEN THE HANDOVER WORK LANDS (steps 3b-6), THIS TEST SHOULD FAIL, and the fix is
     # to invert the assertions rather than delete them: dropped_ers becomes 0, and
     # gateway b should show the recovered session's traffic instead of nothing.
@@ -1133,6 +1135,25 @@ def me_cancel_on_failover_count(log_path: Path, from_byte: int = 0,
                             return -1
         time.sleep(LOG_POLL_INTERVAL)
     return -1
+
+
+def gateway_progress_totals(log_path: Path) -> tuple[int | None, int]:
+    """Return (sent, nos_received) from the last GW-PROGRESS line, or (None, 0).
+
+    The gateway logs "GW-PROGRESS accounted=N sent=N dropped=N nos_received=N" once per
+    1000 accounted reports, so the last line carries the run totals. Used to assert that
+    execution reports were actually delivered, rather than merely not complained about.
+    """
+    try:
+        text = log_path.read_text(errors="replace")
+    except FileNotFoundError:
+        return None, 0
+    last = None
+    for match in re.finditer(r"GW-PROGRESS accounted=(\d+) sent=(\d+) dropped=(\d+) nos_received=(\d+)", text):
+        last = match
+    if last is None:
+        return None, 0
+    return int(last.group(2)), int(last.group(4))
 
 
 def count_log_marker(log_path: Path, marker: str, from_byte: int = 0) -> int:
@@ -2047,7 +2068,25 @@ def run_scenario(scenario: Scenario, args) -> bool:
             if dropped > 0:
                 die(f"ME-HA: gateway dropped {dropped} ExecutionReport(s) for a missing "
                     "gateway_session_conn_id -- cancel-on-failover ER routing via the envelope is broken")
-            log("  ME-HA: cancel-on-failover ERs routed to the client (none dropped) -- OK")
+
+            # "None dropped" is necessary but nowhere near sufficient, and on its own it
+            # passed for a long time while the cancel ERs were never delivered at all --
+            # a report that never reaches the gateway cannot be dropped by it. So assert
+            # delivery positively: the gateway must have sent MORE reports than it
+            # received orders, and the excess is the cancel burst.
+            sent, nos_received = gateway_progress_totals(gw_log)
+            if sent is None:
+                die("ME-HA: no GW-PROGRESS line in the gateway log -- cannot confirm the "
+                    "cancel-on-failover ERs were delivered")
+            if sent < nos_received + cancel_count:
+                die(f"ME-HA: gateway sent {sent} ER(s) for {nos_received} order(s), but "
+                    f"{cancel_count} cancel-on-failover ER(s) were emitted on promotion. "
+                    f"Expected at least {nos_received + cancel_count} -- the cancel reports "
+                    "did not reach the client. Check the WalAck gate in SequencerThread::on_pdu: "
+                    "cancel ERs carry seq_no 0 and must gate on their own WAL record, not on an "
+                    "order sequence that does not exist.")
+            log(f"  ME-HA: gateway delivered {sent} ER(s) for {nos_received} order(s) -- "
+                f"includes the {cancel_count} cancel-on-failover ER(s) -- OK")
 
         # ── Gateway orphan: no session handover between instances ─────────────
         # Asserts a GAP rather than a guarantee. Instance a is dead and the promoted
@@ -2074,22 +2113,25 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     "dead gateway, so this scenario asserted nothing")
             log(f"  gateway orphan: {cancel_count} resting order(s) cancelled by the promoted ME")
 
-            # Give the burst time to traverse ME -> sequencer -> (wherever it ends up)
-            # before sampling. Every other me_ha scenario gets this delay for free from
-            # Phase 5's recovery orders; this one skips Phase 5.
-            #
-            # NOT asserted here: that the sequencer logs dropping these reports. The
-            # first version of this test did, and it failed -- for a reason worth
-            # recording, because it is a separate defect from the one under test.
-            # Cancel-on-failover ERs carry seq_no 0 (MatchingEngineThread.cpp, "seq_no
-            # 0: these cancels are generated by the ME on promotion"). When the
-            # sequencer has a live follower, needs_wal_ack() is true and the ER is held
-            # in pending_er_ until a WalAck arrives for its seq_no -- and no WalAck for
-            # seq_no 0 ever arrives, because 0 is not a sequenced order. So these
-            # reports are neither delivered nor dropped; they are parked, and the only
-            # log line about it is at Debug. Asserting on the drop path would be
-            # asserting on code that this burst never reaches.
-            time.sleep(_CANCEL_ER_SETTLE)
+            # Wait for the burst to reach the sequencer rather than sampling straight
+            # away. Every other me_ha scenario gets this delay for free from Phase 5's
+            # recovery orders; this one skips Phase 5, and without the wait it sampled
+            # about two seconds after promotion and saw nothing.
+            drop_marker = "gateway protocol=1 instance=1 not connected -- dropping ER"
+            log("  gateway orphan: waiting for the cancel ERs to reach the sequencer ...")
+            found, elapsed, _ = poll_log_for(
+                seq_primary_log, drop_marker,
+                timeout=args.failover_timeout,
+                from_byte=seq_primary_pos_pre_kill,
+            )
+            if not found:
+                die("gateway orphan: the sequencer never reported dropping an execution report "
+                    "for the dead FIX instance 1. Either the reports went somewhere they should "
+                    "not have, or session handover now exists -- if the latter, invert this "
+                    "scenario's assertions rather than removing them. See docs/design/gateway_ha.md.")
+            dropped_ers = count_log_marker(seq_primary_log, drop_marker, from_byte=seq_primary_pos_pre_kill)
+            log(f"  gateway orphan: sequencer dropped {dropped_ers} ER(s) bound for the dead "
+                f"instance 1, first after {elapsed:.1f}s -- not rerouted to b")
 
             # The load-bearing assertion: b was alive throughout, and the question is
             # only whether anything reached it. GW-PROGRESS is the gateway's own
@@ -2103,8 +2145,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     "scenario's assertions need inverting, not removing.")
             log("  gateway orphan: instance b inherited nothing from a (no handover exists) -- OK")
 
-            # And the member is never told: the orders were cancelled in the book, but
-            # no surviving gateway delivered a single one of those cancel reports.
+            # The member is never told: the orders were cancelled in the book, and the
+            # reports saying so had nowhere to go.
             log(f"  gateway orphan: {cancel_count} order(s) cancelled in the book, "
                 "0 cancel reports delivered to any client -- orders silently orphaned")
 
