@@ -1098,7 +1098,20 @@ EXCLUDE                = build
 # from the input.
 # The default value is: NO.
 
-EXCLUDE_SYMLINKS       = NO
+# YES because of Emacs lock files.  A buffer with unsaved changes leaves a
+# dangling symlink named .#Foo.hpp pointing at user@host.pid; doxygen tries to
+# read it, cannot, and emits "is not a readable file or directory".  With
+# WARN_AS_ERROR = FAIL_ON_WARNINGS below, that fails the whole build -- so simply
+# having a file open in an editor broke the doxygen target, with an error naming
+# a header that does not exist.
+#
+# EXCLUDE_PATTERNS alone does not fix it: the readability check happens while the
+# input tree is being walked, before the patterns are applied, so the warning is
+# emitted for a file that would then have been excluded anyway.
+#
+# Safe here because nothing in INPUT is a legitimate symlink -- checked, not
+# assumed.  If that ever changes, this needs revisiting.
+EXCLUDE_SYMLINKS       = YES
 
 # If the value of the INPUT tag contains directories, you can use the
 # EXCLUDE_PATTERNS tag to specify one or more wildcard patterns to exclude
@@ -1107,7 +1120,16 @@ EXCLUDE_SYMLINKS       = NO
 # Note that the wildcards are matched against the file with absolute path, so to
 # exclude all test directories for example use the pattern */test/*
 
-EXCLUDE_PATTERNS       = *.cpp
+# .#* are Emacs lock files: dangling symlinks pointing at user@host.pid, created
+# while a buffer has unsaved changes and removed when it is saved.  Doxygen tries
+# to read one, fails, and exits non-zero -- so an open editor buffer breaks the
+# build for anyone running the doxygen target, with an error naming a header that
+# does not exist.  *~ and #*# are Emacs backup and auto-save files, harmless but
+# equally not source.
+EXCLUDE_PATTERNS       = *.cpp \
+                         */.#* \
+                         */*~ \
+                         */#*#
 
 # The EXCLUDE_SYMBOLS tag can be used to specify one or more symbol names
 # (namespaces, classes, functions, etc.) that should be excluded from the
