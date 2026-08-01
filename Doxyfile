@@ -1120,15 +1120,16 @@ EXCLUDE_SYMLINKS       = YES
 # Note that the wildcards are matched against the file with absolute path, so to
 # exclude all test directories for example use the pattern */test/*
 
-# .#* are Emacs lock files: dangling symlinks pointing at user@host.pid, created
-# while a buffer has unsaved changes and removed when it is saved.  Doxygen tries
-# to read one, fails, and exits non-zero -- so an open editor buffer breaks the
-# build for anyone running the doxygen target, with an error naming a header that
-# does not exist.  *~ and #*# are Emacs backup and auto-save files, harmless but
-# equally not source.
-EXCLUDE_PATTERNS       = *.cpp \
-                         */.#* \
-                         */*~ \
+# *~ and #*# are Emacs backup and auto-save files: not source, and not worth a
+# file page each.  (Emacs LOCK files, .#*, are handled by EXCLUDE_SYMLINKS above,
+# which has to catch them earlier than this tag can -- see the note there.)
+#
+# *.cpp is deliberately NOT excluded.  It was until 2026-08-01, added alongside
+# WARN_AS_ERROR to quieten the build; the implementation files turn out to produce
+# no warnings at all, so the exclusion was suppressing nothing and was silently
+# contradicting INPUT, which lists libraries/pubsub_itc_fw/src precisely so those
+# files ARE read.
+EXCLUDE_PATTERNS       = */*~ \
                          */#*#
 
 # The EXCLUDE_SYMBOLS tag can be used to specify one or more symbol names
