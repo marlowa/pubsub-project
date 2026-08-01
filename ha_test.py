@@ -194,6 +194,11 @@ FIX8_LOGON_WAIT        = 3.0   # seconds for f8test to establish a FIX session
 LOG_POLL_INTERVAL      = 0.05  # seconds between log-file polls
 SHUTDOWN_TIMEOUT       = 5.0   # seconds per-process for SIGTERM grace period
 SETTLE_AFTER_FAILOVER  = 2.0   # seconds after failover confirmed (let conns stabilise)
+# Time for the promoted ME's cancel-on-failover ER burst to traverse ME -> sequencer
+# before the gateway-orphan scenario samples the gateway logs.  Only that scenario
+# needs it: every other me_ha scenario spends far longer than this sending Phase 5
+# recovery orders before it asserts anything.
+_CANCEL_ER_SETTLE      = 5.0
 SETTLE_AFTER_KILL      = 1.0   # seconds after a kill where no failover is expected
 
 FIX8_DIR = Path("/home/marlowa/mystuff/fix8_install")
@@ -364,6 +369,19 @@ class Scenario(NamedTuple):
     # re-authenticate, so this is required to exercise auth failover: the fresh
     # logon must be authenticated by whichever auth instance is still alive.
     fresh_logon_in_recovery: bool = False
+    # When True, launch fix_order_gateway_b alongside _a. Every other scenario runs
+    # instance a alone, because a second gateway adds a process and its timing to
+    # scenarios that never touch it. Only the gateway-death scenario needs b, and it
+    # needs it to show that b does NOT pick up a's work.
+    gateway_b: bool = False
+    # Override args.orders_after for this scenario (None = use the CLI value). Set to
+    # 0 when the scenario kills the gateway the FIX session is on: there is no session
+    # left to send recovery orders through, so Phase 5 has nothing to do and skips.
+    orders_after_override: int | None = None
+    # When True, assert the CURRENT no-handover behaviour after a gateway instance is
+    # killed: reports for the dead instance are dropped by the sequencer and the
+    # surviving instance inherits nothing. See run_scenario's "gateway orphan" block.
+    assert_gateway_orphaned: bool = False
 
 
 # ── helpers shared by scenario definitions ────────────────────────────────────
@@ -966,6 +984,62 @@ _SCENARIOS: list[Scenario] = [
             ),
         ],
     ),
+
+    # 18 — FIX gateway instance A death.
+    #
+    # This scenario asserts a GAP, not a guarantee. Running two gateway instances
+    # reduces the single point of failure for *new* sessions, but there is no session
+    # handover: instance b inherits nothing from a, and reports for a's orders are
+    # dropped by the sequencer rather than rerouted. See the "What running two
+    # instances gives you today" section of docs/design/gateway_ha.md.
+    #
+    # Getting a deterministic ER for an order whose gateway is dead is the awkward
+    # part. Killing the gateway mid-burst would work but is a race. Instead this
+    # reuses the ME-HA cancel-on-failover path purely as an ER generator: the ME stub
+    # never matches, so every baseline order rests in the book and replicates to the
+    # secondary; killing the primary ME makes the promoted secondary cancel the whole
+    # book, emitting exactly one cancel ER per resting order. Those orders came from
+    # gateway a, which by then is dead, so every one of those ERs has nowhere to go.
+    #
+    # Kill order matters: gateway a first, ME primary second. The reverse would let
+    # the cancel ERs reach a before it died and prove nothing.
+    #
+    # WHEN THE HANDOVER WORK LANDS (steps 3b-6), THIS TEST SHOULD FAIL, and the fix is
+    # to invert the assertions rather than delete them: dropped_ers becomes 0, and
+    # gateway b should show the recovered session's traffic instead of nothing.
+    Scenario(
+        number=18,
+        short_name="fix_gateway_a_death",
+        description="Death of FIX gateway instance A (no session handover to B)",
+        expected_outcome=(
+            "no election (a gateway elects nothing); instance b keeps running but "
+            "inherits none of a's sessions, and the sequencer drops every execution "
+            "report bound for the dead instance instead of rerouting it to b"
+        ),
+        me_ha=True,
+        gateway_b=True,
+        # The FIX session lives on gateway a. Once a is killed there is no session to
+        # send through, so Phase 5 has nothing to do.
+        orders_during_override=0,
+        orders_after_override=0,
+        assert_gateway_orphaned=True,
+        steps=[
+            KillStep(
+                proc_name="fix_order_gateway_a",
+                secondary_log_name=None,   # nothing is elected — that is the point
+                role_prefix=None,
+                settle_secs=SETTLE_AFTER_FAILOVER,
+            ),
+            KillStep(
+                proc_name="matching_engine_primary",
+                secondary_log_name="matching_engine_secondary.log",
+                role_prefix=None,
+                settle_secs=SETTLE_AFTER_FAILOVER,
+                failover_to="matching_engine_secondary",
+                leader_markers=("MatchingEngineThread:", "adopting LEADER role"),
+            ),
+        ],
+    ),
 ]
 
 _SCENARIO_MAP: dict[int, Scenario] = {s.number: s for s in _SCENARIOS}
@@ -1478,11 +1552,15 @@ def run_scenario(scenario: Scenario, args) -> bool:
     # Delete stale log files so all polling begins at byte 0.  Processes
     # overwrite (not append) their logs on each start, so any pre-existing EOF
     # offset would skip past content written by the new run.
+    gw_b_log                   = log_dir / "fix_order_gateway_b.log"
+
     stale_logs = [seq_primary_log, seq_secondary_log,
                   arb_primary_log, arb_secondary_log, me_log,
                   auth_primary_log, auth_secondary_log]
     if me_secondary_log is not None:
         stale_logs.append(me_secondary_log)
+    if scenario.gateway_b:
+        stale_logs.append(gw_b_log)
     for stale in stale_logs:
         stale.unlink(missing_ok=True)
 
@@ -1505,6 +1583,9 @@ def run_scenario(scenario: Scenario, args) -> bool:
     orders_during = (scenario.orders_during_override
                      if scenario.orders_during_override is not None
                      else args.orders_during)
+    orders_after = (scenario.orders_after_override
+                    if scenario.orders_after_override is not None
+                    else args.orders_after)
 
     log("=" * 60)
     log(f"  ha_test  —  Scenario {scenario.number}: {scenario.description}")
@@ -1514,7 +1595,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
     log(f"  expected outcome : {scenario.expected_outcome}")
     log(f"  orders before    : {args.orders_before * 1000}")
     log(f"  orders during    : {orders_during * 1000}  (in flight during kill)")
-    log(f"  orders after     : {args.orders_after * 1000}")
+    log(f"  orders after     : {orders_after * 1000}")
     log(f"  ready timeout    : {args.ready_timeout:.0f}s")
     log(f"  failover timeout : {args.failover_timeout:.0f}s  (per step)")
     log(f"  recovery timeout : {args.recovery_timeout:.0f}s")
@@ -1586,6 +1667,17 @@ def run_scenario(scenario: Scenario, args) -> bool:
             ("matching_engine",                  "matching_engine",
              etc_dir / "matching_engine"        / "matching_engine_primary.toml"),
         ]
+
+    # Instance b goes in immediately after instance a, so the gateway pair starts
+    # together and both are connected before the sequencer needs either. Appended
+    # rather than written into both literals above: only one scenario wants it, and
+    # duplicating it in each topology invites the two copies to drift.
+    if scenario.gateway_b:
+        gateway_a_index = next(index for index, entry in enumerate(launch_table)
+                               if entry[0] == "fix_order_gateway_a")
+        launch_table.insert(gateway_a_index + 1,
+                            ("fix_order_gateway_b", "fix_order_gateway",
+                             etc_dir / "fix_order_gateway" / "fix_order_gateway_b.toml"))
 
     app_procs:       list[tuple[str, subprocess.Popen]] = []
     proc_by_name:    dict[str, subprocess.Popen]        = {}
@@ -1827,7 +1919,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             isinstance(s, RestartStep) and s.resets_me_counter
             for s in effective_steps
         )
-        after_total  = args.orders_after * 1000
+        after_total  = orders_after * 1000
 
         if scenario.me_ha:
             # Recovery orders flow to the PROMOTED secondary ME.  Count live NOS
@@ -1859,62 +1951,70 @@ def run_scenario(scenario: Scenario, args) -> bool:
             after_target = running_me_total + after_total
             me_log_from  = running_me_pos
 
-        target_desc = (f"{after_total} accepted NOS on {recovery_log.name}"
-                       if count_based else f"ME-ORD target: {after_target}")
-        log(f"=== Phase 5: {after_total} recovery orders ({target_desc}) ===")
-
-        # When ME was restarted while orders were in flight (scenario 10-style),
-        # the old f8test session is blocked waiting for ERs from the orders the
-        # sequencer dropped while ME was disconnected.  Those ERs will never
-        # arrive, so Phase 5 T commands written to the old stdin would just queue
-        # behind them.  Start a fresh FIX session to unblock.
-        if me_restarted and orders_during > 0 and not scenario.extra_steps:
-            log("  Restarting FIX session (old session blocked on dropped in-flight orders) ...")
-            stop_f8test(f8proc)
-            f8proc = send_burst(0, gw_log)
-
-        # Auth-failover scenarios: an established session does not re-authenticate,
-        # so force a fresh logon. With the preferred auth instance dead, send_burst
-        # only completes if the surviving auth instance authenticates the logon.
-        if scenario.fresh_logon_in_recovery:
-            log("  Opening a fresh FIX session (fresh logon must authenticate via the surviving auth) ...")
-            stop_f8test(f8proc)
-            f8proc = send_burst(0, gw_log)
-
-        log(f"  Sending {after_total} recovery orders ...")
-        for _ in range(args.orders_after):
-            f8proc.stdin.write(b"T\n")
-        f8proc.stdin.flush()
-
-        if count_based:
-            log(f"  Waiting for {after_total} accepted NOS in {recovery_log.name} ...")
-            found, elapsed, _ = wait_for_accepted_count(
-                recovery_log, after_total,
-                timeout=args.recovery_timeout,
-                from_byte=me_log_from,
-            )
+        # A scenario that kills the gateway its FIX session runs on has no session
+        # left to send through, so there are no recovery orders to send or wait for.
+        # Skipping is not a weaker test here: what that scenario asserts happens in
+        # Phase 4 and is checked below.
+        if after_total == 0:
+            log("=== Phase 5: skipped — no recovery orders for this scenario ===")
+            log("")
         else:
-            log(f"  Waiting for ME-ORD-{after_target} ...")
-            found, elapsed, _ = wait_for_me_ord(
-                recovery_log, after_target,
-                timeout=args.recovery_timeout,
-                from_byte=me_log_from,
-            )
-        if not found:
-            die(
-                f"recovery orders did not appear within {args.recovery_timeout:.0f}s"
-            )
-        log(f"  {after_total} recovery orders confirmed ({elapsed:.1f}s)")
-        ok, violations = check_me_seq_monotonic(recovery_log)
-        if not ok:
-            for idx, prev_seq, bad_seq in violations[:3]:
-                log(f"  seq non-monotonic at position {idx}: {prev_seq} -> {bad_seq}")
-            die(
-                f"ME log seq numbers not monotonically increasing "
-                f"({len(violations)} violation(s)) — "
-                "WAL recovery or peer seq-number sync failure suspected"
-            )
-        log("  seq monotonicity check: OK")
+            target_desc = (f"{after_total} accepted NOS on {recovery_log.name}"
+                           if count_based else f"ME-ORD target: {after_target}")
+            log(f"=== Phase 5: {after_total} recovery orders ({target_desc}) ===")
+
+            # When ME was restarted while orders were in flight (scenario 10-style),
+            # the old f8test session is blocked waiting for ERs from the orders the
+            # sequencer dropped while ME was disconnected.  Those ERs will never
+            # arrive, so Phase 5 T commands written to the old stdin would just queue
+            # behind them.  Start a fresh FIX session to unblock.
+            if me_restarted and orders_during > 0 and not scenario.extra_steps:
+                log("  Restarting FIX session (old session blocked on dropped in-flight orders) ...")
+                stop_f8test(f8proc)
+                f8proc = send_burst(0, gw_log)
+
+            # Auth-failover scenarios: an established session does not re-authenticate,
+            # so force a fresh logon. With the preferred auth instance dead, send_burst
+            # only completes if the surviving auth instance authenticates the logon.
+            if scenario.fresh_logon_in_recovery:
+                log("  Opening a fresh FIX session (fresh logon must authenticate via the surviving auth) ...")
+                stop_f8test(f8proc)
+                f8proc = send_burst(0, gw_log)
+
+            log(f"  Sending {after_total} recovery orders ...")
+            for _ in range(orders_after):
+                f8proc.stdin.write(b"T\n")
+            f8proc.stdin.flush()
+
+            if count_based:
+                log(f"  Waiting for {after_total} accepted NOS in {recovery_log.name} ...")
+                found, elapsed, _ = wait_for_accepted_count(
+                    recovery_log, after_total,
+                    timeout=args.recovery_timeout,
+                    from_byte=me_log_from,
+                )
+            else:
+                log(f"  Waiting for ME-ORD-{after_target} ...")
+                found, elapsed, _ = wait_for_me_ord(
+                    recovery_log, after_target,
+                    timeout=args.recovery_timeout,
+                    from_byte=me_log_from,
+                )
+            if not found:
+                die(
+                    f"recovery orders did not appear within {args.recovery_timeout:.0f}s"
+                )
+            log(f"  {after_total} recovery orders confirmed ({elapsed:.1f}s)")
+            ok, violations = check_me_seq_monotonic(recovery_log)
+            if not ok:
+                for idx, prev_seq, bad_seq in violations[:3]:
+                    log(f"  seq non-monotonic at position {idx}: {prev_seq} -> {bad_seq}")
+                die(
+                    f"ME log seq numbers not monotonically increasing "
+                    f"({len(violations)} violation(s)) — "
+                    "WAL recovery or peer seq-number sync failure suspected"
+                )
+            log("  seq monotonicity check: OK")
 
         # ── ME-HA: cancel-on-failover ER routing ──────────────────────────────
         # The matching engine is a stub with NO matching logic: every accepted
@@ -1933,7 +2033,10 @@ def run_scenario(scenario: Scenario, args) -> bool:
         #   * the gateway dropped NO ER for a missing conn id (the regression's
         #     signature is the gateway log line
         #     "... has no gateway_session_conn_id -- dropping").
-        if scenario.me_ha:
+        #
+        # The gateway-death scenario reuses the same cancel burst but asserts the
+        # opposite outcome, so it takes the branch below instead of this one.
+        if scenario.me_ha and not scenario.assert_gateway_orphaned:
             cancel_count = me_cancel_on_failover_count(me_secondary_log, from_byte=me_secondary_pos_pre_kill)
             if cancel_count <= 0:
                 die("ME-HA: promoted secondary did not cancel a non-empty book on failover "
@@ -1945,6 +2048,65 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 die(f"ME-HA: gateway dropped {dropped} ExecutionReport(s) for a missing "
                     "gateway_session_conn_id -- cancel-on-failover ER routing via the envelope is broken")
             log("  ME-HA: cancel-on-failover ERs routed to the client (none dropped) -- OK")
+
+        # ── Gateway orphan: no session handover between instances ─────────────
+        # Asserts a GAP rather than a guarantee. Instance a is dead and the promoted
+        # ME has just cancelled its resting orders, so there is a burst of execution
+        # reports addressed to a gateway instance that no longer exists.
+        #
+        # Three things must hold for the test to mean anything:
+        #   1. the cancel burst actually happened, or the rest proves nothing;
+        #   2. the sequencer dropped those reports, naming the dead instance -- it
+        #      does NOT reroute them to the surviving instance of the same protocol;
+        #   3. instance b saw none of it, i.e. it inherited nothing from a.
+        #
+        # Assertion 3 is the load-bearing one. Were b ever to pick up a's sessions,
+        # the third check fails first and loudest.
+        #
+        # WHEN SESSION HANDOVER LANDS (steps 3b-6 of docs/design/gateway_ha.md) THIS
+        # BLOCK SHOULD FAIL. Invert it rather than deleting it: dropped_ers becomes 0
+        # and b's traffic becomes non-zero.
+        if scenario.assert_gateway_orphaned:
+            cancel_count = me_cancel_on_failover_count(me_secondary_log, from_byte=me_secondary_pos_pre_kill)
+            if cancel_count <= 0:
+                die("gateway orphan: promoted secondary did not cancel a non-empty book "
+                    f"(count={cancel_count}) -- no execution reports were generated for the "
+                    "dead gateway, so this scenario asserted nothing")
+            log(f"  gateway orphan: {cancel_count} resting order(s) cancelled by the promoted ME")
+
+            # Give the burst time to traverse ME -> sequencer -> (wherever it ends up)
+            # before sampling. Every other me_ha scenario gets this delay for free from
+            # Phase 5's recovery orders; this one skips Phase 5.
+            #
+            # NOT asserted here: that the sequencer logs dropping these reports. The
+            # first version of this test did, and it failed -- for a reason worth
+            # recording, because it is a separate defect from the one under test.
+            # Cancel-on-failover ERs carry seq_no 0 (MatchingEngineThread.cpp, "seq_no
+            # 0: these cancels are generated by the ME on promotion"). When the
+            # sequencer has a live follower, needs_wal_ack() is true and the ER is held
+            # in pending_er_ until a WalAck arrives for its seq_no -- and no WalAck for
+            # seq_no 0 ever arrives, because 0 is not a sequenced order. So these
+            # reports are neither delivered nor dropped; they are parked, and the only
+            # log line about it is at Debug. Asserting on the drop path would be
+            # asserting on code that this burst never reaches.
+            time.sleep(_CANCEL_ER_SETTLE)
+
+            # The load-bearing assertion: b was alive throughout, and the question is
+            # only whether anything reached it. GW-PROGRESS is the gateway's own
+            # per-1000-report marker, so any non-zero count means b handled traffic for
+            # sessions it never owned.
+            b_progress = count_log_marker(gw_b_log, "GW-PROGRESS")
+            if b_progress > 0:
+                die(f"gateway orphan: instance b logged {b_progress} GW-PROGRESS line(s). It was "
+                    "sent no orders of its own, so either instance a's reports were rerouted to it "
+                    "-- which nothing implements -- or session handover now exists and this "
+                    "scenario's assertions need inverting, not removing.")
+            log("  gateway orphan: instance b inherited nothing from a (no handover exists) -- OK")
+
+            # And the member is never told: the orders were cancelled in the book, but
+            # no surviving gateway delivered a single one of those cancel reports.
+            log(f"  gateway orphan: {cancel_count} order(s) cancelled in the book, "
+                "0 cancel reports delivered to any client -- orders silently orphaned")
 
         result_pass = True
         log("")

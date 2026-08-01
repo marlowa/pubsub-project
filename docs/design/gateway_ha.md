@@ -154,6 +154,35 @@ what steps 4-6 (session provisioning, re-keyed routing, session-slice replay) ex
 exactly why the design sequences 3b immediately after step 3 rather than with the later work: step
 3 makes the failure demonstrable, and 3b is what makes the demonstration worth having.
 
+### Two defects found while testing this
+
+`ha_test.py` scenario 18 (`fix_gateway_a_death`) was written to pin the no-handover behaviour
+above. Writing it turned up two separate defects, neither caused by the multi-instance work.
+
+**Cancel-on-failover execution reports are never delivered when the sequencer has a follower.**
+The promoted matching engine sends each cancel ER with `seq_no = 0`, because the cancel is
+generated on promotion rather than driven by a sequenced order. But `SequencerThread::on_pdu`
+forwards an ER only once `wal_acked_seq_nos_` contains its seq_no, and no WalAck for seq_no 0 can
+ever arrive. So under `needs_wal_ack()` — `ha_enabled` with a follower connected, which is the
+normal configuration — every cancel ER is parked in `pending_er_` forever: not delivered, not
+dropped, and traced only by a `Debug` line that `applog_level = "info"` suppresses. **On ME
+failover the whole book is cancelled and no client is ever told.**
+
+Scenario 16 does not catch this and reads as though it does: its assertion counts the *gateway's*
+`has no gateway_session_conn_id -- dropping` lines and requires zero, which passes vacuously when
+the reports never reach the gateway at all.
+
+**The matching engine never stores the gateway instance.** `OrderEntry` carries
+`gateway_session_conn_id` and `origin_gateway_id` but no instance. Its own comment says the
+connection id "alone is only unique within one gateway, so both are needed" — true before
+instances existed, one axis short now. A cancel-on-failover ER for an order placed through
+instance `b` is therefore addressed to instance 1, which is `a`. Latent only because the first
+defect stops these reports reaching the routing decision; fix that one alone and cancel reports
+start misrouting between instances.
+
+Both need fixing as part of 3b, since 3b's grace period is meaningless if the cancel reports it
+governs cannot be delivered.
+
 ### The short version
 
 Two instances today mean *a venue that keeps trading when one gateway dies*. They do not yet mean
