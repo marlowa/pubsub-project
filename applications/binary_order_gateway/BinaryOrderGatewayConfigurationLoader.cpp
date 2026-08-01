@@ -137,6 +137,8 @@ BinaryOrderGatewayConfigurationLoader::load_and_init_logging(const std::string& 
     }
     toml.get_required_except("binary_session.sender_comp_id", config.sender_comp_id);
     toml.get_required_except("timeouts.scram_auth_timeout", config.scram_auth_timeout);
+    toml.get_required_except("cancel_on_disconnect.enabled", config.cancel_on_disconnect_enabled);
+    toml.get_required_except("cancel_on_disconnect.grace_period", config.cancel_on_disconnect_grace_period);
 
     toml.get_required_except("open_order_pool.objects_per_pool", config.open_order_pool_objects_per_pool);
     toml.get_required_except("open_order_pool.initial_pools", config.open_order_pool_initial_pools);

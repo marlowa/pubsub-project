@@ -106,6 +106,29 @@ struct BinaryOrderGatewayConfiguration {
     /** @brief How long a SCRAM exchange may take before the logon is abandoned. */
     std::chrono::seconds scram_auth_timeout{10};
 
+    // Cancel-on-disconnect
+
+    /**
+     * @brief Whether a lost session's resting orders are cancelled at all.
+     *
+     * Same contract as the FIX order gateway's: cancelling is the default because an
+     * unmanaged book behind a session nobody is watching is the worse failure.
+     */
+    bool cancel_on_disconnect_enabled{true};
+
+    /**
+     * @brief How long a dropped session's orders rest before being cancelled.
+     *
+     * Set comfortably longer than a client takes to notice a dead gateway and reconnect to
+     * its backup, so a gateway failure becomes a reconnect rather than a mass
+     * cancellation. If the same comp id logs on again inside the window its orders are
+     * reclaimed and nothing is cancelled. Zero cancels immediately.
+     *
+     * The binary protocol has no equivalent of a clean FIX Logout, so unlike the FIX
+     * gateway every disconnect here takes the grace period.
+     */
+    std::chrono::seconds cancel_on_disconnect_grace_period{30};
+
     /** @brief Minimum severity written to the application log file. */
     pubsub_itc_fw::FwLogLevel applog_level{pubsub_itc_fw::FwLogLevel::Info};
 

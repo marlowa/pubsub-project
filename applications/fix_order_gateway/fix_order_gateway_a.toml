@@ -44,6 +44,32 @@ default_target_comp_id = "CLIENT"
 logon_timeout      = "30s"
 scram_auth_timeout = "10s"
 
+# Cancel-on-disconnect: what happens to a session's resting orders when its connection
+# goes away.
+#
+# enabled = false leaves every order resting and makes the member wholly responsible for
+# its own book across a disconnect. On is the safer default -- an unmanaged book behind a
+# session nobody is watching is the worse failure.
+#
+# grace_period is the delay before those orders are cancelled, and it is what makes
+# gateway failover coherent rather than being a refinement of it. With no delay, losing a
+# gateway process flattens every book on it the moment the sockets close: the
+# high-availability mechanism producing exactly the outcome high availability exists to
+# prevent. Set it comfortably longer than a client takes to notice a dead gateway and
+# reconnect to its backup. If the same comp id logs on again inside the window it reclaims
+# its orders and nothing is cancelled.
+#
+# Two things deliberately bypass the delay: a clean FIX Logout cancels at once (the member
+# has said what it wants; a vanished socket has not), and GoodTillCancel / GoodTillDate
+# orders are never cancelled on disconnect at all, because they were placed to outlive the
+# session.
+#
+# Venue-wide for now. Per comp id belongs with the rest of comp-id provisioning, in the
+# admin service and the database.
+[cancel_on_disconnect]
+enabled      = ${fix_order_gateway_a_cancel_on_disconnect_enabled}
+grace_period = "${fix_order_gateway_a_cancel_on_disconnect_grace_period}"
+
 [logging]
 applog_level     = "info"
 syslog_level     = "critical"

@@ -9,19 +9,20 @@ change in any release.
 
 ## [Unreleased]
 
-### Changed
-
-- **Both gateways renamed so the name says the protocol and the job.**
-  `order_gateway` is now `fix_order_gateway` and `binary_gateway` is now
-  `binary_order_gateway`. The old names said which wire format a gateway spoke, or
-  didn't, but neither said what kind of gateway it was — and order entry is not the
-  only kind a venue needs. A gateway carrying nothing but risk-parameter changes
-  should not have to compete with members placing orders, and naming the existing
-  pair for what they actually are leaves room for that without a second rename
-  later. The change runs all the way through: directories, binaries, CMake targets,
-  namespaces, class names, config files, component names, deployed paths and docs.
-
 ### Added
+
+- **Cancel-on-disconnect now has a grace period** (`[cancel_on_disconnect] enabled` and
+  `grace_period`, defaulting to on and 30 seconds, in both gateways). A dropped session's
+  resting orders are held rather than cancelled, and if the same comp id reconnects inside
+  the window nothing is cancelled at all. Previously the whole book went the instant a
+  socket closed, so a member whose connection blipped came back flat -- and a gateway
+  failure flattened every book on the instance, the high-availability mechanism producing
+  exactly the outcome high availability exists to prevent.
+- GoodTillCancel and GoodTillDate orders are never cancelled on disconnect; they were
+  placed to outlive the session. A clean FIX Logout still cancels immediately, since a
+  member that logs out has said what it wants.
+- **The matching engine echoes `TimeInForce` on execution reports.** It previously did not,
+  which is what made the exemption above impossible to implement.
 
 - **The binary gateway now runs as two instances, `binary_order_gateway_a` and
   `binary_order_gateway_b`**, for the same reason the FIX gateway does: losing one
@@ -34,6 +35,18 @@ change in any release.
   only to FIX. The load generator's target port is read from the chosen instance's
   deployed configuration rather than from a constant in the script, so it cannot
   drift from the deployment.
+
+### Changed
+
+- **Both gateways renamed so the name says the protocol and the job.**
+  `order_gateway` is now `fix_order_gateway` and `binary_gateway` is now
+  `binary_order_gateway`. The old names said which wire format a gateway spoke, or
+  didn't, but neither said what kind of gateway it was — and order entry is not the
+  only kind a venue needs. A gateway carrying nothing but risk-parameter changes
+  should not have to compete with members placing orders, and naming the existing
+  pair for what they actually are leaves room for that without a second rename
+  later. The change runs all the way through: directories, binaries, CMake targets,
+  namespaces, class names, config files, component names, deployed paths and docs.
 
 ## [0.2.1] - 2026-07-31
 

@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <array>
+#include <chrono>
 #include <deque>
 #include <memory>
 #include <string>
@@ -111,6 +112,13 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // cancel queue in O(1) and arms the drain timer.  The actual OCRs are
     // sent in batches by drain_pending_cancels() so the reactor thread is
     // never monopolised by a single disconnect with many open orders.
+    // Handles a session's resting orders when its connection goes away.
+    //
+    // Persistent orders (GoodTillCancel, GoodTillDate) are never cancelled here: they were
+    // placed to outlive the session, so they are released from the gateway's bookkeeping
+    // and left resting on the book. Everything else is either queued for immediate
+    // cancellation -- a clean Logout, or a zero grace period -- or parked in
+    // grace_sessions_ until its deadline.
     void queue_session_for_cleanup(FixSession& session);
 
     // Timer callback: sends up to cancel_drain_batch_size OCRs from the
@@ -324,11 +332,43 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
         int32_t session_conn_id{0};
         std::string client_comp_id;
         int cancel_id_counter{1};
+        // When this session's orders become due for cancellation. Only meaningful while
+        // the session sits in grace_sessions_; the drain queue ignores it.
+        std::chrono::steady_clock::time_point cancel_due{};
     };
 
     // Sessions waiting for their open orders to be cancelled.  Entries are appended
     // at disconnect time and consumed by the drain timer.
     std::deque<DeadSession> pending_cancel_sessions_;
+
+    // Sessions whose connection dropped and whose grace period has not yet expired.
+    // Ordered by cancel_due, which is automatic: every entry takes the same grace period
+    // and they are appended in the order their connections died, so the front is always
+    // the earliest due.
+    //
+    // A session leaves here one of two ways: the grace timer expires and it moves to
+    // pending_cancel_sessions_, or the same comp id logs on again and it is discarded
+    // without a single cancel being sent -- which is the entire point of the feature.
+    std::deque<DeadSession> grace_sessions_;
+
+    // One-off timer set for grace_sessions_.front().cancel_due. Rearmed on each
+    // expiry while entries remain.
+    pubsub_itc_fw::TimerID grace_timer_id_{};
+    bool grace_timer_active_{false};
+
+    // Moves every grace_sessions_ entry whose deadline has passed into the cancel queue
+    // and rearms for the next, if any.
+    void expire_grace_sessions();
+
+    // Arms (or rearms) the grace timer for the front entry's deadline.
+    void arm_grace_timer();
+
+    // Discards any grace-period entry belonging to this comp id, cancelling nothing.
+    // Called when a comp id logs on: if it got back inside its window, its orders are
+    // left resting exactly as they were.
+    //
+    // Returns the number of orders reclaimed, for logging.
+    size_t reclaim_grace_session(std::string_view comp_id);
 
     // Running totals behind the GW-PROGRESS line. Per-order logging was moved to Debug
     // because it cost roughly a third of this gateway's CPU under load; these keep the

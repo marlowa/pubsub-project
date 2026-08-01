@@ -60,6 +60,8 @@ FixOrderGatewayConfigurationLoader::load_and_init_logging(const std::string& fil
         toml.get_required_except("fix_session.default_target_comp_id", config.default_target_comp_id);
         toml.get_required_except("timeouts.logon_timeout", config.logon_timeout);
         toml.get_required_except("timeouts.scram_auth_timeout", config.scram_auth_timeout);
+        toml.get_required_except("cancel_on_disconnect.enabled", config.cancel_on_disconnect_enabled);
+        toml.get_required_except("cancel_on_disconnect.grace_period", config.cancel_on_disconnect_grace_period);
 
         toml.get_required_except("sequencer.ha_enabled", config.ha_enabled);
 

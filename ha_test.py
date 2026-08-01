@@ -194,6 +194,12 @@ FIX8_LOGON_WAIT        = 3.0   # seconds for f8test to establish a FIX session
 LOG_POLL_INTERVAL      = 0.05  # seconds between log-file polls
 SHUTDOWN_TIMEOUT       = 5.0   # seconds per-process for SIGTERM grace period
 SETTLE_AFTER_FAILOVER  = 2.0   # seconds after failover confirmed (let conns stabilise)
+# Cancel-on-disconnect grace scenario. The hold marker appears as soon as the socket
+# closes, so its timeout is short. The quiet period must be comfortably under the
+# deployed grace_period (30s) or the window would expire mid-test and the scenario
+# would fail for the wrong reason.
+_CANCEL_GRACE_HOLD_TIMEOUT  = 10.0
+_CANCEL_GRACE_QUIET_PERIOD  = 5.0
 SETTLE_AFTER_KILL      = 1.0   # seconds after a kill where no failover is expected
 
 FIX8_DIR = Path("/home/marlowa/mystuff/fix8_install")
@@ -377,6 +383,12 @@ class Scenario(NamedTuple):
     # killed: reports for the dead instance are dropped by the sequencer and the
     # surviving instance inherits nothing. See run_scenario's "gateway orphan" block.
     assert_gateway_orphaned: bool = False
+    # When True, exercise cancel-on-disconnect's grace period: drop the client session
+    # with the gateway still running, prove nothing is cancelled while the window is open,
+    # then reconnect the same comp id and prove nothing is cancelled at all. See
+    # run_scenario's "cancel grace" block. Kills nothing -- the gateway must survive, or
+    # there is no process left to do the cancelling and the test proves nothing.
+    assert_cancel_grace: bool = False
 
 
 # ── helpers shared by scenario definitions ────────────────────────────────────
@@ -1041,6 +1053,35 @@ _SCENARIOS: list[Scenario] = [
                 leader_markers=("MatchingEngineThread:", "adopting LEADER role"),
             ),
         ],
+    ),
+
+    # 19 — cancel-on-disconnect grace period (step 3b).
+    #
+    # Nothing is killed. That is deliberate: the failure this guards against is a client
+    # connection dropping while the gateway lives, and if the gateway process died there
+    # would be nothing left to send the cancels the test is checking for.
+    #
+    # Without a grace period the gateway cancels a dropped session's whole book the instant
+    # the socket closes, so a member whose connection blipped comes back flat -- closed out
+    # by a network event rather than by anything it did. Multiply that by every session on
+    # a failing gateway and the high-availability mechanism produces exactly the outcome
+    # high availability exists to prevent.
+    #
+    # Three things are asserted, in order: the gateway says it is holding rather than
+    # cancelling; nothing is actually cancelled while the window is open; and when the same
+    # comp id logs back on, its orders are released with no cancel ever sent.
+    Scenario(
+        number=19,
+        short_name="cancel_on_disconnect_grace",
+        description="Cancel-on-disconnect grace period (client drops, gateway survives)",
+        expected_outcome=(
+            "the gateway holds the dropped session's orders instead of cancelling them, "
+            "and cancels nothing at all once the same comp id reconnects inside the window"
+        ),
+        orders_during_override=0,
+        orders_after_override=0,
+        assert_cancel_grace=True,
+        steps=[],
     ),
 ]
 
@@ -2149,6 +2190,62 @@ def run_scenario(scenario: Scenario, args) -> bool:
             # reports saying so had nowhere to go.
             log(f"  gateway orphan: {cancel_count} order(s) cancelled in the book, "
                 "0 cancel reports delivered to any client -- orders silently orphaned")
+
+        # ── Cancel-on-disconnect grace period (step 3b) ───────────────────────
+        # The gateway is alive throughout; only the client session goes away. Everything
+        # here reads the gateway's own log, because the behaviour under test is entirely
+        # the gateway's: what it does with a dead session's resting orders, and when.
+        if scenario.assert_cancel_grace:
+            gw_pos = file_end(gw_log)
+
+            log("=== Dropping the client session (gateway stays up) ===")
+            stop_f8test(f8proc)
+            f8proc = None
+
+            # 1. It must say it is holding, not cancelling. This is the line that
+            #    distinguishes the new behaviour from the old one.
+            found, elapsed, _ = poll_log_for(
+                gw_log, "disconnected with", "before cancelling",
+                timeout=_CANCEL_GRACE_HOLD_TIMEOUT, from_byte=gw_pos,
+            )
+            if not found:
+                die("cancel grace: the gateway did not report holding the dropped session's orders. "
+                    "Either cancel_on_disconnect.grace_period is 0 in the deployed config, or the "
+                    "session's orders were cancelled immediately -- check the gateway log for "
+                    "'queuing cancels now'.")
+            log(f"  cancel grace: gateway is holding the orders for reconnect ({elapsed:.1f}s)")
+
+            # 2. Nothing may actually be cancelled while the window is open. The marker is
+            #    the drain's own completion line, which only appears once cancels are sent.
+            #    A sleep is the honest test here: the assertion is that something does NOT
+            #    happen, and there is no event to wait for.
+            time.sleep(_CANCEL_GRACE_QUIET_PERIOD)
+            drained = count_log_marker(gw_log, "cancel drain complete", from_byte=gw_pos)
+            if drained > 0:
+                die(f"cancel grace: the gateway completed {drained} cancel drain(s) "
+                    f"within {_CANCEL_GRACE_QUIET_PERIOD:.0f}s of the disconnect. The grace period "
+                    "is not being honoured -- a member whose connection blipped would come back flat.")
+            log(f"  cancel grace: nothing cancelled {_CANCEL_GRACE_QUIET_PERIOD:.0f}s after the drop -- OK")
+
+            # 3. The point of the whole feature: the same comp id comes back inside the
+            #    window and its orders are released without a cancel ever being sent.
+            log("=== Reconnecting the same comp id inside the grace window ===")
+            f8proc = send_burst(0, gw_log)
+            found, elapsed, _ = poll_log_for(
+                gw_log, "reconnected within the grace period", "none cancelled",
+                timeout=_CANCEL_GRACE_HOLD_TIMEOUT, from_byte=gw_pos,
+            )
+            if not found:
+                die("cancel grace: the reconnecting comp id did not reclaim its held orders. "
+                    "The grace entry is matched on comp id -- check the reconnecting session "
+                    "authenticated with the same one.")
+            log(f"  cancel grace: orders reclaimed on reconnect, none cancelled ({elapsed:.1f}s)")
+
+            drained = count_log_marker(gw_log, "cancel drain complete", from_byte=gw_pos)
+            if drained > 0:
+                die(f"cancel grace: {drained} cancel drain(s) ran despite the reconnect -- "
+                    "the member's book was flattened anyway.")
+            log("  cancel grace: no cancel was sent at any point in this scenario -- OK")
 
         result_pass = True
         log("")

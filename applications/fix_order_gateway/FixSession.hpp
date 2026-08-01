@@ -97,6 +97,15 @@ struct FixSession {
     bool session_established{false};
 
     /**
+     * @brief True when the client sent a FIX Logout rather than the socket simply dying.
+     *
+     * Cancel-on-disconnect reads this: a member that logs out has said what it wants, so
+     * its resting orders are cancelled at once with no grace period. A socket that
+     * vanished has said nothing, and gets the full window to reconnect.
+     */
+    bool clean_logout{false};
+
+    /**
      * @brief True while a SCRAM-SHA-256 authentication exchange is in progress
      *        for this session. The FIX session is not established until the
      *        exchange completes with Granted and the ServerSignature is verified.

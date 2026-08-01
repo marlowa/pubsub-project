@@ -376,7 +376,36 @@ What venues do, and what this follows:
 - **A clean Logout treated differently from an unexpected drop.** A member that logs out has said
   what it wants; a socket that vanished has not.
 
-The last two are recommendations rather than settled decisions.
+The last two were recommendations when this was written; both were confirmed on 2026-08-01
+and are implemented.
+
+**Implemented 2026-08-01, in both gateways.** `[cancel_on_disconnect] enabled` and
+`grace_period` in each gateway's configuration, defaulting to on and 30 seconds:
+
+- A dropped session's orders are parked, not cancelled. If the same comp id logs on again
+  inside the window they are released untouched and **nothing is cancelled at all**.
+- GoodTillCancel and GoodTillDate are never cancelled on disconnect. The matching engine
+  now echoes `TimeInForce` on every execution report so the gateway can tell them apart --
+  it previously did not, which is why this could not have been built without that change.
+- A clean FIX Logout cancels immediately, bypassing the window. The binary protocol has no
+  logout message, so every disconnect there takes the full grace period.
+- `enabled = false` leaves every order resting and hands the member full responsibility.
+
+`ha_test.py` scenario 19 covers it: drop the client with the gateway still running, prove
+the gateway holds rather than cancels, prove nothing is cancelled while the window is open,
+then reconnect the same comp id and prove no cancel is ever sent. It fails if `grace_period`
+is set to zero, so it discriminates rather than merely passing.
+
+**What this deliberately does not do: the reconnecting session does not adopt the held
+orders.** They stay resting on the book, but the new connection cannot cancel them, because
+the matching engine keys an order by the connection id it arrived on. Adopting the entries
+would make the gateway claim a control it does not have. Re-keying an order onto a recovered
+session is step 5, and until it lands "your book survives" is true while "you can manage it
+from the new session" is not.
+
+**Still venue-wide rather than per comp id.** The per-session provisioning half -- Liquibase
+changeset, DAO field, `AuthenticationResult` carrying the values, admin UI control -- is the
+remaining part of this step.
 
 
 ## What this does not solve

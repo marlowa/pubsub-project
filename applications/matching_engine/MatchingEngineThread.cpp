@@ -446,6 +446,8 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
     entry.side = view.side;
     entry.has_price = view.has_price;
     entry.ord_type = view.ord_type;
+    entry.has_time_in_force = view.has_time_in_force;
+    entry.time_in_force = view.time_in_force;
     entry.set_symbol(view.symbol);
     entry.set_order_qty(view.order_qty);
     if (view.has_price) {
@@ -473,6 +475,13 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
     er.order_qty = view.order_qty;
     er.has_ord_type = true;
     er.ord_type = view.ord_type;
+    // Echoed so the gateway can tell a persistent order from a day order without holding
+    // the original NOS. Cancel-on-disconnect exempts GoodTillCancel and GoodTillDate, and
+    // the ER is the only thing the gateway sees for an order resting on the book.
+    if (view.has_time_in_force) {
+        er.has_time_in_force = true;
+        er.time_in_force = view.time_in_force;
+    }
     if (view.has_price) {
         er.has_price = true;
         er.price = view.price;

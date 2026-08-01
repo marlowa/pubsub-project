@@ -53,8 +53,11 @@ STARTUP_DELAY   = 1.0    # seconds between app launches
 SETTLE_TIME     = 3.0    # seconds after last app before attaching perf
 FIX8_LOGON_WAIT = 3.0    # seconds for fix8 to establish the FIX session
 ORDER_TIMEOUT   = 180.0  # seconds to wait for ord1000 in the ME log
-POST_ORDER_WAIT = 15.0   # seconds after last order before SIGTERM; long enough for
-                         # the cancel-on-disconnect drain of a large book to finish
+POST_ORDER_WAIT = 15.0   # seconds after last order before SIGTERM, for the pipeline to
+                         # drain.  It used to also have to cover the cancel-on-disconnect
+                         # burst, which fired the moment the load client's socket closed;
+                         # with a grace period configured that no longer happens inside a
+                         # run, so the ER counts now reflect order flow alone.
 CALLGRAPH        = "dwarf" # dwarf unwinds across the user/kernel boundary; resolves the
                            # otherwise-anonymous kernel stacks that dominate the gateway profile.
                            # fp would suffice for pure-userspace profiling but loses the call

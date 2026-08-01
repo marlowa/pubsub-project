@@ -54,7 +54,33 @@ struct OpenOrderEntry {
     char order_qty[max_supported_order_qty_length + 1]{};
     uint8_t order_qty_len{0};
     char side{0};
+    // TimeInForce as its raw FIX tag-59 character, taken from the ExecutionReport that put
+    // this order on the book. Stored as a char rather than the generated enum so this
+    // struct stays free of any protocol header: it is shared with the binary gateway,
+    // which never sees FIX text. Zero means the order carried no TimeInForce, which
+    // implies Day and claims no exemption.
+    //
+    // It is here for cancel-on-disconnect: see is_persistent_time_in_force().
+    char time_in_force{0};
 };
+
+// TimeInForce values that make an order outlive the session that placed it: GoodTillCancel
+// ('1') and GoodTillDate ('6'). Cancel-on-disconnect must leave these resting -- a member
+// that asked for good-till-cancel did not ask for "until my socket drops", and cancelling
+// them on a dropped connection silently overrides an explicit instruction.
+//
+// The characters are the FIX tag-59 wire values, matching pubsub_itc_fw_app::TimeInForce
+// (GoodTillCancel = 49 = '1', GoodTillDate = 54 = '6'). They are spelled as characters
+// rather than referencing the enum so this header stays protocol-free; the gateway unit
+// tests assert the two agree, so a data-dictionary change cannot silently desynchronise
+// them.
+inline constexpr char time_in_force_good_till_cancel = '1';
+inline constexpr char time_in_force_good_till_date = '6';
+
+/** @brief Whether this TimeInForce means the order should survive a lost session. */
+inline constexpr bool is_persistent_time_in_force(char time_in_force) {
+    return time_in_force == time_in_force_good_till_cancel || time_in_force == time_in_force_good_till_date;
+}
 
 /**
  * @brief A session's open orders, keyed by ClOrdID.

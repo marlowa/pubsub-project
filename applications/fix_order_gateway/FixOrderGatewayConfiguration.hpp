@@ -145,6 +145,38 @@ struct FixOrderGatewayConfiguration {
     /** @brief Maximum time allowed for a SCRAM-SHA-256 exchange to complete after Logon is received. */
     std::chrono::seconds scram_auth_timeout{10};
 
+    // Cancel-on-disconnect
+
+    /**
+     * @brief Whether a lost session's resting orders are cancelled at all.
+     *
+     * Defaults on: an unmanaged book sitting behind a session nobody is watching is the
+     * worse of the two failures. Turning it off leaves every order resting and makes the
+     * member wholly responsible for its own book across a disconnect.
+     *
+     * Venue-wide here. Per comp id belongs in provisioning -- the admin service and the
+     * database already own comp ids -- and is deliberately a later step.
+     */
+    bool cancel_on_disconnect_enabled{true};
+
+    /**
+     * @brief How long a dropped session's orders are left resting before being cancelled.
+     *
+     * **This is what makes gateway failover coherent, not a refinement of it.** Without a
+     * delay, losing a gateway process flattens every book on it the instant the sockets
+     * close -- the high-availability mechanism producing precisely the outcome high
+     * availability exists to prevent. Set comfortably longer than a client takes to notice
+     * a dead gateway and reconnect to its backup, and a gateway failure becomes a
+     * reconnect rather than a mass cancellation.
+     *
+     * If the same comp id logs on again inside the window its orders are reclaimed and
+     * nothing is cancelled. Zero restores the old immediate behaviour.
+     *
+     * A clean FIX Logout ignores this and cancels at once: a member that logs out has said
+     * what it wants, whereas a socket that vanished has not.
+     */
+    std::chrono::seconds cancel_on_disconnect_grace_period{30};
+
     /** @brief Minimum severity written to the application log file. */
     pubsub_itc_fw::FwLogLevel applog_level{pubsub_itc_fw::FwLogLevel::Info};
 

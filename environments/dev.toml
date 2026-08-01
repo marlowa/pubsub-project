@@ -406,6 +406,8 @@ arbiter_secondary_port        = 11201
 
 [fix_order_gateway_a]
 gateway_instance_id        = 1
+cancel_on_disconnect_enabled          = true
+cancel_on_disconnect_grace_period      = "30s"
 network_listen_host                   = "127.0.0.1"
 network_listen_port                   = 9879
 network_tls_listen_port               = 9880
@@ -431,6 +433,8 @@ open_order_pool_initial_pools         = 1
 
 [fix_order_gateway_b]
 gateway_instance_id        = 2
+cancel_on_disconnect_enabled          = true
+cancel_on_disconnect_grace_period      = "30s"
 network_listen_host                   = "127.0.0.1"
 network_listen_port                   = 9881
 network_tls_listen_port               = 9882
@@ -456,6 +460,8 @@ open_order_pool_initial_pools         = 1
 
 [binary_order_gateway_a]
 gateway_instance_id        = 1
+cancel_on_disconnect_enabled          = true
+cancel_on_disconnect_grace_period      = "30s"
 authentication_service_host           = "127.0.0.1"
 authentication_service_port           = 11070
 authentication_service_secondary_host = "127.0.0.1"
@@ -473,6 +479,8 @@ open_order_pool_initial_pools    = 1
 
 [binary_order_gateway_b]
 gateway_instance_id        = 2
+cancel_on_disconnect_enabled          = true
+cancel_on_disconnect_grace_period      = "30s"
 authentication_service_host           = "127.0.0.1"
 authentication_service_port           = 11070
 authentication_service_secondary_host = "127.0.0.1"

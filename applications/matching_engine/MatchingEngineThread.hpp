@@ -104,6 +104,13 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
         int16_t origin_gateway_instance{gateway_ids::first_instance};
         pubsub_itc_fw_app::Side side{};
         pubsub_itc_fw_app::OrdType ord_type{};
+        // Echoed back on every ExecutionReport for this order. The gateway needs it to
+        // decide whether cancel-on-disconnect applies: a GoodTillCancel or GoodTillDate
+        // order is by definition meant to outlive the session that placed it, so a
+        // dropped socket must not retire it. has_time_in_force is false when the client
+        // sent no tag 59, in which case no exemption is claimed and Day is implied.
+        bool has_time_in_force{false};
+        pubsub_itc_fw_app::TimeInForce time_in_force{};
         bool has_price{false};
         uint8_t symbol_len{};
         uint8_t order_qty_len{};

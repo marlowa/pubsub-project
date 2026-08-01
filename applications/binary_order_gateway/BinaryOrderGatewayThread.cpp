@@ -105,6 +105,11 @@ void BinaryOrderGatewayThread::on_timer_event(pubsub_itc_fw::TimerID timer_id) {
         return;
     }
 
+    if (timer_id == grace_timer_id_) {
+        expire_grace_sessions();
+        return;
+    }
+
     // A logon left pending because the authentication service never answered. Refusing it
     // matters: a session stuck in auth_pending would otherwise hold a connection open for
     // ever without ever being able to trade.
@@ -507,6 +512,14 @@ void BinaryOrderGatewayThread::handle_authentication_result(const pubsub_itc_fw:
     session.logged_on = true;
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "BinaryOrderGatewayThread: connection {} authenticated and logged on as '{}'",
                session.conn_id.get_value(), session.comp_id);
+
+    // Back inside its grace period: the orders this comp id left resting stay resting.
+    const size_t reclaimed = reclaim_grace_session(session.comp_id);
+    if (reclaimed > 0) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "BinaryOrderGatewayThread: comp_id='{}' reconnected within the grace period -- {} order(s) left resting, none cancelled", session.comp_id,
+                   reclaimed);
+    }
     send_logon_ack(session.conn_id, pubsub_itc_fw_app::LogonOutcome::Accepted, {});
 }
 
@@ -685,6 +698,9 @@ void BinaryOrderGatewayThread::track_open_order(BinarySession& session, const pu
     entry->order_qty[order_qty_length] = '\0';
     entry->order_qty_len = static_cast<uint8_t>(order_qty_length);
     entry->side = static_cast<char>(report.side);
+    // Kept so the cancel-on-disconnect drain can leave persistent orders resting; absent
+    // means the client sent none, which implies Day and claims no exemption.
+    entry->time_in_force = report.has_time_in_force ? static_cast<char>(report.time_in_force) : char{0};
 
     if (!already_tracked) {
         // The key views the pool storage, which is stable for the entry's lifetime.
@@ -706,27 +722,128 @@ void BinaryOrderGatewayThread::queue_session_for_cleanup(BinarySession& session)
         return;
     }
 
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "BinaryOrderGatewayThread: connection {} disconnected with {} open order(s) -- queuing cancels",
-               session.conn_id.get_value(), session.open_orders.size());
+    const size_t total_orders = session.open_orders.size();
+
+    // Switched off: the member owns its book across a disconnect. The pool entries still
+    // go back -- the session map is about to be destroyed -- but nothing is cancelled.
+    if (!config_.cancel_on_disconnect_enabled) {
+        for (const auto& [cl_ord_id, entry] : session.open_orders) {
+            open_order_pool_->deallocate(entry);
+        }
+        session.open_orders.clear();
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "BinaryOrderGatewayThread: connection {} disconnected with {} open order(s) -- cancel-on-disconnect is disabled, leaving them resting",
+                   session.conn_id.get_value(), total_orders);
+        return;
+    }
 
     DeadSession dead;
     // Collected into a flat vector rather than moving the map: the orders are only ever
     // consumed in sequence from here, and draining a map by repeatedly taking begin()
     // rescans the buckets already emptied, which is quadratic in the order count.
-    dead.open_orders.reserve(session.open_orders.size());
+    dead.open_orders.reserve(total_orders);
+    size_t persistent_orders = 0;
     for (const auto& [cl_ord_id, entry] : session.open_orders) {
+        // GoodTillCancel and GoodTillDate were placed to outlive the session; cancelling
+        // them because a socket dropped would override an explicit instruction.
+        if (open_orders::is_persistent_time_in_force(entry->time_in_force)) {
+            open_order_pool_->deallocate(entry);
+            ++persistent_orders;
+            continue;
+        }
         dead.open_orders.push_back(entry);
     }
     session.open_orders.clear();
+
+    if (persistent_orders > 0) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "BinaryOrderGatewayThread: connection {} disconnected -- {} persistent order(s) (GTC/GTD) left resting", session.conn_id.get_value(),
+                   persistent_orders);
+    }
+    if (dead.open_orders.empty()) {
+        return;
+    }
+
     dead.session_conn_id = session.conn_id.get_value();
     dead.comp_id = session.comp_id;
     dead.cancel_id_counter = session.cancel_id_counter;
-    pending_cancel_sessions_.push_back(std::move(dead));
 
-    if (!cancel_drain_timer_active_) {
-        cancel_drain_timer_id_ = start_one_off_timer(cancel_drain_interval);
-        cancel_drain_timer_active_ = true;
+    // No clean-logout equivalent in this protocol, so every disconnect takes the window.
+    if (config_.cancel_on_disconnect_grace_period.count() == 0) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "BinaryOrderGatewayThread: connection {} disconnected with {} open order(s) -- queuing cancels now", session.conn_id.get_value(),
+                   dead.open_orders.size());
+        pending_cancel_sessions_.push_back(std::move(dead));
+        if (!cancel_drain_timer_active_) {
+            cancel_drain_timer_id_ = start_one_off_timer(cancel_drain_interval);
+            cancel_drain_timer_active_ = true;
+        }
+        return;
     }
+
+    dead.cancel_due = std::chrono::steady_clock::now() + config_.cancel_on_disconnect_grace_period;
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "BinaryOrderGatewayThread: connection {} (comp_id='{}') disconnected with {} open order(s) -- holding {}s for reconnect before cancelling",
+               session.conn_id.get_value(), dead.comp_id, dead.open_orders.size(), config_.cancel_on_disconnect_grace_period.count());
+    grace_sessions_.push_back(std::move(dead));
+    arm_grace_timer();
+}
+
+void BinaryOrderGatewayThread::arm_grace_timer() {
+    if (grace_timer_active_ || grace_sessions_.empty()) {
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    const auto due = grace_sessions_.front().cancel_due;
+    const auto delay = due > now ? std::chrono::duration_cast<std::chrono::milliseconds>(due - now) : std::chrono::milliseconds{1};
+    grace_timer_id_ = start_one_off_timer(delay);
+    grace_timer_active_ = true;
+}
+
+void BinaryOrderGatewayThread::expire_grace_sessions() {
+    grace_timer_active_ = false;
+
+    const auto now = std::chrono::steady_clock::now();
+    size_t expired_sessions = 0;
+    size_t expired_orders = 0;
+    while (!grace_sessions_.empty() && grace_sessions_.front().cancel_due <= now) {
+        expired_orders += grace_sessions_.front().open_orders.size();
+        ++expired_sessions;
+        pending_cancel_sessions_.push_back(std::move(grace_sessions_.front()));
+        grace_sessions_.pop_front();
+    }
+
+    if (expired_sessions > 0) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "BinaryOrderGatewayThread: grace period expired for {} session(s) -- cancelling {} order(s); no reconnect arrived", expired_sessions,
+                   expired_orders);
+        if (!cancel_drain_timer_active_) {
+            cancel_drain_timer_id_ = start_one_off_timer(cancel_drain_interval);
+            cancel_drain_timer_active_ = true;
+        }
+    }
+
+    arm_grace_timer();
+}
+
+size_t BinaryOrderGatewayThread::reclaim_grace_session(std::string_view comp_id) {
+    size_t reclaimed = 0;
+    for (auto it = grace_sessions_.begin(); it != grace_sessions_.end();) {
+        if (it->comp_id != comp_id) {
+            ++it;
+            continue;
+        }
+        // Cancel nothing. The gateway's bookkeeping is released rather than handed to the
+        // new session: the matching engine keys an order by the connection it arrived on,
+        // so an order placed on the old one cannot be cancelled from the new one. Re-keying
+        // onto a recovered session is step 5 of docs/design/gateway_ha.md.
+        for (open_orders::OpenOrderEntry* entry : it->open_orders) {
+            open_order_pool_->deallocate(entry);
+        }
+        reclaimed += it->open_orders.size();
+        it = grace_sessions_.erase(it);
+    }
+    return reclaimed;
 }
 
 void BinaryOrderGatewayThread::drain_pending_cancels() {

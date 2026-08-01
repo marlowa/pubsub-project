@@ -3,6 +3,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <chrono>
 #include <cstdint> // IWYU pragma: keep
 #include <deque>
 #include <memory>
@@ -202,9 +203,25 @@ class BinaryOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
         int32_t session_conn_id{0};
         std::string comp_id;
         int cancel_id_counter{1};
+        // Only meaningful while the entry sits in grace_sessions_.
+        std::chrono::steady_clock::time_point cancel_due{};
     };
 
     std::deque<DeadSession> pending_cancel_sessions_;
+
+    // Sessions whose connection dropped and whose grace period has not yet expired. Same
+    // contract as the FIX order gateway's: an entry leaves either because its deadline
+    // passed, or because the same comp id logged on again -- in which case nothing is
+    // cancelled at all. Ordered by deadline, which is automatic since every entry takes
+    // the same grace period and they are appended as connections die.
+    std::deque<DeadSession> grace_sessions_;
+
+    pubsub_itc_fw::TimerID grace_timer_id_{};
+    bool grace_timer_active_{false};
+
+    void expire_grace_sessions();
+    void arm_grace_timer();
+    size_t reclaim_grace_session(std::string_view comp_id);
 
     // Running totals behind the GW-PROGRESS line, matching the FIX order gateway's so the two
     // gateways log the same amount and a perf comparison is not measuring logging.

@@ -34,6 +34,17 @@ sender_comp_id = "BINARY-GATEWAY"
 [timeouts]
 scram_auth_timeout = "10s"
 
+# Cancel-on-disconnect. Same contract as the FIX order gateway's: see the longer note in
+# fix_order_gateway_a.toml. grace_period is what stops a gateway failure from flattening
+# every book on the instance -- set it longer than a client takes to reconnect to its
+# backup. GoodTillCancel and GoodTillDate orders are never cancelled on disconnect.
+#
+# The binary protocol has no clean-logout message, so unlike FIX every disconnect here
+# takes the full grace period.
+[cancel_on_disconnect]
+enabled      = ${binary_order_gateway_b_cancel_on_disconnect_enabled}
+grace_period = "${binary_order_gateway_b_cancel_on_disconnect_grace_period}"
+
 [logging]
 applog_level     = "info"
 syslog_level     = "critical"

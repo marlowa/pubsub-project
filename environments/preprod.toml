@@ -282,6 +282,8 @@ sequencer_er_secondary_port   = 11022
 
 [fix_order_gateway_a]
 gateway_instance_id        = 1
+cancel_on_disconnect_enabled          = true
+cancel_on_disconnect_grace_period      = "30s"
 network_listen_host                   = "0.0.0.0"
 network_listen_port                   = 9879
 network_er_listen_host                = "0.0.0.0"
@@ -297,6 +299,8 @@ sequencer_secondary_port              = 11002
 
 [binary_order_gateway_a]
 gateway_instance_id        = 1
+cancel_on_disconnect_enabled          = true
+cancel_on_disconnect_grace_period      = "30s"
 authentication_service_host           = "auth-primary.preprod.exchange.internal"    # REPLACE
 authentication_service_port           = 11070
 authentication_service_secondary_host = "auth-secondary.preprod.exchange.internal"  # REPLACE
