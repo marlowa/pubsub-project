@@ -1525,11 +1525,16 @@ def run_scenario(scenario: Scenario, args) -> bool:
     # to them immediately on startup.  The ME-HA topology uses the
     # _primary/_secondary config set and adds a second matching engine so the
     # secondary can promote when the primary is killed.
-    # Only gateway instance a is launched. These scenarios fail over the sequencer, matching
-    # engine and arbiter; a second gateway adds a process and its timing to every one of them
-    # without exercising anything they test. The sequencer will retry its configured FIX/2
-    # endpoint in the background and say so every connect_retry_warning_interval, which is
-    # expected here rather than a symptom. perf_run.py launches both.
+    # Only FIX gateway instance a is launched. These scenarios fail over the sequencer,
+    # matching engine and arbiter; more gateways add a process and its timing to every one
+    # of them without exercising anything they test.
+    #
+    # dev configures four gateway endpoints (FIX 1 and 2, binary 1 and 2), so the sequencer
+    # will retry the three that are not running and say so every
+    # connect_retry_warning_interval. That is expected here rather than a symptom: nothing
+    # gates sequencer readiness on a gateway connection (connect_to_service is
+    # fire-and-retry), and this script does not scan logs for errors. perf_run.py is the one
+    # that launches every instance.
     if scenario.me_ha:
         launch_table = [
             ("witness",                          "witness",

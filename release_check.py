@@ -6,6 +6,13 @@ This is deliberately NOT a normal build. It is slower, stricter and wider than
 devsetup.sh, and it is expected to be run once, by hand, immediately before
 tagging.
 
+Every stage runs by default, including the HA scenarios and the performance run.
+Those two need a deployed, running environment, and they used to be opt-in behind
+--all -- which had it backwards: a check whose entire purpose is "may this be
+tagged?" should not answer yes having skipped the two stages that exercise the
+system rather than the source. --quick drops them for a mid-work sanity run and
+says so in the summary.
+
 Why it exists
 -------------
 Version 0.2.0 was tagged from a tree that built cleanly on the development box
@@ -249,14 +256,29 @@ def stage_ha(args) -> tuple[bool, str]:
 
 
 def stage_perf(args) -> tuple[bool, str]:
-    """A performance smoke run -- proves the pipeline carries load, not a benchmark.
+    """A performance smoke run through both gateways -- proves the pipeline carries
+    load, not a benchmark.
 
-    Note this measures nothing trustworthy unless the hot-path cores are quiet;
-    see cpu_audit.py --strict.
+    Both protocols are driven, not just FIX. A release that smoke-tested one of the
+    two order paths would be claiming more than it checked, and the binary gateway
+    is not a side experiment -- it is the control the FIX numbers are read against.
+    Instance _a of each, because the instances run the same binary and the second
+    adds a process rather than a code path.
+
+    Note this measures nothing trustworthy unless the hot-path cores are quiet; see
+    cpu_audit.py --strict. That is deliberately not a gate here: this stage asks
+    whether the pipeline carries orders end to end, which a noisy machine does not
+    change. Read the timings from a quiet one.
     """
-    code, out = run([sys.executable, "perf_run.py", "--burst", "1", "--clients", "1"],
-                    timeout=args.test_timeout)
-    return code == 0, tail(out, 30)
+    details = []
+    for gateway in ("fix", "binary"):
+        code, out = run([sys.executable, "perf_run.py", "--gateway", gateway,
+                         "--burst", "1", "--clients", "1"],
+                        timeout=args.test_timeout)
+        if code != 0:
+            return False, f"--gateway {gateway} failed:\n" + tail(out, 30)
+        details.append(f"--gateway {gateway}: ok")
+    return True, "\n".join(details)
 
 
 STAGES = [
@@ -270,18 +292,21 @@ STAGES = [
     ("perf", stage_perf, "performance smoke run"),
 ]
 
-_DEFAULT_SKIPPED = {"ha", "perf"}
+# Stages that need a deployed, running environment rather than just a source tree.
+# They are part of a release check, not an optional extra: --quick drops them for a
+# mid-work sanity run, and a release is expected to run everything.
+_NEEDS_ENVIRONMENT = {"ha", "perf"}
 
 
 def select_stages(args) -> list:
-    """Resolve --only / --skip / --all into the ordered list of stages to run."""
+    """Resolve --only / --skip / --quick into the ordered list of stages to run."""
     selected = []
     for name, function, desc in STAGES:
         if args.only and name not in args.only:
             continue
         if name in args.skip:
             continue
-        if not args.only and not args.all and name in _DEFAULT_SKIPPED:
+        if not args.only and args.quick and name in _NEEDS_ENVIRONMENT:
             continue
         selected.append((name, function, desc))
     return selected
@@ -302,8 +327,14 @@ def report(results: list[StageResult]) -> int:
         return 1
 
     print("\nAll selected stages passed.")
-    if "rocky" not in {r.name for r in results}:
+    ran = {r.name for r in results}
+    if "rocky" not in ran:
         print("NOTE: the rocky stage did not run, so the RHEL8 toolchain is unverified.")
+    missing = [name for name, _, _ in STAGES if name not in ran]
+    if missing:
+        print("NOTE: this was not a full release check. Stages not run: "
+              + ", ".join(missing))
+        print("      Do not tag a GitHub release on a partial run.")
     print("Remember: the Rocky image shares RHEL8's gcc but not its Python, so pylint,")
     print("pytest and the pybind11 extension build still need checking on the real target.")
     return 0
@@ -326,10 +357,14 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Run only this stage; repeatable.")
     parser.add_argument("--skip", metavar="STAGE", action="append", default=[],
                         help="Skip this stage; repeatable.")
+    parser.add_argument("--quick", action="store_true",
+                        help="Skip the stages that need a deployed, running environment "
+                             f"({', '.join(sorted(_NEEDS_ENVIRONMENT))}). For a sanity run "
+                             "mid-work -- NOT sufficient before tagging a release.")
+    # Every stage used to be opt-in behind --all. Kept so an existing habit or script
+    # does not fail, but it now describes the default and does nothing.
     parser.add_argument("--all", action="store_true",
-                        help="Also run the stages skipped by default "
-                             f"({', '.join(sorted(_DEFAULT_SKIPPED))}), "
-                             "which need a deployed environment.")
+                        help=argparse.SUPPRESS)
     parser.add_argument("--jobs", "-j", type=int, default=8, help="Parallel build jobs.")
     parser.add_argument("--build-timeout", type=int, default=5400, help="Seconds per build stage.")
     parser.add_argument("--test-timeout", type=int, default=3600, help="Seconds per test stage.")
@@ -358,8 +393,9 @@ def main() -> int:
 
     if args.list:
         for name, _, desc in STAGES:
-            default = " (skipped unless --all)" if name in _DEFAULT_SKIPPED else ""
-            print(f"  {name:<14} {desc}{default}")
+            note = " (needs a deployed environment; dropped by --quick)" \
+                   if name in _NEEDS_ENVIRONMENT else ""
+            print(f"  {name:<14} {desc}{note}")
         return 0
 
     selected = select_stages(args)
