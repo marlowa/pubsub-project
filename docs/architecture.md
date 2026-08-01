@@ -194,8 +194,8 @@ state (routing tables, book replicas) is derived from the WAL and can be rebuilt
 
 | Component | Language | Role |
 |-----------|----------|------|
-| `order_gateway` | C++ | FIX 5.0 SP2 session layer; PDU encode/decode; SCRAM auth |
-| `binary_gateway` | C++ | Same venue over the internal PDU protocol; no FIX translation layer |
+| `fix_order_gateway` | C++ | FIX 5.0 SP2 session layer; PDU encode/decode; SCRAM auth |
+| `binary_order_gateway` | C++ | Same venue over the internal PDU protocol; no FIX translation layer |
 | `sequencer` | C++ | Total order assignment; WAL; leader-follower HA |
 | `matching_engine` | C++ | Order book; execution report generation |
 | `matching_engine_publisher` | C++ | WAL follower; topic fanout to downstream consumers (planned) |

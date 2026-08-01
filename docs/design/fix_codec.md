@@ -33,13 +33,13 @@ Complete and green:
   Python package is in the pylint gate (10.00/10); `check_standards` and
   clang-format are clean.
 
-**Not yet migrated:** the `order_gateway` still uses its own hand-maintained
+**Not yet migrated:** the `fix_order_gateway` still uses its own hand-maintained
 `FixParser` / `FixSerialiser` / `FixMessage` and `Tag::` / `MsgType::` tables.
 Replacing those with this library — and, in doing so, removing the per-message
 `std::string` allocation the current `FixParser::validate_checksum` incurs — is a
 later pass. The migration outline, and its knock-on effect on how much of a
 large message like NewOrderSingle the system exercises, is in
-[Order Gateway → Planned Migration to `fix_codec`](../applications/order_gateway.md#planned-migration-to-fix_codec-not-yet-done).
+[Order Gateway → Planned Migration to `fix_codec`](../applications/fix_order_gateway.md#planned-migration-to-fix_codec-not-yet-done).
 
 ---
 
@@ -304,7 +304,7 @@ Internally the reader's iterator consults the generated `is_data_length_tag(95)`
 
 ### What the gateway migration will look like
 
-The [order gateway migration](../applications/order_gateway.md#planned-migration-to-fix_codec-not-yet-done)
+The [FIX order gateway migration](../applications/fix_order_gateway.md#planned-migration-to-fix_codec-not-yet-done)
 is precisely this reader replacing the hand-written parser. Populating the order
 PDU from an inbound NewOrderSingle becomes:
 
@@ -393,5 +393,5 @@ change *what* is generated, edit the emitter and add a pytest case in
   `fix_codec` is the FIX-specific application-tier counterpart, not a replacement.
 - [Secure Communications](secure_comms.md) — `scram_crypto`, the sibling
   application-tier library.
-- [Order Gateway](../applications/order_gateway.md) — the consumer that will be
+- [Order Gateway](../applications/fix_order_gateway.md) — the consumer that will be
   migrated onto this library.

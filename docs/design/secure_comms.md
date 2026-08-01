@@ -18,7 +18,7 @@ to the gateway listener they are complementary but not combined.
 
 ### Status
 
-Implemented with OpenSSL and in use. The order gateway registers an encrypted FIX listener
+Implemented with OpenSSL and in use. The FIX order gateway registers an encrypted FIX listener
 (`TlsRawBytes`) *alongside* its plain listener, gated by the `[fix_tls]` config (`enabled`,
 `cert`, `key`, and `tls_listen_port`); it has been live-verified with a QuickFIX client
 speaking TLS. The authentication service listener is likewise TLS-secured
@@ -305,4 +305,4 @@ for localhost but not for any externally-exposed endpoint.
 ## See Also
 
 - [Socket Communications](socket_comms.md) — `ProtocolHandlerInterface`, `RawBytesProtocolHandler`, `MirroredBuffer`
-- [Order Gateway](../applications/order_gateway.md) — how the gateway initiates SCRAM and handles the result
+- [Order Gateway](../applications/fix_order_gateway.md) — how the gateway initiates SCRAM and handles the result

@@ -23,8 +23,8 @@ namespace gateway_ids {
 // no compatibility promise across releases, so a WAL from an older build is discarded
 // rather than replayed.
 
-inline constexpr int16_t order_gateway = 1;  ///< The ASCII FIX gateway.
-inline constexpr int16_t binary_gateway = 2; ///< The binary (DSL PDU) gateway.
+inline constexpr int16_t fix_order_gateway = 1;    ///< The ASCII FIX gateway.
+inline constexpr int16_t binary_order_gateway = 2; ///< The binary (DSL PDU) gateway.
 
 // origin_gateway_id is optional, and this is the value a reader uses when it is absent.
 //
@@ -33,7 +33,7 @@ inline constexpr int16_t binary_gateway = 2; ///< The binary (DSL PDU) gateway.
 // path there is nothing upstream that could stamp an origin. The default covers that gap.
 // Removing it needs the sequencer to attribute origin from the connection a PDU arrived on
 // -- see docs/design/gateway_ha.md, step 2.
-inline constexpr int16_t default_when_absent = order_gateway;
+inline constexpr int16_t default_when_absent = fix_order_gateway;
 
 // Which *instance* of a gateway an order entered through, carried on the envelope as
 // gateway_instance_id. The ids above name a protocol, not a process, and cannot be made to

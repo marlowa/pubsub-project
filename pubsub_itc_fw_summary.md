@@ -30,7 +30,7 @@ see [Pub/Sub](docs/design/pubsub.md)
 - Timers (timerfd, via epoll)
 - High availability via primary/secondary instance pairs with arbitration
 - A DSL-based binary serialisation layer replacing protobuf/SBE
-- Sample applications demonstrating framework usage: a simple order gateway (FIX 5.0 SP2 client connectivity, SCRAM authentication) and a matching engine (order book, execution report generation), forming a minimal exchange system skeleton
+- Sample applications demonstrating framework usage: a simple FIX order gateway (FIX 5.0 SP2 client connectivity, SCRAM authentication) and a matching engine (order book, execution report generation), forming a minimal exchange system skeleton
 
 Target environment is **low-latency** (sub-100ns encode/decode). Heap allocation is avoided on all hot paths.
 
@@ -560,7 +560,7 @@ The design borrows the ideas of the hffix library (zero-copy, no heap allocation
    - `FixMessageWriter` — builds a message directly into a caller buffer (e.g. a slab chunk) with no intermediate `std::string`: body fields first, then the tag 8/9 header written backward into a reserved prefix and the tag 10 checksum appended, computing BodyLength and Checksum in place (hffix's `push_back_header`/`push_back_trailer`).
    - `FixChecksum` — allocation-free `compute_checksum` and `checksum_matches` (parses the received three digits with `from_chars` and compares numerically).
 
-**Status.** Library, generator, and tests are complete and green: 21 GoogleTest cases (`libraries/fix_codec/tests/`) and 6 pytest cases (`python/tests/test_fix_dictionary.py`) pass; `fix_codec_tests` is wired into `build.py`'s C++ test run; the `fix_dictionary` package is in the pylint gate (10.00/10); `check_standards` and clang-format are clean. **The `order_gateway` FIX code is intentionally not yet migrated** — that is a later pass which will replace the gateway's hand-maintained `FixMessage`/`FixParser`/`FixSerialiser` and `Tag::`/`MsgType::` tables with this library (and, in doing so, remove the per-message `std::string` allocation the current `FixParser::validate_checksum` still incurs).
+**Status.** Library, generator, and tests are complete and green: 21 GoogleTest cases (`libraries/fix_codec/tests/`) and 6 pytest cases (`python/tests/test_fix_dictionary.py`) pass; `fix_codec_tests` is wired into `build.py`'s C++ test run; the `fix_dictionary` package is in the pylint gate (10.00/10); `check_standards` and clang-format are clean. **The `fix_order_gateway` FIX code is intentionally not yet migrated** — that is a later pass which will replace the gateway's hand-maintained `FixMessage`/`FixParser`/`FixSerialiser` and `Tag::`/`MsgType::` tables with this library (and, in doing so, remove the per-message `std::string` allocation the current `FixParser::validate_checksum` still incurs).
 
 ---
 
@@ -636,7 +636,7 @@ summary (e.g. "session 16", "session 25") to indicate when work was completed.
 - Logging subsystem — complete
 - `RawBytesProtocolHandler` — complete; `on_data_ready`/`send_prebuilt`/`continue_send` return `tuple<bool, std::string>`; no disconnect-handler member; no logger member (session 14)
 - TLS subsystem — complete, tested (session 20). `TlsContext` (wraps SSL_CTX; `create_server`/`create_client`; TLS 1.2 minimum, TLS 1.3 preferred; AEAD-only ciphers), `TlsState` (per-connection; memory BIOs; pending ciphertext buffer), `TlsRawBytesProtocolHandler` (implements `ProtocolHandlerInterface`; non-blocking handshake; same `RawSocketCommunication` delivery), `TlsListenerConfiguration`, `TlsClientConfiguration`. `ServiceEndpoints` carries `optional<TlsClientConfiguration>`. `ProtocolHandlerInterface` gains `start_outbound_handshake`, `is_handshake_complete`, `is_reads_paused`. `ProtocolType::TlsRawBytes` (value 2). 9 integration tests (5 inbound, 4 outbound). Not yet wired to any application.
-- `order_gateway` — FIX session layer complete; PDU encoding to sequencer complete; ER routing back to fix8 complete. Session 17 adds `ha_enabled` flag (default false): when false, secondary sequencer connect is skipped, `forward_pdu_to_sequencers` sends only to primary, and secondary host/port are not required in the toml. When `ha_enabled=true`, dual-publish to primary and secondary is restored. `forward_pdu_to_sequencers` name kept plural — the dual-publish branch returns when leader-follower is fully live.
+- `fix_order_gateway` — FIX session layer complete; PDU encoding to sequencer complete; ER routing back to fix8 complete. Session 17 adds `ha_enabled` flag (default false): when false, secondary sequencer connect is skipped, `forward_pdu_to_sequencers` sends only to primary, and secondary host/port are not required in the toml. When `ha_enabled=true`, dual-publish to primary and secondary is restored. `forward_pdu_to_sequencers` name kept plural — the dual-publish branch returns when leader-follower is fully live.
 - `sequencer` — Slices 1–7 complete. PDU forwarding (NOS, OCR, ER), topology, re-encode fixes all from session 15. WAL (`SequencerWal`: mmap'd segments, snapshot, CRC32, replay on restart), seqNo on wire, `routing_comp_id` stamping, and leader-follower state machine (`Role::unknown/leader/follower`, `adopt_role`, `peer_heartbeat_timeout`, epoch, fence file) from sessions covered by the session-17 entry. Slice 7 (session 18): network WAL replication — leader streams `WalRecord` (id=103) PDUs to follower over peer TCP; follower appends to its WAL and replies `WalAck` (id=104); leader buffers ERs in `pending_er_` keyed by seq_no and gates gateway ER emission on WalAck; follower WAL written exclusively from WalRecord (not from direct gateway PDU); `flush_pending_er()` releases all buffered ERs on peer disconnect (degraded mode). `ha_enabled=false` (default): sequencer immediately adopts `Role::leader` in `on_initial_event` and skips arbiter/peer connects. Both TOMLs now have `ha_enabled=true`.
 - `matching_engine` — complete for the round-trip stub. `on_framework_pdu_message` decodes inbound `NewOrderSingle` PDUs (session 15) and emits a fully-filled `ExecutionReport` over the existing outbound `sequencer_er_conn_id_`. The ER populates every field that `SequencerThread`'s ER decoder reads. No real order book or matching — every order becomes a single fill at its limit price (or a zero sentinel for market orders). `OrderID` and `ExecID` are generated as `ME-ORD-N` / `ME-EXEC-N`. `OrderCancelRequest` is not yet handled (logs and drops at the `else` branch); cancel handling is a small follow-up.
 - `arbiter` — complete. Implements the `ArbitrationReport`/`ArbitrationDecision` PDU exchange. End-to-end arbiter-mediated election verified by ha_test.py scenario 15 (session 2026-06-03).
@@ -656,7 +656,7 @@ summary (e.g. "session 16", "session 25") to indicate when work was completed.
 7. ~~**Pub/sub WAL**~~ — DONE as slice 10. Topic-based fan-out over the WAL, streamed and socket-paced, with replay from a cursor; the MEP is the reference publisher and `topic_probe` the reference subscriber. See [Pub/Sub](docs/design/pubsub.md). This is the long-term replacement for direct TCP and eliminates the rendezvous problem and the retry workaround; the retry logic can be removed as consumers migrate onto topics.
 8. ~~**Credential export script**~~ — done (session 23). `db/export_credentials.py` exports DB credentials to auth service `credentials.toml`. Live CRUD updates go via PDU 510/512.
 9. ~~**`RestoreCredentialRequest` PDU (514/515)**~~ — DONE (session 2026-06-03). PDU 514/515 added to `authentication.dsl`; `handle_restore_credential_request()` implemented in `AuthenticationThread` (decodes pre-derived SCRAM binary fields, validates sizes, installs into `credentials_` map, persists). `AuthServiceClient.restoreCredential()` added in Java (hex→binary conversion; sends PDU 514, validates PDU 515). `CompIdHandler.update()` now calls `restoreCredential` when transitioning from disabled/locked → enabled+unlocked. `FirmHandler.update()` now calls `restoreCredential` for all enabled+unlocked comp_ids when a firm is re-enabled. Warning notices removed from both Edit form templates. README credential lifecycle table updated to include the new restore actions.
-10. ~~**FIX message capture**~~ — DONE (session 2026-06-04). `FixCapture` class (`applications/order_gateway/FixCapture.hpp/.cpp`): gateway thread calls `capture(Direction, data, size, timestamp_ns)` which enqueues a record onto a `std::vector<Record>` queue (protected by mutex; short critical section, no file I/O). A background `std::thread` drains the queue via `condition_variable` and writes binary records to disk. Record format (little-endian): `uint32_t payload_size | int64_t timestamp_ns | uint8_t direction(0=in,1=out) | bytes`. Three capture points in `OrderGatewayThread`: (1) inbound — after `parser.feed()`, captures the consumed bytes of all complete FIX messages; (2) outbound session messages — in `send_fix_to_session`, after serialise; (3) outbound ERs — after `encode_execution_report`. Config: mandatory `[fix_capture] enabled` + `file` fields in `order_gateway.toml`; `enabled=false` in `dev.toml` by default. `capture_` member is `nullptr` when disabled; all three capture calls are guarded by `if (capture_ != nullptr)` so there is zero overhead when capture is off.
+10. ~~**FIX message capture**~~ — DONE (session 2026-06-04). `FixCapture` class (`applications/fix_order_gateway/FixCapture.hpp/.cpp`): gateway thread calls `capture(Direction, data, size, timestamp_ns)` which enqueues a record onto a `std::vector<Record>` queue (protected by mutex; short critical section, no file I/O). A background `std::thread` drains the queue via `condition_variable` and writes binary records to disk. Record format (little-endian): `uint32_t payload_size | int64_t timestamp_ns | uint8_t direction(0=in,1=out) | bytes`. Three capture points in `FixOrderGatewayThread`: (1) inbound — after `parser.feed()`, captures the consumed bytes of all complete FIX messages; (2) outbound session messages — in `send_fix_to_session`, after serialise; (3) outbound ERs — after `encode_execution_report`. Config: mandatory `[fix_capture] enabled` + `file` fields in `fix_order_gateway.toml`; `enabled=false` in `dev.toml` by default. `capture_` member is `nullptr` when disabled; all three capture calls are guarded by `if (capture_ != nullptr)` so there is zero overhead when capture is off.
 11. ~~**WAL replication jitter — Option B fix**~~ — DONE (2026-07-03). Added `prioritise_data_over_timers()` virtual hook to `ApplicationThread` (default `false`). When `true`, the drain loop buffers any `Timer` events encountered and processes them only after all non-timer events in the same drain cycle are exhausted. `SequencerThread` overrides to return `true`. This prevents a heartbeat or snapshot timer from adding latency before a `WalAck` that arrived in the same `epoll_wait` wakeup. All other `ApplicationThread` subclasses are unaffected (FIFO ordering preserved). 583 unit + 33 integration tests pass.
 12. ~~**cpu_registry_shm_path configurable from TOML**~~ — DONE (2026-07-03). Added `cpu_registry_shm_path` to all seven application `*Configuration.hpp`, `*ConfigurationLoader.cpp`, and `*.cpp` wiring files. Added `cpu_registry_shm_path = "${shared_reactor_cpu_registry_shm_path}"` to all eleven application TOML templates and `reactor_cpu_registry_shm_path` to all four environment TOMLs. `ReactorConfiguration::cpu_registry_shm_path` is now populated from the TOML rather than falling back to the hardcoded `/dev/shm/pubsub_cpu_registry` default. `deploy.py` already injected the correct install-dir-relative path; the C++ side now reads it. 583 unit + 33 integration tests pass.
 13. ~~**FixCapture: replace mutex with SPSC lock-free queue**~~ — DONE (implemented before session log coverage; discovered 2026-07-04). `FixCapture` uses a pre-allocated SPSC ring buffer (`ring_bytes` allocated once at construction, default 64 MB), not a mutex or `std::vector<Record>`. `capture()` packs records directly into the ring via `memcpy` with no malloc. `write_offset_` / `read_offset_` are cache-line-aligned atomics for lock-free SPSC coordination. A sentinel record handles ring wrap-around so records are never split. The writer thread drains via `fread` from the ring. No per-record heap allocation; no mutex. The chosen approach (contiguous ring buffer) is more efficient than `LockFreeMessageQueue` + pool allocator for this use case because it eliminates per-record node allocation/deallocation entirely.
@@ -682,7 +682,7 @@ provide.
 
 *What the comparison actually needs.* The two gateways differ only in a bounded segment: what
 happens between the client's bytes arriving and the order PDU leaving for the sequencer. The
-FIX gateway parses, validates, extracts repeating groups and builds the PDU; the binary gateway
+FIX gateway parses, validates, extracts repeating groups and builds the PDU; the binary order gateway
 forwards the client's bytes as they arrived. Everything downstream -- sequencer, WAL, matching
 engine -- is common. So the metric that answers the question is not end-to-end latency but the
 gateway-internal segment, timed identically on both:
@@ -692,12 +692,12 @@ gateway-internal segment, timed identically on both:
   where a difference can legitimately be attributed to FIX.
 - `gw_egress_ns` histogram, from an execution report arriving from the sequencer to the bytes
   being written to the client socket. The FIX gateway decodes the PDU and encodes FIX text; the
-  binary gateway relays the payload untouched.
+  binary order gateway relays the payload untouched.
 - `gw_decode_ns` and `gw_encode_ns` histograms on the FIX gateway only, as sub-phases of the
-  above. On the binary gateway these do not exist rather than reading zero -- a metric that is
+  above. On the binary order gateway these do not exist rather than reading zero -- a metric that is
   structurally absent is clearer than one that is always empty.
 
-*Every one of these must carry a `gateway` label* (`order_gateway`, `binary_gateway`) and use
+*Every one of these must carry a `gateway` label* (`fix_order_gateway`, `binary_order_gateway`) and use
 **identical bucket boundaries**, so a single Grafana panel can overlay them. Different buckets
 would make the two incomparable in exactly the way that is hardest to notice.
 
@@ -717,7 +717,7 @@ gateway latency number is close to meaningless on its own:
 
 *The trap this exercise fell into, which the instrumentation must not repeat.* The first
 comparison was dominated not by protocol but by **logging**: the FIX gateway logged a line per
-order at Info and the binary gateway logged none, which put 32% of the FIX gateway's samples in
+order at Info and the binary order gateway logged none, which put 32% of the FIX gateway's samples in
 Quill against 11% for the binary one -- more than three times the cost of FIX parsing itself.
 Demoting both to Debug and adding a shared `GW-PROGRESS` total halved it. The same asymmetry is
 easy to reproduce with metrics: **if one gateway is instrumented more heavily than the other,
@@ -738,7 +738,7 @@ larger.
 
 *Java instrumentation (admin service, fix-test-client):* Micrometer with the Prometheus registry. Gauges for FIX session state, counters for messages sent/received. A few lines of Javalin integration per service.
 
-*Deployment:* Prometheus server and Grafana added to the environment configuration. The metrics HTTP endpoint for each C++ process should be on a configurable port, added to the TOML config templates and `dev.toml`. The scrape thread's CPU pinning must be excluded from the hot-path CPU registry so it does not collide with `OrderGatewayThread`, `SequencerThread`, or `MatchingEngineThread`.
+*Deployment:* Prometheus server and Grafana added to the environment configuration. The metrics HTTP endpoint for each C++ process should be on a configurable port, added to the TOML config templates and `dev.toml`. The scrape thread's CPU pinning must be excluded from the hot-path CPU registry so it does not collide with `FixOrderGatewayThread`, `SequencerThread`, or `MatchingEngineThread`.
 
 **Note (added 2026-07-26): that last sentence is a whole design problem, not a detail.** Keeping the
 scrape thread off the pinned cores requires knowing which cores are pinned, and the CPU registry
@@ -790,7 +790,7 @@ rationale and tool trade-off analysis below are retained for reference.
 created and fully populated as a human-navigable alternative to this summary file. Entry
 point: `docs/index.md`. Design subsystem docs in `docs/design/` (threading, reactor,
 allocators, WAL+HA, serialisation DSL, socket comms, secure comms, CPU pinning, sequencer,
-MEP/TAP). Application docs in `docs/applications/` (order gateway, sequencer, matching
+MEP/TAP). Application docs in `docs/applications/` (FIX order gateway, sequencer, matching
 engine, admin service, FIX test client). `pubsub_itc_fw_summary.md` is NOT deleted — it
 remains the authoritative narrative and session log. The remaining part of item 18 is
 specifically the **Graphviz DOT clickable maps in Doxygen**, described below.
@@ -904,7 +904,7 @@ None of this is a fault in the layout, and none of it was visible in the compone
 report the pinning each component performed, which is not the same as what else can run there.
 
 **Why it matters now:** development is the environment where every latency measurement and every
-protocol comparison is taken, and the FIX-versus-binary gateway comparison is the reason item 16
+protocol comparison is taken, and the FIX-versus-binary order gateway comparison is the reason item 16
 exists. Interrupt noise on one gateway's core and not the other's would be indistinguishable from a
 protocol difference.
 
@@ -982,11 +982,11 @@ The standing constraint that came out of this: **never set a background on `td`/
 colouring belongs on the `<tr>`, and both stylesheets now follow that rule. Javalin as the web
 framework was never in question and stays.
 
-## TODO — transport encryption on the binary gateway, and on the PDU paths generally (raised 2026-07-26)
+## TODO — transport encryption on the binary order gateway, and on the PDU paths generally (raised 2026-07-26)
 
 **Undecided. To be discussed with a security specialist before anything is built.**
 
-The binary gateway authenticates with SCRAM-SHA-256 but has **no TLS listener**, so a
+The binary order gateway authenticates with SCRAM-SHA-256 but has **no TLS listener**, so a
 client's password crosses the client-to-gateway hop in clear text. SCRAM limits the damage --
 the password is never stored, never forwarded, and never leaves the gateway process -- but
 that is a property of the credential handling, not of the transport. The FIX gateway does
@@ -1002,7 +1002,7 @@ engine, WAL replication between sequencer instances, and the topic streams exter
 subscribers read. Those are all currently plain TCP.
 
 Points to settle:
-- Whether client-edge TLS on the binary gateway is required, optional, or configured per
+- Whether client-edge TLS on the binary order gateway is required, optional, or configured per
   deployment as the FIX gateway's is.
 - Whether the internal PDU hops need it, and if so whether that is a deployment concern
   (trusted network segment, IPsec) or an application one.
@@ -1013,7 +1013,7 @@ Points to settle:
 
 ## Measured: latency grows with sessions per gateway (2026-07-26)
 
-Five runs against the binary gateway with `perf_run.py`, all on the Mint dev box, plain
+Five runs against the binary order gateway with `perf_run.py`, all on the Mint dev box, plain
 loopback TCP, no kernel bypass. Directly relevant to the fairness question below, because it
 shows the problem arising *inside* a single gateway before any question of balancing across
 several.
@@ -1085,7 +1085,7 @@ be re-measured before any of them is quoted as a result.
 
 ## TODO — gateway availability, fairness and identity (raised 2026-07-26)
 
-Adding the binary gateway made the venue multi-gateway for the first time, and that has
+Adding the binary order gateway made the venue multi-gateway for the first time, and that has
 surfaced three questions the current design does not answer. None is a defect in what is
 built; all three need deciding before this could be called an exchange design.
 
@@ -1106,7 +1106,7 @@ scheme here has to be argued for on determinism, not throughput.
 
 **3. Pooled redundancy is weaker than the document claims, because ER routing changed.**
 `wal_and_ha.md` still says routing is on the FIX comp-id pair and "not on ConnectionID".
-The code routes on `gateway_session_conn_id`; `OrderGatewayThread` marks the comp-id lookup
+The code routes on `gateway_session_conn_id`; `FixOrderGatewayThread` marks the comp-id lookup
 "legacy -- no longer used for ER routing". That change was right and must be kept: it fixed
 ClOrdID collisions between sessions sharing a comp id. But a connection id is gateway-local
 and unstable across reconnects, so a client reconnecting to a *different* pool member can no
@@ -1137,7 +1137,7 @@ paths, pinned cores and per-gateway capacity rather than about sequencing.
 
 **Decided, not yet implemented: one comp id may be logged on only once, venue-wide.**
 Today each gateway checks for a duplicate comp id only among its own sessions, so the same
-identity can hold a session on the FIX gateway and the binary gateway simultaneously. This
+identity can hold a session on the FIX gateway and the binary order gateway simultaneously. This
 cannot be fixed inside a gateway: two processes cannot see each other's sessions. It needs a
 shared authority, and the sequencer is the natural one — it is arbiter-elected so there is
 exactly one leader, and both gateways already connect to it. That means a logon round trip
@@ -1179,7 +1179,7 @@ including the ones pinned seconds later -- and applies it successfully. The fail
 
 **The same root cause misallocates P-cores.** Claiming is greedy and follows `devenv.py` start
 order, so the gateways, which start last, get what is left. Measured 2026-07-26, same binaries and
-configuration: under full HA `OrderGatewayThread` landed on CPU 19 and `BinaryGatewayThread` on
+configuration: under full HA `FixOrderGatewayThread` landed on CPU 19 and `BinaryOrderGatewayThread` on
 CPU 22, both E-cores; under `devenv.py --no-ha` they landed on CPU 10 and CPU 13, both P-cores.
 Nothing in the output records which regime produced a measurement. This is the scheduling form of
 the trap already noted under item 16 -- and the symmetry that makes the gateway comparison valid at
@@ -1266,7 +1266,7 @@ declaring a rank and resolving it at deploy time survives a hardware change.
 
 **The mask is applied by a `deploy.py`-generated wrapper script**, not by a particular launcher --
 production launch is still undecided (schedulix is one candidate). Whatever invokes
-`bin/run_binary_gateway` gets identical behaviour. This covers the JVM components (an affinity mask
+`bin/run_binary_order_gateway` gets identical behaviour. This covers the JVM components (an affinity mask
 is preserved across `execve`, so `taskset` constrains a JVM and every thread it will ever create,
 with no Java code), closes the pre-`main()` static-initialiser hole, and doubles as an interposition
 point for `perf` / `valgrind` / `gdb`. The wrapper is not the guarantee, though: each C++ component
@@ -1293,7 +1293,7 @@ hot-path thread. In-process `/proc/self/task` is not enough now that JVMs are in
 **Thread counts stay in the code; the TOML never declares them.** Hot-path demand is the reactor
 thread plus the registered `ApplicationThread`s — every component registers exactly one, so every
 ranked component wants two cores. Threads from `register_extra_thread()` are background by default
-and do not count, which removes a real hazard: `OrderGatewayThread` registers `FixCaptureWriter`
+and do not count, which removes a real hazard: `FixOrderGatewayThread` registers `FixCaptureWriter`
 *conditionally* on `fix_capture_enabled`, so today the same binary has different core demand
 depending on a config flag, and any figure in the TOML would be silently wrong for one setting.
 `deploy.py` asks the binary (`--hot-path-thread-count`) rather than reading a number, backed by a
@@ -1417,7 +1417,7 @@ Alternatively, grant `CAP_SYS_NICE` to the specific binary (survives across logi
 
 ```bash
 sudo setcap cap_sys_nice+ep /path/to/sequencer
-sudo setcap cap_sys_nice+ep /path/to/order_gateway
+sudo setcap cap_sys_nice+ep /path/to/fix_order_gateway
 # etc. for each binary that uses ApplicationThread
 ```
 
@@ -1568,7 +1568,7 @@ syslog_level = "info"
 ```
 Both fields are required. There are no optional config fields — making a field optional hides it from operators and makes it unconfigurable in practice.
 
-**FIX parsing implemented in `order_gateway`** — `FixParser`, `FixSerialiser`, `FixMessage`, `FixSession` copied from `order_gateway` with namespace changed to `order_gateway`. `MsgType::OrderCancelRequest` and `Tag::OrigClOrdID` added to `FixMessage.hpp`. Logger threaded through `FixParser` constructor so bad checksums are logged at Debug rather than silently dropped. Full FIX session layer implemented in `FixGatewaySeqThread` (Logon, Heartbeat, TestRequest, Logout, NewOrderSingle, OrderCancelRequest). PDU encoding and ER routing remain TODO.
+**FIX parsing implemented in `fix_order_gateway`** — `FixParser`, `FixSerialiser`, `FixMessage`, `FixSession` copied from `fix_order_gateway` with namespace changed to `fix_order_gateway`. `MsgType::OrderCancelRequest` and `Tag::OrigClOrdID` added to `FixMessage.hpp`. Logger threaded through `FixParser` constructor so bad checksums are logged at Debug rather than silently dropped. Full FIX session layer implemented in `FixGatewaySeqThread` (Logon, Heartbeat, TestRequest, Logout, NewOrderSingle, OrderCancelRequest). PDU encoding and ER routing remain TODO.
 
 ---
 
@@ -1711,7 +1711,7 @@ Five Python scripts live in the project root.
 ./start_fix_seq_system.py installed --valgrind --valgrind_command "valgrind"
 ```
 
-Starts 7 processes in dependency order: witness → arbiter-primary → arbiter-secondary → order_gateway → sequencer-primary → sequencer-secondary → matching_engine. Monitors for unexpected exits. Ctrl-C sends SIGTERM to all processes.
+Starts 7 processes in dependency order: witness → arbiter-primary → arbiter-secondary → fix_order_gateway → sequencer-primary → sequencer-secondary → matching_engine. Monitors for unexpected exits. Ctrl-C sends SIGTERM to all processes.
 
 **`perf_run.py`** — starts the full system, attaches `perf record` to gateway and ME, fires fix8 NOS orders, waits for completion, SIGTERMs everything, then produces per-process perf reports and flamegraph SVGs.
 
@@ -1762,7 +1762,7 @@ Inspired by the Aeron sequencer pattern. The sequencer is the **sole writer** to
 FIX client
     | raw FIX bytes (RawBytesProtocolHandler)
     v
-order_gateway          (single instance)
+fix_order_gateway          (single instance)
     | NewOrderSingle / OrderCancelRequest PDUs -- single sequencer (post session 15)
     v
 sequencer (single instance, "primary" naming preserved)
@@ -1773,7 +1773,7 @@ matching_engine                 (single instance)
     v
 sequencer (receives ER, forwards to gateway on port 7010)
     v
-order_gateway --> FIX ER --> FIX client (via cl_ord_id_to_session_)
+fix_order_gateway --> FIX ER --> FIX client (via cl_ord_id_to_session_)
 ```
 
 **Future state (after WAL+HA slices land):** the second sequencer returns as a passive follower, the gateway connects to both but sends only to the leader, and the WAL replication channel runs alongside the data channels. See "WAL and HA Design" above for the full topology diagram.
@@ -1861,7 +1861,7 @@ Full class table including `AllocatorConfig`, `PoolStatistics`, and
 
 Profiling flags: `perf record --call-graph dwarf -F 999`.
 Kernel tuning: `/proc/sys/kernel/kptr_restrict = 0`, `/proc/sys/kernel/perf_event_paranoid = -1`.
-Binary: `order_gateway` (RelWithDebInfo, full DWARF).
+Binary: `fix_order_gateway` (RelWithDebInfo, full DWARF).
 Workload: fix8 sending 100,000 NewOrderSingles + OrderCancelRequests over loopback (127.0.0.1).
 
 > **Why dwarf instead of fp?**
@@ -1874,7 +1874,7 @@ Workload: fix8 sending 100,000 NewOrderSingles + OrderCancelRequests over loopba
 | Kernel TCP / net stack (`kernel.kallsyms`) | 39.24 % | Normal for TCP I/O — send/recv, SKB management, scheduler |
 | **Netfilter** (`nf_tables` / `nf_conntrack` / `nf_nat`) | **13.04 %** | **Surprise: loopback traffic goes through the full nftables chain** |
 | Framework (`libpubsub_itc_fw`) | 8.80 % | Dominated by `ReactorControlCommand` slab operations |
-| Application binary (`order_gateway`) | 8.14 % | FIX parsing, serialisation, hashtable, PDU send |
+| Application binary (`fix_order_gateway`) | 8.14 % | FIX parsing, serialisation, hashtable, PDU send |
 | libc | 7.82 % | Heap allocation (3.34 %), timestamp (0.86 %), memchr/memmove |
 | libstdc++ | 1.84 % | |
 | vdso | 0.68 % | `gettimeofday` fast-path |

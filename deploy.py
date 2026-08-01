@@ -286,7 +286,7 @@ def _generate_fix_client_truststore(env: dict, install_dir: Path, force: bool) -
     certificate today, so the client trusts whichever it connects to; if they are ever
     given distinct certs, every one of them needs importing into the same truststore.
     """
-    gateway_name = next((name for name in env.get("tls", {}) if name.startswith("order_gateway")), None)
+    gateway_name = next((name for name in env.get("tls", {}) if name.startswith("fix_order_gateway")), None)
     if gateway_name is None:
         return
     gateway_tls = env["tls"][gateway_name]

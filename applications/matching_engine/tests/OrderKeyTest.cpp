@@ -23,23 +23,23 @@ namespace {
 using OrderBook = std::unordered_map<OrderKey, std::string, OrderKeyHash>;
 
 TEST(OrderKeyTest, SameGatewaySessionAndClOrdIdIsTheSameOrder) {
-    const OrderKey first = OrderKey::make(5, gateway_ids::order_gateway, "ORDER-1");
-    const OrderKey second = OrderKey::make(5, gateway_ids::order_gateway, "ORDER-1");
+    const OrderKey first = OrderKey::make(5, gateway_ids::fix_order_gateway, "ORDER-1");
+    const OrderKey second = OrderKey::make(5, gateway_ids::fix_order_gateway, "ORDER-1");
 
     EXPECT_TRUE(first == second);
     EXPECT_EQ(OrderKeyHash{}(first), OrderKeyHash{}(second));
 }
 
 TEST(OrderKeyTest, DifferentClOrdIdOnOneSessionIsADifferentOrder) {
-    const OrderKey first = OrderKey::make(5, gateway_ids::order_gateway, "ORDER-1");
-    const OrderKey second = OrderKey::make(5, gateway_ids::order_gateway, "ORDER-2");
+    const OrderKey first = OrderKey::make(5, gateway_ids::fix_order_gateway, "ORDER-1");
+    const OrderKey second = OrderKey::make(5, gateway_ids::fix_order_gateway, "ORDER-2");
 
     EXPECT_FALSE(first == second);
 }
 
 TEST(OrderKeyTest, DifferentSessionOnOneGatewayIsADifferentOrder) {
-    const OrderKey first = OrderKey::make(5, gateway_ids::order_gateway, "ORDER-1");
-    const OrderKey second = OrderKey::make(6, gateway_ids::order_gateway, "ORDER-1");
+    const OrderKey first = OrderKey::make(5, gateway_ids::fix_order_gateway, "ORDER-1");
+    const OrderKey second = OrderKey::make(6, gateway_ids::fix_order_gateway, "ORDER-1");
 
     EXPECT_FALSE(first == second);
 }
@@ -47,8 +47,8 @@ TEST(OrderKeyTest, DifferentSessionOnOneGatewayIsADifferentOrder) {
 // The regression. Each gateway numbers its own client connections, so connection 5 exists
 // on both; without the gateway id these two unrelated orders were one book entry.
 TEST(OrderKeyTest, SameSessionNumberOnDifferentGatewaysIsADifferentOrder) {
-    const OrderKey via_fix = OrderKey::make(5, gateway_ids::order_gateway, "ORDER-1");
-    const OrderKey via_binary = OrderKey::make(5, gateway_ids::binary_gateway, "ORDER-1");
+    const OrderKey via_fix = OrderKey::make(5, gateway_ids::fix_order_gateway, "ORDER-1");
+    const OrderKey via_binary = OrderKey::make(5, gateway_ids::binary_order_gateway, "ORDER-1");
 
     EXPECT_FALSE(via_fix == via_binary);
 }
@@ -58,8 +58,8 @@ TEST(OrderKeyTest, SameSessionNumberOnDifferentGatewaysIsADifferentOrder) {
 // and cancelling one must not retire the other.
 TEST(OrderKeyTest, OrdersFromTwoGatewaysCoexistAndCancelIndependently) {
     OrderBook book;
-    const OrderKey via_fix = OrderKey::make(5, gateway_ids::order_gateway, "ORDER-1");
-    const OrderKey via_binary = OrderKey::make(5, gateway_ids::binary_gateway, "ORDER-1");
+    const OrderKey via_fix = OrderKey::make(5, gateway_ids::fix_order_gateway, "ORDER-1");
+    const OrderKey via_binary = OrderKey::make(5, gateway_ids::binary_order_gateway, "ORDER-1");
 
     book.emplace(via_fix, "from the FIX gateway");
     book.emplace(via_binary, "from the binary gateway");
@@ -71,11 +71,11 @@ TEST(OrderKeyTest, OrdersFromTwoGatewaysCoexistAndCancelIndependently) {
     EXPECT_EQ(book.at(via_binary), "from the binary gateway");
 }
 
-// An absent gateway id means the order gateway, so orders replayed from a WAL written
+// An absent gateway id means the FIX order gateway, so orders replayed from a WAL written
 // before gateway ids existed keep the identity they had when they were written.
 TEST(OrderKeyTest, AnAbsentGatewayIdMeansTheOrderGateway) {
     const OrderKey defaulted = OrderKey::make(5, gateway_ids::default_when_absent, "ORDER-1");
-    const OrderKey explicit_fix = OrderKey::make(5, gateway_ids::order_gateway, "ORDER-1");
+    const OrderKey explicit_fix = OrderKey::make(5, gateway_ids::fix_order_gateway, "ORDER-1");
 
     EXPECT_TRUE(defaulted == explicit_fix);
 }
@@ -84,7 +84,7 @@ TEST(OrderKeyTest, AnAbsentGatewayIdMeansTheOrderGateway) {
 // reject longer ones at ingress. If that check is ever dropped, this is where it bites.
 TEST(OrderKeyTest, ClOrdIdIsTruncatedAtTheSharedMaximum) {
     const std::string over_long(fix_order_limits::max_cl_ord_id_length + 10, 'X');
-    const OrderKey key = OrderKey::make(5, gateway_ids::order_gateway, over_long);
+    const OrderKey key = OrderKey::make(5, gateway_ids::fix_order_gateway, over_long);
 
     EXPECT_EQ(key.cl_ord_id_len, fix_order_limits::max_cl_ord_id_length);
 }

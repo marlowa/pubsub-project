@@ -56,13 +56,13 @@ SequencerConfiguration SequencerConfigurationLoader::load(const pubsub_itc_fw::T
         // Gateways are an array of tables, one per process:
         //
         //   [[gateway]]
-        //   protocol = 1        # gateway_ids::order_gateway
+        //   protocol = 1        # gateway_ids::fix_order_gateway
         //   instance = 1
         //   host     = "127.0.0.1"
         //   port     = 7010
         //
         // A gateway that is not deployed simply has no entry. That replaces the earlier
-        // binary_gateway.enabled switch, which said the same thing less directly, and it
+        // binary_order_gateway.enabled switch, which said the same thing less directly, and it
         // lets a protocol run as several instances -- which a scalar host/port pair could
         // not express at all.
         //

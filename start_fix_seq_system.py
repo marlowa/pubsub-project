@@ -13,7 +13,7 @@ Startup order:
   3. arbiter (primary)       -- component listener port 7200, peer listener 7203.
                                Must be up before sequencers try to connect.
   4. arbiter (secondary)     -- component listener port 7201, peer listener 7204.
-  5. order_gateway           -- must be listening on port 7010 before sequencers
+  5. fix_order_gateway           -- must be listening on port 7010 before sequencers
                                start, because sequencers connect outbound to the
                                gateway's ER inbound listener at startup.
   6. sequencer (primary)     -- instance_id=1, listens on port 7001
@@ -169,7 +169,7 @@ def main() -> None:
         "arbiter",
         "sequencer",
         "matching_engine",
-        "order_gateway",
+        "fix_order_gateway",
     ]
 
     java_jars = [
@@ -206,10 +206,10 @@ def main() -> None:
          etc_dir / "arbiter"               / "arbiter.toml",                  None),
         ("arbiter_secondary",     "arbiter",                "arbiter_secondary.log",
          etc_dir / "arbiter"               / "arbiter_secondary.toml",        None),
-        ("order_gateway_a",       "order_gateway",          "order_gateway_a.log",
-         etc_dir / "order_gateway"         / "order_gateway_a.toml",          None),
-        ("order_gateway_b",       "order_gateway",          "order_gateway_b.log",
-         etc_dir / "order_gateway"         / "order_gateway_b.toml",          None),
+        ("fix_order_gateway_a",       "fix_order_gateway",          "fix_order_gateway_a.log",
+         etc_dir / "fix_order_gateway"         / "fix_order_gateway_a.toml",          None),
+        ("fix_order_gateway_b",       "fix_order_gateway",          "fix_order_gateway_b.log",
+         etc_dir / "fix_order_gateway"         / "fix_order_gateway_b.toml",          None),
         ("sequencer_primary",     "sequencer",              "sequencer_primary.log",
          etc_dir / "sequencer"             / "sequencer.toml",                None),
         ("sequencer_secondary",   "sequencer",              "sequencer_secondary.log",

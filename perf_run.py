@@ -62,15 +62,16 @@ CALLGRAPH        = "dwarf" # dwarf unwinds across the user/kernel boundary; reso
 DWARF_STACK_SIZE = 4096    # bytes per sample; default 8192 — halving saves significant RAM
 PERF_MMAP_SIZE   = "16M"   # per-CPU ring-buffer cap passed to -m; prevents OOM under load
 FREQ             = 99      # perf sample frequency (Hz)
-# Processes to profile; set to None to profile all launched processes.
-# Profiling arbiters, the witness, and both sequencers with DWARF is expensive
-# and rarely useful; the hot path is gateway and ME.
-PERF_TARGETS     = {"order_gateway_a", "matching_engine_primary"}
+# Only the gateway instance under test and the matching engine are profiled.  Profiling
+# arbiters, the witness, and both sequencers with DWARF is expensive and rarely useful;
+# the hot path is gateway and ME.  The set is built in main() from --gateway and
+# --gateway-instance, because which gateway is the target is a per-run choice.
 
-# The binary gateway's client listener, and the burst size both load tools use.
-# 1000 is fix8's "T" command, so --burst means the same thing for either gateway.
+# The binary gateway's client listener host, and the burst size both load tools use.
+# 1000 is fix8's "T" command, so --burst means the same thing for either gateway.  The
+# port is not a constant: it is read from the chosen instance's deployed configuration,
+# because the instances listen on different ports and a constant would drift.
 BINARY_GATEWAY_HOST = "127.0.0.1"
-BINARY_GATEWAY_PORT = 9890
 ORDERS_PER_BURST    = 1000
 
 # The binary gateway authenticates with SCRAM, so the load client needs credentials.
@@ -84,9 +85,9 @@ MAX_ORDER_TIMEOUT = 120.0  # hard cap on order/ER completion wait (2 minutes)
 # session already disconnected. Such ERs are "accounted for" but never delivered.
 _ER_DROPPED_MARKER = "client already disconnected -- dropping"
 
-# CONTRACT WITH THE GATEWAYS -- both order_gateway and binary_gateway emit this marker, at
+# CONTRACT WITH THE GATEWAYS -- both fix_order_gateway and binary_order_gateway emit this marker, at
 # Info, every 1000 accounted-for execution reports (see report_order_progress() in
-# OrderGatewayThread.hpp, which carries the matching warning). It is how this script knows a
+# FixOrderGatewayThread.hpp, which carries the matching warning). It is how this script knows a
 # run has finished: the count is the authoritative end-to-end signal that every order made
 # the full NOS -> ME -> sequencer -> gateway -> client round trip.
 #
@@ -148,21 +149,33 @@ def write_scram_credential(creds_file: Path, comp_id: str, password: str) -> Non
     log(f"  SCRAM credential for '{comp_id}' (password={password!r}) written to {creds_file.name}")
 
 
-# ── FIX gateway instances ─────────────────────────────────────────────────────
-# The FIX gateway runs as several instances (order_gateway_a, order_gateway_b, ...) so
-# that losing one does not take every session with it. They listen on different ports,
-# so driving a chosen instance means pointing f8test at that port.
+# ── Gateway instances ─────────────────────────────────────────────────────────
+# Each gateway protocol runs as several instances (fix_order_gateway_a,
+# fix_order_gateway_b, and the same pair for binary) so that losing one does not take
+# every session with it. They listen on different ports, so driving a chosen instance
+# means pointing the load generator at that port.
 #
-# f8test takes its target from an XML session config that lives in the fix8 installation,
-# outside this repo. Rather than requiring a hand-maintained file per instance -- which
-# would drift from the deployed configuration -- the port is read from the instance's own
-# deployed TOML and written into a generated copy of the config.
+# The port is always read from the instance's own deployed TOML rather than kept as a
+# constant here, because a constant drifts from the deployment silently and the failure
+# looks like the gateway being down.
+#
+# For FIX there is a second reason: f8test takes its target from an XML session config
+# that lives in the fix8 installation, outside this repo. Rather than requiring a
+# hand-maintained file per instance, the port read here is written into a generated copy
+# of that config.
 
-def fix_gateway_listen_port(prefix: Path, instance: str) -> int:
-    """Read an instance's plain FIX listen port from its deployed configuration."""
-    config = prefix / "etc" / "order_gateway" / f"order_gateway_{instance}.toml"
+def gateway_component(gateway: str, instance: str) -> str:
+    """Deployed component name for a protocol and instance, e.g. 'fix_order_gateway_a'."""
+    return f"{'binary' if gateway == 'binary' else 'fix'}_order_gateway_{instance}"
+
+
+def gateway_listen_port(prefix: Path, gateway: str, instance: str) -> int:
+    """Read an instance's client listen port from its deployed configuration."""
+    component = gateway_component(gateway, instance)
+    directory = "binary_order_gateway" if gateway == "binary" else "fix_order_gateway"
+    config = prefix / "etc" / directory / f"{component}.toml"
     if not config.is_file():
-        die(f"order_gateway_{instance} config not found: {config}\n"
+        die(f"{component} config not found: {config}\n"
             f"       is instance '{instance}' deployed in this environment?")
     for line in config.read_text().splitlines():
         match = re.match(r"\s*listen_port\s*=\s*(\d+)", line)
@@ -182,7 +195,7 @@ def fix8_config_for_instance(prefix: Path, instance: str) -> str:
     if instance == "a":
         return FIX8_CFG
 
-    port = fix_gateway_listen_port(prefix, instance)
+    port = gateway_listen_port(prefix, "fix", instance)
     source = FIX8_DIR / FIX8_CFG
     if not source.is_file():
         die(f"fix8 session config not found: {source}")
@@ -233,7 +246,7 @@ def binary_load_comp_ids(clients: int) -> list[str]:
 
 
 def set_fix_capture_enabled(config_path: Path, enabled: bool) -> None:
-    """Patch the enabled flag in the order_gateway fix_capture config section."""
+    """Patch the enabled flag in the fix_order_gateway fix_capture config section."""
     text = config_path.read_text()
     patched = re.sub(r'(?m)^(enabled\s*=\s*)(true|false)',
                      lambda m: m.group(1) + ("true" if enabled else "false"),
@@ -254,7 +267,7 @@ def preflight(prefix: Path) -> None:
     if subprocess.call(["which", "perf"],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) != 0:
         die("'perf' not found in PATH")
-    for name in ("witness", "arbiter", "sequencer", "matching_engine", "order_gateway"):
+    for name in ("witness", "arbiter", "sequencer", "matching_engine", "fix_order_gateway"):
         exe = prefix / "bin" / name
         if not exe.is_file() or not os.access(exe, os.X_OK):
             die(f"binary not found or not executable: {exe}")
@@ -570,9 +583,10 @@ def generate_reports(app_names: list[str], perf_dir: Path) -> None:
     log(f"Per-process SVGs     : {perf_dir}/*.svg")
 
 
-def run_binary_load_session(bin_dir: Path, output_dir: Path, burst: int, clients: int, rate: int) -> None:
+def run_binary_load_session(bin_dir: Path, output_dir: Path, burst: int, clients: int, rate: int,
+                            port: int) -> None:
     """
-    Drive the binary gateway with binary_load_client, the counterpart of f8test.
+    Drive the binary order gateway with binary_load_client, the counterpart of f8test.
 
     Simpler than the fix8 path because the client owns both ends of the exchange: it
     knows exactly how many orders it sent and how many reports came back, so completion
@@ -590,7 +604,7 @@ def run_binary_load_session(bin_dir: Path, output_dir: Path, burst: int, clients
     command = [
         str(bin_dir / "binary_load_client"),
         "--host", BINARY_GATEWAY_HOST,
-        "--port", str(BINARY_GATEWAY_PORT),
+        "--port", str(port),
         "--comp-id-prefix", BINARY_LOAD_COMP_ID_PREFIX,
         "--password", BINARY_LOAD_PASSWORD,
         "--sessions", str(clients),
@@ -713,11 +727,12 @@ def main() -> None:
                              "gateway, driven by binary_load_client.  Both send the same "
                              "orders into the same book, so the two runs are comparable.")
     parser.add_argument("--gateway-instance", choices=["a", "b"], default="a",
-                        help="Which FIX gateway instance to drive and profile (default: a). "
-                             "Both instances are launched either way, so the process set and "
-                             "therefore the machine's load is the same whichever is measured. "
-                             "f8test is pointed at the chosen instance's listen port, read from "
-                             "its deployed configuration. Ignored for --gateway binary.")
+                        help="Which instance of the chosen gateway to drive and profile "
+                             "(default: a). Every instance of both protocols is launched "
+                             "either way, so the process set and therefore the machine's load "
+                             "is the same whichever is measured. The load generator is pointed "
+                             "at the chosen instance's listen port, read from its deployed "
+                             "configuration.")
     parser.add_argument("--rate", type=int, default=0,
                         help="Orders per second per session (binary gateway only).  Omit for a "
                              "throughput test, which offers load faster than the pipeline "
@@ -748,9 +763,9 @@ def main() -> None:
     ts         = datetime.now().strftime("%Y%m%d_%H%M%S")
     perf_dir   = prefix / "perf" / ts
     me_log     = log_dir / "matching_engine_primary.log"
-    gw_log     = log_dir / f"order_gateway_{args.gateway_instance}.log"
+    gw_log     = log_dir / f"fix_order_gateway_{args.gateway_instance}.log"
 
-    gw_config = prefix / "etc" / "order_gateway" / f"order_gateway_{args.gateway_instance}.toml"
+    gw_config = prefix / "etc" / "fix_order_gateway" / f"fix_order_gateway_{args.gateway_instance}.toml"
 
     preflight(prefix)
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -758,9 +773,9 @@ def main() -> None:
 
     if args.capture:
         if not gw_config.is_file():
-            die(f"order_gateway config not found: {gw_config}")
+            die(f"fix_order_gateway config not found: {gw_config}")
         set_fix_capture_enabled(gw_config, True)
-        log("FIX capture enabled in order_gateway config")
+        log("FIX capture enabled in fix_order_gateway config")
 
     # Extend LD_LIBRARY_PATH so the installed shared library is found.
     lib_dir = str(prefix / "lib")
@@ -772,8 +787,7 @@ def main() -> None:
     log(f"  perf output    : {perf_dir}")
     cg_desc = f"{CALLGRAPH},{DWARF_STACK_SIZE}" if CALLGRAPH == "dwarf" else CALLGRAPH
     targets_desc = ("matching_engine_primary, "
-                    + ("binary_gateway" if args.gateway == "binary"
-                       else f"order_gateway_{args.gateway_instance}"))
+                    + gateway_component(args.gateway, args.gateway_instance))
     log(f"  call-graph     : {cg_desc}  (freq={FREQ} Hz, mmap={PERF_MMAP_SIZE})")
     log(f"  perf targets   : {targets_desc}")
     log(f"  gateway        : {args.gateway}")
@@ -816,17 +830,17 @@ def main() -> None:
         ("matching_engine_secondary", "matching_engine",    etc_dir / "matching_engine"       / "matching_engine_secondary.toml",None),
         ("sequencer_primary",      "sequencer",              etc_dir / "sequencer"             / "sequencer_primary.toml",                None),
         ("sequencer_secondary",    "sequencer",              etc_dir / "sequencer"             / "sequencer_secondary.toml",      None),
-        ("order_gateway_a",        "order_gateway",          etc_dir / "order_gateway"         / "order_gateway_a.toml",          etc_dir / "order_gateway"),
-        ("order_gateway_b",        "order_gateway",          etc_dir / "order_gateway"         / "order_gateway_b.toml",          etc_dir / "order_gateway"),
-        ("binary_gateway",         "binary_gateway",         etc_dir / "binary_gateway"        / "binary_gateway.toml",           etc_dir / "binary_gateway"),
+        ("fix_order_gateway_a",    "fix_order_gateway",      etc_dir / "fix_order_gateway"      / "fix_order_gateway_a.toml",      etc_dir / "fix_order_gateway"),
+        ("fix_order_gateway_b",    "fix_order_gateway",      etc_dir / "fix_order_gateway"      / "fix_order_gateway_b.toml",      etc_dir / "fix_order_gateway"),
+        ("binary_order_gateway_a", "binary_order_gateway",   etc_dir / "binary_order_gateway"   / "binary_order_gateway_a.toml",   etc_dir / "binary_order_gateway"),
+        ("binary_order_gateway_b", "binary_order_gateway",   etc_dir / "binary_order_gateway"   / "binary_order_gateway_b.toml",   etc_dir / "binary_order_gateway"),
     ]
 
-    # Both gateways run whichever is under test, so the process set -- and therefore the
-    # machine's load -- is the same in either run and the two are comparable. The idle one
-    # does nothing but hold its listeners open.
-    perf_targets = {"matching_engine_primary"}
-    perf_targets.add("binary_gateway" if args.gateway == "binary"
-                     else f"order_gateway_{args.gateway_instance}")
+    # Every gateway instance of both protocols runs whichever one is under test, so the
+    # process set -- and therefore the machine's load -- is the same in every run and the
+    # results are comparable. The idle ones do nothing but hold their listeners open.
+    perf_targets = {"matching_engine_primary",
+                    gateway_component(args.gateway, args.gateway_instance)}
 
     app_procs:  list[tuple[str, subprocess.Popen]] = []
     perf_procs: list[tuple[str, subprocess.Popen]] = []
@@ -862,7 +876,8 @@ def main() -> None:
 
         # Drive load through whichever gateway is under test.
         if args.gateway == "binary":
-            run_binary_load_session(bin_dir, perf_dir, args.burst, args.clients, args.rate)
+            run_binary_load_session(bin_dir, perf_dir, args.burst, args.clients, args.rate,
+                                    gateway_listen_port(prefix, "binary", args.gateway_instance))
         else:
             run_fix8_session(me_log, gw_log, args.burst, args.clients,
                              fix8_config_for_instance(prefix, args.gateway_instance))
@@ -889,7 +904,7 @@ def main() -> None:
     finally:
         if args.capture:
             set_fix_capture_enabled(gw_config, False)
-            log("FIX capture disabled in order_gateway config")
+            log("FIX capture disabled in fix_order_gateway config")
 
     # Post-shutdown ground-truth counts.  Read after all processes have exited so
     # any in-flight log entries are flushed.  GW-ER-SENT is the authoritative

@@ -81,12 +81,12 @@ cert = "admin.crt"
 key  = "admin.key"
 ca   = ""
 
-[tls.order_gateway_a]
+[tls.fix_order_gateway_a]
 cert = "fix_gateway.crt"
 key  = "fix_gateway.key"
 ca   = ""
 
-[tls.order_gateway_b]
+[tls.fix_order_gateway_b]
 cert = "fix_gateway.crt"
 key  = "fix_gateway.key"
 ca   = ""
@@ -106,11 +106,16 @@ ca   = ""
 # tier, which is the safe default -- forgetting to rank something places it where
 # it almost certainly belonged.
 #
-# A rank group is admitted whole or not at all, so both gateways (rank 1) can
-# never be split across core types.  That is what makes the FIX-versus-binary
-# gateway comparison valid by construction rather than by arithmetic accident.
+# A rank group is admitted whole or not at all, so the two measured gateways
+# (rank 1) can never be split across core types.  That is what makes the
+# FIX-versus-binary comparison valid by construction rather than by arithmetic
+# accident.  Only the _a instance of each protocol is ranked: perf_run.py measures
+# _a, and ranking all four would spend two hot cores on processes that are idle
+# during the comparison.  The _b instances are unranked and so run in the shared
+# background tier, which is also what makes them cheap to leave running.
 #
-#   1  order_gateway_a, order_gateway_b, binary_gateway     client edge
+#   1  fix_order_gateway_a,              client edge
+#      binary_order_gateway_a
 #   2  sequencer_primary/_secondary      the sequencing point; the follower's
 #                                        WalAck gates every execution report, so
 #                                        it is latency-critical despite not being
@@ -151,9 +156,10 @@ components = [
     "sequencer_secondary",
     "mep_primary",
     "mep_secondary",
-    "order_gateway_a",
-    "order_gateway_b",
-    "binary_gateway",
+    "fix_order_gateway_a",
+    "fix_order_gateway_b",
+    "binary_order_gateway_a",
+    "binary_order_gateway_b",
     "admin_service",
     "fix_test_client",
 ]
@@ -195,9 +201,10 @@ components = [
     "sequencer_secondary",
     "mep_primary",
     "mep_secondary",
-    "order_gateway_a",
-    "order_gateway_b",
-    "binary_gateway",
+    "fix_order_gateway_a",
+    "fix_order_gateway_b",
+    "binary_order_gateway_a",
+    "binary_order_gateway_b",
     "admin_service",
     "fix_test_client",
 ]
@@ -274,24 +281,29 @@ workdir = "etc/matching_engine_publisher"
 ha_only = true
 hot_path_rank = 4
 
-[components.order_gateway_a]
-binary  = "bin/order_gateway"
-config  = "etc/order_gateway/order_gateway_a.toml"
-workdir = "etc/order_gateway"
+[components.fix_order_gateway_a]
+binary  = "bin/fix_order_gateway"
+config  = "etc/fix_order_gateway/fix_order_gateway_a.toml"
+workdir = "etc/fix_order_gateway"
 ha_only = false
 hot_path_rank = 1
 
-[components.order_gateway_b]
-binary  = "bin/order_gateway"
-config  = "etc/order_gateway/order_gateway_b.toml"
-workdir = "etc/order_gateway"
+[components.fix_order_gateway_b]
+binary  = "bin/fix_order_gateway"
+config  = "etc/fix_order_gateway/fix_order_gateway_b.toml"
+workdir = "etc/fix_order_gateway"
 
-[components.binary_gateway]
-binary  = "bin/binary_gateway"
-config  = "etc/binary_gateway/binary_gateway.toml"
-workdir = "etc/binary_gateway"
+[components.binary_order_gateway_a]
+binary  = "bin/binary_order_gateway"
+config  = "etc/binary_order_gateway/binary_order_gateway_a.toml"
+workdir = "etc/binary_order_gateway"
 ha_only = false
 hot_path_rank = 1
+
+[components.binary_order_gateway_b]
+binary  = "bin/binary_order_gateway"
+config  = "etc/binary_order_gateway/binary_order_gateway_b.toml"
+workdir = "etc/binary_order_gateway"
 
 # The admin service JAR is placed in install_dir/lib/ by build.py.
 # workdir is etc/admin_service/ so that relative paths in application.properties
@@ -392,7 +404,7 @@ arbiter_primary_port          = 11200
 arbiter_secondary_host        = "127.0.0.1"
 arbiter_secondary_port        = 11201
 
-[order_gateway_a]
+[fix_order_gateway_a]
 gateway_instance_id        = 1
 network_listen_host                   = "127.0.0.1"
 network_listen_port                   = 9879
@@ -417,7 +429,7 @@ fix_limits_max_order_qty_length       = 24
 open_order_pool_objects_per_pool      = 4096
 open_order_pool_initial_pools         = 1
 
-[order_gateway_b]
+[fix_order_gateway_b]
 gateway_instance_id        = 2
 network_listen_host                   = "127.0.0.1"
 network_listen_port                   = 9881
@@ -442,7 +454,7 @@ fix_limits_max_order_qty_length       = 24
 open_order_pool_objects_per_pool      = 4096
 open_order_pool_initial_pools         = 1
 
-[binary_gateway]
+[binary_order_gateway_a]
 gateway_instance_id        = 1
 authentication_service_host           = "127.0.0.1"
 authentication_service_port           = 11070
@@ -459,19 +471,42 @@ sequencer_secondary_port = 11002
 open_order_pool_objects_per_pool = 4096
 open_order_pool_initial_pools    = 1
 
+[binary_order_gateway_b]
+gateway_instance_id        = 2
+authentication_service_host           = "127.0.0.1"
+authentication_service_port           = 11070
+authentication_service_secondary_host = "127.0.0.1"
+authentication_service_secondary_port = 11071
+network_listen_host      = "127.0.0.1"
+network_listen_port      = 9891
+network_er_listen_host   = "127.0.0.1"
+network_er_listen_port   = 11111
+sequencer_primary_host   = "127.0.0.1"
+sequencer_primary_port   = 11001
+sequencer_secondary_host = "127.0.0.1"
+sequencer_secondary_port = 11002
+open_order_pool_objects_per_pool = 4096
+open_order_pool_initial_pools    = 1
+
 [sequencer_primary]
-gateway_b_enabled          = true
-gateway_b_host             = "127.0.0.1"
-gateway_b_port             = 11011
 network_listen_host        = "127.0.0.1"
 network_listen_port        = 11001
 network_er_listen_host     = "127.0.0.1"
 network_er_listen_port     = 11021
-gateway_host               = "127.0.0.1"
-gateway_port               = 11010
-binary_gateway_enabled     = true
-binary_gateway_host        = "127.0.0.1"
-binary_gateway_port        = 11110
+# One entry per gateway process the sequencer delivers execution reports to.  The
+# host/port is that instance's ER listener, not its client listener.
+fix_order_gateway_a_enabled      = true
+fix_order_gateway_a_host         = "127.0.0.1"
+fix_order_gateway_a_port         = 11010
+fix_order_gateway_b_enabled      = true
+fix_order_gateway_b_host         = "127.0.0.1"
+fix_order_gateway_b_port         = 11011
+binary_order_gateway_a_enabled   = true
+binary_order_gateway_a_host      = "127.0.0.1"
+binary_order_gateway_a_port      = 11110
+binary_order_gateway_b_enabled   = true
+binary_order_gateway_b_host      = "127.0.0.1"
+binary_order_gateway_b_port      = 11111
 matching_engine_host       = "127.0.0.1"
 matching_engine_port       = 11020
 matching_engine_secondary_host = "127.0.0.1"
@@ -489,18 +524,24 @@ wal_subscriber_listen_host = "127.0.0.1"
 wal_subscriber_listen_port = 11030
 
 [sequencer_secondary]
-gateway_b_enabled          = true
-gateway_b_host             = "127.0.0.1"
-gateway_b_port             = 11011
 network_listen_host        = "127.0.0.1"
 network_listen_port        = 11002
 network_er_listen_host     = "127.0.0.1"
 network_er_listen_port     = 11022
-gateway_host               = "127.0.0.1"
-gateway_port               = 11010
-binary_gateway_enabled     = true
-binary_gateway_host        = "127.0.0.1"
-binary_gateway_port        = 11110
+# Same four gateway endpoints as the primary: either sequencer may be the leader,
+# so both must be able to reach every gateway instance.
+fix_order_gateway_a_enabled      = true
+fix_order_gateway_a_host         = "127.0.0.1"
+fix_order_gateway_a_port         = 11010
+fix_order_gateway_b_enabled      = true
+fix_order_gateway_b_host         = "127.0.0.1"
+fix_order_gateway_b_port         = 11011
+binary_order_gateway_a_enabled   = true
+binary_order_gateway_a_host      = "127.0.0.1"
+binary_order_gateway_a_port      = 11110
+binary_order_gateway_b_enabled   = true
+binary_order_gateway_b_host      = "127.0.0.1"
+binary_order_gateway_b_port      = 11111
 matching_engine_host       = "127.0.0.1"
 matching_engine_port       = 11020
 matching_engine_secondary_host = "127.0.0.1"
@@ -554,14 +595,15 @@ ha_peer_host                         = "127.0.0.1"
 ha_peer_port                         = 11044
 
 # ── Fix test client ────────────────────────────────────────────────────────────
-# fix_gateway_port must match order_gateway.network_listen_port above.
+# fix_gateway_port must match fix_order_gateway_a.network_listen_port above, and
+# binary_order_gateway_port must match binary_order_gateway_a.network_listen_port.
 
 [fix_test_client]
 server_port      = 8081
 fix_gateway_port     = 9879
 fix_tls_gateway_port = 9880
 fix_proprietary_gateway_port = 30994
-binary_gateway_port  = 9890
+binary_order_gateway_port  = 9890
 fix_tls_enabled      = true
 
 # ── Admin service ──────────────────────────────────────────────────────────────

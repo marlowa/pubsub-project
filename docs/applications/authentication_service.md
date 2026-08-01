@@ -3,7 +3,7 @@
 ## Role
 
 The authentication service (`applications/authentication_service/`) validates FIX client
-logons on behalf of the order gateway. When a FIX client sends a Logon, the gateway does not
+logons on behalf of the FIX order gateway. When a FIX client sends a Logon, the gateway does not
 check the password itself — it runs a SCRAM exchange against the authentication service and
 admits the session only on a `Granted` result.
 
@@ -121,4 +121,4 @@ the `[auth_service_a]` / `[auth_service_b]` sections of the environment TOML by 
 - [Secure Comms](../design/secure_comms.md) — SCRAM design, TLS, and the auth PDU protocol
 - [WAL and High Availability](../design/wal_and_ha.md#authentication-service-ha) — the active/active HA model
 - [Admin Service](admin_service.md) — the single writer of credential state
-- [Order Gateway](order_gateway.md) — the caller that runs the SCRAM exchange per logon
+- [Order Gateway](fix_order_gateway.md) — the caller that runs the SCRAM exchange per logon

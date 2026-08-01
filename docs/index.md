@@ -24,8 +24,8 @@
 
 ## Applications
 
-- [Order Gateway](applications/order_gateway.md)
-- [Binary Gateway](applications/binary_gateway.md)
+- [Order Gateway](applications/fix_order_gateway.md)
+- [Binary Gateway](applications/binary_order_gateway.md)
 - [Matching Engine](applications/matching_engine.md)
 - [Sequencer Application](applications/sequencer_app.md)
 - [Arbiter](applications/arbiter.md)

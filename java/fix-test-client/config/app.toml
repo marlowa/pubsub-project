@@ -15,7 +15,7 @@ trust_store_password = "pubsub_dev"
 # chooses which gateway it goes to.
 [binary]
 gateway_host = "127.0.0.1"
-gateway_port = ${fix_test_client_binary_gateway_port}
+gateway_port = ${fix_test_client_binary_order_gateway_port}
 
 [capture]
 output_dir = "output"

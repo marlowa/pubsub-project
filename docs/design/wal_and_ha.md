@@ -46,7 +46,7 @@ Reading the table by column makes the point precise:
 The rest of this document covers each component's model in turn. The
 `primary`/`secondary` and `leader`/`follower` glossary below applies **only** to the
 arbiter-elected components. The gateway (a singleton per FIX endpoint, named
-`order_gateway` with no suffix) and the auth service (active/active instances named
+`fix_order_gateway` with no suffix) and the auth service (active/active instances named
 `a`/`b`) deliberately do not use those terms — see their sections.
 
 ---

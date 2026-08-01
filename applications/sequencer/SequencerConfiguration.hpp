@@ -63,7 +63,7 @@ struct SequencerConfiguration {
 
     /** @brief One gateway process the sequencer delivers execution reports to. */
     struct GatewayEndpoint {
-        /** @brief Which client protocol, from gateway_ids: order_gateway or binary_gateway. */
+        /** @brief Which client protocol, from gateway_ids: fix_order_gateway or binary_order_gateway. */
         int16_t protocol{1};
 
         /** @brief Which instance of that protocol, numbered from 1 within the protocol. */
@@ -90,7 +90,7 @@ struct SequencerConfiguration {
      * @brief Every gateway process to deliver execution reports to.
      *
      * Replaces the earlier scalar gateway_host/gateway_port pair and the
-     * binary_gateway_enabled flag: a gateway that is not deployed simply has no entry,
+     * binary_order_gateway_enabled flag: a gateway that is not deployed simply has no entry,
      * which says the same thing without a separate switch.
      */
     std::vector<GatewayEndpoint> gateway_endpoints{};

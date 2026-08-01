@@ -19,8 +19,8 @@ digraph architecture {
     // --- components (each links to its documentation page) ---
     fix_test_client [label="FIX Test Client\n(Java harness, Groovy scripting)",
                      URL="\ref fix_test_client"];
-    order_gateway   [label="Order Gateway\n(FIX 5.0 SP2, SCRAM; client pool)",
-                     URL="\ref order_gateway"];
+    fix_order_gateway   [label="Order Gateway\n(FIX 5.0 SP2, SCRAM; client pool)",
+                     URL="\ref fix_order_gateway"];
     sequencer       [label="Sequencer\n(total order + WAL; leader / follower)",
                      URL="\ref sequencer_app"];
     matching_engine [label="Matching Engine\n(order book; leader / follower)",
@@ -42,14 +42,14 @@ digraph architecture {
                      URL="\ref witness"];
 
     // --- order / ER data path (solid) ---
-    fix_test_client -> order_gateway   [label="FIX wire", dir=both];
-    order_gateway   -> sequencer       [label="orders -> leader"];
-    sequencer       -> order_gateway   [label="ERs <- leader"];
+    fix_test_client -> fix_order_gateway   [label="FIX wire", dir=both];
+    fix_order_gateway   -> sequencer       [label="orders -> leader"];
+    sequencer       -> fix_order_gateway   [label="ERs <- leader"];
     sequencer       -> matching_engine [label="sequenced orders"];
     matching_engine -> sequencer       [label="ERs"];
 
     // --- credential / auth control plane (dashed) ---
-    order_gateway -> authentication [label="SCRAM auth", style=dashed];
+    fix_order_gateway -> authentication [label="SCRAM auth", style=dashed];
     admin_service -> authentication [label="credential CRUD (fan-out a + b)", style=dashed];
 
     // --- WAL fanout (dashed, planned) ---

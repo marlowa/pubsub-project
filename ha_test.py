@@ -161,7 +161,7 @@ Startup order (mirrors start_fix_seq_system.py):
   3. arbiter_secondary                -- component listener 7201, peer listener 7204
   4. authentication_service_a   -- listens on port 7070
   5. authentication_service_b -- listens on port 7071
-  6. order_gateway           -- FIX client port 9879, ER inbound port 7010
+  6. fix_order_gateway           -- FIX client port 9879, ER inbound port 7010
   7. sequencer_primary                -- listens on port 7001
   8. sequencer_secondary              -- listens on port 7002
   9. matching_engine                  -- connects outbound to sequencer ER listeners 7021/7022
@@ -997,7 +997,7 @@ def preflight(prefix: Path) -> None:
     if not FIX8_BIN.is_file() or not os.access(FIX8_BIN, os.X_OK):
         die(f"f8test not found or not executable: {FIX8_BIN}")
     for name in ("witness", "arbiter", "sequencer",
-                 "matching_engine", "order_gateway",
+                 "matching_engine", "fix_order_gateway",
                  "authentication_service"):
         exe = prefix / "bin" / name
         if not exe.is_file() or not os.access(exe, os.X_OK):
@@ -1461,11 +1461,11 @@ def run_scenario(scenario: Scenario, args) -> bool:
     if scenario.me_ha:
         me_log                 = log_dir / "matching_engine_primary.log"
         me_secondary_log       = log_dir / "matching_engine_secondary.log"
-        gw_log                 = log_dir / "order_gateway_a.log"
+        gw_log                 = log_dir / "fix_order_gateway_a.log"
     else:
         me_log                 = log_dir / "matching_engine.log"
         me_secondary_log       = None
-        gw_log                 = log_dir / "order_gateway_a.log"
+        gw_log                 = log_dir / "fix_order_gateway_a.log"
     seq_primary_log            = log_dir / "sequencer_primary.log"
     seq_secondary_log          = log_dir / "sequencer_secondary.log"
     arb_primary_log            = log_dir / "arbiter_primary.log"
@@ -1542,8 +1542,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
              etc_dir / "authentication_service" / "authentication_service_a.toml"),
             ("authentication_service_b", "authentication_service",
              etc_dir / "authentication_service" / "authentication_service_b.toml"),
-            ("order_gateway_a",                  "order_gateway",
-             etc_dir / "order_gateway"          / "order_gateway_a.toml"),
+            ("fix_order_gateway_a",                  "fix_order_gateway",
+             etc_dir / "fix_order_gateway"          / "fix_order_gateway_a.toml"),
             ("sequencer_primary",                "sequencer",
              etc_dir / "sequencer"              / "sequencer_primary.toml"),
             ("sequencer_secondary",              "sequencer",
@@ -1572,8 +1572,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
              etc_dir / "authentication_service" / "authentication_service_a.toml"),
             ("authentication_service_b", "authentication_service",
              etc_dir / "authentication_service" / "authentication_service_b.toml"),
-            ("order_gateway_a",         "order_gateway",
-             etc_dir / "order_gateway" / "order_gateway_a.toml"),
+            ("fix_order_gateway_a",         "fix_order_gateway",
+             etc_dir / "fix_order_gateway" / "fix_order_gateway_a.toml"),
             ("sequencer_primary",                "sequencer",
              etc_dir / "sequencer"              / "sequencer_primary.toml"),
             ("sequencer_secondary",              "sequencer",

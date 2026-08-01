@@ -534,7 +534,7 @@ std::tuple<bool, std::string> Reactor::verify_hot_path_thread_count(size_t alloc
     // The reactor thread plus one core per registered ApplicationThread. Threads
     // registered through register_extra_thread() are excluded on purpose: they
     // are background by default, and counting them would make a component's core
-    // demand vary with configuration -- OrderGatewayThread registers
+    // demand vary with configuration -- FixOrderGatewayThread registers
     // FixCaptureWriter only when fix_capture_enabled is set.
     const size_t registered_demand = 1 + threads_.size();
 

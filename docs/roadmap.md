@@ -23,7 +23,7 @@ Each slice leaves the system in a working state. Slices 1–8 and 10 are complet
 The ME primary-secondary pair was listed under slice 12+ as forward-looking; it landed on
 2026-07-05 (role config, book replication via `BookUpdate`, arbiter-mediated promotion, WAL
 reconciliation with cancel-on-failover). `ha_test.py` scenario 16 covers it. A second gateway
-(`applications/binary_gateway`, same venue over internal PDUs with no FIX layer) also exists
+(`applications/binary_order_gateway`, same venue over internal PDUs with no FIX layer) also exists
 now, which makes the venue multi-gateway for the first time — but that is one more gateway, not
 the pool of slice 12+, and it raises the availability and fairness questions listed below.
 
@@ -111,8 +111,8 @@ Near-term tasks not tied to a specific slice.
   the sequencer as the shared authority and so is a cross-component protocol change. Pinning makes
   it smaller — two instances to check rather than N — but does not solve it.
 
-- **Transport encryption on the binary gateway and the internal PDU paths** — undecided, awaiting
-  a security specialist. The binary gateway authenticates with SCRAM but has no TLS listener, so
+- **Transport encryption on the binary order gateway and the internal PDU paths** — undecided, awaiting
+  a security specialist. The binary order gateway authenticates with SCRAM but has no TLS listener, so
   it is not equivalent to the FIX gateway on this point. The wider question is whether order-flow
   PDUs need encrypting on the internal hops too (gateway to sequencer, sequencer to ME, WAL
   replication, topic streams — all plain TCP today), which pulls against the latency work above.

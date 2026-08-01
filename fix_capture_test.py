@@ -2,7 +2,7 @@
 """
 fix_capture_test.py — Integration test for FIX message capture.
 
-Starts auth_service_a and order_gateway with fix_capture.enabled=true,
+Starts auth_service_a and fix_order_gateway with fix_capture.enabled=true,
 sends a small FIX session (Logon, 3 x NewOrderSingle, Logout) using a minimal
 built-in FIX client, shuts down, then reads and validates the capture file.
 
@@ -421,7 +421,7 @@ def _read_capture_records(path: Path) -> list:
 def run_test(prefix: Path) -> bool:
     bin_dir = prefix / "bin"
     auth_binary = bin_dir / "authentication_service"
-    gw_binary   = bin_dir / "order_gateway"
+    gw_binary   = bin_dir / "fix_order_gateway"
 
     for binary in (auth_binary, gw_binary):
         if not binary.is_file() or not os.access(binary, os.X_OK):
@@ -443,9 +443,9 @@ def run_test(prefix: Path) -> bool:
 
             capture_file = tmp / "fix_capture.bin"
             auth_log     = tmp / "authentication_service.log"
-            gw_log       = tmp / "order_gateway.log"
+            gw_log       = tmp / "fix_order_gateway.log"
             auth_toml    = tmp / "authentication_service.toml"
-            gw_toml      = tmp / "order_gateway.toml"
+            gw_toml      = tmp / "fix_order_gateway.toml"
 
             cert_path, key_path = _generate_tls_cert(tmp)
             _write_auth_service_toml(auth_toml, auth_port, admin_port, cert_path, key_path)
@@ -462,16 +462,16 @@ def run_test(prefix: Path) -> bool:
                 die(f"authentication_service did not become ready within {AUTH_READY_TIMEOUT:.0f}s")
             log("  authentication_service: ready")
 
-            log("=== Starting order_gateway ===")
-            gw_proc = _launch("order_gateway", gw_binary, gw_log, gw_toml)
+            log("=== Starting fix_order_gateway ===")
+            gw_proc = _launch("fix_order_gateway", gw_binary, gw_log, gw_toml)
             time.sleep(STARTUP_DELAY)
             if gw_proc.poll() is not None:
                 _show_stdout(gw_proc)
-                die(f"order_gateway exited immediately (code {gw_proc.returncode})")
+                die(f"fix_order_gateway exited immediately (code {gw_proc.returncode})")
             if not _wait_for_tcp_port("127.0.0.1", fix_port, GW_READY_TIMEOUT):
                 _show_stdout(gw_proc)
-                die(f"order_gateway FIX port {fix_port} did not open within {GW_READY_TIMEOUT:.0f}s")
-            log(f"  order_gateway: FIX port {fix_port} accepting connections")
+                die(f"fix_order_gateway FIX port {fix_port} did not open within {GW_READY_TIMEOUT:.0f}s")
+            log(f"  fix_order_gateway: FIX port {fix_port} accepting connections")
 
             # Wait for the gateway's outbound PDU connection to the auth service
             # to be established.  If we send a FIX Logon before this connection
@@ -479,8 +479,8 @@ def run_test(prefix: Path) -> bool:
             # to and immediately rejects the session with a FIX Logout.
             auth_conn_marker = "authentication service connection"
             if not _poll_log_for(gw_log, auth_conn_marker, GW_READY_TIMEOUT):
-                die(f"order_gateway did not establish auth service connection within {GW_READY_TIMEOUT:.0f}s")
-            log("  order_gateway: auth service connection established")
+                die(f"fix_order_gateway did not establish auth service connection within {GW_READY_TIMEOUT:.0f}s")
+            log("  fix_order_gateway: auth service connection established")
 
             # ── FIX session ────────────────────────────────────────────────────
             log("=== Running FIX session ===")
@@ -526,7 +526,7 @@ def run_test(prefix: Path) -> bool:
 
             # ── shutdown ───────────────────────────────────────────────────────
             log("=== Shutting down processes ===")
-            _shutdown("order_gateway",          gw_proc)
+            _shutdown("fix_order_gateway",          gw_proc)
             _shutdown("authentication_service", auth_proc)
             gw_proc   = None
             auth_proc = None
@@ -599,7 +599,7 @@ def run_test(prefix: Path) -> bool:
         log("Interrupted")
     finally:
         if gw_proc is not None:
-            _shutdown("order_gateway", gw_proc)
+            _shutdown("fix_order_gateway", gw_proc)
         if auth_proc is not None:
             _shutdown("authentication_service", auth_proc)
 

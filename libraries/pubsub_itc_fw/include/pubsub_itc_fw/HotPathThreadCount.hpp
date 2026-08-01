@@ -18,7 +18,7 @@ namespace pubsub_itc_fw {
  *     reactor thread + the ApplicationThreads registered with the Reactor
  *
  * Threads registered through register_extra_thread() are background by default
- * and are deliberately excluded. That is not a simplification: OrderGatewayThread
+ * and are deliberately excluded. That is not a simplification: FixOrderGatewayThread
  * registers FixCaptureWriter conditionally on fix_capture_enabled, so a count
  * that included extras would vary with a configuration flag, and any figure
  * written into the environment TOML would be correct for one setting of that

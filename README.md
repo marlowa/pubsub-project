@@ -37,7 +37,7 @@ The protocol is intentionally simple — there is no need for a full consensus a
 
 Transport encryption is implemented with OpenSSL (memory BIOs) and FIX logons authenticate with SCRAM-SHA-256. TLS is opt-in per listener via configuration:
 
-- **Order gateway — encrypted FIX listener.** The gateway registers a TLS FIX listener *alongside* its plain listener. Enable it in the `[fix_tls]` block of `order_gateway.toml`:
+- **Order gateway — encrypted FIX listener.** The gateway registers a TLS FIX listener *alongside* its plain listener. Enable it in the `[fix_tls]` block of `fix_order_gateway.toml`:
 
   ```toml
   tls_listen_port = 9880          # encrypted FIX endpoint (plain stays on its own port)
@@ -338,7 +338,7 @@ Start at **[docs/index.md](docs/index.md)**. From there:
 - [CPU Pinning](docs/design/cpu_pinning.md) — shared-memory CPU registry, RT scheduling
 
 **Applications:**
-- [Order Gateway](docs/applications/order_gateway.md)
+- [Order Gateway](docs/applications/fix_order_gateway.md)
 - [Sequencer](docs/applications/sequencer_app.md)
 - [Matching Engine](docs/applications/matching_engine.md)
 - [Admin Service](docs/applications/admin_service.md)

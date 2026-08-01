@@ -37,7 +37,7 @@ Output directory:
         report.txt                   combined callgrind_annotate text report
 
 Visualise:
-    kcachegrind <prefix>/callgrind/<ts>/order_gateway.callgrind.out.<pid>
+    kcachegrind <prefix>/callgrind/<ts>/fix_order_gateway.callgrind.out.<pid>
 """
 
 import argparse
@@ -97,15 +97,15 @@ BINARY_LOAD_PASSWORD       = "loadclientpassword"
 # ── readiness markers (all substrings must appear together on one log line) ────
 _SEQ_LEADER_MARKERS     = ("SequencerThread: role transition", "-> leader")
 _ARB_ACTIVE_MARKERS     = ("ArbiterThread: role transition", "-> leader")
-_GW_OPERATIONAL_MARKERS = ("OrderGatewayThread", "operational state")
-_BINARY_GW_OPERATIONAL_MARKERS = ("BinaryGatewayThread", "operational state")
+_GW_OPERATIONAL_MARKERS = ("FixOrderGatewayThread", "operational state")
+_BINARY_GW_OPERATIONAL_MARKERS = ("BinaryOrderGatewayThread", "operational state")
 _GW_LOGON_OK            = "authentication succeeded -- FIX session established"
 # The gateway logs one of these per ER it discards because the target client
 # session already disconnected. Such ERs are "accounted for" but never delivered.
 _ER_DROPPED_MARKER      = "client already disconnected -- dropping"
 
 # CONTRACT WITH THE GATEWAYS -- see the matching note in perf_run.py and the warning on
-# report_order_progress() in OrderGatewayThread.hpp. Both gateways emit GW-PROGRESS at Info
+# report_order_progress() in FixOrderGatewayThread.hpp. Both gateways emit GW-PROGRESS at Info
 # every 1000 accounted-for execution reports, and it is how this script knows a run has
 # finished. The per-order GW-NOS-RECV / GW-ER-SENT lines are at Debug and must not be counted
 # here. Break this and a run does not fail -- it hangs until timeout and reports a stall.
@@ -256,7 +256,7 @@ def preflight(prefix: Path) -> None:
     if subprocess.call(["which", "valgrind"],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) != 0:
         die("'valgrind' not found in PATH")
-    for name in ("witness", "arbiter", "sequencer", "matching_engine", "order_gateway"):
+    for name in ("witness", "arbiter", "sequencer", "matching_engine", "fix_order_gateway"):
         exe = prefix / "bin" / name
         if not exe.is_file() or not os.access(exe, os.X_OK):
             die(f"binary not found or not executable: {exe}")
@@ -731,11 +731,11 @@ def main() -> None:
     ts         = datetime.now().strftime("%Y%m%d_%H%M%S")
     callgrind_dir = prefix / "callgrind" / ts
     me_log     = log_dir / "matching_engine_primary.log"
-    gw_log     = log_dir / "order_gateway_a.log"
+    gw_log     = log_dir / "fix_order_gateway_a.log"
     seq_log    = log_dir / "sequencer_primary.log"
     arb_log    = log_dir / "arbiter_primary.log"
 
-    gw_config = prefix / "etc" / "order_gateway" / "order_gateway_a.toml"
+    gw_config = prefix / "etc" / "fix_order_gateway" / "fix_order_gateway_a.toml"
 
     # Launched components whose HA/session timeouts must be relaxed so callgrind's
     # slowdown does not trip failover or the gateway's own FIX logon timeout.
@@ -754,7 +754,7 @@ def main() -> None:
     callgrind_dir.mkdir(parents=True, exist_ok=True)
 
     if args.capture and not gw_config.is_file():
-        die(f"order_gateway config not found: {gw_config}")
+        die(f"fix_order_gateway config not found: {gw_config}")
 
     lib_dir = str(prefix / "lib")
     existing = os.environ.get("LD_LIBRARY_PATH", "")
@@ -764,7 +764,7 @@ def main() -> None:
     log(f"  install prefix : {prefix}")
     log(f"  callgrind output: {callgrind_dir}")
     targets_desc = ("matching_engine_primary, "
-                    + ("binary_gateway" if args.gateway == "binary" else "order_gateway_a"))
+                    + ("binary_order_gateway_a" if args.gateway == "binary" else "fix_order_gateway_a"))
     log(f"  valgrind tool  : callgrind")
     log(f"  callgrind targets: {targets_desc}")
     log(f"  gateway        : {args.gateway}")
@@ -804,8 +804,8 @@ def main() -> None:
         ("matching_engine_secondary", "matching_engine",      etc_dir / "matching_engine"        / "matching_engine_secondary.toml",None),
         ("sequencer_primary",      "sequencer",              etc_dir / "sequencer"              / "sequencer_primary.toml",      None),
         ("sequencer_secondary",    "sequencer",              etc_dir / "sequencer"              / "sequencer_secondary.toml",    None),
-        ("order_gateway_a",        "order_gateway",          etc_dir / "order_gateway"          / "order_gateway_a.toml",        etc_dir / "order_gateway"),
-        ("binary_gateway",         "binary_gateway",         etc_dir / "binary_gateway"         / "binary_gateway.toml",         etc_dir / "binary_gateway"),
+        ("fix_order_gateway_a",        "fix_order_gateway",          etc_dir / "fix_order_gateway"          / "fix_order_gateway_a.toml",        etc_dir / "fix_order_gateway"),
+        ("binary_order_gateway_a",  "binary_order_gateway",  etc_dir / "binary_order_gateway"  / "binary_order_gateway_a.toml",  etc_dir / "binary_order_gateway"),
     ]
 
     # Both gateways run whichever is under the profiler, so the process set is the same in
@@ -813,11 +813,11 @@ def main() -> None:
     # slows its target by one to two orders of magnitude, so profiling the idle one would
     # cost the run dearly for nothing.
     callgrind_targets = {"matching_engine_primary"}
-    callgrind_targets.add("binary_gateway" if args.gateway == "binary" else "order_gateway_a")
+    callgrind_targets.add("binary_order_gateway_a" if args.gateway == "binary" else "fix_order_gateway_a")
 
     # Readiness is judged on whichever gateway is under the profiler: it is the slow one to
     # come up, and the unprofiled one says nothing about the run being ready.
-    gw_ready_log = log_dir / ("binary_gateway.log" if args.gateway == "binary" else "order_gateway_a.log")
+    gw_ready_log = log_dir / ("binary_order_gateway_a.log" if args.gateway == "binary" else "fix_order_gateway_a.log")
     gw_ready_markers = _BINARY_GW_OPERATIONAL_MARKERS if args.gateway == "binary" else _GW_OPERATIONAL_MARKERS
 
     app_procs: list[tuple[str, subprocess.Popen]] = []
@@ -842,7 +842,7 @@ def main() -> None:
             log(f"Relaxed HA/session timeouts x{args.slowdown_factor} for the profiling run")
         if args.capture:
             set_fix_capture_enabled(gw_config, True)
-            log("FIX capture enabled in order_gateway config")
+            log("FIX capture enabled in fix_order_gateway config")
 
         for name, bin_name, config, workdir in steps:
             if name in callgrind_targets:

@@ -39,6 +39,6 @@ message BookUpdate(id=600)
     # than one gateway feeds the book -- each numbers its own client connections -- and a
     # promoted secondary needs this to route its cancel-on-failover ERs back to the right
     # one. Trailing and optional, so a replica running older code still decodes; absent
-    # means the order gateway, which is what every pre-existing entry came from.
+    # means the FIX order gateway, which is what every pre-existing entry came from.
     optional i16    origin_gateway_id
 end

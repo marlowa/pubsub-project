@@ -1,6 +1,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <set>
 #include <string>
 
 #include <gtest/gtest.h>
@@ -136,6 +137,50 @@ port     = 7011
     EXPECT_EQ(config.gateway_endpoints[0].instance, 1);
     EXPECT_EQ(config.gateway_endpoints[1].instance, 2);
     EXPECT_NE(config.gateway_endpoints[0].service_name(), config.gateway_endpoints[1].service_name());
+}
+
+// The shape dev actually deploys: two instances of each of the two protocols. Worth
+// pinning down as one case rather than trusting that two passing pairs compose, because
+// the failure this guards against -- two entries colliding on one service name -- only
+// appears once both axes vary at the same time.
+TEST(SequencerConfigurationLoaderTest, ReadsTwoInstancesOfEachOfTwoProtocols) {
+    const auto config = load_with_gateways(R"(
+[[gateway]]
+protocol = 1
+instance = 1
+host     = "10.0.0.1"
+port     = 7010
+
+[[gateway]]
+protocol = 1
+instance = 2
+host     = "10.0.0.2"
+port     = 7011
+
+[[gateway]]
+protocol = 2
+instance = 1
+host     = "10.0.0.3"
+port     = 7110
+
+[[gateway]]
+protocol = 2
+instance = 2
+host     = "10.0.0.4"
+port     = 7111
+)");
+
+    ASSERT_EQ(config.gateway_endpoints.size(), 4u);
+
+    std::set<std::string> service_names;
+    for (const auto& endpoint : config.gateway_endpoints) {
+        service_names.insert(endpoint.service_name());
+    }
+    EXPECT_EQ(service_names.size(), 4u) << "every (protocol, instance) pair needs its own service name";
+
+    EXPECT_EQ(config.gateway_endpoints[3].protocol, 2);
+    EXPECT_EQ(config.gateway_endpoints[3].instance, 2);
+    EXPECT_EQ(config.gateway_endpoints[3].port, 7111);
 }
 
 // Instance 1 of each protocol are different processes. If the service name collapsed the

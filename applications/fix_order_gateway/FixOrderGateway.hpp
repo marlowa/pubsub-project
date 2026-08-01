@@ -1,0 +1,60 @@
+#pragma once
+
+// Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+#include <cstddef>
+#include <memory>
+
+#include <pubsub_itc_fw/QuillLogger.hpp>
+#include <pubsub_itc_fw/Reactor.hpp>
+#include <pubsub_itc_fw/ReactorConfiguration.hpp>
+#include <pubsub_itc_fw/ServiceRegistry.hpp>
+
+#include "FixOrderGatewayConfiguration.hpp"
+#include "FixOrderGatewayThread.hpp"
+
+namespace fix_order_gateway {
+
+/**
+ * @brief Top-level application class for the sequencer-backed FIX gateway.
+ *
+ * Owns all framework objects and wires them together:
+ *
+ *   - One inbound RawBytes listener for FIX client connections.
+ *   - One outbound PDU connection to the primary sequencer.
+ *   - One inbound PDU listener for ExecutionReport PDUs from the sequencer.
+ *
+ * The logger is constructed in main() before the config is loaded.
+ */
+class FixOrderGateway {
+  public:
+    /// Reactor thread plus the one FixOrderGatewayThread registered in the constructor.
+    /// Answered to deploy.py via --hot-path-thread-count and checked against the
+    /// real registrations at startup; see HotPathThreadCount.hpp.
+    static constexpr size_t hot_path_thread_count = 2;
+
+    /**
+     * @brief Constructs the gateway and wires all connections.
+     * @param[in] config Gateway configuration.
+     * @param[in] logger Logger. Ownership transferred. Must already have the
+     *                   correct log levels applied from config.
+     */
+    explicit FixOrderGateway(const FixOrderGatewayConfiguration& config, std::unique_ptr<pubsub_itc_fw::QuillLogger> logger);
+
+    /**
+     * @brief Starts the reactor event loop. Blocks until shutdown.
+     * @return 0 on normal shutdown, non-zero on error.
+     */
+    int run();
+
+  private:
+    FixOrderGatewayConfiguration config_;
+    std::unique_ptr<pubsub_itc_fw::QuillLogger> logger_;
+    pubsub_itc_fw::ServiceRegistry service_registry_;
+    pubsub_itc_fw::ReactorConfiguration reactor_configuration_;
+    std::unique_ptr<pubsub_itc_fw::Reactor> reactor_;
+    std::shared_ptr<FixOrderGatewayThread> gateway_thread_;
+};
+
+} // namespaces

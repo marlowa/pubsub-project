@@ -47,7 +47,7 @@ the rest of this document is mostly about paying for it.
 Verified in the code on 2026-07-30, not inferred from documentation.
 
 **Gateway identity is per protocol, not per instance.** `GatewayIds.hpp` defines
-`order_gateway = 1` and `binary_gateway = 2`. That value rides on the `WalRecord` envelope as
+`fix_order_gateway = 1` and `binary_order_gateway = 2`. That value rides on the `WalRecord` envelope as
 `origin_gateway_id` and is how the sequencer decides where to send an execution report.
 
 Its own comment used to call these values a binding constraint — on-disk WAL format, never to be
@@ -56,8 +56,8 @@ compatibility promise across releases, so a WAL from an older build is discarded
 replayed. Reusing a value is worth avoiding, not forbidden.
 
 **Both gateways stamp `origin_gateway_id` on every order.** The FIX gateway does it in
-`forward_order_in_envelope`, a template in `OrderGatewayThread.hpp`; the binary gateway does it
-at two sites in `BinaryGatewayThread.cpp`.
+`forward_order_in_envelope`, a template in `FixOrderGatewayThread.hpp`; the binary order gateway does it
+at two sites in `BinaryOrderGatewayThread.cpp`.
 
 An earlier version of this document claimed the FIX gateway never constructs a `WalRecord` and
 that `gateway_ids::default_when_absent` therefore covered a structural gap. **That was wrong** —
@@ -72,8 +72,8 @@ onto every record that never came from a gateway.
 
 
 **The sequencer dials a fixed pair of endpoints.** `SequencerConfiguration` holds scalars —
-`gateway_host`/`gateway_port` for the FIX gateway, `binary_gateway_host`/`binary_gateway_port` and
-a `binary_gateway_enabled` flag for the binary one. There is no collection, so there is nowhere to
+`gateway_host`/`gateway_port` for the FIX gateway, `binary_order_gateway_host`/`binary_order_gateway_port` and
+a `binary_order_gateway_enabled` flag for the binary one. There is no collection, so there is nowhere to
 express a second instance of either.
 
 **An execution report for a disconnected gateway is dropped.**
@@ -81,7 +81,7 @@ express a second instance of either.
 seq={}` and returns. Nothing retries and nothing queues.
 
 **There is no outbound message store.** `FixSession` holds `outbound_seq_num` as a plain `int` and
-no record of what was sent. `OrderGatewayThread::handle_resend_request` answers *every*
+no record of what was sent. `FixOrderGatewayThread::handle_resend_request` answers *every*
 ResendRequest with a `SequenceReset-GapFill` spanning the whole gap — it does not resend, it
 declares the missing range administrative and skips it. The comment explains why it was written
 that way (one-at-a-time filling caused a feedback loop that froze the session), and as a way to
@@ -160,7 +160,7 @@ busy gateway cannot flood the log with the same misconfiguration.
 ### Sequencer endpoint collection
 
 Replace the scalar endpoint fields with a list, each entry carrying protocol, instance id, host and
-port. `binary_gateway_enabled` disappears: an absent entry is a gateway that is not deployed.
+port. `binary_order_gateway_enabled` disappears: an absent entry is a gateway that is not deployed.
 
 The sequencer dials every configured entry and keeps the connections open, exactly as it does for
 the two today. `send_er_to_origin_gateway` becomes a lookup on the `(protocol, instance)` pair.
@@ -288,7 +288,7 @@ Each step leaves the system working.
    it on every path. The optional form is a staging post, not the intended end state.
 2. **Sequencer endpoint collection, and gateways stamping their instance.** **Done.**
 
-   2a: the sequencer's scalar gateway host/port pairs and the `binary_gateway.enabled` flag
+   2a: the sequencer's scalar gateway host/port pairs and the `binary_order_gateway.enabled` flag
    become a `[[gateway]]` array of tables, each entry carrying protocol, instance, host, port and
    its own `enabled` flag. `gateway_conn_ids_` is rekeyed on `(protocol, instance)` and
    `send_er_to_origin_gateway` takes both axes. Duplicate pairs are rejected at load.
@@ -310,11 +310,26 @@ Each step leaves the system working.
    Still missing: the loader has no unit test, there being no sequencer configuration loader test
    to extend. Worth adding before step 3 runs two instances for real.
 
-3. **Run two FIX gateway instances in dev.** The first point at which the single point of failure
-   is actually reduced rather than described, and the first honest test of steps 1 and 2. Needs
-   `gateway.instance_id` in the gateway app TOMLs, a second order-gateway component in the
-   environment with its own ports, a second `[[gateway]]` entry in the sequencer configuration,
-   and devenv launching it. Expect this to surface things this document has not predicted.
+3. **Run two gateway instances of each protocol in dev.** **Done.** The first point at which the
+   single point of failure is actually reduced rather than described, and the first honest test of
+   steps 1 and 2. Needed `gateway.instance_id` in the gateway app TOMLs, a second component per
+   protocol in the environment with its own ports, a second `[[gateway]]` entry per protocol in the
+   sequencer configuration, and devenv launching them.
+
+   FIX went first and was proven both ways: 1,000 orders driven at instance `a` and then at
+   instance `b`, with both processes running in both cases, each instance receiving only its own
+   orders and their execution reports. The binary gateway then took the same split, so dev now runs
+   four gateway processes and the sequencer carries four `[[gateway]]` entries.
+
+   Instances are named `_a`/`_b`, not `_primary`/`_secondary`: nothing elects a gateway, a member
+   chooses which to connect to, so this is caller-selected redundancy and follows the
+   authentication service's precedent. The suffix goes on the component name and its config file;
+   the binary and the working directory stay unsuffixed, because there is still one program and one
+   `etc/` directory per protocol.
+
+   Only the `_a` instance of each protocol is deployed outside dev. The `_b` entries exist in
+   preprod, prod and test-1 with `enabled = false`, so a second instance is a configuration change
+   rather than a template edit.
 
 3b. **Cancel-on-disconnect made configurable, with a grace period.** Decided 2026-07-31; see the
    section above. Sequenced here rather than with steps 4-6 because without the grace period, a
@@ -341,6 +356,6 @@ decision and are the larger half.
   already has to survive the instance change.
 - How does a member discover that its primary is down? Connection refusal is the simple answer and
   is what venues rely on, but it interacts with logon timeouts.
-- Does the binary gateway get the same treatment, or does pinning apply only to FIX? It has no
+- Does the binary order gateway get the same treatment, or does pinning apply only to FIX? It has no
   session-layer resend to build on, so "in-flight reports survive" means something different there
   and may need its own mechanism.

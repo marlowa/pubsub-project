@@ -1,0 +1,68 @@
+[network]
+listen_host    = "${binary_order_gateway_a_network_listen_host}"
+listen_port    = ${binary_order_gateway_a_network_listen_port}
+er_listen_host = "${binary_order_gateway_a_network_er_listen_host}"
+er_listen_port = ${binary_order_gateway_a_network_er_listen_port}
+
+[gateway]
+# Which instance of this gateway protocol this process is, numbered from 1. Stamped onto
+# every order envelope beside the protocol id, so the sequencer can route the execution
+# report back to the process the order arrived on rather than merely to the right protocol.
+#
+# Must match a [[gateway]] entry in the sequencer's configuration. The sequencer logs an
+# error naming the pair if it has reports for an instance it was never told about.
+instance_id = ${binary_order_gateway_a_gateway_instance_id}
+
+[sequencer]
+ha_enabled     = true
+primary_host   = "${binary_order_gateway_a_sequencer_primary_host}"
+primary_port   = ${binary_order_gateway_a_sequencer_primary_port}
+secondary_host = "${binary_order_gateway_a_sequencer_secondary_host}"
+secondary_port = ${binary_order_gateway_a_sequencer_secondary_port}
+
+# Clients authenticate by SCRAM-SHA-256 against the same service the FIX gateway uses.
+[authentication_service]
+host           = "${binary_order_gateway_a_authentication_service_host}"
+port           = ${binary_order_gateway_a_authentication_service_port}
+secondary_host = "${binary_order_gateway_a_authentication_service_secondary_host}"
+secondary_port = ${binary_order_gateway_a_authentication_service_secondary_port}
+
+[binary_session]
+# Checked against each client's TargetCompID; a client naming a different venue is refused.
+sender_comp_id = "BINARY-GATEWAY"
+
+[timeouts]
+scram_auth_timeout = "10s"
+
+[logging]
+applog_level     = "info"
+syslog_level     = "critical"
+mode             = "none"
+max_file_size    = 10240000
+max_backup_files = 10
+
+[reactor]
+cpu_pinning_enabled    = true
+cpu_pinning_reserve_cpu0   = ${shared_reactor_cpu_pinning_reserve_cpu0}
+cpu_registry_shm_path  = "${shared_reactor_cpu_registry_shm_path}"
+cpu_registry_lock_file = "${shared_reactor_cpu_registry_lock_file}"
+cpu_layout_file = "${shared_reactor_cpu_layout_file}"
+cpu_layout_component = "${component_name}"
+connect_retry_warning_interval = "15m"
+
+[event_queue_pool]
+# Sized as the FIX order gateway's is: one event per inbound PDU, and the perf tests drive
+# the same order volume through either gateway.
+objects_per_slab = 80000
+initial_slabs    = 1
+
+[command_queue_pool]
+objects_per_slab = 4096
+initial_slabs    = 1
+
+# Backs cancel-on-disconnect: one entry per order a session has resting on the book,
+# held until a terminal ExecutionReport retires it or the session's cancels are drained.
+# Size to the maximum expected concurrent open orders with headroom.
+[open_order_pool]
+objects_per_pool = ${binary_order_gateway_a_open_order_pool_objects_per_pool}
+initial_pools    = ${binary_order_gateway_a_open_order_pool_initial_pools}

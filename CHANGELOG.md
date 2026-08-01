@@ -9,6 +9,32 @@ change in any release.
 
 ## [Unreleased]
 
+### Changed
+
+- **Both gateways renamed so the name says the protocol and the job.**
+  `order_gateway` is now `fix_order_gateway` and `binary_gateway` is now
+  `binary_order_gateway`. The old names said which wire format a gateway spoke, or
+  didn't, but neither said what kind of gateway it was — and order entry is not the
+  only kind a venue needs. A gateway carrying nothing but risk-parameter changes
+  should not have to compete with members placing orders, and naming the existing
+  pair for what they actually are leaves room for that without a second rename
+  later. The change runs all the way through: directories, binaries, CMake targets,
+  namespaces, class names, config files, component names, deployed paths and docs.
+
+### Added
+
+- **The binary gateway now runs as two instances, `binary_order_gateway_a` and
+  `binary_order_gateway_b`**, for the same reason the FIX gateway does: losing one
+  instance should not take every session on that protocol with it. The sequencer
+  carries four `[[gateway]]` entries in dev — FIX 1 and 2, binary 1 and 2 — and
+  routes each execution report back to the instance its order arrived on. Only the
+  `_a` instance of each protocol is deployed outside dev; the `_b` entries are
+  configured but disabled.
+- **`perf_run.py --gateway-instance` now applies to the binary gateway too**, not
+  only to FIX. The load generator's target port is read from the chosen instance's
+  deployed configuration rather than from a constant in the script, so it cannot
+  drift from the deployment.
+
 ## [0.2.1] - 2026-07-31
 
 A patch release fixing three separate failures on the RHEL8 target. **v0.2.0 does

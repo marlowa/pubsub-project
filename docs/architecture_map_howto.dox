@@ -39,9 +39,9 @@ Doxygen's \c {\#label} syntax. The label is simply the markdown file's basename 
 # Matching Engine {#matching_engine}
 \endverbatim
 
-So \c docs/applications/order_gateway.md carries \c {\#order_gateway} and
+So \c docs/applications/fix_order_gateway.md carries \c {\#fix_order_gateway} and
 \c docs/design/wal_and_ha.md carries \c {\#wal_and_ha}; the map then refers to those with a
-plain \c "\\ref order_gateway".
+plain \c "\\ref fix_order_gateway".
 
 \par Why explicit labels and not Doxygen's auto-generated names
 Older Doxygen releases -- notably 1.8.14, which is the newest packaged for our RHEL8 build
