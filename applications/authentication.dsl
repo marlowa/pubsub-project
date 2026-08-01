@@ -141,6 +141,22 @@ message AuthenticationResult (id=503, version=1)
     AuthenticationOutcome outcome
     bytes                 server_signature        # SCRAM ServerSignature; empty on failure
     bool                  force_password_change   # true when outcome is Granted but the credential must be renewed
+    # Cancel-on-disconnect for this comp id: what the gateway does with the session's
+    # resting orders when the connection goes away.  Provisioned in the database beside
+    # the credential and delivered here so it arrives WITH the session rather than
+    # needing a second lookup on a path where the gateway has no database access.
+    #
+    # Both are optional, and absent means this member expressed no preference -- the
+    # gateway applies its own [cancel_on_disconnect] default.  That is deliberately not
+    # the same as false or zero: an operator raising the venue-wide window must not have
+    # to revisit every member, so "said nothing" has to stay distinguishable from
+    # "asked for the value that happens to be the default today", all the way from the
+    # database column to the gateway.
+    #
+    # Trailing and optional, which is this project's compatible-extension pattern: an
+    # older gateway ignores them and keeps using its configured defaults.
+    optional bool         cancel_on_disconnect_enabled
+    optional i32          cancel_on_disconnect_grace_period_seconds
 end
 
 # ---------------------------------------------------------------------------

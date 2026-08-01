@@ -199,6 +199,9 @@ SETTLE_AFTER_FAILOVER  = 2.0   # seconds after failover confirmed (let conns sta
 # deployed grace_period (30s) or the window would expire mid-test and the scenario
 # would fail for the wrong reason.
 _CANCEL_GRACE_HOLD_TIMEOUT  = 10.0
+# The grace period scenario 19 provisions for FIX8_COMP_ID before running, deliberately
+# different from the gateway's own configured default so the two cannot be confused.
+_PROVISIONED_GRACE_PERIOD_SECONDS = 90
 _CANCEL_GRACE_QUIET_PERIOD  = 5.0
 SETTLE_AFTER_KILL      = 1.0   # seconds after a kill where no failover is expected
 
@@ -1178,6 +1181,45 @@ def me_cancel_on_failover_count(log_path: Path, from_byte: int = 0,
     return -1
 
 
+def provision_cancel_on_disconnect(comp_id: str, grace_period_seconds: int) -> None:
+    """Set a comp id's cancel-on-disconnect grace period in the database.
+
+    Uses psql for the same reason export_credentials.py does: the harness has no database
+    driver dependency and is not the place to introduce one.  The credentials the auth
+    service reads are exported straight after this, so the value takes the real path to the
+    gateway rather than being injected further along it.
+    """
+    statement = (
+        f"UPDATE pubsub_comp_id "
+        f"SET cancel_on_disconnect_enabled = true, "
+        f"    cancel_on_disconnect_grace_period_seconds = {grace_period_seconds} "
+        f"WHERE comp_id = '{comp_id}'"
+    )
+    result = subprocess.run(
+        ["psql", "--host", "localhost", "--port", "5432",
+         "--username", "pubsub_app", "--dbname", "pubsub",
+         "--quiet", "--command", statement],
+        capture_output=True, text=True, check=False,
+        env={**os.environ, "PGPASSWORD": os.environ.get("PUBSUB_APP_DB_PASSWORD", "pubsub_dev")},
+    )
+    if result.returncode != 0:
+        die(f"could not provision cancel-on-disconnect for '{comp_id}' "
+            f"(is the database running and migrated?):\n{result.stderr.strip()}")
+    log(f"  {comp_id}: cancel-on-disconnect grace period set to {grace_period_seconds}s")
+
+
+def _held_grace_period_seconds(log_path: Path, from_byte: int = 0) -> int | None:
+    """Seconds named on the gateway's cancel-on-disconnect hold line, or None."""
+    try:
+        with log_path.open("r", errors="replace") as handle:
+            handle.seek(from_byte)
+            text = handle.read()
+    except FileNotFoundError:
+        return None
+    match = re.search(r"holding (\d+)s for reconnect before cancelling", text)
+    return int(match.group(1)) if match else None
+
+
 def gateway_progress_totals(log_path: Path) -> tuple[int | None, int]:
     """Return (sent, nos_received) from the last GW-PROGRESS line, or (None, 0).
 
@@ -1324,6 +1366,30 @@ def launch_app(name: str, bin_name: str, config: Path,
     return proc
 
 
+# Keys this helper owns and therefore replaces.  Anything else in an existing block --
+# cancel_on_disconnect_enabled, cancel_on_disconnect_grace_period, and whatever provisioning
+# fields come later -- is carried across untouched.
+#
+# Without this, rewriting the SCRAM material silently erased the per-comp-id provisioning
+# that export_credentials.py had just written, so a test asserting on a provisioned value
+# would watch the gateway fall back to its default and report a product failure that was
+# really the harness overwriting its own fixture.
+_SCRAM_KEYS = ("comp_id", "stored_key", "server_key", "salt", "iterations")
+
+
+def _preserved_credential_lines(block: str) -> list[str]:
+    """Lines from an existing credential block that this helper must not discard."""
+    preserved = []
+    for line in block.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        key = stripped.split("=", 1)[0].strip()
+        if key and key not in _SCRAM_KEYS:
+            preserved.append(line.rstrip() + "\n")
+    return preserved
+
+
 def ensure_fix8_credentials(creds_file: Path, comp_id: str, password: str) -> None:
     """Rewrite the SCRAM credential for comp_id in credentials.toml.
 
@@ -1350,6 +1416,12 @@ def ensure_fix8_credentials(creds_file: Path, comp_id: str, password: str) -> No
     existing = creds_file.read_text() if creds_file.is_file() else ""
     blocks = re.split(r"\[\[credential\]\]", existing)
     header = blocks[0]
+    # Carry over any non-SCRAM keys this comp id already had, so rewriting the credential
+    # does not quietly drop its provisioning.
+    for block in blocks[1:]:
+        if f'comp_id    = "{comp_id}"' in block or f'comp_id = "{comp_id}"' in block:
+            new_block += "".join(_preserved_credential_lines(block))
+            break
     kept = [b for b in blocks[1:]
             if f'comp_id    = "{comp_id}"' not in b and
                f'comp_id = "{comp_id}"' not in b]
@@ -1760,6 +1832,14 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # the CLIENT test fixture added via the 'test' Liquibase context) are
         # present.  Fail fast with a clear message if the DB is unreachable so
         # that a missing credential doesn't cause an opaque logon hang later.
+        # Provision this scenario's per-comp-id cancel-on-disconnect BEFORE the export, so
+        # the value travels the real path -- database, export_credentials, credentials.toml,
+        # auth service, AuthenticationResult -- rather than being injected somewhere later.
+        # Set here rather than assumed so the scenario is self-contained and re-runnable.
+        if scenario.assert_cancel_grace:
+            log("=== Provisioning cancel-on-disconnect for the test comp id ===")
+            provision_cancel_on_disconnect(FIX8_COMP_ID, _PROVISIONED_GRACE_PERIOD_SECONDS)
+
         log("=== Exporting credentials ===")
         export_script = script_dir / "db" / "export_credentials.py"
         creds_file    = etc_dir / "authentication_service" / "credentials.toml"
@@ -2214,6 +2294,27 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     "session's orders were cancelled immediately -- check the gateway log for "
                     "'queuing cancels now'.")
             log(f"  cancel grace: gateway is holding the orders for reconnect ({elapsed:.1f}s)")
+
+            # The window actually used must be this comp id's provisioned value, not the
+            # gateway's default. Asserting the number rather than merely "it held" is what
+            # makes this cover the whole database -> export -> auth service -> gateway
+            # chain: every hop that drops the value leaves the gateway on its default, and
+            # the difference is invisible unless the number is checked.
+            #
+            # The harness rewrites this comp id's SCRAM material before each run, and used
+            # to discard the provisioning alongside it -- which looked exactly like the
+            # gateway ignoring the setting. write_scram_credential now preserves non-SCRAM
+            # keys; this assertion is what would catch it happening again.
+            held = _held_grace_period_seconds(gw_log, gw_pos)
+            if held is None:
+                die("cancel grace: could not read the grace period from the hold line")
+            if held != _PROVISIONED_GRACE_PERIOD_SECONDS:
+                die(f"cancel grace: the gateway held for {held}s, but comp id "
+                    f"'{FIX8_COMP_ID}' is provisioned for {_PROVISIONED_GRACE_PERIOD_SECONDS}s. "
+                    "The per-comp-id value did not survive the trip from the database. Check, in "
+                    "order: the comp_id row, credentials.toml after export, that the harness did "
+                    "not overwrite it, and that AuthenticationResult carried the field.")
+            log(f"  cancel grace: held for the provisioned {held}s, not the gateway default -- OK")
 
             # 2. Nothing may actually be cancelled while the window is open. The marker is
             #    the drain's own completion line, which only appears once cancels are sent.

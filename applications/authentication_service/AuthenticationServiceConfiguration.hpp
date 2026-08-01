@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <cstdint> // IWYU pragma: keep
+#include <optional>
 #include <string>
 #include <unordered_map>
 
@@ -113,6 +114,29 @@ struct AuthenticationServiceConfiguration {
 
     /** @brief Per-comp_id SCRAM credentials populated from credentials_file at startup. */
     std::unordered_map<std::string, scram_crypto::ScramCredential> credentials;
+
+    /**
+     * @brief Per-comp_id session policy: what a gateway does with this member's resting
+     *        orders when its connection goes away.
+     *
+     * Held apart from ScramCredential deliberately. That struct lives in the scram_crypto
+     * library and is exactly the RFC 5802 key material; cancel-on-disconnect is venue
+     * policy that happens to be provisioned alongside a credential, and putting it there
+     * would make a crypto type depend on trading semantics.
+     *
+     * Both members are optional and mean "this comp id said nothing, use the gateway's own
+     * default". That is not the same as false or zero: an operator who raises the
+     * venue-wide window should not have to revisit every member, so silence has to be
+     * distinguishable from a deliberate value all the way from the database column to the
+     * gateway.
+     */
+    struct SessionPolicy {
+        std::optional<bool> cancel_on_disconnect_enabled;
+        std::optional<int32_t> cancel_on_disconnect_grace_period_seconds;
+    };
+
+    /** @brief Per-comp_id session policy; absent entry means the gateway's defaults apply. */
+    std::unordered_map<std::string, SessionPolicy> session_policies;
 };
 
 } // namespaces

@@ -21,6 +21,11 @@ change in any release.
 - GoodTillCancel and GoodTillDate orders are never cancelled on disconnect; they were
   placed to outlive the session. A clean FIX Logout still cancels immediately, since a
   member that logs out has said what it wants.
+- **Cancel-on-disconnect is provisioned per comp id**, not only venue-wide. Two new
+  `pubsub_comp_id` columns reach the gateway on `AuthenticationResult`, so they arrive with
+  the session. The grace period is nullable and null is *not* zero: null defers to the
+  gateway's configured default, zero cancels immediately. Editable on the admin service's
+  comp-id form.
 - **The matching engine echoes `TimeInForce` on execution reports.** It previously did not,
   which is what made the exemption above impossible to implement.
 

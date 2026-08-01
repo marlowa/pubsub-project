@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <cstdint> // IWYU pragma: keep
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -38,6 +39,16 @@ struct BinarySession {
      * then are refused, so nothing reaches the book from an unauthenticated session.
      */
     bool logged_on{false};
+
+    /**
+     * @brief This comp id's cancel-on-disconnect settings, from AuthenticationResult.
+     *
+     * Empty means no stored preference, so the gateway's own [cancel_on_disconnect]
+     * configuration applies -- which is not the same as false or zero. See the note on
+     * the DSL message.
+     */
+    std::optional<bool> cancel_on_disconnect_enabled;
+    std::optional<int32_t> cancel_on_disconnect_grace_period_seconds;
 
     /** @brief True between sending the AuthenticationRequest and the result arriving. */
     bool auth_pending{false};

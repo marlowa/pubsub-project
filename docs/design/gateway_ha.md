@@ -403,9 +403,25 @@ would make the gateway claim a control it does not have. Re-keying an order onto
 session is step 5, and until it lands "your book survives" is true while "you can manage it
 from the new session" is not.
 
-**Still venue-wide rather than per comp id.** The per-session provisioning half -- Liquibase
-changeset, DAO field, `AuthenticationResult` carrying the values, admin UI control -- is the
-remaining part of this step.
+**Per comp id as well as venue-wide, as of 2026-08-01.** `pubsub_comp_id` gained
+`cancel_on_disconnect_enabled` and `cancel_on_disconnect_grace_period_seconds`; the values
+travel database -> `export_credentials.py` -> `credentials.toml` -> authentication service ->
+`AuthenticationResult` -> gateway, so they arrive *with* the session rather than needing a
+second lookup on a path where the gateway has no database access. The admin service edits
+them on the comp-id form.
+
+The grace period column is deliberately **nullable, and null is not zero**: null means the
+member expressed no preference and the gateway's configured default applies, whereas zero
+means cancel immediately. Keeping those distinguishable is what lets an operator raise the
+venue-wide window without revisiting every member, and the distinction is preserved at every
+hop -- a nullable column, an omitted TOML key, an optional DSL field, and `std::optional` in
+the session.
+
+Scenario 19 asserts the *number* the gateway holds for, not merely that it held, because
+every hop that drops the value leaves the gateway silently on its default. That assertion
+immediately earned its keep: the test harness's own credential rewriter was discarding the
+provisioning while refreshing SCRAM material, which looked exactly like the gateway ignoring
+the setting.
 
 
 ## What this does not solve

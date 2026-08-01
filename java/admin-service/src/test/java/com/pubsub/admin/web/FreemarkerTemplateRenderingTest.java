@@ -55,14 +55,20 @@ class FreemarkerTemplateRenderingTest {
             "ACME_TRADER1", "ACME",
             "0".repeat(64), "1".repeat(64), "2".repeat(32), 4096,
             true, false, 0, false, null,
-            null, TIMESTAMP, TIMESTAMP, TIMESTAMP, TIMESTAMP);
+            null, TIMESTAMP, TIMESTAMP, TIMESTAMP, TIMESTAMP,
+            // No per-comp-id grace period: the gateway's own default applies. Renders as an
+            // empty field, which is the case a ?c on a null would have thrown on.
+            true, null);
 
     /** A locked row: exercises the nullable lockedReason and lockedAt being populated. */
     private static final CompIdRow LOCKED_COMP_ID = new CompIdRow(
             "ACME_TRADER2", "ACME",
             "0".repeat(64), "1".repeat(64), "2".repeat(32), 4096,
             false, true, 3, true, "Too many failed logins",
-            TIMESTAMP, TIMESTAMP, TIMESTAMP, TIMESTAMP, TIMESTAMP);
+            TIMESTAMP, TIMESTAMP, TIMESTAMP, TIMESTAMP, TIMESTAMP,
+            // An explicitly provisioned grace period, so the other rendering path is
+            // covered too: cancelling enabled with a member-specific 60s window.
+            true, 60);
 
     private static final GatewayPermissionRow PERMISSION =
             new GatewayPermissionRow("ACME_TRADER1", "order", true, TIMESTAMP);

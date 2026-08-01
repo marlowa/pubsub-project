@@ -31,6 +31,30 @@
                    value="${(row.lockedReason())!''}" maxlength="255">
         </label>
     </fieldset>
+    <fieldset>
+        <legend>Cancel on Disconnect</legend>
+        <small>
+            What the gateway does with this member's resting orders when its connection
+            goes away. Leaving the grace period blank uses the gateway's own configured
+            default, which is not the same as entering 0 &mdash; 0 cancels immediately.
+        </small>
+        <label>
+            <input type="checkbox" name="cancelOnDisconnectEnabled"
+                   <#if row.cancelOnDisconnectEnabled()>checked</#if>>
+            Cancel resting orders when the session disconnects
+        </label>
+        <label for="cancelOnDisconnectGracePeriodSeconds">Grace Period (seconds)
+            <input type="number" id="cancelOnDisconnectGracePeriodSeconds"
+                   name="cancelOnDisconnectGracePeriodSeconds" min="0" step="1"
+                   placeholder="gateway default"
+                   value="${(row.cancelOnDisconnectGracePeriodSeconds()?c)!''}">
+        </label>
+        <small>
+            Good-Till-Cancel and Good-Till-Date orders are never cancelled on disconnect,
+            whatever is set here: they were placed to outlive the session. A clean FIX
+            Logout cancels immediately, since the member has said what it wants.
+        </small>
+    </fieldset>
     <button type="submit">Update</button>
     <a href="/comp-ids/${row.compId()}/password" role="button">Set Password</a>
     <a href="/comp-ids/${row.compId()}/gateways">Gateways</a>

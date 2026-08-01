@@ -118,6 +118,30 @@ def die(msg: str) -> None:
     sys.exit(1)
 
 
+# Keys this helper owns and therefore replaces.  Anything else in an existing block --
+# cancel_on_disconnect_enabled, cancel_on_disconnect_grace_period, and whatever provisioning
+# fields come later -- is carried across untouched.
+#
+# Without this, rewriting the SCRAM material silently erased the per-comp-id provisioning
+# that export_credentials.py had just written, so a run would watch the gateway fall back to
+# its default and look like a product failure that was really the harness overwriting its
+# own fixture.
+_SCRAM_KEYS = ("comp_id", "stored_key", "server_key", "salt", "iterations")
+
+
+def _preserved_credential_lines(block: str) -> list[str]:
+    """Lines from an existing credential block that this helper must not discard."""
+    preserved = []
+    for line in block.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        key = stripped.split("=", 1)[0].strip()
+        if key and key not in _SCRAM_KEYS:
+            preserved.append(line.rstrip() + "\n")
+    return preserved
+
+
 def write_scram_credential(creds_file: Path, comp_id: str, password: str) -> None:
     """Rewrite the SCRAM credential for comp_id in credentials.toml.
 
@@ -144,6 +168,12 @@ def write_scram_credential(creds_file: Path, comp_id: str, password: str) -> Non
     # Split on [[credential]] blocks; drop any existing block for this comp_id.
     blocks = re.split(r"\[\[credential\]\]", existing)
     header = blocks[0]
+    # Carry over any non-SCRAM keys this comp id already had, so rewriting the credential
+    # does not quietly drop its provisioning.
+    for block in blocks[1:]:
+        if f'comp_id    = "{comp_id}"' in block or f'comp_id = "{comp_id}"' in block:
+            new_block += "".join(_preserved_credential_lines(block))
+            break
     kept = [b for b in blocks[1:]
             if f'comp_id    = "{comp_id}"' not in b and
                f'comp_id = "{comp_id}"' not in b]

@@ -18,7 +18,8 @@ public class CompIdDao {
             "comp_id, firm_id, stored_key, server_key, salt, iterations,"
             + " enabled, force_password_change, consecutive_failed_logins,"
             + " locked, locked_reason, locked_at, last_login_at,"
-            + " password_changed_at, created_at, updated_at";
+            + " password_changed_at, created_at, updated_at,"
+            + " cancel_on_disconnect_enabled, cancel_on_disconnect_grace_period_seconds";
 
     private final DataSource dataSource;
     private final String table;
@@ -108,6 +109,34 @@ public class CompIdDao {
         }
     }
 
+    /**
+     * Sets this comp id's cancel-on-disconnect policy.
+     *
+     * @param gracePeriodSeconds seconds to hold a dropped session's orders, or null to
+     *                           defer to the gateway's own configured default. Null and
+     *                           zero are different: zero cancels immediately.
+     */
+    public void updateCancelOnDisconnect(String compId, boolean enabled, Integer gracePeriodSeconds) throws SQLException {
+        if (gracePeriodSeconds != null && gracePeriodSeconds < 0) {
+            throw new IllegalArgumentException("cancel-on-disconnect grace period must not be negative, got " + gracePeriodSeconds);
+        }
+        String sql = "UPDATE " + table
+                + " SET cancel_on_disconnect_enabled = ?,"
+                + " cancel_on_disconnect_grace_period_seconds = ?,"
+                + " updated_at = NOW() WHERE comp_id = ?";
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setBoolean(1, enabled);
+            if (gracePeriodSeconds == null) {
+                ps.setNull(2, java.sql.Types.INTEGER);
+            } else {
+                ps.setInt(2, gracePeriodSeconds);
+            }
+            ps.setString(3, compId);
+            ps.executeUpdate();
+        }
+    }
+
     public void updateCredentials(String compId, ScramCredential cred) throws SQLException {
         String sql = "UPDATE " + table
                 + " SET stored_key = ?, server_key = ?, salt = ?, iterations = ?,"
@@ -150,6 +179,11 @@ public class CompIdDao {
                 rs.getObject("last_login_at", OffsetDateTime.class),
                 rs.getObject("password_changed_at", OffsetDateTime.class),
                 rs.getObject("created_at", OffsetDateTime.class),
-                rs.getObject("updated_at", OffsetDateTime.class));
+                rs.getObject("updated_at", OffsetDateTime.class),
+                rs.getBoolean("cancel_on_disconnect_enabled"),
+                // getObject, not getInt: getInt maps SQL NULL to 0, which here means
+                // "cancel immediately" rather than "use the gateway default". The two must
+                // stay distinguishable.
+                rs.getObject("cancel_on_disconnect_grace_period_seconds", Integer.class));
     }
 }

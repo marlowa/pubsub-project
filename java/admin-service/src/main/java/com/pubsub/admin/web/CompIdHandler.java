@@ -8,6 +8,7 @@ import com.pubsub.admin.model.CompIdRow;
 import com.pubsub.admin.service.AuthServiceClient;
 import com.pubsub.admin.service.ScramCredential;
 import com.pubsub.admin.service.ScramDerivation;
+import io.javalin.http.BadRequestResponse;
 import io.javalin.http.Context;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -87,6 +88,27 @@ public class CompIdHandler {
         boolean locked = "on".equals(ctx.formParam("locked"));
         String lockedReason = ctx.formParam("lockedReason");
         compIdDao.updateStatus(compId, enabled, forcePasswordChange, locked, lockedReason);
+
+        // Cancel-on-disconnect. A blank grace period means "use the gateway's own default"
+        // and is stored as NULL, which is deliberately not the same as 0 -- 0 cancels
+        // immediately. Anything non-numeric or negative is rejected rather than quietly
+        // coerced, because both plausible coercions (0 and null) are real settings with
+        // opposite meanings and picking one silently would be a guess about intent.
+        boolean cancelOnDisconnectEnabled = "on".equals(ctx.formParam("cancelOnDisconnectEnabled"));
+        String gracePeriodParam = ctx.formParam("cancelOnDisconnectGracePeriodSeconds");
+        Integer gracePeriodSeconds = null;
+        if (gracePeriodParam != null && !gracePeriodParam.isBlank()) {
+            try {
+                gracePeriodSeconds = Integer.valueOf(gracePeriodParam.trim());
+            } catch (NumberFormatException e) {
+                throw new BadRequestResponse("Cancel-on-disconnect grace period must be a whole number of seconds,"
+                        + " or blank to use the gateway default. Got: " + gracePeriodParam);
+            }
+            if (gracePeriodSeconds < 0) {
+                throw new BadRequestResponse("Cancel-on-disconnect grace period must not be negative. Got: " + gracePeriodSeconds);
+            }
+        }
+        compIdDao.updateCancelOnDisconnect(compId, cancelOnDisconnectEnabled, gracePeriodSeconds);
         if ((!enabled || locked) && authServiceClient != null) {
             authServiceClient.removeCredential(compId);
         } else if ((!existing.enabled() || existing.locked()) && enabled && !locked && authServiceClient != null) {

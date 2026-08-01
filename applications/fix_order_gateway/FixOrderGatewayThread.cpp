@@ -746,11 +746,28 @@ void FixOrderGatewayThread::handle_authentication_result(const pubsub_itc_fw::Ev
     reply.set(Tag::HeartBtInt, session.heartbeat_interval);
     reply.set(Tag::DefaultApplVerID, std::string("9"));
     send_fix_to_session(session, reply);
+    // Cancel-on-disconnect for this comp id, provisioned in the database and delivered with
+    // the authentication result. Absent leaves the optionals empty, which means this member
+    // expressed no preference and the gateway's configured defaults apply.
+    if (view.has_cancel_on_disconnect_enabled) {
+        session.cancel_on_disconnect_enabled = view.cancel_on_disconnect_enabled;
+    }
+    if (view.has_cancel_on_disconnect_grace_period_seconds) {
+        session.cancel_on_disconnect_grace_period_seconds = view.cancel_on_disconnect_grace_period_seconds;
+    }
+
     session.session_established = true;
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "FixOrderGatewayThread: connection {} authentication succeeded -- FIX session established comp_id='{}'", session.conn_id.get_value(),
                session.client_comp_id);
+    if (session.cancel_on_disconnect_enabled.has_value() || session.cancel_on_disconnect_grace_period_seconds.has_value()) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "FixOrderGatewayThread: comp_id='{}' cancel-on-disconnect provisioned: enabled={} grace_period={}", session.client_comp_id,
+                   session.cancel_on_disconnect_enabled.has_value() ? (*session.cancel_on_disconnect_enabled ? "true" : "false") : "(gateway default)",
+                   session.cancel_on_disconnect_grace_period_seconds.has_value() ? std::to_string(*session.cancel_on_disconnect_grace_period_seconds) + "s"
+                                                                                 : std::string("(gateway default)"));
+    }
 
     // If this comp id dropped and got back inside its grace period, its orders are still
     // resting and must not be cancelled. This is the case the whole feature exists for: a
@@ -1260,11 +1277,19 @@ void FixOrderGatewayThread::queue_session_for_cleanup(FixSession& session) {
 
     const size_t total_orders = session.open_orders.size();
 
+    // Per comp id where provisioned, the gateway's own setting otherwise. The member's
+    // stored preference wins because it is the more specific statement of intent; the
+    // configuration file is the venue's answer for everyone who has not given one.
+    const bool cancel_enabled = session.cancel_on_disconnect_enabled.value_or(config_.cancel_on_disconnect_enabled);
+    const std::chrono::seconds grace_period = session.cancel_on_disconnect_grace_period_seconds.has_value()
+                                                  ? std::chrono::seconds{*session.cancel_on_disconnect_grace_period_seconds}
+                                                  : config_.cancel_on_disconnect_grace_period;
+
     // Cancel-on-disconnect switched off: the member owns its book across a disconnect.
     // The pool entries still have to go back -- the session map is about to be destroyed
     // and they would otherwise leak -- but nothing is cancelled and the orders stay
     // resting exactly where they are.
-    if (!config_.cancel_on_disconnect_enabled) {
+    if (!cancel_enabled) {
         for (const auto& [cl_ord_id, entry] : session.open_orders) {
             open_order_pool_->deallocate(entry);
         }
@@ -1311,7 +1336,7 @@ void FixOrderGatewayThread::queue_session_for_cleanup(FixSession& session) {
     // A clean Logout means the member has said what it wants, so there is nothing to wait
     // for. An unexpected drop has said nothing, and gets its full window to come back --
     // which is what stops a gateway failure from flattening every book on the instance.
-    const bool cancel_now = session.clean_logout || config_.cancel_on_disconnect_grace_period.count() == 0;
+    const bool cancel_now = session.clean_logout || grace_period.count() == 0;
 
     if (cancel_now) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: connection {} {} with {} open order(s) -- queuing cancels now",
@@ -1324,10 +1349,10 @@ void FixOrderGatewayThread::queue_session_for_cleanup(FixSession& session) {
         return;
     }
 
-    dead.cancel_due = std::chrono::steady_clock::now() + config_.cancel_on_disconnect_grace_period;
+    dead.cancel_due = std::chrono::steady_clock::now() + grace_period;
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "FixOrderGatewayThread: connection {} (comp_id='{}') disconnected with {} open order(s) -- holding {}s for reconnect before cancelling",
-               session.conn_id.get_value(), dead.client_comp_id, dead.open_orders.size(), config_.cancel_on_disconnect_grace_period.count());
+               session.conn_id.get_value(), dead.client_comp_id, dead.open_orders.size(), grace_period.count());
     grace_sessions_.push_back(std::move(dead));
     arm_grace_timer();
 }

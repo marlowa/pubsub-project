@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+    xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+                        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.20.xsd">
+
+    <!-- ================================================================
+         v2-001  cancel-on-disconnect, per comp id
+
+         What happens to a session's resting orders when its connection goes
+         away is a per-member decision, not a venue-wide one: a market maker
+         quoting continuously and a member placing occasional orders want
+         opposite answers.  Venues settle this at provisioning time rather
+         than letting the client toggle it mid-session, which is why it lives
+         here beside the credential rather than in a gateway configuration
+         file.
+
+         The gateways already implement the behaviour with venue-wide
+         defaults from their own TOML (see [cancel_on_disconnect] there).
+         These columns override those defaults per comp id; the values reach
+         the gateway on AuthenticationResult, arriving with the session
+         rather than being looked up separately.
+         ================================================================ -->
+    <changeSet id="v2-001-comp-id-cancel-on-disconnect" author="pubsub">
+
+        <!-- Whether a lost session's resting orders are cancelled at all.
+
+             NOT NULL with a true default: an unmanaged book sitting behind a
+             session nobody is watching is the worse of the two failures, so a
+             comp id provisioned before this column existed, or created by a
+             tool that does not know about it, gets the safe behaviour. -->
+        <addColumn tableName="${tablePrefix}comp_id">
+            <column name="cancel_on_disconnect_enabled"
+                    type="boolean"
+                    defaultValueBoolean="true">
+                <constraints nullable="false"/>
+            </column>
+        </addColumn>
+
+        <!-- How long the orders rest before being cancelled.
+
+             NULLABLE, and null means "use the gateway's configured default"
+             rather than "zero".  That distinction is the whole point of the
+             column: an operator raising the venue-wide window in the gateway
+             TOML should not have to revisit every comp id row, and only rows
+             deliberately given a value should diverge from it.  A DEFAULT of
+             30 here would silently pin every existing member to today's
+             number and make the gateway setting unreachable.
+
+             Zero is a legitimate stored value and means cancel immediately,
+             which is the pre-grace-period behaviour. -->
+        <addColumn tableName="${tablePrefix}comp_id">
+            <column name="cancel_on_disconnect_grace_period_seconds"
+                    type="integer"/>
+        </addColumn>
+
+        <!-- A negative window is meaningless and would otherwise be carried
+             all the way to the gateway before anything noticed.  Null still
+             passes, being the "use the default" case. -->
+        <sql>
+            ALTER TABLE ${tablePrefix}comp_id
+            ADD CONSTRAINT ${tablePrefix}comp_id_grace_period_non_negative
+            CHECK (cancel_on_disconnect_grace_period_seconds IS NULL
+                   OR cancel_on_disconnect_grace_period_seconds &gt;= 0)
+        </sql>
+
+        <rollback>
+            <sql>
+                ALTER TABLE ${tablePrefix}comp_id
+                DROP CONSTRAINT ${tablePrefix}comp_id_grace_period_non_negative
+            </sql>
+            <dropColumn tableName="${tablePrefix}comp_id"
+                        columnName="cancel_on_disconnect_grace_period_seconds"/>
+            <dropColumn tableName="${tablePrefix}comp_id"
+                        columnName="cancel_on_disconnect_enabled"/>
+        </rollback>
+    </changeSet>
+
+</databaseChangeLog>

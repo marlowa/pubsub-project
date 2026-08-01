@@ -5,6 +5,7 @@
 
 #include <cstdint> // IWYU pragma: keep
 #include <cstring>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -104,6 +105,18 @@ struct FixSession {
      * vanished has said nothing, and gets the full window to reconnect.
      */
     bool clean_logout{false};
+
+    /**
+     * @brief This comp id's cancel-on-disconnect settings, from AuthenticationResult.
+     *
+     * Empty means the member has no stored preference and the gateway's own
+     * [cancel_on_disconnect] configuration applies. That is not the same as false or zero:
+     * an operator who raises the venue-wide window must not have to revisit every member,
+     * so silence stays distinguishable from a deliberate value the whole way from the
+     * database column to this struct.
+     */
+    std::optional<bool> cancel_on_disconnect_enabled;
+    std::optional<int32_t> cancel_on_disconnect_grace_period_seconds;
 
     /**
      * @brief True while a SCRAM-SHA-256 authentication exchange is in progress

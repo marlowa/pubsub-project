@@ -196,6 +196,28 @@ void AuthenticationThread::handle_authentication_proof(const pubsub_itc_fw::Conn
         result.outcome = outcome;
         result.server_signature = pubsub_itc_fw_app::BytesView{server_signature.empty() ? nullptr : server_signature.data(), server_signature.size()};
         result.force_password_change = false;
+
+        // Cancel-on-disconnect travels with a successful authentication only. Sending it
+        // on a refusal would hand session policy to something that has just failed to
+        // prove who it is, and the gateway is about to drop the connection regardless.
+        //
+        // A comp id with no stored preference sends neither field, leaving the gateway on
+        // its own configured default -- see the note on the DSL message.
+        if (outcome == pubsub_itc_fw_app::AuthenticationOutcome::Granted) {
+            const auto policy_it = config_.session_policies.find(state.comp_id);
+            if (policy_it != config_.session_policies.end()) {
+                const auto& policy = policy_it->second;
+                if (policy.cancel_on_disconnect_enabled.has_value()) {
+                    result.has_cancel_on_disconnect_enabled = true;
+                    result.cancel_on_disconnect_enabled = *policy.cancel_on_disconnect_enabled;
+                }
+                if (policy.cancel_on_disconnect_grace_period_seconds.has_value()) {
+                    result.has_cancel_on_disconnect_grace_period_seconds = true;
+                    result.cancel_on_disconnect_grace_period_seconds = *policy.cancel_on_disconnect_grace_period_seconds;
+                }
+            }
+        }
+
         send_pdu(conn_id, pubsub_itc_fw_app::AuthenticationResult::message_pdu_id, 0, result);
     };
 

@@ -1,6 +1,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <chrono>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -44,8 +45,8 @@ std::vector<uint8_t> hex_decode(std::string_view hex, std::string_view field_nam
     return result;
 }
 
-void load_credentials(const std::string& credentials_file,
-                      std::unordered_map<std::string, scram_crypto::ScramCredential>& credentials) {
+void load_credentials(const std::string& credentials_file, std::unordered_map<std::string, scram_crypto::ScramCredential>& credentials,
+                      std::unordered_map<std::string, AuthenticationServiceConfiguration::SessionPolicy>& session_policies) {
     pubsub_itc_fw::TomlConfiguration cred_toml;
     auto [ok, err] = cred_toml.load_file(credentials_file);
     if (!ok) {
@@ -91,6 +92,34 @@ void load_credentials(const std::string& credentials_file,
         }
 
         credentials[comp_id] = std::move(cred);
+
+        // Cancel-on-disconnect, per comp id. Both keys are optional and an absent one means
+        // this member expressed no preference, so the gateway's own default applies --
+        // which is why get_required's success flag is read rather than letting it throw.
+        // Writing a default in here would erase the distinction between "said nothing" and
+        // "asked for today's default value", and the two diverge the moment an operator
+        // changes the gateway setting.
+        AuthenticationServiceConfiguration::SessionPolicy policy;
+
+        bool cancel_enabled = true;
+        const auto [has_enabled, enabled_error] = cred_toml.get_required(fmt::format("credential[{}].cancel_on_disconnect_enabled", i), cancel_enabled);
+        if (has_enabled) {
+            policy.cancel_on_disconnect_enabled = cancel_enabled;
+        }
+
+        std::chrono::seconds grace_period{0};
+        const auto [has_grace, grace_error] = cred_toml.get_required(fmt::format("credential[{}].cancel_on_disconnect_grace_period", i), grace_period);
+        if (has_grace) {
+            if (grace_period.count() < 0) {
+                throw pubsub_itc_fw::ConfigurationException(
+                    fmt::format("credentials: credential[{}].cancel_on_disconnect_grace_period must not be negative, got {}s", i, grace_period.count()));
+            }
+            policy.cancel_on_disconnect_grace_period_seconds = static_cast<int32_t>(grace_period.count());
+        }
+
+        if (policy.cancel_on_disconnect_enabled.has_value() || policy.cancel_on_disconnect_grace_period_seconds.has_value()) {
+            session_policies[comp_id] = policy;
+        }
     }
 }
 
@@ -214,7 +243,7 @@ AuthenticationServiceConfigurationLoader::load_and_init_logging(const std::strin
         throw;
     }
 
-    load_credentials(config.credentials_file, config.credentials);
+    load_credentials(config.credentials_file, config.credentials, config.session_policies);
 
     return std::make_tuple(std::move(config), std::move(logger));
 }

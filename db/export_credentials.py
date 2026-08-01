@@ -53,7 +53,8 @@ def _query_credentials(host: str, port: int, username: str, password: str,
     firm_table    = f"{table_prefix}firm"
     comp_id_table = f"{table_prefix}comp_id"
     inner_sql = (
-        f"SELECT ci.comp_id, ci.stored_key, ci.server_key, ci.salt, ci.iterations "
+        f"SELECT ci.comp_id, ci.stored_key, ci.server_key, ci.salt, ci.iterations, "
+        f"       ci.cancel_on_disconnect_enabled, ci.cancel_on_disconnect_grace_period_seconds "
         f"FROM {comp_id_table} ci "
         f"JOIN {firm_table} f ON ci.firm_id = f.firm_id "
         f"WHERE ci.enabled = true "
@@ -74,7 +75,8 @@ def _query_credentials(host: str, port: int, username: str, password: str,
     )
     reader = csv.DictReader(
         io.StringIO(result.stdout),
-        fieldnames=["comp_id", "stored_key", "server_key", "salt", "iterations"],
+        fieldnames=["comp_id", "stored_key", "server_key", "salt", "iterations",
+                    "cancel_on_disconnect_enabled", "cancel_on_disconnect_grace_period_seconds"],
     )
     return list(reader)
 
@@ -91,6 +93,14 @@ def _write_credentials_toml(path: Path, rows: list[dict]) -> None:
         "#   server_key -- hex HMAC-SHA-256(SaltedPassword, \"Server Key\")\n",
         "#   salt       -- hex random salt used during PBKDF2 derivation\n",
         "#   iterations -- PBKDF2 iteration count\n",
+        "#\n",
+        "# Cancel-on-disconnect, per comp id. Both are optional: a credential that omits\n",
+        "# them takes the gateway's own [cancel_on_disconnect] defaults.\n",
+        "#\n",
+        "#   cancel_on_disconnect_enabled       -- false leaves resting orders alone on a drop\n",
+        "#   cancel_on_disconnect_grace_period  -- seconds to hold them for a reconnect;\n",
+        "#                                         omitted means the gateway default, 0 means\n",
+        "#                                         cancel immediately\n",
         "\n",
     ]
     for row in rows:
@@ -100,6 +110,16 @@ def _write_credentials_toml(path: Path, rows: list[dict]) -> None:
         lines.append(f'server_key = "{row["server_key"]}"\n')
         lines.append(f'salt       = "{row["salt"]}"\n')
         lines.append(f'iterations = {row["iterations"]}\n')
+        # COPY renders a SQL NULL as the empty string, which is how "no per-comp-id
+        # value, use the gateway default" arrives here. Only a row that actually set
+        # one gets a key written, so an absent key means the default rather than zero.
+        enabled = row.get("cancel_on_disconnect_enabled", "")
+        if enabled != "":
+            toml_bool = "true" if enabled == "t" else "false"
+            lines.append(f"cancel_on_disconnect_enabled = {toml_bool}\n")
+        grace = row.get("cancel_on_disconnect_grace_period_seconds", "")
+        if grace != "":
+            lines.append(f'cancel_on_disconnect_grace_period = "{int(grace)}s"\n')
         lines.append("\n")
 
     # Atomic write: temp file then rename so the auth service never sees

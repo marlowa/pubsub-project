@@ -509,6 +509,16 @@ void BinaryOrderGatewayThread::handle_authentication_result(const pubsub_itc_fw:
         return;
     }
 
+    // Cancel-on-disconnect for this comp id, provisioned in the database and delivered with
+    // the authentication result. Absent leaves the optionals empty and the gateway's own
+    // configured defaults apply.
+    if (view.has_cancel_on_disconnect_enabled) {
+        session.cancel_on_disconnect_enabled = view.cancel_on_disconnect_enabled;
+    }
+    if (view.has_cancel_on_disconnect_grace_period_seconds) {
+        session.cancel_on_disconnect_grace_period_seconds = view.cancel_on_disconnect_grace_period_seconds;
+    }
+
     session.logged_on = true;
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "BinaryOrderGatewayThread: connection {} authenticated and logged on as '{}'",
                session.conn_id.get_value(), session.comp_id);
@@ -724,9 +734,15 @@ void BinaryOrderGatewayThread::queue_session_for_cleanup(BinarySession& session)
 
     const size_t total_orders = session.open_orders.size();
 
+    // Per comp id where provisioned, the gateway's own setting otherwise.
+    const bool cancel_enabled = session.cancel_on_disconnect_enabled.value_or(config_.cancel_on_disconnect_enabled);
+    const std::chrono::seconds grace_period = session.cancel_on_disconnect_grace_period_seconds.has_value()
+                                                  ? std::chrono::seconds{*session.cancel_on_disconnect_grace_period_seconds}
+                                                  : config_.cancel_on_disconnect_grace_period;
+
     // Switched off: the member owns its book across a disconnect. The pool entries still
     // go back -- the session map is about to be destroyed -- but nothing is cancelled.
-    if (!config_.cancel_on_disconnect_enabled) {
+    if (!cancel_enabled) {
         for (const auto& [cl_ord_id, entry] : session.open_orders) {
             open_order_pool_->deallocate(entry);
         }
@@ -769,7 +785,7 @@ void BinaryOrderGatewayThread::queue_session_for_cleanup(BinarySession& session)
     dead.cancel_id_counter = session.cancel_id_counter;
 
     // No clean-logout equivalent in this protocol, so every disconnect takes the window.
-    if (config_.cancel_on_disconnect_grace_period.count() == 0) {
+    if (grace_period.count() == 0) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "BinaryOrderGatewayThread: connection {} disconnected with {} open order(s) -- queuing cancels now", session.conn_id.get_value(),
                    dead.open_orders.size());
@@ -781,10 +797,10 @@ void BinaryOrderGatewayThread::queue_session_for_cleanup(BinarySession& session)
         return;
     }
 
-    dead.cancel_due = std::chrono::steady_clock::now() + config_.cancel_on_disconnect_grace_period;
+    dead.cancel_due = std::chrono::steady_clock::now() + grace_period;
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "BinaryOrderGatewayThread: connection {} (comp_id='{}') disconnected with {} open order(s) -- holding {}s for reconnect before cancelling",
-               session.conn_id.get_value(), dead.comp_id, dead.open_orders.size(), config_.cancel_on_disconnect_grace_period.count());
+               session.conn_id.get_value(), dead.comp_id, dead.open_orders.size(), grace_period.count());
     grace_sessions_.push_back(std::move(dead));
     arm_grace_timer();
 }

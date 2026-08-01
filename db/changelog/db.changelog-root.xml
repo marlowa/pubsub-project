@@ -16,6 +16,7 @@
     <property name="tablePrefix" value="pubsub_"/>
 
     <include file="v1_initial_schema.xml" relativeToChangelogFile="true"/>
+    <include file="v2_cancel_on_disconnect.xml" relativeToChangelogFile="true"/>
     <include file="v1_test_fixtures.xml"  relativeToChangelogFile="true"/>
 
 </databaseChangeLog>
