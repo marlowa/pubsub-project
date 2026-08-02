@@ -18,6 +18,8 @@ RUN dnf install -y \
     sudo \
     openssl \
     openssl-devel \
+    zlib-devel \
+    libcurl-devel \
     epel-release \
     && dnf install -y lcov \
     && alternatives --set python3 /usr/bin/python3.8 \

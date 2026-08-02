@@ -25,15 +25,12 @@ case "${PLATFORM_ID}" in
         export PROMETHEUS_VERSION=1.3.0
         ;;
     rocky8*|rhel8*|centos8*)
-        # Third-party libraries live at different paths on the real RHEL8 build
-        # hosts vs. the Rocky 8 build container (which mounts them at
-        # /workspace/thirdparty -- see README). Only RHEL8 uses /development/3rdparty;
-        # Rocky and CentOS stay on /workspace/thirdparty.
-        if [ "${ID:-}" = "rhel" ]; then
-            export THIRDPARTY_DIR=/development/3rdparty
-        else
-            export THIRDPARTY_DIR=/workspace/thirdparty
-        fi
+        # The same path the real RHEL8 build hosts use. The Rocky 8 container mounts the
+        # third-party tree there too (see README), which keeps the container validating the
+        # layout production actually has. It also has to be outside the source tree: CMake
+        # omits directories inside the project from the install RPATH, so a third-party tree
+        # mounted under the project would link but not be found at run time.
+        export THIRDPARTY_DIR=/development/3rdparty
         export FMT_VERSION="11.0.2"
         export QUILL_VERSION="11.0.2"
         export ARGPARSE_VERSION="3.2"

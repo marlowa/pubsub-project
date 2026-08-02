@@ -5,7 +5,7 @@
 set -euo pipefail
 
 GTEST_VERSION="1.10.0"
-INSTALL_PREFIX="/workspace/thirdparty/installed/googletest/${GTEST_VERSION}"
+INSTALL_PREFIX="/development/3rdparty/installed/googletest/${GTEST_VERSION}"
 BUILD_DIR="/tmp/googletest-build"
 
 echo "============================================================"

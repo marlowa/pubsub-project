@@ -181,33 +181,6 @@ install(TARGETS pubsub_itc_fw
         LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
 )
 
-# prometheus-cpp ships shared libraries, and this library links them, so every component
-# needs them at run time. They are installed beside libpubsub_itc_fw.so rather than left in
-# the third-party tree for two reasons: devenv.py prepends install_dir/lib to
-# LD_LIBRARY_PATH, so they are found with no extra configuration; and release.py tars up the
-# install tree, so the artefact stays self-contained instead of depending on a path that
-# exists only on the machine that built it.
-#
-# The versioned file and its SONAME symlink are both needed -- the loader asks for the
-# SONAME (libprometheus-cpp-core.so.1.3), not the real name.
-foreach(_prometheus_target prometheus-cpp::core prometheus-cpp::pull)
-    get_target_property(_prometheus_library ${_prometheus_target} IMPORTED_LOCATION_NOCONFIG)
-    if(NOT _prometheus_library)
-        get_target_property(_prometheus_library ${_prometheus_target} IMPORTED_LOCATION)
-    endif()
-    if(_prometheus_library)
-        get_target_property(_prometheus_soname ${_prometheus_target} IMPORTED_SONAME_NOCONFIG)
-        get_filename_component(_prometheus_dir "${_prometheus_library}" DIRECTORY)
-        install(FILES "${_prometheus_library}" DESTINATION "${CMAKE_INSTALL_LIBDIR}")
-        if(_prometheus_soname)
-            install(FILES "${_prometheus_dir}/${_prometheus_soname}" DESTINATION "${CMAKE_INSTALL_LIBDIR}")
-        endif()
-    else()
-        message(FATAL_ERROR "Could not locate the imported library for ${_prometheus_target}; "
-                            "components would fail to start with a missing shared object.")
-    endif()
-endforeach()
-
 # Public headers -> include/pubsub_itc_fw
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/include/pubsub_itc_fw"
         DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"

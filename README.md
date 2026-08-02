@@ -171,7 +171,7 @@ docker volume create pubsub-pgdata
 ```bash
 docker run -it --rm \
     -v "$(pwd)":/workspace \
-    -v /path/to/thirdparty:/workspace/thirdparty \
+    -v /path/to/thirdparty:/development/3rdparty \
     -v pubsub-pgdata:/var/lib/pgsql/data \
     pubsub-rhel8
 ```
@@ -183,7 +183,7 @@ You are now at a bash prompt inside Rocky Linux 8. The flags mean:
 | `-it` | Interactive terminal — required for a usable shell |
 | `--rm` | Delete the container automatically when you type `exit` |
 | `-v "$(pwd)":/workspace` | Mounts the project root into the container at `/workspace`; edits are shared instantly in both directions |
-| `-v /path/to/thirdparty:/workspace/thirdparty` | Pre-built third-party libraries (fmt, quill, etc.) built for Rocky 8 |
+| `-v /path/to/thirdparty:/development/3rdparty` | Pre-built third-party libraries (fmt, quill, etc.) built for Rocky 8. This is the path the real RHEL8 build hosts use, and it must stay outside `/workspace`: CMake leaves directories inside the project tree out of the install RPATH, so a tree mounted under the project links but is not found at run time |
 | `-v pubsub-pgdata:/var/lib/pgsql/data` | Persistent PostgreSQL data directory |
 
 The container entrypoint initialises the PostgreSQL cluster (first run only) and starts the server before dropping you into the shell.
@@ -211,7 +211,7 @@ If you only want to compile and run the C++ tests, omit the database volume enti
 ```bash
 docker run -it --rm \
     -v "$(pwd)":/workspace \
-    -v /path/to/thirdparty:/workspace/thirdparty \
+    -v /path/to/thirdparty:/development/3rdparty \
     pubsub-rhel8
 ```
 

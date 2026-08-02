@@ -141,44 +141,11 @@ list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/tomlplusplus/${TOMLPL
 list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/tsl-robin-map/${ROBINMAP_VERSION}")
 list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/prometheus-cpp/${PROMETHEUS_VERSION}")
 
-# Resolve each dependency's <pkg>_DIR robustly against install-tree layout
-# differences between build hosts. Two things vary in practice: the version
-# directory may be a bare <version> or a <name>-<version>, and the cmake package
-# dir may sit under lib64, lib, or share (GNUInstallDirs picks lib64 on some
-# 64-bit installs and lib on others; header-only packages install under share).
-# The config file itself is spelled either <name>Config.cmake or <name>-config.cmake.
-# Point <pkg>_DIR at the first candidate that actually holds the package config, so a
-# differently-laid-out third-party tree does not break configuration.
-function(resolve_thirdparty_config_dir out_var base name version cmake_name)
-    foreach(_version_dir "${base}/${version}" "${base}/${name}-${version}")
-        foreach(_lib_dir lib64 lib share)
-            set(_candidate "${_version_dir}/${_lib_dir}/cmake/${cmake_name}")
-            if(EXISTS "${_candidate}/${cmake_name}Config.cmake"
-               OR EXISTS "${_candidate}/${cmake_name}-config.cmake")
-                set(${out_var} "${_candidate}" PARENT_SCOPE)
-                return()
-            endif()
-        endforeach()
-    endforeach()
-    # Nothing matched: fall back to the conventional path so find_package reports a
-    # clear, actionable miss rather than acting on a silently-empty variable.
-    set(${out_var} "${base}/${version}/lib64/cmake/${cmake_name}" PARENT_SCOPE)
-endfunction()
-
-resolve_thirdparty_config_dir(fmt_DIR "${THIRDPARTY_DIR}/installed/fmt" fmt "${FMT_VERSION}" fmt)
-resolve_thirdparty_config_dir(quill_DIR "${THIRDPARTY_DIR}/installed/quill" quill "${QUILL_VERSION}" quill)
-resolve_thirdparty_config_dir(argparse_DIR "${THIRDPARTY_DIR}/installed/argparse" argparse "${ARGPARSE_VERSION_FROM_ENV}" argparse)
-resolve_thirdparty_config_dir(GTest_DIR "${THIRDPARTY_DIR}/installed/googletest" googletest "${GOOGLETEST_VERSION}" GTest)
-resolve_thirdparty_config_dir(tsl-robin-map_DIR "${THIRDPARTY_DIR}/installed/tsl-robin-map" tsl-robin-map "${ROBINMAP_VERSION}" tsl-robin-map)
-resolve_thirdparty_config_dir(prometheus-cpp_DIR "${THIRDPARTY_DIR}/installed/prometheus-cpp" prometheus-cpp "${PROMETHEUS_VERSION}" prometheus-cpp)
-
-message(STATUS "fmt_DIR:          ${fmt_DIR}")
-message(STATUS "quill_DIR:        ${quill_DIR}")
-message(STATUS "argparse_DIR:     ${argparse_DIR}")
-message(STATUS "GTest_DIR:        ${GTest_DIR}")
-message(STATUS "tsl-robin-map_DIR: ${tsl-robin-map_DIR}")
-message(STATUS "prometheus-cpp_DIR: ${prometheus-cpp_DIR}")
-
+# Each package prefix is on CMAKE_PREFIX_PATH above, and that is the whole mechanism.
+# find_package(... REQUIRED CONFIG) already searches lib64, lib and share beneath a prefix and
+# accepts either the <name>Config.cmake or the <name>-config.cmake spelling, so a third-party
+# tree that is missing, is the wrong version, or was built for a different platform fails here
+# at configure time, with CMake's own report of every path it tried for the named package.
 find_package(fmt REQUIRED CONFIG)
 find_package(quill REQUIRED CONFIG)
 find_package(argparse REQUIRED CONFIG)
@@ -194,6 +161,25 @@ find_package(PkgConfig)
 if(PkgConfig_FOUND)
     pkg_check_modules(NUMA numa)
 endif()
+
+# ------------------------------------------------------------
+# Finding third-party shared libraries at run time
+# ------------------------------------------------------------
+# Third-party shared libraries stay where they were built, under THIRDPARTY_DIR, and are never
+# copied next to our own binaries. Installed targets therefore need the path recorded in them:
+# USE_LINK_PATH puts the directory of every linked library that lives outside the build tree
+# into the installed target's run-time search path, so the set follows whatever was actually
+# linked rather than a list maintained by hand.
+set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+
+# Emit DT_RPATH, not the DT_RUNPATH that current binutils default to. The two differ in
+# precedence: DT_RUNPATH is consulted after LD_LIBRARY_PATH, DT_RPATH before it. A deployment
+# host with a populated central library directory on LD_LIBRARY_PATH would otherwise supply its
+# copy of a third-party library in preference to the one this build linked against, and a
+# mismatch there surfaces as a missing symbol at start-up rather than anything nameable.
+# add_link_options would be tidier but needs CMake 3.13; the declared minimum here is 3.11.
+string(APPEND CMAKE_EXE_LINKER_FLAGS " -Wl,--disable-new-dtags")
+string(APPEND CMAKE_SHARED_LINKER_FLAGS " -Wl,--disable-new-dtags")
 
 # ------------------------------------------------------------
 # Doxygen target (runs at install time)
