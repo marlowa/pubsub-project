@@ -353,6 +353,7 @@ def check_environment_variables():
         'ARGPARSE_VERSION',
         'GOOGLETEST_VERSION',
         'ROBINMAP_VERSION',
+        'PROMETHEUS_VERSION',
     ]
 
     missing = [var for var in required_vars if var not in os.environ]

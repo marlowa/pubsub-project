@@ -22,6 +22,7 @@ case "${PLATFORM_ID}" in
         export GOOGLETEST_VERSION=1.17.0
         export TOMLPLUSPLUS_VERSION=3.4.0
         export ROBINMAP_VERSION=1.4.1
+        export PROMETHEUS_VERSION=1.3.0
         ;;
     rocky8*|rhel8*|centos8*)
         # Third-party libraries live at different paths on the real RHEL8 build
@@ -39,6 +40,7 @@ case "${PLATFORM_ID}" in
         export GOOGLETEST_VERSION="1.10.0"
         export TOMLPLUSPLUS_VERSION=3.4.0
         export ROBINMAP_VERSION=1.4.1
+        export PROMETHEUS_VERSION=1.3.0
         ;;
     *)
         echo "ERROR: Unrecognised platform: ${PLATFORM_ID}" >&2

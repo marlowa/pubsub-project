@@ -204,6 +204,7 @@ def stage_rocky(args) -> tuple[bool, str]:
         f"THIRDPARTY_DIR={CONTAINER_DEPS}",
         "FMT_VERSION=11.0.2", "QUILL_VERSION=11.0.2", "ARGPARSE_VERSION=3.2",
         "GOOGLETEST_VERSION=1.10.0", "TOMLPLUSPLUS_VERSION=3.4.0", "ROBINMAP_VERSION=1.4.1",
+        "PROMETHEUS_VERSION=1.3.0",
     ])
     # Run as the invoking user, not root. The repo is bind-mounted, so a root-run
     # container leaves root-owned build/, build-rocky/, installed/ and doxygen output

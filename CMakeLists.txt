@@ -128,6 +128,7 @@ set(ARGPARSE_VERSION_FROM_ENV $ENV{ARGPARSE_VERSION})
 set(GOOGLETEST_VERSION $ENV{GOOGLETEST_VERSION})
 set(TOMLPLUSPLUS_VERSION $ENV{TOMLPLUSPLUS_VERSION})
 set(ROBINMAP_VERSION $ENV{ROBINMAP_VERSION})
+set(PROMETHEUS_VERSION $ENV{PROMETHEUS_VERSION})
 
 list(PREPEND CMAKE_PREFIX_PATH ${THIRDPARTY_DIR})
 list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake_modules")
@@ -138,6 +139,7 @@ list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/argparse/${ARGPARSE_V
 list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/googletest/${GOOGLETEST_VERSION}")
 list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/tomlplusplus/${TOMLPLUSPLUS_VERSION}")
 list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/tsl-robin-map/${ROBINMAP_VERSION}")
+list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/prometheus-cpp/${PROMETHEUS_VERSION}")
 
 # Resolve each dependency's <pkg>_DIR robustly against install-tree layout
 # differences between build hosts. Two things vary in practice: the version
@@ -168,18 +170,24 @@ resolve_thirdparty_config_dir(quill_DIR "${THIRDPARTY_DIR}/installed/quill" quil
 resolve_thirdparty_config_dir(argparse_DIR "${THIRDPARTY_DIR}/installed/argparse" argparse "${ARGPARSE_VERSION_FROM_ENV}" argparse)
 resolve_thirdparty_config_dir(GTest_DIR "${THIRDPARTY_DIR}/installed/googletest" googletest "${GOOGLETEST_VERSION}" GTest)
 resolve_thirdparty_config_dir(tsl-robin-map_DIR "${THIRDPARTY_DIR}/installed/tsl-robin-map" tsl-robin-map "${ROBINMAP_VERSION}" tsl-robin-map)
+resolve_thirdparty_config_dir(prometheus-cpp_DIR "${THIRDPARTY_DIR}/installed/prometheus-cpp" prometheus-cpp "${PROMETHEUS_VERSION}" prometheus-cpp)
 
 message(STATUS "fmt_DIR:          ${fmt_DIR}")
 message(STATUS "quill_DIR:        ${quill_DIR}")
 message(STATUS "argparse_DIR:     ${argparse_DIR}")
 message(STATUS "GTest_DIR:        ${GTest_DIR}")
 message(STATUS "tsl-robin-map_DIR: ${tsl-robin-map_DIR}")
+message(STATUS "prometheus-cpp_DIR: ${prometheus-cpp_DIR}")
 
 find_package(fmt REQUIRED CONFIG)
 find_package(quill REQUIRED CONFIG)
 find_package(argparse REQUIRED CONFIG)
 find_package(GTest REQUIRED CONFIG)
 find_package(tsl-robin-map REQUIRED CONFIG)
+# Brings in prometheus-cpp::core and ::pull (and ::push, unused). Its package config
+# find_dependency()s Threads, ZLIB (the build has compression on) and CURL (push enabled),
+# so those must be present on the host even though only the pull path is wanted here.
+find_package(prometheus-cpp REQUIRED CONFIG)
 find_package(OpenSSL REQUIRED)
 
 find_package(PkgConfig)
