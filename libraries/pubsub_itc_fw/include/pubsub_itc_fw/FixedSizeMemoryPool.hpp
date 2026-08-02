@@ -222,30 +222,6 @@ template <typename T> class FixedSizeMemoryPool {
   public:
     using SlotType = Slot<T>;
 
-    FixedSizeMemoryPool(int objects_per_pool, UseHugePagesFlag use_huge_pages_flag,
-                        [[maybe_unused]] std::function<void(void*, size_t)> handler_for_huge_pages_error)
-        : objects_per_pool_(objects_per_pool), use_huge_pages_flag_(use_huge_pages_flag) {
-        total_pool_size_ = static_cast<size_t>(objects_per_pool_) * sizeof(SlotType);
-
-        pool_memory_ = mmap(nullptr, total_pool_size_, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-        if (pool_memory_ == MAP_FAILED)
-            throw std::bad_alloc();
-
-        slots_ = reinterpret_cast<SlotType*>(pool_memory_);
-        free_list_v_.reserve(objects_per_pool_);
-
-        for (int i = 0; i < objects_per_pool_; ++i) {
-            // Placement-new is required to properly construct the std::atomic
-            // member in the mmap'd region before any atomic operations are used.
-            // mmap returns raw uninitialised memory -- the C++ object model requires
-            // construction before any member access, including atomic stores.
-            new (&slots_[i]) SlotType();
-            slots_[i].is_constructed.store(0, std::memory_order_relaxed);
-            slots_[i].canary = slot_canary_value;
-            free_list_v_.push_back(&slots_[i]);
-        }
-    }
-
     /**
      * @brief Destructs all remaining allocated objects and releases pool memory.
      *
@@ -271,6 +247,30 @@ template <typename T> class FixedSizeMemoryPool {
                 }
             }
             munmap(pool_memory_, total_pool_size_);
+        }
+    }
+
+    FixedSizeMemoryPool(int objects_per_pool, UseHugePagesFlag use_huge_pages_flag,
+                        [[maybe_unused]] std::function<void(void*, size_t)> handler_for_huge_pages_error)
+        : objects_per_pool_(objects_per_pool), use_huge_pages_flag_(use_huge_pages_flag) {
+        total_pool_size_ = static_cast<size_t>(objects_per_pool_) * sizeof(SlotType);
+
+        pool_memory_ = mmap(nullptr, total_pool_size_, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (pool_memory_ == MAP_FAILED)
+            throw std::bad_alloc();
+
+        slots_ = reinterpret_cast<SlotType*>(pool_memory_);
+        free_list_v_.reserve(objects_per_pool_);
+
+        for (int i = 0; i < objects_per_pool_; ++i) {
+            // Placement-new is required to properly construct the std::atomic
+            // member in the mmap'd region before any atomic operations are used.
+            // mmap returns raw uninitialised memory -- the C++ object model requires
+            // construction before any member access, including atomic stores.
+            new (&slots_[i]) SlotType();
+            slots_[i].is_constructed.store(0, std::memory_order_relaxed);
+            slots_[i].canary = slot_canary_value;
+            free_list_v_.push_back(&slots_[i]);
         }
     }
 

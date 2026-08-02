@@ -20,6 +20,7 @@
 - [Pub/Sub](design/pubsub.md)
 - [Serialisation DSL](design/serialisation_dsl.md)
 - [FIX Codec](design/fix_codec.md)
+- [Metrics and Prometheus](design/metrics.md)
 - [Sequencer](design/sequencer.md)
 
 ## Applications

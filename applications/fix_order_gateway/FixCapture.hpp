@@ -50,10 +50,9 @@ namespace fix_order_gateway {
  */
 class FixCapture {
   public:
-    enum class Direction : uint8_t {
-        Inbound  = 0,
-        Outbound = 1
-    };
+    enum class Direction : uint8_t { Inbound = 0, Outbound = 1 };
+
+    ~FixCapture();
 
     /**
      * @param[in] file_path       Path to the capture output file.
@@ -62,10 +61,7 @@ class FixCapture {
      *                            value gives more headroom if the writer thread
      *                            falls behind.  Typical value: 64 MB.
      */
-    FixCapture(const std::string& file_path, pubsub_itc_fw::QuillLogger& logger,
-               size_t ring_bytes);
-
-    ~FixCapture();
+    FixCapture(const std::string& file_path, pubsub_itc_fw::QuillLogger& logger, size_t ring_bytes);
 
     FixCapture(const FixCapture&) = delete;
     FixCapture& operator=(const FixCapture&) = delete;
@@ -83,7 +79,9 @@ class FixCapture {
      * @brief Returns the pthread_t of the writer thread for CPU-pinning
      *        registration.
      */
-    [[nodiscard]] pthread_t writer_pthread_id() const { return writer_thread_.get_pthread_id(); }
+    [[nodiscard]] pthread_t writer_pthread_id() const {
+        return writer_thread_.get_pthread_id();
+    }
 
   private:
     // Value written in the payload_size field of a sentinel record.
@@ -102,10 +100,10 @@ class FixCapture {
 
     void writer_loop();
 
-    std::string                          file_path_;
-    pubsub_itc_fw::QuillLogger&          logger_;
-    std::vector<uint8_t>                 ring_;      // pre-allocated, never resized
-    size_t                               capacity_;  // ring_.size()
+    std::string file_path_;
+    pubsub_itc_fw::QuillLogger& logger_;
+    std::vector<uint8_t> ring_; // pre-allocated, never resized
+    size_t capacity_;           // ring_.size()
 
     // Monotonically increasing byte offsets.  Actual position = offset % capacity_.
     // write_offset_ is written only by the gateway thread.
@@ -113,7 +111,7 @@ class FixCapture {
     alignas(64) std::atomic<size_t> write_offset_{0};
     alignas(64) std::atomic<size_t> read_offset_{0};
 
-    std::atomic<bool>                    shutdown_{false};
+    std::atomic<bool> shutdown_{false};
     pubsub_itc_fw::ThreadWithJoinTimeout writer_thread_;
 };
 

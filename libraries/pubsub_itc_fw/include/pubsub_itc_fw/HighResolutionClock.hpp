@@ -32,7 +32,7 @@ namespace pubsub_itc_fw {
  */
 class HighResolutionClock {
   public:
-    using duration   = std::chrono::nanoseconds;
+    using duration = std::chrono::nanoseconds;
     using time_point = std::chrono::time_point<HighResolutionClock, duration>;
 
     /**

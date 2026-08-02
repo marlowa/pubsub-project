@@ -14,6 +14,7 @@
 #include <pubsub_itc_fw/FileOpenMode.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/LoggingConfigurationLoader.hpp>
+#include <pubsub_itc_fw/MetricsConfigurationLoader.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/TomlConfiguration.hpp>
 
@@ -27,18 +28,22 @@ namespace {
 
 std::vector<uint8_t> hex_decode(std::string_view hex, std::string_view field_name) {
     if (hex.size() % 2 != 0) {
-        throw pubsub_itc_fw::ConfigurationException(
-            fmt::format("credentials: {} has odd-length hex string ({})", field_name, hex.size()));
+        throw pubsub_itc_fw::ConfigurationException(fmt::format("credentials: {} has odd-length hex string ({})", field_name, hex.size()));
     }
     std::vector<uint8_t> result;
     result.reserve(hex.size() / 2);
     for (size_t i = 0; i < hex.size(); i += 2) {
         auto nybble = [&](char c) -> uint8_t {
-            if (c >= '0' && c <= '9') { return static_cast<uint8_t>(c - '0'); }
-            if (c >= 'a' && c <= 'f') { return static_cast<uint8_t>(c - 'a' + 10); }
-            if (c >= 'A' && c <= 'F') { return static_cast<uint8_t>(c - 'A' + 10); }
-            throw pubsub_itc_fw::ConfigurationException(
-                fmt::format("credentials: {} contains invalid hex character '{}'", field_name, c));
+            if (c >= '0' && c <= '9') {
+                return static_cast<uint8_t>(c - '0');
+            }
+            if (c >= 'a' && c <= 'f') {
+                return static_cast<uint8_t>(c - 'a' + 10);
+            }
+            if (c >= 'A' && c <= 'F') {
+                return static_cast<uint8_t>(c - 'A' + 10);
+            }
+            throw pubsub_itc_fw::ConfigurationException(fmt::format("credentials: {} contains invalid hex character '{}'", field_name, c));
         };
         result.push_back(static_cast<uint8_t>((nybble(hex[i]) << 4) | nybble(hex[i + 1])));
     }
@@ -50,9 +55,8 @@ void load_credentials(const std::string& credentials_file, std::unordered_map<st
     pubsub_itc_fw::TomlConfiguration cred_toml;
     auto [ok, err] = cred_toml.load_file(credentials_file);
     if (!ok) {
-        throw pubsub_itc_fw::ConfigurationException(
-            "AuthenticationServiceConfigurationLoader: failed to load credentials file '" +
-            credentials_file + "': " + err);
+        throw pubsub_itc_fw::ConfigurationException("AuthenticationServiceConfigurationLoader: failed to load credentials file '" + credentials_file +
+                                                    "': " + err);
     }
 
     const size_t count = cred_toml.array_size("credential");
@@ -63,32 +67,29 @@ void load_credentials(const std::string& credentials_file, std::unordered_map<st
         std::string salt_hex;
         int32_t iterations = 0;
 
-        cred_toml.get_required_except(fmt::format("credential[{}].comp_id",     i), comp_id);
-        cred_toml.get_required_except(fmt::format("credential[{}].stored_key",  i), stored_key_hex);
-        cred_toml.get_required_except(fmt::format("credential[{}].server_key",  i), server_key_hex);
-        cred_toml.get_required_except(fmt::format("credential[{}].salt",        i), salt_hex);
-        cred_toml.get_required_except(fmt::format("credential[{}].iterations",  i), iterations);
+        cred_toml.get_required_except(fmt::format("credential[{}].comp_id", i), comp_id);
+        cred_toml.get_required_except(fmt::format("credential[{}].stored_key", i), stored_key_hex);
+        cred_toml.get_required_except(fmt::format("credential[{}].server_key", i), server_key_hex);
+        cred_toml.get_required_except(fmt::format("credential[{}].salt", i), salt_hex);
+        cred_toml.get_required_except(fmt::format("credential[{}].iterations", i), iterations);
 
         scram_crypto::ScramCredential cred;
         cred.stored_key = hex_decode(stored_key_hex, fmt::format("credential[{}].stored_key", i));
         cred.server_key = hex_decode(server_key_hex, fmt::format("credential[{}].server_key", i));
-        cred.salt       = hex_decode(salt_hex,       fmt::format("credential[{}].salt", i));
+        cred.salt = hex_decode(salt_hex, fmt::format("credential[{}].salt", i));
         cred.iterations = iterations;
 
         if (cred.stored_key.size() != 32) {
             throw pubsub_itc_fw::ConfigurationException(
-                fmt::format("credentials: credential[{}].stored_key must be 64 hex chars (32 bytes), got {} chars",
-                            i, stored_key_hex.size()));
+                fmt::format("credentials: credential[{}].stored_key must be 64 hex chars (32 bytes), got {} chars", i, stored_key_hex.size()));
         }
         if (cred.server_key.size() != 32) {
             throw pubsub_itc_fw::ConfigurationException(
-                fmt::format("credentials: credential[{}].server_key must be 64 hex chars (32 bytes), got {} chars",
-                            i, server_key_hex.size()));
+                fmt::format("credentials: credential[{}].server_key must be 64 hex chars (32 bytes), got {} chars", i, server_key_hex.size()));
         }
         if (cred.salt.size() != 16) {
             throw pubsub_itc_fw::ConfigurationException(
-                fmt::format("credentials: credential[{}].salt must be 32 hex chars (16 bytes), got {} chars",
-                            i, salt_hex.size()));
+                fmt::format("credentials: credential[{}].salt must be 32 hex chars (16 bytes), got {} chars", i, salt_hex.size()));
         }
 
         credentials[comp_id] = std::move(cred);
@@ -142,9 +143,9 @@ AuthenticationServiceConfigurationLoader::load_and_init_logging(const std::strin
         throw;
     }
 
-    auto logger = std::make_unique<pubsub_itc_fw::QuillLogger>(log_file_path, pubsub_itc_fw::FileOpenMode{pubsub_itc_fw::FileOpenMode::Truncate},
-                                                                pubsub_itc_fw::FwLogLevel::Info, pubsub_itc_fw::FwLogLevel::Info,
-                                                                config.rolling_logfile_configuration);
+    auto logger =
+        std::make_unique<pubsub_itc_fw::QuillLogger>(log_file_path, pubsub_itc_fw::FileOpenMode{pubsub_itc_fw::FileOpenMode::Truncate},
+                                                     pubsub_itc_fw::FwLogLevel::Info, pubsub_itc_fw::FwLogLevel::Info, config.rolling_logfile_configuration);
 
     try {
         toml.get_required_except("network.listen_host", config.listen_host);
@@ -179,6 +180,8 @@ AuthenticationServiceConfigurationLoader::load_and_init_logging(const std::strin
             toml.get_required_except("reactor.cpu_registry_lock_file", config.cpu_registry_lock_file);
             toml.get_required_except("reactor.cpu_layout_file", config.cpu_layout_file);
             toml.get_required_except("reactor.cpu_layout_component", config.cpu_layout_component);
+
+            config.metrics_configuration = pubsub_itc_fw::MetricsConfigurationLoader::load(toml);
         }
         toml.get_required_except("reactor.connect_retry_warning_interval", config.connect_retry_warning_interval);
 
@@ -220,9 +223,8 @@ AuthenticationServiceConfigurationLoader::load_and_init_logging(const std::strin
         int32_t admin_listen_port = 0;
         toml.get_required_except("admin.listen_port", admin_listen_port);
         if (admin_listen_port < 1 || admin_listen_port > 65535) {
-            throw pubsub_itc_fw::ConfigurationException(
-                "AuthenticationServiceConfigurationLoader: admin.listen_port must be in [1, 65535], got " +
-                std::to_string(admin_listen_port));
+            throw pubsub_itc_fw::ConfigurationException("AuthenticationServiceConfigurationLoader: admin.listen_port must be in [1, 65535], got " +
+                                                        std::to_string(admin_listen_port));
         }
         config.admin_listen_port = static_cast<uint16_t>(admin_listen_port);
 
@@ -230,10 +232,11 @@ AuthenticationServiceConfigurationLoader::load_and_init_logging(const std::strin
         toml.get_required_except("admin.tls_private_key_path", config.admin_tls_private_key_path);
         // ca_path and require_client_certificate are optional.
         auto [ca_ok, ca_err] = toml.get_required("admin.tls_ca_path", config.admin_tls_ca_path);
-        (void)ca_ok; (void)ca_err;
-        auto [req_ok, req_err] = toml.get_required("admin.tls_require_client_certificate",
-                                                    config.admin_tls_require_client_certificate);
-        (void)req_ok; (void)req_err;
+        (void)ca_ok;
+        (void)ca_err;
+        auto [req_ok, req_err] = toml.get_required("admin.tls_require_client_certificate", config.admin_tls_require_client_certificate);
+        (void)req_ok;
+        (void)req_err;
 
         resolve_path_relative_to_config(config.admin_tls_certificate_path);
         resolve_path_relative_to_config(config.admin_tls_private_key_path);

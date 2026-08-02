@@ -193,17 +193,17 @@ struct OrderShape {
  */
 class LoadSession {
   public:
-    LoadSession(std::string comp_id, std::string password, std::string target_comp_id, std::string symbol)
-        : comp_id_(std::move(comp_id)), password_(std::move(password)), target_comp_id_(std::move(target_comp_id)), symbol_(std::move(symbol)) {}
-
-    LoadSession(const LoadSession&) = delete;
-    LoadSession& operator=(const LoadSession&) = delete;
-
     ~LoadSession() {
         if (socket_fd_ >= 0) {
             ::close(socket_fd_);
         }
     }
+
+    LoadSession(std::string comp_id, std::string password, std::string target_comp_id, std::string symbol)
+        : comp_id_(std::move(comp_id)), password_(std::move(password)), target_comp_id_(std::move(target_comp_id)), symbol_(std::move(symbol)) {}
+
+    LoadSession(const LoadSession&) = delete;
+    LoadSession& operator=(const LoadSession&) = delete;
 
     [[nodiscard]] const std::string& comp_id() const {
         return comp_id_;

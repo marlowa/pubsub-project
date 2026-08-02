@@ -8,6 +8,7 @@
 #include <string>
 
 #include <pubsub_itc_fw/FwLogLevel.hpp>
+#include <pubsub_itc_fw/MetricsConfiguration.hpp>
 #include <pubsub_itc_fw/RollingLogfileConfiguration.hpp>
 
 namespace binary_order_gateway {
@@ -183,6 +184,13 @@ struct BinaryOrderGatewayConfiguration {
     // No wall clock here, unlike the FIX order gateway. That one stamps SendingTime into the
     // FIX messages it builds; this gateway builds none -- orders pass through as the
     // client encoded them, and the sequencer stamps the time that matters.
+
+    /**
+     * @brief This process's Prometheus scrape endpoint; see docs/design/metrics.md.
+     *
+     * Copied into ReactorConfiguration, which is where the Reactor reads it from.
+     */
+    pubsub_itc_fw::MetricsConfiguration metrics_configuration;
 };
 
 } // namespaces

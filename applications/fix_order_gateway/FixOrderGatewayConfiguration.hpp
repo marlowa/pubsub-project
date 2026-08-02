@@ -9,6 +9,7 @@
 #include <string>
 
 #include <pubsub_itc_fw/FwLogLevel.hpp>
+#include <pubsub_itc_fw/MetricsConfiguration.hpp>
 #include <pubsub_itc_fw/RollingLogfileConfiguration.hpp>
 #include <pubsub_itc_fw/WallClock.hpp>
 
@@ -271,6 +272,13 @@ struct FixOrderGatewayConfiguration {
     // Pool for open-order string storage.
     int32_t open_order_pool_objects_per_pool{4096};
     int32_t open_order_pool_initial_pools{1};
+
+    /**
+     * @brief This process's Prometheus scrape endpoint; see docs/design/metrics.md.
+     *
+     * Copied into ReactorConfiguration, which is where the Reactor reads it from.
+     */
+    pubsub_itc_fw::MetricsConfiguration metrics_configuration;
 };
 
 } // namespaces

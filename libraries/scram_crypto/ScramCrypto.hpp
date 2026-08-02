@@ -32,8 +32,7 @@ struct ScramCredential {
  * @brief Computes HMAC-SHA-256(key, data).
  * @throws std::runtime_error if the OpenSSL call fails.
  */
-[[nodiscard]] std::vector<uint8_t> hmac_sha256(const uint8_t* key, size_t key_size,
-                                                const uint8_t* data, size_t data_size);
+[[nodiscard]] std::vector<uint8_t> hmac_sha256(const uint8_t* key, size_t key_size, const uint8_t* data, size_t data_size);
 
 /**
  * @brief Computes SHA-256(data).
@@ -44,9 +43,7 @@ struct ScramCredential {
  * @brief Computes PBKDF2-HMAC-SHA-256(password, salt, iterations, dkLen=32).
  * @throws std::runtime_error if the OpenSSL call fails.
  */
-[[nodiscard]] std::vector<uint8_t> pbkdf2_sha256(std::string_view password,
-                                                  const uint8_t* salt, size_t salt_size,
-                                                  int32_t iterations);
+[[nodiscard]] std::vector<uint8_t> pbkdf2_sha256(std::string_view password, const uint8_t* salt, size_t salt_size, int32_t iterations);
 
 /**
  * @brief Derives a ScramCredential from a plaintext password, salt, and iteration count.
@@ -57,9 +54,7 @@ struct ScramCredential {
  *
  * @throws std::runtime_error if any underlying OpenSSL call fails.
  */
-[[nodiscard]] ScramCredential make_scram_credential(std::string_view password,
-                                                    const uint8_t* salt, size_t salt_size,
-                                                    int32_t iterations);
+[[nodiscard]] ScramCredential make_scram_credential(std::string_view password, const uint8_t* salt, size_t salt_size, int32_t iterations);
 
 /**
  * @brief Builds the canonical AuthMessage used for HMAC inputs on both sides.
@@ -75,10 +70,7 @@ struct ScramCredential {
  *
  * All length prefixes and the iterations field are little-endian unsigned 32-bit.
  */
-[[nodiscard]] std::vector<uint8_t> compute_auth_message(std::string_view comp_id,
-                                                        const std::vector<uint8_t>& client_nonce,
-                                                        const std::vector<uint8_t>& server_nonce,
-                                                        const uint8_t* salt, size_t salt_size,
-                                                        int32_t iterations);
+[[nodiscard]] std::vector<uint8_t> compute_auth_message(std::string_view comp_id, const std::vector<uint8_t>& client_nonce,
+                                                        const std::vector<uint8_t>& server_nonce, const uint8_t* salt, size_t salt_size, int32_t iterations);
 
 } // namespaces

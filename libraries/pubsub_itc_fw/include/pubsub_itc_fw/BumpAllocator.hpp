@@ -96,6 +96,8 @@ namespace pubsub_itc_fw {
  */
 class BumpAllocator {
   public:
+    ~BumpAllocator() = default;
+
     /**
      * @brief Constructs a BumpAllocator.
      *
@@ -111,8 +113,6 @@ class BumpAllocator {
      *                     measuring mode.
      */
     BumpAllocator(uint8_t* storage, size_t capacity) : storage_(storage), capacity_(capacity) {}
-
-    ~BumpAllocator() = default;
 
     BumpAllocator(const BumpAllocator&) = delete;
     BumpAllocator& operator=(const BumpAllocator&) = delete;

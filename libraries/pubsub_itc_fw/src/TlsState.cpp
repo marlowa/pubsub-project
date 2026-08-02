@@ -46,8 +46,12 @@ TlsState& TlsState::operator=(TlsState&& other) {
         if (ssl != nullptr) {
             SSL_free(ssl);
         } else {
-            if (rbio != nullptr) { BIO_free(rbio); }
-            if (wbio != nullptr) { BIO_free(wbio); }
+            if (rbio != nullptr) {
+                BIO_free(rbio);
+            }
+            if (wbio != nullptr) {
+                BIO_free(wbio);
+            }
         }
         ssl = other.ssl;
         rbio = other.rbio;

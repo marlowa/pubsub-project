@@ -21,8 +21,8 @@ namespace pubsub_itc_fw {
  * to this service; without it the connection is plain TCP.
  */
 struct ServiceEndpoints {
-    NetworkEndpointConfiguration primary;   ///< Primary endpoint. Must be configured (port != 0).
-    NetworkEndpointConfiguration secondary; ///< Secondary (fallback) endpoint. port == 0 means not configured.
+    NetworkEndpointConfiguration primary;      ///< Primary endpoint. Must be configured (port != 0).
+    NetworkEndpointConfiguration secondary;    ///< Secondary (fallback) endpoint. port == 0 means not configured.
     std::optional<TlsClientConfiguration> tls; ///< Present when the service requires TLS.
 };
 

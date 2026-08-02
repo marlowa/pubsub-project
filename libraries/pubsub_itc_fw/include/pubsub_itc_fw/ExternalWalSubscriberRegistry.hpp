@@ -58,9 +58,7 @@ class ExternalWalSubscriberRegistry {
      * @param[in] initial_cursor  Starting cursor presented in WalSubscribeRequest.
      * @return ConnectionID of the displaced orphan, or ConnectionID{} if none.
      */
-    ConnectionID register_subscriber(ConnectionID connection_id,
-                                     const std::string& subscriber_id,
-                                     int64_t initial_cursor) {
+    ConnectionID register_subscriber(ConnectionID connection_id, const std::string& subscriber_id, int64_t initial_cursor) {
         ConnectionID orphan;
         auto identity_it = identity_to_connection_.find(subscriber_id);
         if (identity_it != identity_to_connection_.end()) {

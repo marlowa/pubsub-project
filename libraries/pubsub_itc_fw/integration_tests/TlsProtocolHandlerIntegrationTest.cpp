@@ -246,6 +246,17 @@ class TlsCertDirectory {
     std::string client_key_path;
     bool valid{false};
 
+    ~TlsCertDirectory() {
+        ::unlink(ca_cert_path.c_str());
+        ::unlink(server_cert_path.c_str());
+        ::unlink(server_key_path.c_str());
+        ::unlink(client_cert_path.c_str());
+        ::unlink(client_key_path.c_str());
+        if (!directory_.empty()) {
+            ::rmdir(directory_.c_str());
+        }
+    }
+
     TlsCertDirectory() {
         char tmp_dir[] = "/tmp/tls_test_XXXXXX";
         char* dir = mkdtemp(tmp_dir);
@@ -294,17 +305,6 @@ class TlsCertDirectory {
         }
     }
 
-    ~TlsCertDirectory() {
-        ::unlink(ca_cert_path.c_str());
-        ::unlink(server_cert_path.c_str());
-        ::unlink(server_key_path.c_str());
-        ::unlink(client_cert_path.c_str());
-        ::unlink(client_key_path.c_str());
-        if (!directory_.empty()) {
-            ::rmdir(directory_.c_str());
-        }
-    }
-
     TlsCertDirectory(const TlsCertDirectory&) = delete;
     TlsCertDirectory& operator=(const TlsCertDirectory&) = delete;
 
@@ -326,16 +326,16 @@ struct TlsClientConnection {
     SSL_CTX* ctx{nullptr};
     SSL* ssl{nullptr};
 
+    ~TlsClientConnection() {
+        disconnect();
+    }
+
     TlsClientConnection() = default;
 
     TlsClientConnection(TlsClientConnection&& other) : fd(other.fd), ctx(other.ctx), ssl(other.ssl) {
         other.fd = -1;
         other.ctx = nullptr;
         other.ssl = nullptr;
-    }
-
-    ~TlsClientConnection() {
-        disconnect();
     }
 
     void disconnect() {

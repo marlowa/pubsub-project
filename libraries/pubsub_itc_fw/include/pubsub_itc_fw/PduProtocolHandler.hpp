@@ -138,7 +138,9 @@ class PduProtocolHandler : public ProtocolHandlerInterface {
      * Used by the Reactor when processing InstallInlinePduHandler commands to
      * install a reactor-thread inline PDU handler on inbound connections.
      */
-    [[nodiscard]] PduParser* parser() const { return parser_.get(); }
+    [[nodiscard]] PduParser* parser() const {
+        return parser_.get();
+    }
 
     /**
      * @brief Returns a non-owning pointer to the PduFramer for this connection.
@@ -146,7 +148,9 @@ class PduProtocolHandler : public ProtocolHandlerInterface {
      * Used by the Reactor when processing InstallInlinePduHandler commands to
      * supply a reply-send capability to inline PDU handlers on inbound connections.
      */
-    [[nodiscard]] PduFramer* framer() const { return framer_.get(); }
+    [[nodiscard]] PduFramer* framer() const {
+        return framer_.get();
+    }
 
   private:
     void release_pending_send();

@@ -1,10 +1,10 @@
 # pubsub_itc_fw
 
-![version](https://img.shields.io/badge/version-v0.2.1-orange)
+![version](https://img.shields.io/badge/version-v0.3.0-orange)
 ![C++](https://img.shields.io/badge/C%2B%2B-17-blue)
 ![license](https://img.shields.io/badge/license-Apache--2.0-green)
 
-**Current version:** v0.2.1 — see [CHANGELOG.md](CHANGELOG.md).
+**Current version:** v0.3.0 — see [CHANGELOG.md](CHANGELOG.md).
 
 A low-latency, multi-threaded, event-driven application framework for C++17, built around the **reactor pattern**. It provides inter-thread communication, inter-process communication, pub/sub messaging, timers, high availability, and a binary serialisation DSL — all designed for environments where heap allocation on the hot path is not acceptable.
 

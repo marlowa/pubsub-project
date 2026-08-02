@@ -51,9 +51,8 @@ TlsContext::~TlsContext() {
     }
 }
 
-std::tuple<std::unique_ptr<TlsContext>, std::string>
-TlsContext::create_server(const std::string& certificate_path, const std::string& private_key_path,
-                          const std::string& ca_path, bool require_client_certificate) {
+std::tuple<std::unique_ptr<TlsContext>, std::string> TlsContext::create_server(const std::string& certificate_path, const std::string& private_key_path,
+                                                                               const std::string& ca_path, bool require_client_certificate) {
     SSL_CTX* context = SSL_CTX_new(TLS_server_method());
     if (context == nullptr) {
         return {nullptr, "TlsContext::create_server: SSL_CTX_new failed: " + collect_openssl_errors()};
@@ -81,18 +80,15 @@ TlsContext::create_server(const std::string& certificate_path, const std::string
             SSL_CTX_free(context);
             return {nullptr, "TlsContext::create_server: failed to load CA '" + ca_path + "': " + collect_openssl_errors()};
         }
-        const int verify_mode = require_client_certificate
-            ? (SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT)
-            : SSL_VERIFY_PEER;
+        const int verify_mode = require_client_certificate ? (SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT) : SSL_VERIFY_PEER;
         SSL_CTX_set_verify(context, verify_mode, nullptr);
     }
 
     return {std::unique_ptr<TlsContext>(new TlsContext(context)), ""};
 }
 
-std::tuple<std::unique_ptr<TlsContext>, std::string>
-TlsContext::create_client(const std::string& ca_path, const std::string& certificate_path,
-                          const std::string& private_key_path) {
+std::tuple<std::unique_ptr<TlsContext>, std::string> TlsContext::create_client(const std::string& ca_path, const std::string& certificate_path,
+                                                                               const std::string& private_key_path) {
     SSL_CTX* context = SSL_CTX_new(TLS_client_method());
     if (context == nullptr) {
         return {nullptr, "TlsContext::create_client: SSL_CTX_new failed: " + collect_openssl_errors()};

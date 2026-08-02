@@ -4,6 +4,7 @@
 #include "MatchingEngineConfigurationLoader.hpp"
 
 #include <pubsub_itc_fw/ConfigurationException.hpp>
+#include <pubsub_itc_fw/MetricsConfigurationLoader.hpp>
 #include <pubsub_itc_fw/TomlConfiguration.hpp>
 
 namespace matching_engine {
@@ -24,8 +25,8 @@ MatchingEngineConfiguration MatchingEngineConfigurationLoader::load(const std::s
         if (config.ha_enabled) {
             toml.get_required_except("ha.role", config.ha_role);
             if (config.ha_role != "primary" && config.ha_role != "secondary") {
-                throw pubsub_itc_fw::ConfigurationException(
-                    "MatchingEngineConfigurationLoader: ha.role must be 'primary' or 'secondary', got '" + config.ha_role + "'");
+                throw pubsub_itc_fw::ConfigurationException("MatchingEngineConfigurationLoader: ha.role must be 'primary' or 'secondary', got '" +
+                                                            config.ha_role + "'");
             }
         }
 
@@ -137,6 +138,8 @@ MatchingEngineConfiguration MatchingEngineConfigurationLoader::load(const std::s
             toml.get_required_except("reactor.cpu_registry_lock_file", config.cpu_registry_lock_file);
             toml.get_required_except("reactor.cpu_layout_file", config.cpu_layout_file);
             toml.get_required_except("reactor.cpu_layout_component", config.cpu_layout_component);
+
+            config.metrics_configuration = pubsub_itc_fw::MetricsConfigurationLoader::load(toml);
         }
         toml.get_required_except("reactor.connect_retry_warning_interval", config.connect_retry_warning_interval);
 

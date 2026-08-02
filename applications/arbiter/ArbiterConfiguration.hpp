@@ -8,6 +8,7 @@
 #include <string>
 
 #include <pubsub_itc_fw/FwLogLevel.hpp>
+#include <pubsub_itc_fw/MetricsConfiguration.hpp>
 
 namespace arbiter {
 
@@ -134,6 +135,13 @@ struct ArbiterConfiguration {
 
     /** @brief Number of command queue pool slabs pre-allocated at startup. */
     int32_t command_queue_pool_initial_slabs{1};
+
+    /**
+     * @brief This process's Prometheus scrape endpoint; see docs/design/metrics.md.
+     *
+     * Copied into ReactorConfiguration, which is where the Reactor reads it from.
+     */
+    pubsub_itc_fw::MetricsConfiguration metrics_configuration;
 };
 
 } // namespaces

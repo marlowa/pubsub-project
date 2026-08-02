@@ -47,8 +47,9 @@ class WalWriter {
   public:
     static constexpr uint32_t entry_magic = 0xFEEDFACEU;
 
-    WalWriter() = default;
     ~WalWriter();
+
+    WalWriter() = default;
 
     WalWriter(const WalWriter&) = delete;
     WalWriter& operator=(const WalWriter&) = delete;

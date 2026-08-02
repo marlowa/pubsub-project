@@ -17,8 +17,9 @@ namespace {
 
 class EventMessageTest : public ::testing::Test {
   public:
-    EventMessageTest() = default;
     ~EventMessageTest() override = default;
+
+    EventMessageTest() = default;
 };
 
 } // un-named namespace

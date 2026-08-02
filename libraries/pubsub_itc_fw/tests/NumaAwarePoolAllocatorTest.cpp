@@ -118,11 +118,12 @@ class NumaAwarePoolAllocatorTest : public ::testing::Test {
         static std::atomic<int> constructor_count_;
         static std::atomic<int> destructor_count_;
 
-        TestObject() {
-            constructor_count_++;
-        }
         ~TestObject() {
             destructor_count_++;
+        }
+
+        TestObject() {
+            constructor_count_++;
         }
 
         static void reset_counts() {

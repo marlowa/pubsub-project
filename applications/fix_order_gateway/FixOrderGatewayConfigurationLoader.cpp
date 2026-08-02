@@ -7,6 +7,7 @@
 
 #include <pubsub_itc_fw/ConfigurationException.hpp>
 #include <pubsub_itc_fw/LoggingConfigurationLoader.hpp>
+#include <pubsub_itc_fw/MetricsConfigurationLoader.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/TomlConfiguration.hpp>
 
@@ -140,6 +141,8 @@ FixOrderGatewayConfigurationLoader::load_and_init_logging(const std::string& fil
             toml.get_required_except("reactor.cpu_registry_lock_file", config.cpu_registry_lock_file);
             toml.get_required_except("reactor.cpu_layout_file", config.cpu_layout_file);
             toml.get_required_except("reactor.cpu_layout_component", config.cpu_layout_component);
+
+            config.metrics_configuration = pubsub_itc_fw::MetricsConfigurationLoader::load(toml);
         }
         toml.get_required_except("reactor.connect_retry_warning_interval", config.connect_retry_warning_interval);
 

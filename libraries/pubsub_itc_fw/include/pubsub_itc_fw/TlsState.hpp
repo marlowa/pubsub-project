@@ -25,8 +25,9 @@ namespace pubsub_itc_fw {
 struct TlsState {
     enum class HandshakePhase { Pending, Complete, Failed };
 
-    TlsState() = default;
     ~TlsState();
+
+    TlsState() = default;
 
     TlsState(const TlsState&) = delete;
     TlsState& operator=(const TlsState&) = delete;

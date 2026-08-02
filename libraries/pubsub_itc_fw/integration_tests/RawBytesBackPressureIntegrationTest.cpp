@@ -352,16 +352,16 @@ class RawBytesBackpressureIntegrationTest : public ::testing::Test {
      */
     class ReactorGuard {
       public:
-        ReactorGuard(Reactor& reactor, std::thread& reactor_thread) : reactor_(&reactor), reactor_thread_(&reactor_thread) {}
-
-        ReactorGuard(const ReactorGuard&) = delete;
-        ReactorGuard& operator=(const ReactorGuard&) = delete;
-
         ~ReactorGuard() {
             if (reactor_ != nullptr) {
                 shutdown_and_join(*reactor_, *reactor_thread_, "ReactorGuard destructor");
             }
         }
+
+        ReactorGuard(Reactor& reactor, std::thread& reactor_thread) : reactor_(&reactor), reactor_thread_(&reactor_thread) {}
+
+        ReactorGuard(const ReactorGuard&) = delete;
+        ReactorGuard& operator=(const ReactorGuard&) = delete;
 
         void release() {
             reactor_ = nullptr;

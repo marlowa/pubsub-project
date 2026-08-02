@@ -6,6 +6,25 @@ listen_port = ${witness_network_listen_port}
 applog_level = "info"
 syslog_level = "critical"
 
+# Prometheus scrape endpoint for this process. See docs/design/metrics.md.
+#
+# enabled comes from a shared value so the whole venue switches together. The listener is
+# per process -- roughly fifteen of them run on one host in dev and cannot share a port --
+# so host and port are per component. A port of 0 asks the OS to choose, which is how tests
+# avoid colliding; the bound port is logged at startup.
+#
+# application and component are the first two tokens of every metric key this process
+# emits. component is the INSTANCE, not the role, because performance investigation is
+# always about one process; aggregate across instances with a matcher when that is wanted.
+# ${component_name} is resolved per component by deploy.py, the same value the CPU layout
+# uses to find this process.
+[metrics]
+enabled     = ${shared_metrics_enabled}
+application = "${shared_metrics_application}"
+component   = "${component_name}"
+listen_host = "${witness_metrics_listen_host}"
+listen_port = ${witness_metrics_listen_port}
+
 [reactor]
 cpu_pinning_enabled    = true
 cpu_pinning_reserve_cpu0   = ${shared_reactor_cpu_pinning_reserve_cpu0}

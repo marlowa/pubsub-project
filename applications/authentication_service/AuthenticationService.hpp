@@ -37,8 +37,7 @@ class AuthenticationService {
      * @param[in] logger Logger. Ownership transferred. Must already have the
      *                   correct log levels applied from config.
      */
-    explicit AuthenticationService(const AuthenticationServiceConfiguration& config,
-                                   std::unique_ptr<pubsub_itc_fw::QuillLogger> logger);
+    explicit AuthenticationService(const AuthenticationServiceConfiguration& config, std::unique_ptr<pubsub_itc_fw::QuillLogger> logger);
 
     /**
      * @brief Starts the reactor event loop. Blocks until shutdown.

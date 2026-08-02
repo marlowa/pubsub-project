@@ -9,6 +9,7 @@
 #include <string>
 
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
+#include <pubsub_itc_fw/MetricsConfiguration.hpp>
 #include <pubsub_itc_fw/QueueConfiguration.hpp>
 
 namespace pubsub_itc_fw {
@@ -280,6 +281,19 @@ struct ReactorConfiguration {
      * Mandatory whenever cpu_pinning_enabled is true.
      */
     std::string cpu_layout_component;
+
+    /**
+     * @brief This process's Prometheus scrape endpoint.
+     *
+     * Held here because the Reactor owns the endpoint: it is the only object with a
+     * lifetime long enough for the metric handles it hands out, and it is what sequences
+     * the start of the listener after the CPU layout has been applied.
+     *
+     * Defaults to disabled, so a component that has not yet added a [metrics] section --
+     * or a test that builds a ReactorConfiguration directly -- gets no listener and no
+     * collection rather than an accidental open port.
+     */
+    MetricsConfiguration metrics_configuration;
 };
 
 } // namespaces

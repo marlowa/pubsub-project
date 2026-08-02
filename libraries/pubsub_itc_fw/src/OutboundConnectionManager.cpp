@@ -216,8 +216,8 @@ void OutboundConnectionManager::on_connect_ready(OutboundConnection& conn) {
                 const auto elapsed_s =
                     std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - ctx_it->second.first_fail_time).count();
                 const bool runtime_reconnect = ever_established_services_.count(conn.service_name()) > 0;
-                PUBSUB_LOG(logger_, runtime_reconnect ? FwLogLevel::Warning : FwLogLevel::Info,
-                           "OutboundConnectionManager: service '{}' reconnected after {}s", conn.service_name(), elapsed_s);
+                PUBSUB_LOG(logger_, runtime_reconnect ? FwLogLevel::Warning : FwLogLevel::Info, "OutboundConnectionManager: service '{}' reconnected after {}s",
+                           conn.service_name(), elapsed_s);
                 retry_contexts_.erase(ctx_it);
             } else {
                 PUBSUB_LOG(logger_, FwLogLevel::Info, "OutboundConnectionManager::on_connect_ready: connection {} to service '{}' established",

@@ -52,7 +52,7 @@ namespace pubsub_itc_fw {
  *   All methods must be called exclusively from the reactor thread.
  */
 class TlsRawBytesProtocolHandler : public ProtocolHandlerInterface {
-public:
+  public:
     ~TlsRawBytesProtocolHandler() override = default;
 
     TlsRawBytesProtocolHandler(const TlsRawBytesProtocolHandler&) = delete;
@@ -72,9 +72,8 @@ public:
      *                            client-side (SSL_connect path).
      * @param[in] logger          QuillLogger used for TLS diagnostics. Must outlive this object.
      */
-    TlsRawBytesProtocolHandler(ConnectionID connection_id, TcpSocket& socket, ApplicationThread& target_thread,
-                               int64_t buffer_capacity, TlsContext& tls_context, bool is_server,
-                               QuillLogger& logger);
+    TlsRawBytesProtocolHandler(ConnectionID connection_id, TcpSocket& socket, ApplicationThread& target_thread, int64_t buffer_capacity,
+                               TlsContext& tls_context, bool is_server, QuillLogger& logger);
 
     /**
      * @brief Services a readable socket event (EPOLLIN).
@@ -159,7 +158,7 @@ public:
      */
     [[nodiscard]] std::tuple<bool, std::string> start_outbound_handshake() override;
 
-private:
+  private:
     /**
      * @brief Drains the write BIO and attempts a non-blocking send to the socket.
      *

@@ -19,8 +19,8 @@ namespace {
 
 struct ParsedRecord {
     uint32_t payload_size{0};
-    int64_t  timestamp_ns{0};
-    uint8_t  direction{0};
+    int64_t timestamp_ns{0};
+    uint8_t direction{0};
     std::vector<uint8_t> bytes;
 };
 
@@ -36,8 +36,8 @@ std::vector<ParsedRecord> read_all_records(const std::string& path) {
             break;
         }
         ParsedRecord rec;
-        std::memcpy(&rec.payload_size,  header,     4);
-        std::memcpy(&rec.timestamp_ns,  header + 4, 8);
+        std::memcpy(&rec.payload_size, header, 4);
+        std::memcpy(&rec.timestamp_ns, header + 4, 8);
         rec.direction = header[12];
         if (rec.payload_size > 0) {
             rec.bytes.resize(rec.payload_size);
@@ -69,14 +69,14 @@ class FixCaptureTest : public ::testing::Test {
 };
 
 TEST_F(FixCaptureTest, WritesRecordWithCorrectBinaryFormat) {
-    const std::string data = "8=FIX.4.2\x01" "35=A\x01" "10=100\x01";
+    const std::string data = "8=FIX.4.2\x01"
+                             "35=A\x01"
+                             "10=100\x01";
     const int64_t timestamp = 1700000000000000000LL;
 
     {
         FixCapture capture(capture_file_, logger_.logger, 1000);
-        capture.capture(FixCapture::Direction::Inbound,
-                        reinterpret_cast<const uint8_t*>(data.data()),
-                        data.size(), timestamp);
+        capture.capture(FixCapture::Direction::Inbound, reinterpret_cast<const uint8_t*>(data.data()), data.size(), timestamp);
     }
 
     const auto records = read_all_records(capture_file_);
@@ -91,18 +91,18 @@ TEST_F(FixCaptureTest, WritesRecordWithCorrectBinaryFormat) {
 }
 
 TEST_F(FixCaptureTest, InboundAndOutboundDirectionBytesAreCorrect) {
-    const std::string inbound  = "8=FIX.4.2\x01" "35=D\x01" "10=001\x01";
-    const std::string outbound = "8=FIX.4.2\x01" "35=8\x01" "10=002\x01";
+    const std::string inbound = "8=FIX.4.2\x01"
+                                "35=D\x01"
+                                "10=001\x01";
+    const std::string outbound = "8=FIX.4.2\x01"
+                                 "35=8\x01"
+                                 "10=002\x01";
     const int64_t timestamp = 999000000000LL;
 
     {
         FixCapture capture(capture_file_, logger_.logger, 1000);
-        capture.capture(FixCapture::Direction::Inbound,
-                        reinterpret_cast<const uint8_t*>(inbound.data()),
-                        inbound.size(), timestamp);
-        capture.capture(FixCapture::Direction::Outbound,
-                        reinterpret_cast<const uint8_t*>(outbound.data()),
-                        outbound.size(), timestamp + 1);
+        capture.capture(FixCapture::Direction::Inbound, reinterpret_cast<const uint8_t*>(inbound.data()), inbound.size(), timestamp);
+        capture.capture(FixCapture::Direction::Outbound, reinterpret_cast<const uint8_t*>(outbound.data()), outbound.size(), timestamp + 1);
     }
 
     const auto records = read_all_records(capture_file_);
@@ -118,9 +118,7 @@ TEST_F(FixCaptureTest, MultipleRecordsWrittenInOrder) {
         FixCapture capture(capture_file_, logger_.logger, 1000);
         for (int i = 0; i < record_count; ++i) {
             const std::string data = "record_" + std::to_string(i);
-            capture.capture(FixCapture::Direction::Inbound,
-                            reinterpret_cast<const uint8_t*>(data.data()),
-                            data.size(),
+            capture.capture(FixCapture::Direction::Inbound, reinterpret_cast<const uint8_t*>(data.data()), data.size(),
                             static_cast<int64_t>(i) * 1'000'000'000LL);
         }
     }
@@ -130,28 +128,22 @@ TEST_F(FixCaptureTest, MultipleRecordsWrittenInOrder) {
     for (int i = 0; i < record_count; ++i) {
         const std::string expected = "record_" + std::to_string(i);
         ASSERT_EQ(records[i].bytes.size(), expected.size()) << "record " << i;
-        EXPECT_EQ(std::memcmp(records[i].bytes.data(), expected.data(), expected.size()), 0)
-            << "record " << i;
-        EXPECT_EQ(records[i].timestamp_ns, static_cast<int64_t>(i) * 1'000'000'000LL)
-            << "record " << i;
+        EXPECT_EQ(std::memcmp(records[i].bytes.data(), expected.data(), expected.size()), 0) << "record " << i;
+        EXPECT_EQ(records[i].timestamp_ns, static_cast<int64_t>(i) * 1'000'000'000LL) << "record " << i;
     }
 }
 
 TEST_F(FixCaptureTest, FileIsTruncatedWhenNewInstanceCreated) {
-    const std::string first  = "first_message";
+    const std::string first = "first_message";
     const std::string second = "second_message";
 
     {
         FixCapture capture(capture_file_, logger_.logger, 1000);
-        capture.capture(FixCapture::Direction::Inbound,
-                        reinterpret_cast<const uint8_t*>(first.data()),
-                        first.size(), 1LL);
+        capture.capture(FixCapture::Direction::Inbound, reinterpret_cast<const uint8_t*>(first.data()), first.size(), 1LL);
     }
     {
         FixCapture capture(capture_file_, logger_.logger, 1000);
-        capture.capture(FixCapture::Direction::Inbound,
-                        reinterpret_cast<const uint8_t*>(second.data()),
-                        second.size(), 2LL);
+        capture.capture(FixCapture::Direction::Inbound, reinterpret_cast<const uint8_t*>(second.data()), second.size(), 2LL);
     }
 
     const auto records = read_all_records(capture_file_);
@@ -161,9 +153,7 @@ TEST_F(FixCaptureTest, FileIsTruncatedWhenNewInstanceCreated) {
 }
 
 TEST_F(FixCaptureTest, EmptyFileWhenNothingCaptured) {
-    {
-        const FixCapture capture(capture_file_, logger_.logger, 1000);
-    }
+    { const FixCapture capture(capture_file_, logger_.logger, 1000); }
 
     const auto records = read_all_records(capture_file_);
     EXPECT_TRUE(records.empty());
@@ -182,9 +172,7 @@ TEST_F(FixCaptureTest, AllRecordsFlushedBeforeDestructorReturns) {
         FixCapture capture(capture_file_, logger_.logger, ring_bytes);
         for (int i = 0; i < record_count; ++i) {
             const std::string data = "msg_" + std::to_string(i);
-            capture.capture(FixCapture::Direction::Outbound,
-                            reinterpret_cast<const uint8_t*>(data.data()),
-                            data.size(), static_cast<int64_t>(i));
+            capture.capture(FixCapture::Direction::Outbound, reinterpret_cast<const uint8_t*>(data.data()), data.size(), static_cast<int64_t>(i));
         }
     }
 

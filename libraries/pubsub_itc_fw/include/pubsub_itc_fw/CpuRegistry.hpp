@@ -56,14 +56,14 @@ namespace pubsub_itc_fw {
  */
 class CpuRegistry {
   public:
+    /// Calls release_cpus() then unmaps and closes the shared file.
+    ~CpuRegistry();
+
     /**
      * @param[in] shm_path       Path to the shared registry file. Must not be empty.
      * @param[in] lock_file_path Path to the flock serialisation file. Must not be empty.
      */
     CpuRegistry(std::string shm_path, std::string lock_file_path);
-
-    /// Calls release_cpus() then unmaps and closes the shared file.
-    ~CpuRegistry();
 
     CpuRegistry(const CpuRegistry&) = delete;
     CpuRegistry& operator=(const CpuRegistry&) = delete;

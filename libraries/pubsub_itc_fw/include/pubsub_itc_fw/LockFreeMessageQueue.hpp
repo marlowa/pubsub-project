@@ -35,6 +35,10 @@ template <typename T> class LockFreeMessageQueue {
     static_assert(std::is_move_constructible_v<T>, "LockFreeMessageQueue requires a move-constructible element type.");
 
   public:
+    ~LockFreeMessageQueue() {
+        shutdown();
+    }
+
     LockFreeMessageQueue(const LockFreeMessageQueue&) = delete;
     LockFreeMessageQueue& operator=(const LockFreeMessageQueue&) = delete;
     LockFreeMessageQueue(LockFreeMessageQueue&&) = delete;
@@ -42,10 +46,6 @@ template <typename T> class LockFreeMessageQueue {
 
     LockFreeMessageQueue(const QueueConfiguration& queue_config, const AllocatorConfiguration& allocator_config)
         : queue_configuration_(queue_config), allocator_configuration_(allocator_config) {}
-
-    ~LockFreeMessageQueue() {
-        shutdown();
-    }
 
     void shutdown() {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -124,13 +124,13 @@ template <typename T> class LockFreeMessageQueue {
         alignas(T) std::byte data_storage_[sizeof(T)];
         bool has_data_{false};
 
-        Node() : next_(nullptr) {}
-
         ~Node() {
             if (has_data_) {
                 reinterpret_cast<T*>(data_storage_)->~T();
             }
         }
+
+        Node() : next_(nullptr) {}
 
         T& data() {
             return *reinterpret_cast<T*>(data_storage_);

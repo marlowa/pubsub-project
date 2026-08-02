@@ -64,8 +64,8 @@ class AuthenticationServiceConfigurationLoader {
      * @return Populated AuthenticationServiceConfiguration and initialised logger.
      * @throws pubsub_itc_fw::ConfigurationException on any error.
      */
-    static std::tuple<AuthenticationServiceConfiguration, std::unique_ptr<pubsub_itc_fw::QuillLogger>>
-    load_and_init_logging(const std::string& file_path, const std::string& log_file_path);
+    static std::tuple<AuthenticationServiceConfiguration, std::unique_ptr<pubsub_itc_fw::QuillLogger>> load_and_init_logging(const std::string& file_path,
+                                                                                                                             const std::string& log_file_path);
 };
 
 } // namespaces

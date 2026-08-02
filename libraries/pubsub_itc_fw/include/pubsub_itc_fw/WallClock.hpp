@@ -46,9 +46,7 @@ class WallClock {
 class SystemWallClock : public WallClock {
   public:
     [[nodiscard]] int64_t now_ns() const override {
-        return std::chrono::duration_cast<std::chrono::nanoseconds>(
-                   std::chrono::system_clock::now().time_since_epoch())
-            .count();
+        return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
     }
 };
 

@@ -248,6 +248,10 @@ ha_only = false
 # interfaces and you want to isolate traffic.
 
 [shared]
+# Metrics for the whole venue. One edit turns the scrape endpoints on or off
+# everywhere; each component still has its own listener host and port below.
+metrics_enabled     = false
+metrics_application = "pubsub"
 # false: CPU 0 is available for exclusive pinning on a properly isolated
 # production machine.  Set to true only if CPU 0 is not isolated on your
 # hardware.
@@ -258,10 +262,14 @@ reactor_cpu_pinning_reserve_cpu0   = false
 # not share a registry.
 
 [witness]
+metrics_listen_host = "0.0.0.0"
+metrics_listen_port = 9200
 network_listen_host = "0.0.0.0"
 network_listen_port = 11100
 
 [arbiter_primary]
+metrics_listen_host = "0.0.0.0"
+metrics_listen_port = 9201
 network_listen_host  = "0.0.0.0"
 network_listen_port  = 11200
 peer_listen_host     = "0.0.0.0"
@@ -272,6 +280,8 @@ witness_host         = "witness.exchange.internal"            # REPLACE
 witness_port         = 11100
 
 [arbiter_secondary]
+metrics_listen_host = "0.0.0.0"
+metrics_listen_port = 9202
 network_listen_host  = "0.0.0.0"
 network_listen_port  = 11201
 peer_listen_host     = "0.0.0.0"
@@ -282,16 +292,22 @@ witness_host         = "witness.exchange.internal"            # REPLACE
 witness_port         = 11100
 
 [auth_service_a]
+metrics_listen_host = "0.0.0.0"
+metrics_listen_port = 9203
 network_listen_host  = "0.0.0.0"
 network_listen_port  = 11070
 admin_listen_port    = 11072
 
 [auth_service_b]
+metrics_listen_host = "0.0.0.0"
+metrics_listen_port = 9204
 network_listen_host  = "0.0.0.0"
 network_listen_port  = 11071
 admin_listen_port    = 11073
 
 [matching_engine]
+metrics_listen_host = "0.0.0.0"
+metrics_listen_port = 9205
 network_listen_host           = "0.0.0.0"
 network_listen_port           = 11020
 sequencer_er_host             = "sequencer-primary.exchange.internal"    # REPLACE
@@ -300,6 +316,8 @@ sequencer_er_secondary_host   = "sequencer-secondary.exchange.internal"  # REPLA
 sequencer_er_secondary_port   = 11022
 
 [fix_order_gateway_a]
+metrics_listen_host = "0.0.0.0"
+metrics_listen_port = 9211
 gateway_instance_id        = 1
 cancel_on_disconnect_enabled          = true
 cancel_on_disconnect_grace_period      = "30s"
@@ -317,6 +335,8 @@ sequencer_secondary_host              = "sequencer-secondary.exchange.internal" 
 sequencer_secondary_port              = 11002
 
 [binary_order_gateway_a]
+metrics_listen_host = "0.0.0.0"
+metrics_listen_port = 9213
 gateway_instance_id        = 1
 cancel_on_disconnect_enabled          = true
 cancel_on_disconnect_grace_period      = "30s"
@@ -336,6 +356,8 @@ open_order_pool_objects_per_pool = 4096
 open_order_pool_initial_pools    = 1
 
 [sequencer_primary]
+metrics_listen_host = "0.0.0.0"
+metrics_listen_port = 9207
 network_listen_host        = "0.0.0.0"
 network_listen_port        = 11001
 network_er_listen_host     = "0.0.0.0"
@@ -371,6 +393,8 @@ wal_subscriber_listen_host = "0.0.0.0"
 wal_subscriber_listen_port = 11030
 
 [sequencer_secondary]
+metrics_listen_host = "0.0.0.0"
+metrics_listen_port = 9208
 network_listen_host        = "0.0.0.0"
 network_listen_port        = 11002
 network_er_listen_host     = "0.0.0.0"

@@ -18,8 +18,8 @@ namespace {
 
 void write_uint32_le(FILE* file, uint32_t value) {
     uint8_t buffer[4];
-    buffer[0] = static_cast<uint8_t>(value         & 0xFFU);
-    buffer[1] = static_cast<uint8_t>((value >>  8) & 0xFFU);
+    buffer[0] = static_cast<uint8_t>(value & 0xFFU);
+    buffer[1] = static_cast<uint8_t>((value >> 8) & 0xFFU);
     buffer[2] = static_cast<uint8_t>((value >> 16) & 0xFFU);
     buffer[3] = static_cast<uint8_t>((value >> 24) & 0xFFU);
     std::fwrite(buffer, 1, sizeof(buffer), file);
@@ -28,8 +28,8 @@ void write_uint32_le(FILE* file, uint32_t value) {
 void write_int64_le(FILE* file, int64_t value) {
     uint8_t buffer[8];
     const auto u = static_cast<uint64_t>(value);
-    buffer[0] = static_cast<uint8_t>(u         & 0xFFU);
-    buffer[1] = static_cast<uint8_t>((u >>  8) & 0xFFU);
+    buffer[0] = static_cast<uint8_t>(u & 0xFFU);
+    buffer[1] = static_cast<uint8_t>((u >> 8) & 0xFFU);
     buffer[2] = static_cast<uint8_t>((u >> 16) & 0xFFU);
     buffer[3] = static_cast<uint8_t>((u >> 24) & 0xFFU);
     buffer[4] = static_cast<uint8_t>((u >> 32) & 0xFFU);
@@ -41,15 +41,9 @@ void write_int64_le(FILE* file, int64_t value) {
 
 } // un-named namespace
 
-FixCapture::FixCapture(const std::string& file_path, pubsub_itc_fw::QuillLogger& logger,
-                       size_t ring_bytes)
-    : file_path_(file_path)
-    , logger_(logger)
-    , ring_(ring_bytes, 0)
-    , capacity_(ring_bytes) {
-    PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info,
-               "FixCapture: capture started, writing to {} (ring {} MB)",
-               file_path_, ring_bytes / (1024 * 1024));
+FixCapture::FixCapture(const std::string& file_path, pubsub_itc_fw::QuillLogger& logger, size_t ring_bytes)
+    : file_path_(file_path), logger_(logger), ring_(ring_bytes, 0), capacity_(ring_bytes) {
+    PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info, "FixCapture: capture started, writing to {} (ring {} MB)", file_path_, ring_bytes / (1024 * 1024));
     writer_thread_.start([this]() { writer_loop(); });
 }
 
@@ -58,15 +52,14 @@ FixCapture::~FixCapture() {
     writer_thread_.join();
 }
 
-void FixCapture::capture(Direction direction, const uint8_t* data, size_t size,
-                         int64_t timestamp_ns) {
+void FixCapture::capture(Direction direction, const uint8_t* data, size_t size, int64_t timestamp_ns) {
     // Total ring space needed: header + payload, padded to 4-byte alignment.
     // Plus header_bytes for a possible sentinel if the record doesn't fit
     // before the end of the ring (worst case: write a sentinel then wrap).
     const size_t needed = slot_bytes(size) + header_bytes;
 
     const size_t write = write_offset_.load(std::memory_order_relaxed);
-    const size_t read  = read_offset_.load(std::memory_order_acquire);
+    const size_t read = read_offset_.load(std::memory_order_acquire);
 
     if (write - read + needed > capacity_) {
         PUBSUB_LOG_STR(logger_, pubsub_itc_fw::FwLogLevel::Warning, "FixCapture: ring buffer full -- dropping record");
@@ -92,24 +85,25 @@ void FixCapture::capture(Direction direction, const uint8_t* data, size_t size,
     uint8_t* slot = ring_.data() + pos;
 
     const auto payload_size = static_cast<uint32_t>(size);
-    std::memcpy(slot,      &payload_size,  4);
-    std::memcpy(slot +  4, &timestamp_ns,  8);
+    std::memcpy(slot, &payload_size, 4);
+    std::memcpy(slot + 4, &timestamp_ns, 8);
     slot[12] = static_cast<uint8_t>(direction);
     // slot[13..15]: padding (already zeroed from construction)
 
     std::memcpy(slot + header_bytes, data, size);
 
-    write_offset_.store(write_offset_.load(std::memory_order_relaxed) + slot_bytes(size),
-                        std::memory_order_release);
+    write_offset_.store(write_offset_.load(std::memory_order_relaxed) + slot_bytes(size), std::memory_order_release);
 }
 
 void FixCapture::writer_loop() {
-    auto file_deleter = [](FILE* f) { if (f != nullptr) { std::fclose(f); } };
-    std::unique_ptr<FILE, decltype(file_deleter)> file(
-        std::fopen(file_path_.c_str(), "wb"), file_deleter);
+    auto file_deleter = [](FILE* f) {
+        if (f != nullptr) {
+            std::fclose(f);
+        }
+    };
+    std::unique_ptr<FILE, decltype(file_deleter)> file(std::fopen(file_path_.c_str(), "wb"), file_deleter);
     if (!file) {
-        PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Error,
-                   "FixCapture: failed to open capture file: {}", file_path_);
+        PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Error, "FixCapture: failed to open capture file: {}", file_path_);
         return;
     }
 
@@ -118,7 +112,7 @@ void FixCapture::writer_loop() {
     bool dirty = false;
 
     auto drain = [&]() {
-        size_t read        = read_offset_.load(std::memory_order_relaxed);
+        size_t read = read_offset_.load(std::memory_order_relaxed);
         const size_t write = write_offset_.load(std::memory_order_acquire);
 
         while (read < write) {
@@ -139,7 +133,7 @@ void FixCapture::writer_loop() {
             int64_t timestamp_ns{};
             std::memcpy(&timestamp_ns, slot + 4, 8);
             const uint8_t direction = slot[12];
-            const uint8_t* payload  = slot + header_bytes;
+            const uint8_t* payload = slot + header_bytes;
 
             write_uint32_le(file.get(), payload_size);
             write_int64_le(file.get(), timestamp_ns);
@@ -171,8 +165,7 @@ void FixCapture::writer_loop() {
         std::this_thread::sleep_for(std::chrono::milliseconds{1});
     }
 
-    PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info,
-               "FixCapture: capture file closed: {}", file_path_);
+    PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info, "FixCapture: capture file closed: {}", file_path_);
 }
 
 } // namespaces

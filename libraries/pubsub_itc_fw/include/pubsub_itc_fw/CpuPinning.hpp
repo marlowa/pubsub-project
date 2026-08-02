@@ -38,24 +38,27 @@ using CpuId = WrappedInteger<struct CpuIdTag, int>;
  *   absent => Unknown (treat as P-core; safe fallback for uniform architectures)
  */
 enum class CoreType {
-    P_core,   ///< Performance core
-    E_core,   ///< Efficiency core -- latency-sensitive threads should avoid these
-    Unknown   ///< Not detectable; treated as P-core for scheduling purposes
+    P_core, ///< Performance core
+    E_core, ///< Efficiency core -- latency-sensitive threads should avoid these
+    Unknown ///< Not detectable; treated as P-core for scheduling purposes
 };
 
 /// Returns a short human-readable label for logging.
 inline const char* core_type_name(CoreType t) {
     switch (t) {
-        case CoreType::P_core: return "P-core";
-        case CoreType::E_core: return "E-core";
-        default:               return "unknown-core-type";
+        case CoreType::P_core:
+            return "P-core";
+        case CoreType::E_core:
+            return "E-core";
+        default:
+            return "unknown-core-type";
     }
 }
 
 /// A CPU with its associated NUMA node and core type, as returned by discovery functions.
 struct CpuAssignment {
-    CpuId    cpu_id;
-    int      numa_node_id{-1};
+    CpuId cpu_id;
+    int numa_node_id{-1};
     CoreType core_type{CoreType::Unknown};
 };
 
@@ -105,8 +108,7 @@ namespace detail {
  */
 inline CoreType read_core_type(CpuId cpu_id, int max_cppc_perf = 0) {
     // Method 1: cpu_capacity (EAS)
-    const std::filesystem::path cap_path{
-        "/sys/devices/system/cpu/cpu" + std::to_string(cpu_id.get_value()) + "/cpu_capacity"};
+    const std::filesystem::path cap_path{"/sys/devices/system/cpu/cpu" + std::to_string(cpu_id.get_value()) + "/cpu_capacity"};
     if (std::filesystem::exists(cap_path)) {
         std::ifstream f(cap_path);
         int capacity = 0;
@@ -118,8 +120,7 @@ inline CoreType read_core_type(CpuId cpu_id, int max_cppc_perf = 0) {
 
     // Method 2: acpi_cppc/highest_perf
     if (max_cppc_perf > 0) {
-        const std::filesystem::path cppc_path{
-            "/sys/devices/system/cpu/cpu" + std::to_string(cpu_id.get_value()) + "/acpi_cppc/highest_perf"};
+        const std::filesystem::path cppc_path{"/sys/devices/system/cpu/cpu" + std::to_string(cpu_id.get_value()) + "/acpi_cppc/highest_perf"};
         if (std::filesystem::exists(cppc_path)) {
             std::ifstream f(cppc_path);
             int perf = 0;
@@ -153,12 +154,19 @@ inline int read_max_cppc_perf() {
         }
         bool all_digits = true;
         for (size_t i = 3; i < name.size(); ++i) {
-            if (name[i] < '0' || name[i] > '9') { all_digits = false; break; }
+            if (name[i] < '0' || name[i] > '9') {
+                all_digits = false;
+                break;
+            }
         }
-        if (!all_digits) { continue; }
+        if (!all_digits) {
+            continue;
+        }
 
         const std::filesystem::path cppc_path = entry.path() / "acpi_cppc" / "highest_perf";
-        if (!std::filesystem::exists(cppc_path)) { continue; }
+        if (!std::filesystem::exists(cppc_path)) {
+            continue;
+        }
         std::ifstream f(cppc_path);
         int perf = 0;
         if (f >> perf && perf > max_perf) {
@@ -271,10 +279,7 @@ inline AvailableCpuVector get_available_cpu_ids(bool reserve_cpu0, const SharedC
 
     // Sort numerically (node0, node1, ..., node10, ...) not lexicographically,
     // which would wrongly order node10 before node2.
-    std::sort(node_dirs.begin(), node_dirs.end(),
-              [&node_number](const auto& a, const auto& b) {
-                  return node_number(a) < node_number(b);
-              });
+    std::sort(node_dirs.begin(), node_dirs.end(), [&node_number](const auto& a, const auto& b) { return node_number(a) < node_number(b); });
 
     for (const auto& node_dir : node_dirs) {
         const int numa_node = node_number(node_dir);
@@ -323,15 +328,14 @@ inline AvailableCpuVector get_available_cpu_ids(bool reserve_cpu0, const SharedC
 
     // Sort: P-cores (and Unknown) before E-cores; within each tier, lower NUMA
     // node first.  stable_sort preserves the existing NUMA order among ties.
-    std::stable_sort(candidates.begin(), candidates.end(),
-                     [](const CpuAssignment& a, const CpuAssignment& b) {
-                         const int a_rank = (a.core_type == CoreType::E_core) ? 1 : 0;
-                         const int b_rank = (b.core_type == CoreType::E_core) ? 1 : 0;
-                         if (a_rank != b_rank) {
-                             return a_rank < b_rank;
-                         }
-                         return a.numa_node_id < b.numa_node_id;
-                     });
+    std::stable_sort(candidates.begin(), candidates.end(), [](const CpuAssignment& a, const CpuAssignment& b) {
+        const int a_rank = (a.core_type == CoreType::E_core) ? 1 : 0;
+        const int b_rank = (b.core_type == CoreType::E_core) ? 1 : 0;
+        if (a_rank != b_rank) {
+            return a_rank < b_rank;
+        }
+        return a.numa_node_id < b.numa_node_id;
+    });
 
     return candidates;
 }

@@ -265,6 +265,18 @@ class TlsOutboundCertDirectory {
     std::string second_ca_cert_path;
     bool valid{false};
 
+    ~TlsOutboundCertDirectory() {
+        ::unlink(ca_cert_path.c_str());
+        ::unlink(server_cert_path.c_str());
+        ::unlink(server_key_path.c_str());
+        ::unlink(client_cert_path.c_str());
+        ::unlink(client_key_path.c_str());
+        ::unlink(second_ca_cert_path.c_str());
+        if (!directory_.empty()) {
+            ::rmdir(directory_.c_str());
+        }
+    }
+
     TlsOutboundCertDirectory() {
         char tmp_dir[] = "/tmp/tls_outbound_test_XXXXXX";
         char* dir = mkdtemp(tmp_dir);
@@ -324,18 +336,6 @@ class TlsOutboundCertDirectory {
         }
     }
 
-    ~TlsOutboundCertDirectory() {
-        ::unlink(ca_cert_path.c_str());
-        ::unlink(server_cert_path.c_str());
-        ::unlink(server_key_path.c_str());
-        ::unlink(client_cert_path.c_str());
-        ::unlink(client_key_path.c_str());
-        ::unlink(second_ca_cert_path.c_str());
-        if (!directory_.empty()) {
-            ::rmdir(directory_.c_str());
-        }
-    }
-
     TlsOutboundCertDirectory(const TlsOutboundCertDirectory&) = delete;
     TlsOutboundCertDirectory& operator=(const TlsOutboundCertDirectory&) = delete;
 
@@ -355,6 +355,16 @@ class TlsOutboundCertDirectory {
  */
 class BlockingTlsServer {
   public:
+    ~BlockingTlsServer() {
+        close_client();
+        if (listen_fd_ != -1) {
+            ::close(listen_fd_);
+        }
+        if (ctx_) {
+            SSL_CTX_free(ctx_);
+        }
+    }
+
     /**
      * @param[in] server_cert_path        PEM server certificate.
      * @param[in] server_key_path         PEM server private key.
@@ -404,16 +414,6 @@ class BlockingTlsServer {
         }
 
         ready_ = (port_ != 0);
-    }
-
-    ~BlockingTlsServer() {
-        close_client();
-        if (listen_fd_ != -1) {
-            ::close(listen_fd_);
-        }
-        if (ctx_) {
-            SSL_CTX_free(ctx_);
-        }
     }
 
     BlockingTlsServer(const BlockingTlsServer&) = delete;

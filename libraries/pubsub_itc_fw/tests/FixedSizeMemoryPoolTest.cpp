@@ -30,11 +30,12 @@ struct TestObject {
     static std::atomic<int> ctor_count_;
     static std::atomic<int> dtor_count_;
 
-    TestObject() {
-        ctor_count_.fetch_add(1, std::memory_order_relaxed);
-    }
     ~TestObject() {
         dtor_count_.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    TestObject() {
+        ctor_count_.fetch_add(1, std::memory_order_relaxed);
     }
 
     static void reset() {

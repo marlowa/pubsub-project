@@ -101,8 +101,9 @@ namespace pubsub_itc_fw {
  */
 class TomlConfiguration {
   public:
-    TomlConfiguration();
     ~TomlConfiguration();
+
+    TomlConfiguration();
 
     TomlConfiguration(const TomlConfiguration&) = delete;
     TomlConfiguration& operator=(const TomlConfiguration&) = delete;

@@ -109,8 +109,9 @@ class Wal {
      */
     using ReplayCallback = std::function<void(int64_t seq_no, int16_t pdu_id, const uint8_t* payload, size_t payload_size, int64_t wall_time_ns)>;
 
-    Wal() = default;
     ~Wal() = default;
+
+    Wal() = default;
 
     Wal(const Wal&) = delete;
     Wal& operator=(const Wal&) = delete;

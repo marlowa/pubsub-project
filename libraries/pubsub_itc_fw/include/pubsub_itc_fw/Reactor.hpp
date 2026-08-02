@@ -20,15 +20,18 @@
 
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
+#include <pubsub_itc_fw/CpuPinning.hpp>
 #include <pubsub_itc_fw/EventHandler.hpp>
 #include <pubsub_itc_fw/EventType.hpp>
 #include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
+#include <pubsub_itc_fw/IdleTimeoutFlag.hpp>
 #include <pubsub_itc_fw/InboundConnectionManager.hpp>
 #include <pubsub_itc_fw/InboundListener.hpp>
 #include <pubsub_itc_fw/LockFreeMessageQueue.hpp>
 #include <pubsub_itc_fw/NetworkEndpointConfiguration.hpp>
 #include <pubsub_itc_fw/OutboundConnectionManager.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
+#include <pubsub_itc_fw/PrometheusEndpoint.hpp>
 #include <pubsub_itc_fw/ProtocolType.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
@@ -36,7 +39,6 @@
 #include <pubsub_itc_fw/ReactorControlCommand.hpp>
 #include <pubsub_itc_fw/ReactorLifecycleState.hpp>
 #include <pubsub_itc_fw/ServiceRegistry.hpp>
-#include <pubsub_itc_fw/IdleTimeoutFlag.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 #include <pubsub_itc_fw/ThreadLifecycleState.hpp>
 #include <pubsub_itc_fw/ThreadLookupInterface.hpp>
@@ -195,8 +197,8 @@ class Reactor : public ThreadLookupInterface {
      * @param[in] tls_config          Certificate and key paths.
      * @pre Must be called before run(). Violating this throws PreconditionAssertion.
      */
-    void register_inbound_tls_listener(NetworkEndpointConfiguration address, ThreadID target_thread_id,
-                                       int64_t raw_buffer_capacity, TlsListenerConfiguration tls_config);
+    void register_inbound_tls_listener(NetworkEndpointConfiguration address, ThreadID target_thread_id, int64_t raw_buffer_capacity,
+                                       TlsListenerConfiguration tls_config);
 
     /**
      * @brief Returns the name of a thread given its ID.
@@ -263,6 +265,20 @@ class Reactor : public ThreadLookupInterface {
 
     QuillLogger& get_logger() {
         return logger_;
+    }
+
+    /**
+     * @brief This process's metrics.
+     *
+     * Applications register their metrics through this during startup and keep the
+     * returned handles. The Reactor owns it because every such handle points into the
+     * endpoint's registry and must not outlive it.
+     *
+     * Usable before run(): registration works whether or not the listener has started, and
+     * whether or not metrics are enabled at all. See docs/design/metrics.md.
+     */
+    PrometheusEndpoint& metrics() {
+        return metrics_endpoint_;
     }
 
     /**
@@ -380,6 +396,10 @@ class Reactor : public ThreadLookupInterface {
      *         the background tier and this returns true.
      */
     [[nodiscard]] bool pin_registered_threads();
+
+    // Starts the scrape listener, or logs and does nothing when metrics are disabled.
+    // Called from run() after the CPU layout has been applied; see the note there.
+    [[nodiscard]] bool start_metrics_endpoint();
 
     /**
      * @brief Check the component's declared hot-path thread count against reality.
@@ -543,6 +563,24 @@ class Reactor : public ThreadLookupInterface {
      * Destructor releases this process's registry entries on shutdown.
      */
     std::unique_ptr<CpuRegistry> cpu_registry_;
+
+    /**
+     * The background cores from the CPU layout, captured by pin_registered_threads().
+     *
+     * Needed by start_metrics_endpoint(): the scrape listener's threads inherit the
+     * affinity of whichever thread creates them, and by that point this one is pinned to a
+     * hot-path core. Empty when CPU pinning is disabled, in which case nothing is masked.
+     */
+    std::vector<CpuId> background_cores_;
+
+    /**
+     * This process's metrics and, once run() starts it, the endpoint Prometheus scrapes.
+     *
+     * Declared after cpu_registry_ so it is destroyed before it, and constructed from
+     * config_ so it exists for the whole life of the Reactor -- application threads
+     * register metrics during startup and hold the handles until shutdown.
+     */
+    PrometheusEndpoint metrics_endpoint_;
 };
 
 } // namespaces

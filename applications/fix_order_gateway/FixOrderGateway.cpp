@@ -34,6 +34,7 @@ FixOrderGateway::FixOrderGateway(const FixOrderGatewayConfiguration& config, std
     reactor_configuration_.cpu_registry_lock_file = config_.cpu_registry_lock_file;
     reactor_configuration_.cpu_layout_file = config_.cpu_layout_file;
     reactor_configuration_.cpu_layout_component = config_.cpu_layout_component;
+    reactor_configuration_.metrics_configuration = config_.metrics_configuration;
     reactor_configuration_.connect_retry_warning_interval_ = config_.connect_retry_warning_interval;
     reactor_configuration_.command_allocator_configuration_.pool_name = "FixOrderGatewayCommandPool";
     reactor_configuration_.command_allocator_configuration_.objects_per_pool = config_.command_queue_pool_objects_per_slab;

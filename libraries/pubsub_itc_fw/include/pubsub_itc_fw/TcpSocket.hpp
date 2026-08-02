@@ -281,7 +281,6 @@ class TcpSocket : public ByteStreamInterface {
      * effectively hiding internal data members and dependencies from the public interface.
      */
     std::unique_ptr<TcpSocketImpl> p_impl_;
-
 };
 
 } // namespaces

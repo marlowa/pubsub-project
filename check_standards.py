@@ -770,6 +770,58 @@ def _preceding_identifier(text: str, index: int) -> str:
         j -= 1
     return text[j + 1:end]
 
+def check_destructor_before_constructors(path: Path, lines: list[str], stripped: list[str]) -> list[Violation]:
+    """Coding rule: "dtor before ctors".
+
+    Where a class declares both a destructor and at least one constructor, the destructor
+    comes first. The rule exists so a reader learns how an object is cleaned up before
+    wading through however many ways it can be built, and so the ordering is one thing
+    rather than a per-author preference.
+
+    Only the declaration order within one class body is checked. Out-of-line definitions in
+    a .cpp are not ordered by this rule -- there the destructor is often defaulted next to
+    whatever forced it out of line.
+
+    Deleted and defaulted constructors count: they are still constructor declarations, and
+    the point is that the destructor heads the group.
+    """
+    stripped_text = ''.join(stripped)
+    type_names = _constructible_type_names(stripped_text)
+    if not type_names:
+        return []
+
+    line_starts = []
+    offset = 0
+    for line in stripped:
+        line_starts.append(offset)
+        offset += len(line)
+
+    violations = []
+    for type_name in sorted(type_names):
+        escaped = re.escape(type_name)
+        # A constructor declaration inside the class body: the type name, optional
+        # specifiers, then an open paren. Excludes "~Name(" by requiring no leading tilde.
+        ctor_re = re.compile(r'(?m)^[ \t]*(?:(?:explicit|constexpr|consteval|inline)\s+)*(?<![~\w])' + escaped + r'\s*\(')
+        destructor_re = re.compile(r'(?m)^[ \t]*(?:(?:virtual|constexpr|inline)\s+)*~\s*' + escaped + r'\s*\(')
+
+        destructor = destructor_re.search(stripped_text)
+        if destructor is None:
+            continue
+
+        first_ctor = ctor_re.search(stripped_text)
+        if first_ctor is None or first_ctor.start() > destructor.start():
+            continue
+
+        # An out-of-line definition writes "Name::Name(", which the constructor pattern
+        # above would not match because of the "::". Nothing more to exclude here.
+        line_number = bisect.bisect_right(line_starts, destructor.start())
+        constructor_line = bisect.bisect_right(line_starts, first_ctor.start())
+        violations.append(Violation(path, line_number,
+                                    f"destructor of '{type_name}' is declared after its constructor on line "
+                                    f"{constructor_line}; the coding rules require the destructor first"))
+    return violations
+
+
 def check_bool_literal_argument(path: Path, lines: list[str], stripped: list[str]) -> list[Violation]:
     if _BOOL_LITERAL_EXEMPT_DIRS & set(path.parts):
         return []
@@ -942,6 +994,7 @@ _CHECKS = [
     check_banner_dividers,
     check_include_order,
     check_explicit_single_arg_ctor,
+    check_destructor_before_constructors,
     check_bool_literal_argument,
     check_fixed_encode_buffer,
     check_printf_family,

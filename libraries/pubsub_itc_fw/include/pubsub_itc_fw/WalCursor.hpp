@@ -33,8 +33,9 @@ namespace pubsub_itc_fw {
  */
 class WalCursor {
   public:
-    WalCursor() = default;
     ~WalCursor();
+
+    WalCursor() = default;
 
     WalCursor(const WalCursor&) = delete;
     WalCursor& operator=(const WalCursor&) = delete;

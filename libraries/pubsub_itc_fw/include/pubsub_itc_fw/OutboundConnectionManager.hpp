@@ -11,11 +11,11 @@
 #include <unordered_set>
 
 #include <pubsub_itc_fw/ConnectionID.hpp>
+#include <pubsub_itc_fw/DeliverLostEventFlag.hpp>
 #include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
 #include <pubsub_itc_fw/OutboundConnection.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/ReactorConfiguration.hpp>
-#include <pubsub_itc_fw/DeliverLostEventFlag.hpp>
 #include <pubsub_itc_fw/ReactorControlCommand.hpp>
 #include <pubsub_itc_fw/ServiceRegistry.hpp>
 #include <pubsub_itc_fw/ThreadLookupInterface.hpp>

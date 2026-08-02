@@ -26,7 +26,7 @@ namespace pubsub_itc_fw {
  * thread. TlsContext itself must not be modified after construction.
  */
 class TlsContext {
-public:
+  public:
     ~TlsContext();
 
     TlsContext(const TlsContext&) = delete;
@@ -45,8 +45,7 @@ public:
      * @return {context, ""} on success, {nullptr, error_description} on failure.
      */
     [[nodiscard]] static std::tuple<std::unique_ptr<TlsContext>, std::string>
-    create_server(const std::string& certificate_path, const std::string& private_key_path,
-                  const std::string& ca_path, bool require_client_certificate);
+    create_server(const std::string& certificate_path, const std::string& private_key_path, const std::string& ca_path, bool require_client_certificate);
 
     /**
      * @brief Creates a client-side TlsContext.
@@ -61,9 +60,8 @@ public:
      *
      * @return {context, ""} on success, {nullptr, error_description} on failure.
      */
-    [[nodiscard]] static std::tuple<std::unique_ptr<TlsContext>, std::string>
-    create_client(const std::string& ca_path, const std::string& certificate_path,
-                  const std::string& private_key_path);
+    [[nodiscard]] static std::tuple<std::unique_ptr<TlsContext>, std::string> create_client(const std::string& ca_path, const std::string& certificate_path,
+                                                                                            const std::string& private_key_path);
 
     /**
      * @brief Returns the underlying SSL_CTX pointer.
@@ -75,7 +73,7 @@ public:
         return context_;
     }
 
-private:
+  private:
     explicit TlsContext(SSL_CTX* context);
 
     SSL_CTX* context_{nullptr};

@@ -64,12 +64,12 @@ struct TestObject {
     static std::atomic<int> constructor_count_;
     static std::atomic<int> destructor_count_;
 
-    TestObject() {
-        constructor_count_++;
-    }
-
     ~TestObject() {
         destructor_count_++;
+    }
+
+    TestObject() {
+        constructor_count_++;
     }
 
     // Reset static counters before each test case

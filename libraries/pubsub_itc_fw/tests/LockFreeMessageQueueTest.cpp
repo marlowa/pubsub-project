@@ -1265,6 +1265,12 @@ struct TestOrder {
 // internal queues and external descriptor events.
 class MockReactor {
   public:
+    ~MockReactor() {
+        close(epoll_fd_);
+        close(pipe_fds_[0]);
+        close(pipe_fds_[1]);
+    }
+
     MockReactor() {
         epoll_fd_ = epoll_create1(0);
         // Create a dummy pipe just so epoll has a valid descriptor to wait on
@@ -1276,12 +1282,6 @@ class MockReactor {
             // Make read non-blocking
             fcntl(pipe_fds_[0], F_SETFL, O_NONBLOCK);
         }
-    }
-
-    ~MockReactor() {
-        close(epoll_fd_);
-        close(pipe_fds_[0]);
-        close(pipe_fds_[1]);
     }
 
     // Simulates one tick of your framework's dispatch loop

@@ -13,6 +13,10 @@ namespace pubsub_itc_fw {
 
 class FileLock {
   public:
+    ~FileLock() {
+        release();
+    }
+
     explicit FileLock(const std::string& path) : file_path_(path) {
         fd_ = ::open(file_path_.c_str(), O_CREAT | O_RDWR, 0644);
         if (fd_ < 0) {
@@ -40,10 +44,6 @@ class FileLock {
             other.fd_ = -1;
         }
         return *this;
-    }
-
-    ~FileLock() {
-        release();
     }
 
   private:

@@ -6,6 +6,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <sched.h>
 #include <utility>
 #include <vector>
 
@@ -110,7 +111,8 @@ Reactor::Reactor(const ReactorConfiguration& reactor_configuration, const Servic
     , signal_fd_(create_signal_fd())
     , inbound_slab_allocator_(reactor_configuration.inbound_slab_size)
     , inbound_manager_(epoll_fd_, config_, inbound_slab_allocator_, *this, logger_)
-    , outbound_manager_(epoll_fd_, config_, inbound_slab_allocator_, service_registry_, *this, logger_) {
+    , outbound_manager_(epoll_fd_, config_, inbound_slab_allocator_, service_registry_, *this, logger_)
+    , metrics_endpoint_(reactor_configuration.metrics_configuration) {
     wake_fd_ = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
     if (wake_fd_ == -1) {
         throw PubSubItcException("eventfd for wake_fd failed in Reactor constructor");
@@ -502,6 +504,13 @@ bool Reactor::initialize_threads() {
         PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "CPU pinning disabled -- threads will run on any available core");
     }
 
+    // After the CPU layout, because start_metrics_endpoint() needs the background core list
+    // that pinning computes. It does NOT rely on inheritance to place the scrape threads --
+    // see the comment there for why that does not work.
+    if (!start_metrics_endpoint()) {
+        return false;
+    }
+
     broadcast_reactor_event(EventType::Initial);
 
     if (!wait_for_all_threads([](const ApplicationThread& t) { return t.get_lifecycle_state().as_tag() == ThreadLifecycleState::InitialProcessed; },
@@ -547,6 +556,64 @@ std::tuple<bool, std::string> Reactor::verify_hot_path_thread_count(size_t alloc
     return {true, ""};
 }
 
+bool Reactor::start_metrics_endpoint() {
+    if (!metrics_endpoint_.enabled()) {
+        PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "Metrics disabled -- no scrape endpoint, and every registered metric is a no-op");
+        return true;
+    }
+
+    // The scrape listener's threads inherit the affinity of the thread that creates them,
+    // and this one has just been pinned to a hot-path core by pin_registered_threads(). So
+    // creating the listener here without further action puts civetweb's threads on a core
+    // reserved for latency-sensitive work -- measured, not assumed: before this masking was
+    // added, all three civetweb threads of fix_order_gateway_a shared core 3 with its
+    // reactor thread.
+    //
+    // Ordering alone cannot fix it. The process mask is set to the background cores early
+    // in pinning, but the calling thread is then pinned to its own hot core, and it is the
+    // calling thread's mask that is inherited. So the mask is widened to the background
+    // cores for exactly as long as it takes to create the listener, then restored.
+    cpu_set_t previous_affinity;
+    CPU_ZERO(&previous_affinity);
+    const bool saved_affinity = !background_cores_.empty() && sched_getaffinity(0, sizeof(previous_affinity), &previous_affinity) == 0;
+    if (saved_affinity) {
+        cpu_set_t background_mask;
+        CPU_ZERO(&background_mask);
+        for (const CpuId core : background_cores_) {
+            CPU_SET(static_cast<int>(core.get_value()), &background_mask);
+        }
+        if (sched_setaffinity(0, sizeof(background_mask), &background_mask) != 0) {
+            PUBSUB_LOG_STR(logger_, FwLogLevel::Warning,
+                           "Reactor: could not widen this thread's affinity before starting the metrics listener; "
+                           "its threads may run on hot-path cores");
+        }
+    }
+
+    try {
+        metrics_endpoint_.start();
+    } catch (const std::exception& exception) {
+        PUBSUB_LOG(logger_, FwLogLevel::Error, "Reactor: could not start the metrics endpoint: {}", exception.what());
+        if (saved_affinity) {
+            (void)sched_setaffinity(0, sizeof(previous_affinity), &previous_affinity);
+        }
+        return false;
+    }
+
+    // Back to this thread's own core. Restored even though the listener threads already
+    // exist, because this thread is a hot-path thread and must not be left free to roam.
+    if (saved_affinity && sched_setaffinity(0, sizeof(previous_affinity), &previous_affinity) != 0) {
+        PUBSUB_LOG_STR(logger_, FwLogLevel::Error, "Reactor: could not restore this thread's CPU affinity after starting the metrics listener");
+        return false;
+    }
+
+    // The configured port may be 0, meaning the operating system chose one, so the bound
+    // port is logged rather than the configured value. With a scrape endpoint per process
+    // this is the quickest way for an operator to find the right one.
+    PUBSUB_LOG(logger_, FwLogLevel::Info, "Metrics endpoint listening on {}:{}", config_.metrics_configuration.listen_endpoint.host,
+               metrics_endpoint_.listening_port());
+    return true;
+}
+
 bool Reactor::pin_registered_threads() {
     // Silently carrying on unpinned was how a whole test harness ran for weeks
     // without anyone noticing pinning had stopped being configured.
@@ -559,6 +626,9 @@ bool Reactor::pin_registered_threads() {
 
     CpuLayout layout;
     const auto [loaded, load_error] = layout.load(config_.cpu_layout_file, config_.cpu_layout_component);
+    // Kept for start_metrics_endpoint(), which has to put the scrape threads somewhere and
+    // cannot re-derive this without reloading the layout file.
+    background_cores_ = layout.background_cores();
     if (!loaded) {
         PUBSUB_LOG(logger_, FwLogLevel::Error, "CPU pinning: {}", load_error);
         return false;

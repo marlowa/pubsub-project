@@ -13,15 +13,15 @@
 #include <vector>
 
 #include <pubsub_itc_fw/ConnectionID.hpp>
+#include <pubsub_itc_fw/DeliverLostEventFlag.hpp>
 #include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
+#include <pubsub_itc_fw/IdleTimeoutFlag.hpp>
 #include <pubsub_itc_fw/InboundConnection.hpp>
 #include <pubsub_itc_fw/InboundListener.hpp>
 #include <pubsub_itc_fw/NetworkEndpointConfiguration.hpp>
 #include <pubsub_itc_fw/ProtocolType.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/ReactorConfiguration.hpp>
-#include <pubsub_itc_fw/DeliverLostEventFlag.hpp>
-#include <pubsub_itc_fw/IdleTimeoutFlag.hpp>
 #include <pubsub_itc_fw/ReactorControlCommand.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 #include <pubsub_itc_fw/ThreadLookupInterface.hpp>
@@ -110,8 +110,8 @@ class InboundConnectionManager {
      * @param[in] raw_buffer_capacity Minimum MirroredBuffer capacity in bytes.
      * @param[in] tls_config          Certificate and key paths for the TLS context.
      */
-    void register_inbound_tls_listener(NetworkEndpointConfiguration address, ThreadID target_thread_id,
-                                       int64_t raw_buffer_capacity, TlsListenerConfiguration tls_config);
+    void register_inbound_tls_listener(NetworkEndpointConfiguration address, ThreadID target_thread_id, int64_t raw_buffer_capacity,
+                                       TlsListenerConfiguration tls_config);
 
     /**
      * @brief Binds, listens, and registers all staged listeners with epoll.

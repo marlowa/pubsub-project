@@ -8,6 +8,8 @@ add_executable(pubsub_itc_fw_tests
     CpuRegistryTest.cpp
     ExternalWalSubscriberRegistryTest.cpp
     Crc32Test.cpp
+    MetricKeyTest.cpp
+    PrometheusEndpointTest.cpp
     EmptySlabQueueTest.cpp
     EventMessageTest.cpp
     ExpandablePoolAllocatorTest.cpp
