@@ -117,15 +117,15 @@ MetricKey PrometheusEndpoint::key_for(const char* scope, const char* metric_name
     return MetricKey::compose(configuration_.application, configuration_.component, scope != nullptr ? scope : "", metric_name != nullptr ? metric_name : "");
 }
 
-CounterInterface& PrometheusEndpoint::register_counter(const char* scope, const char* metric_name, const char* help) {
+CounterHandle PrometheusEndpoint::register_counter(const char* scope, const char* metric_name, const char* help) {
     return register_counter(key_for(scope, metric_name), help);
 }
 
-GaugeInterface& PrometheusEndpoint::register_gauge(const char* scope, const char* metric_name, const char* help) {
+GaugeHandle PrometheusEndpoint::register_gauge(const char* scope, const char* metric_name, const char* help) {
     return register_gauge(key_for(scope, metric_name), help);
 }
 
-HistogramInterface& PrometheusEndpoint::register_histogram(const char* scope, const char* metric_name, const char* help, const std::vector<double>& buckets) {
+HistogramHandle PrometheusEndpoint::register_histogram(const char* scope, const char* metric_name, const char* help, const std::vector<double>& buckets) {
     return register_histogram(key_for(scope, metric_name), help, buckets);
 }
 
@@ -166,12 +166,12 @@ std::map<std::string, std::string> PrometheusEndpoint::note_registration(const M
     return labels;
 }
 
-CounterInterface& PrometheusEndpoint::register_counter(const MetricKey& metric_key, const char* help) {
+CounterHandle PrometheusEndpoint::register_counter(const MetricKey& metric_key, const char* help) {
     const std::lock_guard<std::mutex> lock(mutex_);
 
     const std::map<std::string, std::string> labels = note_registration(metric_key, help);
     if (!configuration_.enabled) {
-        return shared_no_op_counter();
+        return CounterHandle(&shared_no_op_counter());
     }
 
     const std::string& name = metric_key.metric_name();
@@ -182,15 +182,15 @@ CounterInterface& PrometheusEndpoint::register_counter(const MetricKey& metric_k
     }
 
     prometheus::Counter& counter = family->second->Add(labels);
-    return counters_.emplace(metric_key.full_name(), PrometheusCounter(&counter)).first->second;
+    return CounterHandle(&counters_.emplace(metric_key.full_name(), PrometheusCounter(&counter)).first->second);
 }
 
-GaugeInterface& PrometheusEndpoint::register_gauge(const MetricKey& metric_key, const char* help) {
+GaugeHandle PrometheusEndpoint::register_gauge(const MetricKey& metric_key, const char* help) {
     const std::lock_guard<std::mutex> lock(mutex_);
 
     const std::map<std::string, std::string> labels = note_registration(metric_key, help);
     if (!configuration_.enabled) {
-        return shared_no_op_gauge();
+        return GaugeHandle(&shared_no_op_gauge());
     }
 
     const std::string& name = metric_key.metric_name();
@@ -201,15 +201,15 @@ GaugeInterface& PrometheusEndpoint::register_gauge(const MetricKey& metric_key, 
     }
 
     prometheus::Gauge& gauge = family->second->Add(labels);
-    return gauges_.emplace(metric_key.full_name(), PrometheusGauge(&gauge)).first->second;
+    return GaugeHandle(&gauges_.emplace(metric_key.full_name(), PrometheusGauge(&gauge)).first->second);
 }
 
-HistogramInterface& PrometheusEndpoint::register_histogram(const MetricKey& metric_key, const char* help, const std::vector<double>& buckets) {
+HistogramHandle PrometheusEndpoint::register_histogram(const MetricKey& metric_key, const char* help, const std::vector<double>& buckets) {
     const std::lock_guard<std::mutex> lock(mutex_);
 
     const std::map<std::string, std::string> labels = note_registration(metric_key, help);
     if (!configuration_.enabled) {
-        return shared_no_op_histogram();
+        return HistogramHandle(&shared_no_op_histogram());
     }
 
     const std::string& name = metric_key.metric_name();
@@ -220,7 +220,7 @@ HistogramInterface& PrometheusEndpoint::register_histogram(const MetricKey& metr
     }
 
     prometheus::Histogram& histogram = family->second->Add(labels, buckets);
-    return histograms_.emplace(metric_key.full_name(), PrometheusHistogram(&histogram)).first->second;
+    return HistogramHandle(&histograms_.emplace(metric_key.full_name(), PrometheusHistogram(&histogram)).first->second);
 }
 
 } // namespaces

@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <cstddef> // IWYU pragma: keep
+#include <string>
 
 namespace pubsub_itc_fw {
 /**
@@ -57,5 +58,30 @@ struct ApplicationThreadConfiguration {
      * Default: 65536 bytes (64 KB).
      */
     size_t inbound_decode_arena_size{65536};
+
+    /**
+     * @brief Scope label for this thread's metrics, or empty to record none.
+     *
+     * Metric keys are `<application>.<component>[.<scope>].<metricName>`. The application and
+     * component come from MetricsConfiguration and identify the process; this is the third
+     * token, and is what tells one thread's metrics apart from another's in the same process.
+     *
+     * It is deliberately not derived from the thread name. The thread name is chosen for
+     * people reading logs, so renaming one would silently break every dashboard built on it;
+     * it is CamelCase where label values elsewhere are lowercase; and it is not always a legal
+     * token -- the topic probe names its thread "ProbeThread-<topic>", and a hyphen is not
+     * permitted in a metric key. Naming the scope separately keeps the two free to differ.
+     *
+     * Must be a single token of [A-Za-z0-9_]; MetricKey rejects anything else when the metric
+     * is registered. Prefer lowercase, matching the application and component values, e.g.
+     * "sequencer_thread".
+     *
+     * **Empty means this thread registers no metrics at all**, and its recording handles stay
+     * unbound, so recording through them is a safe no-op. That is the default because two
+     * threads in one process sharing an empty scope would compose the same key, and
+     * registering a key twice is an error. A thread therefore opts in by being named, rather
+     * than every thread in every test having to be named to avoid a collision.
+     */
+    std::string metrics_scope{};
 };
 } // namespaces

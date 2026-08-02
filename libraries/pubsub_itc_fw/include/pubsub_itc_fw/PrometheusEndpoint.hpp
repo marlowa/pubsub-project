@@ -18,8 +18,11 @@
 #include <prometheus/histogram.h>
 #include <prometheus/registry.h>
 
+#include <pubsub_itc_fw/CounterHandle.hpp>
 #include <pubsub_itc_fw/CounterInterface.hpp>
+#include <pubsub_itc_fw/GaugeHandle.hpp>
 #include <pubsub_itc_fw/GaugeInterface.hpp>
+#include <pubsub_itc_fw/HistogramHandle.hpp>
 #include <pubsub_itc_fw/HistogramInterface.hpp>
 #include <pubsub_itc_fw/MetricKey.hpp>
 #include <pubsub_itc_fw/MetricsConfiguration.hpp>
@@ -154,10 +157,10 @@ class PrometheusEndpoint {
      * mistake that only appears once someone switches metrics on is worse than one that
      * appears immediately.
      */
-    CounterInterface& register_counter(const MetricKey& metric_key, const char* help);
+    CounterHandle register_counter(const MetricKey& metric_key, const char* help);
 
     /** @brief As register_counter, for a gauge. */
-    GaugeInterface& register_gauge(const MetricKey& metric_key, const char* help);
+    GaugeHandle register_gauge(const MetricKey& metric_key, const char* help);
 
     /**
      * @brief As register_counter, for a histogram.
@@ -166,7 +169,7 @@ class PrometheusEndpoint {
      * @param[in] buckets    Upper bounds, ascending. Per child, so two scopes of one metric
      *                       may use different bucket sets.
      */
-    HistogramInterface& register_histogram(const MetricKey& metric_key, const char* help, const std::vector<double>& buckets);
+    HistogramHandle register_histogram(const MetricKey& metric_key, const char* help, const std::vector<double>& buckets);
 
     /**
      * @brief Registers a counter under a key composed from this process's identity.
@@ -184,13 +187,13 @@ class PrometheusEndpoint {
      * @param[in] metric_name The metric name itself.
      * @param[in] help        As the MetricKey overload.
      */
-    CounterInterface& register_counter(const char* scope, const char* metric_name, const char* help);
+    CounterHandle register_counter(const char* scope, const char* metric_name, const char* help);
 
     /** @brief As the three-argument register_counter, for a gauge. */
-    GaugeInterface& register_gauge(const char* scope, const char* metric_name, const char* help);
+    GaugeHandle register_gauge(const char* scope, const char* metric_name, const char* help);
 
     /** @brief As the three-argument register_counter, for a histogram. */
-    HistogramInterface& register_histogram(const char* scope, const char* metric_name, const char* help, const std::vector<double>& buckets);
+    HistogramHandle register_histogram(const char* scope, const char* metric_name, const char* help, const std::vector<double>& buckets);
 
     /**
      * @brief The key the three-argument register_* calls would build.

@@ -190,7 +190,7 @@ for evidence.
 
 ## Ownership and lifetime
 
-The Reactor owns the endpoint. Every reference handed out by `register_*` points into the
+The Reactor owns the endpoint. Every handle handed out by `register_*` points into the
 registry the endpoint owns, so **the endpoint must outlive every holder** -- constructed
 early, destroyed last.
 
@@ -199,6 +199,37 @@ needs no manual teardown. One ordering rule does matter: the `Exposer` must be d
 before the registry it collects from, or a scrape in flight can touch freed memory.
 Declaring `exposer_` last achieves that, since members destruct in reverse declaration
 order. It looks like arbitrary field ordering otherwise, so it is worth a comment.
+
+---
+
+## Recording handles
+
+`register_counter`, `register_gauge` and `register_histogram` return a **`CounterHandle`,
+`GaugeHandle` or `HistogramHandle` by value**, not a reference to the interface.
+
+A handle is not a `CounterInterface`. It does not derive from one and takes no part in the
+hierarchy; it holds a pointer to one. `PrometheusCounter` and `NoOpCounter` remain the
+implementations and the virtual call still happens. The handle exists purely so callers have
+something they can hold by value.
+
+Returning a reference was the obvious first shape, and it was wrong for reasons that all bite
+at the call site:
+
+- A reference member must be initialised in the constructor's initialiser list, which runs in
+  member *declaration* order. A metric whose scope is built from another member then depends
+  on the two being declared in the right order, and getting it wrong captures an empty string
+  silently rather than failing to compile. A value member is assigned in the constructor body
+  and the ordering trap disappears.
+- A reference member makes its enclosing class non-assignable -- a lasting restriction to have
+  acquired from the decision to count something.
+- A default-constructed handle is a safe no-op, so a class can hold one unconditionally and
+  register only on the paths that need it. This is what makes the opt-in scope below possible.
+
+What handles do **not** provide is lifetime safety: the pointer dangles if the endpoint is
+destroyed first, exactly as a reference would. That is acceptable because the endpoint is a
+Reactor member and outlives every registrant by construction, and because registrations live
+in node-based `std::map`s whose elements do not move as further metrics are registered.
+`PrometheusEndpointTest.HandlesStayValidAsMoreMetricsAreRegistered` pins that down.
 
 ---
 
@@ -216,6 +247,74 @@ Prometheus allows one help string per family, so a second registration of the sa
 *different* help silently keeps the first. Help text comes from code rather than
 configuration, so that is a programming error and should raise `PreconditionAssertion`
 naming both strings, rather than being ignored.
+
+---
+
+## Who supplies which token
+
+A key is `<application>.<component>[.<scope>].<metricName>`, and the four tokens have quite
+different origins:
+
+| token | source |
+|---|---|
+| `application` | `MetricsConfiguration.application` -- process-wide configuration |
+| `component` | `MetricsConfiguration.component` -- process-wide configuration |
+| `scope` | the registering object |
+| `metricName` | a literal at the call site |
+
+**A caller never supplies the application or the component.** The three-argument
+`register_counter(scope, metric_name, help)` composes them from configuration, which is why it
+exists: framework code declares the same metric in every component, so it cannot name any one
+of them and a literal key would be wrong in nearly every process.
+
+### The scope is named separately from the thread
+
+`ApplicationThreadConfiguration::metrics_scope` carries the scope for a thread's metrics. It is
+deliberately **not** derived from the thread name:
+
+- Thread names are chosen for people reading logs. Renaming one would silently break every
+  dashboard and alert built on it.
+- They are CamelCase (`SequencerThread`) where the application and component label values are
+  lowercase.
+- They are not always legal metric tokens. The topic probe names its thread
+  `"ProbeThread-" + topic_name`, and a hyphen is not permitted -- using the thread name
+  verbatim would throw `ConfigurationException` and the probe would not start.
+
+**An empty scope means the thread registers nothing**, and its handles stay unbound so
+recording is a safe no-op. That is the default, and it is what makes the feature opt-in rather
+than mandatory: two threads in one process both leaving the scope empty would compose the same
+key, and registering a key twice is an error. Making it opt-in means the many test processes
+that construct several threads against one Reactor need no changes, while a component that
+wants the metric names its threads:
+
+```cpp
+ApplicationThreadConfiguration{ .metrics_scope = "sequencer_thread" }
+```
+
+The alternative defaults were considered and rejected: registering unconditionally with an
+empty scope breaks every multi-threaded process at startup, and defaulting to the thread id
+yields `scope="3"`, which never becomes meaningful.
+
+---
+
+## Instrumentation
+
+### `framework_pdu_messages_total`
+
+The first metric, and the pattern for those that follow. `ApplicationThread` registers a
+counter when its configuration names a scope, and increments it in the `EventType::FrameworkPdu`
+branch of its dispatch switch, immediately before `on_framework_pdu_message`.
+
+    framework_pdu_messages_total{application="pubsub",component="sequencer",scope="sequencer_thread"}
+
+It counts PDUs *delivered to the application*, not PDUs parsed off the wire -- the two differ
+if delivery ever drops one, and the delivered count is what an application author reasons
+about.
+
+One series per thread, never one per process. A component that grows a second thread gets a
+second series automatically, with no shared counter and no contention; the process total is a
+`sum()` at query time. Aggregating in the exporter would throw away the breakdown and could not
+be recovered later.
 
 ---
 
@@ -265,9 +364,12 @@ that seam if it turns out to be wanted.
 
 ## Open
 
-- **What to measure.** Nothing is instrumented yet. The first purpose is comparing FIX
-  against binary order entry, which requires instrumenting both identically -- a metric on
-  one path and not the other would measure the instrumentation.
+- **No component sets `metrics_scope` yet**, so `framework_pdu_messages_total` is registered
+  by nothing and no series is exposed. Opting each component in is the immediate next step.
+- **What else to measure.** The first purpose is comparing FIX against binary order entry,
+  which requires instrumenting both identically -- a metric on one path and not the other
+  would measure the instrumentation. The gateway-internal segments are where the two protocols
+  actually differ; everything downstream is common to both.
 - **Bucket boundaries** for latency histograms.
 - **Scrape interval and retention**, and whether a Prometheus server is deployed alongside
   the venue or scrapes from outside it.

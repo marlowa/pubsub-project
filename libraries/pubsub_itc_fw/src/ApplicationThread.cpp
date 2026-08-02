@@ -85,6 +85,17 @@ ApplicationThread::ApplicationThread(ConstructorToken, QuillLogger& logger, Reac
         throw PreconditionAssertion("ThreadID of zero is reserved for the reactor", __FILE__, __LINE__);
     }
 
+    // Registered here rather than in the initialiser list because the handle is a value: it
+    // default-constructs unbound, so there is nothing to initialise until the scope is known
+    // to be non-empty. An unnamed thread records nothing, which is what keeps two threads in
+    // one process from composing the same key. The application and component tokens are not
+    // supplied here at all -- the endpoint takes them from configuration, so framework code
+    // cannot name the wrong component.
+    if (!thread_config.metrics_scope.empty()) {
+        framework_pdu_counter_ = reactor_.metrics().register_counter(thread_config.metrics_scope.c_str(), "framework_pdu_messages_total",
+                                                                     "Framework PDU messages delivered to an application thread");
+    }
+
     // resize(), not reserve(): the buffer is a fixed scratch arena addressed via
     // data()+size(), so size() must report the usable length. With reserve() the
     // capacity is set but size() stays 0, and a BumpAllocator built from
@@ -508,6 +519,7 @@ void ApplicationThread::process_message(const EventMessage& message) {
             // outstanding-allocations counter races into a false zero and the
             // reactor reclaims the slab while live allocations still reference it.
             PUBSUB_LOG(logger_, FwLogLevel::Debug, "Thread {}: Received PDU message", thread_name_);
+            framework_pdu_counter_.increment();
             on_framework_pdu_message(message);
             break;
         }

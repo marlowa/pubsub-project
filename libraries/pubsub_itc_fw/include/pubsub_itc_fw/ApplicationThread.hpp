@@ -20,6 +20,7 @@
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
+#include <pubsub_itc_fw/CounterHandle.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
 #include <pubsub_itc_fw/HighResolutionClock.hpp>
@@ -838,6 +839,16 @@ class ApplicationThread {
 
     std::string thread_name_;
     ThreadID thread_id_;
+
+    /**
+     * Counts framework PDUs delivered to this thread, one series per thread.
+     *
+     * Left unbound, and recording through it a no-op, unless the thread's configuration
+     * names a metrics_scope; see ApplicationThreadConfiguration::metrics_scope for why that
+     * is opt-in. Held by value rather than by reference so it can be assigned in the
+     * constructor body, which keeps it independent of member declaration order.
+     */
+    CounterHandle framework_pdu_counter_;
 
     std::atomic<bool> is_paused_{false};
     std::atomic<ThreadLifecycleState::Tag> lifecycle_state_{ThreadLifecycleState::NotCreated};

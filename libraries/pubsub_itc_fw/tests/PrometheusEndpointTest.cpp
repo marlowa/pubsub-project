@@ -104,9 +104,9 @@ TEST(PrometheusEndpointTest, TwoKeysSharingAMetricNameBecomeOneFamilyWithTwoChil
 TEST(PrometheusEndpointTest, RecordsCounterGaugeAndHistogramValues) {
     PrometheusEndpoint endpoint(enabled_configuration());
 
-    auto& counter = endpoint.register_counter(MetricKey("pubsub.gateway.orders_total"), "Orders");
-    auto& gauge = endpoint.register_gauge(MetricKey("pubsub.gateway.sessions_open"), "Open sessions");
-    auto& histogram = endpoint.register_histogram(MetricKey("pubsub.gateway.latency_seconds"), "Latency", {0.001, 0.01, 0.1});
+    auto counter = endpoint.register_counter(MetricKey("pubsub.gateway.orders_total"), "Orders");
+    auto gauge = endpoint.register_gauge(MetricKey("pubsub.gateway.sessions_open"), "Open sessions");
+    auto histogram = endpoint.register_histogram(MetricKey("pubsub.gateway.latency_seconds"), "Latency", {0.001, 0.01, 0.1});
 
     counter.increment();
     counter.increment();
@@ -156,7 +156,7 @@ TEST(PrometheusEndpointTest, DisabledRegistersNothingAndExposesNothing) {
 // the calls that will litter the hot path once components are instrumented.
 TEST(PrometheusEndpointTest, DisabledMetricsAreSafeToRecordThrough) {
     PrometheusEndpoint endpoint(disabled_configuration());
-    auto& counter = endpoint.register_counter(MetricKey("pubsub.gateway.orders_total"), "Orders");
+    auto counter = endpoint.register_counter(MetricKey("pubsub.gateway.orders_total"), "Orders");
 
     for (int index = 0; index < 1000; ++index) {
         counter.increment();
@@ -260,13 +260,13 @@ TEST(PrometheusEndpointTest, RegistrationRulesApplyWhenDisabledToo) {
 
 // -- Handle stability ----------------------------------------------------------
 
-// Callers keep the reference for the life of the process, so it must survive later
-// registrations. This is why the maps are std::map: node-based containers keep references
-// to elements valid across inserts, which unordered_map with rehashing would too, but a
-// vector would not.
+// Callers keep the handle for the life of the process, and it points at an element of the
+// endpoint's map, so that element must survive later registrations. This is why the maps are
+// std::map: node-based containers keep pointers to elements valid across inserts, which
+// unordered_map with rehashing would too, but a vector would not.
 TEST(PrometheusEndpointTest, HandlesStayValidAsMoreMetricsAreRegistered) {
     PrometheusEndpoint endpoint(enabled_configuration());
-    auto& first = endpoint.register_counter(MetricKey("pubsub.gateway.first_total"), "First");
+    auto first = endpoint.register_counter(MetricKey("pubsub.gateway.first_total"), "First");
 
     for (int index = 0; index < 200; ++index) {
         // MetricKey takes const char*, so a key built at run time needs c_str(). Keys are
