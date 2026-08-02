@@ -10,6 +10,8 @@ installed/
 installed-*/
 # Release tarballs staged by release.py -- output, like build/ and installed/
 release/
+# Runtime working directory: component logs and other output written while running
+run/
 
 # Manually placed JDBC drivers (see db/create_db.py --help for options)
 db/drivers/
