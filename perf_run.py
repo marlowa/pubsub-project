@@ -51,7 +51,10 @@ FIX8_PASSWORD = ""       # empty: f8test sends no Password tag
 # ── tunables ──────────────────────────────────────────────────────────────────
 STARTUP_DELAY   = 1.0    # seconds between app launches
 SETTLE_TIME     = 3.0    # seconds after last app before attaching perf
-FIX8_LOGON_WAIT = 3.0    # seconds for fix8 to establish the FIX session
+# Longest we will wait for every FIX session to be established before giving up. A limit
+# rather than a fixed sleep: the wait ends as soon as the gateway reports the last session,
+# so a fast machine is not delayed, and a slow one is not sent orders it cannot deliver.
+FIX8_LOGON_TIMEOUT = 30.0
 ORDER_TIMEOUT   = 180.0  # seconds to wait for ord1000 in the ME log
 POST_ORDER_WAIT = 15.0   # seconds after last order before SIGTERM, for the pipeline to
                          # drain.  It used to also have to cover the cancel-on-disconnect
@@ -674,10 +677,39 @@ def run_binary_load_session(bin_dir: Path, output_dir: Path, burst: int, clients
     log("  binary_load_client completed: every order acknowledged")
 
 
-def run_fix8_session(me_log: Path, gw_log: Path, burst: int, clients: int, fix8_config: str) -> None:
+_LOGON_ESTABLISHED_MARKER = "FIX session established"
+
+
+def wait_for_fix_logons(gw_log: Path, expected: int, timeout: float) -> int:
+    """Wait until the gateway log reports `expected` FIX sessions established.
+
+    Returns the number established, which is `expected` on success and fewer on timeout.
+
+    Counted from the gateway rather than from the clients because the gateway is the
+    authority on whether a session exists: f8test's own output says it sent a Logon, not
+    that the venue accepted it. The marker is logged at Info by FixOrderGatewayThread once
+    SCRAM authentication has succeeded.
     """
-    Start `clients` concurrent f8test processes, wait for all FIX sessions to
-    log on, then send `burst` 'T' commands to each (each T = 1000 NOS).
+    deadline = time.monotonic() + timeout
+    seen = 0
+    while time.monotonic() < deadline:
+        if gw_log.is_file():
+            try:
+                seen = gw_log.read_text(errors="replace").count(_LOGON_ESTABLISHED_MARKER)
+            except OSError:
+                seen = 0
+            if seen >= expected:
+                log(f"  All {expected} FIX session(s) established")
+                return seen
+        time.sleep(0.25)
+    return seen
+
+
+def run_fix8_session(me_log: Path, gw_log: Path, burst: int, clients: int, fix8_config: str,
+                     client_log_dir: Path, capture_client_logs: bool) -> None:
+    """
+    Start `clients` concurrent f8test processes, wait for the gateway to confirm every
+    FIX session is established, then send `burst` 'T' commands to each (each T = 1000 NOS).
 
     Two-phase completion:
       Phase 1 — wait for the ME to accept all NOS orders (ME-ORD-N).
@@ -693,23 +725,52 @@ def run_fix8_session(me_log: Path, gw_log: Path, burst: int, clients: int, fix8_
     log(f"=== Starting {clients} fix8 client(s), {burst} T burst(s) each "
         f"({total_orders} orders total) ===")
 
+    # Client output is discarded by default and captured only on request. f8test echoes
+    # every message, which is about 5 MB per client per run: writing that during a timed run
+    # makes the load generator do disk I/O it would not otherwise do, and the load generator
+    # is what sets the offered rate. Since a client that fails to log on is now caught before
+    # any order is sent, the logs are needed only to explain WHY one failed -- which is a
+    # deliberate second run with --client-logs, not something every run should pay for.
+    if capture_client_logs:
+        client_log_dir.mkdir(parents=True, exist_ok=True)
+
     procs: list[subprocess.Popen] = []
+    log_handles: list = []
     for i in range(clients):
-        proc = subprocess.Popen(
+        if capture_client_logs:
+            client_log = client_log_dir / f"f8test_client_{i + 1}.log"
+            # Handle deliberately left open: the child needs it for its whole lifetime, and
+            # the children outlive this loop. Closed in the finally block below.
+            stdout_target = client_log.open("w")  # pylint: disable=consider-using-with
+            log_handles.append(stdout_target)
+            destination = client_log.name
+        else:
+            stdout_target = subprocess.DEVNULL
+            destination = "discarded (--client-logs to capture)"
+        proc = subprocess.Popen(  # pylint: disable=consider-using-with
             [str(FIX8_BIN), "-c", fix8_config, "-N", "GW1"],
             cwd=str(FIX8_DIR),
             stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=stdout_target,
+            stderr=subprocess.STDOUT,
         )
         procs.append(proc)
-        log(f"  client {i + 1} of {clients}: f8test PID {proc.pid}")
+        log(f"  client {i + 1} of {clients}: f8test PID {proc.pid} → {destination}")
 
     # The clients are launched; from here everything runs under try/finally so a
     # die() or Ctrl-C mid-wait never orphans a fix8 client.
     try:
-        log(f"  Waiting {FIX8_LOGON_WAIT:.0f}s for FIX logon(s) ...")
-        time.sleep(FIX8_LOGON_WAIT)
+        # Wait for the gateway to report every session established, rather than sleeping a
+        # fixed interval and hoping. A blind sleep here produced a run in which one of four
+        # clients had not finished its SCRAM handshake when the T commands were written: it
+        # sent nothing, the run came up 5,000 orders short, and -- because the shortfall was
+        # then reported as ERs lost in the pipeline -- it looked like the venue had dropped
+        # them. The venue had processed every order it received.
+        established = wait_for_fix_logons(gw_log, clients, FIX8_LOGON_TIMEOUT)
+        if established < clients:
+            die(f"only {established} of {clients} FIX session(s) established within "
+                f"{FIX8_LOGON_TIMEOUT:.0f}s -- not sending orders, as the run could not be "
+                f"complete. See the f8test client logs in the perf output directory.")
 
         log(f"  Sending {burst} T command(s) to each of {clients} client(s) ...")
         for i, proc in enumerate(procs):
@@ -740,6 +801,8 @@ def run_fix8_session(me_log: Path, gw_log: Path, burst: int, clients: int, fix8_
     finally:
         log("  Terminating fix8 client(s) with SIGKILL ...")
         terminate_clients(procs, clients)
+        for handle in log_handles:
+            handle.close()
 
 
 def main() -> None:
@@ -752,6 +815,11 @@ def main() -> None:
                         help="Number of T commands per fix8 session (each T = 1000 NOS). Default: 1")
     parser.add_argument("--clients", type=int, default=1, metavar="N",
                         help="Number of concurrent fix8 sessions. Default: 1")
+    parser.add_argument("--client-logs", action="store_true",
+                        help="Capture f8test client output to <prefix>/log/f8test_client_N.log. "
+                             "Off by default: f8test echoes every message (~5 MB per client per "
+                             "run), and making the load generator do that I/O during a timed run "
+                             "perturbs the offered rate. Use it to diagnose a failed logon.")
     parser.add_argument("--capture", action="store_true", default=False,
                         help="Enable FIX capture (writes all wire bytes to fix_capture.bin).")
     parser.add_argument("--gateway", choices=["fix", "binary"], default="fix",
@@ -913,7 +981,8 @@ def main() -> None:
                                     gateway_listen_port(prefix, "binary", args.gateway_instance))
         else:
             run_fix8_session(me_log, gw_log, args.burst, args.clients,
-                             fix8_config_for_instance(prefix, args.gateway_instance))
+                             fix8_config_for_instance(prefix, args.gateway_instance), log_dir,
+                             args.client_logs)
 
         log(f"Waiting {POST_ORDER_WAIT:.0f}s for pipeline to drain ...")
         time.sleep(POST_ORDER_WAIT)
@@ -1035,11 +1104,22 @@ def main() -> None:
                 f"(partial fills or HA double-forwarding) ===")
         else:
             log("=== PASS — all orders processed and every ER delivered ===")
+    elif not nos_ok:
+        # Checked BEFORE er_short, and the order matters. When the gateway never received
+        # the orders it is the primary fact, and the missing ERs are its consequence, not a
+        # second independent fault. Reporting the ER shortfall first blamed the venue for a
+        # load generator that had not sent -- a false alarm about pipeline data loss that
+        # cost real time to chase down.
+        missing = total_orders - gw_nos_recv
+        log(f"=== FAIL — {missing:,} NOS never reached the gateway "
+            f"(load generator sent fewer than requested; the venue is not implicated) ===")
+        if er_accounted == gw_nos_recv:
+            log(f"           the venue produced an ER for every one of the {gw_nos_recv:,} "
+                f"orders it did receive")
     elif er_short:
         log(f"=== FAIL — {total_orders - er_accounted:,} ERs unaccounted for "
-            f"(lost in the sequencer→gateway pipeline) ===")
-    elif not nos_ok:
-        log(f"=== FAIL — {total_orders - gw_nos_recv:,} NOS not received by gateway ===")
+            f"(every NOS reached the gateway, so these were lost in the "
+            f"sequencer→gateway pipeline) ===")
     else:
         log(f"=== FAIL — unexpected state: "
             f"ME-ORD={me_final:,} NOS={gw_nos_recv:,} ER={gw_er_sent:,} ===")
