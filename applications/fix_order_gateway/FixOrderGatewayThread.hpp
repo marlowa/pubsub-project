@@ -16,6 +16,7 @@
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/ExpandablePoolAllocator.hpp>
+#include <pubsub_itc_fw/HistogramHandle.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
 
@@ -211,8 +212,14 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // the originating session's connection id (for ER routing) and its SenderCompID
     // (for audit) -- rides on the envelope, not the PDU. The sequencer stamps seq_no
     // and wall_time_ns; both are left zero here. See docs/design/fix_pdu_generation.md.
+    // @param[in] gateway_ingress_ns When the originating bytes were read off the client
+    //            socket, or 0 for an order this gateway generated itself (the cancels
+    //            issued on client disconnect). Zero is stamped as absent, so a
+    //            gateway-invented order never contributes a round trip that no client
+    //            ever waited for.
     template <typename MsgT>
-    void forward_order_in_envelope(int16_t inner_pdu_id, const MsgT& msg, int32_t gateway_session_conn_id, std::string_view sender_comp_id) {
+    void forward_order_in_envelope(int16_t inner_pdu_id, const MsgT& msg, int32_t gateway_session_conn_id, std::string_view sender_comp_id,
+                                   int64_t gateway_ingress_ns) {
         size_t bytes_written = 0;
         size_t bytes_needed = 0;
         // Measure then fit: a zero-size out buffer makes encode report bytes_needed
@@ -246,6 +253,11 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
         // process once a protocol could run more than one.
         envelope.has_gateway_instance_id = true;
         envelope.gateway_instance_id = config_.instance_id;
+        // When this order was read off the client socket. The sequencer remembers it against
+        // the order's seq_no and returns it on the acknowledging ER, which is what lets this
+        // gateway measure the whole round trip without keeping any per-order state itself.
+        envelope.has_gateway_ingress_ns = (gateway_ingress_ns != 0);
+        envelope.gateway_ingress_ns = gateway_ingress_ns;
         if (!sender_comp_id.empty()) {
             envelope.has_sender_comp_id = true;
             envelope.sender_comp_id = sender_comp_id;
@@ -369,6 +381,18 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     //
     // Returns the number of orders reclaimed, for logging.
     size_t reclaim_grace_session(std::string_view comp_id);
+
+    // When the current raw-socket read event was handled, in wall-clock nanoseconds.
+    // Stamped on every order forwarded out of that event and returned on the acknowledging
+    // ER, where it becomes the start of the round-trip measurement. Zero until the first
+    // read event, which only a gateway-generated order can precede.
+    int64_t current_read_ingress_ns_{0};
+
+    // Nanoseconds from reading an order off the client socket to starting to send its
+    // ExecutionReport. Unbound -- and therefore a no-op -- unless this thread was given a
+    // metrics scope. See applications/fix_common/GatewayMetrics.hpp for why the bucket
+    // bounds are shared with the binary gateway rather than chosen here.
+    pubsub_itc_fw::HistogramHandle order_round_trip_histogram_;
 
     // Running totals behind the GW-PROGRESS line. Per-order logging was moved to Debug
     // because it cost roughly a third of this gateway's CPU under load; these keep the

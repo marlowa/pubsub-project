@@ -173,6 +173,12 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
         int32_t gateway_session_conn_id{0};
         int16_t origin_gateway_id{gateway_ids::default_when_absent};
         int16_t origin_gateway_instance{gateway_ids::first_instance};
+        // The originating gateway's ingress stamp, carried through the WalAck wait so the
+        // gateway still gets it when the ER is released. Buffering here is the live HA
+        // path, so dropping it would leave the round-trip metric empty in exactly the
+        // configuration the venue actually runs.
+        bool has_gateway_ingress_ns{false};
+        int64_t gateway_ingress_ns{0};
         bool erase_routing_entry{false};
     };
 
@@ -270,6 +276,21 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
         int32_t session_conn_id{0};
         int16_t gateway_id{gateway_ids::default_when_absent};
         int16_t gateway_instance{gateway_ids::first_instance};
+
+        // Wall-clock nanoseconds at which the gateway read the order off the client socket.
+        // Carried here purely so it can be stamped back onto the ER envelope: the gateway
+        // measures its own round trip, and nothing in the sequencer reads this value.
+        //
+        // It rides with the routing data rather than in a map of its own because it has
+        // exactly the same lifetime and the same key -- a second map would be a second
+        // thing to insert into, erase from and rebuild on replay, with no way to notice
+        // when the two drifted apart.
+        //
+        // has_ingress_ns false means the order arrived without one -- a WAL replay, or a
+        // gateway that does not stamp. It is a separate flag rather than a zero sentinel
+        // so an absent stamp cannot be mistaken for an epoch-zero one.
+        bool has_ingress_ns{false};
+        int64_t gateway_ingress_ns{0};
     };
 
     // seq_no -> originating client session.

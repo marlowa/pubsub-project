@@ -13,6 +13,7 @@
 
 #include "FixOrderGatewayConfigurationLoader.hpp"
 #include "FixSession.hpp"
+#include "GatewayMetrics.hpp"
 
 namespace fix_order_gateway {
 
@@ -143,6 +144,12 @@ FixOrderGatewayConfigurationLoader::load_and_init_logging(const std::string& fil
             toml.get_required_except("reactor.cpu_layout_component", config.cpu_layout_component);
 
             config.metrics_configuration = pubsub_itc_fw::MetricsConfigurationLoader::load(toml);
+        }
+        // Only when metrics are on: a disabled endpoint registers nothing, so requiring the
+        // bounds would make turning metrics off mean filling in a value never read -- the
+        // same rule metrics.listen_host follows.
+        if (config.metrics_configuration.enabled) {
+            config.order_round_trip_buckets = gateway_metrics::load_order_round_trip_buckets(toml);
         }
         toml.get_required_except("reactor.connect_retry_warning_interval", config.connect_retry_warning_interval);
 

@@ -650,4 +650,113 @@ TEST_F(TomlConfigurationTest, ArrayOfTablesBoolAndStringFields) {
     EXPECT_TRUE(force_pw);
 }
 
+// Arrays of numbers. Unlike the arrays of tables above, these are read in one call into a
+// vector<double> -- histogram bucket bounds being the reason the accessor exists.
+
+TEST_F(TomlConfigurationTest, ArrayOfIntegersReadsAsDoubles) {
+    // The spelling a person actually writes bucket bounds in. TOML types these as
+    // integers, and rejecting them would mean every entry needed a trailing .0.
+    auto [ok, err] = config.load_string(R"(
+        [metrics]
+        order_round_trip_buckets = [10000, 25000, 50000]
+    )");
+    EXPECT_TRUE(ok) << err;
+
+    std::vector<double> buckets;
+    auto [got, error] = config.get_required("metrics.order_round_trip_buckets", buckets);
+    EXPECT_TRUE(got) << error;
+    ASSERT_EQ(buckets.size(), 3u);
+    EXPECT_DOUBLE_EQ(buckets[0], 10000.0);
+    EXPECT_DOUBLE_EQ(buckets[1], 25000.0);
+    EXPECT_DOUBLE_EQ(buckets[2], 50000.0);
+}
+
+TEST_F(TomlConfigurationTest, ArrayOfNumbersAcceptsMixedIntegerAndFloat) {
+    auto [ok, err] = config.load_string(R"(
+        [metrics]
+        bounds = [1, 2.5, 3, 4.75]
+    )");
+    EXPECT_TRUE(ok) << err;
+
+    std::vector<double> bounds;
+    auto [got, error] = config.get_required("metrics.bounds", bounds);
+    EXPECT_TRUE(got) << error;
+    ASSERT_EQ(bounds.size(), 4u);
+    EXPECT_DOUBLE_EQ(bounds[1], 2.5);
+    EXPECT_DOUBLE_EQ(bounds[3], 4.75);
+}
+
+TEST_F(TomlConfigurationTest, ArrayOfNumbersRejectsNonNumericElement) {
+    auto [ok, err] = config.load_string(R"(
+        [metrics]
+        bounds = [1, "two", 3]
+    )");
+    EXPECT_TRUE(ok) << err;
+
+    std::vector<double> bounds;
+    auto [got, error] = config.get_required("metrics.bounds", bounds);
+    EXPECT_FALSE(got);
+    // The message names the offending position, not just the key -- there are a dozen
+    // entries and "not a number" alone would leave the operator hunting.
+    EXPECT_NE(error.find("element 1"), std::string::npos) << error;
+}
+
+TEST_F(TomlConfigurationTest, ArrayOfNumbersRejectsAScalar) {
+    auto [ok, err] = config.load_string(R"(
+        [metrics]
+        bounds = 10000
+    )");
+    EXPECT_TRUE(ok) << err;
+
+    std::vector<double> bounds;
+    auto [got, error] = config.get_required("metrics.bounds", bounds);
+    EXPECT_FALSE(got);
+    EXPECT_NE(error.find("array of numbers"), std::string::npos) << error;
+}
+
+TEST_F(TomlConfigurationTest, ArrayOfNumbersReportsAMissingKey) {
+    auto [ok, err] = config.load_string(R"(
+        [metrics]
+        enabled = true
+    )");
+    EXPECT_TRUE(ok) << err;
+
+    std::vector<double> bounds;
+    auto [got, error] = config.get_required("metrics.bounds", bounds);
+    EXPECT_FALSE(got);
+    EXPECT_FALSE(error.empty());
+}
+
+TEST_F(TomlConfigurationTest, ArrayOfNumbersLeavesTheTargetUntouchedOnFailure) {
+    // The accessor builds into a scratch vector and only moves it out once every element
+    // has converted, so a failure part-way through cannot leave half-filled bounds
+    // behind -- which would otherwise register a histogram with buckets nobody chose.
+    auto [ok, err] = config.load_string(R"(
+        [metrics]
+        bounds = [1, 2, "three"]
+    )");
+    EXPECT_TRUE(ok) << err;
+
+    std::vector<double> bounds{99.0};
+    auto [got, error] = config.get_required("metrics.bounds", bounds);
+    EXPECT_FALSE(got);
+    ASSERT_EQ(bounds.size(), 1u);
+    EXPECT_DOUBLE_EQ(bounds[0], 99.0);
+}
+
+TEST_F(TomlConfigurationTest, ArrayOfNumbersReadsAnEmptyArray) {
+    // Empty is a legal TOML array and the accessor reports success; whether an empty
+    // bounds are acceptable belongs to the caller, which knows what it is for.
+    auto [ok, err] = config.load_string(R"(
+        [metrics]
+        bounds = []
+    )");
+    EXPECT_TRUE(ok) << err;
+
+    std::vector<double> bounds{99.0};
+    auto [got, error] = config.get_required("metrics.bounds", bounds);
+    EXPECT_TRUE(got) << error;
+    EXPECT_TRUE(bounds.empty());
+}
+
 } // namespaces

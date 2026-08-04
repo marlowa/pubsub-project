@@ -15,6 +15,7 @@
 
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
+#include <pubsub_itc_fw/CounterHandle.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
@@ -180,6 +181,20 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
                               int16_t origin_gateway_id = gateway_ids::default_when_absent, int16_t origin_gateway_instance = gateway_ids::first_instance);
 
     const MatchingEngineConfiguration& config_;
+
+    /**
+     * Orders accepted onto the book, incremented on the one path that puts one there.
+     *
+     * Deliberately not a count of order PDUs arriving. The reconciliation path replays the
+     * WAL into the book without acknowledging anything and the follower path discards
+     * orders outright, so counting arrivals would make the series jump by the whole
+     * replayed backlog at each failover and stop meaning "orders the venue processed".
+     * Duplicate ClOrdIDs, which are rejected, are not counted either.
+     *
+     * Cancels are not counted here. A cancel is a different operation on an existing
+     * order, and folding the two together would leave neither rate readable.
+     */
+    pubsub_itc_fw::CounterHandle orders_processed_counter_;
 
     // HA role flags (set from configuration at construction).
     bool ha_enabled_{false};

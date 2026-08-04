@@ -4,6 +4,7 @@
 #include "FixOrderGatewayThread.hpp"
 #include "FixErEncoder.hpp"
 #include "FixGroupExtractor.hpp"
+#include "GatewayMetrics.hpp"
 
 #include <openssl/rand.h>
 
@@ -35,6 +36,17 @@ pubsub_itc_fw::QueueConfiguration make_queue_config() {
     queue_configuration.low_watermark = 1;
     queue_configuration.high_watermark = 64;
     return queue_configuration;
+}
+
+// A named helper rather than a designated initialiser at the call site: this project builds
+// as C++17, where designated initialisers are a C++20 feature and -Werror rejects them.
+pubsub_itc_fw::ApplicationThreadConfiguration make_thread_config() {
+    pubsub_itc_fw::ApplicationThreadConfiguration configuration;
+    // The same scope token the binary gateway uses: it names this thread's role, and the two
+    // are told apart by the component label, which is the process instance. That is what
+    // makes the FIX-versus-binary comparison a group-by rather than two separate metrics.
+    configuration.metrics_scope = "gateway_thread";
+    return configuration;
 }
 
 pubsub_itc_fw::AllocatorConfiguration make_allocator_config(const FixOrderGatewayConfiguration& config, pubsub_itc_fw::QuillLogger& logger) {
@@ -124,7 +136,7 @@ bool is_terminal_ord_status(pubsub_itc_fw_app::OrdStatus status) {
 FixOrderGatewayThread::FixOrderGatewayThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger,
                                              pubsub_itc_fw::Reactor& reactor, const FixOrderGatewayConfiguration& config)
     : ApplicationThread(token, logger, reactor, "FixOrderGatewayThread", pubsub_itc_fw::ThreadID{1}, make_queue_config(), make_allocator_config(config, logger),
-                        pubsub_itc_fw::ApplicationThreadConfiguration{})
+                        make_thread_config())
     , config_(config)
     , er_inbound_svc_("inbound:" + std::to_string(config.er_listen_port))
     , serialiser_(config.sender_comp_id, config.default_target_comp_id, *config.wall_clock)
@@ -137,6 +149,15 @@ FixOrderGatewayThread::FixOrderGatewayThread(pubsub_itc_fw::ApplicationThread::C
     if (capture_) {
         register_extra_thread(capture_->writer_pthread_id(), "FixCaptureWriter");
     }
+    // Registered here rather than in the initialiser list because the handle is a value and
+    // default-constructs unbound, so unconfigured bounds simply leave it recording
+    // nowhere. The application and component tokens come from configuration; only the scope
+    // and the metric name are named here. See docs/design/metrics.md.
+    if (!config_.order_round_trip_buckets.empty()) {
+        order_round_trip_histogram_ = get_reactor().metrics().register_histogram("gateway_thread", gateway_metrics::order_round_trip_metric_name,
+                                                                                 gateway_metrics::order_round_trip_help, config_.order_round_trip_buckets);
+    }
+
     // Start the reusable ER wire buffer at the common-case size; the ER send path grows
     // it if a large ExecutionReport (many echoed group instances) needs more.
     er_wire_buffer_.resize(execution_report_initial_buffer_size);
@@ -234,6 +255,17 @@ void FixOrderGatewayThread::on_raw_socket_message(const pubsub_itc_fw::EventMess
     if (data == nullptr || available <= 0) {
         return;
     }
+
+    // The gateway's ingress instant, taken before anything is parsed, which is as close to
+    // "the order entered the venue" as this process can observe. It is stamped on every
+    // order forwarded out of this event and returned on the acknowledging ExecutionReport,
+    // where it becomes the start of the round-trip measurement.
+    //
+    // Per read event, not per message: several orders can arrive in one TCP read, and they
+    // did all arrive at this instant. Timing each separately would need a clock read per
+    // message on the hot path to measure a difference that is parsing cost, not venue
+    // latency -- and would flatter the second order in every batch.
+    current_read_ingress_ns_ = config_.wall_clock->now_ns();
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "FixOrderGatewayThread: {} raw bytes received on connection {} ({}) at tail {}", available,
                conn_id.get_value(), conn_id.service_name(), event_tail_position);
@@ -568,6 +600,27 @@ void FixOrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventM
     }
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "FixOrderGatewayThread: connection {} FIX OUT ({} bytes): {}", session.conn_id.get_value(),
                wire.size(), readable_er);
+
+    // The round trip closes here: the ER is encoded and about to be handed to the reactor
+    // for sending. What happens to it afterwards -- kernel, wire, client -- this process
+    // cannot see, and is not what the venue is answerable for.
+    //
+    // Only the ER that acknowledges a new order is measured. Every ER for an order carries
+    // the same ingress stamp, so a later Canceled ER would otherwise be recorded as a round
+    // trip lasting as long as the order rested on the book. A cancel's own round trip is a
+    // different measurement of a different thing.
+    if (envelope.has_gateway_ingress_ns && view.ord_status == pubsub_itc_fw_app::OrdStatus::New) {
+        const int64_t round_trip_ns = config_.wall_clock->now_ns() - envelope.gateway_ingress_ns;
+        // A negative delta is not a fast order. The two ends are stamped by different
+        // processes after a gateway failover -- the instance that took the session over
+        // sends this ER, and its clock shares no origin with the one that read the order.
+        // Recording it would put a nonsense value into _sum and quietly bias every average
+        // drawn from the family thereafter, which is not recoverable by any later query.
+        if (round_trip_ns >= 0) {
+            order_round_trip_histogram_.observe(static_cast<double>(round_trip_ns));
+        }
+    }
+
     send_raw(session.conn_id, wire.data(), static_cast<uint32_t>(wire.size()));
     release_pdu_payload(message);
 }
@@ -1073,7 +1126,7 @@ void FixOrderGatewayThread::handle_new_order_single(FixSession& session, const P
     // WalRecord envelope, not inside the DD-derived PDU. Forward the pure NOS
     // wrapped in that envelope to both sequencer instances.
     forward_order_in_envelope(static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle), nos, session.conn_id.get_value(),
-                              session.client_comp_id);
+                              session.client_comp_id, current_read_ingress_ns_);
 
     // Do NOT record the order here. We record it when the ME sends back a
     // non-terminal ExecutionReport (OrdStatus=New), which confirms the order
@@ -1136,7 +1189,7 @@ void FixOrderGatewayThread::handle_order_cancel_request(FixSession& session, con
     // Connection id (cancel-ER routing) and SenderCompID (audit) ride on the
     // WalRecord envelope, not inside the PDU (same mechanism as NOS).
     forward_order_in_envelope(static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest), ocr, session.conn_id.get_value(),
-                              session.client_comp_id);
+                              session.client_comp_id, current_read_ingress_ns_);
 }
 
 void FixOrderGatewayThread::disconnect_session(const FixSession& session, const std::string& reason) {
@@ -1461,7 +1514,11 @@ void FixOrderGatewayThread::drain_pending_cancels() {
         }
 
         // Connection id and SenderCompID for the dead session travel on the envelope.
-        forward_order_in_envelope(static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest), ocr, dead.session_conn_id, dead.client_comp_id);
+        // No ingress stamp: this cancel is the gateway's own doing, not a client's order.
+        // The client it belongs to has already gone, so there is nobody waiting on it and
+        // no round trip to attribute to the venue.
+        forward_order_in_envelope(static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest), ocr, dead.session_conn_id, dead.client_comp_id,
+                                  /*gateway_ingress_ns=*/0);
 
         open_order_pool_->deallocate(entry);
         ++dead.next_order_index;

@@ -76,7 +76,10 @@ def flatten_toml(data: dict, prefix: str = "") -> dict[str, str]:
     Nested sections are joined with underscores:
       [arbiter_primary] peer_host  →  arbiter_primary_peer_host
     Booleans are rendered as TOML literals ('true'/'false').
-    Lists and other non-scalar types are silently skipped.
+    Lists of scalars are rendered as a TOML array literal, so a value such as a
+    histogram's bucket bounds can be declared once here and expanded into several
+    component files that must agree on it. Lists of tables are skipped: a component
+    file needs its own [[section]] headers, which no single substitution can produce.
     """
     result: dict[str, str] = {}
     for key, value in data.items():
@@ -87,7 +90,27 @@ def flatten_toml(data: dict, prefix: str = "") -> dict[str, str]:
             result[full_key] = str(value)
         elif isinstance(value, dict):
             result.update(flatten_toml(value, full_key))
+        elif isinstance(value, list):
+            if all(isinstance(item, (bool, int, float, str)) for item in value):
+                result[full_key] = _render_toml_array(value)
     return result
+
+
+def _render_toml_array(items: list) -> str:
+    """Render a list of TOML scalars back into TOML array syntax.
+
+    The result is substituted into a component .toml verbatim, so it has to be valid
+    TOML on its own -- booleans lowercase, strings quoted, numbers bare.
+    """
+    rendered = []
+    for item in items:
+        if isinstance(item, bool):
+            rendered.append("true" if item else "false")
+        elif isinstance(item, str):
+            rendered.append(f'"{item}"')
+        else:
+            rendered.append(str(item))
+    return "[" + ", ".join(rendered) + "]"
 
 
 # ── Artefact handling ─────────────────────────────────────────────────────────

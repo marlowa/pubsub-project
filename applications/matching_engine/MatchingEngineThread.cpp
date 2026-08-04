@@ -104,6 +104,14 @@ pubsub_itc_fw::QueueConfiguration make_queue_config() {
     return queue_configuration;
 }
 
+// A named helper rather than a designated initialiser at the call site: this project builds
+// as C++17, where designated initialisers are a C++20 feature and -Werror rejects them.
+pubsub_itc_fw::ApplicationThreadConfiguration make_thread_config() {
+    pubsub_itc_fw::ApplicationThreadConfiguration configuration;
+    configuration.metrics_scope = "matching_engine_thread";
+    return configuration;
+}
+
 pubsub_itc_fw::AllocatorConfiguration make_allocator_config(const MatchingEngineConfiguration& config, pubsub_itc_fw::QuillLogger& logger) {
     pubsub_itc_fw::AllocatorConfiguration allocator_configuration{};
     allocator_configuration.pool_name = "MatchingEnginePool";
@@ -120,13 +128,20 @@ pubsub_itc_fw::AllocatorConfiguration make_allocator_config(const MatchingEngine
 MatchingEngineThread::MatchingEngineThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger,
                                            pubsub_itc_fw::Reactor& reactor, const MatchingEngineConfiguration& config)
     : ApplicationThread(token, logger, reactor, "MatchingEngineThread", pubsub_itc_fw::ThreadID{1}, make_queue_config(), make_allocator_config(config, logger),
-                        pubsub_itc_fw::ApplicationThreadConfiguration{})
+                        make_thread_config())
     , config_(config)
     , ha_enabled_(config.ha_enabled)
     , is_primary_(!config.ha_enabled || config.ha_role == "primary")
     , sequencer_er_conn_id_{}
     , sequencer_er_secondary_conn_id_{} {
     order_book_.reserve(static_cast<size_t>(config_.order_book_initial_capacity));
+
+    // Registered unconditionally: this component has exactly one application thread and
+    // names its scope above, so there is no second thread to collide with. The handle is a
+    // no-op when metrics are disabled, and the application and component tokens come from
+    // configuration rather than from here. See docs/design/metrics.md.
+    orders_processed_counter_ = get_reactor().metrics().register_counter("matching_engine_thread", "orders_processed_total",
+                                                                         "New orders accepted onto the book by the matching engine");
 
     // HA classification. A non-HA ME is a plain single instance (Unknown state,
     // full processing). The HA primary begins Unknown and adopts Leader once it
@@ -454,6 +469,13 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
         entry.set_price(view.price);
     }
     order_book_.emplace(order_key, entry);
+
+    // Counted here, on the one path that puts an order on the book. Not at entry to this
+    // function: the reconciliation and follower paths return before this point, and a
+    // counter that jumped by the whole replayed backlog at every failover would be
+    // unusable as an order rate -- which is the thing it is for. The duplicate-ClOrdID
+    // rejection above is likewise not an order processed.
+    orders_processed_counter_.increment();
 
     // Replicate the new entry to ME-secondary.
     send_book_update(sequence_number, pubsub_itc_fw_app::BookUpdateType::Add, session_id, view.cl_ord_id, &entry);

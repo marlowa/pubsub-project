@@ -55,6 +55,7 @@ add_executable(fix_order_gateway_tests
         tests/FixParserTest.cpp
         tests/FixSerialiserTest.cpp
         tests/FixErEncoderTest.cpp
+        tests/GatewayMetricsTest.cpp
         FixCapture.cpp
         FixParser.cpp
         FixSerialiser.cpp
@@ -63,6 +64,7 @@ add_executable(fix_order_gateway_tests
 
 target_include_directories(fix_order_gateway_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/../fix_common
         ${FIX_DSL_INCLUDE_DIR}
 )
 

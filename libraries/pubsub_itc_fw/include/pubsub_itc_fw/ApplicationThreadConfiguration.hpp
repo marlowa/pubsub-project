@@ -76,6 +76,16 @@ struct ApplicationThreadConfiguration {
      * is registered. Prefer lowercase, matching the application and component values, e.g.
      * "sequencer_thread".
      *
+     * Set it through a small named helper, not a designated initialiser -- this project
+     * builds as C++17, where designated initialisers are a C++20 feature and -Werror rejects
+     * them. The components that opt in follow the make_thread_config() pattern:
+     *
+     *     pubsub_itc_fw::ApplicationThreadConfiguration make_thread_config() {
+     *         pubsub_itc_fw::ApplicationThreadConfiguration configuration;
+     *         configuration.metrics_scope = "sequencer_thread";
+     *         return configuration;
+     *     }
+     *
      * **Empty means this thread registers no metrics at all**, and its recording handles stay
      * unbound, so recording through them is a safe no-op. That is the default because two
      * threads in one process sharing an empty scope would compose the same key, and

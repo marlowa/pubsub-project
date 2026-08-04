@@ -391,6 +391,10 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             origin.session_conn_id = inbound.gateway_session_conn_id;
             origin.gateway_id = inbound.has_origin_gateway_id ? inbound.origin_gateway_id : gateway_ids::default_when_absent;
             origin.gateway_instance = inbound.has_gateway_instance_id ? inbound.gateway_instance_id : gateway_ids::first_instance;
+            // Remembered, not read: the gateway stamped this when it read the order off the
+            // client socket, and gets it back on the ER so it can measure the round trip.
+            origin.has_ingress_ns = inbound.has_gateway_ingress_ns;
+            origin.gateway_ingress_ns = inbound.gateway_ingress_ns;
             seq_no_to_session_conn_id_[seq] = origin;
         }
 
@@ -468,6 +472,11 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         // Step 2b replaces this with attribution from the arrival connection, at which
         // point both fields become required. See docs/design/gateway_ha.md.
         int16_t routing_gateway_instance = gateway_ids::first_instance;
+        // The originating gateway's ingress stamp, returned to it on the ER so it can
+        // measure the round trip. Only the routing-map branch can supply one: an ER that
+        // is not tied to a sequenced order never had an originating read to measure from.
+        bool has_routing_ingress_ns = false;
+        int64_t routing_ingress_ns = 0;
         bool erase_routing_entry = false;
         {
             auto it = seq_no_to_session_conn_id_.find(er_seq_no);
@@ -476,6 +485,8 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
                 routing_conn_id = it->second.session_conn_id;
                 routing_gateway_id = it->second.gateway_id;
                 routing_gateway_instance = it->second.gateway_instance;
+                has_routing_ingress_ns = it->second.has_ingress_ns;
+                routing_ingress_ns = it->second.gateway_ingress_ns;
 
                 switch (view.ord_status) {
                     case pubsub_itc_fw_app::OrdStatus::Filled:
@@ -527,6 +538,8 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         envelope.origin_gateway_id = routing_gateway_id;
         envelope.has_gateway_instance_id = has_routing_conn;
         envelope.gateway_instance_id = routing_gateway_instance;
+        envelope.has_gateway_ingress_ns = has_routing_ingress_ns;
+        envelope.gateway_ingress_ns = routing_ingress_ns;
 
         append_envelope_to_wal(envelope);
         send_wal_record(envelope);
@@ -583,6 +596,8 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
                 pending.gateway_session_conn_id = routing_conn_id;
                 pending.origin_gateway_id = routing_gateway_id;
                 pending.origin_gateway_instance = routing_gateway_instance;
+                pending.has_gateway_ingress_ns = has_routing_ingress_ns;
+                pending.gateway_ingress_ns = routing_ingress_ns;
                 pending.erase_routing_entry = erase_routing_entry;
                 PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: ER seq={} buffered -- awaiting WalAck seq={} from follower",
                            er_seq_no, gate_seq_no);
@@ -1005,6 +1020,15 @@ void SequencerThread::dispatch_replay_records() {
         envelope.has_gateway_instance_id = view.has_gateway_instance_id;
         envelope.gateway_instance_id = view.gateway_instance_id;
 
+        // gateway_ingress_ns is deliberately NOT carried across replay, even though the
+        // stored record has one. It records when a client's order was read off a socket,
+        // which for a replayed order was minutes or hours ago and has nothing to do with
+        // how long this ER took. Forwarding it would put every replayed order in the
+        // histogram's overflow bucket and drag the venue's tail latency with it -- an
+        // invented stall, reported at exactly the moment a failover makes people look.
+        // Leaving it absent costs a handful of observations after promotion and keeps
+        // every observation that is recorded a real measurement.
+
         // Rebuild the routing map as the WAL is replayed, so ERs the matching engine
         // emits for these orders after promotion reach the gateway they came from. The
         // record carries the gateway id because the WAL stores the gateway's own envelope.
@@ -1013,6 +1037,7 @@ void SequencerThread::dispatch_replay_records() {
             origin.session_conn_id = view.gateway_session_conn_id;
             origin.gateway_id = view.has_origin_gateway_id ? view.origin_gateway_id : gateway_ids::default_when_absent;
             origin.gateway_instance = view.has_gateway_instance_id ? view.gateway_instance_id : gateway_ids::first_instance;
+            // has_ingress_ns stays false for the reason above.
             seq_no_to_session_conn_id_[view.seq_no] = origin;
         }
 
@@ -1219,6 +1244,8 @@ void SequencerThread::forward_pending_er(const PendingEr& pending) {
     envelope.origin_gateway_id = pending.origin_gateway_id;
     envelope.has_gateway_instance_id = pending.has_gateway_session_conn_id;
     envelope.gateway_instance_id = pending.origin_gateway_instance;
+    envelope.has_gateway_ingress_ns = pending.has_gateway_ingress_ns;
+    envelope.gateway_ingress_ns = pending.gateway_ingress_ns;
 
     send_er_to_origin_gateway(pending.origin_gateway_id, pending.origin_gateway_instance, pending.seq_no, envelope);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: buffered ER seq={} forwarded to gateway id {}", pending.seq_no,

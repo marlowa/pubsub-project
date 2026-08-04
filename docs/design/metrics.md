@@ -2,11 +2,12 @@
 
 How this project exposes measurements, and the decisions behind the shape of it.
 
-> **Status: partly built.** `MetricKey`, the metric interfaces and their no-op and
-> prometheus-cpp implementations exist. `PrometheusEndpoint` registers metrics but does not
-> yet serve them -- there is no `Exposer` yet -- and nothing is instrumented. The
-> configuration described under [Configuration](#configuration) is agreed but not
-> implemented. Sections marked **open** are undecided.
+> **Status: in use.** `MetricKey`, the metric interfaces, their no-op and prometheus-cpp
+> implementations, the `Exposer` and the configuration below are all built. Three metrics
+> are instrumented -- `framework_pdu_messages_total`, `orders_processed_total` and
+> `order_round_trip_nanoseconds` -- and the matching engine and both order gateways name a
+> `metrics_scope`, so they expose series. Every other component still leaves the scope
+> empty and therefore registers nothing. Sections marked **open** are undecided.
 
 ---
 
@@ -22,7 +23,7 @@ is deliberately not linked -- it would only pull in libcurl for a path never tak
 
 The client library is **prometheus-cpp 1.3.0**, wired in as an ordinary third-party
 dependency (`PROMETHEUS_VERSION`); see the top-level `CMakeLists.txt`. Not to be confused
-with Prometheus itself, which is a Go server and is not vendored here.
+with Prometheus itself, which is a Go server and forms no part of this build.
 
 ---
 
@@ -288,7 +289,14 @@ that construct several threads against one Reactor need no changes, while a comp
 wants the metric names its threads:
 
 ```cpp
-ApplicationThreadConfiguration{ .metrics_scope = "sequencer_thread" }
+// Alongside the make_queue_config() / make_allocator_config() helpers each component
+// already has. A designated initialiser at the call site would be shorter but does not
+// compile: this project builds as C++17, and designated initialisers are C++20.
+pubsub_itc_fw::ApplicationThreadConfiguration make_thread_config() {
+    pubsub_itc_fw::ApplicationThreadConfiguration configuration;
+    configuration.metrics_scope = "sequencer_thread";
+    return configuration;
+}
 ```
 
 The alternative defaults were considered and rejected: registering unconditionally with an
@@ -315,6 +323,117 @@ One series per thread, never one per process. A component that grows a second th
 second series automatically, with no shared counter and no contention; the process total is a
 `sum()` at query time. Aggregating in the exporter would throw away the breakdown and could not
 be recovered later.
+
+### `orders_processed_total`
+
+New orders accepted onto the book by the matching engine.
+
+    orders_processed_total{application="pubsub",component="matching_engine_primary",scope="matching_engine_thread"}
+
+Incremented on the one path that puts an order on the book, immediately after
+`order_book_.emplace`, and deliberately not at entry to `handle_new_order_single`. That
+function has three paths that must not count:
+
+- **Reconciling**, which replays the WAL into the book without emitting an ER. Counting it
+  would make the series jump by the whole replayed backlog at each failover, and an order
+  rate derived from it would show a spike that never happened.
+- **Follower**, which discards order PDUs outright — the primary is authoritative.
+- The **duplicate-ClOrdID rejection**, which sends a rejection ER and books nothing.
+
+Cancels are not counted. A cancel is a different operation on an order that already exists,
+and folding the two into one number leaves neither rate readable. If cancel throughput is
+wanted it gets its own counter.
+
+### `order_round_trip_nanoseconds`
+
+A histogram, registered by **both** order gateways, measuring from the moment a gateway took
+a client's order in hand to the moment it starts sending the acknowledging ExecutionReport.
+
+    order_round_trip_nanoseconds_bucket{application="pubsub",component="fix_order_gateway_a",scope="gateway_thread",le="250000"}
+    order_round_trip_nanoseconds_bucket{application="pubsub",component="binary_order_gateway_a",scope="gateway_thread",le="250000"}
+
+One family, told apart by the component label, exactly as the registration rules above
+describe. Comparing the two protocols is therefore one query grouped by `component`, and a
+third protocol would cost a label value rather than a new metric and a new dashboard panel.
+The trap that comes with it: a query written without `by (component)` blends the protocols
+into a number describing neither. That is true of every metric here, since all of them are
+per-instance, so it is a querying habit rather than a reason to fold the protocol into the
+name.
+
+**What it excludes, and why.** It ends when the encoded ER is handed to the reactor to send,
+not when the client receives it. What happens after that — kernel, wire, client — the gateway
+cannot observe, and it is not what the venue is answerable for.
+
+**Which ER stops the clock.** Only the one acknowledging a new order (`OrdStatus=New`).
+Every ER for an order carries the same ingress stamp, so a later `Canceled` one would
+otherwise be recorded as a round trip lasting as long as the order rested on the book. A
+cancel's own round trip is a different measurement of a different thing.
+
+#### How the ingress time travels
+
+The measurement starts in the gateway and ends in the gateway, but the order visits the
+sequencer and the matching engine in between, so the start time has to travel with it. It
+rides on the `WalRecord` envelope as `gateway_ingress_ns`, alongside the routing metadata
+already there — **not** in the ER PDU, which is DD-derived and must stay a genuine FIX50SP2
+subset, so a nanosecond ingress stamp cannot be smuggled in as an invented tag.
+
+1. The gateway stamps it when it takes the order off the client. The FIX gateway does so at
+   its raw-socket read, before parsing; the binary gateway at entry to its client PDU
+   dispatch, after the ER and authentication branches. Both are the earliest point at which
+   the process has the order in hand, which is what makes the two comparable.
+2. The sequencer records it in the `OriginSession` entry it already keeps against the
+   order's `seq_no`, and stamps it back onto the outbound ER envelope. It rides with the
+   routing data rather than in a map of its own because it has the same key and the same
+   lifetime; a second map would be a second thing to insert into, erase from and rebuild on
+   replay, with no way to notice when the two drifted apart.
+3. The gateway subtracts it from the current time just before the send.
+
+**The matching engine is not involved at all** — it neither reads nor forwards the stamp,
+and needed no change.
+
+Three cases deliberately produce no observation rather than a wrong one:
+
+- **WAL replay.** A replayed order carries the ingress time of the original client read,
+  minutes or hours earlier. Propagating it would put every replayed order in the overflow
+  bucket and drag the venue's tail latency with it — an invented stall, reported at exactly
+  the moment a failover makes people look. The sequencer drops the stamp on replay.
+- **Gateway-generated cancels.** The cancels issued when a client disconnects are the
+  gateway's own doing; the client has already gone, so nobody waited on them.
+- **A negative delta.** After a gateway failover the two ends are stamped by different
+  processes, whose clocks share no origin. Recording it would put a nonsense value into
+  `_sum` and bias every average drawn from the family thereafter, which no later query can
+  undo. The stamp is a wall clock rather than a steady clock for the same reason: a steady
+  clock's origin is per-process and the two ends are not always the same process.
+
+#### Bucket bounds
+
+Configured, not fixed in code — `metrics.order_round_trip_buckets`, a TOML array of
+nanoseconds. Bucket bounds that do not bracket the latencies actually being served are worse
+than no histogram: every observation lands in one bucket and every percentile reads as that
+bucket's bound. There is deliberately no default, which would be the one value nobody ever
+revisits.
+
+**Both gateways must use the same bounds**, so the value comes from a single shared
+placeholder, `${shared_metrics_order_round_trip_buckets}`, expanded into each gateway's
+file. Histograms with different boundaries cannot be compared or aggregated. Nothing can
+detect divergence at run time — each process sees only its own configuration — and nothing
+downstream will either, since bucket bounds belong to each *child* rather than to the
+family, so prometheus-cpp will happily render two children of one family with different
+bounds. The single placeholder is the only thing keeping them in step.
+
+`load_order_round_trip_buckets` rejects empty bounds, non-ascending ones, and a
+non-finite bound. That last is the plausible-looking mistake, since every rendered histogram
+ends in `le="+Inf"`: **that bucket is added by the library, and must not be listed.**
+prometheus-cpp allocates one more counter than there are boundaries and renders it as
+infinity itself. Nothing above the top bound is lost by leaving it out — such an observation
+lands in that automatic bucket and still counts towards `_sum` and `_count`, so the mean and
+the total stay exact. What degrades is quantile resolution, since `histogram_quantile`
+cannot interpolate within an unbounded bucket. That is the reason the top bound belongs well
+above the working range, not a reason to try to cap it.
+
+The dev bounds run from 10µs to 5s. The range is set by measurement: round trips of 119,
+356 and 528 microseconds were recorded at 4, 20 and 40 concurrent sessions at the same
+offered rate.
 
 ---
 
@@ -364,13 +483,23 @@ that seam if it turns out to be wanted.
 
 ## Open
 
-- **No component sets `metrics_scope` yet**, so `framework_pdu_messages_total` is registered
-  by nothing and no series is exposed. Opting each component in is the immediate next step.
-- **What else to measure.** The first purpose is comparing FIX against binary order entry,
-  which requires instrumenting both identically -- a metric on one path and not the other
-  would measure the instrumentation. The gateway-internal segments are where the two protocols
-  actually differ; everything downstream is common to both.
-- **Bucket boundaries** for latency histograms.
+- **Most components still set no `metrics_scope`.** The matching engine and both order
+  gateways are opted in; the sequencer, arbiter, witness, authentication services, matching
+  engine publisher and topic probe are not, so they expose no per-thread series. Opting the
+  sequencer in is the obvious next one, since it sits between the two ends of the round trip.
+- **Which gateway-internal segment is which.** `order_round_trip_nanoseconds` gives the
+  whole trip but does not break it down, so it shows *that* FIX and binary differ without
+  showing where. The segments where they actually differ are gateway-internal -- decode and
+  encode on the FIX side, structurally absent on the binary one -- and everything downstream
+  is common. `gateway_ingress_ns` on the envelope is already the time origin such a
+  breakdown would measure from, so the segments can be added without another wire change.
+  **Instrument both gateways identically or the comparison measures the instrumentation:**
+  the first attempt at this comparison was dominated by *logging*, at 32% of the FIX
+  gateway's samples against 11% for binary, more than three times the cost of FIX parsing.
+- **A queue-depth gauge**, so a round-trip percentile can be read as service time or as
+  queueing. Without it the two are indistinguishable, and the interpretation of every
+  latency figure depends on which it is.
+- **Bucket boundaries beyond the gateway histogram**, for any later latency metric.
 - **Scrape interval and retention**, and whether a Prometheus server is deployed alongside
   the venue or scrapes from outside it.
 - **Whether the endpoint should be exposed at all in preprod and prod**, pending the wider

@@ -17,6 +17,7 @@
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/ExpandablePoolAllocator.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
+#include <pubsub_itc_fw/HistogramHandle.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
@@ -222,6 +223,18 @@ class BinaryOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     void expire_grace_sessions();
     void arm_grace_timer();
     size_t reclaim_grace_session(std::string_view comp_id);
+
+    // When the current client PDU was taken off the connection, in wall-clock nanoseconds.
+    // Stamped on the order forwarded out of it and returned on the acknowledging ER, where
+    // it becomes the start of the round-trip measurement. Zero until the first client PDU,
+    // which only a gateway-generated cancel can precede.
+    int64_t current_pdu_ingress_ns_{0};
+
+    // Nanoseconds from taking an order off the client connection to starting to send its
+    // ExecutionReport. The same metric name and bucket bounds the FIX gateway registers,
+    // told apart by the component label -- see applications/fix_common/GatewayMetrics.hpp.
+    // Unbound, and therefore a no-op, when no bounds are configured.
+    pubsub_itc_fw::HistogramHandle order_round_trip_histogram_;
 
     // Running totals behind the GW-PROGRESS line, matching the FIX order gateway's so the two
     // gateways log the same amount and a perf comparison is not measuring logging.

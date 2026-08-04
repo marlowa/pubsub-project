@@ -164,24 +164,60 @@ message WalRecord (id=103, version=1)
     bytes payload        # complete encoded PDU payload (as stored in the WAL)
     datetime_ns wall_time_ns  # wall time at which the leader sequenced this record; used for WAL replay clock
     # WalRecord doubles as the pipeline envelope: the routing metadata that must not live
-    # inside the (DD-derived) FIX PDU rides here instead. Trailing + optional so existing
-    # WAL/replication records decode unchanged. See docs/design/fix_pdu_generation.md.
+    # inside the (DD-derived) FIX PDU rides here instead. FIX messages here are a genuine
+    # FIX50SP2 subset, so venue-internal routing data cannot be smuggled in as an invented
+    # tag; it belongs on the envelope. See docs/design/fix_pdu_generation.md.
+    #
+    # The four fields below are optional together, and for one shared reason: a WalRecord
+    # does not always have an originating client session. Plain leader-to-follower
+    # replication records do not, and neither do the ERs the matching engine emits with no
+    # originating order (the seq_no==0 cancel-on-failover ERs). Optional says "there was no
+    # client session here", which a receiver must be able to distinguish from a real session
+    # that happens to be numbered zero.
     optional i32 gateway_session_conn_id  # originating client session; sequencer routes the ER back to it
     optional string sender_comp_id        # originating client comp id, retained for audit
     # Which gateway the order came from. gateway_session_conn_id is only unique within one
     # gateway -- each numbers its own client connections -- so with more than one gateway
     # (the ASCII FIX one and the binary one) the pair (origin_gateway_id, session conn id)
-    # is what identifies a client session. Absent means gateway 1, so records written before
-    # this field decode and route unchanged.
+    # is what identifies a client session.
     optional i16 origin_gateway_id
     # Which *instance* of that gateway. origin_gateway_id names a protocol -- the ASCII FIX
-    # gateway or the binary one -- and stays that way, because its values are already baked
-    # into every WAL record written. Running two instances of the same protocol needs a second
-    # axis, and this is it. The triple (origin_gateway_id, gateway_instance_id,
-    # gateway_session_conn_id) identifies a client session venue-wide.
-    # Absent means instance 1, so every record written before this field decodes and routes
-    # unchanged. See docs/design/gateway_ha.md.
+    # gateway or the binary one -- and nothing else: the two are separate axes, because one
+    # protocol can be served by several processes and the protocol id alone stopped
+    # identifying a process the moment a second instance was started. Conflating them is a
+    # mistake this project has already made at three separate layers; see
+    # docs/design/gateway_ha.md.
+    #
+    # The triple (origin_gateway_id, gateway_instance_id, gateway_session_conn_id)
+    # identifies a client session venue-wide.
+    #
+    # Read sites currently substitute gateway_ids::default_when_absent and
+    # gateway_ids::first_instance when these are missing. That substitution is a leftover:
+    # it was there to let older records route, and since the records it protected no longer
+    # exist it now only turns a genuinely absent origin into a plausible-looking wrong one.
+    # Both fields are set exactly when gateway_session_conn_id is, so a reader that has
+    # already checked that has nothing left to default.
     optional i16 gateway_instance_id
+    # Wall-clock nanoseconds at which the originating gateway first read this order off the
+    # client socket. Stamped by the gateway on the NOS/OCR envelope, remembered by the
+    # sequencer against the order's seq_no, and stamped back onto the ER envelope so the
+    # gateway can measure the whole round trip when it sends the ER. It exists solely to be
+    # measured: nothing routes or matches on it.
+    #
+    # Optional because it is genuinely absent, not to spare any older reader:
+    #   - plain leader-to-follower replication records have no originating client at all;
+    #   - ERs the matching engine emits with no originating order (the seq_no==0
+    #     cancel-on-failover ERs) never had an ingress time to remember;
+    #   - an order replayed from the WAL carries the ingress time of the original client
+    #     read, which is minutes or hours stale, so a consumer must be able to tell a
+    #     missing value from a misleading one rather than reading a defaulted zero.
+    # A recorded observation is therefore always a real measurement; see docs/design/metrics.md.
+    #
+    # Wall clock rather than steady clock, because the two ends of the measurement are not
+    # always stamped by the same process: after a gateway failover the ER is sent by the
+    # instance that took the session over, whose steady clock shares no origin with the
+    # instance that read the order. The gateway discards a negative delta for that reason.
+    optional datetime_ns gateway_ingress_ns
 end
 
 # ------------------------------------------------------------

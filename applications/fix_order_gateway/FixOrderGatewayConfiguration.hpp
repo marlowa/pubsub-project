@@ -7,6 +7,7 @@
 #include <cstdint> // IWYU pragma: keep
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/MetricsConfiguration.hpp>
@@ -279,6 +280,18 @@ struct FixOrderGatewayConfiguration {
      * Copied into ReactorConfiguration, which is where the Reactor reads it from.
      */
     pubsub_itc_fw::MetricsConfiguration metrics_configuration;
+
+    /**
+     * @brief Bucket bounds in nanoseconds for order_round_trip_nanoseconds, ascending.
+     *
+     * Configured rather than fixed in code because the right bounds depend on the machine
+     * and the offered load, and a histogram whose buckets do not bracket the latencies
+     * actually being served reports every observation as one bound.
+     *
+     * Empty when metrics are disabled, in which case nothing registers and it is unused.
+     * Must match the binary gateway's exactly -- see GatewayMetrics.hpp.
+     */
+    std::vector<double> order_round_trip_buckets;
 };
 
 } // namespaces

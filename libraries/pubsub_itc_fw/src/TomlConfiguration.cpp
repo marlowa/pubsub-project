@@ -420,6 +420,39 @@ std::tuple<bool, std::string> TomlConfiguration::get_required(std::string_view k
     return {true, ""};
 }
 
+std::tuple<bool, std::string> TomlConfiguration::get_required(std::string_view key, std::vector<double>& value) const {
+    const auto* node = impl_->find_node(key);
+    if (!node) {
+        return {false, not_found_error(key)};
+    }
+    const auto* array = node->as_array();
+    if (!array) {
+        return {false, wrong_type_error(key, "array of numbers")};
+    }
+
+    // Integer elements are accepted as well as floating-point ones, which the scalar double
+    // accessor above deliberately does not do. The values this reads are quantities a person
+    // writes out as a list -- histogram bucket bounds in nanoseconds, for instance -- and TOML
+    // types 10000 as an integer and 10000.0 as a float. Rejecting the integer spelling would
+    // mean every entry in such a list needed a trailing .0, and the one entry that was written
+    // without it would fail the whole load for no reason a reader could see.
+    std::vector<double> parsed;
+    parsed.reserve(array->size());
+    for (size_t index = 0; index < array->size(); ++index) {
+        const toml::node& element = *array->get(index);
+        if (const auto* as_float = element.as_floating_point()) {
+            parsed.push_back(as_float->get());
+        } else if (const auto* as_integer = element.as_integer()) {
+            parsed.push_back(static_cast<double>(as_integer->get()));
+        } else {
+            return {false, fmt::format("configuration key '{}' element {} is not a number", key, index)};
+        }
+    }
+
+    value = std::move(parsed);
+    return {true, ""};
+}
+
 // Duration get_required helper -- shared logic now lives in Impl::get_duration_string
 
 std::tuple<bool, std::string> TomlConfiguration::get_required(std::string_view key, std::chrono::nanoseconds& value) const {
@@ -528,6 +561,12 @@ void TomlConfiguration::get_required_except(std::string_view key, int64_t& value
 }
 
 void TomlConfiguration::get_required_except(std::string_view key, double& value) const {
+    auto [ok, err] = get_required(key, value);
+    if (!ok)
+        throw ConfigurationException(err);
+}
+
+void TomlConfiguration::get_required_except(std::string_view key, std::vector<double>& value) const {
     auto [ok, err] = get_required(key, value);
     if (!ok)
         throw ConfigurationException(err);

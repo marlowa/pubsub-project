@@ -96,6 +96,11 @@ component   = "${component_name}"
 listen_host = "${fix_order_gateway_b_metrics_listen_host}"
 listen_port = ${fix_order_gateway_b_metrics_listen_port}
 
+# Bucket bounds in nanoseconds for order_round_trip_nanoseconds. From a shared
+# placeholder, not written out here: the metric compares this gateway against the other
+# protocol's, and histograms with differing bounds cannot be compared or aggregated.
+order_round_trip_buckets = ${shared_metrics_order_round_trip_buckets}
+
 [reactor]
 cpu_pinning_enabled    = true
 cpu_pinning_reserve_cpu0   = ${shared_reactor_cpu_pinning_reserve_cpu0}

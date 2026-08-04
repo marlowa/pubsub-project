@@ -13,6 +13,10 @@ release/
 # Runtime working directory: component logs and other output written while running
 run/
 
+# Prometheus TSDB. Outside installed/ deliberately -- that tree is rebuilt, and measurement
+# history is meant to outlive a redeploy so runs weeks apart stay comparable.
+var/
+
 # Manually placed JDBC drivers (see db/create_db.py --help for options)
 db/drivers/
 

@@ -33,6 +33,7 @@ as before.
 import argparse
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -118,7 +119,7 @@ def is_pid_alive(pid: int) -> bool:
 # ── Process management ────────────────────────────────────────────────────────
 
 def build_command(
-    name: str, comp: dict, install_dir: Path, log_dir: Path, debug: bool = False,
+    name: str, comp: dict, install_dir: Path, log_dir: Path, run_dir: Path, debug: bool = False,
 ) -> tuple[list[str], Path]:
     """Return (command_list, working_dir) for a component.
 
@@ -127,9 +128,19 @@ def build_command(
     where the resolved config path is appended as the first positional argument only when
     the component defines a 'config' key in the env TOML.  When debug=True, the JVM
     flag -Djavax.net.debug=ssl:handshake:data is added to expose MINA/SSL details.
+    For 'command' components the tool is taken from PATH and its args used verbatim.
     """
     workdir = (install_dir / comp["workdir"]).resolve()
-    if "jar" in comp:
+    if "command" in comp:
+        # An external tool, found on PATH rather than installed into install_dir --
+        # Prometheus is the one such component. Its arguments are given verbatim in the env
+        # TOML because they follow that tool's own conventions, not this project's
+        # <log> <config> pair. {run_dir} and {install_dir} are substituted so a path can be
+        # written without knowing where the tree was deployed.
+        command = [comp["command"]] + [
+            argument.format(run_dir=run_dir, install_dir=install_dir) for argument in comp.get("args", [])
+        ]
+    elif "jar" in comp:
         jar_path = (install_dir / comp["jar"]).resolve()
         command = ["java"]
         if debug:
@@ -164,7 +175,7 @@ def start_one(  # pylint: disable=too-many-arguments,too-many-locals
         time.sleep(delay)
         return
 
-    command, workdir = build_command(name, comp, install_dir, log_dir, debug=debug)
+    command, workdir = build_command(name, comp, install_dir, log_dir, run_dir, debug=debug)
 
     # Start every process in the machine's background CPU tier.  deploy.py
     # generates the wrapper from the resolved layout; a deployment that predates
@@ -185,6 +196,14 @@ def start_one(  # pylint: disable=too-many-arguments,too-many-locals
         jar_path = (install_dir / comp["jar"]).resolve()
         if not jar_path.is_file():
             sys.exit(f"error: JAR not found for {name}: {jar_path}")
+    elif "command" in comp:
+        # Warn and skip rather than exit. An external tool is not part of this project's
+        # build, so a machine that has not installed it is a normal state, not a broken
+        # deployment -- and the venue must still come up. Refusing to start a trading system
+        # because a monitoring tool is absent gets the priority exactly backwards.
+        if shutil.which(comp["command"]) is None:
+            print(f"  {name}: '{comp['command']}' not found on PATH — skipping")
+            return
 
     workdir.mkdir(parents=True, exist_ok=True)
 
@@ -205,8 +224,18 @@ def start_one(  # pylint: disable=too-many-arguments,too-many-locals
             env=child_env,
         )
     write_pid(run_dir, name, proc.pid)
-    print(f"  {name} — PID {proc.pid}")
     time.sleep(delay)
+
+    # Report what actually happened, not merely what was launched. Popen succeeds as soon as
+    # the fork does, so a process that exits immediately -- a port already taken, a config it
+    # will not parse -- was previously announced as started, left a PID file behind, and was
+    # only discovered later by `status` or by wondering why nothing worked.
+    if not is_pid_alive(proc.pid):
+        remove_pid(run_dir, name)
+        print(f"  {name} — FAILED: exited immediately (see {stdout_path})")
+        return
+
+    print(f"  {name} — PID {proc.pid}")
 
 
 def stop_one(name: str, run_dir: Path, timeout: float = _SHUTDOWN_TIMEOUT) -> None:
@@ -241,6 +270,117 @@ def stop_one(name: str, run_dir: Path, timeout: float = _SHUTDOWN_TIMEOUT) -> No
 
     remove_pid(run_dir, name)
     print(f"  {name} (PID {pid}): stopped")
+
+
+# ── Prometheus scrape configuration ───────────────────────────────────────────
+
+def discover_scrape_targets(install_dir: Path) -> list[tuple[str, str, int]]:
+    """Return (component, host, port) for every deployed component with metrics enabled.
+
+    Read out of the deployed configs rather than listed anywhere, because those files are
+    what the processes themselves read: a target discovered here is by construction the
+    address a process will actually bind. A hand-maintained list in a scrape config would
+    be a second copy of the same facts, and the failure mode is silent -- a component added
+    without a matching target simply never appears in a dashboard, and nothing complains.
+
+    The component name comes from `metrics.component`, so it matches the label the process
+    puts on its own series. Components with metrics disabled, or with no [metrics] section
+    at all, are skipped: scraping them would only record `up 0` for ever.
+    """
+    targets: list[tuple[str, str, int]] = []
+    etc_dir = install_dir / "etc"
+    if not etc_dir.is_dir():
+        return targets
+
+    for config_path in sorted(etc_dir.rglob("*.toml")):
+        try:
+            with open(config_path, "rb") as file_handle:
+                data = tomllib.load(file_handle)
+        except (tomllib.TOMLDecodeError, OSError):
+            # credentials.toml and friends are not component configs; a file that will not
+            # parse is not this function's problem to report.
+            continue
+        metrics = data.get("metrics")
+        if not isinstance(metrics, dict) or not metrics.get("enabled"):
+            continue
+        host = metrics.get("listen_host")
+        port = metrics.get("listen_port")
+        component = metrics.get("component")
+        if not host or not port or not component:
+            continue
+        # A configured port of 0 means "let the operating system choose", so the real port
+        # is not knowable from configuration and the process must be asked. Nothing in the
+        # deployed venue does this -- it exists for tests -- so it is skipped rather than
+        # guessed at.
+        if int(port) == 0:
+            print(f"  note: {component} uses an ephemeral metrics port — not scraped")
+            continue
+        targets.append((component, host, int(port)))
+
+    return targets
+
+
+def write_prometheus_scrape_config(env: dict, install_dir: Path, run_dir: Path) -> Path:
+    """Generate the Prometheus scrape config from the deployed venue, and return its path.
+
+    Written into run_dir on every start, so it always describes the venue about to run.
+    """
+    settings = env.get("prometheus", {})
+    scrape_interval = settings.get("scrape_interval", "5s")
+    scrape_timeout = settings.get("scrape_timeout", "4s")
+    environment_name = settings.get("environment_label", "dev")
+
+    targets = discover_scrape_targets(install_dir)
+    target_lines = "\n".join(
+        f"          - {host}:{port}   # {component}" for component, host, port in targets
+    )
+
+    # Jobs for things that are not venue components and so cannot be discovered from the
+    # deployed configs -- a machine-metrics exporter, typically. Listed in the env TOML
+    # because they are a property of the host rather than of the venue.
+    extra_job_blocks = []
+    for extra in settings.get("extra_job", []):
+        job_name = extra["name"]
+        extra_targets = "\n".join(f"          - {target}" for target in extra["targets"])
+        comment = extra.get("comment", "")
+        comment_line = f"    # {comment}\n" if comment else ""
+        extra_job_blocks.append(
+            f"\n{comment_line}  - job_name: {job_name}\n"
+            f"    static_configs:\n"
+            f"      - targets:\n{extra_targets}\n"
+        )
+    extra_jobs = "".join(extra_job_blocks)
+
+    content = f"""# GENERATED by devenv.py on every start -- do not edit; edits are overwritten.
+#
+# Targets are discovered from the deployed component configs under
+# {install_dir}/etc, which is what those processes themselves read, so this
+# cannot drift from the venue it describes.
+#
+# Every target already carries application, component and scope labels composed by
+# MetricKey from its own configuration, so there is deliberately no job-per-component here:
+# that would duplicate what the exposition already says and then disagree with it the first
+# time something was renamed in only one of the two places. The default `instance` label is
+# "host:port", which identifies a process without naming it -- group by `component`.
+
+global:
+  scrape_interval: {scrape_interval}
+  scrape_timeout: {scrape_timeout}
+  external_labels:
+    environment: {environment_name}
+
+scrape_configs:
+  - job_name: pubsub_venue
+    static_configs:
+      - targets:
+{target_lines}
+{extra_jobs}"""
+
+    config_path = run_dir / "prometheus.yml"
+    config_path.write_text(content, encoding="utf-8")
+    extra_count = sum(len(extra["targets"]) for extra in settings.get("extra_job", []))
+    print(f"  scrape config: {config_path} ({len(targets)} venue + {extra_count} other target(s))")
+    return config_path
 
 
 # ── Credential export ─────────────────────────────────────────────────────────
@@ -319,9 +459,9 @@ def check_configs_expanded(install_dir: Path) -> None:
                  "(cmake --install re-lays the templates unexpanded, so re-deploy after every build).")
 
 
-def cmd_start(
+def cmd_start(  # pylint: disable=too-many-arguments
     env: dict, ha_enabled: bool, delay: float, debug: bool = False,
-    component: str | None = None,
+    component: str | None = None, with_prometheus: bool = True,
 ) -> None:
     """Implement the 'start' subcommand: export credentials then start all components.
 
@@ -329,6 +469,10 @@ def cmd_start(
     with ha_only components skipped when ha_enabled is False.  When component
     is given, only that single component is started and the full-stack preamble
     (CPU registry reset, credential export) is skipped.
+
+    Components marked metrics_only are skipped when with_prometheus is False.  They are the
+    observability sidecars rather than part of the venue, so a host that has no Prometheus
+    -- or simply does not want one -- starts the venue exactly as before.
     """
     install_dir, log_dir, run_dir = resolve_paths(env)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -343,6 +487,11 @@ def cmd_start(
             sys.exit(f"error: unknown component '{component}'")
         print(f"=== starting {component} ===")
         comp = env["components"][component]
+        # Starting the scraper on its own still needs a scrape config, and regenerating it
+        # picks up whatever has been deployed since -- which is the usual reason for
+        # restarting it by itself.
+        if comp.get("metrics_only", False):
+            write_prometheus_scrape_config(env, install_dir, run_dir)
         start_one(component, comp, install_dir, log_dir, run_dir, delay, debug=debug)
         return
 
@@ -367,6 +516,16 @@ def cmd_start(
     if debug:
         print("=== enabling debug logging ===")
         patch_debug_logging(install_dir)
+        print()
+
+    if not with_prometheus:
+        order = [name for name in order if not env["components"][name].get("metrics_only", False)]
+    elif any(env["components"][name].get("metrics_only", False) for name in order):
+        # Generated before anything starts, so the scrape config describes this venue. It
+        # reads the deployed configs, not the running processes, so the ordering does not
+        # matter -- and a target that is not up yet simply reads `up 0` until it is.
+        print("=== generating prometheus scrape config ===")
+        write_prometheus_scrape_config(env, install_dir, run_dir)
         print()
 
     print("=== starting components ===")
@@ -409,8 +568,9 @@ def cmd_status(env: dict) -> None:
             print(f"  {label:<38}  {pid:<8}  dead (stale PID)")
 
 
-def cmd_restart(
+def cmd_restart(  # pylint: disable=too-many-arguments
     env: dict, ha_enabled: bool, delay: float, component: str | None, debug: bool = False,
+    with_prometheus: bool = True,
 ) -> None:
     """Implement the 'restart' subcommand: stop and restart all or one named component.
 
@@ -438,11 +598,13 @@ def cmd_restart(
             export_credentials(install_dir, env)
             print()
         comp = env["components"][component]
+        if comp.get("metrics_only", False):
+            write_prometheus_scrape_config(env, install_dir, run_dir)
         start_one(component, comp, install_dir, log_dir, run_dir, delay, debug=debug)
     else:
         cmd_stop(env)
         print()
-        cmd_start(env, ha_enabled, delay, debug=debug)
+        cmd_start(env, ha_enabled, delay, debug=debug, with_prometheus=with_prometheus)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -464,6 +626,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--debug", action="store_true",
         help="override applog_level to 'debug' in all C++ component configs before starting",
+    )
+    parser.add_argument(
+        "--no-prometheus", action="store_true",
+        help="skip components marked metrics_only = true (the Prometheus scraper). "
+             "The venue itself still exposes its metrics endpoints; nothing collects them",
     )
     parser.add_argument(
         "--delay", type=float, default=_STARTUP_DELAY, metavar="SECONDS",
@@ -505,14 +672,18 @@ def main() -> None:
     ha_from_toml = env.get("ha", {}).get("enabled", True)
     ha_enabled   = ha_from_toml and not args.no_ha
 
+    with_prometheus = not args.no_prometheus
+
     if args.subcommand == "start":
-        cmd_start(env, ha_enabled, args.delay, debug=args.debug, component=args.component)
+        cmd_start(env, ha_enabled, args.delay, debug=args.debug, component=args.component,
+                  with_prometheus=with_prometheus)
     elif args.subcommand == "stop":
         cmd_stop(env)
     elif args.subcommand == "status":
         cmd_status(env)
     elif args.subcommand == "restart":
-        cmd_restart(env, ha_enabled, args.delay, args.component, debug=args.debug)
+        cmd_restart(env, ha_enabled, args.delay, args.component, debug=args.debug,
+                    with_prometheus=with_prometheus)
 
 
 if __name__ == "__main__":

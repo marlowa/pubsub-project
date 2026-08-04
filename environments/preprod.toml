@@ -236,6 +236,32 @@ ha_only = false
 # everywhere; each component still has its own listener host and port below.
 metrics_enabled     = false
 metrics_application = "pubsub"
+# Bucket bounds in nanoseconds for the order round-trip histogram, which every order
+# gateway registers. Declared once here and expanded into each gateway's file because
+# the metric exists to compare the FIX gateway against the binary one: histograms with
+# different bounds cannot be compared or aggregated, so a per-gateway value would make
+# the comparison meaningless the first time one of them was tuned alone.
+# The range has to span TWO regimes, which is what earlier, narrower bounds got wrong.
+#
+#   Service time -- a rate-limited run, where the pipeline keeps up. Round trips of 119,
+#   356 and 528 microseconds were recorded at 4, 20 and 40 concurrent sessions. This is the
+#   regime the FIX-versus-binary comparison lives in, so the microsecond end needs fine
+#   resolution or an improvement disappears into one bucket.
+#
+#   Queueing -- a saturating throughput run, which is what perf_run.py does by default:
+#   it offers load faster than the pipeline drains, deliberately. A 20,000-order run
+#   measured a mean of 101ms, and against bounds topping out at 100ms fully 59% of
+#   observations landed in the overflow bucket, leaving no usable percentile at all.
+#
+# Covering both costs five extra series per gateway, which is nothing, and the alternative
+# are bucket bounds that are useless in whichever regime is not being run that day.
+metrics_order_round_trip_buckets = [
+    10000, 25000, 50000, 100000,          # 10us 25us 50us 100us   -- service time
+    250000, 500000, 1000000, 2500000,     # 250us 500us 1ms 2.5ms
+    5000000, 10000000, 25000000,          # 5ms 10ms 25ms
+    50000000, 100000000, 250000000,       # 50ms 100ms 250ms       -- queueing
+    500000000, 1000000000, 2500000000,    # 500ms 1s 2.5s
+    5000000000 ]                          # 5s                     -- a genuine stall
 reactor_cpu_pinning_reserve_cpu0   = false
 # The CPU registry file and its lock live under install_dir/run/ and are set
 # by deploy.py, which is the single place that knows the install layout.  They

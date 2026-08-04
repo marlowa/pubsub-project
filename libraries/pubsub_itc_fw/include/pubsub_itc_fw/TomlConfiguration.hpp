@@ -8,6 +8,7 @@
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <vector>
 
 #include <pubsub_itc_fw/ConfigurationException.hpp>
 
@@ -93,6 +94,17 @@ namespace pubsub_itc_fw {
  *       config.get_required_except(
  *           fmt::format("credential[{}].comp_id", i), comp_id);
  *   }
+ *
+ * A plain array of numbers is read in one call instead, into a std::vector<double>:
+ *
+ *   order_round_trip_buckets = [10000, 25000, 50000]
+ *
+ *   std::vector<double> buckets;
+ *   config.get_required_except("metrics.order_round_trip_buckets", buckets);
+ *
+ * Integer and floating-point elements are both accepted and both yield doubles, so the
+ * list above does not have to be written 10000.0, 25000.0. Note that the scalar double
+ * accessor is stricter and requires a genuine TOML float.
  *
  * Key lookup is case-sensitive, consistent with the TOML specification.
  *
@@ -181,6 +193,7 @@ class TomlConfiguration {
     [[nodiscard]] std::tuple<bool, std::string> get_required(std::string_view key, int32_t& value) const;
     [[nodiscard]] std::tuple<bool, std::string> get_required(std::string_view key, int64_t& value) const;
     [[nodiscard]] std::tuple<bool, std::string> get_required(std::string_view key, double& value) const;
+    [[nodiscard]] std::tuple<bool, std::string> get_required(std::string_view key, std::vector<double>& value) const;
     [[nodiscard]] std::tuple<bool, std::string> get_required(std::string_view key, std::chrono::nanoseconds& value) const;
     [[nodiscard]] std::tuple<bool, std::string> get_required(std::string_view key, std::chrono::microseconds& value) const;
     [[nodiscard]] std::tuple<bool, std::string> get_required(std::string_view key, std::chrono::milliseconds& value) const;
@@ -195,6 +208,7 @@ class TomlConfiguration {
     void get_required_except(std::string_view key, int32_t& value) const;
     void get_required_except(std::string_view key, int64_t& value) const;
     void get_required_except(std::string_view key, double& value) const;
+    void get_required_except(std::string_view key, std::vector<double>& value) const;
     void get_required_except(std::string_view key, std::chrono::nanoseconds& value) const;
     void get_required_except(std::string_view key, std::chrono::microseconds& value) const;
     void get_required_except(std::string_view key, std::chrono::milliseconds& value) const;

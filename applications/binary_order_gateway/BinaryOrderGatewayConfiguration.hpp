@@ -5,11 +5,14 @@
 
 #include <chrono>
 #include <cstdint> // IWYU pragma: keep
+#include <memory>
 #include <string>
+#include <vector>
 
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/MetricsConfiguration.hpp>
 #include <pubsub_itc_fw/RollingLogfileConfiguration.hpp>
+#include <pubsub_itc_fw/WallClock.hpp>
 
 namespace binary_order_gateway {
 
@@ -191,6 +194,32 @@ struct BinaryOrderGatewayConfiguration {
      * Copied into ReactorConfiguration, which is where the Reactor reads it from.
      */
     pubsub_itc_fw::MetricsConfiguration metrics_configuration;
+
+    /**
+     * @brief Clock used to stamp order ingress and to close the round-trip measurement.
+     *
+     * This gateway needs no wall time for the protocol itself -- unlike the FIX one it
+     * builds no SendingTime -- so this exists only for the metric. It is nonetheless the
+     * same injectable WallClock the FIX gateway holds, and deliberately not a direct call
+     * to std::chrono::system_clock: the two gateways' round trips are meant to be compared,
+     * so they must be measured with the same kind of clock, and a test needs to be able to
+     * supply a deterministic one here exactly as it can there.
+     *
+     * Defaults to SystemWallClock (real UTC wall time).
+     */
+    std::shared_ptr<pubsub_itc_fw::WallClock> wall_clock{std::make_shared<pubsub_itc_fw::SystemWallClock>()};
+
+    /**
+     * @brief Bucket bounds in nanoseconds for order_round_trip_nanoseconds, ascending.
+     *
+     * Configured rather than fixed in code because the right bounds depend on the machine
+     * and the offered load, and a histogram whose buckets do not bracket the latencies
+     * actually being served reports every observation as one bound.
+     *
+     * Empty when metrics are disabled, in which case nothing registers and it is unused.
+     * Must match the FIX gateway's exactly -- see GatewayMetrics.hpp.
+     */
+    std::vector<double> order_round_trip_buckets;
 };
 
 } // namespaces

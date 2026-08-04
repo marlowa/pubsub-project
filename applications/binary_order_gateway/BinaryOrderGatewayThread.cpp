@@ -18,6 +18,8 @@
 #include <pubsub_itc_fw/ReactorControlCommand.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 
+#include "GatewayMetrics.hpp"
+
 namespace binary_order_gateway {
 
 namespace {
@@ -27,6 +29,17 @@ pubsub_itc_fw::QueueConfiguration make_queue_config() {
     queue_configuration.low_watermark = 1;
     queue_configuration.high_watermark = 64;
     return queue_configuration;
+}
+
+// A named helper rather than a designated initialiser at the call site: this project builds
+// as C++17, where designated initialisers are a C++20 feature and -Werror rejects them.
+pubsub_itc_fw::ApplicationThreadConfiguration make_thread_config() {
+    pubsub_itc_fw::ApplicationThreadConfiguration configuration;
+    // The same scope token the FIX gateway uses: it names this thread's role, and the two
+    // are told apart by the component label, which is the process instance. That is what
+    // makes the FIX-versus-binary comparison a group-by rather than two separate metrics.
+    configuration.metrics_scope = "gateway_thread";
+    return configuration;
 }
 
 pubsub_itc_fw::AllocatorConfiguration make_allocator_config(const BinaryOrderGatewayConfiguration& config, pubsub_itc_fw::QuillLogger& logger) {
@@ -70,12 +83,22 @@ bool is_terminal_ord_status(pubsub_itc_fw_app::OrdStatus status) {
 BinaryOrderGatewayThread::BinaryOrderGatewayThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger,
                                                    pubsub_itc_fw::Reactor& reactor, const BinaryOrderGatewayConfiguration& config)
     : ApplicationThread(token, logger, reactor, "BinaryOrderGatewayThread", pubsub_itc_fw::ThreadID{1}, make_queue_config(),
-                        make_allocator_config(config, logger), pubsub_itc_fw::ApplicationThreadConfiguration{})
+                        make_allocator_config(config, logger), make_thread_config())
     , config_(config)
     , sequencer_primary_conn_id_{}
     , sequencer_secondary_conn_id_{}
     , client_inbound_service_("inbound:" + std::to_string(config.listen_port))
-    , er_inbound_service_("inbound:" + std::to_string(config.er_listen_port)) {}
+    , er_inbound_service_("inbound:" + std::to_string(config.er_listen_port)) {
+    // Registered here rather than in the initialiser list because the handle is a value and
+    // default-constructs unbound, so unconfigured bounds simply leave it recording
+    // nowhere. Deliberately identical to the FIX gateway's registration -- same metric name,
+    // same help, same bucket bounds -- since a difference in any of the three would make the
+    // comparison measure the instrumentation. See applications/fix_common/GatewayMetrics.hpp.
+    if (!config_.order_round_trip_buckets.empty()) {
+        order_round_trip_histogram_ = get_reactor().metrics().register_histogram("gateway_thread", gateway_metrics::order_round_trip_metric_name,
+                                                                                 gateway_metrics::order_round_trip_help, config_.order_round_trip_buckets);
+    }
+}
 
 void BinaryOrderGatewayThread::on_app_ready_event() {
     open_order_pool_ = std::make_unique<pubsub_itc_fw::ExpandablePoolAllocator<open_orders::OpenOrderEntry>>(
@@ -229,6 +252,16 @@ void BinaryOrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::Eve
         }
         return;
     }
+
+    // This gateway's ingress instant, and the counterpart of the stamp the FIX gateway takes
+    // at its raw-socket read. Both are the earliest point at which the process has a client's
+    // order in hand, which is what makes the round trips of the two protocols comparable
+    // rather than a measurement of where each happened to put its clock read.
+    //
+    // Taken here rather than in handle_new_order_single so it covers the same session lookup
+    // and logged-on check the FIX gateway's stamp covers, and after the ER and authentication
+    // branches above, which are not client traffic and would pay for a clock read nobody uses.
+    current_pdu_ingress_ns_ = config_.wall_clock->now_ns();
 
     BinarySession* session = find_session(message.connection_id());
     if (session == nullptr) {
@@ -568,6 +601,11 @@ void BinaryOrderGatewayThread::forward_order_in_envelope(int16_t inner_pdu_id, c
     envelope.origin_gateway_id = gateway_ids::binary_order_gateway;
     envelope.has_gateway_instance_id = true;
     envelope.gateway_instance_id = config_.instance_id;
+    // When this order was taken off the client connection. The sequencer remembers it
+    // against the order's seq_no and returns it on the acknowledging ER, which is what lets
+    // this gateway measure the whole round trip without keeping any per-order state.
+    envelope.has_gateway_ingress_ns = (current_pdu_ingress_ns_ != 0);
+    envelope.gateway_ingress_ns = current_pdu_ingress_ns_;
     if (!session.comp_id.empty()) {
         envelope.has_sender_comp_id = true;
         envelope.sender_comp_id = session.comp_id;
@@ -642,13 +680,33 @@ void BinaryOrderGatewayThread::handle_execution_report(const pubsub_itc_fw::Even
     // are still the ones that arrived -- this reads the report, it does not rebuild it.
     pubsub_itc_fw_app::ExecutionReportView report{};
     size_t report_bytes_consumed = 0;
-    if (pubsub_itc_fw_app::decode(report, envelope.payload.data, envelope.payload.size, report_bytes_consumed, arena, arena_bytes_needed)) {
+    const bool report_decoded =
+        pubsub_itc_fw_app::decode(report, envelope.payload.data, envelope.payload.size, report_bytes_consumed, arena, arena_bytes_needed);
+    if (report_decoded) {
         track_open_order(it->second, report);
     } else {
         // Relay it regardless: the client is the report's audience, and a gateway that
         // cannot read a message still has no business withholding it.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                    "BinaryOrderGatewayThread: ER seq={} could not be decoded for order tracking -- relaying it but not tracking the order", envelope.seq_no);
+    }
+
+    // The round trip closes here, with the report about to be handed to the reactor for
+    // sending. Measured at the same point as the FIX gateway measures it, and excluding the
+    // same things, or the comparison the metric exists for would be measuring the
+    // instrumentation rather than the protocols.
+    //
+    // Only the report acknowledging a new order counts. Every report for an order carries
+    // the same ingress stamp, so a later Canceled one would otherwise be recorded as a round
+    // trip lasting as long as the order rested on the book.
+    if (report_decoded && envelope.has_gateway_ingress_ns && report.ord_status == pubsub_itc_fw_app::OrdStatus::New) {
+        const int64_t round_trip_ns = config_.wall_clock->now_ns() - envelope.gateway_ingress_ns;
+        // A negative delta is not a fast order: after a failover the two ends are stamped by
+        // different processes, whose clocks share no origin. Recording it would put a
+        // nonsense value into _sum and bias every average drawn from the family thereafter.
+        if (round_trip_ns >= 0) {
+            order_round_trip_histogram_.observe(static_cast<double>(round_trip_ns));
+        }
     }
 
     send_pdu_payload(it->second.conn_id, envelope.pdu_id, envelope.seq_no, envelope.payload.data, envelope.payload.size);
@@ -929,6 +987,9 @@ void BinaryOrderGatewayThread::drain_pending_cancels() {
                 envelope.has_sender_comp_id = true;
                 envelope.sender_comp_id = dead.comp_id;
             }
+            // No gateway_ingress_ns: this cancel is the gateway's own doing, not a client's
+            // order. The client has already gone, so there is nobody waiting on it and no
+            // round trip to attribute to the venue.
             forward_envelope_to_sequencers(envelope);
         }
 
