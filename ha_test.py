@@ -139,6 +139,30 @@ Scenarios
        Expected: no promotion; fresh logon authenticated by auth-B; recovery
        orders flow.
 
+ 18  FIX gateway instance A death (no session handover to B)
+       Runs both FIX gateway instances and kills a.  Nothing is elected: a
+       gateway elects nothing, and b inherits none of a's sessions.  Pins the
+       current behaviour rather than a desired one -- the sequencer drops every
+       execution report bound for the dead instance instead of rerouting it.
+       Expected: b logs no traffic of a's; the sequencer reports dropping ERs.
+
+ 19  Cancel-on-disconnect grace period (step 3b)
+       Kills nothing: the client session drops while the gateway lives.  The
+       gateway must hold the dropped session's resting orders rather than
+       cancelling them, for the number of seconds the comp id is provisioned
+       for, and cancel nothing at all once the same comp id reconnects inside
+       the window.
+       Expected: a hold for the provisioned 90s, no cancel drain at any point.
+
+ 20  Session provisioning (step 4)
+       Kills nothing.  The comp id is pinned to this gateway's instance with
+       another as its backup, and the gateway must name both numbers when it
+       admits the session.  The comp id is then re-provisioned onto an instance
+       this gateway is not -- through the database and a real credentials
+       export -- and the next logon must be refused.
+       Expected: the provisioned pair named on admission; a refusal, and no
+       session established, once the comp id belongs elsewhere.
+
 Options:
     --scenario N|all      Scenario number, or 'all' to run every scenario in
                           order (required).  All scenarios must pass for the
@@ -203,6 +227,16 @@ _CANCEL_GRACE_HOLD_TIMEOUT  = 10.0
 # different from the gateway's own configured default so the two cannot be confused.
 _PROVISIONED_GRACE_PERIOD_SECONDS = 90
 _CANCEL_GRACE_QUIET_PERIOD  = 5.0
+# Session provisioning, scenario 20. The gateway ha_test runs is instance 1, so these say
+# "this instance is the primary, with the instance the harness does not run as its backup":
+# the baseline session must be admitted, and the log must name both numbers.
+_PROVISIONED_PRIMARY_INSTANCE = 1
+_PROVISIONED_BACKUP_INSTANCE  = 2
+# Then the comp id is re-provisioned onto this instance alone, which the harness never runs,
+# so the next logon at instance 1 must be refused. Deliberately left without a backup: with
+# one, a gateway that ignored the primary and matched only the backup would still pass.
+_ELSEWHERE_PRIMARY_INSTANCE   = 2
+_PROVISIONING_LOGON_TIMEOUT   = 20.0
 SETTLE_AFTER_KILL      = 1.0   # seconds after a kill where no failover is expected
 
 FIX8_DIR = Path("/home/marlowa/mystuff/fix8_install")
@@ -392,6 +426,12 @@ class Scenario(NamedTuple):
     # run_scenario's "cancel grace" block. Kills nothing -- the gateway must survive, or
     # there is no process left to do the cancelling and the test proves nothing.
     assert_cancel_grace: bool = False
+    # When True, exercise session provisioning (step 4): prove the gateway admits a comp id
+    # provisioned for the instance it is, naming the numbers it was given, and then refuses
+    # the same comp id once it is provisioned elsewhere. See run_scenario's "provisioning"
+    # block. Kills nothing: the failure this guards against is a session landing on a
+    # gateway that is not its own, which needs every process alive to be visible.
+    assert_session_provisioning: bool = False
 
 
 # ── helpers shared by scenario definitions ────────────────────────────────────
@@ -1086,6 +1126,39 @@ _SCENARIOS: list[Scenario] = [
         assert_cancel_grace=True,
         steps=[],
     ),
+
+    # 20 — session provisioning (step 4).
+    #
+    # Nothing is killed here either. A session is provisioned against a primary gateway
+    # instance and optionally a backup, and may log on to either and nowhere else. The
+    # failure being guarded against is not a process dying but a session being admitted by
+    # a gateway that is not one of its two -- which needs every process alive to see.
+    #
+    # Both directions are checked, because only one of them discriminates on its own. That
+    # the gateway admits a member provisioned for it proves nothing by itself: a gateway
+    # that ignored provisioning entirely would pass that. So the first assertion reads the
+    # NUMBERS out of the gateway's log -- the primary and backup it was actually told, and
+    # which of the two it believes itself to be -- and the second re-provisions the comp id
+    # onto an instance this gateway is not, and requires the next logon to be refused.
+    #
+    # The re-provisioning goes through the database and a real credentials export, so a hop
+    # that silently drops the values fails this rather than quietly falling back to
+    # "everyone may log on anywhere", which is indistinguishable from an unpinned venue
+    # unless the numbers themselves are checked.
+    Scenario(
+        number=20,
+        short_name="session_provisioning",
+        description="Session provisioning (a logon is refused at an instance it is not provisioned for)",
+        expected_outcome=(
+            "the gateway admits the comp id provisioned for its own instance, naming the "
+            "primary and backup it was given, and refuses the same comp id once it is "
+            "provisioned for another instance"
+        ),
+        orders_during_override=0,
+        orders_after_override=0,
+        assert_session_provisioning=True,
+        steps=[],
+    ),
 ]
 
 _SCENARIO_MAP: dict[int, Scenario] = {s.number: s for s in _SCENARIOS}
@@ -1206,6 +1279,87 @@ def provision_cancel_on_disconnect(comp_id: str, grace_period_seconds: int) -> N
         die(f"could not provision cancel-on-disconnect for '{comp_id}' "
             f"(is the database running and migrated?):\n{result.stderr.strip()}")
     log(f"  {comp_id}: cancel-on-disconnect grace period set to {grace_period_seconds}s")
+
+
+def export_credentials(script_dir: Path, creds_file: Path) -> None:
+    """Regenerate credentials.toml from the database, then re-apply the fix8 credential.
+
+    A function rather than inline setup because scenario 20 re-provisions a comp id
+    mid-run and has to push the change down the same path the venue used at startup.
+    """
+    export_result = subprocess.run(
+        [sys.executable, str(script_dir / "db" / "export_credentials.py"),
+         "--credentials-file", str(creds_file)],
+        capture_output=True, text=True,
+    )
+    if export_result.returncode != 0:
+        die(
+            f"export_credentials.py failed (is the database running?):\n"
+            f"{export_result.stderr.strip()}"
+        )
+    log(f"  credentials written to {creds_file}")
+    ensure_fix8_credentials(creds_file, FIX8_COMP_ID, FIX8_PASSWORD)
+
+
+def provision_gateway_pinning(comp_id: str, primary_instance: int,
+                              backup_instance: int | None) -> None:
+    """Pin a comp id to a primary gateway instance, and optionally a backup.
+
+    Same psql route and the same reason as provision_cancel_on_disconnect: the values must
+    travel the real path -- database, export_credentials, credentials.toml, auth service,
+    AuthenticationResult -- so that a hop which drops them fails the scenario rather than
+    being bypassed by injecting them further along.
+
+    backup_instance of None writes SQL NULL, which pins the comp id to the primary alone.
+    That is not the same as omitting the update: a previous run may have left a backup
+    behind, and this scenario's second half depends on there being none.
+    """
+    backup_value = "NULL" if backup_instance is None else str(backup_instance)
+    statement = (
+        f"UPDATE pubsub_comp_id "
+        f"SET primary_gateway_instance = {primary_instance}, "
+        f"    backup_gateway_instance  = {backup_value} "
+        f"WHERE comp_id = '{comp_id}'"
+    )
+    result = subprocess.run(
+        ["psql", "--host", "localhost", "--port", "5432",
+         "--username", "pubsub_app", "--dbname", "pubsub",
+         "--quiet", "--command", statement],
+        capture_output=True, text=True, check=False,
+        env={**os.environ, "PGPASSWORD": os.environ.get("PUBSUB_APP_DB_PASSWORD", "pubsub_dev")},
+    )
+    if result.returncode != 0:
+        die(f"could not provision gateway instances for '{comp_id}' "
+            f"(is the database running and migrated to v3?):\n{result.stderr.strip()}")
+    log(f"  {comp_id}: provisioned for gateway instance {primary_instance}"
+        f"{'' if backup_instance is None else f', backup {backup_instance}'}")
+
+
+def unprovision_gateway_pinning(comp_id: str) -> None:
+    """Clear a comp id's gateway pinning, leaving it free to log on to any instance.
+
+    Called from teardown, so it warns rather than dying: raising here would replace the
+    scenario's own verdict with a cleanup failure, and the thing that actually matters --
+    that the next run does not inherit a comp id pinned somewhere it cannot reach -- is
+    better served by a message naming the fix than by an exception.
+    """
+    statement = (
+        f"UPDATE pubsub_comp_id "
+        f"SET primary_gateway_instance = NULL, backup_gateway_instance = NULL "
+        f"WHERE comp_id = '{comp_id}'"
+    )
+    result = subprocess.run(
+        ["psql", "--host", "localhost", "--port", "5432",
+         "--username", "pubsub_app", "--dbname", "pubsub",
+         "--quiet", "--command", statement],
+        capture_output=True, text=True, check=False,
+        env={**os.environ, "PGPASSWORD": os.environ.get("PUBSUB_APP_DB_PASSWORD", "pubsub_dev")},
+    )
+    if result.returncode != 0:
+        log(f"  WARNING: could not unpin '{comp_id}' -- later scenarios will fail their "
+            f"baseline logon until it is cleared by hand:\n{result.stderr.strip()}")
+        return
+    log(f"  {comp_id}: gateway pinning cleared")
 
 
 def _held_grace_period_seconds(log_path: Path, from_byte: int = 0) -> int | None:
@@ -1840,21 +1994,17 @@ def run_scenario(scenario: Scenario, args) -> bool:
             log("=== Provisioning cancel-on-disconnect for the test comp id ===")
             provision_cancel_on_disconnect(FIX8_COMP_ID, _PROVISIONED_GRACE_PERIOD_SECONDS)
 
+        # Likewise for session provisioning: the comp id is pinned to the instance this
+        # harness runs, so the baseline session is admitted and the gateway has real
+        # numbers to name. The scenario then moves it elsewhere and requires a refusal.
+        if scenario.assert_session_provisioning:
+            log("=== Provisioning gateway instances for the test comp id ===")
+            provision_gateway_pinning(FIX8_COMP_ID, _PROVISIONED_PRIMARY_INSTANCE,
+                                      _PROVISIONED_BACKUP_INSTANCE)
+
         log("=== Exporting credentials ===")
-        export_script = script_dir / "db" / "export_credentials.py"
-        creds_file    = etc_dir / "authentication_service" / "credentials.toml"
-        export_result = subprocess.run(
-            [sys.executable, str(export_script),
-             "--credentials-file", str(creds_file)],
-            capture_output=True, text=True,
-        )
-        if export_result.returncode != 0:
-            die(
-                f"export_credentials.py failed (is the database running?):\n"
-                f"{export_result.stderr.strip()}"
-            )
-        log(f"  credentials written to {creds_file}")
-        ensure_fix8_credentials(creds_file, FIX8_COMP_ID, FIX8_PASSWORD)
+        creds_file = etc_dir / "authentication_service" / "credentials.toml"
+        export_credentials(script_dir, creds_file)
         log("")
 
         # ── Phase 1: start all processes ──────────────────────────────────────
@@ -2348,6 +2498,110 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     "the member's book was flattened anyway.")
             log("  cancel grace: no cancel was sent at any point in this scenario -- OK")
 
+        # ── Session provisioning (step 4) ─────────────────────────────────────
+        # Nothing is killed. Everything here reads the gateway's own log, because the
+        # decision under test is the gateway's alone: whether this session belongs on this
+        # instance, taken once, at the moment authentication succeeds.
+        if scenario.assert_session_provisioning:
+
+            # 1. The accepted path, asserted on the NUMBERS rather than on the session
+            #    having opened. A gateway that ignored provisioning entirely would open the
+            #    session too, so "it logged on" discriminates nothing; the numbers only
+            #    appear if the pinning survived the database -> export -> auth service ->
+            #    AuthenticationResult chain intact. The baseline session opened back in
+            #    Phase 3, so this reads from the start of the log.
+            accepted_marker = (
+                f"provisioned for gateway instances primary={_PROVISIONED_PRIMARY_INSTANCE} "
+                f"backup={_PROVISIONED_BACKUP_INSTANCE} -- this is instance "
+                f"{_PROVISIONED_PRIMARY_INSTANCE} (primary)"
+            )
+            if count_log_marker(gw_log, accepted_marker) == 0:
+                die("provisioning: the gateway never named this comp id's provisioned instances. "
+                    f"It should have logged '{accepted_marker}'. Either the values did not reach "
+                    "it -- check, in order: the comp_id row, credentials.toml after export, that "
+                    "the harness did not overwrite it, and that AuthenticationResult carried the "
+                    "fields -- or the gateway is admitting everyone without looking.")
+            log(f"  provisioning: gateway named primary={_PROVISIONED_PRIMARY_INSTANCE} "
+                f"backup={_PROVISIONED_BACKUP_INSTANCE} and admitted the session as the primary -- OK")
+
+            # 2. Move the comp id to an instance this gateway is not, and push it down the
+            #    same path the venue used at startup. The auth service reads credentials at
+            #    startup, so it is restarted rather than signalled: there is no live update
+            #    path for provisioning, and inventing one for the test would prove something
+            #    the venue does not do.
+            log("=== Re-provisioning the comp id onto a different gateway instance ===")
+            provision_gateway_pinning(FIX8_COMP_ID, _ELSEWHERE_PRIMARY_INSTANCE, None)
+            export_credentials(script_dir, etc_dir / "authentication_service" / "credentials.toml")
+
+            # Taken before the restart, not after: the gateway can reconnect faster than the
+            # next statement runs, and a position sampled afterwards would skip the very line
+            # being waited for. Nothing earlier in the log can match, because the connection
+            # this looks for is the one the restart is about to break.
+            auth_restart_pos = file_end(gw_log)
+
+            for auth_name in ("authentication_service_a", "authentication_service_b"):
+                auth_proc = proc_by_name.get(auth_name)
+                if auth_proc is None:
+                    continue
+                if auth_proc.poll() is None:
+                    auth_proc.send_signal(signal.SIGTERM)
+                    auth_proc.wait(timeout=SHUTDOWN_TIMEOUT)
+                config = next(entry[2] for entry in launch_table if entry[0] == auth_name)
+                restarted = launch_app(auth_name, "authentication_service", config, bin_dir, log_dir)
+                proc_by_name[auth_name] = restarted
+                app_procs = [(name, restarted if name == auth_name else proc)
+                             for name, proc in app_procs]
+
+            # The gateway reconnects to the restarted service on its own retry timer. Waiting
+            # for that is not politeness: a logon attempted before it reconnects is refused
+            # for having no authentication service at all, which is a different refusal and
+            # would let this scenario pass without testing anything.
+            found, elapsed, _ = poll_log_for(
+                gw_log, "authentication service connection", "established",
+                timeout=args.failover_timeout, from_byte=auth_restart_pos,
+            )
+            if not found:
+                die("provisioning: the gateway did not reconnect to the restarted authentication "
+                    f"service within {args.failover_timeout:.0f}s, so the next logon would be "
+                    "refused for the wrong reason.")
+            log(f"  provisioning: gateway reconnected to the authentication service ({elapsed:.1f}s)")
+
+            # 3. The same comp id, the same gateway, now provisioned elsewhere: refused.
+            log("=== Reconnecting the comp id now provisioned for another instance ===")
+            stop_f8test(f8proc)
+            f8proc = None
+            gw_pos = file_end(gw_log)
+            f8proc = subprocess.Popen(
+                [str(FIX8_BIN), "-c", FIX8_CFG, "-N", "GW1"],
+                cwd=str(FIX8_DIR),
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            refused_marker = (
+                f"logon refused -- this is gateway instance {_PROVISIONED_PRIMARY_INSTANCE}, "
+                f"and the session is provisioned for primary={_ELSEWHERE_PRIMARY_INSTANCE} "
+                f"backup=(none)"
+            )
+            found, elapsed, _ = poll_log_for(
+                gw_log, refused_marker,
+                timeout=_PROVISIONING_LOGON_TIMEOUT, from_byte=gw_pos,
+            )
+            if not found:
+                die("provisioning: the gateway did not refuse a comp id provisioned for another "
+                    f"instance. It should have logged '{refused_marker}'. A session that can log "
+                    "on anywhere makes the pinning a convention rather than a rule, and the "
+                    "recovery guarantees in docs/design/gateway_ha.md rest on it being a rule.")
+            log(f"  provisioning: logon refused at the wrong instance ({elapsed:.1f}s)")
+
+            # And refused means refused: no session may have been established alongside it.
+            established = count_log_marker(gw_log, _GW_LOGON_OK, from_byte=gw_pos)
+            if established > 0:
+                die(f"provisioning: the gateway refused the logon but also established "
+                    f"{established} session(s) for it. A refusal that leaves a working session "
+                    "behind is not a refusal.")
+            log("  provisioning: no session was established at the wrong instance -- OK")
+
         result_pass = True
         log("")
 
@@ -2359,6 +2613,15 @@ def run_scenario(scenario: Scenario, args) -> bool:
         if f8proc is not None:
             stop_f8test(f8proc)
         shutdown_all(app_procs)
+        # Scenario 20 pins the test comp id to a gateway instance, and its second half
+        # deliberately pins it to one this harness does not run. Left behind, that refuses
+        # the baseline logon of every scenario that runs afterwards -- including a re-run of
+        # this one -- and the failure would appear to be in whatever ran next. Unpinned is
+        # the state every other scenario expects, so it is restored here rather than at the
+        # end of the block: a scenario that fails half way through has still changed it.
+        if scenario.assert_session_provisioning:
+            log("Restoring the test comp id to unpinned ...")
+            unprovision_gateway_pinning(FIX8_COMP_ID)
 
     # ── result summary ─────────────────────────────────────────────────────────
     log("")

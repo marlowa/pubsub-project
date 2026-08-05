@@ -15,6 +15,8 @@
 #include <string>
 #include <string_view>
 
+#include <fmt/format.h>
+
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
 #include <pubsub_itc_fw/BumpAllocator.hpp>
@@ -792,7 +794,53 @@ void FixOrderGatewayThread::handle_authentication_result(const pubsub_itc_fw::Ev
         return;
     }
 
-    // Authenticated. Send the FIX Logon reply and open the session.
+    // Authenticated, and the service has proved it is the genuine one -- so the
+    // provisioning it just sent can be trusted, and this is the point to act on it.
+    //
+    // A session is provisioned against a primary gateway instance and optionally a backup,
+    // and may log on to either. Landing anywhere else is refused: without that, pinning is
+    // a convention the member happens to follow rather than a rule, and none of the
+    // recovery guarantees it exists to support would hold -- the venue could not say which
+    // two instances hold a session's state if the session could appear on any of them.
+    //
+    // A member with no primary provisioned is not pinned and is let in wherever it landed.
+    // That is the "said nothing" case, not a third instance number: absence has to carry it
+    // because instances are numbered from 1.
+    if (view.has_primary_gateway_instance) {
+        const int16_t primary_instance = view.primary_gateway_instance;
+        const bool has_backup = view.has_backup_gateway_instance;
+        const int16_t backup_instance = has_backup ? view.backup_gateway_instance : static_cast<int16_t>(0);
+        const bool provisioned_here = config_.instance_id == primary_instance || (has_backup && config_.instance_id == backup_instance);
+
+        if (!provisioned_here) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "FixOrderGatewayThread: connection {} comp_id='{}' logon refused -- this is gateway instance {}, "
+                       "and the session is provisioned for primary={} backup={}",
+                       session.conn_id.get_value(), session.client_comp_id, config_.instance_id, primary_instance,
+                       has_backup ? std::to_string(backup_instance) : std::string("(none)"));
+            FixMessage logout;
+            logout.set(Tag::MsgType, MsgType::Logout);
+            // The member is authenticated, so naming its own provisioning tells it nothing
+            // it is not entitled to and saves an operator call to find out where to go.
+            logout.set(Tag::Text, fmt::format("Session not provisioned for gateway instance {} -- use instance {}{}", config_.instance_id, primary_instance,
+                                              has_backup ? fmt::format(" or {}", backup_instance) : std::string()));
+            send_fix_to_session(session, logout);
+            disconnect_session(session, "session not provisioned for this gateway instance");
+            return;
+        }
+
+        // Logged at the accepted instance too, and naming the numbers rather than merely
+        // saying "accepted": a hop that drops the provisioning leaves the gateway letting
+        // everyone in everywhere, which looks identical to a correctly unpinned venue
+        // unless the values themselves are visible.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "FixOrderGatewayThread: comp_id='{}' provisioned for gateway instances primary={} backup={} -- "
+                   "this is instance {} ({})",
+                   session.client_comp_id, primary_instance, has_backup ? std::to_string(backup_instance) : std::string("(none)"), config_.instance_id,
+                   config_.instance_id == primary_instance ? "primary" : "backup");
+    }
+
+    // Authenticated and provisioned. Send the FIX Logon reply and open the session.
     FixMessage reply;
     reply.set(Tag::MsgType, MsgType::Logon);
     reply.set(Tag::EncryptMethod, 0);

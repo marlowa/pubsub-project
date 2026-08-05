@@ -118,22 +118,30 @@ struct AuthenticationServiceConfiguration {
 
     /**
      * @brief Per-comp_id session policy: what a gateway does with this member's resting
-     *        orders when its connection goes away.
+     *        orders when its connection goes away, and which gateway instances the member
+     *        may log on to in the first place.
      *
      * Held apart from ScramCredential deliberately. That struct lives in the scram_crypto
-     * library and is exactly the RFC 5802 key material; cancel-on-disconnect is venue
-     * policy that happens to be provisioned alongside a credential, and putting it there
-     * would make a crypto type depend on trading semantics.
+     * library and is exactly the RFC 5802 key material; these are venue policy that happens
+     * to be provisioned alongside a credential, and putting them there would make a crypto
+     * type depend on trading semantics.
      *
-     * Both members are optional and mean "this comp id said nothing, use the gateway's own
-     * default". That is not the same as false or zero: an operator who raises the
-     * venue-wide window should not have to revisit every member, so silence has to be
-     * distinguishable from a deliberate value all the way from the database column to the
-     * gateway.
+     * Every member is optional and means "this comp id said nothing". For
+     * cancel-on-disconnect that means the gateway's own default applies, which is not the
+     * same as false or zero: an operator who raises the venue-wide window should not have
+     * to revisit every member. For the gateway instances it means the member is not pinned
+     * and may log on to any instance, which is not the same as any instance number, there
+     * being no instance 0. Silence has to stay distinguishable from a deliberate value all
+     * the way from the database column to the gateway.
+     *
+     * The instances name an instance of whichever order-entry protocol the member speaks,
+     * not a protocol: this service is protocol-agnostic and must stay so.
      */
     struct SessionPolicy {
         std::optional<bool> cancel_on_disconnect_enabled;
         std::optional<int32_t> cancel_on_disconnect_grace_period_seconds;
+        std::optional<int16_t> primary_gateway_instance;
+        std::optional<int16_t> backup_gateway_instance;
     };
 
     /** @brief Per-comp_id session policy; absent entry means the gateway's defaults apply. */

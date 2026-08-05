@@ -11,6 +11,27 @@ change in any release.
 
 ### Added
 
+- **Sessions are provisioned against gateway instances.** A comp id gains a primary and an
+  optional backup gateway instance (`pubsub_comp_id.primary_gateway_instance` /
+  `backup_gateway_instance`, editable on the admin service's comp-id form), and both gateways
+  refuse a logon that arrives at an instance the session is not provisioned for. The values
+  travel the same path as cancel-on-disconnect -- database, `export_credentials.py`,
+  `credentials.toml`, authentication service, `AuthenticationResult` -- so they arrive with the
+  session rather than needing a lookup the gateway has no database access to make.
+  - They name an *instance*, not a protocol: instance 1 of the FIX gateway and instance 1 of the
+    binary gateway hold the same position in their own protocol, and the pinning applies to
+    whichever the member speaks. This keeps the authentication service protocol-agnostic.
+  - **Not pinned means any instance**, and is the default: both columns are nullable, and null
+    means the member expressed no preference. No existing comp id is locked out by the change.
+  - The refusal has its own binary `LogonOutcome::NotProvisionedForInstance`, and the FIX Logout
+    text names the instances the member should be using. Reusing `AuthenticationFailed` would
+    have sent members off rotating a password that was never the problem.
+- **Fixed: the authentication service was discarding per-comp-id provisioning on every credential
+  change.** `persist_credentials` rewrites `credentials.toml` in full from its SCRAM map, so an
+  admin setting, removing or restoring any credential silently stripped every member's
+  cancel-on-disconnect settings and left them on gateway defaults, with nothing in any log to say
+  so. It now writes the session policy back out beside the credential it belongs to.
+
 - **Cancel-on-disconnect now has a grace period** (`[cancel_on_disconnect] enabled` and
   `grace_period`, defaulting to on and 30 seconds, in both gateways). A dropped session's
   resting orders are held rather than cancelled, and if the same comp id reconnects inside

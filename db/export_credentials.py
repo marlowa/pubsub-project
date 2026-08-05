@@ -54,7 +54,8 @@ def _query_credentials(host: str, port: int, username: str, password: str,
     comp_id_table = f"{table_prefix}comp_id"
     inner_sql = (
         f"SELECT ci.comp_id, ci.stored_key, ci.server_key, ci.salt, ci.iterations, "
-        f"       ci.cancel_on_disconnect_enabled, ci.cancel_on_disconnect_grace_period_seconds "
+        f"       ci.cancel_on_disconnect_enabled, ci.cancel_on_disconnect_grace_period_seconds, "
+        f"       ci.primary_gateway_instance, ci.backup_gateway_instance "
         f"FROM {comp_id_table} ci "
         f"JOIN {firm_table} f ON ci.firm_id = f.firm_id "
         f"WHERE ci.enabled = true "
@@ -76,7 +77,8 @@ def _query_credentials(host: str, port: int, username: str, password: str,
     reader = csv.DictReader(
         io.StringIO(result.stdout),
         fieldnames=["comp_id", "stored_key", "server_key", "salt", "iterations",
-                    "cancel_on_disconnect_enabled", "cancel_on_disconnect_grace_period_seconds"],
+                    "cancel_on_disconnect_enabled", "cancel_on_disconnect_grace_period_seconds",
+                    "primary_gateway_instance", "backup_gateway_instance"],
     )
     return list(reader)
 
@@ -101,6 +103,13 @@ def _write_credentials_toml(path: Path, rows: list[dict]) -> None:
         "#   cancel_on_disconnect_grace_period  -- seconds to hold them for a reconnect;\n",
         "#                                         omitted means the gateway default, 0 means\n",
         "#                                         cancel immediately\n",
+        "#\n",
+        "# Gateway session provisioning, per comp id. Both are optional: a credential that\n",
+        "# omits primary_gateway_instance is not pinned and may log on to any instance.\n",
+        "#\n",
+        "#   primary_gateway_instance -- the instance this member is expected to use\n",
+        "#   backup_gateway_instance  -- the one it may fall back to; omitted pins it to\n",
+        "#                               the primary alone\n",
         "\n",
     ]
     for row in rows:
@@ -120,6 +129,15 @@ def _write_credentials_toml(path: Path, rows: list[dict]) -> None:
         grace = row.get("cancel_on_disconnect_grace_period_seconds", "")
         if grace != "":
             lines.append(f'cancel_on_disconnect_grace_period = "{int(grace)}s"\n')
+        # Same NULL-is-the-empty-string rule for the pinning. An absent primary means this
+        # member is not pinned and may log on to any instance -- not instance 0, which does
+        # not exist. A backup without a primary cannot occur: the database rejects it.
+        primary_instance = row.get("primary_gateway_instance", "")
+        if primary_instance != "":
+            lines.append(f"primary_gateway_instance = {int(primary_instance)}\n")
+        backup_instance = row.get("backup_gateway_instance", "")
+        if backup_instance != "":
+            lines.append(f"backup_gateway_instance = {int(backup_instance)}\n")
         lines.append("\n")
 
     # Atomic write: temp file then rename so the auth service never sees

@@ -109,6 +109,23 @@ public class CompIdHandler {
             }
         }
         compIdDao.updateCancelOnDisconnect(compId, cancelOnDisconnectEnabled, gracePeriodSeconds);
+
+        // Gateway session provisioning. Blank means "not pinned" and is stored as NULL: the
+        // member may log on to any instance. That is deliberately not instance 0, which is
+        // not a gateway instance at all. The pairwise rules -- a backup must differ from the
+        // primary and cannot stand without one -- are checked in the DAO and again by the
+        // database, and reported here rather than surfacing as a constraint violation.
+        Integer primaryGatewayInstance = parseGatewayInstance(ctx.formParam("primaryGatewayInstance"), "Primary");
+        Integer backupGatewayInstance = parseGatewayInstance(ctx.formParam("backupGatewayInstance"), "Backup");
+        if (backupGatewayInstance != null && primaryGatewayInstance == null) {
+            throw new BadRequestResponse("A backup gateway instance needs a primary."
+                    + " To pin this comp ID to a single instance, set the primary and leave the backup blank.");
+        }
+        if (backupGatewayInstance != null && backupGatewayInstance.equals(primaryGatewayInstance)) {
+            throw new BadRequestResponse("The backup gateway instance must differ from the primary. Both were "
+                    + primaryGatewayInstance + ".");
+        }
+        compIdDao.updateGatewayPinning(compId, primaryGatewayInstance, backupGatewayInstance);
         if ((!enabled || locked) && authServiceClient != null) {
             authServiceClient.removeCredential(compId);
         } else if ((!existing.enabled() || existing.locked()) && enabled && !locked && authServiceClient != null) {
@@ -148,6 +165,32 @@ public class CompIdHandler {
             authServiceClient.setCredential(compId, password, SCRAM_ITERATIONS);
         }
         ctx.redirect("/comp-ids?firmId=" + existing.firmId());
+    }
+
+    /**
+     * Reads one gateway instance number from the form.
+     *
+     * <p>Blank is not an error: it means this member is not pinned to that role, and is
+     * stored as NULL. Anything else must be a whole number of 1 or greater, because
+     * instances are numbered from 1 at every hop from the gateway's own configuration to
+     * the WAL envelope — there is no instance 0 to fall back on.
+     */
+    private static Integer parseGatewayInstance(String param, String role) {
+        if (param == null || param.isBlank()) {
+            return null;
+        }
+        int instance;
+        try {
+            instance = Integer.parseInt(param.trim());
+        } catch (NumberFormatException e) {
+            throw new BadRequestResponse(role + " gateway instance must be a whole number,"
+                    + " or blank to leave this comp ID unpinned. Got: " + param);
+        }
+        if (instance < 1) {
+            throw new BadRequestResponse(role + " gateway instance must be 1 or greater;"
+                    + " instances are numbered from 1. Got: " + instance);
+        }
+        return instance;
     }
 
     private static String requireParam(Context ctx, String name) {

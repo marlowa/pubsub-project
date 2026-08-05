@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -48,6 +50,28 @@ std::vector<uint8_t> hex_decode(std::string_view hex, std::string_view field_nam
         result.push_back(static_cast<uint8_t>((nybble(hex[i]) << 4) | nybble(hex[i + 1])));
     }
     return result;
+}
+
+/**
+ * @brief Reads one optional gateway instance number from a credential entry.
+ *
+ * Absent is not an error and is returned as an empty optional: it is how "this member is
+ * not pinned to that role" is expressed, and there is no in-band number that could carry
+ * it, instances being numbered from 1. A present value must be a real instance, so 0 and
+ * negatives are rejected here rather than travelling to a gateway that would compare them
+ * against its own instance id and simply never match.
+ */
+std::optional<int16_t> load_gateway_instance(const pubsub_itc_fw::TomlConfiguration& cred_toml, size_t index, const char* key) {
+    int32_t instance = 0;
+    const auto [present, error] = cred_toml.get_required(fmt::format("credential[{}].{}", index, key), instance);
+    if (!present) {
+        return std::nullopt;
+    }
+    if (instance < 1 || instance > INT16_MAX) {
+        throw pubsub_itc_fw::ConfigurationException(
+            fmt::format("credentials: credential[{}].{} must be between 1 and {}, got {}", index, key, INT16_MAX, instance));
+    }
+    return static_cast<int16_t>(instance);
 }
 
 void load_credentials(const std::string& credentials_file, std::unordered_map<std::string, scram_crypto::ScramCredential>& credentials,
@@ -118,7 +142,30 @@ void load_credentials(const std::string& credentials_file, std::unordered_map<st
             policy.cancel_on_disconnect_grace_period_seconds = static_cast<int32_t>(grace_period.count());
         }
 
-        if (policy.cancel_on_disconnect_enabled.has_value() || policy.cancel_on_disconnect_grace_period_seconds.has_value()) {
+        // Gateway session provisioning, per comp id, and optional for the same reason: an
+        // absent primary means this member is not pinned and may log on to any instance.
+        // Instances are numbered from 1, so there is no value that could stand in for
+        // "unpinned" -- which is why absence has to carry it.
+        policy.primary_gateway_instance = load_gateway_instance(cred_toml, i, "primary_gateway_instance");
+        policy.backup_gateway_instance = load_gateway_instance(cred_toml, i, "backup_gateway_instance");
+
+        // A backup that is not the backup of anything, and a backup that is its own
+        // primary, are both provisioning mistakes rather than states a gateway could act
+        // on. The database rejects them too; this catches a hand-edited credentials file,
+        // which is the one path that does not go through the database.
+        if (policy.backup_gateway_instance.has_value() && !policy.primary_gateway_instance.has_value()) {
+            throw pubsub_itc_fw::ConfigurationException(fmt::format("credentials: credential[{}].backup_gateway_instance needs a primary_gateway_instance; "
+                                                                    "pin a comp id to a single instance by setting the primary alone",
+                                                                    i));
+        }
+        if (policy.backup_gateway_instance.has_value() && *policy.backup_gateway_instance == *policy.primary_gateway_instance) {
+            throw pubsub_itc_fw::ConfigurationException(
+                fmt::format("credentials: credential[{}].backup_gateway_instance must differ from primary_gateway_instance, both were {}", i,
+                            *policy.primary_gateway_instance));
+        }
+
+        if (policy.cancel_on_disconnect_enabled.has_value() || policy.cancel_on_disconnect_grace_period_seconds.has_value() ||
+            policy.primary_gateway_instance.has_value()) {
             session_policies[comp_id] = policy;
         }
     }

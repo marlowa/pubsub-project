@@ -58,7 +58,10 @@ class FreemarkerTemplateRenderingTest {
             null, TIMESTAMP, TIMESTAMP, TIMESTAMP, TIMESTAMP,
             // No per-comp-id grace period: the gateway's own default applies. Renders as an
             // empty field, which is the case a ?c on a null would have thrown on.
-            true, null);
+            true, null,
+            // Not pinned to any gateway instance either -- the same null-renders-empty case
+            // for the two provisioning fields, which is what an unprovisioned member has.
+            null, null);
 
     /** A locked row: exercises the nullable lockedReason and lockedAt being populated. */
     private static final CompIdRow LOCKED_COMP_ID = new CompIdRow(
@@ -68,7 +71,10 @@ class FreemarkerTemplateRenderingTest {
             TIMESTAMP, TIMESTAMP, TIMESTAMP, TIMESTAMP, TIMESTAMP,
             // An explicitly provisioned grace period, so the other rendering path is
             // covered too: cancelling enabled with a member-specific 60s window.
-            true, 60);
+            true, 60,
+            // Pinned to instance 1 with 2 as its backup, covering the populated path for
+            // both provisioning fields.
+            1, 2);
 
     private static final GatewayPermissionRow PERMISSION =
             new GatewayPermissionRow("ACME_TRADER1", "order", true, TIMESTAMP);

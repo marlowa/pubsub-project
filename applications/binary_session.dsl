@@ -70,6 +70,11 @@ enum LogonOutcome : i32 {
     AuthenticationTimeout = 5  # the authentication service did not answer in time
     AuthenticationUnavailable = 6  # no authentication service connected
     WrongTargetCompId    = 7   # the client is talking to a venue it did not mean to reach
+    # The credential was good but this session is provisioned against other gateway
+    # instances. Its own outcome rather than AuthenticationFailed, which would send a
+    # member off rotating a password that was never the problem; the text names the
+    # instances it should be using instead.
+    NotProvisionedForInstance = 8
 }
 
 # ---------------------------------------------------------------------------

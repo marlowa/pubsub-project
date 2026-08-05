@@ -19,7 +19,8 @@ public class CompIdDao {
             + " enabled, force_password_change, consecutive_failed_logins,"
             + " locked, locked_reason, locked_at, last_login_at,"
             + " password_changed_at, created_at, updated_at,"
-            + " cancel_on_disconnect_enabled, cancel_on_disconnect_grace_period_seconds";
+            + " cancel_on_disconnect_enabled, cancel_on_disconnect_grace_period_seconds,"
+            + " primary_gateway_instance, backup_gateway_instance";
 
     private final DataSource dataSource;
     private final String table;
@@ -137,6 +138,51 @@ public class CompIdDao {
         }
     }
 
+    /**
+     * Sets the gateway instances this comp id's session may log on to.
+     *
+     * <p>Both may be null, meaning this member is not pinned and may log on to any
+     * instance. A primary with a null backup pins it to exactly one. A backup with no
+     * primary is rejected by a database constraint: it would pin the member to a single
+     * instance through an unrelated column being empty, which is not a thing anyone means
+     * to provision.
+     *
+     * @param primaryInstance the instance the member is expected to use, or null for unpinned
+     * @param backupInstance  the instance it may fall back to, or null for none
+     */
+    public void updateGatewayPinning(String compId, Integer primaryInstance, Integer backupInstance) throws SQLException {
+        if (primaryInstance != null && primaryInstance < 1) {
+            throw new IllegalArgumentException("primary gateway instance must be 1 or greater, got " + primaryInstance);
+        }
+        if (backupInstance != null && backupInstance < 1) {
+            throw new IllegalArgumentException("backup gateway instance must be 1 or greater, got " + backupInstance);
+        }
+        if (backupInstance != null && primaryInstance == null) {
+            throw new IllegalArgumentException("a backup gateway instance needs a primary; pin to one instance by setting the primary alone");
+        }
+        if (backupInstance != null && backupInstance.equals(primaryInstance)) {
+            throw new IllegalArgumentException("backup gateway instance must differ from the primary, both were " + primaryInstance);
+        }
+        String sql = "UPDATE " + table
+                + " SET primary_gateway_instance = ?, backup_gateway_instance = ?,"
+                + " updated_at = NOW() WHERE comp_id = ?";
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            setNullableInt(ps, 1, primaryInstance);
+            setNullableInt(ps, 2, backupInstance);
+            ps.setString(3, compId);
+            ps.executeUpdate();
+        }
+    }
+
+    private static void setNullableInt(PreparedStatement ps, int index, Integer value) throws SQLException {
+        if (value == null) {
+            ps.setNull(index, java.sql.Types.SMALLINT);
+        } else {
+            ps.setInt(index, value);
+        }
+    }
+
     public void updateCredentials(String compId, ScramCredential cred) throws SQLException {
         String sql = "UPDATE " + table
                 + " SET stored_key = ?, server_key = ?, salt = ?, iterations = ?,"
@@ -184,6 +230,10 @@ public class CompIdDao {
                 // getObject, not getInt: getInt maps SQL NULL to 0, which here means
                 // "cancel immediately" rather than "use the gateway default". The two must
                 // stay distinguishable.
-                rs.getObject("cancel_on_disconnect_grace_period_seconds", Integer.class));
+                rs.getObject("cancel_on_disconnect_grace_period_seconds", Integer.class),
+                // Boxed for the same reason: null is "not pinned", and getInt would render
+                // that as instance 0, which is not a gateway instance at all.
+                rs.getObject("primary_gateway_instance", Integer.class),
+                rs.getObject("backup_gateway_instance", Integer.class));
     }
 }

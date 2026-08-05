@@ -55,6 +55,32 @@
             Logout cancels immediately, since the member has said what it wants.
         </small>
     </fieldset>
+    <fieldset>
+        <legend>Gateway Session Provisioning</legend>
+        <small>
+            The gateway instances this member's session may log on to. A gateway refuses a
+            logon from a member pinned elsewhere. Leave both blank to leave the member
+            unpinned, free to use any instance; set a primary alone to pin it to exactly
+            one. Instances are numbered from 1 &mdash; instance 1 is the <em>_a</em>
+            process, 2 is <em>_b</em> &mdash; and name an instance of whichever order-entry
+            protocol the member speaks, not a protocol of its own.
+        </small>
+        <label for="primaryGatewayInstance">Primary Gateway Instance
+            <input type="number" id="primaryGatewayInstance"
+                   name="primaryGatewayInstance" min="1" step="1"
+                   placeholder="not pinned"
+                   value="${(row.primaryGatewayInstance()?c)!''}">
+        </label>
+        <label for="backupGatewayInstance">Backup Gateway Instance
+            <input type="number" id="backupGatewayInstance"
+                   name="backupGatewayInstance" min="1" step="1"
+                   placeholder="none"
+                   value="${(row.backupGatewayInstance()?c)!''}">
+        </label>
+        <small>
+            A backup must differ from the primary, and needs a primary to be the backup of.
+        </small>
+    </fieldset>
     <button type="submit">Update</button>
     <a href="/comp-ids/${row.compId()}/password" role="button">Set Password</a>
     <a href="/comp-ids/${row.compId()}/gateways">Gateways</a>

@@ -2,14 +2,20 @@
 
 How a member keeps trading when a gateway dies.
 
-> **Status: agreed direction, not yet built. Planned for 0.3.0.**
+> **Status: steps 1-4 built, steps 5-6 outstanding. Targeted at 0.3.0.**
 >
-> Nothing in the Design section below exists in the code as of 0.2.0. This document records the
-> direction settled on 2026-07-30 so that the decisions — and the reasoning behind them — are
-> written down before implementation starts, rather than being reconstructed afterwards.
+> The direction was settled on 2026-07-30 and written down before implementation started, so that
+> the decisions — and the reasoning behind them — were recorded rather than reconstructed
+> afterwards. Since then, instance identity, the sequencer endpoint collection, two instances of
+> each protocol running, cancel-on-disconnect with a grace period, and session provisioning have
+> all landed; each step's entry under **Implementation order** says what was actually built and
+> how it was proven. **Steps 5 and 6 — re-keying the routing entry on session identity, and
+> session-slice replay on logon — are not built**, and until they are, a session does not survive
+> its gateway dying even though the venue does.
 >
-> The "What exists today" section *is* current and was verified against the code, not inferred
-> from documentation. Read that section as fact and everything after it as intent.
+> The "What exists today" section is the 2026-07-30 baseline this design was written against, kept
+> because later sections argue against it. Where a step has superseded part of it, that is marked
+> in place.
 
 This document covers the order-entry gateways only. Sequencer and matching engine HA are in
 [WAL and High Availability](wal_and_ha.md); this one deliberately supersedes that document's
@@ -124,8 +130,9 @@ configured for instance `b` logs on and trades normally. Nothing about `a`'s abs
 **There is no load sharing.** Nothing distributes sessions between instances. There is no shared
 session registry, no least-loaded selection, no proxy in front. A member connects to the endpoint
 it was configured with, and that is the instance it uses. Two instances are redundancy plus
-capacity you divide by hand, not a balanced pool. Session provisioning (step 4) is what will make
-the division deliberate rather than incidental.
+capacity you divide by hand, not a balanced pool. Session provisioning (step 4) has since made
+that division deliberate rather than incidental — a member now belongs to named instances and is
+refused elsewhere — but it is still a division an operator makes, not one the venue balances.
 
 **Instance `b` does not inherit anything from instance `a`.** There is no handover of any kind:
 
@@ -234,6 +241,9 @@ for new sessions to go, not as a place old ones can be recovered.
 Gaps 1, 2 and 5 are the SPOF work. Gaps 3, 4 and 6 are the in-flight-report decision. They are
 separable, and the SPOF half is worth having on its own.
 
+**Gaps 1, 2 and 5 are now closed** (steps 1, 2 and 4). Gaps 3, 4 and 6 remain open and are what
+steps 5 and 6 exist to close.
+
 ---
 
 ## Design
@@ -305,6 +315,59 @@ This interacts with the already-decided **one comp id may hold a session only on
 instances able to host a given session, the duplicate check has two places to look rather than N.
 It still needs the sequencer as the shared authority, and it is still a cross-component protocol
 change; it is not solved by pinning, only made smaller.
+
+**Implemented 2026-08-05, in both gateways.** `pubsub_comp_id` gained
+`primary_gateway_instance` and `backup_gateway_instance`, and the values travel the path 3b
+already built: database → `export_credentials.py` → `credentials.toml` → authentication service →
+`AuthenticationResult` → gateway. They arrive *with* the session, on a path where the gateway has
+no database access, and the admin service edits them on the comp-id form.
+
+Four decisions are worth recording, because each had a plausible alternative:
+
+**They name an instance, not a protocol.** Instance 1 of the FIX gateway and instance 1 of the
+binary gateway are separate processes holding the same position in their own protocol, so a
+member's pinning applies to whichever order-entry protocol it speaks. The alternative — pinning
+`(protocol, instance)` pairs, so a comp id could be provisioned for FIX and not binary — is truer
+to how a venue partitions, but it would put protocol knowledge into the authentication service,
+which its own DSL header says must have none, and it would need the gateway to declare its
+protocol in `AuthenticationRequest`. It buys a restriction nothing has asked for yet.
+
+**Not pinned means any instance, and is the default.** Both columns are nullable and null means
+this member expressed no preference. That is the same "silence is not a value" rule the v2 grace
+period follows, and it is what stops the change locking out every comp id provisioned before it
+existed. The design says the venue must "reject a logon that arrives at the wrong instance" — it
+does, for every session that *has* a wrong instance. A venue that wants pinning to be mandatory
+provisions its members; it does not get there by having an unset column mean "denied".
+
+**One backup, not a list.** This matches what venues publish — Eurex T7, CME iLink and
+LSEG-lineage native all hand a session a primary and a backup — but the reason to keep it is
+structural rather than imitative: the argument for pinning at all is that only *one nominated
+peer* must be able to serve a session's recovery state. A third live peer reopens the
+distributed-state problem the pinning exists to avoid, and makes the outbound sequence number and
+replay cursor of steps 5 and 6 consistent in three places instead of two. Generalising later means
+a child table keyed on `(comp_id, rank)`, which is a contained change if it is ever wanted.
+Disaster recovery is *not* that third backup: at a real venue it is a separate site with its own
+sequence regime, and it is not modelled here at all.
+
+**The refusal is its own outcome.** The binary protocol gained
+`LogonOutcome::NotProvisionedForInstance` rather than reusing `AuthenticationFailed`, and the FIX
+gateway's Logout carries `Session not provisioned for gateway instance 1 -- use instance 2`. The
+credential was good; telling the member otherwise would send it off rotating a password that was
+never the problem. Naming its own provisioning gives nothing away — it is authenticated by the
+time the check runs, which is also why the check runs *after* the ServerSignature is verified
+rather than before: the provisioning is only trustworthy once the service has proved itself.
+
+The check itself is one decision taken once, at the moment authentication succeeds, in both
+gateways. Nothing is stored on the session: re-deciding it later would need state that can drift
+from the thing it was derived from.
+
+**A defect found and fixed while building this.** `AuthenticationThread::persist_credentials`
+rewrites `credentials.toml` in full from its in-memory SCRAM map every time an admin sets, removes
+or restores a credential — so it had been silently stripping every member's cancel-on-disconnect
+provisioning since 3b, leaving them on gateway defaults with nothing in any log to say so. The
+same rewriter would have eaten the pinning. It now writes the session policy back out beside the
+credential it belongs to. This is the third instance of the same shape: a component that owns one
+part of a record regenerating the whole record and discarding the rest.
 
 ### Recovering in-flight reports
 
@@ -504,8 +567,30 @@ Each step leaves the system working.
    changeset, a comp-id DAO field, an admin UI control, gateway configuration and the cancel path
    itself.
 
-4. **Session provisioning.** Primary and backup per comp id in the admin service and database;
-   gateways reject a logon at an instance a session is not provisioned for.
+4. **Session provisioning.** **Done 2026-08-05.** Primary and backup per comp id in the admin
+   service and database; both gateways refuse a logon at an instance a session is not provisioned
+   for, and admit one that is not pinned at all. See the section above for the four decisions and
+   for the `persist_credentials` defect this turned up.
+
+   `ha_test.py` scenario 20 covers the FIX gateway: it pins the test comp id to the instance the
+   harness runs with another as its backup, requires the gateway to name *both numbers* on
+   admission, then re-provisions the comp id onto an instance the harness does not run — through
+   the database and a real credentials export — and requires the next logon to be refused with no
+   session established. Both halves were verified to fail when broken: pointing the second half at
+   the instance the gateway already is makes it fail to refuse, and dropping the values in
+   `export_credentials.py` makes the first half fail to see them. The scenario restores the comp
+   id to unpinned in teardown, because a comp id left pinned to an instance the harness does not
+   run refuses the baseline logon of every scenario after it.
+
+   The binary gateway was proven live against the dev sandbox rather than in `ha_test.py`, which
+   drives FIX only: with the comp id pinned to instance 2, `binary_client` was refused at instance
+   1 with `NotProvisionedForInstance` and the text naming instance 2, accepted and trading at
+   instance 2, and accepted at instance 1 again once unpinned.
+
+   Half-dropped provisioning is a startup failure, not a silent default: a credential carrying a
+   backup with no primary makes the authentication service refuse to start, naming the entry. That
+   was observed rather than designed — it fell out of the loader validation while the negative
+   controls above were being run — and it is the right behaviour, so it stays.
 5. **Re-key the routing entry** on session identity with the connection triple as destination.
 6. **Session-slice replay on logon**, and retire the blanket gap-fill.
 
@@ -524,4 +609,10 @@ decision and are the larger half.
   is what venues rely on, but it interacts with logon timeouts.
 - Does the binary order gateway get the same treatment, or does pinning apply only to FIX? It has no
   session-layer resend to build on, so "in-flight reports survive" means something different there
-  and may need its own mechanism.
+  and may need its own mechanism. *Settled for step 4: both gateways enforce pinning, and both
+  refuse the same way. The question remains open for steps 5 and 6, which are the resend half.*
+- **Disaster recovery is not modelled at all.** Venues publish a third address at a second site,
+  under a different regime from the primary/backup pair: typically a start-of-day sequence reset
+  and no in-flight state continuity, so it is not a third backup and must not be built as one. Not
+  urgent, and deliberately out of scope for 0.3.0, but it will need its own design rather than an
+  extra column.

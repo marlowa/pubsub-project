@@ -12,6 +12,8 @@
 #include <utility>
 #include <vector>
 
+#include <fmt/format.h>
+
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/BumpAllocator.hpp>
 #include <pubsub_itc_fw/QueueConfiguration.hpp>
@@ -540,6 +542,45 @@ void BinaryOrderGatewayThread::handle_authentication_result(const pubsub_itc_fw:
                    session.conn_id.get_value());
         refuse_logon(session, pubsub_itc_fw_app::LogonOutcome::AuthenticationFailed, "server signature mismatch");
         return;
+    }
+
+    // Authenticated, and the service has proved itself -- so the provisioning it sent can be
+    // trusted, and this is where the session's pinning is enforced.
+    //
+    // A session provisioned against a primary instance, and optionally a backup, may log on
+    // to either and nowhere else. Refusing the rest is what makes the pinning a rule rather
+    // than a convention: the venue can only promise which two instances hold a session's
+    // state if the session cannot appear on a third.
+    //
+    // No primary provisioned means the member is not pinned and is let in wherever it
+    // landed. Absence has to carry that, instances being numbered from 1.
+    if (view.has_primary_gateway_instance) {
+        const bool provisioned_here =
+            config_.instance_id == view.primary_gateway_instance || (view.has_backup_gateway_instance && config_.instance_id == view.backup_gateway_instance);
+        const std::string backup_text = view.has_backup_gateway_instance ? std::to_string(view.backup_gateway_instance) : std::string("(none)");
+
+        if (!provisioned_here) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "BinaryOrderGatewayThread: connection {} comp_id='{}' logon refused -- this is gateway instance {}, "
+                       "and the session is provisioned for primary={} backup={}",
+                       session.conn_id.get_value(), session.comp_id, config_.instance_id, view.primary_gateway_instance, backup_text);
+            // Its own outcome, not AuthenticationFailed: the credential was good, and a
+            // member told otherwise would go and rotate a password that was never wrong.
+            // The member is authenticated, so naming its own provisioning gives away
+            // nothing and saves it an operator call to find out where it should be.
+            refuse_logon(session, pubsub_itc_fw_app::LogonOutcome::NotProvisionedForInstance,
+                         fmt::format("session not provisioned for gateway instance {} -- use instance {}{}", config_.instance_id, view.primary_gateway_instance,
+                                     view.has_backup_gateway_instance ? fmt::format(" or {}", view.backup_gateway_instance) : std::string()));
+            return;
+        }
+
+        // Logged where it succeeded too, naming the numbers: a hop that drops the
+        // provisioning leaves every gateway admitting everyone, which is indistinguishable
+        // from a correctly unpinned venue unless the values themselves are visible.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "BinaryOrderGatewayThread: comp_id='{}' provisioned for gateway instances primary={} backup={} -- this is instance {} ({})", session.comp_id,
+                   view.primary_gateway_instance, backup_text, config_.instance_id,
+                   config_.instance_id == view.primary_gateway_instance ? "primary" : "backup");
     }
 
     // Cancel-on-disconnect for this comp id, provisioned in the database and delivered with

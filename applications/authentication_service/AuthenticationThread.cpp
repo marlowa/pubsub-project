@@ -215,6 +215,19 @@ void AuthenticationThread::handle_authentication_proof(const pubsub_itc_fw::Conn
                     result.has_cancel_on_disconnect_grace_period_seconds = true;
                     result.cancel_on_disconnect_grace_period_seconds = *policy.cancel_on_disconnect_grace_period_seconds;
                 }
+                // The gateway instances this session may use. Sent on the same terms: a
+                // member with no pinning gets neither field and the gateway lets it in
+                // wherever it landed. The gateway compares these against its own
+                // configured instance id and refuses a logon it is not provisioned for,
+                // so this service never needs to know which instance it is talking to.
+                if (policy.primary_gateway_instance.has_value()) {
+                    result.has_primary_gateway_instance = true;
+                    result.primary_gateway_instance = *policy.primary_gateway_instance;
+                }
+                if (policy.backup_gateway_instance.has_value()) {
+                    result.has_backup_gateway_instance = true;
+                    result.backup_gateway_instance = *policy.backup_gateway_instance;
+                }
             }
         }
 
@@ -617,7 +630,33 @@ void AuthenticationThread::persist_credentials() {
                 << "stored_key = \"" << hex_encode(cred.stored_key) << "\"\n"
                 << "server_key = \"" << hex_encode(cred.server_key) << "\"\n"
                 << "salt       = \"" << hex_encode(cred.salt) << "\"\n"
-                << "iterations = " << cred.iterations << "\n\n";
+                << "iterations = " << cred.iterations << "\n";
+
+            // Per-comp-id provisioning is written back out with the credential it belongs
+            // to. This file is rewritten in full every time an admin sets, removes or
+            // restores a credential, and the SCRAM material is the only thing this service
+            // manages -- so without this the next password change would silently strip
+            // every member's cancel-on-disconnect settings and gateway pinning, leaving
+            // them on gateway defaults with nothing to say it had happened. Only keys that
+            // were actually provisioned are written, so silence stays silence rather than
+            // being frozen into today's default.
+            const auto policy_it = config_.session_policies.find(comp_id);
+            if (policy_it != config_.session_policies.end()) {
+                const auto& policy = policy_it->second;
+                if (policy.cancel_on_disconnect_enabled.has_value()) {
+                    out << "cancel_on_disconnect_enabled = " << (*policy.cancel_on_disconnect_enabled ? "true" : "false") << "\n";
+                }
+                if (policy.cancel_on_disconnect_grace_period_seconds.has_value()) {
+                    out << "cancel_on_disconnect_grace_period = \"" << *policy.cancel_on_disconnect_grace_period_seconds << "s\"\n";
+                }
+                if (policy.primary_gateway_instance.has_value()) {
+                    out << "primary_gateway_instance = " << *policy.primary_gateway_instance << "\n";
+                }
+                if (policy.backup_gateway_instance.has_value()) {
+                    out << "backup_gateway_instance = " << *policy.backup_gateway_instance << "\n";
+                }
+            }
+            out << "\n";
         }
     }
 

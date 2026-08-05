@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+    xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+                        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.20.xsd">
+
+    <!-- ================================================================
+         v3-001  session provisioning: which gateway instances a comp id
+                 may log on to
+
+         A session is provisioned against a named primary gateway instance
+         and a named backup, and may log on to either.  It may not land on a
+         third.  That is how venues actually assign order entry (Eurex ETI
+         partitions, CME iLink market-segment gateways, LSE-lineage native)
+         and it is what turns recovery from a distributed-state problem into
+         replication between two known endpoints: only one nominated peer has
+         to be able to serve a session's recovery state, rather than every
+         instance having to serve every session's.
+
+         The values name an INSTANCE, not a protocol.  A gateway process
+         carries its own gateway.instance_id in configuration, numbered from
+         1, and instance 1 of the FIX gateway and instance 1 of the binary
+         gateway are separate processes serving the same position in their own
+         protocol.  Pinning is therefore protocol-agnostic: it says which
+         instance of whichever order-entry protocol the member speaks, which
+         keeps the authentication service, the component that delivers these
+         values, free of any knowledge of protocols, as its own DSL insists.
+
+         These reach the gateway on AuthenticationResult, arriving with the
+         session, exactly as the cancel-on-disconnect columns added in v2 do.
+         ================================================================ -->
+    <changeSet id="v3-001-comp-id-gateway-pinning" author="pubsub">
+
+        <!-- The instance a member is expected to use, and the one it falls
+             back to when its primary is unreachable.
+
+             BOTH NULLABLE, and null means "not pinned": this member expressed
+             no preference and may log on to any instance.  That is the same
+             "silence is not a value" rule the v2 grace period follows, and it
+             is what keeps this change from locking out every comp id
+             provisioned before it existed.  A venue that wants pinning to be
+             mandatory provisions its members; it does not get that by having
+             an unset column mean "denied".
+
+             smallint because gateway.instance_id is an int16_t at every hop
+             from the gateway configuration to the WAL envelope. -->
+        <addColumn tableName="${tablePrefix}comp_id">
+            <column name="primary_gateway_instance" type="smallint"/>
+        </addColumn>
+        <addColumn tableName="${tablePrefix}comp_id">
+            <column name="backup_gateway_instance" type="smallint"/>
+        </addColumn>
+
+        <!-- Instances are numbered from 1, matching the gateway's own
+             validation of gateway.instance_id.  Zero is not a spare "unset"
+             encoding here: null already is one, and having two would make
+             them disagree eventually. -->
+        <sql>
+            ALTER TABLE ${tablePrefix}comp_id
+            ADD CONSTRAINT ${tablePrefix}comp_id_gateway_instances_positive
+            CHECK ((primary_gateway_instance IS NULL OR primary_gateway_instance &gt;= 1)
+               AND (backup_gateway_instance  IS NULL OR backup_gateway_instance  &gt;= 1))
+        </sql>
+
+        <!-- A backup that is the primary is not a backup.  Rejected here
+             rather than at the gateway because it is a provisioning mistake,
+             and the gateway would have no way to tell it from a member
+             deliberately pinned to a single instance, which is expressed by
+             leaving the backup null. -->
+        <sql>
+            ALTER TABLE ${tablePrefix}comp_id
+            ADD CONSTRAINT ${tablePrefix}comp_id_gateway_backup_differs
+            CHECK (backup_gateway_instance IS NULL
+                   OR primary_gateway_instance IS NULL
+                   OR backup_gateway_instance &lt;&gt; primary_gateway_instance)
+        </sql>
+
+        <!-- A backup with no primary is meaningless: there is nothing for it
+             to be the backup of, and the member would be pinned to one
+             instance by an unrelated column being empty.  Pin to a single
+             instance by setting the primary and leaving the backup null. -->
+        <sql>
+            ALTER TABLE ${tablePrefix}comp_id
+            ADD CONSTRAINT ${tablePrefix}comp_id_gateway_backup_needs_primary
+            CHECK (backup_gateway_instance IS NULL
+                   OR primary_gateway_instance IS NOT NULL)
+        </sql>
+
+        <rollback>
+            <sql>
+                ALTER TABLE ${tablePrefix}comp_id
+                DROP CONSTRAINT ${tablePrefix}comp_id_gateway_backup_needs_primary
+            </sql>
+            <sql>
+                ALTER TABLE ${tablePrefix}comp_id
+                DROP CONSTRAINT ${tablePrefix}comp_id_gateway_backup_differs
+            </sql>
+            <sql>
+                ALTER TABLE ${tablePrefix}comp_id
+                DROP CONSTRAINT ${tablePrefix}comp_id_gateway_instances_positive
+            </sql>
+            <dropColumn tableName="${tablePrefix}comp_id"
+                        columnName="backup_gateway_instance"/>
+            <dropColumn tableName="${tablePrefix}comp_id"
+                        columnName="primary_gateway_instance"/>
+        </rollback>
+    </changeSet>
+
+</databaseChangeLog>

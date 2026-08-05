@@ -31,5 +31,22 @@ public record CompIdRow(
          * every member, so the distinction has to survive all the way to the gateway.
          */
         boolean cancelOnDisconnectEnabled,
-        Integer cancelOnDisconnectGracePeriodSeconds
+        Integer cancelOnDisconnectGracePeriodSeconds,
+        /**
+         * The gateway instances this comp id's session may log on to: the one it is
+         * expected to use, and the one it falls back to when that is unreachable. A
+         * gateway refuses a logon from a member pinned elsewhere.
+         *
+         * Both boxed because null means "not pinned" -- this member may log on to any
+         * instance -- which is a different statement from any instance number, and
+         * instance 0 does not exist. A primary with a null backup pins the member to
+         * exactly one instance.
+         *
+         * These name an instance, not a protocol: instance 1 of the FIX gateway and
+         * instance 1 of the binary gateway are separate processes holding the same
+         * position in their own protocol, and a member's pinning applies to whichever
+         * it speaks.
+         */
+        Integer primaryGatewayInstance,
+        Integer backupGatewayInstance
 ) {}

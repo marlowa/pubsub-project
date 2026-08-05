@@ -157,6 +157,22 @@ message AuthenticationResult (id=503, version=1)
     # older gateway ignores them and keeps using its configured defaults.
     optional bool         cancel_on_disconnect_enabled
     optional i32          cancel_on_disconnect_grace_period_seconds
+    # Session provisioning for this comp id: which gateway instances it may log on to.
+    # A gateway refuses a logon from a member pinned elsewhere, which is what makes the
+    # pinning a rule rather than a convention -- and the recovery guarantees the pinning
+    # exists to support hold only if it is a rule.
+    #
+    # These name an INSTANCE, not a protocol. Each gateway process carries its own
+    # gateway.instance_id, numbered from 1, and instance 1 of the FIX gateway and instance
+    # 1 of the binary gateway hold the same position in their own protocol. So the pinning
+    # applies to whichever order-entry protocol the member speaks, and this service stays
+    # free of any knowledge of protocols, as the header of this file requires.
+    #
+    # Absent primary means this member is not pinned and may log on to any instance --
+    # again not the same as any instance number, since there is no instance 0. Absent
+    # backup with a primary present pins the member to that one instance.
+    optional i16          primary_gateway_instance
+    optional i16          backup_gateway_instance
 end
 
 # ---------------------------------------------------------------------------
