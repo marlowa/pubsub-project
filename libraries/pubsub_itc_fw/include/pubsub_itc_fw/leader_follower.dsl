@@ -358,6 +358,110 @@ message SessionUnbound (id=121, version=1)
     i16    gateway_protocol_id
     i16    gateway_instance_id
     i32    gateway_session_conn_id # the connection going away; ignored if not the current one
+    # Where the session's sequence numbers had reached when it ended, handed back so the
+    # next gateway to hold this session can carry on from them rather than restarting at 1.
+    # A member that saw its sequence reset on every reconnect would see a break it cannot
+    # reconcile, which is the opposite of surviving a failover.
+    #
+    # Reported by the gateway rather than counted by the sequencer because the sequencer
+    # cannot count them: the FIX outbound number covers every message sent to the member,
+    # including the heartbeats, Logouts and Rejects that never come near the sequencer.
+    #
+    # This is therefore only as current as the last clean unbind. A gateway that is killed
+    # sends none, so the stored numbers stay where they were and the returning member finds
+    # the venue behind it -- which its own ResendRequest then resolves, and which is one of
+    # the reasons resend has to work.
+    #
+    # Only the outbound number is carried. The gateway does not track what the member sends
+    # it -- there is no inbound gap detection to hold a number for -- so a field for it would
+    # be one nothing populates. When that is built, it belongs here beside this one.
+    i32    outbound_seq_num        # next number the venue would send to this member
+end
+
+# ------------------------------------------------------------
+#  122 -- SessionBoundAck
+#  Sent by the sequencer in reply to SessionBound, handing the
+#  gateway whatever the venue remembers about this session.
+#
+#  A session's sequence numbers belong to the session and not to
+#  the connection carrying it, so a gateway that has just taken
+#  one on cannot know where it had got to. The sequencer does,
+#  because it is the one component every instance of every
+#  protocol reports to.
+#
+#  known = false means the venue has never seen this session, so
+#  the numbers are the defaults and the gateway starts fresh. It
+#  is not an error: a member's first ever logon takes this path.
+# ------------------------------------------------------------
+
+message SessionBoundAck (id=122, version=1)
+    string comp_id
+    i16    gateway_protocol_id
+    bool   known                   # false: first sight of this session, the number is the default
+    i32    outbound_seq_num        # next number to send to the member
+end
+
+# ------------------------------------------------------------
+#  123 -- SessionReplayRequest
+#  Sent by a gateway to ask for a session's execution reports
+#  back, so it can answer a member that has asked for messages
+#  it missed.
+#
+#  The reports are in the WAL already -- every one, with the
+#  session that originated it on the envelope -- so nothing has
+#  to be stored a second time to answer this. What the sequencer
+#  does is walk its WAL and hand back the records belonging to
+#  one session, which is the only part of recovery the venue did
+#  not already have.
+#
+#  max_records bounds the answer. A member asking for everything
+#  since the beginning of a long session would otherwise be
+#  served a reply proportional to the whole trading day, on the
+#  reactor thread that is also serving live order flow.
+# ------------------------------------------------------------
+
+message SessionReplayRequest (id=123, version=1)
+    i64    request_id              # gateway-assigned; echoed on every record and on completion
+    string comp_id
+    i16    gateway_protocol_id
+    i64    from_seq_no             # WAL sequence to resume after; 0 means from the beginning
+    i32    max_records             # cap on records returned; 0 means the sequencer's own limit
+end
+
+# ------------------------------------------------------------
+#  124 -- SessionReplayRecord
+#  One execution report from the replay, in WAL order.
+#
+#  A PDU of its own rather than the WalRecord a live report
+#  arrives in, so that a gateway cannot mistake a replayed report
+#  for a live one: the two need different treatment on the wire
+#  (a replayed FIX report carries PossDupFlag=Y) and confusing
+#  them would tell a member an old fill had just happened.
+# ------------------------------------------------------------
+
+message SessionReplayRecord (id=124, version=1)
+    i64    request_id              # echoed from SessionReplayRequest
+    i64    seq_no                  # the record's WAL sequence number
+    i64    wall_time_ns            # when the venue originally sequenced it
+    bytes  payload                 # the encoded ExecutionReport, exactly as stored
+end
+
+# ------------------------------------------------------------
+#  125 -- SessionReplayComplete
+#  Ends a replay. Sent even when no records matched, because the
+#  gateway is waiting for it before it lets live traffic resume:
+#  without a definite end it could not tell "nothing to send" from
+#  "still coming".
+#
+#  truncated = true means max_records was reached and more remain
+#  after last_seq_no. The gateway can ask again from there.
+# ------------------------------------------------------------
+
+message SessionReplayComplete (id=125, version=1)
+    i64    request_id
+    i32    record_count            # records sent in this reply
+    i64    last_seq_no             # WAL sequence of the last record sent, or from_seq_no if none
+    bool   truncated               # more records remain beyond last_seq_no
 end
 
 # ------------------------------------------------------------

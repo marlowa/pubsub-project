@@ -2,18 +2,23 @@
 
 How a member keeps trading when a gateway dies.
 
-> **Status: steps 1-5 built, step 6 outstanding. Targeted at 0.3.0.**
+> **Status: all six steps built. Targeted at 0.3.0.**
 >
 > The direction was settled on 2026-07-30 and written down before implementation started, so that
 > the decisions — and the reasoning behind them — were recorded rather than reconstructed
 > afterwards. Since then, instance identity, the sequencer endpoint collection, two instances of
 > each protocol running, cancel-on-disconnect with a grace period, and session provisioning have
-> all landed, and so has step 5: routing is now keyed on session identity, so a member that
-> reconnects -- to its own instance or to its backup -- inherits reports for orders it placed
-> earlier and can cancel what it left resting. Each step's entry under **Implementation order**
-> says what was actually built and how it was proven. **Step 6 -- session-slice replay on logon,
-> and retiring the blanket gap-fill -- is not built**, so a member is brought up to date only
-> with reports generated after it returns; anything emitted while it was away is still lost.
+> all landed, and so have steps 5 and 6: routing is keyed on session identity, so a member
+> that reconnects -- to its own instance or to its backup -- inherits reports for orders it
+> placed earlier and can cancel what it left resting; and a member that asks for what it
+> missed is sent the real execution reports rather than having them gap-filled away. Each
+> step's entry under **Implementation order** says what was actually built and how it was
+> proven.
+>
+> **What a member does not get** is set out at the end of step 6 and is worth reading before
+> treating this as finished: there is no outbound message store, so only execution reports are
+> replayable and only for as long as the WAL retains them; the remembered sequence numbers do
+> not survive a venue restart; and the binary gateway has no resend at all.
 >
 > The "What exists today" section is the 2026-07-30 baseline this design was written against, kept
 > because later sections argue against it. Where a step has superseded part of it, that is marked
@@ -251,11 +256,12 @@ replayed to it, which is step 6.
 Gaps 1, 2 and 5 are the SPOF work. Gaps 3, 4 and 6 are the in-flight-report decision. They are
 separable, and the SPOF half is worth having on its own.
 
-**Gaps 1, 2, 5 and 6 are now closed** (steps 1, 2, 4 and 5). Gap 3 is narrowed rather than
-closed: a report for a session that has reconnected now follows it, and only a session that is
-connected nowhere at all has its reports dropped. Gap 4 -- no outbound message store, so nothing
-can be replayed to a member for the period it was away -- is untouched, and with gap 3's
-remainder is what step 6 exists to close.
+**Gaps 1, 2, 5 and 6 are closed** (steps 1, 2, 4 and 5). Gap 3 is narrowed: a report for a
+session that has reconnected follows it, and only a session connected nowhere at all has its
+reports dropped -- and those are recoverable afterwards, which is what made the drop tolerable.
+**Gap 4 is answered rather than closed**: there is still no outbound message store, but the
+WAL serves as one for execution reports, which are the messages a member actually needs back.
+Its limits -- retention, and administrative messages -- are stated under step 6.
 
 ---
 
@@ -401,9 +407,11 @@ So the shape is:
 1. **Stop dropping.** When the target gateway is not connected, the report is not discarded; it
    stays in the WAL, which it is in anyway. The drop path becomes a no-op rather than a loss,
    because delivery is driven by the reconnecting session asking for its slice, not by the
-   sequencer pushing at a connection that may not exist. *Not built. A report for a session that
-   is bound nowhere is still dropped; what changed in step 5 is that far fewer reports are in
-   that position, because a session that has merely moved is no longer one of them.*
+   sequencer pushing at a connection that may not exist. *Built differently, and the
+   difference is worth being clear about. A report for a session bound nowhere is still
+   dropped at the moment it is generated -- but it is in the WAL, and the reconnecting session
+   asks for its slice, which is what this point was really describing. The drop is no longer a
+   loss.*
 2. **Key the routing entry on the session, not the connection.** The connection triple stays as the
    *current destination*. The *key* becomes the provisioned session identity, so that a logon can
    re-bind the destination to a new connection on a different instance. This is the direct answer
@@ -413,12 +421,17 @@ So the shape is:
    instance change.
 3. **Replay on logon.** The gateway, having authenticated a session, asks the sequencer for that
    session's reports from the member's nominated position and encodes them to the wire in its own
-   protocol, with FIX `PossDupFlag=Y` where the report was previously sent.
+   protocol, with FIX `PossDupFlag=Y` where the report was previously sent. **Done, as step 6** --
+   though driven by the member's ResendRequest rather than by the logon itself, which is what FIX
+   prescribes: the venue restores the session's numbering, and the member decides whether it is
+   missing anything.
 4. **Retire the blanket gap-fill.** `handle_resend_request` stops answering everything with
    `SequenceReset-GapFill`. The FIX convention is that administrative messages are gap-filled and
    application messages are resent; execution reports are application messages. The feedback-loop
    hazard the current comment describes is real and must be avoided by resending the range in one
-   pass, not by reverting to one-at-a-time filling.
+   pass, not by reverting to one-at-a-time filling. **Done, as step 6.** The range is answered in
+   one pass, and a second ResendRequest arriving while one is running is ignored rather than
+   restarting it -- which is the same feedback loop reached from the other direction.
 
 The FIX outbound sequence number needs care. It is per session, not per connection, and it must
 survive the instance change — otherwise the backup starts at 1 and the member sees a sequence
@@ -673,7 +686,71 @@ Each step leaves the system working.
    book all but the first client's orders would be duplicates. Each client now gets its own
    comp id, its own credential and its own generated session config, exactly as the binary
    load client already did.
-6. **Session-slice replay on logon**, and retire the blanket gap-fill.
+6. **Session-slice replay on logon**, and retire the blanket gap-fill. **Done 2026-08-06**,
+   to a deliberately bounded scope: the replay path in full, and enough FIX conformance to be
+   honest about what the member is handed. What was *not* built is listed at the end.
+
+   `handle_resend_request` no longer answers everything with a `SequenceReset-GapFill`. It
+   asks the sequencer for the session's execution reports, resends them with `PossDupFlag=Y`
+   and `OrigSendingTime`, and gap-fills only the administrative remainder -- which is the
+   split FIX actually prescribes.
+
+   **Sequence continuity comes first, because without it the member never asks.** A session's
+   outbound number is reported to the sequencer at `SessionUnbound` and handed back at
+   `SessionBoundAck`, so a reconnect continues the member's numbering instead of restarting
+   at 1. The sequencer cannot count that number itself -- the FIX outbound number covers every
+   message sent to the member, including the heartbeats and rejects that never reach the
+   sequencer -- so it is reported rather than derived. That makes it only as current as the
+   last clean unbind: a killed gateway sends none, and the returning member finds the venue
+   behind it, which its own ResendRequest then resolves.
+
+   **`ResetSeqNumFlag=Y` is honoured, and had to be.** A member that asks to start again at 1
+   is declining continuity, and by its own account has nothing missing. Ignoring that would
+   deadlock the two sides into a resend loop neither could end.
+
+   **The replay is a filtered WAL scan.** Nothing is stored twice: every report is already in
+   the WAL with the session that originated it on its envelope, as of step 5. The sequencer
+   walks its WAL, keeps the records matching the identity, and streams them back. Measured
+   rather than assumed: **18 ms to scan a 4 MB retained WAL and return 3,223 records** for one
+   session. The cost is a scan from the oldest retained segment, because the WAL is an
+   append-only log with no index -- deliberately, since indexing it would put work on the
+   write path that every order pays for so that a rare reconnect can be quicker.
+
+   Two mistakes made while building it, both worth recording because both looked like
+   working code:
+
+   - **The replay first streamed matches as it found them, oldest first.** What a member has
+     missed is the *tail* of its stream, so filling the gap from the beginning hands it
+     ancient history and never reaches what it actually missed. It also made the answer
+     unbounded: a member asking for a thousand messages was sent the session's whole retained
+     history. The sequencer now collects the most recent `max_records` matches in a window and
+     sends those, and the gateway asks for exactly the gap width the member described.
+   - **`PossDupFlag` was applied to every replayed report**, including those past the
+     requested range -- reports the venue had never delivered, marked as possible duplicates.
+     It now marks only what falls inside the gap the member asked about.
+
+   `ha_test.py` scenario 22 covers it, driven by a client configured *not* to reset its
+   sequence numbers. It asserts the numbering resumed, that the member asked, that real
+   reports came back -- and then counts `PossDupFlag=Y` in the **client's own received
+   messages**, because whether a resent report is marked is a fact about what the member was
+   handed, and the gateway's record of it sits below the deployed log level.
+
+   The negative control for that last assertion is the most instructive result of the whole
+   step. Removing `PossDupFlag` does not merely mislabel the messages: the member **closed the
+   connection**. A resent report carries a sequence number lower than expected, and FIX
+   requires a member to treat that without `PossDupFlag` as fatal. The flag is not decoration.
+
+   **Deliberately not built**, and the honest limits of what a member gets back:
+
+   - **No outbound message store.** Only execution reports are replayable, because only they
+     are in the WAL. Administrative messages are gap-filled, as FIX permits.
+   - **Replay depth is bounded by WAL retention.** Snapshots truncate the WAL, and anything
+     older than the retained segments cannot be replayed. A real venue would keep a separate
+     outbound store for the trading day.
+   - **No durability across a venue restart.** The remembered sequence numbers live in the
+     sequencer's memory; restarting the pair loses them.
+   - **The binary gateway is unchanged.** It has no session layer to hang a resend on, so
+     "in-flight reports survive" means something different there -- see the open questions.
 
 Steps 1-3 are the SPOF work and are worth landing on their own. Steps 4-6 are the in-flight-report
 decision and are the larger half.
@@ -682,16 +759,26 @@ decision and are the larger half.
 
 ## Open questions
 
-- What does a member nominate as its recovery position? FIX gives `BeginSeqNo` on the
-  ResendRequest, which is a session-level sequence number and not the sequencer's. The mapping
-  between the two has to live somewhere, and that somewhere is probably the session state that
-  already has to survive the instance change.
+- ~~What does a member nominate as its recovery position?~~ **Answered by step 6, and the
+  answer avoided the mapping rather than building it.** `BeginSeqNo` is a session-level number
+  and the WAL is numbered by the venue's own sequence, so no mapping between them exists. What
+  the gateway sends instead is the *width* of the gap the member described, and the sequencer
+  returns that many of the session's most recent reports. The member's numbering is then
+  applied on the way out. That is exact when the gap is all execution reports, and when it is
+  not, the administrative remainder is gap-filled -- which is the case the FIX split already
+  covers. A true mapping would need the outbound store this deliberately does not have.
 - How does a member discover that its primary is down? Connection refusal is the simple answer and
   is what venues rely on, but it interacts with logon timeouts.
 - Does the binary order gateway get the same treatment, or does pinning apply only to FIX? It has no
   session-layer resend to build on, so "in-flight reports survive" means something different there
   and may need its own mechanism. *Settled for step 4: both gateways enforce pinning, and both
   refuse the same way. The question remains open for steps 5 and 6, which are the resend half.*
+- **Should the WAL scan become an indexed lookup?** A replay is a scan from the oldest
+  retained segment: 18 ms for 4 MB today, and linear in what the WAL holds. That is
+  comfortable for a reconnect and would not be for anything frequent. The alternatives -- a
+  per-session cursor, or segment skipping -- trade write-path cost or memory for it, and none
+  is worth paying until a replay stops being rare. The user has separately raised making
+  replay a first-class framework capability, which is where this belongs.
 - **Disaster recovery is not modelled at all.** Venues publish a third address at a second site,
   under a different regime from the primary/backup pair: typically a start-of-day sequence reset
   and no in-flight state continuity, so it is not a third backup and must not be built as one. Not

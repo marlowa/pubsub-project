@@ -237,6 +237,14 @@ _PROVISIONED_BACKUP_INSTANCE  = 2
 # one, a gateway that ignored the primary and matched only the backup would still pass.
 _ELSEWHERE_PRIMARY_INSTANCE   = 2
 _PROVISIONING_LOGON_TIMEOUT   = 20.0
+# Resend, scenario 22. The replay is a WAL scan on the sequencer's reactor thread, so it is
+# slower than a log line appearing -- measured at tens of milliseconds against a few MB of
+# retained WAL, but the timeout is generous because the scan grows with what the WAL holds.
+_RESEND_TIMEOUT               = 30.0
+# The client is a separate process writing to a file; give it a moment to flush what it
+# received before counting. Asserting on another process's output without this reads an
+# empty file and blames the venue.
+_RESEND_CLIENT_SETTLE         = 3.0
 SETTLE_AFTER_KILL      = 1.0   # seconds after a kill where no failover is expected
 
 FIX8_DIR = Path("/home/marlowa/mystuff/fix8_install")
@@ -248,6 +256,23 @@ FIX8_CFG = "myfix_gateway_client.xml"
 # service (mirrors perf_run.py::ensure_fix8_credentials).
 FIX8_COMP_ID  = "CLIENT"
 FIX8_PASSWORD = ""
+# A second f8test config, generated from the stock one with reset_sequence_numbers turned OFF.
+#
+# The stock client sends ResetSeqNumFlag=Y on every Logon, which tells the venue to forget
+# where the session's numbering had reached -- and a venue that honours that has nothing to
+# resend, by the member's own account. Scenario 22 is about the opposite case: a member that
+# keeps its numbering, notices the venue is ahead of it, and asks for what it missed.
+FIX8_NO_RESET_CFG = "myfix_gateway_client_no_reset.xml"
+# A SECOND comp id, used by the scenarios that open a fresh session after the baseline one.
+#
+# f8test numbers its ClOrdIDs ord1, ord2, ... from one in every process, so a second session
+# under the same comp id re-uses ClOrdIDs its first session still has resting on the book.
+# Since the matching engine keys an order on (comp id, protocol, ClOrdID) -- deliberately, so
+# that a reconnecting member can manage what it left resting -- those are duplicates, and the
+# venue is right to reject them. A real member does not re-use a live ClOrdID; the test client
+# has no choice about it, so the fresh session gets an identity of its own.
+FIX8_RECOVERY_COMP_ID = "CLIENT-RECOVERY"
+FIX8_RECOVERY_CFG     = "myfix_gateway_client_recovery.xml"
 # ──────────────────────────────────────────────────────────────────────────────
 
 # Gateway log substrings for FIX logon outcome detection.
@@ -438,6 +463,11 @@ class Scenario(NamedTuple):
     # so reports for those orders must reach the member on its NEW connection. See
     # run_scenario's "reconnect before the kill" block.
     reconnect_before_kill: bool = False
+    # When True, drive this scenario with a client that does NOT reset its sequence numbers,
+    # and assert the resend path: the venue continues the member's numbering across the
+    # reconnect, the member notices the gap and asks, and the venue answers with the real
+    # execution reports rather than gap-filling them away. See run_scenario's "resend" block.
+    assert_resend_recovery: bool = False
 
 
 # ── helpers shared by scenario definitions ────────────────────────────────────
@@ -1212,6 +1242,38 @@ _SCENARIOS: list[Scenario] = [
             ),
         ],
     ),
+
+    # 22 -- a reconnecting member is sent the reports it missed (step 6).
+    #
+    # Nothing is killed. The member simply goes away and comes back, which is the ordinary
+    # case a venue has to survive many times a day, and the one where the old behaviour was
+    # least defensible: the gateway answered every ResendRequest with a blanket
+    # SequenceReset-GapFill, declaring the missing range administrative and skipping it. The
+    # session stayed open and the member was told nothing about what had happened to its
+    # orders.
+    #
+    # This scenario uses a client that does NOT reset its sequence numbers, because the stock
+    # one asks the venue to forget the session on every logon -- and a venue that honours
+    # that, as it must, has nothing to resend.
+    #
+    # Three things are asserted, and the third is the one that matters: the venue continues
+    # the member's numbering rather than restarting it; the member notices and asks; and what
+    # comes back is real execution reports carrying PossDupFlag=Y, checked in the CLIENT's own
+    # received messages rather than in a gateway log line.
+    Scenario(
+        number=22,
+        short_name="resend_recovery",
+        description="A reconnecting member is sent the execution reports it missed",
+        expected_outcome=(
+            "the venue resumes the session's sequence numbering across the reconnect, the "
+            "member asks for what it missed, and receives real execution reports marked "
+            "PossDupFlag=Y instead of a blanket gap-fill"
+        ),
+        orders_during_override=0,
+        orders_after_override=0,
+        assert_resend_recovery=True,
+        steps=[],
+    ),
 ]
 
 _SCENARIO_MAP: dict[int, Scenario] = {s.number: s for s in _SCENARIOS}
@@ -1352,6 +1414,11 @@ def export_credentials(script_dir: Path, creds_file: Path) -> None:
         )
     log(f"  credentials written to {creds_file}")
     ensure_fix8_credentials(creds_file, FIX8_COMP_ID, FIX8_PASSWORD)
+    # The fresh-logon comp id is not in the database, so it needs a credential written the
+    # same way. Written unconditionally: it costs one block in a file the auth service reads
+    # once, and a scenario that needs it and finds it missing fails as an unexplained logon
+    # timeout rather than as a missing credential.
+    ensure_fix8_credentials(creds_file, FIX8_RECOVERY_COMP_ID, FIX8_PASSWORD)
 
 
 def provision_gateway_pinning(comp_id: str, primary_instance: int,
@@ -1413,6 +1480,37 @@ def unprovision_gateway_pinning(comp_id: str) -> None:
             f"baseline logon until it is cleared by hand:\n{result.stderr.strip()}")
         return
     log(f"  {comp_id}: gateway pinning cleared")
+
+
+def _resent_report_count(log_path: Path, from_byte: int = 0) -> int | None:
+    """Reports named on the gateway's 'resend complete' line, or None if absent."""
+    try:
+        with log_path.open("r", errors="replace") as handle:
+            handle.seek(from_byte)
+            for line in handle:
+                if "resend complete" in line:
+                    match = re.search(r"resend complete -- (\d+) report\(s\) resent", line)
+                    if match:
+                        return int(match.group(1))
+    except OSError:
+        return None
+    return None
+
+
+def _client_report_counts(client_output: Path) -> tuple[int, int]:
+    """(execution reports received, of which marked PossDupFlag=Y) from f8test's own output.
+
+    f8test prints each received message with field names rather than raw tags, so this reads
+    'MsgType (35): 8' and 'PossDupFlag (43): Y'. Counting the client's view rather than the
+    gateway's is the point: whether a resent report was marked is a fact about what the
+    member was handed.
+    """
+    if not client_output.is_file():
+        return 0, 0
+    text = client_output.read_text(errors="replace")
+    reports = text.count("MsgType (35): 8")
+    poss_dup = len(re.findall(r"PossDupFlag \(43\): [Yy]", text))
+    return reports, poss_dup
 
 
 def _held_grace_period_seconds(log_path: Path, from_byte: int = 0) -> int | None:
@@ -1665,19 +1763,60 @@ def wait_for_accepted_count(me_log: Path, count: int,
     return False, time.monotonic() - t0, pos
 
 
-def send_burst(count: int, gw_log: Path) -> subprocess.Popen:
+def write_no_reset_fix8_config() -> None:
+    """Generate the f8test config used by the resend scenario, beside the stock one.
+
+    Identical to the stock config except that reset_sequence_numbers is off, so the client
+    keeps its own numbering instead of telling the venue to forget the session's. Generated
+    rather than checked in because it must track the stock config: a divergence in host,
+    port or comp id would make the scenario fail for reasons unrelated to what it tests.
+    """
+    source = FIX8_DIR / FIX8_CFG
+    if not source.is_file():
+        die(f"fix8 session config not found: {source}")
+    rewritten, count = re.subn(r'reset_sequence_numbers="[^"]*"', 'reset_sequence_numbers="false"',
+                               source.read_text(), count=1)
+    if count == 0:
+        die(f"no reset_sequence_numbers attribute to rewrite in {source} -- "
+            "the resend scenario needs a client that keeps its sequence numbers")
+    (FIX8_DIR / FIX8_NO_RESET_CFG).write_text(rewritten)
+
+
+def write_recovery_fix8_config() -> None:
+    """Generate the f8test config for the fresh-logon comp id, beside the stock one.
+
+    Identical to the stock config except for the SenderCompID, so it tracks any change to
+    host, port or reset behaviour rather than drifting from it.
+    """
+    source = FIX8_DIR / FIX8_CFG
+    if not source.is_file():
+        die(f"fix8 session config not found: {source}")
+    rewritten, count = re.subn(r'sender_comp_id="[^"]*"', f'sender_comp_id="{FIX8_RECOVERY_COMP_ID}"',
+                               source.read_text(), count=1)
+    if count == 0:
+        die(f"no sender_comp_id attribute to rewrite in {source}")
+    (FIX8_DIR / FIX8_RECOVERY_CFG).write_text(rewritten)
+
+
+def send_burst(count: int, gw_log: Path, config: str = FIX8_CFG,
+               client_output: Path | None = None) -> subprocess.Popen:
     """
     Launch one f8test session, wait for confirmed FIX logon, then send `count`
     T commands.  Each T command sends 1000 NOS.  Returns the Popen object.
     Dies immediately on authentication failure or timeout instead of hanging.
+
+    client_output captures what the CLIENT received, which is the only place some things can
+    be checked: whether a resent report carried PossDupFlag is visible to the member and to
+    nobody else, the gateway's own record of it being below the deployed log level.
     """
     gw_pos = file_end(gw_log)
+    stdout_target = client_output.open("w") if client_output is not None else subprocess.DEVNULL
     proc = subprocess.Popen(
-        [str(FIX8_BIN), "-c", FIX8_CFG, "-N", "GW1"],
+        [str(FIX8_BIN), "-c", config, "-N", "GW1"],
         cwd=str(FIX8_DIR),
         stdin=subprocess.PIPE,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=stdout_target,
+        stderr=subprocess.STDOUT,
     )
     log(f"  f8test PID {proc.pid}: waiting up to {FIX8_LOGON_WAIT:.0f}s for FIX logon ...")
     outcome = wait_for_fix_logon(gw_log, gw_pos, FIX8_LOGON_WAIT)
@@ -2050,6 +2189,12 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # Likewise for session provisioning: the comp id is pinned to the instance this
         # harness runs, so the baseline session is admitted and the gateway has real
         # numbers to name. The scenario then moves it elsewhere and requires a refusal.
+        if scenario.assert_resend_recovery:
+            write_no_reset_fix8_config()
+
+        if scenario.fresh_logon_in_recovery:
+            write_recovery_fix8_config()
+
         if scenario.assert_session_provisioning:
             log("=== Provisioning gateway instances for the test comp id ===")
             provision_gateway_pinning(FIX8_COMP_ID, _PROVISIONED_PRIMARY_INSTANCE,
@@ -2134,7 +2279,10 @@ def run_scenario(scenario: Scenario, args) -> bool:
         before_total = args.orders_before * 1000
         log(f"=== Phase 3: {before_total} baseline orders ===")
 
-        f8proc = send_burst(args.orders_before, gw_log)
+        # The resend scenario needs a client that keeps its own sequence numbering; every
+        # other scenario uses the stock one, which resets it on each logon.
+        baseline_config = FIX8_NO_RESET_CFG if scenario.assert_resend_recovery else FIX8_CFG
+        f8proc = send_burst(args.orders_before, gw_log, baseline_config)
         log(f"  Waiting for ME-ORD-{before_total} ...")
         found, elapsed, me_pos = wait_for_me_ord(
             me_log, before_total, timeout=120.0, from_byte=0,
@@ -2354,7 +2502,11 @@ def run_scenario(scenario: Scenario, args) -> bool:
             if scenario.fresh_logon_in_recovery:
                 log("  Opening a fresh FIX session (fresh logon must authenticate via the surviving auth) ...")
                 stop_f8test(f8proc)
-                f8proc = send_burst(0, gw_log)
+                # Under its own comp id: see FIX8_RECOVERY_COMP_ID. The point of this step is
+                # that a fresh logon is authenticated by the surviving auth instance, and that
+                # holds whichever identity logs on -- whereas re-using the baseline comp id
+                # makes every recovery order a duplicate of one still resting on the book.
+                f8proc = send_burst(0, gw_log, FIX8_RECOVERY_CFG)
 
             log(f"  Sending {after_total} recovery orders ...")
             for _ in range(orders_after):
@@ -2691,6 +2843,80 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     f"{established} session(s) for it. A refusal that leaves a working session "
                     "behind is not a refusal.")
             log("  provisioning: no session was established at the wrong instance -- OK")
+
+        # ── Resend recovery (step 6) ──────────────────────────────────────────
+        # The member goes away and comes back. Everything asserted here is about what it is
+        # told on its return, and the last of the three is read from what the CLIENT
+        # received rather than from a gateway log line -- PossDupFlag is a fact about the
+        # message the member got, and the gateway's own record of it sits below the deployed
+        # log level.
+        if scenario.assert_resend_recovery:
+            gw_pos = file_end(gw_log)
+            client_output = log_dir / "f8test_resend_client.txt"
+
+            log("=== Dropping the session and reconnecting a client that keeps its sequence numbers ===")
+            stop_f8test(f8proc)
+            f8proc = None
+            f8proc = send_burst(0, gw_log, FIX8_NO_RESET_CFG, client_output)
+
+            # 1. The venue continues the session's numbering. Without this the member sees a
+            #    reset, has no reason to think anything is missing, and never asks.
+            found, elapsed, _ = poll_log_for(
+                gw_log, "resuming the venue's sequence state", "outbound=",
+                timeout=_PROVISIONING_LOGON_TIMEOUT, from_byte=gw_pos,
+            )
+            if not found:
+                die("resend: the gateway did not resume the session's sequence numbering. The venue "
+                    "remembers it at SessionUnbound and hands it back on SessionBoundAck -- check "
+                    "that the unbind carried a number and that the sequencer replied.")
+            log(f"  resend: the venue resumed the session's numbering ({elapsed:.1f}s)")
+
+            # 2. The member notices the gap and asks for what it missed.
+            found, elapsed, _ = poll_log_for(
+                gw_log, "ResendRequest BeginSeqNo=", "requesting this session's reports",
+                timeout=_RESEND_TIMEOUT, from_byte=gw_pos,
+            )
+            if not found:
+                die("resend: no ResendRequest was answered by asking the sequencer for the session's "
+                    "reports. Either the member never asked -- check it is the no-reset config -- or "
+                    "handle_resend_request has gone back to answering with a blanket gap-fill.")
+            log(f"  resend: the member asked and the gateway went to the sequencer ({elapsed:.1f}s)")
+
+            found, elapsed, _ = poll_log_for(
+                gw_log, "resend complete", "report(s) resent",
+                timeout=_RESEND_TIMEOUT, from_byte=gw_pos,
+            )
+            if not found:
+                # Two causes, and the second is the likelier one because the member enforces it.
+                # A resent message carries a sequence number LOWER than the member expects, and
+                # FIX says that without PossDupFlag=Y this is a fatal error: the member must
+                # disconnect. So dropping the flag does not merely mislabel the messages -- the
+                # session dies mid-answer and this assertion times out rather than the PossDup
+                # one below ever being reached. Observed exactly that way while testing.
+                die("resend: the replay never completed. Check, in order: (1) whether the client "
+                    "closed the connection mid-resend -- a resent report sent without PossDupFlag=Y "
+                    "carries a sequence number below what the member expects, which FIX requires it "
+                    "to treat as fatal; (2) the sequencer's side -- that SessionReplayRequest reached "
+                    "it and SessionReplayComplete came back.")
+            resent = _resent_report_count(gw_log, gw_pos)
+            if resent is None or resent <= 0:
+                die(f"resend: the replay completed but resent {resent} reports. The member asked for "
+                    "messages it missed and was sent none -- which is the blanket gap-fill behaviour "
+                    "this replaced, arrived at by a different route.")
+            log(f"  resend: {resent} execution report(s) resent from the WAL ({elapsed:.1f}s)")
+
+            # 3. What the member actually received. A resent report must say so: without
+            #    PossDupFlag the member reads an old fill as a new one.
+            time.sleep(_RESEND_CLIENT_SETTLE)
+            received, poss_dup = _client_report_counts(client_output)
+            if received <= 0:
+                die(f"resend: the client received no execution reports at all (see {client_output}). "
+                    "The reports were resent by the gateway but did not reach the member.")
+            if poss_dup <= 0:
+                die(f"resend: the client received {received} report(s) but none carried PossDupFlag=Y "
+                    f"(see {client_output}). A resent report that does not say it may be a duplicate "
+                    "invites the member to book an old fill twice.")
+            log(f"  resend: the client received {received} report(s), {poss_dup} marked PossDupFlag=Y -- OK")
 
         result_pass = True
         log("")

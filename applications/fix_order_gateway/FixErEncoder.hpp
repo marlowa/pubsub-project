@@ -41,8 +41,19 @@ static constexpr size_t max_execution_report_buffer_size = 64 * 1024;
  * @param[in]  output_buffer_size   Size of output_buffer in bytes.
  * @return A view of the wire bytes within output_buffer; empty on overflow.
  */
+/**
+ * @param[in] poss_dup              True for a report being RESENT to a member that asked for
+ *                                  messages it missed. Adds PossDupFlag=Y, which is what
+ *                                  tells the member this may be a second copy rather than a
+ *                                  new event -- without it, a replayed fill reads as a fresh
+ *                                  one and the member's position is wrong.
+ * @param[in] orig_sending_time_ns  When the venue originally sent it, wall-clock nanoseconds,
+ *                                  or 0 when not resending. FIX requires OrigSendingTime
+ *                                  alongside PossDupFlag: SendingTime is when this copy went
+ *                                  out, and only OrigSendingTime says when the event happened.
+ */
 [[nodiscard]] std::string_view encode_execution_report(const pubsub_itc_fw_app::ExecutionReportView& view, std::string_view sender_comp_id,
                                                        std::string_view target_comp_id, int seq_num, const pubsub_itc_fw::WallClock& wall_clock,
-                                                       char* output_buffer, size_t output_buffer_size);
+                                                       char* output_buffer, size_t output_buffer_size, bool poss_dup = false, int64_t orig_sending_time_ns = 0);
 
 } // namespaces

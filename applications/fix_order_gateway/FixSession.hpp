@@ -41,9 +41,15 @@ using open_orders::OpenOrderMap;
  * The FixSerialiser is stateless and is shared across all sessions by
  * FixOrderGatewayThread.
  *
- * Sequence numbers reset to 1 on each new connection. A production gateway
- * would persist sequence numbers across connections but that is out of scope
- * for this sample.
+ * Sequence numbers no longer reset to 1 on each new connection. The venue remembers where
+ * a session's numbering had reached and hands it back when a gateway binds the session, so
+ * a reconnect continues the member's numbering rather than restarting it -- including a
+ * reconnect to a different gateway instance, which is the case it exists for. A member that
+ * wants to start again says so with ResetSeqNumFlag=Y on its Logon, and that is honoured.
+ *
+ * What is deliberately NOT held here is a store of the messages sent. Recovering them is the
+ * sequencer's job, from its WAL, because the reports may have been sent by a different
+ * instance of this gateway entirely. See docs/design/gateway_ha.md.
  */
 struct FixSession {
     /**
@@ -155,6 +161,42 @@ struct FixSession {
      * Incremented by FixGatewayThread::send_fix_to_session().
      */
     int outbound_seq_num{1};
+
+    /**
+     * @brief True when the member asked, on Logon, for both sides to restart at 1.
+     *
+     * ResetSeqNumFlag=Y is the standard way a member says "forget where we were". A venue
+     * must honour it, and honouring it means the sequence numbers the venue remembered for
+     * this session are deliberately discarded rather than restored -- and there is nothing
+     * to resend, because by the member's own account nothing is missing.
+     *
+     * It matters here because the two features pull in opposite directions: continuing a
+     * member's numbering across a reconnect is what step 6 is for, and this is the member
+     * explicitly declining it. A client that resets and a venue that insists on continuing
+     * would deadlock into a resend loop neither side can end.
+     */
+    bool reset_seq_num_requested{false};
+
+    /**
+     * @brief State of a resend in progress for this session, if any.
+     *
+     * A member that has missed reports asks for them with a ResendRequest, and the reports
+     * come back from the sequencer asynchronously -- they are in its WAL, not in this
+     * process, because a gateway holds no store of what it has sent and the gateway that
+     * sent them may not even be this one.
+     *
+     * Live reports arriving mid-resend must not be interleaved with the replayed ones: the
+     * member is being handed a numbered sequence, and a live report slotted into the middle
+     * of it would take a sequence number the resend still needs. So they are held in
+     * deferred_execution_reports until the replay ends, then delivered in order behind it.
+     * The window is short -- one round trip to the sequencer -- but it is not zero.
+     */
+    bool replay_in_progress{false};
+    int64_t replay_request_id{0};
+    /// The outbound number the session had reached before the resend began; where to resume.
+    int replay_resume_seq_num{1};
+    /// Encoded ExecutionReports that arrived live while the resend was running.
+    std::vector<std::vector<uint8_t>> deferred_execution_reports;
 
     /**
      * @brief Counter for generating unique OrderID values for this session.

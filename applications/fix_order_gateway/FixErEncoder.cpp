@@ -17,8 +17,11 @@ namespace {
 
 constexpr size_t timestamp_length = 17; // YYYYMMDD-HH:MM:SS
 
-void fill_utc_timestamp(char* out, const pubsub_itc_fw::WallClock& clock) {
-    const auto t = static_cast<std::time_t>(clock.now_ns() / 1'000'000'000LL);
+// Formats one wall-clock instant. Split from fill_utc_timestamp so a *stored* time can be
+// rendered too: a resent report has to say when the event originally happened, which is not
+// the same as when this copy is going out, and only the caller knows which is which.
+void fill_utc_timestamp_from(char* out, int64_t wall_time_ns) {
+    const auto t = static_cast<std::time_t>(wall_time_ns / 1'000'000'000LL);
     struct tm utc {};
     gmtime_r(&t, &utc);
 
@@ -51,12 +54,17 @@ void fill_utc_timestamp(char* out, const pubsub_itc_fw::WallClock& clock) {
     // No NUL terminator -- callers use timestamp_length directly.
 }
 
+void fill_utc_timestamp(char* out, const pubsub_itc_fw::WallClock& clock) {
+    fill_utc_timestamp_from(out, clock.now_ns());
+}
+
 } // namespaces
 
 // -- Public encoder ------------------------------------------------------------
 
 std::string_view encode_execution_report(const pubsub_itc_fw_app::ExecutionReportView& view, std::string_view sender_comp_id, std::string_view target_comp_id,
-                                         int seq_num, const pubsub_itc_fw::WallClock& wall_clock, char* output_buffer, size_t output_buffer_size) {
+                                         int seq_num, const pubsub_itc_fw::WallClock& wall_clock, char* output_buffer, size_t output_buffer_size, bool poss_dup,
+                                         int64_t orig_sending_time_ns) {
     // Stack-allocated timestamp -- no heap allocation.
     char timestamp_buffer[timestamp_length + 1];
     fill_utc_timestamp(timestamp_buffer, wall_clock);
@@ -73,6 +81,18 @@ std::string_view encode_execution_report(const pubsub_itc_fw_app::ExecutionRepor
     writer.push_back_field(Tag::TargetCompID, target_comp_id);
     writer.push_back_field(Tag::MsgSeqNum, seq_num);
     writer.push_back_field(Tag::SendingTime, timestamp);
+
+    // Resent, not new. PossDupFlag is what stops a member treating a replayed report as a
+    // fresh event, and OrigSendingTime is what lets it tell when the event actually happened
+    // -- SendingTime above is only when this copy left. Both are standard header fields, so
+    // no dictionary change is involved. Written immediately after SendingTime because that
+    // is where the FIX standard header puts them.
+    if (poss_dup) {
+        writer.push_back_field(Tag::PossDupFlag, 'Y');
+        char orig_timestamp_buffer[timestamp_length + 1];
+        fill_utc_timestamp_from(orig_timestamp_buffer, orig_sending_time_ns);
+        writer.push_back_field(Tag::OrigSendingTime, std::string_view{orig_timestamp_buffer, timestamp_length});
+    }
 
     if (view.has_cl_ord_id) {
         writer.push_back_field(Tag::ClOrdID, view.cl_ord_id);

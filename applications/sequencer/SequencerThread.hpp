@@ -319,8 +319,35 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // is step 6, and it is deliberately not smuggled in here.
     std::unordered_map<fix_common::SessionIdentity, fix_common::SessionDestination, fix_common::SessionIdentityHash> session_destinations_;
 
-    void handle_session_bound(const pubsub_itc_fw::EventMessage& message);
+    /**
+     * @brief What the venue remembers about a session between connections.
+     *
+     * Sequence numbers belong to the session, not to the connection carrying it, so a
+     * gateway that has just taken a session on has no way to know where it had reached.
+     * The sequencer does, because every instance of every protocol binds through it -- and
+     * this is the state that makes a reconnect a continuation rather than a reset.
+     *
+     * The numbers are *reported* by the gateway at unbind rather than counted here. They
+     * have to be: the FIX outbound number counts every message sent to the member,
+     * including the heartbeats and session-level rejects the sequencer never sees. So this
+     * is as current as the last clean unbind, and a killed gateway leaves it behind --
+     * which the member's own ResendRequest is what resolves.
+     *
+     * Kept separately from session_destinations_ because the lifetimes differ: a
+     * destination is erased the moment a session disconnects, whereas this must outlive
+     * exactly that event to be of any use.
+     */
+    struct SessionSequenceState {
+        int32_t outbound_seq_num{1};
+    };
+    std::unordered_map<fix_common::SessionIdentity, SessionSequenceState, fix_common::SessionIdentityHash> session_sequence_state_;
+
+    void handle_session_bound(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     void handle_session_unbound(const pubsub_itc_fw::EventMessage& message);
+    void handle_session_replay_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
+
+    /// Records a single replay may return before it truncates, when the caller names no cap.
+    static constexpr int32_t default_replay_max_records = 10000;
 
     // Resolves where a session's reports go, or nullptr when it is not bound anywhere.
     const fix_common::SessionDestination* session_destination(const fix_common::SessionIdentity& identity) const;

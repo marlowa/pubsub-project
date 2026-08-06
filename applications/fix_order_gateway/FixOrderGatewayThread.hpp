@@ -38,6 +38,11 @@
 // so BytesView is already defined. See docs/design/fix_pdu_generation.md.
 #include <leader_follower.hpp>
 
+// ExecutionReportView appears in this header's own interface: send_execution_report_to_session
+// is the one path both live and resent reports go through. Included after authentication.hpp
+// for the BytesView reason above.
+#include <fix_orders.hpp>
+
 // Shared SCRAM-SHA-256 crypto primitives.
 #include <scram_crypto/ScramCrypto.hpp> // IWYU pragma: keep
 
@@ -329,6 +334,44 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // reports for orders it placed before. See docs/design/gateway_ha.md.
     void announce_session_bound(const FixSession& session);
     void announce_session_unbound(const FixSession& session);
+
+    // The venue's reply to a binding: what it remembers of this session's sequence numbers,
+    // so the member's numbering continues across a reconnect instead of restarting at 1.
+    void handle_session_bound_ack(const pubsub_itc_fw::EventMessage& message);
+
+    // A session's missed execution reports, replayed from the sequencer's WAL in answer to a
+    // ResendRequest, and the completion that ends the replay. See handle_resend_request.
+    void handle_session_replay_record(const pubsub_itc_fw::EventMessage& message);
+    void handle_session_replay_complete(const pubsub_itc_fw::EventMessage& message);
+
+    /**
+     * @brief Encodes one ExecutionReport and sends it to a session. False if it would not fit.
+     *
+     * The single path for both live and resent reports, so the two cannot drift apart: a
+     * resend differs only in PossDupFlag and OrigSendingTime, and if anything else about the
+     * encoding differed the member would be told something subtly different about an event
+     * it has already seen.
+     *
+     * @param[in] poss_dup              True when resending; adds PossDupFlag=Y.
+     * @param[in] orig_sending_time_ns  When the venue first sent it; only read when resending.
+     */
+    bool send_execution_report_to_session(FixSession& session, const pubsub_itc_fw_app::ExecutionReportView& view, bool poss_dup, int64_t orig_sending_time_ns);
+
+    // Sessions are keyed by connection, but a replay is addressed to neither: the reply comes
+    // back from the sequencer naming the request, and a bind ack names the comp id. Linear
+    // scans because a gateway holds tens of sessions, not thousands, and both are logon-time
+    // paths -- an index here would be state to keep correct for no measurable gain.
+    FixSession* find_session_by_comp_id(std::string_view comp_id);
+    FixSession* find_session_by_replay_request(int64_t request_id);
+
+    // Correlates a replay request with the records that answer it. Monotonic per process;
+    // the sequencer treats it as opaque and echoes it back.
+    int64_t next_replay_request_id_{0};
+
+    // Reports resent to members that asked for messages they missed. Counted separately from
+    // execution_reports_sent_ because a resend is not new venue activity: folding the two
+    // together would make a recovering session look like a burst of trading.
+    int64_t execution_reports_replayed_{0};
 
     // Legacy comp_id lookup retained for diagnostics; no longer used for ER routing.
     // Linear scan over sessions_ (small set; typically 1-10 sessions).

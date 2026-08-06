@@ -470,6 +470,25 @@ void FixOrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventM
         return;
     }
 
+    // Session PDUs from the sequencer. They arrive on the connection this gateway already
+    // holds outbound to the sequencer -- the same one the bindings and the replay request
+    // went out on -- rather than on the inbound listener live reports come in on.
+    if (pdu_id == pubsub_itc_fw_app::SessionBoundAck::message_pdu_id) {
+        handle_session_bound_ack(message);
+        release_pdu_payload(message);
+        return;
+    }
+    if (pdu_id == pubsub_itc_fw_app::SessionReplayRecord::message_pdu_id) {
+        handle_session_replay_record(message);
+        release_pdu_payload(message);
+        return;
+    }
+    if (pdu_id == pubsub_itc_fw_app::SessionReplayComplete::message_pdu_id) {
+        handle_session_replay_complete(message);
+        release_pdu_payload(message);
+        return;
+    }
+
     if (pdu_id != pubsub_itc_fw_app::WalRecord::message_pdu_id) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "FixOrderGatewayThread: unsupported PDU id {} on connection {} -- dropping", pdu_id,
                    message.connection_id().get_value());
@@ -531,6 +550,18 @@ void FixOrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventM
     }
     FixSession& session = *session_ptr;
 
+    // A resend is running for this session: hold this report until it finishes.
+    //
+    // The member is being handed a numbered sequence of messages it missed. A live report
+    // sent into the middle of that would take a sequence number the resend still needs, and
+    // the member would see the numbering jump. Held here and delivered in order once the
+    // replay completes -- the window is one round trip to the sequencer.
+    if (session.replay_in_progress) {
+        session.deferred_execution_reports.emplace_back(envelope.payload.data, envelope.payload.data + envelope.payload.size);
+        release_pdu_payload(message);
+        return;
+    }
+
     // Maintain the open-orders set from ME acknowledgements (not from NOS
     // forward time) so only orders genuinely on the book are tracked.
     // The view's string_views are backed by the PDU payload, which is valid
@@ -582,31 +613,10 @@ void FixOrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventM
     // and silently drop the ER. The buffer grows to the high-water mark and is reused, so no
     // per-ER allocation after warmup. The wire view does not begin at the buffer start --
     // FixMessageWriter frames the header backward.
-    std::string_view wire = encode_execution_report(view, config_.sender_comp_id, session.client_comp_id, session.outbound_seq_num, *config_.wall_clock,
-                                                    er_wire_buffer_.data(), er_wire_buffer_.size());
-    while (wire.empty() && er_wire_buffer_.size() < max_execution_report_buffer_size) {
-        er_wire_buffer_.resize(er_wire_buffer_.size() * 2);
-        wire = encode_execution_report(view, config_.sender_comp_id, session.client_comp_id, session.outbound_seq_num, *config_.wall_clock,
-                                       er_wire_buffer_.data(), er_wire_buffer_.size());
-    }
-    if (wire.empty()) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
-                   "FixOrderGatewayThread: connection {} ExecutionReport too large to encode (>{} bytes) -- not sent", session.conn_id.get_value(),
-                   er_wire_buffer_.size());
+    if (!send_execution_report_to_session(session, view, /*poss_dup=*/false, 0)) {
         release_pdu_payload(message);
         return;
     }
-    ++session.outbound_seq_num;
-    if (capture_ != nullptr) {
-        capture_->capture(FixCapture::Direction::Outbound, reinterpret_cast<const uint8_t*>(wire.data()), wire.size(), config_.wall_clock->now_ns());
-    }
-    std::string readable_er(wire);
-    for (char& c : readable_er) {
-        if (c == '\x01')
-            c = '|';
-    }
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "FixOrderGatewayThread: connection {} FIX OUT ({} bytes): {}", session.conn_id.get_value(),
-               wire.size(), readable_er);
 
     // The round trip closes here: the ER is encoded and about to be handed to the reactor
     // for sending. What happens to it afterwards -- kernel, wire, client -- this process
@@ -628,8 +638,70 @@ void FixOrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventM
         }
     }
 
-    send_raw(session.conn_id, wire.data(), static_cast<uint32_t>(wire.size()));
     release_pdu_payload(message);
+}
+
+bool FixOrderGatewayThread::send_execution_report_to_session(FixSession& session, const pubsub_itc_fw_app::ExecutionReportView& view, bool poss_dup,
+                                                             int64_t orig_sending_time_ns) {
+    // Encode the FIX ExecutionReport into a reusable, growable buffer. encode_execution_report
+    // returns an empty view if the buffer is too small (a large ER -- many echoed group
+    // instances -- can exceed the starting size), so grow and retry rather than cap the size
+    // and silently drop the ER. The buffer grows to the high-water mark and is reused, so no
+    // per-ER allocation after warmup. The wire view does not begin at the buffer start --
+    // FixMessageWriter frames the header backward.
+    //
+    // Shared by the live path and the resend path so the two cannot drift: a resent report
+    // differs from a live one only in PossDupFlag and OrigSendingTime, and everything else
+    // about it -- encoding, buffer growth, capture, sequence numbering -- must be identical
+    // or the member is being told something subtly different about the same event.
+    std::string_view wire = encode_execution_report(view, config_.sender_comp_id, session.client_comp_id, session.outbound_seq_num, *config_.wall_clock,
+                                                    er_wire_buffer_.data(), er_wire_buffer_.size(), poss_dup, orig_sending_time_ns);
+    while (wire.empty() && er_wire_buffer_.size() < max_execution_report_buffer_size) {
+        er_wire_buffer_.resize(er_wire_buffer_.size() * 2);
+        wire = encode_execution_report(view, config_.sender_comp_id, session.client_comp_id, session.outbound_seq_num, *config_.wall_clock,
+                                       er_wire_buffer_.data(), er_wire_buffer_.size(), poss_dup, orig_sending_time_ns);
+    }
+    if (wire.empty()) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                   "FixOrderGatewayThread: connection {} ExecutionReport too large to encode (>{} bytes) -- not sent", session.conn_id.get_value(),
+                   er_wire_buffer_.size());
+        return false;
+    }
+    ++session.outbound_seq_num;
+    if (capture_ != nullptr) {
+        capture_->capture(FixCapture::Direction::Outbound, reinterpret_cast<const uint8_t*>(wire.data()), wire.size(), config_.wall_clock->now_ns());
+    }
+    std::string readable_er(wire);
+    for (char& c : readable_er) {
+        if (c == '\x01')
+            c = '|';
+    }
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "FixOrderGatewayThread: connection {} FIX OUT{} ({} bytes): {}", session.conn_id.get_value(),
+               poss_dup ? " (resend)" : "", wire.size(), readable_er);
+
+    send_raw(session.conn_id, wire.data(), static_cast<uint32_t>(wire.size()));
+    return true;
+}
+
+FixSession* FixOrderGatewayThread::find_session_by_comp_id(std::string_view comp_id) {
+    for (auto& [conn_id, session] : sessions_) {
+        if (session.client_comp_id == comp_id) {
+            return &session;
+        }
+    }
+    return nullptr;
+}
+
+FixSession* FixOrderGatewayThread::find_session_by_replay_request(int64_t request_id) {
+    if (request_id == 0) {
+        return nullptr;
+    }
+    for (auto& [conn_id, session] : sessions_) {
+        if (session.replay_in_progress && session.replay_request_id == request_id) {
+            return &session;
+        }
+    }
+    return nullptr;
 }
 
 void FixOrderGatewayThread::on_timer_event(pubsub_itc_fw::TimerID timer_id) {
@@ -913,6 +985,16 @@ void FixOrderGatewayThread::handle_logon(FixSession& session, const ParsedFixMes
                "FixOrderGatewayThread: connection {} Logon from SenderCompID='{}' -- initiating SCRAM authentication", session.conn_id.get_value(),
                session.client_comp_id);
 
+    // ResetSeqNumFlag=Y: the member wants both sides to restart at 1. Read here, acted on
+    // when the venue's remembered numbering arrives -- see handle_session_bound_ack.
+    const std::string_view reset_flag = msg.get(Tag::ResetSeqNumFlag);
+    session.reset_seq_num_requested = (reset_flag == "Y" || reset_flag == "y");
+    if (session.reset_seq_num_requested) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "FixOrderGatewayThread: connection {} Logon requests ResetSeqNumFlag=Y -- starting this session's numbering at 1",
+                   session.conn_id.get_value());
+    }
+
     const std::string_view heartbeat_interval_text = msg.get(Tag::HeartBtInt);
     session.heartbeat_interval = 30;
     if (!heartbeat_interval_text.empty()) {
@@ -1002,24 +1084,204 @@ void FixOrderGatewayThread::handle_resend_request(FixSession& session, const Par
         std::from_chars(begin_str.data(), begin_str.data() + begin_str.size(), begin_seq);
     }
 
-    // Fill the entire gap in one shot: NewSeqNo = current outbound position.
-    // fix8 will buffer messages it received after the gap; those with seq < NewSeqNo
-    // are gap-filled and discarded by fix8's session layer, but the session stays
-    // open and subsequent ERs (at NewSeqNo onwards) flow normally.
-    // One-at-a-time filling (NewSeqNo=begin_seq+1) creates a feedback loop of
-    // thousands of ResendRequest/SequenceReset exchanges that freezes the session.
-    const int next_seq = session.outbound_seq_num;
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-               "FixOrderGatewayThread: connection {} ResendRequest BeginSeqNo={} -- sending SequenceReset-GapFill NewSeqNo={}", session.conn_id.get_value(),
-               begin_seq, next_seq);
+    // The member is asking for messages it missed. It gets them.
+    //
+    // This used to answer every ResendRequest with a blanket SequenceReset-GapFill: the gap
+    // was declared administrative and skipped, the session survived, and the member was told
+    // nothing about what had happened to its orders. That was the only option available,
+    // because a gateway holds no record of what it has sent -- and the reports in question
+    // may have been sent by a different gateway instance entirely.
+    //
+    // The reports are in the sequencer's WAL, each stamped with the session it belongs to,
+    // so the answer is to ask for that session's slice and resend it. FIX's own rule is
+    // followed: application messages are resent (with PossDupFlag=Y), and only the
+    // administrative remainder is gap-filled, which is done when the replay completes.
+    //
+    // A resend already running is not restarted. fix8 will re-ask if it is still short, and
+    // restarting would re-issue sequence numbers the first pass is still consuming -- which
+    // is the feedback loop the old comment here described, arrived at from the other side.
+    if (session.replay_in_progress) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "FixOrderGatewayThread: connection {} ResendRequest BeginSeqNo={} while a resend is already running -- ignoring the duplicate request",
+                   session.conn_id.get_value(), begin_seq);
+        return;
+    }
 
+    // Where the session had reached. The resend rewinds the outbound number to the start of
+    // the gap and replays into it; whatever is left over is gap-filled up to here, so the
+    // member ends at the number it would have been at anyway.
+    session.replay_resume_seq_num = session.outbound_seq_num;
     session.outbound_seq_num = begin_seq;
-    FixMessage reset;
-    reset.set(Tag::MsgType, MsgType::SequenceReset);
-    reset.set(Tag::GapFillFlag, std::string("Y"));
-    reset.set(Tag::NewSeqNo, std::to_string(next_seq));
-    send_fix_to_session(session, reset); // stamps MsgSeqNum=begin_seq, increments to begin_seq+1
-    session.outbound_seq_num = next_seq;
+    session.replay_in_progress = true;
+    session.replay_request_id = ++next_replay_request_id_;
+
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "FixOrderGatewayThread: connection {} comp_id='{}' ResendRequest BeginSeqNo={} -- requesting this session's reports from the sequencer "
+               "(request_id={}, will resume at {})",
+               session.conn_id.get_value(), session.client_comp_id, begin_seq, session.replay_request_id, session.replay_resume_seq_num);
+
+    pubsub_itc_fw_app::SessionReplayRequest request{};
+    request.request_id = session.replay_request_id;
+    request.comp_id = session.client_comp_id;
+    request.gateway_protocol_id = gateway_ids::fix_order_gateway;
+    // From the beginning of what the WAL still holds. A cursor per session would narrow this,
+    // and is the obvious next move if replays ever become frequent enough to matter; the
+    // member's own BeginSeqNo cannot serve as one, because it is a FIX session number and
+    // the WAL is numbered by the venue's own sequence.
+    request.from_seq_no = 0;
+    // Ask for exactly the gap the member described, and no more. The sequencer returns the
+    // most recent that many reports, which is what a member has missed -- it is the tail of
+    // its stream that went undelivered, never the beginning. Asking for everything gets the
+    // session's whole retained history: far more messages than the member has room for in
+    // its gap, oldest first, so the messages it actually wants never arrive.
+    const int gap_width = session.replay_resume_seq_num - begin_seq;
+    request.max_records = gap_width > 0 ? gap_width : 1;
+    forward_pdu_to_sequencers(pubsub_itc_fw_app::SessionReplayRequest::message_pdu_id, request);
+}
+
+void FixOrderGatewayThread::handle_session_bound_ack(const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buffer = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buffer.data(), arena_buffer.size());
+    arena.reset();
+    size_t bytes_consumed = 0;
+    size_t arena_bytes_needed = 0;
+
+    pubsub_itc_fw_app::SessionBoundAckView view{};
+    if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "FixOrderGatewayThread: failed to decode SessionBoundAck -- dropping");
+        return;
+    }
+    if (!view.known) {
+        return; // first time the venue has seen this session; the defaults already apply
+    }
+
+    FixSession* session = find_session_by_comp_id(view.comp_id);
+    if (session == nullptr) {
+        return; // the session went away between binding and the reply
+    }
+    if (session->reset_seq_num_requested) {
+        // The member asked to start again at 1, so the numbering the venue remembered is
+        // not restored. Continuing it against the member's explicit wish would put the two
+        // sides permanently at odds: the venue would send numbers the member rejects as
+        // too high, and the member would ask for a resend of messages it has just disclaimed.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "FixOrderGatewayThread: comp_id='{}' asked for a sequence reset -- discarding the venue's remembered outbound={}", session->client_comp_id,
+                   view.outbound_seq_num);
+        return;
+    }
+
+    // Continue the member's numbering rather than restarting it. Without this a reconnect
+    // looks to the member like the venue resetting to 1, which is a break it cannot
+    // reconcile and which no amount of replay would fix.
+    session->outbound_seq_num = view.outbound_seq_num;
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: comp_id='{}' resuming the venue's sequence state -- outbound={} (was 1)",
+               session->client_comp_id, view.outbound_seq_num);
+}
+
+void FixOrderGatewayThread::handle_session_replay_record(const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buffer = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buffer.data(), arena_buffer.size());
+    arena.reset();
+    size_t bytes_consumed = 0;
+    size_t arena_bytes_needed = 0;
+
+    pubsub_itc_fw_app::SessionReplayRecordView view{};
+    if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "FixOrderGatewayThread: failed to decode SessionReplayRecord -- dropping");
+        return;
+    }
+
+    FixSession* session = find_session_by_replay_request(view.request_id);
+    if (session == nullptr) {
+        // The session ended while its own replay was in flight. Nothing to deliver to.
+        return;
+    }
+
+    pubsub_itc_fw_app::ExecutionReportView report{};
+    size_t report_consumed = 0;
+    size_t report_needed = 0;
+    if (!pubsub_itc_fw_app::decode(report, view.payload.data, view.payload.size, report_consumed, arena, report_needed)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "FixOrderGatewayThread: replayed record seq={} did not decode as an ExecutionReport",
+                   view.seq_no);
+        return;
+    }
+
+    // PossDupFlag only within the gap the member actually asked about. A replay routinely
+    // runs past it: the reports the venue could not deliver while the session was away are in
+    // the same slice, and they have never been sent. Marking those as possible duplicates
+    // would invite the member to discard news it is seeing for the first time.
+    const bool inside_requested_gap = session->outbound_seq_num < session->replay_resume_seq_num;
+    send_execution_report_to_session(*session, report, inside_requested_gap, view.wall_time_ns);
+    ++execution_reports_replayed_;
+}
+
+void FixOrderGatewayThread::handle_session_replay_complete(const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buffer = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buffer.data(), arena_buffer.size());
+    arena.reset();
+    size_t bytes_consumed = 0;
+    size_t arena_bytes_needed = 0;
+
+    pubsub_itc_fw_app::SessionReplayCompleteView view{};
+    if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "FixOrderGatewayThread: failed to decode SessionReplayComplete -- dropping");
+        return;
+    }
+
+    FixSession* session_ptr = find_session_by_replay_request(view.request_id);
+    if (session_ptr == nullptr) {
+        return;
+    }
+    FixSession& session = *session_ptr;
+
+    // Close the gap. The replayed reports have consumed sequence numbers from the start of
+    // the gap; whatever is still missing between here and where the session had reached was
+    // administrative traffic -- heartbeats, and the session-level messages the venue is not
+    // required to resend. FIX says to gap-fill exactly that remainder, and only it.
+    if (session.outbound_seq_num < session.replay_resume_seq_num) {
+        const int gap_from = session.outbound_seq_num;
+        FixMessage reset;
+        reset.set(Tag::MsgType, MsgType::SequenceReset);
+        reset.set(Tag::GapFillFlag, std::string("Y"));
+        reset.set(Tag::NewSeqNo, std::to_string(session.replay_resume_seq_num));
+        send_fix_to_session(session, reset);
+        session.outbound_seq_num = session.replay_resume_seq_num;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "FixOrderGatewayThread: connection {} resend complete -- {} report(s) resent, gap-filled {}..{} (administrative traffic)",
+                   session.conn_id.get_value(), view.record_count, gap_from, session.replay_resume_seq_num);
+    } else {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: connection {} resend complete -- {} report(s) resent, no gap left",
+                   session.conn_id.get_value(), view.record_count);
+    }
+
+    if (view.truncated) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "FixOrderGatewayThread: comp_id='{}' resend was truncated at the sequencer's record cap (last_seq_no={}) -- "
+                   "the member has been sent what fitted and gap-filled the rest",
+                   session.client_comp_id, view.last_seq_no);
+    }
+
+    session.replay_in_progress = false;
+    session.replay_request_id = 0;
+
+    // Live reports that arrived mid-resend, now delivered in order behind it.
+    std::vector<std::vector<uint8_t>> deferred;
+    deferred.swap(session.deferred_execution_reports);
+    for (const std::vector<uint8_t>& payload : deferred) {
+        pubsub_itc_fw::BumpAllocator deferred_arena(arena_buffer.data(), arena_buffer.size());
+        deferred_arena.reset();
+        size_t deferred_consumed = 0;
+        size_t deferred_needed = 0;
+        pubsub_itc_fw_app::ExecutionReportView report{};
+        if (!pubsub_itc_fw_app::decode(report, payload.data(), payload.size(), deferred_consumed, deferred_arena, deferred_needed)) {
+            continue;
+        }
+        send_execution_report_to_session(session, report, /*poss_dup=*/false, 0);
+    }
+    if (!deferred.empty()) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: connection {} delivered {} report(s) held during the resend",
+                   session.conn_id.get_value(), deferred.size());
+    }
 }
 
 void FixOrderGatewayThread::handle_new_order_single(FixSession& session, const ParsedFixMessage& msg, const fix_codec::FixMessageReader& reader) {
@@ -1635,6 +1897,9 @@ void FixOrderGatewayThread::announce_session_unbound(const FixSession& session) 
     unbound.gateway_protocol_id = gateway_ids::fix_order_gateway;
     unbound.gateway_instance_id = config_.instance_id;
     unbound.gateway_session_conn_id = session.conn_id.get_value();
+    // Where this session's numbering reached, so the next gateway to hold it carries on from
+    // here rather than restarting the member at 1.
+    unbound.outbound_seq_num = session.outbound_seq_num;
     forward_pdu_to_sequencers(pubsub_itc_fw_app::SessionUnbound::message_pdu_id, unbound);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: announced session comp_id='{}' unbound from instance {} connection {}",
                session.client_comp_id, config_.instance_id, session.conn_id.get_value());

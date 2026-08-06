@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <deque>
 
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
@@ -304,12 +305,17 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
     // one a gateway already holds, and they are handled before the order/ER split because
     // they are neither.
     if (message.pdu_id() == pubsub_itc_fw_app::SessionBound::message_pdu_id) {
-        handle_session_bound(message);
+        handle_session_bound(conn_id, message);
         release_pdu_payload(message);
         return;
     }
     if (message.pdu_id() == pubsub_itc_fw_app::SessionUnbound::message_pdu_id) {
         handle_session_unbound(message);
+        release_pdu_payload(message);
+        return;
+    }
+    if (message.pdu_id() == pubsub_itc_fw_app::SessionReplayRequest::message_pdu_id) {
+        handle_session_replay_request(conn_id, message);
         release_pdu_payload(message);
         return;
     }
@@ -1297,7 +1303,7 @@ const fix_common::SessionDestination* SequencerThread::session_destination(const
     return it == session_destinations_.end() ? nullptr : &it->second;
 }
 
-void SequencerThread::handle_session_bound(const pubsub_itc_fw::EventMessage& message) {
+void SequencerThread::handle_session_bound(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
     auto& arena_buf = decode_arena_buffer();
     pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
     arena.reset();
@@ -1340,6 +1346,31 @@ void SequencerThread::handle_session_bound(const pubsub_itc_fw::EventMessage& me
     }
 
     session_destinations_[identity] = destination;
+
+    // Hand back what the venue remembers of this session's sequence numbers, so the gateway
+    // that has just taken it on continues where the last one left off instead of starting
+    // at 1. A member whose numbers restarted on every reconnect would see a break it cannot
+    // reconcile -- the very thing a failover is supposed to spare it.
+    const auto state_it = session_sequence_state_.find(identity);
+    const bool known = state_it != session_sequence_state_.end();
+    const SessionSequenceState state = known ? state_it->second : SessionSequenceState{};
+
+    // Only the leader answers. The follower tracks bindings too -- it will need them if it
+    // is promoted -- but a session has one venue-side view of its numbering, and two replies
+    // would have the gateway apply it twice.
+    if (role_ != pubsub_itc_fw_app::Role::leader) {
+        return;
+    }
+
+    pubsub_itc_fw_app::SessionBoundAck ack{};
+    ack.comp_id = identity.comp_id_view();
+    ack.gateway_protocol_id = identity.protocol;
+    ack.known = known;
+    ack.outbound_seq_num = state.outbound_seq_num;
+    send_pdu(conn_id, pubsub_itc_fw_app::SessionBoundAck::message_pdu_id, 0, ack);
+
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: session comp_id='{}' protocol={} sequence state {} -- outbound={}",
+               identity.comp_id_view(), identity.protocol, known ? "restored" : "is new", state.outbound_seq_num);
 }
 
 void SequencerThread::handle_session_unbound(const pubsub_itc_fw::EventMessage& message) {
@@ -1379,10 +1410,147 @@ void SequencerThread::handle_session_unbound(const pubsub_itc_fw::EventMessage& 
     }
 
     session_destinations_.erase(existing);
+
+    // Keep the sequence numbers the departing gateway reports. The destination is gone, but
+    // the session is not: this is what the next gateway to take it on will be handed, and
+    // the only reason a reconnect can continue the member's numbering rather than reset it.
+    SessionSequenceState& state = session_sequence_state_[identity];
+    state.outbound_seq_num = view.outbound_seq_num;
+
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "SequencerThread: session comp_id='{}' protocol={} unbound from instance={} connection={} -- "
-               "its reports have nowhere to go until it binds again",
-               identity.comp_id_view(), identity.protocol, view.gateway_instance_id, view.gateway_session_conn_id);
+               "remembered outbound={}; its reports have nowhere to go until it binds again",
+               identity.comp_id_view(), identity.protocol, view.gateway_instance_id, view.gateway_session_conn_id, state.outbound_seq_num);
+}
+
+void SequencerThread::handle_session_replay_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    arena.reset();
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw_app::SessionReplayRequestView view{};
+
+    if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode SessionReplayRequest -- dropping");
+        return;
+    }
+
+    const fix_common::SessionIdentity identity = fix_common::SessionIdentity::make(view.comp_id, view.gateway_protocol_id);
+    const int64_t from_seq_no = view.from_seq_no;
+    const int32_t max_records = view.max_records > 0 ? view.max_records : default_replay_max_records;
+
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "SequencerThread: SessionReplayRequest id={} comp_id='{}' protocol={} from_seq_no={} max_records={}", view.request_id, identity.comp_id_view(),
+               identity.protocol, from_seq_no, max_records);
+
+    // Walk the WAL and hand back this session's execution reports.
+    //
+    // Nothing is stored twice to make this possible: every report is already in the WAL with
+    // the session that originated it on its envelope. What the venue lacked was a way to ask
+    // for one session's slice of that stream, and this is it.
+    //
+    // The cost is a scan from the oldest retained segment on every request, because the WAL
+    // is an append-only log with no index -- deliberately, since indexing it would put work
+    // on the write path that every order pays for so that a rare reconnect can be quicker.
+    // A logon is rare and a resend rarer; if that ever stops being true the answer is a
+    // cursor or a per-session index, not a slower hot path. Measured, not assumed: see
+    // docs/design/gateway_ha.md.
+    // The MOST RECENT max_records reports, not the first found.
+    //
+    // What a member has missed is by definition the tail of its stream, so streaming as the
+    // scan goes -- oldest first -- fills the gap with the session's ancient history and stops
+    // before reaching anything it actually missed. It also makes the reply unbounded: the WAL
+    // holds the session's whole retained history, and a member asking for a handful of
+    // messages was being sent thousands, which in testing was enough for the client to give
+    // up and close the connection mid-answer.
+    //
+    // So matches are collected into a window of the last max_records and sent afterwards.
+    // The window is what bounds the memory: max_records payloads, not the whole slice.
+    struct ReplayMatch {
+        int64_t record_id{};
+        int64_t wall_time_ns{};
+        std::vector<uint8_t> payload;
+    };
+    std::deque<ReplayMatch> window;
+    int64_t total_matched = 0;
+    int32_t record_count = 0;
+    int64_t last_seq_no = from_seq_no;
+    bool truncated = false;
+    const int64_t started_ns = config_.wall_clock->now_ns();
+
+    [[maybe_unused]] auto end_pos = pubsub_itc_fw::WalReader::replay(
+        config_.wal_directory, {0, 0}, [&identity, from_seq_no, max_records, &window, &total_matched](int64_t record_id, const void* payload, size_t size) {
+            if (record_id <= from_seq_no) {
+                return;
+            }
+            constexpr size_t header_size = sizeof(int64_t) + sizeof(int16_t);
+            if (size < header_size) {
+                return;
+            }
+            int64_t wall_time_ns{};
+            std::memcpy(&wall_time_ns, payload, sizeof(int64_t));
+            const auto* record_payload = static_cast<const uint8_t*>(payload) + header_size;
+            const size_t record_size = size - header_size;
+
+            // Every stored record is a WalRecord envelope; decode it to read who it belonged
+            // to and what it was. A separate arena from the caller's: this runs inside the
+            // decode of the request itself, whose view is still in use above.
+            std::array<uint8_t, 64 * 1024> replay_arena_buffer{};
+            pubsub_itc_fw::BumpAllocator replay_arena(replay_arena_buffer.data(), replay_arena_buffer.size());
+            size_t replay_consumed = 0;
+            size_t replay_needed = 0;
+            pubsub_itc_fw_app::WalRecordView stored{};
+            if (!pubsub_itc_fw_app::decode(stored, record_payload, record_size, replay_consumed, replay_arena, replay_needed)) {
+                return;
+            }
+            if (stored.pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport)) {
+                return; // orders are not replayed to a member; it already knows what it sent
+            }
+            if (!stored.has_sender_comp_id ||
+                fix_common::SessionIdentity::make(stored.sender_comp_id,
+                                                  stored.has_origin_gateway_id ? stored.origin_gateway_id : gateway_ids::default_when_absent) != identity) {
+                return;
+            }
+
+            ++total_matched;
+            ReplayMatch match;
+            match.record_id = record_id;
+            match.wall_time_ns = wall_time_ns;
+            match.payload.assign(stored.payload.data, stored.payload.data + stored.payload.size);
+            window.push_back(std::move(match));
+            if (window.size() > static_cast<size_t>(max_records)) {
+                window.pop_front();
+            }
+        });
+
+    // Older matches than the window holds were dropped rather than never found, which is
+    // what the member needs to know: it has been given the most recent ones and there is
+    // history behind them it has not seen.
+    truncated = total_matched > static_cast<int64_t>(window.size());
+
+    for (const ReplayMatch& match : window) {
+        pubsub_itc_fw_app::SessionReplayRecord replay_record{};
+        replay_record.request_id = view.request_id;
+        replay_record.seq_no = match.record_id;
+        replay_record.wall_time_ns = match.wall_time_ns;
+        replay_record.payload = pubsub_itc_fw_app::BytesView{match.payload.data(), match.payload.size()};
+        send_pdu(conn_id, pubsub_itc_fw_app::SessionReplayRecord::message_pdu_id, match.record_id, replay_record);
+        ++record_count;
+        last_seq_no = match.record_id;
+    }
+
+    pubsub_itc_fw_app::SessionReplayComplete complete{};
+    complete.request_id = view.request_id;
+    complete.record_count = record_count;
+    complete.last_seq_no = last_seq_no;
+    complete.truncated = truncated;
+    send_pdu(conn_id, pubsub_itc_fw_app::SessionReplayComplete::message_pdu_id, 0, complete);
+
+    const int64_t elapsed_ns = config_.wall_clock->now_ns() - started_ns;
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "SequencerThread: SessionReplayComplete id={} comp_id='{}' records={} last_seq_no={} truncated={} scanned_in_ms={}", view.request_id,
+               identity.comp_id_view(), record_count, last_seq_no, truncated, elapsed_ns / 1000000);
 }
 
 void SequencerThread::forward_pending_er(const PendingEr& pending) {

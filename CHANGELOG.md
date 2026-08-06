@@ -11,6 +11,33 @@ change in any release.
 
 ### Added
 
+- **A reconnecting member is sent the execution reports it missed.** A ResendRequest is now
+  answered with the real reports, carrying `PossDupFlag=Y` and `OrigSendingTime`, and only the
+  administrative remainder is gap-filled -- the split FIX actually prescribes. Previously every
+  ResendRequest was answered with a blanket `SequenceReset-GapFill`: the session survived and
+  the member was told nothing about what had happened to its orders.
+  - **Sequence continuity across a reconnect**, without which a member never asks. A session's
+    outbound number is reported to the sequencer when it unbinds and handed back when a gateway
+    binds it, so a reconnect -- to the same instance or to the backup -- continues the member's
+    numbering instead of restarting at 1. `ResetSeqNumFlag=Y` is honoured, for the member that
+    wants the opposite.
+  - **The replay is a filtered WAL scan**, not a second copy of anything: every report is
+    already in the WAL with its originating session on the envelope. Measured at 18 ms to scan
+    a 4 MB retained WAL and return 3,223 records for one session. The sequencer returns the
+    most recent records up to the gap width the member described -- what a member misses is the
+    tail of its stream, so serving the oldest matches first fills the gap with ancient history
+    and never reaches what it actually missed.
+  - New `SessionBoundAck`, `SessionReplayRequest`, `SessionReplayRecord` and
+    `SessionReplayComplete` PDUs. Live reports arriving mid-resend are held and delivered
+    behind it, so the numbered sequence the member is being handed stays ordered.
+  - **Limits, stated plainly:** only execution reports are replayable and only while the WAL
+    retains them; there is no outbound message store; the remembered sequence numbers do not
+    survive a venue restart; the binary gateway is unchanged, having no session layer to hang a
+    resend on.
+- `binary_client` gained `--cl-ord-id` and `--cancel` (step 5), and the FIX encoder gained
+  optional `PossDupFlag`/`OrigSendingTime` for resends.
+
+
 - **A session is now an identity, not an address, and its reports follow it.** A member that
   reconnects -- to the same gateway instance or to its backup -- receives execution reports for
   orders it placed on the connection it has lost, and can cancel orders it left resting. Neither
@@ -104,6 +131,15 @@ change in any release.
   pair for what they actually are leaves room for that without a second rename
   later. The change runs all the way through: directories, binaries, CMake targets,
   namespaces, class names, config files, component names, deployed paths and docs.
+
+### Fixed
+
+- **`ha_test.py` scenario 17 opened its fresh session under the baseline comp id.** Since the
+  matching engine keys an order on `(comp id, protocol, ClOrdID)`, and f8test numbers its
+  ClOrdIDs from one in every process, every recovery order collided with one still resting on
+  the book and was correctly rejected as a duplicate. The fresh logon now uses its own comp id.
+  A regression introduced by the step 5 re-keying and missed at the time, because the step 5
+  sweep did not include scenario 17.
 
 ## [0.2.1] - 2026-07-31
 
