@@ -171,6 +171,7 @@
             <thead>
                 <tr>
                     <th></th>
+                    <th class="freshness"></th>
                     <th>Time</th><th>Dir</th><th>Type</th><th>Seq</th><th>ClOrdID</th><th>OrigClOrdID</th>
                     <th>OrderID</th><th>ExecID</th><th>ExecType</th><th>OrdStatus</th><th>Reason</th>
                     <th>SecurityID</th><th>Symbol</th><th>Side</th><th>OrdQty</th><th>Price</th><th>OrdType</th>
@@ -213,6 +214,116 @@ const ORD_STATUS_LABEL = {
 };
 
 const TERMINAL_ORD_STATUSES = new Set(['2', '4', '8', '3', 'C']);
+
+// ── Freshness indicator ──────────────────────────────────────────────────────
+//
+// The narrow title-less cell at the left of each row starts bright red when the row
+// arrives and fades to the row's own colour over FRESH_FADE_MS, so a glance at the
+// top of the blotter says what has just come in.
+//
+// The awkward part is that renderBlotter rebuilds the entire table body whenever a
+// row arrives. Anything that lives on the cell -- a CSS animation, a start time in a
+// data attribute -- is destroyed and recreated by that rebuild, so every visible row
+// would flash red again each time any new row arrived. Age is therefore kept HERE,
+// outside the DOM, keyed on the row id that the server already assigns.
+//
+// Given the age, the fade needs no timer at all: the cell is painted at the colour
+// its age has already reached and handed a CSS transition lasting only the REMAINING
+// time. The browser animates it, and a rebuild half way through simply repaints at
+// the right colour and carries on.
+// The fade is deliberately STEPPED rather than continuous: four shades, five seconds
+// each. A smooth interpolation is imperceptible moment to moment -- you notice only
+// that a cell has changed, never that it is changing -- whereas discrete bands let a
+// glance place a row at a stage, and make the ageing visible across a busy blotter.
+const FRESH_FADE_MS = 20000;
+const FRESH_STEPS = 4;      // distinct shades before the cell settles
+const FRESH_TICK_MS = 500;  // how often a still-fading cell is re-checked
+
+const firstSeen = new Map();  // row id -> ms when this page first saw the row
+let seenAnyRows = false;      // rows present at page load are history, not news
+let fadingCells = [];         // { td, seenAt, step } for cells not yet settled
+
+function noteRowsSeen(rows) {
+    const now = Date.now();
+    // On the first fetch after a page load, stamp everything as already faded. Those
+    // rows may be hours old; lighting the whole table up on a refresh would say
+    // "all of this just happened", which is the opposite of what the column is for.
+    const stamp = seenAnyRows ? now : now - FRESH_FADE_MS;
+    for (const row of rows) {
+        if (!firstSeen.has(row.id)) {
+            firstSeen.set(row.id, stamp);
+        }
+    }
+    seenAnyRows = true;
+}
+
+/** @return 0..FRESH_STEPS-1 while fading, FRESH_STEPS once the row has settled. */
+function freshnessStep(age) {
+    if (age >= FRESH_FADE_MS) {
+        return FRESH_STEPS;
+    }
+    return Math.max(0, Math.floor(age / (FRESH_FADE_MS / FRESH_STEPS)));
+}
+
+function paintFreshness(td, step) {
+    if (step >= FRESH_STEPS) {
+        // Settled: no background at all, so the row's own colour shows through. Fading
+        // the ALPHA rather than mixing towards white is what allows that -- a settled
+        // cell on a green ExecutionReport row ends up green, not a white gap in it.
+        td.style.backgroundColor = '';
+        return;
+    }
+    const alpha = (FRESH_STEPS - step) / FRESH_STEPS;  // 1.00, 0.75, 0.50, 0.25
+    td.style.backgroundColor = `rgba(255, 0, 0, ${alpha})`;
+}
+
+function makeFreshnessCell(row) {
+    const td = document.createElement('td');
+    td.className = 'freshness';
+
+    // Arrivals only. An OUT row is a message this client sent -- you already know it
+    // happened, because you are the one who did it -- so marking it as newly arrived says
+    // nothing. Red means the venue has told us something.
+    //
+    // The column is still added to every row: it is a table, and a missing cell would
+    // shift every column right of it out of alignment on that row.
+    if (row.direction !== 'IN') {
+        return td;
+    }
+
+    const seenAt = firstSeen.get(row.id);
+    // A row with no recorded arrival is one this page has never tracked; treat it as
+    // history rather than as brand new.
+    const step = freshnessStep(seenAt === undefined ? FRESH_FADE_MS : Date.now() - seenAt);
+    paintFreshness(td, step);
+    if (step < FRESH_STEPS) {
+        fadingCells.push({ td, seenAt, step });
+    }
+    return td;
+}
+
+// Only cells that are still fading are tracked, and each is repainted only when it
+// actually crosses a band -- so this costs nothing once the blotter has settled, however
+// many rows it holds.
+function tickFreshness() {
+    if (fadingCells.length === 0) {
+        return;
+    }
+    const now = Date.now();
+    const stillFading = [];
+    for (const entry of fadingCells) {
+        const step = freshnessStep(now - entry.seenAt);
+        if (step !== entry.step) {
+            paintFreshness(entry.td, step);
+            entry.step = step;
+        }
+        if (step < FRESH_STEPS) {
+            stillFading.push(entry);
+        }
+    }
+    fadingCells = stillFading;
+}
+setInterval(tickFreshness, FRESH_TICK_MS);
 
 function isOrderTerminal(rows, clOrdId) {
     return rows.some(r => r.direction === 'IN' && TERMINAL_ORD_STATUSES.has(r.ordStatus) &&
@@ -329,6 +440,7 @@ async function doSend() {
 async function pollBlotter() {
     try {
         const rows = await apiGet('/api/messages');
+        noteRowsSeen(rows);
         if (rows.length !== lastBlotterSize) {
             lastRows = rows;
             renderBlotter(rows);
@@ -343,6 +455,9 @@ async function pollBlotter() {
 function renderBlotter(rows) {
     const tbody = document.getElementById('blotter-body');
     tbody.innerHTML = '';
+    // Every cell just discarded; makeFreshnessCell repopulates this as the rows are
+    // rebuilt. Without the reset the ticker would go on repainting detached elements.
+    fadingCells = [];
     // Session/admin messages are always shown; Heartbeats (frequent noise) only when toggled on.
     const showHeartbeats = document.getElementById('show-heartbeats')?.checked;
     // Newest first, so the row you are waiting for appears at the top under the sticky
@@ -377,6 +492,7 @@ function renderBlotter(rows) {
             actionTd.appendChild(btn);
         }
         tr.appendChild(actionTd);
+        tr.appendChild(makeFreshnessCell(row));
 
         const cells = [
             row.time, row.direction, MSG_TYPE_LABEL[row.msgType] || row.msgType, row.seqNum,
@@ -456,6 +572,9 @@ function prefillCancel(clOrdId, symbol, side, qty) {
 async function doClear() {
     await apiPost('/api/messages/clear', {});
     lastBlotterSize = 0;
+    // The rows are gone, so their arrival times are dead weight. Row ids keep
+    // climbing after a clear, so nothing that arrives later can collide with one.
+    firstSeen.clear();
     renderBlotter([]);
 }
 

@@ -229,6 +229,23 @@ legend {
 #blotter td {
     border: 1px solid #ccc;
     padding: 2px 8px;
+    /* Every row the same height, whatever the cell holds. On a table cell `height` is a
+       minimum, so this is a floor that the contents cannot fall below -- and the button
+       rule below stops the Cancel button pushing past it. Rows used to be two different
+       heights depending on whether they carried a button, which the freshness column
+       made obvious: the red cells varied in height down the table. */
+    height: 22px;
+}
+
+/* The Cancel button is what made those rows taller: at the page-wide button size it is
+   around 28px against a 20px text row. Shrunk to sit inside the row height, keeping the
+   border and bevel so it still reads as a button rather than as decorated text. */
+#blotter td button {
+    font-size: 11px;
+    line-height: 16px;
+    height: 18px;
+    padding: 0 8px;
+    box-shadow: 1px 1px 2px #888, -1px -1px 1px #fff;
 }
 
 /* Row background colours applied to tr so that the sticky first-child
@@ -238,6 +255,17 @@ legend {
 #blotter tr.er-normal    { background: #d4f0d4; }
 #blotter tr.er-cancelled { background: #fce8e8; }
 #blotter tr.er-error     { background: #f08080; }
+
+/* Freshness indicator: a narrow, title-less cell that starts bright red on a
+   newly arrived row and fades to the row's own colour. Sized to sit roughly
+   square against the row height, since it holds a colour rather than text. */
+#blotter th.freshness,
+#blotter td.freshness {
+    width: 26px;
+    min-width: 26px;
+    max-width: 26px;
+    padding: 2px 0;
+}
 
 /* Sticky action column — always visible at the left edge.
    background: inherit picks up the tr colour set above. */
