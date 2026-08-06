@@ -345,7 +345,13 @@ function renderBlotter(rows) {
     tbody.innerHTML = '';
     // Session/admin messages are always shown; Heartbeats (frequent noise) only when toggled on.
     const showHeartbeats = document.getElementById('show-heartbeats')?.checked;
-    for (const row of rows) {
+    // Newest first, so the row you are waiting for appears at the top under the sticky
+    // header rather than below whatever the session has accumulated.
+    //
+    // Reversing a COPY matters: `rows` is the same array held in lastRows, which the
+    // heartbeat toggle re-renders without re-fetching. Reversing in place would flip the
+    // order back and forth every time that box was ticked.
+    for (const row of [...rows].reverse()) {
         if (row.msgType === '0' && !showHeartbeats) {
             continue;
         }
@@ -392,8 +398,10 @@ function renderBlotter(rows) {
         tbody.appendChild(tr);
     }
 
+    // The newest row is now at the top, so that is where the view follows to. Scrolling to
+    // the bottom would land on the oldest message in the session.
     const wrap = document.getElementById('blotter-wrap');
-    wrap.scrollTop = wrap.scrollHeight;
+    wrap.scrollTop = 0;
 }
 
 async function doCancel() {
