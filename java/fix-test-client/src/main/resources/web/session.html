@@ -65,6 +65,10 @@
             <label></label>
             <button id="logon-btn" onclick="doLogon()" disabled>Log On</button>
             <button id="cancel-btn" onclick="doCancel()" style="display:none; margin-left:8px;">Cancel</button>
+            <!-- Says why Log On is greyed out. Beside the button rather than beside the
+                 field it refers to, because the button is where you look when it will not
+                 respond. -->
+            <span id="logon-hint" style="margin-left:10px; color:#666; font-size:0.85rem;"></span>
         </div>
         <div id="logon-error" style="display:none; color:#c00; margin-top:8px;"></div>
     </div>
@@ -127,11 +131,25 @@ function updateLogonButton() {
     // comp id, since it has no other way to know who is connecting.
     const button = document.getElementById('logon-btn');
     const password = document.getElementById('password').value;
-    if (selectedGateway() === 'binary') {
-        button.disabled = !password || !document.getElementById('sender-comp-id').value.trim();
-        return;
+    const missing = [];
+    if (!password) {
+        missing.push('a password');
     }
-    button.disabled = !password;
+    if (selectedGateway() === 'binary' && !document.getElementById('sender-comp-id').value.trim()) {
+        missing.push('a SenderCompID');
+    }
+    button.disabled = missing.length > 0;
+
+    // Say WHY it is disabled, rather than leaving a dead-looking button.
+    //
+    // This is not cosmetic. When the gateway dies, the session drops and the page returns
+    // you to an empty logon form -- so the button is greyed for a perfectly ordinary reason
+    // that looks, at that moment, exactly like the client having seized up along with the
+    // gateway. The requirement has to advertise itself.
+    const hint = document.getElementById('logon-hint');
+    if (hint) {
+        hint.textContent = missing.length ? 'Enter ' + missing.join(' and ') + ' to log on.' : '';
+    }
 }
 
 async function doCancel() {
