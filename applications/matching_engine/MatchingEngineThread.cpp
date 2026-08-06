@@ -27,6 +27,20 @@ namespace {
 // allocated from @p arena. The copied string_views still point into the NOS payload
 // buffer, which outlives the synchronous ER encode. @p arena and the NOS payload must
 // both stay alive until the ER has been encoded.
+// Which session an inbound envelope belongs to.
+//
+// The comp id is the identity; the connection id that also rides on the envelope is only
+// where that session happened to be when it sent this, and is deliberately not consulted
+// here. An envelope with no comp id yields an empty identity: that is a record with no
+// originating client session at all, and it keys nothing.
+template <typename EnvelopeT> fix_common::SessionIdentity session_identity_from(const EnvelopeT& envelope) {
+    if (!envelope.has_sender_comp_id || envelope.sender_comp_id.empty()) {
+        return fix_common::SessionIdentity{};
+    }
+    return fix_common::SessionIdentity::make(envelope.sender_comp_id,
+                                             envelope.has_origin_gateway_id ? envelope.origin_gateway_id : gateway_ids::default_when_absent);
+}
+
 void echo_underlyings(const pubsub_itc_fw_app::ListView<pubsub_itc_fw_app::UnderlyingsView>& source, pubsub_itc_fw::BumpAllocator& arena,
                       pubsub_itc_fw_app::ListView<pubsub_itc_fw_app::Underlyings>& destination) {
     if (source.size == 0) {
@@ -203,6 +217,7 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
     } else if (!is_primary_ && ha_enabled_ && svc == replication_inbound_svc) {
         // Secondary: inbound connection from ME-primary (book replication channel).
         primary_replication_conn_id_ = id;
+        // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "MatchingEngineThread: ME-primary replication connection {} established -- replica book will be updated", id.get_value());
         // Slice C: if a promotion was pending (primary had dropped and we armed
@@ -350,9 +365,7 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
             release_pdu_payload(message);
             return;
         }
-        handle_new_order_single(view, message.seq_no(), envelope.wall_time_ns, envelope.has_gateway_session_conn_id ? envelope.gateway_session_conn_id : 0,
-                                envelope.has_origin_gateway_id ? envelope.origin_gateway_id : gateway_ids::default_when_absent,
-                                envelope.has_gateway_instance_id ? envelope.gateway_instance_id : gateway_ids::first_instance);
+        handle_new_order_single(view, message.seq_no(), envelope.wall_time_ns, session_identity_from(envelope));
 
     } else if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest)) {
         pubsub_itc_fw_app::OrderCancelRequestView view{};
@@ -361,9 +374,7 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
             release_pdu_payload(message);
             return;
         }
-        handle_order_cancel_request(view, message.seq_no(), envelope.wall_time_ns, envelope.has_gateway_session_conn_id ? envelope.gateway_session_conn_id : 0,
-                                    envelope.has_origin_gateway_id ? envelope.origin_gateway_id : gateway_ids::default_when_absent,
-                                    envelope.has_gateway_instance_id ? envelope.gateway_instance_id : gateway_ids::first_instance);
+        handle_order_cancel_request(view, message.seq_no(), envelope.wall_time_ns, session_identity_from(envelope));
 
     } else if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport)) {
         // The ME is the source of ERs, not a consumer -- discard.
@@ -378,13 +389,12 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
 }
 
 void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number, int64_t sequenced_at_ns,
-                                                   int32_t gateway_session_conn_id, int16_t origin_gateway_id, int16_t origin_gateway_instance) {
+                                                   const fix_common::SessionIdentity& session) {
     // RECONCILING (Slice D): apply the WAL catch-up NOS to the book but do NOT
     // emit an ER and do NOT replicate. The gateway already saw ERs for these
     // orders from the failed primary; re-sending would duplicate them.
     if (ha_role_state_ == MeRole::Reconciling) {
-        const int32_t recon_session_id = gateway_session_conn_id;
-        const OrderKey recon_key = OrderKey::make(recon_session_id, origin_gateway_id, origin_gateway_instance, view.cl_ord_id);
+        const OrderKey recon_key = OrderKey::make(session, view.cl_ord_id);
         if (order_book_.count(recon_key)) {
             return; // duplicate during replay -- ignore
         }
@@ -398,9 +408,7 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
         if (view.has_price) {
             recon_entry.set_price(view.price);
         }
-        recon_entry.gateway_session_conn_id = recon_session_id;
-        recon_entry.origin_gateway_id = origin_gateway_id;
-        recon_entry.origin_gateway_instance = origin_gateway_instance;
+        recon_entry.session = session;
         order_book_.emplace(recon_key, recon_entry);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MatchingEngineThread: RECONCILING apply NOS seq={} cl_ord_id={} book_size={}",
                    sequence_number, view.cl_ord_id, order_book_.size());
@@ -413,8 +421,7 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
     }
 
     const int64_t now_ns = sequenced_at_ns != 0 ? sequenced_at_ns : config_.wall_clock->now_ns();
-    const int32_t session_id = gateway_session_conn_id;
-    const OrderKey order_key = OrderKey::make(session_id, origin_gateway_id, origin_gateway_instance, view.cl_ord_id);
+    const OrderKey order_key = OrderKey::make(session, view.cl_ord_id);
 
     // Stack-allocated ID buffers -- no heap allocation.
     std::array<char, 32> exec_id_buf{};
@@ -422,8 +429,8 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
 
     // Reject duplicate ClOrdID within the same FIX session.
     if (order_book_.count(order_key)) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: duplicate ClOrdID={} (session {}) -- rejecting NOS", view.cl_ord_id,
-                   session_id);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: duplicate ClOrdID={} (session comp_id='{}') -- rejecting NOS",
+                   view.cl_ord_id, session.comp_id_view());
 
         pubsub_itc_fw_app::ExecutionReport er{};
         er.order_id = "NONE";
@@ -455,9 +462,7 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
 
     OrderEntry entry{};
     entry.order_id_num = order_id_counter_;
-    entry.gateway_session_conn_id = session_id;
-    entry.origin_gateway_id = origin_gateway_id;
-    entry.origin_gateway_instance = origin_gateway_instance;
+    entry.session = session;
     entry.side = view.side;
     entry.has_price = view.has_price;
     entry.ord_type = view.ord_type;
@@ -478,7 +483,7 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
     orders_processed_counter_.increment();
 
     // Replicate the new entry to ME-secondary.
-    send_book_update(sequence_number, pubsub_itc_fw_app::BookUpdateType::Add, session_id, view.cl_ord_id, &entry);
+    send_book_update(sequence_number, pubsub_itc_fw_app::BookUpdateType::Add, session, view.cl_ord_id, &entry);
 
     pubsub_itc_fw_app::ExecutionReport er{};
     er.order_id = order_id;
@@ -529,16 +534,16 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
     }
 
     send_er_to_sequencer(er, sequence_number);
+    // TEST CONTRACT -- ha_test.py and perf_run.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: accepted NOS OrderID={} ExecID={} ClOrdID={} book_size={}", order_id,
                exec_id, view.cl_ord_id, order_book_.size());
 }
 
 void MatchingEngineThread::handle_order_cancel_request(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t sequence_number, int64_t sequenced_at_ns,
-                                                       int32_t gateway_session_conn_id, int16_t origin_gateway_id, int16_t origin_gateway_instance) {
+                                                       const fix_common::SessionIdentity& session) {
     // RECONCILING (Slice D): apply the WAL catch-up OCR to the book but do NOT emit an ER.
     if (ha_role_state_ == MeRole::Reconciling) {
-        const int32_t recon_session_id = gateway_session_conn_id;
-        const OrderKey recon_key = OrderKey::make(recon_session_id, origin_gateway_id, origin_gateway_instance, view.orig_cl_ord_id);
+        const OrderKey recon_key = OrderKey::make(session, view.orig_cl_ord_id);
         order_book_.erase(recon_key);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MatchingEngineThread: RECONCILING apply OCR seq={} orig_cl_ord_id={} book_size={}",
                    sequence_number, view.orig_cl_ord_id, order_book_.size());
@@ -551,8 +556,7 @@ void MatchingEngineThread::handle_order_cancel_request(const pubsub_itc_fw_app::
     }
 
     const int64_t now_ns = sequenced_at_ns != 0 ? sequenced_at_ns : config_.wall_clock->now_ns();
-    const int32_t session_id = gateway_session_conn_id;
-    const OrderKey orig_key = OrderKey::make(session_id, origin_gateway_id, origin_gateway_instance, view.orig_cl_ord_id);
+    const OrderKey orig_key = OrderKey::make(session, view.orig_cl_ord_id);
 
     std::array<char, 32> exec_id_buf{};
     const std::string_view exec_id = format_id(exec_id_buf, "ME-EXEC-", 8, ++exec_id_counter_);
@@ -593,7 +597,7 @@ void MatchingEngineThread::handle_order_cancel_request(const pubsub_itc_fw_app::
     order_book_.erase(it);
 
     // Replicate the removal to ME-secondary.
-    send_book_update(sequence_number, pubsub_itc_fw_app::BookUpdateType::Remove, session_id, view.orig_cl_ord_id, nullptr);
+    send_book_update(sequence_number, pubsub_itc_fw_app::BookUpdateType::Remove, session, view.orig_cl_ord_id, nullptr);
 
     // Format order_id from the stored counter value.
     std::array<char, 32> order_id_buf{};
@@ -629,13 +633,13 @@ void MatchingEngineThread::handle_order_cancel_request(const pubsub_itc_fw_app::
                view.orig_cl_ord_id, order_book_.size());
 }
 
-void MatchingEngineThread::send_er_to_sequencer(const pubsub_itc_fw_app::ExecutionReport& er, int64_t seq_no, std::optional<int32_t> gateway_session_conn_id,
-                                                int16_t origin_gateway_id, int16_t origin_gateway_instance) {
+void MatchingEngineThread::send_er_to_sequencer(const pubsub_itc_fw_app::ExecutionReport& er, int64_t seq_no, const fix_common::SessionIdentity& session) {
     // Encode the ER, then wrap it in a WalRecord envelope. The echoed seq_no travels in
-    // the transport header (so the sequencer can route ordinary ERs via its seq->conn
-    // map); the optional gateway_session_conn_id on the envelope routes ERs that are not
-    // tied to a sequenced order (the seq_no==0 cancel-on-failover ERs), and the gateway
-    // id says which gateway that connection id belongs to.
+    // the transport header, which is how the sequencer routes an ordinary ER: it looks the
+    // order's sequence up and finds the session that placed it. The session identity on
+    // the envelope is for the ERs that have no such sequence -- the seq_no==0
+    // cancel-on-failover ones -- and says whose order was cancelled without saying where
+    // that member is, which the ME cannot know and which by then has usually changed.
     // Measure then fit: a zero-size out buffer makes encode report bytes_needed, then
     // the reusable buffer is grown to hold it -- no fixed cap that could silently drop
     // an over-large ER, and no per-ER allocation once the buffer reaches its high-water
@@ -657,12 +661,10 @@ void MatchingEngineThread::send_er_to_sequencer(const pubsub_itc_fw_app::Executi
     envelope.pdu_id = static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport);
     envelope.payload.data = er_encode_buffer_.data();
     envelope.payload.size = bytes_written;
-    envelope.has_gateway_session_conn_id = gateway_session_conn_id.has_value();
-    envelope.gateway_session_conn_id = gateway_session_conn_id.value_or(0);
-    envelope.has_origin_gateway_id = gateway_session_conn_id.has_value();
-    envelope.origin_gateway_id = origin_gateway_id;
-    envelope.has_gateway_instance_id = gateway_session_conn_id.has_value();
-    envelope.gateway_instance_id = origin_gateway_instance;
+    envelope.has_sender_comp_id = !session.empty();
+    envelope.sender_comp_id = session.comp_id_view();
+    envelope.has_origin_gateway_id = !session.empty();
+    envelope.origin_gateway_id = session.protocol;
 
     if (sequencer_er_conn_id_.is_valid()) {
         send_pdu(sequencer_er_conn_id_, pubsub_itc_fw_app::WalRecord::message_pdu_id, seq_no, envelope);
@@ -693,8 +695,8 @@ void MatchingEngineThread::on_timer_event(pubsub_itc_fw::TimerID id) {
 
 void MatchingEngineThread::on_itc_message([[maybe_unused]] const pubsub_itc_fw::EventMessage& message) {}
 
-void MatchingEngineThread::send_book_update(int64_t seq_no, pubsub_itc_fw_app::BookUpdateType update_type, int32_t session_id, std::string_view cl_ord_id,
-                                            const OrderEntry* entry) {
+void MatchingEngineThread::send_book_update(int64_t seq_no, pubsub_itc_fw_app::BookUpdateType update_type, const fix_common::SessionIdentity& session,
+                                            std::string_view cl_ord_id, const OrderEntry* entry) {
     if (!ha_enabled_ || !is_primary_ || !secondary_replication_conn_id_.is_valid()) {
         return;
     }
@@ -702,14 +704,13 @@ void MatchingEngineThread::send_book_update(int64_t seq_no, pubsub_itc_fw_app::B
     pubsub_itc_fw_app::BookUpdate upd{};
     upd.seq_no = seq_no;
     upd.update_type = static_cast<int8_t>(update_type);
-    upd.session_id = session_id;
+    // The identity, on both Add and Remove: the replica keys its book by it, so a Remove
+    // that named only a ClOrdID could not find the entry to erase.
+    upd.comp_id = session.comp_id_view();
+    upd.origin_gateway_id = session.protocol;
     upd.cl_ord_id = cl_ord_id;
 
     if (entry != nullptr) {
-        upd.has_origin_gateway_id = true;
-        upd.origin_gateway_id = entry->origin_gateway_id;
-        upd.has_gateway_instance_id = true;
-        upd.gateway_instance_id = entry->origin_gateway_instance;
         upd.order_id_num = entry->order_id_num;
         upd.side = static_cast<int8_t>(entry->side);
         upd.ord_type = static_cast<int8_t>(entry->ord_type);
@@ -722,8 +723,8 @@ void MatchingEngineThread::send_book_update(int64_t seq_no, pubsub_itc_fw_app::B
     }
 
     send_pdu(secondary_replication_conn_id_, pubsub_itc_fw_app::BookUpdate::message_pdu_id, seq_no, upd);
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MatchingEngineThread: BookUpdate sent seq={} type={} session={} cl_ord_id={}", seq_no,
-               static_cast<int>(update_type), session_id, cl_ord_id);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MatchingEngineThread: BookUpdate sent seq={} type={} comp_id='{}' cl_ord_id={}", seq_no,
+               static_cast<int>(update_type), session.comp_id_view(), cl_ord_id);
 }
 
 void MatchingEngineThread::apply_book_update(const pubsub_itc_fw::EventMessage& message) {
@@ -740,16 +741,14 @@ void MatchingEngineThread::apply_book_update(const pubsub_itc_fw::EventMessage& 
         return;
     }
 
-    const OrderKey key = OrderKey::make(view.session_id, view.has_origin_gateway_id ? view.origin_gateway_id : gateway_ids::default_when_absent,
-                                        view.has_gateway_instance_id ? view.gateway_instance_id : gateway_ids::first_instance, view.cl_ord_id);
+    const fix_common::SessionIdentity session = fix_common::SessionIdentity::make(view.comp_id, view.origin_gateway_id);
+    const OrderKey key = OrderKey::make(session, view.cl_ord_id);
     const auto update_type = static_cast<pubsub_itc_fw_app::BookUpdateType>(view.update_type);
 
     if (update_type == pubsub_itc_fw_app::BookUpdateType::Add) {
         OrderEntry entry{};
         entry.order_id_num = view.order_id_num;
-        entry.gateway_session_conn_id = view.session_id;
-        entry.origin_gateway_id = view.has_origin_gateway_id ? view.origin_gateway_id : gateway_ids::default_when_absent;
-        entry.origin_gateway_instance = view.has_gateway_instance_id ? view.gateway_instance_id : gateway_ids::first_instance;
+        entry.session = session;
         entry.side = static_cast<pubsub_itc_fw_app::Side>(view.side);
         entry.ord_type = static_cast<pubsub_itc_fw_app::OrdType>(view.ord_type);
         entry.set_symbol(view.symbol);
@@ -787,6 +786,7 @@ void MatchingEngineThread::adopt_leader_role() {
     if (ha_role_state_ == MeRole::Leader) {
         return;
     }
+    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: adopting LEADER role (epoch={})", epoch_);
     ha_role_state_ = MeRole::Leader;
     // Renew the arbiter lease periodically for as long as we are leader.
@@ -1007,11 +1007,12 @@ void MatchingEngineThread::cancel_all_orders_on_failover() {
         // seq_no 0: these cancels are generated by the ME on promotion, not driven by a
         // sequenced order, so the sequencer cannot route them via its seq->conn map. The
         // originating session's connection id rides on the envelope instead.
-        send_er_to_sequencer(er, 0, entry.gateway_session_conn_id, entry.origin_gateway_id, entry.origin_gateway_instance);
+        send_er_to_sequencer(er, 0, entry.session);
         ++cancelled;
     }
 
     order_book_.clear();
+    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: cancel-on-failover complete -- {} cancel ER(s) sent, book cleared",
                cancelled);
 }

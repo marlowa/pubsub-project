@@ -122,6 +122,33 @@ class BinaryOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     void forward_envelope_to_sequencers(const pubsub_itc_fw_app::WalRecord& envelope);
 
     /**
+     * @brief Sends any DSL PDU to the sequencer(s), on the same terms as an order envelope.
+     *
+     * Separate from forward_envelope_to_sequencers because the session bindings below are
+     * not orders and are not wrapped in a WalRecord: they carry no payload to sequence, and
+     * nothing about them belongs in the WAL.
+     */
+    template <typename MsgT> void forward_pdu_to_sequencers(int16_t pdu_id, const MsgT& msg) {
+        if (sequencer_primary_conn_id_.get_value() != 0) {
+            send_pdu(sequencer_primary_conn_id_, pdu_id, 0, msg);
+        } else {
+            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                           "BinaryOrderGatewayThread: primary sequencer not connected -- PDU not forwarded to primary");
+        }
+        if (config_.ha_enabled && sequencer_secondary_conn_id_.get_value() != 0) {
+            send_pdu(sequencer_secondary_conn_id_, pdu_id, 0, msg);
+        }
+    }
+
+    // Tell the sequencer where this session's execution reports should go, and that they
+    // should stop coming here when it ends. The sequencer keys its routing on the session
+    // identity and treats this connection as a destination it can replace, which is what
+    // lets a member reconnect -- here or at its backup instance -- and still be sent
+    // reports for orders it placed before. See docs/design/gateway_ha.md.
+    void announce_session_bound(const BinarySession& session);
+    void announce_session_unbound(const BinarySession& session);
+
+    /**
      * @brief Records or retires an order in the session's open set from an ER.
      *
      * Tracking is driven by the matching engine's acknowledgements, not by order-forward

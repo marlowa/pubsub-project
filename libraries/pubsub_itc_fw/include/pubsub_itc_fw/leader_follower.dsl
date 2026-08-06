@@ -301,6 +301,66 @@ message MePositionAck (id=116, version=1)
 end
 
 # ------------------------------------------------------------
+#  120 -- SessionBound
+#  Sent by a gateway to the sequencer once a client session is
+#  authenticated and established, and again on every reconnect.
+#
+#  It tells the sequencer where a session identity currently lives:
+#  which gateway instance is holding it, on which connection. The
+#  sequencer keys its routing on the identity and treats the
+#  connection as a mutable destination, so a member that reconnects
+#  -- to the same instance or to its backup -- has its execution
+#  reports follow it without anything else being rewritten.
+#
+#  Before this existed, the sequencer's routing entry was keyed on
+#  the connection the order arrived on, which is gateway-local and
+#  dies with the socket. A reconnecting member could therefore not
+#  be handed reports for orders it had already placed: the address
+#  they were bound to no longer existed. See docs/design/gateway_ha.md.
+#
+#  The identity is (comp_id, gateway_protocol_id), NOT the comp id
+#  alone. A comp id gets one session per order-entry protocol: an
+#  instance failover moves a session between instances of the SAME
+#  protocol, which is the case that has to keep working, while a FIX
+#  and a binary session sharing a comp id stay separate books with
+#  separate reports.
+#
+#  Sent for every established session, not only for reconnects. The
+#  sequencer cannot tell a first logon from a return, and a binding
+#  it never received is one it cannot route to.
+# ------------------------------------------------------------
+message SessionBound (id=120, version=1)
+    string comp_id                # the session identity, with the protocol below
+    i16    gateway_protocol_id    # which order-entry protocol: see GatewayIds.hpp
+    i16    gateway_instance_id    # which instance of that protocol now holds it
+    i32    gateway_session_conn_id # the connection within that instance: the destination
+end
+
+# ------------------------------------------------------------
+#  121 -- SessionUnbound
+#  Sent by a gateway when a client session goes away, so the
+#  sequencer stops addressing reports at a connection that is gone.
+#
+#  Unbinding is deliberately NOT the same as forgetting the session:
+#  the identity and its orders outlive the connection, which is the
+#  whole point of keying on the identity. An unbound session's
+#  reports have nowhere to go until it binds again -- today they are
+#  dropped, as they were before; step 6 is what makes them replayable.
+#
+#  Carries the connection id so a late unbind cannot tear down a
+#  newer binding: a member that reconnects fast enough for its new
+#  SessionBound to overtake the old connection's SessionUnbound would
+#  otherwise be unbound immediately after binding. The sequencer
+#  ignores an unbind naming a connection it is no longer bound to.
+# ------------------------------------------------------------
+message SessionUnbound (id=121, version=1)
+    string comp_id
+    i16    gateway_protocol_id
+    i16    gateway_instance_id
+    i32    gateway_session_conn_id # the connection going away; ignored if not the current one
+end
+
+# ------------------------------------------------------------
 #  200 — ArbitrationReport
 #  Sent by a component (sequencer or ME) to the active arbiter
 #  when arbitration is required (startup or after peer heartbeat

@@ -21,13 +21,23 @@ enum BookUpdateType : i8 {
 # reconciliation during promotion.
 #
 # For Remove updates, order_id_num/side/ord_type/symbol/order_qty are
-# sent as zero/empty -- the secondary uses only session_id+cl_ord_id to
-# locate and erase the entry from its replica book.
+# sent as zero/empty -- the secondary uses only the session identity plus
+# cl_ord_id to locate and erase the entry from its replica book.
 # price is absent on Remove and on Add when the order has no limit price.
 message BookUpdate(id=600)
     i64             seq_no
     i8              update_type
-    i32             session_id
+    # Whose order this is: the comp id and the protocol it arrived on, which together are
+    # the session identity the book is keyed by.
+    #
+    # This used to be the originating connection id, and that was wrong in a way that only
+    # showed up at failover -- which is the one moment this message matters. A connection
+    # id names a socket on a gateway process: the process the secondary is being promoted
+    # because of, so the entries it replicated were filed under addresses that no longer
+    # existed and could not be matched to the member that placed them. The identity
+    # outlives the connection, which is the whole point of it. See docs/design/gateway_ha.md.
+    string          comp_id
+    i16             origin_gateway_id
     string          cl_ord_id
     i64             order_id_num
     i8              side
@@ -35,17 +45,4 @@ message BookUpdate(id=600)
     string          symbol
     string          order_qty
     optional string price
-    # Which gateway the order arrived through. session_id alone is ambiguous once more
-    # than one gateway feeds the book -- each numbers its own client connections -- and a
-    # promoted secondary needs this to route its cancel-on-failover ERs back to the right
-    # one. Trailing and optional, so a replica running older code still decodes; absent
-    # means the FIX order gateway, which is what every pre-existing entry came from.
-    optional i16    origin_gateway_id
-    # Which *instance* of that gateway protocol. origin_gateway_id names a protocol, not
-    # a process, so once a protocol runs as more than one instance it is one axis short:
-    # instance a's connection 5 and instance b's connection 5 are unrelated sessions. A
-    # promoted secondary needs this to send its cancel-on-failover ERs to the process that
-    # actually holds the session, rather than to whichever instance is numbered 1.
-    # Trailing and optional, matching origin_gateway_id above; absent means instance 1.
-    optional i16    gateway_instance_id
 end

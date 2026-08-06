@@ -11,6 +11,27 @@ change in any release.
 
 ### Added
 
+- **A session is now an identity, not an address, and its reports follow it.** A member that
+  reconnects -- to the same gateway instance or to its backup -- receives execution reports for
+  orders it placed on the connection it has lost, and can cancel orders it left resting. Neither
+  was possible before: an order was filed under the connection it arrived on, which is a socket
+  on a gateway process, so it died with the connection and did not exist at the backup at all.
+  - The sequencer's routing entry is split in two: `seq_no -> session identity`, and
+    `session identity -> current destination`. The destination is resolved when a report is sent
+    rather than remembered when the order was placed.
+  - The identity is `(comp id, protocol)`. An instance failover moves a session between instances
+    of one protocol, so the instance cannot be part of it; a FIX and a binary session sharing a
+    comp id are two sessions, so the protocol must be.
+  - Gateways announce sessions to the sequencer with new `SessionBound` / `SessionUnbound` PDUs.
+    An unbind naming a connection that is no longer the current one is ignored, so a fast
+    reconnect cannot be unbound by the old connection's late notice.
+  - The matching engine's book key (`OrderKey`) and its `BookUpdate` replication carry the
+    identity, and the engine no longer stamps a destination on any report -- on the
+    cancel-on-failover path any address it remembered would name the process that just died.
+- `binary_client` gained `--cl-ord-id` and `--cancel`, so a second run on a new connection can
+  cancel an order the first one placed. That is how the above was verified from a client rather
+  than from a log.
+
 - **Sessions are provisioned against gateway instances.** A comp id gains a primary and an
   optional backup gateway instance (`pubsub_comp_id.primary_gateway_instance` /
   `backup_gateway_instance`, editable on the admin service's comp-id form), and both gateways
@@ -63,6 +84,16 @@ change in any release.
   drift from the deployment.
 
 ### Changed
+
+- **`perf_run.py --clients N` now gives each FIX client its own comp id**, credential and
+  generated session config, as the binary load client already did. N clients under one comp id
+  are one session to the venue, and f8test numbers its ClOrdIDs from one in every process, so
+  under an identity-keyed book all but the first client's orders would be duplicates. It only
+  worked before because the book key included the gateway connection id.
+- Log lines that `ha_test.py` and `perf_run.py` assert on now carry a `TEST CONTRACT` comment at
+  the source. The harness matches log text across seven processes, which makes the wording an
+  interface no compiler checks; 24 sites in the matching engine, sequencer, arbiter and both
+  gateways now say so where the line is written.
 
 - **Both gateways renamed so the name says the protocol and the job.**
   `order_gateway` is now `fix_order_gateway` and `binary_gateway` is now

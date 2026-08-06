@@ -219,6 +219,9 @@ void BinaryOrderGatewayThread::on_connection_lost(const pubsub_itc_fw::Connectio
     if (it != sessions_.end()) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "BinaryOrderGatewayThread: client connection {} (comp id '{}') lost: {}", id.get_value(),
                    it->second.comp_id, reason);
+        // Told before the session object goes: the sequencer addresses reports at this
+        // connection, and once it is gone there is nothing here to receive them.
+        announce_session_unbound(it->second);
         // The client is gone but its orders are still on the book with nobody managing
         // them, so cancel them on its behalf before the session is destroyed.
         queue_session_for_cleanup(it->second);
@@ -560,6 +563,7 @@ void BinaryOrderGatewayThread::handle_authentication_result(const pubsub_itc_fw:
         const std::string backup_text = view.has_backup_gateway_instance ? std::to_string(view.backup_gateway_instance) : std::string("(none)");
 
         if (!provisioned_here) {
+            // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                        "BinaryOrderGatewayThread: connection {} comp_id='{}' logon refused -- this is gateway instance {}, "
                        "and the session is provisioned for primary={} backup={}",
@@ -577,6 +581,7 @@ void BinaryOrderGatewayThread::handle_authentication_result(const pubsub_itc_fw:
         // Logged where it succeeded too, naming the numbers: a hop that drops the
         // provisioning leaves every gateway admitting everyone, which is indistinguishable
         // from a correctly unpinned venue unless the values themselves are visible.
+        // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "BinaryOrderGatewayThread: comp_id='{}' provisioned for gateway instances primary={} backup={} -- this is instance {} ({})", session.comp_id,
                    view.primary_gateway_instance, backup_text, config_.instance_id,
@@ -597,9 +602,15 @@ void BinaryOrderGatewayThread::handle_authentication_result(const pubsub_itc_fw:
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "BinaryOrderGatewayThread: connection {} authenticated and logged on as '{}'",
                session.conn_id.get_value(), session.comp_id);
 
+    // Tell the sequencer where this session now lives, so reports for orders it placed
+    // reach it here -- including orders placed through a connection, or an instance, that
+    // no longer exists.
+    announce_session_bound(session);
+
     // Back inside its grace period: the orders this comp id left resting stay resting.
     const size_t reclaimed = reclaim_grace_session(session.comp_id);
     if (reclaimed > 0) {
+        // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "BinaryOrderGatewayThread: comp_id='{}' reconnected within the grace period -- {} order(s) left resting, none cancelled", session.comp_id,
                    reclaimed);
@@ -653,6 +664,37 @@ void BinaryOrderGatewayThread::forward_order_in_envelope(int16_t inner_pdu_id, c
     }
 
     forward_envelope_to_sequencers(envelope);
+}
+
+void BinaryOrderGatewayThread::announce_session_bound(const BinarySession& session) {
+    if (session.comp_id.empty()) {
+        return;
+    }
+    pubsub_itc_fw_app::SessionBound bound{};
+    bound.comp_id = session.comp_id;
+    bound.gateway_protocol_id = gateway_ids::binary_order_gateway;
+    bound.gateway_instance_id = config_.instance_id;
+    bound.gateway_session_conn_id = session.conn_id.get_value();
+    forward_pdu_to_sequencers(pubsub_itc_fw_app::SessionBound::message_pdu_id, bound);
+    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "BinaryOrderGatewayThread: announced session comp_id='{}' bound to instance {} connection {}",
+               session.comp_id, config_.instance_id, session.conn_id.get_value());
+}
+
+void BinaryOrderGatewayThread::announce_session_unbound(const BinarySession& session) {
+    // Only a session that was announced needs unannouncing. A connection that dies before
+    // it logs on never had an identity, so there is nothing to unbind.
+    if (!session.logged_on || session.comp_id.empty()) {
+        return;
+    }
+    pubsub_itc_fw_app::SessionUnbound unbound{};
+    unbound.comp_id = session.comp_id;
+    unbound.gateway_protocol_id = gateway_ids::binary_order_gateway;
+    unbound.gateway_instance_id = config_.instance_id;
+    unbound.gateway_session_conn_id = session.conn_id.get_value();
+    forward_pdu_to_sequencers(pubsub_itc_fw_app::SessionUnbound::message_pdu_id, unbound);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "BinaryOrderGatewayThread: announced session comp_id='{}' unbound from instance {} connection {}",
+               session.comp_id, config_.instance_id, session.conn_id.get_value());
 }
 
 void BinaryOrderGatewayThread::forward_envelope_to_sequencers(const pubsub_itc_fw_app::WalRecord& envelope) {
@@ -897,6 +939,7 @@ void BinaryOrderGatewayThread::queue_session_for_cleanup(BinarySession& session)
     }
 
     dead.cancel_due = std::chrono::steady_clock::now() + grace_period;
+    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "BinaryOrderGatewayThread: connection {} (comp_id='{}') disconnected with {} open order(s) -- holding {}s for reconnect before cancelling",
                session.conn_id.get_value(), dead.comp_id, dead.open_orders.size(), grace_period.count());
@@ -1050,6 +1093,7 @@ void BinaryOrderGatewayThread::drain_pending_cancels() {
     // Gating on sent > 0 missed the common case: the final tick usually just pops the last
     // exhausted session, so the completion line went unlogged exactly when a drain finished.
     if (cancels_sent_this_drain_ > 0) {
+        // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "BinaryOrderGatewayThread: cancel drain complete -- {} cancel(s) sent",
                    cancels_sent_this_drain_);
         cancels_sent_this_drain_ = 0;

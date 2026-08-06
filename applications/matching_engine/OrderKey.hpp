@@ -12,89 +12,66 @@
 
 #include "FixOrderLimits.hpp"
 #include "GatewayIds.hpp"
+#include "SessionIdentity.hpp"
 
 namespace matching_engine {
 
 /**
- * @brief Identity of one order in the book: which gateway instance, which session, which ClOrdID.
+ * @brief Identity of one order in the book: which session, and which ClOrdID within it.
  *
  * A fixed-size struct, so a lookup allocates nothing.
  *
- * All four parts are needed, and each one is there because leaving it out merges two
- * unrelated orders into one key -- so the second is rejected as a duplicate, or a cancel
- * from one session retires the other's order.
+ * ClOrdID alone is only unique within a client session, so the session has to be part of
+ * the key -- otherwise two members using the same ClOrdID collide, and a cancel from one
+ * retires the other's order.
  *
- * ClOrdID alone is only unique within a client session. A session id is only unique within
- * one gateway *process*, because each numbers its own client connections from its own
- * counter. That gives the other two axes, and they are genuinely separate:
+ * **The session is named by its identity, not by the connection it arrived on**, and that
+ * is what makes an order outlive a reconnect. The key used to be
+ * (connection id, protocol, instance, ClOrdID), which named a socket on a process: when a
+ * member's connection dropped, its resting orders stayed in the book under a key nothing
+ * could reproduce, so the member could see them on reconnect but not cancel them -- and
+ * after a gateway failover it could not even do that, because the instance in the key was
+ * a process that no longer existed. Keying on the identity means a member that comes back
+ * -- to the same instance or to its backup -- builds the same key and can manage what it
+ * left resting. See docs/design/gateway_ha.md.
  *
- * - **gateway_id** separates the protocols. The FIX gateway's connection 5 and the binary
- *   gateway's connection 5 are unrelated sessions.
- * - **gateway_instance** separates the processes within a protocol. Once a protocol runs as
- *   more than one instance, FIX instance a's connection 5 and FIX instance b's connection 5
- *   are unrelated in exactly the same way, and for exactly the same reason. This axis was
- *   missing until instances existed; a key without it is a live collision the moment a
- *   second instance of any protocol takes orders.
- *
- * The triple (gateway_id, gateway_instance, session_id) is what GatewayIds.hpp calls a
- * venue-wide session identity; this key is that plus the ClOrdID.
+ * SessionIdentity carries the protocol, and deliberately not the instance: an instance
+ * failover moves a session between instances of one protocol, so including it would defeat
+ * the purpose, while a FIX and a binary session sharing a comp id are genuinely separate
+ * and must not share a book.
  */
 struct OrderKey {
-    int32_t session_id{};
-    int16_t gateway_id{gateway_ids::default_when_absent};
-    int16_t gateway_instance{gateway_ids::first_instance};
+    fix_common::SessionIdentity session;
     uint8_t cl_ord_id_len{};
     std::array<char, fix_order_limits::max_cl_ord_id_length> cl_ord_id{};
 
     /**
      * @brief Builds a key, truncating an over-long ClOrdID to the shared maximum.
-     * @param[in] session  The originating session's connection id within its gateway instance.
-     * @param[in] gateway   Which gateway protocol that session belongs to.
-     * @param[in] instance  Which instance of that protocol. Deliberately NOT defaulted: this
-     *                      axis was forgotten once already, and a default would let the next
-     *                      call site forget it silently rather than failing to compile.
-     * @param[in] id        The ClOrdID.
+     * @param[in] session The identity of the session that placed the order.
+     * @param[in] id      The ClOrdID.
      *
      * Truncation is safe here only because the gateways validate ClOrdID length at
      * ingress against the same limit, rejecting anything longer with an
      * ExecutionReport. Were that check removed, two long ClOrdIDs sharing a prefix
      * would silently become one key.
      */
-    static OrderKey make(int32_t session, int16_t gateway, int16_t instance, std::string_view id) {
+    static OrderKey make(const fix_common::SessionIdentity& session, std::string_view id) {
         OrderKey key;
-        key.session_id = session;
-        key.gateway_id = gateway;
-        key.gateway_instance = instance;
+        key.session = session;
         key.cl_ord_id_len = static_cast<uint8_t>(std::min(id.size(), fix_order_limits::max_cl_ord_id_length));
         std::memcpy(key.cl_ord_id.data(), id.data(), key.cl_ord_id_len);
         return key;
     }
 
     bool operator==(const OrderKey& other) const {
-        return session_id == other.session_id && gateway_id == other.gateway_id && gateway_instance == other.gateway_instance &&
-               cl_ord_id_len == other.cl_ord_id_len && std::memcmp(cl_ord_id.data(), other.cl_ord_id.data(), cl_ord_id_len) == 0;
+        return session == other.session && cl_ord_id_len == other.cl_ord_id_len && std::memcmp(cl_ord_id.data(), other.cl_ord_id.data(), cl_ord_id_len) == 0;
     }
 };
 
-/** @brief FNV-1a over the session id, the gateway id, the gateway instance, then the ClOrdID bytes. */
+/** @brief FNV-1a over the session identity, then the ClOrdID bytes. */
 struct OrderKeyHash {
     size_t operator()(const OrderKey& key) const {
-        size_t hash = 14695981039346656037ULL;
-        const auto* session_bytes = reinterpret_cast<const uint8_t*>(&key.session_id);
-        for (size_t index = 0; index < sizeof(key.session_id); ++index) {
-            hash ^= session_bytes[index];
-            hash *= 1099511628211ULL;
-        }
-        const auto* gateway_bytes = reinterpret_cast<const uint8_t*>(&key.gateway_id);
-        for (size_t index = 0; index < sizeof(key.gateway_id); ++index) {
-            hash ^= gateway_bytes[index];
-            hash *= 1099511628211ULL;
-        }
-        const auto* instance_bytes = reinterpret_cast<const uint8_t*>(&key.gateway_instance);
-        for (size_t index = 0; index < sizeof(key.gateway_instance); ++index) {
-            hash ^= instance_bytes[index];
-            hash *= 1099511628211ULL;
-        }
+        size_t hash = fix_common::SessionIdentityHash{}(key.session);
         for (uint8_t index = 0; index < key.cl_ord_id_len; ++index) {
             hash ^= static_cast<uint8_t>(key.cl_ord_id[index]);
             hash *= 1099511628211ULL;

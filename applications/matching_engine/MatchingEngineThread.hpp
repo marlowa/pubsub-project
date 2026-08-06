@@ -90,19 +90,18 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // Live order stored in the order book from NOS acceptance until cancel.
     // All string fields stored as fixed-size char arrays -- no heap allocation.
     struct OrderEntry {
-        int64_t order_id_num{};            // counter value; formatted to "ME-ORD-N" on demand
-        int32_t gateway_session_conn_id{}; // originating client session; used to route cancel ERs on failover
-        // Which gateway that session belongs to. Held alongside the connection id because
-        // the id alone is only unique within one gateway, so both are needed to send a
-        // cancel-on-failover ER back to the client that placed the order.
-        int16_t origin_gateway_id{gateway_ids::default_when_absent};
-        // And which instance of that gateway. origin_gateway_id names a protocol, not a
-        // process; with a protocol running as several instances the pair above is still
-        // ambiguous, because each instance numbers its own connections. Without this a
-        // cancel-on-failover ER for an order placed through instance b is addressed to
-        // instance 1 and delivered to whatever session happens to hold that connection id
-        // there -- a report for one client handed to another.
-        int16_t origin_gateway_instance{gateway_ids::first_instance};
+        int64_t order_id_num{}; // counter value; formatted to "ME-ORD-N" on demand
+        // Whose order this is: the comp id and the protocol, which together are the key
+        // this entry is filed under and the address-free way to reach the member again.
+        //
+        // It used to be the originating connection id, plus the protocol and instance
+        // needed to disambiguate it. That identified a socket rather than a member, which
+        // failed in exactly the case this field exists for: a cancel-on-failover ER is
+        // emitted when a process has died, so the connection it named was already gone,
+        // and a member reconnecting elsewhere could neither be sent the report nor cancel
+        // what it had left resting. The sequencer now resolves this identity to wherever
+        // the session is currently bound. See docs/design/gateway_ha.md.
+        fix_common::SessionIdentity session;
         pubsub_itc_fw_app::Side side{};
         pubsub_itc_fw_app::OrdType ord_type{};
         // Echoed back on every ExecutionReport for this order. The gateway needs it to
@@ -154,14 +153,16 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
 
     // Both come from the WalRecord envelope, not the (DD-derived) FIX PDU:
     // sequenced_at_ns is the sequencer's wall time used as transact_time (0 => not
-    // stamped, fall back to the local wall clock); gateway_session_conn_id is the
-    // originating client session's connection id, forming half of the order key (0 if
-    // absent); origin_gateway_id says which gateway that connection id belongs to, since
-    // it is only unique within one gateway.
-    void handle_new_order_single(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t seq_no, int64_t sequenced_at_ns, int32_t gateway_session_conn_id,
-                                 int16_t origin_gateway_id, int16_t origin_gateway_instance);
+    // stamped, fall back to the local wall clock); session is the identity of the client
+    // session that placed the order -- its comp id and protocol -- which forms half of the
+    // order key. Deliberately not the connection it arrived on: that is where the member
+    // was, and the book has to be keyed on who it is, or an order becomes unmanageable the
+    // moment its connection drops. An empty identity means a record with no originating
+    // client session at all.
+    void handle_new_order_single(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t seq_no, int64_t sequenced_at_ns,
+                                 const fix_common::SessionIdentity& session);
     void handle_order_cancel_request(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t seq_no, int64_t sequenced_at_ns,
-                                     int32_t gateway_session_conn_id, int16_t origin_gateway_id, int16_t origin_gateway_instance);
+                                     const fix_common::SessionIdentity& session);
     // Reusable scratch buffer for encoding an ExecutionReport before wrapping it in a
     // WalRecord envelope (send_er_to_sequencer). Grown to the largest ER seen and
     // reused -- no fixed cap that could silently drop an ER, no per-ER allocation.
@@ -176,9 +177,14 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // Wraps the ER in a WalRecord envelope and sends it to the sequencer(s). Routing
     // metadata for ERs not tied to a sequenced order (the seq_no==0 cancel-on-failover
     // ERs) rides on the envelope, so the ER PDU itself stays purely DD-derived. For
-    // ordinary ERs the sequencer routes by the echoed seq_no, so no conn id is supplied.
-    void send_er_to_sequencer(const pubsub_itc_fw_app::ExecutionReport& er, int64_t seq_no, std::optional<int32_t> gateway_session_conn_id = std::nullopt,
-                              int16_t origin_gateway_id = gateway_ids::default_when_absent, int16_t origin_gateway_instance = gateway_ids::first_instance);
+    // ordinary ERs the sequencer routes by the echoed seq_no, so no session is supplied.
+    //
+    // What travels is the session's identity, never an address. The ME has no idea where a
+    // session is connected -- and on the path that needs this most, promotion after a
+    // gateway or ME failure, any address it remembered would name a process that has since
+    // died. The sequencer holds the live bindings and resolves the identity when it sends.
+    void send_er_to_sequencer(const pubsub_itc_fw_app::ExecutionReport& er, int64_t seq_no,
+                              const fix_common::SessionIdentity& session = fix_common::SessionIdentity{});
 
     const MatchingEngineConfiguration& config_;
 
@@ -218,7 +224,7 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     pubsub_itc_fw::ConnectionID sequencer_er_conn_id_;
     pubsub_itc_fw::ConnectionID sequencer_er_secondary_conn_id_;
 
-    // Order book keyed by (session_id, cl_ord_id).
+    // Order book keyed by (session identity, cl_ord_id).
     // Primary:   live orders currently on the book.
     // Secondary: replica of the primary's book, maintained via BookUpdate PDUs.
     tsl::robin_map<OrderKey, OrderEntry, OrderKeyHash> order_book_;
@@ -228,7 +234,7 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     int64_t exec_id_counter_{0};
 
     // Helper: send a BookUpdate PDU to ME-secondary (primary only).
-    void send_book_update(int64_t seq_no, pubsub_itc_fw_app::BookUpdateType update_type, int32_t session_id, std::string_view cl_ord_id,
+    void send_book_update(int64_t seq_no, pubsub_itc_fw_app::BookUpdateType update_type, const fix_common::SessionIdentity& session, std::string_view cl_ord_id,
                           const OrderEntry* entry); // nullptr for Remove updates
 
     // Helper: apply a received BookUpdate PDU to the replica book (secondary only).

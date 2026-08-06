@@ -299,6 +299,21 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         return;
     }
 
+    // Session bindings from the gateways: which instance and connection a session identity
+    // is reachable at right now. They arrive on the order connection because that is the
+    // one a gateway already holds, and they are handled before the order/ER split because
+    // they are neither.
+    if (message.pdu_id() == pubsub_itc_fw_app::SessionBound::message_pdu_id) {
+        handle_session_bound(message);
+        release_pdu_payload(message);
+        return;
+    }
+    if (message.pdu_id() == pubsub_itc_fw_app::SessionUnbound::message_pdu_id) {
+        handle_session_unbound(message);
+        release_pdu_payload(message);
+        return;
+    }
+
     const bool is_order_pdu = (svc == order_inbound_svc_);
     const bool is_er_pdu = (svc == er_inbound_svc_);
 
@@ -383,19 +398,33 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             return;
         }
 
-        // Record seq_no -> originating session for ER routing back to the exact client
-        // session. seq_no is globally unique; the connection id identifies a connection
-        // within one gateway, and the gateway id says which gateway that is.
-        if (inbound.has_gateway_session_conn_id) {
+        // Record seq_no -> the session that placed this order, so its execution reports can
+        // be routed back to it. seq_no is globally unique, unlike a ClOrdID.
+        //
+        // What is stored is the session's identity, not the connection it arrived on. The
+        // connection is where the session happens to be *now*, and by the time a report is
+        // ready it may be somewhere else entirely -- a different socket, or a different
+        // gateway instance after a failover. Resolving that at send time is what makes a
+        // report survive the reconnect; see docs/design/gateway_ha.md.
+        if (inbound.has_sender_comp_id && !inbound.sender_comp_id.empty()) {
             OriginSession origin;
-            origin.session_conn_id = inbound.gateway_session_conn_id;
-            origin.gateway_id = inbound.has_origin_gateway_id ? inbound.origin_gateway_id : gateway_ids::default_when_absent;
-            origin.gateway_instance = inbound.has_gateway_instance_id ? inbound.gateway_instance_id : gateway_ids::first_instance;
+            origin.identity = fix_common::SessionIdentity::make(inbound.sender_comp_id,
+                                                                inbound.has_origin_gateway_id ? inbound.origin_gateway_id : gateway_ids::default_when_absent);
             // Remembered, not read: the gateway stamped this when it read the order off the
             // client socket, and gets it back on the ER so it can measure the round trip.
             origin.has_ingress_ns = inbound.has_gateway_ingress_ns;
             origin.gateway_ingress_ns = inbound.gateway_ingress_ns;
-            seq_no_to_session_conn_id_[seq] = origin;
+            seq_no_to_session_[seq] = origin;
+        } else if (inbound.has_gateway_session_conn_id) {
+            // An order with a connection but no comp id cannot be routed home: the address
+            // it arrived on is not an identity, and there is nothing else to file it under.
+            // Warned rather than passed over, because it means a gateway stopped stamping
+            // the comp id and every report for that order will be dropped later, far from
+            // the cause.
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "SequencerThread: order seq={} arrived with a session connection but no sender_comp_id -- "
+                       "its execution reports cannot be routed to any session",
+                       seq);
         }
 
         // Forward the stamped envelope to the ME. The ME unwraps it, reads
@@ -465,12 +494,15 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         // ERs) instead carry the conn id on the inbound envelope. The conn id rides on the
         // envelope, never inside the DD-derived ER.
         const int64_t er_seq_no = message.seq_no();
+        // The session this report belongs to, and then -- separately -- where that session
+        // can be reached. Keeping the two apart is the whole of step 5: an order is filed
+        // under an identity that outlives connections, and the address is resolved at the
+        // last possible moment, so a member that reconnected while the report was in flight
+        // still receives it.
+        fix_common::SessionIdentity routing_identity{};
         bool has_routing_conn = false;
         int32_t routing_conn_id = 0;
         int16_t routing_gateway_id = gateway_ids::default_when_absent;
-        // Absent means the single instance that was running when the record was written.
-        // Step 2b replaces this with attribution from the arrival connection, at which
-        // point both fields become required. See docs/design/gateway_ha.md.
         int16_t routing_gateway_instance = gateway_ids::first_instance;
         // The originating gateway's ingress stamp, returned to it on the ER so it can
         // measure the round trip. Only the routing-map branch can supply one: an ER that
@@ -479,12 +511,9 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         int64_t routing_ingress_ns = 0;
         bool erase_routing_entry = false;
         {
-            auto it = seq_no_to_session_conn_id_.find(er_seq_no);
-            if (it != seq_no_to_session_conn_id_.end()) {
-                has_routing_conn = true;
-                routing_conn_id = it->second.session_conn_id;
-                routing_gateway_id = it->second.gateway_id;
-                routing_gateway_instance = it->second.gateway_instance;
+            auto it = seq_no_to_session_.find(er_seq_no);
+            if (it != seq_no_to_session_.end()) {
+                routing_identity = it->second.identity;
                 has_routing_ingress_ns = it->second.has_ingress_ns;
                 routing_ingress_ns = it->second.gateway_ingress_ns;
 
@@ -500,14 +529,35 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
                     default:
                         break;
                 }
-            } else if (inbound.has_gateway_session_conn_id) {
-                has_routing_conn = true;
-                routing_conn_id = inbound.gateway_session_conn_id;
-                routing_gateway_id = inbound.has_origin_gateway_id ? inbound.origin_gateway_id : gateway_ids::default_when_absent;
-                routing_gateway_instance = inbound.has_gateway_instance_id ? inbound.gateway_instance_id : gateway_ids::first_instance;
+            } else if (inbound.has_sender_comp_id && !inbound.sender_comp_id.empty()) {
+                // No originating order sequence: the cancel-on-failover reports a promoted
+                // matching engine emits. They carry the identity of the session whose order
+                // was cancelled, which is exactly what is needed -- and it is why the ME now
+                // stores the identity against each resting order rather than the connection
+                // that placed it, which by definition no longer exists in this scenario.
+                routing_identity = fix_common::SessionIdentity::make(inbound.sender_comp_id, inbound.has_origin_gateway_id ? inbound.origin_gateway_id
+                                                                                                                           : gateway_ids::default_when_absent);
             } else {
                 PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                           "SequencerThread: ER seq_no={} not in routing map and no envelope conn id -- forwarding without gateway_session_conn_id", er_seq_no);
+                           "SequencerThread: ER seq_no={} not in routing map and no comp id on the envelope -- forwarding unaddressed", er_seq_no);
+            }
+
+            // Now the address, resolved from the identity rather than remembered with it.
+            if (!routing_identity.empty()) {
+                const fix_common::SessionDestination* destination = session_destination(routing_identity);
+                if (destination != nullptr) {
+                    has_routing_conn = true;
+                    routing_conn_id = destination->conn_id;
+                    routing_gateway_id = routing_identity.protocol;
+                    routing_gateway_instance = destination->instance;
+                } else {
+                    // The session is not connected anywhere. Its reports are dropped, as
+                    // they always were -- but now for a reason that names the session
+                    // rather than a connection id that stopped meaning anything.
+                    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
+                               "SequencerThread: ER seq_no={} for session comp_id='{}' protocol={} -- session not bound to any instance, dropping", er_seq_no,
+                               routing_identity.comp_id_view(), routing_identity.protocol);
+                }
             }
         }
 
@@ -540,6 +590,14 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         envelope.gateway_instance_id = routing_gateway_instance;
         envelope.has_gateway_ingress_ns = has_routing_ingress_ns;
         envelope.gateway_ingress_ns = routing_ingress_ns;
+        // The identity travels with the report as well as the address, and outlasts it: the
+        // address is only true while the session stays where it is, whereas this says whose
+        // report it was. That is what a WAL reader, a topic subscriber, or a replay after a
+        // reconnect has to key on -- the connection ids in an old record name sockets that
+        // are long gone. The string_view points into routing_identity, which outlives every
+        // use of this envelope below.
+        envelope.has_sender_comp_id = !routing_identity.empty();
+        envelope.sender_comp_id = routing_identity.comp_id_view();
 
         append_envelope_to_wal(envelope);
         send_wal_record(envelope);
@@ -574,7 +632,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             send_er_to_origin_gateway(routing_gateway_id, routing_gateway_instance, er_seq_no, envelope);
             release_pdu_payload(message);
             if (erase_routing_entry) {
-                seq_no_to_session_conn_id_.erase(er_seq_no);
+                seq_no_to_session_.erase(er_seq_no);
             }
         } else {
             auto acked_it = wal_acked_seq_nos_.find(gate_seq_no);
@@ -584,7 +642,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
                 send_er_to_origin_gateway(routing_gateway_id, routing_gateway_instance, er_seq_no, envelope);
                 release_pdu_payload(message);
                 if (erase_routing_entry) {
-                    seq_no_to_session_conn_id_.erase(er_seq_no);
+                    seq_no_to_session_.erase(er_seq_no);
                 }
             } else {
                 // WalAck not yet received; buffer the inner (unwrapped) ER until it arrives.
@@ -592,10 +650,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
                 pending.pdu_id = inbound.pdu_id;
                 pending.seq_no = er_seq_no;
                 pending.payload.assign(inbound.payload.data, inbound.payload.data + inbound.payload.size);
-                pending.has_gateway_session_conn_id = has_routing_conn;
-                pending.gateway_session_conn_id = routing_conn_id;
-                pending.origin_gateway_id = routing_gateway_id;
-                pending.origin_gateway_instance = routing_gateway_instance;
+                pending.identity = routing_identity;
                 pending.has_gateway_ingress_ns = has_routing_ingress_ns;
                 pending.gateway_ingress_ns = routing_ingress_ns;
                 pending.erase_routing_entry = erase_routing_entry;
@@ -688,6 +743,7 @@ void SequencerThread::adopt_role(pubsub_itc_fw_app::Role new_role) {
     }
 
     const auto transition_level = (role_ == pubsub_itc_fw_app::Role::unknown) ? pubsub_itc_fw::FwLogLevel::Info : pubsub_itc_fw::FwLogLevel::Warning;
+    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(get_logger(), transition_level, "SequencerThread: role transition {} -> {} (epoch={})", pubsub_itc_fw_app::to_string(role_),
                pubsub_itc_fw_app::to_string(new_role), epoch_);
 
@@ -812,6 +868,7 @@ void SequencerThread::send_arbitration_report() {
     if (arbiter_secondary_conn_id_.is_valid()) {
         send_pdu(arbiter_secondary_conn_id_, pubsub_itc_fw_app::ArbitrationReport::message_pdu_id, 0, report);
     }
+    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "SequencerThread: ArbitrationReport sent to arbiter pool (self_instance_id={} peer_instance_id={} epoch={})", report.self_instance_id,
                report.peer_instance_id, report.epoch);
@@ -1029,16 +1086,21 @@ void SequencerThread::dispatch_replay_records() {
         // Leaving it absent costs a handful of observations after promotion and keeps
         // every observation that is recorded a real measurement.
 
-        // Rebuild the routing map as the WAL is replayed, so ERs the matching engine
-        // emits for these orders after promotion reach the gateway they came from. The
-        // record carries the gateway id because the WAL stores the gateway's own envelope.
-        if (view.has_gateway_session_conn_id) {
+        // Rebuild the routing map as the WAL is replayed, so ERs the matching engine emits
+        // for these orders after promotion reach the sessions that placed them.
+        //
+        // The identity is what is rebuilt, and it is the only part of the old routing entry
+        // that a replay could honestly restore. The connection ids in these records name
+        // sockets on a process that has since died -- that is why there is a promotion to
+        // replay after -- so a rebuilt address would be wrong by construction. The live
+        // addresses come from the gateways instead, as SessionBound PDUs, and a session
+        // that reconnects after the promotion re-announces itself.
+        if (view.has_sender_comp_id && !view.sender_comp_id.empty()) {
             OriginSession origin;
-            origin.session_conn_id = view.gateway_session_conn_id;
-            origin.gateway_id = view.has_origin_gateway_id ? view.origin_gateway_id : gateway_ids::default_when_absent;
-            origin.gateway_instance = view.has_gateway_instance_id ? view.gateway_instance_id : gateway_ids::first_instance;
+            origin.identity =
+                fix_common::SessionIdentity::make(view.sender_comp_id, view.has_origin_gateway_id ? view.origin_gateway_id : gateway_ids::default_when_absent);
             // has_ingress_ns stays false for the reason above.
-            seq_no_to_session_conn_id_[view.seq_no] = origin;
+            seq_no_to_session_[view.seq_no] = origin;
         }
 
         send_pdu(me_outbound_order_conn_id_, pubsub_itc_fw_app::WalRecord::message_pdu_id, record.seq_no, envelope);
@@ -1222,6 +1284,7 @@ void SequencerThread::send_er_to_origin_gateway(int16_t protocol, int16_t instan
                        "sequencer's endpoints.",
                        protocol, instance);
         }
+        // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: gateway protocol={} instance={} not connected -- dropping ER seq={}",
                    protocol, instance, er_seq_no);
         return;
@@ -1229,30 +1292,137 @@ void SequencerThread::send_er_to_origin_gateway(int16_t protocol, int16_t instan
     send_pdu(*connection, pubsub_itc_fw_app::WalRecord::message_pdu_id, er_seq_no, envelope);
 }
 
+const fix_common::SessionDestination* SequencerThread::session_destination(const fix_common::SessionIdentity& identity) const {
+    const auto it = session_destinations_.find(identity);
+    return it == session_destinations_.end() ? nullptr : &it->second;
+}
+
+void SequencerThread::handle_session_bound(const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    arena.reset();
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw_app::SessionBoundView view{};
+
+    if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode SessionBound -- dropping");
+        return;
+    }
+    if (view.comp_id.empty()) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "SequencerThread: SessionBound with an empty comp id from protocol={} instance={} -- ignoring, there is no identity to bind",
+                   view.gateway_protocol_id, view.gateway_instance_id);
+        return;
+    }
+
+    const fix_common::SessionIdentity identity = fix_common::SessionIdentity::make(view.comp_id, view.gateway_protocol_id);
+    fix_common::SessionDestination destination{};
+    destination.instance = view.gateway_instance_id;
+    destination.conn_id = view.gateway_session_conn_id;
+
+    const auto existing = session_destinations_.find(identity);
+    if (existing != session_destinations_.end()) {
+        // The same identity was already bound somewhere. On a reconnect this is the
+        // expected case and the whole point -- the address is replaced and the session's
+        // reports follow it. But it is also what a comp id logged on twice at once looks
+        // like, and that is a venue rule violation ("one comp id may hold a session only
+        // once venue-wide") which nothing yet enforces. The sequencer is the only component
+        // that can see it happen, so it says so; refusing the second logon is the piece of
+        // that decision still to be built, and belongs with the decision, not smuggled in
+        // here as a side effect of re-keying.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: session comp_id='{}' protocol={} re-bound from instance={} connection={} to instance={} connection={}",
+                   identity.comp_id_view(), identity.protocol, existing->second.instance, existing->second.conn_id, destination.instance, destination.conn_id);
+    } else {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: session comp_id='{}' protocol={} bound to instance={} connection={}",
+                   identity.comp_id_view(), identity.protocol, destination.instance, destination.conn_id);
+    }
+
+    session_destinations_[identity] = destination;
+}
+
+void SequencerThread::handle_session_unbound(const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    arena.reset();
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw_app::SessionUnboundView view{};
+
+    if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode SessionUnbound -- dropping");
+        return;
+    }
+    if (view.comp_id.empty()) {
+        return;
+    }
+
+    const fix_common::SessionIdentity identity = fix_common::SessionIdentity::make(view.comp_id, view.gateway_protocol_id);
+    const auto existing = session_destinations_.find(identity);
+    if (existing == session_destinations_.end()) {
+        return;
+    }
+
+    // Only the connection that is actually bound may unbind the session. A member that
+    // reconnects quickly enough for its new SessionBound to arrive before the old
+    // connection's SessionUnbound -- two gateways racing, which is precisely what a
+    // failover produces -- would otherwise be unbound a moment after binding, and would
+    // sit there receiving nothing while appearing perfectly connected.
+    if (existing->second.instance != view.gateway_instance_id || existing->second.conn_id != view.gateway_session_conn_id) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: stale SessionUnbound for comp_id='{}' protocol={} naming instance={} connection={} -- "
+                   "it is bound to instance={} connection={}, keeping the newer binding",
+                   identity.comp_id_view(), identity.protocol, view.gateway_instance_id, view.gateway_session_conn_id, existing->second.instance,
+                   existing->second.conn_id);
+        return;
+    }
+
+    session_destinations_.erase(existing);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "SequencerThread: session comp_id='{}' protocol={} unbound from instance={} connection={} -- "
+               "its reports have nowhere to go until it binds again",
+               identity.comp_id_view(), identity.protocol, view.gateway_instance_id, view.gateway_session_conn_id);
+}
+
 void SequencerThread::forward_pending_er(const PendingEr& pending) {
-    // Wrap the buffered raw ER in a WalRecord envelope carrying the routing conn id
-    // and forward it to the originating gateway, which unwraps and routes to the session.
+    // Wrap the buffered raw ER in a WalRecord envelope and forward it to wherever its
+    // session is NOW. The address is resolved here rather than when the ER was buffered,
+    // and the difference is the point: this path exists because delivery waited for the
+    // follower's ack, and a member can reconnect -- to its backup gateway, after exactly
+    // the failure this system is built for -- inside that wait.
     // pending.payload is alive for this call; the envelope's BytesView borrows it.
+    const fix_common::SessionDestination* destination = pending.identity.empty() ? nullptr : session_destination(pending.identity);
+    if (destination == nullptr && !pending.identity.empty()) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
+                   "SequencerThread: buffered ER seq={} for session comp_id='{}' protocol={} -- session not bound to any instance, dropping", pending.seq_no,
+                   pending.identity.comp_id_view(), pending.identity.protocol);
+    }
+
     pubsub_itc_fw_app::WalRecord envelope{};
     envelope.seq_no = pending.seq_no;
     envelope.pdu_id = pending.pdu_id;
     envelope.payload.data = pending.payload.data();
     envelope.payload.size = pending.payload.size();
-    envelope.has_gateway_session_conn_id = pending.has_gateway_session_conn_id;
-    envelope.gateway_session_conn_id = pending.gateway_session_conn_id;
-    envelope.has_origin_gateway_id = pending.has_gateway_session_conn_id;
-    envelope.origin_gateway_id = pending.origin_gateway_id;
-    envelope.has_gateway_instance_id = pending.has_gateway_session_conn_id;
-    envelope.gateway_instance_id = pending.origin_gateway_instance;
+    envelope.has_gateway_session_conn_id = destination != nullptr;
+    envelope.gateway_session_conn_id = destination != nullptr ? destination->conn_id : 0;
+    envelope.has_origin_gateway_id = destination != nullptr;
+    envelope.origin_gateway_id = pending.identity.protocol;
+    envelope.has_gateway_instance_id = destination != nullptr;
+    envelope.gateway_instance_id = destination != nullptr ? destination->instance : gateway_ids::first_instance;
     envelope.has_gateway_ingress_ns = pending.has_gateway_ingress_ns;
     envelope.gateway_ingress_ns = pending.gateway_ingress_ns;
+    envelope.has_sender_comp_id = !pending.identity.empty();
+    envelope.sender_comp_id = pending.identity.comp_id_view();
 
-    send_er_to_origin_gateway(pending.origin_gateway_id, pending.origin_gateway_instance, pending.seq_no, envelope);
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: buffered ER seq={} forwarded to gateway id {}", pending.seq_no,
-               pending.origin_gateway_id);
+    if (destination != nullptr) {
+        send_er_to_origin_gateway(pending.identity.protocol, destination->instance, pending.seq_no, envelope);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: buffered ER seq={} forwarded to protocol={} instance={}", pending.seq_no,
+                   pending.identity.protocol, destination->instance);
+    }
 
     if (pending.erase_routing_entry) {
-        seq_no_to_session_conn_id_.erase(pending.seq_no);
+        seq_no_to_session_.erase(pending.seq_no);
     }
 }
 

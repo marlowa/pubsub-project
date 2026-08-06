@@ -432,6 +432,12 @@ class Scenario(NamedTuple):
     # block. Kills nothing: the failure this guards against is a session landing on a
     # gateway that is not its own, which needs every process alive to be visible.
     assert_session_provisioning: bool = False
+    # When True, drop the baseline FIX session and open a fresh one BEFORE Phase 4 runs, so
+    # the orders resting on the book were placed by a connection that no longer exists. What
+    # follows then tests the thing step 5 built: a session is an identity, not an address,
+    # so reports for those orders must reach the member on its NEW connection. See
+    # run_scenario's "reconnect before the kill" block.
+    reconnect_before_kill: bool = False
 
 
 # ── helpers shared by scenario definitions ────────────────────────────────────
@@ -1158,6 +1164,53 @@ _SCENARIOS: list[Scenario] = [
         orders_after_override=0,
         assert_session_provisioning=True,
         steps=[],
+    ),
+
+    # 21 — a reconnected session inherits reports for orders it placed earlier (step 5).
+    #
+    # This is scenario 16 with one thing changed: the client drops and comes back on a new
+    # connection BEFORE the matching engine is killed. That one change is the whole test.
+    #
+    # The baseline orders rest on the book, placed by a connection that is then closed. The
+    # promoted matching engine cancels the whole book on promotion and emits a cancel report
+    # for every order -- reports for orders whose originating connection no longer exists.
+    # They must be delivered to the member's CURRENT connection.
+    #
+    # Before step 5 they could not be: the sequencer's routing entry held the connection the
+    # order arrived on, and addressed the reports at it. The connection was gone, so every
+    # one was dropped and the member was never told its book had been cancelled. Now the
+    # entry holds the session's identity and the address is resolved when the report is
+    # sent, so the reconnect re-binds it.
+    #
+    # The assertion is the same one scenario 16 makes, and it discriminates for exactly this
+    # reason: the gateway must have sent one report per order PLUS one per cancel. If the
+    # cancel reports went to the dead connection the count falls short by the size of the
+    # book.
+    Scenario(
+        number=21,
+        short_name="reconnect_inherits_reports",
+        description="A reconnected session inherits reports for orders placed on its old connection",
+        expected_outcome=(
+            "the promoted matching engine cancels the resting book, and every cancel report "
+            "is delivered to the member's new connection rather than dropped at the address "
+            "of the connection that placed the orders"
+        ),
+        me_ha=True,
+        reconnect_before_kill=True,
+        # In-flight orders would advance the promoted secondary's order_id_counter_ during
+        # reconciliation, and there is no Phase 5 here: the cancel burst is the subject.
+        orders_during_override=0,
+        orders_after_override=0,
+        steps=[
+            KillStep(
+                proc_name="matching_engine_primary",
+                secondary_log_name="matching_engine_secondary.log",
+                role_prefix=None,
+                settle_secs=SETTLE_AFTER_FAILOVER,
+                failover_to="matching_engine_secondary",
+                leader_markers=("MatchingEngineThread:", "adopting LEADER role"),
+            ),
+        ],
     ),
 ]
 
@@ -2106,6 +2159,36 @@ def run_scenario(scenario: Scenario, args) -> bool:
             f8proc.stdin.flush()
         log("")
 
+        # ── Reconnect before the kill (step 5) ────────────────────────────────
+        # The baseline orders are resting on the book. Take the connection that placed them
+        # away and bring the same comp id back on a new one, so that everything Phase 4
+        # produces concerns orders whose originating connection no longer exists.
+        #
+        # This is what makes the assertion afterwards mean something: the reports have to be
+        # delivered to a member that has moved, which is only possible because the routing
+        # entry is keyed on who the member is rather than on where it was.
+        if scenario.reconnect_before_kill:
+            log("=== Dropping the baseline session and reconnecting on a new connection ===")
+            reconnect_pos = file_end(gw_log)
+            stop_f8test(f8proc)
+            f8proc = None
+            # send_burst waits for the logon and dies on failure, so a fresh session that
+            # cannot be established fails here rather than as a confusing shortfall later.
+            f8proc = send_burst(0, gw_log)
+
+            # The gateway must have told the sequencer, or the rest of this scenario tests
+            # the old behaviour and would pass by accident.
+            found, elapsed, _ = poll_log_for(
+                gw_log, "announced session", "bound to instance",
+                timeout=_PROVISIONING_LOGON_TIMEOUT, from_byte=reconnect_pos,
+            )
+            if not found:
+                die("reconnect: the gateway did not announce the new session to the sequencer. "
+                    "Without a SessionBound the sequencer still holds the old connection as this "
+                    "session's destination, and every report for it will be dropped.")
+            log(f"  reconnect: new session announced to the sequencer ({elapsed:.1f}s)")
+            log("")
+
         # ── Phase 4: execute kill / restart scenario ──────────────────────────
         # f8proc stays alive so the FIX session remains established.
         # extra_steps (when present) replaces steps+restart_steps and may
@@ -2350,12 +2433,19 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 die("ME-HA: no GW-PROGRESS line in the gateway log -- cannot confirm the "
                     "cancel-on-failover ERs were delivered")
             if sent < nos_received + cancel_count:
+                # Two different defects produce this same shortfall, so name both. The
+                # second only applies to the scenario that reconnects first, but a reader
+                # staring at a failure should not have to know which scenario they are in.
                 die(f"ME-HA: gateway sent {sent} ER(s) for {nos_received} order(s), but "
                     f"{cancel_count} cancel-on-failover ER(s) were emitted on promotion. "
                     f"Expected at least {nos_received + cancel_count} -- the cancel reports "
-                    "did not reach the client. Check the WalAck gate in SequencerThread::on_pdu: "
-                    "cancel ERs carry seq_no 0 and must gate on their own WAL record, not on an "
-                    "order sequence that does not exist.")
+                    "did not reach the client. Two causes to check, in this order: "
+                    "(1) the WalAck gate in SequencerThread::on_pdu -- cancel ERs carry seq_no 0 "
+                    "and must gate on their own WAL record, not on an order sequence that does "
+                    "not exist; (2) session binding -- the sequencer resolves a report's "
+                    "destination from the session's CURRENT binding, so if SessionBound/"
+                    "SessionUnbound stopped working the reports are addressed at the connection "
+                    "that placed the orders, which in this scenario is deliberately gone.")
             log(f"  ME-HA: gateway delivered {sent} ER(s) for {nos_received} order(s) -- "
                 f"includes the {cancel_count} cancel-on-failover ER(s) -- OK")
 

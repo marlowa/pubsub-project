@@ -220,6 +220,10 @@ void FixOrderGatewayThread::on_connection_lost(const pubsub_itc_fw::ConnectionID
         FixSession& session = it->second;
         cancel_timer(session.logon_timeout_timer_id);
         cancel_timer(session.scram_auth_timeout_timer_id);
+        // Told before the session object goes: the sequencer addresses reports at this
+        // connection, and once it is gone there is nothing here to receive them. Announced
+        // rather than inferred because the sequencer cannot see a client socket close.
+        announce_session_unbound(session);
         queue_session_for_cleanup(session);
         sessions_.erase(it);
     }
@@ -505,6 +509,7 @@ void FixOrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventM
     // Route to the exact FIX session identified by gateway_session_conn_id, which
     // the gateway stamped on the original NOS envelope and the sequencer echoes here.
     if (!envelope.has_gateway_session_conn_id) {
+        // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                    "FixOrderGatewayThread: ExecutionReport OrderID={} ExecID={} has no gateway_session_conn_id -- dropping", view.order_id, view.exec_id);
         release_pdu_payload(message);
@@ -813,6 +818,7 @@ void FixOrderGatewayThread::handle_authentication_result(const pubsub_itc_fw::Ev
         const bool provisioned_here = config_.instance_id == primary_instance || (has_backup && config_.instance_id == backup_instance);
 
         if (!provisioned_here) {
+            // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                        "FixOrderGatewayThread: connection {} comp_id='{}' logon refused -- this is gateway instance {}, "
                        "and the session is provisioned for primary={} backup={}",
@@ -833,6 +839,7 @@ void FixOrderGatewayThread::handle_authentication_result(const pubsub_itc_fw::Ev
         // saying "accepted": a hop that drops the provisioning leaves the gateway letting
         // everyone in everywhere, which looks identical to a correctly unpinned venue
         // unless the values themselves are visible.
+        // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "FixOrderGatewayThread: comp_id='{}' provisioned for gateway instances primary={} backup={} -- "
                    "this is instance {} ({})",
@@ -859,9 +866,16 @@ void FixOrderGatewayThread::handle_authentication_result(const pubsub_itc_fw::Ev
 
     session.session_established = true;
 
+    // TEST CONTRACT -- ha_test.py and perf_run.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "FixOrderGatewayThread: connection {} authentication succeeded -- FIX session established comp_id='{}'", session.conn_id.get_value(),
                session.client_comp_id);
+
+    // Tell the sequencer where this session now lives, so reports for orders it placed
+    // reach it here -- including orders placed through a connection, or an instance, that
+    // no longer exists. Sent on every logon rather than only on a reconnect: the sequencer
+    // cannot tell the two apart, and a binding it never received is one it cannot use.
+    announce_session_bound(session);
     if (session.cancel_on_disconnect_enabled.has_value() || session.cancel_on_disconnect_grace_period_seconds.has_value()) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "FixOrderGatewayThread: comp_id='{}' cancel-on-disconnect provisioned: enabled={} grace_period={}", session.client_comp_id,
@@ -875,6 +889,7 @@ void FixOrderGatewayThread::handle_authentication_result(const pubsub_itc_fw::Ev
     // gateway dies, the member reconnects to another instance, and its book survives.
     const size_t reclaimed = reclaim_grace_session(session.client_comp_id);
     if (reclaimed > 0) {
+        // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "FixOrderGatewayThread: comp_id='{}' reconnected within the grace period -- {} order(s) left resting, none cancelled",
                    session.client_comp_id, reclaimed);
@@ -1367,6 +1382,7 @@ void FixOrderGatewayThread::report_order_progress() {
     if (accounted % order_progress_interval != 0) {
         return;
     }
+    // TEST CONTRACT -- ha_test.py and perf_run.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "GW-PROGRESS accounted={} sent={} dropped={} nos_received={}", accounted, execution_reports_sent_,
                execution_reports_dropped_, orders_received_);
 }
@@ -1451,6 +1467,7 @@ void FixOrderGatewayThread::queue_session_for_cleanup(FixSession& session) {
     }
 
     dead.cancel_due = std::chrono::steady_clock::now() + grace_period;
+    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "FixOrderGatewayThread: connection {} (comp_id='{}') disconnected with {} open order(s) -- holding {}s for reconnect before cancelling",
                session.conn_id.get_value(), dead.client_comp_id, dead.open_orders.size(), grace_period.count());
@@ -1584,10 +1601,43 @@ void FixOrderGatewayThread::drain_pending_cancels() {
     // Gating on sent > 0 missed the common case: the final tick usually just pops the last
     // exhausted session, so the completion line went unlogged exactly when a drain finished.
     if (cancels_sent_this_drain_ > 0) {
+        // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: cancel drain complete -- {} cancel(s) sent",
                    cancels_sent_this_drain_);
         cancels_sent_this_drain_ = 0;
     }
+}
+
+void FixOrderGatewayThread::announce_session_bound(const FixSession& session) {
+    if (session.client_comp_id.empty()) {
+        return;
+    }
+    pubsub_itc_fw_app::SessionBound bound{};
+    bound.comp_id = session.client_comp_id;
+    bound.gateway_protocol_id = gateway_ids::fix_order_gateway;
+    bound.gateway_instance_id = config_.instance_id;
+    bound.gateway_session_conn_id = session.conn_id.get_value();
+    forward_pdu_to_sequencers(pubsub_itc_fw_app::SessionBound::message_pdu_id, bound);
+    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: announced session comp_id='{}' bound to instance {} connection {}",
+               session.client_comp_id, config_.instance_id, session.conn_id.get_value());
+}
+
+void FixOrderGatewayThread::announce_session_unbound(const FixSession& session) {
+    // Only a session that was announced needs unannouncing. An unauthenticated connection
+    // that dies during logon never had an identity, so there is nothing to unbind and
+    // sending one would name an empty comp id.
+    if (!session.session_established || session.client_comp_id.empty()) {
+        return;
+    }
+    pubsub_itc_fw_app::SessionUnbound unbound{};
+    unbound.comp_id = session.client_comp_id;
+    unbound.gateway_protocol_id = gateway_ids::fix_order_gateway;
+    unbound.gateway_instance_id = config_.instance_id;
+    unbound.gateway_session_conn_id = session.conn_id.get_value();
+    forward_pdu_to_sequencers(pubsub_itc_fw_app::SessionUnbound::message_pdu_id, unbound);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: announced session comp_id='{}' unbound from instance {} connection {}",
+               session.client_comp_id, config_.instance_id, session.conn_id.get_value());
 }
 
 FixSession* FixOrderGatewayThread::find_session_by_conn_id(int32_t gateway_session_conn_id) {

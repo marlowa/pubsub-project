@@ -221,14 +221,35 @@ def gateway_listen_port(prefix: Path, gateway: str, instance: str) -> int:
     return 0  # unreachable; die() exits
 
 
-def fix8_config_for_instance(prefix: Path, instance: str) -> str:
-    """Return the name of an f8test config aimed at the given gateway instance.
+def fix8_comp_ids(clients: int) -> list[str]:
+    """The comp id each f8test client logs on with -- one per client, never shared.
 
-    Instance 'a' uses the stock config unchanged, so the common case behaves exactly as
-    before. Any other instance gets a generated copy with the port rewritten, written
-    beside the original because f8test resolves the name relative to its own directory.
+    Mirrors binary_load_comp_ids deliberately: a single session keeps the bare name, and
+    more than one appends an index.
+
+    Concurrent clients MUST NOT share a comp id. A comp id plus its protocol is the session
+    identity the matching engine keys its book by and the sequencer routes reports by, so N
+    clients sharing one are one session as far as the venue is concerned -- and since
+    f8test numbers its ClOrdIDs ord1, ord2, ... from one in every process, all but the first
+    client's orders would be rejected as duplicates. The venue rule is the same: one comp id
+    holds a session once. This used to work only because the book key included the gateway
+    connection id, which is exactly the address-not-identity mistake step 5 removed.
     """
-    if instance == "a":
+    if clients == 1:
+        return [FIX8_COMP_ID]
+    return [f"{FIX8_COMP_ID}-{index + 1}" for index in range(clients)]
+
+
+def fix8_config_for_client(prefix: Path, instance: str, comp_id: str) -> str:
+    """Return the name of an f8test config aimed at one gateway instance as one comp id.
+
+    The stock config is used unchanged only for the common case -- instance 'a' with a
+    single client under the default comp id -- so that the simplest run behaves exactly as
+    it always has. Anything else gets a generated copy with the port and the sender comp id
+    rewritten, written beside the original because f8test resolves the name relative to its
+    own directory.
+    """
+    if instance == "a" and comp_id == FIX8_COMP_ID:
         return FIX8_CFG
 
     port = gateway_listen_port(prefix, "fix", instance)
@@ -236,25 +257,31 @@ def fix8_config_for_instance(prefix: Path, instance: str) -> str:
     if not source.is_file():
         die(f"fix8 session config not found: {source}")
 
-    generated_name = f"myfix_gateway_client_{instance}.xml"
-    rewritten, count = re.subn(r'port="\d+"', f'port="{port}"', source.read_text(), count=1)
-    if count == 0:
+    text, port_count = re.subn(r'port="\d+"', f'port="{port}"', source.read_text(), count=1)
+    if port_count == 0:
         die(f"no port attribute to rewrite in {source}")
-    (FIX8_DIR / generated_name).write_text(rewritten)
-    log(f"fix8 config for instance {instance}: {generated_name} -> port {port}")
+    text, comp_count = re.subn(r'sender_comp_id="[^"]*"', f'sender_comp_id="{comp_id}"', text, count=1)
+    if comp_count == 0:
+        die(f"no sender_comp_id attribute to rewrite in {source}")
+
+    generated_name = f"myfix_gateway_client_{instance}_{comp_id}.xml"
+    (FIX8_DIR / generated_name).write_text(text)
     return generated_name
 
 
-def ensure_fix8_credentials(creds_file: Path, comp_id: str, password: str,
+def ensure_fix8_credentials(creds_file: Path, comp_ids: list[str], password: str,
                             logon_mode: str) -> None:
-    """Provision the credential f8test authenticates with.
+    """Provision a credential for every comp id the f8test clients authenticate with.
+
+    One per client, because each client now has its own identity -- see fix8_comp_ids.
 
     Skipped when logon_mode == 'proprietary' (no SCRAM involved).
     """
     if logon_mode == "proprietary":
-        log(f"  proprietary logon mode -- skipping SCRAM credential rewrite for '{comp_id}'")
+        log(f"  proprietary logon mode -- skipping SCRAM credential rewrite for {len(comp_ids)} comp id(s)")
         return
-    write_scram_credential(creds_file, comp_id, password)
+    for comp_id in comp_ids:
+        write_scram_credential(creds_file, comp_id, password)
 
 
 def ensure_binary_load_credentials(creds_file: Path, clients: int) -> None:
@@ -705,7 +732,7 @@ def wait_for_fix_logons(gw_log: Path, expected: int, timeout: float) -> int:
     return seen
 
 
-def run_fix8_session(me_log: Path, gw_log: Path, burst: int, clients: int, fix8_config: str,
+def run_fix8_session(me_log: Path, gw_log: Path, burst: int, clients: int, fix8_configs: list[str],
                      client_log_dir: Path, capture_client_logs: bool) -> None:
     """
     Start `clients` concurrent f8test processes, wait for the gateway to confirm every
@@ -747,8 +774,10 @@ def run_fix8_session(me_log: Path, gw_log: Path, burst: int, clients: int, fix8_
         else:
             stdout_target = subprocess.DEVNULL
             destination = "discarded (--client-logs to capture)"
+        # One config per client, each naming that client's own comp id: concurrent
+        # clients are separate sessions, not one session opened many times.
         proc = subprocess.Popen(  # pylint: disable=consider-using-with
-            [str(FIX8_BIN), "-c", fix8_config, "-N", "GW1"],
+            [str(FIX8_BIN), "-c", fix8_configs[i], "-N", "GW1"],
             cwd=str(FIX8_DIR),
             stdin=subprocess.PIPE,
             stdout=stdout_target,
@@ -916,7 +945,7 @@ def main() -> None:
     if args.gateway == "binary":
         ensure_binary_load_credentials(creds_file, args.clients)
     else:
-        ensure_fix8_credentials(creds_file, FIX8_COMP_ID, FIX8_PASSWORD, args.logon_mode)
+        ensure_fix8_credentials(creds_file, fix8_comp_ids(args.clients), FIX8_PASSWORD, args.logon_mode)
 
     # -- launch applications in dependency order (mirrors dev.toml startup_order)
     # Each tuple: (name, binary, config, optional_workdir).
@@ -981,7 +1010,8 @@ def main() -> None:
                                     gateway_listen_port(prefix, "binary", args.gateway_instance))
         else:
             run_fix8_session(me_log, gw_log, args.burst, args.clients,
-                             fix8_config_for_instance(prefix, args.gateway_instance), log_dir,
+                             [fix8_config_for_client(prefix, args.gateway_instance, comp_id)
+                              for comp_id in fix8_comp_ids(args.clients)], log_dir,
                              args.client_logs)
 
         log(f"Waiting {POST_ORDER_WAIT:.0f}s for pipeline to drain ...")

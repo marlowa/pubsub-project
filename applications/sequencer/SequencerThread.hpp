@@ -23,6 +23,7 @@
 
 #include "GatewayIds.hpp"
 #include "SequencerConfiguration.hpp"
+#include "SessionIdentity.hpp"
 
 namespace sequencer {
 
@@ -169,10 +170,12 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
         int16_t pdu_id{};
         int64_t seq_no{};
         std::vector<uint8_t> payload; // copy of the raw encoded ER from ME
-        bool has_gateway_session_conn_id{false};
-        int32_t gateway_session_conn_id{0};
-        int16_t origin_gateway_id{gateway_ids::default_when_absent};
-        int16_t origin_gateway_instance{gateway_ids::first_instance};
+        // Whose report this is. Deliberately the identity and not a resolved destination:
+        // this record exists precisely because delivery is being deferred until the
+        // follower acks, and a session can reconnect during that wait -- which is the case
+        // a gateway failover produces. Resolving the address when the ER was buffered would
+        // send it to whichever connection was current a moment before the failover.
+        fix_common::SessionIdentity identity;
         // The originating gateway's ingress stamp, carried through the WalAck wait so the
         // gateway still gets it when the ER is released. Buffering here is the live HA
         // path, so dropping it would leave the round-trip metric empty in exactly the
@@ -269,13 +272,11 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void stream_wal_record_to_me(const pubsub_itc_fw::ConnectionID& conn_id, int64_t record_id, int16_t pdu_id, const uint8_t* pdu_payload, size_t pdu_size,
                                  int64_t wall_time_ns);
 
-    // Identifies the client session an order came from: which gateway, and which
-    // connection within it. The connection id alone is ambiguous once more than one
-    // gateway is feeding the book.
+    // Which client session an order came from. The identity, not the address: where its
+    // reports go is looked up separately, at the moment of sending, so that a session which
+    // has reconnected somewhere else in the meantime is still reachable.
     struct OriginSession {
-        int32_t session_conn_id{0};
-        int16_t gateway_id{gateway_ids::default_when_absent};
-        int16_t gateway_instance{gateway_ids::first_instance};
+        fix_common::SessionIdentity identity;
 
         // Wall-clock nanoseconds at which the gateway read the order off the client socket.
         // Carried here purely so it can be stamped back onto the ER envelope: the gateway
@@ -293,14 +294,36 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
         int64_t gateway_ingress_ns{0};
     };
 
-    // seq_no -> originating client session.
-    // Keyed by the sequence number assigned to each NOS/OCR (globally unique,
-    // unlike ClOrdID which is only unique per client session).  Populated on each
-    // sequenced NOS/OCR; rebuilt from WAL replay on startup.  Used to stamp
-    // gateway_session_conn_id on forwarded ERs so the gateway can route each
-    // ER directly to the exact session that placed the order, even when
-    // multiple sessions share the same SenderCompID or reuse ClOrdIDs.
-    std::unordered_map<int64_t, OriginSession> seq_no_to_session_conn_id_;
+    // seq_no -> the session that placed the order.
+    // Keyed by the sequence number assigned to each NOS/OCR (globally unique, unlike
+    // ClOrdID which is only unique per client session). Populated on each sequenced
+    // NOS/OCR; rebuilt from WAL replay on startup.
+    //
+    // This used to hold the originating *connection* and its reports were addressed
+    // straight at it. That made a report undeliverable the moment the socket closed, and
+    // undeliverable to the right member even after it came back, because the connection id
+    // it named was gateway-local and renumbered on reconnect. Holding the identity and
+    // resolving the address at send time is what lets a reconnect -- to the same instance
+    // or to the member's backup -- inherit reports for orders it placed on the old one.
+    std::unordered_map<int64_t, OriginSession> seq_no_to_session_;
+
+    // session identity -> where that session's reports go right now.
+    //
+    // Maintained from the SessionBound and SessionUnbound PDUs the gateways send as
+    // sessions come and go, which is the only way the sequencer can know: it listens on one
+    // port and accepts, so it cannot tell instances apart from a connection alone, and a
+    // member that reconnects and sends no order would otherwise never announce itself.
+    //
+    // An absent entry means the session is not connected anywhere. Its reports have nowhere
+    // to go and are dropped, exactly as they were before -- making them replayable instead
+    // is step 6, and it is deliberately not smuggled in here.
+    std::unordered_map<fix_common::SessionIdentity, fix_common::SessionDestination, fix_common::SessionIdentityHash> session_destinations_;
+
+    void handle_session_bound(const pubsub_itc_fw::EventMessage& message);
+    void handle_session_unbound(const pubsub_itc_fw::EventMessage& message);
+
+    // Resolves where a session's reports go, or nullptr when it is not bound anywhere.
+    const fix_common::SessionDestination* session_destination(const fix_common::SessionIdentity& identity) const;
 };
 
 } // namespaces

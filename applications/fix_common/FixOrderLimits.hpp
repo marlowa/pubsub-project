@@ -18,4 +18,16 @@ namespace fix_order_limits {
 // the silent-truncation key collisions a mismatch would otherwise cause.
 inline constexpr size_t max_cl_ord_id_length = 64;
 
+// Maximum comp id length in bytes, and a HARD limit for the same reason as the one above:
+// it sizes SessionIdentity, the fixed-size POD key the matching engine's book and the
+// sequencer's routing entry are both keyed on.
+//
+// Unlike a ClOrdID, this one is not enforced at the gateway, because it cannot be exceeded
+// by anything that gets that far: a comp id has to be provisioned in the database to
+// authenticate, and `pubsub_comp_id.comp_id` is `varchar(64)`. This value is that column's
+// width, so the two must be changed together -- widening the column alone would start
+// truncating identities, and two comp ids sharing a 64-character prefix would silently
+// become one session.
+inline constexpr size_t max_comp_id_length = 64;
+
 } // namespaces

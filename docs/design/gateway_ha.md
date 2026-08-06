@@ -2,16 +2,18 @@
 
 How a member keeps trading when a gateway dies.
 
-> **Status: steps 1-4 built, steps 5-6 outstanding. Targeted at 0.3.0.**
+> **Status: steps 1-5 built, step 6 outstanding. Targeted at 0.3.0.**
 >
 > The direction was settled on 2026-07-30 and written down before implementation started, so that
 > the decisions — and the reasoning behind them — were recorded rather than reconstructed
 > afterwards. Since then, instance identity, the sequencer endpoint collection, two instances of
 > each protocol running, cancel-on-disconnect with a grace period, and session provisioning have
-> all landed; each step's entry under **Implementation order** says what was actually built and
-> how it was proven. **Steps 5 and 6 — re-keying the routing entry on session identity, and
-> session-slice replay on logon — are not built**, and until they are, a session does not survive
-> its gateway dying even though the venue does.
+> all landed, and so has step 5: routing is now keyed on session identity, so a member that
+> reconnects -- to its own instance or to its backup -- inherits reports for orders it placed
+> earlier and can cancel what it left resting. Each step's entry under **Implementation order**
+> says what was actually built and how it was proven. **Step 6 -- session-slice replay on logon,
+> and retiring the blanket gap-fill -- is not built**, so a member is brought up to date only
+> with reports generated after it returns; anything emitted while it was away is still lost.
 >
 > The "What exists today" section is the 2026-07-30 baseline this design was written against, kept
 > because later sections argue against it. Where a step has superseded part of it, that is marked
@@ -25,8 +27,10 @@ This document covers the order-entry gateways only. Sequencer and matching engin
 
 ## Decisions
 
-Both taken on 2026-07-30. Both change what was previously written down, and neither is yet
-reflected in the code.
+Both taken on 2026-07-30. Both changed what was previously written down. Both are now in the
+code: pinning landed as step 4, and the routing half of the second as step 5 -- with the
+qualification recorded under that step, that a member inherits reports from the moment it returns
+and not for the period it was away, which is step 6.
 
 **Sessions are pinned to a primary and a backup gateway.** Not any-of-N pooling. A member's
 session is provisioned against two named gateway instances and may log on to either; it may not
@@ -148,10 +152,10 @@ refused elsewhere — but it is still a division an operator makes, not one the 
 sends an `OrderCancelRequest` for every resting order, immediately, unconditionally — no grace
 period, no per-comp-id switch. So:
 
-| What fails | What happens today |
+| What fails | What happened before steps 3b-5 |
 |---|---|
-| The client's connection to `a` drops, `a` survives | `a` cancels that session's entire book at once. The member reconnects — to `a` or to `b` — and finds itself flat. Its positions were closed by a network blip. |
-| The `a` process dies | No cancels are sent, because the process that would send them is dead. The orders stay resting in the matching engine, but no gateway holds their session and every report for them is dropped by the sequencer. The member reconnects to `b` and cannot see or cancel orders that are still live in the book. |
+| The client's connection to `a` drops, `a` survives | `a` cancelled that session's entire book at once. The member reconnected — to `a` or to `b` — and found itself flat. Its positions were closed by a network blip. *Closed by 3b: the orders are held for a grace period and a reconnect inside it cancels nothing.* |
+| The `a` process dies | No cancels are sent, because the process that would send them is dead. The orders stay resting in the matching engine — but the member reconnecting to `b` could neither see nor cancel them, because both the book key and the report address named the connection that placed them. *Closed by step 5: the book is keyed on the session's identity and reports are addressed to wherever it is now, so the member cancels them from `b` and is told what happened.* |
 
 The first is the cancel storm step 3b's grace period exists to prevent. The second is arguably
 worse — orphaned live orders are a real risk position that the member cannot manage — and it is
@@ -221,9 +225,15 @@ absent meaning instance 1.
 
 ### The short version
 
-Two instances today mean *a venue that keeps trading when one gateway dies*. They do not yet mean
-*a session that survives its gateway dying*. Until steps 3b-6 land, treat instance `b` as a place
-for new sessions to go, not as a place old ones can be recovered.
+*Written when steps 1-3 were all that existed, and kept because the distinction it draws is the
+right one.* Two instances then meant *a venue that keeps trading when one gateway dies*, but not
+*a session that survives its gateway dying*: instance `b` was a place for new sessions to go, not
+a place old ones could be recovered.
+
+Steps 3b, 4 and 5 have since closed that. A member whose gateway dies reconnects to its backup,
+finds its orders still resting, can cancel them, and receives reports for them there. What is
+still missing is the period in between: reports generated while it was disconnected are not
+replayed to it, which is step 6.
 
 ---
 
@@ -241,8 +251,11 @@ for new sessions to go, not as a place old ones can be recovered.
 Gaps 1, 2 and 5 are the SPOF work. Gaps 3, 4 and 6 are the in-flight-report decision. They are
 separable, and the SPOF half is worth having on its own.
 
-**Gaps 1, 2 and 5 are now closed** (steps 1, 2 and 4). Gaps 3, 4 and 6 remain open and are what
-steps 5 and 6 exist to close.
+**Gaps 1, 2, 5 and 6 are now closed** (steps 1, 2, 4 and 5). Gap 3 is narrowed rather than
+closed: a report for a session that has reconnected now follows it, and only a session that is
+connected nowhere at all has its reports dropped. Gap 4 -- no outbound message store, so nothing
+can be replayed to a member for the period it was away -- is untouched, and with gap 3's
+remainder is what step 6 exists to close.
 
 ---
 
@@ -388,12 +401,16 @@ So the shape is:
 1. **Stop dropping.** When the target gateway is not connected, the report is not discarded; it
    stays in the WAL, which it is in anyway. The drop path becomes a no-op rather than a loss,
    because delivery is driven by the reconnecting session asking for its slice, not by the
-   sequencer pushing at a connection that may not exist.
+   sequencer pushing at a connection that may not exist. *Not built. A report for a session that
+   is bound nowhere is still dropped; what changed in step 5 is that far fewer reports are in
+   that position, because a session that has merely moved is no longer one of them.*
 2. **Key the routing entry on the session, not the connection.** The connection triple stays as the
    *current destination*. The *key* becomes the provisioned session identity, so that a logon can
    re-bind the destination to a new connection on a different instance. This is the direct answer
    to gap 6: the identity that must survive is the session's, and the connection is a mutable
-   attribute of it.
+   attribute of it. **Done, as step 5.** The identity turned out to be `(comp id, protocol)`
+   rather than the provisioned pinning itself, which names instances and so cannot survive an
+   instance change.
 3. **Replay on logon.** The gateway, having authenticated a session, asks the sequencer for that
    session's reports from the member's nominated position and encodes them to the wire in its own
    protocol, with FIX `PossDupFlag=Y` where the report was previously sent.
@@ -459,12 +476,14 @@ the gateway holds rather than cancels, prove nothing is cancelled while the wind
 then reconnect the same comp id and prove no cancel is ever sent. It fails if `grace_period`
 is set to zero, so it discriminates rather than merely passing.
 
-**What this deliberately does not do: the reconnecting session does not adopt the held
-orders.** They stay resting on the book, but the new connection cannot cancel them, because
-the matching engine keys an order by the connection id it arrived on. Adopting the entries
-would make the gateway claim a control it does not have. Re-keying an order onto a recovered
-session is step 5, and until it lands "your book survives" is true while "you can manage it
-from the new session" is not.
+**What this deliberately did not do, when it was built: the reconnecting session did not
+adopt the held orders.** They stayed resting on the book, but the new connection could not
+cancel them, because the matching engine keyed an order by the connection id it arrived on.
+Adopting the entries in the gateway would have made it claim a control it did not have, so
+the fix belonged one layer down. *Step 5 did that: the book is keyed on the session's identity,
+so a reconnected member cancels what it left resting without anything being adopted or
+transferred. "Your book survives" and "you can manage it from the new session" are now both
+true.*
 
 **Per comp id as well as venue-wide, as of 2026-08-01.** `pubsub_comp_id` gained
 `cancel_on_disconnect_enabled` and `cancel_on_disconnect_grace_period_seconds`; the values
@@ -592,6 +611,68 @@ Each step leaves the system working.
    was observed rather than designed — it fell out of the loader validation while the negative
    controls above were being run — and it is the right behaviour, so it stays.
 5. **Re-key the routing entry** on session identity with the connection triple as destination.
+   **Done 2026-08-06.**
+
+   The sequencer's routing entry was `seq_no -> (connection, protocol, instance)`: an order
+   was filed under the *address* it arrived at. That address is a socket on a process, so it
+   died with the connection, was renumbered on reconnect, and did not exist at all at the
+   member's backup gateway. It is now split in two — `seq_no -> session identity`, and
+   `session identity -> current destination` — and the destination is resolved at the moment
+   a report is sent rather than remembered when the order was placed.
+
+   **The identity is `(comp id, protocol)`.** Not the comp id alone: an instance failover
+   moves a session between instances of one protocol, so the instance must not be part of
+   it, but a FIX and a binary session sharing one comp id are genuinely two sessions and
+   must not share a book or each other's reports. The venue rule that one comp id holds a
+   session only once still applies within a protocol, and is still unenforced; the sequencer
+   now logs when it sees a comp id bind while already bound, which is the first half of it.
+
+   **The bindings come from the gateways**, as `SessionBound` and `SessionUnbound` PDUs sent
+   when a session is established and when it goes away. The sequencer cannot infer them: it
+   listens on one port and accepts, so it cannot tell instances apart from a connection, and
+   a member that reconnects and sends no order would never announce itself. `SessionUnbound`
+   carries the connection id and is ignored when it does not name the current binding, so a
+   reconnect that overtakes the old connection's unbind — two gateways racing, which is what
+   a failover produces — cannot unbind the session it just bound.
+
+   Three consequences worth stating plainly:
+
+   - **The matching engine's book is keyed on the identity too** (`OrderKey`), which is what
+     lets a reconnected member cancel an order it left resting. Until now it could see the
+     order but not touch it, because the key held the connection that placed it. That was
+     called out as the gap at the end of the cancel-on-disconnect section, and it is closed.
+   - **`BookUpdate` replication carries the identity**, not the connection id. Replicating an
+     address was wrong in the one case the message exists for: on promotion, the addresses
+     in the replica named the process whose death caused the promotion.
+   - **The matching engine no longer stamps a destination on any report.** It stamps whose
+     report it is; the sequencer resolves where that member currently is. The ME has no way
+     to know, and on the cancel-on-failover path any address it remembered would be stale by
+     construction.
+
+   Proven live, in the way that matters most — from a client rather than from a log:
+   `binary_client` placed an order on instance 1, disconnected, and a *new* connection
+   cancelled it; then the same across instances, placed on instance 1 and cancelled from
+   instance 2, with the report coming back on instance 2. The sequencer's log shows the
+   session re-binding from instance 1 to instance 2 between the two.
+
+   `ha_test.py` scenario 21 covers the FIX path: 1,000 orders rest on the book, the client
+   drops and returns on a new connection, then the matching-engine primary is killed and the
+   promoted secondary cancels the whole book. All 1,000 cancel reports must reach the new
+   connection — reports for orders whose originating connection no longer exists.
+
+   **The first negative control for that scenario passed, which meant it proved nothing.**
+   Suppressing re-binds alone was not enough, because the client's disconnect unbinds the
+   session first, so a reconnect faces no existing binding to refuse. Freezing the
+   destination properly — suppressing the unbind as well — reproduces the pre-step-5
+   behaviour, and the scenario then fails with 1,000 reports instead of 2,000. Worth
+   recording because the weak control looked exactly like a passing test.
+
+   One harness change fell out of the re-keying. `perf_run.py --clients N` ran N FIX clients
+   under a single comp id, which only worked because the book key included the connection
+   id; f8test numbers its ClOrdIDs from one in every process, so under an identity-keyed
+   book all but the first client's orders would be duplicates. Each client now gets its own
+   comp id, its own credential and its own generated session config, exactly as the binary
+   load client already did.
 6. **Session-slice replay on logon**, and retire the blanket gap-fill.
 
 Steps 1-3 are the SPOF work and are worth landing on their own. Steps 4-6 are the in-flight-report

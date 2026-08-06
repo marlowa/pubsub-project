@@ -46,6 +46,13 @@ struct Options {
     std::string target_comp_id{"BINARY-GATEWAY"};
     std::string symbol{"AAPL"};
     int order_count{1};
+    // A ClOrdID chosen by the caller rather than generated. Two runs of this tool are two
+    // separate connections, so naming the id is what lets the second one refer to an order
+    // the first one placed -- which is the only way to test, from outside, that an order
+    // outlives the connection that created it.
+    std::string cl_ord_id;
+    // When set, send an OrderCancelRequest for this OrigClOrdID instead of placing orders.
+    std::string cancel_cl_ord_id;
 };
 
 bool parse_options(int argc, char** argv, Options& options) {
@@ -66,9 +73,19 @@ bool parse_options(int argc, char** argv, Options& options) {
             options.symbol = argv[++index];
         } else if (argument == "--orders" && has_value) {
             options.order_count = std::stoi(argv[++index]);
+        } else if (argument == "--cl-ord-id" && has_value) {
+            options.cl_ord_id = argv[++index];
+        } else if (argument == "--cancel" && has_value) {
+            options.cancel_cl_ord_id = argv[++index];
         } else {
             fmt::print("usage: {} [--host H] [--port P] [--comp-id ID] [--password P]\n", argv[0]);
             fmt::print("          [--target-comp-id ID] [--symbol SYM] [--orders N]\n");
+            fmt::print("          [--cl-ord-id ID] [--cancel ORIG-CL-ORD-ID]\n");
+            fmt::print("\n");
+            fmt::print("  --cl-ord-id  use this ClOrdID instead of a generated one, so a later\n");
+            fmt::print("               run on a new connection can refer to the same order\n");
+            fmt::print("  --cancel     send an OrderCancelRequest for this OrigClOrdID rather\n");
+            fmt::print("               than placing an order\n");
             return false;
         }
     }
@@ -226,8 +243,52 @@ int main(int argc, char** argv) {
     }
     fmt::print("logged on as '{}'\n", options.comp_id);
 
+    // Cancel mode: refer to an order by ClOrdID and say nothing about where it was placed.
+    // The venue is expected to find it from this session's identity, which is the same
+    // whichever connection -- or gateway instance -- this tool is run against.
+    if (!options.cancel_cl_ord_id.empty()) {
+        pubsub_itc_fw_app::OrderCancelRequest cancel{};
+        const std::string cancel_cl_ord_id = options.cancel_cl_ord_id + "-CANCEL";
+        cancel.cl_ord_id = cancel_cl_ord_id;
+        cancel.orig_cl_ord_id = options.cancel_cl_ord_id;
+        cancel.side = pubsub_itc_fw_app::Side::Buy;
+        cancel.symbol = options.symbol;
+        cancel.transact_time = now_nanoseconds();
+
+        if (!send_pdu(socket_fd, pubsub_itc_fw_app::OrderCancelRequest::message_pdu_id, cancel)) {
+            fmt::print("failed to send OrderCancelRequest\n");
+            ::close(socket_fd);
+            return 1;
+        }
+        fmt::print("sent OrderCancelRequest OrigClOrdID={}\n", options.cancel_cl_ord_id);
+
+        if (!receive_pdu(socket_fd, pdu_id, seq_no, payload)) {
+            fmt::print("connection closed with no reply to the cancel\n");
+            ::close(socket_fd);
+            return 1;
+        }
+        pubsub_itc_fw::BumpAllocator arena(arena_buffer.data(), arena_buffer.size());
+        size_t bytes_consumed = 0;
+        size_t arena_bytes_needed = 0;
+        pubsub_itc_fw_app::ExecutionReportView report{};
+        if (pdu_id != pubsub_itc_fw_app::ExecutionReport::message_pdu_id ||
+            !pubsub_itc_fw_app::decode(report, payload.data(), payload.size(), bytes_consumed, arena, arena_bytes_needed)) {
+            fmt::print("unexpected reply to the cancel: PDU id {}\n", pdu_id);
+            ::close(socket_fd);
+            return 1;
+        }
+        fmt::print("ExecutionReport seq={} ClOrdID={} OrdStatus={} ExecType={}\n", seq_no, std::string_view(report.cl_ord_id.data(), report.cl_ord_id.size()),
+                   pubsub_itc_fw_app::to_string(report.ord_status), pubsub_itc_fw_app::to_string(report.exec_type));
+        ::close(socket_fd);
+        fmt::print("done\n");
+        // A rejected cancel is a failed run: it means the venue could not find the order,
+        // which for a reconnected session is exactly the defect this mode exists to detect.
+        return report.ord_status == pubsub_itc_fw_app::OrdStatus::Rejected ? 1 : 0;
+    }
+
     for (int order = 0; order < options.order_count; ++order) {
-        const std::string cl_ord_id = options.comp_id + "-" + std::to_string(now_nanoseconds()) + "-" + std::to_string(order);
+        const std::string cl_ord_id =
+            options.cl_ord_id.empty() ? options.comp_id + "-" + std::to_string(now_nanoseconds()) + "-" + std::to_string(order) : options.cl_ord_id;
 
         pubsub_itc_fw_app::NewOrderSingle order_message{};
         order_message.cl_ord_id = cl_ord_id;

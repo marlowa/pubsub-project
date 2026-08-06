@@ -199,6 +199,7 @@ void ArbiterThread::adopt_role(pubsub_itc_fw_app::Role new_role) {
     }
 
     const auto transition_level = (role_ == pubsub_itc_fw_app::Role::unknown) ? pubsub_itc_fw::FwLogLevel::Info : pubsub_itc_fw::FwLogLevel::Warning;
+    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(get_logger(), transition_level, "ArbiterThread: role transition {} -> {} (epoch={})", pubsub_itc_fw_app::to_string(role_),
                pubsub_itc_fw_app::to_string(new_role), epoch_);
 
@@ -581,6 +582,7 @@ void ArbiterThread::send_arbitration_decision(const pubsub_itc_fw::ConnectionID&
     decision.epoch = epoch;
     decision.group = group;
     send_pdu(conn_id, pubsub_itc_fw_app::ArbitrationDecision::message_pdu_id, 0, decision);
+    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "ArbiterThread: ArbitrationDecision sent to connection {} (group={} leader={} follower={} epoch={})", conn_id.get_value(),
                pubsub_itc_fw_app::to_string(group), leader_id, follower_id, epoch);
