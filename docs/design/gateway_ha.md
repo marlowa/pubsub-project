@@ -30,6 +30,104 @@ This document covers the order-entry gateways only. Sequencer and matching engin
 
 ---
 
+## What a member experiences when things fail
+
+*Written for a reader who does not know FIX. Everything below is behaviour this venue has
+been observed to produce, not intention. Most of it is pinned by a scenario in `ha_test.py`;
+where it is not, the table says so, because "we have seen it work" and "it cannot regress
+without someone noticing" are different claims.*
+
+### Two facts about FIX that govern everything else
+
+**1. Every message to a member is numbered, and the two directions are not symmetrical.**
+
+A FIX session numbers each message it sends: 1, 2, 3, and so on. The member tracks what it
+expects next. Two things can go wrong, and their consequences are wildly different:
+
+| | What the member does |
+|---|---|
+| The venue's number is **higher** than expected | Assumes it missed messages. Asks for them with a **ResendRequest**. Recoverable. |
+| The venue's number is **lower** than expected | Treats it as a broken session. **Disconnects.** Not recoverable. |
+
+This asymmetry is the single most important thing to know here. When the venue is unsure
+where a session had reached, it must guess **high**. Guessing high costs a round trip;
+guessing low kills the session. Much of the design below is that one sentence, applied.
+
+**2. FIX has no "disconnect" message.**
+
+The session-layer messages are Logon, Logout, Heartbeat, TestRequest, ResendRequest, Reject
+and SequenceReset — and that is all. A polite shutdown is a *Logout*; a process being killed
+is just a TCP connection closing, carrying nothing.
+
+So when a gateway is killed, **no message is produced and nothing appears in a message
+blotter**. That is not a fault: there is genuinely nothing to show. It is also why the venue
+cannot rely on a dying process to tell anyone anything — a rule that caught this project out
+once already, and is the reason gateways now report their state continuously rather than at
+shutdown.
+
+### What each failure looks like from the member's seat
+
+| What fails | What the member sees | What its orders do | Pinned by |
+|---|---|---|---|
+| **Its own connection drops**, gateway survives | Nothing until it reconnects | Held, not cancelled, for a grace period (default 30s, per-member configurable). Reconnect inside the window and **nothing is cancelled at all** | scenario 19 |
+| **The gateway process is killed** | Connection closes. No message — see fact 2 | **Stay live on the book.** The process that would have cancelled them is the one that died | scenario 23 |
+| It **reconnects to its backup instance** | A normal Logon, numbered where the session had reached — *not* restarted at 1 | Still live | scenario 23 |
+| It **cancels an order it left resting** | A cancel report, from the new connection | Retired | `binary_client` by hand; `OrderKeyTest` for the key |
+| It **asks for what it missed** | Its execution reports, resent with `PossDupFlag=Y`, and a gap-fill for the rest | Unchanged | **nothing — see below** |
+| It logs on to an instance it is **not provisioned for** | Refused, with text naming the instance it should use | Untouched | scenario 20 |
+| **The matching engine** fails over | Cancel reports for its resting orders | Cancelled by the promoted engine, and it is **told** | scenarios 16, 21 |
+
+The resend row is real and was demonstrated working, but has **no passing regression test**,
+and the reason is worth knowing. The venue numbers its Logon at the session's resumed
+position, which is correct — so for a member that has lost its own state, the gap it must
+recover from appears on the Logon itself. The harness client, `f8test`, terminates the
+session in that case instead of asking, which the standard says it should not. That is a
+limitation of the test client, not of the venue, and replacing it is deferred work.
+
+The third row is the one that took three steps of work. A member returning after its gateway
+died is the same member: its identity survives, so its orders are still its own, and the
+venue continues its numbering rather than greeting it as a stranger.
+
+### Orders that were in flight when the gateway died
+
+"In flight" is five different situations, and they do not share a fate:
+
+| Where the order was | What became of it |
+|---|---|
+| 1. Still in the member's socket, unread | **Gone.** Never reached the venue |
+| 2. Read by the gateway, not yet forwarded | **Gone.** Died with the process |
+| 3. Forwarded, in flight to the sequencer | Usually arrives and is sequenced |
+| 4. Sequenced, no report emitted yet | **A live order** |
+| 5. Report emitted, addressed at the dead gateway | **A live order**, and a report that could not be delivered |
+
+Cases 4 and 5 are the ones that matter: the order is real, resting on the book, and the
+member has not heard of it. Both are recoverable — the reports are in the sequencer's log and
+can be replayed to the member wherever it reconnects.
+
+**Cases 1 and 2 are not recoverable, and cannot be made so.** Nothing distinguishes an order
+that died in a socket from one that was never sent. This is not a gap in the implementation;
+it is what "in flight" means. The FIX answer is for the member to *ask* — an **Order Mass
+Status Request**, "tell me the state of every order I have" — which this venue does not yet
+implement. Until it does, a member cannot fully reconcile its book after a gateway death.
+
+### What this venue does not do
+
+Stated plainly, because each is a real limit rather than an oversight:
+
+- **No Order Mass Status Request.** As above: a member cannot ask what the venue thinks it
+  holds. The single biggest remaining gap in recovery.
+- **Replay is bounded by log retention.** Reports are replayed from the sequencer's
+  write-ahead log, which is truncated by snapshots. Older than that cannot be replayed. A
+  production venue would keep a separate store for the trading day.
+- **Only execution reports are replayable.** Administrative messages are gap-filled, which
+  FIX permits.
+- **The remembered sequence position does not survive a venue restart.** It lives in the
+  sequencer's memory.
+- **The binary gateway has no resend.** It has no session layer to hang one on, so "in-flight
+  reports survive" means something different there and needs its own mechanism.
+
+---
+
 ## Decisions
 
 Both taken on 2026-07-30. Both changed what was previously written down. Both are now in the
