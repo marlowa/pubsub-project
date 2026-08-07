@@ -338,13 +338,37 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
      * exactly that event to be of any use.
      */
     struct SessionSequenceState {
+        /// Highest position the gateway has reported. Never lowered.
         int32_t outbound_seq_num{1};
+
+        /// Execution reports forwarded to this session since that report arrived.
+        ///
+        /// Each one consumed an outbound sequence number at the gateway, so this is how much
+        /// the reported figure is known to be behind. Exact, because the sequencer resolves a
+        /// destination for every report it sends -- and reports are the bulk of what a member
+        /// is sent. What it cannot see is the admin traffic (heartbeats, rejects), which is
+        /// what the allowance below covers.
+        int32_t ers_since_report{0};
     };
+
+    /// Added when resuming a session whose gateway died without reporting.
+    ///
+    /// Covers the admin messages the sequencer never sees. Small, because a report is only
+    /// seconds old, and heartbeats are the main thing it misses. Erring high is deliberate:
+    /// resuming ABOVE the true position leaves a gap the member closes with a ResendRequest,
+    /// whereas resuming below sends it a sequence number lower than it expects, which FIX
+    /// requires it to treat as fatal. The two errors are not symmetrical.
+    static constexpr int32_t unclean_resume_admin_allowance = 64;
     std::unordered_map<fix_common::SessionIdentity, SessionSequenceState, fix_common::SessionIdentityHash> session_sequence_state_;
 
     void handle_session_bound(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     void handle_session_unbound(const pubsub_itc_fw::EventMessage& message);
     void handle_session_replay_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
+    void handle_session_sequence_update(const pubsub_itc_fw::EventMessage& message);
+
+    /// Records that one execution report was sent to this session, so a resume after an
+    /// unclean death can account for what the gateway sent since its last report.
+    void note_report_forwarded(const fix_common::SessionIdentity& identity);
 
     /// Records a single replay may return before it truncates, when the caller names no cap.
     static constexpr int32_t default_replay_max_records = 10000;

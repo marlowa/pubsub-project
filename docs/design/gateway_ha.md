@@ -696,13 +696,42 @@ Each step leaves the system working.
    split FIX actually prescribes.
 
    **Sequence continuity comes first, because without it the member never asks.** A session's
-   outbound number is reported to the sequencer at `SessionUnbound` and handed back at
-   `SessionBoundAck`, so a reconnect continues the member's numbering instead of restarting
-   at 1. The sequencer cannot count that number itself -- the FIX outbound number covers every
-   message sent to the member, including the heartbeats and rejects that never reach the
-   sequencer -- so it is reported rather than derived. That makes it only as current as the
-   last clean unbind: a killed gateway sends none, and the returning member finds the venue
-   behind it, which its own ResendRequest then resolves.
+   outbound number is reported to the sequencer and handed back at `SessionBoundAck`, so a
+   reconnect continues the member's numbering instead of restarting at 1. The sequencer cannot
+   count that number itself -- the FIX outbound number covers every message sent to the member,
+   including the heartbeats and rejects that never reach the sequencer -- so it is reported
+   rather than derived.
+
+   > **Correction.** This section originally claimed that a killed gateway leaves the venue
+   > *behind* the member, "which its own ResendRequest then resolves". **Both halves were
+   > wrong**, and scenario 23 found it by killing a gateway with orders in flight.
+   >
+   > A ResendRequest resolves the venue being **ahead** -- a gap. The venue being **behind**
+   > sends the member a sequence number lower than it expects, which FIX treats as a fatal
+   > condition, not a recoverable one. And in practice the venue was not even behind: reporting
+   > the number only at `SessionUnbound` meant a killed gateway reported nothing at all, so the
+   > sequencer said *"sequence state is new"* and started the returning member at 1. With a
+   > client whose own store had also restarted, both sides sat at 1, no gap was visible, and
+   > the member was silently resynchronised while **5,000 of its orders were live on the book**.
+   > It was told nothing.
+
+   **The number is therefore reported continuously and resumed deliberately high.** Three
+   things together, each covering another's blind spot:
+
+   - The gateway reports its outbound sequence **periodically**, not only at unbind, so an
+     abrupt death leaves a recent high-water mark rather than nothing. The sequencer keeps the
+     maximum and never lowers it.
+   - The sequencer **counts the execution reports it forwards** to each session since that
+     report. It resolves a destination per report already, so this is exact, and reports are
+     the overwhelming bulk of what a member is sent.
+   - On an **unclean** rebind -- detectable because the identity is still bound when the new
+     `SessionBound` arrives -- it resumes at high-water plus those reports plus a small
+     allowance for the admin messages it cannot see.
+
+   Every unknown is biased **upward on purpose**: over-stating leaves a gap the member closes
+   with a ResendRequest, and step 6's replay then hands back the real reports with a gap-fill
+   for the remainder. Under-stating kills the session. The two errors are not symmetrical, and
+   the design must not treat them as though they were.
 
    **`ResetSeqNumFlag=Y` is honoured, and had to be.** A member that asks to start again at 1
    is declining continuity, and by its own account has nothing missing. Ignoring that would

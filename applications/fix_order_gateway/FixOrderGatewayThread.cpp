@@ -120,6 +120,22 @@ constexpr int64_t order_progress_interval = 1000;
 constexpr int cancel_drain_batch_size = 500;
 constexpr auto cancel_drain_interval = std::chrono::milliseconds{1};
 
+// How often each session's outbound sequence number is reported to the sequencer.
+//
+// Short, because the report's whole value is being recent when this process dies without
+// warning: whatever it sent the member after the last report is drift the sequencer has to
+// cover by other means. Cheap enough to be short -- one small PDU per established session,
+// bounded by session count rather than by traffic.
+constexpr auto sequence_report_interval = std::chrono::seconds{2};
+
+// How long a logon waits for the venue to say where the session's numbering stands.
+//
+// A bound must be there: the sequencer may be mid-failover, or not connected at all, and a
+// member left hanging on a logon that will never complete is worse than one started at 1.
+// On expiry the session opens with whatever it has, which is the behaviour that existed
+// before the venue remembered anything.
+constexpr auto sequence_state_timeout = std::chrono::seconds{5};
+
 bool is_terminal_ord_status(pubsub_itc_fw_app::OrdStatus status) {
     switch (status) {
         case pubsub_itc_fw_app::OrdStatus::Filled:
@@ -186,6 +202,8 @@ void FixOrderGatewayThread::on_app_ready_event() {
     if (config_.ha_enabled) {
         connect_to_service("sequencer_secondary");
     }
+
+    sequence_report_timer_id_ = start_one_off_timer(sequence_report_interval);
 }
 
 void FixOrderGatewayThread::on_connection_established(pubsub_itc_fw::ConnectionID id) {
@@ -715,12 +733,28 @@ void FixOrderGatewayThread::on_timer_event(pubsub_itc_fw::TimerID timer_id) {
         return;
     }
 
+    if (timer_id == sequence_report_timer_id_) {
+        report_session_sequence_numbers();
+        sequence_report_timer_id_ = start_one_off_timer(sequence_report_interval);
+        return;
+    }
+
     for (auto& [id, session] : sessions_) {
         if (timer_id == session.logon_timeout_timer_id) {
             if (!session.session_established) {
                 PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "FixOrderGatewayThread: connection {} logon timeout -- disconnecting",
                            id.get_value());
                 disconnect_session(session, "logon timeout");
+            }
+            return;
+        }
+        if (timer_id == session.sequence_state_timeout_timer_id) {
+            if (session.awaiting_sequence_state) {
+                PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                           "FixOrderGatewayThread: connection {} comp_id='{}' the sequencer did not report this session's numbering within {}s -- "
+                           "opening the session at {} anyway; a member expecting a higher number will see a low sequence and disconnect",
+                           id.get_value(), session.client_comp_id, sequence_state_timeout.count(), session.outbound_seq_num);
+                complete_session_establishment(session);
             }
             return;
         }
@@ -919,13 +953,6 @@ void FixOrderGatewayThread::handle_authentication_result(const pubsub_itc_fw::Ev
                    config_.instance_id == primary_instance ? "primary" : "backup");
     }
 
-    // Authenticated and provisioned. Send the FIX Logon reply and open the session.
-    FixMessage reply;
-    reply.set(Tag::MsgType, MsgType::Logon);
-    reply.set(Tag::EncryptMethod, 0);
-    reply.set(Tag::HeartBtInt, session.heartbeat_interval);
-    reply.set(Tag::DefaultApplVerID, std::string("9"));
-    send_fix_to_session(session, reply);
     // Cancel-on-disconnect for this comp id, provisioned in the database and delivered with
     // the authentication result. Absent leaves the optionals empty, which means this member
     // expressed no preference and the gateway's configured defaults apply.
@@ -936,18 +963,18 @@ void FixOrderGatewayThread::handle_authentication_result(const pubsub_itc_fw::Ev
         session.cancel_on_disconnect_grace_period_seconds = view.cancel_on_disconnect_grace_period_seconds;
     }
 
-    session.session_established = true;
-
-    // TEST CONTRACT -- ha_test.py and perf_run.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "FixOrderGatewayThread: connection {} authentication succeeded -- FIX session established comp_id='{}'", session.conn_id.get_value(),
-               session.client_comp_id);
-
-    // Tell the sequencer where this session now lives, so reports for orders it placed
-    // reach it here -- including orders placed through a connection, or an instance, that
-    // no longer exists. Sent on every logon rather than only on a reconnect: the sequencer
-    // cannot tell the two apart, and a binding it never received is one it cannot use.
+    // Authenticated and provisioned. Bind the session BEFORE replying, and wait for the
+    // venue to say where its numbering stands.
+    //
+    // The Logon reply is itself a numbered message, so it cannot be sent until that is
+    // known. Replying first and adjusting afterwards was the original mistake and it
+    // defeated the whole mechanism: the member was sent a Logon at sequence 1 and everything
+    // after it at 3065, so the one message that establishes the session was the one message
+    // carrying a number the member could not accept.
     announce_session_bound(session);
+    session.awaiting_sequence_state = true;
+    session.sequence_state_timeout_timer_id = start_one_off_timer(sequence_state_timeout);
+
     if (session.cancel_on_disconnect_enabled.has_value() || session.cancel_on_disconnect_grace_period_seconds.has_value()) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "FixOrderGatewayThread: comp_id='{}' cancel-on-disconnect provisioned: enabled={} grace_period={}", session.client_comp_id,
@@ -966,6 +993,30 @@ void FixOrderGatewayThread::handle_authentication_result(const pubsub_itc_fw::Ev
                    "FixOrderGatewayThread: comp_id='{}' reconnected within the grace period -- {} order(s) left resting, none cancelled",
                    session.client_comp_id, reclaimed);
     }
+}
+
+void FixOrderGatewayThread::complete_session_establishment(FixSession& session) {
+    if (!session.awaiting_sequence_state) {
+        return;
+    }
+    session.awaiting_sequence_state = false;
+    cancel_timer(session.sequence_state_timeout_timer_id);
+
+    // Sent now that the session's numbering is settled, so this message and every one after
+    // it belong to the same sequence -- which is what lets the member spot a gap and ask.
+    FixMessage reply;
+    reply.set(Tag::MsgType, MsgType::Logon);
+    reply.set(Tag::EncryptMethod, 0);
+    reply.set(Tag::HeartBtInt, session.heartbeat_interval);
+    reply.set(Tag::DefaultApplVerID, std::string("9"));
+    send_fix_to_session(session, reply);
+
+    session.session_established = true;
+
+    // TEST CONTRACT -- ha_test.py and perf_run.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "FixOrderGatewayThread: connection {} authentication succeeded -- FIX session established comp_id='{}'", session.conn_id.get_value(),
+               session.client_comp_id);
 }
 
 // FIX session handlers
@@ -1151,15 +1202,26 @@ void FixOrderGatewayThread::handle_session_bound_ack(const pubsub_itc_fw::EventM
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "FixOrderGatewayThread: failed to decode SessionBoundAck -- dropping");
         return;
     }
-    if (!view.known) {
-        return; // first time the venue has seen this session; the defaults already apply
-    }
-
     FixSession* session = find_session_by_comp_id(view.comp_id);
     if (session == nullptr) {
         return; // the session went away between binding and the reply
     }
+    if (!view.known) {
+        // First time the venue has seen this session, so the defaults already apply -- but
+        // the reply is still owed, and the session is not open until it goes out.
+        complete_session_establishment(*session);
+        return;
+    }
     if (session->reset_seq_num_requested) {
+        // Asked to start again at 1, so there is nothing to restore -- but the session still
+        // has to be opened, and the reply still has to go out.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "FixOrderGatewayThread: comp_id='{}' asked for a sequence reset -- discarding the venue's remembered outbound={}", session->client_comp_id,
+                   view.outbound_seq_num);
+        complete_session_establishment(*session);
+        return;
+    }
+    if (false) {
         // The member asked to start again at 1, so the numbering the venue remembered is
         // not restored. Continuing it against the member's explicit wish would put the two
         // sides permanently at odds: the venue would send numbers the member rejects as
@@ -1176,6 +1238,7 @@ void FixOrderGatewayThread::handle_session_bound_ack(const pubsub_itc_fw::EventM
     session->outbound_seq_num = view.outbound_seq_num;
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: comp_id='{}' resuming the venue's sequence state -- outbound={} (was 1)",
                session->client_comp_id, view.outbound_seq_num);
+    complete_session_establishment(*session);
 }
 
 void FixOrderGatewayThread::handle_session_replay_record(const pubsub_itc_fw::EventMessage& message) {
@@ -1867,6 +1930,24 @@ void FixOrderGatewayThread::drain_pending_cancels() {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: cancel drain complete -- {} cancel(s) sent",
                    cancels_sent_this_drain_);
         cancels_sent_this_drain_ = 0;
+    }
+}
+
+void FixOrderGatewayThread::report_session_sequence_numbers() {
+    // One small PDU per established session per interval. Cheap, and bounded by the number of
+    // sessions rather than by traffic -- an idle session still advances its outbound number
+    // through heartbeats, which is precisely the drift the sequencer cannot see.
+    for (const auto& [conn_id, session] : sessions_) {
+        if (!session.session_established || session.client_comp_id.empty()) {
+            continue;
+        }
+        pubsub_itc_fw_app::SessionSequenceUpdate update{};
+        update.comp_id = session.client_comp_id;
+        update.gateway_protocol_id = gateway_ids::fix_order_gateway;
+        update.gateway_instance_id = config_.instance_id;
+        update.gateway_session_conn_id = session.conn_id.get_value();
+        update.outbound_seq_num = session.outbound_seq_num;
+        forward_pdu_to_sequencers(pubsub_itc_fw_app::SessionSequenceUpdate::message_pdu_id, update);
     }
 }
 

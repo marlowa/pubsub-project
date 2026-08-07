@@ -339,6 +339,9 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // so the member's numbering continues across a reconnect instead of restarting at 1.
     void handle_session_bound_ack(const pubsub_itc_fw::EventMessage& message);
 
+    /// Sends the FIX Logon reply and opens the session, once its numbering is settled.
+    void complete_session_establishment(FixSession& session);
+
     // A session's missed execution reports, replayed from the sequencer's WAL in answer to a
     // ResendRequest, and the completion that ends the replay. See handle_resend_request.
     void handle_session_replay_record(const pubsub_itc_fw::EventMessage& message);
@@ -417,6 +420,18 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // One-off timer set for grace_sessions_.front().cancel_due. Rearmed on each
     // expiry while entries remain.
     pubsub_itc_fw::TimerID grace_timer_id_{};
+
+    // Drives the periodic report of each session's outbound sequence number to the sequencer.
+    //
+    // Periodic rather than only-at-unbind because the value matters most exactly when it
+    // cannot be sent: a gateway killed outright reports nothing, and the sequencer then has
+    // no idea where the session had reached. It started the returning member at 1, which --
+    // with a client whose own store had restarted too -- looked like a clean new session
+    // while thousands of that member's orders were live on the book.
+    pubsub_itc_fw::TimerID sequence_report_timer_id_{};
+
+    /** @brief Tells the sequencer where each established session's numbering has reached. */
+    void report_session_sequence_numbers();
     bool grace_timer_active_{false};
 
     // Moves every grace_sessions_ entry whose deadline has passed into the cancel queue

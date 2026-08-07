@@ -314,6 +314,11 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         release_pdu_payload(message);
         return;
     }
+    if (message.pdu_id() == pubsub_itc_fw_app::SessionSequenceUpdate::message_pdu_id) {
+        handle_session_sequence_update(message);
+        release_pdu_payload(message);
+        return;
+    }
     if (message.pdu_id() == pubsub_itc_fw_app::SessionReplayRequest::message_pdu_id) {
         handle_session_replay_request(conn_id, message);
         release_pdu_payload(message);
@@ -636,6 +641,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
 
         if (!needs_wal_ack()) {
             send_er_to_origin_gateway(routing_gateway_id, routing_gateway_instance, er_seq_no, envelope);
+            note_report_forwarded(routing_identity);
             release_pdu_payload(message);
             if (erase_routing_entry) {
                 seq_no_to_session_.erase(er_seq_no);
@@ -646,6 +652,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
                 // Follower already acked this seq_no; forward immediately.
                 wal_acked_seq_nos_.erase(acked_it);
                 send_er_to_origin_gateway(routing_gateway_id, routing_gateway_instance, er_seq_no, envelope);
+                note_report_forwarded(routing_identity);
                 release_pdu_payload(message);
                 if (erase_routing_entry) {
                     seq_no_to_session_.erase(er_seq_no);
@@ -1327,6 +1334,12 @@ void SequencerThread::handle_session_bound(const pubsub_itc_fw::ConnectionID& co
     destination.instance = view.gateway_instance_id;
     destination.conn_id = view.gateway_session_conn_id;
 
+    // A binding still present means the previous session never unbound -- its gateway died
+    // without saying so. That is the only signal the sequencer gets that the position it
+    // remembers for this session is stale rather than exact, and it is what decides whether
+    // the resume figure below is used as-is or deliberately raised.
+    const bool previous_session_died = session_destinations_.count(identity) != 0;
+
     const auto existing = session_destinations_.find(identity);
     if (existing != session_destinations_.end()) {
         // The same identity was already bound somewhere. On a reconnect this is the
@@ -1362,15 +1375,47 @@ void SequencerThread::handle_session_bound(const pubsub_itc_fw::ConnectionID& co
         return;
     }
 
+    // Where to resume the member's numbering.
+    //
+    // After a clean unbind the reported figure is exact and is used as it stands. After an
+    // unclean death it is stale by whatever the gateway sent between its last report and its
+    // last breath, so the known part of that -- the reports this sequencer forwarded -- is
+    // added, plus an allowance for the admin traffic it cannot see.
+    //
+    // The result is deliberately too HIGH rather than risk being too low. Too high leaves a
+    // gap the member closes with a ResendRequest, which the replay then answers. Too low
+    // sends a sequence number below what the member expects, which FIX requires it to treat
+    // as fatal -- it drops the session, and no amount of replay can help.
+    int32_t resume_seq_num = state.outbound_seq_num;
+    if (known && previous_session_died) {
+        resume_seq_num += state.ers_since_report + unclean_resume_admin_allowance;
+    }
+
     pubsub_itc_fw_app::SessionBoundAck ack{};
     ack.comp_id = identity.comp_id_view();
     ack.gateway_protocol_id = identity.protocol;
     ack.known = known;
-    ack.outbound_seq_num = state.outbound_seq_num;
+    ack.outbound_seq_num = resume_seq_num;
     send_pdu(conn_id, pubsub_itc_fw_app::SessionBoundAck::message_pdu_id, 0, ack);
 
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: session comp_id='{}' protocol={} sequence state {} -- outbound={}",
-               identity.comp_id_view(), identity.protocol, known ? "restored" : "is new", state.outbound_seq_num);
+    // The resumed session starts from the figure just handed out, so the running count that
+    // fed into it has been spent.
+    if (known) {
+        SessionSequenceState& stored = session_sequence_state_[identity];
+        stored.outbound_seq_num = resume_seq_num;
+        stored.ers_since_report = 0;
+    }
+
+    if (known && previous_session_died) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "SequencerThread: session comp_id='{}' protocol={} previous gateway died without reporting -- "
+                   "resuming at outbound={} (reported {} + {} report(s) forwarded since + {} allowance), "
+                   "deliberately ahead so the member sees a gap rather than a fatal low sequence",
+                   identity.comp_id_view(), identity.protocol, resume_seq_num, state.outbound_seq_num, state.ers_since_report, unclean_resume_admin_allowance);
+    } else {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: session comp_id='{}' protocol={} sequence state {} -- outbound={}",
+                   identity.comp_id_view(), identity.protocol, known ? "restored" : "is new", resume_seq_num);
+    }
 }
 
 void SequencerThread::handle_session_unbound(const pubsub_itc_fw::EventMessage& message) {
@@ -1421,6 +1466,46 @@ void SequencerThread::handle_session_unbound(const pubsub_itc_fw::EventMessage& 
                "SequencerThread: session comp_id='{}' protocol={} unbound from instance={} connection={} -- "
                "remembered outbound={}; its reports have nowhere to go until it binds again",
                identity.comp_id_view(), identity.protocol, view.gateway_instance_id, view.gateway_session_conn_id, state.outbound_seq_num);
+}
+
+void SequencerThread::note_report_forwarded(const fix_common::SessionIdentity& identity) {
+    if (identity.empty()) {
+        return;
+    }
+    // Deliberately counts what was SENT, not what was acknowledged. A report handed to a
+    // gateway that then dies still consumed a sequence number there, and counting it makes
+    // the resume position too high rather than too low -- the safe direction.
+    ++session_sequence_state_[identity].ers_since_report;
+}
+
+void SequencerThread::handle_session_sequence_update(const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    arena.reset();
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw_app::SessionSequenceUpdateView view{};
+
+    if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode SessionSequenceUpdate -- dropping");
+        return;
+    }
+    if (view.comp_id.empty()) {
+        return;
+    }
+
+    const fix_common::SessionIdentity identity = fix_common::SessionIdentity::make(view.comp_id, view.gateway_protocol_id);
+    SessionSequenceState& state = session_sequence_state_[identity];
+
+    // Never lowered. Reports can arrive out of order across a reconnect -- a late one from the
+    // instance that has just lost the session would otherwise wind the position backwards, and
+    // backwards is the direction that kills the member's session.
+    if (view.outbound_seq_num > state.outbound_seq_num) {
+        state.outbound_seq_num = view.outbound_seq_num;
+        // The reported figure now accounts for everything sent so far, so the running count of
+        // reports forwarded since the last one starts again.
+        state.ers_since_report = 0;
+    }
 }
 
 void SequencerThread::handle_session_replay_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
@@ -1585,6 +1670,7 @@ void SequencerThread::forward_pending_er(const PendingEr& pending) {
 
     if (destination != nullptr) {
         send_er_to_origin_gateway(pending.identity.protocol, destination->instance, pending.seq_no, envelope);
+        note_report_forwarded(pending.identity);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: buffered ER seq={} forwarded to protocol={} instance={}", pending.seq_no,
                    pending.identity.protocol, destination->instance);
     }

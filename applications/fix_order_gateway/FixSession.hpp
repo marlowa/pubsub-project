@@ -178,6 +178,16 @@ struct FixSession {
     bool reset_seq_num_requested{false};
 
     /**
+     * @brief True between binding the session and hearing where its numbering stands.
+     *
+     * The Logon reply is a numbered message, so it cannot be sent until the venue has said
+     * what number it should carry. Between those two points the session is authenticated but
+     * not yet established, and nothing may be sent to the member.
+     */
+    bool awaiting_sequence_state{false};
+    pubsub_itc_fw::TimerID sequence_state_timeout_timer_id{};
+
+    /**
      * @brief State of a resend in progress for this session, if any.
      *
      * A member that has missed reports asks for them with a ResendRequest, and the reports

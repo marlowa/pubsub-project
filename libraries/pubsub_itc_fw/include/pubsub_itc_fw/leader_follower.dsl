@@ -465,6 +465,35 @@ message SessionReplayComplete (id=125, version=1)
 end
 
 # ------------------------------------------------------------
+#  126 -- SessionSequenceUpdate
+#  Sent by a gateway on a timer, for each session it holds, to
+#  keep the sequencer's record of where that session's numbering
+#  has reached.
+#
+#  Reporting only at SessionUnbound was not enough, and the way
+#  it failed is worth stating: a gateway that is KILLED reports
+#  nothing, so the sequencer had no record at all and started the
+#  returning member at 1. With a client whose own store had also
+#  restarted, both sides sat at 1, no gap was visible, and the
+#  member was silently resynchronised while thousands of its
+#  orders were live on the book.
+#
+#  The sequencer cannot derive this number: it counts every
+#  message the gateway sends the member, including the heartbeats
+#  and session-level rejects that never reach the sequencer. So it
+#  is reported, and reported often, because the value is only ever
+#  useful when the process holding it has died without warning.
+# ------------------------------------------------------------
+
+message SessionSequenceUpdate (id=126, version=1)
+    string comp_id
+    i16    gateway_protocol_id
+    i16    gateway_instance_id
+    i32    gateway_session_conn_id
+    i32    outbound_seq_num        # next number this gateway would send to the member
+end
+
+# ------------------------------------------------------------
 #  200 — ArbitrationReport
 #  Sent by a component (sequencer or ME) to the active arbiter
 #  when arbitration is required (startup or after peer heartbeat
