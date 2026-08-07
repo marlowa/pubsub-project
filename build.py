@@ -181,6 +181,46 @@ def rewrite_tracefile_for_genhtml(raw_info, clean_info):
     return lines_found, lines_hit, functions_found, functions_hit
 
 
+def remove_orphaned_target_directories(build_dir, source_dir):
+    """Delete build-tree directories whose source directory no longer exists.
+
+    CMake mirrors the source layout into the build tree, but never tidies up after a
+    source directory is renamed or removed: the old target directory, its CMakeFiles/ and
+    every .gcno inside it stay behind indefinitely. applications/binary_gateway/ was
+    renamed to applications/binary_order_gateway/ and its build tree sat there afterwards.
+
+    That is fatal to coverage specifically. gcovr searches the whole build tree for
+    coverage data before the report-level --exclude filters are applied, so it finds the
+    orphan's .gcno, finds no .gcda beside it, cannot resolve the compilation directory the
+    notes record, and searches upward -- ending at / , where it cannot write .gcov files
+    and aborts the entire run. The visible symptom is hundreds of "Could not open output
+    file" lines naming standard library headers, which says nothing whatever about the
+    cause.
+
+    Deleting them is safe: with no source directory there is no target, so nothing in the
+    current build can refer to these files. They are not rebuilt, only left behind.
+
+    @param[in] build_dir  Build tree to tidy.
+    @param[in] source_dir Source tree it mirrors.
+    @return Number of directories removed.
+    """
+    removed = 0
+    for cmake_files in sorted(build_dir.rglob("CMakeFiles")):
+        if not cmake_files.is_dir():
+            continue
+        mirrored = cmake_files.parent
+        if mirrored == build_dir:
+            continue  # the build root mirrors the source root, which always exists
+        relative = mirrored.relative_to(build_dir)
+        if (source_dir / relative).is_dir():
+            continue
+        print(f"  removing orphaned build directory {relative} "
+              f"(no {relative} in the source tree -- renamed or deleted)")
+        shutil.rmtree(mirrored, ignore_errors=True)
+        removed += 1
+    return removed
+
+
 def generate_coverage_report(build_dir, source_dir):
     """Generate an HTML coverage report: gcovr captures, genhtml renders.
 
@@ -198,6 +238,11 @@ def generate_coverage_report(build_dir, source_dir):
     """
     print("\n============================================================")
     print("Generating code coverage report (gcovr capture + genhtml)")
+
+    # Before gcovr searches the tree, not after: an orphan left by a renamed source
+    # directory aborts the whole capture, and the report-level excludes come too late to
+    # prevent it. See remove_orphaned_target_directories.
+    remove_orphaned_target_directories(build_dir, source_dir)
     print("============================================================")
 
     raw_info = build_dir / "coverage.raw.info"
@@ -472,17 +517,18 @@ def test_environment(build_dir):
     return env
 
 
-def install_directory_name(args):
+def flavour_suffix(args):
     """
-    Name of the staging directory for this build's instrumentation flavour.
+    Directory suffix naming this build's instrumentation flavour, or "" for a plain build.
 
-    The plain build stages into "installed"; anything instrumented stages into
-    "installed-<flavour>". A coverage or sanitizer library is a different artefact
-    -- built at -O0, inlining disabled, gcov counters or a sanitizer runtime linked
-    in -- and it must not overwrite the plain one.
+    The single place the flavour is decided, because the build directory and the staging
+    directory must agree about it. They were derived separately once, and only the staging
+    one was automatic: a coverage build whose caller forgot --build-dir put -O0 --coverage
+    -fno-inline objects straight into build/, on top of the plain build's, while dutifully
+    staging them to installed-coverage/.
 
     @param[in] args Parsed command-line arguments.
-    @return Directory name, relative to the project root.
+    @return Suffix beginning with "-", or an empty string.
     """
     flavours = []
     if args.coverage:
@@ -496,9 +542,50 @@ def install_directory_name(args):
     tag = platform_tag()
     if tag:
         flavours.append(tag)
-    if not flavours:
-        return "installed"
-    return "installed-" + "-".join(flavours)
+    return "-" + "-".join(flavours) if flavours else ""
+
+
+def install_directory_name(args):
+    """
+    Name of the staging directory for this build's instrumentation flavour.
+
+    The plain build stages into "installed"; anything instrumented stages into
+    "installed-<flavour>". A coverage or sanitizer library is a different artefact
+    -- built at -O0, inlining disabled, gcov counters or a sanitizer runtime linked
+    in -- and it must not overwrite the plain one.
+
+    @param[in] args Parsed command-line arguments.
+    @return Directory name, relative to the project root.
+    """
+    return "installed" + flavour_suffix(args)
+
+
+def build_directory_name(args):
+    """
+    Name of the build directory for this build's instrumentation flavour.
+
+    This is about time and hygiene, NOT correctness. Sharing one directory between
+    flavours is already known to be correct here: every object rule carries flags.make as
+    a prerequisite, so changing flavour changes that file and every object is rebuilt.
+    That was measured on 2026-07-26 and is written up in docs/building.md -- do not
+    justify this function by claiming a mixture of instrumented and plain objects, which
+    is the plausible-sounding thing that does not actually happen.
+
+    What it buys is that forgetting the flag no longer costs anything. Before, a coverage
+    build without --build-dir correctly rebuilt every object in build/ as instrumented,
+    and the next plain build correctly rebuilt them all back -- two full rebuilds, for a
+    mistake with no visible symptom. Per-flavour directories keep each flavour's objects
+    warm, which is exactly the use docs/building.md already recommends --build-dir for;
+    this only makes it the default rather than something to remember.
+
+    Only used when the caller did not name a directory. An explicit --build-dir is obeyed
+    verbatim, because callers that pass one are separating builds on an axis this function
+    knows nothing about -- release_check.py uses build-rocky for its container run.
+
+    @param[in] args Parsed command-line arguments.
+    @return Directory name, relative to the project root.
+    """
+    return "build" + flavour_suffix(args)
 
 
 def install_directory_notice(staging_dir):
@@ -825,8 +912,12 @@ Examples:
         help='Show compiler and linker command lines during build'
     )
 
-    parser.add_argument('--build-dir', type=Path, default=Path('build'),
-        help='Build directory path (default: ./build)'
+    parser.add_argument('--build-dir', type=Path, default=None,
+        help='Build directory path. Defaults to ./build for a plain build and to '
+             './build-<flavour> for an instrumented one (build-coverage, build-asan, '
+             'build-tsan, build-valgrind, plus a platform tag off the ordinary dev host) '
+             'because those objects cannot share a directory with the plain ones. '
+             'An explicit value is used verbatim'
     )
 
     parser.add_argument('--coverage', action='store_true',
@@ -876,7 +967,16 @@ Examples:
 
     # Get source directory (parent of this script)
     source_dir = Path(__file__).parent.resolve()
-    build_dir = source_dir / args.build_dir
+    # An explicit --build-dir wins; otherwise the flavour names it, so that forgetting the
+    # flag cannot drop instrumented objects into the plain build's directory.
+    build_dir = source_dir / (args.build_dir if args.build_dir is not None
+                              else build_directory_name(args))
+    if args.build_dir is None and build_dir.name != "build":
+        print(f"NOTE: instrumented build -- building in {build_dir.name}/ instead of build/")
+        print("  Sharing build/ would still be CORRECT (CMake rebuilds every object when the")
+        print("  flavour changes -- see docs/building.md), but it costs a full rebuild in each")
+        print("  direction every time you switch. Each flavour now keeps its own objects warm.")
+        print("  Pass --build-dir explicitly to override this.")
 
     # Staging dir: CMake installs here after the build; release.py reads from here.
     # Fixed relative to the project root, not the build directory, so that all

@@ -59,12 +59,29 @@ Measured 2026-07-26, one build directory, reconfigured in place and rebuilt with
 | gcov symbols in the object | 0 | **903** |
 | md5 | `42b23a1b3e06` | `05a60649261a` |
 
-Same path, new content. The artefact locations do not vary by flavour; the object is rebuilt where
-it already was.
+Same path, new content. The object is rebuilt where it already was.
 
-Separate build directories per flavour are still worth using if you switch back and forth often --
-`--build-dir` exists for that -- but as a way to keep each flavour's objects warm and avoid a full
-rebuild, not because correctness requires it.
+**This remains true, and it is the reason the per-flavour build directory below is a convenience
+rather than a correctness measure.** If you point two flavours at one directory -- by passing
+`--build-dir` explicitly -- what you get back is correct. It simply costs a full rebuild each way.
+
+---
+
+## Each flavour builds in its own directory
+
+A plain build uses `build/`. An instrumented one uses `build-coverage/`, `build-asan/`,
+`build-tsan/` or `build-valgrind/`, combined flavours concatenating, plus a platform tag off the
+ordinary dev host. This is derived from the flags, so there is nothing to remember; `build-*/` is
+gitignored. An explicit `--build-dir` is obeyed verbatim and overrides all of it, which is how
+`release_check.py` keeps its container build in `build-rocky/`.
+
+The build directory and the staging directory are named from **one** shared `flavour_suffix()`, so
+`build-coverage/` and `installed-coverage/` cannot drift apart. They were derived separately once,
+and only the staging one was automatic -- so a coverage build whose caller forgot `--build-dir` put
+instrumented objects into `build/` while dutifully staging them to `installed-coverage/`.
+
+Given the section above, the cost of that mistake was never a wrong build; it was two full
+rebuilds, for a mistake with no visible symptom until you noticed the clock.
 
 ---
 
@@ -200,6 +217,24 @@ does not exist in 1.8.14.
 Output lands in `<build-dir>/coverage_html/index.html`. `gcovr` captures, the tracefile is
 rewritten, and `genhtml` renders. Application code, tests, third-party code and benchmark
 `performance/` mains are excluded; the report covers the framework libraries.
+
+### Orphaned build directories are removed first
+
+`remove_orphaned_target_directories()` runs before the capture, deleting any build-tree directory
+whose source directory no longer exists. CMake mirrors the source layout into the build tree but
+never tidies up after a rename, so `applications/binary_gateway/` left its target tree, its
+`CMakeFiles/` and its `.gcno` files behind when it became `applications/binary_order_gateway/`.
+
+That is harmless to an ordinary build and fatal to coverage, because **gcovr searches the whole
+build tree before the report-level `--exclude` filters apply**. It finds the orphan's `.gcno`, no
+`.gcda` beside it, cannot resolve the compilation directory the notes record, searches upward, and
+aborts at `/` where it cannot write `.gcov` files. The symptom is hundreds of `Could not open
+output file` lines naming standard-library headers, which point nowhere near the cause.
+
+Note the asymmetry that makes the obvious alternative wrong: excluding `applications/` from the
+*search* to match the report's excludes would discard real data, because the integration tests
+execute the applications, so those objects carry genuine coverage of the library headers compiled
+into them.
 
 ### What the rewrite corrects, and why
 
