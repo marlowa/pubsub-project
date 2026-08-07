@@ -18,6 +18,18 @@ box running the venue, render wherever there is a display.
          python3 pubsub_metrics.py --component gateways --output gateways.dash
          python3 pubsub_metrics.py --input gateways.dash --graphic
 
+  4. Track the round trip through the session against a ceiling it must not exceed,
+     with the orders that did exceed it counted underneath:
+
+         python3 pubsub_metrics.py --component fix_order_gateway_a \
+                 --metrics bands --ceiling 2.5ms --since 480 --graphic
+
+     The band chart needs no new instrumentation -- it is the existing histogram read
+     back with a RANGE query instead of an instant one, so Prometheus has been storing
+     it all along. Two things it cannot give you, whatever the resolution: a true
+     minimum or maximum (the outer buckets are unbounded), and individual outliers as
+     points (a histogram keeps counts, not observations).
+
 Three data sources, resolved by the CLI:
 
   * live Prometheus fetch   (default; needs --component)
@@ -65,11 +77,13 @@ TABLE_LINE_HEIGHT_INCHES = 0.20
 # (float or int); real Prometheus values are floats.
 
 class DashboardData:
-    """Container for the three kinds of series shown on the dashboard."""
+    """Container for the four kinds of series shown on the dashboard."""
 
     def __init__(self):
         self.component = "sample"  # label shown in the figure title
         self.histograms = []       # list of {"name", "bounds", "counts"}
+        self.bands = []            # list of {"name", "times", "tracks", "ceiling_ns",
+                               #          "breaches", "observations"}
         self.counters = []         # list of (name, total, rate)
         self.gauges = []           # list of (name, value)
 
@@ -92,6 +106,39 @@ def add_histogram(data, name, bounds, counts):
             "name": name,
             "bounds": [bound for bound, _ in ordered],
             "counts": [count for _, count in ordered],
+        }
+    )
+
+
+def add_latency_bands(data, name, times, tracks, ceiling_ns=None, breaches=None,
+                      observations=None):
+    """Append one percentile-over-time chart: how the distribution moved during the window.
+
+    ``times`` are the epoch second each interval begins at, and ``tracks`` is an ordered
+    [(label, [value per time])] list running from the lowest percentile to the highest, so
+    the renderer can shade between the outermost two without being told which they are.
+    A value may be None where the interval had no traffic to take a percentile of.
+
+    ``ceiling_ns`` is the latency a round trip is not supposed to exceed, and ``breaches``
+    the count of orders that exceeded it in each interval. The two are separate on purpose:
+    a percentile line sitting under the ceiling does NOT mean nothing breached it -- p99
+    under the ceiling still permits one order in a hundred above it, which for a day's
+    order flow is a large number. The line answers "how is the venue behaving", the count
+    answers "how many orders were late", and only the second is the compliance question.
+
+    ``observations`` is how many orders were measured in each interval, and it is here
+    because a fall in it can raise an averaged alarm all by itself, with no latency change
+    whatever. Without it a reader seeing steady percentiles and a firing alarm has no way
+    to reach the explanation, and will go looking for a slowdown that never happened.
+    """
+    data.bands.append(
+        {
+            "name": name,
+            "times": list(times),
+            "tracks": [(label, list(values)) for label, values in tracks],
+            "ceiling_ns": ceiling_ns,
+            "breaches": list(breaches) if breaches is not None else None,
+            "observations": list(observations) if observations is not None else None,
         }
     )
 
@@ -423,6 +470,145 @@ def query_with_stale_fallback(instant_selector, stale_selector, prom_url):
     return query_prometheus(stale_selector, prom_url)
 
 
+def query_prometheus_range(query, start_epoch_seconds, end_epoch_seconds, step_seconds, prom_url):
+    """Execute a Prometheus RANGE query, returning one value per step rather than one value.
+
+    This is the whole difference between the histogram view and the band view. A histogram
+    is an instant query: one distribution, however long it took to accumulate. A band chart
+    needs the same expression evaluated repeatedly across the window, which is what
+    /api/v1/query_range does -- and it is why no new instrumentation is required to draw
+    one. Prometheus has been storing this all along.
+    """
+    import requests  # lazy: only the fetch path needs it
+
+    url = f"{prom_url}/api/v1/query_range"
+    parameters = {
+        "query": query,
+        "start": start_epoch_seconds,
+        "end": end_epoch_seconds,
+        "step": step_seconds,
+    }
+    # Longer than the instant-query timeout: a range query is many evaluations, and a
+    # day-long window at a fine step is a lot of them.
+    response = requests.get(url, params=parameters, timeout=30.0)
+    response.raise_for_status()
+    return response.json()["data"]["result"]
+
+
+def parse_range_values(results):
+    """Turn a single-series range-query result into [(epoch_second, value)].
+
+    NaN is mapped to None. Prometheus returns it for an interval in which nothing was
+    observed -- histogram_quantile of an empty distribution is undefined, not zero -- and
+    plotting it as zero would draw a latency cliff to the floor where there was simply no
+    traffic. The two are opposite findings and must not render alike.
+    """
+    import math
+
+    if not results:
+        return []
+    pairs = []
+    for timestamp, text in results[0]["values"]:
+        value = float(text)
+        pairs.append((float(timestamp), None if math.isnan(value) else value))
+    return pairs
+
+
+def get_percentile_range(metric, scope, labels, quantile, start_epoch_seconds,
+                         end_epoch_seconds, step_seconds, prom_url):
+    """Fetch one percentile of a histogram, evaluated at every step across the window.
+
+    histogram_quantile does the work server-side, and the rate() inside it is what makes
+    each point describe only its own interval rather than the venue's whole lifetime.
+
+    The lookback given to rate() is twice the step, not the step itself. rate() needs at
+    least two samples in its window to return anything, so at a step equal to the scrape
+    interval a one-step lookback silently yields gaps; doubling it guarantees overlap at
+    the cost of neighbouring points sharing a little data.
+
+    A caveat worth knowing when reading the result: histogram_quantile INTERPOLATES within
+    the bucket the percentile falls in. It reports a value the venue may never have
+    produced, and its accuracy is entirely a property of how well the bucket bounds suit
+    the traffic -- which is why the bounds matter more than the query does.
+    """
+    selector = f'{metric}{{{labels}, scope="{scope}"}}'
+    query = (f'histogram_quantile({quantile}, '
+             f'sum by (le) (rate({selector}[{step_seconds * 2}s])))')
+    return parse_range_values(
+        query_prometheus_range(query, start_epoch_seconds, end_epoch_seconds,
+                               step_seconds, prom_url))
+
+
+def find_bucket_bound_label(metric, scope, labels, ceiling_ns, prom_url):
+    """Return the exact `le` label string naming ``ceiling_ns``, or None if none does.
+
+    The label is DISCOVERED rather than formatted from the number, because `le` is a
+    string and the match is exact: le="100000" and le="100000.0" name the same latency and
+    are different labels. Which of them the exporter writes is a property of the exporter's
+    serialiser, not of the value, and getting it wrong returns an empty result that looks
+    exactly like a venue with no late orders. Asking Prometheus what labels it actually
+    holds cannot be wrong in that way.
+    """
+    series = query_series(f'{metric}{{{labels}, scope="{scope}"}}', prom_url)
+    bounds = {entry["le"] for entry in series if "le" in entry}
+    for bound in bounds:
+        if bound != "+Inf" and float(bound) == float(ceiling_ns):
+            return bound
+    return None
+
+
+def describe_nearest_bounds(metric, scope, labels, ceiling_ns, prom_url):
+    """Return the two configured bucket bounds either side of ``ceiling_ns``, as text.
+
+    Used only to explain a ceiling that no bucket bound sits on. Naming the neighbours
+    turns "cannot count breaches" into "move the ceiling here, or add a bound there".
+    """
+    series = query_series(f'{metric}{{{labels}, scope="{scope}"}}', prom_url)
+    bounds = sorted(float(entry["le"]) for entry in series
+                    if entry.get("le") not in (None, "+Inf"))
+    below = [bound for bound in bounds if bound < float(ceiling_ns)]
+    above = [bound for bound in bounds if bound > float(ceiling_ns)]
+    parts = []
+    if below:
+        parts.append(f"nearest below {format_latency_ns(below[-1])}")
+    if above:
+        parts.append(f"nearest above {format_latency_ns(above[0])}")
+    return ", ".join(parts) if parts else "no finite bucket bounds configured"
+
+
+def get_observation_range(metric, scope, labels, start_epoch_seconds,
+                          end_epoch_seconds, step_seconds, prom_url):
+    """Fetch how many observations the histogram recorded in each interval.
+
+    Read from the _count series, which is the same population the percentiles are taken
+    from -- so a fall here explains a percentile that went quiet, and rules in or out the
+    one cause of an averaged alarm that involves no latency change at all.
+    """
+    total = f'{metric.replace("_bucket", "_count")}{{{labels}, scope="{scope}"}}'
+    query = f'sum(increase({total}[{step_seconds * 2}s]))'
+    return parse_range_values(
+        query_prometheus_range(query, start_epoch_seconds, end_epoch_seconds,
+                               step_seconds, prom_url))
+
+
+def get_breach_range(metric, scope, labels, bound_label, start_epoch_seconds,
+                     end_epoch_seconds, step_seconds, prom_url):
+    """Fetch how many observations exceeded the ceiling in each interval.
+
+    This is a subtraction of two cumulative bucket counters, not an estimate: everything
+    observed, minus everything at or below the ceiling. No interpolation and no percentile
+    is involved, so unlike the percentile tracks the answer is EXACT -- which is what makes
+    it the right instrument for a question about how many orders were late.
+    """
+    total = f'{metric.replace("_bucket", "_count")}{{{labels}, scope="{scope}"}}'
+    under = f'{metric}{{{labels}, scope="{scope}", le="{bound_label}"}}'
+    query = (f'sum(increase({total}[{step_seconds * 2}s])) - '
+             f'sum(increase({under}[{step_seconds * 2}s]))')
+    return parse_range_values(
+        query_prometheus_range(query, start_epoch_seconds, end_epoch_seconds,
+                               step_seconds, prom_url))
+
+
 def get_histogram_counts(metric, scope, sample, labels, prom_url, window):
     """Fetch cumulative bucket counts (grouped by 'le') for one histogram series.
 
@@ -515,8 +701,71 @@ def buckets_to_bounds_counts(per_bucket):
     return bounds, counts
 
 
+# The percentiles the band chart tracks, lowest first so the renderer can shade between
+# the outermost two without being told which they are.
+#
+# There is no min and no max. A Prometheus histogram cannot supply either: its top bucket
+# is unbounded, so the largest thing it can ever say is "something exceeded the last
+# bound", never by how much, and the bottom bucket is the same in reverse. A "max" line
+# drawn from bucket data would be the last bound -- a number that says more about the
+# configuration than about the traffic. Orders above the ceiling are counted exactly
+# instead, which is the question a max was being asked to answer.
+BAND_QUANTILES = [(0.50, "p50"), (0.90, "p90"), (0.99, "p99")]
+
+
+def fetch_band_series(spec, labels, prom_url, band_options, hist_filter, data):
+    """Fetch the percentile-over-time tracks for every histogram a component exposes."""
+    import time  # lazy: only the fetch path needs it
+
+    step_seconds = band_options["step_seconds"]
+    end_epoch_seconds = int(time.time())
+    start_epoch_seconds = end_epoch_seconds - band_options["since_minutes"] * 60
+    ceiling_ns = band_options["ceiling_ns"]
+
+    for histogram in spec["histograms"]:
+        name = histogram["name"]
+        if hist_filter and name not in hist_filter:
+            continue
+        series_labels = histogram.get("labels", labels)
+        metric, scope = histogram["metric"], histogram["scope"]
+
+        tracks, times = [], []
+        for quantile, label in BAND_QUANTILES:
+            pairs = get_percentile_range(metric, scope, series_labels, quantile,
+                                         start_epoch_seconds, end_epoch_seconds,
+                                         step_seconds, prom_url)
+            if not times:
+                times = [timestamp for timestamp, _ in pairs]
+            tracks.append((label, [value for _, value in pairs]))
+
+        observations = [value for _, value in
+                        get_observation_range(metric, scope, series_labels,
+                                              start_epoch_seconds, end_epoch_seconds,
+                                              step_seconds, prom_url)]
+
+        breaches = None
+        if ceiling_ns is not None and times:
+            bound_label = find_bucket_bound_label(metric, scope, series_labels,
+                                                  ceiling_ns, prom_url)
+            if bound_label is None:
+                # Refused rather than approximated. The breach count is worth having only
+                # because it is exact, and an interpolated one would be a percentile
+                # wearing a counter's name.
+                print(f"warning: no bucket bound at {format_latency_ns(ceiling_ns)} for "
+                      f"'{name}', so orders over the ceiling cannot be counted "
+                      f"({describe_nearest_bounds(metric, scope, series_labels, ceiling_ns, prom_url)}). "
+                      f"The ceiling line is still drawn.", file=sys.stderr)
+            else:
+                breaches = [value for _, value in
+                            get_breach_range(metric, scope, series_labels, bound_label,
+                                             start_epoch_seconds, end_epoch_seconds,
+                                             step_seconds, prom_url)]
+
+        add_latency_bands(data, name, times, tracks, ceiling_ns, breaches, observations)
+
+
 def fetch_from_prometheus(component, sample, prom_url, metrics_requested, hist_filter, window,
-                          config=None):
+                          config=None, band_options=None):
     """Query Prometheus for one component and return a populated DashboardData."""
     spec = (config or COMPONENT_CONFIG)[component]
     labels = spec["labels"]
@@ -538,6 +787,9 @@ def fetch_from_prometheus(component, sample, prom_url, metrics_requested, hist_f
             )
             bounds, counts = buckets_to_bounds_counts(per_bucket)
             add_histogram(data, name, bounds, counts)
+
+    if "bands" in metrics_requested and band_options is not None:
+        fetch_band_series(spec, labels, prom_url, band_options, hist_filter, data)
 
     if "counter" in metrics_requested:
         for metric in spec["counters"]:
@@ -567,17 +819,155 @@ DEMO_BUCKET_BOUNDS_NS = [
 ]
 
 
-def _demo_histogram(random_module, name, centre_ns, spread, total):
-    counts = [0] * len(DEMO_BUCKET_BOUNDS_NS)
+def _demo_bucket_counts(random_module, bounds, centre_ns, spread, total, counts=None):
+    """Draw ``total`` lognormal latencies and bin them into ``bounds``.
+
+    Observations above the last bound land in the last band, matching the histogram
+    demo's long-standing behaviour. ``counts`` accumulates into an existing list, which
+    is how one interval can be built from two populations -- a normal one, and a few
+    deliberately late orders.
+    """
+    if counts is None:
+        counts = [0] * len(bounds)
     for _ in range(total):
         latency = random_module.lognormvariate(0.0, spread) * centre_ns
-        for index, bound in enumerate(DEMO_BUCKET_BOUNDS_NS):
+        for index, bound in enumerate(bounds):
             if latency <= bound:
                 counts[index] += 1
                 break
         else:
             counts[-1] += 1
+    return counts
+
+
+def _demo_histogram(random_module, name, centre_ns, spread, total):
+    counts = _demo_bucket_counts(random_module, DEMO_BUCKET_BOUNDS_NS, centre_ns, spread, total)
     return name, list(DEMO_BUCKET_BOUNDS_NS), counts
+
+
+# --- The demo band chart's trading day -------------------------------------- #
+#
+# A session carrying the patterns a percentile chart exists to tell apart, all of which
+# raise a short-window arithmetic mean by a similar amount:
+#
+#   open volatility   every track lifts together        -- the venue really is slower
+#   tail excursion    p50 and p90 flat, p99 climbs      -- a few orders are late
+#   volume collapse   nothing moves at all              -- an averaged alarm is lying
+#
+# The ceiling is placed ON a configured bucket bound, because that is the only way the
+# breach count underneath can be exact rather than interpolated.
+
+DEMO_BAND_STEP_SECONDS = 30
+DEMO_BAND_SESSION_MINUTES = 480       # 08:00 to 16:00
+DEMO_BAND_OPEN_HOUR = 8
+DEMO_BAND_CEILING_NS = 2_500_000      # 2.5ms -- a bound present in DEMO_BUCKET_BOUNDS_NS
+DEMO_BAND_BASELINE_CENTRE_NS = 300_000
+DEMO_BAND_BASELINE_SPREAD = 0.55
+DEMO_BAND_BASELINE_VOLUME = 900
+
+# (first minute, last minute, centre_ns, spread, volume, late orders per interval)
+DEMO_BAND_PHASES = [
+    (0, 22, 900_000, 0.75, 2600, 0),          # the open: heavier flow, genuinely slower
+    (168, 180, DEMO_BAND_BASELINE_CENTRE_NS, DEMO_BAND_BASELINE_SPREAD,
+     DEMO_BAND_BASELINE_VOLUME, 30),          # tail excursion, mass unmoved
+    (300, 330, DEMO_BAND_BASELINE_CENTRE_NS, DEMO_BAND_BASELINE_SPREAD, 90, 0),
+    (462, 480, 700_000, 0.7, 2100, 8),        # the close
+]
+
+
+def _interpolated_percentile(bounds, counts, fraction):
+    """Estimate a percentile the way Prometheus's histogram_quantile does.
+
+    Linear interpolation WITHIN the bucket the rank falls in, rather than snapping to that
+    bucket's upper bound. This exists so the demo behaves like the live path: snapping
+    makes a percentile sitting near a bound flick between it and its neighbour from one
+    interval to the next -- across a 1ms/2.5ms bucket step, a 2.5x sawtooth that is purely
+    an artefact of the bounds and reads as violent instability the venue never had.
+
+    The interpolation assumes observations are spread evenly across the bucket, which they
+    are not. It is an estimate, and its quality is a property of how well the bucket bounds
+    suit the traffic.
+    """
+    total = sum(counts)
+    if total == 0:
+        return None
+    target = total * fraction
+    running = 0.0
+    lower = 0.0
+    for bound, count in zip(bounds, counts):
+        if running + count >= target and count > 0:
+            return lower + (bound - lower) * (target - running) / count
+        running += count
+        lower = bound
+    return bounds[-1] if bounds else None
+
+
+def _demo_band_phase(elapsed_minutes):
+    """Return the (centre_ns, spread, volume, late) in force ``elapsed_minutes`` in."""
+    for first, last, centre_ns, spread, volume, late in DEMO_BAND_PHASES:
+        if first <= elapsed_minutes <= last:
+            return centre_ns, spread, volume, late
+    return (DEMO_BAND_BASELINE_CENTRE_NS, DEMO_BAND_BASELINE_SPREAD,
+            DEMO_BAND_BASELINE_VOLUME, 0)
+
+
+def _demo_band_start_epoch_seconds():
+    """Epoch second of the most recent 08:00 local, so the axis reads as a trading day."""
+    import time  # lazy: only the demo path needs it
+
+    now = time.localtime()
+    open_struct = (now.tm_year, now.tm_mon, now.tm_mday,
+                   DEMO_BAND_OPEN_HOUR, 0, 0, 0, 0, -1)
+    open_epoch = int(time.mktime(open_struct))
+    return open_epoch if open_epoch <= time.time() else open_epoch - 86400
+
+
+def _demo_latency_bands(random_module, name, ceiling_ns=None):
+    """Synthesise percentile tracks and a breach count across a trading session.
+
+    Percentiles are taken from a freshly drawn distribution per interval, at the bucket
+    granularity a real histogram would impose, so the tracks step rather than glide -- the
+    resolution really is that coarse and the demo should not pretend otherwise.
+
+    The breach count is derived from the same draws by summing the bands ABOVE the
+    ceiling, which is precisely what the live query does by subtracting two bucket
+    counters. It is deliberately not derived from the percentiles, because the point of
+    showing both is that neither can be recovered from the other -- and it is deliberately
+    refused when no bucket bound sits on the ceiling, even though the demo holds the raw
+    draws and could count them anyway. A demo that quietly did what the live path cannot
+    would teach the one lesson this chart exists to teach, backwards.
+    """
+    if ceiling_ns is None:
+        ceiling_ns = DEMO_BAND_CEILING_NS
+    bounds = list(DEMO_BUCKET_BOUNDS_NS)
+    countable = any(bound == ceiling_ns for bound in bounds)
+    if not countable:
+        print(f"warning: no bucket bound at {format_latency_ns(ceiling_ns)}, so orders over "
+              f"the ceiling cannot be counted exactly. The ceiling line is still drawn.",
+              file=sys.stderr)
+
+    intervals = DEMO_BAND_SESSION_MINUTES * 60 // DEMO_BAND_STEP_SECONDS
+    start = _demo_band_start_epoch_seconds()
+
+    times, breaches, observations = [], [], []
+    values = {label: [] for _, label in BAND_QUANTILES}
+    for interval in range(intervals):
+        elapsed_minutes = interval * DEMO_BAND_STEP_SECONDS // 60
+        centre_ns, spread, volume, late = _demo_band_phase(elapsed_minutes)
+        counts = _demo_bucket_counts(random_module, bounds, centre_ns, spread, volume)
+        if late:
+            _demo_bucket_counts(random_module, bounds, ceiling_ns * 4, 0.5, late, counts)
+
+        for quantile, label in BAND_QUANTILES:
+            values[label].append(_interpolated_percentile(bounds, counts, quantile))
+        breaches.append(sum(count for bound, count in zip(bounds, counts)
+                            if bound > ceiling_ns))
+        observations.append(sum(counts))
+        times.append(start + interval * DEMO_BAND_STEP_SECONDS)
+
+    tracks = [(label, values[label]) for _, label in BAND_QUANTILES]
+    return (name, times, tracks, ceiling_ns,
+            (breaches if countable else None), observations)
 
 
 def _demo_synthetic_counter(rng):
@@ -597,12 +987,13 @@ def _demo_synthetic_gauge(rng, name):
     return rng.randint(0, 5_000)
 
 
-def _build_demo_for_component(component, metrics_requested, hist_filter, config=None):
+def _build_demo_for_component(component, metrics_requested, hist_filter, config=None,
+                              ceiling_ns=None):
     """Synthesise artificial data using ``component``'s configured series."""
     import random  # lazy: only the demo path needs it
 
     if metrics_requested is None:
-        metrics_requested = {"histogram", "counter", "gauge"}
+        metrics_requested = {"histogram", "bands", "counter", "gauge"}
     spec = (config or COMPONENT_CONFIG)[component]
     # Seed from the component name so each component looks distinct but stable.
     rng = random.Random(42 + sum(ord(char) for char in component))
@@ -623,6 +1014,17 @@ def _build_demo_for_component(component, metrics_requested, hist_filter, config=
             )
             add_histogram(data, name, bounds, counts)
 
+    # The bands are drawn from the same underlying series as the histogram beside them --
+    # the histogram is that series summed over the window, the bands are its percentiles
+    # kept per interval -- so one is synthesised wherever a histogram is configured.
+    if "bands" in metrics_requested:
+        for histogram in spec["histograms"]:
+            name = histogram["name"]
+            if hist_filter and name not in hist_filter:
+                continue
+            _, times, tracks, ceiling, breaches, seen = _demo_latency_bands(rng, name, ceiling_ns)
+            add_latency_bands(data, name, times, tracks, ceiling, breaches, seen)
+
     if "counter" in metrics_requested:
         for name in spec["counters"]:
             total, rate = _demo_synthetic_counter(rng)
@@ -635,32 +1037,49 @@ def _build_demo_for_component(component, metrics_requested, hist_filter, config=
     return data
 
 
-def build_demo_dataset(component=None, metrics_requested=None, hist_filter=None, config=None):
+def build_demo_dataset(component=None, metrics_requested=None, hist_filter=None, config=None,
+                       ceiling_ns=None):
     """Return a DashboardData of synthetic data -- for testing without Prometheus.
 
     With ``component`` given, the synthetic data uses that component's configured
     series (histogram paths, counter and gauge names) so the demo mirrors what a
     live fetch of that component would show -- but with artificial numbers.
     Without it, a generic 'sample' dataset is produced.
+
+    ``metrics_requested`` is honoured on both paths. It used to be ignored here, which
+    only became visible once there was a series worth asking for on its own: --metrics
+    bands drew the band chart and then four histograms and both tables underneath it.
     """
     if component is not None:
-        return _build_demo_for_component(component, metrics_requested, hist_filter, config)
+        return _build_demo_for_component(component, metrics_requested, hist_filter, config,
+                                         ceiling_ns)
 
     import random  # lazy: only the demo path needs it
+
+    if metrics_requested is None:
+        metrics_requested = {"histogram", "bands", "counter", "gauge"}
 
     random.seed(42)
     data = DashboardData()
 
-    for name, centre_ns, spread, total in [
-        ("order_ingress_latency", 3000, 0.7, 50000),
-        ("match_engine_latency", 6000, 0.8, 48000),
-        ("market_data_publish_latency", 2000, 0.6, 52000),
-        ("wal_fsync_latency", 15000, 0.9, 15000),
-    ]:
-        hname, bounds, counts = _demo_histogram(random, name, centre_ns, spread, total)
-        add_histogram(data, hname, bounds, counts)
+    if "histogram" in metrics_requested:
+        for name, centre_ns, spread, total in [
+            ("order_ingress_latency", 3000, 0.7, 50000),
+            ("match_engine_latency", 6000, 0.8, 48000),
+            ("market_data_publish_latency", 2000, 0.6, 52000),
+            ("wal_fsync_latency", 15000, 0.9, 15000),
+        ]:
+            if hist_filter and name not in hist_filter:
+                continue
+            hname, bounds, counts = _demo_histogram(random, name, centre_ns, spread, total)
+            add_histogram(data, hname, bounds, counts)
 
-    for name, total, rate in [
+    if "bands" in metrics_requested:
+        bname, times, tracks, ceiling, breaches, seen = _demo_latency_bands(
+            random, "order_round_trip_latency", ceiling_ns)
+        add_latency_bands(data, bname, times, tracks, ceiling, breaches, seen)
+
+    counters = [] if "counter" not in metrics_requested else [
         ("orders_accepted_total", 4_821_337, 1250.4),
         ("orders_rejected_total", 12_904, 3.2),
         ("executions_total", 9_113_882, 2380.7),
@@ -668,10 +1087,11 @@ def build_demo_dataset(component=None, metrics_requested=None, hist_filter=None,
         ("wal_records_written_total", 4_834_241, 1255.1),
         ("reconnects_total", 37, 0.0),
         ("heartbeats_sent_total", 1_204_557, 12.0),
-    ]:
+    ]
+    for name, total, rate in counters:
         add_counter(data, name, total, rate)
 
-    for name, value in [
+    gauges = [] if "gauge" not in metrics_requested else [
         ("open_orders", 18_442),
         ("subscribers_connected", 214),
         ("wal_backlog_bytes", 3_112_960),
@@ -679,7 +1099,8 @@ def build_demo_dataset(component=None, metrics_requested=None, hist_filter=None,
         ("cpu_reactor_pct", 73.2),
         ("epoch", 7),
         ("leader", 1),
-    ]:
+    ]
+    for name, value in gauges:
         add_gauge(data, name, value)
 
     return data
@@ -715,6 +1136,42 @@ def _text_to_numbers(text):
     return [] if text == "-" else [_text_to_number(token) for token in text.split(",")]
 
 
+# A percentile track carries None where an interval had no traffic to take a percentile
+# of, which is a different fact from a zero and has to survive the round trip.
+_ABSENT = "~"
+
+
+def _optional_numbers_to_text(values):
+    if not values:
+        return "-"
+    return ",".join(_ABSENT if value is None else _number_to_text(value) for value in values)
+
+
+def _text_to_optional_numbers(text):
+    if text == "-":
+        return []
+    return [None if token == _ABSENT else _text_to_number(token) for token in text.split(",")]
+
+
+# The labelled tracks need a separator the comma-joined values do not already use, and a
+# second one between a label and its values. Semicolon and colon, not tab: a tab delimiter
+# is invisible in every editor and survives exactly until something reformats the file.
+def _tracks_to_text(tracks):
+    if not tracks:
+        return "-"
+    return ";".join(f"{label}:{_optional_numbers_to_text(values)}" for label, values in tracks)
+
+
+def _text_to_tracks(text):
+    if text == "-":
+        return []
+    tracks = []
+    for part in text.split(";"):
+        label, _, values = part.partition(":")
+        tracks.append((label, _text_to_optional_numbers(values)))
+    return tracks
+
+
 def write_dataset(data, path):
     """Write ``data`` to ``path`` as a sequence of replayable builder calls."""
     lines = ["# prometheus metrics snapshot -- replayable call transcript"]
@@ -725,6 +1182,16 @@ def write_dataset(data, path):
             histogram["name"],
             _numbers_to_text(histogram["bounds"]),
             _numbers_to_text(histogram["counts"]),
+        ]))
+    for band in data.bands:
+        lines.append(" ".join([
+            "add_latency_bands",
+            band["name"],
+            _numbers_to_text(band["times"]),
+            _tracks_to_text(band["tracks"]),
+            _ABSENT if band["ceiling_ns"] is None else _number_to_text(band["ceiling_ns"]),
+            _optional_numbers_to_text(band["breaches"]),
+            _optional_numbers_to_text(band["observations"]),
         ]))
     for name, total, rate in data.counters:
         lines.append(" ".join(["add_counter", name, _number_to_text(total), _number_to_text(rate)]))
@@ -739,6 +1206,15 @@ def _replay_add_histogram(data, name, bounds, counts):
     add_histogram(data, name, _text_to_numbers(bounds), _text_to_numbers(counts))
 
 
+def _replay_add_latency_bands(data, name, times, tracks, ceiling, breaches, observations):
+    add_latency_bands(
+        data, name, _text_to_numbers(times), _text_to_tracks(tracks),
+        None if ceiling == _ABSENT else _text_to_number(ceiling),
+        _text_to_optional_numbers(breaches),
+        _text_to_optional_numbers(observations),
+    )
+
+
 def _replay_add_counter(data, name, total, rate):
     add_counter(data, name, _text_to_number(total), _text_to_number(rate))
 
@@ -750,6 +1226,7 @@ def _replay_add_gauge(data, name, value):
 REPLAY_DISPATCH = {
     "set_component": set_component,
     "add_histogram": _replay_add_histogram,
+    "add_latency_bands": _replay_add_latency_bands,
     "add_counter": _replay_add_counter,
     "add_gauge": _replay_add_gauge,
 }
@@ -904,6 +1381,147 @@ def draw_histogram(axis, histogram):
         )
 
 
+def format_clock_time(epoch_seconds):
+    """Render an epoch second as local wall-clock HH:MM.
+
+    Wall clock rather than time elapsed, because the question this chart gets asked is
+    "what was happening at 13:00" -- and an axis counting minutes from an arbitrary window
+    start cannot be lined up against a market event, an alarm, or anyone's recollection.
+    """
+    import time
+
+    return time.strftime("%H:%M", time.localtime(epoch_seconds))
+
+
+# Lowest percentile palest: the tracks are then read as one distribution widening and
+# narrowing rather than as three unrelated lines that happen to share an axis.
+BAND_TRACK_COLOURS = ["#8FBCE6", "#4C72B0", "#1F3D63"]
+BAND_CEILING_COLOUR = "#C0392B"
+
+
+def draw_latency_bands(axis, breach_axis, band):
+    """Draw percentiles over time, the ceiling, and the count of orders that exceeded it.
+
+    The two axes answer two different questions and are stacked rather than overlaid
+    because their units have nothing to do with each other. The upper one is diagnostic --
+    how did the distribution move, and when. The lower one is the compliance answer, and
+    it is a COUNT, not a percentile: a p99 sitting under the ceiling still permits one
+    order in a hundred above it, which over a session is a large number of late orders. A
+    chart that showed only the percentile tracks would let a reader conclude "we were
+    inside the limit all day" from a picture that cannot support it.
+    """
+    import matplotlib.ticker as mticker
+
+    times = band["times"]
+    tracks = band["tracks"]
+    ceiling_ns = band["ceiling_ns"]
+    breaches = band["breaches"]
+
+    axis.set_yscale("log")
+    axis.set_title(band["name"], fontsize=10, fontweight="bold")
+
+    if not times or not any(any(value is not None for value in values) for _, values in tracks):
+        axis.text(0.5, 0.5, "no observations recorded", transform=axis.transAxes,
+                  ha="center", va="center", color="0.45", fontsize=9)
+        axis.set_title(f"{band['name']} (no observations)", fontsize=10, fontweight="bold")
+        return
+
+    # Shade between the outermost tracks first, so the lines sit on top of it. Gaps are
+    # segmented rather than bridged: an interval with no traffic must not be spanned by a
+    # band implying the venue was measured throughout.
+    if len(tracks) >= 2:
+        low_values, high_values = tracks[0][1], tracks[-1][1]
+        segment_x, segment_low, segment_high = [], [], []
+        for index, moment in enumerate(times):
+            low, high = low_values[index], high_values[index]
+            if low is None or high is None:
+                if segment_x:
+                    axis.fill_between(segment_x, segment_low, segment_high,
+                                      color=BAND_TRACK_COLOURS[1], alpha=0.18, linewidth=0)
+                segment_x, segment_low, segment_high = [], [], []
+                continue
+            segment_x.append(moment)
+            segment_low.append(low)
+            segment_high.append(high)
+        if segment_x:
+            axis.fill_between(segment_x, segment_low, segment_high,
+                              color=BAND_TRACK_COLOURS[1], alpha=0.18, linewidth=0)
+
+    # 'post', not the default: a percentile derived from the interval beginning at times[i]
+    # describes that interval, so it must be held forward across it rather than sloped
+    # towards the next point as though the venue had been sampled continuously.
+    for index, (label, values) in enumerate(tracks):
+        colour = BAND_TRACK_COLOURS[min(index, len(BAND_TRACK_COLOURS) - 1)]
+        axis.step(times, [float("nan") if value is None else value for value in values],
+                  where="post", color=colour, linewidth=1.4, label=label)
+
+    if ceiling_ns is not None:
+        axis.axhline(ceiling_ns, color=BAND_CEILING_COLOUR, linestyle="--", linewidth=1.6)
+        axis.annotate(f"ceiling {format_latency_ns(ceiling_ns)}",
+                      xy=(times[0], ceiling_ns), xytext=(4, 3), textcoords="offset points",
+                      color=BAND_CEILING_COLOUR, fontsize=8, fontweight="bold")
+
+    axis.set_xlim(times[0], times[-1])
+    axis.set_ylabel("latency (log scale)")
+    axis.grid(True, which="major", axis="both", linestyle=":", alpha=0.3)
+    axis.yaxis.set_major_formatter(
+        mticker.FuncFormatter(lambda value, _: format_latency_ns(value)))
+    axis.yaxis.set_minor_formatter(mticker.NullFormatter())
+    axis.legend(fontsize=8, loc="upper left", framealpha=0.9, ncol=len(tracks))
+
+    draw_breach_counts(breach_axis, times, breaches, ceiling_ns, band["observations"])
+
+
+BAND_VOLUME_COLOUR = "#6B7280"
+
+
+def draw_breach_counts(axis, times, breaches, ceiling_ns, observations):
+    """Draw orders over the ceiling, and how many orders there were, beneath the percentiles.
+
+    The two share this axis because they are both counts per interval, and because they are
+    only useful together. Breaches alone cannot distinguish "nothing was late" from "almost
+    nothing was sent", and those call for opposite responses.
+    """
+    import matplotlib.ticker as mticker
+
+    axis.set_xlim(times[0], times[-1])
+    axis.set_xlabel("time")
+    axis.xaxis.set_major_formatter(
+        mticker.FuncFormatter(lambda value, _: format_clock_time(value)))
+    axis.tick_params(axis="y", labelsize=8)
+
+    if ceiling_ns is not None and breaches:
+        width = (times[1] - times[0]) if len(times) > 1 else 1.0
+        heights = [0.0 if value is None else value for value in breaches]
+        axis.bar(times, heights, width=width, align="edge",
+                 color=BAND_CEILING_COLOUR, alpha=0.85, linewidth=0, label="over ceiling")
+        axis.set_ylabel("over ceiling", fontsize=8, color=BAND_CEILING_COLOUR)
+        axis.tick_params(axis="y", labelcolor=BAND_CEILING_COLOUR)
+        axis.grid(True, axis="y", linestyle=":", alpha=0.3)
+        axis.annotate(
+            f"{sum(heights):,.0f} orders over {format_latency_ns(ceiling_ns)} in this window",
+            xy=(0.995, 0.92), xycoords="axes fraction", ha="right", va="top",
+            fontsize=8, color=BAND_CEILING_COLOUR, fontweight="bold")
+    else:
+        # No ceiling means no breach question was asked; say so rather than showing an
+        # empty axis that reads as a measured zero.
+        axis.set_yticks([])
+        axis.text(0.5, 0.72,
+                  "no ceiling given -- pass --ceiling to count orders over the limit",
+                  transform=axis.transAxes, ha="center", va="center", color="0.45", fontsize=8)
+
+    if not observations:
+        return
+    volume_axis = axis.twinx()
+    volume_axis.step(times, [0.0 if value is None else value for value in observations],
+                     where="post", color=BAND_VOLUME_COLOUR, linewidth=1.0, alpha=0.9)
+    volume_axis.set_ylabel("orders", fontsize=8, color=BAND_VOLUME_COLOUR)
+    volume_axis.tick_params(axis="y", labelsize=8, labelcolor=BAND_VOLUME_COLOUR)
+    # From zero, always. On a volume axis an autoscaled floor turns a 10% dip into a
+    # cliff, which is the misreading this line was added to prevent.
+    volume_axis.set_ylim(0, max(value for value in observations if value is not None) * 1.15)
+
+
 def percentile_bound(histogram, fraction):
     """Return the bucket bound at cumulative ``fraction``, or None if unknown."""
     counts = histogram["counts"]
@@ -925,7 +1543,7 @@ def summary_title(data):
     A component with no histogram is not a latency distribution, and saying it is invites
     the reader to look for one. The matching engine exposes counters only.
     """
-    if data.histograms:
+    if data.histograms or data.bands:
         return f"Latency Distribution: {data.component}"
     return f"Metrics: {data.component}"
 
@@ -995,6 +1613,26 @@ def draw_overlay(axis, histograms):
         axis.set_title("dotted verticals mark each series' p99", fontsize=9, color="0.35")
 
 
+def assemble_figure_bands(table_height, chart_height, histogram_height):
+    """Lay out the figure's horizontal bands, skipping the kinds this figure has none of.
+
+    Each argument is that band's height in inches, or None if it is not wanted. Returns
+    the heights actually used plus each band's row index, so a figure showing only some of
+    the four kinds reserves no blank paper where the others would have gone.
+    """
+    heights, indices = [], []
+    for height in (table_height, chart_height, histogram_height):
+        if height is None:
+            indices.append(None)
+            continue
+        indices.append(len(heights))
+        heights.append(height)
+    # A figure with nothing on it still needs one row to hang its title from.
+    if not heights:
+        heights.append(1.2)
+    return heights, indices[0], indices[1], indices[2]
+
+
 def build_figure(data, overlay=False):
     """Build and return the matplotlib Figure for the whole dashboard.
 
@@ -1009,10 +1647,17 @@ def build_figure(data, overlay=False):
     Two columns rather than one because these histograms are meant to be compared: four
     gateways stacked vertically cannot be seen at once on any normal screen, which defeats
     the point of drawing them together.
+
+    Band charts get a band of their own between the tables and the histograms, one per row
+    at full width, each split into a tall percentile axis and a short breach-count axis
+    sharing its X. They are not gridded two-up like the histograms: their X axis is a
+    trading session, and half a figure width leaves each interval a couple of pixels --
+    at which point a five-minute excursion and a single glitch look identical.
     """
     import matplotlib.pyplot as plt
 
     histograms = data.histograms
+    bands = data.bands
     # Overlaying is one axes however many series there are.
     if overlay and histograms:
         columns, rows = 1, 1
@@ -1034,35 +1679,66 @@ def build_figure(data, overlay=False):
     # property of ascii_table, and guessing it too low ran the last line of the gauges
     # table into the first histogram's title.
     table_line_count = table_text.count("\n") + 1
-    table_height_inches = max(1.2, TABLE_LINE_HEIGHT_INCHES * table_line_count + 0.3)
+    # Neither counters nor gauges means no table band at all. Two header-only frames
+    # announcing columns with nothing under them read as a fetch that failed, which is a
+    # different claim from not having asked for them (--metrics bands, say).
+    show_tables = bool(counter_rows or gauge_rows)
+    table_height_inches = (
+        max(1.2, TABLE_LINE_HEIGHT_INCHES * table_line_count + 0.3) if show_tables else 0.0)
     # No histograms at all is a normal shape -- the matching engine exposes counters only --
     # and it must not reserve a band of blank paper below the tables.
     histogram_height_inches = (4.6 if overlay else 3.6) * rows
+    band_height_inches = 4.4 * len(bands)
 
-    figure = plt.figure(figsize=(7.5 * columns, table_height_inches + histogram_height_inches))
-    if rows == 0:
+    # A band chart needs width for its time axis, so its presence sets a floor on the
+    # figure width even when there is only one histogram column beside it.
+    figure_width_inches = 7.5 * columns
+    if bands:
+        figure_width_inches = max(figure_width_inches, 13.0)
+
+    band_heights, table_band, chart_band, histogram_band = assemble_figure_bands(
+        table_height_inches if show_tables else None,
+        band_height_inches if bands else None,
+        histogram_height_inches if rows else None,
+    )
+
+    figure = plt.figure(figsize=(figure_width_inches, sum(band_heights)))
+    if len(band_heights) == 1:
         outer = figure.add_gridspec(1, 1)
     else:
         outer = figure.add_gridspec(
-            2, 1,
-            height_ratios=[table_height_inches, histogram_height_inches],
-            hspace=0.35 / rows,
+            len(band_heights), 1, height_ratios=band_heights, hspace=0.35 / max(rows, 1),
         )
+    # Room for the suptitle reserved in INCHES, not as a fraction of the figure. A fraction
+    # that suits a four-panel figure leaves a bands-only one with its title sitting on top
+    # of the first panel's, because the two differ in height by a factor of four.
+    outer.update(top=1.0 - 0.45 / sum(band_heights))
 
     # --- summary tables, across the full width ---
-    text_axis = figure.add_subplot(outer[0])
-    text_axis.axis("off")
-    text_axis.text(
-        0.0, 1.0, table_text, family="monospace", fontsize=10,
-        va="top", ha="left", transform=text_axis.transAxes,
-    )
+    if table_band is not None:
+        text_axis = figure.add_subplot(outer[table_band])
+        text_axis.axis("off")
+        text_axis.text(
+            0.0, 1.0, table_text, family="monospace", fontsize=10,
+            va="top", ha="left", transform=text_axis.transAxes,
+        )
+
+    # --- band charts, full width, percentiles above their breach counts ---
+    if chart_band is not None:
+        chart_grid = outer[chart_band].subgridspec(len(bands), 1, hspace=0.45)
+        for index, band in enumerate(bands):
+            pair = chart_grid[index, 0].subgridspec(2, 1, height_ratios=[3.0, 1.0], hspace=0.08)
+            percentile_axis = figure.add_subplot(pair[0, 0])
+            breach_axis = figure.add_subplot(pair[1, 0], sharex=percentile_axis)
+            percentile_axis.tick_params(axis="x", labelbottom=False)
+            draw_latency_bands(percentile_axis, breach_axis, band)
 
     # --- histograms, in a grid beneath ---
-    if rows == 0:
+    if histogram_band is None:
         figure.suptitle(summary_title(data), fontsize=14, fontweight="bold")
         return figure
 
-    inner = outer[1].subgridspec(rows, columns, wspace=0.32, hspace=0.55)
+    inner = outer[histogram_band].subgridspec(rows, columns, wspace=0.32, hspace=0.55)
     if overlay:
         draw_overlay(figure.add_subplot(inner[0, 0]), histograms)
     else:
@@ -1105,7 +1781,7 @@ def show_dashboard(data, overlay=False):
     figure = build_figure(data, overlay=overlay)
 
     root = tk.Tk()
-    root.title(f"Latency Distribution: {data.component}")
+    root.title(summary_title(data))
 
     # The figure's full pixel extent -- the scroll region covers all of it so
     # nothing is ever clipped regardless of window size.
@@ -1224,7 +1900,19 @@ def parse_arguments(argv=None):
     parser.add_argument("--prom-url", default=PROM_URL,
                         help=f"Prometheus base URL (default: {PROM_URL})")
     parser.add_argument("--metrics", default="all",
-                        help="comma list of histogram,counter,gauge,all (default: all)")
+                        help="comma list of histogram,bands,counter,gauge,all (default: all)")
+    parser.add_argument("--ceiling", metavar="DURATION",
+                        help="latency a round trip is not supposed to exceed, e.g. 2.5ms, "
+                             "500us, or a bare nanosecond count. Drawn on the band chart, and "
+                             "orders above it counted EXACTLY -- which needs a bucket bound "
+                             "sitting on the same value, or the count is refused rather than "
+                             "estimated")
+    parser.add_argument("--since", type=int, default=60, metavar="MINUTES",
+                        help="how far back the band chart reaches (default: 60)")
+    parser.add_argument("--step", type=int, default=30, metavar="SECONDS",
+                        help="band chart resolution (default: 30). Below the scrape interval "
+                             "the extra points carry no extra information; much above 60 and a "
+                             "burst lasting a minute or two is a single point with no shape")
     parser.add_argument("--hist", action="append", metavar="PATH",
                         help="restrict histograms to this path (repeatable)")
     parser.add_argument("--demo", action="store_true",
@@ -1239,6 +1927,15 @@ def parse_arguments(argv=None):
         parser.error("--input and --demo cannot be used together")
     if arguments.input and not (arguments.graphic or arguments.save_figure):
         parser.error("--input requires --graphic or --save-figure")
+    if arguments.step < 1:
+        parser.error("--step must be at least 1 second")
+    if arguments.since < 1:
+        parser.error("--since must be at least 1 minute")
+    if arguments.ceiling is not None:
+        try:
+            parse_duration_ns(arguments.ceiling)
+        except ValueError as error:
+            parser.error(str(error))
     if arguments.list:
         return arguments
     if not arguments.graphic and not arguments.output and not arguments.save_figure:
@@ -1253,13 +1950,42 @@ def parse_arguments(argv=None):
 def resolve_metrics(text):
     """Turn a --metrics string into a validated set of series kinds."""
     requested = {token.strip().lower() for token in text.split(",")}
-    valid = {"histogram", "counter", "gauge", "all"}
+    valid = {"histogram", "bands", "counter", "gauge", "all"}
     invalid = requested - valid
     if invalid:
         raise ValueError(f"invalid --metrics value(s): {sorted(invalid)}")
     if "all" in requested:
-        return {"histogram", "counter", "gauge"}
+        return {"histogram", "bands", "counter", "gauge"}
     return requested
+
+
+DURATION_UNITS_NS = {"ns": 1, "us": 1_000, "ms": 1_000_000, "s": 1_000_000_000}
+
+
+def parse_duration_ns(text):
+    """Parse '2.5ms', '500us', '1s' or a bare nanosecond count into nanoseconds.
+
+    A unit is accepted because the ceiling is a figure someone quotes in milliseconds and
+    then has to convert; a bare number is accepted because the configured bucket bounds are
+    written in nanoseconds and it must be possible to paste one in unaltered.
+    """
+    cleaned = text.strip().lower()
+    number, multiplier = cleaned, 1
+    # Longest unit first, so 'ns'/'us'/'ms' are matched before the 's' they all end with.
+    for unit, unit_multiplier in sorted(DURATION_UNITS_NS.items(), key=lambda pair: -len(pair[0])):
+        if cleaned.endswith(unit) and len(cleaned) > len(unit):
+            number, multiplier = cleaned[: -len(unit)].strip(), unit_multiplier
+            break
+    # One conversion at the end, covering both the unit and bare forms. Converting inside
+    # the loop let a bad number in front of a real unit ('2.5years' -> '2.5year') raise a
+    # bare ValueError past this message, and argparse reported it as a float conversion
+    # failure naming a string the user never typed.
+    try:
+        return float(number) * multiplier
+    except ValueError:
+        raise ValueError(
+            f"cannot read '{text}' as a duration: give a bare nanosecond count, "
+            f"or a number with one of {', '.join(sorted(DURATION_UNITS_NS))}") from None
 
 
 def main(argv=None):
@@ -1289,11 +2015,19 @@ def main(argv=None):
     if arguments.input:
         data = read_dataset(arguments.input)
     elif arguments.demo:
-        data = build_demo_dataset(arguments.component, metrics_requested, arguments.hist, config)
+        data = build_demo_dataset(arguments.component, metrics_requested, arguments.hist, config,
+                                  ceiling_ns=(None if arguments.ceiling is None
+                                              else parse_duration_ns(arguments.ceiling)))
     else:
         data = fetch_from_prometheus(
             arguments.component, arguments.sample, arguments.prom_url,
             metrics_requested, arguments.hist, arguments.window, config,
+            band_options={
+                "since_minutes": arguments.since,
+                "step_seconds": arguments.step,
+                "ceiling_ns": (None if arguments.ceiling is None
+                               else parse_duration_ns(arguments.ceiling)),
+            },
         )
 
     # An explicit --component overrides the label carried by file/demo data.
