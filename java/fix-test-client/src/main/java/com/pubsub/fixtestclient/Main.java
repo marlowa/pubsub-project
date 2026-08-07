@@ -40,7 +40,7 @@ public class Main {
         // The venue's other front door. One session is live at a time; the selector holds
         // which, so the handlers do not each have to work it out.
         BinaryEngine binaryEngine = new BinaryEngine(config, blotterStore);
-        GatewaySelector gateways = new GatewaySelector(fixEngine, binaryEngine);
+        GatewaySelector gateways = new GatewaySelector(fixEngine, binaryEngine, config.defaultGateway());
         fixApplication.setInboundListener(blotterStore::addInbound);
 
         MessageCapture messageCapture = new MessageCapture(config.outputDir());
@@ -49,12 +49,11 @@ public class Main {
             messageCapture.capture(message);
         });
 
-        FixSessionBinding sessionBinding = new FixSessionBinding(fixEngine);
+        FixSessionBinding sessionBinding = new FixSessionBinding(fixEngine, config);
         FixHelper fixHelper = new FixHelper();
         ScriptRunner scriptRunner = new ScriptRunner(sessionBinding, fixHelper, messageCapture);
 
-        SessionHandler sessionHandler = new SessionHandler(gateways, config.gatewayPort(), config.tlsGatewayPort(),
-                config.proprietaryGatewayPort(), config.tlsEnabled(), config.binaryGatewayPort());
+        SessionHandler sessionHandler = new SessionHandler(gateways, config);
         ScriptHandler scriptHandler = new ScriptHandler(scriptRunner, config.scriptsDir());
         MessagesHandler messagesHandler = new MessagesHandler(gateways, blotterStore);
         ConfigHandler configHandler = new ConfigHandler(configPath);

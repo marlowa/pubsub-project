@@ -1,7 +1,9 @@
 package com.pubsub.fixtestclient.web;
 
+import com.pubsub.fixtestclient.Config;
 import com.pubsub.fixtestclient.fix.FixEngine;
 import com.pubsub.fixtestclient.fix.LogonMode;
+import com.pubsub.fixtestclient.gateway.GatewayEndpoint;
 import com.pubsub.fixtestclient.gateway.GatewayKind;
 import com.pubsub.fixtestclient.gateway.GatewaySelector;
 import com.pubsub.fixtestclient.fix.SessionStatus;
@@ -10,7 +12,11 @@ import io.javalin.http.Context;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 
 public class SessionHandler {
@@ -20,33 +26,52 @@ public class SessionHandler {
 
     private final GatewaySelector gateways;
     private final FixEngine fixEngine;
-    private final int plainPort;
-    private final int tlsPort;
-    private final int proprietaryPort;
-    private final boolean tlsEnabled;
-    private final int binaryPort;
+    private final Config config;
 
     private volatile LastSession lastSession;
 
-    public SessionHandler(GatewaySelector gateways, int plainPort, int tlsPort, int proprietaryPort, boolean tlsEnabled, int binaryPort) {
-        this.gateways        = gateways;
-        this.fixEngine       = gateways.fix();
-        this.binaryPort      = binaryPort;
-        this.plainPort       = plainPort;
-        this.tlsPort         = tlsPort;
-        this.proprietaryPort = proprietaryPort;
-        this.tlsEnabled      = tlsEnabled;
+    public SessionHandler(GatewaySelector gateways, Config config) {
+        this.gateways  = gateways;
+        this.fixEngine = gateways.fix();
+        this.config    = config;
     }
 
+    /**
+     * The endpoints the logon page offers, in configured order.
+     *
+     * Replaces a flat set of ports (plain, tls, proprietary, binary) that could describe only
+     * one instance of each protocol. The page needs to name each address as well as reach it,
+     * so each entry carries its label and whether TLS is available -- an endpoint with no TLS
+     * listener has its TLS control disabled rather than offering a choice that would fail.
+     */
     public void getPorts(Context ctx) {
-        ctx.json(Map.of("plainPort", plainPort, "tlsPort", tlsPort, "proprietaryPort", proprietaryPort,
-                        "tlsEnabled", tlsEnabled, "binaryPort", binaryPort));
+        List<Map<String, Object>> endpoints = new ArrayList<>();
+        for (GatewayEndpoint endpoint : config.gateways()) {
+            Map<String, Object> entry = new LinkedHashMap<>();
+            entry.put("key", endpoint.key());
+            entry.put("label", endpoint.label());
+            entry.put("protocol", endpoint.kind().name().toLowerCase(java.util.Locale.ROOT));
+            entry.put("host", endpoint.host());
+            entry.put("port", endpoint.port());
+            entry.put("tlsPort", endpoint.tlsPort());
+            entry.put("supportsTls", endpoint.supportsTls());
+            entry.put("proprietary", endpoint.logonMode() == LogonMode.PROPRIETARY);
+            endpoints.add(entry);
+        }
+        ctx.json(Map.of("gateways", endpoints,
+                        "tlsEnabled", config.tlsEnabled(),
+                        "activeKey", gateways.active().key()));
     }
 
     public void getStatus(Context ctx) {
         SessionStatus status = gateways.status();
         Map<String, Object> body = new java.util.LinkedHashMap<>();
-        body.put("gateway",           gateways.active().name().toLowerCase(java.util.Locale.ROOT));
+        // The protocol drives which fields the page shows; the key and label say WHICH of the
+        // several gateways of that protocol this session is on, which the protocol alone
+        // cannot answer now that each runs as more than one instance.
+        body.put("gateway",           gateways.activeKind().name().toLowerCase(java.util.Locale.ROOT));
+        body.put("gatewayKey",        gateways.active().key());
+        body.put("gatewayLabel",      gateways.active().label());
         body.put("connected",         status.connected());
         body.put("loggingOn",         status.loggingOn());
         body.put("loggedOn",          status.loggedOn());
@@ -64,27 +89,37 @@ public class SessionHandler {
     }
 
     public void logon(Context ctx) {
-        GatewayKind requested = GatewayKind.fromFormValue(ctx.formParam("gateway"));
-        String switchError = gateways.setActive(requested);
+        // The form names ONE endpoint, which is the whole address. It used to send a protocol
+        // plus a pair of booleans that the server recombined into a port -- a scheme with no
+        // room for a second instance of a protocol, so instance b was unreachable.
+        String key = ctx.formParam("gateway");
+        Optional<GatewayEndpoint> chosen = key == null ? Optional.empty() : config.gatewayByKey(key);
+        if (chosen.isEmpty()) {
+            ctx.status(400).json(Map.of("ok", false, "error", "unknown gateway '" + key + "'"));
+            return;
+        }
+        GatewayEndpoint endpoint = chosen.get();
+
+        String switchError = gateways.setActive(endpoint);
         if (!switchError.isEmpty()) {
             ctx.status(400).json(Map.of("ok", false, "error", switchError));
             return;
         }
-        if (requested == GatewayKind.BINARY) {
-            logonBinary(ctx);
+        if (endpoint.kind() == GatewayKind.BINARY) {
+            logonBinary(ctx, endpoint);
             return;
         }
 
         String senderCompId = ctx.formParam("senderCompId");
         String targetCompId = ctx.formParam("targetCompId");
         String password     = ctx.formParam("password");
-        boolean useTls             = "true".equals(ctx.formParam("useTls"));
-        LogonMode logonMode = "true".equals(ctx.formParam("proprietaryLogon"))
-                ? LogonMode.PROPRIETARY
-                : LogonMode.STANDARD;
+        boolean useTls      = "true".equals(ctx.formParam("useTls"));
 
-        if (logonMode == LogonMode.PROPRIETARY && useTls) {
-            ctx.status(400).json(Map.of("ok", false, "error", "Proprietary logon cannot use TLS"));
+        // The logon dialect is a property of the endpoint, not a box the user ticks: the
+        // proprietary one lives at its own address. That makes "proprietary over TLS"
+        // unrepresentable rather than an error to report.
+        if (useTls && !endpoint.supportsTls()) {
+            ctx.status(400).json(Map.of("ok", false, "error", endpoint.label() + " has no TLS listener"));
             return;
         }
 
@@ -103,7 +138,7 @@ public class SessionHandler {
         }
 
         try {
-            fixEngine.logon(senderCompId, targetCompId, password, useTls, logonMode);
+            fixEngine.logon(endpoint, senderCompId, targetCompId, password, useTls);
         } catch (Exception e) {
             ctx.status(500).json(Map.of("ok", false, "error", e.getMessage()));
             return;
@@ -119,14 +154,14 @@ public class SessionHandler {
      * those would imply capabilities that do not exist. Authentication it does have --
      * SCRAM-SHA-256 against the same service the FIX gateway uses.
      */
-    private void logonBinary(Context ctx) {
+    private void logonBinary(Context ctx, GatewayEndpoint endpoint) {
         String compId = ctx.formParam("senderCompId");
         String password = ctx.formParam("password");
         if (password == null || password.isEmpty()) {
             ctx.status(400).json(Map.of("ok", false, "error", "Password is required"));
             return;
         }
-        String error = gateways.binary().logon(compId, password, ctx.formParam("targetCompId"));
+        String error = gateways.binary().logon(endpoint, compId, password, ctx.formParam("targetCompId"));
         if (!error.isEmpty()) {
             ctx.status(400).json(Map.of("ok", false, "error", error));
             return;

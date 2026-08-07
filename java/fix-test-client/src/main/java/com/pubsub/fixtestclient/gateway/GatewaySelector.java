@@ -23,43 +23,56 @@ public final class GatewaySelector {
     private final FixEngine fixEngine;
     private final BinaryEngine binaryEngine;
 
-    private volatile GatewayKind active = GatewayKind.FIX;
+    /**
+     * The endpoint this client is using, or about to use.
+     *
+     * This used to be a GatewayKind -- FIX or binary -- which is one axis short of an
+     * address: the venue runs two instances of each protocol, so a protocol does not say
+     * where to connect. Holding the endpoint means the answer to "where did this order go?"
+     * is a thing the client knows rather than one it reconstructs.
+     */
+    private volatile GatewayEndpoint active;
 
-    public GatewaySelector(FixEngine fixEngine, BinaryEngine binaryEngine) {
+    public GatewaySelector(FixEngine fixEngine, BinaryEngine binaryEngine, GatewayEndpoint initial) {
         this.fixEngine = fixEngine;
         this.binaryEngine = binaryEngine;
+        this.active = initial;
     }
 
-    public GatewayKind active() {
+    public GatewayEndpoint active() {
         return active;
     }
 
+    public GatewayKind activeKind() {
+        return active.kind();
+    }
+
     /**
-     * Records which gateway a logon is being attempted against.
+     * Records which endpoint a logon is being attempted against.
      *
      * Refuses to switch while a session is live, rather than silently abandoning it: the
      * caller should log out first, and being told so is better than a leaked connection.
      *
-     * @param kind the gateway to make active
+     * @param endpoint the endpoint to make active
      * @return an empty string on success, or the reason it was refused
      */
-    public synchronized String setActive(GatewayKind kind) {
-        if (kind == active) {
+    public synchronized String setActive(GatewayEndpoint endpoint) {
+        if (endpoint.key().equals(active.key())) {
             return "";
         }
         if (isLoggedOn()) {
-            return "log out of the " + active.displayName() + " gateway before switching";
+            return "log out of " + active.label() + " before switching";
         }
-        active = kind;
+        active = endpoint;
         return "";
     }
 
     public boolean isLoggedOn() {
-        return active == GatewayKind.BINARY ? binaryEngine.isLoggedOn() : fixEngine.isLoggedOn();
+        return isBinaryActive() ? binaryEngine.isLoggedOn() : fixEngine.isLoggedOn();
     }
 
     public SessionStatus status() {
-        return active == GatewayKind.BINARY ? binaryEngine.getStatus() : fixEngine.getStatus();
+        return isBinaryActive() ? binaryEngine.getStatus() : fixEngine.getStatus();
     }
 
     public FixEngine fix() {
@@ -72,6 +85,6 @@ public final class GatewaySelector {
 
     /** True when orders should be built as binary PDUs rather than QuickFIX messages. */
     public boolean isBinaryActive() {
-        return active == GatewayKind.BINARY;
+        return active.kind() == GatewayKind.BINARY;
     }
 }

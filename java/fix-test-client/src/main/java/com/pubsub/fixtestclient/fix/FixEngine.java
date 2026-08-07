@@ -1,6 +1,7 @@
 package com.pubsub.fixtestclient.fix;
 
 import com.pubsub.fixtestclient.Config;
+import com.pubsub.fixtestclient.gateway.GatewayEndpoint;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import quickfix.ConfigError;
@@ -38,13 +39,18 @@ public class FixEngine {
         fixApplication.setOnLogout(this::handleLogout);
     }
 
-    public synchronized void logon(String compId, String targetCompId, String password, boolean useTls, LogonMode logonMode)
+    public synchronized void logon(GatewayEndpoint endpoint, String compId, String targetCompId, String password, boolean useTls)
             throws ConfigError, IOException {
-        // Proprietary logon is plaintext only; the proprietary gateway does not
-        // accept a TLS handshake. Enforce it here so every caller (web form and
-        // scripting API) is held to the same invariant.
+        LogonMode logonMode = endpoint.logonMode();
+        // Proprietary logon is plaintext only; the proprietary gateway does not accept a TLS
+        // handshake. The logon page cannot express the combination -- that endpoint has no
+        // TLS port, so its TLS control is disabled -- but the scripting API can still ask
+        // for it, so the invariant is enforced here where every caller passes.
         if (logonMode == LogonMode.PROPRIETARY && useTls) {
             throw new IllegalArgumentException("Proprietary logon is incompatible with TLS");
+        }
+        if (useTls && !endpoint.supportsTls()) {
+            throw new IllegalArgumentException(endpoint.label() + " has no TLS listener");
         }
 
         connectError = null;
@@ -64,7 +70,7 @@ public class FixEngine {
             }
         }
 
-        SessionSettings settings = buildSettings(compId, targetCompId, useTls, logonMode);
+        SessionSettings settings = buildSettings(endpoint, compId, targetCompId, useTls, logonMode);
         fixApplication.setPendingPassword(password);
 
         var storeFactory   = new quickfix.FileStoreFactory(settings);
@@ -239,7 +245,7 @@ public class FixEngine {
         }
     }
 
-    private SessionSettings buildSettings(String compId, String targetCompId, boolean useTls, LogonMode logonMode) {
+    private SessionSettings buildSettings(GatewayEndpoint endpoint, String compId, String targetCompId, boolean useTls, LogonMode logonMode) {
         SessionSettings settings = new SessionSettings();
 
         // The login screen may override the target comp ID; fall back to the
@@ -273,18 +279,14 @@ public class FixEngine {
             settings.setString("TimestampPrecision", "NANOS");
         }
 
-        int connectPort;
-        if (logonMode == LogonMode.PROPRIETARY) {
-            connectPort = config.proprietaryGatewayPort();
-        } else if (useTls) {
-            connectPort = config.tlsGatewayPort();
-        } else {
-            connectPort = config.gatewayPort();
-        }
+        // The endpoint IS the address. It used to be reconstructed here from three config
+        // scalars and two booleans, which is why the client could only ever reach instance a:
+        // there was one port per protocol and no way to express a second.
+        int connectPort = endpoint.connectPort(useTls);
 
         SessionID sid = new SessionID("FIXT.1.1", compId, effectiveTargetCompId);
         settings.setString(sid, "BeginString",       "FIXT.1.1");
-        settings.setString(sid, "SocketConnectHost", config.gatewayHost());
+        settings.setString(sid, "SocketConnectHost", endpoint.host());
         settings.setString(sid, "SocketConnectPort", String.valueOf(connectPort));
 
         if (useTls) {

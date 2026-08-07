@@ -8,12 +8,41 @@ output_dir = "test-output"
 scripts_dir = "test-scripts"
 
 [fix]
-gateway_host = "192.168.1.1"
-gateway_port = 7777
-proprietary_gateway_port = 8888
 target_comp_id = "TEST_GW"
 trust_store_path = "certs/test.jks"
 trust_store_password = "test_pass"
+
+[[gateway]]
+key      = "fix-a"
+label    = "FIX a"
+protocol = "fix"
+host     = "192.168.1.1"
+port     = 7777
+tls_port = 7778
+
+[[gateway]]
+key      = "fix-b"
+label    = "FIX b"
+protocol = "fix"
+host     = "192.168.1.1"
+port     = 7779
+tls_port = 7780
+
+# No tls_port: the page must offer no TLS for this one.
+[[gateway]]
+key        = "fix-proprietary"
+label      = "FIX proprietary"
+protocol   = "fix"
+host       = "192.168.1.1"
+port       = 8888
+logon_mode = "proprietary"
+
+[[gateway]]
+key      = "binary-a"
+label    = "Binary a"
+protocol = "binary"
+host     = "192.168.1.2"
+port     = 9999
 
 [web]
 logo_path = "certs/test-logo.png"

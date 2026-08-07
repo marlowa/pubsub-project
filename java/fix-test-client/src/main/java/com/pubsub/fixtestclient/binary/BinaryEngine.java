@@ -2,6 +2,7 @@ package com.pubsub.fixtestclient.binary;
 
 import com.pubsub.fixtestclient.Config;
 import com.pubsub.fixtestclient.blotter.BlotterStore;
+import com.pubsub.fixtestclient.gateway.GatewayEndpoint;
 import com.pubsub.fixtestclient.fix.SessionStatus;
 import com.pubsub.fixtestclient.protocol.BinarySession;
 import com.pubsub.fixtestclient.protocol.FixOrders;
@@ -37,6 +38,11 @@ public final class BinaryEngine {
 
     private final Config config;
     private final BlotterStore blotterStore;
+
+    // Which endpoint the live session is on. Reported in the status rather than read back
+    // from configuration, so the page names the gateway actually connected to -- with two
+    // instances per protocol, the config alone no longer answers that.
+    private volatile GatewayEndpoint endpoint;
     private final AtomicLong orderCounter = new AtomicLong(1);
 
     private volatile Socket socket;
@@ -60,12 +66,13 @@ public final class BinaryEngine {
      * Synchronous by design: the caller is a web request handler that must tell the user
      * whether the logon worked, and a binary logon is a single round trip.
      *
+     * @param endpoint    which binary gateway to connect to -- the venue runs more than one
      * @param compIdToUse the identity to log on with, as SenderCompID is in FIX
      * @param password    verified by SCRAM at the gateway; never sent onwards from there
      * @param targetCompId the venue the client expects, or empty to skip the check
      * @return an empty string on success, or the reason it failed
      */
-    public synchronized String logon(String compIdToUse, String password, String targetCompId) {
+    public synchronized String logon(GatewayEndpoint endpoint, String compIdToUse, String password, String targetCompId) {
         if (loggedOn) {
             return "already logged on as " + compId;
         }
@@ -73,10 +80,10 @@ public final class BinaryEngine {
             return "comp id is required";
         }
 
+        this.endpoint = endpoint;
         try {
             Socket newSocket = new Socket();
-            newSocket.connect(new InetSocketAddress(config.binaryGatewayHost(), config.binaryGatewayPort()),
-                              CONNECT_TIMEOUT_MILLIS);
+            newSocket.connect(new InetSocketAddress(endpoint.host(), endpoint.port()), CONNECT_TIMEOUT_MILLIS);
             newSocket.setTcpNoDelay(true);
             newSocket.setSoTimeout(LOGON_TIMEOUT_MILLIS);
 
@@ -152,7 +159,8 @@ public final class BinaryEngine {
         // Sequence numbers are FIX session-layer concepts with no binary equivalent, so they
         // are reported as zero rather than invented.
         return new SessionStatus(true, false, true, compId, "BINARY-GATEWAY",
-                                 config.binaryGatewayHost(), config.binaryGatewayPort(),
+                                 endpoint != null ? endpoint.host() : "",
+                                 endpoint != null ? endpoint.port() : 0,
                                  logonTime, 0, 0, 0, lastError, 0);
     }
 

@@ -24,15 +24,18 @@
 
     <!-- Pre-logon form -->
     <div id="logon-form">
-        <div class="form-row">
+        <!-- One row per configured endpoint, built by renderGatewayList() from
+             /api/session/ports. Not hardcoded here: the venue runs two instances of each
+             protocol and which of them this client may reach is a deployment fact, so the
+             page shows what it has been given rather than what someone typed into a form
+             once. -->
+        <div class="form-row" style="align-items:flex-start;">
             <label>Gateway</label>
-            <label style="font-weight:normal; margin-right:14px;">
-                <input type="radio" name="gateway" value="fix" checked onchange="onGatewayChange()"> FIX
-            </label>
-            <label style="font-weight:normal;">
-                <input type="radio" name="gateway" value="binary" onchange="onGatewayChange()"> Binary
-            </label>
-            <span id="gateway-note" style="margin-left:10px; color:#555; font-size:0.9em;"></span>
+            <div id="gateway-list"></div>
+        </div>
+        <div class="form-row">
+            <label></label>
+            <span id="gateway-note" style="color:#555; font-size:0.9em;"></span>
         </div>
         <div class="form-row">
             <label>SenderCompID</label>
@@ -50,10 +53,6 @@
             <label>Use TLS</label>
             <input type="checkbox" id="use-tls" checked onchange="updatePortDisplay()">
             <span id="port-display" style="margin-left:10px; color:#555; font-size:0.9em;"></span>
-        </div>
-        <div class="form-row fix-only">
-            <label>Proprietary logon</label>
-            <input type="checkbox" id="proprietary-logon" onchange="onProprietaryChange()">
         </div>
         <div class="form-row fix-only">
             <label>Starting seq num</label>
@@ -100,28 +99,79 @@ function toggleSeqInput() {
         !document.getElementById('override-seq-check').checked;
 }
 
+/** @return the key of the selected endpoint, e.g. "fix-b", or '' before the list loads. */
 function selectedGateway() {
     const chosen = document.querySelector('input[name="gateway"]:checked');
-    return chosen ? chosen.value : 'fix';
+    return chosen ? chosen.value : '';
+}
+
+/** @return the selected endpoint object, or null before the list has loaded. */
+function selectedEndpoint() {
+    const key = selectedGateway();
+    return endpoints.find(e => e.key === key) || null;
+}
+
+// Builds one row per configured endpoint, each naming the gateway AND its address.
+//
+// Showing the address matters: protocol and instance are two axes that between them pick a
+// port, and a form that asks you to combine them without showing the result is how instance
+// b came to be unreachable without anyone noticing.
+function renderGatewayList() {
+    const list = document.getElementById('gateway-list');
+    if (!list) {
+        return;
+    }
+    list.innerHTML = '';
+    endpoints.forEach((endpoint, index) => {
+        const row = document.createElement('label');
+        row.style.cssText = 'display:block; font-weight:normal; margin-bottom:2px;';
+
+        const radio = document.createElement('input');
+        radio.type = 'radio';
+        radio.name = 'gateway';
+        radio.value = endpoint.key;
+        radio.checked = index === 0;
+        radio.onchange = onGatewayChange;
+        row.appendChild(radio);
+
+        const name = document.createElement('span');
+        name.textContent = ' ' + endpoint.label + ' ';
+        row.appendChild(name);
+
+        const address = document.createElement('span');
+        address.style.cssText = 'color:#666; font-size:0.9em;';
+        address.textContent = endpoint.host + ':' + endpoint.port;
+        row.appendChild(address);
+
+        list.appendChild(row);
+    });
 }
 
 // The binary gateway has no password, no TLS listener and no session-layer sequence
 // numbers, so its fields are hidden rather than shown-but-ignored: a disabled password box
 // still suggests the protocol has one.
 function onGatewayChange() {
-    const binary = selectedGateway() === 'binary';
+    const endpoint = selectedEndpoint();
+    const binary = endpoint ? endpoint.protocol === 'binary' : false;
     document.querySelectorAll('.fix-only').forEach(row => {
         row.style.display = binary ? 'none' : '';
     });
-    document.getElementById('gateway-note').textContent = binary
-        ? 'Binary gateway: SCRAM authenticated, no TLS listener or sequence numbers'
-        : '';
+
+    let note = '';
+    if (binary) {
+        note = 'Binary gateway: SCRAM authenticated, no TLS listener or sequence numbers';
+    } else if (endpoint && endpoint.proprietary) {
+        note = 'Proprietary dialect: nanosecond timestamps, plaintext only';
+    }
+    document.getElementById('gateway-note').textContent = note;
+
     // Each gateway answers to its own name, so carrying one default across to the other
     // would have the gateway refuse a logon that looked perfectly reasonable on screen.
     const target = document.getElementById('target-comp-id');
     if (target) {
         target.value = binary ? 'BINARY-GATEWAY' : 'GATEWAY';
     }
+    applyTlsAvailability();
     updateLogonButton();
     updatePortDisplay();
 }
@@ -135,7 +185,8 @@ function updateLogonButton() {
     if (!password) {
         missing.push('a password');
     }
-    if (selectedGateway() === 'binary' && !document.getElementById('sender-comp-id').value.trim()) {
+    const endpoint = selectedEndpoint();
+    if (endpoint && endpoint.protocol === 'binary' && !document.getElementById('sender-comp-id').value.trim()) {
         missing.push('a SenderCompID');
     }
     button.disabled = missing.length > 0;
@@ -167,7 +218,6 @@ async function doLogon() {
         targetCompId:     document.getElementById('target-comp-id').value,
         password:         document.getElementById('password').value,
         useTls:           document.getElementById('use-tls').checked,
-        proprietaryLogon: document.getElementById('proprietary-logon').checked,
         overrideSeq:      document.getElementById('override-seq-check').checked,
         overrideSeqNum:   document.getElementById('override-seq-num').value,
     };
@@ -303,56 +353,43 @@ async function loadLastSession() {
 }
 
 let prevLoggedOn = null;
-let ports = { plainPort: null, tlsPort: null, proprietaryPort: null };
+let endpoints = [];       // every gateway this client may log on to, from the server
 let tlsConfigured = false;
 
+// Shows the address the current choices resolve to, so the port is never something you
+// have to work out from a protocol, an instance and a checkbox.
 function updatePortDisplay() {
-    if (selectedGateway() === 'binary') {
-        // Shown next to the gateway choice rather than the (hidden) TLS row.
-        const note = document.getElementById('gateway-note');
-        if (note && ports.binaryPort != null) {
-            note.textContent = 'Binary gateway on port ' + ports.binaryPort
-                               + ' -- comp id only, no password or TLS';
-        }
+    const endpoint = selectedEndpoint();
+    const el = document.getElementById('port-display');
+    if (!el) {
         return;
     }
-    const proprietary = document.getElementById('proprietary-logon').checked;
-    const useTls = document.getElementById('use-tls').checked;
-    let port;
-    if (proprietary) {
-        port = ports.proprietaryPort;
-    } else {
-        port = useTls ? ports.tlsPort : ports.plainPort;
+    if (!endpoint) {
+        el.textContent = '';
+        return;
     }
-    const el = document.getElementById('port-display');
-    if (el) {
-        el.textContent = port != null ? '→ port ' + port : '';
-    }
+    const useTls = document.getElementById('use-tls').checked && endpoint.supportsTls;
+    const port = useTls ? endpoint.tlsPort : endpoint.port;
+    el.textContent = '→ ' + endpoint.host + ':' + port + (useTls ? ' (TLS)' : '');
 }
 
-// Proprietary logon does not and cannot use TLS. While proprietary is ticked,
-// force TLS off and grey it out; restore its configured state when unticked.
-function onProprietaryChange() {
-    const proprietary = document.getElementById('proprietary-logon').checked;
-    const tlsCheckbox = document.getElementById('use-tls');
-    if (tlsCheckbox) {
-        if (proprietary) {
-            tlsCheckbox.checked  = false;
-            tlsCheckbox.disabled = true;
-            tlsCheckbox.title    = 'Proprietary logon does not use TLS';
-        } else {
-            applyTlsAvailability();
-        }
-    }
-    updatePortDisplay();
-}
-
+// TLS is offered only where there is a listener for it.
+//
+// This used to be a venue-wide flag plus a special case for the proprietary checkbox. Now
+// each endpoint says for itself: the binary gateways have no TLS listener and the
+// proprietary dialect is plaintext by definition, so for those the control is disabled and
+// says why rather than offering a choice that could only fail.
 function applyTlsAvailability() {
     const tlsCheckbox = document.getElementById('use-tls');
     if (!tlsCheckbox) {
         return;
     }
-    if (!tlsConfigured) {
+    const endpoint = selectedEndpoint();
+    if (endpoint && !endpoint.supportsTls) {
+        tlsCheckbox.checked  = false;
+        tlsCheckbox.disabled = true;
+        tlsCheckbox.title    = endpoint.label + ' has no TLS listener';
+    } else if (!tlsConfigured) {
         tlsCheckbox.checked  = false;
         tlsCheckbox.disabled = true;
         tlsCheckbox.title    = 'TLS is not configured on the gateway';
@@ -365,23 +402,20 @@ function applyTlsAvailability() {
 
 async function loadPorts() {
     const data = await apiGet('/api/session/ports');
-    ports = data;
+    endpoints = data.gateways || [];
     tlsConfigured = !!data.tlsEnabled;
-    // Proprietary takes precedence: if it is ticked, keep TLS greyed out.
-    if (document.getElementById('proprietary-logon').checked) {
-        onProprietaryChange();
-    } else {
-        applyTlsAvailability();
-    }
-    updatePortDisplay();
+    renderGatewayList();
+    // Applies the first endpoint's rules -- TLS availability, which fields are shown, the
+    // TargetCompID default -- so the form is consistent before anyone touches it.
+    onGatewayChange();
 }
 
 function pageInit() {
+    // loadPorts builds the endpoint list and then applies the first one's rules. Nothing
+    // here can call onGatewayChange first: until the list arrives there is no endpoint
+    // selected, and the form would be laid out for a gateway that may not be the default.
     loadPorts();
     loadLastSession();
-    // Apply the gateway choice once at load, so the FIX-only fields are in the right state
-    // before anyone touches the form.
-    onGatewayChange();
 
     const originalPoll = window._sessionStatusCallback;
     window._sessionStatusCallback = function(status) {

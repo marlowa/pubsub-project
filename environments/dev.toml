@@ -732,10 +732,20 @@ ha_peer_port                         = 11044
 
 [fix_test_client]
 server_port      = 8081
+# One entry per row of the client's logon page. The _b ports must match the _b gateways
+# above, exactly as the _a ports match the _a gateways: this is the only way the client can
+# reach instance b, so a mismatch here is indistinguishable from the instance being down.
+fix_gateway_host     = "127.0.0.1"
 fix_gateway_port     = 9879
 fix_tls_gateway_port = 9880
+fix_gateway_b_host     = "127.0.0.1"
+fix_gateway_b_port     = 9881
+fix_tls_gateway_b_port = 9882
 fix_proprietary_gateway_port = 30994
-binary_order_gateway_port  = 9890
+binary_order_gateway_host    = "127.0.0.1"
+binary_order_gateway_port    = 9890
+binary_order_gateway_b_host  = "127.0.0.1"
+binary_order_gateway_b_port  = 9891
 fix_tls_enabled      = true
 
 # ── Admin service ──────────────────────────────────────────────────────────────

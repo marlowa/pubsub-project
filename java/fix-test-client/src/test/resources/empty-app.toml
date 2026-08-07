@@ -1,1 +1,1 @@
-# empty — all values should come from Config defaults
+# No [[gateway]] entries: a client with nowhere to log on to must not start quietly.

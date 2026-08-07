@@ -1,0 +1,7 @@
+# Only the one thing a client cannot do without: somewhere to log on to.
+# Everything else must come from Config's defaults.
+[[gateway]]
+key      = "fix-a"
+protocol = "fix"
+host     = "127.0.0.1"
+port     = 9879

@@ -2,20 +2,73 @@
 port = ${fix_test_client_server_port}
 
 [fix]
-gateway_host         = "127.0.0.1"
-gateway_port         = ${fix_test_client_fix_gateway_port}
-tls_gateway_port     = ${fix_test_client_fix_tls_gateway_port}
-proprietary_gateway_port = ${fix_test_client_fix_proprietary_gateway_port}
 tls_enabled          = ${fix_test_client_fix_tls_enabled}
 target_comp_id       = "GATEWAY"
 trust_store_path     = "config/fix_gateway_trust.jks"
 trust_store_password = "pubsub_dev"
 
-# The venue's other front door. The client holds one session at a time; the logon page
-# chooses which gateway it goes to.
-[binary]
-gateway_host = "127.0.0.1"
-gateway_port = ${fix_test_client_binary_order_gateway_port}
+# ── Gateways this client may log on to ────────────────────────────────────────
+#
+# Every address, one entry each, in the order the logon page offers them. The client holds
+# one session at a time; this list is what it chooses between.
+#
+# A member is TOLD its endpoints out of band, which is how a venue provisions order entry
+# (docs/design/gateway_ha.md) -- so they are configured here rather than discovered from the
+# venue's own deployed configs. Discovery would work only on the venue host, and would make
+# this client something no real member could be.
+#
+# The list deliberately includes instances this comp id may not be provisioned for. A gateway
+# refuses a logon at an instance a session is not pinned to, and a client that could only
+# make correct choices could never show that refusal happening.
+#
+#   key        posted back by the logon form; must be unique
+#   label      what the page displays
+#   protocol   "fix" or "binary" -- which engine speaks to it
+#   tls_port   omit when the endpoint has no TLS listener; the page then disables TLS for it
+#   logon_mode "proprietary" for the nanosecond-timestamp dialect; omit for standard FIX
+
+[[gateway]]
+key      = "fix-a"
+label    = "FIX a"
+protocol = "fix"
+host     = "${fix_test_client_fix_gateway_host}"
+port     = ${fix_test_client_fix_gateway_port}
+tls_port = ${fix_test_client_fix_tls_gateway_port}
+
+[[gateway]]
+key      = "fix-b"
+label    = "FIX b"
+protocol = "fix"
+host     = "${fix_test_client_fix_gateway_b_host}"
+port     = ${fix_test_client_fix_gateway_b_port}
+tls_port = ${fix_test_client_fix_tls_gateway_b_port}
+
+# Not served by this venue: the proprietary dialect belongs to another system, and nothing
+# here listens on that port. Kept so the dialect stays reachable when there is something to
+# reach. Plaintext by definition, so it has no tls_port.
+[[gateway]]
+key        = "fix-proprietary"
+label      = "FIX proprietary"
+protocol   = "fix"
+host       = "${fix_test_client_fix_gateway_host}"
+port       = ${fix_test_client_fix_proprietary_gateway_port}
+logon_mode = "proprietary"
+
+# The venue's other front door: the same book over the internal binary protocol. No TLS
+# listener on either instance.
+[[gateway]]
+key      = "binary-a"
+label    = "Binary a"
+protocol = "binary"
+host     = "${fix_test_client_binary_order_gateway_host}"
+port     = ${fix_test_client_binary_order_gateway_port}
+
+[[gateway]]
+key      = "binary-b"
+label    = "Binary b"
+protocol = "binary"
+host     = "${fix_test_client_binary_order_gateway_b_host}"
+port     = ${fix_test_client_binary_order_gateway_b_port}
 
 [capture]
 output_dir = "output"
