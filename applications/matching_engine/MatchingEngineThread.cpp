@@ -468,6 +468,11 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
     entry.ord_type = view.ord_type;
     entry.has_time_in_force = view.has_time_in_force;
     entry.time_in_force = view.time_in_force;
+    // Stored exactly as sent -- no rounding to a session close, no trading-calendar
+    // resolution, no clamp to a maximum lifetime. See OrderEntry::expire_time for why this
+    // is a decision rather than merely the absence of one.
+    entry.has_expire_time = view.has_expire_time;
+    entry.expire_time = view.expire_time;
     entry.set_symbol(view.symbol);
     entry.set_order_qty(view.order_qty);
     if (view.has_price) {
@@ -505,6 +510,15 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
     // Echoed so the gateway can tell a persistent order from a day order without holding
     // the original NOS. Cancel-on-disconnect exempts GoodTillCancel and GoodTillDate, and
     // the ER is the only thing the gateway sees for an order resting on the book.
+    if (view.has_expire_time) {
+        // The member's confirmation of when its order dies -- one of the terms it is
+        // trading on, and the only way it can tell which expiry convention this venue
+        // follows. (The FIX rendering on the wire is second-precision, matching what the
+        // gateway's inbound parser reads; that is a property of the protocol hop rather
+        // than an adjustment to the value.)
+        er.has_expire_time = true;
+        er.expire_time = view.expire_time;
+    }
     if (view.has_time_in_force) {
         er.has_time_in_force = true;
         er.time_in_force = view.time_in_force;
@@ -610,6 +624,17 @@ void MatchingEngineThread::handle_order_cancel_request(const pubsub_itc_fw_app::
     er.ord_status = pubsub_itc_fw_app::OrdStatus::Canceled;
     er.symbol = entry.get_symbol();
     er.side = entry.side;
+    // A report describes the order it concerns, and a cancel is no exception: a member
+    // reconciling a cancel it did not initiate -- one arriving on a reconnect, say -- has
+    // only the report to tell it which order this was.
+    if (entry.has_time_in_force) {
+        er.has_time_in_force = true;
+        er.time_in_force = entry.time_in_force;
+    }
+    if (entry.has_expire_time) {
+        er.has_expire_time = true;
+        er.expire_time = entry.expire_time;
+    }
     er.leaves_qty = "0";
     er.cum_qty = "0";
     er.avg_px = "0.00";
@@ -716,6 +741,14 @@ void MatchingEngineThread::send_book_update(int64_t seq_no, pubsub_itc_fw_app::B
         upd.ord_type = static_cast<int8_t>(entry->ord_type);
         upd.symbol = entry->get_symbol();
         upd.order_qty = entry->get_order_qty();
+        if (entry->has_time_in_force) {
+            upd.has_time_in_force = true;
+            upd.time_in_force = static_cast<int8_t>(entry->time_in_force);
+        }
+        if (entry->has_expire_time) {
+            upd.has_expire_time = true;
+            upd.expire_time = entry->expire_time;
+        }
         if (entry->has_price) {
             upd.has_price = true;
             upd.price = entry->get_price();
@@ -749,6 +782,10 @@ void MatchingEngineThread::apply_book_update(const pubsub_itc_fw::EventMessage& 
         OrderEntry entry{};
         entry.order_id_num = view.order_id_num;
         entry.session = session;
+        entry.has_time_in_force = view.has_time_in_force;
+        entry.time_in_force = static_cast<pubsub_itc_fw_app::TimeInForce>(view.time_in_force);
+        entry.has_expire_time = view.has_expire_time;
+        entry.expire_time = view.expire_time;
         entry.side = static_cast<pubsub_itc_fw_app::Side>(view.side);
         entry.ord_type = static_cast<pubsub_itc_fw_app::OrdType>(view.ord_type);
         entry.set_symbol(view.symbol);

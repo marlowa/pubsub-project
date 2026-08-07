@@ -175,6 +175,7 @@
                     <th>Time</th><th>Dir</th><th>Type</th><th>Seq</th><th>ClOrdID</th><th>OrigClOrdID</th>
                     <th>OrderID</th><th>ExecID</th><th>ExecType</th><th>OrdStatus</th><th>Reason</th>
                     <th>SecurityID</th><th>Symbol</th><th>Side</th><th>OrdQty</th><th>Price</th><th>OrdType</th>
+                    <th>TIF</th><th>ExpireTime</th>
                     <th>CumQty</th><th>LeavesQty</th><th>Parties</th><th>Underlyings</th>
                 </tr>
             </thead>
@@ -189,6 +190,13 @@
 
 let lastBlotterSize = 0;
 let lastRows = []; // most recent blotter fetch, so the heartbeat toggle can re-render without a poll
+
+// FIX TimeInForce (tag 59) values the venue can report. Labelled rather than shown raw for
+// the same reason ExecType and OrdStatus are: '6' means nothing at a glance.
+const TIME_IN_FORCE_LABEL = {
+    '0': 'Day', '1': 'GTC', '2': 'OPG', '3': 'IOC', '4': 'FOK',
+    '5': 'GTX', '6': 'GTD', '7': 'AtClose',
+};
 
 const MSG_TYPE_LABEL = {
     'D': 'NewOrderSingle', 'F': 'OrderCancelRequest', '8': 'ExecutionReport',
@@ -502,6 +510,10 @@ function renderBlotter(rows) {
             rejectionReason(row),
             row.securityId, row.symbol, row.side,
             row.ordQty, row.price, row.ordType,
+            // The venue's own statement of the order's time-in-force terms. Shown because a
+            // member cannot otherwise tell which expiry convention it is dealing with: some
+            // venues adjust a GoodTillDate expiry, and this one reports back what it was sent.
+            TIME_IN_FORCE_LABEL[row.timeInForce] || row.timeInForce, row.expireTime,
             row.cumQty, row.leavesQty,
             row.parties, row.underlyings,
         ];

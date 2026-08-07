@@ -25,6 +25,20 @@ public record BlotterRow(
         String cumQty,
         String leavesQty,
         String parties,
-        String underlyings
+        String underlyings,
+        /**
+         * The order's time-in-force terms, as the venue reported them back.
+         *
+         * Appended rather than slotted in beside ordType where they belong logically: every
+         * component of this record is a String, so a positional mistake at one of the three
+         * construction sites would compile cleanly and show the wrong column. Display order
+         * is decided in messages.html, not here.
+         *
+         * expireTime is the venue's own statement of when a GoodTillDate order dies. It is
+         * shown because a member cannot otherwise tell which expiry convention the venue
+         * follows -- several venues adjust a GTD expiry, and this one does not.
+         */
+        String timeInForce,
+        String expireTime
 ) {
 }

@@ -45,4 +45,17 @@ message BookUpdate(id=600)
     string          symbol
     string          order_qty
     optional string price
+    # The order's time-in-force terms, replicated so a promoted secondary holds the order the
+    # member actually placed rather than a version of it with the terms stripped.
+    #
+    # Both were missing, and the consequence was the same shape as the connection-id bug this
+    # message had before: everything looked correct until a promotion, at which point the
+    # replica's copy of the book quietly differed from the primary's. A cancel report from the
+    # promoted engine would then describe an order with no expiry and no time-in-force,
+    # leaving a member unable to tell which of its orders had gone.
+    #
+    # expire_time is replicated verbatim. This venue never adjusts an expiry -- see
+    # OrderEntry::expire_time -- and replication is emphatically not the place to start.
+    optional i8     time_in_force
+    optional datetime_ns expire_time
 end

@@ -111,6 +111,20 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
         // sent no tag 59, in which case no exemption is claimed and Day is implied.
         bool has_time_in_force{false};
         pubsub_itc_fw_app::TimeInForce time_in_force{};
+        // When a GoodTillDate order expires, exactly as the member stated it.
+        //
+        // Echoed back unaltered, and stored here rather than re-read from the order because
+        // reports are emitted long after the NewOrderSingle has gone.
+        //
+        // Worth saying explicitly, where the same about the symbol or the quantity would be
+        // noise: **adjusting a GTD expiry is a real venue behaviour**, not a bug. Venues
+        // truncate to a maximum lifetime, round to session close, or resolve a date against
+        // a trading calendar, and are not misbehaving when they do. This venue does not, so
+        // the member's stated instant is the one that governs. That is a choice between
+        // defensible alternatives, which is why it is written down and tested rather than
+        // left to be inferred from the absence of conversion code.
+        bool has_expire_time{false};
+        int64_t expire_time{};
         bool has_price{false};
         uint8_t symbol_len{};
         uint8_t order_qty_len{};

@@ -4,6 +4,8 @@ import com.pubsub.fixtestclient.blotter.BlotterRow;
 import com.pubsub.fixtestclient.protocol.FixOrders;
 
 import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -33,7 +35,9 @@ public final class BinaryBlotterRows {
                 asFixChar(order.ord_type.value),
                 "", "",
                 summariseParties(order.no_party_i_ds),
-                summariseUnderlyings(order.no_underlyings));
+                summariseUnderlyings(order.no_underlyings),
+                order.has_time_in_force ? asFixChar(order.time_in_force.value) : "",
+                order.has_expire_time ? formatExpireTime(order.expire_time) : "");
     }
 
     public static BlotterRow fromCancel(long id, FixOrders.OrderCancelRequest cancel) {
@@ -42,7 +46,7 @@ public final class BinaryBlotterRows {
                 cancel.cl_ord_id, cancel.orig_cl_ord_id, "", "", "", "", "", "",
                 "", cancel.symbol,
                 asFixChar(cancel.side.value),
-                cancel.order_qty, "", "", "", "", "", "");
+                cancel.order_qty, "", "", "", "", "", "", "", "");
     }
 
     public static BlotterRow fromReport(long id, FixOrders.ExecutionReport report) {
@@ -65,7 +69,9 @@ public final class BinaryBlotterRows {
                 report.cum_qty,
                 report.leaves_qty,
                 summariseParties(report.no_party_i_ds),
-                summariseUnderlyings(report.no_underlyings));
+                summariseUnderlyings(report.no_underlyings),
+                report.has_time_in_force ? asFixChar(report.time_in_force.value) : "",
+                report.has_expire_time ? formatExpireTime(report.expire_time) : "");
     }
 
     // Repeating groups render as a compact one-line summary, matching what the FIX blotter
@@ -98,6 +104,19 @@ public final class BinaryBlotterRows {
         }
         return String.join(", ", parts);
     }
+
+    /**
+     * Renders an expiry for display, matching the FIX wire form the gateway emits.
+     *
+     * Second precision, as the venue's own rendering is: showing more would suggest the
+     * venue holds a finer value than it reports back.
+     */
+    private static String formatExpireTime(long expireTimeNanos) {
+        return EXPIRE_TIME_FORMAT.format(Instant.ofEpochSecond(expireTimeNanos / 1_000_000_000L));
+    }
+
+    private static final DateTimeFormatter EXPIRE_TIME_FORMAT =
+            DateTimeFormatter.ofPattern("yyyyMMdd-HH:mm:ss").withZone(ZoneOffset.UTC);
 
     private static String summariseUnderlyings(FixOrders.Underlyings[] underlyings) {
         if (underlyings == null || underlyings.length == 0) {

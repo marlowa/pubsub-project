@@ -356,6 +356,8 @@ public class MessagesHandler {
             map.put("ordQty", row.ordQty());
             map.put("price", row.price());
             map.put("ordType", row.ordType());
+            map.put("timeInForce", row.timeInForce());
+            map.put("expireTime", row.expireTime());
             map.put("cumQty", row.cumQty());
             map.put("leavesQty", row.leavesQty());
             map.put("parties", row.parties());

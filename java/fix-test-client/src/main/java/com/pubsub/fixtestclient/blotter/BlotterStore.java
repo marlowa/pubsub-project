@@ -8,6 +8,7 @@ import quickfix.field.ClOrdID;
 import quickfix.field.CumQty;
 import quickfix.field.ExecID;
 import quickfix.field.ExecType;
+import quickfix.field.ExpireTime;
 import quickfix.field.LeavesQty;
 import quickfix.field.MsgSeqNum;
 import quickfix.field.MsgType;
@@ -28,6 +29,7 @@ import quickfix.field.Price;
 import quickfix.field.SecurityID;
 import quickfix.field.Side;
 import quickfix.field.Symbol;
+import quickfix.field.TimeInForce;
 import quickfix.field.UnderlyingQty;
 import quickfix.field.UnderlyingSecurityID;
 import quickfix.field.UnderlyingSymbol;
@@ -99,7 +101,9 @@ public class BlotterStore {
                 getDecimal(message, CumQty.FIELD),
                 getDecimal(message, LeavesQty.FIELD),
                 summarizeParties(message),
-                summarizeUnderlyings(message)
+                summarizeUnderlyings(message),
+                getChar(message, TimeInForce.FIELD),
+                getString(message, ExpireTime.FIELD)
         );
     }
 

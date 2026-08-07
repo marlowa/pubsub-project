@@ -118,6 +118,21 @@ std::string_view encode_execution_report(const pubsub_itc_fw_app::ExecutionRepor
     if (view.has_ord_type) {
         writer.push_back_field(Tag::OrdType, static_cast<char>(view.ord_type));
     }
+    // The order's time-in-force terms, when the matching engine echoed them.
+    //
+    // Neither was written before, so a member never saw them on a report -- which is how a
+    // GoodTillDate order came to be acknowledged with no expiry on it. The report is the
+    // venue's statement of the order it accepted, and for a GTD order the expiry is one of
+    // the terms; a member that cannot see it back has no way to confirm the venue holds what
+    // it sent.
+    if (view.has_time_in_force) {
+        writer.push_back_field(Tag::TimeInForce, static_cast<char>(view.time_in_force));
+    }
+    if (view.has_expire_time) {
+        char expire_buffer[timestamp_length + 1];
+        fill_utc_timestamp_from(expire_buffer, view.expire_time);
+        writer.push_back_field(Tag::ExpireTime, std::string_view{expire_buffer, timestamp_length});
+    }
     writer.push_back_field(Tag::CumQty, view.cum_qty);
     writer.push_back_field(Tag::LeavesQty, view.leaves_qty);
 
