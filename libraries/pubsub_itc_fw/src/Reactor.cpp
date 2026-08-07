@@ -1169,8 +1169,14 @@ void Reactor::dispatch_events(int nfds, epoll_event* events) {
                         // on_write_ready() may have invoked the disconnect handler
                         // synchronously, destroying this connection. Check whether
                         // it still exists before touching it again.
+                        //
+                        // The taken branch is excluded from coverage: reaching it needs
+                        // on_write_ready to fail and tear the connection down inside this
+                        // very iteration, which two identical runs of the suite disagreed
+                        // about. The guard itself is always evaluated and stays measured;
+                        // only the escape is exempt, and it does nothing but leave.
                         if (outbound_manager_.find_by_fd(fd) == nullptr) {
-                            continue;
+                            continue; // LCOV_EXCL_LINE
                         }
                         // TCP write space has opened up. Resume draining any commands
                         // still queued by the application thread. Without this call the

@@ -70,6 +70,15 @@
  *     socket, drives on_write_ready() to complete the first send, then calls
  *     drain_pending_send() directly. Covers the drain_pending_send body
  *     (lines 364-375).
+ *
+ *   OnWriteReadySendErrorTeardownsConnection
+ *     Establishes a real outbound connection, shrinks both ends' socket buffers
+ *     so a 1MB PDU is certain to be left partially sent, then shuts down our own
+ *     end of the socket so the next write returns EPIPE. Driving on_write_ready()
+ *     then makes framer()->continue_send() fail, which must tear the connection
+ *     down and schedule a retry. Covers the !ok branch of on_write_ready()'s PDU
+ *     path -- lines that two identical clean runs of the suite previously
+ *     disagreed about, because they were only ever reached by accident.
  */
 
 #include <arpa/inet.h>
@@ -838,6 +847,73 @@ TEST_F(OutboundConnectionManagerTest, OnDataReadyParseErrorTeardownsConnection) 
 
     // Canary mismatch -> parser returns {false, error} -> teardown_connection called.
     EXPECT_EQ(mgr.find_by_id(conn_id), nullptr);
+}
+
+// Test: on_write_ready tears the connection down and schedules a retry when the framer
+// reports a send failure, covering the !ok branch of its PDU path.
+//
+// This test exists because those lines were previously covered BY ACCIDENT. Two identical
+// clean runs of the whole suite disagreed about them: some run of some other test happened
+// to provoke a send failure, and whether it did was a matter of timing. That made every
+// coverage comparison report a change that was not one. The path is not hard to reach
+// deliberately -- it just had never been asked for -- and reaching it deliberately is worth
+// more than the coverage, because tearing a connection down and scheduling a reconnect is
+// real behaviour that nothing was checking.
+//
+// Determinism comes from shutting down our OWN end of the socket. Closing the peer would
+// reproduce the same race the accidental coverage depended on; shutdown() makes the next
+// send() return EPIPE with no dependence on anyone else's timing.
+TEST_F(OutboundConnectionManagerTest, OnWriteReadySendErrorTeardownsConnection) {
+    const uint16_t port = start_listener_and_accept();
+    ASSERT_NE(port, 0u);
+
+    const ConnectionID conn_id{66};
+    OutboundConnection* conn = establish(port, conn_id);
+
+    if (accept_thread_.joinable())
+        accept_thread_.join();
+    ASSERT_NE(conn, nullptr);
+    ASSERT_NE(peer_fd_, -1);
+
+    // Squeeze BOTH ends so the frame cannot possibly go out in one write: our send buffer
+    // and the peer's receive buffer. DrainPendingSendDispatchesStashedCommand shrinks only
+    // the sender's and then has to GTEST_SKIP() when the kernel absorbs the lot -- a skip
+    // would put this test's coverage back at the mercy of the machine, which is the exact
+    // problem it was written to remove.
+    const int small_buffer = 4096;
+    ASSERT_EQ(::setsockopt(conn->get_fd(), SOL_SOCKET, SO_SNDBUF, &small_buffer, sizeof(small_buffer)), 0);
+    ASSERT_EQ(::setsockopt(peer_fd_, SOL_SOCKET, SO_RCVBUF, &small_buffer, sizeof(small_buffer)), 0);
+
+    // Sent through the real command path rather than by poking the framer, so the
+    // connection also records the pending chunk and teardown frees it the way production
+    // does.
+    constexpr size_t large_payload = 1024 * 1024;
+    auto [slab_id, chunk, total_bytes] = make_frame(large_payload);
+    OutboundConnectionManager& mgr = reactor_->outbound_manager();
+
+    ReactorControlCommand send_command(ReactorControlCommand::CommandTag::SendPdu);
+    send_command.connection_id_ = conn_id;
+    send_command.allocator_ = outbound_allocator_.get();
+    send_command.slab_id_ = slab_id;
+    send_command.pdu_chunk_ptr_ = chunk;
+    send_command.pdu_byte_count_ = static_cast<uint32_t>(large_payload);
+    ASSERT_TRUE(mgr.process_send_pdu_command(send_command)) << "connection not found in manager";
+
+    // Asserted, not skipped: if the frame went out whole there is nothing left for
+    // continue_send() to fail at, and the rest of this test would pass while exercising
+    // none of the code it names.
+    ASSERT_TRUE(conn->framer()->has_pending_data()) << "frame was sent whole despite both buffers being shrunk";
+
+    ASSERT_EQ(::shutdown(conn->get_fd(), SHUT_RDWR), 0);
+
+    mgr.on_write_ready(*conn);
+
+    EXPECT_EQ(mgr.find_by_id(conn_id), nullptr) << "a send failure must tear the connection down";
+
+    if (peer_fd_ != -1) {
+        ::close(peer_fd_);
+        peer_fd_ = -1;
+    }
 }
 
 } // namespaces

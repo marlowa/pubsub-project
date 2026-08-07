@@ -1,0 +1,325 @@
+#!/usr/bin/env python3
+"""Record a coverage baseline, and report how the current build has moved against it.
+
+    ./build.sh --coverage --coverage-report          # produces the tracefile
+    python3 coverage_baseline.py --update            # record where we are now
+    python3 coverage_baseline.py                     # report what has changed since
+
+This REPORTS. It does not gate, and it never fails a build: the exit status is 0 whether
+coverage rose, fell or stayed put. A threshold that blocks a merge is satisfiable by
+writing a test that executes the hard path and asserts nothing, which passes the check and
+leaves behind a test that can never fail and must be maintained forever. The number is
+worth watching; it is not worth obeying.
+
+Three things follow from that, and they are the whole design:
+
+  * Per file, never one number. A single percentage is a scalar summary of a
+    distribution: it cannot tell 80% everywhere from 100% of the trivial code and 20% of
+    the matching engine, and those are different risks.
+
+  * Counts, not percentages. Delete fifty well-tested lines and a percentage falls though
+    nothing got worse. With hit/total you can tell "five lines stopped being covered" from
+    "fifty covered lines were deleted" -- different events, different responses.
+
+  * Name what regressed. "SessionStore::evict_expired is no longer covered" is actionable
+    in thirty seconds; "-0.4%" starts a discussion. The baseline therefore records the
+    UNCOVERED function signatures, which are both the smaller set and the useful one.
+
+The baseline is a committed text file, sorted, one record per line, so that a change in
+coverage arrives as a reviewable diff rather than as a number in a database somewhere.
+Update it in the same commit as the change that moved it, while the reason is still known.
+
+Note on excluded code: the baseline does not record gcovr's --exclude patterns, it records
+the set of files that survived them. That is the observable thing. If the excludes change,
+files appear or disappear and this reports FILE NEW / FILE GONE, which is what you want to
+see -- the patterns themselves could match nothing and look fine.
+"""
+
+import argparse
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+DEFAULT_TRACEFILE = Path("build-coverage/coverage.info")
+DEFAULT_BASELINE = Path("coverage_baseline.txt")
+
+# Everything below this path component is the project; the prefix varies by checkout and
+# must not reach the committed file, or the baseline only matches the machine that wrote it.
+ROOT_MARKER = "pubsub-project-10-copilot/"
+
+
+# =========================================================================== #
+# READING THE TRACEFILE
+# =========================================================================== #
+
+def read_tracefile(path):
+    """Parse an lcov tracefile into {relative path: {"lines": {...}, "functions": {...}}}.
+
+    Hit counts are kept rather than reduced to booleans on the way in. A line whose count
+    moved from 900 to 901 is not a coverage change, and a comparison that treated it as one
+    would report every run as different; the reduction to covered/not-covered happens where
+    the comparison is made, deliberately and once.
+    """
+    files = {}
+    current = {}
+    with open(path, "r", encoding="utf-8") as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            if line.startswith("SF:"):
+                name = line[3:]
+                index = name.find(ROOT_MARKER)
+                if index >= 0:
+                    name = name[index + len(ROOT_MARKER):]
+                current = files.setdefault(name, {"lines": {}, "functions": {}})
+            elif line.startswith("DA:") and current:
+                number, _, remainder = line[3:].partition(",")
+                current["lines"][int(number)] = int(remainder.split(",")[0])
+            elif line.startswith("FNDA:") and current:
+                hits, _, name = line[5:].partition(",")
+                current["functions"][name] = int(hits)
+            elif line == "end_of_record":
+                current = {}
+    return files
+
+
+def summarise(entry):
+    """Return (lines hit, lines total, functions hit, functions total, uncovered names)."""
+    lines_hit = sum(1 for hits in entry["lines"].values() if hits > 0)
+    functions_hit = sum(1 for hits in entry["functions"].values() if hits > 0)
+    uncovered = sorted(name for name, hits in entry["functions"].items() if hits == 0)
+    return lines_hit, len(entry["lines"]), functions_hit, len(entry["functions"]), uncovered
+
+
+def current_commit():
+    """Short commit the working tree is at, or "unknown" outside a repository."""
+    try:
+        result = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
+                                capture_output=True, text=True, check=True)
+        return result.stdout.strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return "unknown"
+
+
+# =========================================================================== #
+# THE BASELINE FILE
+# =========================================================================== #
+
+def relative_if_possible(path):
+    """Path relative to the working directory, or its bare name if it lies outside."""
+    try:
+        return Path(path).resolve().relative_to(Path.cwd())
+    except ValueError:
+        return Path(path).name
+
+
+def write_baseline(files, path, tracefile):
+    """Write the baseline, sorted, so that a later diff is readable."""
+    total_lines_hit = total_lines = total_functions_hit = total_functions = 0
+    records = []
+    for name in sorted(files):
+        lines_hit, lines_total, functions_hit, functions_total, uncovered = summarise(files[name])
+        total_lines_hit += lines_hit
+        total_lines += lines_total
+        total_functions_hit += functions_hit
+        total_functions += functions_total
+        records.append((name, lines_hit, lines_total, functions_hit, functions_total, uncovered))
+
+    lines = [
+        "# Coverage baseline -- see coverage_baseline.py.",
+        "#",
+        "# Counts, not percentages: a percentage moves when the denominator moves, so it",
+        "# cannot distinguish lines that stopped being covered from covered lines that were",
+        "# deleted. UNCOVERED records name the functions with no observations, which is the",
+        "# smaller set and the one worth acting on.",
+        "#",
+        "# Regenerate with: ./build.sh --coverage --coverage-report",
+        "#                 python3 coverage_baseline.py --update",
+        "# Commit the result alongside the change that moved it.",
+        "",
+        f"COMMIT {current_commit()}",
+        f"GENERATED {datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}",
+        # Relative where possible: an absolute path names the machine that happened to
+        # write the baseline, and would show up as a spurious diff on the next one.
+        f"TRACEFILE {relative_if_possible(tracefile)}",
+        f"TOTALS lines {total_lines_hit}/{total_lines} functions "
+        f"{total_functions_hit}/{total_functions}",
+        "",
+    ]
+    for name, lines_hit, lines_total, functions_hit, functions_total, uncovered in records:
+        lines.append(f"FILE {name} lines {lines_hit}/{lines_total} "
+                     f"functions {functions_hit}/{functions_total}")
+        for signature in uncovered:
+            lines.append(f"  UNCOVERED {signature}")
+
+    Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return total_lines_hit, total_lines, total_functions_hit, total_functions
+
+
+def read_baseline(path):
+    """Parse a baseline file back into {file: (counts, uncovered set)} plus its header."""
+    header = {}
+    files = {}
+    current = None
+    with open(path, "r", encoding="utf-8") as handle:
+        for raw_line in handle:
+            line = raw_line.rstrip("\n")
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("  UNCOVERED "):
+                if current is not None:
+                    files[current]["uncovered"].add(line[len("  UNCOVERED "):])
+                continue
+            parts = line.split()
+            if parts[0] == "FILE":
+                # FILE <path> lines <hit>/<total> functions <hit>/<total>
+                current = parts[1]
+                lines_hit, lines_total = (int(value) for value in parts[3].split("/"))
+                functions_hit, functions_total = (int(value) for value in parts[5].split("/"))
+                files[current] = {
+                    "lines": (lines_hit, lines_total),
+                    "functions": (functions_hit, functions_total),
+                    "uncovered": set(),
+                }
+            elif parts[0] in ("COMMIT", "GENERATED", "TRACEFILE"):
+                header[parts[0]] = " ".join(parts[1:])
+            elif parts[0] == "TOTALS":
+                header["TOTALS"] = line
+                current = None
+    return header, files
+
+
+# =========================================================================== #
+# COMPARISON
+# =========================================================================== #
+
+def compare(baseline_path, files):
+    """Report movement against the baseline. Always returns 0 -- this reports, never gates."""
+    header, baseline = read_baseline(baseline_path)
+    print(f"baseline taken at {header.get('COMMIT', '?')} on {header.get('GENERATED', '?')}")
+    print(f"working tree is at {current_commit()}\n")
+
+    current = {}
+    for name, entry in files.items():
+        lines_hit, lines_total, functions_hit, functions_total, uncovered = summarise(entry)
+        current[name] = {
+            "lines": (lines_hit, lines_total),
+            "functions": (functions_hit, functions_total),
+            "uncovered": set(uncovered),
+        }
+
+    def totals(source):
+        return (sum(v["lines"][0] for v in source.values()),
+                sum(v["lines"][1] for v in source.values()),
+                sum(v["functions"][0] for v in source.values()),
+                sum(v["functions"][1] for v in source.values()))
+
+    was = totals(baseline)
+    now = totals(current)
+    print(f"{'':10s} {'lines':>16s}   {'functions':>16s}")
+    print(f"{'baseline':10s} {was[0]:6d}/{was[1]:<9d} {was[2]:6d}/{was[3]:<9d}")
+    print(f"{'now':10s} {now[0]:6d}/{now[1]:<9d} {now[2]:6d}/{now[3]:<9d}")
+    print(f"{'change':10s} {now[0] - was[0]:+6d}/{now[1] - was[1]:<+9d} "
+          f"{now[2] - was[2]:+6d}/{now[3] - was[3]:<+9d}\n")
+
+    gone = sorted(set(baseline) - set(current))
+    added = sorted(set(current) - set(baseline))
+    for name in gone:
+        print(f"FILE GONE  {name}")
+    for name in added:
+        entry = current[name]
+        print(f"FILE NEW   {name} lines {entry['lines'][0]}/{entry['lines'][1]} "
+              f"functions {entry['functions'][0]}/{entry['functions'][1]}")
+    if gone or added:
+        print()
+
+    # Function movement and line movement are reported separately because they are not
+    # equally trustworthy, and the difference was measured rather than assumed. Across four
+    # clean runs of the whole suite at one commit, function coverage was identical every
+    # time -- same count, same set -- while the line count came out 5634, 5644, 5643 and
+    # 5649. The variance is a handful of shutdown-race lines (an event arriving while a
+    # thread winds down, and the as_string() call in the log statement that reports it):
+    # real code, reachable only when the timing falls a certain way.
+    #
+    # So a function that stops being covered is a finding, and a line count that shifts by
+    # a few is weather. Presenting them alike would train the reader to skim both.
+    function_moves = []
+    line_moves = []
+    for name in sorted(set(baseline) & set(current)):
+        before, after = baseline[name], current[name]
+        # Computed from the UNCOVERED sets rather than the counts, so a file that loses
+        # coverage of one function and gains it on another -- unchanged counts, changed
+        # reality -- still reports.
+        regressed = sorted(after["uncovered"] - before["uncovered"])
+        recovered = sorted(before["uncovered"] - after["uncovered"])
+        if regressed or recovered:
+            function_moves.append((name, regressed, recovered))
+        if before["lines"] != after["lines"]:
+            line_moves.append((name, before["lines"], after["lines"]))
+
+    if function_moves:
+        print("FUNCTION COVERAGE CHANGED -- this is the signal worth acting on:\n")
+        for name, regressed, recovered in function_moves:
+            print(f"  {name}")
+            for signature in regressed:
+                print(f"      NO LONGER COVERED  {signature}")
+            for signature in recovered:
+                print(f"      now covered        {signature}")
+        print()
+
+    if line_moves:
+        print("Line counts also moved (informational -- a few lines vary between identical")
+        print("runs; see the note in this script):\n")
+        for name, before_lines, after_lines in line_moves:
+            print(f"  {name}: {before_lines[0]}/{before_lines[1]}"
+                  f"  ->  {after_lines[0]}/{after_lines[1]}")
+        print()
+
+    if not function_moves and not line_moves and not gone and not added:
+        print("No change against the baseline.")
+    elif not function_moves:
+        print("No function-level change against the baseline.")
+    else:
+        print("If this is intended, re-run with --update and commit the baseline "
+              "alongside\nthe change that caused it.")
+    return 0
+
+
+def main(argv=None):
+    """Parse the command line and either record the baseline or report against it."""
+    parser = argparse.ArgumentParser(
+        description="Record and compare a code-coverage baseline. Reports; never gates.")
+    parser.add_argument("--update", action="store_true",
+                        help="overwrite the baseline with the current tracefile")
+    parser.add_argument("--tracefile", type=Path, default=DEFAULT_TRACEFILE,
+                        help=f"lcov tracefile to read (default: {DEFAULT_TRACEFILE})")
+    parser.add_argument("--baseline", type=Path, default=DEFAULT_BASELINE,
+                        help=f"baseline file (default: {DEFAULT_BASELINE})")
+    arguments = parser.parse_args(argv)
+
+    if not arguments.tracefile.exists():
+        print(f"error: no tracefile at {arguments.tracefile}\n"
+              f"Generate one with: ./build.sh --coverage --coverage-report", file=sys.stderr)
+        return 2
+
+    files = read_tracefile(arguments.tracefile)
+    if not files:
+        print(f"error: {arguments.tracefile} holds no file records", file=sys.stderr)
+        return 2
+
+    if arguments.update:
+        lines_hit, lines_total, functions_hit, functions_total = write_baseline(
+            files, arguments.baseline, arguments.tracefile)
+        print(f"wrote {arguments.baseline}: {len(files)} files, "
+              f"lines {lines_hit}/{lines_total}, functions {functions_hit}/{functions_total}")
+        return 0
+
+    if not arguments.baseline.exists():
+        print(f"error: no baseline at {arguments.baseline}; create one with --update",
+              file=sys.stderr)
+        return 2
+    return compare(arguments.baseline, files)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

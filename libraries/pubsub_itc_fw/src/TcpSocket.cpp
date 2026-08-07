@@ -218,6 +218,11 @@ TcpSocketImpl::TcpSocketImpl(int socket_fd) : socket_file_descriptor(socket_fd) 
         if (errno == EWOULDBLOCK || errno == EAGAIN) {
             return {-EAGAIN, ""}; // Socket send buffer full -- caller should wait for EPOLLOUT.
         }
+        // Covered deterministically by OutboundConnectionManagerTest.
+        // OnWriteReadySendErrorTeardownsConnection, which shuts down its own end of the
+        // socket rather than waiting for a peer to close: EPIPE then arrives on the next
+        // send() with no dependence on anyone else's timing. It used to be reached only
+        // by accident, and two identical clean runs of the suite disagreed about it.
         if (errno == EPIPE) {
             return {-EPIPE, ""}; // Peer closed its end -- clean disconnect, not an error on our side.
         }
