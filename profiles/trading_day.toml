@@ -1,0 +1,67 @@
+# A compressed trading day. See docs/design/trading_day_load.md.
+#
+# Phase rates are FRACTIONS of ceiling_orders_per_second, never absolute, so the same
+# profile means the same thing on a machine with different capacity. Measure the ceiling
+# on this box and set it below.
+#
+# Compression applies ONLY to phases with compressible = true -- the quiet ones. Bursts
+# keep their real durations because their durations are what is being tested, and the
+# sustained phase is never compressed because accumulation needs real elapsed time.
+
+[run]
+ceiling_orders_per_second = 3500   # PROVISIONAL -- calibrate on this machine
+compression               = 6      # quiet phases only
+chart_step_seconds        = 30     # must match pubsub_metrics.py --step
+minimum_samples           = 6      # per phase; sets the floor a phase may not fall below
+
+[[phase]]
+name         = "pre-open"
+pattern      = "steady"
+duration     = "20m"               # 200s after 6x compression
+compressible = true
+rate         = 0.05
+
+[[phase]]
+name         = "open auction"
+pattern      = "uniform_slowdown"
+duration     = "4m"
+compressible = false
+rate         = 1.0                 # at the ceiling: the venue should be working hard
+
+[[phase]]
+name         = "morning steady"
+pattern      = "steady"
+duration     = "20m"
+compressible = true
+rate         = 0.30
+
+# The event of interest, and the reason this run takes an hour. Never compressed:
+# accumulation -- slab growth, WAL, monotonic degradation -- cannot be measured in
+# less elapsed time than it takes to accumulate.
+[[phase]]
+name         = "sustained elevated"
+pattern      = "uniform_slowdown"
+duration     = "60m"
+compressible = false
+rate         = 0.55
+
+[[phase]]
+name         = "midday lull"
+pattern      = "volume_collapse"
+duration     = "30m"               # 300s after compression
+compressible = true
+rate         = 0.02                # percentiles should NOT move here -- only volume
+
+[[phase]]
+name         = "afternoon burst"
+pattern      = "uniform_slowdown"
+duration     = "3m"
+compressible = false
+rate         = 0.95
+
+[[phase]]
+name         = "close"
+pattern      = "uniform_slowdown"
+duration     = "4m"
+compressible = false
+rate         = 1.1                 # deliberately above ceiling: a stress phase

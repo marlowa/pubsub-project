@@ -704,6 +704,210 @@ def run_binary_load_session(bin_dir: Path, output_dir: Path, burst: int, clients
     log("  binary_load_client completed: every order acknowledged")
 
 
+# ── Trading-day profile ───────────────────────────────────────────────────────
+#
+# A run shaped like a trading day rather than a flat rate: quiet periods, steady
+# activity, short bursts and at least one sustained hour. See
+# docs/design/trading_day_load.md for why, and for what each phase is meant to find.
+#
+# Phase rates are FRACTIONS of a ceiling measured on this machine, never absolute
+# orders/second, so the same profile means the same thing on a different box.
+
+def _load_toml(path: Path) -> dict:
+    """Parse a TOML file, with the same interpreter fallback cpu_audit.py uses."""
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        try:
+            import tomli as tomllib  # type: ignore[no-redef]
+        except ModuleNotFoundError:
+            die("Python 3.11+ or the 'tomli' package is required to read a profile")
+    with open(path, "rb") as handle:  # binary: tomllib requires it
+        return tomllib.load(handle)
+
+
+def parse_duration_seconds(text: str) -> float:
+    """Parse '90s', '4m', '1h' into seconds."""
+    units = {"s": 1.0, "m": 60.0, "h": 3600.0}
+    cleaned = str(text).strip().lower()
+    for unit, multiplier in units.items():
+        if cleaned.endswith(unit):
+            try:
+                return float(cleaned[:-1]) * multiplier
+            except ValueError:
+                break
+    try:
+        return float(cleaned)
+    except ValueError:
+        die(f"cannot read '{text}' as a duration: use 90s, 4m or 1h")
+    return 0.0  # unreachable; die() exits
+
+
+def validate_profile(profile: dict, sessions: int) -> tuple[dict, list[dict]]:
+    """Check a profile is runnable and return its (run settings, resolved phases).
+
+    Refuses rather than warns, and names the offending phase. A profile that runs but
+    produces phases too short to appear on the latency chart wastes the whole run, and
+    the fault is invisible until someone tries to read the result -- the same reason the
+    coverage baseline refuses a ceiling that sits on no bucket bound.
+    """
+    run = profile.get("run", {})
+    ceiling = run.get("ceiling_orders_per_second")
+    if not ceiling:
+        die("profile [run] needs ceiling_orders_per_second -- measure it with --probe first,\n"
+            "       or the phase fractions mean nothing on this machine")
+
+    compression = float(run.get("compression", 1.0))
+    if compression < 1.0:
+        die(f"[run] compression must be at least 1.0, got {compression}")
+
+    step_seconds = float(run.get("chart_step_seconds", 30))
+    minimum_samples = int(run.get("minimum_samples", 6))
+    minimum_phase_seconds = step_seconds * minimum_samples
+
+    phases = profile.get("phase", [])
+    if not phases:
+        die("profile declares no [[phase]] entries")
+
+    resolved = []
+    for index, phase in enumerate(phases):
+        name = phase.get("name", f"phase {index + 1}")
+        if "duration" not in phase:
+            die(f"phase '{name}' has no duration")
+        seconds = parse_duration_seconds(phase["duration"])
+        # Compression applies ONLY to phases that opt in -- the quiet ones. Bursts and
+        # the sustained phase keep their real durations, because their durations ARE the
+        # thing being tested.
+        if phase.get("compressible", False):
+            seconds /= compression
+        if seconds < minimum_phase_seconds:
+            die(f"phase '{name}' is {seconds:.0f}s after compression, below the "
+                f"{minimum_phase_seconds:.0f}s floor\n"
+                f"       ({minimum_samples} samples at a {step_seconds:.0f}s chart step). "
+                f"Lengthen it, mark it not compressible,\n"
+                f"       or lower [run] compression.")
+
+        fraction = float(phase.get("rate", 0.0))
+        if fraction <= 0.0:
+            die(f"phase '{name}' has rate {fraction}; it must be a positive "
+                f"fraction of the ceiling")
+        aggregate = fraction * float(ceiling)
+        per_session = max(1, int(round(aggregate / max(1, sessions))))
+
+        resolved.append({
+            "name": name,
+            "pattern": phase.get("pattern", "steady"),
+            "seconds": seconds,
+            "rate_fraction": fraction,
+            "aggregate_rate": aggregate,
+            "per_session_rate": per_session,
+            "compressed": bool(phase.get("compressible", False)),
+            "micro_burst": phase.get("micro_burst"),
+        })
+
+    total = sum(entry["seconds"] for entry in resolved)
+    log(f"profile: {len(resolved)} phase(s), {total / 60.0:.0f} minutes, "
+        f"ceiling {ceiling} orders/s, compression {compression}x")
+    return run, resolved
+
+
+def run_profile_phase(bin_dir: Path, output_dir: Path, phase: dict, sessions: int,
+                      port: int, manifest: list[dict]) -> None:
+    """Run one phase, appending its actual timings to the manifest.
+
+    One binary_load_client invocation per phase. That means a logon at each phase
+    boundary, which is visible on the chart and recorded here so it is not misread as
+    part of the phase's own behaviour -- the client has no way to change rate in flight.
+    """
+    per_session = phase["per_session_rate"]
+    bursts = max(1, int(round(per_session * phase["seconds"] / ORDERS_PER_BURST)))
+    orders = bursts * ORDERS_PER_BURST * sessions
+
+    log(f"--- phase '{phase['name']}' ({phase['pattern']}): "
+        f"{phase['seconds']:.0f}s at {phase['aggregate_rate']:.0f} orders/s aggregate "
+        f"({per_session}/s x {sessions} sessions, {orders} orders) ---")
+
+    command = [
+        str(bin_dir / "binary_load_client"),
+        "--host", BINARY_GATEWAY_HOST,
+        "--port", str(port),
+        "--comp-id-prefix", BINARY_LOAD_COMP_ID_PREFIX,
+        "--password", BINARY_LOAD_PASSWORD,
+        "--sessions", str(sessions),
+        "--orders-per-burst", str(ORDERS_PER_BURST),
+        "--bursts", str(bursts),
+        "--rate", str(per_session),
+    ]
+
+    started = time.time()
+    # Generous: the phase should take `seconds`, but a saturated venue makes the client
+    # take longer, and cutting it off would look like a client fault rather than the
+    # finding it is.
+    timeout = phase["seconds"] * 3 + 120
+    try:
+        result = subprocess.run(command, timeout=timeout, check=False,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        returncode, out = result.returncode, result.stdout or ""
+    except subprocess.TimeoutExpired:
+        returncode, out = 124, f"phase timed out after {timeout:.0f}s"
+    finished = time.time()
+
+    (output_dir / f"phase_{len(manifest) + 1:02d}_{phase['name'].replace(' ', '_')}.txt"
+     ).write_text(out)
+
+    manifest.append({
+        "name": phase["name"],
+        "pattern": phase["pattern"],
+        "planned_seconds": round(phase["seconds"], 1),
+        "actual_seconds": round(finished - started, 1),
+        "start_epoch": round(started, 3),
+        "end_epoch": round(finished, 3),
+        "aggregate_rate": round(phase["aggregate_rate"], 1),
+        "orders_offered": orders,
+        "exit_code": returncode,
+    })
+    write_manifest(output_dir, manifest)
+
+    elapsed = finished - started
+    log(f"    took {elapsed:.0f}s (planned {phase['seconds']:.0f}s), exit {returncode}")
+    if elapsed > phase["seconds"] * 1.25:
+        log(f"    NOTE: overran by {elapsed - phase['seconds']:.0f}s -- the venue did not "
+            f"keep up with the offered rate. That is a finding, not a harness fault.")
+    if returncode != 0:
+        log(f"    WARNING: load client exited {returncode}; continuing so later phases "
+            f"still run. The manifest records it.")
+
+
+def write_manifest(output_dir: Path, manifest: list[dict]) -> None:
+    """Write the phase manifest after every phase, so a run that dies still has one.
+
+    This is what lets the latency chart and a perf capture be read against the phases:
+    without the wall-clock boundaries, a feature on the chart cannot be attributed to the
+    phase that caused it.
+    """
+    import json
+
+    (output_dir / "trading_day_manifest.json").write_text(
+        json.dumps({"phases": manifest}, indent=2) + "\n")
+
+
+def run_trading_day(bin_dir: Path, output_dir: Path, profile_path: Path, sessions: int,
+                    port: int) -> list[dict]:
+    """Run a whole trading-day profile, phase by phase."""
+    profile = _load_toml(profile_path)
+    _run_settings, phases = validate_profile(profile, sessions)
+
+    log(f"=== Trading day: {len(phases)} phases from {profile_path.name} ===")
+    manifest: list[dict] = []
+    for phase in phases:
+        run_profile_phase(bin_dir, output_dir, phase, sessions, port, manifest)
+
+    total = sum(entry["actual_seconds"] for entry in manifest)
+    log(f"=== Trading day complete: {total / 60.0:.1f} minutes across {len(manifest)} phases ===")
+    log(f"    manifest: {output_dir / 'trading_day_manifest.json'}")
+    return manifest
+
+
 _LOGON_ESTABLISHED_MARKER = "FIX session established"
 
 
@@ -863,6 +1067,11 @@ def main() -> None:
                              "is the same whichever is measured. The load generator is pointed "
                              "at the chosen instance's listen port, read from its deployed "
                              "configuration.")
+    parser.add_argument("--profile", metavar="PATH",
+                        help="Run a trading-day load profile instead of a flat rate: quiet "
+                             "periods, bursts and a sustained phase, driven from a TOML file. "
+                             "Binary gateway only, since the FIX load client has no rate "
+                             "control. See docs/design/trading_day_load.md.")
     parser.add_argument("--rate", type=int, default=0,
                         help="Orders per second per session (binary gateway only).  Omit for a "
                              "throughput test, which offers load faster than the pipeline "
@@ -1005,7 +1214,10 @@ def main() -> None:
         time.sleep(1)  # give perf a moment to start recording
 
         # Drive load through whichever gateway is under test.
-        if args.gateway == "binary":
+        if args.profile:
+            run_trading_day(bin_dir, perf_dir, Path(args.profile), args.clients,
+                            gateway_listen_port(prefix, "binary", args.gateway_instance))
+        elif args.gateway == "binary":
             run_binary_load_session(bin_dir, perf_dir, args.burst, args.clients, args.rate,
                                     gateway_listen_port(prefix, "binary", args.gateway_instance))
         else:

@@ -513,6 +513,61 @@ roughly 8%. They land in different categories, which makes them a good worked ex
 
 ---
 
+## Running it
+
+```bash
+# 1. Deploy, if the installed configs still hold ${placeholders}.
+python3 deploy.py --skip-db --skip-certs
+grep -c '\${' installed/etc/binary_order_gateway/binary_order_gateway_a.toml   # expect 0
+
+# 2. Make sure NO venue is running, then start Prometheus ON ITS OWN.
+python3 devenv.py stop
+python3 devenv.py start prometheus
+curl -s http://localhost:9090/-/healthy
+
+# 3. Run the profile. perf_run.py starts and stops the venue itself.
+python3 perf_run.py --gateway binary --clients 4 --profile profiles/trading_day.toml
+
+# 4. Read it, against the phases in the manifest.
+python3 pubsub_metrics.py --component binary_order_gateway_a --metrics bands \
+        --ceiling 2.5ms --since 120 --step 30 --graphic
+```
+
+### The trap: `perf_run.py` owns the venue, and does not start Prometheus
+
+Both halves matter, and getting either wrong wastes the run.
+
+- **`perf_run.py` starts and stops every component itself.** If `devenv.py start` has already
+  brought the venue up, `perf_run` starts a *second* copy, the ports are taken, and the first thing
+  to fall over is the auth service — `auth_service_a (PID ...) died during startup (exit code
+  255)`, followed by a run that generates no load at all. The message names the auth service, so it
+  reads like an auth fault rather than the port conflict it is.
+- **`perf_run.py` does not start Prometheus**, so a run started against a stopped environment
+  collects no metrics and the band chart has nothing to draw.
+
+Hence the order above: stop everything, start **only** Prometheus, then let `perf_run.py` own the
+venue. Prometheus scrapes `127.0.0.1:92xx` and does not care which process owns those ports, so it
+happily follows components it did not start.
+
+**Verify within the first two minutes** that load is actually flowing, rather than trusting the
+absence of an error:
+
+```bash
+curl -s 'http://localhost:9090/api/v1/query?query=sum(rate(order_round_trip_nanoseconds_count[1m]))'
+```
+
+It should report roughly the first phase's aggregate rate. Zero means the venue is not receiving
+orders, whatever the console says.
+
+### On RHEL8
+
+`devenv.py --no-prometheus` skips the scraper for hosts where it is not wanted. The venue still
+exposes its metrics endpoints; nothing collects them, so there is no band chart and the run yields
+only the client's own figures and the manifest. If the chart is wanted, Prometheus has to be
+running before step 3.
+
+---
+
 ## Prerequisites
 
 - `metrics_enabled = true` — dev only today, which is where this runs.
