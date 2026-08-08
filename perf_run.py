@@ -934,6 +934,13 @@ def validate_profile(profile: dict, sessions: int) -> tuple[dict, list[dict]]:
                 f"Lengthen it, mark it not compressible,\n"
                 f"       or lower [run] compression.")
 
+        cancel_ratio = float(phase.get("cancel_ratio", 0.0))
+        if not 0.0 <= cancel_ratio <= 1.0:
+            die(f"phase '{name}' has cancel_ratio {cancel_ratio}; it must be between 0 and 1.\n"
+                f"       The book grows only from new orders and shrinks only from cancels, so a\n"
+                f"       sustained rate above the arrival rate would drain it and then have\n"
+                f"       nothing left to cancel.")
+
         fraction = float(phase.get("rate", 0.0))
         if fraction <= 0.0:
             die(f"phase '{name}' has rate {fraction}; it must be a positive "
@@ -950,6 +957,7 @@ def validate_profile(profile: dict, sessions: int) -> tuple[dict, list[dict]]:
             "per_session_rate": per_session,
             "compressed": bool(phase.get("compressible", False)),
             "micro_burst": phase.get("micro_burst"),
+            "cancel_ratio": float(phase.get("cancel_ratio", 0.0)),
         })
 
     total = sum(entry["seconds"] for entry in resolved)
@@ -979,7 +987,8 @@ def run_profile_phase(bin_dir: Path, output_dir: Path, phase: dict, sessions: in
 
     log(f"--- phase '{phase['name']}' ({phase['pattern']}): "
         f"{phase['seconds']:.0f}s at {phase['aggregate_rate']:.0f} orders/s aggregate "
-        f"({per_session}/s x {sessions} sessions, {orders} orders) ---")
+        f"({per_session}/s x {sessions} sessions, {orders} orders"
+        f"{', cancel ratio ' + str(phase['cancel_ratio']) if phase.get('cancel_ratio') else ''}) ---")
 
     command = [
         str(bin_dir / "binary_load_client"),
@@ -993,6 +1002,8 @@ def run_profile_phase(bin_dir: Path, output_dir: Path, phase: dict, sessions: in
         "--rate", str(per_session),
         "--first-cl-ord-id", str(first_cl_ord_id),
     ]
+    if phase.get("cancel_ratio", 0.0) > 0.0:
+        command += ["--cancel-ratio", str(phase["cancel_ratio"])]
 
     started = time.time()
     # Generous: the phase should take `seconds`, but a saturated venue makes the client
@@ -1387,6 +1398,7 @@ def main() -> None:
     # per-order Info line dominates the log and is worth 1.95 GB over one profile. Restored
     # in the shutdown path so a config edited for one run does not silently persist.
     stop_resource_monitor = None
+    profile_manifest: list = []
     me_config = etc_dir / "matching_engine" / "matching_engine_primary.toml"
     previous_me_level = None
     if args.profile:
@@ -1459,8 +1471,8 @@ def main() -> None:
 
         # Drive load through whichever gateway is under test.
         if args.profile:
-            run_trading_day(bin_dir, perf_dir, Path(args.profile), args.clients,
-                            gateway_listen_port(prefix, "binary", args.gateway_instance))
+            profile_manifest = run_trading_day(bin_dir, perf_dir, Path(args.profile), args.clients,
+                                               gateway_listen_port(prefix, "binary", args.gateway_instance))
         elif args.gateway == "binary":
             run_binary_load_session(bin_dir, perf_dir, args.burst, args.clients, args.rate,
                                     gateway_listen_port(prefix, "binary", args.gateway_instance))
@@ -1518,7 +1530,14 @@ def main() -> None:
     # Post-shutdown ground-truth counts.  Read after all processes have exited so
     # any in-flight log entries are flushed.  GW-ER-SENT is the authoritative
     # end-to-end signal: it confirms the full NOS→ME→sequencer→gateway→fix8 path.
-    total_orders = args.clients * args.burst * 1000
+    # A profile offers what its phases offered, not clients x burst x 1000 -- that
+    # arithmetic belongs to a flat run and reported a phantom mismatch against a profile.
+    # Cancels are excluded deliberately: this figure is checked against the matching
+    # engine's accepted-ORDER count, and a cancel removes an order rather than adding one.
+    if profile_manifest:
+        total_orders = sum(entry["orders_offered"] for entry in profile_manifest)
+    else:
+        total_orders = args.clients * args.burst * 1000
     def count_in_log(path: Path, marker: str) -> int:
         try:
             return sum(1 for line in path.open(errors="replace") if marker in line)

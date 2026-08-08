@@ -20,13 +20,15 @@ pattern      = "steady"
 duration     = "20m"               # 200s after 6x compression
 compressible = true
 rate         = 0.05
+cancel_ratio = 0.5
 
 [[phase]]
 name         = "open auction"
 pattern      = "uniform_slowdown"
 duration     = "4m"
 compressible = false
-rate         = 1.0                 # at the ceiling: the venue should be working hard
+rate         = 1.0
+cancel_ratio = 0.7                 # at the ceiling: the venue should be working hard
 
 [[phase]]
 name         = "morning steady"
@@ -34,6 +36,7 @@ pattern      = "steady"
 duration     = "20m"
 compressible = true
 rate         = 0.30
+cancel_ratio = 0.8
 
 # The event of interest, and the reason this run takes an hour. Never compressed:
 # accumulation -- slab growth, WAL, monotonic degradation -- cannot be measured in
@@ -44,6 +47,7 @@ pattern      = "uniform_slowdown"
 duration     = "60m"
 compressible = false
 rate         = 0.55
+cancel_ratio = 0.8
 
 [[phase]]
 name         = "midday lull"
@@ -58,10 +62,12 @@ pattern      = "uniform_slowdown"
 duration     = "3m"
 compressible = false
 rate         = 0.95
+cancel_ratio = 0.7
 
 [[phase]]
 name         = "close"
 pattern      = "uniform_slowdown"
 duration     = "4m"
 compressible = false
-rate         = 1.1                 # deliberately above ceiling: a stress phase
+rate         = 1.1
+cancel_ratio = 0.9                 # deliberately above ceiling: a stress phase

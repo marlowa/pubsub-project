@@ -38,6 +38,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <iostream>
 #include <mutex>
 #include <string>
@@ -77,6 +78,15 @@ struct Options {
     // delivered load while measuring nothing. A trading-day profile restarts this client
     // once per phase, which is exactly that case.
     int64_t first_cl_ord_id{0};
+
+    // Cancels to send per new order, as a fraction. A member pulling its book is ordinary
+    // behaviour, and without it the venue's order book only ever grows: nothing else
+    // removes an order, since this matching engine does no matching.
+    //
+    // Bounded above by 1.0 by arithmetic, not by taste: the book grows only from new orders
+    // and shrinks only from cancels, so a sustained rate above the arrival rate would drain
+    // the book and then have nothing left to cancel.
+    double cancel_ratio{0.0};
     int underlyings{3};       // NoUnderlyings instances per order
     int parties{1};           // NoPartyIDs instances per order
     int party_sub_ids{1};     // NoPartySubIDs instances per party
@@ -109,6 +119,8 @@ bool parse_options(int argc, char** argv, Options& options) {
             options.orders_per_second = std::stoi(argv[++index]);
         } else if (argument == "--first-cl-ord-id" && has_value) {
             options.first_cl_ord_id = std::stoll(argv[++index]);
+        } else if (argument == "--cancel-ratio" && has_value) {
+            options.cancel_ratio = std::stod(argv[++index]);
         } else if (argument == "--underlyings" && has_value) {
             options.underlyings = std::stoi(argv[++index]);
         } else if (argument == "--parties" && has_value) {
@@ -120,7 +132,7 @@ bool parse_options(int argc, char** argv, Options& options) {
         } else {
             fmt::print("usage: {} [--host H] [--port P] [--comp-id-prefix ID] [--symbol SYM]\n", argv[0]);
             fmt::print("          [--sessions N] [--orders-per-burst N] [--bursts N] [--rate N]\n");
-            fmt::print("          [--first-cl-ord-id N]\n\n");
+            fmt::print("          [--first-cl-ord-id N] [--cancel-ratio F]\n\n");
             fmt::print("  --password          SCRAM password for every session (default stubpassword)\n");
             fmt::print("  --target-comp-id    the venue name to send; must match the gateway\n");
             fmt::print("  --sessions          concurrent logged-on sessions, each with its own comp id\n");
@@ -209,12 +221,16 @@ class LoadSession {
         }
     }
 
-    LoadSession(std::string comp_id, std::string password, std::string target_comp_id, std::string symbol, int64_t first_cl_ord_id = 0)
+    LoadSession(std::string comp_id, std::string password, std::string target_comp_id, std::string symbol, int64_t first_cl_ord_id = 0,
+                double cancel_ratio = 0.0)
         : comp_id_(std::move(comp_id))
         , password_(std::move(password))
         , target_comp_id_(std::move(target_comp_id))
         , symbol_(std::move(symbol))
-        , order_counter_(first_cl_ord_id) {}
+        // Order matters and the compiler enforces it: members initialise in DECLARATION
+        // order, so this list must match it or -Wreorder fails the build.
+        , order_counter_(first_cl_ord_id)
+        , cancel_ratio_(cancel_ratio) {}
 
     LoadSession(const LoadSession&) = delete;
     LoadSession& operator=(const LoadSession&) = delete;
@@ -224,6 +240,15 @@ class LoadSession {
     }
     [[nodiscard]] int64_t orders_sent() const {
         return orders_sent_;
+    }
+
+    [[nodiscard]] int64_t cancels_sent() const {
+        return cancels_sent_;
+    }
+
+    [[nodiscard]] size_t resting_order_count() {
+        const std::lock_guard<std::mutex> guard(resting_mutex_);
+        return resting_cl_ord_ids_.size();
     }
     [[nodiscard]] int64_t reports_received() const {
         return reports_received_.load(std::memory_order_relaxed);
@@ -286,6 +311,10 @@ class LoadSession {
   private:
     template <typename MessageType> bool send_pdu(int16_t pdu_id, const MessageType& message);
     void build_order(pubsub_itc_fw_app::NewOrderSingle& order, const std::string& cl_ord_id);
+
+    /// Cancels the oldest order the venue has confirmed is resting. Returns false only
+    /// on a send failure; having nothing to cancel is a normal state, not an error.
+    bool send_cancel_for_oldest_resting_order();
     void receive_loop();
 
     std::string comp_id_;
@@ -301,6 +330,17 @@ class LoadSession {
 
     std::mutex latency_mutex_;
     std::unordered_map<std::string, int64_t> send_time_by_cl_ord_id_;
+
+    // Orders the venue has confirmed are on the book and which this session has not yet
+    // cancelled. A deque because the only operations needed are "add the newest" and "take
+    // the oldest": cancelling oldest-first is not how a real member behaves, but it needs
+    // no lookup and no memory beyond the orders actually resting.
+    std::mutex resting_mutex_;
+    std::deque<std::string> resting_cl_ord_ids_;
+    double cancel_ratio_{0.0};
+    double cancel_credit_{0.0};
+    int64_t cancels_sent_{0};
+    int64_t cancel_rejects_{0};
     std::vector<int64_t> latencies_;
 
     std::vector<uint8_t> send_buffer_;
@@ -458,6 +498,33 @@ void LoadSession::build_order(pubsub_itc_fw_app::NewOrderSingle& order, const st
     }
 }
 
+bool LoadSession::send_cancel_for_oldest_resting_order() {
+    std::string target;
+    {
+        const std::lock_guard<std::mutex> guard(resting_mutex_);
+        if (resting_cl_ord_ids_.empty()) {
+            return true; // nothing acknowledged yet; not an error, just nothing to cancel
+        }
+        target = std::move(resting_cl_ord_ids_.front());
+        resting_cl_ord_ids_.pop_front();
+    }
+
+    pubsub_itc_fw_app::OrderCancelRequest cancel{};
+    const std::string cancel_cl_ord_id = target + "-CANCEL";
+    cancel.cl_ord_id = cancel_cl_ord_id;
+    cancel.orig_cl_ord_id = target;
+    cancel.side = pubsub_itc_fw_app::Side::Buy;
+    cancel.symbol = symbol_;
+    cancel.transact_time = now_nanoseconds();
+
+    if (!send_pdu(pubsub_itc_fw_app::OrderCancelRequest::message_pdu_id, cancel)) {
+        fmt::print("{}: cancel send failed after {} cancel(s)\n", comp_id_, cancels_sent_);
+        return false;
+    }
+    ++cancels_sent_;
+    return true;
+}
+
 bool LoadSession::send_burst(int order_count, int64_t nanoseconds_between_orders) {
     const int64_t burst_started = now_nanoseconds();
     for (int index = 0; index < order_count; ++index) {
@@ -487,6 +554,20 @@ bool LoadSession::send_burst(int order_count, int64_t nanoseconds_between_orders
             return false;
         }
         ++orders_sent_;
+
+        // Cancels ride alongside the order flow rather than replacing it, which is the
+        // realistic shape: whatever makes a member pull its book is usually making everyone
+        // else busy too. The accumulator carries the fraction across orders so a ratio of
+        // 0.25 sends one cancel every four orders rather than rounding to none.
+        if (cancel_ratio_ > 0.0) {
+            cancel_credit_ += cancel_ratio_;
+            while (cancel_credit_ >= 1.0) {
+                cancel_credit_ -= 1.0;
+                if (!send_cancel_for_oldest_resting_order()) {
+                    return false;
+                }
+            }
+        }
     }
     return true;
 }
@@ -547,6 +628,17 @@ void LoadSession::receive_loop() {
                 send_time_by_cl_ord_id_.erase(sent_at);
             }
         }
+
+        // An order is recorded as resting only when the venue reports it accepted, and only
+        // for OrdStatus New. A cancel names one specific OrigClOrdID -- there is no range or
+        // bulk form in this venue's dictionary -- so the client can only cancel an order it
+        // knows exists. Inferring the resting set from ClOrdID arithmetic would be wrong:
+        // the ids sent are contiguous, but a rejected order never rests, and cancelling one
+        // earns a cancel-reject.
+        if (report.has_cl_ord_id && report.ord_status == pubsub_itc_fw_app::OrdStatus::New) {
+            const std::lock_guard<std::mutex> guard(resting_mutex_);
+            resting_cl_ord_ids_.emplace_back(report.cl_ord_id);
+        }
     }
 }
 
@@ -577,7 +669,8 @@ int main(int argc, char** argv) {
     sessions.reserve(static_cast<size_t>(options.session_count));
     for (int index = 0; index < options.session_count; ++index) {
         const std::string comp_id = options.session_count == 1 ? options.comp_id_prefix : options.comp_id_prefix + "-" + std::to_string(index + 1);
-        sessions.push_back(std::make_unique<LoadSession>(comp_id, options.password, options.target_comp_id, options.symbol, options.first_cl_ord_id));
+        sessions.push_back(
+            std::make_unique<LoadSession>(comp_id, options.password, options.target_comp_id, options.symbol, options.first_cl_ord_id, options.cancel_ratio));
         OrderShape shape;
         shape.underlyings = options.underlyings;
         shape.parties = options.parties;
@@ -661,7 +754,9 @@ int main(int argc, char** argv) {
 
     int64_t total_sent = 0;
     for (const auto& session : sessions) {
-        total_sent += session->orders_sent();
+        // Orders AND cancels: each cancel earns its own execution report, so a run with
+        // cancels compared against orders alone would report a shortfall that is not one.
+        total_sent += session->orders_sent() + session->cancels_sent();
     }
 
     // Wait for the reports to come back. The gateway delivers them asynchronously, so a
@@ -710,7 +805,23 @@ int main(int argc, char** argv) {
                    options.party_sub_ids);
     }
     fmt::print("  bursts         {} of {} order(s) per session\n", bursts_run, options.orders_per_burst);
-    fmt::print("  orders sent    {}\n", total_sent);
+    int64_t total_orders = 0;
+    int64_t total_cancels = 0;
+    size_t total_resting = 0;
+    for (const auto& session : sessions) {
+        total_orders += session->orders_sent();
+        total_cancels += session->cancels_sent();
+        total_resting += session->resting_order_count();
+    }
+    fmt::print("  orders sent    {}\n", total_orders);
+    if (total_cancels > 0) {
+        // Resting is what the venue's book still holds from this run. Without cancels it
+        // equals the order count and grows without bound, which is how a matching engine
+        // that does no matching came to be OOM-killed at 9.9 GB.
+        fmt::print("  cancels sent   {}\n", total_cancels);
+        fmt::print("  still resting  {}\n", total_resting);
+    }
+    fmt::print("  messages sent  {}  (orders + cancels; each earns one report)\n", total_sent);
     fmt::print("  reports recvd  {}\n", total_received);
     if (total_seconds > 0.0) {
         fmt::print("  throughput     {:.0f} orders/s round trip over {:.3f}s\n", static_cast<double>(total_received) / total_seconds, total_seconds);
