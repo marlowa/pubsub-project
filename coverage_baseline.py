@@ -101,6 +101,39 @@ def current_commit():
         return "unknown"
 
 
+def platform_identifier():
+    """Distribution and compiler version this coverage data was produced by.
+
+    Recorded because a baseline is TOOLCHAIN-SPECIFIC and comparing across toolchains is
+    meaningless. gcc 8.5 in the Rocky container and gcc 13 on the development host emit
+    different function lists for identical sources -- different template instantiations,
+    different lambda naming, different [abi:cxx11] decoration -- and the container also
+    builds against different third-party versions.
+
+    Without this, a coverage build run in the container lands in build-coverage-rocky8/
+    (the flavour suffix takes care of that) but `--update` from it would overwrite the
+    host's baseline with a list that legitimately differs in hundreds of places. Nothing
+    would complain, and the next release check would report a wall of phantom regressions.
+    """
+    system = "unknown"
+    try:
+        text = Path("/etc/os-release").read_text(encoding="utf-8")
+        lines = dict(entry.split("=", 1) for entry in text.splitlines() if "=" in entry)
+        name = lines.get("ID", "unknown").strip('"')
+        version = lines.get("VERSION_ID", "").strip('"')
+        system = f"{name}{version}"
+    except OSError:
+        pass
+    compiler = "unknown"
+    try:
+        result = subprocess.run(["gcc", "-dumpfullversion"],
+                                capture_output=True, text=True, check=True)
+        compiler = result.stdout.strip()
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        pass
+    return f"{system}-gcc{compiler}"
+
+
 # =========================================================================== #
 # THE BASELINE FILE
 # =========================================================================== #
@@ -138,6 +171,7 @@ def write_baseline(files, path, tracefile):
         "# Commit the result alongside the change that moved it.",
         "",
         f"COMMIT {current_commit()}",
+        f"PLATFORM {platform_identifier()}",
         f"GENERATED {datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}",
         # Relative where possible: an absolute path names the machine that happened to
         # write the baseline, and would show up as a spurious diff on the next one.
@@ -154,6 +188,32 @@ def write_baseline(files, path, tracefile):
 
     Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
     return total_lines_hit, total_lines, total_functions_hit, total_functions
+
+
+def read_baseline_at_ref(reference, path):
+    """Return the baseline as it was committed at ``reference``, via a temporary file.
+
+    The previous release's coverage needs no storage of its own: the baseline is a
+    committed file, so `git show v0.2.0:coverage_baseline.txt` IS what coverage looked
+    like when v0.2.0 was tagged. That is the comparison a release wants -- movement since
+    the last release, not since the last commit.
+    """
+    import tempfile
+
+    result = subprocess.run(["git", "show", f"{reference}:{path}"],
+                            capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        raise FileNotFoundError(
+            f"no {path} committed at '{reference}': {result.stderr.strip()}\n"
+            f"A release before the baseline existed will not have one; compare against a "
+            f"later tag, or review this release's coverage without a comparison.")
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as handle:
+        handle.write(result.stdout)
+        temporary_path = handle.name
+    try:
+        return read_baseline(temporary_path)
+    finally:
+        Path(temporary_path).unlink(missing_ok=True)
 
 
 def read_baseline(path):
@@ -181,7 +241,7 @@ def read_baseline(path):
                     "functions": (functions_hit, functions_total),
                     "uncovered": set(),
                 }
-            elif parts[0] in ("COMMIT", "GENERATED", "TRACEFILE"):
+            elif parts[0] in ("COMMIT", "PLATFORM", "GENERATED", "TRACEFILE"):
                 header[parts[0]] = " ".join(parts[1:])
             elif parts[0] == "TOTALS":
                 header["TOTALS"] = line
@@ -193,10 +253,28 @@ def read_baseline(path):
 # COMPARISON
 # =========================================================================== #
 
-def compare(baseline_path, files):
-    """Report movement against the baseline. Always returns 0 -- this reports, never gates."""
-    header, baseline = read_baseline(baseline_path)
-    print(f"baseline taken at {header.get('COMMIT', '?')} on {header.get('GENERATED', '?')}")
+def warn_on_platform_mismatch(header):
+    """Print a warning when the baseline was produced by a different toolchain.
+
+    A warning and not a refusal: reading someone else's baseline is a reasonable thing to
+    do deliberately. Writing over it is not, which is why --update refuses instead.
+    """
+    recorded = header.get("PLATFORM")
+    running = platform_identifier()
+    if recorded is None:
+        print(f"NOTE: this baseline predates the PLATFORM field; it is assumed to be {running}.\n",
+              file=sys.stderr)
+    elif recorded != running:
+        print(f"WARNING: baseline was produced on {recorded}, this is {running}.\n"
+              f"         Function lists differ between toolchains for identical sources, so\n"
+              f"         most of what follows is likely to be noise rather than a change.\n",
+              file=sys.stderr)
+
+
+def compare(header, baseline, files, description):
+    """Report movement against a baseline. Always returns 0 -- this reports, never gates."""
+    warn_on_platform_mismatch(header)
+    print(f"{description} taken at {header.get('COMMIT', '?')} on {header.get('GENERATED', '?')}")
     print(f"working tree is at {current_commit()}\n")
 
     current = {}
@@ -260,11 +338,21 @@ def compare(baseline_path, files):
     if function_moves:
         print("FUNCTION COVERAGE CHANGED -- this is the signal worth acting on:\n")
         for name, regressed, recovered in function_moves:
-            print(f"  {name}")
+            # The file's function TOTAL is printed beside the name when it moved, because
+            # the baseline records only uncovered functions and so cannot by itself
+            # distinguish "this function was added without tests" from "this function was
+            # covered and something broke it". A file that grew makes the first reading
+            # likely, and both readings are findings -- the reviewer needs to know which.
+            before_total = baseline[name]["functions"][1]
+            after_total = current[name]["functions"][1]
+            grew = ""
+            if before_total != after_total:
+                grew = f"   (file's functions {before_total} -> {after_total})"
+            print(f"  {name}{grew}")
             for signature in regressed:
-                print(f"      NO LONGER COVERED  {signature}")
+                print(f"      NOT COVERED  {signature}")
             for signature in recovered:
-                print(f"      now covered        {signature}")
+                print(f"      now covered  {signature}")
         print()
 
     if line_moves:
@@ -295,7 +383,21 @@ def main(argv=None):
                         help=f"lcov tracefile to read (default: {DEFAULT_TRACEFILE})")
     parser.add_argument("--baseline", type=Path, default=DEFAULT_BASELINE,
                         help=f"baseline file (default: {DEFAULT_BASELINE})")
+    parser.add_argument("--since", metavar="REF",
+                        help="compare against the baseline as COMMITTED at a git ref -- a release "
+                             "tag, normally. This is the release question: what moved since we "
+                             "last shipped, rather than since the last commit. Needs no stored "
+                             "history because the baseline is a committed file")
+    parser.add_argument("--force-platform", action="store_true",
+                        help="allow --update to overwrite a baseline produced by a different "
+                             "toolchain. Almost always wrong: gcc 8.5 in the Rocky container and "
+                             "gcc 13 on this host emit different function lists for identical "
+                             "sources, so the result would describe neither")
     arguments = parser.parse_args(argv)
+
+    if arguments.since and arguments.update:
+        parser.error("--since compares against a released baseline; "
+                     "it cannot be combined with --update")
 
     if not arguments.tracefile.exists():
         print(f"error: no tracefile at {arguments.tracefile}\n"
@@ -308,17 +410,43 @@ def main(argv=None):
         return 2
 
     if arguments.update:
+        # Refuse rather than warn: overwriting a baseline with one from another toolchain
+        # silently replaces a correct file with a wrong one, and the damage only surfaces
+        # later as a wall of phantom regressions that looks like a real problem.
+        if arguments.baseline.exists() and not arguments.force_platform:
+            existing_header, _ = read_baseline(arguments.baseline)
+            recorded = existing_header.get("PLATFORM")
+            running = platform_identifier()
+            if recorded is not None and recorded != running:
+                print(f"error: {arguments.baseline} was produced on {recorded}, "
+                      f"this is {running}.\n"
+                      f"A baseline is toolchain-specific -- different compilers emit different\n"
+                      f"function lists for identical sources -- so overwriting it here would\n"
+                      f"produce a file that describes neither. Update it on {recorded}, or pass\n"
+                      f"--force-platform if you really mean to move the baseline over.",
+                      file=sys.stderr)
+                return 2
         lines_hit, lines_total, functions_hit, functions_total = write_baseline(
             files, arguments.baseline, arguments.tracefile)
         print(f"wrote {arguments.baseline}: {len(files)} files, "
               f"lines {lines_hit}/{lines_total}, functions {functions_hit}/{functions_total}")
         return 0
 
+    if arguments.since:
+        try:
+            header, baseline = read_baseline_at_ref(arguments.since, str(arguments.baseline))
+        except FileNotFoundError as error:
+            print(f"error: {error}", file=sys.stderr)
+            return 2
+        print(f"Coverage review: what has moved since {arguments.since}\n")
+        return compare(header, baseline, files, f"{arguments.since} baseline")
+
     if not arguments.baseline.exists():
         print(f"error: no baseline at {arguments.baseline}; create one with --update",
               file=sys.stderr)
         return 2
-    return compare(arguments.baseline, files)
+    header, baseline = read_baseline(arguments.baseline)
+    return compare(header, baseline, files, "baseline")
 
 
 if __name__ == "__main__":

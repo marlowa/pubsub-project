@@ -9,10 +9,11 @@
 #                 python3 coverage_baseline.py --update
 # Commit the result alongside the change that moved it.
 
-COMMIT 8c89483
-GENERATED 2026-08-08T05:02:39Z
+COMMIT ba814ee
+PLATFORM linuxmint22.2-gcc13.3.0
+GENERATED 2026-08-08T06:50:33Z
 TRACEFILE build-coverage/coverage.info
-TOTALS lines 5699/6865 functions 1302/1445
+TOTALS lines 5700/6865 functions 1302/1445
 
 FILE libraries/fix_codec/FixChecksum.hpp lines 15/15 functions 2/2
 FILE libraries/fix_codec/FixField.hpp lines 91/93 functions 15/15
@@ -269,7 +270,7 @@ FILE libraries/pubsub_itc_fw/src/PrometheusEndpoint.cpp lines 96/108 functions 1
   UNCOVERED pubsub_itc_fw::PrometheusEndpoint::register_histogram(char const*, char const*, char const*, std::vector<double, std::allocator<double> > const&)
 FILE libraries/pubsub_itc_fw/src/QuillLogger.cpp lines 109/111 functions 17/17
 FILE libraries/pubsub_itc_fw/src/RawBytesProtocolHandler.cpp lines 84/99 functions 9/9
-FILE libraries/pubsub_itc_fw/src/Reactor.cpp lines 485/700 functions 42/43
+FILE libraries/pubsub_itc_fw/src/Reactor.cpp lines 486/700 functions 42/43
   UNCOVERED pubsub_itc_fw::Reactor::verify_hot_path_thread_count[abi:cxx11](unsigned long) const
 FILE libraries/pubsub_itc_fw/src/SlabAllocator.cpp lines 67/71 functions 15/16
   UNCOVERED pubsub_itc_fw::SlabAllocator::is_current() const

@@ -107,6 +107,57 @@ Both are honest positions, and both are stated in the source where a reader will
 
 ---
 
+## At release time
+
+A release is when coverage gets *considered* — deliberately, once, by a person. That is a
+different activity from the day-to-day check, and it is still not a gate.
+
+`release_check.py` has a `coverage` stage. It runs a clean coverage build and **fails on exactly
+one thing**: the committed `coverage_baseline.txt` not matching a freshly generated one. That
+means the code changed and nobody regenerated the baseline, so nobody looked. It is the
+mechanical form of "perform a coverage analysis and consider the results", and it cannot be
+satisfied by writing a test that asserts nothing — only by looking.
+
+It never fails on a coverage number. If coverage fell, you regenerated the baseline and tagged
+anyway, that is a decision taken with the figures in front of you, which is the point. `PASS
+coverage` means *the analysis was done and the baseline is current*, never *coverage is high
+enough*.
+
+**Only function coverage is compared for the staleness check** — see the section above. A
+line-level check would fail spuriously and be skipped within a fortnight.
+
+Once the baseline is current, the stage prints the review a human reads: what moved since the
+previous release tag.
+
+```bash
+python3 coverage_baseline.py --since v0.2.0
+```
+
+This needs no stored history. The baseline is a committed file, so `git show
+v0.2.0:coverage_baseline.txt` **is** the coverage at that release. Read it for, in descending
+order of value: functions that are uncovered and were not before; whether the affected file's
+function total also grew, which distinguishes *added without tests* from *regression*; totals and
+per-file movement; and whether the deliberately-uncovered list has quietly expanded.
+
+### Coverage is measured on this host, not in the Rocky container
+
+The container answers a different question — *does it compile and do the tests pass on the target
+toolchain* — and `stage_rocky` already answers it by running the full `devsetup.py`.
+
+A baseline is **toolchain-specific**: gcc 8.5 and gcc 13 emit different function lists for
+identical sources (template instantiations, lambda naming, `[abi:cxx11]` decoration), and the
+container builds against different third-party versions. So the baseline records a `PLATFORM`
+line, and `--update` **refuses** to overwrite a baseline produced by a different toolchain unless
+given `--force-platform`. Without that guard, a coverage build run in the container — which now
+lands in `build-coverage-rocky8/` of its own accord — could silently replace the host baseline
+with one that legitimately differs in hundreds of places, surfacing later as a wall of phantom
+regressions.
+
+A second, container-generated baseline would measure much the same thing and be read by nobody,
+which is the documentation equivalent of the test that cannot fail.
+
+---
+
 ## Verify a new test batch by breaking the code
 
 A green test suite is evidence only if the tests can go red. Before trusting a new batch, mutate

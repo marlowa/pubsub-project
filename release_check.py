@@ -157,6 +157,102 @@ def stage_build_local(args) -> tuple[bool, str]:
     return code == 0, tail(out, 30)
 
 
+def previous_release_tag() -> str | None:
+    """The most recent tag reachable from HEAD, or None if there is none."""
+    code, out = run(["git", "describe", "--tags", "--abbrev=0", "HEAD"])
+    return out.strip() if code == 0 and out.strip() else None
+
+
+def stage_coverage(args) -> tuple[bool, str]:
+    """Coverage analysis for the release: regenerate, check the baseline is current, review.
+
+    This stage FAILS ON ONE THING ONLY: the committed coverage_baseline.txt not matching a
+    freshly generated one. That means the code changed and nobody regenerated the baseline,
+    so nobody looked at what the change did to coverage. It is the mechanical form of
+    "perform a coverage analysis and consider the results", and it cannot be satisfied by
+    writing a test that asserts nothing -- only by looking.
+
+    It does NOT fail on a coverage number, ever. There is no threshold. If coverage fell,
+    you regenerated the baseline and tagged anyway, that is a decision taken with the
+    figures in front of you, which is the entire point. See docs/testing.md.
+
+    Only FUNCTION coverage is compared for the staleness check. Line counts differ between
+    identical runs -- measured across four clean runs at one commit, function coverage was
+    identical every time and the line count never was -- so a line-level check would fail
+    spuriously and be skipped within a fortnight.
+
+    Coverage is measured on this host only. The Rocky container answers a different
+    question, "does it compile and do the tests pass on the target toolchain", and a
+    baseline is toolchain-specific: gcc 8.5 and gcc 13 emit different function lists for
+    identical sources. A second baseline nobody reads would be worse than none.
+    """
+    code, out = run(["./build.sh", "--clean", "--coverage", "--coverage-report",
+                     "--no-java", "--no-doxygen", f"-j{args.jobs}"],
+                    timeout=args.build_timeout)
+    if code != 0:
+        return False, "coverage build failed:\n" + tail(out, 30)
+
+    fresh = PROJECT_ROOT / "build-coverage" / "coverage_baseline_fresh.txt"
+    code, out = run([sys.executable, "coverage_baseline.py", "--update", "--baseline", str(fresh)])
+    if code != 0:
+        return False, "could not generate a baseline from the coverage run:\n" + tail(out, 20)
+
+    committed = PROJECT_ROOT / "coverage_baseline.txt"
+    if not committed.exists():
+        return False, ("no committed coverage_baseline.txt. Generate one and commit it:\n"
+                       "    ./build.sh --coverage --coverage-report\n"
+                       "    python3 coverage_baseline.py --update")
+
+    stale = _baseline_function_coverage_differs(committed, fresh)
+    if stale:
+        return False, ("the committed baseline is out of date, so this release's coverage has\n"
+                       "not been reviewed by anyone. Regenerate and commit it, then look at what\n"
+                       "changed:\n"
+                       "    python3 coverage_baseline.py --update\n\n" + stale)
+
+    # The baseline is current, so the stage passes. What follows is for a human to read:
+    # movement since the last release, which is the question a release actually asks.
+    tag = previous_release_tag()
+    if tag is None:
+        return True, "baseline current. No previous tag to compare against."
+    code, out = run([sys.executable, "coverage_baseline.py", "--since", tag])
+    if code != 0:
+        return True, f"baseline current. Could not compare against {tag}:\n" + tail(out, 10)
+    return True, f"baseline current.\n\n{out}"
+
+
+def _baseline_function_coverage_differs(committed: Path, fresh: Path) -> str:
+    """Return a description of any function-coverage difference, or "" when they agree.
+
+    Compares the UNCOVERED function sets per file, not the counts, so a file that lost
+    coverage of one function and gained it on another is still caught.
+    """
+    def read(path: Path) -> dict[str, set[str]]:
+        uncovered: dict[str, set[str]] = {}
+        current = ""
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            if raw_line.startswith("FILE "):
+                current = raw_line.split()[1]
+                uncovered.setdefault(current, set())
+            elif raw_line.startswith("  UNCOVERED ") and current:
+                uncovered[current].add(raw_line[len("  UNCOVERED "):])
+        return uncovered
+
+    before, after = read(committed), read(fresh)
+    differences = []
+    for name in sorted(set(before) | set(after)):
+        if name not in after:
+            differences.append(f"  gone from the report: {name}")
+        elif name not in before:
+            differences.append(f"  new in the report:    {name}")
+        elif before[name] != after[name]:
+            for signature in sorted(after[name] - before[name]):
+                differences.append(f"  {name}\n      now uncovered: {signature}")
+            for signature in sorted(before[name] - after[name]):
+                differences.append(f"  {name}\n      now covered:   {signature}")
+    return "\n".join(differences[:40])
+
+
 def stage_rocky(args) -> tuple[bool, str]:
     """Build and test in the Rocky 8 container -- the RHEL8 gcc 8.5 toolchain.
 
@@ -287,6 +383,7 @@ STAGES = [
     ("version", stage_version_consistency, "CMakeLists, README x2 and CHANGELOG agree"),
     ("standards", stage_standards, "check_standards.py"),
     ("build-local", stage_build_local, "full clean build, nothing skipped"),
+    ("coverage", stage_coverage, "coverage analysis; fails only if the baseline is stale"),
     ("rocky", stage_rocky, "build and test under RHEL8's gcc 8.5 in the Rocky container"),
     ("deploy", stage_deploy, "deployment scripts present and runnable"),
     ("ha", stage_ha, "every ha_test scenario"),
