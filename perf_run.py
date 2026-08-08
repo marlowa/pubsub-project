@@ -721,6 +721,103 @@ def run_binary_load_session(bin_dir: Path, output_dir: Path, burst: int, clients
 
 
 
+
+# ── Resource monitor ──────────────────────────────────────────────────────────
+#
+# Samples every component's memory to a CSV during the run, flushing each sample.
+#
+# Written because a run died of memory exhaustion leaving no trace of it: the matching
+# engine was OOM-killed at 9.9 GB and the only quantity that tracked the approach was
+# book_size, which lived in a log line rather than a metric. The framework's
+# handler_for_pool_exhausted callbacks did fire elsewhere, but the order book is a
+# tsl::robin_map on std::allocator -- it never passes through the pool or slab allocators,
+# so the single largest consumer in the venue is invisible to them.
+#
+# Flushed every sample, deliberately: the file is only useful if it survives the crash it
+# is meant to explain. A buffered writer would lose exactly the last few seconds that
+# matter.
+
+RESOURCE_SAMPLE_SECONDS = 5.0
+
+
+def _read_process_memory(pid: int) -> tuple[int, int, int] | None:
+    """Return (rss_kb, vsz_kb, threads) for a pid, or None once it has gone."""
+    try:
+        status = Path(f"/proc/{pid}/status").read_text()
+    except (FileNotFoundError, ProcessLookupError, PermissionError):
+        return None
+    rss = vsz = threads = 0
+    for line in status.splitlines():
+        if line.startswith("VmRSS:"):
+            rss = int(line.split()[1])
+        elif line.startswith("VmSize:"):
+            vsz = int(line.split()[1])
+        elif line.startswith("Threads:"):
+            threads = int(line.split()[1])
+    return rss, vsz, threads
+
+
+def _read_system_memory() -> tuple[int, int]:
+    """Return (MemAvailable_kb, SwapFree_kb) -- how close the machine is to the OOM killer."""
+    available = swap_free = 0
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                available = int(line.split()[1])
+            elif line.startswith("SwapFree:"):
+                swap_free = int(line.split()[1])
+    except OSError:
+        pass
+    return available, swap_free
+
+
+def start_resource_monitor(named_procs: list, output_dir: Path):
+    """Sample component memory to resource_usage.csv until the returned stop() is called.
+
+    Also reports a component whose pid disappears. perf_run used to check liveness only at
+    start-up, so a matching engine that died 55 minutes in went unnoticed and the run
+    reported a misleading reason for failing.
+    """
+    import threading
+
+    path = output_dir / "resource_usage.csv"
+    handle = open(path, "w", encoding="utf-8", buffering=1)  # line buffered
+    handle.write("epoch,time,component,pid,rss_kb,vsz_kb,threads,mem_available_kb,swap_free_kb\n")
+    stop_event = threading.Event()
+    seen_dead: set = set()
+
+    def sample() -> None:
+        while not stop_event.is_set():
+            available, swap_free = _read_system_memory()
+            now = time.time()
+            stamp = datetime.now().strftime("%H:%M:%S")
+            for name, proc in named_procs:
+                memory = _read_process_memory(proc.pid)
+                if memory is None:
+                    if name not in seen_dead:
+                        seen_dead.add(name)
+                        log(f"  RESOURCE MONITOR: {name} (pid {proc.pid}) is GONE at {stamp} "
+                            f"-- recorded in {path.name}")
+                        handle.write(f"{now:.1f},{stamp},{name},{proc.pid},,,,"
+                                     f"{available},{swap_free}\n")
+                    continue
+                rss, vsz, threads = memory
+                handle.write(f"{now:.1f},{stamp},{name},{proc.pid},{rss},{vsz},{threads},"
+                             f"{available},{swap_free}\n")
+            handle.flush()
+            stop_event.wait(RESOURCE_SAMPLE_SECONDS)
+
+    thread = threading.Thread(target=sample, name="resource_monitor", daemon=True)
+    thread.start()
+    log(f"  resource monitor sampling every {RESOURCE_SAMPLE_SECONDS:.0f}s -> {path}")
+
+    def stop() -> None:
+        stop_event.set()
+        thread.join(timeout=RESOURCE_SAMPLE_SECONDS + 2.0)
+        handle.close()
+
+    return stop
+
 # ── Log level for load runs ───────────────────────────────────────────────────
 
 def set_applog_level(config: Path, level: str) -> str | None:
@@ -1289,6 +1386,7 @@ def main() -> None:
     # A profile run raises the matching engine's log level before anything starts: its
     # per-order Info line dominates the log and is worth 1.95 GB over one profile. Restored
     # in the shutdown path so a config edited for one run does not silently persist.
+    stop_resource_monitor = None
     me_config = etc_dir / "matching_engine" / "matching_engine_primary.toml"
     previous_me_level = None
     if args.profile:
@@ -1348,6 +1446,9 @@ def main() -> None:
                 die(f"{name} (PID {proc.pid}) died during startup "
                     f"(exit code {proc.returncode})")
 
+        # Start sampling memory before any load is offered, so the baseline is recorded.
+        stop_resource_monitor = start_resource_monitor(app_procs, perf_dir)
+
         # Attach perf to targeted processes
         log("=== Attaching perf to all processes ===")
         for name, proc in app_procs:
@@ -1397,6 +1498,12 @@ def main() -> None:
         stop_perf_procs(perf_procs)
         raise
     finally:
+        # Stopped here rather than beside the shutdown calls: the failure path does not run
+        # full_shutdown(), and the whole point of this file is that it survives the crash it
+        # exists to explain.
+        if stop_resource_monitor is not None:
+            stop_resource_monitor()
+
         # In `finally` because the failure path above does not call full_shutdown(), and a
         # run that died must not leave the matching engine's log level altered for the next
         # one -- a silently quiet component is exactly the kind of thing nobody notices

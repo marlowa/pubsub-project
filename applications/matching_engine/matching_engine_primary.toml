@@ -75,6 +75,12 @@ initial_slabs    = 1
 # Pre-reserved capacity of the live-order hash map.
 initial_capacity = 262144
 
+# Warn when the book's storage allocation reaches this size. The book is a growing hash
+# map on the OS heap rather than a pool or slab, so handler_for_pool_exhausted never sees
+# it: it once reached 9.9 GB and this process was OOM-killed having logged no memory
+# warning at all. One line per doubling, never per order.
+growth_report_threshold_bytes = 67108864
+
 [command_queue_pool]
 objects_per_slab = 500000
 initial_slabs    = 1

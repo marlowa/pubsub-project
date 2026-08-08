@@ -162,6 +162,16 @@ struct MatchingEngineConfiguration {
      *  orders.  Increase for load-test environments. */
     int32_t order_book_initial_capacity{1024};
 
+    /** @brief Report a single order-book storage allocation at or above this many bytes.
+     *  The book is a growing hash map on the OS heap, not a pool or slab, so the
+     *  framework's handler_for_pool_exhausted never sees it -- it once reached 9.9 GB and
+     *  the process was OOM-killed having logged no memory warning at all.  The map
+     *  allocates its whole bucket array in one call and reallocates on each doubling, so a
+     *  report is emitted roughly two dozen times over a process lifetime, never per order.
+     *  64 MB by default: large enough to ignore ordinary sizing, small enough to give
+     *  many doublings of warning before memory becomes a problem. */
+    int64_t order_book_growth_report_threshold_bytes{64L * 1024 * 1024};
+
     // Wall clock
 
     /** @brief Clock used to generate transact_time on ExecutionReports when the

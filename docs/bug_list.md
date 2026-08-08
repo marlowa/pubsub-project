@@ -53,6 +53,90 @@ will grow a container on a reactor callback thread and eventually stall it.
 
 See [Compressed Trading Day Load Profile](design/trading_day_load.md).
 
+### The venue accepts orders indefinitely with no matching engine, and tells nobody
+
+| | |
+|---|---|
+| Found | 2026-08-08 |
+| How | The first clean trading-day load run, after the matching engine was OOM-killed |
+| Impact | 924,000 orders accepted and acknowledged to the member with nothing able to process them; 1,087,912 orders deferred over 7 minutes |
+
+When the matching engine connection drops, the sequencer commits each order to the WAL and
+defers forwarding it:
+
+```
+SequencerThread: no matching engine connected -- order seq=59678842 WAL-committed,
+forward deferred until an ME reconnects (recovered via WAL replay on ME promotion)
+```
+
+That policy is sound for a brief failover — the orders are durable and a promoted ME
+replays them. Three things about it are not.
+
+**The assumption can stop holding, and nothing notices.** An ME was promoted and did
+reconcile, then died two minutes later. The sequencer went on deferring for another five
+minutes, waiting for a recovery that could no longer happen because no matching engine
+existed at all.
+
+**It is logged at INFO, once per order — 1,087,912 times.** A million lines saying the
+venue is degraded, at the level used for routine progress. Volume that large hides the
+condition rather than reporting it.
+
+**Nothing propagates to the gateway.** The sequencer knew there was no matching engine for
+seven minutes. The gateway kept accepting orders and acknowledging them, logging
+`dropped=0` throughout, and the member saw no difference. The sequencer has the knowledge,
+the gateway has the member relationship, and there is no path between them.
+
+Suggested shape, not yet designed: deferring a handful of orders across a brief failover
+should stay silent; deferring thousands over minutes should escalate — a rate-limited
+WARNING, a metric for deferred-order count and age, and ultimately a signal that makes the
+gateways stop accepting. **A venue that takes orders it cannot process is worse than one
+that refuses them.**
+
+Related: the HA entry below, since the deferral policy assumes a promotion that will
+succeed.
+
+### HA fails over into a condition both nodes share
+
+| | |
+|---|---|
+| Found | 2026-08-08 |
+| How | The first clean trading-day load run — the primary matching engine was OOM-killed and the promoted secondary died 2 minutes later |
+| Impact | Failover postponed an outage by about 4 minutes instead of preventing it |
+
+The HA mechanism itself performed correctly and quickly:
+
+```
+16:49:30  primary OOM-killed (9.9 GB, book 8,388,608)
+16:49:31  secondary: replication connection lost -- replica book now stale
+16:49:46  promotion timeout fired, arbitration requested, elected leader
+16:49:49  reconciled 58,444 records in 2.8s -- book 8,445,780
+16:51:41  reactor watchdog: callback stuck [109105 ms] -- orderly shutdown
+```
+
+Detection, arbitration, promotion and reconciliation all worked. **The secondary then died
+of the same thing**, because it came up holding a book of 8,445,780 orders on a machine
+that had just killed a process for holding 9.9 GB.
+
+**HA protects against independent failures. It cannot protect against a systemic condition
+both nodes share** — memory exhaustion, a poison message, a bug reached by the same input,
+a shared dependency. Failing over into it converts an outage into a slightly later outage
+and burns the standby doing it.
+
+Worth designing for explicitly. Open questions rather than a plan:
+
+- Should a promoted node **check its own headroom** before accepting promotion, and decline
+  if it is in the same state the primary died in?
+- Should the arbiter know *why* the primary went, so it can distinguish "the process died"
+  from "the process died of something I am also suffering"?
+- Is there a signal a node can publish that means "I am not a safe failover target"?
+- What is the right behaviour when there is no safe target — refuse orders rather than
+  accept ones that cannot be processed? See the entry above about accepting orders with no
+  matching engine.
+
+Note this run's book growth was itself an artefact: the ME does no matching and the load
+client cannot yet cancel, so nothing removed orders. The **failover behaviour** is the
+finding here, not the growth.
+
 ### `cmake --install` re-lays config templates unexpanded
 
 | | |

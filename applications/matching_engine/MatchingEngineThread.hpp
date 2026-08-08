@@ -17,6 +17,7 @@
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/CounterHandle.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
+#include <pubsub_itc_fw/GrowthReportingAllocator.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
 
@@ -241,7 +242,19 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // Order book keyed by (session identity, cl_ord_id).
     // Primary:   live orders currently on the book.
     // Secondary: replica of the primary's book, maintained via BookUpdate PDUs.
-    tsl::robin_map<OrderKey, OrderEntry, OrderKeyHash> order_book_;
+    //
+    // On GrowthReportingAllocator rather than std::allocator so that the book's growth is
+    // VISIBLE. The framework's pool and slab allocators instrument objects with a message
+    // lifecycle and every component registers handler_for_pool_exhausted for them -- but
+    // the book is neither pooled nor slab-allocated, so it went straight to the OS heap
+    // and no instrument in the venue could see it. It reached 9.9 GB and the matching
+    // engine was OOM-killed having logged no memory warning of any kind.
+    //
+    // robin_map allocates its whole bucket array in one call and reallocates on each
+    // doubling, so the callback fires once per doubling and never per order.
+    using OrderBookAllocator = pubsub_itc_fw::GrowthReportingAllocator<std::pair<OrderKey, OrderEntry>>;
+    pubsub_itc_fw::AllocationGrowthReporter book_growth_reporter_;
+    tsl::robin_map<OrderKey, OrderEntry, OrderKeyHash, std::equal_to<OrderKey>, OrderBookAllocator> order_book_;
 
     // Monotonic counters for generated OrderID and ExecID values (primary only).
     int64_t order_id_counter_{0};

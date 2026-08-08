@@ -172,6 +172,9 @@ MatchingEngineConfiguration MatchingEngineConfigurationLoader::load(const std::s
         }
 
         toml.get_required_except("order_book.initial_capacity", config.order_book_initial_capacity);
+        // Optional: an existing deployment that predates this keeps the default rather
+        // than failing to start, and the default is a useful value rather than "off".
+        static_cast<void>(toml.get_required("order_book.growth_report_threshold_bytes", config.order_book_growth_report_threshold_bytes));
         if (config.order_book_initial_capacity < 1) {
             throw pubsub_itc_fw::ConfigurationException("MatchingEngineConfigurationLoader: order_book.initial_capacity must be >= 1, got " +
                                                         std::to_string(config.order_book_initial_capacity));
